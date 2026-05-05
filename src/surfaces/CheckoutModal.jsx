@@ -13,6 +13,8 @@ import {
   syncAuthTokenFromSession,
   getSavedPairing,
   autoReconnect,
+  getAssignedNetworkReader,
+  connectInternetReader,
 } from '../lib/stripeTerminal';
 import { getActiveLocationSync } from '../lib/supabase';
 
@@ -114,12 +116,29 @@ function CardTerminal({ grand, onComplete, onBack }) {
         await initStripeTerminal();
         if (cancelled) return;
         let s = getStripeTerminalStatus();
-        // If we have a saved pairing but no live connection, reconnect silently.
+        // 1. Saved BT pairing → reconnect silently
         if (!s?.reader && getSavedPairing()) {
           setStatusMsg('Reconnecting to reader…');
           await autoReconnect();
           if (cancelled) return;
           s = getStripeTerminalStatus();
+        }
+        // 2. No BT? Check for an admin-assigned network reader and connect to it.
+        if (!s?.reader) {
+          try {
+            const networkReader = await getAssignedNetworkReader();
+            if (networkReader?.stripe_reader_id) {
+              setStatusMsg('Connecting to network reader…');
+              const opsLocationId = getActiveLocationSync();
+              const platformLocationId = await resolvePlatformLocationId(opsLocationId);
+              await connectInternetReader(networkReader.stripe_reader_id, platformLocationId);
+              if (cancelled) return;
+              s = getStripeTerminalStatus();
+            }
+          } catch (e) {
+            // Non-fatal — falls through to "no reader paired" message
+            console.warn('[CardTerminal] network reader connect failed:', e?.message ?? e);
+          }
         }
         setBridgeReady(true);
         if (s?.reader) {

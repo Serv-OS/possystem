@@ -71,9 +71,9 @@ Deno.serve(async (req) => {
     console.warn('platform_users upsert failed (non-fatal):', e?.message ?? e),
   );
 
-  let body: { location_id?: string; registration_code?: string; label?: string };
+  let body: { location_id?: string; registration_code?: string; label?: string; bound_pos_device_id?: string };
   try { body = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
-  const { location_id, registration_code, label } = body ?? {};
+  const { location_id, registration_code, label, bound_pos_device_id } = body ?? {};
   if (!location_id || !registration_code) return json({ error: 'location_id and registration_code required' }, 400);
 
   // 1. Find the connected account for this location
@@ -131,6 +131,7 @@ Deno.serve(async (req) => {
     status: reader.status ?? 'unknown',
     last_seen_at: new Date().toISOString(),
     registered_by_user_id: caller.id,
+    bound_pos_device_id: bound_pos_device_id || null,
   }).select().single();
   if (insErr) {
     // Best effort: try to roll back the Stripe registration

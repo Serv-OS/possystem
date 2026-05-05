@@ -35,14 +35,17 @@ const S = {
 
 export default function CardReaders() {
   const [platformLocationId, setPlatformLocationId] = useState(null);
+  const [opsLocationId, setOpsLocationId] = useState(null);
   const [locationName, setLocationName] = useState('');
   const [companyName, setCompanyName] = useState('');
   const [readers, setReaders] = useState([]);
+  const [devices, setDevices] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [showRegister, setShowRegister] = useState(false);
   const [refreshingStatus, setRefreshingStatus] = useState(false);
   const [lastRefreshedAt, setLastRefreshedAt] = useState(null);
+  const [reassignReader, setReassignReader] = useState(null);
 
   const refresh = useCallback(async () => {
     if (!platformSupabase) {
@@ -58,6 +61,7 @@ export default function CardReaders() {
         setLoading(false);
         return;
       }
+      setOpsLocationId(opsLocId);
       const platformId = await resolvePlatformLocationId(opsLocId);
       if (!platformId) {
         setError('This location is not registered for billing yet. Contact platform admin.');
@@ -66,15 +70,22 @@ export default function CardReaders() {
       }
       setPlatformLocationId(platformId);
 
-      const [{ data: loc }, { data: rdrs }] = await Promise.all([
+      const [{ data: loc }, { data: rdrs }, { data: devs }] = await Promise.all([
         platformSupabase.from('locations').select('id, name, company_id').eq('id', platformId).maybeSingle(),
         platformSupabase.from('payment_devices')
           .select('id, stripe_reader_id, label, device_type, connection_kind, serial_number, status, last_seen_at, bound_pos_device_id, created_at, registration_code, ip_address, firmware_version, last_status_check_at')
           .eq('location_id', platformId)
           .order('created_at', { ascending: false }),
+        // Devices live in Ops DB. Pull POS + kiosk types only — those are what can take payments.
+        supabase.from('devices')
+          .select('id, name, type, status')
+          .eq('location_id', opsLocId)
+          .in('type', ['pos', 'kiosk'])
+          .order('name', { ascending: true }),
       ]);
       setLocationName(loc?.name ?? '(unknown)');
       setReaders(rdrs ?? []);
+      setDevices(devs ?? []);
 
       if (loc?.company_id) {
         const { data: co } = await platformSupabase.from('companies').select('name').eq('id', loc.company_id).maybeSingle();
@@ -186,7 +197,7 @@ export default function CardReaders() {
               <div style={S.empty}>None registered yet — click "+ Register network reader" above to add one.</div>
             ) : (
               networkReaders.map(r => (
-                <ReaderRow key={r.id} reader={r} onUnregister={() => onUnregister(r)} />
+                <ReaderRow key={r.id} reader={r} devices={devices} onUnregister={() => onUnregister(r)} onReassign={() => setReassignReader(r)} />
               ))
             )}
           </div>
@@ -198,7 +209,7 @@ export default function CardReaders() {
               <div style={S.empty}>None paired yet — pair from each POS terminal's Status panel.</div>
             ) : (
               bluetoothReaders.map(r => (
-                <ReaderRow key={r.id} reader={r} onUnregister={() => onUnregister(r)} />
+                <ReaderRow key={r.id} reader={r} devices={devices} onUnregister={() => onUnregister(r)} />
               ))
             )}
           </div>
@@ -209,21 +220,38 @@ export default function CardReaders() {
         <RegisterNetworkReaderModal
           locationId={platformLocationId}
           locationName={locationName}
+          devices={devices}
           onClose={() => setShowRegister(false)}
           onRegistered={() => { setShowRegister(false); refresh(); }}
+        />
+      )}
+
+      {reassignReader && (
+        <ReassignReaderModal
+          reader={reassignReader}
+          devices={devices}
+          onClose={() => setReassignReader(null)}
+          onSaved={() => { setReassignReader(null); refresh(); }}
         />
       )}
     </div>
   );
 }
 
-function ReaderRow({ reader, onUnregister }) {
+function ReaderRow({ reader, devices, onUnregister, onReassign }) {
   const [expanded, setExpanded] = useState(false);
   const isOnline = reader.status === 'online';
   const isNetwork = reader.connection_kind === 'network';
   const lastSeen = reader.last_seen_at ? new Date(reader.last_seen_at) : null;
   const lastCheck = reader.last_status_check_at ? new Date(reader.last_status_check_at) : null;
   const lastSeenAge = lastSeen ? Math.floor((Date.now() - lastSeen.getTime()) / 60000) : null;       // minutes
+
+  const boundDevice = reader.bound_pos_device_id
+    ? (devices ?? []).find(d => d.id === reader.bound_pos_device_id)
+    : null;
+  const boundLabel = reader.bound_pos_device_id
+    ? (boundDevice ? `${boundDevice.name} (${boundDevice.type})` : `unknown device · ${reader.bound_pos_device_id.slice(0, 8)}`)
+    : null;
 
   return (
     <div style={{ padding: '12px 14px', borderRadius: 10, border: '1px solid var(--bdr)', background: 'var(--bg2)', marginBottom: 8 }}>
@@ -245,11 +273,28 @@ function ReaderRow({ reader, onUnregister }) {
           <div style={{ fontSize: 11, color: 'var(--t4)', fontFamily: 'var(--font-mono, monospace)', marginTop: 3, wordBreak: 'break-all' }}>
             {reader.stripe_reader_id}{reader.serial_number ? ` · ${reader.serial_number}` : ''}
           </div>
+
+          {/* Assigned-to display */}
+          <div style={{ marginTop: 8, padding: '8px 10px', borderRadius: 8, background: boundLabel ? 'var(--acc-d)' : 'var(--bg3)', border: '1px solid', borderColor: boundLabel ? 'var(--acc-b)' : 'var(--bdr)' }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 2 }}>
+              Assigned to
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+              <div style={{ fontSize: 12, color: 'var(--t1)', fontWeight: boundLabel ? 700 : 400 }}>
+                {boundLabel ?? (isNetwork ? 'Not assigned to any POS or kiosk yet' : 'Auto-bound to paired POS')}
+              </div>
+              {isNetwork && onReassign && (
+                <button onClick={onReassign} style={{ ...S.btn, ...S.btnGhost, padding: '4px 10px', fontSize: 11 }}>
+                  {boundLabel ? 'Reassign' : 'Assign'}
+                </button>
+              )}
+            </div>
+          </div>
+
           <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap', alignItems: 'center' }}>
             <span style={S.pill}>{reader.device_type?.replace(/_/g, ' ') || 'reader'}</span>
             <span style={S.pill}>{reader.connection_kind}</span>
             {reader.firmware_version && <span style={S.pill}>fw {reader.firmware_version}</span>}
-            {reader.bound_pos_device_id && <span style={S.pill}>POS: {reader.bound_pos_device_id.slice(0, 8)}</span>}
             {lastSeenAge !== null && (
               <span style={{ ...S.pill, background: lastSeenAge < 5 ? 'var(--grn-d)' : lastSeenAge < 60 ? 'var(--bg3)' : 'var(--red-d)', color: lastSeenAge < 5 ? 'var(--grn)' : lastSeenAge < 60 ? 'var(--t2)' : 'var(--red)' }}>
                 seen {lastSeenAge < 1 ? 'just now' : lastSeenAge < 60 ? `${lastSeenAge}m ago` : lastSeenAge < 1440 ? `${Math.floor(lastSeenAge/60)}h ago` : `${Math.floor(lastSeenAge/1440)}d ago`}
@@ -272,7 +317,7 @@ function ReaderRow({ reader, onUnregister }) {
           <DiagRow label="Device type" value={reader.device_type?.replace(/_/g,' ') || '—'}/>
           <DiagRow label="Connection" value={reader.connection_kind}/>
           {isNetwork && <DiagRow label="IP address" value={reader.ip_address || 'unknown'} mono/>}
-          {!isNetwork && <DiagRow label="Bound POS device" value={reader.bound_pos_device_id || '—'} mono/>}
+          <DiagRow label="Bound POS/kiosk" value={boundLabel || '—'}/>
           <DiagRow label="Firmware" value={reader.firmware_version || 'unknown'} mono/>
           <DiagRow label="Status" value={reader.status || 'unknown'}/>
           <DiagRow label="Last seen by Stripe" value={lastSeen ? lastSeen.toLocaleString() : 'never'}/>
@@ -306,9 +351,10 @@ function DiagRow({ label, value, mono }) {
   );
 }
 
-function RegisterNetworkReaderModal({ locationId, locationName, onClose, onRegistered }) {
+function RegisterNetworkReaderModal({ locationId, locationName, devices, onClose, onRegistered }) {
   const [code, setCode] = useState('');
   const [label, setLabel] = useState('');
+  const [boundDeviceId, setBoundDeviceId] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
 
@@ -326,7 +372,12 @@ function RegisterNetworkReaderModal({ locationId, locationName, onClose, onRegis
       const res = await fetch(`${FUNCTIONS_URL}/stripe-register-network-reader`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-        body: JSON.stringify({ location_id: locationId, registration_code: code.trim(), label: label.trim() || undefined }),
+        body: JSON.stringify({
+          location_id: locationId,
+          registration_code: code.trim(),
+          label: label.trim() || undefined,
+          bound_pos_device_id: boundDeviceId || undefined,
+        }),
       });
       const j = await res.json();
       if (!res.ok || j.error) throw new Error(j.error ?? `HTTP ${res.status}`);
@@ -358,12 +409,89 @@ function RegisterNetworkReaderModal({ locationId, locationName, onClose, onRegis
         <label style={S.label}>Label (optional)</label>
         <input type="text" value={label} onChange={e => setLabel(e.target.value)} placeholder="Front counter, terrace, etc." style={S.input}/>
 
+        <div style={{ height: 12 }}/>
+        <label style={S.label}>Assign to POS or kiosk (optional — can do later)</label>
+        <select value={boundDeviceId} onChange={e => setBoundDeviceId(e.target.value)} style={S.input}>
+          <option value="">— Don't assign yet —</option>
+          {(devices ?? []).map(d => (
+            <option key={d.id} value={d.id}>{d.name} ({d.type})</option>
+          ))}
+        </select>
+        {(devices ?? []).length === 0 && (
+          <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 4 }}>
+            No POS or kiosk devices found at this location. Pair a device first under <em>Devices</em>, then come back to assign this reader.
+          </div>
+        )}
+
         {error && <div style={{ ...S.errorBox, marginTop: 14 }}>{error}</div>}
 
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
           <button onClick={onClose} disabled={submitting} style={{ ...S.btn, ...S.btnGhost }}>Cancel</button>
           <button onClick={submit} disabled={submitting || !code} style={{ ...S.btn, ...S.btnPrim }}>
             {submitting ? 'Registering…' : 'Register reader'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ReassignReaderModal({ reader, devices, onClose, onSaved }) {
+  const [boundDeviceId, setBoundDeviceId] = useState(reader.bound_pos_device_id || '');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState(null);
+
+  const submit = async () => {
+    setError(null);
+    setSubmitting(true);
+    try {
+      const { data: session } = await supabase.auth.getSession();
+      const token = session?.session?.access_token;
+      if (!token) throw new Error('not authenticated');
+      const res = await fetch(`${FUNCTIONS_URL}/stripe-assign-reader-to-pos`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          reader_id: reader.id,
+          pos_device_id: boundDeviceId || null,
+        }),
+      });
+      const j = await res.json();
+      if (!res.ok || j.error) throw new Error(j.error ?? `HTTP ${res.status}`);
+      onSaved();
+    } catch (e) {
+      setError(String(e?.message ?? e));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(2px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={onClose}>
+      <div style={{ ...S.card, width: 460, maxWidth: 'calc(100vw - 32px)', marginBottom: 0, boxShadow: 'var(--sh3)' }} onClick={e => e.stopPropagation()}>
+        <h2 style={{ ...S.h1, fontSize: 18, marginBottom: 4 }}>Assign reader</h2>
+        <div style={{ fontSize: 13, color: 'var(--t3)', marginBottom: 16 }}>
+          <strong style={{ color: 'var(--t1)' }}>{reader.label || reader.serial_number}</strong>
+        </div>
+
+        <label style={S.label}>POS or kiosk</label>
+        <select value={boundDeviceId} onChange={e => setBoundDeviceId(e.target.value)} style={S.input} autoFocus>
+          <option value="">— Unassign (no device uses this reader) —</option>
+          {(devices ?? []).map(d => (
+            <option key={d.id} value={d.id}>{d.name} ({d.type})</option>
+          ))}
+        </select>
+        <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 6, lineHeight: 1.5 }}>
+          The selected POS or kiosk will use this reader automatically when taking card payments.
+          Other devices at this location will not see it as their default reader.
+        </div>
+
+        {error && <div style={{ ...S.errorBox, marginTop: 14 }}>{error}</div>}
+
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
+          <button onClick={onClose} disabled={submitting} style={{ ...S.btn, ...S.btnGhost }}>Cancel</button>
+          <button onClick={submit} disabled={submitting} style={{ ...S.btn, ...S.btnPrim }}>
+            {submitting ? 'Saving…' : 'Save'}
           </button>
         </div>
       </div>

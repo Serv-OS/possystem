@@ -299,6 +299,77 @@ class StripeTerminalBridge(
     }
 
     /**
+     * window.RposStripeTerminal.connectInternetReader(stripeReaderId, locationId, callbackId)
+     *
+     * Connects to a network reader (S700, WisePOS E in WiFi mode) by its
+     * Stripe reader id (rdr_…). The reader must already be registered against
+     * the merchant's connected account at this Stripe Terminal Location.
+     */
+    @JavascriptInterface
+    fun connectInternetReader(stripeReaderId: String, locationId: String, callbackId: String) {
+        if (!Terminal.isInitialized()) {
+            postCallback(callbackId, false, JSONObject().put("error", "Terminal not initialised"))
+            return
+        }
+        // Disconnect any existing reader first (BT or network).
+        if (Terminal.getInstance().connectedReader != null) {
+            Terminal.getInstance().disconnectReader(object : Callback {
+                override fun onSuccess() { discoverAndConnectInternet(stripeReaderId, locationId, callbackId) }
+                override fun onFailure(e: TerminalException) {
+                    postCallback(callbackId, false, JSONObject().put("error", "disconnect prior reader: ${e.errorMessage}"))
+                }
+            })
+        } else {
+            discoverAndConnectInternet(stripeReaderId, locationId, callbackId)
+        }
+    }
+
+    private fun discoverAndConnectInternet(stripeReaderId: String, locationId: String, callbackId: String) {
+        val config = DiscoveryConfiguration.InternetDiscoveryConfiguration(
+            isSimulated = stripeReaderId == "simulated-wisepos-e" || stripeReaderId.startsWith("tmr_"),
+        )
+        var found: Reader? = null
+        Terminal.getInstance().discoverReaders(
+            config,
+            object : DiscoveryListener {
+                override fun onUpdateDiscoveredReaders(readers: List<Reader>) {
+                    val match = readers.firstOrNull { it.id == stripeReaderId || it.serialNumber == stripeReaderId }
+                    if (match != null && found == null) found = match
+                }
+            },
+            object : Callback {
+                override fun onSuccess() {
+                    val reader = found
+                    if (reader == null) {
+                        postCallback(callbackId, false, JSONObject().put("error",
+                            "Network reader $stripeReaderId not discovered. Check it is online and on the same Stripe Terminal Location."))
+                        return
+                    }
+                    val connConfig = ConnectionConfiguration.InternetConnectionConfiguration()
+                    Terminal.getInstance().connectInternetReader(
+                        reader, connConfig,
+                        object : ReaderCallback {
+                            override fun onSuccess(connectedReader: Reader) {
+                                postCallback(callbackId, true, JSONObject()
+                                    .put("connected", true)
+                                    .put("reader", readerToJson(connectedReader)))
+                            }
+                            override fun onFailure(e: TerminalException) {
+                                postCallback(callbackId, false, JSONObject()
+                                    .put("error", e.errorMessage)
+                                    .put("code", e.errorCode.name))
+                            }
+                        },
+                    )
+                }
+                override fun onFailure(e: TerminalException) {
+                    postCallback(callbackId, false, JSONObject().put("error", "discovery: ${e.errorMessage}"))
+                }
+            },
+        )
+    }
+
+    /**
      * window.RposStripeTerminal.getStatus()
      * Synchronous — returns JSON: { initialized, hasAuthToken, connection, reader }
      */

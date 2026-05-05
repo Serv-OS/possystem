@@ -73,6 +73,26 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.51', date: '5 May 2026', label: 'Network reader assignment to specific POS/kiosk + auto-connect at checkout',
+    changes: [
+      'BO: Register network reader modal now has an "Assign to POS or kiosk" dropdown listing devices at this location (POS + kiosk types from Ops DB devices table). Optional — can leave unassigned at registration time and assign later.',
+      'BO: Each network reader row now shows an "Assigned to" panel (orange-tinted when assigned, neutral when not) with a Reassign button. New ReassignReaderModal lets admin move a reader between any POS or kiosk at the location, or unassign it entirely.',
+      'NEW EDGE FUNCTION: stripe-assign-reader-to-pos (deployed). Validates the target device exists, is type=pos or kiosk, and is at the same location as the reader. Updates payment_devices.bound_pos_device_id via service_role. stripe-register-network-reader updated to accept optional bound_pos_device_id at insert time.',
+      'POS Status drawer Card readers section: Network area now ONLY shows the reader assigned to THIS device (filtered by bound_pos_device_id = rpos-device.id). When none assigned, shows a friendly "ask admin to assign" message pointing at the BO. No more confusing "all readers at the location" list.',
+      'POS CheckoutModal CardTerminal probe order: (1) connected BT reader, (2) saved BT pairing → autoReconnect, (3) admin-assigned network reader → connectInternetReader, (4) "no reader paired" message. Status messages reflect each step. Same flow works for kiosks since kiosks share the rpos-device.id mechanism.',
+      'JS BRIDGE: new helpers getAssignedNetworkReader() and connectInternetReader(stripeReaderId, locationId).',
+      'KOTLIN BRIDGE: new connectInternetReader method using InternetDiscoveryConfiguration + InternetConnectionConfiguration. Disconnects any existing reader (BT or network) before connecting. Treats simulated-wisepos-e and tmr_ ids as simulated for testing. Requires APK rebuild.',
+    ],
+  },
+  {
+    version: '5.5.50', date: '5 May 2026', label: 'Fix user FK errors across Platform DB writes',
+    changes: [
+      'BUG FIX: Duncan Scott (DX Test Location admin) tried to register a network reader and got "payment_devices_registered_by_user_id_fkey" violation because his Ops DB Auth UUID had never been touched in Platform DB. Reproducible for any new admin.',
+      'DROPPED 4 audit-only FKs: payment_devices_registered_by_user_id_fkey, merchant_stripe_accounts_linked_by_user_id_fkey, billing_invoices_override_by_user_id_fkey, platform_settings_updated_by_user_id_fkey. These columns are pure audit and should not enforce referential integrity. Legitimate FKs (user_company_roles.user_id, user_location_access.user_id) remain.',
+      'ADDED ensurePlatformUser() helper to stripe-register-network-reader: lazy-upserts the calling user into platform_users on first write so the audit trail is still complete. Best-effort, non-fatal. Same pattern should apply to any future Platform DB writes.',
+    ],
+  },
+  {
     version: '5.5.49', date: '4 May 2026', label: 'Unregister reader fix — now goes through edge function',
     changes: [
       'BUG FIX: Unregistering a network reader from BO appeared to do nothing. Root cause: anon RLS DELETE policy on payment_devices only permits connection_kind=\'bluetooth\' (so POS terminals can clean up their own pairings), so direct DB deletes from BO for network readers silently no-op. Also we were not deleting the reader from Stripe\'s side, leaving a zombie registration on the connected account.',

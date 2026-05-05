@@ -172,6 +172,41 @@ export function onStatusEvent(fn) {
   return () => eventListeners.delete(fn);
 }
 
+// ── Network reader (assigned by admin) ────────────────────────────────────
+
+/**
+ * Fetch the network reader assigned to this POS/kiosk device, if any.
+ * Returns the payment_devices row or null.
+ */
+export async function getAssignedNetworkReader() {
+  const opsLocationId = getActiveLocationSyncMaybe();
+  const posDeviceId = getPosDeviceId();
+  if (!opsLocationId || !posDeviceId || !platformSupabase) return null;
+  const platformLocationId = await resolvePlatformLocationId(opsLocationId);
+  if (!platformLocationId) return null;
+  const { data } = await platformSupabase
+    .from('payment_devices')
+    .select('id, stripe_reader_id, label, status, ip_address, device_type')
+    .eq('location_id', platformLocationId)
+    .eq('connection_kind', 'network')
+    .eq('bound_pos_device_id', posDeviceId)
+    .maybeSingle();
+  return data ?? null;
+}
+
+/** Connect to a specific network reader by Stripe rdr_ id. */
+export function connectInternetReader(stripeReaderId, locationId) {
+  return call('connectInternetReader', [stripeReaderId, locationId]);
+}
+
+// Helper used above — guarded so this module loads even if rpos-bo-location absent
+function getActiveLocationSyncMaybe() {
+  try {
+    const ops = localStorage.getItem('rpos-bo-location') || localStorage.getItem('rpos-active-location');
+    return ops || null;
+  } catch { return null; }
+}
+
 // ── POS device identity + persistent reader pairing ───────────────────────
 // Each POS device has its own paired reader. We persist the pairing in
 // localStorage under the same key shape used elsewhere in the app.

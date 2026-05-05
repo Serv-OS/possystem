@@ -72,19 +72,20 @@ export default function StatusDrawerCardReaders() {
     return () => window.removeEventListener('posup-paired-reader-updated', update);
   }, []);
 
-  // Load network readers for this location
+  // Load network reader assigned to THIS pos device
   useEffect(() => {
-    if (!platformLocationId || !platformSupabase) return;
+    if (!platformLocationId || !platformSupabase || !posDeviceId) return;
     (async () => {
       const { data } = await platformSupabase
         .from('payment_devices')
-        .select('id, stripe_reader_id, label, device_type, connection_kind, status, last_seen_at, serial_number')
+        .select('id, stripe_reader_id, label, device_type, connection_kind, status, last_seen_at, serial_number, ip_address')
         .eq('location_id', platformLocationId)
         .eq('connection_kind', 'network')
+        .eq('bound_pos_device_id', posDeviceId)
         .order('label', { ascending: true });
       setNetworkReaders(data ?? []);
     })();
-  }, [platformLocationId]);
+  }, [platformLocationId, posDeviceId]);
 
   // Initial bridge probe + perms check
   const probe = useCallback(async () => {
@@ -316,25 +317,37 @@ export default function StatusDrawerCardReaders() {
         )}
       </div>
 
-      {/* ── Network readers (location) ────────────────────────────────── */}
-      {networkReaders.length > 0 && (
-        <div>
-          <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 6 }}>
-            Network · This location
+      {/* ── Network reader assigned to this terminal ─────────────── */}
+      <div style={{ marginTop: 12 }}>
+        <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 6 }}>
+          Network · This terminal
+        </div>
+        {networkReaders.length === 0 ? (
+          <div style={{ ...Sx.rowCard, padding: 12 }}>
+            <div style={{ fontSize: 12, color: 'var(--t3)', lineHeight: 1.5 }}>
+              No network reader assigned to this terminal.<br/>
+              <span style={{ color: 'var(--t4)' }}>An admin can assign a network reader (Stripe S700, WisePOS E) to this device in <strong style={{ color: 'var(--acc)' }}>Back office → Card readers</strong>.</span>
+            </div>
           </div>
-          {networkReaders.map((r) => (
+        ) : (
+          networkReaders.map((r) => (
             <div key={r.id} style={Sx.rowCard}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--t1)' }}>{r.label || r.serial_number}</div>
-              <div style={{ fontSize: 10, color: 'var(--t4)', marginTop: 2 }}>
-                {r.device_type} · {r.status}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)' }}>{r.label || r.serial_number}</div>
+                  <div style={{ fontSize: 10, color: 'var(--t4)' }}>
+                    {(r.device_type || '').replace(/_/g, ' ')} · {r.status || 'unknown'}
+                    {r.ip_address && (<> · <code style={{ fontFamily: 'var(--font-mono, monospace)' }}>{r.ip_address}</code></>)}
+                  </div>
+                </div>
+                <span style={{ fontSize: 10, fontWeight: 700, color: r.status === 'online' ? 'var(--grn)' : 'var(--t4)' }}>
+                  ● {r.status === 'online' ? 'live' : (r.status || 'unknown')}
+                </span>
               </div>
             </div>
-          ))}
-          <div style={{ fontSize: 10, color: 'var(--t4)', marginTop: 6, lineHeight: 1.4 }}>
-            Network reader connections happen automatically per-checkout — you don't need to "pair" them on this terminal.
-          </div>
-        </div>
-      )}
+          ))
+        )}
+      </div>
 
       <div style={{ fontSize: 10, color: 'var(--t4)', marginTop: 8, lineHeight: 1.4 }}>
         Terminal id: <code style={{ fontFamily: 'var(--font-mono, monospace)' }}>{posDeviceId || '(not configured)'}</code>
