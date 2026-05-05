@@ -172,6 +172,77 @@ export function onStatusEvent(fn) {
   return () => eventListeners.delete(fn);
 }
 
+// ── POS device identity + persistent reader pairing ───────────────────────
+// Each POS device has its own paired reader. We persist the pairing in
+// localStorage under the same key shape used elsewhere in the app.
+
+const POS_DEVICE_KEY = 'rpos-device';
+const PAIRED_READER_KEY = 'posup-paired-reader';
+
+export function getPosDeviceId() {
+  try {
+    const raw = localStorage.getItem(POS_DEVICE_KEY);
+    if (!raw) return null;
+    const obj = JSON.parse(raw);
+    return obj?.id || null;
+  } catch { return null; }
+}
+
+/**
+ * Returns the locally-saved pairing for THIS POS device:
+ * { serialNumber, deviceType, label, locationId, pairedAt } or null.
+ */
+export function getSavedPairing() {
+  try {
+    const raw = localStorage.getItem(PAIRED_READER_KEY);
+    if (!raw) return null;
+    const obj = JSON.parse(raw);
+    // Belt-and-braces: the saved pairing must match THIS pos device id.
+    if (obj?.posDeviceId && obj.posDeviceId !== getPosDeviceId()) return null;
+    return obj;
+  } catch { return null; }
+}
+
+export function savePairing({ serialNumber, deviceType, label, locationId }) {
+  try {
+    localStorage.setItem(PAIRED_READER_KEY, JSON.stringify({
+      serialNumber, deviceType, label, locationId,
+      posDeviceId: getPosDeviceId(),
+      pairedAt: new Date().toISOString(),
+    }));
+    window.dispatchEvent(new CustomEvent('posup-paired-reader-updated'));
+  } catch {}
+}
+
+export function clearPairing() {
+  try {
+    localStorage.removeItem(PAIRED_READER_KEY);
+    window.dispatchEvent(new CustomEvent('posup-paired-reader-updated'));
+  } catch {}
+}
+
+/**
+ * On app boot, if we have a saved pairing for this POS device, attempt to
+ * silently reconnect to the reader. Returns true on success, false if the
+ * reader can't be found within 15s. Caller is expected to show a non-blocking
+ * UI while this runs.
+ */
+export async function autoReconnect() {
+  const saved = getSavedPairing();
+  if (!saved?.serialNumber || !saved?.locationId) return false;
+  if (!hasStripeTerminalBridge()) return false;
+  try {
+    await syncAuthTokenFromSession();
+    await initialize();
+    const status = getStatus();
+    if (status?.reader?.serialNumber === saved.serialNumber) return true;     // already connected
+    await connectReader(saved.serialNumber, saved.locationId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ── Location-id resolution ────────────────────────────────────────────────
 // The POS holds the Ops DB location_id. Stripe billing tables are keyed by
 // the Platform DB location id (which is the same UUID for new locations but

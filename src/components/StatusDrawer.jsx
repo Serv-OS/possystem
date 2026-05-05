@@ -3,6 +3,7 @@ import { useStore } from '../store';
 import { supabase, getLocationId } from '../lib/supabase';
 import { printService } from '../lib/printer';
 import { VERSION } from '../lib/version';
+import StatusDrawerCardReaders from './StatusDrawerCardReaders';
 
 const ONLINE_THRESHOLD_MS = 15 * 60 * 1000; // 15 min last_seen threshold
 
@@ -380,6 +381,11 @@ export default function StatusDrawer({ onClose }) {
                 })}
               </div>
             )}
+          </Section>
+
+          {/* Card readers — bluetooth (this POS) + network (location) */}
+          <Section label="Card readers">
+            <StatusDrawerCardReaders/>
           </Section>
 
           {/* Print queue — pending/failed only */}

@@ -11,6 +11,8 @@ import {
   collectPayment as terminalCollect,
   resolvePlatformLocationId,
   syncAuthTokenFromSession,
+  getSavedPairing,
+  autoReconnect,
 } from '../lib/stripeTerminal';
 import { getActiveLocationSync } from '../lib/supabase';
 
@@ -111,7 +113,14 @@ function CardTerminal({ grand, onComplete, onBack }) {
         await syncAuthTokenFromSession();
         await initStripeTerminal();
         if (cancelled) return;
-        const s = getStripeTerminalStatus();
+        let s = getStripeTerminalStatus();
+        // If we have a saved pairing but no live connection, reconnect silently.
+        if (!s?.reader && getSavedPairing()) {
+          setStatusMsg('Reconnecting to reader…');
+          await autoReconnect();
+          if (cancelled) return;
+          s = getStripeTerminalStatus();
+        }
         setBridgeReady(true);
         if (s?.reader) {
           setHasReader(true);

@@ -73,6 +73,17 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.45', date: '4 May 2026', label: 'Card-reader pairing moved to POS Status drawer (where it belongs); BO becomes network-reader registry',
+    changes: [
+      'PRODUCT FIX: Bluetooth pairing was wrongly placed in BO. Now lives in the POS Terminal status drawer (left rail · Status icon) under a new "Card readers" section, alongside printers and KDS. Pairing happens at the actual physical terminal, persists per POS device id (rpos-device.id) in localStorage, and auto-reconnects on app launch via the new autoReconnect() helper.',
+      'NETWORK READERS: New BO Card readers section is now a registry for network/WiFi readers (Stripe S700, WisePOS E in WiFi mode). Admin enters the reader\'s 3-word pairing code (generated on the reader\'s screen) along with a label, and a new edge function stripe-register-network-reader registers it on the merchant\'s connected account, creates a Stripe Terminal Location object if needed, and stores it in payment_devices.',
+      'NEW DB: payment_devices table on Platform DB tracks every reader registered to a location. Bluetooth readers carry bound_pos_device_id so admins can see which terminal owns which BT reader. Network readers don\'t — they serve all POS at the location. RLS allows anon read, anon write only for connection_kind=\'bluetooth\' (so POS terminals can self-register their pairing), network registration is service-role only via edge function. Added stripe_terminal_location_id to locations.',
+      'CHECKOUT FLOW: CheckoutModal CardTerminal now calls autoReconnect() before showing "no reader paired" — silent reconnect to the saved pairing on this terminal. New error UI offers Retry without going back to the start of checkout.',
+      'NEW EDGE FUNCTION: stripe-register-network-reader (deployed). Validates the location has a charges-enabled connected account, creates a Stripe Terminal Location object on first use, calls Stripe terminal.readers.create with the registration code, inserts into payment_devices. Rolls back the Stripe registration if the DB insert fails.',
+      'STATUS DRAWER: New StatusDrawerCardReaders component drops into the existing Section pattern between KDS and Print queue. Shows: bluetooth pairing for THIS terminal (live → idle paired → unpaired states with Reconnect/Forget/Pair buttons inline), plus a list of network readers registered to this location.',
+    ],
+  },
+  {
     version: '5.5.44', date: '4 May 2026', label: 'POS card-present payments via Stripe Reader M2 — native Android bridge + BO pairing UI',
     changes: [
       'ANDROID APK: New Kotlin bridge StripeTerminalBridge.kt wired into MainActivity as window.RposStripeTerminal. Wraps Stripe Terminal Android SDK 3.10.1. Methods: setAuthToken, initialize, checkPermissions/requestPermissions, discoverReaders/cancelDiscovery, connectReader/disconnectReader, getStatus, collectPayment. ConnectionTokenProvider hits the existing stripe-terminal-connection-token edge function with the user\'s Supabase JWT. App-level dependency change: added Kotlin plugin, bumped minSdk 24→26 and Java 8→17 for Stripe Terminal SDK compatibility.',
