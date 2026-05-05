@@ -27,8 +27,6 @@ import LocationSettings from './sections/LocationSettings';
 import ReceiptBranding from './sections/ReceiptBranding';
 import TaxManager from './sections/TaxManager';
 import PettyCash from './sections/PettyCash';
-import BillingManager from './sections/BillingManager';
-import StripeTestHarness from './sections/StripeTestHarness';
 
 const NAV = [
   { id:'overview',   label:'Overview',        icon:'◈',  group:'Dashboard' },
@@ -48,8 +46,6 @@ const NAV = [
   { id:'pettycash',  label:'Petty cash',        icon:'\u{1F4B0}', group:'Analytics' },
   { id:'customers',  label:'Customers',         icon:'\u{1F465}', group:'Analytics' },
   { id:'tax',        label:'Tax & VAT',          icon:'%',   group:'Analytics' },
-  { id:'billing',    label:'Billing',            icon:'💳',  group:'Analytics' },
-  { id:'stripe_test',label:'Stripe test',        icon:'🧪',  group:'Analytics' },
   { id:'ai',         label:'AI Assistant',      icon:'✦',   group:'Analytics' },
   { id:'network',    label:'Network & Sync',     icon:'📡',  group:'Analytics' },
   { id:'location',   label:'Location settings', icon:'⚙️',  group:'Analytics' },
@@ -462,8 +458,6 @@ export default function BackOfficeApp() {
           {section === 'location'   && <LocationSettings />}
           {section === 'receipt' && <ReceiptBranding/>}
           {section === 'tax'        && <TaxManager />}
-          {section === 'billing'    && <BillingManager   orgId={orgCtx?.orgId} currentUser={{ role: orgCtx?.role }} />}
-          {section === 'stripe_test'&& <StripeTestHarness orgId={orgCtx?.orgId} currentUser={{ role: orgCtx?.role }} />}
         </div>
       </div>
       {showLocationSwitcher && <LocationSwitcher onClose={() => setShowLocationSwitcher(false)} />}

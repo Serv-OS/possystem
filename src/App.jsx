@@ -73,6 +73,16 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.40', date: '4 May 2026', label: 'Stripe billing moved out of customer back office and into super-admin (?mode=admin)',
+    changes: [
+      'PRODUCT FIX: Billing & Stripe Connect management never belonged in the customer-facing back office. Customers should not see (or have any UI to interact with) platform-level Stripe internals — that is POSUP staff territory. Moved both Billing and Stripe test sections into CompanyAdminApp at ?mode=admin, behind the existing super_admin gate. Removed both entries from BackOfficeApp nav and routing.',
+      'NEW src/admin/sections/AdminBillingManager.jsx: per-location Stripe Connect status across ALL companies, with a company filter dropdown. Shows linked status, country, currency, link method, charges_enabled state, rolling GMV, current plan, monthly fee. Link button opens paste-acct modal that calls stripe-link-merchant edge fn. Unlink removes the merchant_stripe_accounts row.',
+      'NEW src/admin/sections/AdminStripeTest.jsx: same test harness as before, themed for the admin app (dark slate palette matching CompanyAdminApp). Picks a location with a charges_enabled connected account, creates a real PaymentIntent via stripe-create-payment-intent edge fn, confirms with Stripe Elements, displays the result.',
+      'VISUAL FIX: previous BO version of these screens used CSS variables (var(--t1, #fff), var(--p2, #18181c)) that inherited from the BO light theme — meaning text fell back to dark grey on the dark card background and was invisible. Admin versions use explicit hex colors throughout, matching the existing CompanyAdminApp style guide.',
+      'No backend changes — same edge functions, same Platform DB tables, same permissions.',
+    ],
+  },
+  {
     version: '5.5.39', date: '4 May 2026', label: 'Stripe Connect: schema correction — Platform DB had evolved past supabase-auth-schema.sql doc',
     changes: [
       'When v5.5.38 migration was run against Platform DB (yhzjgyrkyjabvhblqxzu), got "relation subscriptions does not exist". Investigated — actual Platform DB tables are companies/locations/platform_users/user_company_roles/user_access. There is NO subscriptions/organisations/user_profiles. supabase-auth-schema.sql in the repo is stale.',

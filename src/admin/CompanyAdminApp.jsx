@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { VERSION } from '../lib/version';
 import BOLogin from '../backoffice/BOLogin';
+import AdminBillingManager from './sections/AdminBillingManager';
+import AdminStripeTest from './sections/AdminStripeTest';
 
 const S = {
   shell: { display:'flex', height:'100vh', fontFamily:'inherit', background:'#0f1117', color:'#e2e8f0' },
@@ -341,7 +343,12 @@ function AdminPanel({ authUser }) {
           <div style={{ fontSize:14, fontWeight:800, color:'#f1f5f9' }}>Restaurant OS</div>
           <div style={{ fontSize:11, color:'#6366f1', fontWeight:700, letterSpacing:'.06em', textTransform:'uppercase' }}>Company Admin</div>
         </div>
-        {[{ id:'orgs', label:'All organisations', icon:'🏢' }, { id:'new-org', label:'+ New organisation' }].map(n => (
+        {[
+          { id:'orgs', label:'All organisations', icon:'🏢' },
+          { id:'new-org', label:'+ New organisation' },
+          { id:'billing', label:'Billing & Stripe', icon:'💳' },
+          { id:'stripe-test', label:'Stripe test', icon:'🧪' },
+        ].map(n => (
           <button key={n.id} onClick={() => { setSection(n.id); setMsg({ type:'', text:'' }); }}
             style={{ display:'flex', alignItems:'center', gap:10, padding:'8px 16px', margin:'1px 8px', borderRadius:8, cursor:'pointer', fontSize:13,
               fontWeight: section===n.id ? 700 : 400,
@@ -371,6 +378,12 @@ function AdminPanel({ authUser }) {
         {ms && msg.text && (
           <div style={{ background:ms.bg, border:`1px solid ${ms.border}`, color:ms.color, borderRadius:10, padding:'12px 16px', marginBottom:20, fontSize:13 }}>{msg.text}</div>
         )}
+
+        {/* ── Billing & Stripe accounts ── */}
+        {section === 'billing' && <AdminBillingManager authUser={authUser} />}
+
+        {/* ── Stripe test harness ── */}
+        {section === 'stripe-test' && <AdminStripeTest />}
 
         {/* ── Orgs list ── */}
         {section === 'orgs' && (
