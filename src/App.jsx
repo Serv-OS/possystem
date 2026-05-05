@@ -73,6 +73,20 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.49', date: '4 May 2026', label: 'Unregister reader fix — now goes through edge function',
+    changes: [
+      'BUG FIX: Unregistering a network reader from BO appeared to do nothing. Root cause: anon RLS DELETE policy on payment_devices only permits connection_kind=\'bluetooth\' (so POS terminals can clean up their own pairings), so direct DB deletes from BO for network readers silently no-op. Also we were not deleting the reader from Stripe\'s side, leaving a zombie registration on the connected account.',
+      'NEW EDGE FUNCTION: stripe-unregister-reader (deployed). Deletes the reader from Stripe via terminal.readers.del with the connected account header for network readers, then deletes the local row via service_role. Treats Stripe resource_missing as success (already gone). Refuses to delete the local row if Stripe deletion fails for any other reason so admin can retry without losing audit trail.',
+      'BO: CardReaders onUnregister now calls the edge function instead of direct DB delete. Confirm message updated to mention removal from both POSUP and Stripe.',
+    ],
+  },
+  {
+    version: '5.5.48', date: '4 May 2026', label: 'Card readers page padding + maxWidth match PrinterRegistry pattern',
+    changes: [
+      'UI: Card readers section was sitting flush against the BO chrome. Added page wrapper with padding 32/40 and maxWidth 1080 to match PrinterRegistry/DeviceRegistry patterns.',
+    ],
+  },
+  {
     version: '5.5.47', date: '4 May 2026', label: 'Reader diagnostics — IP address, firmware, last-seen, and a "Refresh status" button',
     changes: [
       'NEW EDGE FUNCTION: stripe-readers-status (deployed). For a given location, fetches every registered network reader from Stripe and returns ip_address, device_sw_version (firmware), status, last_seen_at, livemode, and persists the diagnostic fields back into payment_devices for audit. Bluetooth readers are passed through with a note explaining their fields come from the POS terminal that paired them.',

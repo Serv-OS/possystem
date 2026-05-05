@@ -118,9 +118,22 @@ export default function CardReaders() {
   const bluetoothReaders = readers.filter(r => r.connection_kind === 'bluetooth');
 
   const onUnregister = async (rdr) => {
-    if (!confirm(`Unregister "${rdr.label || rdr.serial_number}"? It will be removed from POSUP only — you will need to delete it from the Stripe dashboard separately.`)) return;
-    const { error } = await platformSupabase.from('payment_devices').delete().eq('id', rdr.id);
-    if (error) alert(`Failed: ${error.message}`); else refresh();
+    if (!confirm(`Unregister "${rdr.label || rdr.serial_number}"? It will be removed from POSUP and from Stripe.`)) return;
+    try {
+      const { data: session } = await supabase.auth.getSession();
+      const token = session?.session?.access_token;
+      if (!token) throw new Error('not authenticated');
+      const res = await fetch(`${FUNCTIONS_URL}/stripe-unregister-reader`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({ reader_id: rdr.id }),
+      });
+      const j = await res.json();
+      if (!res.ok || j.error) throw new Error(j.error ?? `HTTP ${res.status}`);
+      refresh();
+    } catch (e) {
+      alert(`Unregister failed: ${e.message}`);
+    }
   };
 
   return (
