@@ -10,6 +10,7 @@ import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import androidx.core.app.ActivityCompat
 import com.stripe.stripeterminal.Terminal
+import com.stripe.stripeterminal.external.callable.BluetoothReaderListener
 import com.stripe.stripeterminal.external.callable.Callback
 import com.stripe.stripeterminal.external.callable.Cancelable
 import com.stripe.stripeterminal.external.callable.ConnectionTokenCallback
@@ -254,7 +255,7 @@ class StripeTerminalBridge(
                     )
                     Terminal.getInstance().connectBluetoothReader(
                         reader, connConfig,
-                        com.stripe.stripeterminal.external.callable.BluetoothReaderListener {},
+                        object : BluetoothReaderListener {},
                         object : ReaderCallback {
                             override fun onSuccess(connectedReader: Reader) {
                                 postCallback(callbackId, true, JSONObject()
@@ -446,6 +447,10 @@ class StripeTerminalBridge(
 
         override fun onPaymentStatusChange(status: PaymentStatus) {
             postEvent("paymentStatus", JSONObject().put("status", status.name))
+        }
+
+        override fun onUnexpectedReaderDisconnect(reader: Reader) {
+            postEvent("readerDisconnected", JSONObject().put("reader", readerToJson(reader)))
         }
     }
 
