@@ -73,6 +73,22 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.44', date: '4 May 2026', label: 'POS card-present payments via Stripe Reader M2 — native Android bridge + BO pairing UI',
+    changes: [
+      'ANDROID APK: New Kotlin bridge StripeTerminalBridge.kt wired into MainActivity as window.RposStripeTerminal. Wraps Stripe Terminal Android SDK 3.10.1. Methods: setAuthToken, initialize, checkPermissions/requestPermissions, discoverReaders/cancelDiscovery, connectReader/disconnectReader, getStatus, collectPayment. ConnectionTokenProvider hits the existing stripe-terminal-connection-token edge function with the user\'s Supabase JWT. App-level dependency change: added Kotlin plugin, bumped minSdk 24→26 and Java 8→17 for Stripe Terminal SDK compatibility.',
+      'ANDROID MANIFEST: added Bluetooth (BLUETOOTH_SCAN/BLUETOOTH_CONNECT for API 31+, legacy BLUETOOTH/BLUETOOTH_ADMIN for 30 and below) and location permissions (ACCESS_FINE_LOCATION on 30 and below — required for BLE scan). Plus FOREGROUND_SERVICE_CONNECTED_DEVICE for the long-lived BLE link the SDK keeps alive during collect.',
+      'WEB BRIDGE: src/lib/stripeTerminal.js — promise-based wrapper around the native bridge with onReadersUpdate streaming for discovery, status events for connection/payment changes, automatic auth token sync on every call, and resolvePlatformLocationId helper that maps Ops DB location ids → Platform DB ids (some legacy seeded locations had different UUIDs across the two DBs).',
+      'BO: NEW Card readers section under Devices. Init + permissions check, BT scan with live results, connect by serial, disconnect, connected reader status pills (battery, deviceType, connection state, serial). Friendly placeholder when running outside the Sunmi APK (i.e. plain browsers).',
+      'POS CHECKOUT: CardTerminal in CheckoutModal now detects the bridge. With the M2 paired and connected, it auto-runs the full collect → confirm flow — server creates PaymentIntent on the connected account with application_fee_amount applied per the location\'s markup %, the SDK retrieves it via clientSecret, customer taps/inserts card on the M2, SDK confirms, and the approved screen shows markup % and platform fee actually taken. Without the bridge, the previous "Simulate payment" UI is preserved for browser dev.',
+      'GITHUB ACTIONS: build-apk.yml now triggers on develop branch too (not just main). Build #180+ should produce an APK with the Stripe Terminal bridge included — sideload onto the Sunmi to test M2 pairing and live card-present payments.',
+      'STILL NOT YET WIRED: receipt printing of the Stripe transaction (PaymentIntent id + last4 from M2), GMV bump in recordClosedCheck, refund flow via Terminal SDK. Coming once Peter validates the basic collect path on real hardware.',
+    ],
+  },
+  {
+    version: '5.5.43', date: '4 May 2026', label: 'Bump rebuild for VITE_STRIPE_PUBLISHABLE_KEY scope fix',
+    changes: ['Vercel had VITE_STRIPE_PUBLISHABLE_KEY scoped Production-only while develop branch deploys to Preview. Re-scoped to Production+Preview+dev so the publishable key reaches the deployed bundle. Card details box now actually accepts input on the admin Stripe test harness.'],
+  },
+  {
     version: '5.5.41', date: '4 May 2026', label: 'Per-merchant transaction markup wired end to end + Platform DB backfill from Ops DB + admin theme matched to BO',
     changes: [
       'PLATFORM DB BACKFILL: Discovered Platform DB only had 1 company / 1 location while Ops DB has 3 orgs / 4 locations with 105+13+5 real transactions. Wrote one-off migration (supabase-platform-backfill-v1.sql) to reconcile — added Doboy Donuts + DX Test Location + Leeds + Huddersfield + Location 2 + 2 orgs, plus billing_state for every location and admin role mappings for peter@posup.co.uk across all 4 locations. Idempotent.',

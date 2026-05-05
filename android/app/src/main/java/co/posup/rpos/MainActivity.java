@@ -5,12 +5,14 @@ import android.os.Bundle;
 import android.view.View;
 import android.view.WindowManager;
 import android.webkit.*;
+import co.posup.rpos.payments.StripeTerminalBridge;
 import co.posup.rpos.printer.PrinterBridge;
 
 public class MainActivity extends Activity {
     private static final String POS_URL = "https://possystem-liard.vercel.app/?mode=pos";
     private WebView webView;
     private PrinterBridge printerBridge;
+    private StripeTerminalBridge stripeTerminalBridge;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -30,9 +32,12 @@ public class MainActivity extends Activity {
         webView = new WebView(this);
         setContentView(webView);
 
-        // Wire native printer bridge — exposes window.RposPrinter to React app
+        // Wire native bridges — exposes to React app on window.RposPrinter and window.RposStripeTerminal
         printerBridge = new PrinterBridge(webView);
         webView.addJavascriptInterface(printerBridge, "RposPrinter");
+
+        stripeTerminalBridge = new StripeTerminalBridge(this, webView);
+        webView.addJavascriptInterface(stripeTerminalBridge, "RposStripeTerminal");
 
         WebSettings s = webView.getSettings();
         s.setJavaScriptEnabled(true);

@@ -13,6 +13,7 @@ import KioskRegistry from './sections/KioskRegistry';
 import StaffManager from './sections/StaffManager';
 import PrintRouting from './sections/PrintRouting';
 import PrinterRegistry from './sections/PrinterRegistry';
+import CardReaders from './sections/CardReaders';
 import CashDrawers from './sections/CashDrawers';
 import BOReports from './sections/BOReports';
 import EODClose from './sections/EODClose';
@@ -37,6 +38,7 @@ const NAV = [
   { id:'devices',    label:'Devices',         icon:'📱',  group:'Devices' },
   { id:'kiosks',      label:'Kiosks',           icon:'🖥️',  group:'Devices' },
   { id:'printers',   label:'Printers',        icon:'🖨',  group:'Devices' },
+  { id:'cardreaders',label:'Card readers',    icon:'💳',  group:'Devices' },
   { id:'cashdrawers', label:'Cash drawers',       icon:'\u{1F4B0}', group:'Devices' },
   { id:'staff',      label:'Staff & access',  icon:'👥',  group:'Configuration' },
   { id:'printing',   label:'Production printing',   icon:'🖨',  group:'Configuration' },
@@ -444,6 +446,7 @@ export default function BackOfficeApp() {
           {section === 'devices'    && <DeviceRegistry />}
           {section === 'kiosks'     && <KioskRegistry />}
           {section === 'printers'   && <PrinterRegistry />}
+          {section === 'cardreaders'&& <CardReaders />}
           {section === 'cashdrawers' && <CashDrawers />}
           {section === 'staff'      && <StaffManager />}
           {section === 'printing'   && <PrintRouting />}

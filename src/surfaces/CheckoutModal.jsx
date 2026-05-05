@@ -1,9 +1,18 @@
 import { useCompact } from '../lib/useCompact';
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { ALLERGENS } from '../data/seed';
 import SplitModal from '../components/SplitModal';
 import { useStore } from '../store';
 import { calculateOrderTax } from '../lib/tax';
+import {
+  hasStripeTerminalBridge,
+  initialize as initStripeTerminal,
+  getStatus as getStripeTerminalStatus,
+  collectPayment as terminalCollect,
+  resolvePlatformLocationId,
+  syncAuthTokenFromSession,
+} from '../lib/stripeTerminal';
+import { getActiveLocationSync } from '../lib/supabase';
 
 // ─── Tip picker ───────────────────────────────────────────────────────────────
 function TipPicker({ total, onSelect }) {
@@ -78,70 +87,144 @@ function TipPicker({ total, onSelect }) {
 }
 
 // ─── Card terminal ────────────────────────────────────────────────────────────
+// When running inside the Sunmi APK with a paired Stripe Reader M2, this drives
+// the real Stripe Terminal collect → confirm flow. Otherwise it falls back to
+// the original simulated UI for browser testing and dev environments.
 function CardTerminal({ grand, onComplete, onBack }) {
   const compact = useCompact();
-  const [state, setState] = useState('waiting');
+  const bridgePresent = hasStripeTerminalBridge();
+  const [bridgeReady, setBridgeReady] = useState(false);
+  const [hasReader, setHasReader] = useState(false);
+  const [readerLabel, setReaderLabel] = useState('');
+  const [state, setState] = useState('waiting');                      // waiting | collecting | confirming | approved | error
+  const [statusMsg, setStatusMsg] = useState('Present card to reader');
+  const [errorMsg, setErrorMsg] = useState(null);
+  const [piResult, setPiResult] = useState(null);
+  const startedRef = useRef(false);
 
-  useEffect(()=>{
-    if(state==='approved'){
+  // Probe the bridge / reader once on mount
+  useEffect(() => {
+    let cancelled = false;
+    if (!bridgePresent) return;
+    (async () => {
+      try {
+        await syncAuthTokenFromSession();
+        await initStripeTerminal();
+        if (cancelled) return;
+        const s = getStripeTerminalStatus();
+        setBridgeReady(true);
+        if (s?.reader) {
+          setHasReader(true);
+          setReaderLabel(s.reader.label || s.reader.serialNumber || 'Reader');
+        } else {
+          setHasReader(false);
+        }
+      } catch (e) {
+        if (!cancelled) setErrorMsg(`Bridge init failed: ${e.message}`);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [bridgePresent]);
+
+  // Auto-start the collect flow once reader confirmed (bridge mode only)
+  useEffect(() => {
+    if (!bridgePresent || !bridgeReady || !hasReader || startedRef.current) return;
+    if (state !== 'waiting') return;
+    startedRef.current = true;
+    runCollect();
+  }, [bridgePresent, bridgeReady, hasReader, state]);
+
+  // Smooth transition to "approved" → call onComplete after brief moment
+  useEffect(() => {
+    if (state === 'approved') {
       const t = setTimeout(onComplete, 900);
-      return ()=>clearTimeout(t);
+      return () => clearTimeout(t);
     }
-  },[state]);
+  }, [state, onComplete]);
+
+  const runCollect = async () => {
+    setErrorMsg(null);
+    setState('collecting');
+    setStatusMsg('Tap, insert or swipe card');
+    try {
+      const opsLocationId = getActiveLocationSync();
+      if (!opsLocationId) throw new Error('No active location');
+      const platformLocationId = await resolvePlatformLocationId(opsLocationId);
+      if (!platformLocationId) throw new Error('Could not resolve Platform DB location id (location not registered for billing)');
+
+      const amountMinor = Math.round(grand * 100);
+      const result = await terminalCollect({
+        amountMinor,
+        currency: 'gbp',                               // TODO: read from location.currency
+        locationId: platformLocationId,
+        channel: 'card_present',
+      });
+      setPiResult(result);
+
+      // Stripe Terminal returns 'succeeded' or 'requires_capture' depending on capture_method
+      const s = (result?.status || '').toLowerCase();
+      if (s === 'succeeded' || s === 'requires_capture') {
+        setState('approved');
+      } else {
+        setState('error');
+        setErrorMsg(`Unexpected status: ${result?.status || 'unknown'}`);
+      }
+    } catch (e) {
+      setState('error');
+      setErrorMsg(e.message || String(e));
+    }
+  };
 
   return (
     <div style={{ display:'flex', flexDirection:'column', alignItems:'center', textAlign:'center' }}>
-      {state==='waiting' && (
+      {/* No bridge → original simulated UI (browser dev / non-Sunmi devices) */}
+      {!bridgePresent && state==='waiting' && (
+        <SimulatedCardWaiting grand={grand} onSimulate={() => setState('approved')} onBack={onBack} />
+      )}
+
+      {/* Bridge present, reader missing */}
+      {bridgePresent && bridgeReady && !hasReader && (
+        <div style={{ padding:'24px 8px' }}>
+          <div style={{ fontSize:32, marginBottom:8 }}>💳</div>
+          <div style={{ fontSize:17, fontWeight:800, color:'var(--t1)', marginBottom:6 }}>No card reader paired</div>
+          <div style={{ fontSize:13, color:'var(--t3)', marginBottom:16, maxWidth:320, margin:'0 auto 16px' }}>
+            Pair a Stripe Reader M2 in <strong style={{ color:'var(--acc)' }}>Back office → Devices → Card readers</strong>, then try again.
+          </div>
+          <button className="btn btn-ghost" style={{ height:46, padding:'0 22px' }} onClick={onBack}>← Back</button>
+        </div>
+      )}
+
+      {/* Bridge present, reader connected → real flow */}
+      {bridgePresent && hasReader && state!=='approved' && state!=='error' && (
         <>
-          {/* Terminal illustration */}
-          <div style={{ position:'relative', width:120, height:120, marginBottom:24 }}>
-            {/* Outer ring — track */}
-            <svg width="120" height="120" style={{ position:'absolute', top:0, left:0 }}>
-              <circle cx="60" cy="60" r="54" fill="none" stroke="var(--bdr2)" strokeWidth="3"/>
-            </svg>
-            {/* Spinning arc */}
-            <svg width="120" height="120" style={{ position:'absolute', top:0, left:0, animation:'spin .9s linear infinite' }}>
-              <circle cx="60" cy="60" r="54" fill="none" stroke="var(--acc)" strokeWidth="3"
-                strokeDasharray="100 240" strokeLinecap="round"/>
-            </svg>
-            {/* Card icon */}
-            <div style={{ position:'absolute', inset:0, display:'flex', alignItems:'center', justifyContent:'center' }}>
-              <div style={{ width:64, height:44, borderRadius:8, background:'var(--bg3)', border:'2px solid var(--bdr2)', display:'flex', flexDirection:'column', overflow:'hidden', boxShadow:'var(--sh)' }}>
-                <div style={{ height:12, background:'var(--acc)', opacity:.7 }}/>
-                <div style={{ flex:1, display:'flex', alignItems:'flex-end', padding:'4px 6px', gap:3 }}>
-                  {[1,2,3,4].map(i=><div key={i} style={{ flex:1, height:3, borderRadius:1, background:'var(--t4)' }}/>)}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div style={{ fontSize:38, fontWeight:800, color:'var(--t1)', fontFamily:'var(--font-mono)', letterSpacing:'-.02em', marginBottom:6 }}>
-            £{grand.toFixed(2)}
-          </div>
-          <div style={{ fontSize:15, color:'var(--t2)', fontWeight:600, marginBottom:4 }}>Present card to reader</div>
-          <div style={{ fontSize:12, color:'var(--t4)', marginBottom:8 }}>Stripe Reader S700</div>
-
-          <div style={{ display:'flex', gap:12, marginBottom:28 }}>
-            {['Tap','Chip','Swipe','Apple Pay','Google Pay'].map(m=>(
-              <div key={m} style={{ fontSize:10, fontWeight:600, color:'var(--t4)', padding:'3px 8px', borderRadius:20, border:'1px solid var(--bdr)', background:'var(--bg3)' }}>{m}</div>
-            ))}
-          </div>
-
-          <div style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 20px', background:'var(--acc-d)', border:'1px solid var(--acc-b)', borderRadius:22, fontSize:12, color:'var(--acc)', fontWeight:700, marginBottom:24 }}>
-            <div style={{ width:7,height:7,borderRadius:'50%',background:'var(--acc)',animation:'pulse 1.4s ease-in-out infinite'}}/>
-            Waiting for card…
-          </div>
-
-          <div style={{ display:'flex', gap:8, width:'100%' }}>
-            <button className="btn btn-ghost" style={{ flex:1, height:46 }} onClick={onBack}>← Back</button>
-            <button className="btn btn-grn" style={{ flex:2, height:46, fontSize:14, fontWeight:800 }}
-              onClick={()=>setState('approved')}>
-              Simulate payment ✓
-            </button>
+          <RealCardWaiting grand={grand} readerLabel={readerLabel} statusMsg={statusMsg} state={state}/>
+          <div style={{ display:'flex', gap:8, width:'100%', marginTop:16 }}>
+            <button className="btn btn-ghost" style={{ flex:1, height:46 }} onClick={onBack}>← Cancel</button>
           </div>
         </>
       )}
 
+      {/* Error state */}
+      {state==='error' && (
+        <div style={{ padding:'20px 8px', textAlign:'center' }}>
+          <div style={{ fontSize:48, marginBottom:8 }}>⚠️</div>
+          <div style={{ fontSize:18, fontWeight:800, color:'var(--red)', marginBottom:6 }}>Payment failed</div>
+          <div style={{ fontSize:13, color:'var(--t2)', marginBottom:16, maxWidth:380, margin:'0 auto 16px' }}>
+            {errorMsg || 'Unknown error'}
+          </div>
+          <div style={{ display:'flex', gap:8, justifyContent:'center' }}>
+            <button className="btn btn-ghost" style={{ height:46, padding:'0 22px' }} onClick={onBack}>← Back</button>
+            {bridgePresent && hasReader && (
+              <button className="btn btn-grn" style={{ height:46, padding:'0 22px' }}
+                onClick={() => { startedRef.current = false; setState('waiting'); }}>
+                Retry
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Approved state */}
       {state==='approved' && (
         <div style={{ padding:'20px 0' }}>
           <div style={{
@@ -153,9 +236,95 @@ function CardTerminal({ grand, onComplete, onBack }) {
           }}>✓</div>
           <div style={{ fontSize:28, fontWeight:800, color:'var(--grn)', marginBottom:6 }}>Payment approved</div>
           <div style={{ fontSize:15, color:'var(--t2)', fontFamily:'var(--font-mono)' }}>£{grand.toFixed(2)} charged</div>
+          {piResult?.markup_percent != null && (
+            <div style={{ fontSize:11, color:'var(--t4)', marginTop:6 }}>
+              Markup {Number(piResult.markup_percent).toFixed(2)}% (£{(Number(piResult.application_fee_minor||0)/100).toFixed(2)} platform fee)
+            </div>
+          )}
         </div>
       )}
     </div>
+  );
+}
+
+function RealCardWaiting({ grand, readerLabel, statusMsg }) {
+  return (
+    <>
+      <div style={{ position:'relative', width:120, height:120, marginBottom:24 }}>
+        <svg width="120" height="120" style={{ position:'absolute', top:0, left:0 }}>
+          <circle cx="60" cy="60" r="54" fill="none" stroke="var(--bdr2)" strokeWidth="3"/>
+        </svg>
+        <svg width="120" height="120" style={{ position:'absolute', top:0, left:0, animation:'spin .9s linear infinite' }}>
+          <circle cx="60" cy="60" r="54" fill="none" stroke="var(--acc)" strokeWidth="3"
+            strokeDasharray="100 240" strokeLinecap="round"/>
+        </svg>
+        <div style={{ position:'absolute', inset:0, display:'flex', alignItems:'center', justifyContent:'center' }}>
+          <div style={{ width:64, height:44, borderRadius:8, background:'var(--bg3)', border:'2px solid var(--bdr2)', display:'flex', flexDirection:'column', overflow:'hidden', boxShadow:'var(--sh)' }}>
+            <div style={{ height:12, background:'var(--acc)', opacity:.7 }}/>
+            <div style={{ flex:1, display:'flex', alignItems:'flex-end', padding:'4px 6px', gap:3 }}>
+              {[1,2,3,4].map(i=><div key={i} style={{ flex:1, height:3, borderRadius:1, background:'var(--t4)' }}/>)}
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style={{ fontSize:38, fontWeight:800, color:'var(--t1)', fontFamily:'var(--font-mono)', letterSpacing:'-.02em', marginBottom:6 }}>
+        £{grand.toFixed(2)}
+      </div>
+      <div style={{ fontSize:15, color:'var(--t2)', fontWeight:600, marginBottom:4 }}>{statusMsg}</div>
+      <div style={{ fontSize:12, color:'var(--t4)', marginBottom:8 }}>{readerLabel}</div>
+      <div style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 20px', background:'var(--acc-d)', border:'1px solid var(--acc-b)', borderRadius:22, fontSize:12, color:'var(--acc)', fontWeight:700, marginBottom:24 }}>
+        <div style={{ width:7,height:7,borderRadius:'50%',background:'var(--acc)',animation:'pulse 1.4s ease-in-out infinite'}}/>
+        Reader is live
+      </div>
+    </>
+  );
+}
+
+function SimulatedCardWaiting({ grand, onSimulate, onBack }) {
+  return (
+    <>
+      <div style={{ position:'relative', width:120, height:120, marginBottom:24 }}>
+        <svg width="120" height="120" style={{ position:'absolute', top:0, left:0 }}>
+          <circle cx="60" cy="60" r="54" fill="none" stroke="var(--bdr2)" strokeWidth="3"/>
+        </svg>
+        <svg width="120" height="120" style={{ position:'absolute', top:0, left:0, animation:'spin .9s linear infinite' }}>
+          <circle cx="60" cy="60" r="54" fill="none" stroke="var(--acc)" strokeWidth="3"
+            strokeDasharray="100 240" strokeLinecap="round"/>
+        </svg>
+        <div style={{ position:'absolute', inset:0, display:'flex', alignItems:'center', justifyContent:'center' }}>
+          <div style={{ width:64, height:44, borderRadius:8, background:'var(--bg3)', border:'2px solid var(--bdr2)', display:'flex', flexDirection:'column', overflow:'hidden', boxShadow:'var(--sh)' }}>
+            <div style={{ height:12, background:'var(--acc)', opacity:.7 }}/>
+            <div style={{ flex:1, display:'flex', alignItems:'flex-end', padding:'4px 6px', gap:3 }}>
+              {[1,2,3,4].map(i=><div key={i} style={{ flex:1, height:3, borderRadius:1, background:'var(--t4)' }}/>)}
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style={{ fontSize:38, fontWeight:800, color:'var(--t1)', fontFamily:'var(--font-mono)', letterSpacing:'-.02em', marginBottom:6 }}>
+        £{grand.toFixed(2)}
+      </div>
+      <div style={{ fontSize:15, color:'var(--t2)', fontWeight:600, marginBottom:4 }}>Present card to reader</div>
+      <div style={{ fontSize:12, color:'var(--t4)', marginBottom:8 }}>(Simulator — pair an M2 in BO to take real payments)</div>
+
+      <div style={{ display:'flex', gap:12, marginBottom:28 }}>
+        {['Tap','Chip','Swipe','Apple Pay','Google Pay'].map(m=>(
+          <div key={m} style={{ fontSize:10, fontWeight:600, color:'var(--t4)', padding:'3px 8px', borderRadius:20, border:'1px solid var(--bdr)', background:'var(--bg3)' }}>{m}</div>
+        ))}
+      </div>
+
+      <div style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 20px', background:'var(--acc-d)', border:'1px solid var(--acc-b)', borderRadius:22, fontSize:12, color:'var(--acc)', fontWeight:700, marginBottom:24 }}>
+        <div style={{ width:7,height:7,borderRadius:'50%',background:'var(--acc)',animation:'pulse 1.4s ease-in-out infinite'}}/>
+        Waiting for card…
+      </div>
+
+      <div style={{ display:'flex', gap:8, width:'100%' }}>
+        <button className="btn btn-ghost" style={{ flex:1, height:46 }} onClick={onBack}>← Back</button>
+        <button className="btn btn-grn" style={{ flex:2, height:46, fontSize:14, fontWeight:800 }}
+          onClick={onSimulate}>
+          Simulate payment ✓
+        </button>
+      </div>
+    </>
   );
 }
 
