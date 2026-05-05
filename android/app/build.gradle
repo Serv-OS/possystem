@@ -52,8 +52,7 @@ dependencies {
     // Kotlin coroutines (used by StripeTerminalBridge for non-blocking IO)
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
 
-    // Stripe Terminal Android SDK — core + BBPOS module for the M2 Bluetooth reader.
-    // 3.10.1 is the latest stable as of build time.
-    implementation 'com.stripe:stripeterminal-core:3.10.1'
-    implementation 'com.stripe:stripeterminal-bbpos:3.10.1'
+    // Stripe Terminal Android SDK 3.10.1 — umbrella artifact bundles the M2/BBPOS reader support.
+    // (The split into stripeterminal-core/-bbpos/-localmobile only happened in SDK 4.x+.)
+    implementation 'com.stripe:stripeterminal:3.10.1'
 }
