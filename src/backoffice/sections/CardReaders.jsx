@@ -1,26 +1,24 @@
 // src/backoffice/sections/CardReaders.jsx
-// Back office card-reader registry.
+// Back office card-reader registry — SCOPED TO THE ACTIVE LOCATION.
 //
-// Two concerns from BO:
-//   1. NETWORK READERS (S700, WisePOS E in WiFi mode): registered HERE using
-//      Stripe's pairing-code flow. Belongs in BO because one network reader
-//      can serve multiple POS terminals at the same location.
-//   2. ALL READERS overview: BT readers paired by individual POS terminals
-//      surface here read-only so admins can see "what's where" across the
-//      whole platform without having to walk around each terminal.
+// What lives here:
+//   • Register network/WiFi readers (Stripe S700, WisePOS E) for THIS location
+//     using Stripe's pairing-code flow.
+//   • Read-only inventory of all readers serving this location, including BT
+//     readers paired by individual POS terminals.
 //
-// Bluetooth pairing itself happens in the POS Status drawer — that's the
-// physical device's responsibility.
+// Bluetooth pairing happens at the POS terminal itself — see Status drawer.
+// Cross-location oversight lives in the super-admin app (?mode=admin).
 
 import { useEffect, useState, useCallback } from 'react';
-import { supabase, platformSupabase } from '../../lib/supabase';
+import { supabase, platformSupabase, getActiveLocationSync } from '../../lib/supabase';
+import { resolvePlatformLocationId } from '../../lib/stripeTerminal';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 
 const S = {
-  page:    { padding: 0 },
   h1:      { fontSize: 22, fontWeight: 800, color: 'var(--t1)', margin: 0, marginBottom: 4, letterSpacing: '-.01em' },
-  sub:     { fontSize: 13, color: 'var(--t3)', marginBottom: 24, maxWidth: 700, lineHeight: 1.5 },
+  sub:     { fontSize: 13, color: 'var(--t3)', marginBottom: 20, maxWidth: 720, lineHeight: 1.5 },
   card:    { background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 12, padding: 18, marginBottom: 14, boxShadow: 'var(--sh)' },
   label:   { fontSize: 11, fontWeight: 700, color: 'var(--t3)', marginBottom: 6, display: 'block', textTransform: 'uppercase', letterSpacing: '.06em' },
   input:   { width: '100%', padding: '8px 10px', borderRadius: 8, border: '1px solid var(--bdr2)', background: 'var(--bg2)', color: 'var(--t1)', fontSize: 13, fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' },
@@ -31,16 +29,17 @@ const S = {
   btnDan:  { background: 'transparent', color: 'var(--red)', border: '1px solid var(--red-b)' },
   pill:    { fontSize: 11, padding: '2px 8px', borderRadius: 99, background: 'var(--bg3)', color: 'var(--t2)', textTransform: 'uppercase', letterSpacing: '.05em', fontWeight: 700, border: '1px solid var(--bdr)' },
   errorBox:{ padding: 12, background: 'var(--red-d)', color: 'var(--red)', borderRadius: 8, marginBottom: 14, fontSize: 13, border: '1px solid var(--red-b)' },
+  empty:   { padding: 14, fontSize: 13, color: 'var(--t3)', textAlign: 'center', background: 'var(--bg2)', borderRadius: 8, border: '1px dashed var(--bdr)' },
 };
 
-export default function CardReaders({ authUser }) {
-  const [companies, setCompanies] = useState([]);
-  const [locations, setLocations] = useState([]);
+export default function CardReaders() {
+  const [platformLocationId, setPlatformLocationId] = useState(null);
+  const [locationName, setLocationName] = useState('');
+  const [companyName, setCompanyName] = useState('');
   const [readers, setReaders] = useState([]);
-  const [filterCompanyId, setFilterCompanyId] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [registerModalLoc, setRegisterModalLoc] = useState(null);
+  const [showRegister, setShowRegister] = useState(false);
 
   const refresh = useCallback(async () => {
     if (!platformSupabase) {
@@ -50,16 +49,35 @@ export default function CardReaders({ authUser }) {
     }
     setLoading(true); setError(null);
     try {
-      const [{ data: cos }, { data: locs }, { data: rdrs }] = await Promise.all([
-        platformSupabase.from('companies').select('id, name').order('name'),
-        platformSupabase.from('locations').select('id, name, company_id').order('name'),
+      const opsLocId = getActiveLocationSync();
+      if (!opsLocId) {
+        setError('No active location selected. Pick a location in the bottom-left corner of the back office.');
+        setLoading(false);
+        return;
+      }
+      const platformId = await resolvePlatformLocationId(opsLocId);
+      if (!platformId) {
+        setError('This location is not registered for billing yet. Contact platform admin.');
+        setLoading(false);
+        return;
+      }
+      setPlatformLocationId(platformId);
+
+      // Pull location + company + readers for THIS location only
+      const [{ data: loc }, { data: rdrs }] = await Promise.all([
+        platformSupabase.from('locations').select('id, name, company_id').eq('id', platformId).maybeSingle(),
         platformSupabase.from('payment_devices')
-          .select('id, location_id, stripe_reader_id, label, device_type, connection_kind, serial_number, status, last_seen_at, bound_pos_device_id, created_at, registration_code')
+          .select('id, stripe_reader_id, label, device_type, connection_kind, serial_number, status, last_seen_at, bound_pos_device_id, created_at, registration_code')
+          .eq('location_id', platformId)
           .order('created_at', { ascending: false }),
       ]);
-      setCompanies(cos ?? []);
-      setLocations(locs ?? []);
+      setLocationName(loc?.name ?? '(unknown)');
       setReaders(rdrs ?? []);
+
+      if (loc?.company_id) {
+        const { data: co } = await platformSupabase.from('companies').select('name').eq('id', loc.company_id).maybeSingle();
+        setCompanyName(co?.name ?? '');
+      }
     } catch (e) {
       setError(String(e?.message ?? e));
     } finally {
@@ -69,113 +87,108 @@ export default function CardReaders({ authUser }) {
 
   useEffect(() => { refresh(); }, [refresh]);
 
-  const filteredLocations = filterCompanyId ? locations.filter(l => l.company_id === filterCompanyId) : locations;
-  const companyName = (id) => companies.find(c => c.id === id)?.name ?? '(unknown)';
-  const readersByLocation = (locId) => readers.filter(r => r.location_id === locId);
+  const networkReaders = readers.filter(r => r.connection_kind === 'network');
+  const bluetoothReaders = readers.filter(r => r.connection_kind === 'bluetooth');
+
+  const onUnregister = async (rdr) => {
+    if (!confirm(`Unregister "${rdr.label || rdr.serial_number}"? It will be removed from POSUP only — you will need to delete it from the Stripe dashboard separately.`)) return;
+    const { error } = await platformSupabase.from('payment_devices').delete().eq('id', rdr.id);
+    if (error) alert(`Failed: ${error.message}`); else refresh();
+  };
 
   return (
-    <div style={S.page}>
+    <div>
       <h1 style={S.h1}>Card readers</h1>
       <div style={S.sub}>
-        Network readers (Stripe Reader S700, WisePOS E in WiFi mode) are registered here per location and serve all POS terminals at that location.
+        Network readers (Stripe Reader S700, WisePOS E in WiFi mode) are registered here and serve all POS terminals at this location.
         Bluetooth readers (Stripe Reader M2) are paired at each POS terminal individually — they appear here read-only.
-      </div>
-
-      <div style={{ display: 'flex', gap: 10, marginBottom: 14, alignItems: 'center', flexWrap: 'wrap' }}>
-        <select value={filterCompanyId} onChange={e => setFilterCompanyId(e.target.value)} style={{ ...S.input, width: 320 }}>
-          <option value="">All companies ({companies.length})</option>
-          {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </select>
-        <button onClick={refresh} disabled={loading} style={{ ...S.btn, ...S.btnGhost }}>
-          {loading ? 'Loading…' : '↻ Refresh'}
-        </button>
-        <div style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--t3)' }}>
-          {readers.length} reader{readers.length === 1 ? '' : 's'} across {filteredLocations.length} location{filteredLocations.length === 1 ? '' : 's'}
-        </div>
       </div>
 
       {error && <div style={S.errorBox}>{error}</div>}
 
-      {filteredLocations.map((loc) => (
-        <LocationBlock
-          key={loc.id}
-          location={loc}
-          companyName={companyName(loc.company_id)}
-          readers={readersByLocation(loc.id)}
-          onRegisterClick={() => setRegisterModalLoc(loc)}
-          onUnregister={async (rdr) => {
-            if (!confirm(`Unregister "${rdr.label || rdr.serial_number}"? It will be removed from POSUP only — you will need to delete it from the Stripe dashboard separately.`)) return;
-            const { error } = await platformSupabase.from('payment_devices').delete().eq('id', rdr.id);
-            if (error) alert(`Failed: ${error.message}`); else refresh();
-          }}
-        />
-      ))}
+      {loading ? (
+        <div style={{ ...S.empty, marginBottom: 20 }}>Loading…</div>
+      ) : (
+        <>
+          {/* Location header */}
+          <div style={S.card}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+              <div>
+                {companyName && (
+                  <div style={{ fontSize: 11, color: 'var(--acc)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 2 }}>
+                    {companyName}
+                  </div>
+                )}
+                <div style={{ fontSize: 17, fontWeight: 700, color: 'var(--t1)' }}>{locationName}</div>
+                <div style={{ display: 'flex', gap: 16, marginTop: 8, fontSize: 12, color: 'var(--t3)' }}>
+                  <span><strong style={{ color: 'var(--t1)' }}>{networkReaders.length}</strong> network</span>
+                  <span><strong style={{ color: 'var(--t1)' }}>{bluetoothReaders.length}</strong> bluetooth</span>
+                </div>
+              </div>
+              <button onClick={() => setShowRegister(true)} disabled={!platformLocationId} style={{ ...S.btn, ...S.btnPrim }}>
+                + Register network reader
+              </button>
+            </div>
+          </div>
 
-      {registerModalLoc && (
+          {/* Network readers */}
+          <div style={{ marginBottom: 18 }}>
+            <div style={S.label}>Network readers</div>
+            {networkReaders.length === 0 ? (
+              <div style={S.empty}>None registered yet — click "+ Register network reader" above to add one.</div>
+            ) : (
+              networkReaders.map(r => (
+                <ReaderRow key={r.id} reader={r} onUnregister={() => onUnregister(r)} />
+              ))
+            )}
+          </div>
+
+          {/* Bluetooth readers */}
+          <div>
+            <div style={S.label}>Bluetooth readers (paired by POS terminals)</div>
+            {bluetoothReaders.length === 0 ? (
+              <div style={S.empty}>None paired yet — pair from each POS terminal's Status panel.</div>
+            ) : (
+              bluetoothReaders.map(r => (
+                <ReaderRow key={r.id} reader={r} onUnregister={() => onUnregister(r)} />
+              ))
+            )}
+          </div>
+        </>
+      )}
+
+      {showRegister && platformLocationId && (
         <RegisterNetworkReaderModal
-          location={registerModalLoc}
-          onClose={() => setRegisterModalLoc(null)}
-          onRegistered={() => { setRegisterModalLoc(null); refresh(); }}
+          locationId={platformLocationId}
+          locationName={locationName}
+          onClose={() => setShowRegister(false)}
+          onRegistered={() => { setShowRegister(false); refresh(); }}
         />
       )}
     </div>
   );
 }
 
-function LocationBlock({ location, companyName, readers, onRegisterClick, onUnregister }) {
-  const networkReaders = readers.filter(r => r.connection_kind === 'network');
-  const bluetoothReaders = readers.filter(r => r.connection_kind === 'bluetooth');
-  return (
-    <div style={S.card}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14, flexWrap: 'wrap', gap: 12 }}>
-        <div>
-          <div style={{ fontSize: 11, color: 'var(--acc)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 2 }}>
-            {companyName}
-          </div>
-          <div style={{ fontSize: 17, fontWeight: 700, color: 'var(--t1)' }}>{location.name}</div>
-          <div style={{ fontSize: 11, color: 'var(--t4)', fontFamily: 'var(--font-mono, monospace)' }}>{location.id}</div>
-        </div>
-        <button onClick={onRegisterClick} style={{ ...S.btn, ...S.btnPrim }}>+ Register network reader</button>
-      </div>
-
-      {/* Network readers */}
-      <div style={{ marginBottom: 12 }}>
-        <div style={S.label}>Network readers ({networkReaders.length})</div>
-        {networkReaders.length === 0 ? (
-          <div style={{ fontSize: 12, color: 'var(--t4)', padding: '8px 0' }}>None registered yet</div>
-        ) : (
-          networkReaders.map(r => (
-            <ReaderRow key={r.id} reader={r} onUnregister={() => onUnregister(r)}/>
-          ))
-        )}
-      </div>
-
-      {/* Bluetooth readers */}
-      <div>
-        <div style={S.label}>Bluetooth readers ({bluetoothReaders.length})</div>
-        {bluetoothReaders.length === 0 ? (
-          <div style={{ fontSize: 12, color: 'var(--t4)', padding: '8px 0' }}>None paired — pair at each POS terminal's Status panel</div>
-        ) : (
-          bluetoothReaders.map(r => <ReaderRow key={r.id} reader={r} onUnregister={() => onUnregister(r)}/>)
-        )}
-      </div>
-    </div>
-  );
-}
-
 function ReaderRow({ reader, onUnregister }) {
+  const isOnline = reader.status === 'online';
   return (
-    <div style={{ padding: '10px 12px', borderRadius: 10, border: '1px solid var(--bdr)', background: 'var(--bg2)', marginBottom: 6 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+    <div style={{ padding: '12px 14px', borderRadius: 10, border: '1px solid var(--bdr)', background: 'var(--bg2)', marginBottom: 8 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
         <div style={{ minWidth: 0, flex: 1 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)' }}>{reader.label || reader.serial_number}</div>
-          <div style={{ fontSize: 10, color: 'var(--t4)', fontFamily: 'var(--font-mono, monospace)', marginTop: 2 }}>
-            {reader.stripe_reader_id} · {reader.serial_number || 'no serial'}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--t1)' }}>
+              {reader.label || reader.serial_number || '(unnamed)'}
+            </div>
+            <span style={{ fontSize: 10, fontWeight: 700, color: isOnline ? 'var(--grn)' : 'var(--t4)' }}>
+              ● {reader.status || 'unknown'}
+            </span>
           </div>
-          <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
-            <span style={S.pill}>{reader.device_type?.replace(/_/g,' ')}</span>
+          <div style={{ fontSize: 11, color: 'var(--t4)', fontFamily: 'var(--font-mono, monospace)', marginTop: 3, wordBreak: 'break-all' }}>
+            {reader.stripe_reader_id}{reader.serial_number ? ` · ${reader.serial_number}` : ''}
+          </div>
+          <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+            <span style={S.pill}>{reader.device_type?.replace(/_/g, ' ') || 'reader'}</span>
             <span style={S.pill}>{reader.connection_kind}</span>
-            <span style={S.pill}>{reader.status || 'unknown'}</span>
             {reader.bound_pos_device_id && <span style={S.pill}>POS: {reader.bound_pos_device_id.slice(0, 8)}</span>}
           </div>
         </div>
@@ -187,7 +200,7 @@ function ReaderRow({ reader, onUnregister }) {
   );
 }
 
-function RegisterNetworkReaderModal({ location, onClose, onRegistered }) {
+function RegisterNetworkReaderModal({ locationId, locationName, onClose, onRegistered }) {
   const [code, setCode] = useState('');
   const [label, setLabel] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -207,11 +220,7 @@ function RegisterNetworkReaderModal({ location, onClose, onRegistered }) {
       const res = await fetch(`${FUNCTIONS_URL}/stripe-register-network-reader`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          location_id: location.id,
-          registration_code: code.trim(),
-          label: label.trim() || undefined,
-        }),
+        body: JSON.stringify({ location_id: locationId, registration_code: code.trim(), label: label.trim() || undefined }),
       });
       const j = await res.json();
       if (!res.ok || j.error) throw new Error(j.error ?? `HTTP ${res.status}`);
@@ -228,7 +237,7 @@ function RegisterNetworkReaderModal({ location, onClose, onRegistered }) {
       <div style={{ ...S.card, width: 480, maxWidth: 'calc(100vw - 32px)', marginBottom: 0, boxShadow: 'var(--sh3)' }} onClick={e => e.stopPropagation()}>
         <h2 style={{ ...S.h1, fontSize: 18, marginBottom: 4 }}>Register network reader</h2>
         <div style={{ fontSize: 13, color: 'var(--t3)', marginBottom: 16 }}>
-          to <strong style={{ color: 'var(--t1)' }}>{location.name}</strong>
+          to <strong style={{ color: 'var(--t1)' }}>{locationName}</strong>
         </div>
 
         <div style={{ fontSize: 12, color: 'var(--t3)', lineHeight: 1.5, marginBottom: 16, padding: 12, background: 'var(--bg2)', border: '1px solid var(--bdr)', borderRadius: 8 }}>
@@ -237,7 +246,7 @@ function RegisterNetworkReaderModal({ location, onClose, onRegistered }) {
         </div>
 
         <label style={S.label}>Pairing code</label>
-        <input type="text" value={code} onChange={e => setCode(e.target.value.toLowerCase())} placeholder="golden-aroma-circle" style={{ ...S.input, ...S.inputMono }} autoFocus/>
+        <input type="text" value={code} onChange={e => setCode(e.target.value.toLowerCase())} placeholder="golden-aroma-circle" style={{ ...S.input, ...S.inputMono }} autoFocus />
 
         <div style={{ height: 12 }}/>
         <label style={S.label}>Label (optional)</label>

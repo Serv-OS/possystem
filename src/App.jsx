@@ -73,6 +73,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.46', date: '4 May 2026', label: 'BO Card readers scoped to active location only + cleaner layout',
+    changes: [
+      'BUG FIX: BO Card readers section was showing readers across ALL locations and ALL companies, which leaked cross-tenant info into the customer-facing back office and made the page huge / non-scrolling. Rewrote the page to be strictly scoped to the active location (resolved via getActiveLocationSync → resolvePlatformLocationId). Header card shows the active company + location with reader counts, then two clearly labelled lists (network · paired in BO, bluetooth · paired by POS terminals) for THIS location only.',
+      'LAYOUT FIX: removed the company filter dropdown, fixed the wrapping container so it sits inside the BO scrollable content area properly. Section follows the same pattern as PrinterRegistry / DeviceRegistry now.',
+      'OUT OF SCOPE: cross-location oversight (every company, every location) lives in the super-admin app at ?mode=admin under Billing & Stripe — not in the customer-facing back office.',
+    ],
+  },
+  {
     version: '5.5.45', date: '4 May 2026', label: 'Card-reader pairing moved to POS Status drawer (where it belongs); BO becomes network-reader registry',
     changes: [
       'PRODUCT FIX: Bluetooth pairing was wrongly placed in BO. Now lives in the POS Terminal status drawer (left rail · Status icon) under a new "Card readers" section, alongside printers and KDS. Pairing happens at the actual physical terminal, persists per POS device id (rpos-device.id) in localStorage, and auto-reconnects on app launch via the new autoReconnect() helper.',
