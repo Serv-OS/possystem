@@ -73,6 +73,16 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.47', date: '4 May 2026', label: 'Reader diagnostics — IP address, firmware, last-seen, and a "Refresh status" button',
+    changes: [
+      'NEW EDGE FUNCTION: stripe-readers-status (deployed). For a given location, fetches every registered network reader from Stripe and returns ip_address, device_sw_version (firmware), status, last_seen_at, livemode, and persists the diagnostic fields back into payment_devices for audit. Bluetooth readers are passed through with a note explaining their fields come from the POS terminal that paired them.',
+      'DB: added ip_address, firmware_version, last_status_check_at, stripe_terminal_location_id columns to payment_devices.',
+      'BO: Card readers section now shows IP address inline next to network readers, plus pills for firmware version, "last seen" relative time (just now / 5m ago / 2h ago / 3d ago) colour-coded by freshness. New "↻ Refresh status" button at the top of the page hits the new edge function to pull live snapshots from Stripe.',
+      'BO: each reader now has a "Diagnostics" expander that shows the full troubleshooting field set in a 2-column grid: Stripe reader ID, serial, device type, IP address, firmware, status, last seen by Stripe, last status check, registration date, pairing code. Network readers also get a tips block with subnet/firewall/Stripe-API-reachability advice.',
+      'NEXT: planned diagnostic expansion (printers ping-test, POS terminal own-IP visibility via Kotlin bridge, dedicated Diagnostics page in BO covering all network devices).',
+    ],
+  },
+  {
     version: '5.5.46', date: '4 May 2026', label: 'BO Card readers scoped to active location only + cleaner layout',
     changes: [
       'BUG FIX: BO Card readers section was showing readers across ALL locations and ALL companies, which leaked cross-tenant info into the customer-facing back office and made the page huge / non-scrolling. Rewrote the page to be strictly scoped to the active location (resolved via getActiveLocationSync → resolvePlatformLocationId). Header card shows the active company + location with reader counts, then two clearly labelled lists (network · paired in BO, bluetooth · paired by POS terminals) for THIS location only.',

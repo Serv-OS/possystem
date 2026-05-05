@@ -40,6 +40,8 @@ export default function CardReaders() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [showRegister, setShowRegister] = useState(false);
+  const [refreshingStatus, setRefreshingStatus] = useState(false);
+  const [lastRefreshedAt, setLastRefreshedAt] = useState(null);
 
   const refresh = useCallback(async () => {
     if (!platformSupabase) {
@@ -63,11 +65,10 @@ export default function CardReaders() {
       }
       setPlatformLocationId(platformId);
 
-      // Pull location + company + readers for THIS location only
       const [{ data: loc }, { data: rdrs }] = await Promise.all([
         platformSupabase.from('locations').select('id, name, company_id').eq('id', platformId).maybeSingle(),
         platformSupabase.from('payment_devices')
-          .select('id, stripe_reader_id, label, device_type, connection_kind, serial_number, status, last_seen_at, bound_pos_device_id, created_at, registration_code')
+          .select('id, stripe_reader_id, label, device_type, connection_kind, serial_number, status, last_seen_at, bound_pos_device_id, created_at, registration_code, ip_address, firmware_version, last_status_check_at')
           .eq('location_id', platformId)
           .order('created_at', { ascending: false }),
       ]);
@@ -86,6 +87,31 @@ export default function CardReaders() {
   }, []);
 
   useEffect(() => { refresh(); }, [refresh]);
+
+  // ── Refresh live diagnostics from Stripe ──────────────────────────────
+  const refreshStatusFromStripe = async () => {
+    if (!platformLocationId) return;
+    setRefreshingStatus(true); setError(null);
+    try {
+      const { data: session } = await supabase.auth.getSession();
+      const token = session?.session?.access_token;
+      if (!token) throw new Error('not authenticated');
+      const res = await fetch(`${FUNCTIONS_URL}/stripe-readers-status`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({ location_id: platformLocationId }),
+      });
+      const j = await res.json();
+      if (!res.ok || j.error) throw new Error(j.error ?? `HTTP ${res.status}`);
+      setLastRefreshedAt(Date.now());
+      // Re-pull from DB so we see persisted updates
+      await refresh();
+    } catch (e) {
+      setError(`Status refresh failed: ${e.message}`);
+    } finally {
+      setRefreshingStatus(false);
+    }
+  };
 
   const networkReaders = readers.filter(r => r.connection_kind === 'network');
   const bluetoothReaders = readers.filter(r => r.connection_kind === 'bluetooth');
@@ -123,11 +149,19 @@ export default function CardReaders() {
                 <div style={{ display: 'flex', gap: 16, marginTop: 8, fontSize: 12, color: 'var(--t3)' }}>
                   <span><strong style={{ color: 'var(--t1)' }}>{networkReaders.length}</strong> network</span>
                   <span><strong style={{ color: 'var(--t1)' }}>{bluetoothReaders.length}</strong> bluetooth</span>
+                  {lastRefreshedAt && (
+                    <span style={{ color: 'var(--t4)' }}>· Last checked {new Date(lastRefreshedAt).toLocaleTimeString()}</span>
+                  )}
                 </div>
               </div>
-              <button onClick={() => setShowRegister(true)} disabled={!platformLocationId} style={{ ...S.btn, ...S.btnPrim }}>
-                + Register network reader
-              </button>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button onClick={refreshStatusFromStripe} disabled={refreshingStatus || !platformLocationId} style={{ ...S.btn, ...S.btnGhost }}>
+                  {refreshingStatus ? '⟳ Checking…' : '↻ Refresh status'}
+                </button>
+                <button onClick={() => setShowRegister(true)} disabled={!platformLocationId} style={{ ...S.btn, ...S.btnPrim }}>
+                  + Register network reader
+                </button>
+              </div>
             </div>
           </div>
 
@@ -170,31 +204,89 @@ export default function CardReaders() {
 }
 
 function ReaderRow({ reader, onUnregister }) {
+  const [expanded, setExpanded] = useState(false);
   const isOnline = reader.status === 'online';
+  const isNetwork = reader.connection_kind === 'network';
+  const lastSeen = reader.last_seen_at ? new Date(reader.last_seen_at) : null;
+  const lastCheck = reader.last_status_check_at ? new Date(reader.last_status_check_at) : null;
+  const lastSeenAge = lastSeen ? Math.floor((Date.now() - lastSeen.getTime()) / 60000) : null;       // minutes
+
   return (
     <div style={{ padding: '12px 14px', borderRadius: 10, border: '1px solid var(--bdr)', background: 'var(--bg2)', marginBottom: 8 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
         <div style={{ minWidth: 0, flex: 1 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--t1)' }}>
               {reader.label || reader.serial_number || '(unnamed)'}
             </div>
             <span style={{ fontSize: 10, fontWeight: 700, color: isOnline ? 'var(--grn)' : 'var(--t4)' }}>
               ● {reader.status || 'unknown'}
             </span>
+            {isNetwork && reader.ip_address && (
+              <span style={{ fontSize: 11, color: 'var(--t2)', fontFamily: 'var(--font-mono, monospace)', background: 'var(--bg3)', padding: '2px 7px', borderRadius: 6 }}>
+                {reader.ip_address}
+              </span>
+            )}
           </div>
           <div style={{ fontSize: 11, color: 'var(--t4)', fontFamily: 'var(--font-mono, monospace)', marginTop: 3, wordBreak: 'break-all' }}>
             {reader.stripe_reader_id}{reader.serial_number ? ` · ${reader.serial_number}` : ''}
           </div>
-          <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap', alignItems: 'center' }}>
             <span style={S.pill}>{reader.device_type?.replace(/_/g, ' ') || 'reader'}</span>
             <span style={S.pill}>{reader.connection_kind}</span>
+            {reader.firmware_version && <span style={S.pill}>fw {reader.firmware_version}</span>}
             {reader.bound_pos_device_id && <span style={S.pill}>POS: {reader.bound_pos_device_id.slice(0, 8)}</span>}
+            {lastSeenAge !== null && (
+              <span style={{ ...S.pill, background: lastSeenAge < 5 ? 'var(--grn-d)' : lastSeenAge < 60 ? 'var(--bg3)' : 'var(--red-d)', color: lastSeenAge < 5 ? 'var(--grn)' : lastSeenAge < 60 ? 'var(--t2)' : 'var(--red)' }}>
+                seen {lastSeenAge < 1 ? 'just now' : lastSeenAge < 60 ? `${lastSeenAge}m ago` : lastSeenAge < 1440 ? `${Math.floor(lastSeenAge/60)}h ago` : `${Math.floor(lastSeenAge/1440)}d ago`}
+              </span>
+            )}
+            <button onClick={() => setExpanded(e => !e)} style={{ ...S.btn, ...S.btnGhost, padding: '3px 8px', fontSize: 11 }}>
+              {expanded ? 'Hide details' : 'Diagnostics'}
+            </button>
           </div>
         </div>
         <button onClick={onUnregister} style={{ ...S.btn, ...S.btnDan, padding: '6px 10px', fontSize: 12 }}>
           Unregister
         </button>
+      </div>
+
+      {expanded && (
+        <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--bdr)', display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10, fontSize: 11 }}>
+          <DiagRow label="Stripe reader ID" value={reader.stripe_reader_id} mono/>
+          <DiagRow label="Serial number" value={reader.serial_number || '—'} mono/>
+          <DiagRow label="Device type" value={reader.device_type?.replace(/_/g,' ') || '—'}/>
+          <DiagRow label="Connection" value={reader.connection_kind}/>
+          {isNetwork && <DiagRow label="IP address" value={reader.ip_address || 'unknown'} mono/>}
+          {!isNetwork && <DiagRow label="Bound POS device" value={reader.bound_pos_device_id || '—'} mono/>}
+          <DiagRow label="Firmware" value={reader.firmware_version || 'unknown'} mono/>
+          <DiagRow label="Status" value={reader.status || 'unknown'}/>
+          <DiagRow label="Last seen by Stripe" value={lastSeen ? lastSeen.toLocaleString() : 'never'}/>
+          <DiagRow label="Last status check" value={lastCheck ? lastCheck.toLocaleString() : 'never'}/>
+          <DiagRow label="Registered" value={reader.created_at ? new Date(reader.created_at).toLocaleString() : '—'}/>
+          {isNetwork && <DiagRow label="Pairing code" value={reader.registration_code || '—'} mono/>}
+
+          {isNetwork && reader.ip_address && (
+            <div style={{ gridColumn: 'span 2', marginTop: 8, padding: 10, background: 'var(--bg3)', borderRadius: 8, fontSize: 11, color: 'var(--t3)', lineHeight: 1.5 }}>
+              <strong style={{ color: 'var(--t1)' }}>Troubleshooting tips:</strong><br/>
+              • Reader IP <code style={{ color: 'var(--acc)', fontFamily: 'var(--font-mono, monospace)' }}>{reader.ip_address}</code> should be on the same subnet as your Sunmi terminals.<br/>
+              • Confirm the reader can reach <code style={{ fontFamily: 'var(--font-mono, monospace)' }}>api.stripe.com</code> on port 443 (most network outages here are firewall rules).<br/>
+              • If "Last seen" is more than 5 minutes ago, the reader has lost connectivity — power-cycle it or check WiFi.<br/>
+              • Click <em>Refresh status</em> at the top to fetch a fresh snapshot from Stripe.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DiagRow({ label, value, mono }) {
+  return (
+    <div>
+      <div style={{ fontSize: 9, fontWeight: 700, color: 'var(--t4)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 2 }}>{label}</div>
+      <div style={{ fontSize: 12, color: 'var(--t1)', fontFamily: mono ? 'var(--font-mono, monospace)' : 'inherit', wordBreak: 'break-all' }}>
+        {value}
       </div>
     </div>
   );
