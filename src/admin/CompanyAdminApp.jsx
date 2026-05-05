@@ -5,22 +5,22 @@ import AdminBillingManager from './sections/AdminBillingManager';
 import AdminStripeTest from './sections/AdminStripeTest';
 
 const S = {
-  shell: { display:'flex', height:'100vh', fontFamily:'inherit', background:'#0f1117', color:'#e2e8f0' },
-  sidebar: { width:220, background:'#1a1d27', borderRight:'1px solid #2d3148', display:'flex', flexDirection:'column', padding:'24px 0' },
-  brand: { padding:'0 20px 24px', borderBottom:'1px solid #2d3148', marginBottom:16 },
-  brandBadge: { width:36, height:36, borderRadius:10, background:'#6366f1', display:'flex', alignItems:'center', justifyContent:'center', fontSize:18, fontWeight:800, color:'#fff', marginBottom:10 },
-  main: { flex:1, overflowY:'auto', padding:'32px 40px' },
-  h1: { fontSize:22, fontWeight:800, color:'#f1f5f9', marginBottom:4 },
-  sub: { fontSize:13, color:'#64748b', marginBottom:28 },
-  card: { background:'#1a1d27', border:'1px solid #2d3148', borderRadius:12, padding:24, marginBottom:20 },
-  label: { fontSize:12, fontWeight:600, color:'#94a3b8', marginBottom:5, display:'block' },
-  input: { width:'100%', padding:'9px 12px', borderRadius:8, border:'1px solid #2d3148', background:'#0f1117', color:'#f1f5f9', fontSize:13, fontFamily:'inherit', outline:'none', boxSizing:'border-box' },
+  shell: { display:'flex', height:'100vh', fontFamily:'inherit', background:'var(--bg)', color:'var(--t1)' },
+  sidebar: { width:228, background:'var(--bg1)', borderRight:'1px solid var(--bdr)', display:'flex', flexDirection:'column', padding:'20px 0' },
+  brand: { padding:'0 16px 18px', borderBottom:'1px solid var(--bdr)', marginBottom:14 },
+  brandBadge: { width:34, height:34, borderRadius:8, background:'var(--acc)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:16, fontWeight:800, color:'#0b0c10', marginBottom:8 },
+  main: { flex:1, overflowY:'auto', padding:'28px 36px' },
+  h1: { fontSize:22, fontWeight:800, color:'var(--t1)', marginBottom:4, letterSpacing:'-.01em' },
+  sub: { fontSize:13, color:'var(--t3)', marginBottom:24 },
+  card: { background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:12, padding:20, marginBottom:16, boxShadow:'var(--sh)' },
+  label: { fontSize:11, fontWeight:700, color:'var(--t3)', marginBottom:5, display:'block', textTransform:'uppercase', letterSpacing:'.06em' },
+  input: { width:'100%', padding:'9px 12px', borderRadius:8, border:'1px solid var(--bdr2)', background:'var(--bg2)', color:'var(--t1)', fontSize:13, fontFamily:'inherit', outline:'none', boxSizing:'border-box' },
   row: { display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:12 },
   row3: { display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:12, marginBottom:12 },
-  btn: { padding:'8px 16px', borderRadius:8, border:'none', cursor:'pointer', fontSize:13, fontWeight:700, fontFamily:'inherit' },
-  btnPrimary: { background:'#6366f1', color:'#fff' },
-  btnGhost: { background:'transparent', color:'#94a3b8', border:'1px solid #2d3148' },
-  btnDanger: { background:'transparent', color:'#ef4444', border:'1px solid #7f1d1d' },
+  btn: { padding:'8px 14px', borderRadius:8, border:'none', cursor:'pointer', fontSize:13, fontWeight:700, fontFamily:'inherit' },
+  btnPrimary: { background:'var(--acc)', color:'#0b0c10' },
+  btnGhost: { background:'transparent', color:'var(--t2)', border:'1px solid var(--bdr2)' },
+  btnDanger: { background:'transparent', color:'var(--red)', border:'1px solid var(--red-b)' },
   badge: { padding:'3px 8px', borderRadius:20, fontSize:11, fontWeight:700 },
 };
 
@@ -67,14 +67,14 @@ export default function CompanyAdminApp() {
     }
   }, []);
 
-  if (!authChecked) return <div style={{ minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center', background:'#0f1117', color:'#64748b', fontSize:13 }}>Loading…</div>;
+  if (!authChecked) return <div style={{ minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center', background:'var(--bg)', color:'var(--t3)', fontSize:13 }}>Loading…</div>;
   if (!authUser) return <BOLogin onLogin={(u) => { setAuthUser(u); window.location.reload(); }} />;
   if (!isSuperAdmin) return (
-    <div style={{ minHeight:'100vh', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', background:'#0f1117', color:'#64748b', gap:16 }}>
+    <div style={{ minHeight:'100vh', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', background:'var(--bg)', color:'var(--t3)', gap:16 }}>
       <div style={{ fontSize:32 }}>🔒</div>
-      <div style={{ fontSize:16, fontWeight:700, color:'#f1f5f9' }}>Access denied</div>
+      <div style={{ fontSize:16, fontWeight:700, color:'var(--t1)' }}>Access denied</div>
       <div style={{ fontSize:13 }}>This area requires super_admin access.</div>
-      <button onClick={() => { localStorage.removeItem('rpos-auth'); window.location.reload(); }} style={{ marginTop:8, padding:'8px 20px', borderRadius:8, border:'1px solid #2d3148', background:'transparent', color:'#94a3b8', cursor:'pointer', fontFamily:'inherit', fontSize:13 }}>Sign out</button>
+      <button onClick={() => { localStorage.removeItem('rpos-auth'); window.location.reload(); }} style={{ marginTop:8, padding:'8px 20px', borderRadius:8, border:'1px solid var(--bdr2)', background:'transparent', color:'var(--t3)', cursor:'pointer', fontFamily:'inherit', fontSize:13 }}>Sign out</button>
     </div>
   );
   return <AdminPanel authUser={authUser} />;
@@ -340,8 +340,8 @@ function AdminPanel({ authUser }) {
       <div style={S.sidebar}>
         <div style={S.brand}>
           <div style={S.brandBadge}>R</div>
-          <div style={{ fontSize:14, fontWeight:800, color:'#f1f5f9' }}>Restaurant OS</div>
-          <div style={{ fontSize:11, color:'#6366f1', fontWeight:700, letterSpacing:'.06em', textTransform:'uppercase' }}>Company Admin</div>
+          <div style={{ fontSize:14, fontWeight:800, color:'var(--t1)' }}>Restaurant OS</div>
+          <div style={{ fontSize:11, color:'var(--acc)', fontWeight:700, letterSpacing:'.06em', textTransform:'uppercase' }}>Company Admin</div>
         </div>
         {[
           { id:'orgs', label:'All organisations', icon:'🏢' },
@@ -352,24 +352,24 @@ function AdminPanel({ authUser }) {
           <button key={n.id} onClick={() => { setSection(n.id); setMsg({ type:'', text:'' }); }}
             style={{ display:'flex', alignItems:'center', gap:10, padding:'8px 16px', margin:'1px 8px', borderRadius:8, cursor:'pointer', fontSize:13,
               fontWeight: section===n.id ? 700 : 400,
-              background: section===n.id ? '#2d3148' : 'none',
-              color: section===n.id ? '#f1f5f9' : '#94a3b8',
+              background: section===n.id ? 'var(--acc-d)' : 'none',
+              color: section===n.id ? 'var(--acc)' : 'var(--t2)',
               border:'none', fontFamily:'inherit', width:'calc(100% - 16px)', textAlign:'left' }}>
             {n.icon} {n.label}
           </button>
         ))}
         {selectedOrg && (
           <button onClick={() => setSection('org-detail')}
-            style={{ display:'block', width:'calc(100% - 16px)', margin:'1px 8px', textAlign:'left', padding:'6px 16px', borderRadius:8, border:'none', cursor:'pointer', fontSize:12, color:'#6366f1', background:section==='org-detail'?'#1e1a3a':'none', fontFamily:'inherit' }}>
+            style={{ display:'block', width:'calc(100% - 16px)', margin:'1px 8px', textAlign:'left', padding:'6px 16px', borderRadius:8, border:'none', cursor:'pointer', fontSize:12, color:'var(--acc)', background:section==='org-detail'?'#1e1a3a':'none', fontFamily:'inherit' }}>
             └ {selectedOrg.name}
           </button>
         )}
         <div style={{ flex:1 }} />
         <div style={{ padding:'0 12px' }}>
-          <div style={{ fontSize:11, color:'#475569', padding:'0 6px', marginBottom:6 }}>{authUser.email}</div>
+          <div style={{ fontSize:11, color:'var(--t4)', padding:'0 6px', marginBottom:6 }}>{authUser.email}</div>
           <button onClick={() => { localStorage.removeItem('rpos-auth'); window.location.reload(); }} style={{ ...S.btn, ...S.btnGhost, width:'100%', fontSize:12 }}>Sign out</button>
-          <button onClick={() => { localStorage.removeItem('rpos-device-mode'); window.location.href='/'; }} style={{ width:'100%', padding:'6px', background:'none', border:'none', cursor:'pointer', fontSize:11, color:'#475569', marginTop:4, fontFamily:'inherit' }}>← Switch device mode</button>
-          <div style={{ fontSize:10, color:'#334155', textAlign:'center', marginTop:8, fontFamily:'monospace' }}>v{VERSION}</div>
+          <button onClick={() => { localStorage.removeItem('rpos-device-mode'); window.location.href='/'; }} style={{ width:'100%', padding:'6px', background:'none', border:'none', cursor:'pointer', fontSize:11, color:'var(--t4)', marginTop:4, fontFamily:'inherit' }}>← Switch device mode</button>
+          <div style={{ fontSize:10, color:'var(--t4)', textAlign:'center', marginTop:8, fontFamily:'monospace' }}>v{VERSION}</div>
         </div>
       </div>
 
@@ -393,11 +393,11 @@ function AdminPanel({ authUser }) {
             <button onClick={() => setSection('new-org')} style={{ ...S.btn, ...S.btnPrimary, marginBottom:20 }}>+ New organisation</button>
             <div style={S.card}>
               {loading
-                ? <div style={{ color:'#64748b', fontSize:13 }}>Loading… <button onClick={loadOrgs} style={{ ...S.btn, ...S.btnGhost, padding:'3px 10px', fontSize:11, marginLeft:8 }}>Retry</button></div>
+                ? <div style={{ color:'var(--t3)', fontSize:13 }}>Loading… <button onClick={loadOrgs} style={{ ...S.btn, ...S.btnGhost, padding:'3px 10px', fontSize:11, marginLeft:8 }}>Retry</button></div>
                 : orgs.length === 0
-                  ? <div style={{ color:'#64748b', fontSize:13, padding:'20px 0' }}>No organisations yet</div>
+                  ? <div style={{ color:'var(--t3)', fontSize:13, padding:'20px 0' }}>No organisations yet</div>
                   : orgs.map(o => (
-                    <div key={o.id} style={{ display:'flex', alignItems:'center', gap:12, padding:'14px 0', borderBottom:'1px solid #2d3148' }}>
+                    <div key={o.id} style={{ display:'flex', alignItems:'center', gap:12, padding:'14px 0', borderBottom:'1px solid var(--bdr)' }}>
                       {editingOrg?.id === o.id ? (
                         <>
                           <input autoFocus value={editingOrg.name} onChange={e => setEditingOrg(x => ({ ...x, name:e.target.value }))}
@@ -409,11 +409,11 @@ function AdminPanel({ authUser }) {
                       ) : (
                         <>
                           <div style={{ flex:1 }}>
-                            <div style={{ fontSize:14, fontWeight:700, color:'#f1f5f9' }}>{o.name}</div>
-                            <div style={{ fontSize:12, color:'#64748b', fontFamily:'monospace' }}>{o.slug}</div>
+                            <div style={{ fontSize:14, fontWeight:700, color:'var(--t1)' }}>{o.name}</div>
+                            <div style={{ fontSize:12, color:'var(--t3)', fontFamily:'monospace' }}>{o.slug}</div>
                           </div>
                           <span style={{ ...S.badge, background:'#0d2e1a', color:'#86efac' }}>{o.status}</span>
-                          <div style={{ fontSize:12, color:'#64748b' }}>{new Date(o.created_at).toLocaleDateString('en-GB')}</div>
+                          <div style={{ fontSize:12, color:'var(--t3)' }}>{new Date(o.created_at).toLocaleDateString('en-GB')}</div>
                           <button onClick={() => selectOrg(o)} style={{ ...S.btn, ...S.btnGhost, padding:'5px 12px', fontSize:12 }}>Manage →</button>
                           <button onClick={() => setEditingOrg({ id:o.id, name:o.name })} style={{ ...S.btn, ...S.btnGhost, padding:'5px 12px', fontSize:12 }}>✏️</button>
                           <button onClick={() => deleteOrg(o)} disabled={working} style={{ ...S.btn, ...S.btnDanger, padding:'5px 12px', fontSize:12 }}>🗑</button>
@@ -461,9 +461,9 @@ function AdminPanel({ authUser }) {
                 </div>
 
                 <div style={S.card}>
-                  <div style={{ fontSize:14, fontWeight:700, color:'#e2e8f0', marginBottom:20 }}>📍 Locations & User Access</div>
+                  <div style={{ fontSize:14, fontWeight:700, color:'var(--t1)', marginBottom:20 }}>📍 Locations & User Access</div>
                   {locations.length === 0
-                    ? <div style={{ color:'#64748b', fontSize:13 }}>No locations yet — add one above</div>
+                    ? <div style={{ color:'var(--t3)', fontSize:13 }}>No locations yet — add one above</div>
                     : locations.map((loc, idx) => {
                         const maxDev = loc.location_features?.find(f=>f.feature==='max_devices')?.price_per_month || 3;
                         const plan = loc.subscriptions?.[0]?.plan || 'free';
@@ -473,7 +473,7 @@ function AdminPanel({ authUser }) {
                         const isEditingName = editingLoc?.id === loc.id;
 
                         return (
-                          <div key={loc.id} style={{ paddingBottom:24, marginBottom:24, borderBottom: idx < locations.length-1 ? '1px solid #2d3148' : 'none' }}>
+                          <div key={loc.id} style={{ paddingBottom:24, marginBottom:24, borderBottom: idx < locations.length-1 ? '1px solid var(--bdr)' : 'none' }}>
                             {/* Location name row */}
                             <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:10 }}>
                               {isEditingName ? (
@@ -486,11 +486,11 @@ function AdminPanel({ authUser }) {
                                 </>
                               ) : (
                                 <>
-                                  <div style={{ fontSize:15, fontWeight:700, color:'#f1f5f9' }}>{loc.name}</div>
+                                  <div style={{ fontSize:15, fontWeight:700, color:'var(--t1)' }}>{loc.name}</div>
                                   <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-                                    <span style={{ ...S.badge, background:'#1e1a3a', color:'#a5b4fc' }}>{plan}</span>
-                                    <span style={{ fontSize:12, color:'#64748b' }}>{maxDev} devices</span>
-                                    <span style={{ fontSize:12, color:'#64748b' }}>£{parseFloat(gmv).toFixed(2)} GMV</span>
+                                    <span style={{ ...S.badge, background:'var(--acc-d)', color:'#a5b4fc' }}>{plan}</span>
+                                    <span style={{ fontSize:12, color:'var(--t3)' }}>{maxDev} devices</span>
+                                    <span style={{ fontSize:12, color:'var(--t3)' }}>£{parseFloat(gmv).toFixed(2)} GMV</span>
                                   </div>
                                   <div style={{ marginLeft:'auto', display:'flex', gap:8 }}>
                                     <button onClick={() => setEditingLoc({ id:loc.id, name:loc.name })} style={{ ...S.btn, ...S.btnGhost, padding:'4px 10px', fontSize:11 }}>✏️ Rename</button>
@@ -502,9 +502,9 @@ function AdminPanel({ authUser }) {
 
                             {/* Users section */}
                             <div style={{ paddingLeft:0 }}>
-                              <div style={{ fontSize:11, fontWeight:700, color:'#64748b', textTransform:'uppercase', letterSpacing:'.06em', marginBottom:10 }}>Users with access</div>
+                              <div style={{ fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.06em', marginBottom:10 }}>Users with access</div>
                               {isEditingUsers ? (
-                                <div style={{ background:'#0f1117', borderRadius:10, padding:16, border:'1px solid #2d3148' }}>
+                                <div style={{ background:'var(--bg)', borderRadius:10, padding:16, border:'1px solid var(--bdr2)' }}>
                                   {/* v5.5.14: search input — searches across all platform users by email or name */}
                                   <input
                                     autoFocus
@@ -522,10 +522,10 @@ function AdminPanel({ authUser }) {
                                           (u.full_name || '').toLowerCase().includes(q))
                                       : allShown;
                                     if (allShown.length === 0) {
-                                      return <div style={{ fontSize:13, color:'#475569', marginBottom:12 }}>No users in the platform yet — create one first</div>;
+                                      return <div style={{ fontSize:13, color:'var(--t4)', marginBottom:12 }}>No users in the platform yet — create one first</div>;
                                     }
                                     if (filtered.length === 0) {
-                                      return <div style={{ fontSize:13, color:'#475569', marginBottom:12 }}>No users match "{userSearch}"</div>;
+                                      return <div style={{ fontSize:13, color:'var(--t4)', marginBottom:12 }}>No users match "{userSearch}"</div>;
                                     }
                                     return filtered.map(u => {
                                       const has = locUsers.some(lu => lu.id === u.id);
@@ -534,11 +534,11 @@ function AdminPanel({ authUser }) {
                                         <label key={u.id} style={{ display:'flex', alignItems:'center', gap:10, marginBottom:12, cursor:'pointer' }}>
                                           <input type="checkbox" checked={has}
                                             onChange={() => toggleUserLocation(u.id, loc.id, has)}
-                                            style={{ accentColor:'#6366f1', width:16, height:16, flexShrink:0 }}
+                                            style={{ accentColor:'var(--acc)', width:16, height:16, flexShrink:0 }}
                                           />
                                           <div style={{ flex:1, minWidth:0 }}>
-                                            <div style={{ fontSize:13, fontWeight:600, color:'#e2e8f0' }}>{u.full_name || u.email}</div>
-                                            <div style={{ fontSize:11, color:'#6366f1', fontFamily:'monospace' }}>{u.email || '—'}</div>
+                                            <div style={{ fontSize:13, fontWeight:600, color:'var(--t1)' }}>{u.full_name || u.email}</div>
+                                            <div style={{ fontSize:11, color:'var(--acc)', fontFamily:'monospace' }}>{u.email || '—'}</div>
                                           </div>
                                           {!sameOrg && <span style={{ ...S.badge, background:'#2d2540', color:'#c89bff', marginLeft:'auto', fontSize:10 }}>cross-org</span>}
                                           {has && <span style={{ ...S.badge, background:'#0d2e1a', color:'#86efac', marginLeft: sameOrg ? 'auto' : 6, fontSize:10 }}>✓ Access</span>}
@@ -551,11 +551,11 @@ function AdminPanel({ authUser }) {
                               ) : (
                                 <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
                                   {locUsers.length === 0
-                                    ? <span style={{ fontSize:13, color:'#475569' }}>No users assigned to this location</span>
+                                    ? <span style={{ fontSize:13, color:'var(--t4)' }}>No users assigned to this location</span>
                                     : locUsers.map(u => (
-                                        <div key={u.id} style={{ background:'#1e1a3a', border:'1px solid #3730a3', borderRadius:8, padding:'6px 12px' }}>
-                                          <div style={{ fontSize:12, fontWeight:700, color:'#e2e8f0' }}>{u.full_name || u.email}</div>
-                                          <div style={{ fontSize:11, color:'#6366f1', fontFamily:'monospace' }}>{u.email}</div>
+                                        <div key={u.id} style={{ background:'var(--acc-d)', border:'1px solid #3730a3', borderRadius:8, padding:'6px 12px' }}>
+                                          <div style={{ fontSize:12, fontWeight:700, color:'var(--t1)' }}>{u.full_name || u.email}</div>
+                                          <div style={{ fontSize:11, color:'var(--acc)', fontFamily:'monospace' }}>{u.email}</div>
                                         </div>
                                       ))
                                   }
@@ -576,7 +576,7 @@ function AdminPanel({ authUser }) {
             {/* ── Add location form ── */}
             {section === 'new-location' && (
               <div style={S.card}>
-                <div style={{ fontSize:14, fontWeight:700, color:'#e2e8f0', marginBottom:16 }}>Add location to {selectedOrg.name}</div>
+                <div style={{ fontSize:14, fontWeight:700, color:'var(--t1)', marginBottom:16 }}>Add location to {selectedOrg.name}</div>
                 <div style={S.row}>
                   <div><label style={S.label}>Location name *</label><input style={S.input} placeholder="e.g. Oxford Street" value={form.locName||''} onChange={e=>f('locName',e.target.value)} /></div>
                   <div><label style={S.label}>Address</label><input style={S.input} placeholder="123 High St, London" value={form.locAddress||''} onChange={e=>f('locAddress',e.target.value)} /></div>
@@ -610,7 +610,7 @@ function AdminPanel({ authUser }) {
             {/* ── Create user form ── */}
             {section === 'create-user' && (
               <div style={S.card}>
-                <div style={{ fontSize:14, fontWeight:700, color:'#e2e8f0', marginBottom:16 }}>👤 Create back-office user for {selectedOrg.name}</div>
+                <div style={{ fontSize:14, fontWeight:700, color:'var(--t1)', marginBottom:16 }}>👤 Create back-office user for {selectedOrg.name}</div>
                 <div style={S.row}>
                   <div><label style={S.label}>Email *</label><input type="email" style={S.input} placeholder="owner@restaurant.com" value={form.inviteEmail||''} onChange={e=>f('inviteEmail',e.target.value)} /></div>
                   <div><label style={S.label}>Full name</label><input style={S.input} placeholder="Sarah Smith" value={form.inviteName||''} onChange={e=>f('inviteName',e.target.value)} /></div>

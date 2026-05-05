@@ -1,26 +1,32 @@
 // src/admin/sections/AdminBillingManager.jsx
-// Admin-only: manage Stripe Connect accounts per location across all companies.
-// Mounted inside CompanyAdminApp (super_admin gated, ?mode=admin).
+// Admin-only billing manager: per-location Stripe Connect status,
+// negotiated markup % (card-present + online), GMV stats.
+// Plus a platform-defaults panel for the global fallback values.
+//
+// Themed with the same CSS variables as the customer back office, so it
+// follows the user's light/dark theme choice automatically.
 
 import { useEffect, useState, useCallback } from 'react';
 import { supabase, platformSupabase } from '../../lib/supabase';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 
-// Reusable admin styles (mirrors CompanyAdminApp's `S` object so the look matches)
+// ─── Reusable styles (BO theme tokens) ─────────────────────────────────────
 const S = {
-  page: { padding: '0' },
-  h1: { fontSize: 22, fontWeight: 800, color: '#f1f5f9', marginBottom: 4 },
-  sub: { fontSize: 13, color: '#64748b', marginBottom: 28 },
-  card: { background: '#1a1d27', border: '1px solid #2d3148', borderRadius: 12, padding: 20, marginBottom: 16 },
-  label: { fontSize: 12, fontWeight: 600, color: '#94a3b8', marginBottom: 6, display: 'block', textTransform: 'uppercase', letterSpacing: '.05em' },
-  input: { width: '100%', padding: '9px 12px', borderRadius: 8, border: '1px solid #2d3148', background: '#0f1117', color: '#f1f5f9', fontSize: 13, fontFamily: 'monospace', outline: 'none', boxSizing: 'border-box' },
-  btn: { padding: '8px 16px', borderRadius: 8, border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 700, fontFamily: 'inherit' },
-  btnPrimary: { background: '#6366f1', color: '#fff' },
-  btnGhost: { background: 'transparent', color: '#94a3b8', border: '1px solid #2d3148' },
-  btnDanger: { background: 'transparent', color: '#ef4444', border: '1px solid #7f1d1d' },
-  pill: { fontSize: 11, padding: '3px 8px', borderRadius: 99, background: '#2d3148', color: '#cbd5e1', textTransform: 'uppercase', letterSpacing: '.05em', fontWeight: 600 },
-  errorBox: { padding: 12, background: '#3f1d1d', color: '#fca5a5', borderRadius: 8, marginBottom: 16, fontSize: 13, border: '1px solid #7f1d1d' },
+  page:    { padding: 0 },
+  h1:      { fontSize: 22, fontWeight: 800, color: 'var(--t1)', margin: 0, marginBottom: 4, letterSpacing: '-.01em' },
+  sub:     { fontSize: 13, color: 'var(--t3)', marginBottom: 24 },
+  card:    { background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 12, padding: 18, marginBottom: 14, boxShadow: 'var(--sh)' },
+  label:   { fontSize: 11, fontWeight: 700, color: 'var(--t3)', marginBottom: 5, display: 'block', textTransform: 'uppercase', letterSpacing: '.06em' },
+  input:   { width: '100%', padding: '8px 10px', borderRadius: 8, border: '1px solid var(--bdr2)', background: 'var(--bg2)', color: 'var(--t1)', fontSize: 13, fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' },
+  inputMono: { fontFamily: 'var(--font-mono, monospace)' },
+  btn:     { padding: '8px 14px', borderRadius: 8, border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 700, fontFamily: 'inherit' },
+  btnPrim: { background: 'var(--acc)', color: '#0b0c10' },
+  btnGhost:{ background: 'transparent', color: 'var(--t2)', border: '1px solid var(--bdr2)' },
+  btnDan:  { background: 'transparent', color: 'var(--red)', border: '1px solid var(--red-b)' },
+  pill:    { fontSize: 11, padding: '2px 8px', borderRadius: 99, background: 'var(--bg3)', color: 'var(--t2)', textTransform: 'uppercase', letterSpacing: '.05em', fontWeight: 700, border: '1px solid var(--bdr)' },
+  errorBox:{ padding: 12, background: 'var(--red-d)', color: 'var(--red)', borderRadius: 8, marginBottom: 14, fontSize: 13, border: '1px solid var(--red-b)' },
+  okBox:   { padding: 10, background: 'var(--grn-d)', color: 'var(--grn)', borderRadius: 8, marginBottom: 0, fontSize: 12, border: '1px solid var(--grn-b)' },
 };
 
 export default function AdminBillingManager({ authUser }) {
@@ -28,6 +34,7 @@ export default function AdminBillingManager({ authUser }) {
   const [locations, setLocations] = useState([]);
   const [msaByLoc, setMsaByLoc] = useState({});
   const [bsByLoc, setBsByLoc] = useState({});
+  const [platformDefaults, setPlatformDefaults] = useState({ default_cardpresent_markup_percent: 1.0, default_online_markup_percent: 0.5 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [linkModalLoc, setLinkModalLoc] = useState(null);
@@ -42,9 +49,13 @@ export default function AdminBillingManager({ authUser }) {
     setLoading(true);
     setError(null);
     try {
-      const { data: cos, error: coErr } = await platformSupabase.from('companies').select('id, name').order('name');
+      const [{ data: cos, error: coErr }, { data: ps }] = await Promise.all([
+        platformSupabase.from('companies').select('id, name').order('name'),
+        platformSupabase.from('platform_settings').select('*').eq('id', true).maybeSingle(),
+      ]);
       if (coErr) throw coErr;
       setCompanies(cos ?? []);
+      if (ps) setPlatformDefaults(ps);
 
       let q = platformSupabase.from('locations').select('id, name, company_id, timezone').order('name');
       if (filterCompanyId) q = q.eq('company_id', filterCompanyId);
@@ -63,8 +74,7 @@ export default function AdminBillingManager({ authUser }) {
         setMsaByLoc(m);
         setBsByLoc(b);
       } else {
-        setMsaByLoc({});
-        setBsByLoc({});
+        setMsaByLoc({}); setBsByLoc({});
       }
     } catch (e) {
       setError(String(e?.message ?? e));
@@ -75,18 +85,29 @@ export default function AdminBillingManager({ authUser }) {
 
   useEffect(() => { refresh(); }, [refresh]);
 
-  const companyName = (id) => companies.find(c => c.id === id)?.name ?? '(unknown company)';
+  const companyName = (id) => companies.find(c => c.id === id)?.name ?? '(unknown)';
+  const upsertMsaPatch = (locationId, patch) => {
+    setMsaByLoc(prev => ({ ...prev, [locationId]: { ...(prev[locationId] ?? {}), ...patch } }));
+  };
 
   return (
     <div style={S.page}>
-      <h1 style={S.h1}>Billing & Stripe accounts</h1>
-      <div style={S.sub}>Manage Stripe Connect linkage and rolling GMV per location, across all companies.</div>
+      <h1 style={S.h1}>Billing &amp; Stripe accounts</h1>
+      <div style={S.sub}>Per-location Stripe Connect status, negotiated transaction markup %, and rolling GMV.</div>
 
-      <div style={{ display: 'flex', gap: 12, marginBottom: 16, alignItems: 'center' }}>
+      {/* Platform-wide defaults */}
+      <PlatformDefaultsPanel
+        defaults={platformDefaults}
+        onSave={(next) => { setPlatformDefaults(next); }}
+        authUserId={authUser?.id}
+        onError={setError}
+      />
+
+      <div style={{ display: 'flex', gap: 10, marginBottom: 14, alignItems: 'center', flexWrap: 'wrap' }}>
         <select
           value={filterCompanyId}
           onChange={e => setFilterCompanyId(e.target.value)}
-          style={{ ...S.input, width: 320, fontFamily: 'inherit' }}
+          style={{ ...S.input, width: 320 }}
         >
           <option value="">All companies ({companies.length})</option>
           {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
@@ -94,7 +115,7 @@ export default function AdminBillingManager({ authUser }) {
         <button onClick={refresh} disabled={loading} style={{ ...S.btn, ...S.btnGhost }}>
           {loading ? 'Loading…' : '↻ Refresh'}
         </button>
-        <div style={{ marginLeft: 'auto', fontSize: 12, color: '#64748b' }}>
+        <div style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--t3)' }}>
           {locations.length} location{locations.length === 1 ? '' : 's'}
         </div>
       </div>
@@ -102,7 +123,7 @@ export default function AdminBillingManager({ authUser }) {
       {error && <div style={S.errorBox}>{error}</div>}
 
       {!error && locations.length === 0 && !loading && (
-        <div style={{ ...S.card, color: '#64748b', textAlign: 'center', padding: 40 }}>No locations found.</div>
+        <div style={{ ...S.card, color: 'var(--t3)', textAlign: 'center', padding: 40 }}>No locations found.</div>
       )}
 
       {locations.map(loc => (
@@ -112,12 +133,25 @@ export default function AdminBillingManager({ authUser }) {
           companyName={companyName(loc.company_id)}
           msa={msaByLoc[loc.id]}
           bs={bsByLoc[loc.id]}
+          defaults={platformDefaults}
           onLink={() => setLinkModalLoc(loc)}
           onUnlink={async () => {
             if (!confirm(`Unlink Stripe account from ${loc.name}? Future payments will fail until re-linked.`)) return;
             const { error } = await platformSupabase.from('merchant_stripe_accounts').delete().eq('id', msaByLoc[loc.id].id);
             if (error) alert(`Unlink failed: ${error.message}`);
             else refresh();
+          }}
+          onSavePricing={async ({ cardpresent, online, notes }) => {
+            const patch = {
+              cardpresent_markup_percent: cardpresent === '' ? null : Number(cardpresent),
+              online_markup_percent:      online      === '' ? null : Number(online),
+              pricing_notes: notes || null,
+            };
+            const { error } = await platformSupabase.from('merchant_stripe_accounts')
+              .update(patch).eq('id', msaByLoc[loc.id].id);
+            if (error) { alert(`Save failed: ${error.message}`); return false; }
+            upsertMsaPatch(loc.id, patch);
+            return true;
           }}
         />
       ))}
@@ -133,28 +167,126 @@ export default function AdminBillingManager({ authUser }) {
   );
 }
 
-function LocationCard({ location, companyName, msa, bs, onLink, onUnlink }) {
+// ─── Platform-wide defaults panel ─────────────────────────────────────────
+function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
+  const [editing, setEditing] = useState(false);
+  const [cp, setCp] = useState(defaults.default_cardpresent_markup_percent);
+  const [on, setOn] = useState(defaults.default_online_markup_percent);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    setCp(defaults.default_cardpresent_markup_percent);
+    setOn(defaults.default_online_markup_percent);
+  }, [defaults]);
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      const patch = {
+        default_cardpresent_markup_percent: Number(cp),
+        default_online_markup_percent: Number(on),
+        updated_at: new Date().toISOString(),
+        updated_by_user_id: authUserId,
+      };
+      const { error } = await platformSupabase.from('platform_settings').update(patch).eq('id', true);
+      if (error) throw error;
+      onSave({ ...defaults, ...patch });
+      setEditing(false);
+    } catch (e) {
+      onError(`Failed to save platform defaults: ${e.message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ ...S.card, borderColor: 'var(--acc-b)', background: 'var(--acc-d)' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, flexWrap: 'wrap' }}>
+        <div style={{ flex: 1, minWidth: 260 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--acc)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 4 }}>
+            Platform defaults
+          </div>
+          <div style={{ fontSize: 14, color: 'var(--t1)', marginBottom: 8, lineHeight: 1.4 }}>
+            Used for any location where the merchant doesn't have a per-merchant override.
+          </div>
+          {!editing && (
+            <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}>
+              <Stat label="In-person markup" value={`${Number(defaults.default_cardpresent_markup_percent ?? 0).toFixed(2)}%`} />
+              <Stat label="Online markup"    value={`${Number(defaults.default_online_markup_percent ?? 0).toFixed(2)}%`} />
+            </div>
+          )}
+          {editing && (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, maxWidth: 460 }}>
+              <div>
+                <label style={S.label}>In-person markup %</label>
+                <input type="number" step="0.01" min="0" max="100" value={cp} onChange={e => setCp(e.target.value)} style={S.input} />
+              </div>
+              <div>
+                <label style={S.label}>Online markup %</label>
+                <input type="number" step="0.01" min="0" max="100" value={on} onChange={e => setOn(e.target.value)} style={S.input} />
+              </div>
+            </div>
+          )}
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {!editing && <button onClick={() => setEditing(true)} style={{ ...S.btn, ...S.btnGhost }}>Edit defaults</button>}
+          {editing && <>
+            <button onClick={() => { setEditing(false); setCp(defaults.default_cardpresent_markup_percent); setOn(defaults.default_online_markup_percent); }} disabled={busy} style={{ ...S.btn, ...S.btnGhost }}>Cancel</button>
+            <button onClick={save} disabled={busy} style={{ ...S.btn, ...S.btnPrim }}>{busy ? 'Saving…' : 'Save defaults'}</button>
+          </>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Per-location card ────────────────────────────────────────────────────
+function LocationCard({ location, companyName, msa, bs, defaults, onLink, onUnlink, onSavePricing }) {
   const linked = !!msa;
   const status = !linked
-    ? { label: 'Not linked', color: '#64748b', dot: '#475569' }
+    ? { label: 'Not linked',       color: 'var(--t3)' }
     : !msa.charges_enabled
-      ? { label: 'Onboarding incomplete', color: '#fbbf24', dot: '#fbbf24' }
-      : { label: 'Live · charges enabled', color: '#34d399', dot: '#34d399' };
+      ? { label: 'Onboarding incomplete', color: 'var(--orn)' }
+      : { label: 'Live · charges enabled', color: 'var(--grn)' };
   const currency = (msa?.default_currency || bs?.current_period_currency || 'gbp').toUpperCase();
+
+  // Local edit state for pricing fields
+  const [cp, setCp] = useState(msa?.cardpresent_markup_percent ?? '');
+  const [on, setOn] = useState(msa?.online_markup_percent ?? '');
+  const [notes, setNotes] = useState(msa?.pricing_notes ?? '');
+  const [busy, setBusy] = useState(false);
+  const [savedAt, setSavedAt] = useState(null);
+
+  // Sync local state if msa changes from outside
+  useEffect(() => {
+    setCp(msa?.cardpresent_markup_percent ?? '');
+    setOn(msa?.online_markup_percent ?? '');
+    setNotes(msa?.pricing_notes ?? '');
+  }, [msa?.cardpresent_markup_percent, msa?.online_markup_percent, msa?.pricing_notes]);
+
+  const dirty = linked && (
+    String(cp) !== String(msa?.cardpresent_markup_percent ?? '') ||
+    String(on) !== String(msa?.online_markup_percent ?? '') ||
+    (notes ?? '') !== (msa?.pricing_notes ?? '')
+  );
+
+  const effectiveCp = cp === '' ? defaults.default_cardpresent_markup_percent : Number(cp);
+  const effectiveOn = on === '' ? defaults.default_online_markup_percent      : Number(on);
 
   return (
     <div style={S.card}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start' }}>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 11, color: '#6366f1', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 2 }}>
+      {/* Header */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, marginBottom: linked ? 16 : 0, flexWrap: 'wrap' }}>
+        <div style={{ flex: 1, minWidth: 220 }}>
+          <div style={{ fontSize: 11, color: 'var(--acc)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 2 }}>
             {companyName}
           </div>
-          <div style={{ fontSize: 18, fontWeight: 700, color: '#f1f5f9', marginBottom: 4 }}>{location.name}</div>
-          <div style={{ fontSize: 11, color: '#475569', marginBottom: 14, fontFamily: 'monospace' }}>{location.id}</div>
+          <div style={{ fontSize: 17, fontWeight: 700, color: 'var(--t1)', marginBottom: 3 }}>{location.name}</div>
+          <div style={{ fontSize: 11, color: 'var(--t4)', marginBottom: 10, fontFamily: 'var(--font-mono, monospace)' }}>{location.id}</div>
 
-          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14 }}>
-            <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: 13, color: status.color, fontWeight: 600 }}>
-              <span style={{ width: 8, height: 8, borderRadius: 99, background: status.dot }} />
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+            <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: 13, color: status.color, fontWeight: 700 }}>
+              <span style={{ width: 8, height: 8, borderRadius: 99, background: status.color }} />
               {status.label}
             </span>
             {linked && (
@@ -162,27 +294,99 @@ function LocationCard({ location, companyName, msa, bs, onLink, onUnlink }) {
                 <span style={S.pill}>{msa.country ?? '—'}</span>
                 <span style={S.pill}>{currency}</span>
                 <span style={S.pill}>{msa.link_method === 'admin_manual' ? 'Manual' : 'Express'}</span>
-                <code style={{ fontSize: 12, color: '#94a3b8', fontFamily: 'monospace' }}>{msa.stripe_account_id}</code>
+                <code style={{ fontSize: 11, color: 'var(--t2)', fontFamily: 'var(--font-mono, monospace)' }}>{msa.stripe_account_id}</code>
               </>
             )}
           </div>
-
-          {bs && (
-            <div style={{ display: 'flex', gap: 28, flexWrap: 'wrap' }}>
-              <Stat label="GMV this month" value={fmt(bs.gmv_this_month, currency)} />
-              <Stat label="Plan" value={(bs.current_plan ?? '—').toUpperCase()} accent />
-              <Stat label="Monthly fee" value={fmt(bs.current_monthly_fee, currency)} />
-              <Stat label="Last month" value={fmt(bs.gmv_last_month, currency)} />
-              <Stat label="Period start" value={bs.current_period_start ?? '—'} />
-            </div>
-          )}
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, flexShrink: 0 }}>
-          {!linked && <button onClick={onLink} style={{ ...S.btn, ...S.btnPrimary }}>Link Stripe account</button>}
-          {linked && <button onClick={onUnlink} style={{ ...S.btn, ...S.btnDanger }}>Unlink</button>}
+          {!linked && <button onClick={onLink} style={{ ...S.btn, ...S.btnPrim }}>Link Stripe account</button>}
+          {linked && <button onClick={onUnlink} style={{ ...S.btn, ...S.btnDan }}>Unlink</button>}
         </div>
       </div>
+
+      {/* Pricing + GMV (only meaningful once linked) */}
+      {linked && (
+        <>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
+            <div>
+              <label style={S.label}>In-person (card present) markup %</label>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                <input
+                  type="number" step="0.01" min="0" max="100"
+                  placeholder={`default ${Number(defaults.default_cardpresent_markup_percent ?? 0).toFixed(2)}`}
+                  value={cp} onChange={e => setCp(e.target.value)}
+                  style={{ ...S.input, ...S.inputMono }}
+                />
+                <span style={{ color: 'var(--t3)', fontSize: 13, fontWeight: 700 }}>%</span>
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 4 }}>
+                {cp === '' ? <>Using platform default. Effective: <strong>{effectiveCp.toFixed(2)}%</strong></> : <>Override: <strong>{Number(cp).toFixed(2)}%</strong></>}
+              </div>
+            </div>
+            <div>
+              <label style={S.label}>Online markup %</label>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                <input
+                  type="number" step="0.01" min="0" max="100"
+                  placeholder={`default ${Number(defaults.default_online_markup_percent ?? 0).toFixed(2)}`}
+                  value={on} onChange={e => setOn(e.target.value)}
+                  style={{ ...S.input, ...S.inputMono }}
+                />
+                <span style={{ color: 'var(--t3)', fontSize: 13, fontWeight: 700 }}>%</span>
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 4 }}>
+                {on === '' ? <>Using platform default. Effective: <strong>{effectiveOn.toFixed(2)}%</strong></> : <>Override: <strong>{Number(on).toFixed(2)}%</strong></>}
+              </div>
+            </div>
+          </div>
+
+          <div style={{ marginBottom: 14 }}>
+            <label style={S.label}>Pricing notes (internal)</label>
+            <input
+              type="text" value={notes} onChange={e => setNotes(e.target.value)}
+              placeholder="e.g. Negotiated by Sales Aug-26, locked-in until Dec-26"
+              style={S.input}
+            />
+          </div>
+
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: bs ? 14 : 0 }}>
+            <button
+              onClick={async () => {
+                setBusy(true);
+                const ok = await onSavePricing({ cardpresent: cp, online: on, notes });
+                setBusy(false);
+                if (ok) { setSavedAt(Date.now()); setTimeout(() => setSavedAt(null), 2500); }
+              }}
+              disabled={busy || !dirty}
+              style={{ ...S.btn, ...(dirty ? S.btnPrim : S.btnGhost) }}
+            >
+              {busy ? 'Saving…' : 'Save pricing'}
+            </button>
+            <button
+              onClick={() => {
+                setCp(msa?.cardpresent_markup_percent ?? '');
+                setOn(msa?.online_markup_percent ?? '');
+                setNotes(msa?.pricing_notes ?? '');
+              }}
+              disabled={busy || !dirty}
+              style={{ ...S.btn, ...S.btnGhost }}
+            >Reset</button>
+            {savedAt && <span style={{ fontSize: 12, color: 'var(--grn)', fontWeight: 700 }}>✓ Saved</span>}
+          </div>
+
+          {bs && (
+            <div style={{ display: 'flex', gap: 22, flexWrap: 'wrap', paddingTop: 12, borderTop: '1px solid var(--bdr)' }}>
+              <Stat label="GMV this month" value={fmt(bs.gmv_this_month, currency)} />
+              <Stat label="Plan" value={(bs.current_plan ?? '—').toUpperCase()} accent />
+              <Stat label="Monthly SaaS fee" value={fmt(bs.current_monthly_fee, currency)} />
+              <Stat label="Last month GMV" value={fmt(bs.gmv_last_month, currency)} />
+              <Stat label="Period start" value={bs.current_period_start ?? '—'} />
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
@@ -190,8 +394,8 @@ function LocationCard({ location, companyName, msa, bs, onLink, onUnlink }) {
 function Stat({ label, value, accent }) {
   return (
     <div>
-      <div style={{ fontSize: 10, color: '#64748b', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 2, fontWeight: 700 }}>{label}</div>
-      <div style={{ fontSize: 14, fontWeight: 700, color: accent ? '#a5b4fc' : '#f1f5f9' }}>{value}</div>
+      <div style={{ fontSize: 10, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 2, fontWeight: 700 }}>{label}</div>
+      <div style={{ fontSize: 14, fontWeight: 700, color: accent ? 'var(--acc)' : 'var(--t1)' }}>{value}</div>
     </div>
   );
 }
@@ -225,21 +429,21 @@ function LinkModal({ location, onClose, onLinked }) {
   };
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={onClose}>
-      <div style={{ ...S.card, width: 480, maxWidth: 'calc(100vw - 32px)', marginBottom: 0 }} onClick={e => e.stopPropagation()}>
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(2px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={onClose}>
+      <div style={{ ...S.card, width: 480, maxWidth: 'calc(100vw - 32px)', marginBottom: 0, boxShadow: 'var(--sh3)' }} onClick={e => e.stopPropagation()}>
         <h2 style={{ ...S.h1, fontSize: 18, marginBottom: 4 }}>Link Stripe account</h2>
-        <div style={{ fontSize: 13, color: '#64748b', marginBottom: 16 }}>
-          to <strong style={{ color: '#cbd5e1' }}>{location.name}</strong>
+        <div style={{ fontSize: 13, color: 'var(--t3)', marginBottom: 16 }}>
+          to <strong style={{ color: 'var(--t1)' }}>{location.name}</strong>
         </div>
         <label style={S.label}>Stripe account ID</label>
-        <input type="text" value={acctId} onChange={e => setAcctId(e.target.value)} placeholder="acct_1ABC..." style={S.input} autoFocus />
-        <div style={{ fontSize: 12, color: '#64748b', marginTop: 8, marginBottom: 16 }}>
-          The merchant account from <code style={{ color: '#94a3b8' }}>dashboard.stripe.com → Connect → Accounts</code>. The function validates with Stripe before linking.
+        <input type="text" value={acctId} onChange={e => setAcctId(e.target.value)} placeholder="acct_1ABC..." style={{ ...S.input, ...S.inputMono }} autoFocus />
+        <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 6, marginBottom: 16 }}>
+          The connected account from <code style={{ fontFamily: 'var(--font-mono, monospace)' }}>dashboard.stripe.com → Connect → Accounts</code>. Validated with Stripe before linking.
         </div>
         {error && <div style={S.errorBox}>{error}</div>}
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
           <button onClick={onClose} disabled={submitting} style={{ ...S.btn, ...S.btnGhost }}>Cancel</button>
-          <button onClick={submit} disabled={submitting || !acctId} style={{ ...S.btn, ...S.btnPrimary }}>
+          <button onClick={submit} disabled={submitting || !acctId} style={{ ...S.btn, ...S.btnPrim }}>
             {submitting ? 'Linking…' : 'Link account'}
           </button>
         </div>

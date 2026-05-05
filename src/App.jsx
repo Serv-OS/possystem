@@ -73,6 +73,17 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.41', date: '4 May 2026', label: 'Per-merchant transaction markup wired end to end + Platform DB backfill from Ops DB + admin theme matched to BO',
+    changes: [
+      'PLATFORM DB BACKFILL: Discovered Platform DB only had 1 company / 1 location while Ops DB has 3 orgs / 4 locations with 105+13+5 real transactions. Wrote one-off migration (supabase-platform-backfill-v1.sql) to reconcile — added Doboy Donuts + DX Test Location + Leeds + Huddersfield + Location 2 + 2 orgs, plus billing_state for every location and admin role mappings for peter@posup.co.uk across all 4 locations. Idempotent.',
+      'PER-MERCHANT MARKUP MODEL: Added cardpresent_markup_percent and online_markup_percent columns to merchant_stripe_accounts (negotiated per location, nullable). Added platform_settings singleton table for global default markup % values (1.0% in-person, 0.5% online). Added pricing_notes free-text column for sales team annotations. Added get_effective_markup(location_id, channel) RPC that resolves merchant override → platform default → 0.',
+      'PAYMENT INTENT: stripe-create-payment-intent now accepts a channel param (online | card_present), looks up the effective markup % via the new RPC, and computes application_fee_amount = round(amount × markup% / 100). On every successful PaymentIntent, that fee is automatically routed to our platform balance by Stripe — this is the per-transaction revenue stream Peter asked for. Markup percent + computed fee are echoed back in the response and stored in PI metadata.',
+      'ADMIN UI: AdminBillingManager now has a top-of-page Platform defaults panel (edit defaults inline). Per-location card shows current effective markup (override or default), inline editable In-person % and Online % fields with placeholder showing the active default, plus pricing notes. Save / Reset buttons. AdminStripeTest gains a channel selector (🌐 Online / 💳 In-person) so each test fires through the correct markup path; the confirm step shows the markup % and computed fee before card entry.',
+      'ADMIN THEME MATCHED TO BO: dropped the standalone dark-slate palette I was using for the admin app and switched to BO CSS variables (var(--bg), --bg1, --t1, --acc, --bdr, etc.). Admin app now follows the user\'s light/dark theme choice automatically and visually matches the customer back office. Same brand accent colour (gold), same typography, same shadows.',
+      'STILL NOT YET WIRED: kiosk online card flow (KioskApp.jsx submitOrder), POS card-present flow with Sunmi M2 reader, GMV bump in recordClosedCheck (cross-DB Ops→Platform write), monthly skim cron for SaaS tier fee, US tier USD pricing in get_plan_and_fee_for_gmv, historical GMV backfill from Ops closed_checks. The infrastructure is ready; these are next-sprint integrations.',
+    ],
+  },
+  {
     version: '5.5.40', date: '4 May 2026', label: 'Stripe billing moved out of customer back office and into super-admin (?mode=admin)',
     changes: [
       'PRODUCT FIX: Billing & Stripe Connect management never belonged in the customer-facing back office. Customers should not see (or have any UI to interact with) platform-level Stripe internals — that is POSUP staff territory. Moved both Billing and Stripe test sections into CompanyAdminApp at ?mode=admin, behind the existing super_admin gate. Removed both entries from BackOfficeApp nav and routing.',
