@@ -29,6 +29,32 @@ const platformAdmin = createClient(
   { auth: { autoRefreshToken: false, persistSession: false } },
 );
 
+/**
+ * Ensure the calling Ops-DB-Auth user exists as a row in Platform DB
+ * platform_users. Idempotent (upsert by id). Best-effort: callers should not
+ * fail if this throws — the audit FKs that referenced platform_users have
+ * been dropped on purpose.
+ *
+ * Without this helper, a brand-new admin (e.g. Duncan Scott from DX Test
+ * Location) who has never been touched on Platform DB cannot perform actions
+ * like registering a card reader, because the audit field would point at a
+ * non-existent platform_users row. This is a known consequence of the
+ * Ops/Platform DB split — we plan to switch to JWT sharing or shared auth
+ * eventually, but for now we plug the gap by lazy-creating Platform users on
+ * first write.
+ */
+async function ensurePlatformUser(caller: { id: string; email?: string | null; user_metadata?: Record<string, unknown> }) {
+  if (!caller?.id) return;
+  const fullName =
+    (caller.user_metadata?.full_name as string | undefined) ??
+    (caller.user_metadata?.name as string | undefined) ??
+    null;
+  await platformAdmin.from('platform_users').upsert(
+    { id: caller.id, email: caller.email ?? `${caller.id}@unknown`, full_name: fullName },
+    { onConflict: 'id', ignoreDuplicates: false },
+  );
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
@@ -37,6 +63,13 @@ Deno.serve(async (req) => {
   if (!authHeader) return json({ error: 'Unauthorized' }, 401);
   const { data: { user: caller } } = await opsAdmin.auth.getUser(authHeader.replace('Bearer ', ''));
   if (!caller) return json({ error: 'Invalid token' }, 401);
+
+  // Ensure the caller exists in platform_users before any Platform DB write that
+  // references their UUID. This is best-effort — we don't fail the request if
+  // the upsert fails, since the audit FKs have been dropped.
+  await ensurePlatformUser(caller).catch((e) =>
+    console.warn('platform_users upsert failed (non-fatal):', e?.message ?? e),
+  );
 
   let body: { location_id?: string; registration_code?: string; label?: string };
   try { body = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
