@@ -73,6 +73,16 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.52', date: '5 May 2026', label: 'Bridge detection robustness + visible diagnostics for card-reader debugging',
+    changes: [
+      'BUG: Some users on the Sunmi APK saw "Card-reader pairing requires the POSUP Sunmi APK" even when running inside the APK. Root cause is the bridge detection check called .isAvailable() === \'true\' (string), which can silently fail under Android WebView quirks or any future Kotlin annotation regression — the entire reader UI then disappears with no way to debug.',
+      'FIX: hasStripeTerminalBridge() is now lenient — just checks that window.RposStripeTerminal exists. Individual method calls have their own try/catches, so a missing method only breaks that one feature, not the whole UI.',
+      'NEW: getBridgeDiagnostics() helper returning { hasNative, hasIsAvailable, isAvailableResult, methods, error, userAgent }. Surfaced in the Status drawer Card readers section via a "Bridge diagnostics" expander that appears whenever the bridge is missing — gives concrete signal instead of a dead-end message.',
+      'UX: Status drawer Card readers no-reader state is now ALWAYS actionable. If the bridge is detected but the probe has not finished, a single "Connect reader" button now requests permissions inline if needed, then scans — instead of showing nothing while permsCheckedAt is still 0. No more silent dead-ends.',
+      'Version VERSION exposed on window.RPOS_VERSION so the diagnostics panel can show which build the app is on.',
+    ],
+  },
+  {
     version: '5.5.51', date: '5 May 2026', label: 'Network reader assignment to specific POS/kiosk + auto-connect at checkout',
     changes: [
       'BO: Register network reader modal now has an "Assign to POS or kiosk" dropdown listing devices at this location (POS + kiosk types from Ops DB devices table). Optional — can leave unassigned at registration time and assign later.',

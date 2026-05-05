@@ -18,11 +18,49 @@ import { supabase, platformSupabase } from './supabase';
 const native = () => (typeof window !== 'undefined' ? window.RposStripeTerminal : null);
 
 export function hasStripeTerminalBridge() {
+  // The bridge is detected if window.RposStripeTerminal exists at all.
+  // Earlier versions also called .isAvailable() === 'true', but that meant a
+  // single Kotlin annotation regression silently disabled the entire reader UI.
+  // Existence of the object is enough — actual method calls catch their own errors.
+  try { return !!native(); } catch { return false; }
+}
+
+/**
+ * Diagnostic snapshot of bridge state for on-screen debugging.
+ * Returns { hasWindow, hasNative, hasIsAvailable, isAvailableResult, methodCount }.
+ */
+export function getBridgeDiagnostics() {
+  const result = {
+    hasWindow: typeof window !== 'undefined',
+    hasNative: false,
+    hasIsAvailable: false,
+    isAvailableResult: null,
+    isAvailableType: null,
+    methodCount: 0,
+    methods: [],
+    error: null,
+  };
   try {
-    return !!native() && native().isAvailable() === 'true';
-  } catch {
-    return false;
+    const b = native();
+    result.hasNative = !!b;
+    if (b) {
+      result.hasIsAvailable = typeof b.isAvailable === 'function';
+      if (result.hasIsAvailable) {
+        const r = b.isAvailable();
+        result.isAvailableResult = String(r);
+        result.isAvailableType = typeof r;
+      }
+      // Count method-like properties (won't enumerate all due to JS-bridge quirks but gives a hint)
+      try {
+        const keys = Object.keys(b || {});
+        result.methods = keys;
+        result.methodCount = keys.length;
+      } catch { /* the bridge object often won't enumerate */ }
+    }
+  } catch (e) {
+    result.error = e?.message ?? String(e);
   }
+  return result;
 }
 
 // ── Callback plumbing ─────────────────────────────────────────────────────

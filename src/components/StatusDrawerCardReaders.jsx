@@ -13,6 +13,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   hasStripeTerminalBridge,
+  getBridgeDiagnostics,
   initialize,
   checkPermissions, requestPermissions,
   discoverReaders, cancelDiscovery,
@@ -208,11 +209,26 @@ export default function StatusDrawerCardReaders() {
   const showRescan = !isConnected || (savedPairing && connectedReader?.serialNumber !== savedPairing.serialNumber);
 
   if (!bridgePresent) {
+    const diag = getBridgeDiagnostics();
     return (
       <div style={{ padding: '8px 0' }}>
-        <div style={{ fontSize: 11, color: 'var(--t4)', lineHeight: 1.5 }}>
-          Card-reader pairing requires the POSUP Sunmi APK.<br/>
-          On a regular browser, payments fall back to test simulation.
+        <div style={{ fontSize: 12, color: 'var(--t2)', lineHeight: 1.5, marginBottom: 8 }}>
+          The native card-reader bridge isn't responding.
+        </div>
+        <details style={{ fontSize: 10, color: 'var(--t3)', background: 'var(--bg3)', borderRadius: 6, padding: 8 }}>
+          <summary style={{ cursor: 'pointer', fontWeight: 700 }}>Bridge diagnostics</summary>
+          <pre style={{ margin: '6px 0 0', fontSize: 10, fontFamily: 'var(--font-mono, monospace)', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+{`window:                  ${diag.hasWindow}
+window.RposStripeTerminal: ${diag.hasNative}
+.isAvailable() defined:  ${diag.hasIsAvailable}
+.isAvailable() returned: ${JSON.stringify(diag.isAvailableResult)} (${diag.isAvailableType})
+exposed methods:         ${diag.methods.length > 0 ? diag.methods.join(', ') : '(none enumerable — bridges often hide their methods from Object.keys, this is normal)'}
+error:                   ${diag.error ?? '(none)'}
+user agent:              ${typeof navigator !== 'undefined' ? navigator.userAgent : 'unknown'}`}
+          </pre>
+        </details>
+        <div style={{ fontSize: 10, color: 'var(--t4)', marginTop: 8, lineHeight: 1.5 }}>
+          If you're inside the Sunmi APK and seeing this message, the bridge didn't load. Likely causes: an old APK without the Stripe bridge, or the StripeTerminalBridge class failed to register. Make sure you're on v{typeof window !== 'undefined' && window.RPOS_VERSION ? window.RPOS_VERSION : '5.5.51 or later'}.
         </div>
       </div>
     );
@@ -277,16 +293,28 @@ export default function StatusDrawerCardReaders() {
         ) : (
           <div style={{ ...Sx.rowCard, textAlign: 'center', padding: 14 }}>
             <div style={{ fontSize: 12, color: 'var(--t3)', marginBottom: 8 }}>No reader paired with this terminal</div>
-            {!permsGranted && permsCheckedAt > 0 && (
+            {permsCheckedAt > 0 && !permsGranted ? (
               <button onClick={handleRequestPerms} disabled={busy} style={{ ...Sx.btnXs, ...Sx.btnPrim }}>
                 Grant Bluetooth permissions
               </button>
-            )}
-            {permsGranted && (
-              <button onClick={handleDiscover} disabled={busy || !platformLocationId} style={{ ...Sx.btnXs, ...Sx.btnPrim }}>
-                {discovering ? 'Scanning…' : 'Pair Stripe Reader M2'}
+            ) : (
+              <button
+                onClick={async () => {
+                  // First-time path: request perms inline if we haven't checked yet,
+                  // so the user always gets to a working scan with one tap.
+                  if (permsCheckedAt === 0 || !permsGranted) {
+                    await handleRequestPerms();
+                    if (!permsGranted) return;
+                  }
+                  handleDiscover();
+                }}
+                disabled={busy}
+                style={{ ...Sx.btnXs, ...Sx.btnPrim }}
+              >
+                {discovering ? 'Scanning…' : permsGranted ? 'Pair Stripe Reader M2' : 'Connect reader'}
               </button>
             )}
+            {error && <div style={{ ...Sx.errorBox, marginTop: 8, fontSize: 10 }}>{error}</div>}
           </div>
         )}
 
