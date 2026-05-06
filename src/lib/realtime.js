@@ -10,6 +10,7 @@
 
 import { supabase, isMock, LOCATION_ID } from './supabase';
 import { applyQueueRealtimeEvent, applyTabRealtimeEvent } from '../sync/QueueSync';
+import { playOrderChime } from './orderChime';
 
 let channels = [];
 
@@ -213,6 +214,13 @@ export function startRealtime(store, locationId = LOCATION_ID) {
     .on('postgres_changes', { event: '*', schema: 'public', table: 'order_queue', filter: `location_id=eq.${locationId}` }, (payload) => {
       if (payload.eventType === 'DELETE' && payload.old?.location_id && payload.old.location_id !== locationId) return;
       applyQueueRealtimeEvent(payload);
+      if (payload.eventType === 'INSERT' && payload.new?.source === 'kiosk') {
+        const ref = payload.new.ref || '';
+        const name = payload.new.customer?.name || 'Kiosk';
+        const type = payload.new.type || 'takeaway';
+        playOrderChime();
+        store.getState().showToast?.(`Kiosk order ${ref} — ${name} (${type})`, 'info');
+      }
     })
     .subscribe();
 

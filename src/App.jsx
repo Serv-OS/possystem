@@ -73,6 +73,16 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.56', date: '6 May 2026', label: 'Kiosk orders wired into POS OrdersHub with live notifications',
+    changes: [
+      'Kiosk submitOrder now inserts into order_queue (source: kiosk) alongside closed_checks and kds_tickets. POS OrdersHub displays kiosk orders in the queue section with full status tracking (received > prep > ready > collected).',
+      'Audio chime (Web Audio API major triad) + toast notification on every POS device when a kiosk order arrives via Supabase Realtime.',
+      'KIOSK badge on OrdersHub cards so staff can distinguish kiosk orders from POS walk-ins at a glance.',
+      'QueueSync updated to pass source field through both directions (queueToRow / rowToQueue).',
+      'DB migration: order_queue.source column (text, default pos) tracks order origin.',
+    ],
+  },
+  {
     version: '5.5.55', date: '6 May 2026', label: 'REST-only network reader payments + BO tipping config + Stripe Terminal Configuration sync',
     changes: [
       'STRATEGIC PIVOT: After exhaustive iteration on the Bluetooth bridge with no resolution, decision made to commit to BBPOS WisePOS E (network reader) as the primary card device. Customer-facing UX — line items, tip, card prompt — all happens on the reader\'s 5" screen. No Android SDK, no native bridge, no APK changes for the payment flow. Pure REST.',

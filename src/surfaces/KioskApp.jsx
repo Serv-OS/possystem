@@ -467,7 +467,26 @@ export default function KioskApp({ kioskId, onUnpair }) {
         covers: 1,
       });
       if (e2) console.warn('[kiosk] kds insert failed:', e2);
-      // 4. Heartbeat
+      // 4. order_queue — makes kiosk orders visible in POS OrdersHub
+      const { error: e3 } = await supabase.from('order_queue').insert({
+        ref: num,
+        location_id: locationId,
+        type: orderTypeOut,
+        customer: {
+          name: (nameOverride ?? customerName) || null,
+          phone: (phoneOverride ?? customerPhone) || null,
+        },
+        items: itemsPayload,
+        total: total,
+        status: 'received',
+        staff: null,
+        created_at: new Date().toISOString(),
+        sent_at: new Date().toISOString(),
+        is_asap: true,
+        source: 'kiosk',
+      });
+      if (e3) console.warn('[kiosk] order_queue insert failed:', e3);
+      // 5. Heartbeat
       await supabase.from('devices').update({ last_seen: new Date().toISOString() }).eq('id', kioskId);
       setOrderNumber(num);
       setScreen('done');

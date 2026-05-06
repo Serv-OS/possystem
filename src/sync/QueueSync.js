@@ -33,6 +33,7 @@ function queueToRow(o, locationId) {
     sent_at: o.sentAt ? new Date(o.sentAt).toISOString() : null,
     collection_time: o.collectionTime || null,
     is_asap: !!o.isASAP,
+    source: o.source || 'pos',
   };
 }
 
@@ -49,6 +50,7 @@ function rowToQueue(row) {
     sentAt: row.sent_at ? new Date(row.sent_at).getTime() : null,
     collectionTime: row.collection_time,
     isASAP: !!row.is_asap,
+    source: row.source || 'pos',
   };
 }
 
