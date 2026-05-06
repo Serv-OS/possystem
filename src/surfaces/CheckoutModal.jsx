@@ -16,7 +16,7 @@ import {
   getAssignedNetworkReader,
   connectInternetReader,
 } from '../lib/stripeTerminal';
-import { getActiveLocationSync } from '../lib/supabase';
+import { getActiveLocationSync, supabase } from '../lib/supabase';
 
 // ─── Tip picker ───────────────────────────────────────────────────────────────
 function TipPicker({ total, onSelect }) {
@@ -91,12 +91,25 @@ function TipPicker({ total, onSelect }) {
 }
 
 // ─── Card terminal ────────────────────────────────────────────────────────────
-// When running inside the Sunmi APK with a paired Stripe Reader M2, this drives
-// the real Stripe Terminal collect → confirm flow. Otherwise it falls back to
-// the original simulated UI for browser testing and dev environments.
-function CardTerminal({ grand, onComplete, onBack }) {
+// Handles three modes, in order:
+//   1. NETWORK READER (BBPOS WisePOS E, S700) — REST flow. Customer interacts
+//      directly with the reader screen: line items, tip prompt, card prompt.
+//      No Android bridge required. This is the primary path.
+//   2. BLUETOOTH M2 (Sunmi APK with bridge) — bridge flow. Cashier-facing only.
+//      Kept as a fallback for mobile checkout scenarios.
+//   3. SIMULATED — browser dev / non-Sunmi devices. Click-to-approve UI.
+function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
   const compact = useCompact();
   const bridgePresent = hasStripeTerminalBridge();
+
+  // REST flow state (network reader)
+  const [networkReader, setNetworkReader] = useState(null);            // { stripe_reader_id, label, ... }
+  const [paymentIntentId, setPaymentIntentId] = useState(null);
+  const [platformLocId, setPlatformLocId] = useState(null);
+  const [restState, setRestState] = useState('idle');                  // idle | starting | collecting | success | error | cancelling
+  const [restStatusMsg, setRestStatusMsg] = useState('');
+
+  // Bridge flow state (existing)
   const [bridgeReady, setBridgeReady] = useState(false);
   const [hasReader, setHasReader] = useState(false);
   const [readerLabel, setReaderLabel] = useState('');
@@ -105,40 +118,43 @@ function CardTerminal({ grand, onComplete, onBack }) {
   const [errorMsg, setErrorMsg] = useState(null);
   const [piResult, setPiResult] = useState(null);
   const startedRef = useRef(false);
+  const pollAbortRef = useRef(false);
 
-  // Probe the bridge / reader once on mount
+  // Resolve location + check for assigned network reader on mount
   useEffect(() => {
     let cancelled = false;
-    if (!bridgePresent) return;
+    (async () => {
+      try {
+        const opsLocationId = getActiveLocationSync();
+        if (!opsLocationId) return;
+        const platformId = await resolvePlatformLocationId(opsLocationId);
+        if (cancelled) return;
+        setPlatformLocId(platformId);
+        const assigned = await getAssignedNetworkReader();
+        if (cancelled) return;
+        setNetworkReader(assigned);
+      } catch (e) {
+        console.warn('[CardTerminal] resolve location/reader failed:', e?.message ?? e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Probe the bridge / BT reader once on mount (only if no network reader)
+  useEffect(() => {
+    let cancelled = false;
+    if (!bridgePresent || networkReader) return;                       // network reader path skips bridge entirely
     (async () => {
       try {
         await syncAuthTokenFromSession();
         await initStripeTerminal();
         if (cancelled) return;
         let s = getStripeTerminalStatus();
-        // 1. Saved BT pairing → reconnect silently
         if (!s?.reader && getSavedPairing()) {
           setStatusMsg('Reconnecting to reader…');
           await autoReconnect();
           if (cancelled) return;
           s = getStripeTerminalStatus();
-        }
-        // 2. No BT? Check for an admin-assigned network reader and connect to it.
-        if (!s?.reader) {
-          try {
-            const networkReader = await getAssignedNetworkReader();
-            if (networkReader?.stripe_reader_id) {
-              setStatusMsg('Connecting to network reader…');
-              const opsLocationId = getActiveLocationSync();
-              const platformLocationId = await resolvePlatformLocationId(opsLocationId);
-              await connectInternetReader(networkReader.stripe_reader_id, platformLocationId);
-              if (cancelled) return;
-              s = getStripeTerminalStatus();
-            }
-          } catch (e) {
-            // Non-fatal — falls through to "no reader paired" message
-            console.warn('[CardTerminal] network reader connect failed:', e?.message ?? e);
-          }
         }
         setBridgeReady(true);
         if (s?.reader) {
@@ -152,24 +168,169 @@ function CardTerminal({ grand, onComplete, onBack }) {
       }
     })();
     return () => { cancelled = true; };
-  }, [bridgePresent]);
+  }, [bridgePresent, networkReader]);
 
-  // Auto-start the collect flow once reader confirmed (bridge mode only)
+  // ─── REST flow: start payment when network reader is available ────────
   useEffect(() => {
+    if (!networkReader || !platformLocId || restState !== 'idle' || startedRef.current) return;
+    startedRef.current = true;
+    runRestFlow();
+  }, [networkReader, platformLocId, restState]);
+
+  // BT auto-start collect once reader is connected
+  useEffect(() => {
+    if (networkReader) return;                                          // REST flow handles its own start
     if (!bridgePresent || !bridgeReady || !hasReader || startedRef.current) return;
     if (state !== 'waiting') return;
     startedRef.current = true;
     runCollect();
-  }, [bridgePresent, bridgeReady, hasReader, state]);
+  }, [bridgePresent, bridgeReady, hasReader, state, networkReader]);
 
   // Smooth transition to "approved" → call onComplete after brief moment
   useEffect(() => {
-    if (state === 'approved') {
+    if (state === 'approved' || restState === 'success') {
       const t = setTimeout(onComplete, 900);
       return () => clearTimeout(t);
     }
-  }, [state, onComplete]);
+  }, [state, restState, onComplete]);
 
+  // Cleanup: cancel any in-flight reader action when this screen unmounts
+  useEffect(() => () => {
+    pollAbortRef.current = true;
+    if (paymentIntentId && (restState === 'collecting' || restState === 'starting')) {
+      // Best-effort cancel — don't await
+      callCancelReaderAction({ paymentIntentId, readerId: networkReader?.stripe_reader_id, locationId: platformLocId })
+        .catch(() => {});
+    }
+  }, []);
+
+  // ─── REST flow runner ──────────────────────────────────────────────────
+  const runRestFlow = async () => {
+    setRestState('starting');
+    setRestStatusMsg('Pushing cart to reader…');
+    setErrorMsg(null);
+
+    try {
+      // Build line items for set_reader_display
+      const lineItems = (items ?? [])
+        .filter(it => it && it.price != null)
+        .map(it => ({
+          description: String(it.name || it.title || 'Item').slice(0, 60),
+          amount: Math.round(Number(it.price) * 100),
+          quantity: Math.max(1, Math.round(Number(it.qty || it.quantity || 1))),
+        }));
+      // Tip line if applicable
+      if (tipAmt && tipAmt > 0) {
+        lineItems.push({ description: 'Tip', amount: Math.round(tipAmt * 100), quantity: 1 });
+      }
+
+      const opsDeviceId = (() => {
+        try { return localStorage.getItem('rpos-device') || ''; } catch { return ''; }
+      })();
+      if (!opsDeviceId) throw new Error('POS device id missing — run BO setup');
+
+      const { data: session } = await supabase.auth.getSession();
+      const token = session?.session?.access_token;
+      if (!token) throw new Error('not authenticated');
+
+      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-process-payment-on-reader`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          pos_device_id: opsDeviceId,
+          amount_minor: Math.round(grand * 100),
+          currency: 'gbp',                                              // TODO: read from location.currency
+          line_items: lineItems,
+        }),
+      });
+      const j = await res.json();
+      if (!res.ok || j.error) throw new Error(j.error ?? `HTTP ${res.status}`);
+
+      setPaymentIntentId(j.payment_intent_id);
+      setRestState('collecting');
+      setRestStatusMsg('Customer is paying on reader');
+
+      // Begin polling
+      pollAbortRef.current = false;
+      pollPaymentIntent(j.payment_intent_id, j.reader_id, platformLocId);
+    } catch (e) {
+      setRestState('error');
+      setErrorMsg(e.message || String(e));
+    }
+  };
+
+  const pollPaymentIntent = async (piId, readerId, locId) => {
+    const start = Date.now();
+    const POLL_INTERVAL = 1500;                                         // 1.5s between polls
+    const TIMEOUT_MS = 5 * 60 * 1000;                                   // 5 minutes
+    while (!pollAbortRef.current && Date.now() - start < TIMEOUT_MS) {
+      await new Promise(r => setTimeout(r, POLL_INTERVAL));
+      if (pollAbortRef.current) return;
+      try {
+        const { data: session } = await supabase.auth.getSession();
+        const token = session?.session?.access_token;
+        const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-poll-reader-action`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+          body: JSON.stringify({ payment_intent_id: piId, reader_id: readerId, location_id: locId }),
+        });
+        const j = await res.json();
+        if (!res.ok) {
+          console.warn('[CardTerminal] poll error:', j.error);
+          continue;                                                     // transient — keep polling
+        }
+        // Update status message based on reader action stage
+        const ra = j.reader_action;
+        if (ra?.type === 'process_payment_intent' && ra?.status === 'in_progress') {
+          setRestStatusMsg('Customer is selecting tip / paying on reader');
+        }
+        if (j.is_terminal_state) {
+          if (j.is_success) {
+            setRestState('success');
+            setRestStatusMsg('Payment approved');
+            setPiResult({
+              status: 'succeeded',
+              paymentIntentId: j.payment_intent_id,
+              amount: j.amount,
+              amountReceived: j.amount_received,
+              applicationFee: j.application_fee_amount,
+            });
+          } else {
+            setRestState('error');
+            setErrorMsg(
+              j.last_payment_error
+              ?? ra?.failure_message
+              ?? `Payment ${j.payment_intent_status}`,
+            );
+          }
+          return;
+        }
+      } catch (e) {
+        console.warn('[CardTerminal] poll iter failed:', e?.message ?? e);
+      }
+    }
+    if (!pollAbortRef.current) {
+      setRestState('error');
+      setErrorMsg('Timed out — customer didn\'t complete payment within 5 minutes');
+    }
+  };
+
+  const cancelRestFlow = async () => {
+    pollAbortRef.current = true;
+    setRestState('cancelling');
+    try {
+      await callCancelReaderAction({
+        paymentIntentId,
+        readerId: networkReader?.stripe_reader_id,
+        locationId: platformLocId,
+      });
+    } catch (e) {
+      console.warn('[CardTerminal] cancel failed:', e?.message ?? e);
+    }
+    onBack();
+  };
+
+  // ─── BT bridge flow (unchanged) ────────────────────────────────────────
   const runCollect = async () => {
     setErrorMsg(null);
     setState('collecting');
@@ -183,13 +344,11 @@ function CardTerminal({ grand, onComplete, onBack }) {
       const amountMinor = Math.round(grand * 100);
       const result = await terminalCollect({
         amountMinor,
-        currency: 'gbp',                               // TODO: read from location.currency
+        currency: 'gbp',
         locationId: platformLocationId,
         channel: 'card_present',
       });
       setPiResult(result);
-
-      // Stripe Terminal returns 'succeeded' or 'requires_capture' depending on capture_method
       const s = (result?.status || '').toLowerCase();
       if (s === 'succeeded' || s === 'requires_capture') {
         setState('approved');
@@ -203,27 +362,65 @@ function CardTerminal({ grand, onComplete, onBack }) {
     }
   };
 
+  // ─── Render ────────────────────────────────────────────────────────────
+  // Prioritise REST flow when a network reader is assigned
+  const useRest = !!networkReader;
+
   return (
     <div style={{ display:'flex', flexDirection:'column', alignItems:'center', textAlign:'center' }}>
-      {/* No bridge → original simulated UI (browser dev / non-Sunmi devices) */}
-      {!bridgePresent && state==='waiting' && (
+      {/* REST flow: starting / collecting */}
+      {useRest && (restState === 'starting' || restState === 'collecting' || restState === 'cancelling') && (
+        <RestCardWaiting
+          grand={grand}
+          readerLabel={networkReader.label || networkReader.stripe_reader_id}
+          statusMsg={restStatusMsg}
+          state={restState}
+          onCancel={cancelRestFlow}
+        />
+      )}
+
+      {/* REST flow: success */}
+      {useRest && restState === 'success' && (
+        <ApprovedView grand={grand}/>
+      )}
+
+      {/* REST flow: error */}
+      {useRest && restState === 'error' && (
+        <div style={{ padding:'20px 8px', textAlign:'center' }}>
+          <div style={{ fontSize:48, marginBottom:8 }}>⚠️</div>
+          <div style={{ fontSize:18, fontWeight:800, color:'var(--red)', marginBottom:6 }}>Payment failed</div>
+          <div style={{ fontSize:13, color:'var(--t2)', marginBottom:16, maxWidth:380, margin:'0 auto 16px' }}>
+            {errorMsg || 'Unknown error'}
+          </div>
+          <div style={{ display:'flex', gap:8, justifyContent:'center' }}>
+            <button className="btn btn-ghost" style={{ height:46, padding:'0 22px' }} onClick={onBack}>← Back</button>
+            <button className="btn btn-grn" style={{ height:46, padding:'0 22px' }}
+              onClick={() => { startedRef.current = false; pollAbortRef.current = false; setRestState('idle'); setErrorMsg(null); }}>
+              Retry
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* No network reader, no bridge → simulated */}
+      {!useRest && !bridgePresent && state==='waiting' && (
         <SimulatedCardWaiting grand={grand} onSimulate={() => setState('approved')} onBack={onBack} />
       )}
 
-      {/* Bridge present, reader missing */}
-      {bridgePresent && bridgeReady && !hasReader && (
+      {/* Bridge present, no BT reader and no network reader → "no reader" message */}
+      {!useRest && bridgePresent && bridgeReady && !hasReader && (
         <div style={{ padding:'24px 8px' }}>
           <div style={{ fontSize:32, marginBottom:8 }}>💳</div>
-          <div style={{ fontSize:17, fontWeight:800, color:'var(--t1)', marginBottom:6 }}>No card reader paired</div>
-          <div style={{ fontSize:13, color:'var(--t3)', marginBottom:16, maxWidth:320, margin:'0 auto 16px' }}>
-            Pair a Stripe Reader M2 in <strong style={{ color:'var(--acc)' }}>Back office → Devices → Card readers</strong>, then try again.
+          <div style={{ fontSize:17, fontWeight:800, color:'var(--t1)', marginBottom:6 }}>No card reader available</div>
+          <div style={{ fontSize:13, color:'var(--t3)', marginBottom:16, maxWidth:340, margin:'0 auto 16px' }}>
+            Either pair a Bluetooth reader to this terminal, or have an admin assign a network reader (BBPOS WisePOS E, S700) in <strong style={{ color:'var(--acc)' }}>Back office → Card readers</strong>.
           </div>
           <button className="btn btn-ghost" style={{ height:46, padding:'0 22px' }} onClick={onBack}>← Back</button>
         </div>
       )}
 
-      {/* Bridge present, reader connected → real flow */}
-      {bridgePresent && hasReader && state!=='approved' && state!=='error' && (
+      {/* BT bridge active flow */}
+      {!useRest && bridgePresent && hasReader && state!=='approved' && state!=='error' && (
         <>
           <RealCardWaiting grand={grand} readerLabel={readerLabel} statusMsg={statusMsg} state={state}/>
           <div style={{ display:'flex', gap:8, width:'100%', marginTop:16 }}>
@@ -232,8 +429,7 @@ function CardTerminal({ grand, onComplete, onBack }) {
         </>
       )}
 
-      {/* Error state */}
-      {state==='error' && (
+      {!useRest && state==='error' && (
         <div style={{ padding:'20px 8px', textAlign:'center' }}>
           <div style={{ fontSize:48, marginBottom:8 }}>⚠️</div>
           <div style={{ fontSize:18, fontWeight:800, color:'var(--red)', marginBottom:6 }}>Payment failed</div>
@@ -252,25 +448,59 @@ function CardTerminal({ grand, onComplete, onBack }) {
         </div>
       )}
 
-      {/* Approved state */}
-      {state==='approved' && (
-        <div style={{ padding:'20px 0' }}>
-          <div style={{
-            width:88, height:88, borderRadius:'50%',
-            background:'var(--grn-d)', border:'2px solid var(--grn)',
-            display:'flex', alignItems:'center', justifyContent:'center',
-            fontSize:40, marginBottom:20, margin:'0 auto 20px',
-            animation:'slideUp .3s cubic-bezier(.2,.8,.3,1)',
-          }}>✓</div>
-          <div style={{ fontSize:28, fontWeight:800, color:'var(--grn)', marginBottom:6 }}>Payment approved</div>
-          <div style={{ fontSize:15, color:'var(--t2)', fontFamily:'var(--font-mono)' }}>£{grand.toFixed(2)} charged</div>
-          {piResult?.markup_percent != null && (
-            <div style={{ fontSize:11, color:'var(--t4)', marginTop:6 }}>
-              Markup {Number(piResult.markup_percent).toFixed(2)}% (£{(Number(piResult.application_fee_minor||0)/100).toFixed(2)} platform fee)
-            </div>
-          )}
+      {!useRest && state==='approved' && <ApprovedView grand={grand}/>}
+    </div>
+  );
+}
+
+async function callCancelReaderAction({ paymentIntentId, readerId, locationId }) {
+  const { data: session } = await supabase.auth.getSession();
+  const token = session?.session?.access_token;
+  if (!token) throw new Error('not authenticated');
+  const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-cancel-reader-action`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({ payment_intent_id: paymentIntentId, reader_id: readerId, location_id: locationId }),
+  });
+  const j = await res.json();
+  if (!res.ok) throw new Error(j.error ?? `HTTP ${res.status}`);
+  return j;
+}
+
+function RestCardWaiting({ grand, readerLabel, statusMsg, state, onCancel }) {
+  return (
+    <div style={{ padding:'18px 8px', width:'100%', maxWidth:480, margin:'0 auto' }}>
+      <div style={{ fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.07em', marginBottom:6 }}>
+        Customer-facing payment
+      </div>
+      <div style={{ padding:'18px 16px', borderRadius:14, background:'var(--bg2)', border:'1px solid var(--bdr)', marginBottom:14 }}>
+        <div style={{ fontSize:36, marginBottom:6 }}>📲</div>
+        <div style={{ fontSize:18, fontWeight:800, color:'var(--t1)', marginBottom:4 }}>
+          £{Number(grand).toFixed(2)} on {readerLabel}
         </div>
-      )}
+        <div style={{ fontSize:13, color:'var(--t3)' }}>{statusMsg}</div>
+        <div style={{ marginTop:10, fontSize:11, color:'var(--t4)', lineHeight:1.5 }}>
+          Customer should see the line items, tip prompt, and card prompt on the reader screen.
+        </div>
+      </div>
+      <button className="btn btn-ghost" style={{ width:'100%', height:46 }} disabled={state==='cancelling'} onClick={onCancel}>
+        {state === 'cancelling' ? 'Cancelling…' : '✕ Cancel payment'}
+      </button>
+    </div>
+  );
+}
+
+function ApprovedView({ grand }) {
+  return (
+    <div style={{ padding:'20px 0' }}>
+      <div style={{
+        width:88, height:88, borderRadius:'50%',
+        background:'var(--grn-d)', border:'2px solid var(--grn)',
+        display:'flex', alignItems:'center', justifyContent:'center',
+        fontSize:48, color:'var(--grn)', margin:'0 auto 14px',
+      }}>✓</div>
+      <div style={{ fontSize:22, fontWeight:800, color:'var(--grn)', marginBottom:4 }}>Approved</div>
+      <div style={{ fontSize:14, color:'var(--t2)' }}>£{Number(grand).toFixed(2)} charged</div>
     </div>
   );
 }
@@ -734,7 +964,9 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
 
           {screen==='card_terminal' && (
             <CardTerminal
+              items={items}
               grand={grand}
+              tipAmt={tipAmt}
               onComplete={()=>complete('card')}
               onBack={()=>setScreen(skipTip?'review':'card_tip')}
             />

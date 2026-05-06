@@ -73,6 +73,19 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.55', date: '6 May 2026', label: 'REST-only network reader payments — bypass the Android bridge entirely',
+    changes: [
+      'STRATEGIC PIVOT: After exhaustive iteration on the Bluetooth bridge with no resolution, decision made to commit to BBPOS WisePOS E (network reader) as the primary card device. Customer-facing UX — line items, tip, card prompt — all happens on the reader\'s 5" screen. No Android SDK, no native bridge, no APK changes for the payment flow. Pure REST.',
+      'NEW EDGE FUNCTION: stripe-process-payment-on-reader. Resolves POS device → location → assigned reader, creates PaymentIntent on the merchant\'s connected account with platform markup as application_fee_amount, pushes cart line items to the reader screen via set_reader_display, then process_payment_intent on the reader to start the customer-facing flow. Returns PI id for polling.',
+      'NEW EDGE FUNCTION: stripe-poll-reader-action. POS calls every ~1.5s during a card payment. Returns PI status + reader action status (in_progress/succeeded/failed) + last_payment_error if any. is_terminal_state convenience flag.',
+      'NEW EDGE FUNCTION: stripe-cancel-reader-action. Cancels reader action + cancels PI + clears reader display. Called on POS unmount or cashier-initiated abort.',
+      'NEW DB MIGRATION (Platform DB v5): location_reader_settings table — per-location tipping_enabled, tip_percentages, allow_custom_tip, smart_tip_threshold_minor, idle_screen_enabled, idle_screen_file_id, stripe_configuration_id. Backfilled defaults for all existing locations.',
+      'POS CheckoutModal: CardTerminal now detects network reader assignment first and routes to the REST flow when present. Three-tier priority: (1) network reader → REST, (2) Bluetooth bridge → bridge.collectPayment (kept as fallback for mobile checkout), (3) simulated browser UI for dev. RestCardWaiting panel shows "Customer is paying on reader" with cancel button.',
+      'Cart line items + tip are passed to the reader screen so the customer sees what they\'re paying for. Tip line is added to the line_items array when applicable so the breakdown matches the total.',
+      'WisePOS E or S700 hardware needed for live testing. Stripe simulated WisePOS E works for end-to-end test in sandbox without hardware — register one in Stripe dashboard and assign in BO.',
+    ],
+  },
+  {
     version: '5.5.54', date: '5 May 2026', label: 'StripeTerminalBridge ported to pure Java — fixes WebView silently rejecting the Kotlin bridge',
     changes: [
       'ROOT CAUSE: After Peter\'s diagnostic screenshot showed window.RposStripeTerminal: false inside the Sunmi APK while window.RposPrinter worked fine — and the user agent confirmed MainActivity onCreate ran past the addJavascriptInterface calls — the conclusion was that Android WebView was silently rejecting the Kotlin bridge object during its method-enumeration step. Likely culprits in the Kotlin source: companion object generating nested $Companion class, private val with object initializer for ConnectionTokenProvider/TerminalListener forcing class-load of Stripe SDK at construction time, and Kotlin reflection metadata that the WebView doesn\'t handle.',
