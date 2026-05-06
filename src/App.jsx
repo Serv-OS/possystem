@@ -73,6 +73,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.54', date: '5 May 2026', label: 'StripeTerminalBridge ported to pure Java — fixes WebView silently rejecting the Kotlin bridge',
+    changes: [
+      'ROOT CAUSE: After Peter\'s diagnostic screenshot showed window.RposStripeTerminal: false inside the Sunmi APK while window.RposPrinter worked fine — and the user agent confirmed MainActivity onCreate ran past the addJavascriptInterface calls — the conclusion was that Android WebView was silently rejecting the Kotlin bridge object during its method-enumeration step. Likely culprits in the Kotlin source: companion object generating nested $Companion class, private val with object initializer for ConnectionTokenProvider/TerminalListener forcing class-load of Stripe SDK at construction time, and Kotlin reflection metadata that the WebView doesn\'t handle.',
+      'FIX: Rewrote StripeTerminalBridge as pure Java mirroring the PrinterBridge.java pattern (which has been working reliably). Same JS-facing API, same callback dispatch, same JSON shapes. Stripe SDK references are now LAZY — created inside initialize() rather than as class-level fields — so the bridge class can register with WebView without forcing class-load of any Stripe SDK class.',
+      'Removed StripeTerminalBridge.kt entirely. No more Kotlin files in the bridge layer. Kotlin plugin stays in build.gradle because the Stripe Terminal SDK itself is a Kotlin library, but our code is now 100% Java.',
+      'No JS-side changes needed — the bridge surface is identical.',
+    ],
+  },
+  {
     version: '5.5.53', date: '5 May 2026', label: 'Capture and surface the actual JVM exception when StripeTerminalBridge fails to register',
     changes: [
       'BUG STILL UNRESOLVED: After v5.5.52 with lenient detection and visible diagnostics, Peter reported the diagnostic panel showed window.RposStripeTerminal: false. So the JS detection isn\'t the problem — the Kotlin bridge is genuinely not being registered with the WebView. But the user agent shows "RestaurantOS/1.0 Sunmi/1.0" which means MainActivity onCreate ran past the addJavascriptInterface calls. So either the bridge constructor threw silently OR addJavascriptInterface itself silently rejected the bridge object.',
