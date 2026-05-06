@@ -9,22 +9,10 @@
     <uses-permission android:name="android.permission.CAMERA"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
 
-    <!-- Bluetooth: legacy permissions for Android < 12, runtime perms for 12+ -->
-    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30"/>
-    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30"/>
-    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
-        android:usesPermissionFlags="neverForLocation"/>
-    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
-
-    <!-- Location: required for BLE scanning on Android < 12 (Stripe Terminal scans for readers) -->
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"
-        android:maxSdkVersion="30"/>
-    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"
-        android:maxSdkVersion="30"/>
-
-    <!-- Foreground service: Stripe Terminal SDK needs this to keep BLE connection alive while collecting -->
+    <!-- v5.5.58: Bluetooth + BLE-related location + foreground-service-connected-device
+         permissions removed alongside the Stripe Terminal SDK ripout. Card payments
+         now run pure REST against a WiFi reader. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE"/>
 
     <application
         android:allowBackup="false"

@@ -5,17 +5,9 @@ import SplitModal from '../components/SplitModal';
 import { useStore } from '../store';
 import { calculateOrderTax } from '../lib/tax';
 import {
-  hasStripeTerminalBridge,
-  initialize as initStripeTerminal,
-  getStatus as getStripeTerminalStatus,
-  collectPayment as terminalCollect,
   resolvePlatformLocationId,
-  syncAuthTokenFromSession,
-  getSavedPairing,
-  autoReconnect,
   getAssignedNetworkReader,
-  connectInternetReader,
-} from '../lib/stripeTerminal';
+} from '../lib/networkReader';
 import { getActiveLocationSync, supabase } from '../lib/supabase';
 
 // ─── Tip picker ───────────────────────────────────────────────────────────────
@@ -100,7 +92,6 @@ function TipPicker({ total, onSelect }) {
 //   3. SIMULATED — browser dev / non-Sunmi devices. Click-to-approve UI.
 function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
   const compact = useCompact();
-  const bridgePresent = hasStripeTerminalBridge();
 
   // REST flow state (network reader)
   const [networkReader, setNetworkReader] = useState(null);            // { stripe_reader_id, label, ... }
@@ -109,12 +100,8 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
   const [restState, setRestState] = useState('idle');                  // idle | starting | collecting | success | error | cancelling
   const [restStatusMsg, setRestStatusMsg] = useState('');
 
-  // Bridge flow state (existing)
-  const [bridgeReady, setBridgeReady] = useState(false);
-  const [hasReader, setHasReader] = useState(false);
-  const [readerLabel, setReaderLabel] = useState('');
-  const [state, setState] = useState('waiting');                      // waiting | collecting | confirming | approved | error
-  const [statusMsg, setStatusMsg] = useState('Present card to reader');
+  // Simulated fallback (browser dev / no reader assigned)
+  const [state, setState] = useState('waiting');                      // waiting | approved
   const [errorMsg, setErrorMsg] = useState(null);
   const [piResult, setPiResult] = useState(null);
   const startedRef = useRef(false);
@@ -140,51 +127,12 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
     return () => { cancelled = true; };
   }, []);
 
-  // Probe the bridge / BT reader once on mount (only if no network reader)
-  useEffect(() => {
-    let cancelled = false;
-    if (!bridgePresent || networkReader) return;                       // network reader path skips bridge entirely
-    (async () => {
-      try {
-        await syncAuthTokenFromSession();
-        await initStripeTerminal();
-        if (cancelled) return;
-        let s = getStripeTerminalStatus();
-        if (!s?.reader && getSavedPairing()) {
-          setStatusMsg('Reconnecting to reader…');
-          await autoReconnect();
-          if (cancelled) return;
-          s = getStripeTerminalStatus();
-        }
-        setBridgeReady(true);
-        if (s?.reader) {
-          setHasReader(true);
-          setReaderLabel(s.reader.label || s.reader.serialNumber || 'Reader');
-        } else {
-          setHasReader(false);
-        }
-      } catch (e) {
-        if (!cancelled) setErrorMsg(`Bridge init failed: ${e.message}`);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [bridgePresent, networkReader]);
-
   // ─── REST flow: start payment when network reader is available ────────
   useEffect(() => {
     if (!networkReader || !platformLocId || restState !== 'idle' || startedRef.current) return;
     startedRef.current = true;
     runRestFlow();
   }, [networkReader, platformLocId, restState]);
-
-  // BT auto-start collect once reader is connected
-  useEffect(() => {
-    if (networkReader) return;                                          // REST flow handles its own start
-    if (!bridgePresent || !bridgeReady || !hasReader || startedRef.current) return;
-    if (state !== 'waiting') return;
-    startedRef.current = true;
-    runCollect();
-  }, [bridgePresent, bridgeReady, hasReader, state, networkReader]);
 
   // Smooth transition to "approved" → call onComplete after brief moment
   useEffect(() => {
@@ -330,38 +278,6 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
     onBack();
   };
 
-  // ─── BT bridge flow (unchanged) ────────────────────────────────────────
-  const runCollect = async () => {
-    setErrorMsg(null);
-    setState('collecting');
-    setStatusMsg('Tap, insert or swipe card');
-    try {
-      const opsLocationId = getActiveLocationSync();
-      if (!opsLocationId) throw new Error('No active location');
-      const platformLocationId = await resolvePlatformLocationId(opsLocationId);
-      if (!platformLocationId) throw new Error('Could not resolve Platform DB location id (location not registered for billing)');
-
-      const amountMinor = Math.round(grand * 100);
-      const result = await terminalCollect({
-        amountMinor,
-        currency: 'gbp',
-        locationId: platformLocationId,
-        channel: 'card_present',
-      });
-      setPiResult(result);
-      const s = (result?.status || '').toLowerCase();
-      if (s === 'succeeded' || s === 'requires_capture') {
-        setState('approved');
-      } else {
-        setState('error');
-        setErrorMsg(`Unexpected status: ${result?.status || 'unknown'}`);
-      }
-    } catch (e) {
-      setState('error');
-      setErrorMsg(e.message || String(e));
-    }
-  };
-
   // ─── Render ────────────────────────────────────────────────────────────
   // Prioritise REST flow when a network reader is assigned
   const useRest = !!networkReader;
@@ -402,50 +318,9 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
         </div>
       )}
 
-      {/* No network reader, no bridge → simulated */}
-      {!useRest && !bridgePresent && state==='waiting' && (
+      {/* No network reader assigned → simulated (browser dev / unconfigured devices) */}
+      {!useRest && state==='waiting' && (
         <SimulatedCardWaiting grand={grand} onSimulate={() => setState('approved')} onBack={onBack} />
-      )}
-
-      {/* Bridge present, no BT reader and no network reader → "no reader" message */}
-      {!useRest && bridgePresent && bridgeReady && !hasReader && (
-        <div style={{ padding:'24px 8px' }}>
-          <div style={{ fontSize:32, marginBottom:8 }}>💳</div>
-          <div style={{ fontSize:17, fontWeight:800, color:'var(--t1)', marginBottom:6 }}>No card reader available</div>
-          <div style={{ fontSize:13, color:'var(--t3)', marginBottom:16, maxWidth:340, margin:'0 auto 16px' }}>
-            Either pair a Bluetooth reader to this terminal, or have an admin assign a network reader (BBPOS WisePOS E, S700) in <strong style={{ color:'var(--acc)' }}>Back office → Card readers</strong>.
-          </div>
-          <button className="btn btn-ghost" style={{ height:46, padding:'0 22px' }} onClick={onBack}>← Back</button>
-        </div>
-      )}
-
-      {/* BT bridge active flow */}
-      {!useRest && bridgePresent && hasReader && state!=='approved' && state!=='error' && (
-        <>
-          <RealCardWaiting grand={grand} readerLabel={readerLabel} statusMsg={statusMsg} state={state}/>
-          <div style={{ display:'flex', gap:8, width:'100%', marginTop:16 }}>
-            <button className="btn btn-ghost" style={{ flex:1, height:46 }} onClick={onBack}>← Cancel</button>
-          </div>
-        </>
-      )}
-
-      {!useRest && state==='error' && (
-        <div style={{ padding:'20px 8px', textAlign:'center' }}>
-          <div style={{ fontSize:48, marginBottom:8 }}>⚠️</div>
-          <div style={{ fontSize:18, fontWeight:800, color:'var(--red)', marginBottom:6 }}>Payment failed</div>
-          <div style={{ fontSize:13, color:'var(--t2)', marginBottom:16, maxWidth:380, margin:'0 auto 16px' }}>
-            {errorMsg || 'Unknown error'}
-          </div>
-          <div style={{ display:'flex', gap:8, justifyContent:'center' }}>
-            <button className="btn btn-ghost" style={{ height:46, padding:'0 22px' }} onClick={onBack}>← Back</button>
-            {bridgePresent && hasReader && (
-              <button className="btn btn-grn" style={{ height:46, padding:'0 22px' }}
-                onClick={() => { startedRef.current = false; setState('waiting'); }}>
-                Retry
-              </button>
-            )}
-          </div>
-        </div>
       )}
 
       {!useRest && state==='approved' && <ApprovedView grand={grand}/>}
@@ -502,39 +377,6 @@ function ApprovedView({ grand }) {
       <div style={{ fontSize:22, fontWeight:800, color:'var(--grn)', marginBottom:4 }}>Approved</div>
       <div style={{ fontSize:14, color:'var(--t2)' }}>£{Number(grand).toFixed(2)} charged</div>
     </div>
-  );
-}
-
-function RealCardWaiting({ grand, readerLabel, statusMsg }) {
-  return (
-    <>
-      <div style={{ position:'relative', width:120, height:120, marginBottom:24 }}>
-        <svg width="120" height="120" style={{ position:'absolute', top:0, left:0 }}>
-          <circle cx="60" cy="60" r="54" fill="none" stroke="var(--bdr2)" strokeWidth="3"/>
-        </svg>
-        <svg width="120" height="120" style={{ position:'absolute', top:0, left:0, animation:'spin .9s linear infinite' }}>
-          <circle cx="60" cy="60" r="54" fill="none" stroke="var(--acc)" strokeWidth="3"
-            strokeDasharray="100 240" strokeLinecap="round"/>
-        </svg>
-        <div style={{ position:'absolute', inset:0, display:'flex', alignItems:'center', justifyContent:'center' }}>
-          <div style={{ width:64, height:44, borderRadius:8, background:'var(--bg3)', border:'2px solid var(--bdr2)', display:'flex', flexDirection:'column', overflow:'hidden', boxShadow:'var(--sh)' }}>
-            <div style={{ height:12, background:'var(--acc)', opacity:.7 }}/>
-            <div style={{ flex:1, display:'flex', alignItems:'flex-end', padding:'4px 6px', gap:3 }}>
-              {[1,2,3,4].map(i=><div key={i} style={{ flex:1, height:3, borderRadius:1, background:'var(--t4)' }}/>)}
-            </div>
-          </div>
-        </div>
-      </div>
-      <div style={{ fontSize:38, fontWeight:800, color:'var(--t1)', fontFamily:'var(--font-mono)', letterSpacing:'-.02em', marginBottom:6 }}>
-        £{grand.toFixed(2)}
-      </div>
-      <div style={{ fontSize:15, color:'var(--t2)', fontWeight:600, marginBottom:4 }}>{statusMsg}</div>
-      <div style={{ fontSize:12, color:'var(--t4)', marginBottom:8 }}>{readerLabel}</div>
-      <div style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 20px', background:'var(--acc-d)', border:'1px solid var(--acc-b)', borderRadius:22, fontSize:12, color:'var(--acc)', fontWeight:700, marginBottom:24 }}>
-        <div style={{ width:7,height:7,borderRadius:'50%',background:'var(--acc)',animation:'pulse 1.4s ease-in-out infinite'}}/>
-        Reader is live
-      </div>
-    </>
   );
 }
 

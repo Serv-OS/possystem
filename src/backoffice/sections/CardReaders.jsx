@@ -4,15 +4,16 @@
 // What lives here:
 //   • Register network/WiFi readers (Stripe S700, WisePOS E) for THIS location
 //     using Stripe's pairing-code flow.
-//   • Read-only inventory of all readers serving this location, including BT
-//     readers paired by individual POS terminals.
+//   • Read-only inventory of network readers serving this location.
 //
-// Bluetooth pairing happens at the POS terminal itself — see Status drawer.
+// v5.5.58: Bluetooth support removed. Card readers are WiFi-only end-to-end —
+// pairing, payments and tipping all run through the Stripe REST API on the
+// reader's own screen. The Stripe Terminal SDK is no longer in the APK.
 // Cross-location oversight lives in the super-admin app (?mode=admin).
 
 import { useEffect, useState, useCallback } from 'react';
 import { supabase, platformSupabase, getActiveLocationSync } from '../../lib/supabase';
-import { resolvePlatformLocationId } from '../../lib/stripeTerminal';
+import { resolvePlatformLocationId } from '../../lib/networkReader';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 
@@ -126,7 +127,6 @@ export default function CardReaders() {
   };
 
   const networkReaders = readers.filter(r => r.connection_kind === 'network');
-  const bluetoothReaders = readers.filter(r => r.connection_kind === 'bluetooth');
 
   const onUnregister = async (rdr) => {
     if (!confirm(`Unregister "${rdr.label || rdr.serial_number}"? It will be removed from POSUP and from Stripe.`)) return;
@@ -152,7 +152,6 @@ export default function CardReaders() {
       <h1 style={S.h1}>Card readers</h1>
       <div style={S.sub}>
         Network readers (Stripe Reader S700, WisePOS E in WiFi mode) are registered here and serve all POS terminals at this location.
-        Bluetooth readers (Stripe Reader M2) are paired at each POS terminal individually — they appear here read-only.
       </div>
 
       {error && <div style={S.errorBox}>{error}</div>}
@@ -172,8 +171,7 @@ export default function CardReaders() {
                 )}
                 <div style={{ fontSize: 17, fontWeight: 700, color: 'var(--t1)' }}>{locationName}</div>
                 <div style={{ display: 'flex', gap: 16, marginTop: 8, fontSize: 12, color: 'var(--t3)' }}>
-                  <span><strong style={{ color: 'var(--t1)' }}>{networkReaders.length}</strong> network</span>
-                  <span><strong style={{ color: 'var(--t1)' }}>{bluetoothReaders.length}</strong> bluetooth</span>
+                  <span><strong style={{ color: 'var(--t1)' }}>{networkReaders.length}</strong> network reader{networkReaders.length === 1 ? '' : 's'}</span>
                   {lastRefreshedAt && (
                     <span style={{ color: 'var(--t4)' }}>· Last checked {new Date(lastRefreshedAt).toLocaleTimeString()}</span>
                   )}
@@ -198,18 +196,6 @@ export default function CardReaders() {
             ) : (
               networkReaders.map(r => (
                 <ReaderRow key={r.id} reader={r} devices={devices} onUnregister={() => onUnregister(r)} onReassign={() => setReassignReader(r)} />
-              ))
-            )}
-          </div>
-
-          {/* Bluetooth readers */}
-          <div>
-            <div style={S.label}>Bluetooth readers (paired by POS terminals)</div>
-            {bluetoothReaders.length === 0 ? (
-              <div style={S.empty}>None paired yet — pair from each POS terminal's Status panel.</div>
-            ) : (
-              bluetoothReaders.map(r => (
-                <ReaderRow key={r.id} reader={r} devices={devices} onUnregister={() => onUnregister(r)} />
               ))
             )}
           </div>

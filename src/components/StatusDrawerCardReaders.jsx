@@ -1,29 +1,9 @@
 // src/components/StatusDrawerCardReaders.jsx
-// Card readers section for the Terminal status drawer (POS side).
-//
-// Two reader categories visible to the cashier:
-//   • Bluetooth reader paired to THIS POS terminal (Stripe Reader M2). Pairing
-//     happens here. Persisted in localStorage and bound to the rpos-device id.
-//   • Network readers registered to this LOCATION in BO. Cashier picks one to
-//     "use on this terminal" — connection is per-checkout, not persistent.
-//
-// Outside the Sunmi APK the bridge isn't present — we render a placeholder
-// explaining where pairing actually lives.
+// v5.5.58: WiFi-only — Bluetooth pairing UI removed. The network reader is
+// assigned in BO; this drawer just shows its status to the cashier.
 
 import { useState, useEffect, useCallback } from 'react';
-import {
-  hasStripeTerminalBridge,
-  getBridgeDiagnostics,
-  initialize,
-  checkPermissions, requestPermissions,
-  discoverReaders, cancelDiscovery,
-  connectReader, disconnectReader,
-  getStatus, onStatusEvent,
-  syncAuthTokenFromSession,
-  resolvePlatformLocationId,
-  getSavedPairing, savePairing, clearPairing,
-  getPosDeviceId,
-} from '../lib/stripeTerminal';
+import { getPosDeviceId, resolvePlatformLocationId } from '../lib/networkReader';
 import { getActiveLocationSync, platformSupabase } from '../lib/supabase';
 
 const Sx = {
@@ -32,25 +12,31 @@ const Sx = {
   btnXs:   { padding: '5px 10px', borderRadius: 6, border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 700, fontFamily: 'inherit' },
   btnPrim: { background: 'var(--acc)', color: '#0b0c10' },
   btnGhost:{ background: 'transparent', color: 'var(--t2)', border: '1px solid var(--bdr2)' },
-  btnDan:  { background: 'transparent', color: 'var(--red)', border: '1px solid var(--red-b)' },
-  errorBox:{ padding: 9, background: 'var(--red-d)', color: 'var(--red)', borderRadius: 8, marginBottom: 8, fontSize: 11, border: '1px solid var(--red-b)', lineHeight: 1.4 },
 };
 
-export default function StatusDrawerCardReaders() {
-  const bridgePresent = hasStripeTerminalBridge();
-  const posDeviceId = getPosDeviceId();
-  const [bridgeStatus, setBridgeStatus] = useState(() => getStatus());
-  const [permsGranted, setPermsGranted] = useState(false);
-  const [permsCheckedAt, setPermsCheckedAt] = useState(0);
-  const [error, setError] = useState(null);
-  const [busy, setBusy] = useState(false);
-  const [discovering, setDiscovering] = useState(false);
-  const [discoveredReaders, setDiscoveredReaders] = useState([]);
-  const [savedPairing, setSavedPairing] = useState(getSavedPairing());
-  const [networkReaders, setNetworkReaders] = useState([]);
-  const [platformLocationId, setPlatformLocationId] = useState(null);
+const STATUS_COLOURS = {
+  online:  { bg:'var(--grn-d)', fg:'var(--grn)', border:'var(--grn-b)' },
+  offline: { bg:'var(--red-d)', fg:'var(--red)', border:'var(--red-b)' },
+  unknown: { bg:'var(--bg3)',   fg:'var(--t3)',  border:'var(--bdr)'   },
+};
 
-  // ── Effects ─────────────────────────────────────────────────────────────
+function relTime(iso) {
+  if (!iso) return '—';
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return '—';
+  const s = Math.floor((Date.now() - t) / 1000);
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s/60)}m ago`;
+  if (s < 86400) return `${Math.floor(s/3600)}h ago`;
+  return `${Math.floor(s/86400)}d ago`;
+}
+
+export default function StatusDrawerCardReaders() {
+  const posDeviceId = getPosDeviceId();
+  const [platformLocationId, setPlatformLocationId] = useState(null);
+  const [readers, setReaders] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
     (async () => {
@@ -61,334 +47,100 @@ export default function StatusDrawerCardReaders() {
     })();
   }, []);
 
-  useEffect(() => {
-    if (!bridgePresent) return;
-    const off = onStatusEvent(() => setBridgeStatus(getStatus()));
-    return off;
-  }, [bridgePresent]);
+  const loadReaders = useCallback(async () => {
+    if (!platformLocationId || !platformSupabase) return;
+    setError(null);
+    const { data, error: qErr } = await platformSupabase
+      .from('payment_devices')
+      .select('id, stripe_reader_id, label, device_type, status, last_seen_at, serial_number, ip_address, bound_pos_device_id')
+      .eq('location_id', platformLocationId)
+      .eq('connection_kind', 'network')
+      .order('label', { ascending: true });
+    if (qErr) { setError(qErr.message); return; }
+    setReaders(data ?? []);
+  }, [platformLocationId]);
 
-  useEffect(() => {
-    const update = () => setSavedPairing(getSavedPairing());
-    window.addEventListener('posup-paired-reader-updated', update);
-    return () => window.removeEventListener('posup-paired-reader-updated', update);
-  }, []);
+  useEffect(() => { loadReaders(); }, [loadReaders]);
 
-  // Load network reader assigned to THIS pos device
-  useEffect(() => {
-    if (!platformLocationId || !platformSupabase || !posDeviceId) return;
-    (async () => {
-      const { data } = await platformSupabase
-        .from('payment_devices')
-        .select('id, stripe_reader_id, label, device_type, connection_kind, status, last_seen_at, serial_number, ip_address')
-        .eq('location_id', platformLocationId)
-        .eq('connection_kind', 'network')
-        .eq('bound_pos_device_id', posDeviceId)
-        .order('label', { ascending: true });
-      setNetworkReaders(data ?? []);
-    })();
-  }, [platformLocationId, posDeviceId]);
-
-  // Initial bridge probe + perms check
-  const probe = useCallback(async () => {
-    if (!bridgePresent) return;
-    try {
-      await syncAuthTokenFromSession();
-      await initialize();
-      const p = await checkPermissions();
-      setPermsGranted(!!p?.granted);
-      setBridgeStatus(getStatus());
-      setPermsCheckedAt(Date.now());
-    } catch (e) {
-      setError(`Init failed: ${e.message}`);
-    }
-  }, [bridgePresent]);
-
-  useEffect(() => { probe(); }, [probe]);
-
-  // ── Actions ────────────────────────────────────────────────────────────
-
-  const handleRequestPerms = async () => {
+  const refreshStatus = async () => {
+    if (busy || !platformLocationId) return;
     setBusy(true); setError(null);
     try {
-      await requestPermissions();
-      setTimeout(async () => {
-        const p = await checkPermissions();
-        setPermsGranted(!!p?.granted);
-      }, 1500);
+      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-readers-status`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ location_id: platformLocationId }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error ?? `HTTP ${res.status}`);
+      await loadReaders();
     } catch (e) { setError(e.message); }
     finally { setBusy(false); }
   };
 
-  const handleDiscover = async () => {
-    if (discovering) {
-      try { await cancelDiscovery(); } catch {}
-      setDiscovering(false);
-      return;
-    }
-    setDiscoveredReaders([]); setError(null); setDiscovering(true);
-    try {
-      await discoverReaders((readers) => setDiscoveredReaders(readers));
-    } catch (e) {
-      setError(`Discovery failed: ${e.message}`);
-    } finally {
-      setDiscovering(false);
-    }
-  };
-
-  const handleConnect = async (reader) => {
-    if (!platformLocationId) { setError('No location resolved'); return; }
-    setBusy(true); setError(null);
-    try {
-      await connectReader(reader.serialNumber, platformLocationId);
-      savePairing({
-        serialNumber: reader.serialNumber,
-        deviceType: reader.deviceType,
-        label: reader.label || reader.serialNumber,
-        locationId: platformLocationId,
-      });
-
-      // Best-effort: register the BT reader in payment_devices so it shows up
-      // in the BO inventory. This uses anon write; if RLS blocks, we just skip.
-      try {
-        const status = getStatus();
-        const stripeReaderId = status?.reader?.serialNumber || reader.serialNumber;
-        if (platformSupabase && stripeReaderId) {
-          await platformSupabase.from('payment_devices').upsert({
-            location_id: platformLocationId,
-            stripe_reader_id: stripeReaderId,
-            stripe_account_id: 'unknown',                                 // BT readers don't have a Stripe rdr_ id
-            device_type: reader.deviceType || 'stripe_m2',
-            connection_kind: 'bluetooth',
-            serial_number: reader.serialNumber,
-            label: reader.label || reader.serialNumber,
-            bound_pos_device_id: posDeviceId,
-            status: 'online',
-            last_seen_at: new Date().toISOString(),
-          }, { onConflict: 'stripe_reader_id' });
-        }
-      } catch (e) {
-        // Non-fatal — the reader is paired locally either way
-        console.warn('[CardReaders] failed to upsert into payment_devices:', e.message);
-      }
-
-      setBridgeStatus(getStatus());
-      setDiscoveredReaders([]);
-      try { await cancelDiscovery(); } catch {}
-      setDiscovering(false);
-    } catch (e) {
-      setError(`Connect failed: ${e.message}`);
-    } finally { setBusy(false); }
-  };
-
-  const handleDisconnect = async (alsoForget = false) => {
-    setBusy(true); setError(null);
-    try {
-      await disconnectReader();
-      if (alsoForget) clearPairing();
-      setBridgeStatus(getStatus());
-    } catch (e) {
-      setError(`Disconnect failed: ${e.message}`);
-    } finally { setBusy(false); }
-  };
-
-  const handleReconnectSaved = async () => {
-    if (!savedPairing) return;
-    setBusy(true); setError(null);
-    try {
-      await connectReader(savedPairing.serialNumber, savedPairing.locationId);
-      setBridgeStatus(getStatus());
-    } catch (e) {
-      setError(`Reconnect failed: ${e.message}`);
-    } finally { setBusy(false); }
-  };
-
-  // ── Render ─────────────────────────────────────────────────────────────
-
-  const connectedReader = bridgeStatus?.reader;
-  const isConnected = !!connectedReader;
-  const showRescan = !isConnected || (savedPairing && connectedReader?.serialNumber !== savedPairing.serialNumber);
-
-  if (!bridgePresent) {
-    const diag = getBridgeDiagnostics();
-    return (
-      <div style={{ padding: '8px 0' }}>
-        <div style={{ fontSize: 12, color: 'var(--t2)', lineHeight: 1.5, marginBottom: 8 }}>
-          The native card-reader bridge isn't responding.
-        </div>
-        {diag.nativeInitErr && (
-          <div style={{ ...Sx.errorBox, marginBottom: 8, fontSize: 11, lineHeight: 1.5 }}>
-            <div style={{ fontWeight: 700, marginBottom: 4 }}>Native bridge init failed (JVM exception):</div>
-            <code style={{ fontFamily: 'var(--font-mono, monospace)', fontSize: 10, wordBreak: 'break-all' }}>
-              {diag.nativeInitErr}
-            </code>
-          </div>
-        )}
-        <details style={{ fontSize: 10, color: 'var(--t3)', background: 'var(--bg3)', borderRadius: 6, padding: 8 }}>
-          <summary style={{ cursor: 'pointer', fontWeight: 700 }}>Bridge diagnostics</summary>
-          <pre style={{ margin: '6px 0 0', fontSize: 10, fontFamily: 'var(--font-mono, monospace)', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
-{`window:                  ${diag.hasWindow}
-window.RposStripeTerminal: ${diag.hasNative}
-.isAvailable() defined:  ${diag.hasIsAvailable}
-.isAvailable() returned: ${JSON.stringify(diag.isAvailableResult)} (${diag.isAvailableType})
-exposed methods:         ${diag.methods.length > 0 ? diag.methods.join(', ') : '(none enumerable — bridges often hide their methods from Object.keys, this is normal)'}
-js error:                ${diag.error ?? '(none)'}
-native init result:      ${diag.nativeInitResult ?? '(no signal — pre-v5.5.53 APK or page-load handler did not run)'}
-native init error:       ${diag.nativeInitErr ?? '(none)'}
-user agent:              ${typeof navigator !== 'undefined' ? navigator.userAgent : 'unknown'}`}
-          </pre>
-        </details>
-        <div style={{ fontSize: 10, color: 'var(--t4)', marginTop: 8, lineHeight: 1.5 }}>
-          If you're inside the Sunmi APK and seeing this message, the bridge didn't load. Make sure you're on v{typeof window !== 'undefined' && window.RPOS_VERSION ? window.RPOS_VERSION : '5.5.53 or later'} and the APK includes the Stripe bridge.
-        </div>
-      </div>
-    );
-  }
+  const assigned = readers.filter(r => r.bound_pos_device_id === posDeviceId);
+  const others = readers.filter(r => r.bound_pos_device_id !== posDeviceId);
 
   return (
     <div>
-      {error && <div style={Sx.errorBox}>{error}</div>}
-
-      {/* ── Bluetooth (this POS) ──────────────────────────────────────── */}
-      <div style={{ marginBottom: 12 }}>
-        <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 6 }}>
-          Bluetooth · This terminal
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:8 }}>
+        <div style={{ fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.06em' }}>
+          Network reader
         </div>
-
-        {isConnected && connectedReader ? (
-          <div style={Sx.rowCard}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
-              <div style={{ minWidth: 0, flex: 1 }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {connectedReader.label || connectedReader.serialNumber}
-                </div>
-                <div style={{ fontSize: 10, color: 'var(--t4)', fontFamily: 'var(--font-mono, monospace)' }}>{connectedReader.serialNumber}</div>
-              </div>
-              <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--grn)' }}>● live</span>
-            </div>
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
-              <span style={Sx.pill}>{connectedReader.deviceType?.replace(/_/g, ' ') || 'reader'}</span>
-              {connectedReader.batteryLevel != null && (
-                <span style={Sx.pill}>{Math.round(connectedReader.batteryLevel * 100)}%</span>
-              )}
-            </div>
-            <div style={{ display: 'flex', gap: 6 }}>
-              <button onClick={() => handleDisconnect(false)} disabled={busy} style={{ ...Sx.btnXs, ...Sx.btnGhost }}>
-                Disconnect
-              </button>
-              <button onClick={() => { if (confirm('Forget this paired reader on this terminal?')) handleDisconnect(true); }} disabled={busy} style={{ ...Sx.btnXs, ...Sx.btnDan }}>
-                Forget
-              </button>
-            </div>
-          </div>
-        ) : savedPairing ? (
-          <div style={Sx.rowCard}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
-              <div style={{ minWidth: 0, flex: 1 }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)' }}>
-                  {savedPairing.label || savedPairing.serialNumber}
-                </div>
-                <div style={{ fontSize: 10, color: 'var(--t4)', fontFamily: 'var(--font-mono, monospace)' }}>{savedPairing.serialNumber}</div>
-              </div>
-              <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--t4)' }}>○ paired · idle</span>
-            </div>
-            <div style={{ display: 'flex', gap: 6 }}>
-              <button onClick={handleReconnectSaved} disabled={busy} style={{ ...Sx.btnXs, ...Sx.btnPrim }}>
-                Reconnect
-              </button>
-              <button onClick={() => { if (confirm('Forget this paired reader?')) clearPairing(); }} disabled={busy} style={{ ...Sx.btnXs, ...Sx.btnDan }}>
-                Forget
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div style={{ ...Sx.rowCard, textAlign: 'center', padding: 14 }}>
-            <div style={{ fontSize: 12, color: 'var(--t3)', marginBottom: 8 }}>No reader paired with this terminal</div>
-            {permsCheckedAt > 0 && !permsGranted ? (
-              <button onClick={handleRequestPerms} disabled={busy} style={{ ...Sx.btnXs, ...Sx.btnPrim }}>
-                Grant Bluetooth permissions
-              </button>
-            ) : (
-              <button
-                onClick={async () => {
-                  // First-time path: request perms inline if we haven't checked yet,
-                  // so the user always gets to a working scan with one tap.
-                  if (permsCheckedAt === 0 || !permsGranted) {
-                    await handleRequestPerms();
-                    if (!permsGranted) return;
-                  }
-                  handleDiscover();
-                }}
-                disabled={busy}
-                style={{ ...Sx.btnXs, ...Sx.btnPrim }}
-              >
-                {discovering ? 'Scanning…' : permsGranted ? 'Pair Stripe Reader M2' : 'Connect reader'}
-              </button>
-            )}
-            {error && <div style={{ ...Sx.errorBox, marginTop: 8, fontSize: 10 }}>{error}</div>}
-          </div>
-        )}
-
-        {/* Discovery results */}
-        {discovering && (
-          <div style={{ ...Sx.rowCard, marginTop: 6 }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t2)' }}>
-                Scanning… ({discoveredReaders.length} found)
-              </div>
-              <button onClick={handleDiscover} disabled={busy} style={{ ...Sx.btnXs, ...Sx.btnGhost }}>Stop</button>
-            </div>
-            <div style={{ fontSize: 10, color: 'var(--t4)', marginBottom: 8, lineHeight: 1.4 }}>
-              Hold the M2 power button for 4 seconds — when its LEDs flash blue it's in pairing mode.
-            </div>
-            {discoveredReaders.map((r) => (
-              <div key={r.serialNumber} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 0', borderTop: '1px solid var(--bdr)' }}>
-                <div style={{ minWidth: 0, flex: 1 }}>
-                  <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--t1)' }}>{r.label || r.serialNumber}</div>
-                  <div style={{ fontSize: 10, color: 'var(--t4)', fontFamily: 'var(--font-mono, monospace)' }}>{r.deviceType?.replace(/_/g,' ')}</div>
-                </div>
-                <button onClick={() => handleConnect(r)} disabled={busy} style={{ ...Sx.btnXs, ...Sx.btnPrim }}>
-                  Pair
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
+        <button style={{ ...Sx.btnXs, ...Sx.btnGhost }} disabled={busy} onClick={refreshStatus}>
+          {busy ? 'Checking…' : 'Refresh status'}
+        </button>
       </div>
 
-      {/* ── Network reader assigned to this terminal ─────────────── */}
-      <div style={{ marginTop: 12 }}>
-        <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 6 }}>
-          Network · This terminal
+      {error && (
+        <div style={{ padding:9, background:'var(--red-d)', color:'var(--red)', borderRadius:8, marginBottom:8, fontSize:11, border:'1px solid var(--red-b)', lineHeight:1.4 }}>
+          {error}
         </div>
-        {networkReaders.length === 0 ? (
-          <div style={{ ...Sx.rowCard, padding: 12 }}>
-            <div style={{ fontSize: 12, color: 'var(--t3)', lineHeight: 1.5 }}>
-              No network reader assigned to this terminal.<br/>
-              <span style={{ color: 'var(--t4)' }}>An admin can assign a network reader (Stripe S700, WisePOS E) to this device in <strong style={{ color: 'var(--acc)' }}>Back office → Card readers</strong>.</span>
-            </div>
-          </div>
-        ) : (
-          networkReaders.map((r) => (
-            <div key={r.id} style={Sx.rowCard}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-                <div style={{ minWidth: 0, flex: 1 }}>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)' }}>{r.label || r.serial_number}</div>
-                  <div style={{ fontSize: 10, color: 'var(--t4)' }}>
-                    {(r.device_type || '').replace(/_/g, ' ')} · {r.status || 'unknown'}
-                    {r.ip_address && (<> · <code style={{ fontFamily: 'var(--font-mono, monospace)' }}>{r.ip_address}</code></>)}
-                  </div>
-                </div>
-                <span style={{ fontSize: 10, fontWeight: 700, color: r.status === 'online' ? 'var(--grn)' : 'var(--t4)' }}>
-                  ● {r.status === 'online' ? 'live' : (r.status || 'unknown')}
-                </span>
-              </div>
-            </div>
-          ))
-        )}
-      </div>
+      )}
 
-      <div style={{ fontSize: 10, color: 'var(--t4)', marginTop: 8, lineHeight: 1.4 }}>
-        Terminal id: <code style={{ fontFamily: 'var(--font-mono, monospace)' }}>{posDeviceId || '(not configured)'}</code>
+      {assigned.length === 0 && others.length === 0 && (
+        <div style={{ ...Sx.rowCard, fontSize:12, color:'var(--t3)', textAlign:'center', padding:'14px 12px' }}>
+          No network readers registered for this location.<br/>
+          <span style={{ fontSize:11, color:'var(--t4)' }}>Admin can add one in Back office → Card readers.</span>
+        </div>
+      )}
+
+      {assigned.map(r => <ReaderRow key={r.id} reader={r} highlight />)}
+      {others.length > 0 && (
+        <>
+          <div style={{ fontSize:10, fontWeight:700, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.06em', margin:'10px 0 6px' }}>
+            Other readers at this location
+          </div>
+          {others.map(r => <ReaderRow key={r.id} reader={r} />)}
+        </>
+      )}
+    </div>
+  );
+}
+
+function ReaderRow({ reader, highlight = false }) {
+  const status = reader.status || 'unknown';
+  const colours = STATUS_COLOURS[status] || STATUS_COLOURS.unknown;
+  return (
+    <div style={{
+      ...Sx.rowCard,
+      borderColor: highlight ? 'var(--acc)' : 'var(--bdr)',
+      background: highlight ? 'var(--acc-d)' : 'var(--bg2)',
+    }}>
+      <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:4 }}>
+        <span style={{ fontSize:13, fontWeight:700, color:'var(--t1)' }}>
+          {reader.label || reader.stripe_reader_id || 'Unnamed reader'}
+        </span>
+        <span style={{ ...Sx.pill, background: colours.bg, color: colours.fg, borderColor: colours.border }}>
+          {status}
+        </span>
+        {highlight && <span style={{ ...Sx.pill, background:'var(--acc)', color:'#0b0c10', borderColor:'var(--acc)' }}>This terminal</span>}
+      </div>
+      <div style={{ fontSize:11, color:'var(--t3)', display:'flex', flexWrap:'wrap', gap:'2px 12px' }}>
+        {reader.device_type && <span>Type: <strong style={{ color:'var(--t2)' }}>{reader.device_type}</strong></span>}
+        {reader.serial_number && <span>SN: <strong style={{ color:'var(--t2)', fontFamily:'var(--font-mono)' }}>{reader.serial_number}</strong></span>}
+        {reader.ip_address && <span>IP: <strong style={{ color:'var(--t2)', fontFamily:'var(--font-mono)' }}>{reader.ip_address}</strong></span>}
+        <span>Last seen: <strong style={{ color:'var(--t2)' }}>{relTime(reader.last_seen_at)}</strong></span>
       </div>
     </div>
   );

@@ -73,6 +73,20 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.58', date: '6 May 2026', label: 'WiFi-only card terminals — Stripe Terminal SDK + Bluetooth ripped out',
+    changes: [
+      'Strategic completion of the v5.5.55 REST pivot. Bluetooth Stripe Reader M2 was the customer-facing card device on the Sunmi for several months, but the BBPOS bridge has been a constant source of build failures (#181-184) and reader-disconnection bugs. Decision (Peter): commit fully to network/WiFi readers (BBPOS WisePOS E, S700) — no SDK on the device, no native bridge, payments end-to-end via Stripe REST API on the reader\'s own 5" screen.',
+      'JS RIPOUT: src/lib/stripeTerminal.js (354 lines) deleted. Replaced by a slim src/lib/networkReader.js (~70 lines) exporting only getPosDeviceId, resolvePlatformLocationId, getAssignedNetworkReader. No bridge calls, no init, no permissions, no discovery, no autoReconnect, no savedPairing.',
+      'CHECKOUTMODAL: BT bridge tier removed. Three tiers became two — (1) network reader REST flow when a reader is assigned to this POS device, (2) simulated for browser dev / unconfigured devices. The "no card reader available" hint, RealCardWaiting BT spinner, runCollect, and bridge-probe useEffect are all gone.',
+      'STATUS DRAWER: src/components/StatusDrawerCardReaders.jsx rewritten as a small read-only network-reader status panel. Shows the reader assigned to THIS POS terminal with its online/offline status, last-seen, IP, serial, plus other readers at this location. Refresh-status button hits the existing edge function. No more pairing UI, no more Bluetooth scan flow.',
+      'BO CARD READERS: Bluetooth readers list section removed. Subtitle updated. Header counts collapsed to just network readers. Reader settings panel (tipping config, idle screen — Phase 3) untouched.',
+      'ANDROID RIPOUT: StripeTerminalBridge.java deleted (~500 lines). Stripe Terminal SDK 3.10.1 dropped from app/build.gradle. Kotlin plugin removed from root build.gradle. packagingOptions META-INF excludes removed (no longer needed without the SDK). Bluetooth + BLE-related-location + FOREGROUND_SERVICE_CONNECTED_DEVICE permissions dropped from AndroidManifest.xml. Estimated APK size reduction: ~10MB. Estimated build time reduction: ~40%.',
+      'MAINACTIVITY: window.RposStripeTerminal injection removed. The bridgeInitErr try/catch and __bridgeInitResult JS injection on every page load are gone. The APK now does only two jobs: (a) WebView wrapper around dev.pos-up.com/?mode=pos, (b) printer bridge (window.RposPrinter) for ESC/POS over TCP/9100. Versioncode bumped to 3, versionName to "1.2".',
+      'DB MIGRATION (Platform DB v5.5.58): DELETE FROM payment_devices WHERE connection_kind = \'bluetooth\'. Drop the bluetooth option from payment_devices_connection_kind_check constraint (now allows network|tap_to_pay only). Drop any anon-can-insert-where-connection_kind=bluetooth RLS policy that may have been added out-of-band.',
+      'WHAT IS UNCHANGED: All four phases of yesterday\'s REST work are 100% intact. Edge functions (stripe-process-payment-on-reader, stripe-poll-reader-action, stripe-cancel-reader-action, stripe-sync-location-reader-config), Phase 2 customer-facing display via set_reader_display, Phase 3 BO tipping config + Stripe Terminal Configuration sync, Phase 4 idle screen schema. The path that actually runs in production was always tier 1 — the BT tier was vestigial and now gone.',
+    ],
+  },
+  {
     version: '5.5.57', date: '6 May 2026', label: 'Kiosk order printing + PAID label end-to-end',
     changes: [
       'Kiosk orders now print at production centres. New routeKioskOrderPrints store action runs on the master POS when a kiosk order_queue INSERT arrives via realtime: claims the order via atomic UPDATE on kitchen_routed_at, buckets items by production centre using the same routing config the POS uses, creates per-centre kds_tickets, and calls routePrintJob for each centre. Identical idempotency semantics to the existing print pipeline.',
