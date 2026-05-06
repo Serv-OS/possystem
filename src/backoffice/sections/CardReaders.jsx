@@ -213,6 +213,9 @@ export default function CardReaders() {
               ))
             )}
           </div>
+
+          {/* Reader settings — tipping + idle screen */}
+          <ReaderSettingsPanel locationId={platformLocationId} />
         </>
       )}
 
@@ -494,6 +497,177 @@ function ReassignReaderModal({ reader, devices, onClose, onSaved }) {
             {submitting ? 'Saving…' : 'Save'}
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Reader settings (tipping + idle screen) ────────────────────────────
+function ReaderSettingsPanel({ locationId }) {
+  const [settings, setSettings] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+  const [savedNote, setSavedNote] = useState(null);
+
+  // Local edit state
+  const [tipEnabled, setTipEnabled] = useState(true);
+  const [tipPcts, setTipPcts] = useState([15, 18, 20]);
+  const [allowCustom, setAllowCustom] = useState(true);
+  const [smartThreshold, setSmartThreshold] = useState('');
+
+  useEffect(() => {
+    if (!locationId || !platformSupabase) return;
+    (async () => {
+      const { data } = await platformSupabase.from('location_reader_settings')
+        .select('*').eq('location_id', locationId).maybeSingle();
+      if (data) {
+        setSettings(data);
+        setTipEnabled(data.tipping_enabled);
+        setTipPcts(data.tip_percentages ?? [15, 18, 20]);
+        setAllowCustom(data.allow_custom_tip);
+        setSmartThreshold(data.smart_tip_threshold_minor != null ? String(data.smart_tip_threshold_minor / 100) : '');
+      }
+    })();
+  }, [locationId]);
+
+  const save = async () => {
+    setSaving(true); setError(null); setSavedNote(null);
+    try {
+      const { data: session } = await supabase.auth.getSession();
+      const token = session?.session?.access_token;
+      if (!token) throw new Error('not authenticated');
+
+      // 1. Update our settings table directly via platform supabase
+      const cleanedPcts = tipPcts.filter(p => Number.isFinite(p) && p > 0 && p < 100).slice(0, 5);
+      const thresholdMinor = smartThreshold ? Math.round(Number(smartThreshold) * 100) : null;
+      const { error: updErr } = await platformSupabase.from('location_reader_settings').update({
+        tipping_enabled: tipEnabled,
+        tip_percentages: cleanedPcts.length > 0 ? cleanedPcts : [15, 18, 20],
+        allow_custom_tip: allowCustom,
+        smart_tip_threshold_minor: thresholdMinor,
+      }).eq('location_id', locationId);
+      if (updErr) throw updErr;
+
+      // 2. Sync to Stripe Terminal Configuration
+      const res = await fetch(`${FUNCTIONS_URL}/stripe-sync-location-reader-config`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({ location_id: locationId }),
+      });
+      const j = await res.json();
+      if (!res.ok || j.error) throw new Error(j.error ?? `HTTP ${res.status}`);
+
+      setSavedNote(`Settings synced — ${j.readers_updated}/${j.readers_total} readers updated`);
+      if (j.reader_errors?.length > 0) {
+        setSavedNote(prev => `${prev}. Some readers had errors: ${j.reader_errors.map(e => `${e.reader} (${e.error})`).join(', ')}`);
+      }
+      // Refresh local settings from DB
+      const { data: refreshed } = await platformSupabase.from('location_reader_settings')
+        .select('*').eq('location_id', locationId).maybeSingle();
+      setSettings(refreshed);
+    } catch (e) {
+      setError(String(e?.message ?? e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!settings) return null;
+
+  return (
+    <div style={{ ...S.card, marginTop: 24 }}>
+      <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--t1)', marginBottom: 4 }}>Reader settings</div>
+      <div style={{ fontSize: 12, color: 'var(--t3)', marginBottom: 16, lineHeight: 1.5 }}>
+        Controls how the customer-facing reader behaves at this location. Saved settings sync to Stripe and apply to all readers here.
+      </div>
+
+      {/* Tipping toggle */}
+      <div style={{ padding: 12, background: 'var(--bg2)', border: '1px solid var(--bdr)', borderRadius: 8, marginBottom: 12 }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
+          <input type="checkbox" checked={tipEnabled} onChange={e => setTipEnabled(e.target.checked)} style={{ width: 16, height: 16 }}/>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)' }}>Enable tipping prompt on reader</div>
+            <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2 }}>
+              Customer sees tip percentage buttons before tapping their card. Disable for fast-casual / counter service where tipping isn't appropriate.
+            </div>
+          </div>
+        </label>
+      </div>
+
+      {tipEnabled && (
+        <div style={{ paddingLeft: 26 }}>
+          <div style={{ marginBottom: 12 }}>
+            <label style={S.label}>Tip preset percentages (up to 5)</label>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {tipPcts.map((p, i) => (
+                <input
+                  key={i}
+                  type="number"
+                  value={p}
+                  onChange={e => {
+                    const v = parseInt(e.target.value, 10);
+                    setTipPcts(prev => prev.map((x, idx) => idx === i ? (Number.isFinite(v) ? v : 0) : x));
+                  }}
+                  style={{ ...S.input, width: 72, textAlign: 'center' }}
+                  min={1} max={50}
+                />
+              ))}
+              {tipPcts.length < 5 && (
+                <button onClick={() => setTipPcts(prev => [...prev, 25])} style={{ ...S.btn, ...S.btnGhost, padding: '4px 10px', fontSize: 12 }}>
+                  + Add
+                </button>
+              )}
+              {tipPcts.length > 1 && (
+                <button onClick={() => setTipPcts(prev => prev.slice(0, -1))} style={{ ...S.btn, ...S.btnGhost, padding: '4px 10px', fontSize: 12 }}>
+                  − Remove last
+                </button>
+              )}
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 6 }}>
+              Reader screen will show these as tap buttons. Common: 15 / 18 / 20.
+            </div>
+          </div>
+
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+              <input type="checkbox" checked={allowCustom} onChange={e => setAllowCustom(e.target.checked)} style={{ width: 14, height: 14 }}/>
+              <span style={{ fontSize: 12, color: 'var(--t1)' }}>Allow customer to enter a custom tip amount</span>
+            </label>
+          </div>
+
+          <div style={{ marginBottom: 12 }}>
+            <label style={S.label}>Smart-tip threshold (currency major units, optional)</label>
+            <input
+              type="number"
+              value={smartThreshold}
+              onChange={e => setSmartThreshold(e.target.value)}
+              placeholder="e.g. 10"
+              style={{ ...S.input, width: 160 }}
+              step="0.01" min="0"
+            />
+            <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 4, lineHeight: 1.4 }}>
+              Below this amount, the reader shows fixed-amount tip suggestions (£1, £2, £3) instead of percentages. Leave blank to always use percentages.
+            </div>
+          </div>
+        </div>
+      )}
+
+      {error && <div style={{ ...S.errorBox, marginTop: 14 }}>{error}</div>}
+      {savedNote && (
+        <div style={{ marginTop: 12, padding: 10, background: 'var(--grn-d)', color: 'var(--grn)', borderRadius: 8, fontSize: 12, border: '1px solid var(--grn-b, var(--grn))' }}>
+          ✓ {savedNote}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 16 }}>
+        <button onClick={save} disabled={saving} style={{ ...S.btn, ...S.btnPrim }}>
+          {saving ? 'Saving…' : 'Save & sync to readers'}
+        </button>
+        {settings.stripe_configuration_synced_at && (
+          <span style={{ fontSize: 11, color: 'var(--t4)' }}>
+            Last synced {new Date(settings.stripe_configuration_synced_at).toLocaleString()}
+          </span>
+        )}
       </div>
     </div>
   );

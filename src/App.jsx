@@ -73,16 +73,18 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
-    version: '5.5.55', date: '6 May 2026', label: 'REST-only network reader payments — bypass the Android bridge entirely',
+    version: '5.5.55', date: '6 May 2026', label: 'REST-only network reader payments + BO tipping config + Stripe Terminal Configuration sync',
     changes: [
       'STRATEGIC PIVOT: After exhaustive iteration on the Bluetooth bridge with no resolution, decision made to commit to BBPOS WisePOS E (network reader) as the primary card device. Customer-facing UX — line items, tip, card prompt — all happens on the reader\'s 5" screen. No Android SDK, no native bridge, no APK changes for the payment flow. Pure REST.',
-      'NEW EDGE FUNCTION: stripe-process-payment-on-reader. Resolves POS device → location → assigned reader, creates PaymentIntent on the merchant\'s connected account with platform markup as application_fee_amount, pushes cart line items to the reader screen via set_reader_display, then process_payment_intent on the reader to start the customer-facing flow. Returns PI id for polling.',
-      'NEW EDGE FUNCTION: stripe-poll-reader-action. POS calls every ~1.5s during a card payment. Returns PI status + reader action status (in_progress/succeeded/failed) + last_payment_error if any. is_terminal_state convenience flag.',
-      'NEW EDGE FUNCTION: stripe-cancel-reader-action. Cancels reader action + cancels PI + clears reader display. Called on POS unmount or cashier-initiated abort.',
+      'NEW EDGE FUNCTION: stripe-process-payment-on-reader. Resolves POS device → location → assigned reader, creates PaymentIntent on the merchant\'s connected account with platform markup as application_fee_amount, pushes cart line items to the reader screen via set_reader_display, then process_payment_intent on the reader to start the customer-facing flow.',
+      'NEW EDGE FUNCTION: stripe-poll-reader-action. POS calls every ~1.5s during a card payment.',
+      'NEW EDGE FUNCTION: stripe-cancel-reader-action. Cancels reader action + cancels PI + clears reader display.',
+      'NEW EDGE FUNCTION: stripe-sync-location-reader-config. Reads our location_reader_settings, creates/updates the merchant\'s Stripe Terminal Configuration object (tipping rules, splashscreen file id), and assigns it to every reader at the location via configuration_overrides. Called automatically when admin saves settings in BO.',
       'NEW DB MIGRATION (Platform DB v5): location_reader_settings table — per-location tipping_enabled, tip_percentages, allow_custom_tip, smart_tip_threshold_minor, idle_screen_enabled, idle_screen_file_id, stripe_configuration_id. Backfilled defaults for all existing locations.',
       'POS CheckoutModal: CardTerminal now detects network reader assignment first and routes to the REST flow when present. Three-tier priority: (1) network reader → REST, (2) Bluetooth bridge → bridge.collectPayment (kept as fallback for mobile checkout), (3) simulated browser UI for dev. RestCardWaiting panel shows "Customer is paying on reader" with cancel button.',
-      'Cart line items + tip are passed to the reader screen so the customer sees what they\'re paying for. Tip line is added to the line_items array when applicable so the breakdown matches the total.',
+      'BO Card Readers page: NEW Reader settings panel below the readers list. Toggle for "Enable tipping prompt on reader" (drives the Stripe Terminal Configuration tipping object), tip percentage editor (up to 5 values), allow custom tip toggle, smart-tip threshold (£ amount below which reader shows fixed-amount tips like £1/£2/£3 instead of percentages). Save button calls the sync edge function which updates Stripe and applies to all readers at the location.',
       'WisePOS E or S700 hardware needed for live testing. Stripe simulated WisePOS E works for end-to-end test in sandbox without hardware — register one in Stripe dashboard and assign in BO.',
+      'IDLE SCREEN: schema columns are in place (idle_screen_enabled, idle_screen_file_id) and the sync edge function pushes the splashscreen to readers. UI for uploading the image is deferred to next iteration since it requires a Stripe Files API upload flow — will ship when the WisePOS E hardware arrives.',
     ],
   },
   {
