@@ -211,7 +211,7 @@ public class StripeTerminalBridge {
             config,
             new DiscoveryListener() {
                 @Override
-                public void onUpdateDiscoveredReaders(@NotNull List<? extends Reader> readers) {
+                public void onUpdateDiscoveredReaders(@NotNull List<Reader> readers) {
                     try {
                         JSONArray arr = new JSONArray();
                         for (Reader r : readers) arr.put(readerToJson(r));
@@ -291,7 +291,7 @@ public class StripeTerminalBridge {
             discoveryConfig,
             new DiscoveryListener() {
                 @Override
-                public void onUpdateDiscoveredReaders(@NotNull List<? extends Reader> readers) {
+                public void onUpdateDiscoveredReaders(@NotNull List<Reader> readers) {
                     if (foundReader[0] != null) return;
                     for (Reader r : readers) {
                         if (serialNumber.equals(r.getSerialNumber())) {
@@ -390,13 +390,13 @@ public class StripeTerminalBridge {
         boolean isSim = "simulated-wisepos-e".equals(stripeReaderId)
             || (stripeReaderId != null && stripeReaderId.startsWith("tmr_"));
         DiscoveryConfiguration.InternetDiscoveryConfiguration config =
-            new DiscoveryConfiguration.InternetDiscoveryConfiguration(isSim);
+            new DiscoveryConfiguration.InternetDiscoveryConfiguration(null, isSim);
         final Reader[] found = new Reader[]{null};
 
         Terminal.getInstance().discoverReaders(
             config,
             new DiscoveryListener() {
-                @Override public void onUpdateDiscoveredReaders(@NotNull List<? extends Reader> readers) {
+                @Override public void onUpdateDiscoveredReaders(@NotNull List<Reader> readers) {
                     if (found[0] != null) return;
                     for (Reader r : readers) {
                         if (stripeReaderId.equals(r.getId()) || stripeReaderId.equals(r.getSerialNumber())) {
