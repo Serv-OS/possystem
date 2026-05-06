@@ -73,6 +73,16 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.57', date: '6 May 2026', label: 'Kiosk order printing + PAID label end-to-end',
+    changes: [
+      'Kiosk orders now print at production centres. New routeKioskOrderPrints store action runs on the master POS when a kiosk order_queue INSERT arrives via realtime: claims the order via atomic UPDATE on kitchen_routed_at, buckets items by production centre using the same routing config the POS uses, creates per-centre kds_tickets, and calls routePrintJob for each centre. Identical idempotency semantics to the existing print pipeline.',
+      'Master POS scans for unrouted kiosk orders on startup (backfill) so orders placed while master was offline still hit production printers when master comes back online.',
+      'Kiosk no longer writes a single un-bucketed kds_tickets row. The master POS path produces per-centre tickets so a centre-filtered KDS shows only the items relevant to that station — a hot kitchen no longer sees cold drinks etc.',
+      'PAID badge on OrdersHub cards. Kiosk orders insert with paid=true and payment_method=card-external (Stripe online payment is still simulated until the next sprint, but the data shape is correct).',
+      'DB migration v5.5.57: order_queue.paid (bool), order_queue.payment_method (text), order_queue.kitchen_routed_at (timestamptz). The last is used as the atomic claim flag for print routing.',
+    ],
+  },
+  {
     version: '5.5.56', date: '6 May 2026', label: 'Kiosk orders wired into POS OrdersHub with live notifications',
     changes: [
       'Kiosk submitOrder now inserts into order_queue (source: kiosk) alongside closed_checks and kds_tickets. POS OrdersHub displays kiosk orders in the queue section with full status tracking (received > prep > ready > collected).',

@@ -121,6 +121,8 @@ export default function OrdersHub() {
         createdAt: o.createdAt, sentAt: o.sentAt,
         collectionTime: o.collectionTime, isASAP: o.isASAP,
         source: o.source || 'pos',
+        paid: !!o.paid,
+        paymentMethod: o.paymentMethod || null,
         _raw: o,
       });
     });
@@ -400,6 +402,7 @@ function OrderCard({ order, onAdvance, onOpen }) {
             <span style={{ fontSize:10, color:'var(--t4)', fontFamily:'var(--font-mono)', flexShrink:0 }}>{order.ref}</span>
             {order.isChild && <span style={{ fontSize:9, padding:'1px 5px', borderRadius:8, background:'var(--bg3)', border:'1px solid var(--bdr)', color:'var(--t4)' }}>split</span>}
             {order.source === 'kiosk' && <span style={{ fontSize:9, fontWeight:700, padding:'1px 6px', borderRadius:8, background:'#8b5cf618', border:'1px solid #8b5cf644', color:'#8b5cf6' }}>KIOSK</span>}
+            {order.paid && <span style={{ fontSize:9, fontWeight:700, padding:'1px 6px', borderRadius:8, background:'#22c55e18', border:'1px solid #22c55e44', color:'#22c55e' }}>PAID</span>}
           </div>
           <div style={{ display:'flex', gap:8, marginTop:3, flexWrap:'wrap' }}>
             {order.server  && <span style={{ fontSize:10, color:'var(--t3)' }}>👤 {order.server}</span>}

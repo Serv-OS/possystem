@@ -34,6 +34,8 @@ function queueToRow(o, locationId) {
     collection_time: o.collectionTime || null,
     is_asap: !!o.isASAP,
     source: o.source || 'pos',
+    paid: !!o.paid,
+    payment_method: o.paymentMethod || null,
   };
 }
 
@@ -51,6 +53,8 @@ function rowToQueue(row) {
     collectionTime: row.collection_time,
     isASAP: !!row.is_asap,
     source: row.source || 'pos',
+    paid: !!row.paid,
+    paymentMethod: row.payment_method || null,
   };
 }
 

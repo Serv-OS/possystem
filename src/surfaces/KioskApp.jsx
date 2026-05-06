@@ -450,24 +450,12 @@ export default function KioskApp({ kioskId, onUnpair }) {
           console.warn('[kiosk] customer attribution dispatch failed:', e?.message || e);
         }
       }
-      // 3. kds_tickets — fire to kitchen
-      const ticketId = (crypto.randomUUID ? crypto.randomUUID() : 'tk-' + Date.now());
-      const { error: e2 } = await supabase.from('kds_tickets').insert({
-        id: ticketId,
-        location_id: locationId,
-        course: 1,
-        all_courses: [1],
-        fired_courses: [1],
-        items: itemsPayload,
-        status: 'fired',
-        sent_at: new Date().toISOString(),
-        table_id: null,
-        table_label: tableNumber ? ('T' + tableNumber) : ('Kiosk ' + num),
-        server: (nameOverride ?? customerName) || ('Kiosk ' + num),
-        covers: 1,
-      });
-      if (e2) console.warn('[kiosk] kds insert failed:', e2);
-      // 4. order_queue — makes kiosk orders visible in POS OrdersHub
+      // 3. order_queue — makes kiosk orders visible in POS OrdersHub.
+      // The master POS device picks up this row via realtime and creates
+      // centre-bucketed kds_tickets + print_jobs in routeKioskOrderPrints.
+      // (Previously the kiosk wrote a single un-bucketed kds_ticket which
+      // wouldn't show on a centre-filtered KDS — now production centres get
+      // proper per-centre tickets.)
       const { error: e3 } = await supabase.from('order_queue').insert({
         ref: num,
         location_id: locationId,
@@ -484,9 +472,11 @@ export default function KioskApp({ kioskId, onUnpair }) {
         sent_at: new Date().toISOString(),
         is_asap: true,
         source: 'kiosk',
+        paid: true,
+        payment_method: 'card-external',
       });
       if (e3) console.warn('[kiosk] order_queue insert failed:', e3);
-      // 5. Heartbeat
+      // 4. Heartbeat
       await supabase.from('devices').update({ last_seen: new Date().toISOString() }).eq('id', kioskId);
       setOrderNumber(num);
       setScreen('done');

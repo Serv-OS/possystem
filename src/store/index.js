@@ -3581,6 +3581,134 @@ export const useStore = create((set, get) => ({
     }
   },
 
+  // v5.5.57: route kiosk-originated orders through production centres.
+  // Buckets items by centre using the same routing config the POS uses,
+  // creates per-centre kds_tickets, and calls routePrintJob per centre.
+  // Idempotent via a conditional UPDATE on kitchen_routed_at — only the
+  // first claimer (typically master POS) does the work.
+  routeKioskOrderPrints: async (order) => {
+    if (!order?.ref || !Array.isArray(order.items) || !order.items.length) return;
+    if (!supabase) return;
+    try {
+      // Atomic claim — only succeeds if kitchen_routed_at is still NULL
+      const { data: claimed, error: claimErr } = await supabase
+        .from('order_queue')
+        .update({ kitchen_routed_at: new Date().toISOString() })
+        .eq('ref', order.ref)
+        .is('kitchen_routed_at', null)
+        .select('ref');
+      if (claimErr) { console.warn('[routeKioskOrderPrints] claim failed', claimErr); return; }
+      if (!claimed?.length) return; // Another device already routed this order
+
+      // Routing config + cat parent map (mirror getCentresForItem from sendToKitchen)
+      let routingConfig = useStore.getState().printRouting;
+      if (!routingConfig?.centres?.length) {
+        try { routingConfig = JSON.parse(localStorage.getItem('rpos-print-routing') || 'null') || { centres:[], routing:{} }; }
+        catch { routingConfig = { centres:[], routing:{} }; }
+      }
+      let parentMap = {};
+      try {
+        const snap = JSON.parse(localStorage.getItem('rpos-config-snapshot') || '{}');
+        const cats = snap.menuCategories || useStore.getState().menuCategories || [];
+        cats.forEach(c => { parentMap[c.id] = c.parentId || null; });
+      } catch {}
+      const allMenuItems = useStore.getState().menuItems || [];
+      const catOrAncestorMatches = (catId, set, depth = 0) => {
+        if (!catId || depth > 5) return false;
+        if (set.has(catId)) return true;
+        const p = parentMap[catId];
+        return p ? catOrAncestorMatches(p, set, depth + 1) : false;
+      };
+      const centresForItem = (item) => {
+        const { centres, routing } = routingConfig;
+        if (!centres?.length || !routing) return [];
+        const menuItem = allMenuItems.find(i => i.id === (item.itemId || item.id));
+        const itemCat = item.cat || item.cats?.[0] || menuItem?.cat || menuItem?.cats?.[0] || null;
+        const parentId = item.parentId || menuItem?.parentId || null;
+        const parentMenuItem = parentId ? allMenuItems.find(i => i.id === parentId) : null;
+        const parentCat = parentMenuItem?.cat || parentMenuItem?.cats?.[0] || null;
+        const matched = [];
+        centres.forEach(centre => {
+          const r = routing[centre.id];
+          if (!r?.assignedCategories?.length) return;
+          if (r.excludedItems?.includes(item.id) || r.excludedItems?.includes(item.itemId)) return;
+          const set = new Set(r.assignedCategories);
+          if ((itemCat && catOrAncestorMatches(itemCat, set)) || (parentCat && catOrAncestorMatches(parentCat, set))) {
+            matched.push(centre.id);
+          }
+        });
+        return matched;
+      };
+
+      // Bucket items by centre
+      const byCentre = {};
+      order.items.forEach(item => {
+        centresForItem(item).forEach(cid => {
+          if (!byCentre[cid]) byCentre[cid] = [];
+          byCentre[cid].push(item);
+        });
+      });
+
+      const tableLabel = `Kiosk ${order.ref}`;
+      const serverName = order.customer?.name || `Kiosk ${order.ref}`;
+      const sentAt = order.sentAt || Date.now();
+
+      // Per-centre KDS tickets (replace the generic one the kiosk inserted with centre-bucketed)
+      const tickets = Object.entries(byCentre).map(([centreId, items]) => ({
+        id: `kds-${sentAt}-${centreId}-${Math.random().toString(36).slice(2,6)}`,
+        location_id: useStore.getState().locationConfig?.id || null,
+        centre_id: centreId,
+        course: 1,
+        all_courses: [1],
+        fired_courses: [1],
+        items: items.map(i => ({
+          qty: i.qty,
+          name: i.kitchenName || i.name,
+          mods: Array.isArray(i.mods) ? i.mods.map(m => m?.name || m?.label || m).filter(Boolean) : [],
+          course: 1, fired: true, centreId,
+        })),
+        status: 'fired',
+        sent_at: new Date(sentAt).toISOString(),
+        table_id: null,
+        table_label: tableLabel,
+        server: serverName,
+        covers: 1,
+      }));
+      if (tickets.length) {
+        const { error: kdsErr } = await supabase.from('kds_tickets').insert(tickets);
+        if (kdsErr) console.warn('[routeKioskOrderPrints] kds insert', kdsErr);
+      }
+
+      // Print jobs per centre
+      const getCentrePrinter = (centreId) => {
+        const c = routingConfig.centres?.find(c => c.id === centreId);
+        return c?.printer?.name || c?.name || 'Kitchen';
+      };
+      Object.entries(byCentre).forEach(([centreId, items]) => {
+        if (!items.length) return;
+        get().routePrintJob({
+          centreId,
+          printerName: getCentrePrinter(centreId),
+          tableLabel,
+          server: serverName,
+          covers: 1,
+          course: 1,
+          items: items.map(i => ({
+            qty: i.qty,
+            kitchenName: i.kitchenName,
+            name: i.name,
+            mods: i.mods,
+          })),
+          type: 'kitchen',
+        });
+      });
+
+      console.log('[routeKioskOrderPrints] routed', order.ref, 'to', Object.keys(byCentre).length, 'centres');
+    } catch (e) {
+      console.warn('[routeKioskOrderPrints] failed:', e?.message);
+    }
+  },
+
   // Print a customer receipt (called from close-check flow, ReceiptModal, etc.)
   // Safe to call even if no receipt printer is configured — falls back to browser print.
   printCustomerReceipt: async ({ location, check, items, totals }, printerId = null) => {

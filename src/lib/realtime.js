@@ -215,11 +215,23 @@ export function startRealtime(store, locationId = LOCATION_ID) {
       if (payload.eventType === 'DELETE' && payload.old?.location_id && payload.old.location_id !== locationId) return;
       applyQueueRealtimeEvent(payload);
       if (payload.eventType === 'INSERT' && payload.new?.source === 'kiosk') {
-        const ref = payload.new.ref || '';
-        const name = payload.new.customer?.name || 'Kiosk';
-        const type = payload.new.type || 'takeaway';
+        const row = payload.new;
+        const ref = row.ref || '';
+        const name = row.customer?.name || 'Kiosk';
+        const type = row.type || 'takeaway';
         playOrderChime();
         store.getState().showToast?.(`Kiosk order ${ref} — ${name} (${type})`, 'info');
+        // Master device routes prints to production centres (idempotent — only one device claims)
+        let isMaster = false;
+        try { isMaster = JSON.parse(localStorage.getItem('rpos-device-config') || '{}').isMaster === true; } catch {}
+        if (isMaster && !row.kitchen_routed_at) {
+          store.getState().routeKioskOrderPrints?.({
+            ref,
+            items: row.items || [],
+            customer: row.customer || null,
+            sentAt: row.sent_at ? new Date(row.sent_at).getTime() : Date.now(),
+          });
+        }
       }
     })
     .subscribe();
@@ -234,6 +246,34 @@ export function startRealtime(store, locationId = LOCATION_ID) {
     .subscribe();
 
   channels = [kdsChannel, e86Channel, configChannel, taxChannel, sessionsChannel, checksChannel, queueChannel, tabsChannel];
+
+  // Backfill: master scans for unrouted kiosk orders that arrived while it was offline
+  (async () => {
+    try {
+      let isMaster = false;
+      try { isMaster = JSON.parse(localStorage.getItem('rpos-device-config') || '{}').isMaster === true; } catch {}
+      if (!isMaster) return;
+      const { data, error } = await supabase
+        .from('order_queue')
+        .select('ref, items, customer, sent_at')
+        .eq('location_id', locationId)
+        .eq('source', 'kiosk')
+        .is('kitchen_routed_at', null)
+        .neq('status', 'collected');
+      if (error) { console.warn('[Realtime] kiosk backfill query failed', error); return; }
+      if (data?.length) {
+        console.log(`[Realtime] backfilling ${data.length} unrouted kiosk order(s)`);
+        for (const row of data) {
+          await store.getState().routeKioskOrderPrints?.({
+            ref: row.ref,
+            items: row.items || [],
+            customer: row.customer || null,
+            sentAt: row.sent_at ? new Date(row.sent_at).getTime() : Date.now(),
+          });
+        }
+      }
+    } catch (e) { console.warn('[Realtime] kiosk backfill failed', e?.message); }
+  })();
 
   return () => {
     channels.forEach(ch => supabase.removeChannel(ch));
