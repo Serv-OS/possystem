@@ -73,6 +73,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.53', date: '5 May 2026', label: 'Capture and surface the actual JVM exception when StripeTerminalBridge fails to register',
+    changes: [
+      'BUG STILL UNRESOLVED: After v5.5.52 with lenient detection and visible diagnostics, Peter reported the diagnostic panel showed window.RposStripeTerminal: false. So the JS detection isn\'t the problem — the Kotlin bridge is genuinely not being registered with the WebView. But the user agent shows "RestaurantOS/1.0 Sunmi/1.0" which means MainActivity onCreate ran past the addJavascriptInterface calls. So either the bridge constructor threw silently OR addJavascriptInterface itself silently rejected the bridge object.',
+      'NATIVE: Wrapped the StripeTerminalBridge construction + registration in try/catch. Captures the exception class name + message, shows a Toast on app start ("Stripe bridge failed: NoClassDefFoundError — see Status drawer"), AND injects window.__bridgeInitErr / window.__bridgeInitResult into the WebView via evaluateJavascript on every onPageFinished.',
+      'JS DIAGNOSTICS: getBridgeDiagnostics() now reads window.__bridgeInitResult / window.__bridgeInitErr and the diagnostics panel renders the JVM exception prominently in a red error box. This will tell us EXACTLY which class is missing or what threw.',
+      'Toast message visible at app startup so even users who don\'t open the diagnostics know something went wrong.',
+    ],
+  },
+  {
     version: '5.5.52', date: '5 May 2026', label: 'Bridge detection robustness + visible diagnostics for card-reader debugging',
     changes: [
       'BUG: Some users on the Sunmi APK saw "Card-reader pairing requires the POSUP Sunmi APK" even when running inside the APK. Root cause is the bridge detection check called .isAvailable() === \'true\' (string), which can silently fail under Android WebView quirks or any future Kotlin annotation regression — the entire reader UI then disappears with no way to debug.',

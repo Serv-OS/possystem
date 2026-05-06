@@ -215,6 +215,14 @@ export default function StatusDrawerCardReaders() {
         <div style={{ fontSize: 12, color: 'var(--t2)', lineHeight: 1.5, marginBottom: 8 }}>
           The native card-reader bridge isn't responding.
         </div>
+        {diag.nativeInitErr && (
+          <div style={{ ...Sx.errorBox, marginBottom: 8, fontSize: 11, lineHeight: 1.5 }}>
+            <div style={{ fontWeight: 700, marginBottom: 4 }}>Native bridge init failed (JVM exception):</div>
+            <code style={{ fontFamily: 'var(--font-mono, monospace)', fontSize: 10, wordBreak: 'break-all' }}>
+              {diag.nativeInitErr}
+            </code>
+          </div>
+        )}
         <details style={{ fontSize: 10, color: 'var(--t3)', background: 'var(--bg3)', borderRadius: 6, padding: 8 }}>
           <summary style={{ cursor: 'pointer', fontWeight: 700 }}>Bridge diagnostics</summary>
           <pre style={{ margin: '6px 0 0', fontSize: 10, fontFamily: 'var(--font-mono, monospace)', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
@@ -223,12 +231,14 @@ window.RposStripeTerminal: ${diag.hasNative}
 .isAvailable() defined:  ${diag.hasIsAvailable}
 .isAvailable() returned: ${JSON.stringify(diag.isAvailableResult)} (${diag.isAvailableType})
 exposed methods:         ${diag.methods.length > 0 ? diag.methods.join(', ') : '(none enumerable — bridges often hide their methods from Object.keys, this is normal)'}
-error:                   ${diag.error ?? '(none)'}
+js error:                ${diag.error ?? '(none)'}
+native init result:      ${diag.nativeInitResult ?? '(no signal — pre-v5.5.53 APK or page-load handler did not run)'}
+native init error:       ${diag.nativeInitErr ?? '(none)'}
 user agent:              ${typeof navigator !== 'undefined' ? navigator.userAgent : 'unknown'}`}
           </pre>
         </details>
         <div style={{ fontSize: 10, color: 'var(--t4)', marginTop: 8, lineHeight: 1.5 }}>
-          If you're inside the Sunmi APK and seeing this message, the bridge didn't load. Likely causes: an old APK without the Stripe bridge, or the StripeTerminalBridge class failed to register. Make sure you're on v{typeof window !== 'undefined' && window.RPOS_VERSION ? window.RPOS_VERSION : '5.5.51 or later'}.
+          If you're inside the Sunmi APK and seeing this message, the bridge didn't load. Make sure you're on v{typeof window !== 'undefined' && window.RPOS_VERSION ? window.RPOS_VERSION : '5.5.53 or later'} and the APK includes the Stripe bridge.
         </div>
       </div>
     );

@@ -2,17 +2,21 @@ package co.posup.rpos;
 
 import android.app.Activity;
 import android.os.Bundle;
+import android.util.Log;
 import android.view.View;
 import android.view.WindowManager;
 import android.webkit.*;
+import android.widget.Toast;
 import co.posup.rpos.payments.StripeTerminalBridge;
 import co.posup.rpos.printer.PrinterBridge;
 
 public class MainActivity extends Activity {
+    private static final String TAG = "MainActivity";
     private static final String POS_URL = "https://possystem-liard.vercel.app/?mode=pos";
     private WebView webView;
     private PrinterBridge printerBridge;
     private StripeTerminalBridge stripeTerminalBridge;
+    private String bridgeInitErr = null;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -36,8 +40,18 @@ public class MainActivity extends Activity {
         printerBridge = new PrinterBridge(webView);
         webView.addJavascriptInterface(printerBridge, "RposPrinter");
 
-        stripeTerminalBridge = new StripeTerminalBridge(this, webView);
-        webView.addJavascriptInterface(stripeTerminalBridge, "RposStripeTerminal");
+        // Stripe bridge — wrap in try/catch so a class-load or constructor failure here
+        // doesn't block the whole app, and we can surface a useful diagnostic instead of
+        // a silent missing window.RposStripeTerminal.
+        try {
+            stripeTerminalBridge = new StripeTerminalBridge(this, webView);
+            webView.addJavascriptInterface(stripeTerminalBridge, "RposStripeTerminal");
+            Log.d(TAG, "StripeTerminalBridge registered successfully");
+        } catch (Throwable e) {
+            bridgeInitErr = e.getClass().getName() + ": " + (e.getMessage() != null ? e.getMessage() : "(no message)");
+            Log.e(TAG, "StripeTerminalBridge init FAILED: " + bridgeInitErr, e);
+            Toast.makeText(this, "Stripe bridge failed: " + e.getClass().getSimpleName() + " — see Status drawer for details", Toast.LENGTH_LONG).show();
+        }
 
         WebSettings s = webView.getSettings();
         s.setJavaScriptEnabled(true);
@@ -69,6 +83,20 @@ public class MainActivity extends Activity {
                 // Only allow our app domain + Supabase
                 return !url.startsWith("https://possystem-liard.vercel.app") &&
                        !url.startsWith("https://tbetcegmszzotrwdtqhi.supabase.co");
+            }
+
+            @Override
+            public void onPageFinished(WebView v, String url) {
+                // After every page load, push the bridge init result into JS so the
+                // diagnostics panel can render it. Quoted for safe injection.
+                String js;
+                if (bridgeInitErr == null) {
+                    js = "window.__bridgeInitResult = 'ok';";
+                } else {
+                    String safe = bridgeInitErr.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n");
+                    js = "window.__bridgeInitResult = 'failed'; window.__bridgeInitErr = '" + safe + "';";
+                }
+                v.evaluateJavascript(js, null);
             }
 
             @Override

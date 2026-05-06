@@ -39,8 +39,16 @@ export function getBridgeDiagnostics() {
     methodCount: 0,
     methods: [],
     error: null,
+    nativeInitResult: null,
+    nativeInitErr: null,
   };
   try {
+    // Native side may have injected these on page-load if the Kotlin bridge
+    // registration failed. window.__bridgeInitErr is the JVM exception string.
+    if (typeof window !== 'undefined') {
+      result.nativeInitResult = window.__bridgeInitResult ?? null;
+      result.nativeInitErr = window.__bridgeInitErr ?? null;
+    }
     const b = native();
     result.hasNative = !!b;
     if (b) {
@@ -50,7 +58,6 @@ export function getBridgeDiagnostics() {
         result.isAvailableResult = String(r);
         result.isAvailableType = typeof r;
       }
-      // Count method-like properties (won't enumerate all due to JS-bridge quirks but gives a hint)
       try {
         const keys = Object.keys(b || {});
         result.methods = keys;
