@@ -20,6 +20,7 @@ import com.stripe.stripeterminal.external.callable.DiscoveryListener;
 import com.stripe.stripeterminal.external.callable.PaymentIntentCallback;
 import com.stripe.stripeterminal.external.callable.ReaderCallback;
 import com.stripe.stripeterminal.external.callable.TerminalListener;
+import com.stripe.stripeterminal.external.models.CollectConfiguration;
 import com.stripe.stripeterminal.external.models.ConnectionConfiguration;
 import com.stripe.stripeterminal.external.models.ConnectionStatus;
 import com.stripe.stripeterminal.external.models.ConnectionTokenException;
@@ -491,6 +492,7 @@ public class StripeTerminalBridge {
 
                 term.retrievePaymentIntent(clientSecret, new PaymentIntentCallback() {
                     @Override public void onSuccess(@NotNull PaymentIntent intent) {
+                        CollectConfiguration cfg = new CollectConfiguration.Builder().build();
                         term.collectPaymentMethod(intent, new PaymentIntentCallback() {
                             @Override public void onSuccess(@NotNull PaymentIntent intentAfterCollect) {
                                 term.confirmPaymentIntent(intentAfterCollect, new PaymentIntentCallback() {
@@ -515,7 +517,7 @@ public class StripeTerminalBridge {
                             @Override public void onFailure(@NotNull TerminalException e) {
                                 postCallback(callbackId, false, stepErr(e, "collect"));
                             }
-                        });
+                        }, cfg);
                     }
                     @Override public void onFailure(@NotNull TerminalException e) {
                         postCallback(callbackId, false, stepErr(e, "retrieve"));
