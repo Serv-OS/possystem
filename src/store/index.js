@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { supabase, isMock, getLocationId } from '../lib/supabase';
 import { calculateOrderTax } from '../lib/tax';
 import { resolveServiceCharge } from '../lib/serviceCharge';
-import { upsertMenuItem, upsertFloorTable, deleteFloorTable, insertKDSTicket, insertClosedCheck, toggle86DB, getNextOrderRefLocal } from '../lib/db';
+import { upsertMenuItem, upsertFloorTable, deleteFloorTable, insertKDSTicket, insertClosedCheck, toggle86DB, getNextOrderRefLocal, updateClosedCheckRefunds } from '../lib/db';
 import { printService } from '../lib/printer';
 
 // ── Supabase helpers ─────────────────────────────────────────────────────────
@@ -3312,6 +3312,8 @@ export const useStore = create((set, get) => ({
   },
 
   refundCheck: (checkId, { items: refundItems, isFullRefund, manager, reason, tenderMethod, amount }) => {
+    let nextRefunds = null;
+    let nextStatus = null;
     set(s => ({
       closedChecks: s.closedChecks.map(chk => {
         if (chk.id !== checkId) return chk;
@@ -3326,11 +3328,22 @@ export const useStore = create((set, get) => ({
           items: refundItems,
           amount: amount || refundItems.reduce((s, ri) => s + ri.price * ri.refundQty, 0),
         };
-        const totalRefunded = [...chk.refunds, refund].reduce((s, r) => s + r.amount, 0);
+        const allRefunds = [...chk.refunds, refund];
+        const totalRefunded = allRefunds.reduce((s, r) => s + r.amount, 0);
         const status = totalRefunded >= chk.subtotal ? 'refunded' : 'partial_refund';
-        return { ...chk, refunds: [...chk.refunds, refund], status };
+        nextRefunds = allRefunds;
+        nextStatus = status;
+        return { ...chk, refunds: allRefunds, status };
       }),
     }));
+    // Persist to Supabase so other POS devices at the location see this refund
+    // via the realtime UPDATE listener (lib/realtime.js). Fire-and-forget — the
+    // local mutation already happened so UX stays snappy; if the network call
+    // fails it logs a warning and the next refund / boot reconciles.
+    if (nextRefunds && nextStatus) {
+      updateClosedCheckRefunds(checkId, nextRefunds, nextStatus)
+        .catch(err => console.warn('[refundCheck] persist failed', err?.message || err));
+    }
     get().showToast(`Refund of £${amount?.toFixed(2)} processed via ${tenderMethod}`, 'success');
   },
 

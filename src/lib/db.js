@@ -403,6 +403,33 @@ export const insertClosedCheck = async (check, locationId = null) => {
   return safeInsertClosedCheck(check, row);
 };
 
+/**
+ * Persist a refund to closed_checks.refunds[] + status. Used by store.refundCheck
+ * so refunds applied on one device propagate to every other device at the
+ * location via the realtime UPDATE listener in lib/realtime.js.
+ *
+ * Returns { ok, error? }. Failures are logged but never thrown — the local
+ * mutation has already happened so the UI stays responsive even if Supabase
+ * is unreachable; the next refund / boot will re-sync.
+ */
+export const updateClosedCheckRefunds = async (checkId, refunds, status) => {
+  if (isMock || !checkId) return { ok: false };
+  try {
+    const { error } = await supabase
+      .from('closed_checks')
+      .update({ refunds: refunds || [], status: status || 'paid' })
+      .eq('id', checkId);
+    if (error) {
+      console.warn('[DB] updateClosedCheckRefunds failed:', error.message);
+      return { ok: false, error };
+    }
+    return { ok: true };
+  } catch (e) {
+    console.warn('[DB] updateClosedCheckRefunds error:', e?.message);
+    return { ok: false, error: e };
+  }
+};
+
 export const fetchClosedChecks = async (locationId = null, limit = 500, sinceDate = null) => {
   if (isMock) return { data: null, error: null };
   // Use provided date or fall back to today's start (will be refined by locationTime once config loads)

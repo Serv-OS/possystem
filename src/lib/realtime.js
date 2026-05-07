@@ -162,6 +162,10 @@ export function startRealtime(store, locationId = LOCATION_ID) {
     .subscribe();
 
   // ── Closed checks — live sync across all devices ──────────────────────────
+  // INSERT  → a check was paid on another device, prepend it to local state.
+  // UPDATE  → a refund / status change happened elsewhere — merge it in so the
+  //           refund history view + closed-orders list stay consistent across
+  //           every POS / MPOS at the location.
   const checksChannel = supabase
     .channel(`checks:${locationId}`)
     .on('postgres_changes', {
@@ -205,6 +209,44 @@ export function startRealtime(store, locationId = LOCATION_ID) {
         }
         store.setState(update);
       }
+    })
+    .on('postgres_changes', {
+      event: 'UPDATE',
+      schema: 'public',
+      table: 'closed_checks',
+      filter: `location_id=eq.${locationId}`,
+    }, ({ new: check }) => {
+      if (!check?.id) return;
+      // Refund / status change from another device — merge the updated fields
+      // (refunds[], status) into the matching local row. We don't replace the
+      // whole row because the local row's camelCase shape is richer than the
+      // snake_case Supabase shape; we just patch the bits the desktop POS UI
+      // reads from. If the row isn't in local state yet (rare), append it.
+      store.setState(s => {
+        const existing = (s.closedChecks || []).find(c => c.id === check.id);
+        if (existing) {
+          return {
+            closedChecks: s.closedChecks.map(c => c.id === check.id ? {
+              ...c,
+              refunds: check.refunds || [],
+              status: check.status || c.status,
+            } : c),
+          };
+        }
+        // Not in local state — append a normalised row (same shape as INSERT branch)
+        return {
+          closedChecks: [{
+            id: check.id, ref: check.ref, server: check.server, covers: check.covers,
+            orderType: check.order_type, customer: check.customer,
+            items: check.items || [], discounts: check.discounts || [],
+            subtotal: check.subtotal, service: check.service, tip: check.tip, total: check.total,
+            method: check.method,
+            closedAt: check.closed_at ? new Date(check.closed_at).getTime() : null,
+            status: check.status, refunds: check.refunds || [],
+            tableId: check.table_id, tableLabel: check.table_label,
+          }, ...s.closedChecks],
+        };
+      });
     })
     .subscribe();
 

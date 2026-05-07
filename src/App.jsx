@@ -74,6 +74,16 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.67', date: '7 May 2026', label: 'Refunds now sync across devices (closed_checks UPDATE realtime)',
+    changes: [
+      'CROSS-DEVICE REFUND SYNC — caught a real gap: the closed-check INSERT path was wired into Supabase + realtime so a paid order on the phone immediately appeared on the desktop POS. But store.refundCheck was only mutating local state — the refund row was being added to closedChecks[].refunds in memory, never written back to Supabase, so other devices stayed unaware. Three small surgical fixes:',
+      '  • lib/db.js — new updateClosedCheckRefunds(checkId, refunds, status) helper. Single Supabase UPDATE that overwrites the refunds array + status on the matching row. Returns { ok, error? }; failures log a warning but don\'t throw, since the local mutation has already happened.',
+      '  • store.refundCheck — after the local set() that appends the refund row, fires updateClosedCheckRefunds() fire-and-forget. The next refund / boot reconciles if the network call missed.',
+      '  • lib/realtime.js — closed_checks channel now subscribes to UPDATE in addition to INSERT. On UPDATE, merges the new refunds + status into the matching local row (we patch fields, don\'t replace the whole row, because local camelCase shape is richer than Supabase snake_case). If the row isn\'t in local state yet — rare but possible on stale clients — the listener falls back to appending a normalised version, same shape as INSERT.',
+      'NET RESULT: refund a check on MPOS, the row updates on every other POS / MPOS at the location within ~1 second. Status flips to "Refunded" or "Partial refund" with the refunds[] array fully synced (manager id, amount, reason, items, timestamp).',
+    ],
+  },
+  {
     version: '5.5.66', date: '7 May 2026', label: 'MPOS — close-check fix + closed-orders history + refund flow',
     changes: [
       'PAYMENT WAS NOT CLOSING THE TABLE — root cause: MPOSSurface was calling store.recordClosedCheck which only writes the closed_checks row but does NOT reset the table session, so the table stayed stuck as occupied even though the customer had paid. Switched to store.clearTable which calls recordClosedCheck AND flips the session to null + status to available + cleans up child tables. Walk-in path also now nulls walkInOrder + customer after recordWalkInClosed. Belt-and-braces: setActiveTableId(null) right after so the next "Take next order" lands on a clean slate.',
