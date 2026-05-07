@@ -3,17 +3,28 @@
 
 export const Sx = {
   shell: {
-    // 100svh = SMALL viewport height (conservative — bottom action bars never
-    // clip behind iOS Safari's dynamic URL bar). Centered horizontally via
-    // left:0 right:0 + margin:0 auto INSTEAD of transform:translateX(-50%):
-    // the latter combination with position:fixed had an iOS Safari hit-test
-    // bug where touch coordinates were offset from the visual layout (Peter
-    // had to tap below buttons to fire them — v5.5.71 fix).
-    position:'fixed', top:0, left:0, right:0, margin:'0 auto',
-    display:'flex', flexDirection:'column', height:'100svh', maxWidth:540,
+    // v5.5.72 — REAL hit-test fix. Earlier we used `top:0` + `padding-top:
+    // env(safe-area-inset-top)` to keep content out from under the iPhone
+    // notch. That works visually but iOS Safari with viewport-fit=cover
+    // measures touch coordinates from the hardware top (under the notch),
+    // while the layout box sits there too — so a button rendered at visible
+    // y=50 had its hit-zone at y=50 + ~47px notch padding, off-screen.
+    // Tapping below the visible button "worked" because the user was
+    // tapping at the actual hit-zone position.
+    //
+    // Fix: position the shell BELOW the safe area entirely. top: safe-area-
+    // inset-top means the shell's first pixel IS the first visible pixel.
+    // Height shrinks by the safe-area top so we still bottom-out at the
+    // hardware-bottom edge (bottom action bars use safe-area-inset-bottom
+    // padding internally to clear the home indicator).
+    position:'fixed',
+    top:'env(safe-area-inset-top)',
+    left:0, right:0, margin:'0 auto',
+    display:'flex', flexDirection:'column',
+    height:'calc(100svh - env(safe-area-inset-top))',
+    maxWidth:540,
     background:'var(--bg)', color:'var(--t1)',
     overflow:'hidden', fontFamily:'inherit', WebkitTapHighlightColor:'transparent',
-    paddingTop:'env(safe-area-inset-top)',
   },
   header: {
     padding:'10px 14px', borderBottom:'1px solid var(--bdr)', background:'var(--bg1)',

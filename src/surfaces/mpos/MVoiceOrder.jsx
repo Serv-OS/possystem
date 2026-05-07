@@ -146,6 +146,15 @@ export default function MVoiceOrder({ onClose }) {
     parsed.items.forEach(p => {
       const item = menuItems.find(m => m.id === p.item_id);
       if (!item) return;
+      // Defensive: never add a parent-variant container item directly. The
+      // server-side filter already drops these from the prompt, but if the
+      // model returns one anyway (e.g. due to fuzzy id reasoning) we skip it
+      // rather than adding a £0 placeholder line. The clarification banner
+      // covers the user-visible side.
+      if ((item.type || 'simple') === 'variants') {
+        console.warn('[voice] refusing to add parent-variant item', item.id);
+        return;
+      }
       const mods = (p.mod_labels || []).map(label => ({
         id: `voice-${label}`, name: label, label, price: 0, _instruction: true,
       }));
@@ -262,23 +271,46 @@ export default function MVoiceOrder({ onClose }) {
                 </div>
                 {parsed.items.map((p, i) => {
                   const item = menuItems.find(m => m.id === p.item_id);
-                  if (!item) return null;
+                  if (!item) {
+                    return (
+                      <div key={i} style={{ padding:'10px 12px', background:'var(--red-d)', borderRadius:11, border:'1px solid var(--red-b)', marginBottom:6, fontSize:12, color:'var(--red)' }}>
+                        ⚠ Couldn't find item id "{p.item_id}" — skipped
+                      </div>
+                    );
+                  }
+                  const isParentVariant = (item.type || 'simple') === 'variants';
                   const price = item?.pricing?.base ?? item?.price ?? 0;
                   return (
-                    <div key={i} style={{ padding:'10px 12px', background:'var(--bg2)', borderRadius:11, border:'1px solid var(--bdr)', marginBottom:6, display:'flex', gap:10 }}>
+                    <div key={i} style={{
+                      padding:'10px 12px',
+                      background: isParentVariant ? 'var(--red-d)' : 'var(--bg2)',
+                      borderRadius:11,
+                      border:`1px solid ${isParentVariant ? 'var(--red-b)' : 'var(--bdr)'}`,
+                      marginBottom:6, display:'flex', gap:10,
+                    }}>
                       <div style={{ fontSize:12, fontWeight:800, color:'var(--t4)', fontFamily:'var(--font-mono)', minWidth:24, paddingTop:1 }}>
                         {p.qty}×
                       </div>
                       <div style={{ flex:1, minWidth:0 }}>
-                        <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)' }}>{item.name}</div>
-                        {(p.mod_labels || []).length > 0 && (
+                        <div style={{ fontSize:13, fontWeight:700, color: isParentVariant ? 'var(--red)' : 'var(--t1)' }}>
+                          {item.name}
+                          {isParentVariant && <span style={{ marginLeft:6, fontSize:10, fontWeight:700, padding:'1px 6px', borderRadius:6, background:'var(--red)', color:'#fff' }}>SKIPPED · pick a size</span>}
+                        </div>
+                        {isParentVariant && (
+                          <div style={{ fontSize:11, color:'var(--red)', marginTop:2 }}>
+                            "{item.name}" needs a specific size. Tap "Try again" and say e.g. "Latte large" or "Latte regular".
+                          </div>
+                        )}
+                        {!isParentVariant && (p.mod_labels || []).length > 0 && (
                           <div style={{ fontSize:11, color:'var(--acc)', marginTop:1 }}>{p.mod_labels.join(' · ')}</div>
                         )}
-                        {p.notes && <div style={{ fontSize:11, color:'var(--acc)', marginTop:1 }}>📝 {p.notes}</div>}
+                        {!isParentVariant && p.notes && <div style={{ fontSize:11, color:'var(--acc)', marginTop:1 }}>📝 {p.notes}</div>}
                       </div>
-                      <div style={{ fontSize:13, fontWeight:800, color:'var(--t2)', fontFamily:'var(--font-mono)' }}>
-                        {money(price * (p.qty || 1))}
-                      </div>
+                      {!isParentVariant && (
+                        <div style={{ fontSize:13, fontWeight:800, color:'var(--t2)', fontFamily:'var(--font-mono)' }}>
+                          {money(price * (p.qty || 1))}
+                        </div>
+                      )}
                     </div>
                   );
                 })}

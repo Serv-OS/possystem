@@ -15,8 +15,11 @@
 const SYSTEM_PROMPT = `You are a voice-order parser for a restaurant POS system.
 
 A server has just spoken an order at the table. You receive the transcript and
-the location's full menu (items, modifier groups, allergens). Your job is to
-return a structured list of items that match the transcript.
+the location's menu — every item is a SELLABLE LEAF (parent variant items like
+"Lager" or "Latte" are filtered out before reaching you; you only see the
+sellable variants like "Lager — Pint" or "Latte — Large").
+
+Your job is to return a structured list of items that match the transcript.
 
 You must call the add_items_to_order tool exactly once with the parsed items.
 If the transcript is ambiguous (e.g. "burger" but there are three burgers on
@@ -25,14 +28,20 @@ call and return zero items so the server can re-record.
 
 Rules:
 1. Only return items that exist in the provided menu — never invent items.
-2. Map quantities correctly ("a couple of beers" → 2, "three" → 3, "another" → +1).
-3. Map modifiers / sizes if the transcript implies them ("large fries" → fries
-   variant where size matches, "no pickle" → modifier with negative flag in notes).
-4. Map cooking preferences ("medium rare", "well done") to instruction notes.
-5. If the transcript mentions allergies ("they're allergic to nuts"), put it in
-   the order_note field — DO NOT silently swap items.
-6. Be tolerant of speech-to-text errors: "ling-uine" → "linguine".
-7. If something can't be confidently mapped, skip it and add a note in clarification.
+   Match the spoken phrase against item.name. The names already include the
+   size / variant (e.g. "Latte — Large", "Lager — Pint"), so "large latte"
+   should match the item whose name CONTAINS BOTH "latte" AND "large".
+2. NEVER pick an item by partial size match alone. If the transcript says
+   "large latte" and you find "Latte — Large", return that. If you can only
+   find "Latte — Regular" and "Espresso", set clarification asking for the
+   right size — DO NOT silently substitute.
+3. Map quantities correctly ("a couple of beers" → 2, "three" → 3, "another" → +1).
+4. Map modifiers if the transcript implies them ("no pickle" → mod_label).
+5. Map cooking preferences ("medium rare", "well done") to instruction labels.
+6. If the transcript mentions allergies ("they're allergic to nuts"), put it in
+   order_note — DO NOT silently swap items.
+7. Be tolerant of speech-to-text errors: "ling-uine" → "linguine".
+8. If something can't be confidently mapped, skip it and explain in clarification.
 
 Return only the tool call. No prose.`;
 
@@ -83,15 +92,32 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Missing menu' });
   }
 
+  // Filter to SELLABLE LEAVES only. Parent variant items (type === 'variants')
+  // exist on the menu as containers — they have price 0 and aren't sold
+  // directly; their sellable forms are children with parentId set. If we let
+  // Claude see the parent, it sometimes picks the parent ID for "large latte"
+  // because the parent name matched, even though the variant child is what
+  // the customer wanted. Drop parents here so Claude can only choose among
+  // sellable items.
+  const ids = new Set(menu.map(m => m.id));
+  const parentIds = new Set(menu.filter(m => (m.type || 'simple') === 'variants').map(m => m.id));
+  const sellable = menu.filter(m => {
+    const t = m.type || 'simple';
+    if (t === 'variants') return false;          // never sell the parent
+    if (m.parentId && !ids.has(m.parentId)) {
+      // orphaned variant — keep, defensive
+      return true;
+    }
+    return true;
+  });
+
   // Compact menu representation — only the fields the parser needs. Keeps
   // tokens down so latency stays under ~1.5s.
-  const compactMenu = menu.slice(0, 200).map(m => ({
+  const compactMenu = sellable.slice(0, 250).map(m => ({
     id: m.id,
     name: m.name,
     cat: m.cat || (Array.isArray(m.cats) ? m.cats[0] : null),
     price: m.price ?? m.pricing?.base ?? 0,
-    parent_id: m.parentId || null,
-    type: m.type || 'simple',
     allergens: m.allergens || [],
   }));
 

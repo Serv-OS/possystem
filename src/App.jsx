@@ -74,6 +74,17 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.72', date: '7 May 2026', label: 'MPOS — REAL hit-test fix (shell below safe area) + voice variant handling (no more "large" alone)',
+    changes: [
+      'HIT-TEST OFFSET — actual root cause this time. The 5.5.71 fix removed the transform-based centering but kept padding-top:env(safe-area-inset-top) on a position:fixed shell. iOS Safari with viewport-fit=cover measures touch coordinates from the hardware-top (under the notch) but I was rendering content visually below the notch via padding — so a button visually at y=50 had its hit-zone at y=50+47px notch padding, off the screen above. Tapping below the visible button "worked" because that\'s where the hit-zone actually was.',
+      'PROPER FIX: position the shell BELOW the safe area entirely. top: env(safe-area-inset-top) means the shell\'s first pixel IS the first visible pixel; height shrinks accordingly. No more padding-top needed at the shell level. Hit-zones now align with visual layout exactly.',
+      'VOICE "LARGE LATTE" → "LARGE" BUG — variant parents (items with type:"variants" like "Latte" itself, price:0) were being returned by the parser instead of their sellable children (e.g. "Latte — Large"). Fixed in three layers:',
+      '  • api/voice-order.js now FILTERS the menu before sending to Claude — drops every type:"variants" parent. Claude only sees sellable leaves like "Latte — Large", "Latte — Regular", "Lager — Pint" etc. So when the server says "large latte", Claude can only match the leaf with both words in its name.',
+      '  • System prompt tightened — explicit rule: NEVER pick by partial size match alone. If the right variant doesn\'t exist on the menu, set clarification asking the server to specify size — don\'t silently substitute.',
+      '  • MVoiceOrder client-side guard: if Claude returns a parent-variant id anyway (defensive, shouldn\'t happen post-filter), the confirm step refuses to add it AND the confirmation list flags it with a red SKIPPED pill + actionable message ("Tap Try again and say e.g. \'Latte large\' or \'Latte regular\'"). No more silent £0 line items.',
+    ],
+  },
+  {
     version: '5.5.71', date: '7 May 2026', label: 'MPOS — hit-test offset fix (buttons now click where they look) + voice recording reliability rewrite',
     changes: [
       'BUTTONS NOT CLICKING WHERE THEY LOOK — root cause: Sx.shell used position:fixed combined with transform:translateX(-50%) for centering. iOS Safari has a known issue where this combination causes touch hit-zones to offset from the visual layout — Peter had to tap below buttons to fire them. Replaced the transform-based centering with left:0; right:0; margin:0 auto so the shell still centres on phones up to 540pt wide but uses regular box-model positioning. All taps now register where the user expects.',
