@@ -53,12 +53,21 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
   // set. Without this filter the device shows every menu's categories at
   // once (Brunch, Main, Late Night all interleaved) rather than just the
   // current service.
-  const topLevelCategories = useMemo(() =>
-    menuCategories.filter(c =>
-      !c.parentId && c.visible !== false &&
-      (!effectiveMenuId || !c.menuId || c.menuId === effectiveMenuId)
-    )
-  , [menuCategories, effectiveMenuId]);
+  //
+  // Fault-tolerant fallback: if the filter results in zero categories (e.g.
+  // mismatched menuId between activeMenuId='menu-1' and Peter's actual data
+  // using different ids), show every visible top-level category instead of
+  // a blank menu. We log a warning so the wiring can be fixed in BO.
+  const topLevelCategories = useMemo(() => {
+    const allTop = menuCategories.filter(c => !c.parentId && c.visible !== false);
+    if (!effectiveMenuId) return allTop;
+    const filtered = allTop.filter(c => !c.menuId || c.menuId === effectiveMenuId);
+    if (filtered.length === 0 && allTop.length > 0) {
+      console.warn(`[MPOS] activeMenuId="${effectiveMenuId}" matched 0 categories; showing all ${allTop.length}`);
+      return allTop;
+    }
+    return filtered;
+  }, [menuCategories, effectiveMenuId]);
 
   // Items by predicate. Hide child variants here (parentId set) so they don't
   // appear as their own rows — they show up inside the parent variant picker.

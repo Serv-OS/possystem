@@ -74,6 +74,13 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.75', date: '7 May 2026', label: 'MPOS — shell uses height:100% (inherits from #root) + menu filter falls back to all when filter empties',
+    changes: [
+      'SHELL HEIGHT — switched from 100dvh to height:100% which inherits from #root (which globals.css sets to height:100%). This is the most-compatible approach across iOS/Android browsers and avoids dvh/svh/lvh inconsistencies that have caused both bottom-clip and hit-test issues across multiple iterations. No position:fixed, no transform — plain block flow.',
+      'MENU FILTER — when activeMenuId doesn\'t match any category\'s menuId (mismatched data), the filter was returning zero categories so the menu rendered blank. Now it falls back to showing every visible top-level category and logs a console warning so the wiring can be fixed in BO. Still hides when the user has explicitly set the right activeMenuId and that filter passes.',
+    ],
+  },
+  {
     version: '5.5.74', date: '7 May 2026', label: 'MPOS — five real-data fixes (shell revert, variant detection, from-price, active menu, combined names)',
     changes: [
       'SHELL REVERTED to the v5.5.60 simple block-flow version. Every "fix" since then (position:fixed + transform, then position:fixed + safe-area-top top, etc.) introduced different iOS hit-test offsets. Going back to plain `display:flex; height:100dvh; margin:0 auto; padding-top:env(safe-area-inset-top)` — no fixed positioning, no transform, hit-zones perfectly match visual layout. dvh adjusts as iOS Safari\'s URL bar shows/hides.',

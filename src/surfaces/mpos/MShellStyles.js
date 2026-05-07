@@ -3,19 +3,16 @@
 
 export const Sx = {
   shell: {
-    // v5.5.74 — REVERTED to the original simple shell from v5.5.60. Every
-    // attempt to "improve" this with position:fixed or transform-based
-    // centering caused iOS hit-test offsets where touches registered below
-    // the visual button. Going back to plain block flow:
-    //  • height: 100dvh — adjusts as iOS Safari's URL bar shows/hides
-    //  • margin: 0 auto — horizontal centering, no transform
-    //  • padding-top: env(safe-area-inset-top) — keep content below notch
-    //  • bottom action bars internally pad env(safe-area-inset-bottom)
-    // No position:fixed = no hit-test bug. Trade-off is that on landscape
-    // with a visible URL bar, the bottom action bar may briefly sit under
-    // chrome — but tapping is unaffected.
+    // v5.5.75 — Use height:100% which inherits from #root (which globals.css
+    // sets to height:100%). #root resolves to whatever the browser thinks the
+    // viewport is — most compatible across browsers / devices and avoids the
+    // dvh/svh/lvh inconsistencies that have caused both bottom-clip and
+    // hit-test issues. No position:fixed, no transform — plain block flow.
+    //
+    // Safe areas: padding-top for the notch, bottom action bars handle their
+    // own padding-bottom (env(safe-area-inset-bottom)) for the home indicator.
     display:'flex', flexDirection:'column',
-    height:'100dvh', width:'100%', maxWidth:540, margin:'0 auto',
+    height:'100%', width:'100%', maxWidth:540, margin:'0 auto',
     background:'var(--bg)', color:'var(--t1)',
     overflow:'hidden', fontFamily:'inherit', WebkitTapHighlightColor:'transparent',
     paddingTop:'env(safe-area-inset-top)',
