@@ -133,12 +133,16 @@ function MPOSRouter() {
 
   // From TableView/walk-in menu cart-bar → menu
   const goMenu = () => setFlow(f => ({ screen: 'menu', context: f.context || {} }));
-  // From menu → item detail. Variant parents (type === 'variants') open the
-  // variant picker first; the picked variant then routes to MItemDetail (for
-  // modifier selection) or, if it has no modifiers, straight into the cart
-  // via the parent flow.
+  // From menu → item detail. Variant parents are detected by the existence of
+  // ANY menu item whose parentId points back at this item — that's a more
+  // robust check than reading `type === 'variants'` (the type field varies by
+  // data source — Supabase rows might use a different value, etc.). When a
+  // variant parent is tapped we open the picker; otherwise straight to the
+  // item-detail modifier flow.
   const goItem = (item) => {
-    if (item?.type === 'variants') {
+    const items = useStore.getState().menuItems || [];
+    const hasChildren = items.some(m => m.parentId === item.id);
+    if (hasChildren) {
       setFlow(f => ({ screen: 'variantPicker', context: { ...(f.context||{}), parent: item } }));
       return;
     }
@@ -273,7 +277,23 @@ function MPOSRouter() {
         <BlankBg />
         <MVariantPicker
           parent={flow.context.parent}
-          onPick={(variant) => setFlow(f => ({ screen:'item', context:{ ...(f.context||{}), item: variant, parent: undefined } }))}
+          onPick={(variant) => {
+            // Synthesize a combined display name "Parent — Variant" so the
+            // cart line, kitchen ticket and receipt all show the full
+            // identity (e.g. "Lager — Half" rather than just "Half"). Some
+            // data sources store the child's name as just the size; others
+            // store it pre-combined. We detect the case-insensitive presence
+            // of the parent name to avoid double-combining.
+            const parent = flow.context.parent;
+            const parentName = parent?.name || '';
+            const childName = variant?.name || '';
+            const alreadyCombined = parentName && childName.toLowerCase().includes(parentName.toLowerCase());
+            const combinedName = alreadyCombined
+              ? childName
+              : (parentName ? `${parentName} — ${variant.menuName || childName}` : childName);
+            const displayItem = { ...variant, name: combinedName };
+            setFlow(f => ({ screen:'item', context:{ ...(f.context||{}), item: displayItem, parent: undefined } }));
+          }}
           onClose={() => setFlow(f => ({ screen:'menu', context: f.context || {} }))}
         />
       </div>

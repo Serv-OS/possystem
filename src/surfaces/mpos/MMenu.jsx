@@ -16,8 +16,12 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
   const {
     activeTableId, tables, walkInOrder,
     menuCategories = [], menuItems = [], eightySixIds = [],
-    allergens = [],
+    allergens = [], activeMenuId, deviceConfig,
   } = useStore();
+  // Active menu — falls back through device profile, then store default.
+  // Filtering by menuId keeps items from secondary menus ("Brunch", "Late
+  // night") out of the picker when the active menu is "Main".
+  const effectiveMenuId = activeMenuId || deviceConfig?.menuId || null;
 
   const [query, setQuery] = useState('');
   const [activeCatId, setActiveCatId] = useState(null);
@@ -45,10 +49,16 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
   const cartCount = activeItems.reduce((s, i) => s + (i.qty || 0), 0);
   const cartSubtotal = activeItems.reduce((s, i) => s + (i.price || 0) * (i.qty || 0), 0);
 
-  // Top-level visible categories
+  // Top-level visible categories — restricted to the active menu when one is
+  // set. Without this filter the device shows every menu's categories at
+  // once (Brunch, Main, Late Night all interleaved) rather than just the
+  // current service.
   const topLevelCategories = useMemo(() =>
-    menuCategories.filter(c => !c.parentId && c.visible !== false)
-  , [menuCategories]);
+    menuCategories.filter(c =>
+      !c.parentId && c.visible !== false &&
+      (!effectiveMenuId || !c.menuId || c.menuId === effectiveMenuId)
+    )
+  , [menuCategories, effectiveMenuId]);
 
   // Items by predicate. Hide child variants here (parentId set) so they don't
   // appear as their own rows — they show up inside the parent variant picker.
@@ -70,6 +80,29 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
       )
       .slice(0, 80);
   }, [menuItems, eightySixIds, query]);
+
+  // Build a parent-id → children index once. Used for:
+  //  • Detecting which top-level items are actually variant parents (any item
+  //    with at least one child via parentId) — independent of the `type`
+  //    field which can vary by data source.
+  //  • Computing the "from" price (cheapest child) so menu cards don't show
+  //    £0 for parents whose price lives on the children.
+  const childrenIndex = useMemo(() => {
+    const idx = {};
+    (menuItems || []).forEach(i => {
+      if (i.parentId) {
+        if (!idx[i.parentId]) idx[i.parentId] = [];
+        idx[i.parentId].push(i);
+      }
+    });
+    return idx;
+  }, [menuItems]);
+  const variantInfo = (item) => {
+    const kids = childrenIndex[item.id] || [];
+    if (!kids.length) return null;
+    const prices = kids.map(k => Number(k?.pricing?.base ?? k?.price ?? 0)).filter(p => p > 0);
+    return { kids, fromPrice: prices.length ? Math.min(...prices) : 0 };
+  };
 
   // Picked category, only when not searching
   const showSearch = query.trim().length > 0;
@@ -161,6 +194,7 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
           <ItemsList
             items={itemsToShow}
             allergenHits={allergenHits}
+            variantInfo={variantInfo}
             empty={
               showSearch
                 ? { icon:'🔍', title:`No items match "${query}"`, sub:'Try a different search term.' }
@@ -270,7 +304,7 @@ function CategoriesGrid({ categories, countFor, onPick }) {
 }
 
 // ── Items list (used for both category drill-in and search results) ──────────
-function ItemsList({ items, empty, onPick, allergenHits }) {
+function ItemsList({ items, empty, onPick, allergenHits, variantInfo }) {
   if (!items.length) {
     return (
       <div style={Sx.emptyBlock}>
@@ -287,18 +321,26 @@ function ItemsList({ items, empty, onPick, allergenHits }) {
           key={item.id} item={item}
           onTap={() => onPick?.(item)}
           allergenHits={allergenHits ? allergenHits(item) : []}
+          variantInfo={variantInfo ? variantInfo(item) : null}
         />
       ))}
     </div>
   );
 }
 
-function ItemRow({ item, onTap, allergenHits = [] }) {
-  const price = item?.pricing?.base ?? item?.price ?? 0;
+function ItemRow({ item, onTap, allergenHits = [], variantInfo = null }) {
+  // If this item is a variant parent (children link to it via parentId), the
+  // displayed price is "from £X" using the cheapest child — parents typically
+  // have base price 0 since the price lives on the children.
+  const isParent = !!variantInfo?.kids?.length;
+  const ownPrice = item?.pricing?.base ?? item?.price ?? 0;
+  const displayPrice = isParent ? (variantInfo.fromPrice || 0) : ownPrice;
   const hasMods =
-    item?.assignedModifierGroups?.length > 0 ||
-    item?.modifierGroups?.length > 0 ||
-    item?.type === 'modifiable';
+    !isParent && (
+      item?.assignedModifierGroups?.length > 0 ||
+      item?.modifierGroups?.length > 0 ||
+      item?.type === 'modifiable'
+    );
   const flagged = allergenHits.length > 0;
   return (
     <button onClick={onTap} style={{
@@ -330,8 +372,18 @@ function ItemRow({ item, onTap, allergenHits = [] }) {
       </div>
       <div style={{ display:'flex', flexDirection:'column', alignItems:'flex-end', gap:4, flexShrink:0 }}>
         <div style={{ fontSize:14, fontWeight:800, color: flagged ? 'var(--red)' : 'var(--acc)', fontFamily:'var(--font-mono)' }}>
-          {money(price)}
+          {isParent && variantInfo.fromPrice > 0 ? (
+            <>
+              <span style={{ fontSize:9, fontWeight:700, color:'var(--t4)', marginRight:3 }}>FROM</span>
+              {money(displayPrice)}
+            </>
+          ) : money(displayPrice)}
         </div>
+        {isParent && (
+          <span style={{ ...Sx.pill, background:'var(--acc-d)', color:'var(--acc)', border:'1px solid var(--acc-b)' }}>
+            {variantInfo.kids.length} SIZES
+          </span>
+        )}
         {hasMods && <span style={{ ...Sx.pill, background:'var(--bg3)', color:'var(--t4)', border:'1px solid var(--bdr)' }}>OPTIONS</span>}
       </div>
     </button>

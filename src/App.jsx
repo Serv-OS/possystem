@@ -74,6 +74,16 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.74', date: '7 May 2026', label: 'MPOS — five real-data fixes (shell revert, variant detection, from-price, active menu, combined names)',
+    changes: [
+      'SHELL REVERTED to the v5.5.60 simple block-flow version. Every "fix" since then (position:fixed + transform, then position:fixed + safe-area-top top, etc.) introduced different iOS hit-test offsets. Going back to plain `display:flex; height:100dvh; margin:0 auto; padding-top:env(safe-area-inset-top)` — no fixed positioning, no transform, hit-zones perfectly match visual layout. dvh adjusts as iOS Safari\'s URL bar shows/hides.',
+      'VARIANT DETECTION — was relying on `item.type === "variants"` to spot parent variant items, but real Supabase data uses different type values. Switched to a robust check: an item is a variant parent if ANY menu item has `parentId === item.id`. Used in two places: 1) MMenu ItemRow now renders parents with a "SIZES" pill and the cheapest-child price prefixed with "FROM", 2) MPOSSurface goItem routes parent taps to MVariantPicker (the picker was being skipped before because the type field didn\'t match).',
+      '"FROM £X" PRICING — parent variant items have base price 0 (the price lives on the children) so the menu was showing them as £0. Now parents compute "from = min(child prices)" and the ItemRow renders "FROM £3.20" with a small leading FROM label, matching how the desktop POS displays variant parents.',
+      'ACTIVE MENU FILTER — the menu was showing every menu\'s categories interleaved (Brunch, Main, Late Night all at once) instead of just the active menu. Now MMenu filters categories where `c.menuId === activeMenuId` (or the device profile\'s menuId). Falls back to showing all categories if no active menu is set, so locations with a single menu aren\'t affected.',
+      'COMBINED VARIANT NAMES — picking "Half" from a Lager variant picker was adding a cart line called just "Half" because the child item\'s `name` field was the size only. Now MPOSSurface synthesizes a "Parent — Variant" display name when handing the variant to MItemDetail / addItem (e.g. "Lager — Half") so cart lines, kitchen tickets and receipts all show the full identity. Detects already-combined names case-insensitively to avoid doubling up if the data source pre-combines them.',
+    ],
+  },
+  {
     version: '5.5.73', date: '7 May 2026', label: 'Voice — "did you mean" suggestions when item isn\'t on the menu',
     changes: [
       'GRACEFUL FALLBACK when the customer asks for something we don\'t sell (or asks for a size that doesn\'t exist). Previously the parser returned an empty items array + a vague clarification ("we don\'t have that"). Now it ALSO returns a suggestions[] array — Claude proposes the closest 2-5 menu items the server can offer the customer instead.',

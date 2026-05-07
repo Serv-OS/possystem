@@ -3,28 +3,22 @@
 
 export const Sx = {
   shell: {
-    // v5.5.72 — REAL hit-test fix. Earlier we used `top:0` + `padding-top:
-    // env(safe-area-inset-top)` to keep content out from under the iPhone
-    // notch. That works visually but iOS Safari with viewport-fit=cover
-    // measures touch coordinates from the hardware top (under the notch),
-    // while the layout box sits there too — so a button rendered at visible
-    // y=50 had its hit-zone at y=50 + ~47px notch padding, off-screen.
-    // Tapping below the visible button "worked" because the user was
-    // tapping at the actual hit-zone position.
-    //
-    // Fix: position the shell BELOW the safe area entirely. top: safe-area-
-    // inset-top means the shell's first pixel IS the first visible pixel.
-    // Height shrinks by the safe-area top so we still bottom-out at the
-    // hardware-bottom edge (bottom action bars use safe-area-inset-bottom
-    // padding internally to clear the home indicator).
-    position:'fixed',
-    top:'env(safe-area-inset-top)',
-    left:0, right:0, margin:'0 auto',
+    // v5.5.74 — REVERTED to the original simple shell from v5.5.60. Every
+    // attempt to "improve" this with position:fixed or transform-based
+    // centering caused iOS hit-test offsets where touches registered below
+    // the visual button. Going back to plain block flow:
+    //  • height: 100dvh — adjusts as iOS Safari's URL bar shows/hides
+    //  • margin: 0 auto — horizontal centering, no transform
+    //  • padding-top: env(safe-area-inset-top) — keep content below notch
+    //  • bottom action bars internally pad env(safe-area-inset-bottom)
+    // No position:fixed = no hit-test bug. Trade-off is that on landscape
+    // with a visible URL bar, the bottom action bar may briefly sit under
+    // chrome — but tapping is unaffected.
     display:'flex', flexDirection:'column',
-    height:'calc(100svh - env(safe-area-inset-top))',
-    maxWidth:540,
+    height:'100dvh', width:'100%', maxWidth:540, margin:'0 auto',
     background:'var(--bg)', color:'var(--t1)',
     overflow:'hidden', fontFamily:'inherit', WebkitTapHighlightColor:'transparent',
+    paddingTop:'env(safe-area-inset-top)',
   },
   header: {
     padding:'10px 14px', borderBottom:'1px solid var(--bdr)', background:'var(--bg1)',
