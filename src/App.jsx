@@ -74,6 +74,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.76', date: '7 May 2026', label: 'MPOS — bottom-sheet hit-test fix (single shared MBottomSheet wrapper, anchored at bottom:0)',
+    changes: [
+      'BOTTOM-SHEET HIT-TEST — every sheet (MNewOrder, MVariantPicker, MItemActions, MOrderActions, MAllergenPicker, MManagerPin, MVoiceOrder) was using the same `position:fixed; inset:0; display:flex; align-items:flex-end` pattern that has the iOS Safari hit-test offset bug. With the main shell now fixed, this was the last layer where taps registered slightly below the visual button.',
+      'NEW MBottomSheet wrapper component — single source of truth for sheet positioning. Two siblings: a fixed inset:0 backdrop (dim + tap-to-close) and a fixed bottom:0 sheet anchored DIRECTLY at the bottom edge. No more flex container with align-items:flex-end. Z-index and backdrop opacity are props so MManagerPin can layer above other sheets at z-index 70.',
+      'All 7 sheets refactored to use MBottomSheet: MNewOrder · MVariantPicker · MItemActions · MOrderActions · MAllergenPicker · MManagerPin · MVoiceOrder. Drag handle, padding, max-height, border-radius all centralised in the wrapper. Hit-zones should now match visual layout on the dine-in option, variant sizes, every other sheet button.',
+    ],
+  },
+  {
     version: '5.5.75', date: '7 May 2026', label: 'MPOS — shell uses height:100% (inherits from #root) + menu filter falls back to all when filter empties',
     changes: [
       'SHELL HEIGHT — switched from 100dvh to height:100% which inherits from #root (which globals.css sets to height:100%). This is the most-compatible approach across iOS/Android browsers and avoids dvh/svh/lvh inconsistencies that have caused both bottom-clip and hit-test issues across multiple iterations. No position:fixed, no transform — plain block flow.',

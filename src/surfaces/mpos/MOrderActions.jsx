@@ -14,6 +14,7 @@ import { useState } from 'react';
 import { useStore } from '../../store';
 import { Sx, money } from './MShellStyles';
 import MManagerPin, { getCachedManagerAuth } from './MManagerPin';
+import MBottomSheet from './MBottomSheet';
 
 // Same preset ladder as MItemActions / DiscountModal. Keeps line / order
 // discount UI consistent.
@@ -82,15 +83,8 @@ export default function MOrderActions({ onClose }) {
 
   // ── Render ───────────────────────────────────────────────────────────────
   return (
-    <div onClick={(e) => { if (e.target === e.currentTarget) close(); }}
-      style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.55)', zIndex:60, display:'flex', alignItems:'flex-end' }}>
-      <div onClick={(e) => e.stopPropagation()} style={{
-        width:'100%', maxWidth:540, margin:'0 auto', background:'var(--bg1)', borderRadius:'18px 18px 0 0',
-        padding:'14px 14px calc(18px + env(safe-area-inset-bottom)) 14px',
-        boxShadow:'0 -10px 32px rgba(0,0,0,.45)', maxHeight:'88svh', overflowY:'auto',
-      }}>
-        <div style={{ width:36, height:4, borderRadius:2, background:'var(--bdr2)', margin:'0 auto 14px' }}/>
-
+    <>
+    <MBottomSheet onClose={close} maxHeight="88vh">
         {view === 'main' && (
           <>
             <div style={{ marginBottom:14 }}>
@@ -206,20 +200,20 @@ export default function MOrderActions({ onClose }) {
             onBack={() => setView('main')}
           />
         )}
-      </div>
+    </MBottomSheet>
 
-      {pendingManagerDiscount && (
-        <MManagerPin
-          reason={`Approve ${pendingManagerDiscount.label} on ${isTable ? `Table ${tables.find(t => t.id === activeTableId)?.label}` : 'this order'}`}
-          onApprove={(manager) => {
-            const d = pendingManagerDiscount;
-            setPendingManagerDiscount(null);
-            commitDiscount(d, manager);
-          }}
-          onCancel={() => setPendingManagerDiscount(null)}
-        />
-      )}
-    </div>
+    {pendingManagerDiscount && (
+      <MManagerPin
+        reason={`Approve ${pendingManagerDiscount.label} on ${isTable ? `Table ${tables.find(t => t.id === activeTableId)?.label}` : 'this order'}`}
+        onApprove={(manager) => {
+          const d = pendingManagerDiscount;
+          setPendingManagerDiscount(null);
+          commitDiscount(d, manager);
+        }}
+        onCancel={() => setPendingManagerDiscount(null)}
+      />
+    )}
+    </>
   );
 }
 

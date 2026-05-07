@@ -7,6 +7,7 @@
 import { useStore } from '../../store';
 import { ALLERGENS } from '../../data/seed';
 import { Sx } from './MShellStyles';
+import MBottomSheet from './MBottomSheet';
 
 export default function MAllergenPicker({ onClose }) {
   const { allergens = [] } = useStore();
@@ -21,16 +22,8 @@ export default function MAllergenPicker({ onClose }) {
   const clearAll = () => useStore.setState({ allergens: [] });
 
   return (
-    <div onClick={(e) => { if (e.target === e.currentTarget) onClose?.(); }}
-      style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.55)', zIndex:60, display:'flex', alignItems:'flex-end' }}>
-      <div onClick={(e) => e.stopPropagation()} style={{
-        width:'100%', maxWidth:540, margin:'0 auto', background:'var(--bg1)', borderRadius:'18px 18px 0 0',
-        padding:'14px 14px calc(18px + env(safe-area-inset-bottom)) 14px',
-        boxShadow:'0 -10px 32px rgba(0,0,0,.45)', maxHeight:'90svh', overflowY:'auto',
-      }}>
-        <div style={{ width:36, height:4, borderRadius:2, background:'var(--bdr2)', margin:'0 auto 14px' }}/>
-
-        <div style={{ display:'flex', alignItems:'baseline', gap:10, marginBottom:6 }}>
+    <MBottomSheet onClose={onClose}>
+      <div style={{ display:'flex', alignItems:'baseline', gap:10, marginBottom:6 }}>
           <div style={{ fontSize:20, fontWeight:800, color:'var(--t1)', flex:1 }}>Allergy filter</div>
           {allergens.length > 0 && (
             <button onClick={clearAll} style={{
@@ -69,10 +62,9 @@ export default function MAllergenPicker({ onClose }) {
           })}
         </div>
 
-        <button onClick={onClose} style={{ ...Sx.btnPrim, marginTop:18 }}>
-          Done {allergens.length > 0 ? `· filtering ${allergens.length}` : ''}
-        </button>
-      </div>
-    </div>
+      <button onClick={onClose} style={{ ...Sx.btnPrim, marginTop:18 }}>
+        Done {allergens.length > 0 ? `· filtering ${allergens.length}` : ''}
+      </button>
+    </MBottomSheet>
   );
 }

@@ -19,6 +19,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { useStore } from '../../store';
 import { Sx, money } from './MShellStyles';
+import MBottomSheet from './MBottomSheet';
 
 const SpeechRecognitionImpl =
   typeof window !== 'undefined'
@@ -174,16 +175,7 @@ export default function MVoiceOrder({ onClose }) {
   // ── Render ──────────────────────────────────────────────────────────────
   const liveText = (transcriptUI + (interimUI ? ` ${interimUI}` : '')).trim();
   return (
-    <div onClick={(e) => { if (e.target === e.currentTarget) onClose?.(); }}
-      style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.7)', zIndex:60, display:'flex', alignItems:'flex-end' }}>
-      <div onClick={(e) => e.stopPropagation()} style={{
-        width:'100%', maxWidth:540, margin:'0 auto', background:'var(--bg1)', borderRadius:'18px 18px 0 0',
-        padding:'14px 14px calc(18px + env(safe-area-inset-bottom)) 14px',
-        boxShadow:'0 -10px 32px rgba(0,0,0,.5)', maxHeight:'92svh', overflowY:'auto',
-        display:'flex', flexDirection:'column',
-      }}>
-        <div style={{ width:36, height:4, borderRadius:2, background:'var(--bdr2)', margin:'0 auto 14px' }}/>
-
+    <MBottomSheet onClose={onClose} backdropOpacity=".7">
         <div style={{ textAlign:'center', marginBottom:14 }}>
           <div style={{ fontSize:11, color:'var(--acc)', textTransform:'uppercase', letterSpacing:'.07em', fontWeight:800 }}>Voice order</div>
           <div style={{ fontSize:18, fontWeight:800, color:'var(--t1)', marginTop:4 }}>
@@ -411,12 +403,11 @@ export default function MVoiceOrder({ onClose }) {
             </button>
           )}
         </div>
-      </div>
 
       <style>{`
         @keyframes mpos-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,.3), 0 0 0 0 rgba(239,68,68,.15); } 50% { box-shadow: 0 0 0 14px rgba(239,68,68,.25), 0 0 0 30px rgba(239,68,68,.10); } }
         @keyframes mpos-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
       `}</style>
-    </div>
+    </MBottomSheet>
   );
 }

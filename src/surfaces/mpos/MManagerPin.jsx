@@ -9,6 +9,7 @@
 import { useState, useEffect } from 'react';
 import { useStore } from '../../store';
 import { Sx } from './MShellStyles';
+import MBottomSheet from './MBottomSheet';
 
 const GRACE_MS = 90 * 1000;
 
@@ -73,15 +74,7 @@ export default function MManagerPin({ reason, onApprove, onCancel }) {
   };
 
   return (
-    <div onClick={(e) => { if (e.target === e.currentTarget) onCancel?.(); }}
-      style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.65)', zIndex:70, display:'flex', alignItems:'flex-end' }}>
-      <div onClick={(e) => e.stopPropagation()} style={{
-        width:'100%', maxWidth:540, margin:'0 auto', background:'var(--bg1)', borderRadius:'18px 18px 0 0',
-        padding:'14px 14px calc(18px + env(safe-area-inset-bottom)) 14px',
-        boxShadow:'0 -10px 32px rgba(0,0,0,.45)', maxHeight:'90svh', overflowY:'auto',
-      }}>
-        <div style={{ width:36, height:4, borderRadius:2, background:'var(--bdr2)', margin:'0 auto 14px' }}/>
-
+    <MBottomSheet onClose={onCancel} zIndex={70} backdropOpacity=".65">
         <div style={{ marginBottom:14, textAlign:'center' }}>
           <div style={{ fontSize:11, color:'var(--acc)', fontWeight:800, textTransform:'uppercase', letterSpacing:'.07em' }}>Manager required</div>
           <div style={{ fontSize:16, fontWeight:800, color:'var(--t1)', marginTop:4 }}>{reason || 'Approve this action'}</div>
@@ -171,7 +164,6 @@ export default function MManagerPin({ reason, onApprove, onCancel }) {
             </div>
           </div>
         )}
-      </div>
-    </div>
+    </MBottomSheet>
   );
 }

@@ -7,6 +7,7 @@ import { useState } from 'react';
 import { useStore } from '../../store';
 import { Sx, money } from './MShellStyles';
 import MManagerPin, { getCachedManagerAuth } from './MManagerPin';
+import MBottomSheet from './MBottomSheet';
 
 const COURSES = [
   { id:0, label:'Immediate' },
@@ -92,16 +93,9 @@ export default function MItemActions({ item, onClose }) {
 
   // ── Render ───────────────────────────────────────────────────────────────
   return (
-    <div onClick={(e) => { if (e.target === e.currentTarget) close(); }}
-      style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.55)', zIndex:60, display:'flex', alignItems:'flex-end' }}>
-      <div onClick={(e) => e.stopPropagation()} style={{
-        width:'100%', maxWidth:540, margin:'0 auto', background:'var(--bg1)', borderRadius:'18px 18px 0 0',
-        padding:'14px 14px calc(18px + env(safe-area-inset-bottom)) 14px',
-        boxShadow:'0 -10px 32px rgba(0,0,0,.45)', maxHeight:'88svh', overflowY:'auto',
-      }}>
-        <div style={{ width:36, height:4, borderRadius:2, background:'var(--bdr2)', margin:'0 auto 14px' }}/>
-
-        <div style={{ marginBottom:14 }}>
+    <>
+    <MBottomSheet onClose={close} maxHeight="88vh">
+      <div style={{ marginBottom:14 }}>
           <div style={{ fontSize:11, color:'var(--t4)', fontWeight:700, textTransform:'uppercase', letterSpacing:'.06em' }}>Item</div>
           <div style={{ fontSize:16, fontWeight:800, color:'var(--t1)', marginTop:2 }}>{item.qty} × {item.name}</div>
           {item.discount && (
@@ -171,7 +165,7 @@ export default function MItemActions({ item, onClose }) {
             <button onClick={() => setView('main')} style={{ ...Sx.btnGhost, marginTop:10 }}>← Back</button>
           </div>
         )}
-      </div>
+      </MBottomSheet>
 
       {/* Manager-PIN gate when a discount needs approval */}
       {pendingManagerDiscount && (
@@ -185,7 +179,7 @@ export default function MItemActions({ item, onClose }) {
           onCancel={() => setPendingManagerDiscount(null)}
         />
       )}
-    </div>
+    </>
   );
 }
 
