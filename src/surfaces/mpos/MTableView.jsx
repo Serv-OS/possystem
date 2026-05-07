@@ -55,6 +55,14 @@ export default function MTableView({ tableId, onAddItems, onOpenCart, onPay, onC
       </div>
 
       <div style={Sx.scroller}>
+        {/* Order note (if set) */}
+        {session.orderNote && (
+          <div style={{ margin:'14px 14px 0', padding:'10px 12px', borderRadius:11, background:'var(--acc-d)', border:'1px solid var(--acc-b)', display:'flex', alignItems:'flex-start', gap:8 }}>
+            <span style={{ fontSize:14, flexShrink:0 }}>📝</span>
+            <div style={{ flex:1, fontSize:12, color:'var(--acc)', lineHeight:1.4, whiteSpace:'pre-wrap' }}>{session.orderNote}</div>
+          </div>
+        )}
+
         {/* Total summary card */}
         <div style={{ margin:'14px 14px 6px', padding:'14px 16px', background:'var(--bg2)', borderRadius:14, border:'1px solid var(--bdr)' }}>
           <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>

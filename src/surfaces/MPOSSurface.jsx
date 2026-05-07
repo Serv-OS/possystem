@@ -31,6 +31,11 @@ import MTableView from './mpos/MTableView';
 import MMenu from './mpos/MMenu';
 import MItemDetail from './mpos/MItemDetail';
 import MCartSheet from './mpos/MCartSheet';
+import MTender from './mpos/MTender';
+import MCardFlow from './mpos/MCardFlow';
+import MPayAtCounter from './mpos/MPayAtCounter';
+import MReceiptPrompt from './mpos/MReceiptPrompt';
+import MDone from './mpos/MDone';
 import { Sx } from './mpos/MShellStyles';
 
 const TABS = [
@@ -140,10 +145,64 @@ function MPOSRouter() {
     showToast?.('Sent to kitchen', 'success');
   };
 
-  // Walk-in "Send & take payment" or table "Take payment" → tender flow (1C placeholder)
+  // Walk-in "Send & take payment" or table "Take payment" → tender flow (1C)
   const onSendAndPay = () => {
-    // 1C: open MTender. For now, stub.
-    alert('Tender flow (MTender → MCardFlow → MReceiptPrompt → MDone) lands in MPOS Phase 1C (next).');
+    // For walk-in flows, fire to kitchen first if anything is still pending. The
+    // tender wizard then takes over.
+    const { walkInOrder } = useStore.getState();
+    if (!activeTableId && walkInOrder?.items?.length) {
+      const pending = walkInOrder.items.filter(i => i.status !== 'sent' && !i.voided);
+      if (pending.length) {
+        try { useStore.getState().sendToKitchen?.(); } catch {}
+      }
+    }
+    setFlow({ screen: 'tender', context: flow.context || {} });
+  };
+
+  // After payment is approved (card REST or simulated)
+  const onPaymentApproved = (paymentInfo) => {
+    // Close the check using the existing store actions. They route automatically
+    // by activeTableId — same path the desktop POS uses.
+    const state = useStore.getState();
+    let closedCheck = null;
+    try {
+      if (activeTableId) {
+        state.recordClosedCheck(activeTableId, paymentInfo);
+        // recordClosedCheck doesn't return — read the latest closed check
+        closedCheck = useStore.getState().closedChecks?.[0] || null;
+      } else if (state.walkInOrder) {
+        state.recordWalkInClosed(state.walkInOrder, state.orderType || 'takeaway', state.customer, paymentInfo);
+        closedCheck = useStore.getState().closedChecks?.[0] || null;
+      }
+    } catch (e) {
+      console.warn('[mpos] close check failed', e);
+    }
+    setFlow({ screen: 'receipt', context: { check: closedCheck } });
+  };
+
+  // After "Pay at counter" routes to the order_queue
+  const onSentToCounter = () => {
+    showToast?.('Sent to counter for payment', 'success');
+    // Clear the active order locally — counter POS owns it now
+    if (activeTableId) {
+      // For tables, we leave the session open — counter staff will close it
+    } else {
+      useStore.setState({ walkInOrder: null });
+    }
+    setFlow({ screen: 'done', context: { check: null, deliveredVia: 'counter' } });
+  };
+
+  // After receipt prompt resolves
+  const onReceiptDone = (deliveredVia) => {
+    setFlow({ screen: 'done', context: { ...flow.context, deliveredVia: deliveredVia?.deliveredVia ?? deliveredVia } });
+  };
+
+  // "Take next order" on MDone → reset to home
+  const onAllDone = () => {
+    setActiveTableId(null);
+    useStore.setState({ walkInOrder: null, customer: null });
+    setFlow({ screen: null });
+    setTab(runnerMode ? 'orders' : 'home');
   };
 
   // ── Render flow overlays first so they sit above everything ──────────────
@@ -224,6 +283,59 @@ function MPOSRouter() {
           onSentToKitchen();
         }}
         onSendAndPay={onSendAndPay}
+      />
+    );
+  }
+
+  if (flow.screen === 'tender') {
+    return (
+      <MTender
+        onBack={() => {
+          const tableId = flow.context?.tableId || activeTableId;
+          if (tableId) setFlow({ screen: 'tableView', context: { tableId } });
+          else setFlow({ screen: 'cart', context: flow.context || {} });
+        }}
+        onPay={(payment) => setFlow(f => ({ screen: 'card', context: { ...(f.context || {}), payment } }))}
+        onPayAtCounter={(payment) => setFlow(f => ({ screen: 'payAtCounter', context: { ...(f.context || {}), payment } }))}
+      />
+    );
+  }
+
+  if (flow.screen === 'card' && flow.context?.payment) {
+    return (
+      <MCardFlow
+        payment={flow.context.payment}
+        onCancel={() => setFlow(f => ({ screen: 'tender', context: f.context || {} }))}
+        onApproved={onPaymentApproved}
+      />
+    );
+  }
+
+  if (flow.screen === 'payAtCounter' && flow.context?.payment) {
+    return (
+      <MPayAtCounter
+        payment={flow.context.payment}
+        onBack={() => setFlow(f => ({ screen: 'tender', context: f.context || {} }))}
+        onSent={onSentToCounter}
+      />
+    );
+  }
+
+  if (flow.screen === 'receipt') {
+    return (
+      <MReceiptPrompt
+        check={flow.context?.check}
+        onDone={onReceiptDone}
+      />
+    );
+  }
+
+  if (flow.screen === 'done') {
+    return (
+      <MDone
+        check={flow.context?.check}
+        deliveredVia={flow.context?.deliveredVia}
+        onNewOrder={onAllDone}
       />
     );
   }

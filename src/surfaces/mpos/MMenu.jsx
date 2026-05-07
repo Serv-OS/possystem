@@ -1,10 +1,10 @@
-// MMenu — phone-native menu browser. Search-first because typing on a phone
-// is faster than drilling 4 levels deep. Falls back to category chips and a
-// vertical item list when there's no query.
-//
-// Tapping an item opens MItemDetail (full-screen modifier flow). The cart
-// bar at the bottom counts items in the active order (table session OR
-// walkInOrder, routed by the store).
+// MMenu — phone-native menu browser with a TWO-STEP flow:
+//   1) Categories grid — big tappable cards. The category name is unambiguous,
+//      colour-coded by category.color when present.
+//   2) Items list — drill into a category, header shows the category name with
+//      a back arrow to return to the grid.
+// Search box is always visible at the top and bypasses the category step
+// when a query is present.
 
 import { useState, useMemo } from 'react';
 import { useStore } from '../../store';
@@ -19,7 +19,7 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
   const [query, setQuery] = useState('');
   const [activeCatId, setActiveCatId] = useState(null);
 
-  // Items in the active order — works for both table session and walk-in
+  // Live cart count + total
   const activeItems = useMemo(() => {
     if (activeTableId) {
       const t = tables.find(x => x.id === activeTableId);
@@ -27,49 +27,71 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
     }
     return walkInOrder?.items || [];
   }, [activeTableId, tables, walkInOrder]);
-
   const cartCount = activeItems.reduce((s, i) => s + (i.qty || 0), 0);
   const cartSubtotal = activeItems.reduce((s, i) => s + (i.price || 0) * (i.qty || 0), 0);
 
-  // Top-level categories (no parent)
-  const visibleCategories = useMemo(() =>
+  // Top-level visible categories
+  const topLevelCategories = useMemo(() =>
     menuCategories.filter(c => !c.parentId && c.visible !== false)
   , [menuCategories]);
 
-  // Default to first category if nothing selected
-  const effectiveCatId = activeCatId || visibleCategories[0]?.id;
+  // Items by predicate
+  const itemsForCategory = (catId) => (menuItems || []).filter(i =>
+    !i.hidden && !eightySixIds.includes(i.id) &&
+    (i.cat === catId || (Array.isArray(i.cats) && i.cats.includes(catId)))
+  );
 
-  // Filter logic
-  const filteredItems = useMemo(() => {
-    const all = (menuItems || []).filter(i => !i.hidden && !eightySixIds.includes(i.id));
-    if (query.trim()) {
-      const q = query.toLowerCase();
-      return all
-        .filter(i =>
-          (i.name || '').toLowerCase().includes(q) ||
-          (i.description || '').toLowerCase().includes(q) ||
-          (i.kitchenName || '').toLowerCase().includes(q)
-        )
-        .slice(0, 60);
+  // Search results — flatten everything matching the query
+  const searchResults = useMemo(() => {
+    if (!query.trim()) return [];
+    const q = query.toLowerCase();
+    return (menuItems || [])
+      .filter(i => !i.hidden && !eightySixIds.includes(i.id))
+      .filter(i =>
+        (i.name || '').toLowerCase().includes(q) ||
+        (i.description || '').toLowerCase().includes(q) ||
+        (i.kitchenName || '').toLowerCase().includes(q)
+      )
+      .slice(0, 80);
+  }, [menuItems, eightySixIds, query]);
+
+  // Picked category, only when not searching
+  const showSearch = query.trim().length > 0;
+  const showCategory = !showSearch && activeCatId != null;
+  const showCategoryGrid = !showSearch && activeCatId == null;
+
+  const activeCategory = showCategory ? topLevelCategories.find(c => c.id === activeCatId) : null;
+  const itemsToShow = showSearch ? searchResults : (showCategory ? itemsForCategory(activeCatId) : []);
+
+  // Header title — different for each step
+  let resolvedTitle = headerTitle || 'New order';
+  if (showSearch) resolvedTitle = `${searchResults.length} match${searchResults.length === 1 ? '' : 'es'}`;
+  else if (showCategory) resolvedTitle = activeCategory?.name || 'Items';
+
+  // Back behaviour: from items grid → go to categories grid; from categories → close
+  const handleBack = () => {
+    if (showCategory) {
+      setActiveCatId(null);
+      return;
     }
-    return all.filter(i =>
-      i.cat === effectiveCatId ||
-      (Array.isArray(i.cats) && i.cats.includes(effectiveCatId))
-    );
-  }, [menuItems, eightySixIds, query, effectiveCatId]);
+    onBack?.();
+  };
 
   return (
     <div style={Sx.shell}>
       {/* Header */}
       <div style={Sx.header}>
-        <button onClick={onBack} style={Sx.iconBtn} aria-label="Back">←</button>
+        <button onClick={handleBack} style={Sx.iconBtn} aria-label="Back">←</button>
         <div style={{ flex:1, minWidth:0 }}>
-          <div style={Sx.hTitle}>{headerTitle || 'Add items'}</div>
-          {headerSub && <div style={Sx.hSub}>{headerSub}</div>}
+          <div style={Sx.hTitle}>{resolvedTitle}</div>
+          {(headerSub && !showCategory && !showSearch) && <div style={Sx.hSub}>{headerSub}</div>}
+          {showCategory && activeCategory && (
+            <div style={Sx.hSub}>{itemsForCategory(activeCatId).length} item{itemsForCategory(activeCatId).length === 1 ? '' : 's'}</div>
+          )}
         </div>
       </div>
 
-      {/* Search box */}
+      {/* Search box — always visible */}
       <div style={{ padding:'10px 12px', flexShrink:0, background:'var(--bg)' }}>
         <div style={{ position:'relative' }}>
           <span style={{ position:'absolute', left:12, top:'50%', transform:'translateY(-50%)', fontSize:14, color:'var(--t4)', pointerEvents:'none' }}>🔍</span>
@@ -91,42 +113,26 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
         </div>
       </div>
 
-      {/* Category chips — hidden during search */}
-      {!query && (
-        <div style={{ padding:'2px 12px 8px', display:'flex', gap:6, overflowX:'auto', flexShrink:0, WebkitOverflowScrolling:'touch' }}>
-          {visibleCategories.length === 0 && (
-            <div style={{ fontSize:12, color:'var(--t4)', padding:'6px 0' }}>Menu not loaded yet.</div>
-          )}
-          {visibleCategories.map(c => {
-            const active = c.id === effectiveCatId;
-            return (
-              <button key={c.id} onClick={() => setActiveCatId(c.id)} style={{
-                padding:'8px 14px', borderRadius:99, border:`1.5px solid ${active ? 'var(--acc)' : 'var(--bdr2)'}`,
-                background: active ? 'var(--acc-d)' : 'var(--bg2)',
-                color: active ? 'var(--acc)' : 'var(--t2)',
-                fontSize:12, fontWeight:700, whiteSpace:'nowrap', cursor:'pointer', fontFamily:'inherit', flexShrink:0,
-              }}>{c.name}</button>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Items list */}
+      {/* Body — categories grid OR items list */}
       <div style={{ ...Sx.scroller, paddingBottom: cartCount > 0 ? 110 : 32 }}>
-        {filteredItems.length === 0 ? (
-          <div style={Sx.emptyBlock}>
-            <div style={{ fontSize:36, marginBottom:8, opacity:.3 }}>🍽</div>
-            <div style={{ fontSize:14, color:'var(--t3)', fontWeight:700, marginBottom:4 }}>
-              {query ? `No items match "${query}"` : 'No items in this category'}
-            </div>
-            <div style={{ fontSize:12 }}>{query ? 'Try a different search term.' : 'Pick another category or load the menu.'}</div>
-          </div>
-        ) : (
-          <div style={{ padding:'8px 12px' }}>
-            {filteredItems.map(item => (
-              <ItemRow key={item.id} item={item} onTap={() => onPickItem?.(item)} />
-            ))}
-          </div>
+        {showCategoryGrid && (
+          <CategoriesGrid
+            categories={topLevelCategories}
+            countFor={(c) => itemsForCategory(c.id).length}
+            onPick={(c) => setActiveCatId(c.id)}
+          />
+        )}
+
+        {(showCategory || showSearch) && (
+          <ItemsList
+            items={itemsToShow}
+            empty={
+              showSearch
+                ? { icon:'🔍', title:`No items match "${query}"`, sub:'Try a different search term.' }
+                : { icon:'🍽', title:'No items in this category', sub:'Pick another category.' }
+            }
+            onPick={onPickItem}
+          />
         )}
       </div>
 
@@ -152,9 +158,69 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
   );
 }
 
+// ── Categories grid — big tappable cards, 2-up ────────────────────────────────
+function CategoriesGrid({ categories, countFor, onPick }) {
+  if (!categories?.length) {
+    return (
+      <div style={Sx.emptyBlock}>
+        <div style={{ fontSize:36, marginBottom:8, opacity:.3 }}>🍽</div>
+        <div style={{ fontSize:14, color:'var(--t3)', fontWeight:700, marginBottom:4 }}>Menu not loaded yet</div>
+        <div style={{ fontSize:12 }}>Categories will appear here once the menu syncs.</div>
+      </div>
+    );
+  }
+  return (
+    <div style={{ padding:'10px 12px', display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
+      {categories.map(c => {
+        const accent = c.color || '#3b82f6';
+        return (
+          <button key={c.id} onClick={() => onPick(c)} style={{
+            padding:'18px 14px', borderRadius:14, border:`1.5px solid ${accent}40`,
+            background:`linear-gradient(135deg, ${accent}10, ${accent}22)`,
+            cursor:'pointer', fontFamily:'inherit', textAlign:'left',
+            display:'flex', flexDirection:'column', justifyContent:'space-between',
+            minHeight:108, color:'var(--t1)',
+          }}>
+            <div style={{ fontSize:24, marginBottom:8, lineHeight:1 }}>{c.icon || '🍽'}</div>
+            <div>
+              <div style={{ fontSize:15, fontWeight:800, color:'var(--t1)', marginBottom:3, lineHeight:1.2 }}>
+                {c.name}
+              </div>
+              <div style={{ fontSize:11, fontWeight:700, color: accent, textTransform:'uppercase', letterSpacing:'.06em' }}>
+                {countFor(c)} item{countFor(c) === 1 ? '' : 's'}
+              </div>
+            </div>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Items list (used for both category drill-in and search results) ──────────
+function ItemsList({ items, empty, onPick }) {
+  if (!items.length) {
+    return (
+      <div style={Sx.emptyBlock}>
+        <div style={{ fontSize:36, marginBottom:8, opacity:.3 }}>{empty.icon}</div>
+        <div style={{ fontSize:14, color:'var(--t3)', fontWeight:700, marginBottom:4 }}>{empty.title}</div>
+        <div style={{ fontSize:12 }}>{empty.sub}</div>
+      </div>
+    );
+  }
+  return (
+    <div style={{ padding:'8px 12px' }}>
+      {items.map(item => <ItemRow key={item.id} item={item} onTap={() => onPick?.(item)} />)}
+    </div>
+  );
+}
+
 function ItemRow({ item, onTap }) {
   const price = item?.pricing?.base ?? item?.price ?? 0;
-  const hasMods = item?.assignedModifierGroups?.length > 0 || item?.modifierGroups?.length > 0 || item?.type === 'modifiable';
+  const hasMods =
+    item?.assignedModifierGroups?.length > 0 ||
+    item?.modifierGroups?.length > 0 ||
+    item?.type === 'modifiable';
   return (
     <button onClick={onTap} style={{
       width:'100%', padding:'12px 14px', background:'var(--bg2)', borderRadius:12, border:'1px solid var(--bdr)',

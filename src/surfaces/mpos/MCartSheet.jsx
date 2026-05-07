@@ -17,8 +17,12 @@ import { Sx, money, STATUS_PILL } from './MShellStyles';
 export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore }) {
   const {
     activeTableId, tables, walkInOrder,
-    removeItem, updateItemQty, orderType,
+    removeItem, updateItemQty, orderType, setOrderNote,
   } = useStore();
+  // Live order note from whichever store branch holds the active order
+  const liveNote = activeTableId
+    ? (tables.find(t => t.id === activeTableId)?.session?.orderNote || '')
+    : (walkInOrder?.orderNote || '');
 
   // Read live order data — table session or walk-in
   const sourceData = useMemo(() => {
@@ -84,6 +88,25 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
         ) : (
           <div style={{ padding:'8px 12px' }}>
             {items.map(it => <CartLine key={it.uid} item={it} onRemove={() => removeItem(it.uid)} onInc={() => updateItemQty(it.uid, +1)} onDec={() => updateItemQty(it.uid, -1)} />)}
+          </div>
+        )}
+
+        {/* Order note */}
+        {items.length > 0 && (
+          <div style={{ padding:'8px 12px 4px' }}>
+            <div style={{ fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.06em', marginBottom:6 }}>
+              Order note
+            </div>
+            <textarea
+              value={liveNote}
+              onChange={(e) => setOrderNote(e.target.value.slice(0, 240))}
+              placeholder="e.g. Allergy in party, table near window, ASAP…"
+              style={{
+                width:'100%', padding:'10px 12px', borderRadius:10, border:'1px solid var(--bdr2)',
+                background:'var(--bg2)', color:'var(--t1)', fontSize:13, fontFamily:'inherit', outline:'none', boxSizing:'border-box',
+                minHeight:56, resize:'vertical',
+              }}/>
+            <div style={{ fontSize:10, color:'var(--t4)', textAlign:'right', marginTop:2 }}>{liveNote.length}/240</div>
           </div>
         )}
 

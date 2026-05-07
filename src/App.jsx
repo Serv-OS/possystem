@@ -74,6 +74,33 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.62', date: '7 May 2026', label: 'MPOS Phase 1B fixes + Phase 1C tender flow end-to-end (card · pay-at-counter · email receipts)',
+    changes: [
+      'PETER FEEDBACK FIXES from 1B:',
+      '  • VIEWPORT — buttons hanging off the bottom on phones. Switched MPOS shell from height:100vh to height:100dvh (dynamic viewport height) so the bottom action bar clears the iOS Safari URL bar / Android Chrome bottom chrome. dvh is supported on every browser shipped in the last two years.',
+      '  • ORDER NOTES — added an editable Order note section in MCartSheet (calls existing store.setOrderNote, routes to walkInOrder.orderNote or session.orderNote automatically). Note also displays as an orange callout at the top of MTableView so the kitchen-bound info is visible at a glance.',
+      '  • NESTED MODIFIERS — were broken in the first cut. Now: when a modifier option has subGroupId, the linked sub-group is revealed conditionally underneath that option (e.g. picking "Peppercorn" surfaces "Sauce preference: Hot / On the side"). Sub-picks attach to the parent option\'s mods array so they fire to the kitchen with the parent line.',
+      '  • CATEGORY VISIBILITY — categories were tiny chips. MMenu rewritten as a TWO-STEP flow: 1) big tappable category cards in a 2-up grid (colour-coded by category.color, item count badge, optional icon), 2) drill into a category → header shows the category name with back arrow. Search still bypasses the category step. Way more readable on a phone.',
+      '  • MULTI-PICK SAME MODIFIER — multi-select groups (max > 1) now allow tapping the same option multiple times to increment qty. Picked options show a "× N" badge with an inline − button to decrement. Single-select groups (max = 1) keep radio behaviour. The flat mods array passed to addItem expands each picked option into the right number of entries so kitchen tickets and price calculations stay correct.',
+      '',
+      'PHASE 1C SHIPPED — full payment + receipt flow on top of the 1A scaffold:',
+      '  • MTender — method picker. Shows total + tax + tip breakdown. 5-preset tip selector (0/10/12.5/15/20%) + custom amount input. Card · Pay at counter (Cash intentionally absent — no drawer on a phone, see docs/MPOS-SPEC.md).',
+      '  • MCardFlow — runtime decision tree based on the device profile\'s payment_mode: assigned_reader → REST flow against stripe-process-payment-on-reader (push line items via set_reader_display, poll every 1.5s, cancel on back, 5-min timeout). tap_to_pay → simulated approval (Phase 1E will swap in the native Stripe Tap to Pay bridge — slimmer artifact than the BBPOS one we ripped out). pay_at_counter_only → MTender hides the card option entirely.',
+      '  • MPayAtCounter — confirms the order routes to the counter via order_queue insert with status=pending_cash, source=mpos. Walk-in flows fire to kitchen first via sendToKitchen so the order isn\'t lost in transit. Counter POS picks it up via the existing realtime subscription on order_queue.',
+      '  • MReceiptPrompt — Email · Print at counter · None. Email is the digital-first default. Email field auto-populated from customer.email if present. Validates the address before send.',
+      '  • MDone — paid confirmation with delivery-method pill ("Receipt emailed to X" / "Sent to counter printer" / "No receipt"). Big "Take next order" CTA resets to home.',
+      '',
+      'EMAIL RECEIPT INFRASTRUCTURE (provider-agnostic):',
+      '  • supabase/functions/send-receipt/index.ts — provider-agnostic dispatcher. Reads RECEIPT_EMAIL_PROVIDER env var to pick a backend. Stubs included: log (default — writes audit row, no real send, useful for shipping the UI before a provider is chosen), resend, postmark. Plug in by setting RECEIPT_EMAIL_PROVIDER + the corresponding API key secret. No UI changes needed.',
+      '  • migrations/v5.5.62-receipt-emails.sql — receipt_emails delivery audit table. Tracks every send attempt with status (pending/queued/sent/failed), provider, provider_message_id, error, sent_at. RLS read-permissive; writes via service_role from the edge function only.',
+      '  • src/lib/sendReceipt.js — client-side helper. Renders a clean HTML receipt template (line items with mods + notes, subtotal/tax/tip/total breakdown, payment method footer) plus a plain-text alternative. Single source of truth so the email matches the print path.',
+      '',
+      'STORE INTEGRATION: payment approval calls existing store.recordWalkInClosed or store.recordClosedCheck — same path the desktop POS uses. Closed_checks row writes, customer attribution fires (CRM + customer_locations + customer_orders), order_queue stale entry cleared, GMV bump (when wired in a future sprint). Email receipt builds from the closed_check record so it matches what the customer paid exactly.',
+      '',
+      'WHAT IS NOT IN 1C (lands in 1D / 1E): MOrderActions ⋯ menu (apply order discount, split bill, transfer table, fire course), MManagerPin sheet, swipe-left action sheet on cart lines (discount/comp/void/transfer), refund flow, native iOS / Android shells with real Stripe Tap to Pay (currently simulated for testing the rest of the flow end-to-end).',
+    ],
+  },
+  {
     version: '5.5.61', date: '7 May 2026', label: 'MPOS Phase 1B — order-taking flow end-to-end (NewOrder → Menu → ItemDetail → Cart → Send)',
     changes: [
       'PHASE 1B SHIPPED: the actual order-taking workflow on top of the 1A scaffold. Floating "+" now opens a bottom-sheet order-type picker; from there the wizard walks through covers picker (dine-in only) → menu → item detail → cart → send to kitchen. Fully phone-native, single-task focus, no shrunk-desktop-UI anywhere.',
