@@ -2,17 +2,19 @@
 // "two cheeseburgers, one with no pickle, large fries, two cokes". On stop
 // the transcript is sent to /api/voice-order which uses Claude with a
 // menu-aware tool to return structured items. Server reviews + confirms,
-// then items are added via the existing addItem store action — same path
-// the manual menu flow uses.
+// then items are added via the existing addItem store action.
 //
-// Web Speech API:
-//   • iOS Safari 14.5+ supports webkitSpeechRecognition with hard mic perms
-//   • Chrome on Android supports SpeechRecognition natively
-//   • Falls back to "not supported" message on Firefox + older Safari — phase
-//     1E native shells will provide a Whisper bridge for those
-//
-// Permission: triggered the first time the user taps the mic. After grant,
-// remains permitted for the life of the page.
+// v5.5.71 reliability rewrite. Earlier version had two bugs:
+//   1. iOS Safari's SpeechRecognition auto-stops after ~6s of silence (or any
+//      lull) regardless of continuous:true. We now restart the recogniser
+//      automatically while the user is still in "listening" phase, and
+//      preserve the transcript across restarts using refs so closures don't
+//      see stale state.
+//   2. The only Stop control was the central mic toggle. If a user couldn't
+//      tap it (or recognition had already auto-stopped silently), the screen
+//      was stuck. We now always render a separate, prominent Stop & Use Text
+//      button below the live transcript, plus an explicit "I'm finished"
+//      action when iOS forces an early end.
 
 import { useState, useRef, useEffect } from 'react';
 import { useStore } from '../../store';
@@ -27,17 +29,22 @@ const supported = !!SpeechRecognitionImpl;
 export default function MVoiceOrder({ onClose }) {
   const { menuItems = [], addItem, setOrderNote } = useStore();
   const [phase, setPhase] = useState('ready'); // ready | listening | parsing | confirm | error
-  const [transcript, setTranscript] = useState('');
-  const [interim, setInterim] = useState('');
-  const [parsed, setParsed] = useState(null); // { items: [...], order_note, clarification }
+  const [transcriptUI, setTranscriptUI] = useState('');
+  const [interimUI, setInterimUI] = useState('');
+  const [parsed, setParsed] = useState(null);
   const [error, setError] = useState(null);
-  const recogRef = useRef(null);
-  const silenceTimerRef = useRef(null);
 
-  // ── Mic / recognition lifecycle ──────────────────────────────────────────
-  const start = () => {
-    if (!supported) { setError('Voice ordering not supported in this browser. Use Chrome on Android or Safari on iOS, or wait for the native shell.'); setPhase('error'); return; }
-    setError(null); setTranscript(''); setInterim('');
+  // Refs hold the LATEST values so SpeechRecognition handlers (which capture
+  // stale closures from when start() ran) can read what's actually current.
+  const phaseRef = useRef('ready');
+  const transcriptRef = useRef('');
+  const recogRef = useRef(null);
+  const userStoppedRef = useRef(false);
+
+  const setPhaseSafe = (p) => { phaseRef.current = p; setPhase(p); };
+
+  // ── Recognition lifecycle ────────────────────────────────────────────────
+  const buildRecognition = () => {
     const r = new SpeechRecognitionImpl();
     r.lang = 'en-GB';
     r.continuous = true;
@@ -50,48 +57,65 @@ export default function MVoiceOrder({ onClose }) {
         if (res.isFinal) finalText += res[0].transcript + ' ';
         else interimText += res[0].transcript;
       }
-      if (finalText) setTranscript(t => (t + finalText).trim() + ' ');
-      setInterim(interimText.trim());
-      // Auto-stop on 1.5s of silence after at least one final result
       if (finalText) {
-        clearTimeout(silenceTimerRef.current);
-        silenceTimerRef.current = setTimeout(() => stopAndParse(), 1500);
+        transcriptRef.current = (transcriptRef.current + ' ' + finalText).trim() + ' ';
+        setTranscriptUI(transcriptRef.current);
       }
+      setInterimUI(interimText.trim());
     };
     r.onerror = (e) => {
-      if (e.error === 'no-speech') return; // benign — keep listening
-      if (e.error === 'aborted') return;   // we stopped it ourselves
-      setError(`Mic error: ${e.error}`); setPhase('error');
+      // 'no-speech' fires when iOS hears silence. We just restart in that
+      // case — don't surface it as an error to the user.
+      if (e.error === 'no-speech' || e.error === 'aborted') return;
+      console.warn('[voice] recognition error', e.error);
+      setError(`Mic error: ${e.error}. Tap the mic to retry.`);
+      setPhaseSafe('error');
     };
     r.onend = () => {
-      // If we got here without explicit stopAndParse (e.g. 60s timeout), trigger parse if there's content
-      const t = (transcript + ' ' + interim).trim();
-      if (phase === 'listening' && t) {
-        // small delay so ref state reads through
-        setTimeout(() => stopAndParse(), 50);
+      // iOS Safari aggressively ends recognition; while the user is still in
+      // listening phase AND hasn't explicitly stopped, restart it. The
+      // transcriptRef survives across restarts so we don't lose anything.
+      if (phaseRef.current === 'listening' && !userStoppedRef.current) {
+        try { r.start(); } catch (e) { /* sometimes "already started" — fine */ }
       }
     };
-    recogRef.current = r;
-    setPhase('listening');
-    try { r.start(); } catch (e) { setError(e?.message || 'Could not start mic'); setPhase('error'); }
+    return r;
   };
 
-  const stopRecording = () => {
-    clearTimeout(silenceTimerRef.current);
+  const start = () => {
+    if (!supported) {
+      setError('Voice ordering isn\'t supported in this browser. Use Chrome on Android or Safari on iOS, or wait for the native shell.');
+      setPhaseSafe('error');
+      return;
+    }
+    setError(null);
+    transcriptRef.current = '';
+    userStoppedRef.current = false;
+    setTranscriptUI('');
+    setInterimUI('');
+    const r = buildRecognition();
+    recogRef.current = r;
+    setPhaseSafe('listening');
+    try { r.start(); }
+    catch (e) {
+      setError(e?.message || 'Could not start mic — check browser permissions');
+      setPhaseSafe('error');
+    }
+  };
+
+  // User-initiated stop. Sets a flag so onend doesn't restart, then triggers parse.
+  const stopAndParse = async () => {
+    userStoppedRef.current = true;
     if (recogRef.current) {
       try { recogRef.current.stop(); } catch {}
     }
-  };
-
-  const stopAndParse = async () => {
-    stopRecording();
-    const fullText = (transcript + ' ' + interim).trim();
-    setInterim('');
+    const fullText = (transcriptRef.current + ' ' + interimUI).trim();
     if (!fullText) {
-      setError('Did not hear anything — tap the mic and try again.');
-      setPhase('error'); return;
+      setError('Did not hear anything. Tap the mic and speak a bit louder, or check your phone\'s mic permission.');
+      setPhaseSafe('error');
+      return;
     }
-    setPhase('parsing');
+    setPhaseSafe('parsing');
     try {
       const res = await fetch('/api/voice-order', {
         method:'POST',
@@ -101,10 +125,20 @@ export default function MVoiceOrder({ onClose }) {
       const j = await res.json();
       if (!res.ok) throw new Error(j?.error || `HTTP ${res.status}`);
       setParsed(j);
-      setPhase('confirm');
+      setPhaseSafe('confirm');
     } catch (e) {
-      setError(e?.message || 'Could not parse order'); setPhase('error');
+      setError(e?.message || 'Could not parse order');
+      setPhaseSafe('error');
     }
+  };
+
+  // Cancel mid-recording (back out without parsing)
+  const cancelRecording = () => {
+    userStoppedRef.current = true;
+    if (recogRef.current) { try { recogRef.current.stop(); } catch {} }
+    transcriptRef.current = '';
+    setTranscriptUI(''); setInterimUI('');
+    setPhaseSafe('ready');
   };
 
   const confirm = () => {
@@ -121,10 +155,15 @@ export default function MVoiceOrder({ onClose }) {
     onClose?.();
   };
 
-  // Cleanup on unmount
-  useEffect(() => () => { stopRecording(); }, []);
+  // Cleanup on unmount — guarantee mic releases even if the user navigates
+  // away mid-listen.
+  useEffect(() => () => {
+    userStoppedRef.current = true;
+    if (recogRef.current) { try { recogRef.current.stop(); } catch {} }
+  }, []);
 
   // ── Render ──────────────────────────────────────────────────────────────
+  const liveText = (transcriptUI + (interimUI ? ` ${interimUI}` : '')).trim();
   return (
     <div onClick={(e) => { if (e.target === e.currentTarget) onClose?.(); }}
       style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.7)', zIndex:60, display:'flex', alignItems:'flex-end' }}>
@@ -139,22 +178,27 @@ export default function MVoiceOrder({ onClose }) {
         <div style={{ textAlign:'center', marginBottom:14 }}>
           <div style={{ fontSize:11, color:'var(--acc)', textTransform:'uppercase', letterSpacing:'.07em', fontWeight:800 }}>Voice order</div>
           <div style={{ fontSize:18, fontWeight:800, color:'var(--t1)', marginTop:4 }}>
-            {phase === 'ready' && 'Speak the order'}
+            {phase === 'ready'     && 'Speak the order'}
             {phase === 'listening' && 'Listening…'}
-            {phase === 'parsing' && 'Parsing your order'}
-            {phase === 'confirm' && 'Confirm items'}
-            {phase === 'error' && 'Voice order failed'}
+            {phase === 'parsing'   && 'Parsing your order'}
+            {phase === 'confirm'   && 'Confirm items'}
+            {phase === 'error'     && 'Something went wrong'}
           </div>
           {phase === 'ready' && (
             <div style={{ fontSize:12, color:'var(--t3)', marginTop:6, lineHeight:1.4 }}>
-              Tap the mic and say the order naturally. Pause for a moment to finish.
+              Tap the mic and say the order naturally. When you're done, tap "Stop & use text".
+            </div>
+          )}
+          {phase === 'listening' && (
+            <div style={{ fontSize:12, color:'var(--acc)', marginTop:6, lineHeight:1.4, fontWeight:700 }}>
+              {liveText ? '✓ Picking up your voice…' : 'Speak now — I\'m listening.'}
             </div>
           )}
         </div>
 
-        {/* Mic button — big, central */}
+        {/* Mic button — central, dominant */}
         {(phase === 'ready' || phase === 'listening' || phase === 'error') && (
-          <div style={{ display:'flex', justifyContent:'center', padding:'18px 0 8px' }}>
+          <div style={{ display:'flex', justifyContent:'center', padding:'14px 0 6px' }}>
             <button
               onClick={phase === 'listening' ? stopAndParse : start}
               aria-label={phase === 'listening' ? 'Stop and parse' : 'Start recording'}
@@ -171,18 +215,23 @@ export default function MVoiceOrder({ onClose }) {
           </div>
         )}
 
-        {/* Live transcript */}
-        {(phase === 'listening' || transcript) && phase !== 'confirm' && (
+        {/* Live transcript — shown during listening (and afterwards as a
+            preview before parse) */}
+        {(phase === 'listening' || (phase === 'ready' && transcriptUI)) && (
           <div style={{
             margin:'10px 0', padding:'14px 16px', borderRadius:14,
             background:'var(--bg2)', border:'1px solid var(--bdr)',
             minHeight:80, fontSize:14, color:'var(--t1)', lineHeight:1.5,
           }}>
-            <span>{transcript}</span>
-            <span style={{ color:'var(--t4)', fontStyle:'italic' }}>{interim ? ` ${interim}` : ''}</span>
-            {!transcript && !interim && phase === 'listening' && (
-              <span style={{ color:'var(--t4)', fontStyle:'italic' }}>Listening…</span>
-            )}
+            {liveText
+              ? (
+                <>
+                  <span>{transcriptUI}</span>
+                  <span style={{ color:'var(--t4)', fontStyle:'italic' }}>{interimUI ? ` ${interimUI}` : ''}</span>
+                </>
+              )
+              : <span style={{ color:'var(--t4)', fontStyle:'italic' }}>Listening… speak now.</span>
+            }
           </div>
         )}
 
@@ -204,7 +253,7 @@ export default function MVoiceOrder({ onClose }) {
             )}
             {parsed.items.length === 0 ? (
               <div style={{ padding:'18px 12px', textAlign:'center', color:'var(--t3)', fontSize:13 }}>
-                No items mapped from "{transcript}". Try again with clearer item names.
+                No items mapped from "{transcriptUI}". Try again with clearer item names.
               </div>
             ) : (
               <>
@@ -243,37 +292,48 @@ export default function MVoiceOrder({ onClose }) {
           </div>
         )}
 
-        {/* Error state */}
+        {/* Error */}
         {error && (
           <div style={{ margin:'10px 0', padding:10, borderRadius:10, background:'var(--red-d)', color:'var(--red)', fontSize:12, border:'1px solid var(--red-b)' }}>
             {error}
           </div>
         )}
 
-        {/* Bottom buttons */}
+        {/* Bottom actions — context-aware */}
         <div style={{ marginTop:'auto', paddingTop:14 }}>
+          {phase === 'listening' && (
+            <>
+              <button onClick={stopAndParse} disabled={!liveText} style={{ ...Sx.btnPrim, opacity: liveText ? 1 : .5 }}>
+                ⏹ Stop & use text
+              </button>
+              <button onClick={cancelRecording} style={{ ...Sx.btnGhost, marginTop:8 }}>
+                Cancel — start again
+              </button>
+            </>
+          )}
           {phase === 'confirm' && parsed?.items?.length > 0 && (
             <button onClick={confirm} style={Sx.btnPrim}>
               ✓ Add {parsed.items.length} item{parsed.items.length === 1 ? '' : 's'} to order
             </button>
           )}
           {phase === 'confirm' && (!parsed?.items?.length) && (
-            <button onClick={() => { setParsed(null); setTranscript(''); setPhase('ready'); }} style={Sx.btnPrim}>
+            <button onClick={() => { setParsed(null); setTranscriptUI(''); transcriptRef.current=''; setPhaseSafe('ready'); }} style={Sx.btnPrim}>
               🎤 Try again
             </button>
           )}
-          {(phase === 'error') && (
-            <button onClick={() => { setError(null); setPhase('ready'); setTranscript(''); }} style={Sx.btnPrim}>
+          {phase === 'error' && (
+            <button onClick={() => { setError(null); setPhaseSafe('ready'); transcriptRef.current=''; setTranscriptUI(''); }} style={Sx.btnPrim}>
               🎤 Try again
             </button>
           )}
-          <button onClick={onClose} style={{ ...Sx.btnGhost, marginTop:8 }}>
-            {phase === 'confirm' ? 'Cancel' : 'Close'}
-          </button>
+          {phase !== 'listening' && (
+            <button onClick={onClose} style={{ ...Sx.btnGhost, marginTop:8 }}>
+              {phase === 'confirm' ? 'Cancel' : 'Close'}
+            </button>
+          )}
         </div>
       </div>
 
-      {/* Inline animations — kept here so MVoiceOrder is self-contained */}
       <style>{`
         @keyframes mpos-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,.3), 0 0 0 0 rgba(239,68,68,.15); } 50% { box-shadow: 0 0 0 14px rgba(239,68,68,.25), 0 0 0 30px rgba(239,68,68,.10); } }
         @keyframes mpos-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }

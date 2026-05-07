@@ -3,14 +3,15 @@
 
 export const Sx = {
   shell: {
-    // 100svh = SMALL viewport height (always the conservative size — never
-    // underestimates so bottom buttons CANNOT clip behind the iOS Safari URL
-    // bar or Android Chrome chrome, even mid-scroll where 100dvh would still
-    // misreport on some browsers). Combined with position:fixed inset:0 below
-    // it locks the shell to the visible viewport.
-    position:'fixed', top:0, left:'50%', transform:'translateX(-50%)',
-    display:'flex', flexDirection:'column', height:'100svh', width:'100%',
-    maxWidth:540, background:'var(--bg)', color:'var(--t1)',
+    // 100svh = SMALL viewport height (conservative — bottom action bars never
+    // clip behind iOS Safari's dynamic URL bar). Centered horizontally via
+    // left:0 right:0 + margin:0 auto INSTEAD of transform:translateX(-50%):
+    // the latter combination with position:fixed had an iOS Safari hit-test
+    // bug where touch coordinates were offset from the visual layout (Peter
+    // had to tap below buttons to fire them — v5.5.71 fix).
+    position:'fixed', top:0, left:0, right:0, margin:'0 auto',
+    display:'flex', flexDirection:'column', height:'100svh', maxWidth:540,
+    background:'var(--bg)', color:'var(--t1)',
     overflow:'hidden', fontFamily:'inherit', WebkitTapHighlightColor:'transparent',
     paddingTop:'env(safe-area-inset-top)',
   },

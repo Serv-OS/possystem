@@ -74,6 +74,18 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.71', date: '7 May 2026', label: 'MPOS — hit-test offset fix (buttons now click where they look) + voice recording reliability rewrite',
+    changes: [
+      'BUTTONS NOT CLICKING WHERE THEY LOOK — root cause: Sx.shell used position:fixed combined with transform:translateX(-50%) for centering. iOS Safari has a known issue where this combination causes touch hit-zones to offset from the visual layout — Peter had to tap below buttons to fire them. Replaced the transform-based centering with left:0; right:0; margin:0 auto so the shell still centres on phones up to 540pt wide but uses regular box-model positioning. All taps now register where the user expects.',
+      'VOICE RECORDING WAS BROKEN in two ways:',
+      '  (1) "no way to stop" — the only stop control was the central mic button toggling to a red ■. With the hit-test bug above, taps on it didn\'t register. Plus iOS Safari\'s SpeechRecognition aggressively auto-stops after ~6s of silence (or any lull) regardless of continuous:true, which left the screen stuck mid-listen with no way out.',
+      '  (2) "hasn\'t recorded anything" — closure staleness. recognition.onresult and onend captured the React state values from when start() ran, so subsequent updates (later transcript chunks, later phase) weren\'t visible to the handlers. Combined with iOS auto-stops, the recogniser was effectively dying silently.',
+      'RELIABILITY REWRITE: refs back the live state (transcriptRef, phaseRef, userStoppedRef) so handlers always read the latest. recognition.onend now checks "is the user still in listening phase AND did they not explicitly stop?" — if yes, it auto-restarts the recogniser. The transcript survives across restarts (concatenates onto transcriptRef) so iOS auto-stop is invisible to the user.',
+      'NEW UI: prominent "⏹ Stop & use text" button at the BOTTOM of the sheet during listening (not just the central mic toggle), plus a Cancel button to back out without parsing. Status copy is now active ("✓ Picking up your voice…" / "Speak now — I\'m listening") so the server knows the mic is hot.',
+      'Touched: src/surfaces/mpos/MShellStyles.js (shell positioning), src/surfaces/mpos/MVoiceOrder.jsx (substantial rewrite, ~70 lines longer due to ref-backed state machine and clearer UI).',
+    ],
+  },
+  {
     version: '5.5.70', date: '7 May 2026', label: 'MPOS — drop bar tab + fix silent buttons in ⋯ order menu',
     changes: [
       'BAR TAB REMOVED from MPOS — Peter confirmed this product doesn\'t need bar-tab handling at this layer. MNewOrder.TYPES dropped to four (Dine in, Takeaway, Collection, Delivery), and the takeaway-fallback in MPOSSurface.onPickType cleaned up. The desktop POS BarSurface still handles bar tabs at the till.',
