@@ -37,6 +37,8 @@ import MTender from './mpos/MTender';
 import MCardFlow from './mpos/MCardFlow';
 import MReceiptPrompt from './mpos/MReceiptPrompt';
 import MDone from './mpos/MDone';
+import MOrderHistory from './mpos/MOrderHistory';
+import MOrderDetail from './mpos/MOrderDetail';
 import { Sx } from './mpos/MShellStyles';
 
 const TABS = [
@@ -182,24 +184,32 @@ function MPOSRouter() {
     setFlow({ screen: 'tender', context: flow.context || {} });
   };
 
-  // After payment is approved (card REST or simulated)
+  // After payment is approved (card REST or simulated). Closes the check AND
+  // releases the table session so the table goes back to "available". Earlier
+  // versions called recordClosedCheck only, which left the table stuck on the
+  // floor plan as occupied even though the customer had paid.
   const onPaymentApproved = (paymentInfo) => {
-    // Close the check using the existing store actions. They route automatically
-    // by activeTableId — same path the desktop POS uses.
     const state = useStore.getState();
     let closedCheck = null;
     try {
       if (activeTableId) {
-        state.recordClosedCheck(activeTableId, paymentInfo);
-        // recordClosedCheck doesn't return — read the latest closed check
+        // clearTable internally calls recordClosedCheck AND resets the table
+        // session/status so the table flips to available + walkInOrder/customer
+        // get cleared. Same path the desktop POS uses on close.
+        state.clearTable(activeTableId, paymentInfo);
         closedCheck = useStore.getState().closedChecks?.[0] || null;
       } else if (state.walkInOrder) {
         state.recordWalkInClosed(state.walkInOrder, state.orderType || 'takeaway', state.customer, paymentInfo);
         closedCheck = useStore.getState().closedChecks?.[0] || null;
+        // Walk-in-side cleanup: drop the now-paid order from local state.
+        useStore.setState({ walkInOrder: null, customer: null });
       }
     } catch (e) {
       console.warn('[mpos] close check failed', e);
     }
+    // Belt-and-braces: clear activeTableId so the next "Take next order" lands
+    // on a clean slate even if clearTable's reducer hasn't propagated yet.
+    setActiveTableId(null);
     setFlow({ screen: 'receipt', context: { check: closedCheck } });
   };
 
@@ -405,14 +415,58 @@ function MPOSRouter() {
     );
   }
 
+  if (flow.screen === 'history') {
+    return (
+      <MOrderHistory
+        onBack={closeFlow}
+        onOpen={(check) => setFlow({ screen: 'orderDetail', context: { check, fromHistory: true } })}
+      />
+    );
+  }
+
+  if (flow.screen === 'orderDetail' && flow.context?.check) {
+    return (
+      <MOrderDetail
+        check={flow.context.check}
+        onBack={() => {
+          // Sensible back: history → history; orders-list tap → close flow
+          if (flow.context?.fromHistory) setFlow({ screen: 'history' });
+          else closeFlow();
+        }}
+      />
+    );
+  }
+
   // ── Default: tab bar shell ────────────────────────────────────────────────
   return (
     <div style={Sx.shell}>
       <div style={Sx.body}>
         {tab === 'home'   && <MHome onTakeOrder={startNewOrder} onSeeOrders={() => setTab('orders')} onSeeTables={() => setTab('tables')} />}
-        {tab === 'orders' && <MOrdersList onOpenOrder={() => alert('Order detail lands in 1D.')} />}
+        {tab === 'orders' && (
+          <MOrdersList
+            onOpenOrder={(o) => {
+              // Tap behaviour depends on the kind of row:
+              //  • table   → jump into the live table view
+              //  • queue   → not yet supported (order_queue detail) — toast
+              //  • closed  → open the closed-check detail (reprint / refund)
+              if (o._kind === 'table') {
+                setActiveTableId(o.tableId);
+                useStore.getState().setOrderType('dine-in');
+                setFlow({ screen: 'tableView', context: { tableId: o.tableId } });
+              } else if (o._kind === 'closed') {
+                // Find the underlying closedChecks row by id (MOrdersList uses
+                // the wrapped shape — look up the live record so refunds
+                // applied during this session appear immediately).
+                const live = useStore.getState().closedChecks.find(c => c.id === (o.id?.replace(/^c-/, '') || o.id));
+                setFlow({ screen: 'orderDetail', context: { check: live || o } });
+              } else {
+                showToast?.('Live queue order detail lands in next sprint', 'info');
+              }
+            }}
+          />
+        )}
         {tab === 'tables' && <MTablesList onPickTable={onPickTable} />}
-        {tab === 'me'     && <MMe />}
+        {tab === 'me'     && <MMe onOpenHistory={() => setFlow({ screen: 'history' })} />}
 
         {!runnerMode && tab !== 'me' && (
           <button onClick={startNewOrder} aria-label="New order" style={{

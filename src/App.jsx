@@ -74,6 +74,18 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.66', date: '7 May 2026', label: 'MPOS — close-check fix + closed-orders history + refund flow',
+    changes: [
+      'PAYMENT WAS NOT CLOSING THE TABLE — root cause: MPOSSurface was calling store.recordClosedCheck which only writes the closed_checks row but does NOT reset the table session, so the table stayed stuck as occupied even though the customer had paid. Switched to store.clearTable which calls recordClosedCheck AND flips the session to null + status to available + cleans up child tables. Walk-in path also now nulls walkInOrder + customer after recordWalkInClosed. Belt-and-braces: setActiveTableId(null) right after so the next "Take next order" lands on a clean slate.',
+      'NEW: MOrderHistory screen — searchable history of every closed check this location has logged. Reads from store.closedChecks (kept in sync with Supabase via realtime). Filters: Today / Yesterday / 7 days / 30 days / All. Free-text search over ref / customer / server / table label. Stats row showing Sales / Tips / Refunded for the active filter. Tap any row to open MOrderDetail.',
+      'NEW: MOrderDetail screen — full closed-check view. Shows the line items with mods + notes, totals (subtotal / tax / tip / paid-by), refunds log if any. Bottom action bar: Reprint receipt (uses existing printCustomerReceipt store action via PrintOrchestrator), Email receipt (re-uses sendEmailReceipt from 1C), Refund items (partial picker), Refund whole order. Refunds gate behind MManagerPin — manager taps name + PIN, then store.refundCheck records the refund with amount, items, manager, reason. 90s grace window so multiple-refund sessions don\'t re-prompt.',
+      'PARTIAL REFUNDS — pick which items to refund, set refund qty per item (capped at original qty), required reason text, refund button shows live total. Routes through the same store.refundCheck the desktop POS uses, so the audit trail is identical (refund row attached to the check, status flips to partial_refund or refunded, voidLog gets the manager id).',
+      'WIRING: tap a closed-order row in the Orders tab → opens MOrderDetail directly. Tap an open-table row → jumps into MTableView. Live-queue rows still placeholder pending the next sprint. New "Closed orders" entry in the Me tab opens MOrderHistory.',
+      'NEW FILES: src/surfaces/mpos/MOrderHistory.jsx (~155 lines), src/surfaces/mpos/MOrderDetail.jsx (~280 lines). Touched: MPOSSurface.jsx (close-check fix + history/detail render branches), MMe.jsx (Closed orders link).',
+      'WHAT IS NOT IN this release: the audit trail in voidLog should also receive a row when a refund happens — desktop POS does this via the same refundCheck path, but I haven\'t verified it end-to-end yet. Worth checking on the next refund test.',
+    ],
+  },
+  {
     version: '5.5.65', date: '7 May 2026', label: 'MPOS Phase 1D — floor plan view, ⋯ order actions menu, Manager PIN gate',
     changes: [
       'FLOOR PLAN VIEW — new MFloorPlan canvas in the Tables tab. Reuses the same x/y/w/h/shape coordinates the desktop POS uses (so what BO designs in FloorPlanBuilder shows up identically here). Auto-scales the canvas to phone width via CSS transform, preserving pixel-perfect relative positions. Tables coloured by status (available/open/occupied/bill-req/reserved), my tables get an accent border. Tap a table → same flow as the list (covers picker if empty, table view if seated). Section tabs at top when multiple sections exist. Legend at the bottom.',

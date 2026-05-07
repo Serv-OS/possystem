@@ -6,7 +6,7 @@ import { useStore } from '../../store';
 import { VERSION } from '../../lib/version';
 import { Sx } from './MShellStyles';
 
-export default function MMe() {
+export default function MMe({ onOpenHistory }) {
   const { staff, logout, deviceConfig, closedChecks = [] } = useStore();
 
   // Today's sales attributed to this server (rough — by name match)
@@ -50,6 +50,11 @@ export default function MMe() {
 
       {/* Actions */}
       <div style={{ padding:'8px 14px' }}>
+        <Action
+          icon="🧾" title="Closed orders"
+          desc="Reprint receipts, email a copy, refund items"
+          onClick={() => onOpenHistory?.()}
+        />
         <Action
           icon="🏢" title="Back office"
           desc="Reports, menu, staff (opens in browser)"
