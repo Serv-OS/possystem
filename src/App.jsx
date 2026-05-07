@@ -74,6 +74,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.68', date: '7 May 2026', label: 'MPOS — customer capture for collection/delivery + live queue order detail + active-session UPDATE realtime',
+    changes: [
+      'CUSTOMER CAPTURE — collection and delivery walk-in flows now route through a dedicated MCustomerCapture screen between MNewOrder and MMenu. Required fields by type: collection → name + phone + (ASAP or pick a time); delivery → name + phone + address + time. Takeaway has the form available but skippable. Email captured here too so MReceiptPrompt auto-pre-fills the address. Reuses existing store.setCustomer so the data flows into kitchen tickets, queue rows, attribution, and receipts identically to the desktop POS.',
+      'LIVE QUEUE ORDER DETAIL — tapping a kiosk / walk-in / takeaway / collection / delivery row from the Orders tab no longer shows a placeholder. New MQueueDetail screen shows: visual status timeline (Received → In prep → Ready → Collected with checkmarks for completed steps), customer card (name, tappable tel: phone, address, ASAP/time, placed-X-ago), full item list with mods + instructions + notes, total summary with PAID badge if applicable. Bottom CTA advances the status one step (Mark in prep → Mark ready → Mark collected) — calls store.updateQueueStatus which auto-syncs to Supabase via the SyncBridge subscribe pattern. Cancel-order option for non-final states.',
+      'ACTIVE SESSION UPDATE REALTIME — the gap I flagged in v5.5.67. Voids / discounts / item edits / course changes inside an open table session weren\'t propagating between devices because lib/realtime.js only listened for INSERT (table opened) and DELETE (table closed) on active_sessions. Added UPDATE handler with the same echo-back guards as INSERT — skip if this is the currently active table on this device, or if local session.lastUpdated/seatedAt is newer than the incoming row. So now: void an item on the phone, the desktop POS sees the line struck through within ~1s; apply a 10% discount on the phone, the green pill shows up on the desktop too.',
+      'NEW FILES: src/surfaces/mpos/MCustomerCapture.jsx (~150 lines, name/phone/email/address/time form with type-aware validation), src/surfaces/mpos/MQueueDetail.jsx (~190 lines, status timeline + items + advance/cancel actions). Touched: MPOSSurface.jsx (customerCapture + queueDetail flow branches, MOrdersList tap handler now routes queue rows to MQueueDetail), lib/realtime.js (active_sessions UPDATE listener).',
+    ],
+  },
+  {
     version: '5.5.67', date: '7 May 2026', label: 'Refunds now sync across devices (closed_checks UPDATE realtime)',
     changes: [
       'CROSS-DEVICE REFUND SYNC — caught a real gap: the closed-check INSERT path was wired into Supabase + realtime so a paid order on the phone immediately appeared on the desktop POS. But store.refundCheck was only mutating local state — the refund row was being added to closedChecks[].refunds in memory, never written back to Supabase, so other devices stayed unaware. Three small surgical fixes:',

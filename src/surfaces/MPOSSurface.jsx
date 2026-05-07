@@ -26,6 +26,7 @@ import MOrdersList from './mpos/MOrdersList';
 import MTablesList from './mpos/MTablesList';
 import MMe from './mpos/MMe';
 import MNewOrder from './mpos/MNewOrder';
+import MCustomerCapture from './mpos/MCustomerCapture';
 import MCoversPicker from './mpos/MCoversPicker';
 import MTableView from './mpos/MTableView';
 import MMenu from './mpos/MMenu';
@@ -39,6 +40,7 @@ import MReceiptPrompt from './mpos/MReceiptPrompt';
 import MDone from './mpos/MDone';
 import MOrderHistory from './mpos/MOrderHistory';
 import MOrderDetail from './mpos/MOrderDetail';
+import MQueueDetail from './mpos/MQueueDetail';
 import { Sx } from './mpos/MShellStyles';
 
 const TABS = [
@@ -93,21 +95,25 @@ function MPOSRouter() {
   const onPickType = (type) => {
     useStore.getState().setOrderType(type);
     if (type === 'dine-in') {
-      // Stay in the order flow — show a dedicated full-screen table picker.
-      // Tab switching was confusing because the floating "+" overlay closed
-      // and the user landed on the Tables tab without context. Now they get
-      // an explicit "Pick a table" screen with a Back arrow back to types.
       setFlow({ screen: 'pickTable' });
       return;
     }
     if (type === 'bar') {
       // Bar tabs handled by existing BarSurface — out of MPOS Phase 1B scope.
-      // For now route as a takeaway-style walk-in until 1C adds bar tab UI.
+      // For now route as a takeaway-style walk-in until bar UI ships.
       useStore.getState().setOrderType('takeaway');
     }
-    // Walk-in style: clear any prior walk-in, keep customer for collection/delivery later
+    // Reset prior walk-in state. For collection / delivery we route through the
+    // customer-capture screen first (they need a name / phone / address /
+    // collection time before going to the menu). Takeaway skips capture by
+    // default — the server can hit "Skip" to go straight to the menu.
     useStore.setState({ walkInOrder: null, customer: null, activeTableId: null });
-    setFlow({ screen: 'menu', context: { source: 'walkin' } });
+    const effectiveType = type === 'bar' ? 'takeaway' : type;
+    if (effectiveType === 'collection' || effectiveType === 'delivery') {
+      setFlow({ screen: 'customerCapture' });
+    } else {
+      setFlow({ screen: 'menu', context: { source: 'walkin' } });
+    }
   };
 
   // Tap a table from MTablesList
@@ -234,6 +240,18 @@ function MPOSRouter() {
         <BlankBg />
         <MNewOrder onPick={onPickType} onClose={closeFlow} />
       </div>
+    );
+  }
+
+  if (flow.screen === 'customerCapture') {
+    const orderType = useStore.getState().orderType;
+    return (
+      <MCustomerCapture
+        orderType={orderType}
+        onContinue={() => setFlow({ screen: 'menu', context: { source: 'walkin' } })}
+        onSkip={() => setFlow({ screen: 'menu', context: { source: 'walkin' } })}
+        onBack={() => setFlow({ screen: 'newOrder' })}
+      />
     );
   }
 
@@ -424,6 +442,15 @@ function MPOSRouter() {
     );
   }
 
+  if (flow.screen === 'queueDetail' && flow.context?.order) {
+    return (
+      <MQueueDetail
+        order={flow.context.order}
+        onBack={closeFlow}
+      />
+    );
+  }
+
   if (flow.screen === 'orderDetail' && flow.context?.check) {
     return (
       <MOrderDetail
@@ -459,8 +486,14 @@ function MPOSRouter() {
                 // applied during this session appear immediately).
                 const live = useStore.getState().closedChecks.find(c => c.id === (o.id?.replace(/^c-/, '') || o.id));
                 setFlow({ screen: 'orderDetail', context: { check: live || o } });
+              } else if (o._kind === 'queue') {
+                // Live walk-in / takeaway / collection / delivery / kiosk order.
+                // Pull the underlying order_queue entry by ref so updates from
+                // other devices reflect.
+                const live = useStore.getState().orderQueue.find(q => q.ref === o.ref) || o._raw || o;
+                setFlow({ screen: 'queueDetail', context: { order: live } });
               } else {
-                showToast?.('Live queue order detail lands in next sprint', 'info');
+                showToast?.('Live tab order detail lands in next sprint', 'info');
               }
             }}
           />

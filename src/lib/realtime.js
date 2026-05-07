@@ -142,6 +142,33 @@ export function startRealtime(store, locationId = LOCATION_ID) {
       }));
     })
     .on('postgres_changes', {
+      event: 'UPDATE',
+      schema: 'public',
+      table: 'active_sessions',
+      filter: `location_id=eq.${locationId}`,
+    }, ({ new: row }) => {
+      // v5.5.68: voids / discounts / item edits inside an open session weren't
+      // propagating because we only listened for INSERT (table opened) and
+      // DELETE (table closed). Now: UPDATE merges the latest session jsonb
+      // back into the matching local table. Same echo-back guards as the
+      // INSERT handler — skip if this is the currently active table on this
+      // device, or if our local session is newer than the incoming one.
+      if (!row?.table_id) return;
+      const state = store.getState();
+      if (row.table_id === state.activeTableId) return;
+      const existing = (state.tables || []).find(t => t.id === row.table_id);
+      const localUpdated = existing?.session?.lastUpdated || existing?.session?.seatedAt || 0;
+      const incomingUpdated = row.session?.lastUpdated || row.session?.seatedAt || 0;
+      if (localUpdated > incomingUpdated) return;
+      store.setState(s => ({
+        tables: s.tables.map(t =>
+          t.id === row.table_id
+            ? { ...t, session: row.session, status: row.session ? 'occupied' : 'available' }
+            : t
+        ),
+      }));
+    })
+    .on('postgres_changes', {
       event: 'DELETE',
       schema: 'public',
       table: 'active_sessions',
