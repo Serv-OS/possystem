@@ -260,11 +260,58 @@ export default function MVoiceOrder({ onClose }) {
                 <span>❓</span><span>{parsed.clarification}</span>
               </div>
             )}
-            {parsed.items.length === 0 ? (
+
+            {/* Suggestions from the parser when nothing matched (or there's a
+                partial match). Tap to add directly — bypasses the "Try again"
+                cycle when the server just wants to pick a close alternative. */}
+            {parsed.items.length === 0 && (parsed.suggestions || []).length > 0 && (
+              <div style={{ marginBottom:10 }}>
+                <div style={{ fontSize:11, fontWeight:800, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.06em', marginBottom:8 }}>
+                  Did you mean one of these?
+                </div>
+                <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+                  {parsed.suggestions.slice(0, 5).map((s, i) => {
+                    const item = menuItems.find(m => m.id === s.item_id);
+                    if (!item || (item.type || 'simple') === 'variants') return null;
+                    const price = item?.pricing?.base ?? item?.price ?? 0;
+                    return (
+                      <button
+                        key={i}
+                        onClick={() => {
+                          addItem(item, [], null, { qty: 1 });
+                          // Stay on the screen so the server can keep adding
+                          // suggestions; clear the parsed state so the
+                          // confirmation list flips to "added" implicitly.
+                          // Simpler: close and let them tap mic again.
+                          onClose?.();
+                        }}
+                        style={{
+                          padding:'12px 14px', borderRadius:11, fontFamily:'inherit', cursor:'pointer',
+                          border:'1.5px solid var(--bdr)', background:'var(--bg2)',
+                          display:'flex', alignItems:'center', gap:10, textAlign:'left', minHeight:54,
+                        }}>
+                        <div style={{ flex:1, minWidth:0 }}>
+                          <div style={{ fontSize:14, fontWeight:700, color:'var(--t1)' }}>{item.name}</div>
+                          {s.reason && (
+                            <div style={{ fontSize:11, color:'var(--t4)', marginTop:2 }}>{s.reason}</div>
+                          )}
+                        </div>
+                        <div style={{ fontSize:13, fontWeight:800, color:'var(--acc)', fontFamily:'var(--font-mono)' }}>
+                          {money(price)}
+                        </div>
+                        <span style={{ fontSize:18, color:'var(--acc)' }}>+</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {parsed.items.length === 0 && (parsed.suggestions || []).length === 0 ? (
               <div style={{ padding:'18px 12px', textAlign:'center', color:'var(--t3)', fontSize:13 }}>
                 No items mapped from "{transcriptUI}". Try again with clearer item names.
               </div>
-            ) : (
+            ) : parsed.items.length === 0 ? null : (
               <>
                 <div style={{ fontSize:11, color:'var(--t3)', textTransform:'uppercase', fontWeight:700, letterSpacing:'.06em', marginBottom:8 }}>
                   Adding {parsed.items.reduce((s, i) => s + (i.qty || 0), 0)} items

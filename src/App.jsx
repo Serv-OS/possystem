@@ -74,6 +74,19 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.73', date: '7 May 2026', label: 'Voice — "did you mean" suggestions when item isn\'t on the menu',
+    changes: [
+      'GRACEFUL FALLBACK when the customer asks for something we don\'t sell (or asks for a size that doesn\'t exist). Previously the parser returned an empty items array + a vague clarification ("we don\'t have that"). Now it ALSO returns a suggestions[] array — Claude proposes the closest 2-5 menu items the server can offer the customer instead.',
+      'Decision logic encoded in the parser prompt:',
+      '  • CONFIDENT MATCH → return items as before, no suggestions',
+      '  • PARTIAL MATCH (item exists, size/variant doesn\'t) → suggestions = the available variants',
+      '  • NO MATCH ("we don\'t sell lattes") → suggestions = up to 5 menu items the server might offer as alternatives',
+      '  • AMBIGUOUS ("burger" but 3 burgers) → suggestions = the matching options for the server to pick',
+      'Each suggestion includes a short "reason" explaining why it\'s a close fit ("only size we have", "similar drink", "matches \\"burger\\""). Renders as a tap-to-add button in the confirmation sheet — one tap adds the item to the cart and closes voice mode, no need to "Try again" and re-record.',
+      'Tool schema extended: suggestions[] with item_id + reason. Server route returns it alongside items + clarification. Defensive client filter still skips parent-variant items if any leak through.',
+    ],
+  },
+  {
     version: '5.5.72', date: '7 May 2026', label: 'MPOS — REAL hit-test fix (shell below safe area) + voice variant handling (no more "large" alone)',
     changes: [
       'HIT-TEST OFFSET — actual root cause this time. The 5.5.71 fix removed the transform-based centering but kept padding-top:env(safe-area-inset-top) on a position:fixed shell. iOS Safari with viewport-fit=cover measures touch coordinates from the hardware-top (under the notch) but I was rendering content visually below the notch via padding — so a button visually at y=50 had its hit-zone at y=50+47px notch padding, off the screen above. Tapping below the visible button "worked" because that\'s where the hit-zone actually was.',
