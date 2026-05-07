@@ -6,6 +6,7 @@
 import { useState } from 'react';
 import { useStore } from '../../store';
 import { Sx, money } from './MShellStyles';
+import MManagerPin, { getCachedManagerAuth } from './MManagerPin';
 
 const COURSES = [
   { id:0, label:'Immediate' },
@@ -28,6 +29,8 @@ export default function MItemActions({ item, onClose }) {
   const { activeTableId, staff, updateItemCourse, addItemDiscount, removeItemDiscount, voidItem, removeItem } = useStore();
   const sent = item?.status === 'sent';
   const [view, setView] = useState('main'); // main | course | discount | void
+  // Pending discount waiting on a manager PIN
+  const [pendingManagerDiscount, setPendingManagerDiscount] = useState(null);
 
   if (!item) return null;
 
@@ -40,9 +43,19 @@ export default function MItemActions({ item, onClose }) {
   };
 
   // ── Action: apply discount ───────────────────────────────────────────────
-  const applyDiscount = (d) => {
+  const commitDiscount = (d) => {
     addItemDiscount(activeTableId || null, item.uid, { id:d.id, label:d.label, type:d.type, value:d.value });
     close();
+  };
+  const applyDiscount = (d) => {
+    if (d.requiresManager) {
+      // 90s grace window — fast-path if a manager has already approved recently
+      const cached = getCachedManagerAuth();
+      if (cached) { commitDiscount(d); return; }
+      setPendingManagerDiscount(d);
+      return;
+    }
+    commitDiscount(d);
   };
 
   const clearDiscount = () => {
@@ -147,7 +160,7 @@ export default function MItemActions({ item, onClose }) {
                     <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)' }}>{d.label}</div>
                     {d.requiresManager && (
                       <div style={{ fontSize:10, color:'var(--acc)', fontWeight:700, textTransform:'uppercase', letterSpacing:'.06em', marginTop:2 }}>
-                        Manager · 1D adds PIN gate
+                        Manager PIN required
                       </div>
                     )}
                   </div>
@@ -159,6 +172,19 @@ export default function MItemActions({ item, onClose }) {
           </div>
         )}
       </div>
+
+      {/* Manager-PIN gate when a discount needs approval */}
+      {pendingManagerDiscount && (
+        <MManagerPin
+          reason={`Approve ${pendingManagerDiscount.label} on ${item.name}`}
+          onApprove={() => {
+            const d = pendingManagerDiscount;
+            setPendingManagerDiscount(null);
+            commitDiscount(d);
+          }}
+          onCancel={() => setPendingManagerDiscount(null)}
+        />
+      )}
     </div>
   );
 }

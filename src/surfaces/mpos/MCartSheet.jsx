@@ -14,6 +14,7 @@ import { useMemo, useState } from 'react';
 import { useStore } from '../../store';
 import { Sx, money, STATUS_PILL } from './MShellStyles';
 import MItemActions from './MItemActions';
+import MOrderActions from './MOrderActions';
 
 export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore }) {
   const {
@@ -26,6 +27,8 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
     : (walkInOrder?.orderNote || '');
   // Item-actions sheet (course / discount / void per line)
   const [actionsItem, setActionsItem] = useState(null);
+  // Order-actions sheet (whole-order discount / fire course / transfer / note)
+  const [showOrderActions, setShowOrderActions] = useState(false);
 
   // Read live order data — table session or walk-in
   const sourceData = useMemo(() => {
@@ -78,6 +81,9 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
           <div style={Sx.hTitle}>{sourceData.label}</div>
           <div style={Sx.hSub}>{sourceData.sub} · {cartCount} item{cartCount === 1 ? '' : 's'}</div>
         </div>
+        {items.length > 0 && (
+          <button onClick={() => setShowOrderActions(true)} style={Sx.iconBtn} aria-label="Order actions">⋯</button>
+        )}
       </div>
 
       {/* Items — grouped by course, mirroring how the desktop POS shows
@@ -152,6 +158,10 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
       {/* Per-item actions sheet (course change, discount, void) */}
       {actionsItem && (
         <MItemActions item={actionsItem} onClose={() => setActionsItem(null)} />
+      )}
+      {/* Whole-order ⋯ menu */}
+      {showOrderActions && (
+        <MOrderActions onClose={() => setShowOrderActions(false)} />
       )}
     </div>
   );

@@ -74,6 +74,17 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.65', date: '7 May 2026', label: 'MPOS Phase 1D — floor plan view, ⋯ order actions menu, Manager PIN gate',
+    changes: [
+      'FLOOR PLAN VIEW — new MFloorPlan canvas in the Tables tab. Reuses the same x/y/w/h/shape coordinates the desktop POS uses (so what BO designs in FloorPlanBuilder shows up identically here). Auto-scales the canvas to phone width via CSS transform, preserving pixel-perfect relative positions. Tables coloured by status (available/open/occupied/bill-req/reserved), my tables get an accent border. Tap a table → same flow as the list (covers picker if empty, table view if seated). Section tabs at top when multiple sections exist. Legend at the bottom.',
+      'LIST ↔ FLOOR TOGGLE — segmented control in the MTablesList header. Choice persisted to localStorage so it sticks across sessions. List is the default for one-handed servers, floor for staff who think in physical layout terms.',
+      'ORDER ⋯ MENU — new MOrderActions bottom sheet on the cart, opened from a ⋯ button next to the back arrow in the header. Whole-order actions: Apply order discount (Staff meal · Staff drinks · Loyalty 10% · NHS 10% · Happy hour 20% · Comp 100%) · Fire a held course (course 2 / 3) — creates the FIRE COURSE marker docket via existing fireCourse store action which routes to KDS + printer · Transfer to another table (dine-in only) · Edit order note. Active order-level discounts shown at top with × to remove.',
+      'MANAGER PIN GATE — new MManagerPin bottom sheet. Now wired for Comp 100% discounts (per-item AND order-level). Lists managers (staff with role=manager or "manager" permission), tap your name → 4-digit PIN entry → 90-second grace window so follow-up gated actions in the same minute don\'t re-prompt. Cached approval lives in sessionStorage and clears on logout. Wrong PIN shakes the input and clears.',
+      'NEW FILES: src/surfaces/mpos/MFloorPlan.jsx (~150 lines, canvas + scale logic), src/surfaces/mpos/MOrderActions.jsx (~210 lines, multi-view bottom sheet for whole-order actions), src/surfaces/mpos/MManagerPin.jsx (~190 lines, manager picker + PIN pad with grace window). Touched: MTablesList.jsx (toggle + ViewToggle), MItemActions.jsx + MOrderActions.jsx (PIN gate wiring), MCartSheet.jsx (⋯ button in header).',
+      'WHAT IS NOT IN 1D yet (lands in 1E next): native iOS Capacitor + Android shells with real Stripe Tap to Pay. Refund flow from MOrderDetail is still TBD — currently refunds go through the desktop POS. Voice ordering (Phase 2) and runner-mode scan-to-deliver are also still pending.',
+    ],
+  },
+  {
     version: '5.5.64', date: '7 May 2026', label: 'MPOS round-3 fixes — post-send CTA, course-grouped cart, void wired, allergy filter, customer-facing tip pass, Pay-at-counter removed',
     changes: [
       'POST-SEND CTA — sending to kitchen used to dump you back into the table view with no signposted next step. New MSentConfirm screen replaces that with a green checkmark and three CTAs: "Take next order" (resets context, opens MNewOrder), "Take payment for Table N" (jumps to MTender), "Add more to Table N" (returns to MTableView). For walk-in flows it shows "Take next order" + "Take payment now". Triggered after every successful sendToKitchen.',

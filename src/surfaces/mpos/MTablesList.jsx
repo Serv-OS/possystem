@@ -1,17 +1,31 @@
-// MTablesList — every table at this location, list view, sorted intelligently.
-// Replaces the floor-plan grid which doesn't work in portrait. Each row tappable
-// to open the table session (1B). Filter by section, search by label/server.
+// MTablesList — every table at this location, with a list view AND a floor
+// plan view (toggled by a segmented control in the header). The list is the
+// default for one-handed servers, but the floor plan view is faster for
+// experienced staff who think in terms of physical layout. The choice is
+// persisted to localStorage so it sticks across sessions.
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useStore } from '../../store';
 import { Sx, money, elapsed, STATUS_PILL } from './MShellStyles';
+import MFloorPlan from './MFloorPlan';
+
+const VIEW_KEY = 'mpos-tables-view'; // 'list' | 'floor'
 
 export default function MTablesList({ onPickTable }) {
   const { staff, tables = [], deviceConfig } = useStore();
   const [filter, setFilter] = useState('all'); // all | available | open | bill_req | mine
   const [search, setSearch] = useState('');
+  const [view, setView] = useState(() => {
+    try { return localStorage.getItem(VIEW_KEY) === 'floor' ? 'floor' : 'list'; }
+    catch { return 'list'; }
+  });
   const myName = staff?.name?.toLowerCase();
   const restrictedSection = deviceConfig?.assignedSection || null;
+
+  // Persist view choice
+  useEffect(() => {
+    try { localStorage.setItem(VIEW_KEY, view); } catch {}
+  }, [view]);
 
   const filtered = useMemo(() => {
     let list = tables;
@@ -66,16 +80,35 @@ export default function MTablesList({ onPickTable }) {
     mine: tables.filter(t => t.session && (t.session.server || '').toLowerCase() === myName).length,
   }), [tables, myName]);
 
+  // Floor plan view bypasses the filter chips / search and renders the canvas
+  // directly. The toggle lives in the title bar so switching is one tap.
+  if (view === 'floor') {
+    return (
+      <div style={{ ...Sx.scroller, display:'flex', flexDirection:'column' }}>
+        <div style={{ padding:'14px 14px 8px', flexShrink:0 }}>
+          <div style={{ fontSize:18, fontWeight:800, color:'var(--t1)', marginBottom:10, display:'flex', alignItems:'center', gap:10 }}>
+            <span style={{ flex:1 }}>Tables</span>
+            <ViewToggle view={view} onChange={setView} />
+          </div>
+        </div>
+        <MFloorPlan onPickTable={onPickTable} />
+      </div>
+    );
+  }
+
   return (
     <div style={Sx.scroller}>
       <div style={{ padding:'14px 14px 8px', position:'sticky', top:0, background:'var(--bg)', zIndex:2 }}>
-        <div style={{ fontSize:18, fontWeight:800, color:'var(--t1)', marginBottom:10, display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
-          <span>Tables</span>
-          {restrictedSection && (
-            <span style={{ ...Sx.pill, background:'var(--acc-d)', color:'var(--acc)', border:'1px solid var(--acc-b)' }}>
-              {restrictedSection} only
-            </span>
-          )}
+        <div style={{ fontSize:18, fontWeight:800, color:'var(--t1)', marginBottom:10, display:'flex', justifyContent:'space-between', alignItems:'center', gap:10 }}>
+          <span style={{ flex:1, display:'flex', alignItems:'baseline', gap:10 }}>
+            <span>Tables</span>
+            {restrictedSection && (
+              <span style={{ ...Sx.pill, background:'var(--acc-d)', color:'var(--acc)', border:'1px solid var(--acc-b)' }}>
+                {restrictedSection} only
+              </span>
+            )}
+          </span>
+          <ViewToggle view={view} onChange={setView} />
         </div>
 
         {/* Filter chips */}
@@ -186,6 +219,36 @@ function TableRow({ table, myName, onClick }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ── View toggle (segmented control) ──────────────────────────────────────────
+function ViewToggle({ view, onChange }) {
+  const Btn = ({ id, icon, label }) => {
+    const active = view === id;
+    return (
+      <button onClick={() => onChange(id)} style={{
+        flex:1, padding:'7px 10px', border:'none', cursor:'pointer', fontFamily:'inherit',
+        background: active ? 'var(--bg1)' : 'transparent',
+        color: active ? 'var(--t1)' : 'var(--t4)',
+        fontSize:11, fontWeight:800, borderRadius:8,
+        display:'flex', alignItems:'center', justifyContent:'center', gap:5,
+        transition:'all .12s',
+        boxShadow: active ? '0 1px 3px rgba(0,0,0,.2)' : 'none',
+      }}>
+        <span style={{ fontSize:13 }}>{icon}</span>
+        <span>{label}</span>
+      </button>
+    );
+  };
+  return (
+    <div style={{
+      display:'inline-flex', padding:3, borderRadius:10,
+      background:'var(--bg3)', border:'1px solid var(--bdr)',
+    }}>
+      <Btn id="list"  icon="≡" label="List" />
+      <Btn id="floor" icon="⬚" label="Floor" />
     </div>
   );
 }
