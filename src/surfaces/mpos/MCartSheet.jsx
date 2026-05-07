@@ -80,7 +80,11 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
         </div>
       </div>
 
-      {/* Items */}
+      {/* Items — grouped by course, mirroring how the desktop POS shows
+          dine-in checks. Course 0 is "Immediate" (drinks etc), 1 = starters,
+          2 = mains, 3+ = later. Within each course, pending items render
+          first with a clear "TO SEND" sub-header so the cashier can spot
+          what's left to fire. */}
       <div style={Sx.scroller}>
         {items.length === 0 ? (
           <div style={Sx.emptyBlock}>
@@ -89,17 +93,13 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
             <div style={{ fontSize:12 }}>Tap Add items to start.</div>
           </div>
         ) : (
-          <div style={{ padding:'8px 12px' }}>
-            {items.map(it => (
-              <CartLine
-                key={it.uid} item={it}
-                onRemove={() => removeItem(it.uid)}
-                onInc={() => updateItemQty(it.uid, +1)}
-                onDec={() => updateItemQty(it.uid, -1)}
-                onActions={() => setActionsItem(it)}
-              />
-            ))}
-          </div>
+          <CourseGroupedItems
+            items={items}
+            onRemove={(uid) => removeItem(uid)}
+            onInc={(uid) => updateItemQty(uid, +1)}
+            onDec={(uid) => updateItemQty(uid, -1)}
+            onActions={(it) => setActionsItem(it)}
+          />
         )}
 
         {/* Order note */}
@@ -231,6 +231,103 @@ function CartLine({ item, onRemove, onInc, onDec, onActions }) {
       {sent && (
         <div style={{ fontSize:11, color:'var(--t4)', textAlign:'center' }}>Tap row to void or apply discount</div>
       )}
+    </div>
+  );
+}
+
+// ── Course-grouped items ──────────────────────────────────────────────────────
+// Mirrors the desktop POS check view: a section per course. Within a course,
+// pending lines render before sent lines so the cashier sees what's still to
+// fire at a glance. Course 0 = Immediate (drinks fired on send), 1 = starters,
+// 2 = mains, 3+ = later courses.
+function CourseGroupedItems({ items, onRemove, onInc, onDec, onActions }) {
+  // Bucket by course
+  const byCourse = items.reduce((acc, it) => {
+    const c = it.course ?? 1;
+    (acc[c] = acc[c] || []).push(it);
+    return acc;
+  }, {});
+  const courseIds = Object.keys(byCourse).map(Number).sort((a, b) => a - b);
+
+  const courseLabel = (c) =>
+    c === 0 ? 'Immediate' :
+    c === 1 ? 'Course 1 · Starters' :
+    c === 2 ? 'Course 2 · Mains' :
+    c === 3 ? 'Course 3 · Desserts' :
+    `Course ${c}`;
+
+  const courseAccent = (c) =>
+    c === 0 ? '#3b82f6' :
+    c === 1 ? '#22c55e' :
+    c === 2 ? 'var(--acc)' :
+    c === 3 ? '#a855f7' :
+    'var(--t3)';
+
+  return (
+    <div style={{ padding:'8px 12px' }}>
+      {courseIds.map(c => {
+        const courseItems = byCourse[c];
+        const pending = courseItems.filter(i => i.status !== 'sent');
+        const sent    = courseItems.filter(i => i.status === 'sent');
+        const courseSubtotal = courseItems.reduce((s, i) => {
+          const base = (i.price || 0) * (i.qty || 0);
+          return s + (i.discount?.value ? base * (1 - i.discount.value / 100) : base);
+        }, 0);
+        const accent = courseAccent(c);
+        return (
+          <div key={c} style={{ marginBottom:14 }}>
+            {/* Course header */}
+            <div style={{ display:'flex', alignItems:'center', gap:8, padding:'10px 4px' }}>
+              <span style={{
+                fontSize:11, fontWeight:800, color:accent, textTransform:'uppercase', letterSpacing:'.07em',
+                padding:'3px 9px', borderRadius:99,
+                background:'rgba(255,255,255,0.04)', border:`1px solid ${accent}44`,
+              }}>
+                {courseLabel(c)}
+              </span>
+              <span style={{ fontSize:11, fontWeight:700, color:'var(--t4)' }}>
+                {courseItems.length} item{courseItems.length === 1 ? '' : 's'}
+              </span>
+              <span style={{ flex:1, height:1, background:'var(--bdr)' }}/>
+              <span style={{ fontSize:13, fontWeight:800, color:'var(--t2)', fontFamily:'var(--font-mono)' }}>
+                {money(courseSubtotal)}
+              </span>
+            </div>
+            {pending.length > 0 && (
+              <>
+                {sent.length > 0 && (
+                  <div style={{ fontSize:10, fontWeight:700, color:'var(--acc)', textTransform:'uppercase', letterSpacing:'.06em', padding:'4px 4px 6px' }}>To send</div>
+                )}
+                {pending.map(it => (
+                  <CartLine
+                    key={it.uid} item={it}
+                    onRemove={() => onRemove(it.uid)}
+                    onInc={() => onInc(it.uid)}
+                    onDec={() => onDec(it.uid)}
+                    onActions={() => onActions(it)}
+                  />
+                ))}
+              </>
+            )}
+            {sent.length > 0 && (
+              <>
+                {pending.length > 0 && (
+                  <div style={{ fontSize:10, fontWeight:700, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.06em', padding:'8px 4px 6px' }}>Already sent</div>
+                )}
+                {sent.map(it => (
+                  <CartLine
+                    key={it.uid} item={it}
+                    onRemove={() => onRemove(it.uid)}
+                    onInc={() => onInc(it.uid)}
+                    onDec={() => onDec(it.uid)}
+                    onActions={() => onActions(it)}
+                  />
+                ))}
+              </>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

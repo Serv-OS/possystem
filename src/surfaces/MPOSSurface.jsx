@@ -32,9 +32,9 @@ import MMenu from './mpos/MMenu';
 import MItemDetail from './mpos/MItemDetail';
 import MVariantPicker from './mpos/MVariantPicker';
 import MCartSheet from './mpos/MCartSheet';
+import MSentConfirm from './mpos/MSentConfirm';
 import MTender from './mpos/MTender';
 import MCardFlow from './mpos/MCardFlow';
-import MPayAtCounter from './mpos/MPayAtCounter';
 import MReceiptPrompt from './mpos/MReceiptPrompt';
 import MDone from './mpos/MDone';
 import { Sx } from './mpos/MShellStyles';
@@ -147,12 +147,25 @@ function MPOSRouter() {
   // From item → back to menu (after add)
   const goBackToMenu = () => setFlow(f => ({ screen: 'menu', context: f.context || {} }));
 
-  // After Send to kitchen on a table — go back to table view
+  // After Send to Kitchen — show the post-send confirmation with clear next-step
+  // CTAs (Take next order / Stay here / Take payment). Replaces the silent
+  // back-to-table-view return that left the server with no signposted exit.
   const onSentToKitchen = () => {
     const tableId = flow.context?.tableId || activeTableId;
-    if (tableId) setFlow({ screen: 'tableView', context: { tableId } });
-    else setFlow({ screen: null });
-    showToast?.('Sent to kitchen', 'success');
+    const state = useStore.getState();
+    let ticketCount = 0;
+    let totalSent = 0;
+    if (tableId) {
+      const tbl = state.tables.find(t => t.id === tableId);
+      const sent = (tbl?.session?.items || []).filter(i => i.status === 'sent' && !i.voided);
+      ticketCount = sent.reduce((s, i) => s + (i.qty || 0), 0);
+      totalSent = sent.reduce((s, i) => s + (i.price || 0) * (i.qty || 0), 0);
+    } else if (state.walkInOrder) {
+      const sent = (state.walkInOrder.items || []).filter(i => i.status === 'sent' && !i.voided);
+      ticketCount = sent.reduce((s, i) => s + (i.qty || 0), 0);
+      totalSent = sent.reduce((s, i) => s + (i.price || 0) * (i.qty || 0), 0);
+    }
+    setFlow({ screen: 'sentConfirm', context: { tableId, ticketCount, totalSent } });
   };
 
   // Walk-in "Send & take payment" or table "Take payment" → tender flow (1C)
@@ -188,18 +201,6 @@ function MPOSRouter() {
       console.warn('[mpos] close check failed', e);
     }
     setFlow({ screen: 'receipt', context: { check: closedCheck } });
-  };
-
-  // After "Pay at counter" routes to the order_queue
-  const onSentToCounter = () => {
-    showToast?.('Sent to counter for payment', 'success');
-    // Clear the active order locally — counter POS owns it now
-    if (activeTableId) {
-      // For tables, we leave the session open — counter staff will close it
-    } else {
-      useStore.setState({ walkInOrder: null });
-    }
-    setFlow({ screen: 'done', context: { check: null, deliveredVia: 'counter' } });
   };
 
   // After receipt prompt resolves
@@ -328,7 +329,41 @@ function MPOSRouter() {
     );
   }
 
+  if (flow.screen === 'sentConfirm') {
+    const { tableId, ticketCount, totalSent } = flow.context || {};
+    const tableLabel = tableId ? (useStore.getState().tables.find(t => t.id === tableId)?.label) : null;
+    return (
+      <MSentConfirm
+        ticketCount={ticketCount || 0}
+        totalSent={totalSent || 0}
+        isTable={!!tableId}
+        isWalkIn={!tableId}
+        tableLabel={tableLabel}
+        onTakeNext={() => {
+          // Clear active context and start a fresh order. Table stays open in
+          // the background — its session lives in the store and the realtime
+          // sub keeps it visible to other devices.
+          setActiveTableId(null);
+          useStore.setState({ walkInOrder: null, customer: null });
+          setFlow({ screen: 'newOrder' });
+        }}
+        onStayHere={() => {
+          if (tableId) setFlow({ screen: 'tableView', context: { tableId } });
+          else setFlow({ screen: null });
+        }}
+        onTakePayment={() => {
+          // Walk-in or table — both go through MTender. For walk-in we keep
+          // walkInOrder intact (sent items remain payable until close).
+          setFlow({ screen: 'tender', context: flow.context || {} });
+        }}
+      />
+    );
+  }
+
   if (flow.screen === 'tender') {
+    // Customer-facing tip pass — auto-triggers MCardFlow on Confirm. No
+    // method picker (card-only on the phone) and no Pay-at-counter (cash
+    // belongs at the till where the drawer lives).
     return (
       <MTender
         onBack={() => {
@@ -336,8 +371,7 @@ function MPOSRouter() {
           if (tableId) setFlow({ screen: 'tableView', context: { tableId } });
           else setFlow({ screen: 'cart', context: flow.context || {} });
         }}
-        onPay={(payment) => setFlow(f => ({ screen: 'card', context: { ...(f.context || {}), payment } }))}
-        onPayAtCounter={(payment) => setFlow(f => ({ screen: 'payAtCounter', context: { ...(f.context || {}), payment } }))}
+        onConfirm={(payment) => setFlow(f => ({ screen: 'card', context: { ...(f.context || {}), payment } }))}
       />
     );
   }
@@ -348,16 +382,6 @@ function MPOSRouter() {
         payment={flow.context.payment}
         onCancel={() => setFlow(f => ({ screen: 'tender', context: f.context || {} }))}
         onApproved={onPaymentApproved}
-      />
-    );
-  }
-
-  if (flow.screen === 'payAtCounter' && flow.context?.payment) {
-    return (
-      <MPayAtCounter
-        payment={flow.context.payment}
-        onBack={() => setFlow(f => ({ screen: 'tender', context: f.context || {} }))}
-        onSent={onSentToCounter}
       />
     );
   }

@@ -25,7 +25,7 @@ const DISCOUNTS = [
 ];
 
 export default function MItemActions({ item, onClose }) {
-  const { activeTableId, updateItemCourse, addItemDiscount, removeItemDiscount, voidItem, removeItem } = useStore();
+  const { activeTableId, staff, updateItemCourse, addItemDiscount, removeItemDiscount, voidItem, removeItem } = useStore();
   const sent = item?.status === 'sent';
   const [view, setView] = useState('main'); // main | course | discount | void
 
@@ -52,12 +52,28 @@ export default function MItemActions({ item, onClose }) {
 
   // ── Action: void / remove ────────────────────────────────────────────────
   const doVoid = () => {
-    if (sent) {
-      // Sent items go through the void path so they're tracked properly.
-      voidItem?.(activeTableId || null, item.uid, { manager: null, reason: 'mpos void' });
-    } else {
+    if (!sent) {
+      // Pending item — just remove it from the order. No void log needed.
       removeItem?.(item.uid);
+      close();
+      return;
     }
+    // Sent item — must go through voidItem so the void log gets a row and the
+    // KDS / printer pick up the void. The desktop POS gates this behind a
+    // manager-PIN modal; until 1D ships, we use the current staff as the
+    // approving party so the void doesn't crash on null.manager.
+    if (!activeTableId) {
+      // Walk-in items don't truly hit voidItem — the desktop POS only voids
+      // table sessions. For walk-ins we fall back to remove (which still
+      // restores the daily count via the existing branch in removeItem).
+      removeItem?.(item.uid);
+      close();
+      return;
+    }
+    voidItem?.(activeTableId, item.uid, {
+      manager: staff || { id:'mpos-system', name:'MPOS' },
+      reason: 'voided from MPOS',
+    });
     close();
   };
 

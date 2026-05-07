@@ -1,146 +1,144 @@
-// MTender — payment method picker. Reads the active order (table or walk-in)
-// and offers Card · Pay at counter. Tip selector for card flows. Cash is
-// intentionally absent — phones have no cash drawer (see docs/MPOS-SPEC.md).
+// MTender — customer-facing tip pass. The server hands the phone to the
+// customer at this point; the screen is designed for a one-tap interaction.
+// Tip preset → big Confirm button → auto-runs the card payment (MCardFlow).
+//
+// "Pay at counter" was removed in this pass — the phone is always a card
+// device (Tap to Pay or assigned reader); cash always happens at the counter
+// where the drawer lives, so server staff route those at the till instead.
 
 import { useMemo, useState } from 'react';
 import { useStore } from '../../store';
 import { calculateOrderTax } from '../../lib/tax';
 import { Sx, money } from './MShellStyles';
 
-const TIP_PRESETS = [0, 10, 12.5, 15, 20];
+const TIP_PRESETS = [10, 12.5, 15, 20];
 
-export default function MTender({ onBack, onPay, onPayAtCounter }) {
+export default function MTender({ onBack, onConfirm }) {
   const { activeTableId, tables, walkInOrder, taxRates = [], orderType, deviceConfig } = useStore();
 
   const order = useMemo(() => {
     if (activeTableId) {
       const t = tables.find(x => x.id === activeTableId);
       return {
-        kind:'table',
         items: (t?.session?.items || []).filter(i => !i.voided),
         label:`Table ${t?.label || activeTableId}`,
       };
     }
     return {
-      kind:'walkin',
       items: walkInOrder?.items || [],
       label: walkInOrder?.customer?.name || 'New order',
     };
   }, [activeTableId, tables, walkInOrder]);
 
-  const subtotal = order.items.reduce((s, i) => s + (i.price || 0) * (i.qty || 0), 0);
+  const subtotal = order.items.reduce((s, i) => {
+    const base = (i.price || 0) * (i.qty || 0);
+    return s + (i.discount?.value ? base * (1 - i.discount.value / 100) : base);
+  }, 0);
   const taxResult = useMemo(() => {
     try { return calculateOrderTax(order.items, taxRates, orderType); }
-    catch { return { totalTax: 0, total: subtotal }; }
-  }, [order.items, taxRates, orderType, subtotal]);
+    catch { return { totalTax: 0 }; }
+  }, [order.items, taxRates, orderType]);
   const tax = Number(taxResult?.totalTax) || 0;
 
+  // Tip in £ amount (computed from selected preset OR custom override).
   const [tipPct, setTipPct] = useState(12.5);
-  const [customTip, setCustomTip] = useState('');
-  const tipAmount = customTip !== '' ? (parseFloat(customTip) || 0) : ((subtotal + tax) * tipPct) / 100;
+  const [customTip, setCustomTip] = useState(null); // null | number
+  const tipAmount = customTip != null ? customTip : ((subtotal + tax) * tipPct) / 100;
   const grand = subtotal + tax + tipAmount;
 
-  // Profile-driven payment-mode policy
   const paymentMode = deviceConfig?.paymentMode || 'tap_to_pay';
-  const cardAllowed = paymentMode !== 'pay_at_counter_only';
-  const counterAllowed = true; // always allowed as a fallback for cash
+  const subtitle =
+    paymentMode === 'assigned_reader'
+      ? 'Hand the phone to your guest — they’ll pay on the reader after confirming.'
+      : 'Hand the phone to your guest. They tap a tip and Confirm — card prompt follows.';
 
-  const setPreset = (p) => { setTipPct(p); setCustomTip(''); };
+  const onPickPreset = (p) => { setTipPct(p); setCustomTip(null); };
+  const onPickNoTip = () => { setTipPct(0); setCustomTip(0); };
 
   return (
     <div style={Sx.shell}>
-      <div style={Sx.header}>
-        <button onClick={onBack} style={Sx.iconBtn} aria-label="Back">←</button>
-        <div style={{ flex:1, minWidth:0 }}>
-          <div style={Sx.hTitle}>Take payment</div>
-          <div style={Sx.hSub}>{order.label}</div>
+      {/* Customer-facing header — minimal, no back arrow at the top because
+          this view is for the customer; server-back lives at the bottom. */}
+      <div style={{ ...Sx.header, justifyContent:'center', borderBottom:'none', padding:'14px 14px 0' }}>
+        <div style={{ textAlign:'center' }}>
+          <div style={{ fontSize:11, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', fontWeight:800 }}>
+            Customer payment
+          </div>
+          <div style={{ fontSize:13, color:'var(--t3)', marginTop:4, lineHeight:1.4, padding:'0 8px' }}>
+            {subtitle}
+          </div>
         </div>
       </div>
 
       <div style={Sx.scroller}>
-        {/* Total + breakdown */}
-        <div style={{ padding:'18px 16px 8px', textAlign:'center' }}>
-          <div style={{ fontSize:11, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.07em', fontWeight:700 }}>Total due</div>
-          <div style={{ fontSize:46, fontWeight:800, color:'var(--t1)', fontFamily:'var(--font-mono)', letterSpacing:'-.02em', marginTop:4 }}>{money(grand)}</div>
-          <div style={{ fontSize:11, color:'var(--t4)', marginTop:4 }}>
-            {money(subtotal)} subtotal{tax > 0 ? ` · ${money(tax)} tax` : ''}{tipAmount > 0 ? ` · ${money(tipAmount)} tip` : ''}
+        {/* Total panel — large, customer-readable */}
+        <div style={{ padding:'24px 16px 12px', textAlign:'center' }}>
+          <div style={{ fontSize:11, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.07em', fontWeight:700 }}>Subtotal</div>
+          <div style={{ fontSize:32, fontWeight:800, color:'var(--t2)', fontFamily:'var(--font-mono)', letterSpacing:'-.02em', marginTop:2 }}>
+            {money(subtotal + tax)}
           </div>
+          {tax > 0 && (
+            <div style={{ fontSize:11, color:'var(--t4)', marginTop:2 }}>{money(subtotal)} + {money(tax)} tax</div>
+          )}
         </div>
 
-        {/* Tip picker */}
-        <div style={{ padding:'14px 16px 4px' }}>
-          <div style={{ fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.06em', marginBottom:8 }}>
-            Add a tip
+        {/* Tip prompt */}
+        <div style={{ padding:'4px 16px 8px' }}>
+          <div style={{ fontSize:14, fontWeight:800, color:'var(--t1)', textAlign:'center', marginBottom:14 }}>
+            Add a tip?
           </div>
-          <div style={{ display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:6 }}>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(2, 1fr)', gap:10, marginBottom:10 }}>
             {TIP_PRESETS.map(p => {
-              const active = customTip === '' && tipPct === p;
+              const active = customTip == null && tipPct === p;
               const amt = ((subtotal + tax) * p) / 100;
               return (
-                <button key={p} onClick={() => setPreset(p)} style={{
-                  padding:'10px 4px', borderRadius:10,
-                  border:`1.5px solid ${active ? 'var(--acc)' : 'var(--bdr2)'}`,
+                <button key={p} onClick={() => onPickPreset(p)} style={{
+                  padding:'18px 8px', borderRadius:14,
+                  border:`2px solid ${active ? 'var(--acc)' : 'var(--bdr2)'}`,
                   background: active ? 'var(--acc-d)' : 'var(--bg2)',
-                  color: active ? 'var(--acc)' : 'var(--t2)',
+                  color: active ? 'var(--acc)' : 'var(--t1)',
                   fontFamily:'inherit', cursor:'pointer',
-                  display:'flex', flexDirection:'column', alignItems:'center', gap:2,
+                  display:'flex', flexDirection:'column', alignItems:'center', gap:4, minHeight:90,
                 }}>
-                  <div style={{ fontSize:13, fontWeight:800 }}>{p === 0 ? 'No tip' : `${p}%`}</div>
-                  {p > 0 && <div style={{ fontSize:10, color:'var(--t4)', fontFamily:'var(--font-mono)' }}>{money(amt)}</div>}
+                  <div style={{ fontSize:24, fontWeight:800 }}>{p}%</div>
+                  <div style={{ fontSize:13, color: active ? 'var(--acc)' : 'var(--t3)', fontFamily:'var(--font-mono)', fontWeight:700 }}>
+                    {money(amt)}
+                  </div>
                 </button>
               );
             })}
           </div>
-          <div style={{ marginTop:8 }}>
-            <input
-              value={customTip} onChange={(e) => setCustomTip(e.target.value.replace(/[^0-9.]/g, ''))}
-              placeholder="Custom tip amount"
-              inputMode="decimal"
-              style={{
-                width:'100%', padding:'10px 12px', borderRadius:10, border:'1px solid var(--bdr2)',
-                background:'var(--bg2)', color:'var(--t1)', fontSize:13, fontFamily:'inherit', outline:'none', boxSizing:'border-box',
-              }}/>
-          </div>
+          <button onClick={onPickNoTip} style={{
+            width:'100%', padding:'12px', borderRadius:12,
+            border:`2px solid ${customTip === 0 || tipPct === 0 ? 'var(--bdr2)' : 'transparent'}`,
+            background: customTip === 0 || tipPct === 0 ? 'var(--bg3)' : 'transparent',
+            color:'var(--t3)', fontSize:13, fontWeight:700, fontFamily:'inherit', cursor:'pointer',
+          }}>
+            No tip thanks
+          </button>
         </div>
 
-        {/* Method picker */}
-        <div style={{ padding:'18px 16px 24px' }}>
-          <div style={{ fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.06em', marginBottom:8 }}>
-            Payment method
+        {/* Total summary */}
+        <div style={{ padding:'12px 16px 24px', textAlign:'center' }}>
+          <div style={{ fontSize:11, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.07em', fontWeight:800, marginBottom:4 }}>Total to pay</div>
+          <div style={{ fontSize:46, fontWeight:800, color:'var(--t1)', fontFamily:'var(--font-mono)', letterSpacing:'-.02em' }}>
+            {money(grand)}
           </div>
-          <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-            {cardAllowed && (
-              <Method
-                icon="📱" title="Card" desc={paymentMode === 'tap_to_pay' ? 'Tap, insert or swipe — Tap to Pay on this phone' : 'Customer pays on the assigned reader'}
-                onClick={() => onPay?.({ method:'card', tip: tipAmount, grand, subtotal, tax })}
-              />
-            )}
-            {counterAllowed && (
-              <Method
-                icon="💷" title="Pay at counter" desc="Send to counter for cash or card. The counter POS will see this order in the queue."
-                onClick={() => onPayAtCounter?.({ tip: tipAmount, grand, subtotal, tax })}
-              />
-            )}
-          </div>
+          {tipAmount > 0 && (
+            <div style={{ fontSize:11, color:'var(--t4)', marginTop:4 }}>incl. {money(tipAmount)} tip</div>
+          )}
         </div>
+      </div>
+
+      {/* Big customer Confirm — auto-triggers card flow */}
+      <div style={Sx.bottom}>
+        <button onClick={() => onConfirm?.({ method:'card', tip: tipAmount, grand, subtotal, tax })} style={{ ...Sx.btnPrim, fontSize:17, padding:'18px 16px', minHeight:60 }}>
+          Confirm · {money(grand)}
+        </button>
+        <button onClick={onBack} style={{ ...Sx.btnGhost, marginTop:8 }}>
+          ← Back to order
+        </button>
       </div>
     </div>
-  );
-}
-
-function Method({ icon, title, desc, onClick }) {
-  return (
-    <button onClick={onClick} style={{
-      padding:'14px 14px', borderRadius:14, border:'1px solid var(--bdr)',
-      background:'var(--bg2)', cursor:'pointer', fontFamily:'inherit', textAlign:'left',
-      display:'flex', alignItems:'center', gap:14, minHeight:72,
-    }}>
-      <div style={{ fontSize:30, flexShrink:0, width:48, textAlign:'center' }}>{icon}</div>
-      <div style={{ flex:1, minWidth:0 }}>
-        <div style={{ fontSize:15, fontWeight:800, color:'var(--t1)' }}>{title}</div>
-        <div style={{ fontSize:12, color:'var(--t3)', marginTop:2, lineHeight:1.4 }}>{desc}</div>
-      </div>
-      <div style={{ fontSize:20, color:'var(--t4)' }}>›</div>
-    </button>
   );
 }

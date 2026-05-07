@@ -9,15 +9,28 @@
 import { useState, useMemo } from 'react';
 import { useStore } from '../../store';
 import { Sx, money } from './MShellStyles';
+import MAllergenPicker from './MAllergenPicker';
 
 export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, headerSub }) {
   const {
     activeTableId, tables, walkInOrder,
     menuCategories = [], menuItems = [], eightySixIds = [],
+    allergens = [],
   } = useStore();
 
   const [query, setQuery] = useState('');
   const [activeCatId, setActiveCatId] = useState(null);
+  const [showAllergens, setShowAllergens] = useState(false);
+
+  // Compute allergen overlap for a given item — shared across the menu list
+  // and the search results so the warning style is consistent. We keep the
+  // item visible (rather than hiding) so the server can still pick it after
+  // a manager override / customer clarification.
+  const allergenHits = (item) => {
+    if (!allergens?.length) return [];
+    const itemAllergens = item.allergens || [];
+    return itemAllergens.filter(a => allergens.includes(a));
+  };
 
   // Live cart count + total
   const activeItems = useMemo(() => {
@@ -90,6 +103,18 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
             <div style={Sx.hSub}>{itemsForCategory(activeCatId).length} item{itemsForCategory(activeCatId).length === 1 ? '' : 's'}</div>
           )}
         </div>
+        {/* Allergy chip — opens the picker. Active state when any allergen is filtered. */}
+        <button onClick={() => setShowAllergens(true)} aria-label="Allergy filter" style={{
+          ...Sx.iconBtn,
+          width:'auto', padding:'0 12px', minWidth:38, gap:5,
+          background: allergens.length > 0 ? 'var(--red-d)' : 'var(--bg2)',
+          border: `1px solid ${allergens.length > 0 ? 'var(--red-b)' : 'var(--bdr2)'}`,
+          color: allergens.length > 0 ? 'var(--red)' : 'var(--t2)',
+          fontSize:13, fontWeight:800,
+        }}>
+          <span style={{ fontSize:14 }}>⚠</span>
+          {allergens.length > 0 && <span style={{ fontFamily:'var(--font-mono)' }}>{allergens.length}</span>}
+        </button>
       </div>
 
       {/* Search box — always visible */}
@@ -127,6 +152,7 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
         {(showCategory || showSearch) && (
           <ItemsList
             items={itemsToShow}
+            allergenHits={allergenHits}
             empty={
               showSearch
                 ? { icon:'🔍', title:`No items match "${query}"`, sub:'Try a different search term.' }
@@ -136,6 +162,22 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
           />
         )}
       </div>
+
+      {/* Active allergen warning banner (when filter is on) */}
+      {allergens.length > 0 && !showAllergens && (
+        <div style={{
+          margin:'0 12px 4px', padding:'8px 12px', borderRadius:10,
+          background:'var(--red-d)', border:'1px solid var(--red-b)', color:'var(--red)',
+          fontSize:11, fontWeight:700, display:'flex', alignItems:'center', gap:8, flexShrink:0,
+        }}>
+          <span style={{ fontSize:14 }}>⚠</span>
+          <span style={{ flex:1, lineHeight:1.4 }}>Filtering for {allergens.length} allergen{allergens.length === 1 ? '' : 's'} — flagged items shown crossed out</span>
+          <button onClick={() => setShowAllergens(true)} style={{
+            background:'transparent', border:'none', color:'var(--red)', fontWeight:800, fontSize:11,
+            fontFamily:'inherit', cursor:'pointer', padding:'2px 6px',
+          }}>Edit</button>
+        </div>
+      )}
 
       {/* Sticky cart bar */}
       {cartCount > 0 && (
@@ -155,6 +197,9 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
           </button>
         </div>
       )}
+
+      {/* Allergen picker overlay */}
+      {showAllergens && <MAllergenPicker onClose={() => setShowAllergens(false)} />}
     </div>
   );
 }
@@ -214,7 +259,7 @@ function CategoriesGrid({ categories, countFor, onPick }) {
 }
 
 // ── Items list (used for both category drill-in and search results) ──────────
-function ItemsList({ items, empty, onPick }) {
+function ItemsList({ items, empty, onPick, allergenHits }) {
   if (!items.length) {
     return (
       <div style={Sx.emptyBlock}>
@@ -226,34 +271,54 @@ function ItemsList({ items, empty, onPick }) {
   }
   return (
     <div style={{ padding:'8px 12px' }}>
-      {items.map(item => <ItemRow key={item.id} item={item} onTap={() => onPick?.(item)} />)}
+      {items.map(item => (
+        <ItemRow
+          key={item.id} item={item}
+          onTap={() => onPick?.(item)}
+          allergenHits={allergenHits ? allergenHits(item) : []}
+        />
+      ))}
     </div>
   );
 }
 
-function ItemRow({ item, onTap }) {
+function ItemRow({ item, onTap, allergenHits = [] }) {
   const price = item?.pricing?.base ?? item?.price ?? 0;
   const hasMods =
     item?.assignedModifierGroups?.length > 0 ||
     item?.modifierGroups?.length > 0 ||
     item?.type === 'modifiable';
+  const flagged = allergenHits.length > 0;
   return (
     <button onClick={onTap} style={{
-      width:'100%', padding:'12px 14px', background:'var(--bg2)', borderRadius:12, border:'1px solid var(--bdr)',
-      marginBottom:8, display:'flex', gap:10, alignItems:'center', cursor:'pointer', minHeight:64, fontFamily:'inherit', textAlign:'left',
+      width:'100%', padding:'12px 14px',
+      background: flagged ? 'var(--red-d)' : 'var(--bg2)',
+      borderRadius:12,
+      border:`1px solid ${flagged ? 'var(--red-b)' : 'var(--bdr)'}`,
+      marginBottom:8, display:'flex', gap:10, alignItems:'center', cursor:'pointer',
+      minHeight:64, fontFamily:'inherit', textAlign:'left',
+      opacity: flagged ? .85 : 1,
     }}>
       <div style={{ flex:1, minWidth:0 }}>
-        <div style={{ fontSize:14, fontWeight:700, color:'var(--t1)', marginBottom:2, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+        <div style={{
+          fontSize:14, fontWeight:700, color:'var(--t1)', marginBottom:2,
+          overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap',
+          textDecoration: flagged ? 'line-through' : 'none',
+        }}>
           {item.name}
         </div>
-        {item.description && (
+        {flagged ? (
+          <div style={{ fontSize:11, color:'var(--red)', fontWeight:700, lineHeight:1.4 }}>
+            ⚠ Contains: {allergenHits.join(', ')}
+          </div>
+        ) : item.description ? (
           <div style={{ fontSize:11, color:'var(--t4)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
             {item.description}
           </div>
-        )}
+        ) : null}
       </div>
       <div style={{ display:'flex', flexDirection:'column', alignItems:'flex-end', gap:4, flexShrink:0 }}>
-        <div style={{ fontSize:14, fontWeight:800, color:'var(--acc)', fontFamily:'var(--font-mono)' }}>
+        <div style={{ fontSize:14, fontWeight:800, color: flagged ? 'var(--red)' : 'var(--acc)', fontFamily:'var(--font-mono)' }}>
           {money(price)}
         </div>
         {hasMods && <span style={{ ...Sx.pill, background:'var(--bg3)', color:'var(--t4)', border:'1px solid var(--bdr)' }}>OPTIONS</span>}
