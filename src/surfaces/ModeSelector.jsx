@@ -23,7 +23,7 @@ function Card({ icon, title, desc, note, accent, onClick }) {
   );
 }
 
-export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelectAdmin }) {
+export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelectAdmin, onSelectMPOS }) {
   return (
     <div style={{
       minHeight: '100vh',
@@ -46,15 +46,23 @@ export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelect
         <div style={{ fontSize: 16, color: '#64748b' }}>What is this device being used for?</div>
       </div>
 
-      {/* Main two cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, width: '100%', maxWidth: 680, marginBottom: 20 }}>
+      {/* Main cards */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 20, width: '100%', maxWidth: 1020, marginBottom: 20 }}>
         <Card
           icon="🖥"
           title="POS Terminal"
           desc="A till, counter screen, or handheld used by staff to take orders and process payments."
           note="Requires a pairing code from Back Office"
           accent="#d4881c"
-          href='?mode=pos' onClick={onSelectPOS}
+          onClick={onSelectPOS}
+        />
+        <Card
+          icon="📱"
+          title="MPOS (mobile)"
+          desc="A phone or Sunmi handheld used by servers and runners — portrait UI, Stripe Tap to Pay, walk-in orders."
+          note="Pairs to a location like a regular POS"
+          accent="#22c55e"
+          onClick={onSelectMPOS}
         />
         <Card
           icon="🏢"

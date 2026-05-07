@@ -20,6 +20,7 @@ import POSSurface from './surfaces/POSSurface';
 import BarSurface from './surfaces/BarSurface';
 import TablesSurface from './surfaces/TablesSurface';
 import { KDSSurface } from './surfaces/OtherSurfaces';
+import MPOSSurface from './surfaces/MPOSSurface';
 import AIChat from './components/AIChat';
 
 function AIAssistantSurface() {
@@ -72,6 +73,19 @@ import useSupabaseInit from './lib/useSupabaseInit';
 import { VERSION } from './lib/version';
 
 const CHANGELOG = [
+  {
+    version: '5.5.59', date: '6 May 2026', label: 'MPOS Phase 1A — phone-shaped POS for servers and runners (cash + REST card)',
+    changes: [
+      'NEW SURFACE: ?mode=mpos — phone-shaped portrait POS that reuses every existing piece of plumbing (Zustand store, OfflineQueue, QueueSync, realtime, edge functions, walkInOrder, sendToKitchen, recordWalkInClosed, calculateOrderTax, getAssignedNetworkReader). About 600 lines of new UI sitting on top of unchanged backend. The first step toward Toast-Go-style mobile ordering devices for table service and counter-side payment.',
+      'PHASE 1A SCOPE (this release): walk-in / takeaway / counter / collection / delivery order types, single-column menu→cart→tender flow, cash payment fully working with quick-cash and number-pad UI, card via existing Stripe REST flow (network reader assigned to this device\'s pos id), simulated-card fallback so the phone is testable end-to-end before native shells exist. Digital receipt only — no printer dispatch from the phone in this phase. Table service + native printer integration land in Phase 2.',
+      'PHASE 1B (next): native iOS + Android shells with Stripe Tap to Pay so the phone\'s NFC is the card reader. Apple does not allow Tap to Pay from PWA/Safari, so the iOS shell will be a thin Capacitor app hosting the same WebView, with a native bridge exposing the Tap to Pay framework. Android will add the stripeterminal-tap-to-pay artifact (slimmer than the BBPOS one we just removed) and a Java bridge mirroring the printer pattern. Sunmi MPOS handhelds (V2s Plus, P2 Pro) will run the same Android shell.',
+      'NEW FILES: src/surfaces/MPOSSurface.jsx (~620 lines — header, menu browse, cart review, tender method picker, cash entry with number pad + quick-cash, card REST flow with assigned-reader detection, simulated approval fallback, done screen), src/lib/useMobile.js (viewport hook, threshold 540pt), public/mpos-manifest.json (portrait orientation, start_url=?mode=mpos, MPOS short_name).',
+      'MODE SELECTOR UPDATED: card grid expanded to three columns (POS Terminal, MPOS, Back Office) on first-visit. Internal admin link unchanged.',
+      'PWA MANIFEST SWAP: when MPOSSurface mounts it dynamically swaps the link[rel=manifest] href to /mpos-manifest.json and tightens viewport to viewport-fit=cover, user-scalable=no — phones installing the PWA from ?mode=mpos get the portrait MPOS shell, phones installing from ?mode=pos get the existing landscape POS.',
+      'STAFF AUTH: PINScreen reused as-is. Server picks themselves from the staff list, enters PIN. Existing roles/permissions apply unchanged.',
+      'WHAT IS NOT IN THIS RELEASE (Phase 2+): table service from phone (open table, send to kitchen with print at the location\'s station printer), runner mode with order list / scan-to-deliver, manager-PIN-gated refunds and voids, BO link to a phone-friendly subset of admin views, push notifications for new kiosk orders. The architecture supports all of these — they just need UI work.',
+    ],
+  },
   {
     version: '5.5.58', date: '6 May 2026', label: 'WiFi-only card terminals — Stripe Terminal SDK + Bluetooth ripped out',
     changes: [
@@ -3166,6 +3180,7 @@ export default function App() {
   if (!deviceMode) return (
     <ModeSelector
       onSelectPOS={() => { localStorage.setItem('rpos-device-mode', 'pos'); window.location.href = '?mode=pos'; }}
+      onSelectMPOS={() => { localStorage.setItem('rpos-device-mode', 'mpos'); window.location.href = '?mode=mpos'; }}
       onSelectBackOffice={() => { localStorage.setItem('rpos-device-mode', 'backoffice'); window.location.href = '?mode=office'; }}
       onSelectAdmin={() => { localStorage.setItem('rpos-device-mode', 'admin'); window.location.href = '?mode=admin'; }}
     />
@@ -3180,9 +3195,14 @@ export default function App() {
   // Back office mode — go to email login (no pairing needed)
   if (deviceMode === 'backoffice' || deviceMode === 'office') return <><SyncBridge onSyncPulse={handleSyncPulse}/><BackOfficeApp /></>;
 
-  // POS mode — check if paired to a location
+  // POS / MPOS modes both need a paired device for locationId resolution
   const pairedDevice = (() => { try { return JSON.parse(localStorage.getItem('rpos-device') || 'null'); } catch { return null; } })();
   if (!pairedDevice) return <PairingScreen onPaired={() => window.location.reload()} />;
+
+  // MPOS — phone-shaped POS for servers/runners. Reuses the same store + sync
+  // layer as ?mode=pos but with a portrait, single-column UI. Phase 1A: walk-in
+  // only, cash + REST card. Phase 1B will add Stripe Tap to Pay native bridges.
+  if (deviceMode === 'mpos') return <><SyncBridge onSyncPulse={handleSyncPulse}/><MPOSSurface /></>;
 
   // Validate device against Supabase (checks if admin removed it)
   // Uses a component so hooks work properly
