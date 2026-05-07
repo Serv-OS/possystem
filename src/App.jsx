@@ -74,6 +74,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.70', date: '7 May 2026', label: 'MPOS — drop bar tab + fix silent buttons in ⋯ order menu',
+    changes: [
+      'BAR TAB REMOVED from MPOS — Peter confirmed this product doesn\'t need bar-tab handling at this layer. MNewOrder.TYPES dropped to four (Dine in, Takeaway, Collection, Delivery), and the takeaway-fallback in MPOSSurface.onPickType cleaned up. The desktop POS BarSurface still handles bar tabs at the till.',
+      'FIXED SILENT BUTTONS in the ⋯ order menu (MOrderActions). The previous build wired Transfer table and Edit order note to optional callbacks (onTransferTable / onEditNote) that MCartSheet never passed, so tapping them did nothing. Replaced with self-contained sub-views inside MOrderActions: Transfer table → grid of every available table at the location (excludes the current one + occupied ones) → tap → store.transferTable + toast. Edit order note → multi-line textarea with the existing note pre-filled, 240-char cap → store.setOrderNote on save. Both work for table sessions; note also works for walk-in orders. No prop drilling required from MCartSheet.',
+      'Note: if other buttons aren\'t working on the build you tested, please tell me which screen + which button — I\'ll fix surgically. The two I just spotted by audit are the most likely culprits but I haven\'t exhausted every render path.',
+    ],
+  },
+  {
     version: '5.5.69', date: '7 May 2026', label: 'MPOS — voice-to-order (Web Speech + Claude menu-aware parser)',
     changes: [
       'VOICE ORDERING — Phase 2 of the MPOS spec. Server taps the 🎤 chip in the menu header and says the order naturally ("two cheeseburgers, one with no pickle, large fries, two cokes"). Browser SpeechRecognition transcribes live (interim + final results), auto-stops on 1.5s silence, then sends the transcript + the location\'s menu to Claude via /api/voice-order. Claude returns structured items with quantities, modifiers, instructions, and an optional clarifying question if anything is ambiguous. Server reviews the parsed list, taps Confirm, and items flow into the cart via the same store.addItem path the manual flow uses — kitchen tickets, pricing, allergen warnings all work identically.',

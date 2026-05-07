@@ -98,18 +98,12 @@ function MPOSRouter() {
       setFlow({ screen: 'pickTable' });
       return;
     }
-    if (type === 'bar') {
-      // Bar tabs handled by existing BarSurface — out of MPOS Phase 1B scope.
-      // For now route as a takeaway-style walk-in until bar UI ships.
-      useStore.getState().setOrderType('takeaway');
-    }
     // Reset prior walk-in state. For collection / delivery we route through the
     // customer-capture screen first (they need a name / phone / address /
     // collection time before going to the menu). Takeaway skips capture by
     // default — the server can hit "Skip" to go straight to the menu.
     useStore.setState({ walkInOrder: null, customer: null, activeTableId: null });
-    const effectiveType = type === 'bar' ? 'takeaway' : type;
-    if (effectiveType === 'collection' || effectiveType === 'delivery') {
+    if (type === 'collection' || type === 'delivery') {
       setFlow({ screen: 'customerCapture' });
     } else {
       setFlow({ screen: 'menu', context: { source: 'walkin' } });

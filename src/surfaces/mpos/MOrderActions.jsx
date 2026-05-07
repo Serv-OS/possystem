@@ -26,13 +26,13 @@ const DISCOUNTS = [
   { id:'comp',    label:'Comp (100%)',    type:'percent', value:100, requiresManager:true },
 ];
 
-export default function MOrderActions({ onClose, onTransferTable, onEditNote }) {
+export default function MOrderActions({ onClose }) {
   const {
     activeTableId, tables, walkInOrder, staff,
     addCheckDiscount, removeCheckDiscount, addWalkInDiscount, removeWalkInDiscount,
-    fireCourse,
+    fireCourse, transferTable, setOrderNote, showToast,
   } = useStore();
-  const [view, setView] = useState('main'); // main | discount | fire
+  const [view, setView] = useState('main'); // main | discount | fire | transfer | note
   const [pendingManagerDiscount, setPendingManagerDiscount] = useState(null);
 
   const isTable = !!activeTableId;
@@ -124,9 +124,9 @@ export default function MOrderActions({ onClose, onTransferTable, onEditNote }) 
                 <ActionRow icon="🔥" label={`Fire course ${heldCourses[0]}`} sub={`${heldCourses.length} course${heldCourses.length === 1 ? '' : 's'} held — tap to fire`} onClick={() => setView('fire')} />
               )}
               {isTable && (
-                <ActionRow icon="↔" label="Transfer to another table" sub="Move this session and its items to a different table" onClick={() => { close(); onTransferTable?.(); }} />
+                <ActionRow icon="↔" label="Transfer to another table" sub="Move this session and its items to a different table" onClick={() => setView('transfer')} />
               )}
-              <ActionRow icon="📝" label="Edit order note" sub="Kitchen-bound note for the whole order" onClick={() => { close(); onEditNote?.(); }} />
+              <ActionRow icon="📝" label={isTable && session?.orderNote ? 'Edit order note' : 'Add order note'} sub={isTable && session?.orderNote ? session.orderNote : 'Kitchen-bound note for the whole order'} onClick={() => setView('note')} />
               <button onClick={close} style={{ ...Sx.btnGhost, marginTop:6 }}>Cancel</button>
             </div>
           </>
@@ -185,6 +185,27 @@ export default function MOrderActions({ onClose, onTransferTable, onEditNote }) 
             <button onClick={() => setView('main')} style={{ ...Sx.btnGhost, marginTop:10 }}>← Back</button>
           </div>
         )}
+
+        {view === 'transfer' && (
+          <TransferTableView
+            currentTableId={activeTableId}
+            tables={tables}
+            onTransfer={(toId) => {
+              transferTable(activeTableId, toId);
+              showToast?.(`Transferred to Table ${tables.find(t => t.id === toId)?.label || toId}`, 'success');
+              close();
+            }}
+            onBack={() => setView('main')}
+          />
+        )}
+
+        {view === 'note' && (
+          <NoteEditorView
+            initialValue={isTable ? (session?.orderNote || '') : (walkInOrder?.orderNote || '')}
+            onSave={(text) => { setOrderNote(text); close(); }}
+            onBack={() => setView('main')}
+          />
+        )}
       </div>
 
       {pendingManagerDiscount && (
@@ -198,6 +219,67 @@ export default function MOrderActions({ onClose, onTransferTable, onEditNote }) 
           onCancel={() => setPendingManagerDiscount(null)}
         />
       )}
+    </div>
+  );
+}
+
+// Transfer-table view — list every available table at the location and let
+// the server pick one. Excludes the current table and any with active sessions.
+function TransferTableView({ currentTableId, tables, onTransfer, onBack }) {
+  const targets = (tables || []).filter(t =>
+    t.id !== currentTableId && t.status === 'available' && !t.session
+  );
+  return (
+    <div>
+      <div style={{ fontSize:13, fontWeight:800, color:'var(--t1)', marginBottom:4 }}>Transfer to another table</div>
+      <div style={{ fontSize:12, color:'var(--t3)', marginBottom:10, lineHeight:1.4 }}>
+        Move this open session and all items to an available table.
+      </div>
+      {targets.length === 0 ? (
+        <div style={{ padding:'18px 8px', textAlign:'center', fontSize:12, color:'var(--t4)' }}>
+          No available tables to transfer to. All tables are occupied or reserved.
+        </div>
+      ) : (
+        <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:6, maxHeight:'40svh', overflowY:'auto' }}>
+          {targets.map(t => (
+            <button key={t.id} onClick={() => onTransfer(t.id)} style={{
+              padding:'14px 6px', borderRadius:11, fontFamily:'inherit', cursor:'pointer',
+              border:'1.5px solid var(--bdr)', background:'var(--bg2)',
+              display:'flex', flexDirection:'column', alignItems:'center', gap:2, minHeight:64,
+            }}>
+              <div style={{ fontSize:14, fontWeight:800, color:'var(--t1)' }}>{t.label}</div>
+              {t.section && <div style={{ fontSize:10, color:'var(--t4)', textTransform:'capitalize' }}>{t.section}</div>}
+            </button>
+          ))}
+        </div>
+      )}
+      <button onClick={onBack} style={{ ...Sx.btnGhost, marginTop:10 }}>← Back</button>
+    </div>
+  );
+}
+
+// Note editor view — edits the active order's orderNote (table session OR
+// walk-in). 240-char cap, multi-line.
+function NoteEditorView({ initialValue, onSave, onBack }) {
+  const [text, setText] = useState(initialValue || '');
+  return (
+    <div>
+      <div style={{ fontSize:13, fontWeight:800, color:'var(--t1)', marginBottom:4 }}>Order note</div>
+      <div style={{ fontSize:12, color:'var(--t3)', marginBottom:10, lineHeight:1.4 }}>
+        Visible to the kitchen on the docket. Use for allergy alerts, urgency, special arrangements.
+      </div>
+      <textarea
+        value={text} onChange={(e) => setText(e.target.value.slice(0, 240))}
+        placeholder="e.g. Allergy in party — gluten free; child's birthday, surprise dessert"
+        autoFocus
+        style={{
+          width:'100%', padding:'12px 14px', borderRadius:11, border:'1px solid var(--bdr2)',
+          background:'var(--bg2)', color:'var(--t1)', fontSize:14, fontFamily:'inherit', outline:'none', boxSizing:'border-box',
+          minHeight:96, resize:'vertical',
+        }}/>
+      <div style={{ fontSize:10, color:'var(--t4)', textAlign:'right', marginTop:4 }}>{text.length}/240</div>
+      <button onClick={() => onSave(text.trim())} style={Sx.btnPrim}>Save note</button>
+      <button onClick={onBack} style={{ ...Sx.btnGhost, marginTop:8 }}>← Back</button>
     </div>
   );
 }

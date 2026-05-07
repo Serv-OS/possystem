@@ -16,16 +16,12 @@ const TYPES = [
   { id:'takeaway',   label:'Takeaway',    icon:'🥡',  desc:'Customer takes the order with them now' },
   { id:'collection', label:'Collection',  icon:'📦',  desc:'Customer collects later — capture name + time' },
   { id:'delivery',   label:'Delivery',    icon:'🛵',  desc:'Sent out for delivery — capture address' },
-  { id:'bar',        label:'Bar tab',     icon:'🍸',  desc:'Open a tab at the bar' },
 ];
 
 export default function MNewOrder({ onPick, onClose }) {
   const { deviceConfig } = useStore();
   const enabled = deviceConfig?.enabledOrderTypes || ['takeaway','collection','delivery','dine-in'];
-  // Bar tab is only offered if the location has bar tabs enabled — not gated by
-  // enabledOrderTypes which is dine-in/takeaway/collection/delivery only.
-  const allowBar = !deviceConfig?.hiddenFeatures?.includes('barTabs');
-  const visible = TYPES.filter(t => t.id === 'bar' ? allowBar : enabled.includes(t.id));
+  const visible = TYPES.filter(t => enabled.includes(t.id));
 
   return (
     <div onClick={(e) => { if (e.target === e.currentTarget) onClose?.(); }}
