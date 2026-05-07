@@ -74,6 +74,17 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.69', date: '7 May 2026', label: 'MPOS — voice-to-order (Web Speech + Claude menu-aware parser)',
+    changes: [
+      'VOICE ORDERING — Phase 2 of the MPOS spec. Server taps the 🎤 chip in the menu header and says the order naturally ("two cheeseburgers, one with no pickle, large fries, two cokes"). Browser SpeechRecognition transcribes live (interim + final results), auto-stops on 1.5s silence, then sends the transcript + the location\'s menu to Claude via /api/voice-order. Claude returns structured items with quantities, modifiers, instructions, and an optional clarifying question if anything is ambiguous. Server reviews the parsed list, taps Confirm, and items flow into the cart via the same store.addItem path the manual flow uses — kitchen tickets, pricing, allergen warnings all work identically.',
+      'NEW ENDPOINT api/voice-order.js — focused, low-latency parser. Claude Sonnet 4.6 with a single add_items_to_order tool, tool_choice forced so the response is always structured. Compact menu representation (id / name / cat / price / parent_id / type / allergens) keeps tokens around 3-5K per call so latency stays under ~1.5s. System prompt explicitly forbids inventing items not on the menu, requires fuzzy speech-to-text tolerance ("ling-uine" → "linguine"), and routes allergy mentions to the order-level note instead of silently swapping items.',
+      'NEW MVoiceOrder bottom sheet — full-screen flow with a big central mic button (orange when ready, red with pulsing halo when listening), live transcript preview (final text + italic interim), parsing spinner, then a confirmation list showing each parsed item with qty + mods + price. Clarification banner if Claude is uncertain. "Try again" path clears state without losing context. Auto-cleanup on unmount so SpeechRecognition releases the mic if the server backs out.',
+      'BROWSER SUPPORT: iOS Safari 14.5+ (webkitSpeechRecognition) and Chrome on Android (SpeechRecognition) work today. Firefox and older Safari show a graceful "not supported in this browser, use Chrome on Android or wait for the native shell" message — Phase 1E native shells will provide a Whisper-based fallback for those.',
+      'COST: ~3-5K tokens per order at current Claude rates ≈ £0.005-£0.01 per order. Negligible vs the order-speed gain — a complete five-item table order goes from ~30s of menu drilling to ~5s of speaking.',
+      'TOUCHED: src/surfaces/mpos/MMenu.jsx (mic chip in header, MVoiceOrder render branch). NEW: api/voice-order.js (~110 lines), src/surfaces/mpos/MVoiceOrder.jsx (~225 lines).',
+    ],
+  },
+  {
     version: '5.5.68', date: '7 May 2026', label: 'MPOS — customer capture for collection/delivery + live queue order detail + active-session UPDATE realtime',
     changes: [
       'CUSTOMER CAPTURE — collection and delivery walk-in flows now route through a dedicated MCustomerCapture screen between MNewOrder and MMenu. Required fields by type: collection → name + phone + (ASAP or pick a time); delivery → name + phone + address + time. Takeaway has the form available but skippable. Email captured here too so MReceiptPrompt auto-pre-fills the address. Reuses existing store.setCustomer so the data flows into kitchen tickets, queue rows, attribution, and receipts identically to the desktop POS.',

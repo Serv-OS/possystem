@@ -10,6 +10,7 @@ import { useState, useMemo } from 'react';
 import { useStore } from '../../store';
 import { Sx, money } from './MShellStyles';
 import MAllergenPicker from './MAllergenPicker';
+import MVoiceOrder from './MVoiceOrder';
 
 export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, headerSub }) {
   const {
@@ -21,6 +22,7 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
   const [query, setQuery] = useState('');
   const [activeCatId, setActiveCatId] = useState(null);
   const [showAllergens, setShowAllergens] = useState(false);
+  const [showVoice, setShowVoice] = useState(false);
 
   // Compute allergen overlap for a given item — shared across the menu list
   // and the search results so the warning style is consistent. We keep the
@@ -103,6 +105,12 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
             <div style={Sx.hSub}>{itemsForCategory(activeCatId).length} item{itemsForCategory(activeCatId).length === 1 ? '' : 's'}</div>
           )}
         </div>
+        {/* Voice-order mic — opens MVoiceOrder bottom sheet */}
+        <button onClick={() => setShowVoice(true)} aria-label="Voice order" style={{
+          ...Sx.iconBtn,
+          background:'var(--acc-d)', border:'1px solid var(--acc-b)',
+          color:'var(--acc)', fontSize:18,
+        }}>🎤</button>
         {/* Allergy chip — opens the picker. Active state when any allergen is filtered. */}
         <button onClick={() => setShowAllergens(true)} aria-label="Allergy filter" style={{
           ...Sx.iconBtn,
@@ -200,6 +208,9 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
 
       {/* Allergen picker overlay */}
       {showAllergens && <MAllergenPicker onClose={() => setShowAllergens(false)} />}
+
+      {/* Voice-order overlay */}
+      {showVoice && <MVoiceOrder onClose={() => setShowVoice(false)} />}
     </div>
   );
 }
