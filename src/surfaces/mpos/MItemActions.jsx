@@ -1,0 +1,167 @@
+// MItemActions — bottom sheet shown when a cart line is tapped. Surfaces the
+// per-line actions Peter listed (course change, discount, void) without the
+// swipe-left gesture work that lands in 1D. Sent items show only "Void"
+// (manager-PIN gate is 1D — for now we trust the server until that ships).
+
+import { useState } from 'react';
+import { useStore } from '../../store';
+import { Sx, money } from './MShellStyles';
+
+const COURSES = [
+  { id:0, label:'Immediate' },
+  { id:1, label:'Course 1' },
+  { id:2, label:'Course 2' },
+  { id:3, label:'Course 3' },
+];
+
+// Same preset ladder used by the desktop POS DiscountModal (compatible).
+const DISCOUNTS = [
+  { id:'staff50', label:'Staff meal',     type:'percent', value:50 },
+  { id:'staff_d', label:'Staff drinks',   type:'percent', value:50 },
+  { id:'loyalty', label:'Loyalty 10%',    type:'percent', value:10 },
+  { id:'nhs',     label:'NHS / Blue Light', type:'percent', value:10 },
+  { id:'happy',   label:'Happy hour 20%', type:'percent', value:20 },
+  { id:'comp',    label:'Comp (100%)',    type:'percent', value:100, requiresManager:true },
+];
+
+export default function MItemActions({ item, onClose }) {
+  const { activeTableId, updateItemCourse, addItemDiscount, removeItemDiscount, voidItem, removeItem } = useStore();
+  const sent = item?.status === 'sent';
+  const [view, setView] = useState('main'); // main | course | discount | void
+
+  if (!item) return null;
+
+  const close = () => onClose?.();
+
+  // ── Action: change course ────────────────────────────────────────────────
+  const pickCourse = (c) => {
+    updateItemCourse?.(item.uid, c);
+    close();
+  };
+
+  // ── Action: apply discount ───────────────────────────────────────────────
+  const applyDiscount = (d) => {
+    addItemDiscount(activeTableId || null, item.uid, { id:d.id, label:d.label, type:d.type, value:d.value });
+    close();
+  };
+
+  const clearDiscount = () => {
+    removeItemDiscount(activeTableId || null, item.uid);
+    close();
+  };
+
+  // ── Action: void / remove ────────────────────────────────────────────────
+  const doVoid = () => {
+    if (sent) {
+      // Sent items go through the void path so they're tracked properly.
+      voidItem?.(activeTableId || null, item.uid, { manager: null, reason: 'mpos void' });
+    } else {
+      removeItem?.(item.uid);
+    }
+    close();
+  };
+
+  // ── Render ───────────────────────────────────────────────────────────────
+  return (
+    <div onClick={(e) => { if (e.target === e.currentTarget) close(); }}
+      style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.55)', zIndex:60, display:'flex', alignItems:'flex-end' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{
+        width:'100%', maxWidth:540, margin:'0 auto', background:'var(--bg1)', borderRadius:'18px 18px 0 0',
+        padding:'14px 14px calc(18px + env(safe-area-inset-bottom)) 14px',
+        boxShadow:'0 -10px 32px rgba(0,0,0,.45)', maxHeight:'88svh', overflowY:'auto',
+      }}>
+        <div style={{ width:36, height:4, borderRadius:2, background:'var(--bdr2)', margin:'0 auto 14px' }}/>
+
+        <div style={{ marginBottom:14 }}>
+          <div style={{ fontSize:11, color:'var(--t4)', fontWeight:700, textTransform:'uppercase', letterSpacing:'.06em' }}>Item</div>
+          <div style={{ fontSize:16, fontWeight:800, color:'var(--t1)', marginTop:2 }}>{item.qty} × {item.name}</div>
+          {item.discount && (
+            <div style={{ marginTop:6, fontSize:11, fontWeight:700, color:'var(--grn)', display:'inline-block', padding:'2px 8px', borderRadius:99, background:'var(--grn-d)', border:'1px solid var(--grn-b)' }}>
+              {item.discount.label} · −{item.discount.value}%
+            </div>
+          )}
+        </div>
+
+        {view === 'main' && (
+          <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+            {!sent && <ActionRow icon="⏱" label="Change course" sub={`Currently course ${item.course ?? 1}`} onClick={() => setView('course')} />}
+            <ActionRow icon="💸" label={item.discount ? 'Change discount' : 'Apply discount'} sub={item.discount ? `${item.discount.label} active` : 'Pick from preset list'} onClick={() => setView('discount')} />
+            {item.discount && <ActionRow icon="✕" label="Remove discount" onClick={clearDiscount} />}
+            <ActionRow icon={sent ? '🗑' : '−'} label={sent ? 'Void item' : 'Remove from order'} sub={sent ? 'Already sent — kitchen will be notified' : 'Pending only'} dangerous onClick={doVoid} />
+            <button onClick={close} style={{ ...Sx.btnGhost, marginTop:8 }}>Cancel</button>
+          </div>
+        )}
+
+        {view === 'course' && (
+          <div>
+            <div style={{ fontSize:13, fontWeight:800, color:'var(--t1)', marginBottom:8 }}>Move to course</div>
+            <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+              {COURSES.map(c => {
+                const active = (item.course ?? 1) === c.id;
+                return (
+                  <button key={c.id} onClick={() => pickCourse(c.id)} style={{
+                    padding:'12px 14px', borderRadius:11, fontFamily:'inherit', cursor:'pointer',
+                    border:`1.5px solid ${active ? 'var(--acc)' : 'var(--bdr)'}`,
+                    background: active ? 'var(--acc-d)' : 'var(--bg2)',
+                    color: active ? 'var(--acc)' : 'var(--t1)',
+                    display:'flex', alignItems:'center', gap:10, textAlign:'left', minHeight:48,
+                  }}>
+                    <div style={{ width:28, textAlign:'center', fontWeight:800, fontFamily:'var(--font-mono)' }}>{c.id}</div>
+                    <div style={{ flex:1, fontSize:13, fontWeight:700 }}>{c.label}</div>
+                    {active && <span style={{ color:'var(--acc)' }}>✓</span>}
+                  </button>
+                );
+              })}
+            </div>
+            <button onClick={() => setView('main')} style={{ ...Sx.btnGhost, marginTop:10 }}>← Back</button>
+          </div>
+        )}
+
+        {view === 'discount' && (
+          <div>
+            <div style={{ fontSize:13, fontWeight:800, color:'var(--t1)', marginBottom:8 }}>Apply discount to this item</div>
+            <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+              {DISCOUNTS.map(d => (
+                <button key={d.id} onClick={() => applyDiscount(d)} style={{
+                  padding:'12px 14px', borderRadius:11, fontFamily:'inherit', cursor:'pointer',
+                  border:'1.5px solid var(--bdr)', background:'var(--bg2)',
+                  display:'flex', alignItems:'center', gap:10, textAlign:'left', minHeight:48,
+                }}>
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)' }}>{d.label}</div>
+                    {d.requiresManager && (
+                      <div style={{ fontSize:10, color:'var(--acc)', fontWeight:700, textTransform:'uppercase', letterSpacing:'.06em', marginTop:2 }}>
+                        Manager · 1D adds PIN gate
+                      </div>
+                    )}
+                  </div>
+                  <div style={{ fontSize:13, fontWeight:800, color:'var(--acc)', fontFamily:'var(--font-mono)' }}>−{d.value}%</div>
+                </button>
+              ))}
+            </div>
+            <button onClick={() => setView('main')} style={{ ...Sx.btnGhost, marginTop:10 }}>← Back</button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ActionRow({ icon, label, sub, onClick, dangerous }) {
+  return (
+    <button onClick={onClick} style={{
+      width:'100%', padding:'12px 14px', borderRadius:11,
+      border:`1px solid ${dangerous ? 'var(--red-b)' : 'var(--bdr)'}`,
+      background: dangerous ? 'var(--red-d)' : 'var(--bg2)',
+      cursor:'pointer', fontFamily:'inherit', textAlign:'left',
+      display:'flex', alignItems:'center', gap:12, minHeight:54,
+    }}>
+      <div style={{ fontSize:20, width:32, textAlign:'center', flexShrink:0 }}>{icon}</div>
+      <div style={{ flex:1, minWidth:0 }}>
+        <div style={{ fontSize:14, fontWeight:700, color: dangerous ? 'var(--red)' : 'var(--t1)' }}>{label}</div>
+        {sub && <div style={{ fontSize:11, color:'var(--t3)', marginTop:1 }}>{sub}</div>}
+      </div>
+      <div style={{ fontSize:18, color:'var(--t4)' }}>›</div>
+    </button>
+  );
+}

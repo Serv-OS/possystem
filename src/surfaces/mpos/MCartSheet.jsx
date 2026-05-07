@@ -10,9 +10,10 @@
 // Sent items show as locked (status:'sent') — qty/remove blocked. Pending
 // items are editable. Manager-PIN-gated voids land in 1D.
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useStore } from '../../store';
 import { Sx, money, STATUS_PILL } from './MShellStyles';
+import MItemActions from './MItemActions';
 
 export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore }) {
   const {
@@ -23,6 +24,8 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
   const liveNote = activeTableId
     ? (tables.find(t => t.id === activeTableId)?.session?.orderNote || '')
     : (walkInOrder?.orderNote || '');
+  // Item-actions sheet (course / discount / void per line)
+  const [actionsItem, setActionsItem] = useState(null);
 
   // Read live order data — table session or walk-in
   const sourceData = useMemo(() => {
@@ -87,7 +90,15 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
           </div>
         ) : (
           <div style={{ padding:'8px 12px' }}>
-            {items.map(it => <CartLine key={it.uid} item={it} onRemove={() => removeItem(it.uid)} onInc={() => updateItemQty(it.uid, +1)} onDec={() => updateItemQty(it.uid, -1)} />)}
+            {items.map(it => (
+              <CartLine
+                key={it.uid} item={it}
+                onRemove={() => removeItem(it.uid)}
+                onInc={() => updateItemQty(it.uid, +1)}
+                onDec={() => updateItemQty(it.uid, -1)}
+                onActions={() => setActionsItem(it)}
+              />
+            ))}
           </div>
         )}
 
@@ -137,20 +148,33 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
         </button>
         <button onClick={onAddMore} style={{ ...Sx.btnGhost, marginTop:8 }}>+ Add more items</button>
       </div>
+
+      {/* Per-item actions sheet (course change, discount, void) */}
+      {actionsItem && (
+        <MItemActions item={actionsItem} onClose={() => setActionsItem(null)} />
+      )}
     </div>
   );
 }
 
-function CartLine({ item, onRemove, onInc, onDec }) {
+function CartLine({ item, onRemove, onInc, onDec, onActions }) {
   const sent = item.status === 'sent';
-  const lineTotal = (item.price || 0) * (item.qty || 0);
-  const modsList = (item.mods || []).map(m => m?.name || m?.label || m).filter(Boolean);
+  const baseLine = (item.price || 0) * (item.qty || 0);
+  const lineTotal = item.discount?.value
+    ? baseLine * (1 - item.discount.value / 100)
+    : baseLine;
+  const modsList = (item.mods || [])
+    .filter(m => !m?._instruction)
+    .map(m => m?.name || m?.label || m).filter(Boolean);
+  const instructionsList = (item.mods || [])
+    .filter(m => m?._instruction)
+    .map(m => m?.label || m?.name || m).filter(Boolean);
   return (
-    <div style={{
+    <div onClick={onActions} style={{
       padding:'12px 14px', background:'var(--bg2)', borderRadius:12,
-      border:`1px solid ${sent ? 'var(--bdr)' : 'var(--bdr)'}`,
+      border:`1px solid ${item.discount ? 'var(--grn-b)' : 'var(--bdr)'}`,
       marginBottom:8, display:'flex', flexDirection:'column', gap:8,
-      opacity: sent ? .7 : 1,
+      opacity: sent ? .8 : 1, cursor:'pointer',
     }}>
       <div style={{ display:'flex', alignItems:'flex-start', gap:10 }}>
         <div style={{ flex:1, minWidth:0 }}>
@@ -164,28 +188,48 @@ function CartLine({ item, onRemove, onInc, onDec }) {
           {modsList.length > 0 && (
             <div style={{ fontSize:11, color:'var(--t3)', lineHeight:1.4 }}>+ {modsList.join(' · ')}</div>
           )}
+          {instructionsList.length > 0 && (
+            <div style={{ fontSize:11, color:'var(--acc)', marginTop:2, lineHeight:1.4 }}>{instructionsList.join(' · ')}</div>
+          )}
           {item.notes && (
             <div style={{ fontSize:11, color:'var(--acc)', marginTop:2, lineHeight:1.4 }}>📝 {item.notes}</div>
           )}
+          {item.discount && (
+            <div style={{ marginTop:6, display:'inline-block' }}>
+              <span style={{ ...Sx.pill, background:'var(--grn-d)', color:'var(--grn)', border:'1px solid var(--grn-b)' }}>
+                {item.discount.label || 'Discount'} · −{item.discount.value}%
+              </span>
+            </div>
+          )}
         </div>
         <div style={{ textAlign:'right', flexShrink:0 }}>
-          <div style={{ fontSize:14, fontWeight:800, color:'var(--t1)', fontFamily:'var(--font-mono)' }}>{money(lineTotal)}</div>
-          <div style={{ fontSize:10, color:'var(--t4)', fontFamily:'var(--font-mono)' }}>{money(item.price)} ea</div>
+          {item.discount ? (
+            <>
+              <div style={{ fontSize:14, fontWeight:800, color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{money(lineTotal)}</div>
+              <div style={{ fontSize:10, color:'var(--t4)', fontFamily:'var(--font-mono)', textDecoration:'line-through' }}>{money(baseLine)}</div>
+            </>
+          ) : (
+            <>
+              <div style={{ fontSize:14, fontWeight:800, color:'var(--t1)', fontFamily:'var(--font-mono)' }}>{money(lineTotal)}</div>
+              <div style={{ fontSize:10, color:'var(--t4)', fontFamily:'var(--font-mono)' }}>{money(item.price)} ea</div>
+            </>
+          )}
         </div>
       </div>
 
-      {/* Qty stepper / remove — only on pending items */}
+      {/* Qty stepper / remove — only on pending items. Buttons stop propagation
+          so tapping +/− doesn't also open the actions sheet. */}
       {!sent && (
         <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-          <button onClick={onDec} style={{ ...Sx.iconBtn, width:34, height:34, fontSize:16 }}>−</button>
+          <button onClick={(e) => { e.stopPropagation(); onDec(); }} style={{ ...Sx.iconBtn, width:34, height:34, fontSize:16 }}>−</button>
           <div style={{ fontSize:14, fontWeight:800, color:'var(--t1)', minWidth:24, textAlign:'center', fontFamily:'var(--font-mono)' }}>{item.qty}</div>
-          <button onClick={onInc} style={{ ...Sx.iconBtn, width:34, height:34, fontSize:16, background:'var(--acc-d)', color:'var(--acc)', borderColor:'var(--acc-b)' }}>+</button>
+          <button onClick={(e) => { e.stopPropagation(); onInc(); }} style={{ ...Sx.iconBtn, width:34, height:34, fontSize:16, background:'var(--acc-d)', color:'var(--acc)', borderColor:'var(--acc-b)' }}>+</button>
           <div style={{ flex:1 }}/>
-          <button onClick={onRemove} style={{
-            padding:'7px 10px', borderRadius:8, border:'1px solid var(--red-b)',
-            background:'transparent', color:'var(--red)', fontSize:12, fontWeight:700, fontFamily:'inherit', cursor:'pointer',
-          }}>Remove</button>
+          <span style={{ fontSize:11, color:'var(--t4)', fontWeight:700 }}>Tap row for ⋯</span>
         </div>
+      )}
+      {sent && (
+        <div style={{ fontSize:11, color:'var(--t4)', textAlign:'center' }}>Tap row to void or apply discount</div>
       )}
     </div>
   );

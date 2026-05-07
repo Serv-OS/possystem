@@ -16,13 +16,19 @@ import { useStore } from '../../store';
 import { Sx, money } from './MShellStyles';
 
 export default function MItemDetail({ item, onClose, onAdded }) {
-  const { addItem, modifierGroupDefs = [] } = useStore();
+  const { addItem, modifierGroupDefs = [], instructionGroupDefs = [] } = useStore();
   const [qty, setQty] = useState(1);
   const [notes, setNotes] = useState('');
   // selectedMods shape: { [groupId]: [{ id, name, price, qty, groupLabel, subPicks: [...] }] }
   // qty allows the same option to be picked multiple times in multi-select groups.
   // subPicks holds picks made in the option's nested sub-group (if any).
   const [selectedMods, setSelectedMods] = useState({});
+  // Selected pre-set instructions (canned chips like "Medium rare", "No bread"
+  // pulled from instructionGroupDefs assigned to this item). They surface as
+  // tap-to-toggle chips and end up in the item's mods list flagged with
+  // _instruction:true so the existing kitchen-ticket renderer separates them
+  // from real modifier surcharges.
+  const [pickedInstructions, setPickedInstructions] = useState([]);
 
   const basePrice = item?.pricing?.base ?? item?.price ?? 0;
 
@@ -40,6 +46,26 @@ export default function MItemDetail({ item, onClose, onAdded }) {
       };
     }).filter(Boolean);
   }, [item, modifierGroupDefs]);
+
+  // Instruction groups (presets like "Cooking preference: Rare/Medium/…")
+  const instructionGroups = useMemo(() => {
+    const assigned = item?.assignedInstructionGroups || [];
+    return assigned.map(a => {
+      const groupId = typeof a === 'string' ? a : (a?.groupId || a?.id);
+      const def = instructionGroupDefs.find(g => g.id === groupId);
+      return def ? def : null;
+    }).filter(Boolean);
+  }, [item, instructionGroupDefs]);
+
+  const toggleInstruction = (groupId, groupName, opt) => {
+    setPickedInstructions(prev => {
+      // Single-select: replace within the same group
+      const others = prev.filter(p => p.groupId !== groupId);
+      const exists = prev.find(p => p.groupId === groupId && p.label === opt);
+      if (exists) return prev.filter(p => !(p.groupId === groupId && p.label === opt));
+      return [...others, { groupId, groupLabel: groupName, label: opt, _instruction: true }];
+    });
+  };
 
   // Total picks in a group (sum of qtys across options) — counts toward max
   const groupPickCount = (groupId) =>
@@ -144,6 +170,13 @@ export default function MItemDetail({ item, onClose, onAdded }) {
         flatMods.push(...subPickEntries);
       }
     });
+    // Add instructions as flagged mod entries so kitchen tickets show them but
+    // pricing isn't affected (no surcharge on canned instructions).
+    pickedInstructions.forEach(p => flatMods.push({
+      id:`ig-${p.groupId}-${p.label}`,
+      name: p.label, label: p.label, groupLabel: p.groupLabel,
+      price: 0, _instruction: true,
+    }));
     addItem(item, flatMods, null, { qty, notes: notes.trim() || undefined });
     onAdded?.();
   };
@@ -171,6 +204,50 @@ export default function MItemDetail({ item, onClose, onAdded }) {
             {item.description}
           </div>
         )}
+
+        {/* Pre-set instruction chips (e.g. cooking preference, bread service).
+            Shown ABOVE modifier groups because they're often the most important
+            kitchen-bound choice on the item. */}
+        {instructionGroups.map(ig => {
+          const picks = pickedInstructions.filter(p => p.groupId === ig.id);
+          return (
+            <div key={ig.id} style={{ padding:'14px 14px 4px' }}>
+              <div style={{ fontSize:13, fontWeight:800, color:'var(--t1)', marginBottom:8 }}>{ig.name}</div>
+              <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
+                {(ig.options || []).map(opt => {
+                  const label = typeof opt === 'string' ? opt : (opt.label || opt.name || '');
+                  const selected = picks.some(p => p.label === label);
+                  return (
+                    <button key={label} onClick={() => toggleInstruction(ig.id, ig.name, label)} style={{
+                      padding:'8px 14px', borderRadius:99,
+                      border:`1.5px solid ${selected ? 'var(--acc)' : 'var(--bdr2)'}`,
+                      background: selected ? 'var(--acc-d)' : 'var(--bg2)',
+                      color: selected ? 'var(--acc)' : 'var(--t2)',
+                      fontSize:12, fontWeight:700, cursor:'pointer', fontFamily:'inherit',
+                    }}>{label}</button>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+
+        {/* Special instructions — lifted up so it's never buried below long
+            modifier lists. Sticky-ish placement: visible after a short scroll. */}
+        <div style={{ padding:'14px 14px 4px' }}>
+          <div style={{ fontSize:13, fontWeight:800, color:'var(--t1)', marginBottom:6 }}>
+            Special instructions <span style={{ fontSize:11, color:'var(--t4)', fontWeight:600 }}>· optional</span>
+          </div>
+          <textarea
+            value={notes} onChange={(e) => setNotes(e.target.value.slice(0, 200))}
+            placeholder="e.g. no onion, well done, gluten-free…"
+            style={{
+              width:'100%', padding:'10px 12px', borderRadius:10, border:'1px solid var(--bdr2)',
+              background:'var(--bg2)', color:'var(--t1)', fontSize:13, fontFamily:'inherit', outline:'none', boxSizing:'border-box',
+              minHeight:54, resize:'vertical',
+            }}/>
+          <div style={{ fontSize:10, color:'var(--t4)', textAlign:'right', marginTop:2 }}>{notes.length}/200</div>
+        </div>
 
         {groups.map(group => {
           const totalPicked = groupPickCount(group.id);
@@ -272,20 +349,6 @@ export default function MItemDetail({ item, onClose, onAdded }) {
             </div>
           );
         })}
-
-        {/* Item-level note (different from order-level note) */}
-        <div style={{ padding:'18px 14px 4px' }}>
-          <div style={{ fontSize:13, fontWeight:800, color:'var(--t1)', marginBottom:6 }}>Special instructions</div>
-          <textarea
-            value={notes} onChange={(e) => setNotes(e.target.value.slice(0, 200))}
-            placeholder="e.g. no onion, well done…"
-            style={{
-              width:'100%', padding:'10px 12px', borderRadius:10, border:'1px solid var(--bdr2)',
-              background:'var(--bg2)', color:'var(--t1)', fontSize:13, fontFamily:'inherit', outline:'none', boxSizing:'border-box',
-              minHeight:64, resize:'vertical',
-            }}/>
-          <div style={{ fontSize:10, color:'var(--t4)', textAlign:'right', marginTop:2 }}>{notes.length}/200</div>
-        </div>
 
         {/* Qty stepper */}
         <div style={{ padding:'14px 14px 24px' }}>

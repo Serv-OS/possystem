@@ -74,6 +74,18 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.63', date: '7 May 2026', label: 'MPOS round-2 fixes — bottom-clip, variants stacked, category names visible, instructions surfaced, dine-in inline picker, per-line course/discount/void',
+    changes: [
+      'BOTTOM-CLIP — second-pass fix. 100dvh wasn\'t enough on every iOS Safari version (the dynamic measurement still under-reports during scroll on certain builds). Switched to 100svh (small viewport height — always the conservative size) + position:fixed inset on the shell so the action bars are locked to the visible viewport regardless of browser-chrome animation state. Buttons are now guaranteed visible.',
+      'VARIANTS — children with parentId now hide from the top-level menu list and search. Tapping a parent (type === "variants") opens a new MVariantPicker bottom sheet listing every child item with its own price. Picking a variant proceeds to MItemDetail for modifier selection. e.g. tapping "Lager" no longer shows "Lager", "Lager — Pint", "Lager — Half" as three siblings — it shows one "Lager" card that opens to Pint/Half.',
+      'CATEGORY CARDS — name was being squashed on small phones. Rewrote the layout: solid colour strip at the top (8px), then the name as the hero element (18px / weight 800 / multi-line wrap), with the item count as a coloured pill below. Falls back through name → menuName → label → title → trimmed id so a malformed category never renders blank.',
+      'ITEM INSTRUCTIONS — added two pieces. (1) instructionGroupDefs are now surfaced as tap-to-toggle chip groups above the modifier list (e.g. "Cooking preference: Rare/Medium/…", "Bread service: With bread/No bread/Gluten-free…") — pulled from item.assignedInstructionGroups. Picks attach as _instruction:true entries on the item\'s mods array so kitchen tickets show them. (2) The Special instructions textarea moved from the bottom of MItemDetail to BEFORE the modifier groups so it\'s never buried — long modifier lists were hiding it.',
+      'DINE-IN BUTTON FIXED — Dine in used to switch tabs and show a toast which felt like nothing happened. Replaced with a dedicated full-screen pickTable step in the order flow: tap "+" → Dine in → MTablesList renders inside the flow with a Back-to-order-types button at the bottom → tap a table → covers picker (or table view if seated). Stays in flow context throughout.',
+      'PER-LINE CART ACTIONS — Peter said "cant change the course etc no discounts". Tapping a cart line now opens MItemActions bottom sheet with: Change course (Immediate / Course 1-3) · Apply discount (Staff meal · Staff drinks · Loyalty 10% · NHS 10% · Happy hour 20% · Comp 100%) · Remove discount · Remove from order (pending) / Void item (sent). Discounts visible inline on cart lines as a green badge with the strikethrough original price. Manager-PIN gate for Comp/large discounts is 1D scope — Comp is currently allowed without PIN with an inline note that it gates in 1D.',
+      'NEW FILES: src/surfaces/mpos/MVariantPicker.jsx (~50 lines, bottom sheet), src/surfaces/mpos/MItemActions.jsx (~180 lines, multi-view bottom sheet for course/discount/void). MMenu.jsx, MItemDetail.jsx, MCartSheet.jsx, MShellStyles.js and MPOSSurface.jsx all touched for the wiring.',
+    ],
+  },
+  {
     version: '5.5.62', date: '7 May 2026', label: 'MPOS Phase 1B fixes + Phase 1C tender flow end-to-end (card · pay-at-counter · email receipts)',
     changes: [
       'PETER FEEDBACK FIXES from 1B:',

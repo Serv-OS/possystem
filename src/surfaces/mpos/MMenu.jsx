@@ -35,18 +35,19 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
     menuCategories.filter(c => !c.parentId && c.visible !== false)
   , [menuCategories]);
 
-  // Items by predicate
+  // Items by predicate. Hide child variants here (parentId set) so they don't
+  // appear as their own rows — they show up inside the parent variant picker.
   const itemsForCategory = (catId) => (menuItems || []).filter(i =>
-    !i.hidden && !eightySixIds.includes(i.id) &&
+    !i.hidden && !eightySixIds.includes(i.id) && !i.parentId &&
     (i.cat === catId || (Array.isArray(i.cats) && i.cats.includes(catId)))
   );
 
-  // Search results — flatten everything matching the query
+  // Search results — flatten everything matching the query (also hides children)
   const searchResults = useMemo(() => {
     if (!query.trim()) return [];
     const q = query.toLowerCase();
     return (menuItems || [])
-      .filter(i => !i.hidden && !eightySixIds.includes(i.id))
+      .filter(i => !i.hidden && !eightySixIds.includes(i.id) && !i.parentId)
       .filter(i =>
         (i.name || '').toLowerCase().includes(q) ||
         (i.description || '').toLowerCase().includes(q) ||
@@ -158,7 +159,8 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
   );
 }
 
-// ── Categories grid — big tappable cards, 2-up ────────────────────────────────
+// ── Categories grid — big tappable cards, 2-up. Name is the hero — colour
+// strip + small icon are accents that never compete with the text.
 function CategoriesGrid({ categories, countFor, onPick }) {
   if (!categories?.length) {
     return (
@@ -173,21 +175,35 @@ function CategoriesGrid({ categories, countFor, onPick }) {
     <div style={{ padding:'10px 12px', display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
       {categories.map(c => {
         const accent = c.color || '#3b82f6';
+        // Pick the clearest available label — falls back through naming
+        // conventions used elsewhere in the codebase. Last resort is a
+        // truncated id so the card never appears blank.
+        const label = c.name || c.menuName || c.label || c.title || (c.id ? `Category ${String(c.id).slice(-4)}` : 'Category');
         return (
           <button key={c.id} onClick={() => onPick(c)} style={{
-            padding:'18px 14px', borderRadius:14, border:`1.5px solid ${accent}40`,
-            background:`linear-gradient(135deg, ${accent}10, ${accent}22)`,
+            padding:0, borderRadius:14, border:'1px solid var(--bdr)',
+            background:'var(--bg2)', overflow:'hidden',
             cursor:'pointer', fontFamily:'inherit', textAlign:'left',
-            display:'flex', flexDirection:'column', justifyContent:'space-between',
-            minHeight:108, color:'var(--t1)',
+            display:'flex', flexDirection:'column',
+            minHeight:120, color:'var(--t1)',
           }}>
-            <div style={{ fontSize:24, marginBottom:8, lineHeight:1 }}>{c.icon || '🍽'}</div>
-            <div>
-              <div style={{ fontSize:15, fontWeight:800, color:'var(--t1)', marginBottom:3, lineHeight:1.2 }}>
-                {c.name}
+            {/* Solid colour strip at top — clear identifier without obscuring text */}
+            <div style={{ height:8, background:accent, flexShrink:0 }}/>
+            <div style={{ flex:1, padding:'14px 14px', display:'flex', flexDirection:'column', justifyContent:'space-between' }}>
+              <div style={{
+                fontSize:18, fontWeight:800, color:'var(--t1)', lineHeight:1.2,
+                wordBreak:'break-word', hyphens:'auto',
+              }}>
+                {label}
               </div>
-              <div style={{ fontSize:11, fontWeight:700, color: accent, textTransform:'uppercase', letterSpacing:'.06em' }}>
-                {countFor(c)} item{countFor(c) === 1 ? '' : 's'}
+              <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginTop:8 }}>
+                <span style={{
+                  fontSize:11, fontWeight:800, color: accent, textTransform:'uppercase', letterSpacing:'.06em',
+                  padding:'3px 8px', borderRadius:99, background:`${accent}1a`,
+                }}>
+                  {countFor(c)} item{countFor(c) === 1 ? '' : 's'}
+                </span>
+                <span style={{ fontSize:18, color:'var(--t4)' }}>›</span>
               </div>
             </div>
           </button>

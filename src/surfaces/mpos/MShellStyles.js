@@ -3,12 +3,14 @@
 
 export const Sx = {
   shell: {
-    // 100dvh = dynamic viewport height; on iOS Safari this excludes the URL bar
-    // so the bottom buttons never sit underneath the browser chrome. 100vh
-    // (the old value) treated the URL bar as part of the viewport which made
-    // the bottom action bar clip off-screen.
-    display:'flex', flexDirection:'column', height:'100dvh', width:'100vw',
-    maxWidth:540, margin:'0 auto', background:'var(--bg)', color:'var(--t1)',
+    // 100svh = SMALL viewport height (always the conservative size — never
+    // underestimates so bottom buttons CANNOT clip behind the iOS Safari URL
+    // bar or Android Chrome chrome, even mid-scroll where 100dvh would still
+    // misreport on some browsers). Combined with position:fixed inset:0 below
+    // it locks the shell to the visible viewport.
+    position:'fixed', top:0, left:'50%', transform:'translateX(-50%)',
+    display:'flex', flexDirection:'column', height:'100svh', width:'100%',
+    maxWidth:540, background:'var(--bg)', color:'var(--t1)',
     overflow:'hidden', fontFamily:'inherit', WebkitTapHighlightColor:'transparent',
     paddingTop:'env(safe-area-inset-top)',
   },

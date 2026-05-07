@@ -30,6 +30,7 @@ import MCoversPicker from './mpos/MCoversPicker';
 import MTableView from './mpos/MTableView';
 import MMenu from './mpos/MMenu';
 import MItemDetail from './mpos/MItemDetail';
+import MVariantPicker from './mpos/MVariantPicker';
 import MCartSheet from './mpos/MCartSheet';
 import MTender from './mpos/MTender';
 import MCardFlow from './mpos/MCardFlow';
@@ -90,14 +91,14 @@ function MPOSRouter() {
   const onPickType = (type) => {
     useStore.getState().setOrderType(type);
     if (type === 'dine-in') {
-      // Switch to Tables tab and let the user pick a table
-      setFlow({ screen: null });
-      setTab('tables');
-      showToast?.('Pick a table to seat the guests', 'info');
+      // Stay in the order flow — show a dedicated full-screen table picker.
+      // Tab switching was confusing because the floating "+" overlay closed
+      // and the user landed on the Tables tab without context. Now they get
+      // an explicit "Pick a table" screen with a Back arrow back to types.
+      setFlow({ screen: 'pickTable' });
       return;
     }
     if (type === 'bar') {
-      setFlow({ screen: null });
       // Bar tabs handled by existing BarSurface — out of MPOS Phase 1B scope.
       // For now route as a takeaway-style walk-in until 1C adds bar tab UI.
       useStore.getState().setOrderType('takeaway');
@@ -130,8 +131,17 @@ function MPOSRouter() {
 
   // From TableView/walk-in menu cart-bar → menu
   const goMenu = () => setFlow(f => ({ screen: 'menu', context: f.context || {} }));
-  // From menu → item detail
-  const goItem = (item) => setFlow(f => ({ screen: 'item', context: { ...(f.context||{}), item } }));
+  // From menu → item detail. Variant parents (type === 'variants') open the
+  // variant picker first; the picked variant then routes to MItemDetail (for
+  // modifier selection) or, if it has no modifiers, straight into the cart
+  // via the parent flow.
+  const goItem = (item) => {
+    if (item?.type === 'variants') {
+      setFlow(f => ({ screen: 'variantPicker', context: { ...(f.context||{}), parent: item } }));
+      return;
+    }
+    setFlow(f => ({ screen: 'item', context: { ...(f.context||{}), item } }));
+  };
   // From menu/table-view → cart
   const goCart = () => setFlow(f => ({ screen: 'cart', context: f.context || {} }));
   // From item → back to menu (after add)
@@ -212,6 +222,37 @@ function MPOSRouter() {
       <div style={Sx.shell}>
         <BlankBg />
         <MNewOrder onPick={onPickType} onClose={closeFlow} />
+      </div>
+    );
+  }
+
+  if (flow.screen === 'pickTable') {
+    // Inline full-screen table picker as part of the new-order flow. The user
+    // tapped Dine in and now picks where to seat the guests. Back arrow goes
+    // back to the order-type sheet (MNewOrder).
+    return (
+      <div style={Sx.shell}>
+        <div style={{ ...Sx.body, display:'flex', flexDirection:'column' }}>
+          <MTablesList onPickTable={onPickTable} />
+          <div style={{ ...Sx.bottom, borderTop:'1px solid var(--bdr)' }}>
+            <button onClick={() => setFlow({ screen:'newOrder' })} style={Sx.btnGhost}>
+              ← Back to order types
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (flow.screen === 'variantPicker' && flow.context?.parent) {
+    return (
+      <div style={Sx.shell}>
+        <BlankBg />
+        <MVariantPicker
+          parent={flow.context.parent}
+          onPick={(variant) => setFlow(f => ({ screen:'item', context:{ ...(f.context||{}), item: variant, parent: undefined } }))}
+          onClose={() => setFlow(f => ({ screen:'menu', context: f.context || {} }))}
+        />
       </div>
     );
   }
