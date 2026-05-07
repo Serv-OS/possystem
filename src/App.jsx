@@ -74,6 +74,16 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.77', date: '7 May 2026', label: 'MPOS — sheets anchored to shell (no more URL-bar overlay) + strict active-menu filter (no more test categories)',
+    changes: [
+      'BOTTOM-SHEET HIT-TEST — final fix. Earlier the sheet used position:fixed bottom:0 which anchors to the LAYOUT viewport, which on iOS Safari with viewport-fit=cover extends UNDER the URL bar — so sheet buttons rendered partially under the URL bar overlay and clicks landed below. Now: shell uses height:100svh + position:relative; sheets use position:absolute. The shell\'s bottom is the VISIBLE bottom (svh = small viewport, never under chrome), and sheets anchor to the shell, not the viewport. Sheet buttons now sit fully above the URL bar.',
+      'STRICT ACTIVE-MENU FILTER — the previous fallback "show all categories if filter results in 0" was leaking categories from other menus when activeMenuId in the store didn\'t match. Now the filter is strict: if the active menu resolves to "menu-main", only categories with menuId="menu-main" (or no menuId) appear. Empty result is honoured rather than papered over.',
+      'NEW resolveActiveMenu HELPER — ports the desktop POS\'s deviceMenuId resolver (POSSurface.jsx:164-198) to MPOS. Same priority chain: device-pinned-and-active → highest-priority active by schedule → default-flagged → device-pinned-even-if-inactive → null. So if BO sets the device profile to "Main menu" and Main is active right now, MPOS uses Main — same logic as the desktop till.',
+      'SEARCH RESULTS — now also restricted to the active menu so searching "lager" doesn\'t surface items from a Test menu when Main is the active service.',
+      'NEW FILES: src/lib/mpos/resolveActiveMenu.js (~50 lines, schedule-aware menu resolver). Touched: MShellStyles.js (100svh + position:relative), MBottomSheet.jsx (position:absolute), MMenu.jsx (resolver wiring + strict filter + search filter).',
+    ],
+  },
+  {
     version: '5.5.76', date: '7 May 2026', label: 'MPOS — bottom-sheet hit-test fix (single shared MBottomSheet wrapper, anchored at bottom:0)',
     changes: [
       'BOTTOM-SHEET HIT-TEST — every sheet (MNewOrder, MVariantPicker, MItemActions, MOrderActions, MAllergenPicker, MManagerPin, MVoiceOrder) was using the same `position:fixed; inset:0; display:flex; align-items:flex-end` pattern that has the iOS Safari hit-test offset bug. With the main shell now fixed, this was the last layer where taps registered slightly below the visual button.',

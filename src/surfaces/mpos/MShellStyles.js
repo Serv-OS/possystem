@@ -3,16 +3,16 @@
 
 export const Sx = {
   shell: {
-    // v5.5.75 — Use height:100% which inherits from #root (which globals.css
-    // sets to height:100%). #root resolves to whatever the browser thinks the
-    // viewport is — most compatible across browsers / devices and avoids the
-    // dvh/svh/lvh inconsistencies that have caused both bottom-clip and
-    // hit-test issues. No position:fixed, no transform — plain block flow.
-    //
-    // Safe areas: padding-top for the notch, bottom action bars handle their
-    // own padding-bottom (env(safe-area-inset-bottom)) for the home indicator.
+    // v5.5.77 — KEY CHANGE: height:100svh (small viewport — always smaller
+    // than the visible area, never extends behind iOS Safari's URL bar) +
+    // position:relative so bottom sheets (MBottomSheet) can use absolute
+    // positioning scoped to the shell. Together this means: the shell's
+    // bottom IS the visible bottom, sheets anchor to the shell, and click
+    // targets exactly match visual layout. No URL-bar overlay → no
+    // hit-test offset.
+    position:'relative',
     display:'flex', flexDirection:'column',
-    height:'100%', width:'100%', maxWidth:540, margin:'0 auto',
+    height:'100svh', width:'100%', maxWidth:540, margin:'0 auto',
     background:'var(--bg)', color:'var(--t1)',
     overflow:'hidden', fontFamily:'inherit', WebkitTapHighlightColor:'transparent',
     paddingTop:'env(safe-area-inset-top)',

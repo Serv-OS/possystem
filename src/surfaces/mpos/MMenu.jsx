@@ -11,17 +11,23 @@ import { useStore } from '../../store';
 import { Sx, money } from './MShellStyles';
 import MAllergenPicker from './MAllergenPicker';
 import MVoiceOrder from './MVoiceOrder';
+import { resolveActiveMenu } from '../../lib/mpos/resolveActiveMenu';
 
 export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, headerSub }) {
   const {
     activeTableId, tables, walkInOrder,
     menuCategories = [], menuItems = [], eightySixIds = [],
-    allergens = [], activeMenuId, deviceConfig,
+    allergens = [], menus = [], deviceConfig,
   } = useStore();
-  // Active menu — falls back through device profile, then store default.
-  // Filtering by menuId keeps items from secondary menus ("Brunch", "Late
-  // night") out of the picker when the active menu is "Main".
-  const effectiveMenuId = activeMenuId || deviceConfig?.menuId || null;
+  // Active menu resolution — same logic the desktop POS uses (resolveActiveMenu
+  // ports POSSurface's deviceMenuId chain). Honours device-profile pinning,
+  // schedule-based scheduling, default-flagged menus, in priority order. This
+  // is what fixes "I set Main in BO but the phone still shows Test menu" —
+  // we now use the EXACT same resolver.
+  const effectiveMenuId = useMemo(
+    () => resolveActiveMenu({ menus, deviceConfig }),
+    [menus, deviceConfig]
+  );
 
   const [query, setQuery] = useState('');
   const [activeCatId, setActiveCatId] = useState(null);
@@ -49,24 +55,18 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
   const cartCount = activeItems.reduce((s, i) => s + (i.qty || 0), 0);
   const cartSubtotal = activeItems.reduce((s, i) => s + (i.price || 0) * (i.qty || 0), 0);
 
-  // Top-level visible categories — restricted to the active menu when one is
-  // set. Without this filter the device shows every menu's categories at
-  // once (Brunch, Main, Late Night all interleaved) rather than just the
-  // current service.
+  // Top-level visible categories — STRICT filter when an active menu is set.
+  // If the user explicitly set "Main" in BO and a category belongs to "Test"
+  // (a different menuId), we hide it — even if that means the menu is empty.
+  // The earlier "fall back to all" behaviour was wrong: it leaked test
+  // categories into the live menu when activeMenuId didn't match anything.
   //
-  // Fault-tolerant fallback: if the filter results in zero categories (e.g.
-  // mismatched menuId between activeMenuId='menu-1' and Peter's actual data
-  // using different ids), show every visible top-level category instead of
-  // a blank menu. We log a warning so the wiring can be fixed in BO.
+  // Categories with no menuId at all still pass — they're treated as "global"
+  // (legacy data shape).
   const topLevelCategories = useMemo(() => {
     const allTop = menuCategories.filter(c => !c.parentId && c.visible !== false);
     if (!effectiveMenuId) return allTop;
-    const filtered = allTop.filter(c => !c.menuId || c.menuId === effectiveMenuId);
-    if (filtered.length === 0 && allTop.length > 0) {
-      console.warn(`[MPOS] activeMenuId="${effectiveMenuId}" matched 0 categories; showing all ${allTop.length}`);
-      return allTop;
-    }
-    return filtered;
+    return allTop.filter(c => !c.menuId || c.menuId === effectiveMenuId);
   }, [menuCategories, effectiveMenuId]);
 
   // Items by predicate. Hide child variants here (parentId set) so they don't
@@ -76,19 +76,40 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
     (i.cat === catId || (Array.isArray(i.cats) && i.cats.includes(catId)))
   );
 
-  // Search results — flatten everything matching the query (also hides children)
+  // Active-menu category id set — used to filter search results to items in
+  // the active menu only. Without this, searching "lager" would surface
+  // items from Test / Brunch / etc. menus.
+  const activeMenuCategoryIds = useMemo(() => {
+    const set = new Set(topLevelCategories.map(c => c.id));
+    // Include sub-categories whose parent is in the active menu
+    menuCategories.forEach(c => {
+      if (c.parentId && set.has(c.parentId)) set.add(c.id);
+    });
+    return set;
+  }, [topLevelCategories, menuCategories]);
+  const itemBelongsToActiveMenu = (i) => {
+    if (activeMenuCategoryIds.size === 0) return true; // no filter set
+    if (i.cat && activeMenuCategoryIds.has(i.cat)) return true;
+    if (Array.isArray(i.cats) && i.cats.some(id => activeMenuCategoryIds.has(id))) return true;
+    return false;
+  };
+
+  // Search results — flatten everything matching the query (also hides children).
+  // Now also restricted to the active menu so test-menu items don't leak in.
   const searchResults = useMemo(() => {
     if (!query.trim()) return [];
     const q = query.toLowerCase();
     return (menuItems || [])
       .filter(i => !i.hidden && !eightySixIds.includes(i.id) && !i.parentId)
+      .filter(itemBelongsToActiveMenu)
       .filter(i =>
         (i.name || '').toLowerCase().includes(q) ||
         (i.description || '').toLowerCase().includes(q) ||
         (i.kitchenName || '').toLowerCase().includes(q)
       )
       .slice(0, 80);
-  }, [menuItems, eightySixIds, query]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [menuItems, eightySixIds, query, activeMenuCategoryIds]);
 
   // Build a parent-id → children index once. Used for:
   //  • Detecting which top-level items are actually variant parents (any item

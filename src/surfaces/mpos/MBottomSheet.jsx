@@ -9,23 +9,25 @@
 // backdrop (just for dim + tap-outside-to-close) and a fixed bottom:0 sheet
 // anchored directly at the bottom edge. No flex container needed.
 
-export default function MBottomSheet({ onClose, children, maxHeight = '92vh', zIndex = 60, backdropOpacity = '.55' }) {
+export default function MBottomSheet({ onClose, children, maxHeight = '92%', zIndex = 60, backdropOpacity = '.55' }) {
   return (
     <>
-      {/* Backdrop — dims the page, taps close the sheet */}
+      {/* Backdrop — dims the shell, taps close the sheet. position:absolute
+          scopes to the shell (which has position:relative) so the inset
+          rectangle exactly matches the shell's coordinate system — no iOS
+          viewport-fit hit-test offset. */}
       <div
         onClick={onClose}
         style={{
-          position:'fixed', top:0, left:0, right:0, bottom:0,
+          position:'absolute', top:0, left:0, right:0, bottom:0,
           background:`rgba(0,0,0,${backdropOpacity})`, zIndex,
         }}
       />
-      {/* Sheet — anchored directly at bottom, no flex parent */}
+      {/* Sheet — anchored at the shell's bottom, NOT the viewport bottom */}
       <div
         onClick={(e) => e.stopPropagation()}
         style={{
-          position:'fixed', bottom:0, left:0, right:0, zIndex: zIndex + 1,
-          width:'100%', maxWidth:540, margin:'0 auto',
+          position:'absolute', bottom:0, left:0, right:0, zIndex: zIndex + 1,
           background:'var(--bg1)', borderRadius:'18px 18px 0 0',
           padding:'14px 14px calc(18px + env(safe-area-inset-bottom)) 14px',
           boxShadow:'0 -10px 32px rgba(0,0,0,.45)',
