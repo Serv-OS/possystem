@@ -74,6 +74,21 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.60', date: '6 May 2026', label: 'MPOS Phase 1A (rebuilt) — phone-native bottom-tab router, device-profile pairing, four tab screens',
+    changes: [
+      'COMPLETE REBUILD of MPOS after the v5.5.59 minimal attempt was scoped wrong (cash on a phone, missing table service, missing categories, missing receipts). v5.5.60 follows the locked spec at docs/MPOS-SPEC.md — phone-native UX reimagined for one-handed thumb-driven use, NOT a shrunk desktop POS. Card-only (no cash drawer on a phone). Bottom tab bar, persistent floating "+" button, four primary tabs.',
+      'DEVICE PAIRING: MPOS pairs identically to POS via the existing pairing-code flow. Admin creates an "MPOS Server" or "MPOS Runner" device profile in BO Devices → Profiles, picks the new "📱 MPOS (mobile)" default surface, sets Runner mode + Payment mode (Tap to Pay / Assigned reader / Pay at counter only). Standard pairing code on the phone. App boots into MPOSSurface based on profile, not URL.',
+      'NEW BO FIELDS on device_profiles: runner_mode (bool), payment_mode (text — tap_to_pay | assigned_reader | pay_at_counter_only), assigned_reader_id (uuid). DeviceProfiles editor surfaces an orange MPOS-only panel when defaultSurface=mpos, with a toggle for Runner mode and a 3-way picker for Payment mode.',
+      'NEW SURFACE FILE STRUCTURE: src/surfaces/MPOSSurface.jsx is the bottom-tab router. Each tab is its own focused file in src/surfaces/mpos/ — MHome.jsx (quick stats + my open tables + recent paid), MOrdersList.jsx (sectioned: Ready for handoff / My open tables / In flight / Recently closed, with filter chips + search), MTablesList.jsx (phone list view replacing the floor plan, grouped by section, sorted bill-req-first then mine-first then alphanumeric, with filter chips), MMe.jsx (profile, today\'s sales/tips/orders, switch device mode, end shift). MShellStyles.js holds the shared phone-native style tokens including safe-area inset handling.',
+      'RUNNER MODE: default landing tab is Orders (the runner queue), floating "+" button hidden, order-taking flows blocked. Same UI codebase, behaviour gated on the profile flag.',
+      'PROFILE-AWARE BEHAVIOUR: MTablesList honours assigned_section so a "Patio" server only sees patio tables. MHome filters "My tables" by staff name. MMe shows the active profile name and runner-mode pill.',
+      'REUSES EVERY EXISTING PIECE OF PLUMBING: Zustand store, OfflineQueue, QueueSync, realtime channels, edge functions, walkInOrder, sendToKitchen, recordWalkInClosed, calculateOrderTax, getAssignedNetworkReader. About 1100 lines of new UI sitting on unchanged backend. Phase 1B/1C/1D will add MNewOrder → MMenu → MItemDetail → MCart → MTender → MCardFlow → MReceiptPrompt → MOrderActions → MManagerPin etc. (see spec). Phase 1E adds iOS Capacitor + Android Tap to Pay shells.',
+      'DB MIGRATION v5.5.60: alter table device_profiles add runner_mode bool default false, payment_mode text default tap_to_pay, assigned_reader_id uuid. Idempotent.',
+      'PWA MANIFEST SWAP: when MPOSSurface mounts it points link[rel=manifest] at /mpos-manifest.json (portrait orientation, MPOS short_name, start_url=?mode=mpos) and tightens viewport to viewport-fit=cover, user-scalable=no. Phones installing the PWA from ?mode=mpos get the portrait MPOS shell automatically.',
+      'WHAT THE FLOATING "+" CURRENTLY DOES: shows a "Phase 1B" placeholder. Real new-order wizard (NewOrder → CoversPicker → TableView → Menu → ItemDetail → Cart → Send) lands in 1B (~4 days). Tender + email-receipt infrastructure in 1C. Order management + ⋯ menu + manager PIN + refunds in 1D. Native Tap to Pay shells in 1E.',
+    ],
+  },
+  {
     version: '5.5.59', date: '6 May 2026', label: 'MPOS Phase 1A — phone-shaped POS for servers and runners (cash + REST card)',
     changes: [
       'NEW SURFACE: ?mode=mpos — phone-shaped portrait POS that reuses every existing piece of plumbing (Zustand store, OfflineQueue, QueueSync, realtime, edge functions, walkInOrder, sendToKitchen, recordWalkInClosed, calculateOrderTax, getAssignedNetworkReader). About 600 lines of new UI sitting on top of unchanged backend. The first step toward Toast-Go-style mobile ordering devices for table service and counter-side payment.',
@@ -3549,6 +3564,9 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
   if (!staff) return <><SyncBridge onSyncPulse={handleSyncPulse}/><PINScreen /></>;
   // Kiosk — full screen, no staff sidebar, no shift bar
   if (surface === 'kiosk' || deviceConfig?.defaultSurface === 'kiosk') return <><SyncBridge onSyncPulse={handleSyncPulse}/><KioskSurface /></>;
+  // MPOS — full screen, phone-shaped router. Picked up by defaultSurface in addition
+  // to the URL-based ?mode=mpos path (which is checked earlier in the component).
+  if (deviceConfig?.defaultSurface === 'mpos') return <><SyncBridge onSyncPulse={handleSyncPulse}/><MPOSSurface /></>;
 
   return (
     <div style={{ display:'flex', flexDirection:'column', height:'100vh', overflow:'hidden' }}>

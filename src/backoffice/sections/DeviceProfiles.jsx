@@ -7,6 +7,14 @@ const SURFACES = [
   { id:'pos',    label:'POS ordering', icon:'⊞', desc:'Opens straight to the menu/ordering screen' },
   { id:'bar',    label:'Bar tabs', icon:'🍸', desc:'Opens to the bar tab management screen' },
   { id:'kds',    label:'Kitchen display', icon:'▣', desc:'Opens to the KDS screen (for kitchen units)' },
+  { id:'mpos',   label:'MPOS (mobile)', icon:'📱', desc:'Phone or Sunmi handheld for servers and runners. Card-only — Stripe Tap to Pay or assigned reader.' },
+];
+
+// MPOS payment mode — only relevant when defaultSurface === 'mpos'
+const MPOS_PAYMENT_MODES = [
+  { id:'tap_to_pay',          label:'Tap to Pay on this device', desc:'Use the phone’s built-in NFC. Requires native shell (Phase 1B).' },
+  { id:'assigned_reader',     label:'Assigned network reader',   desc:'Pair to a fixed BBPOS WisePOS E or S700.' },
+  { id:'pay_at_counter_only', label:'Pay at counter only',       desc:'Server takes orders only — cash/card all routed to the counter POS.' },
 ];
 
 const ORDER_TYPES = [
@@ -91,6 +99,10 @@ export default function DeviceProfiles() {
         deviceCount: countMap[p.id] || 0,
         serviceCharge: p.service_charge || null,
         isMaster: p.is_master || false,
+        // v5.5.60 MPOS-only fields
+        runnerMode: p.runner_mode === true,
+        paymentMode: p.payment_mode || 'tap_to_pay',
+        assignedReaderId: p.assigned_reader_id || null,
       }));
       setProfiles(mapped);
       try { localStorage.setItem('rpos-device-profiles', JSON.stringify(mapped)); } catch {}
@@ -114,6 +126,10 @@ export default function DeviceProfiles() {
     sort_order: p.sortOrder || 0,
     service_charge: p.serviceCharge || null,
     is_master: p.isMaster || false,
+    // v5.5.60 MPOS-only fields
+    runner_mode: p.runnerMode === true,
+    payment_mode: p.paymentMode || 'tap_to_pay',
+    assigned_reader_id: p.assignedReaderId || null,
   });
 
   // Always resolve a real locationId — never save with null
@@ -325,6 +341,7 @@ function ProfileEditor({ profile, onSave, onDelete, onClose }) {
     assignedSection:null, hiddenFeatures:[],
     tableServiceEnabled:true, quickScreenEnabled:true, receiptPrinterId:'pr1', menuId:null,
     autoPrintReceiptOnClose:true,
+    runnerMode:false, paymentMode:'tap_to_pay', assignedReaderId:null,
   });
 
   const upd = (key, val) => setForm(f => ({ ...f, [key]: val }));
@@ -383,6 +400,44 @@ function ProfileEditor({ profile, onSave, onDelete, onClose }) {
               ))}
             </div>
           </div>
+
+          {/* MPOS-only options — only shown when default surface is MPOS */}
+          {form.defaultSurface === 'mpos' && (
+            <div style={{ marginBottom:18, padding:14, borderRadius:12, background:'var(--acc-d)', border:'1px solid var(--acc-b)' }}>
+              <div style={{ fontSize:11, fontWeight:800, color:'var(--acc)', textTransform:'uppercase', letterSpacing:'.07em', marginBottom:10 }}>📱 MPOS settings</div>
+
+              {/* Runner mode */}
+              <label style={{ display:'flex', alignItems:'center', gap:10, cursor:'pointer', marginBottom:14 }}>
+                <div onClick={() => upd('runnerMode', !form.runnerMode)} style={{
+                  width:42, height:24, borderRadius:14, position:'relative', flexShrink:0,
+                  background: form.runnerMode ? 'var(--grn)' : 'var(--bg4)', transition:'all .2s',
+                }}>
+                  <div style={{ width:18, height:18, borderRadius:'50%', background:'#fff', position:'absolute', top:3, left: form.runnerMode ? 21 : 3, transition:'left .2s' }}/>
+                </div>
+                <div>
+                  <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)' }}>Runner mode</div>
+                  <div style={{ fontSize:11, color:'var(--t3)', marginTop:2 }}>Restricts UI to delivery handoff (no order taking).</div>
+                </div>
+              </label>
+
+              {/* Payment mode */}
+              <div style={{ marginTop:6 }}>
+                <div style={{ fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.07em', marginBottom:8 }}>Payment mode</div>
+                <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+                  {MPOS_PAYMENT_MODES.map(m => (
+                    <button key={m.id} onClick={() => upd('paymentMode', m.id)} style={{
+                      textAlign:'left', padding:'10px 12px', borderRadius:10, cursor:'pointer', fontFamily:'inherit',
+                      background: form.paymentMode === m.id ? 'var(--bg2)' : 'transparent',
+                      border:`1.5px solid ${form.paymentMode === m.id ? 'var(--acc)' : 'var(--bdr2)'}`,
+                    }}>
+                      <div style={{ fontSize:13, fontWeight:700, color: form.paymentMode === m.id ? 'var(--acc)' : 'var(--t1)' }}>{m.label}</div>
+                      <div style={{ fontSize:11, color:'var(--t4)', marginTop:2 }}>{m.desc}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Order types */}
           <div style={{ marginBottom:18 }}>
