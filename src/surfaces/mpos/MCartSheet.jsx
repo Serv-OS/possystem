@@ -20,7 +20,56 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
   const {
     activeTableId, tables, walkInOrder,
     removeItem, updateItemQty, orderType, setOrderNote,
+    printCustomerReceipt, locationConfig, showToast, staff,
   } = useStore();
+  // Print-bill state — feedback while the bill prints
+  const [printing, setPrinting] = useState(false);
+
+  // Print the current order as a bill preview so the customer can review
+  // before payment. Builds a check-shape payload from the live cart and
+  // routes through the existing printCustomerReceipt store action (same path
+  // the desktop POS uses for end-of-meal receipts).
+  const printBill = async () => {
+    if (printing) return;
+    setPrinting(true);
+    try {
+      const liveItems = activeTableId
+        ? (tables.find(t => t.id === activeTableId)?.session?.items || []).filter(i => !i.voided)
+        : (walkInOrder?.items || []);
+      const sub = liveItems.reduce((s, i) => {
+        const base = (i.price || 0) * (i.qty || 0);
+        return s + (i.discount?.value ? base * (1 - i.discount.value / 100) : base);
+      }, 0);
+      const checkShape = {
+        id: `bill-${Date.now()}`,
+        ref: activeTableId
+          ? `Table ${tables.find(t => t.id === activeTableId)?.label || ''}`
+          : (walkInOrder?.ref || 'Walk-in'),
+        server: staff?.name || '',
+        items: liveItems,
+        subtotal: sub,
+        tip: 0,
+        total: sub,
+        status: 'open',
+        method: 'pending',
+      };
+      const result = await printCustomerReceipt?.({
+        location: locationConfig, check: checkShape,
+        items: liveItems, totals: { subtotal: sub, tip: 0, total: sub },
+      });
+      if (!result?.ok) {
+        showToast?.(`Print failed: ${result?.error || 'no printer mapped'}`, 'error');
+      } else if (result.transport === 'browser') {
+        showToast?.('Bill opened in browser print dialog', 'info');
+      } else {
+        showToast?.('Bill printed', 'success');
+      }
+    } catch (e) {
+      showToast?.(`Print failed: ${e?.message || e}`, 'error');
+    } finally {
+      setPrinting(false);
+    }
+  };
   // Live order note from whichever store branch holds the active order
   const liveNote = activeTableId
     ? (tables.find(t => t.id === activeTableId)?.session?.orderNote || '')
@@ -152,7 +201,17 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
         <button onClick={handlePrimary} disabled={items.length === 0} style={{ ...Sx.btnPrim, opacity: items.length === 0 ? .4 : 1 }}>
           {sendLabel}
         </button>
-        <button onClick={onAddMore} style={{ ...Sx.btnGhost, marginTop:8 }}>+ Add more items</button>
+        {items.length > 0 && (
+          <div style={{ display:'flex', gap:8, marginTop:8 }}>
+            <button onClick={printBill} disabled={printing} style={{ ...Sx.btnGhost, flex:1, opacity: printing ? .5 : 1 }}>
+              {printing ? 'Printing…' : '🧾 Print bill'}
+            </button>
+            <button onClick={onAddMore} style={{ ...Sx.btnGhost, flex:1 }}>+ Add items</button>
+          </div>
+        )}
+        {items.length === 0 && (
+          <button onClick={onAddMore} style={{ ...Sx.btnGhost, marginTop:8 }}>+ Add more items</button>
+        )}
       </div>
 
       {/* Per-item actions sheet (course change, discount, void) */}

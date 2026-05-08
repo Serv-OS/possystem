@@ -27,11 +27,13 @@ const DISCOUNTS = [
 ];
 
 export default function MItemActions({ item, onClose }) {
-  const { activeTableId, staff, updateItemCourse, addItemDiscount, removeItemDiscount, voidItem, removeItem } = useStore();
+  const { activeTableId, staff, updateItemCourse, updateItemNote, addItemDiscount, removeItemDiscount, voidItem, removeItem } = useStore();
   const sent = item?.status === 'sent';
-  const [view, setView] = useState('main'); // main | course | discount | void
+  const [view, setView] = useState('main'); // main | course | discount | note
   // Pending discount waiting on a manager PIN
   const [pendingManagerDiscount, setPendingManagerDiscount] = useState(null);
+  // Editable copy of the item's note when the user enters the Edit notes view
+  const [draftNote, setDraftNote] = useState(item?.notes || '');
 
   if (!item) return null;
 
@@ -108,6 +110,7 @@ export default function MItemActions({ item, onClose }) {
         {view === 'main' && (
           <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
             {!sent && <ActionRow icon="⏱" label="Change course" sub={`Currently course ${item.course ?? 1}`} onClick={() => setView('course')} />}
+            <ActionRow icon="📝" label={item.notes ? 'Edit note' : 'Add note'} sub={item.notes || 'Special instruction for this item'} onClick={() => { setDraftNote(item.notes || ''); setView('note'); }} />
             <ActionRow icon="💸" label={item.discount ? 'Change discount' : 'Apply discount'} sub={item.discount ? `${item.discount.label} active` : 'Pick from preset list'} onClick={() => setView('discount')} />
             {item.discount && <ActionRow icon="✕" label="Remove discount" onClick={clearDiscount} />}
             <ActionRow icon={sent ? '🗑' : '−'} label={sent ? 'Void item' : 'Remove from order'} sub={sent ? 'Already sent — kitchen will be notified' : 'Pending only'} dangerous onClick={doVoid} />
@@ -137,6 +140,31 @@ export default function MItemActions({ item, onClose }) {
               })}
             </div>
             <button onClick={() => setView('main')} style={{ ...Sx.btnGhost, marginTop:10 }}>← Back</button>
+          </div>
+        )}
+
+        {view === 'note' && (
+          <div>
+            <div style={{ fontSize:13, fontWeight:800, color:'var(--t1)', marginBottom:4 }}>Note for {item.name}</div>
+            <div style={{ fontSize:12, color:'var(--t3)', marginBottom:10, lineHeight:1.4 }}>
+              Visible to the kitchen on the docket. Saving updates the line in the cart immediately.
+            </div>
+            <textarea
+              value={draftNote} onChange={(e) => setDraftNote(e.target.value.slice(0, 200))}
+              placeholder="e.g. no onion, well done, gluten-free"
+              autoFocus
+              style={{
+                width:'100%', padding:'12px 14px', borderRadius:11, border:'1px solid var(--bdr2)',
+                background:'var(--bg2)', color:'var(--t1)', fontSize:14, fontFamily:'inherit', outline:'none', boxSizing:'border-box',
+                minHeight:96, resize:'vertical',
+              }}/>
+            <div style={{ fontSize:10, color:'var(--t4)', textAlign:'right', marginTop:4 }}>{draftNote.length}/200</div>
+            <button
+              onClick={() => { updateItemNote?.(item.uid, draftNote.trim()); close(); }}
+              style={Sx.btnPrim}>
+              Save note
+            </button>
+            <button onClick={() => setView('main')} style={{ ...Sx.btnGhost, marginTop:8 }}>← Back</button>
           </div>
         )}
 

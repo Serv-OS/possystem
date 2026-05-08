@@ -27,15 +27,26 @@ export default function MOrderDetail({ check, onBack }) {
   const refundedAmount = (live.refunds || []).reduce((s, r) => s + (Number(r.amount) || 0), 0);
   const remaining = (Number(live.total) || 0) - refundedAmount;
 
-  // ── Reprint receipt (existing print path) ──────────────────────────────
+  // ── Reprint receipt ──────────────────────────────────────────────────────
+  // printCustomerReceipt returns { ok, error?, transport? } — it doesn't throw
+  // on routing failure, it returns ok:false. The earlier reprint path was
+  // showing "Receipt sent to printer" even when no printer was mapped.
   const reprint = async () => {
     setBusy(true); setError(null);
     try {
-      await printCustomerReceipt?.({
+      const result = await printCustomerReceipt?.({
         location: locationConfig, check: live,
         items: live.items, totals: { subtotal: live.subtotal, tip: live.tip, total: live.total },
       });
-      showToast?.('Receipt sent to printer', 'success');
+      if (!result?.ok) {
+        setError(`Print failed: ${result?.error || 'no printer mapped to this device'}. Check Back office → Devices → Printer routing, or use Email instead.`);
+        return;
+      }
+      if (result.transport === 'browser') {
+        showToast?.('Receipt opened in browser print dialog', 'info');
+      } else {
+        showToast?.('Receipt sent to printer', 'success');
+      }
     } catch (e) {
       setError(e?.message || 'Print failed');
     } finally { setBusy(false); }

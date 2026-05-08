@@ -74,6 +74,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.78', date: '7 May 2026', label: 'MPOS — print bill before close, edit item notes after adding, reprint feedback fixed',
+    changes: [
+      'PRINT BILL FROM MCARTSHEET — new "🧾 Print bill" button next to "Add items" in the cart bottom bar. Builds a check-shape payload from the live cart and routes through the existing printCustomerReceipt store action — same path the desktop POS uses for end-of-meal receipts. Surfaces print failures with a toast ("Print failed: no printer mapped" etc) rather than silently claiming success. If transport falls back to browser, the toast says so.',
+      'EDIT ITEM NOTES AFTER ADDING — the cart line item-actions sheet now has an "📝 Add note / Edit note" row. Tapping opens an inline view with a 200-char textarea pre-filled with the existing note. Save calls store.updateItemNote (existing action) which updates the cart line in place, including reprint of kitchen tickets if needed. Sub copy on the row shows the existing note so the server can see at a glance what\'s on the line.',
+      'REPRINT FEEDBACK FIXED — printCustomerReceipt returns { ok, error?, transport? } rather than throwing on routing failure. MOrderDetail\'s Reprint button was awaiting the call without checking the return value, so it always showed "Receipt sent to printer" even when no printer was mapped to the device. Now: surfaces the actual error ("Print failed: no printer mapped to this device. Check Back office → Devices → Printer routing, or use Email instead."). Browser-fallback transport gets its own toast.',
+    ],
+  },
+  {
     version: '5.5.77', date: '7 May 2026', label: 'MPOS — sheets anchored to shell (no more URL-bar overlay) + strict active-menu filter (no more test categories)',
     changes: [
       'BOTTOM-SHEET HIT-TEST — final fix. Earlier the sheet used position:fixed bottom:0 which anchors to the LAYOUT viewport, which on iOS Safari with viewport-fit=cover extends UNDER the URL bar — so sheet buttons rendered partially under the URL bar overlay and clicks landed below. Now: shell uses height:100svh + position:relative; sheets use position:absolute. The shell\'s bottom is the VISIBLE bottom (svh = small viewport, never under chrome), and sheets anchor to the shell, not the viewport. Sheet buttons now sit fully above the URL bar.',
