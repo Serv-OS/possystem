@@ -74,6 +74,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.101', date: '8 May 2026', label: 'getLocationConfig — same id-fallback + maybeSingle fix as LocationSettings (so reports actually see saved shifts)',
+    changes: [
+      'PARALLEL BUG TO 5.5.99 — lib/locationTime.js was the read path that every report uses to get timezone / business_day_start / shifts. It was doing `.eq(\'id\', locationId).single()` against platform DB locations. Same problem as LocationSettings had: if the platform DB row id doesn\'t match the ops DB locationId (which is the case in Peter\'s setup where Huddersfield is platform-side and ops uses a different id), `.single()` throws, the catch swallows the error, and EVERY report gets the fallback `{ shifts: [] }` regardless of whether shifts were saved successfully.',
+      'FIX — same pattern as LocationSettings: try `.eq(\'id\', locationId).maybeSingle()` first, fall back to `.limit(1).maybeSingle()` if no row matches. Use maybeSingle so 0 rows doesn\'t throw. Console-warn instead of silently swallowing errors.',
+      'NET IMPACT — once this lands and BO is hard-refreshed, the saved shifts (now persisting via 5.5.99/5.5.100 + the RLS policy) will actually appear in: SalesSummary service-period breakdown, Daypart per-service stats, BOReports period chips ("Today\'s Breakfast / Lunch / Dinner"), Shifts report aggregation, and the AI assistant context.',
+    ],
+  },
+  {
     version: '5.5.100', date: '8 May 2026', label: 'Service periods — root-cause confirmed (RLS UPDATE blocked) + actionable SQL surfaced',
     changes: [
       'CONFIRMED ROOT CAUSE — Peter\'s "Cannot coerce the result to a single JSON object" error is PostgREST telling us the UPDATE on platform DB locations affected 0 rows even though the SELECT found the row. That\'s the canonical signal for "RLS allows SELECT but blocks UPDATE for the current (anon) session". platformSupabase is initialised with persistSession:false so BO queries hit the platform DB unauthenticated.',

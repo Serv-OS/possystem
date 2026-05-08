@@ -36,25 +36,32 @@ export async function getLocationConfig(explicitLocationId = null) {
     return _locationConfigCache.get(locationId);
   }
 
-  // Try Platform DB
+  // Try Platform DB. SAME fallback pattern as LocationSettings: eq(id) first,
+  // fall back to limit(1) if the platform DB row id doesn't match the ops
+  // DB id (sometimes seeded separately). Without the fallback, every report
+  // gets shifts:[] even when LocationSettings successfully saved them.
+  // Use maybeSingle so 0 rows doesn't throw.
   if (platformSupabase) {
     try {
-      const { data } = await platformSupabase
-        .from('locations')
-        .select('timezone, business_day_start, shifts, collection_lead_minutes')
-        .eq('id', locationId)
-        .single();
-      if (data) {
+      const select = 'timezone, business_day_start, shifts, collection_lead_minutes';
+      let row = null;
+      const r1 = await platformSupabase.from('locations').select(select).eq('id', locationId).maybeSingle();
+      row = r1.data;
+      if (!row) {
+        const r2 = await platformSupabase.from('locations').select(select).limit(1).maybeSingle();
+        row = r2.data;
+      }
+      if (row) {
         const cfg = {
-          timezone: data.timezone || 'Europe/London',
-          businessDayStart: data.business_day_start || '06:00',
-          shifts: data.shifts || [],
-          collectionLeadMinutes: typeof data.collection_lead_minutes === 'number' ? data.collection_lead_minutes : 30,
+          timezone: row.timezone || 'Europe/London',
+          businessDayStart: row.business_day_start || '06:00',
+          shifts: row.shifts || [],
+          collectionLeadMinutes: typeof row.collection_lead_minutes === 'number' ? row.collection_lead_minutes : 30,
         };
         _locationConfigCache.set(locationId, cfg);
         return cfg;
       }
-    } catch (e) { void e; }
+    } catch (e) { console.warn('[locationTime] platform DB read failed:', e?.message); }
   }
 
   // Fallback defaults
