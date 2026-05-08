@@ -76,6 +76,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.104', date: '8 May 2026', label: 'Online ordering Phase 2 wrap — pos-up.com root domain + reserved subdomains',
+    changes: [
+      'Wired pos-up.com as a recognised customer root domain alongside serv-os.app, so when DNS is configured later (e.g. peters-cafe.pos-up.com → this app) the URL parser picks up the slug automatically. Both domains live in customerUrl.js — flipping primary brand later is a one-line change.',
+      'Reserved operator subdomains added to NON_SLUG_SUBDOMAINS so de.pos-up.com (the BO host today), plus the usual app/bo/admin/api/staging/dev/test/preview, are NEVER mistakenly treated as a customer slug. Without this, hitting de.pos-up.com would try to look up "de" as a slug and would either show "shop not found" or worse, route to a slug owned by a different tenant.',
+      'BO Location Settings preview now shows the live pos-up.com host so the URL labels match what customers will actually visit. The DNS-pending hint also surfaces both the future subdomain URL and the ?loc=<slug>&surface=... query you can use to test today.',
+    ],
+  },
+  {
     version: '5.5.103', date: '8 May 2026', label: 'Online ordering Phase 2 — subdomain routing + online_slug + kiosk hours gate',
     changes: [
       'NEW src/lib/customerUrl.js — pure URL parser. Reads window.location, identifies the visitor as a customer (subdomain match e.g. peters-cafe.serv-os.app, or ?loc=<slug> fallback for testing pre-DNS), and returns { mode: \'online\' | \'qr\' | \'kiosk\', slug, tableId }. Resolves slug → platform.locations row via lookupLocationBySlug (in-module cache).',

@@ -470,9 +470,14 @@ function OnlineOrderingCard({
   locationName, slug, setSlug, slugError, setSlugError,
   onlineEnabled, setOnlineEnabled, qrEnabled, setQrEnabled,
 }) {
-  const previewHost = slug ? `${slug}.serv-os.app` : '(slug).serv-os.app';
-  const onlineUrl = slug ? `https://${slug}.serv-os.app` : '';
-  const qrUrl     = slug ? `https://${slug}.serv-os.app/t/<table-id>` : '';
+  // Domain shown in the preview is what's actually live for the customer
+  // today (pos-up.com). The serv-os.app subdomain is the planned final
+  // customer domain — keep both wired in customerUrl.js so flipping over
+  // later is just a DNS change.
+  const ROOT = 'pos-up.com';
+  const previewHost = slug ? `${slug}.${ROOT}` : `(slug).${ROOT}`;
+  const onlineUrl   = slug ? `https://${slug}.${ROOT}`               : '';
+  const qrUrl       = slug ? `https://${slug}.${ROOT}/t/<table-id>`  : '';
 
   return (
     <div style={S.card}>
@@ -528,8 +533,11 @@ function OnlineOrderingCard({
       {slug && (
         <div style={{ marginTop:14, padding:'10px 12px', background:'var(--bg3)', borderRadius:8, border:'1px solid var(--bdr)' }}>
           <div style={{ fontSize:11, color:'var(--t4)', lineHeight:1.6 }}>
-            <b>DNS still required.</b> Once <code style={{ fontFamily:'var(--font-mono)' }}>*.serv-os.app</code> is wired in Vercel + your registrar, these URLs go live.
-            For now you can preview locally with <code style={{ fontFamily:'var(--font-mono)' }}>?loc={slug}&surface=online</code> on the existing host.
+            <b>DNS pending.</b> Once <code style={{ fontFamily:'var(--font-mono)' }}>*.{ROOT}</code> is wired (Vercel + registrar), the URLs above go live.
+            <br/>Test now (no DNS) on the existing host:&nbsp;
+            <code style={{ fontFamily:'var(--font-mono)' }}>?loc={slug}&surface=online</code>
+            &nbsp;or&nbsp;
+            <code style={{ fontFamily:'var(--font-mono)' }}>?loc={slug}&surface=qr&t=&lt;table-id&gt;</code>.
           </div>
         </div>
       )}

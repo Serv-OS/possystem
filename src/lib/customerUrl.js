@@ -14,14 +14,23 @@
 // hit Supabase. The caller (boot loader) takes the slug and resolves it
 // to a platform location row via lookupLocationBySlug() in supabase.js.
 
-// Subdomains we should treat as "no slug" — bare domains, www, vercel
-// preview hosts, dev hosts, the legacy production URL etc.
+// Subdomains reserved for operator / infra surfaces — never customer slugs.
+// "de" is the BO host on pos-up.com today; "app", "bo", "admin", "api",
+// "staging", "dev", "test" are the usual suspects we should defend against.
+// If anyone tries to register a slug that collides with this list, the BO
+// validator should also block it (TODO when we wire onboarding).
 const NON_SLUG_SUBDOMAINS = new Set([
   '', 'www', 'localhost', 'possystem-liard',
+  'de', 'app', 'bo', 'admin', 'api', 'staging', 'stage', 'dev', 'test', 'preview',
 ]);
 
+// Domains we treat as the customer-facing root. The first match wins.
+//   • serv-os.app    → final intended customer domain
+//   • pos-up.com     → today's operating domain (de.pos-up.com is BO; future
+//                      <slug>.pos-up.com is customer ordering)
+//   • servos.app     → typo-friendly fallback
 const ROOT_DOMAIN_SUFFIXES = [
-  '.serv-os.app', '.servos.app', // primary + a typo-friendly fallback
+  '.serv-os.app', '.servos.app', '.pos-up.com',
 ];
 
 export function parseCustomerUrl(loc = (typeof window !== 'undefined' ? window.location : null)) {
