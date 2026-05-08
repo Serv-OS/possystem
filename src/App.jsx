@@ -76,6 +76,16 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.109', date: '8 May 2026', label: 'Online ordering — real BO config page (branding + menu picker + delivery toggle)',
+    changes: [
+      'NEW SCHEMA — platform.locations gets four new columns: online_branding (jsonb: logo_url, hero_url, accent_color, background, foreground), online_menu_id (text — references ops menus.id when chosen), online_collection_lead_min (int, default 30), online_delivery_enabled (bool, default false). Migration ran in Supabase against all 4 platform locations.',
+      'NEW src/backoffice/sections/OnlineOrdering.jsx — replaces the previous status-hub stub. Real config page with: status pills for Online + QR (live URLs, Preview ↗ links), menu picker (loads OPS menus for this location, lets the operator choose which menu to expose online — falls back to active menu if unset), branding card with logo URL / hero URL / 3 colour pickers + LIVE preview that updates as you type, operational card with collection lead time + delivery toggle, save button with round-trip verification.',
+      'OnlineSurface NOW READS online_branding FIRST — falls back to ops receipt_branding only when online-specific branding isn\'t set. Same fallback chain for menu: location.online_menu_id is the source of truth for which categories show; if unset, every non-archived sellable item shows (legacy behaviour). Cross-DB join uses menu_category_links to filter categories to the chosen menu.',
+      'lookupLocationBySlug now selects online_branding / online_menu_id / online_collection_lead_min / online_delivery_enabled so the customer surface gets everything in one round-trip.',
+      'TO USE — BO → Devices → 🌐 Online ordering. Set logo URL, accent colour, pick which menu to show, toggle delivery if you want it, save. Open the Preview ↗ link or hit `?loc=<slug>&surface=online` to see the branded surface.',
+    ],
+  },
+  {
     version: '5.5.108', date: '8 May 2026', label: 'Online ordering Phase 3a — real branded surface (menu / cart / item modifiers)',
     changes: [
       'NEW src/surfaces/online/OnlineSurface.jsx — replaces the stub when CustomerBoot routes to mode=online. Cross-DB menu load: queries OPS DB menu_items + menu_categories using location.ops_location_id (the same id-mapping fix from v5.5.105 in reverse — platform-row-to-ops-data instead of ops-id-to-platform-row). Renders sticky branded header, sticky category chip nav, single-column item rows with image / name / description / price.',

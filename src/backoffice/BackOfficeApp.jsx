@@ -10,6 +10,7 @@ import FloorPlanBuilder from './sections/FloorPlanBuilder';
 import DeviceProfiles from './sections/DeviceProfiles';
 import DeviceRegistry from './sections/DeviceRegistry';
 import KioskRegistry from './sections/KioskRegistry';
+import OnlineOrdering from './sections/OnlineOrdering';
 import StaffManager from './sections/StaffManager';
 import PrintRouting from './sections/PrintRouting';
 import PrinterRegistry from './sections/PrinterRegistry';
@@ -446,7 +447,7 @@ export default function BackOfficeApp() {
           {section === 'profiles'   && <DeviceProfiles />}
           {section === 'devices'    && <DeviceRegistry />}
           {section === 'kiosks'     && <KioskRegistry />}
-          {section === 'online'     && <OnlineOrderingSection setSection={setSection} />}
+          {section === 'online'     && <OnlineOrdering setSection={setSection} />}
           {section === 'printers'   && <PrinterRegistry />}
           {section === 'cardreaders'&& <CardReaders />}
           {section === 'cashdrawers' && <CashDrawers />}
