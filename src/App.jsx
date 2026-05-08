@@ -74,6 +74,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.80', date: '7 May 2026', label: 'MPOS — print button unstick, history backfill, floor plan section split',
+    changes: [
+      'PRINT BUTTON STUCK — after the first tap, if the print store action never resolved (e.g. PrintOrchestrator queued the job but the bridge response was lost) the cart\'s "printing" state pinned the button to disabled and Peter could never re-tap. Fix: 10-second Promise.race timeout in MCartSheet.printBill so the spinner always clears, plus an explicit `transport: \'queued\'` toast for the no-bridge case so Peter sees what happened instead of silent disable.',
+      'HISTORY VANISHED — useSupabaseInit only loads today\'s closed_checks (since boot is the hot path), so opening Closed orders and switching the range chip to 7d / 30d / All showed an empty list even though older checks exist in Supabase. Fix: MOrderHistory now fetches on demand when the range expands beyond today, merges the result into the closedChecks store (dedup by id), and shows a Loading… empty state while the fetch is in flight. Each range fetched once and cached for the session.',
+      'FLOOR PLAN SHOWING BOTH SECTIONS AT ONCE — MFloorPlan computed `activeSection` from the section prop / device profile / first available section, but the section tab buttons called an `onSectionPick` callback that was never wired into MTablesList. Side-effect: when there were ≥2 sections (e.g. Indoor + Patio) you couldn\'t change which one rendered, and if no fallback resolved, the canvas filter degraded to "show all" — drawing both floor plans on top of each other. Fix: internal section state in MFloorPlan, tabs wired directly to setPicked, and the no-section fallback now hides everything instead of jumbling sections together when section data is partial.',
+    ],
+  },
+  {
     version: '5.5.79', date: '7 May 2026', label: 'MPOS — wire useSupabaseInit (printers were never hydrated → silent print failure)',
     changes: [
       'PRINT SILENT FAILURE — Peter pressed Print bill, nothing printed, no error toast. Root cause: useSupabaseInit() is the hook that hydrates rpos-printers (and closed_checks, tax rates, shift, cash drawers etc.) from Supabase on mount. It runs inside ValidatedPOSApp for the desktop POS, but MPOS bypasses that wrapper entirely (App.jsx:3424 returns MPOSSurface directly). So MPOS never read the location\'s printer config — _printerForRole(\'receipt\') always returned null — printer.printReceipt() fell through to browserPrint() which opens a print dialog... except in iOS Safari running as a PWA, browser print is suppressed silently. Hence the "no printer, no error".',

@@ -27,11 +27,17 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
 
   // Print the current order as a bill preview so the customer can review
   // before payment. Builds a check-shape payload from the live cart and
-  // routes through the existing printCustomerReceipt store action (same path
-  // the desktop POS uses for end-of-meal receipts).
+  // routes through the existing printCustomerReceipt store action.
+  //
+  // Wraps the call in a 10s timeout so the button can never get permanently
+  // stuck — if printService hangs (e.g. branding fetch never resolves on a
+  // flaky connection) the timeout wins, the button re-enables, and the user
+  // sees a clear error toast. Race uses Promise.race semantics.
   const printBill = async () => {
     if (printing) return;
     setPrinting(true);
+    const timeout = new Promise((resolve) =>
+      setTimeout(() => resolve({ __timedOut: true }), 10_000));
     try {
       const liveItems = activeTableId
         ? (tables.find(t => t.id === activeTableId)?.session?.items || []).filter(i => !i.voided)
@@ -53,14 +59,22 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
         status: 'open',
         method: 'pending',
       };
-      const result = await printCustomerReceipt?.({
+      const printPromise = Promise.resolve(printCustomerReceipt?.({
         location: locationConfig, check: checkShape,
         items: liveItems, totals: { subtotal: sub, tip: 0, total: sub },
-      });
-      if (!result?.ok) {
+      }));
+      const result = await Promise.race([printPromise, timeout]);
+      if (result?.__timedOut) {
+        showToast?.('Print timed out — check the printer / network and try again', 'error');
+      } else if (!result?.ok) {
         showToast?.(`Print failed: ${result?.error || 'no printer mapped'}`, 'error');
       } else if (result.transport === 'browser') {
         showToast?.('Bill opened in browser print dialog', 'info');
+      } else if (result.transport === 'queued') {
+        // No native bridge on the phone — job is in print_jobs, master Sunmi
+        // POS will pick it up via PrintOrchestrator and print on the location
+        // receipt printer within a few seconds.
+        showToast?.('Bill queued — printing on counter printer', 'success');
       } else {
         showToast?.('Bill printed', 'success');
       }

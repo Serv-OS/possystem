@@ -6,7 +6,7 @@
 // Tapping a table calls the same onPickTable callback as the list view so
 // downstream wiring (covers picker / table view) is identical.
 
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { useStore } from '../../store';
 import { Sx, money, elapsed, STATUS_PILL } from './MShellStyles';
 
@@ -28,13 +28,27 @@ export default function MFloorPlan({ section, onPickTable }) {
     tables.forEach(t => { if (t.section) s.add(t.section); });
     return Array.from(s);
   }, [tables]);
-  const activeSection = section || restrictedSection || sections[0] || null;
+  // Internal section state so the tabs are interactive. Default to the prop /
+  // profile restriction / first available section so the canvas never shows
+  // every section's tables jumbled together.
+  const [picked, setPicked] = useState(null);
+  const activeSection = picked || section || restrictedSection || sections[0] || null;
 
-  // Filter to active section
-  const visible = useMemo(
-    () => tables.filter(t => !activeSection || t.section === activeSection),
-    [tables, activeSection]
-  );
+  // If sections list arrives async, snap to first one once available.
+  useEffect(() => {
+    if (!picked && !section && !restrictedSection && sections.length > 0) {
+      setPicked(sections[0]);
+    }
+  }, [sections, picked, section, restrictedSection]);
+
+  // Filter to active section. If we have any sections defined at all, ALWAYS
+  // require a match — never fall back to "show all" which would render two
+  // floor plans on top of each other.
+  const visible = useMemo(() => {
+    if (sections.length === 0) return tables; // no sections defined — show all
+    if (!activeSection) return [];
+    return tables.filter(t => t.section === activeSection);
+  }, [tables, activeSection, sections.length]);
 
   // Compute the bounding box of the floor so we can scale to phone width
   const { canvasW, canvasH, minX, minY } = useMemo(() => {
@@ -67,7 +81,7 @@ export default function MFloorPlan({ section, onPickTable }) {
           {sections.map(s => {
             const active = s === activeSection;
             return (
-              <button key={s} onClick={() => onSectionPick?.(s)} style={{
+              <button key={s} onClick={() => setPicked(s)} style={{
                 padding:'7px 14px', borderRadius:99,
                 border:`1.5px solid ${active ? 'var(--acc)' : 'var(--bdr2)'}`,
                 background: active ? 'var(--acc-d)' : 'var(--bg2)',

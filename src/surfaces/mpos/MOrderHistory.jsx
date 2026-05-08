@@ -5,8 +5,10 @@
 // Filters: today / yesterday / 7 days / 30 days, plus a free-text search
 // over ref / customer / server / table label.
 
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect, useRef } from 'react';
 import { useStore } from '../../store';
+import { fetchClosedChecks } from '../../lib/db';
+import { getLocationId } from '../../lib/supabase';
 import { Sx, money, elapsed, STATUS_PILL } from './MShellStyles';
 
 const RANGES = [
@@ -28,6 +30,44 @@ export default function MOrderHistory({ onBack, onOpen }) {
   const { closedChecks = [] } = useStore();
   const [range, setRange] = useState('today');
   const [search, setSearch] = useState('');
+  const [loading, setLoading] = useState(false);
+  const fetchedRanges = useRef(new Set(['today']));
+
+  // Backfill older closed checks when range expands beyond today.
+  // useSupabaseInit only loads today's checks at boot; older ranges need
+  // an on-demand fetch and merge into the store.
+  useEffect(() => {
+    if (range === 'today') return;
+    if (fetchedRanges.current.has(range)) return;
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      try {
+        const locId = await getLocationId().catch(() => null);
+        if (!locId) return;
+        let since;
+        const now = Date.now();
+        if (range === 'yesterday') since = new Date(startOfYesterday());
+        else if (range === '7d') since = new Date(now - 7*24*60*60*1000);
+        else if (range === '30d') since = new Date(now - 30*24*60*60*1000);
+        else since = new Date(0); // all
+        const limit = range === 'all' ? 2000 : 1000;
+        const { data } = await fetchClosedChecks(locId, limit, since);
+        if (cancelled || !Array.isArray(data)) return;
+        // Merge into store, dedup by id, keep newest
+        const existing = useStore.getState().closedChecks || [];
+        const byId = new Map();
+        for (const c of existing) byId.set(c.id, c);
+        for (const c of data) byId.set(c.id, c);
+        const merged = Array.from(byId.values()).sort((a, b) => (b.closedAt || 0) - (a.closedAt || 0));
+        useStore.setState({ closedChecks: merged });
+        fetchedRanges.current.add(range);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [range]);
 
   const filtered = useMemo(() => {
     let list = [...closedChecks].sort((a, b) => (b.closedAt || 0) - (a.closedAt || 0));
@@ -115,9 +155,11 @@ export default function MOrderHistory({ onBack, onOpen }) {
       <div style={Sx.scroller}>
         {filtered.length === 0 ? (
           <div style={Sx.emptyBlock}>
-            <div style={{ fontSize:36, marginBottom:8, opacity:.3 }}>🧾</div>
-            <div style={{ fontSize:14, color:'var(--t3)', fontWeight:700, marginBottom:4 }}>No closed orders match</div>
-            <div style={{ fontSize:12 }}>Try a wider date range or clear the search.</div>
+            <div style={{ fontSize:36, marginBottom:8, opacity:.3 }}>{loading ? '⏳' : '🧾'}</div>
+            <div style={{ fontSize:14, color:'var(--t3)', fontWeight:700, marginBottom:4 }}>
+              {loading ? 'Loading…' : 'No closed orders match'}
+            </div>
+            <div style={{ fontSize:12 }}>{loading ? 'Fetching from server.' : 'Try a wider date range or clear the search.'}</div>
           </div>
         ) : (
           <div style={{ padding:'4px 12px 32px' }}>
