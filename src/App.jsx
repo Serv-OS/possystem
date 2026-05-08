@@ -74,6 +74,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.87', date: '8 May 2026', label: 'MPOS floor plan — pinch zoom + pan + zoom controls',
+    changes: [
+      'PINCH ZOOM — two-finger pinch on the MPOS floor plan canvas zooms 0.6× to 4×. Auto-fit-to-screen still applies as the base scale, and the user pinch is a multiplier on top, so a default canvas always fills the phone width on first open.',
+      'PAN — once zoomed past 1.0, single-finger drag pans the canvas around to reach off-screen tables. Below 1.0, single-finger taps go straight to the tap-the-table flow as before. A small "moved" guard suppresses the spurious tap that iOS fires at the end of a pinch / pan so you don\'t accidentally open a table when releasing.',
+      'ZOOM CONTROLS — bottom-right +/− buttons + a centre pill showing current zoom (tap to reset). Useful for users who don\'t want to pinch, or for the +25% / -25% step that\'s easier to land precisely than a pinch.',
+      'TOUCH HANDLING — handlers attached via useEffect with { passive: false } so preventDefault inside the gesture actually fires. iOS Safari was page-zooming the whole app during pinch otherwise. touch-action: none on the wrapper plus willChange: transform on the canvas keeps the gesture buttery on Sunmi-class devices.',
+    ],
+  },
+  {
     version: '5.5.86', date: '7 May 2026', label: 'CRITICAL — fix variant regression caused by useSupabaseInit field mapping',
     changes: [
       'VARIANT REGRESSION ROOT CAUSE — Peter was right, this WAS a regression I caused. In v5.5.79 I added useSupabaseInit() to MPOSSurface so printers + tax rates would hydrate. The hook fires fetchMenuItems and writes the result into the store. But its mapping was: { ...item, taxRateId, taxOverrides } — ALL the other snake_case→camelCase aliases that SyncBridge does (parent_id → parentId, sort_order → sortOrder, kitchen_name → kitchenName, etc) were dropped. Once useSupabaseInit fired, it overwrote SyncBridge\'s correctly-mapped menuItems with rows where parentId was undefined. Effect: variant parents (Latte) lost their children → no size picker; variant children (Half / Pint) lost their parent_id → showed up as standalone items in the menu list with no indication of which beer they belonged to.',

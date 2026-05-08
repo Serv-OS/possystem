@@ -6,7 +6,7 @@
 // Tapping a table calls the same onPickTable callback as the list view so
 // downstream wiring (covers picker / table view) is identical.
 
-import { useMemo, useState, useEffect } from 'react';
+import { useMemo, useState, useEffect, useRef } from 'react';
 import { useStore } from '../../store';
 import { Sx, money, elapsed, STATUS_PILL } from './MShellStyles';
 
@@ -123,32 +123,150 @@ export default function MFloorPlan({ section, onPickTable }) {
 }
 
 function FloorCanvas({ tables, canvasW, canvasH, minX, minY, myName, onPickTable }) {
-  // Scale to fit the viewport width — phones are typically ~360-420 wide
+  // Auto-fit scale (so the floor fills the phone width on first render),
+  // multiplied by user-controlled pinch zoom. Pan kicks in when zoomed past
+  // 1.0 so the user can drag the canvas around to reach off-screen tables.
   const VIEWPORT_PADDING = 8;
   const targetWidth = typeof window !== 'undefined'
     ? Math.min(540, window.innerWidth) - VIEWPORT_PADDING * 2
     : 380;
-  const scale = Math.min(1, targetWidth / canvasW);
-  const scaledH = canvasH * scale;
+  const fitScale = Math.min(1, targetWidth / canvasW);
+
+  const [userScale, setUserScale] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const wrapRef = useRef(null);
+  const gesture = useRef(null);
+  // Suppress the table tap that fires at the END of a pinch / pan
+  const movedRef = useRef(false);
+
+  // Touch handlers. We attach via useEffect with { passive: false } because
+  // preventDefault on a passive listener is a no-op — and we need it to stop
+  // iOS from page-zooming the whole app while the user is pinching the floor.
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+
+    const onStart = (e) => {
+      if (e.touches.length === 2) {
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        gesture.current = {
+          type: 'pinch',
+          startDist: Math.hypot(dx, dy),
+          startScale: userScale,
+        };
+        movedRef.current = true;
+      } else if (e.touches.length === 1 && userScale > 1.02) {
+        gesture.current = {
+          type: 'pan',
+          startX: e.touches[0].clientX,
+          startY: e.touches[0].clientY,
+          startPan: { ...pan },
+        };
+      }
+    };
+
+    const onMove = (e) => {
+      if (!gesture.current) return;
+      if (gesture.current.type === 'pinch' && e.touches.length === 2) {
+        e.preventDefault();
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        const dist = Math.hypot(dx, dy);
+        const ratio = dist / gesture.current.startDist;
+        const next = Math.max(0.6, Math.min(4, gesture.current.startScale * ratio));
+        setUserScale(next);
+      } else if (gesture.current.type === 'pan' && e.touches.length === 1) {
+        e.preventDefault();
+        const dx = e.touches[0].clientX - gesture.current.startX;
+        const dy = e.touches[0].clientY - gesture.current.startY;
+        if (Math.abs(dx) > 4 || Math.abs(dy) > 4) movedRef.current = true;
+        setPan({ x: gesture.current.startPan.x + dx, y: gesture.current.startPan.y + dy });
+      }
+    };
+
+    const onEnd = (e) => {
+      if (e.touches.length === 0) {
+        gesture.current = null;
+        // Reset the moved flag on a short delay so the upcoming click event
+        // (synthesised after touchend) sees it and suppresses the tap if a
+        // gesture happened. iOS click delay is ~300ms; we use 350.
+        setTimeout(() => { movedRef.current = false; }, 350);
+      }
+    };
+
+    el.addEventListener('touchstart', onStart, { passive: true });
+    el.addEventListener('touchmove',  onMove,  { passive: false });
+    el.addEventListener('touchend',   onEnd,   { passive: true });
+    el.addEventListener('touchcancel', onEnd,  { passive: true });
+    return () => {
+      el.removeEventListener('touchstart', onStart);
+      el.removeEventListener('touchmove',  onMove);
+      el.removeEventListener('touchend',   onEnd);
+      el.removeEventListener('touchcancel', onEnd);
+    };
+  }, [userScale, pan]);
+
+  const resetZoom = () => { setUserScale(1); setPan({ x: 0, y: 0 }); };
+  const totalScale = fitScale * userScale;
+  // Visible area height grows with zoom so tables off the bottom can be reached
+  const scaledH = canvasH * totalScale;
+
+  // Suppress the tap that follows a pinch/pan
+  const handleTablePick = (t) => {
+    if (movedRef.current) return;
+    onPickTable?.(t);
+  };
 
   return (
-    <div style={{
-      position:'relative',
-      width: targetWidth,
-      height: scaledH,
-      margin:'0 auto',
-    }}>
+    <div
+      ref={wrapRef}
+      style={{
+        position:'relative',
+        width: targetWidth,
+        height: scaledH,
+        margin:'0 auto',
+        overflow:'hidden',
+        touchAction:'none',
+      }}
+    >
       <div style={{
         position:'absolute', top:0, left:0,
         width: canvasW, height: canvasH,
         transformOrigin:'top left',
-        transform: `scale(${scale})`,
+        transform: `translate(${pan.x}px, ${pan.y}px) scale(${totalScale})`,
         background:'rgba(255,255,255,0.02)',
         borderRadius: 12,
+        willChange: 'transform',
       }}>
-        {tables.map(t => <TableTile key={t.id} table={t} minX={minX} minY={minY} myName={myName} onTap={() => onPickTable?.(t)} />)}
+        {tables.map(t => <TableTile key={t.id} table={t} minX={minX} minY={minY} myName={myName} onTap={() => handleTablePick(t)} />)}
+      </div>
+
+      {/* Zoom controls — quick +/- and reset, for users who don't want to pinch */}
+      <div style={{
+        position:'absolute', right:8, bottom:8, display:'flex', gap:6,
+        background:'var(--bg2)', border:'1px solid var(--bdr)', borderRadius:99, padding:3,
+        boxShadow:'0 2px 8px rgba(0,0,0,.25)',
+      }}>
+        <ZoomBtn onClick={() => setUserScale(s => Math.max(0.6, s - 0.25))} label="−" />
+        <ZoomBtn onClick={resetZoom} label={`${Math.round(userScale * 100)}%`} wide />
+        <ZoomBtn onClick={() => setUserScale(s => Math.min(4, s + 0.25))} label="+" />
       </div>
     </div>
+  );
+}
+
+function ZoomBtn({ onClick, label, wide }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        minWidth: wide ? 52 : 32, height: 32, borderRadius: 99,
+        border:'none', background:'transparent', color:'var(--t1)',
+        fontSize:13, fontWeight:800, cursor:'pointer', fontFamily:'inherit',
+        WebkitTapHighlightColor:'transparent',
+      }}
+    >{label}</button>
   );
 }
 
