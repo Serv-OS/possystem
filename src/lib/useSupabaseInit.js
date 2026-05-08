@@ -39,13 +39,31 @@ export default function useSupabaseInit() {
       // we wipe live data that the realtime channel had already populated.
       const locId = await getLocationId().catch(() => null);
 
-      // Menu items
+      // Menu items — REGRESSION FIX (v5.5.86): the previous mapping here
+      // dropped most snake_case→camelCase aliases (parent_id, sort_order,
+      // kitchen_name, etc), so once this hook fired on MPOS it overwrote
+      // SyncBridge's correctly-mapped menuItems with rows where parentId
+      // was undefined. Effect: variant parents (Latte) lost their children
+      // and variant children (Half / Pint) lost their parent — children
+      // were no longer hidden in the menu list and parents no longer
+      // opened a size picker. Mapping below mirrors SyncBridge.jsx exactly.
       const { data: items } = await fetchMenuItems();
       if (items?.length) {
         useStore.setState({ menuItems: items.map(item => ({
           ...item,
-          taxRateId:   item.tax_rate_id   ?? item.taxRateId   ?? null,
+          price:        item.pricing?.base ?? item.price ?? 0,
+          menuName:     item.menu_name    ?? item.menuName    ?? item.name ?? 'Item',
+          receiptName:  item.receipt_name ?? item.receiptName ?? item.name,
+          kitchenName:  item.kitchen_name ?? item.kitchenName ?? item.name,
+          sortOrder:    item.sort_order   ?? item.sortOrder   ?? 0,
+          parentId:     item.parent_id    ?? item.parentId    ?? null,
+          soldAlone:    item.sold_alone   ?? item.soldAlone,
+          centreId:     item.centre_id    ?? item.centreId    ?? null,
+          taxRateId:    item.tax_rate_id  ?? item.taxRateId   ?? null,
           taxOverrides: item.tax_overrides ?? item.taxOverrides ?? {},
+          assignedModifierGroups:    item.assigned_modifier_groups    ?? item.assignedModifierGroups    ?? [],
+          assignedInstructionGroups: item.assigned_instruction_groups ?? item.assignedInstructionGroups ?? [],
+          image: item.image ?? null,
         })) });
       }
 

@@ -74,6 +74,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.86', date: '7 May 2026', label: 'CRITICAL — fix variant regression caused by useSupabaseInit field mapping',
+    changes: [
+      'VARIANT REGRESSION ROOT CAUSE — Peter was right, this WAS a regression I caused. In v5.5.79 I added useSupabaseInit() to MPOSSurface so printers + tax rates would hydrate. The hook fires fetchMenuItems and writes the result into the store. But its mapping was: { ...item, taxRateId, taxOverrides } — ALL the other snake_case→camelCase aliases that SyncBridge does (parent_id → parentId, sort_order → sortOrder, kitchen_name → kitchenName, etc) were dropped. Once useSupabaseInit fired, it overwrote SyncBridge\'s correctly-mapped menuItems with rows where parentId was undefined. Effect: variant parents (Latte) lost their children → no size picker; variant children (Half / Pint) lost their parent_id → showed up as standalone items in the menu list with no indication of which beer they belonged to.',
+      'FIX — useSupabaseInit\'s menuItems mapping now mirrors SyncBridge.jsx exactly: parentId, sortOrder, menuName, kitchenName, receiptName, soldAlone, centreId, assignedModifierGroups, assignedInstructionGroups, image, plus the existing taxRateId/taxOverrides. Single source of truth would be cleaner long-term but this keeps the behaviour consistent across boot paths.',
+      'PRINT SPEED — Peter reports 12s for a print. v5.5.85 added the broadcast subscriber to print-agent.js but the agent process needs to be RESTARTED to pick it up. Until you restart, every print falls through to the postgres path which is the slow one (4+ Supabase round trips + native TCP). To verify after restart, watch the agent console for `[fast XXXXXX] ok N b -> 192.168.x.y:9100 in NNNms` lines — those are fast-path prints. Restart command: kill the agent process, run `node print-agent.js` again.',
+    ],
+  },
+  {
     version: '5.5.85', date: '7 May 2026', label: 'Print FAST PATH — fix subscribe race + add print-agent broadcast subscriber',
     changes: [
       'WHY 5.5.84 STILL FELT 9 SECONDS — TWO bugs prevented the fast path from actually delivering. Both fixed here.',
