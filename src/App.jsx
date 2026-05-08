@@ -74,6 +74,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.90', date: '8 May 2026', label: 'Reports — live realtime refresh + name-fallback for modifier rollup',
+    changes: [
+      'REPORTS WERE STALE — Peter just rang up another Box of 3 with 3 Bueno Filled and ItemTrend didn\'t show it. Root cause: BOReports fetched closed_checks once on period change and never refreshed, so any sale completed while the report is open was invisible until the user toggled period. Fix: allChecks now merges the historical range fetch with the live closedChecks store (kept in sync by the existing closed_checks INSERT realtime channel). New sales appear in every report within ~500ms of the cash being taken.',
+      'MODIFIER ROLLUP WIDENED — was matching mod.id → menu_items.id only. Some BO setups give modifier options their own ids (e.g. sub-bueno) while the corresponding menu item has a different id (e.g. an autogen UUID with name "Bueno Filled"). The rollup missed everything in those installs. ItemTrend now also looks up by name (lowercase trim) so the match works regardless of how the BO modifier groups were originally configured. id-match still wins when present.',
+      'IF YOU\'RE NOT SEEING NEW SALES — confirm Reports header pill shows v5.5.90 and that the period chip covers the day the sale closed. The "Today" chip uses the location\'s business-day start; if your location\'s day-start is set to e.g. 4 AM, sales between midnight and 4 AM count as the previous day.',
+    ],
+  },
+  {
     version: '5.5.89', date: '8 May 2026', label: 'Live menu sync + modifier-component attribution in ItemTrend',
     changes: [
       'STALE NAME ON MPOS — root cause: there was NO realtime subscription on menu_items. SyncBridge / useSupabaseInit only loaded the table at boot, so a rename in Back Office (Donut 1 → Bueno Filled) didn\'t propagate to other devices until they rebooted. Fix: lib/realtime.js now subscribes to the full INSERT/UPDATE/DELETE event stream on menu_items filtered by location_id. Patches the local store within ~500ms with the same camelCase mapping as the boot path so parentId etc don\'t get lost.',

@@ -105,7 +105,21 @@ export default function BOReports() {
     })();
   }, [period, customRange.from, customRange.to]);
 
-  const allChecks = rangeChecks || [];
+  // Merge in any live closed_checks that landed via realtime AFTER the initial
+  // range fetch. Without this, a sale completed while the report is open never
+  // appears unless the user changes the period chip. Dedup by id; rangeChecks
+  // shape wins on conflict (it's the canonical Supabase row).
+  const allChecks = useMemo(() => {
+    const base = rangeChecks || [];
+    const live = (storeChecks || []).filter(c =>
+      c.closedAt && new Date(c.closedAt) >= range.from && new Date(c.closedAt) <= range.to
+    );
+    if (!live.length) return base;
+    const ids = new Set(base.map(c => c.id));
+    const extras = live.filter(c => !ids.has(c.id));
+    if (!extras.length) return base;
+    return [...extras, ...base].sort((a, b) => (b.closedAt || 0) - (a.closedAt || 0));
+  }, [rangeChecks, storeChecks, range.from, range.to]);
   const allPrev   = prevChecks  || [];
 
   const filtered     = useMemo(() => applyFilters(allChecks, { server: serverFilter, orderType: orderTypeFilter }), [allChecks, serverFilter, orderTypeFilter]);

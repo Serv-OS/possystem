@@ -44,12 +44,34 @@ export default function ItemTrend({ checks, fmt, fmtN, rangeFrom, rangeTo }) {
   const [catFilter, setCatFilter] = useState('all');
   const [dowFilter, setDowFilter] = useState('all'); // 'all' | 0..6 (Sun..Sat)
   const [includeMods, setIncludeMods] = useState(true); // attribute modifier components (Bueno inside Box of 3)
-  // menu item lookup for attributing modifier components back to their item rows
+  // Menu item lookups for attributing modifier components back to their item
+  // rows. We index by BOTH id and lowercase name. Reason: BO setups vary in
+  // whether a modifier option's id equals the corresponding menu_item.id —
+  // some installs share the id, some give the option its own id and just
+  // mark soldAlone:true on a separate menu row with the same name. Falling
+  // back to a name match catches the second case and means the rollup
+  // works for the donut shop / Box of 3 / steak-with-fries-or-sweet-potato
+  // examples regardless of how the back-office data is structured.
   const menuById = useMemo(() => {
     const map = {};
     (menuItems || []).forEach(m => { if (m.id) map[m.id] = m; });
     return map;
   }, [menuItems]);
+  const menuByName = useMemo(() => {
+    const map = {};
+    (menuItems || []).forEach(m => {
+      if (!m?.name) return;
+      const key = m.name.toLowerCase().trim();
+      // First-write-wins so an exact-name match beats a near-duplicate
+      if (!map[key]) map[key] = m;
+    });
+    return map;
+  }, [menuItems]);
+  const lookupModItem = (m) => {
+    if (m?.id && menuById[m.id]) return menuById[m.id];
+    if (m?.name) return menuByName[m.name.toLowerCase().trim()] || null;
+    return null;
+  };
 
   // Day axis — every day in the range, even days with zero sales (zeros are
   // signal too; don't hide them).
@@ -119,11 +141,12 @@ export default function ItemTrend({ checks, fmt, fmtN, rangeFrom, rangeTo }) {
         //    the id matches a menu_items.id when the option is sold-alone).
         if (!includeMods) return;
         (i.mods || []).forEach(m => {
-          if (!m?.id || m._instruction) return;
-          const mItem = menuById[m.id];
+          if (!m || m._instruction) return;
+          const mItem = lookupModItem(m);
           if (!mItem) return; // option isn't its own menu item — skip
-          // Each flatMods entry is one pick. flatMods is built per parent qty
-          // already, so the mod entry count already accounts for line qty.
+          // flatMods is built per parent qty already (one entry per pick),
+          // so each entry represents one component unit. We don't multiply
+          // by lineQty here — that would double-count.
           const compQty = 1;
           const compRev = Number(m.price) || 0;
           bump(mItem.name, mItem.name, mItem.cat || null, compQty, compRev, dayKey, lineName);
@@ -143,7 +166,8 @@ export default function ItemTrend({ checks, fmt, fmtN, rangeFrom, rangeTo }) {
     // Sort by chosen metric
     arr.sort((a, b) => (metric === 'qty' ? b.total - a.total : b.totalRev - a.totalRev));
     return { rows: arr, totalsByDay, periodTotal };
-  }, [checks, days, metric, catFilter, search, includeMods, menuById]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [checks, days, metric, catFilter, search, includeMods, menuById, menuByName]);
 
   // Top-N truncation
   const visibleRows = topN === 'all' ? rows : rows.slice(0, Number(topN));
