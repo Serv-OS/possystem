@@ -344,9 +344,65 @@ export function startRealtime(store, locationId = LOCATION_ID) {
     } catch (e) { console.warn('[Realtime] kiosk backfill failed', e?.message); }
   })();
 
+  // ── Menu items — live propagation of BO renames / price changes ────────────
+  // Without this, a rename in Back Office only reaches other devices when they
+  // reboot the app or trigger a "Push to POS". Servers see the old name on
+  // MPOS and the kitchen prints stale tickets. Now any UPDATE flows through to
+  // every device's menuItems store within ~500ms, with the same camelCase
+  // mapping SyncBridge / useSupabaseInit use so parentId etc don't get lost.
+  const menuItemsChannel = supabase
+    .channel(`menu_items:${locationId}`)
+    .on('postgres_changes', {
+      event: '*',
+      schema: 'public',
+      table: 'menu_items',
+      filter: `location_id=eq.${locationId}`,
+    }, ({ eventType, new: row, old }) => {
+      if (eventType === 'DELETE') {
+        const id = old?.id;
+        if (!id) return;
+        store.setState(s => ({ menuItems: (s.menuItems || []).filter(m => m.id !== id) }));
+        return;
+      }
+      if (!row?.id) return;
+      const mapped = mapMenuItemRow(row);
+      store.setState(s => {
+        const list = s.menuItems || [];
+        const idx = list.findIndex(m => m.id === mapped.id);
+        if (idx === -1) return { menuItems: [...list, mapped] };
+        const next = list.slice();
+        next[idx] = { ...next[idx], ...mapped };
+        return { menuItems: next };
+      });
+    })
+    .subscribe();
+  channels.push(menuItemsChannel);
+
   return () => {
     channels.forEach(ch => supabase.removeChannel(ch));
     channels = [];
+  };
+}
+
+// Mirrors SyncBridge's snake→camel mapping for a single menu_items row.
+// Single-source-of-truth would be cleaner long-term; this stays in lockstep
+// with useSupabaseInit + SyncBridge for now.
+function mapMenuItemRow(item) {
+  return {
+    ...item,
+    price:        item.pricing?.base ?? item.price ?? 0,
+    menuName:     item.menu_name    ?? item.menuName    ?? item.name ?? 'Item',
+    receiptName:  item.receipt_name ?? item.receiptName ?? item.name,
+    kitchenName:  item.kitchen_name ?? item.kitchenName ?? item.name,
+    sortOrder:    item.sort_order   ?? item.sortOrder   ?? 0,
+    parentId:     item.parent_id    ?? item.parentId    ?? null,
+    soldAlone:    item.sold_alone   ?? item.soldAlone,
+    centreId:     item.centre_id    ?? item.centreId    ?? null,
+    taxRateId:    item.tax_rate_id  ?? item.taxRateId   ?? null,
+    taxOverrides: item.tax_overrides ?? item.taxOverrides ?? {},
+    assignedModifierGroups:    item.assigned_modifier_groups    ?? item.assignedModifierGroups    ?? [],
+    assignedInstructionGroups: item.assigned_instruction_groups ?? item.assignedInstructionGroups ?? [],
+    image: item.image ?? null,
   };
 }
 

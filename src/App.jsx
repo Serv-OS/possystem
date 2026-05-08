@@ -74,6 +74,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.89', date: '8 May 2026', label: 'Live menu sync + modifier-component attribution in ItemTrend',
+    changes: [
+      'STALE NAME ON MPOS — root cause: there was NO realtime subscription on menu_items. SyncBridge / useSupabaseInit only loaded the table at boot, so a rename in Back Office (Donut 1 → Bueno Filled) didn\'t propagate to other devices until they rebooted. Fix: lib/realtime.js now subscribes to the full INSERT/UPDATE/DELETE event stream on menu_items filtered by location_id. Patches the local store within ~500ms with the same camelCase mapping as the boot path so parentId etc don\'t get lost.',
+      'MODIFIER COMPONENTS NOT IN SALES DATA — when a server picks Bueno + 2 Glazed inside "Box of 3", closed_check.items[] only has the parent line. ItemTrend was therefore showing 0 Bueno sales and the operator couldn\'t see what was actually selling. Fix: new "Include modifier components" toggle (default ON) walks every line\'s mods[], looks up each option id in menuItems, and attributes qty back to the component\'s row. Same logic gives the steak / fries-or-sweet-potato-fries example the data it needs.',
+      'SOURCE BREAKDOWN — Peter\'s "27 sold (3 in Box of 3)" ask. Each row in ItemTrend now records a sources map: { __standalone: N, "Box of 3": M, ... }. Under each item name we show "M in Box of 3 · N standalone", capped to top-3 sources to keep the column compact. Click off the "Include modifier components" toggle to see the old standalone-only view.',
+      'TRADEOFF — when components are included, the period total counts a Bueno-in-Box and a standalone Bueno both as 1 unit each. That\'s the right answer for prep planning ("how many Bueno did the kitchen need today") but means the headline qty is higher than the standalone-only count. Toggle off if you want the strict standalone view.',
+    ],
+  },
+  {
     version: '5.5.88', date: '8 May 2026', label: 'Reports — Item Sales Trend (matrix) + Daily Trend dashboard',
     changes: [
       'ITEM SALES TREND — the donut-shop report. Matrix view: items down the left, every day across the top, qty sold (or revenue) in each cell with a heatmap-style colour intensity per cell. Row totals on the right, column totals at the bottom, frozen item / category columns so the names stay visible while you scroll horizontally across dates. Filters: metric (qty / revenue), category, day-of-week (e.g. only show Saturdays), top-N (10/25/50/100/all), free-text item search. CSV export of the full matrix including totals row.',

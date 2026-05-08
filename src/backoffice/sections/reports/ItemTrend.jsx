@@ -12,6 +12,9 @@ import { useStore } from '../../../store';
 import { ExportBtn, EmptyState, StatTile } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
 
+// Attribution constants for the sources breakdown
+const SRC_STANDALONE = '__standalone';
+
 const TOP_N_OPTIONS = [10, 25, 50, 100, 'all'];
 const METRICS = [
   { id:'qty', label:'Qty sold' },
@@ -34,12 +37,19 @@ function fmtDayFull(d) {
 }
 
 export default function ItemTrend({ checks, fmt, fmtN, rangeFrom, rangeTo }) {
-  const { menuCategories = [] } = useStore();
+  const { menuCategories = [], menuItems = [] } = useStore();
   const [metric, setMetric] = useState('qty');
   const [topN, setTopN] = useState(50);
   const [search, setSearch] = useState('');
   const [catFilter, setCatFilter] = useState('all');
   const [dowFilter, setDowFilter] = useState('all'); // 'all' | 0..6 (Sun..Sat)
+  const [includeMods, setIncludeMods] = useState(true); // attribute modifier components (Bueno inside Box of 3)
+  // menu item lookup for attributing modifier components back to their item rows
+  const menuById = useMemo(() => {
+    const map = {};
+    (menuItems || []).forEach(m => { if (m.id) map[m.id] = m; });
+    return map;
+  }, [menuItems]);
 
   // Day axis — every day in the range, even days with zero sales (zeros are
   // signal too; don't hide them).
@@ -62,12 +72,32 @@ export default function ItemTrend({ checks, fmt, fmtN, rangeFrom, rangeTo }) {
     return map;
   }, [menuCategories]);
 
-  // Build the matrix: { itemKey: { name, cat, total, byDay: { dayKey: number } } }
+  // Build the matrix.
+  // Row shape: { name, cat, total, totalRev, byDay, byDayRev, sources }
+  // sources = { [parentName | SRC_STANDALONE]: qty }  → drives the
+  // "27 sold (3 in Box of 3, 24 standalone)" breakdown.
+  // When includeMods is on, each line item contributes:
+  //   • a row keyed by its OWN name (sources[SRC_STANDALONE] += qty)
+  //   • for each modifier whose option id matches a menu item, a row keyed by
+  //     that COMPONENT item (sources[parentName] += qty)
+  // This way a "Box of 3" containing a Bueno + 2 Glazed counts the box AND
+  // the components in their respective rows, with provenance.
   const { rows, totalsByDay, periodTotal } = useMemo(() => {
     const map = {};
     const totalsByDay = {};
     let periodTotal = 0;
     const dayKeys = new Set(days.map(fmtDayKey));
+
+    const bump = (key, name, cat, qty, rev, dayKey, source) => {
+      if (!map[key]) {
+        map[key] = { name, cat: cat || null, total: 0, totalRev: 0, byDay: {}, byDayRev: {}, sources: {} };
+      }
+      map[key].total += qty;
+      map[key].totalRev += rev;
+      map[key].byDay[dayKey]    = (map[key].byDay[dayKey]    || 0) + qty;
+      map[key].byDayRev[dayKey] = (map[key].byDayRev[dayKey] || 0) + rev;
+      map[key].sources[source]  = (map[key].sources[source]  || 0) + qty;
+    };
 
     checks.filter(c => c.status !== 'voided').forEach(c => {
       if (!c.closedAt) return;
@@ -76,18 +106,30 @@ export default function ItemTrend({ checks, fmt, fmtN, rangeFrom, rangeTo }) {
       if (!dayKeys.has(dayKey)) return;
       (c.items || []).forEach(i => {
         if (i.voided) return;
-        const key = i.name || 'Unknown';
-        const qty = i.qty || 1;
-        const rev = (i.price || 0) * qty;
-        if (!map[key]) {
-          map[key] = { name: key, cat: i.cat || null, total: 0, totalRev: 0, byDay: {}, byDayRev: {} };
-        }
-        map[key].total += qty;
-        map[key].totalRev += rev;
-        map[key].byDay[dayKey]    = (map[key].byDay[dayKey]    || 0) + qty;
-        map[key].byDayRev[dayKey] = (map[key].byDayRev[dayKey] || 0) + rev;
-        totalsByDay[dayKey] = (totalsByDay[dayKey] || 0) + (metric === 'qty' ? qty : rev);
-        periodTotal += (metric === 'qty' ? qty : rev);
+        const lineQty = i.qty || 1;
+        const lineRev = (i.price || 0) * lineQty;
+        const lineName = i.name || 'Unknown';
+        // 1) Parent line itself
+        bump(lineName, lineName, i.cat, lineQty, lineRev, dayKey, SRC_STANDALONE);
+        totalsByDay[dayKey] = (totalsByDay[dayKey] || 0) + (metric === 'qty' ? lineQty : lineRev);
+        periodTotal += (metric === 'qty' ? lineQty : lineRev);
+
+        // 2) Modifier components — only if the option is a real menu item
+        //    (cart records mods as { id, name, price, label, groupLabel } and
+        //    the id matches a menu_items.id when the option is sold-alone).
+        if (!includeMods) return;
+        (i.mods || []).forEach(m => {
+          if (!m?.id || m._instruction) return;
+          const mItem = menuById[m.id];
+          if (!mItem) return; // option isn't its own menu item — skip
+          // Each flatMods entry is one pick. flatMods is built per parent qty
+          // already, so the mod entry count already accounts for line qty.
+          const compQty = 1;
+          const compRev = Number(m.price) || 0;
+          bump(mItem.name, mItem.name, mItem.cat || null, compQty, compRev, dayKey, lineName);
+          totalsByDay[dayKey] = (totalsByDay[dayKey] || 0) + (metric === 'qty' ? compQty : compRev);
+          periodTotal += (metric === 'qty' ? compQty : compRev);
+        });
       });
     });
     let arr = Object.values(map);
@@ -101,7 +143,7 @@ export default function ItemTrend({ checks, fmt, fmtN, rangeFrom, rangeTo }) {
     // Sort by chosen metric
     arr.sort((a, b) => (metric === 'qty' ? b.total - a.total : b.totalRev - a.totalRev));
     return { rows: arr, totalsByDay, periodTotal };
-  }, [checks, days, metric, catFilter, search]);
+  }, [checks, days, metric, catFilter, search, includeMods, menuById]);
 
   // Top-N truncation
   const visibleRows = topN === 'all' ? rows : rows.slice(0, Number(topN));
@@ -185,6 +227,11 @@ export default function ItemTrend({ checks, fmt, fmtN, rangeFrom, rangeTo }) {
           {TOP_N_OPTIONS.map(n => <option key={n} value={n}>{n === 'all' ? 'Show all items' : `Top ${n}`}</option>)}
         </select>
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search items…" style={{ ...selectSt, minWidth:160 }}/>
+        <label style={{ display:'flex', alignItems:'center', gap:6, fontSize:12, color:'var(--t3)', cursor:'pointer', userSelect:'none' }}
+          title="When on, items sold inside a modifier group (e.g. Bueno picked as part of Box of 3) are counted under their own row, with a 'X via Box of 3' breakdown.">
+          <input type="checkbox" checked={includeMods} onChange={e => setIncludeMods(e.target.checked)}/>
+          Include modifier components
+        </label>
         <div style={{ flex:1 }}/>
         <ExportBtn onClick={exportCsv}/>
       </div>
@@ -222,7 +269,27 @@ export default function ItemTrend({ checks, fmt, fmtN, rangeFrom, rangeTo }) {
             <tbody>
               {visibleRows.map((r, idx) => (
                 <tr key={r.name} style={{ background: idx % 2 ? 'var(--bg)' : 'transparent' }}>
-                  <td style={{ ...tdStickySt, background: idx % 2 ? 'var(--bg)' : 'var(--bg1)' }}>{r.name}</td>
+                  <td style={{ ...tdStickySt, background: idx % 2 ? 'var(--bg)' : 'var(--bg1)' }}>
+                    <div>{r.name}</div>
+                    {(() => {
+                      const entries = Object.entries(r.sources || {});
+                      const viaParents = entries.filter(([s]) => s !== SRC_STANDALONE);
+                      const standalone = r.sources?.[SRC_STANDALONE] || 0;
+                      if (!viaParents.length) return null;
+                      const parts = [];
+                      viaParents
+                        .sort((a, b) => b[1] - a[1])
+                        .slice(0, 3) // cap to avoid runaway widths
+                        .forEach(([parent, q]) => parts.push(`${fmtN(q)} in ${parent}`));
+                      if (standalone > 0) parts.push(`${fmtN(standalone)} standalone`);
+                      return (
+                        <div style={{ fontSize:10, color:'var(--t4)', marginTop:2, fontStyle:'italic' }}>
+                          {parts.join(' · ')}
+                          {viaParents.length > 3 ? ` · +${viaParents.length - 3} more sources` : ''}
+                        </div>
+                      );
+                    })()}
+                  </td>
                   <td style={{ ...tdSt, color:'var(--t4)', fontSize:11, position:'sticky', left:200, background: idx % 2 ? 'var(--bg)' : 'var(--bg1)', borderRight:'1px solid var(--bdr2)' }}>
                     {catLabel[r.cat] || '—'}
                   </td>
