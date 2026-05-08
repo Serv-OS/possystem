@@ -36,19 +36,24 @@ export async function getLocationConfig(explicitLocationId = null) {
     return _locationConfigCache.get(locationId);
   }
 
-  // Try Platform DB. SAME fallback pattern as LocationSettings: eq(id) first,
-  // fall back to limit(1) if the platform DB row id doesn't match the ops
-  // DB id (sometimes seeded separately). Without the fallback, every report
-  // gets shifts:[] even when LocationSettings successfully saved them.
-  // Use maybeSingle so 0 rows doesn't throw.
+  // Cross-DB join — platform.locations.id ≠ ops.locations.id in general.
+  // We must resolve via platform.locations.ops_location_id, NOT id, and we
+  // must NOT fall back to .limit(1) which would return another tenant's
+  // row when no match exists (active wrong-row-targeting bug).
+  // Also include opening_hours in the select so kiosk + online surfaces
+  // and any future hour-aware report can read the location's schedule
+  // through the same cached config.
   if (platformSupabase) {
     try {
-      const select = 'timezone, business_day_start, shifts, collection_lead_minutes';
-      let row = null;
-      const r1 = await platformSupabase.from('locations').select(select).eq('id', locationId).maybeSingle();
-      row = r1.data;
+      const select = 'timezone, business_day_start, shifts, collection_lead_minutes, opening_hours';
+      // First try the right join key.
+      const r1 = await platformSupabase.from('locations').select(select).eq('ops_location_id', locationId).maybeSingle();
+      let row = r1.data;
+      // Legacy rows may have id == ops_location_id (created before the join
+      // column existed). Try matching on id ONLY when ops_location_id missed,
+      // and ALWAYS scoped to one specific value (never .limit(1)).
       if (!row) {
-        const r2 = await platformSupabase.from('locations').select(select).limit(1).maybeSingle();
+        const r2 = await platformSupabase.from('locations').select(select).eq('id', locationId).maybeSingle();
         row = r2.data;
       }
       if (row) {
@@ -56,6 +61,7 @@ export async function getLocationConfig(explicitLocationId = null) {
           timezone: row.timezone || 'Europe/London',
           businessDayStart: row.business_day_start || '06:00',
           shifts: row.shifts || [],
+          opening_hours: row.opening_hours || null,
           collectionLeadMinutes: typeof row.collection_lead_minutes === 'number' ? row.collection_lead_minutes : 30,
         };
         _locationConfigCache.set(locationId, cfg);

@@ -102,27 +102,33 @@ export default function LocationSettings() {
 
   useEffect(() => {
     if (!platformSupabase) { setLoading(false); return; }
-    // Try the resolved location first, fall back to limit(1) if that returns
-    // no row (e.g. ops DB locations.id and platform DB locations.id don't
-    // match — they sometimes don't because Platform was bootstrapped from
-    // a different seed). Surface load errors to the UI rather than swallowing.
+    // CROSS-DB JOIN — platform.locations.id ≠ ops.locations.id in general.
+    // We resolve the ops location id (what BO is logged into) and look it
+    // up via platform.locations.ops_location_id. The previous .limit(1)
+    // fallback was a wrong-row-targeting bug: when ops.id had no matching
+    // platform.id, it returned the FIRST platform row (e.g. Huddersfield)
+    // and the user unwittingly edited a different tenant's location. No
+    // org-level data leaked (RLS held), but writes hit the wrong row.
     (async () => {
       try {
         const locId = await getLocationId().catch(() => null);
-        const select = 'id, name, timezone, business_day_start, shifts, collection_lead_minutes, opening_hours, online_slug, online_enabled, qr_enabled';
+        const select = 'id, name, timezone, business_day_start, shifts, collection_lead_minutes, opening_hours, online_slug, online_enabled, qr_enabled, ops_location_id';
         let row = null;
         let lastErr = null;
         if (locId) {
-          const r = await platformSupabase.from('locations').select(select).eq('id', locId).maybeSingle();
-          row = r.data;
-          lastErr = r.error;
-          if (lastErr) console.warn('[LocationSettings] load by id failed:', lastErr);
-        }
-        if (!row) {
-          const r = await platformSupabase.from('locations').select(select).limit(1).maybeSingle();
-          row = r.data;
-          lastErr = r.error || lastErr;
-          if (lastErr && !row) console.warn('[LocationSettings] fallback load failed:', lastErr);
+          // First: ops_location_id mapping (the right join key).
+          const r1 = await platformSupabase.from('locations').select(select).eq('ops_location_id', locId).maybeSingle();
+          row = r1.data;
+          lastErr = r1.error;
+          if (!row) {
+            // Legacy data: some platform rows have id == ops_location_id (set
+            // up before the join column existed). Try matching on id too —
+            // safe because we still scope to one specific value, never .limit(1).
+            const r2 = await platformSupabase.from('locations').select(select).eq('id', locId).maybeSingle();
+            row = r2.data;
+            lastErr = r2.error || lastErr;
+          }
+          if (lastErr) console.warn('[LocationSettings] load failed:', lastErr);
         }
         if (row) {
           setLocation(row);

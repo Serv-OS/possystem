@@ -76,6 +76,16 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.105', date: '8 May 2026', label: 'CRITICAL — fix cross-DB id bleed (LocationSettings + getLocationConfig were targeting wrong tenant rows)',
+    changes: [
+      'BUG — platform.locations.id ≠ ops.locations.id in general. For most rows in Peter\'s installation they happened to match (Huddersfield, Leeds, Location 2 all have id == ops_location_id), but Location 1 had a different platform id. So .eq(\'id\', getLocationId()) returned no row, the .limit(1) fallback kicked in and returned Huddersfield (the first row), and Peter\'s saves silently landed on Huddersfield\'s row instead of Location 1\'s. NO ORG-LEVEL DATA LEAKED — RLS held, no tenant could read anyone else\'s data. But a logged-in BO user was unintentionally writing slug / hours / online flags to a sibling location\'s row.',
+      'FIX 1 — LocationSettings.jsx now joins on platform.locations.ops_location_id (the right cross-DB key). Falls back to .eq(\'id\', locId) for legacy rows where platform.id == ops_location_id, which is safe because it\'s still scoped to one specific id, never .limit(1). Removed the .limit(1) fallback entirely — it was the active wrong-row-targeting bug.',
+      'FIX 2 — lib/locationTime.js (the read path used by every report and the kiosk hours gate) gets the same ops_location_id-first treatment, plus opening_hours pulled into the cached config so the kiosk + online surfaces can read hours via the same helper.',
+      'DATA CLEANUP DONE — slug=\'location1\' + online_enabled + qr_enabled have been moved off Huddersfield\'s row (where Peter\'s saves had landed) and onto Location 1\'s row. Huddersfield is back to default (no slug, both flags off). One-time SQL via the Supabase editor; no migration file because this was specific to Peter\'s data.',
+      'TEST AGAIN — once 5.5.105 deploys + you hard-refresh BO, Location Settings should now load and save against Location 1\'s row consistently. The customer URL ?loc=location1 should resolve to Location 1, show the Location 1 name in the header, and respect Location 1\'s opening_hours.',
+    ],
+  },
+  {
     version: '5.5.104', date: '8 May 2026', label: 'Online ordering Phase 2 wrap — pos-up.com root domain + reserved subdomains',
     changes: [
       'Wired pos-up.com as a recognised customer root domain alongside serv-os.app, so when DNS is configured later (e.g. peters-cafe.pos-up.com → this app) the URL parser picks up the slug automatically. Both domains live in customerUrl.js — flipping primary brand later is a one-line change.',
