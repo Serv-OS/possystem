@@ -162,6 +162,12 @@ export default function InlineItemFlow({ item, menuItems, activeAllergens = [], 
           const opt = (group.options||[]).find(o => (o.id||o.name) === id);
           const label = opt?.name || opt?.label || id;
           return {
+            // id + name preserved so reports can attribute this option back to
+            // its menu_item row (e.g. count "Bueno Filled" sales when sold as
+            // part of "Box of 3"). label is what kitchen tickets / receipts
+            // print; id/name are the audit trail.
+            id: opt?.id || id,
+            name: opt?.name || label,
             groupLabel: group.name || group.label,
             label: qty > 1 ? `${label} ×${qty}` : label,
             price: (opt?.price || 0) * qty,
@@ -171,6 +177,9 @@ export default function InlineItemFlow({ item, menuItems, activeAllergens = [], 
       }
       const arr = Array.isArray(val) ? val : [val];
       return arr.filter(Boolean).map(m => ({
+        // Same audit-trail fields as quantity mode above.
+        id: m.id || null,
+        name: m.name || m.label || '',
         groupLabel: group?.name || group?.label,
         label: m.name || m.label || '',
         price: m.price || 0,

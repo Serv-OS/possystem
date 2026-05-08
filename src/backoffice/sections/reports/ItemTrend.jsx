@@ -69,7 +69,18 @@ export default function ItemTrend({ checks, fmt, fmtN, rangeFrom, rangeTo }) {
   }, [menuItems]);
   const lookupModItem = (m) => {
     if (m?.id && menuById[m.id]) return menuById[m.id];
-    if (m?.name) return menuByName[m.name.toLowerCase().trim()] || null;
+    if (m?.name) {
+      const hit = menuByName[m.name.toLowerCase().trim()];
+      if (hit) return hit;
+    }
+    // Historical closed_checks (from before InlineItemFlow started preserving
+    // id/name) only have `label`. Try that, stripping any "×N" qty suffix
+    // first so "Bueno ×3" still matches "Bueno".
+    if (m?.label) {
+      const cleaned = m.label.replace(/\s*[×x]\s*\d+\s*$/i, '').toLowerCase().trim();
+      const hit = menuByName[cleaned];
+      if (hit) return hit;
+    }
     return null;
   };
 
@@ -144,11 +155,14 @@ export default function ItemTrend({ checks, fmt, fmtN, rangeFrom, rangeTo }) {
           if (!m || m._instruction) return;
           const mItem = lookupModItem(m);
           if (!mItem) return; // option isn't its own menu item — skip
-          // flatMods is built per parent qty already (one entry per pick),
-          // so each entry represents one component unit. We don't multiply
-          // by lineQty here — that would double-count.
-          const compQty = 1;
-          const compRev = Number(m.price) || 0;
+          // For most mods, flatMods is built per parent qty already (one entry
+          // per pick), so the entry represents one unit. For quantity-mode
+          // mods (e.g. "Bueno ×3" inside Box of 3), the mod carries a qty
+          // field — multiply by that. Multiply by lineQty in either case so
+          // 2× Box of 3 with 3 Bueno each = 6 Bueno.
+          const modQty = Number(m.qty) || 1;
+          const compQty = modQty * lineQty;
+          const compRev = (Number(m.price) || 0) * lineQty;
           bump(mItem.name, mItem.name, mItem.cat || null, compQty, compRev, dayKey, lineName);
           totalsByDay[dayKey] = (totalsByDay[dayKey] || 0) + (metric === 'qty' ? compQty : compRev);
           periodTotal += (metric === 'qty' ? compQty : compRev);

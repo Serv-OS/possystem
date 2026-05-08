@@ -74,6 +74,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.91', date: '8 May 2026', label: 'Box-of-3 modifier rollup — fix root cause (id/name dropped at cart-add) + label fallback for historical sales',
+    changes: [
+      'WHY 5.5.90 STILL DIDN\'T SHOW BUENO — found the actual root cause. The desktop POS InlineItemFlow.jsx (the modifier picker behind every Box of 3 / steak-with-side / etc) was building the cart line\'s mods array as { groupLabel, label, price } — no id, no name. So even my name-fallback lookup had nothing to match on. The closed_check.items[].mods entries for every existing Box of 3 sale literally don\'t carry the option\'s identity. Two fixes:',
+      'FIX 1 — InlineItemFlow now preserves the option\'s id and name on every mod it adds to the cart (both the standard pick path and the quantity-mode path). Going forward, every closed_check has the audit trail needed to attribute components back to menu items in any report.',
+      'FIX 2 — ItemTrend\'s lookupModItem now ALSO falls back to `m.label` (with the "×3" qty suffix stripped) so historical closed_checks from before fix 1 still resolve. So the donut shop\'s past Box of 3 sales should now retroactively count Bueno qty too, not just future ones.',
+      'QTY ALGEBRA — when a mod entry carries a qty field (quantity-mode picks like "Bueno ×3"), the rollup now uses that qty × lineQty instead of just 1. So 2× Box of 3 each containing 3 Bueno = 6 Bueno, not 3. MPOS\'s multi-entry flat-mods path is unaffected (each pick is its own entry, qty defaults to 1 × lineQty).',
+    ],
+  },
+  {
     version: '5.5.90', date: '8 May 2026', label: 'Reports — live realtime refresh + name-fallback for modifier rollup',
     changes: [
       'REPORTS WERE STALE — Peter just rang up another Box of 3 with 3 Bueno Filled and ItemTrend didn\'t show it. Root cause: BOReports fetched closed_checks once on period change and never refreshed, so any sale completed while the report is open was invisible until the user toggled period. Fix: allChecks now merges the historical range fetch with the live closedChecks store (kept in sync by the existing closed_checks INSERT realtime channel). New sales appear in every report within ~500ms of the cash being taken.',
