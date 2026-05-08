@@ -76,6 +76,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.106', date: '8 May 2026', label: 'Customer URL slug cache — switch to 30s TTL so operator changes propagate (and "we\'re closed" stops being sticky)',
+    changes: [
+      'Verified Location 1 currently has Mon-Sun 11:30-22:00 in opening_hours, Europe/London tz — should be open right now. The customer page showing "we\'re closed" was the lookupLocationBySlug module-level cache holding the pre-cleanup Huddersfield row (which had near-empty hours). The cache had no TTL so the only way to bust it was a full page refresh, which was easy to miss after the slug-data was moved between rows in the DB.',
+      'FIX — lookupLocationBySlug cache now has a 30-second TTL. Operator changes in BO (slug move, hours edit, enable toggle) propagate to live customer pages within half a minute, and the "stuck on a stale row" failure mode goes away. Also added invalidateSlugCache() helper for explicit cache busting from the customer surface.',
+      'BONUS — receipt_branding pulled into the slug select so Phase 3a (branded online surface) can render the location\'s logo + colours instead of the dark stub.',
+      'TO TEST — hard-refresh your customer URL once 5.5.106 deploys. The header should now show "Location 1" (not Huddersfield) and the surface should NOT show the closed banner because it\'s currently within 11:30-22:00.',
+    ],
+  },
+  {
     version: '5.5.105', date: '8 May 2026', label: 'CRITICAL — fix cross-DB id bleed (LocationSettings + getLocationConfig were targeting wrong tenant rows)',
     changes: [
       'BUG — platform.locations.id ≠ ops.locations.id in general. For most rows in Peter\'s installation they happened to match (Huddersfield, Leeds, Location 2 all have id == ops_location_id), but Location 1 had a different platform id. So .eq(\'id\', getLocationId()) returned no row, the .limit(1) fallback kicked in and returned Huddersfield (the first row), and Peter\'s saves silently landed on Huddersfield\'s row instead of Location 1\'s. NO ORG-LEVEL DATA LEAKED — RLS held, no tenant could read anyone else\'s data. But a logged-in BO user was unintentionally writing slug / hours / online flags to a sibling location\'s row.',

@@ -83,25 +83,35 @@ export function parseCustomerUrl(loc = (typeof window !== 'undefined' ? window.l
 }
 
 // Resolve a slug to a location row from platform DB. Returns null if the
-// slug is unknown — caller should show a "shop not found" page in that case.
-// Cached in-module for the app's lifetime since the lookup is read-only.
+// slug is unknown. Lightweight 30-second cache so the customer page doesn't
+// hammer Supabase on every interaction, but refreshes often enough that
+// operator changes (slug move, hours edit, enable toggle) propagate quickly
+// and we don't get stuck on a row that was migrated away in BO.
 const _slugCache = new Map();
+const SLUG_CACHE_TTL_MS = 30_000;
 
 export async function lookupLocationBySlug(slug, platformSupabase) {
   if (!slug || !platformSupabase) return null;
-  if (_slugCache.has(slug)) return _slugCache.get(slug);
+  const hit = _slugCache.get(slug);
+  if (hit && (Date.now() - hit.at) < SLUG_CACHE_TTL_MS) return hit.row;
   try {
     const { data } = await platformSupabase
       .from('locations')
-      .select('id, ops_location_id, name, timezone, online_slug, online_enabled, qr_enabled, opening_hours')
+      .select('id, ops_location_id, name, timezone, online_slug, online_enabled, qr_enabled, opening_hours, receipt_branding')
       .eq('online_slug', slug)
       .maybeSingle();
-    _slugCache.set(slug, data || null);
+    _slugCache.set(slug, { row: data || null, at: Date.now() });
     return data || null;
   } catch (e) {
     console.warn('[customerUrl] slug lookup failed:', e?.message);
     return null;
   }
+}
+
+// Force a refetch — used by the customer surface itself after the user
+// navigates around so a stale 30s cache can't lock them into "we're closed".
+export function invalidateSlugCache(slug) {
+  if (slug) _slugCache.delete(slug); else _slugCache.clear();
 }
 
 // Validate a slug input from BO — same shape DNS-friendly: lowercase a-z,
