@@ -74,6 +74,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.79', date: '7 May 2026', label: 'MPOS — wire useSupabaseInit (printers were never hydrated → silent print failure)',
+    changes: [
+      'PRINT SILENT FAILURE — Peter pressed Print bill, nothing printed, no error toast. Root cause: useSupabaseInit() is the hook that hydrates rpos-printers (and closed_checks, tax rates, shift, cash drawers etc.) from Supabase on mount. It runs inside ValidatedPOSApp for the desktop POS, but MPOS bypasses that wrapper entirely (App.jsx:3424 returns MPOSSurface directly). So MPOS never read the location\'s printer config — _printerForRole(\'receipt\') always returned null — printer.printReceipt() fell through to browserPrint() which opens a print dialog... except in iOS Safari running as a PWA, browser print is suppressed silently. Hence the "no printer, no error".',
+      'FIX: useSupabaseInit() called from MPOSSurface on mount. Same path the desktop POS uses, so MPOS now sees the same printers, the same tax rates, the same closed_checks history, the same shift state. Print bill from MPOS will now route through _submitJob → print_jobs row in Supabase → master Sunmi POS picks it up via PrintOrchestrator and prints to the location\'s receipt printer. Same for reprint receipts in Closed orders.',
+      'WHAT THIS ALSO FIXES: closed_checks may have been showing partial data on MPOS because the hydration step that backfills checks from Supabase wasn\'t running. Tax rates may have been missing too (so MTender was showing untaxed totals). All those silently inherit the desktop\'s data flow now.',
+    ],
+  },
+  {
     version: '5.5.78', date: '7 May 2026', label: 'MPOS — print bill before close, edit item notes after adding, reprint feedback fixed',
     changes: [
       'PRINT BILL FROM MCARTSHEET — new "🧾 Print bill" button next to "Add items" in the cart bottom bar. Builds a check-shape payload from the live cart and routes through the existing printCustomerReceipt store action — same path the desktop POS uses for end-of-meal receipts. Surfaces print failures with a toast ("Print failed: no printer mapped" etc) rather than silently claiming success. If transport falls back to browser, the toast says so.',

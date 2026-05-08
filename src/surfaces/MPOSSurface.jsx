@@ -20,6 +20,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useStore } from '../store';
+import useSupabaseInit from '../lib/useSupabaseInit';
 import PINScreen from './PINScreen';
 import MHome from './mpos/MHome';
 import MOrdersList from './mpos/MOrdersList';
@@ -52,6 +53,14 @@ const TABS = [
 
 export default function MPOSSurface() {
   const { staff } = useStore();
+
+  // v5.5.79 fix — hydrate Supabase state on mount the same way the desktop
+  // ValidatedPOSApp does. Without this, rpos-printers never gets populated
+  // from the printers table, so _printerForRole('receipt') returns null and
+  // every print attempt falls back to browser print (which doesn't open a
+  // dialog on iOS). Also hydrates closed_checks, tax rates, shift, cash
+  // drawers, etc. — all of which MPOS uses.
+  useSupabaseInit();
 
   // PWA + viewport — same as 1A
   useEffect(() => {
