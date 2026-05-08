@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { platformSupabase, supabase, getLocationId } from '../../lib/supabase';
 import { clearLocationConfigCache } from '../../lib/locationTime';
 import { defaultOpeningHours, emptyOpeningHours, isOpenNow, formatHoursPreview } from '../../lib/openingHours';
+import { isValidSlug, suggestSlug } from '../../lib/customerUrl';
 
 const TIMEZONES = [
   { value:'Europe/London',      label:'Europe/London (UK)' },
@@ -93,6 +94,11 @@ export default function LocationSettings() {
   // (jsonb). Both kiosk and online surfaces gate ordering on this.
   const [openingHours, setOpeningHours] = useState(emptyOpeningHours());
   const [closedDateInput, setClosedDateInput] = useState('');
+  // Phase 2 — online ordering URL + enabled toggles
+  const [onlineSlug,  setOnlineSlug]  = useState('');
+  const [onlineEnabled, setOnlineEnabled] = useState(false);
+  const [qrEnabled,     setQrEnabled]     = useState(false);
+  const [slugError,   setSlugError]   = useState('');
 
   useEffect(() => {
     if (!platformSupabase) { setLoading(false); return; }
@@ -103,7 +109,7 @@ export default function LocationSettings() {
     (async () => {
       try {
         const locId = await getLocationId().catch(() => null);
-        const select = 'id, name, timezone, business_day_start, shifts, collection_lead_minutes, opening_hours';
+        const select = 'id, name, timezone, business_day_start, shifts, collection_lead_minutes, opening_hours, online_slug, online_enabled, qr_enabled';
         let row = null;
         let lastErr = null;
         if (locId) {
@@ -132,6 +138,9 @@ export default function LocationSettings() {
               ? row.opening_hours
               : emptyOpeningHours()
           );
+          setOnlineSlug(row.online_slug || '');
+          setOnlineEnabled(!!row.online_enabled);
+          setQrEnabled(!!row.qr_enabled);
         } else {
           setError('Could not load any location row from the platform DB. Check VITE_PLATFORM_SUPABASE_URL/KEY and the locations table SELECT policy.');
         }
@@ -170,6 +179,13 @@ export default function LocationSettings() {
       setError('No location loaded — nothing to save against. Check the platform DB locations table or run the load again.');
       return;
     }
+    // Slug validation up-front so the user gets a clear message instead of
+    // a Postgres unique-violation in the toast.
+    if (onlineSlug && !isValidSlug(onlineSlug)) {
+      setSlugError('Slug must be 3-40 chars, lowercase letters / digits / hyphens, no leading or trailing hyphen.');
+      return;
+    }
+    setSlugError('');
     setSaving(true); setError(''); setSaved(false);
 
     // Sanitise shifts payload — strip any fields the JSONB column doesn't
@@ -193,9 +209,12 @@ export default function LocationSettings() {
         shifts:                  cleanShifts,
         collection_lead_minutes: collectionLeadMin,
         opening_hours:           sanitiseOpeningHours(openingHours),
+        online_slug:             onlineSlug ? onlineSlug.toLowerCase() : null,
+        online_enabled:          !!onlineEnabled,
+        qr_enabled:              !!qrEnabled,
       })
       .eq('id', location.id)
-      .select('id, shifts, timezone, business_day_start, collection_lead_minutes, opening_hours')
+      .select('id, shifts, timezone, business_day_start, collection_lead_minutes, opening_hours, online_slug, online_enabled, qr_enabled')
       // maybeSingle so a 0-row return doesn't throw "Cannot coerce" — it
       // resolves to data:null which we then handle with a specific error
       // pointing at the RLS UPDATE policy (the most common cause).
@@ -232,6 +251,10 @@ export default function LocationSettings() {
     }
     // Keep local state in sync with what's actually persisted
     setShifts(persistedShifts);
+    if (data.opening_hours && data.opening_hours.weekly) setOpeningHours(data.opening_hours);
+    setOnlineSlug(data.online_slug || '');
+    setOnlineEnabled(!!data.online_enabled);
+    setQrEnabled(!!data.qr_enabled);
     clearLocationConfigCache(); // force refresh on next read
     setSaved(true);
     setTimeout(() => setSaved(false), 3000);
@@ -381,6 +404,19 @@ export default function LocationSettings() {
         setClosedDateInput={setClosedDateInput}
       />
 
+      {/* Online ordering / QR code surfaces — Phase 2 */}
+      <OnlineOrderingCard
+        locationName={location?.name}
+        slug={onlineSlug}
+        setSlug={setOnlineSlug}
+        slugError={slugError}
+        setSlugError={setSlugError}
+        onlineEnabled={onlineEnabled}
+        setOnlineEnabled={setOnlineEnabled}
+        qrEnabled={qrEnabled}
+        setQrEnabled={setQrEnabled}
+      />
+
       {/* POS Display */}
       <div style={S.card}>
         <div style={S.h2}>🖼 POS Display</div>
@@ -420,6 +456,103 @@ export default function LocationSettings() {
         {error && <span style={{ fontSize:13, color:'var(--red)' }}>{error}</span>}
       </div>
     </div>
+  );
+}
+
+// ── Online Ordering / QR card ────────────────────────────────────────────────
+// Phase 2 — lets the operator pick a slug ("peters-cafe") that becomes
+// peters-cafe.serv-os.app for the customer, and toggle the two
+// customer-facing surfaces independently:
+//   • Online ordering   — collection / delivery, customer details, Stripe online
+//   • QR table-side     — diners scan a QR at their table, fires into the
+//                         table's session on the POS, server brings food
+function OnlineOrderingCard({
+  locationName, slug, setSlug, slugError, setSlugError,
+  onlineEnabled, setOnlineEnabled, qrEnabled, setQrEnabled,
+}) {
+  const previewHost = slug ? `${slug}.serv-os.app` : '(slug).serv-os.app';
+  const onlineUrl = slug ? `https://${slug}.serv-os.app` : '';
+  const qrUrl     = slug ? `https://${slug}.serv-os.app/t/<table-id>` : '';
+
+  return (
+    <div style={S.card}>
+      <div style={S.h2}>📱 Online ordering & QR code</div>
+      <div style={S.desc}>
+        Two customer-facing surfaces. <b>Online</b> is for remote orders (collection / delivery, pay online).
+        <b>QR table-side</b> is for in-store guests scanning a code at their table — fires straight into the table's session on the POS.
+        Set a slug below and your URLs become {previewHost.includes('serv-os') ? <code style={{ color:'var(--acc)' }}>{previewHost}</code> : previewHost}.
+      </div>
+
+      {/* Slug */}
+      <label style={S.label}>Online slug</label>
+      <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+        <input
+          style={{ ...S.input, flex:1, fontFamily:'var(--font-mono)' }}
+          value={slug}
+          placeholder={locationName ? suggestSlug(locationName) : 'peters-cafe'}
+          onChange={e => { setSlug(e.target.value.toLowerCase()); setSlugError(''); }}/>
+        <span style={{ fontSize:12, color:'var(--t4)', fontFamily:'var(--font-mono)' }}>.serv-os.app</span>
+        {locationName && !slug && (
+          <button onClick={() => setSlug(suggestSlug(locationName))} style={{ ...S.btn, background:'var(--bg3)', color:'var(--t2)', border:'1px solid var(--bdr)', padding:'7px 10px', fontSize:11 }}>
+            Suggest
+          </button>
+        )}
+      </div>
+      {slugError && <div style={{ fontSize:11, color:'var(--red)', marginTop:6 }}>{slugError}</div>}
+      <div style={{ fontSize:11, color:'var(--t4)', marginTop:6, lineHeight:1.5 }}>
+        Lowercase letters, digits and hyphens. 3-40 chars. Must be unique across all locations.
+      </div>
+
+      {/* Surface toggles */}
+      <div style={{ marginTop:18, paddingTop:14, borderTop:'1px solid var(--bdr)' }}>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'10px 0', gap:10 }}>
+          <div style={{ flex:1 }}>
+            <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)' }}>🌐 Online ordering</div>
+            <div style={{ fontSize:11, color:'var(--t4)', marginTop:2 }}>
+              {slug ? <><code style={{ fontFamily:'var(--font-mono)' }}>{onlineUrl}</code> — collection / delivery, customer details, Stripe online checkout.</> : 'Set a slug above first.'}
+            </div>
+          </div>
+          <Toggle on={onlineEnabled} onChange={setOnlineEnabled} disabled={!slug}/>
+        </div>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'10px 0', gap:10, borderTop:'1px solid var(--bdr)' }}>
+          <div style={{ flex:1 }}>
+            <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)' }}>📱 QR table-side ordering</div>
+            <div style={{ fontSize:11, color:'var(--t4)', marginTop:2 }}>
+              {slug ? <><code style={{ fontFamily:'var(--font-mono)' }}>{qrUrl}</code> — guests scan a QR at their table, items fire into that table's session on the POS.</> : 'Set a slug above first.'}
+            </div>
+          </div>
+          <Toggle on={qrEnabled} onChange={setQrEnabled} disabled={!slug}/>
+        </div>
+      </div>
+
+      {slug && (
+        <div style={{ marginTop:14, padding:'10px 12px', background:'var(--bg3)', borderRadius:8, border:'1px solid var(--bdr)' }}>
+          <div style={{ fontSize:11, color:'var(--t4)', lineHeight:1.6 }}>
+            <b>DNS still required.</b> Once <code style={{ fontFamily:'var(--font-mono)' }}>*.serv-os.app</code> is wired in Vercel + your registrar, these URLs go live.
+            For now you can preview locally with <code style={{ fontFamily:'var(--font-mono)' }}>?loc={slug}&surface=online</code> on the existing host.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Toggle({ on, onChange, disabled }) {
+  return (
+    <button
+      onClick={() => !disabled && onChange(!on)}
+      disabled={disabled}
+      style={{
+        width:44, height:24, borderRadius:12, border:'none', cursor: disabled ? 'not-allowed' : 'pointer',
+        background: disabled ? 'var(--bdr)' : (on ? 'var(--acc)' : 'var(--bdr2)'),
+        position:'relative', transition:'background .2s', flexShrink:0, opacity: disabled ? .5 : 1,
+      }}>
+      <div style={{
+        position:'absolute', top:3, left: on ? 23 : 3,
+        width:18, height:18, borderRadius:'50%', background:'#fff',
+        transition:'left .2s', boxShadow:'0 1px 3px rgba(0,0,0,.2)',
+      }}/>
+    </button>
   );
 }
 

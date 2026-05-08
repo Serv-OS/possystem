@@ -15,6 +15,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
 import KioskApp from './KioskApp';
+import { getLocationConfig } from '../lib/locationTime';
+import { isOpenNow, nextOpensAt, formatHoursPreview } from '../lib/openingHours';
 
 const LS_KIOSK_ID = 'rpos-kiosk-id';
 const LS_KIOSK_TOKEN = 'rpos-kiosk-token';
@@ -91,9 +93,9 @@ export default function KioskSurface() {
     setCode('');
   };
 
-  // ─── Paired → render the full ordering app ───
+  // ─── Paired → check opening hours, then render the full ordering app ───
   if (paired && kiosk) {
-    return <KioskApp kioskId={kiosk.id} onUnpair={unpair} />;
+    return <KioskHoursGate kiosk={kiosk} onUnpair={unpair}/>;
   }
 
   // ─── Pairing-code entry ───
@@ -159,4 +161,61 @@ function pageStyle() {
     placeItems: 'center',
     fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',
   };
+}
+
+// ── Opening hours gate ───────────────────────────────────────────────────────
+// Sits between successful pairing and the ordering UI. Loads the location's
+// opening_hours, then either renders the kiosk app (open) or a "We're closed"
+// screen (closed) that re-checks every minute and auto-flips to the kiosk
+// the moment the next window opens.
+function KioskHoursGate({ kiosk, onUnpair }) {
+  const [config, setConfig]   = useState(null);
+  const [tick, setTick]       = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    getLocationConfig().then(c => { if (!cancelled) setConfig(c); }).catch(() => {});
+    // Re-check status every 30s so the closed screen flips to open without
+    // a manual refresh, and the opening_hours stays fresh if changed in BO.
+    const id = setInterval(() => setTick(t => t + 1), 30_000);
+    return () => { cancelled = true; clearInterval(id); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  if (!config) return null; // brief flash while config loads — KioskApp loads its own data anyway
+
+  // No opening_hours set yet (location hasn't configured them) → fail-open
+  // so we don't lock operators out by default. Once they set hours, this
+  // path stops triggering.
+  const hoursSet = config.opening_hours
+    && config.opening_hours.weekly
+    && Object.values(config.opening_hours.weekly).some(arr => Array.isArray(arr) && arr.length > 0);
+  if (!hoursSet) return <KioskApp kioskId={kiosk.id} onUnpair={onUnpair}/>;
+
+  const status = isOpenNow(config.opening_hours, config.timezone);
+  if (status.open) return <KioskApp kioskId={kiosk.id} onUnpair={onUnpair}/>;
+
+  // Closed — show a friendly screen with next-open time
+  void tick; // re-render trigger
+  const next = nextOpensAt(config.opening_hours, config.timezone);
+  const fmt = next
+    ? new Intl.DateTimeFormat('en-GB', { timeZone: config.timezone, weekday:'long', hour:'numeric', minute:'2-digit', hour12:true }).format(next)
+    : null;
+  return (
+    <div style={pageStyle()}>
+      <div style={{ textAlign:'center', maxWidth:520, padding:'0 24px' }}>
+        <div style={{ fontSize:80, marginBottom:18 }}>🌙</div>
+        <div style={{ fontSize:28, fontWeight:800, letterSpacing:'-0.02em', marginBottom:8 }}>We're closed</div>
+        <div style={{ fontSize:15, color:'#aaa', marginBottom:18 }}>
+          {fmt ? <>Opens <b style={{ color:'#fff' }}>{fmt}</b></> : 'Please come back later.'}
+        </div>
+        <div style={{ fontSize:12, color:'#666', marginTop:24 }}>
+          {formatHoursPreview(config.opening_hours)}
+        </div>
+        <div style={{ fontSize:10, color:'#444', marginTop:36 }}>
+          Kiosk auto-opens at the next service window. No need to refresh.
+        </div>
+      </div>
+    </div>
+  );
 }

@@ -21,6 +21,8 @@ import BarSurface from './surfaces/BarSurface';
 import TablesSurface from './surfaces/TablesSurface';
 import { KDSSurface } from './surfaces/OtherSurfaces';
 import MPOSSurface from './surfaces/MPOSSurface';
+import CustomerBoot from './surfaces/CustomerBoot';
+import { parseCustomerUrl as parseCustomerUrlForBoot } from './lib/customerUrl';
 import AIChat from './components/AIChat';
 
 function AIAssistantSurface() {
@@ -73,6 +75,18 @@ import useSupabaseInit from './lib/useSupabaseInit';
 import { VERSION } from './lib/version';
 
 const CHANGELOG = [
+  {
+    version: '5.5.103', date: '8 May 2026', label: 'Online ordering Phase 2 — subdomain routing + online_slug + kiosk hours gate',
+    changes: [
+      'NEW src/lib/customerUrl.js — pure URL parser. Reads window.location, identifies the visitor as a customer (subdomain match e.g. peters-cafe.serv-os.app, or ?loc=<slug> fallback for testing pre-DNS), and returns { mode: \'online\' | \'qr\' | \'kiosk\', slug, tableId }. Resolves slug → platform.locations row via lookupLocationBySlug (in-module cache).',
+      'NEW src/surfaces/CustomerBoot.jsx — runs when the parser identifies a customer. Resolves slug → location, checks online_enabled / qr_enabled, gates on isOpenNow against the location\'s opening_hours + timezone, then routes to OnlineSurface or QRSurface (Phase 3 stubs included so the routing pipeline is testable end-to-end now). "Shop not found" / "ordering not enabled" / "we\'re closed (opens Tue 9 AM)" states all live here.',
+      'App.jsx WIRED — parseCustomerUrl runs BEFORE the operator mode dispatch, so customers never see device-pairing or mode-selector screens. Operator URLs (?mode=pos/mpos/office/admin/kiosk) still take precedence on the same hostname.',
+      'BO LOCATION SETTINGS — new "Online ordering & QR code" card with three controls per location: online_slug (input + Suggest button derived from location name + live <slug>.serv-os.app preview), online_enabled toggle (master switch for /), qr_enabled toggle (master switch for /t/<table-id>). Slug validated client-side (lowercase a-z, digits, hyphens, 3-40, no leading/trailing hyphen) before save so RLS unique-violations don\'t bubble up.',
+      'NEW supabase/migrations/20260508_online_slug.sql — adds online_slug text + online_enabled bool + qr_enabled bool columns to platform.locations, plus a unique index on online_slug WHERE NOT NULL. RUN ONCE on platform DB before testing.',
+      'KIOSK HOURS GATE — KioskSurface now wraps KioskApp in a KioskHoursGate that checks isOpenNow against the location\'s configured opening_hours. If closed, shows a "We\'re closed — opens Tuesday 9 AM" screen that re-checks every 30 seconds and auto-flips to the kiosk the moment the next window opens. Fail-open if no hours are set yet, so legacy installs aren\'t locked out by default.',
+      'PHASE 3 NEXT — actual Online + QR menu / cart / checkout surfaces. The routing, gating, and operator controls are all in now; Phase 3 is just the customer-facing UIs.',
+    ],
+  },
   {
     version: '5.5.102', date: '8 May 2026', label: 'Online ordering Phase 1 — Opening Hours infrastructure (BO editor + helpers)',
     changes: [
@@ -3602,10 +3616,24 @@ export default function App() {
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
 
+  // ── Customer-facing surfaces ──────────────────────────────────────────
+  // Subdomain-based routing: (slug).serv-os.app → online ordering or QR
+  // table-side. Falls back to ?loc=<slug>&surface=... query for testing
+  // before DNS is wired. Resolved BEFORE the operator mode dispatch so
+  // customers never see the device pairing / mode selector screens.
+  // Operator URLs (?mode=pos / mpos / office / admin / kiosk) take
+  // precedence so an operator on the same hostname still gets their tools.
+  const urlMode = new URLSearchParams(window.location.search).get('mode');
+  if (!urlMode) {
+    const customerCtx = parseCustomerUrlForBoot();
+    if (customerCtx?.slug && (customerCtx.mode === 'online' || customerCtx.mode === 'qr')) {
+      return <CustomerBoot slug={customerCtx.slug} mode={customerCtx.mode} tableId={customerCtx.tableId} />;
+    }
+  }
+
   // ── Device mode selection ─────────────────────────────────────────────
   // Priority: URL ?mode=X param > localStorage > first-visit selector
   // This lets users bookmark /app?mode=pos, /app?mode=office, /app?mode=admin
-  const urlMode = new URLSearchParams(window.location.search).get('mode');
   const storedMode = localStorage.getItem('rpos-device-mode');
   const deviceMode = isMock ? 'pos' : (urlMode || storedMode || null);
 
