@@ -74,6 +74,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.93', date: '8 May 2026', label: 'Modifier rollup — match by menuName/kitchenName + composite-id extraction',
+    changes: [
+      'DIAGNOSTIC PAID OFF — the v5.5.92 debug panel showed exactly what the data looks like. Two patterns were missing from the lookup:',
+      '1. NAME COLUMN STAYS STALE ON RENAME — when BO renames a menu_item, some setups only update menu_name (display) and kitchen_name; the canonical `name` column stays as the original ("Donut 1"). My menuByName index only used m.name, so "Bueno Filled" mods couldn\'t find their menu_item. Fixed: index keys now include name, menuName, menu_name, kitchenName, kitchen_name, receiptName, receipt_name. Whichever field carries the rename, we pick it up.',
+      '2. COMPOSITE OPTION IDS — modifier-group options use ids like `opt-1777507081426-m-1776446790456`. The trailing `m-MMM` portion is the underlying menu_item id. Direct id lookup never matched (the full composite isn\'t a menu_item id). Fixed: lookupModItem now extracts the `m-MMM` suffix from composite mod ids and looks THAT up. Bypasses any name/rename mismatch entirely — id-based attribution always points to the current menu_item.',
+      'NET EFFECT — Bueno Filled (and any other renamed items) now resolve in the modifier rollup whether their mod entry has id, name, menuName, or just label. Standalone sales were already working because that path keys on the parent line\'s name (which is current).',
+    ],
+  },
+  {
     version: '5.5.92', date: '8 May 2026', label: 'ItemTrend — Debug mods diagnostic panel (stop guessing, see the data)',
     changes: [
       'Fix attempts on the Box of 3 / Bueno rollup were guessing at the data shape because we have no visibility into what closed_checks.items[].mods actually contains for Peter\'s installation. Stopped guessing. Added a "🔍 Debug mods" toggle in ItemTrend that surveys every modifier seen in the period and tabulates: count, id, name, label, parent line, matched?',

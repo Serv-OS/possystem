@@ -58,27 +58,42 @@ export default function ItemTrend({ checks, fmt, fmtN, rangeFrom, rangeTo }) {
     (menuItems || []).forEach(m => { if (m.id) map[m.id] = m; });
     return map;
   }, [menuItems]);
+  // Index by name AND menuName AND kitchenName + receiptName. When BO
+  // renames an item, some setups only update menu_name (display); the
+  // canonical `name` column may stay as the original. We also need menuName
+  // and kitchenName for kitchen-ticket sourced reports.
   const menuByName = useMemo(() => {
     const map = {};
     (menuItems || []).forEach(m => {
-      if (!m?.name) return;
-      const key = m.name.toLowerCase().trim();
-      // First-write-wins so an exact-name match beats a near-duplicate
-      if (!map[key]) map[key] = m;
+      if (!m) return;
+      const keys = [m.name, m.menuName, m.menu_name, m.kitchenName, m.kitchen_name, m.receiptName, m.receipt_name]
+        .filter(Boolean)
+        .map(s => String(s).toLowerCase().trim());
+      keys.forEach(k => { if (k && !map[k]) map[k] = m; });
     });
     return map;
   }, [menuItems]);
   const lookupModItem = (m) => {
+    // 1) Direct id match
     if (m?.id && menuById[m.id]) return menuById[m.id];
+    // 2) Composite "opt-NNN-m-MMM" mod ids (the modifier group's own option
+    //    id, suffixed with the menu_item id it references). Extract the
+    //    `m-MMM` tail and look that up — that's the actual menu_item id.
+    if (m?.id) {
+      const match = String(m.id).match(/(?:^|[-_])m-([a-zA-Z0-9-]+)$/);
+      if (match) {
+        const mid = `m-${match[1]}`;
+        if (menuById[mid]) return menuById[mid];
+      }
+    }
+    // 3) Name match (now also covers menuName / kitchenName / receiptName)
     if (m?.name) {
-      const hit = menuByName[m.name.toLowerCase().trim()];
+      const hit = menuByName[String(m.name).toLowerCase().trim()];
       if (hit) return hit;
     }
-    // Historical closed_checks (from before InlineItemFlow started preserving
-    // id/name) only have `label`. Try that, stripping any "×N" qty suffix
-    // first so "Bueno ×3" still matches "Bueno".
+    // 4) Historical fallback — only `label`, strip any "×N" qty suffix.
     if (m?.label) {
-      const cleaned = m.label.replace(/\s*[×x]\s*\d+\s*$/i, '').toLowerCase().trim();
+      const cleaned = String(m.label).replace(/\s*[×x]\s*\d+\s*$/i, '').toLowerCase().trim();
       const hit = menuByName[cleaned];
       if (hit) return hit;
     }
