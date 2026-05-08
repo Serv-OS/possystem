@@ -74,6 +74,16 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.84', date: '7 May 2026', label: 'Print FAST PATH — Supabase Realtime Broadcast (~3s → ~500ms tap-to-paper)',
+    changes: [
+      'WHY THE PREVIOUS PATH FELT SLOW — every print went phone → Supabase INSERT → Postgres logical replication → realtime fanout → master claim → master native print. The two cloud writes either side of the actual paper feed were bookkeeping the user could feel. Browsers can\'t open raw TCP sockets, so the phone can never talk to the printer directly — but we don\'t need a postgres write to get a packet from one device to another on the same network.',
+      'NEW HOT PATH — Supabase Realtime Broadcast. printService._submitJob now fires a `broadcast` event on the channel `print-fast:${locationId}` BEFORE the durable insert. Broadcast doesn\'t hit Postgres — it\'s a memory-only fanout in the Supabase realtime tier with ~50-150ms latency each leg. Master subscribes to that same channel, receives the bytes within ~150ms of the tap, and dispatches via the native bridge to the printer. Tap-to-paper now ~250-500ms (down from ~3s).',
+      'DURABILITY UNCHANGED — the print_jobs row is still inserted in parallel as the audit trail. Master upserts the row to status=\'printed\' on broadcast print success (ON CONFLICT idempotency_key) so whether MPOS\'s INSERT or master\'s upsert lands first, the row ends up correct. If the broadcast misses (master offline, channel not yet subscribed, network glitch), the postgres INSERT realtime path still fires and master picks it up via the existing claim+dispatch flow.',
+      'IDEMPOTENCY DEDUP — _broadcastHandled Map on master tracks idempotency_keys printed via broadcast for 5 min. When the postgres INSERT realtime arrives ~500ms later for the same key, master sees the entry, skips dispatch, and just marks the row as printed. Edge cases covered: master restart between broadcast print and INSERT (worst case = duplicate ticket, voidable), broadcast missed entirely (postgres path is the durable fallback), child device receives broadcast (ignored — only master subscribes).',
+      'EXPECTED IMPACT — single print: ~3s → ~500ms (-83%). Burst of 4 jobs: ~12s → ~2s (-83%). Cellular MPOS adds ~200-400ms each leg — still well under 1s on 4G. Cloud round-trip is now bookkeeping, not user-facing.',
+    ],
+  },
+  {
     version: '5.5.83', date: '7 May 2026', label: 'PrintOrchestrator — shave ~1s off every print (~30-40% faster)',
     changes: [
       'PRINT SPEED — actual hardware-side latency, not perceived. Audited the path tap-to-paper for an MPOS print: ~500ms phone insert → ~300ms realtime delivery → master claim (~500ms) → master "sending" update (~500ms) → native bridge to printer (~500ms-1s) → master "printed" update (~500ms). The two master-side Supabase updates that bracket the actual native print were both pure bookkeeping — paper doesn\'t come out any sooner because of them, but the dispatch loop blocks on them and queue-stalls the next job.',

@@ -49,12 +49,19 @@ const BATCH_SIZE        = 10;            // max jobs to claim per scan
 // ─── State ───────────────────────────────────────────────────────────────────
 let _pollTimer      = null;
 let _reclaimTimer   = null;
+let _idempotencyCleanupTimer = null;
 let _channel        = null;
+let _fastChannel    = null;
 let _deviceId       = null;
 let _locationId     = null;
 let _isMaster       = false;
 let _running        = false;
 let _inflight       = new Set();       // jobIds currently being dispatched on THIS device
+// FAST PATH dedup: idempotency_key → timestamp of broadcast print. When the
+// postgres INSERT realtime arrives ~500ms after our broadcast print, we look
+// up the key here and skip dispatch — the upsert path will mark the row done.
+const _broadcastHandled = new Map();
+const _BROADCAST_DEDUP_TTL_MS = 5 * 60_000;
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 export async function startPrintOrchestrator({ deviceId, locationId, isMaster }) {
@@ -88,11 +95,40 @@ export async function startPrintOrchestrator({ deviceId, locationId, isMaster })
     }, (payload) => {
       const job = payload.new;
       if (!job || job.status !== 'pending') return;
+      // FAST PATH: if we already printed this via the broadcast channel
+      // (master only), skip the dispatch. The broadcast handler upserts the
+      // row to status='printed' as soon as paper is out — but the postgres
+      // realtime fanout often races ahead of that update, so we also do a
+      // local in-memory check here.
+      if (job.idempotency_key && _broadcastHandled.has(job.idempotency_key)) {
+        markRowPrinted(job.id).catch(() => {});
+        return;
+      }
       // Master picks up immediately; child waits slightly before attempting
       const delay = _isMaster ? 0 : CHILD_DELAY_MS;
       setTimeout(() => claimAndDispatch(job.id), delay);
     })
     .subscribe();
+
+  // FAST PATH — Supabase Realtime BROADCAST channel. MPOS sends a broadcast
+  // with the bytes when it submits a print, and master prints immediately on
+  // receipt — no postgres write in the hot path, no realtime fanout from
+  // logical replication. End-to-end latency is ~50-150ms each way, vs
+  // 500-1500ms for postgres+realtime.
+  //
+  // Master only: child devices ignore broadcasts to avoid double-print.
+  // The postgres INSERT path is the durable backup for two cases:
+  //   1. Master is offline — postgres row still exists, picked up on reboot
+  //   2. Broadcast was missed — realtime INSERT arrives later as fallback
+  if (_isMaster) {
+    _fastChannel = supabase
+      .channel(`print-fast:${locationId}`, { config: { broadcast: { self: false } } })
+      .on('broadcast', { event: 'print' }, ({ payload }) => {
+        handleFastBroadcast(payload).catch((e) =>
+          console.warn('[PrintOrchestrator] broadcast print error:', e?.message || e));
+      })
+      .subscribe();
+  }
 
   // Periodic poll — catches anything realtime missed, plus handles retries
   const pollInterval = _isMaster ? MASTER_POLL_MS : CHILD_POLL_MS;
@@ -101,18 +137,104 @@ export async function startPrintOrchestrator({ deviceId, locationId, isMaster })
   // Reclaim stuck jobs — every 15s regardless of role
   _reclaimTimer = setInterval(reclaimStuck, 15_000);
 
+  // Prune the broadcast-handled dedup map every minute so it can't grow
+  // unbounded. Entries older than 5 minutes are safe to drop — by then any
+  // postgres INSERT realtime event for that key has long since arrived.
+  _idempotencyCleanupTimer = setInterval(() => {
+    const cutoff = Date.now() - _BROADCAST_DEDUP_TTL_MS;
+    for (const [k, ts] of _broadcastHandled) {
+      if (ts < cutoff) _broadcastHandled.delete(k);
+    }
+  }, 60_000);
+
   // Immediate first tick — drain anything left from previous session
   setTimeout(tick, 500);
 }
+
+// ─── FAST PATH: handle an incoming broadcast print event ─────────────────────
+// Called on master only. Prints bytes directly without waiting for the
+// durable postgres row. Then upserts the row to status='printed' so the audit
+// trail still ends up correct.
+async function handleFastBroadcast(payload) {
+  if (!_running || !_isMaster) return;
+  if (!payload || !payload.idempotency_key) return;
+  const key = payload.idempotency_key;
+  // Dedup: ignore if we already handled this broadcast (duplicate fanout)
+  if (_broadcastHandled.has(key)) return;
+  _broadcastHandled.set(key, Date.now());
+
+  try {
+    const bytes = base64ToBytes(payload.payload_b64 || '');
+    if (!bytes?.length) throw new Error('Empty payload');
+    const printer = findPrinter(payload.printer_id) || {
+      address: payload.printer_ip,
+      port: payload.printer_port || 9100,
+      name: payload.printer_id,
+    };
+    const ip = printer.address || payload.printer_ip;
+    if (!ip) throw new Error('No printer IP');
+
+    const result = await printService._dispatchBytesDirect(
+      bytes, ip, printer.port || payload.printer_port || 9100
+    );
+    if (!result?.ok) throw new Error(result?.error || 'Native bridge failed');
+
+    // Upsert the audit row to status='printed'. ON CONFLICT (idempotency_key)
+    // means whether MPOS's INSERT lands first or this upsert lands first,
+    // the row ends up correct: status='printed', no double dispatch.
+    supabase.from('print_jobs').upsert({
+      location_id:     payload.location_id,
+      printer_id:      payload.printer_id,
+      printer_ip:      payload.printer_ip,
+      printer_port:    payload.printer_port,
+      job_type:        payload.job_type || 'receipt',
+      payload:         payload.payload_b64,
+      status:          'printed',
+      idempotency_key: key,
+      processed_at:    new Date().toISOString(),
+      attempts:        1,
+      metadata:        payload.metadata || null,
+    }, { onConflict: 'idempotency_key' }).then(() => {}, (e) => {
+      console.warn('[PrintOrchestrator] broadcast upsert failed:', e?.message);
+    });
+    printService.recordPrinterHealth(payload.printer_id, 'online').catch(() => {});
+  } catch (e) {
+    // Broadcast print failed — drop the dedup entry so the postgres-INSERT
+    // path can retry. The phone's durable insert is still in flight; once
+    // that row lands we'll claim and dispatch it normally.
+    _broadcastHandled.delete(key);
+    console.warn('[PrintOrchestrator] fast broadcast dispatch failed, falling back to durable path:', e?.message || e);
+    if (payload.printer_id) {
+      printService.recordPrinterHealth(payload.printer_id, 'offline', e?.message).catch(() => {});
+    }
+  }
+}
+
+// ─── Helper: mark a row as printed (used when broadcast already handled it) ──
+async function markRowPrinted(jobId) {
+  if (!supabase) return;
+  await supabase.from('print_jobs').update({
+    status: 'printed',
+    processed_at: new Date().toISOString(),
+    claimed_by: null,
+    claim_expires_at: null,
+    error_message: null,
+  }).eq('id', jobId);
+}
+
+// (base64ToBytes + findPrinter helpers defined further down — reused here)
 
 export function stopPrintOrchestrator() {
   if (!_running) return;
   _running = false;
   clearInterval(_pollTimer);
   clearInterval(_reclaimTimer);
+  clearInterval(_idempotencyCleanupTimer);
   if (_channel && supabase) supabase.removeChannel(_channel);
-  _pollTimer = _reclaimTimer = _channel = null;
+  if (_fastChannel && supabase) supabase.removeChannel(_fastChannel);
+  _pollTimer = _reclaimTimer = _idempotencyCleanupTimer = _channel = _fastChannel = null;
   _inflight.clear();
+  _broadcastHandled.clear();
 }
 
 export function getOrchestratorStatus() {

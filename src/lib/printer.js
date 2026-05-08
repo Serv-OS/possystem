@@ -510,6 +510,50 @@ class PrintService {
     const idempotencyKey = opts.idempotencyKey || genIdempotencyKey();
     const metadata = opts.metadata || null;
 
+    // ── FAST PATH ─────────────────────────────────────────────────────────────
+    // Fire a Supabase Realtime broadcast BEFORE the durable insert. The master
+    // device subscribes to `print-fast:${locationId}` and prints immediately on
+    // receipt — typical broadcast latency is 50-150ms each leg, so paper comes
+    // out in ~250-500ms vs 2-3s via postgres+realtime.
+    //
+    // The durable insert below still happens as the audit trail. Master upserts
+    // the row to status='printed' on broadcast print success, so the audit
+    // record is consistent regardless of which path lands first.
+    //
+    // Fire and forget — never await this. If the broadcast misses (master
+    // offline, channel not subscribed yet), the durable INSERT path takes over.
+    try {
+      const fastLocId = await getLocationId();
+      if (supabase && fastLocId) {
+        // One channel per location, kept subscribed for the app's lifetime
+        if (!this._fastChannel || this._fastChannelLocId !== fastLocId) {
+          if (this._fastChannel) {
+            try { supabase.removeChannel(this._fastChannel); } catch {}
+          }
+          this._fastChannel = supabase.channel(`print-fast:${fastLocId}`);
+          this._fastChannelLocId = fastLocId;
+          this._fastChannel.subscribe();
+        }
+        this._fastChannel.send({
+          type: 'broadcast',
+          event: 'print',
+          payload: {
+            idempotency_key: idempotencyKey,
+            location_id:     fastLocId,
+            printer_id:      printer.id,
+            printer_ip:      ip,
+            printer_port:    port,
+            job_type:        jobType,
+            payload_b64:     payload,
+            metadata,
+            ts:              Date.now(),
+          },
+        }).catch(() => {});
+      }
+    } catch (e) {
+      console.warn('[Print] fast broadcast failed (falling back to durable):', e?.message);
+    }
+
     // ── Step 1: Insert durable row BEFORE any dispatch attempt ─────────────────
     let jobId = null;
     if (supabase) {
