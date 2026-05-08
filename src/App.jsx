@@ -74,6 +74,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.94', date: '8 May 2026', label: 'Rename cascade — fix stale name column + propagate rename into modifier_group options',
+    changes: [
+      'STALE NAME COLUMN ON RENAME — db.js upsertMenuItem was writing `name: item.name || \'Item\'` directly. Every other display field cascaded properly (menu_name / receipt_name / kitchen_name fall through item.menuName ?? item.menu_name ?? item.name). The lone holdout meant when BO patched menuName="Bueno Filled" without touching `name`, the upsert wrote the OLD `name` back to the DB. Result: menu_items.name went stale on every rename, breaking any name-keyed report. Fixed: name + menu_name + receipt_name + kitchen_name now all share the same fallback chain. One rename, all four columns update together.',
+      'MODIFIER OPTIONS NOW CASCADE TOO — when updateMenuItem changes the display name, the store now walks every modifier_group and updates any option whose id is either the menu_item id directly OR ends with "-m-<menu_item_id>" (the "opt-NNN-m-MMM" composite id pattern Peter\'s data uses). Touched groups are persisted to Supabase via the existing _saveModGroup helper. Future Box-of-3 sales will record the right name in mod entries — no more "the modifier picker still says Donut 1" after a rename.',
+      'WHY THIS MATTERED — combined with v5.5.93\'s lookup widening, the rename pipeline is now consistent end-to-end: menu_items.name + menu_name + receipt_name + kitchen_name all stay in sync, modifier_group options follow rename, reports look up by any of those four fields plus composite-id extraction. Peter can rename items in BO without quietly breaking reports going forward.',
+    ],
+  },
+  {
     version: '5.5.93', date: '8 May 2026', label: 'Modifier rollup — match by menuName/kitchenName + composite-id extraction',
     changes: [
       'DIAGNOSTIC PAID OFF — the v5.5.92 debug panel showed exactly what the data looks like. Two patterns were missing from the lookup:',

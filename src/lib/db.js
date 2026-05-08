@@ -143,13 +143,20 @@ export const upsertMenuItem = async (item, locationId = null) => {
   // Build pricing jsonb — preserve existing or derive from scalar price
   const pricing = item.pricing || { base: item.price || 0 };
 
+  // RENAME CASCADE — when BO renames an item, it patches `menuName` (display).
+  // The canonical `name` column previously held the original because `name`
+  // here read item.name directly without falling through to menuName. Result:
+  // menu_items.name went stale on every rename, breaking any report / query
+  // that looks up by name. Now name + menu_name + receipt_name + kitchen_name
+  // all cascade through the same chain so a rename updates them together.
+  const _displayName = item.menuName || item.menu_name || item.name || 'Item';
   const dbItem = {
     id:           item.id,
     location_id:  locationId,
-    name:         item.name || 'Item',
-    menu_name:    item.menuName    || item.menu_name    || item.name || 'Item',
-    receipt_name: item.receiptName || item.receipt_name || item.name || 'Item',
-    kitchen_name: item.kitchenName || item.kitchen_name || item.name || 'Item',
+    name:         _displayName,
+    menu_name:    _displayName,
+    receipt_name: item.receiptName || item.receipt_name || _displayName,
+    kitchen_name: item.kitchenName || item.kitchen_name || _displayName,
     description:  item.description || '',
     type:         item.type        || 'simple',
     cat:          item.cat         || null,

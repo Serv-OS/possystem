@@ -653,6 +653,43 @@ export const useStore = create((set, get) => ({
       if (fullItem) {
         upsertMenuItem(fullItem);
       }
+
+      // RENAME CASCADE — if the display name changed, walk modifier_groups
+      // and update any option that references this menu_item, so the picker
+      // labels (and the cart-line mod entries built from them) reflect the
+      // new name. Modifier-group options use composite ids of the form
+      // "opt-NNN-m-<menu_item_id>"; we match on the m-<id> tail.
+      const nameChanged = (
+        ('menuName' in patch && patch.menuName !== undefined) ||
+        ('name'     in patch && patch.name     !== undefined) ||
+        ('menu_name' in patch && patch.menu_name !== undefined)
+      ) && fullItem;
+      if (nameChanged) {
+        const newName = fullItem.menuName || fullItem.name || 'Item';
+        const idTail = `-m-${id.replace(/^m-/, '')}`;
+        let touched = 0;
+        const updatedGroups = s.modifierGroupDefs.map(g => {
+          if (!Array.isArray(g.options) || g.options.length === 0) return g;
+          let groupChanged = false;
+          const newOptions = g.options.map(o => {
+            const matchesId = o.id === id || (typeof o.id === 'string' && o.id.endsWith(idTail));
+            if (!matchesId) return o;
+            if (o.name === newName) return o;
+            groupChanged = true;
+            touched++;
+            return { ...o, name: newName };
+          });
+          return groupChanged ? { ...g, options: newOptions } : g;
+        });
+        if (touched > 0) {
+          // Persist every group whose options changed (rare, so the parallel
+          // saves are bounded).
+          updatedGroups.forEach((g, i) => {
+            if (g !== s.modifierGroupDefs[i]) useStore.getState()._saveModGroup(g);
+          });
+          return { menuItems: items, modifierGroupDefs: updatedGroups };
+        }
+      }
       return { menuItems: items };
     });
   },
