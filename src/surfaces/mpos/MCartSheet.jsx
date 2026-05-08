@@ -22,71 +22,77 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
     removeItem, updateItemQty, orderType, setOrderNote,
     printCustomerReceipt, locationConfig, showToast, staff,
   } = useStore();
-  // Print-bill state — feedback while the bill prints
+  // Print-bill UX is optimistic: tap → haptic + immediate "Sending…" toast →
+  // button re-enables after ~800ms (debounce, prevents accidental double-tap)
+  // → print runs in background → success replaces toast with "Bill sent ✓",
+  // failure replaces it with an error toast. Server doesn't wait staring at
+  // a disabled button for 3-5s while Supabase round-trips.
   const [printing, setPrinting] = useState(false);
 
-  // Print the current order as a bill preview so the customer can review
-  // before payment. Builds a check-shape payload from the live cart and
-  // routes through the existing printCustomerReceipt store action.
-  //
-  // Wraps the call in a 10s timeout so the button can never get permanently
-  // stuck — if printService hangs (e.g. branding fetch never resolves on a
-  // flaky connection) the timeout wins, the button re-enables, and the user
-  // sees a clear error toast. Race uses Promise.race semantics.
-  const printBill = async () => {
+  const printBill = () => {
     if (printing) return;
+    // Immediate tactile feedback: haptic on Android (silent no-op on iOS),
+    // visual press state via the `printing` flag, optimistic toast within
+    // the same animation frame. iOS Safari WebKit click latency is ~50-80ms;
+    // doing this before any await keeps the perceived response under 100ms.
+    try { navigator.vibrate?.(8); } catch {}
     setPrinting(true);
-    const timeout = new Promise((resolve) =>
-      setTimeout(() => resolve({ __timedOut: true }), 10_000));
-    try {
-      const liveItems = activeTableId
-        ? (tables.find(t => t.id === activeTableId)?.session?.items || []).filter(i => !i.voided)
-        : (walkInOrder?.items || []);
-      const sub = liveItems.reduce((s, i) => {
-        const base = (i.price || 0) * (i.qty || 0);
-        return s + (i.discount?.value ? base * (1 - i.discount.value / 100) : base);
-      }, 0);
-      const checkShape = {
-        id: `bill-${Date.now()}`,
-        ref: activeTableId
-          ? `Table ${tables.find(t => t.id === activeTableId)?.label || ''}`
-          : (walkInOrder?.ref || 'Walk-in'),
-        server: staff?.name || '',
-        items: liveItems,
-        subtotal: sub,
-        tip: 0,
-        total: sub,
-        status: 'open',
-        method: 'pending',
-      };
-      const printPromise = Promise.resolve(printCustomerReceipt?.({
-        location: locationConfig, check: checkShape,
-        items: liveItems,
-        // printer.js reads totals.grand / totals.subtotal / totals.service /
-        // totals.tip — not totals.total. Sending the wrong shape blows up
-        // inside the receipt builder ("undefined is not an object — i.grand.toFixed").
-        totals: { subtotal: sub, service: 0, tip: 0, grand: sub },
-      }));
-      const result = await Promise.race([printPromise, timeout]);
-      if (result?.__timedOut) {
-        showToast?.('Print timed out — check the printer / network and try again', 'error');
-      } else if (!result?.ok) {
-        showToast?.(`Print failed: ${result?.error || 'no printer mapped'}`, 'error');
-      } else if (result.transport === 'browser') {
-        showToast?.('Bill opened in browser print dialog', 'info');
-      } else if (result.transport === 'queued') {
-        // No native bridge on the phone — job is in print_jobs, master Sunmi
-        // POS will pick it up via PrintOrchestrator and print on the location
-        // receipt printer within a few seconds.
-        showToast?.('Bill queued — printing on counter printer', 'success');
-      } else {
-        showToast?.('Bill printed', 'success');
+    showToast?.('Sending bill to printer…', 'info');
+    // Auto-clear the "printing" flag after 800ms so the button re-enables
+    // even if the background print takes longer. The optimistic toast (and
+    // any subsequent success / error toast) covers the user-visible state.
+    setTimeout(() => setPrinting(false), 800);
+
+    // Build payload + fire print in the background. We don't await — the
+    // server has already moved on visually. Errors surface as toasts later.
+    (async () => {
+      try {
+        const liveItems = activeTableId
+          ? (tables.find(t => t.id === activeTableId)?.session?.items || []).filter(i => !i.voided)
+          : (walkInOrder?.items || []);
+        const sub = liveItems.reduce((s, i) => {
+          const base = (i.price || 0) * (i.qty || 0);
+          return s + (i.discount?.value ? base * (1 - i.discount.value / 100) : base);
+        }, 0);
+        const checkShape = {
+          id: `bill-${Date.now()}`,
+          ref: activeTableId
+            ? `Table ${tables.find(t => t.id === activeTableId)?.label || ''}`
+            : (walkInOrder?.ref || 'Walk-in'),
+          server: staff?.name || '',
+          items: liveItems,
+          subtotal: sub,
+          tip: 0,
+          total: sub,
+          status: 'open',
+          method: 'pending',
+        };
+        // 12s timeout safety — if the print pipeline hangs entirely (e.g.
+        // Supabase insert never returns) we surface an error rather than
+        // leave the user thinking it printed.
+        const timeout = new Promise((resolve) =>
+          setTimeout(() => resolve({ __timedOut: true }), 12_000));
+        const printPromise = Promise.resolve(printCustomerReceipt?.({
+          location: locationConfig, check: checkShape,
+          items: liveItems,
+          totals: { subtotal: sub, service: 0, tip: 0, grand: sub },
+        }));
+        const result = await Promise.race([printPromise, timeout]);
+        if (result?.__timedOut) {
+          showToast?.('Print timed out — check the printer / network', 'error');
+        } else if (!result?.ok) {
+          showToast?.(`Print failed: ${result?.error || 'no printer mapped'}`, 'error');
+        } else if (result.transport === 'browser') {
+          showToast?.('Bill opened in browser print dialog', 'info');
+        } else if (result.transport === 'queued') {
+          showToast?.('Bill queued — printing on counter printer', 'success');
+        } else {
+          showToast?.('Bill sent to printer ✓', 'success');
+        }
+      } catch (e) {
+        showToast?.(`Print failed: ${e?.message || e}`, 'error');
       }
-    } catch (e) {
-      showToast?.(`Print failed: ${e?.message || e}`, 'error');
-    } finally {
-      setPrinting(false);
-    }
+    })();
   };
   // Live order note from whichever store branch holds the active order
   const liveNote = activeTableId
@@ -221,8 +227,19 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
         </button>
         {items.length > 0 && (
           <div style={{ display:'flex', gap:8, marginTop:8 }}>
-            <button onClick={printBill} disabled={printing} style={{ ...Sx.btnGhost, flex:1, opacity: printing ? .5 : 1 }}>
-              {printing ? 'Printing…' : '🧾 Print bill'}
+            <button
+              onClick={printBill}
+              disabled={printing}
+              style={{
+                ...Sx.btnGhost, flex:1,
+                opacity: printing ? .55 : 1,
+                transform: printing ? 'scale(0.97)' : 'scale(1)',
+                transition: 'transform .12s ease, opacity .12s ease, background .12s ease',
+                background: printing ? 'var(--acc-d)' : Sx.btnGhost.background,
+                WebkitTapHighlightColor: 'transparent',
+              }}
+            >
+              {printing ? '⏳ Sending…' : '🧾 Print bill'}
             </button>
             <button onClick={onAddMore} style={{ ...Sx.btnGhost, flex:1 }}>+ Add items</button>
           </div>

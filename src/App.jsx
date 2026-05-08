@@ -74,6 +74,18 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.82', date: '7 May 2026', label: 'MPOS — optimistic print UX (instant feedback, fire-and-forget)',
+    changes: [
+      'PRINT FELT SLOW + BUTTON DIDN\'T FEEL RESPONSIVE — both symptoms had the same root cause: the Print bill / Reprint buttons were awaiting the entire print pipeline (build receipt → Supabase insert → master Sunmi pickup → bridge → paper) before giving any visual feedback. On a busy network that\'s 3-5s of staring at a disabled button. Server taps it again, nothing happens, taps a third time. Replaced with an optimistic flow tuned for high-volume service:',
+      '  • Tap → 8ms haptic (Android, silent on iOS but harmless) → button presses (scale .97 + dim) → "Sending bill to printer…" info toast — all within one frame, perceived response under 100ms.',
+      '  • Button auto re-enables after 800ms (debounce window — long enough to catch accidental double-taps from the same gesture, short enough that a real second print is unblocked).',
+      '  • Print runs in background. Success replaces the toast with "Bill sent to printer ✓" / "Receipt queued — printing on counter printer". Failure replaces it with a specific error toast. The user is never blocked waiting.',
+      '  • 12s safety timeout (up from 10s) so genuinely hung jobs still surface an error rather than failing silent.',
+      'APPLIED IN: MCartSheet.printBill (Print bill from cart) + MOrderDetail.reprint (Reprint from closed orders). Same pattern, same UX. Hardware print queue / PrintOrchestrator routing unchanged — all of this is purely client-side perceived latency, the actual print is the same speed.',
+      'NEXT (deferred to printing-reliability sprint): printer health pill in MPOS header, "Print issues" sheet for retrying failed jobs, MPOS routing of kitchen / bar / centre tickets through the same orchestrator instead of only receipts.',
+    ],
+  },
+  {
     version: '5.5.81', date: '7 May 2026', label: 'CRITICAL — stop boot wiping closedChecks; fix MPOS print "totals.grand" crash',
     changes: [
       'DATA LOSS ROOT CAUSE — closed orders were vanishing from every device after a refresh. useSupabaseInit was calling fetchClosedChecks(undefined, 500, todayStart) — locationId arg defaults to null, the Supabase query becomes .eq(\'location_id\', null) which returns ZERO rows, the empty array is truthy, and useStore.setState({ closedChecks: [] }) wipes whatever realtime had already populated. Fix: resolve locationId BEFORE the closed_checks fetch, pass it explicitly, and merge results with existing state (dedup by id). NEVER overwrite closedChecks with [] — if the fetch returns nothing we keep what we already had.',

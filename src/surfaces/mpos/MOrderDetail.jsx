@@ -31,31 +31,46 @@ export default function MOrderDetail({ check, onBack }) {
   // printCustomerReceipt returns { ok, error?, transport? } — it doesn't throw
   // on routing failure, it returns ok:false. The earlier reprint path was
   // showing "Receipt sent to printer" even when no printer was mapped.
-  const reprint = async () => {
+  // Optimistic reprint: tap → haptic + immediate "Sending…" toast → busy
+  // flag clears after 800ms so the user can re-tap if the success toast
+  // never arrives → background print surfaces success/failure when ready.
+  const reprint = () => {
+    if (busy) return;
+    try { navigator.vibrate?.(8); } catch {}
     setBusy(true); setError(null);
-    try {
-      const result = await printCustomerReceipt?.({
-        location: locationConfig, check: live,
-        items: live.items,
-        totals: {
-          subtotal: Number(live.subtotal) || 0,
-          service: Number(live.service) || 0,
-          tip:     Number(live.tip)     || 0,
-          grand:   Number(live.total)   || 0,
-        },
-      });
-      if (!result?.ok) {
-        setError(`Print failed: ${result?.error || 'no printer mapped to this device'}. Check Back office → Devices → Printer routing, or use Email instead.`);
-        return;
+    showToast?.('Sending receipt to printer…', 'info');
+    setTimeout(() => setBusy(false), 800);
+
+    (async () => {
+      try {
+        const timeout = new Promise((resolve) =>
+          setTimeout(() => resolve({ __timedOut: true }), 12_000));
+        const printPromise = Promise.resolve(printCustomerReceipt?.({
+          location: locationConfig, check: live,
+          items: live.items,
+          totals: {
+            subtotal: Number(live.subtotal) || 0,
+            service: Number(live.service) || 0,
+            tip:     Number(live.tip)     || 0,
+            grand:   Number(live.total)   || 0,
+          },
+        }));
+        const result = await Promise.race([printPromise, timeout]);
+        if (result?.__timedOut) {
+          setError('Print timed out — check the printer / network and try again.');
+        } else if (!result?.ok) {
+          setError(`Print failed: ${result?.error || 'no printer mapped to this device'}. Check Back office → Devices → Printer routing, or use Email instead.`);
+        } else if (result.transport === 'browser') {
+          showToast?.('Receipt opened in browser print dialog', 'info');
+        } else if (result.transport === 'queued') {
+          showToast?.('Receipt queued — printing on counter printer', 'success');
+        } else {
+          showToast?.('Receipt sent to printer ✓', 'success');
+        }
+      } catch (e) {
+        setError(e?.message || 'Print failed');
       }
-      if (result.transport === 'browser') {
-        showToast?.('Receipt opened in browser print dialog', 'info');
-      } else {
-        showToast?.('Receipt sent to printer', 'success');
-      }
-    } catch (e) {
-      setError(e?.message || 'Print failed');
-    } finally { setBusy(false); }
+    })();
   };
 
   // ── Resend email receipt ───────────────────────────────────────────────
