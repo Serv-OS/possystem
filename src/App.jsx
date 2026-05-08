@@ -74,6 +74,17 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.96', date: '8 May 2026', label: 'Voice ordering — modifier-aware (almond milk picks the option, not a note)',
+    changes: [
+      'WHY VOICE WAS WEAK — saying "latte large with almond milk" parsed almond milk as a free-form mod_label, which the cart added as { _instruction: true, price: 0 }. Result: no surcharge, no link to a real modifier option, no attribution in reports, and the customer-facing receipt printed it as a note instead of a chargeable add-on. The parser literally didn\'t know what modifier groups existed for an item.',
+      'API NOW SEES THE MODIFIER GROUPS — voice-order.js accepts modifierGroups in the request body. Server-side it builds a compact representation of every group referenced by the menu (id, name, min/max, selection_type, options[id, name, price]) and embeds it alongside the item list in the LLM prompt. ~80 groups max, kept token-efficient.',
+      'NEW STRUCTURED OUTPUT — tool schema now has mod_picks: [{ group_id, option_id, qty? }] for real modifier picks alongside the existing mod_labels (now narrowly used for instruction-only labels the groups don\'t cover). System prompt updated with mapping examples ("with almond milk" → milk-choice group + almond option_id, "no pickle" → toppings group, etc).',
+      'CLIENT RESOLVES PROPERLY — MVoiceOrder.confirm now looks up each mod_pick against modifierGroupDefs and builds a real mod entry { id, name, label, groupLabel, price } — the same shape MItemDetail / InlineItemFlow produce. So the cart line, kitchen ticket, receipt, and reports all treat voice picks identically to manual ones. Quantity-mode picks (e.g. "3 buenos in box of 3") use the qty field and expand to N flat entries.',
+      'CONFIRM SHEET — review screen before adding now shows mod picks with their real names + surcharges (e.g. "Almond milk (+£0.50)"), instruction-only labels in muted italic so the server can tell the difference at a glance.',
+      'TRADEOFF — slightly more tokens per request (~+500-1000 for the groups). Latency stays well under the ~1.5s target. If a modifier mention lands on something the parser can\'t resolve to an option, it falls through to mod_labels (no regression).',
+    ],
+  },
+  {
     version: '5.5.95', date: '8 May 2026', label: 'ItemTrend — bucket by menu_item id (no more split rows after rename)',
     changes: [
       'TWO-ROW PROBLEM — after the rename cascade fixes, ItemTrend was showing renamed items as TWO rows: "Donut 1" (mod-resolved sales using the stale `name` column the menu_item still had) and "Bueno Filled" (standalone sales using the fresh menuName). Same item, same id, two rows — bad UX and worse for totals.',

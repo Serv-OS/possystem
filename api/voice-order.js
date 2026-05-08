@@ -19,6 +19,12 @@ the location's menu — every item is a SELLABLE LEAF (parent variant items like
 "Lager" or "Latte" are filtered out before reaching you; you only see the
 sellable variants like "Lager — Pint" or "Latte — Large").
 
+Each menu item also carries a list of MODIFIER GROUPS it accepts. Each group
+has options with a stable id. When the customer mentions something that maps
+to a modifier option (e.g. "with almond milk", "no pickle", "extra cheese",
+"medium rare") you MUST return it as a structured mod_picks entry, NOT as a
+free-form note. Notes are for things the modifier groups don't cover.
+
 You must call the add_items_to_order tool exactly once.
 
 Decision logic:
@@ -34,16 +40,24 @@ Decision logic:
    set clarification asking which AND populate suggestions[] with the matching
    options.
 
-Rules:
+Modifier-mapping rules:
+- "with almond milk" → find the milk-choice group on the matched item, pick
+  the almond option, add { group_id, option_id } to mod_picks.
+- "no pickle" / "no onion" → if the item has an "Add or remove" or "Toppings"
+  group, return that option_id. If no such group exists for this item, use
+  notes (free-form) instead.
+- "medium rare" / "well done" → if a cooking-preference instruction group
+  exists, prefer option_id; else mod_labels[] (instruction-only).
+- Quantity-mode picks ("3 buenos in the box of 3") → set qty on the mod_pick.
+- Parent-variant disambiguation ("large latte"): pick the menu item whose
+  name contains the size word — variants are SEPARATE items, not modifiers.
+
+General rules:
 - Only reference items that exist in the provided menu — never invent items.
-- Match against item.name. Names include size / variant (e.g. "Latte — Large").
-  "large latte" should match the item whose name contains BOTH words.
-- NEVER pick a child by partial size match alone. If the customer asked for a
-  size that doesn't exist, treat it as PARTIAL MATCH (case 2 above) rather
-  than silently substituting.
+- Match against item.name. Names include size / variant.
+- NEVER pick a child by partial size match alone — treat unmatched sizes as
+  PARTIAL MATCH (case 2) rather than silently substituting.
 - Map quantities ("a couple of beers" → 2, "three" → 3, "another" → +1).
-- Map modifiers if implied ("no pickle" → mod_label).
-- Map cooking preferences ("medium rare") to instruction labels.
 - Allergy mentions go in order_note — DO NOT silently swap items.
 - Be tolerant of speech-to-text errors: "ling-uine" → "linguine".
 
@@ -63,8 +77,21 @@ const TOOL = {
           properties: {
             item_id:    { type: 'string',  description: 'The item id from the provided menu.' },
             qty:        { type: 'number',  description: 'Quantity. Must be a positive integer.' },
-            mod_labels: { type: 'array',   description: 'Modifier or instruction labels to attach.', items: { type: 'string' } },
-            notes:      { type: 'string',  description: 'Item-level notes (e.g. "no onion", "well done").' },
+            mod_picks: {
+              type: 'array',
+              description: 'Structured modifier picks resolved against the item\'s modifier groups. Use this whenever the customer\'s words map to a real modifier option (e.g. "almond milk" → the almond option in the milk-choice group). PRICING WILL BE APPLIED automatically — these are real chargeable picks, not notes.',
+              items: {
+                type: 'object',
+                properties: {
+                  group_id:  { type: 'string', description: 'Modifier group id (e.g. "mgd-milk").' },
+                  option_id: { type: 'string', description: 'Option id within that group (e.g. "sub-almond").' },
+                  qty:       { type: 'number', description: 'Optional. Used by quantity-mode groups (e.g. 3 of one option in a "Box of 3").' },
+                },
+                required: ['group_id', 'option_id'],
+              },
+            },
+            mod_labels: { type: 'array', description: 'Free-form labels for cases the modifier groups don\'t cover (instruction-only, no price). Prefer mod_picks when an option exists.', items: { type: 'string' } },
+            notes:      { type: 'string', description: 'Item-level free-text notes (e.g. customer-specific requests not in any group).' },
           },
           required: ['item_id', 'qty'],
         },
@@ -100,13 +127,14 @@ export default async function handler(req, res) {
   const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
   if (!ANTHROPIC_API_KEY) return res.status(500).json({ error: 'AI not configured' });
 
-  const { transcript, menu } = req.body || {};
+  const { transcript, menu, modifierGroups } = req.body || {};
   if (!transcript || typeof transcript !== 'string') {
     return res.status(400).json({ error: 'Missing transcript' });
   }
   if (!Array.isArray(menu) || menu.length === 0) {
     return res.status(400).json({ error: 'Missing menu' });
   }
+  const groupsArr = Array.isArray(modifierGroups) ? modifierGroups : [];
 
   // Filter to SELLABLE LEAVES only. Parent variant items (type === 'variants')
   // exist on the menu as containers — they have price 0 and aren't sold
@@ -128,16 +156,43 @@ export default async function handler(req, res) {
   });
 
   // Compact menu representation — only the fields the parser needs. Keeps
-  // tokens down so latency stays under ~1.5s.
+  // tokens down so latency stays under ~1.5s. Per-item we surface the assigned
+  // modifier-group ids so the LLM knows which groups to consider when the
+  // customer mentions an add-on.
   const compactMenu = sellable.slice(0, 250).map(m => ({
     id: m.id,
     name: m.name,
     cat: m.cat || (Array.isArray(m.cats) ? m.cats[0] : null),
     price: m.price ?? m.pricing?.base ?? 0,
     allergens: m.allergens || [],
+    mod_groups: m.assignedModifierGroups || m.assigned_modifier_groups || [],
   }));
 
-  const userMessage = `Transcript: "${transcript}"\n\nMenu (${compactMenu.length} items):\n${JSON.stringify(compactMenu)}`;
+  // Compact modifier-group representation. Only include groups any sellable
+  // item actually references (keeps tokens down on locations with many groups).
+  const referencedGroupIds = new Set(
+    compactMenu.flatMap(m => m.mod_groups || [])
+  );
+  const compactGroups = groupsArr
+    .filter(g => referencedGroupIds.has(g.id))
+    .slice(0, 80)
+    .map(g => ({
+      id: g.id,
+      name: g.name,
+      min: g.min ?? 0,
+      max: g.max ?? 1,
+      selection_type: g.selectionType || 'single',
+      options: (g.options || []).map(o => ({
+        id: o.id,
+        name: o.name || o.label,
+        price: Number(o.price) || 0,
+      })),
+    }));
+
+  const userMessage =
+    `Transcript: "${transcript}"\n\n` +
+    `Menu (${compactMenu.length} items):\n${JSON.stringify(compactMenu)}\n\n` +
+    `Modifier groups (${compactGroups.length}):\n${JSON.stringify(compactGroups)}`;
 
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {

@@ -28,7 +28,7 @@ const SpeechRecognitionImpl =
 const supported = !!SpeechRecognitionImpl;
 
 export default function MVoiceOrder({ onClose }) {
-  const { menuItems = [], addItem, setOrderNote } = useStore();
+  const { menuItems = [], modifierGroupDefs = [], addItem, setOrderNote } = useStore();
   const [phase, setPhase] = useState('ready'); // ready | listening | parsing | confirm | error
   const [transcriptUI, setTranscriptUI] = useState('');
   const [interimUI, setInterimUI] = useState('');
@@ -121,7 +121,11 @@ export default function MVoiceOrder({ onClose }) {
       const res = await fetch('/api/voice-order', {
         method:'POST',
         headers:{ 'content-type':'application/json' },
-        body: JSON.stringify({ transcript: fullText, menu: menuItems }),
+        body: JSON.stringify({
+          transcript: fullText,
+          menu: menuItems,
+          modifierGroups: modifierGroupDefs,
+        }),
       });
       const j = await res.json();
       if (!res.ok) throw new Error(j?.error || `HTTP ${res.status}`);
@@ -156,9 +160,34 @@ export default function MVoiceOrder({ onClose }) {
         console.warn('[voice] refusing to add parent-variant item', item.id);
         return;
       }
-      const mods = (p.mod_labels || []).map(label => ({
-        id: `voice-${label}`, name: label, label, price: 0, _instruction: true,
-      }));
+      // Resolve structured mod_picks against the location's modifier groups.
+      // For each picked option we build a real mod entry with the option's
+      // price, group label, and id — same shape MItemDetail/InlineItemFlow
+      // produce, so the cart line, kitchen ticket, and reports treat voice
+      // picks identically to manual picks. Falls back to mod_labels for
+      // anything that didn't resolve (e.g. instruction-only "extra napkins").
+      const mods = [];
+      (p.mod_picks || []).forEach(pick => {
+        const group = modifierGroupDefs.find(g => g.id === pick.group_id);
+        const opt   = group?.options?.find(o => o.id === pick.option_id);
+        if (!group || !opt) {
+          console.warn('[voice] could not resolve mod pick', pick);
+          return;
+        }
+        const baseEntry = {
+          id: opt.id,
+          name: opt.name,
+          label: opt.name,
+          groupLabel: group.name,
+          price: Number(opt.price) || 0,
+        };
+        const pickQty = Math.max(1, Math.round(Number(pick.qty) || 1));
+        for (let k = 0; k < pickQty; k++) mods.push(baseEntry);
+      });
+      // Free-form labels — instruction-only entries (no price, no menu_item link)
+      (p.mod_labels || []).forEach(label => {
+        mods.push({ id: `voice-${label}`, name: label, label, price: 0, _instruction: true });
+      });
       addItem(item, mods, null, { qty: Math.max(1, Math.round(p.qty || 1)), notes: (p.notes || '').trim() || undefined });
     });
     if (parsed.order_note?.trim()) setOrderNote(parsed.order_note.trim());
@@ -340,8 +369,22 @@ export default function MVoiceOrder({ onClose }) {
                             "{item.name}" needs a specific size. Tap "Try again" and say e.g. "Latte large" or "Latte regular".
                           </div>
                         )}
+                        {!isParentVariant && (p.mod_picks || []).length > 0 && (
+                          <div style={{ fontSize:11, color:'var(--acc)', marginTop:1 }}>
+                            {(p.mod_picks || []).map((pk, j) => {
+                              const grp = modifierGroupDefs.find(g => g.id === pk.group_id);
+                              const opt = grp?.options?.find(o => o.id === pk.option_id);
+                              if (!opt) return null;
+                              const px = Number(opt.price) || 0;
+                              const qtyTag = pk.qty && pk.qty > 1 ? ` ×${pk.qty}` : '';
+                              return (
+                                <span key={j}>{j > 0 ? ' · ' : ''}{opt.name}{qtyTag}{px > 0 ? ` (+${money(px)})` : ''}</span>
+                              );
+                            })}
+                          </div>
+                        )}
                         {!isParentVariant && (p.mod_labels || []).length > 0 && (
-                          <div style={{ fontSize:11, color:'var(--acc)', marginTop:1 }}>{p.mod_labels.join(' · ')}</div>
+                          <div style={{ fontSize:11, color:'var(--t4)', fontStyle:'italic', marginTop:1 }}>{p.mod_labels.join(' · ')}</div>
                         )}
                         {!isParentVariant && p.notes && <div style={{ fontSize:11, color:'var(--acc)', marginTop:1 }}>📝 {p.notes}</div>}
                       </div>
