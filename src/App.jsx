@@ -76,6 +76,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.107', date: '8 May 2026', label: 'Hotfix — revert receipt_branding from platform.locations select (broke slug lookup, caused "Shop not found")',
+    changes: [
+      'My v5.5.106 added receipt_branding to the lookupLocationBySlug select. That column lives on ops.locations, NOT platform.locations — Postgres returned a column-does-not-exist error, supabase-js converted it to a null data result, and every customer URL lit up as "Shop not found". Owned and reverted in this commit.',
+      'Phase 3a will fetch branding via a separate ops-DB lookup keyed on ops_location_id (which we already have on the platform row) once the surface is rendering. Won\'t repeat the same column mistake.',
+      'After this deploys + a hard refresh, your customer URL should resolve again — header showing "Location 1", inside-hours showing the open stub.',
+    ],
+  },
+  {
     version: '5.5.106', date: '8 May 2026', label: 'Customer URL slug cache — switch to 30s TTL so operator changes propagate (and "we\'re closed" stops being sticky)',
     changes: [
       'Verified Location 1 currently has Mon-Sun 11:30-22:00 in opening_hours, Europe/London tz — should be open right now. The customer page showing "we\'re closed" was the lookupLocationBySlug module-level cache holding the pre-cleanup Huddersfield row (which had near-empty hours). The cache had no TTL so the only way to bust it was a full page refresh, which was easy to miss after the slug-data was moved between rows in the DB.',

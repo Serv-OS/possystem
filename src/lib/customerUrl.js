@@ -97,7 +97,12 @@ export async function lookupLocationBySlug(slug, platformSupabase) {
   try {
     const { data } = await platformSupabase
       .from('locations')
-      .select('id, ops_location_id, name, timezone, online_slug, online_enabled, qr_enabled, opening_hours, receipt_branding')
+      // NOTE — receipt_branding lives on OPS db locations, NOT platform.
+      // Phase 3a will fetch branding via a separate ops-DB lookup keyed on
+      // ops_location_id once we have the location resolved here. Adding it
+      // to this select silently failed the whole query and broke "shop not
+      // found" for everyone in v5.5.106 — won't repeat that mistake.
+      .select('id, ops_location_id, name, timezone, online_slug, online_enabled, qr_enabled, opening_hours')
       .eq('online_slug', slug)
       .maybeSingle();
     _slugCache.set(slug, { row: data || null, at: Date.now() });
