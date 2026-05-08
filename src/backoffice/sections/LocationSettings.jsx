@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { platformSupabase, supabase, getLocationId } from '../../lib/supabase';
 import { clearLocationConfigCache } from '../../lib/locationTime';
+import { defaultOpeningHours, emptyOpeningHours, isOpenNow, formatHoursPreview } from '../../lib/openingHours';
 
 const TIMEZONES = [
   { value:'Europe/London',      label:'Europe/London (UK)' },
@@ -26,6 +27,29 @@ const HOURS = Array.from({ length: 48 }, (_, i) => {
   const s = `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
   return { value: s, label: s };
 });
+
+// Strip junk and coerce types so the JSONB column gets clean data and the
+// migration can rely on shape. Days that aren't a valid weekday key are
+// dropped; windows missing an open or close are dropped.
+const _DAYS = ['mon','tue','wed','thu','fri','sat','sun'];
+function sanitiseOpeningHours(oh) {
+  const weekly = {};
+  for (const d of _DAYS) {
+    const arr = Array.isArray(oh?.weekly?.[d]) ? oh.weekly[d] : [];
+    weekly[d] = arr
+      .filter(w => w && typeof w.open === 'string' && typeof w.close === 'string')
+      .map(w => ({
+        open:  String(w.open).slice(0, 5),
+        close: String(w.close).slice(0, 5),
+      }));
+  }
+  const closedDates = Array.isArray(oh?.closedDates)
+    ? oh.closedDates
+        .filter(d => /^\d{4}-\d{2}-\d{2}$/.test(String(d)))
+        .slice(0, 200)
+    : [];
+  return { weekly, closedDates };
+}
 
 // v4.6.25: Duration in minutes between a start and end HH:MM. Handles
 // overnight wrap where end <= start (e.g. late bar 22:00 -> 02:00).
@@ -65,6 +89,10 @@ export default function LocationSettings() {
   const [shifts, setShifts]         = useState([]);
   const [showItemImages, setShowItemImages] = useState(false);
   const [loadingImageSetting, setLoadingImageSetting] = useState(true);
+  // Opening hours — Phase 1 of online ordering. Stored on locations.opening_hours
+  // (jsonb). Both kiosk and online surfaces gate ordering on this.
+  const [openingHours, setOpeningHours] = useState(emptyOpeningHours());
+  const [closedDateInput, setClosedDateInput] = useState('');
 
   useEffect(() => {
     if (!platformSupabase) { setLoading(false); return; }
@@ -75,7 +103,7 @@ export default function LocationSettings() {
     (async () => {
       try {
         const locId = await getLocationId().catch(() => null);
-        const select = 'id, name, timezone, business_day_start, shifts, collection_lead_minutes';
+        const select = 'id, name, timezone, business_day_start, shifts, collection_lead_minutes, opening_hours';
         let row = null;
         let lastErr = null;
         if (locId) {
@@ -96,6 +124,14 @@ export default function LocationSettings() {
           setBizDayStart(row.business_day_start || '06:00');
           setShifts(Array.isArray(row.shifts) ? row.shifts : []);
           setCollectionLeadMin(typeof row.collection_lead_minutes === 'number' ? row.collection_lead_minutes : 30);
+          // Defensive: opening_hours may not exist on the row yet if the SQL
+          // migration hasn't been run. Fall back to empty schedule so the
+          // editor renders cleanly and surfaces a "set me up" CTA.
+          setOpeningHours(
+            row.opening_hours && row.opening_hours.weekly
+              ? row.opening_hours
+              : emptyOpeningHours()
+          );
         } else {
           setError('Could not load any location row from the platform DB. Check VITE_PLATFORM_SUPABASE_URL/KEY and the locations table SELECT policy.');
         }
@@ -156,9 +192,10 @@ export default function LocationSettings() {
         business_day_start:      bizDayStart,
         shifts:                  cleanShifts,
         collection_lead_minutes: collectionLeadMin,
+        opening_hours:           sanitiseOpeningHours(openingHours),
       })
       .eq('id', location.id)
-      .select('id, shifts, timezone, business_day_start, collection_lead_minutes')
+      .select('id, shifts, timezone, business_day_start, collection_lead_minutes, opening_hours')
       // maybeSingle so a 0-row return doesn't throw "Cannot coerce" — it
       // resolves to data:null which we then handle with a specific error
       // pointing at the RLS UPDATE policy (the most common cause).
@@ -335,6 +372,15 @@ export default function LocationSettings() {
         )}
       </div>
 
+      {/* Opening Hours — Phase 1 of online ordering */}
+      <OpeningHoursCard
+        hours={openingHours}
+        setHours={setOpeningHours}
+        timezone={timezone}
+        closedDateInput={closedDateInput}
+        setClosedDateInput={setClosedDateInput}
+      />
+
       {/* POS Display */}
       <div style={S.card}>
         <div style={S.h2}>🖼 POS Display</div>
@@ -372,6 +418,184 @@ export default function LocationSettings() {
         </button>
         {saved && <span style={{ fontSize:13, color:'var(--grn)', fontWeight:600 }}>✓ Saved</span>}
         {error && <span style={{ fontSize:13, color:'var(--red)' }}>{error}</span>}
+      </div>
+    </div>
+  );
+}
+
+// ── Opening Hours editor ─────────────────────────────────────────────────────
+const DAY_LABELS = [
+  { key:'mon', label:'Monday' },
+  { key:'tue', label:'Tuesday' },
+  { key:'wed', label:'Wednesday' },
+  { key:'thu', label:'Thursday' },
+  { key:'fri', label:'Friday' },
+  { key:'sat', label:'Saturday' },
+  { key:'sun', label:'Sunday' },
+];
+
+function OpeningHoursCard({ hours, setHours, timezone, closedDateInput, setClosedDateInput }) {
+  const status = isOpenNow(hours, timezone, new Date());
+  const preview = formatHoursPreview(hours);
+
+  const updateDay = (dayKey, windows) => {
+    setHours(h => ({ ...h, weekly: { ...(h.weekly || {}), [dayKey]: windows } }));
+  };
+  const addWindow = (dayKey) => {
+    const w = (hours.weekly?.[dayKey] || []);
+    const last = w[w.length - 1];
+    // Smart default: if previous window is e.g. 11:30-15:00, suggest 17:00-22:00
+    const next = last
+      ? { open: '17:00', close: '22:00' }
+      : { open: '09:00', close: '17:00' };
+    updateDay(dayKey, [...w, next]);
+  };
+  const removeWindow = (dayKey, idx) => {
+    const w = (hours.weekly?.[dayKey] || []).slice();
+    w.splice(idx, 1);
+    updateDay(dayKey, w);
+  };
+  const setWindowField = (dayKey, idx, field, value) => {
+    const w = (hours.weekly?.[dayKey] || []).slice();
+    w[idx] = { ...w[idx], [field]: value };
+    updateDay(dayKey, w);
+  };
+  const copyMondayToAll = () => {
+    const mon = hours.weekly?.mon || [];
+    setHours(h => ({
+      ...h,
+      weekly: Object.fromEntries(DAY_LABELS.map(d => [d.key, mon])),
+    }));
+  };
+  const useDefault = () => setHours(defaultOpeningHours());
+
+  const addClosedDate = () => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(closedDateInput)) return;
+    setHours(h => ({
+      ...h,
+      closedDates: Array.from(new Set([...(h.closedDates || []), closedDateInput])).sort(),
+    }));
+    setClosedDateInput('');
+  };
+  const removeClosedDate = (d) => {
+    setHours(h => ({ ...h, closedDates: (h.closedDates || []).filter(x => x !== d) }));
+  };
+
+  return (
+    <div style={S.card}>
+      <div style={S.h2}>🚪 Opening hours</div>
+      <div style={S.desc}>
+        Drives the kiosk and the online ordering surface. When you're closed, customers see a "Closed — opens at X" banner instead of an order button. Multi-window per day supports lunch / dinner with a break (e.g. 11:30-15:00 then 17:00-22:00). Overnight windows (close before open, e.g. 22:00-02:00) are valid.
+      </div>
+
+      {/* Live status */}
+      <div style={{
+        padding:'12px 14px', borderRadius:10, marginBottom:14,
+        background: status.open ? 'var(--grn-d)' : 'var(--red-d)',
+        border: `1px solid ${status.open ? 'var(--grn-b)' : 'var(--red-b)'}`,
+        display:'flex', alignItems:'center', gap:10,
+      }}>
+        <div style={{ fontSize:18 }}>{status.open ? '🟢' : '🔴'}</div>
+        <div style={{ flex:1 }}>
+          <div style={{ fontSize:13, fontWeight:800, color: status.open ? 'var(--grn)' : 'var(--red)' }}>
+            {status.open ? 'Open right now' : 'Closed right now'}
+          </div>
+          <div style={{ fontSize:11, color:'var(--t4)', marginTop:2 }}>{preview}</div>
+        </div>
+      </div>
+
+      {/* Weekly grid */}
+      <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+        {DAY_LABELS.map(({ key, label }) => {
+          const windows = hours.weekly?.[key] || [];
+          const isClosed = windows.length === 0;
+          return (
+            <div key={key} style={{
+              padding:'10px 12px', borderRadius:8,
+              background:'var(--bg)', border:'1px solid var(--bdr)',
+              display:'grid', gridTemplateColumns:'90px 1fr auto', gap:10, alignItems:'start',
+            }}>
+              <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)', paddingTop:4 }}>{label}</div>
+              <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+                {isClosed && (
+                  <div style={{ fontSize:12, color:'var(--t4)', fontStyle:'italic', paddingTop:6 }}>Closed</div>
+                )}
+                {windows.map((w, idx) => (
+                  <div key={idx} style={{ display:'flex', gap:6, alignItems:'center' }}>
+                    <select style={{ ...S.select, width:90, padding:'6px 8px', fontSize:12 }}
+                      value={w.open || '09:00'}
+                      onChange={e => setWindowField(key, idx, 'open', e.target.value)}>
+                      {HOURS.map(h => <option key={h.value} value={h.value}>{h.label}</option>)}
+                    </select>
+                    <span style={{ fontSize:11, color:'var(--t4)' }}>to</span>
+                    <select style={{ ...S.select, width:90, padding:'6px 8px', fontSize:12 }}
+                      value={w.close || '17:00'}
+                      onChange={e => setWindowField(key, idx, 'close', e.target.value)}>
+                      {HOURS.map(h => <option key={h.value} value={h.value}>{h.label}</option>)}
+                    </select>
+                    <button onClick={() => removeWindow(key, idx)}
+                      style={{ ...S.btn, background:'var(--red-d)', color:'var(--red)', border:'1px solid var(--red-b)', padding:'4px 9px', fontSize:11 }}>
+                      ✕
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <button onClick={() => addWindow(key)}
+                style={{ ...S.btn, background:'var(--bg3)', color:'var(--t2)', border:'1px solid var(--bdr)', padding:'6px 10px', fontSize:11 }}>
+                + Window
+              </button>
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginTop:12 }}>
+        <button onClick={copyMondayToAll}
+          style={{ ...S.btn, background:'var(--bg3)', color:'var(--t2)', border:'1px solid var(--bdr)' }}>
+          Copy Monday to every day
+        </button>
+        <button onClick={useDefault}
+          style={{ ...S.btn, background:'transparent', color:'var(--t3)', border:'1px solid var(--bdr)' }}>
+          Use defaults (11:30-22:00 daily)
+        </button>
+      </div>
+
+      {/* Closed dates */}
+      <div style={{ marginTop:18, paddingTop:14, borderTop:'1px solid var(--bdr)' }}>
+        <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)', marginBottom:4 }}>Closed dates</div>
+        <div style={{ fontSize:11, color:'var(--t4)', marginBottom:10 }}>
+          Holidays / one-off closures override the weekly schedule. Date in the location's timezone (YYYY-MM-DD).
+        </div>
+        <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center', marginBottom:10 }}>
+          <input type="date"
+            value={closedDateInput}
+            onChange={e => setClosedDateInput(e.target.value)}
+            style={{ ...S.input }}/>
+          <button onClick={addClosedDate} disabled={!closedDateInput}
+            style={{ ...S.btn, background:'var(--bg3)', color:'var(--t2)', border:'1px solid var(--bdr)', opacity: closedDateInput ? 1 : .5 }}>
+            + Add closed date
+          </button>
+        </div>
+        {(hours.closedDates || []).length === 0 ? (
+          <div style={{ fontSize:11, color:'var(--t4)', fontStyle:'italic' }}>No closed dates set.</div>
+        ) : (
+          <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
+            {(hours.closedDates || []).map(d => (
+              <span key={d} style={{
+                display:'inline-flex', alignItems:'center', gap:6,
+                padding:'4px 10px', borderRadius:99,
+                background:'var(--red-d)', color:'var(--red)', border:'1px solid var(--red-b)',
+                fontSize:11, fontFamily:'var(--font-mono)', fontWeight:700,
+              }}>
+                {d}
+                <button onClick={() => removeClosedDate(d)} style={{
+                  background:'transparent', border:'none', color:'var(--red)',
+                  cursor:'pointer', padding:0, fontSize:13, lineHeight:1, fontFamily:'inherit',
+                }}>×</button>
+              </span>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

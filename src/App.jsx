@@ -74,6 +74,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.102', date: '8 May 2026', label: 'Online ordering Phase 1 — Opening Hours infrastructure (BO editor + helpers)',
+    changes: [
+      'NEW src/lib/openingHours.js — pure helpers shared by Back Office, kiosk, and the future online surface. Exports: isOpenNow(hours, tz, now), nextOpensAt(hours, tz, now, lookaheadDays), getDayWindows(hours, tz, date), formatHoursPreview(hours), closedBannerText(hours, tz, now). Multi-window per day (lunch + dinner break), overnight windows (22:00→02:00 late bar), and per-date closure overrides — all handled.',
+      'NEW Opening hours editor card in BO → Location Settings, between Service periods and POS Display. Live "Open right now" / "Closed right now" pill at the top driven by isOpenNow against the configured timezone. Per-day grid with multiple windows per day, "+ Window" to add more, smart defaults (when adding a 2nd window after 11:30-15:00 it suggests 17:00-22:00). "Copy Monday to every day" + "Use defaults (11:30-22:00)" quick-actions. Closed dates section for one-off holidays — date picker + chip list.',
+      'NEW supabase/migrations/20260508_opening_hours.sql — adds opening_hours jsonb column to platform.locations and seeds empty schedules so existing rows don\'t crash on null. RUN ONCE on the platform DB project (yhzjgyrkyjabvhblqxzu) before testing.',
+      'NOTHING USES THE DATA YET — kiosk + online surfaces will be gated in Phase 2 / 3. This commit is just the foundation: editor, persistence, helpers. Once the SQL migration lands and you set hours, the data is live in locationConfig.opening_hours for downstream surfaces.',
+    ],
+  },
+  {
     version: '5.5.101', date: '8 May 2026', label: 'getLocationConfig — same id-fallback + maybeSingle fix as LocationSettings (so reports actually see saved shifts)',
     changes: [
       'PARALLEL BUG TO 5.5.99 — lib/locationTime.js was the read path that every report uses to get timezone / business_day_start / shifts. It was doing `.eq(\'id\', locationId).single()` against platform DB locations. Same problem as LocationSettings had: if the platform DB row id doesn\'t match the ops DB locationId (which is the case in Peter\'s setup where Huddersfield is platform-side and ops uses a different id), `.single()` throws, the catch swallows the error, and EVERY report gets the fallback `{ shifts: [] }` regardless of whether shifts were saved successfully.',
