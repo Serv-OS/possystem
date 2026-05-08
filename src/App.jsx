@@ -76,6 +76,18 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.108', date: '8 May 2026', label: 'Online ordering Phase 3a — real branded surface (menu / cart / item modifiers)',
+    changes: [
+      'NEW src/surfaces/online/OnlineSurface.jsx — replaces the stub when CustomerBoot routes to mode=online. Cross-DB menu load: queries OPS DB menu_items + menu_categories using location.ops_location_id (the same id-mapping fix from v5.5.105 in reverse — platform-row-to-ops-data instead of ops-id-to-platform-row). Renders sticky branded header, sticky category chip nav, single-column item rows with image / name / description / price.',
+      'NEW src/surfaces/online/OnlineItemSheet.jsx — slide-up bottom sheet that opens on item tap. Loads modifier_groups for the item\'s assigned ids. Variant picker (size selector) when the item has children. Multi-window-style modifier picks (single / multi / required validation). Quantity stepper. "Add to cart" CTA shows live line total including modifiers.',
+      'NEW src/surfaces/online/OnlineCart.jsx — slide-up bottom-sheet showing all cart lines, qty steppers, per-line removal, subtotal. "Checkout" button is the Phase 4 entry point (currently a placeholder alert).',
+      'BRANDING from ops locations.receipt_branding — same column kiosk uses. Logo, accent color, background, foreground, hero image. Falls back to dark/orange defaults when not set so untrained tenants get a usable surface day one.',
+      'NEW BO sidebar entry "🌐 Online ordering" under Devices. Status hub showing Online + QR enabled state, the live customer URLs, and one-click "Open Location Settings" / "Preview online ↗" / "Preview QR ↗" buttons. The slug + enable controls still live in Location Settings for now; Phase 4 will move branding (logo, colors, hero) and an order-feed view in here.',
+      'CART HELD LOCALLY — OnlineSurface keeps cart state in component useState, doesn\'t share the operator Zustand store. Customer surface stands alone; final order goes to closed_checks + order_queue via Phase 4 after Stripe.',
+      'PHASE 4 NEXT — customer-details form (name / phone / email / time slot for collection, address for delivery), Stripe online card payment, write closed_checks + order_queue rows, fire kitchen tickets via existing print-routing pipeline, render confirmation page.',
+    ],
+  },
+  {
     version: '5.5.107', date: '8 May 2026', label: 'Hotfix — revert receipt_branding from platform.locations select (broke slug lookup, caused "Shop not found")',
     changes: [
       'My v5.5.106 added receipt_branding to the lookupLocationBySlug select. That column lives on ops.locations, NOT platform.locations — Postgres returned a column-does-not-exist error, supabase-js converted it to a null data result, and every customer URL lit up as "Shop not found". Owned and reverted in this commit.',

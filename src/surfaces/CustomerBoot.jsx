@@ -14,6 +14,7 @@ import { useEffect, useState } from 'react';
 import { platformSupabase } from '../lib/supabase';
 import { lookupLocationBySlug } from '../lib/customerUrl';
 import { isOpenNow, nextOpensAt, formatHoursPreview } from '../lib/openingHours';
+import OnlineSurface from './online/OnlineSurface';
 
 export default function CustomerBoot({ slug, mode, tableId }) {
   const [state, setState] = useState({ loading: true, location: null, error: null });
@@ -67,12 +68,11 @@ export default function CustomerBoot({ slug, mode, tableId }) {
     </CustomerShell>;
   }
 
-  // Phase 3 stubs — confirm routing pipeline works end-to-end
-  return <CustomerShell location={loc}>
-    {mode === 'online'
-      ? <OnlineStub location={loc}/>
-      : <QrStub location={loc} tableId={tableId}/>}
-  </CustomerShell>;
+  // Online surface — the real branded ordering experience. QR is still a
+  // stub until Phase 3b lands (it needs different "fire to table session"
+  // wiring rather than the cart-checkout-Stripe flow online uses).
+  if (mode === 'online') return <OnlineSurface location={loc}/>;
+  return <CustomerShell location={loc}><QrStub location={loc} tableId={tableId}/></CustomerShell>;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -37,6 +37,7 @@ const NAV = [
   { id:'profiles',   label:'Device profiles', icon:'📋',  group:'Devices' },
   { id:'devices',    label:'Devices',         icon:'📱',  group:'Devices' },
   { id:'kiosks',      label:'Kiosks',           icon:'🖥️',  group:'Devices' },
+  { id:'online',     label:'Online ordering',  icon:'🌐',  group:'Devices' },
   { id:'printers',   label:'Printers',        icon:'🖨',  group:'Devices' },
   { id:'cardreaders',label:'Card readers',    icon:'💳',  group:'Devices' },
   { id:'cashdrawers', label:'Cash drawers',       icon:'\u{1F4B0}', group:'Devices' },
@@ -445,6 +446,7 @@ export default function BackOfficeApp() {
           {section === 'profiles'   && <DeviceProfiles />}
           {section === 'devices'    && <DeviceRegistry />}
           {section === 'kiosks'     && <KioskRegistry />}
+          {section === 'online'     && <OnlineOrderingSection setSection={setSection} />}
           {section === 'printers'   && <PrinterRegistry />}
           {section === 'cardreaders'&& <CardReaders />}
           {section === 'cashdrawers' && <CashDrawers />}
@@ -744,4 +746,151 @@ function BOOverview({ setSection, orgCtx }) {
       </div>
     </div>
   );
+}
+
+// ── Online ordering section ─────────────────────────────────────────────────
+// Phase 3a — quick-glance hub for the online + QR surfaces. The persistent
+// settings (slug, online_enabled, qr_enabled, opening_hours) live in
+// Location Settings for now; this page surfaces what's running, gives a
+// one-click path to edit the controls, and shows the live customer URLs
+// for sharing / QR-printing. Phase 4 will add the order queue and the
+// branding editor here too.
+function OnlineOrderingSection({ setSection }) {
+  const [loading, setLoading] = useState(true);
+  const [row, setRow] = useState(null);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const { platformSupabase, getLocationId } = await import('../lib/supabase');
+        if (!platformSupabase) { setLoading(false); return; }
+        const locId = await getLocationId().catch(() => null);
+        let r = null;
+        if (locId) {
+          const { data } = await platformSupabase.from('locations')
+            .select('id, name, online_slug, online_enabled, qr_enabled, opening_hours, timezone')
+            .eq('ops_location_id', locId).maybeSingle();
+          r = data;
+          if (!r) {
+            const { data: r2 } = await platformSupabase.from('locations')
+              .select('id, name, online_slug, online_enabled, qr_enabled, opening_hours, timezone')
+              .eq('id', locId).maybeSingle();
+            r = r2;
+          }
+        }
+        if (alive) setRow(r);
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  const ROOT = 'pos-up.com';
+  const slug = row?.online_slug;
+  const onlineEnabled = !!row?.online_enabled;
+  const qrEnabled     = !!row?.qr_enabled;
+
+  return (
+    <div style={{ padding:'32px 40px', maxWidth:880 }}>
+      <div style={{ fontSize:22, fontWeight:800, color:'var(--t1)', marginBottom:4 }}>🌐 Online ordering</div>
+      <div style={{ fontSize:13, color:'var(--t3)', marginBottom:24 }}>
+        Customer-facing surfaces for online (collection / delivery) and QR table-side ordering.
+      </div>
+
+      {loading && <div style={{ color:'var(--t4)', fontSize:13 }}>Loading…</div>}
+
+      {!loading && !row && (
+        <div style={{ padding:'14px 16px', borderRadius:12, background:'var(--bg1)', border:'1px solid var(--bdr)', color:'var(--t3)', fontSize:13 }}>
+          Couldn't load this location's online ordering settings. Open <button onClick={() => setSection('location')} style={linkBtnStyle()}>Location settings</button> to configure.
+        </div>
+      )}
+
+      {!loading && row && (
+        <>
+          {/* Status grid */}
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(260px, 1fr))', gap:14, marginBottom:24 }}>
+            <StatusCard
+              title="🌐 Online ordering"
+              enabled={onlineEnabled}
+              slug={slug}
+              urlSuffix=""
+              root={ROOT}
+              desc="Remote orders — collection / delivery, customer details, Stripe checkout."
+              setSection={setSection}/>
+            <StatusCard
+              title="📱 QR table-side"
+              enabled={qrEnabled}
+              slug={slug}
+              urlSuffix="/t/<table-id>"
+              root={ROOT}
+              desc="Diners scan a QR at their table — items fire into that table's session on the POS."
+              setSection={setSection}/>
+          </div>
+
+          {/* Quick actions */}
+          <div style={{ padding:'18px 20px', background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:14, marginBottom:18 }}>
+            <div style={{ fontSize:14, fontWeight:700, color:'var(--t1)', marginBottom:8 }}>Manage</div>
+            <div style={{ fontSize:12, color:'var(--t4)', marginBottom:12, lineHeight:1.6 }}>
+              Slug, enable toggles and opening hours all live in Location Settings for now.
+              Phase 4 will move branding (logo, colors, hero image) and an order-feed view in here.
+            </div>
+            <div style={{ display:'flex', gap:10, flexWrap:'wrap' }}>
+              <button onClick={() => setSection('location')} style={primaryBtn()}>
+                Open Location Settings
+              </button>
+              {slug && (
+                <a href={`https://possystem-liard.vercel.app/?loc=${slug}&surface=online`} target="_blank" rel="noopener"
+                  style={{ ...secondaryBtn(), textDecoration:'none' }}>
+                  Preview online ↗
+                </a>
+              )}
+              {slug && (
+                <a href={`https://possystem-liard.vercel.app/?loc=${slug}&surface=qr&t=t1`} target="_blank" rel="noopener"
+                  style={{ ...secondaryBtn(), textDecoration:'none' }}>
+                  Preview QR (table t1) ↗
+                </a>
+              )}
+            </div>
+          </div>
+
+          {!slug && (
+            <div style={{ padding:'12px 14px', borderRadius:10, background:'var(--acc-d)', border:'1px solid var(--acc-b)', color:'var(--acc)', fontSize:12, lineHeight:1.6 }}>
+              ⓘ No slug set yet. Set one in Location Settings to enable customer-facing URLs.
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function StatusCard({ title, enabled, slug, urlSuffix, root, desc, setSection }) {
+  const url = slug ? `https://${slug}.${root}${urlSuffix}` : `(slug).${root}${urlSuffix}`;
+  return (
+    <div style={{ padding:'18px 20px', background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:14 }}>
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:8 }}>
+        <div style={{ fontSize:14, fontWeight:700, color:'var(--t1)' }}>{title}</div>
+        <span style={{
+          padding:'3px 10px', borderRadius:99, fontSize:10, fontWeight:800, letterSpacing:'.04em', textTransform:'uppercase',
+          background: enabled ? 'var(--grn-d)' : 'var(--bg3)',
+          color: enabled ? 'var(--grn)' : 'var(--t4)',
+          border: `1px solid ${enabled ? 'var(--grn-b)' : 'var(--bdr)'}`,
+        }}>{enabled ? 'On' : 'Off'}</span>
+      </div>
+      <div style={{ fontSize:11, color:'var(--t4)', marginBottom:10, lineHeight:1.5 }}>{desc}</div>
+      <code style={{ display:'block', padding:'8px 10px', borderRadius:8, background:'var(--bg3)', color: slug ? 'var(--acc)' : 'var(--t4)', fontSize:11, fontFamily:'var(--font-mono, monospace)', overflowWrap:'anywhere' }}>{url}</code>
+    </div>
+  );
+}
+
+function linkBtnStyle() {
+  return { background:'transparent', border:'none', color:'var(--acc)', textDecoration:'underline', cursor:'pointer', fontFamily:'inherit', padding:0, fontSize:'inherit' };
+}
+function primaryBtn() {
+  return { padding:'10px 16px', borderRadius:8, border:'none', background:'var(--acc)', color:'#0b0c10', fontSize:12, fontWeight:700, cursor:'pointer', fontFamily:'inherit' };
+}
+function secondaryBtn() {
+  return { padding:'10px 16px', borderRadius:8, border:'1px solid var(--bdr)', background:'var(--bg3)', color:'var(--t2)', fontSize:12, fontWeight:700, cursor:'pointer', fontFamily:'inherit' };
 }
