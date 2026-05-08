@@ -68,28 +68,44 @@ export default function LocationSettings() {
 
   useEffect(() => {
     if (!platformSupabase) { setLoading(false); return; }
-    // Pin the load to the resolved location id. Previously this was
-    // `limit(1).single()` with no filter, which on a multi-location org
-    // returned whichever row RLS surfaced first — meaning a save could
-    // appear to "lose" service periods because the next mount loaded a
-    // different location's row.
+    // Try the resolved location first, fall back to limit(1) if that returns
+    // no row (e.g. ops DB locations.id and platform DB locations.id don't
+    // match — they sometimes don't because Platform was bootstrapped from
+    // a different seed). Surface load errors to the UI rather than swallowing.
     (async () => {
-      const locId = await getLocationId().catch(() => null);
-      const q = platformSupabase
-        .from('locations')
-        .select('id, name, timezone, business_day_start, shifts, collection_lead_minutes');
-      const { data } = locId
-        ? await q.eq('id', locId).maybeSingle()
-        : await q.limit(1).maybeSingle();
-      if (data) {
-        setLocation(data);
-        setTimezone(data.timezone || 'Europe/London');
-        setBizDayStart(data.business_day_start || '06:00');
-        setShifts(Array.isArray(data.shifts) ? data.shifts : []);
-        setCollectionLeadMin(typeof data.collection_lead_minutes === 'number' ? data.collection_lead_minutes : 30);
+      try {
+        const locId = await getLocationId().catch(() => null);
+        const select = 'id, name, timezone, business_day_start, shifts, collection_lead_minutes';
+        let row = null;
+        let lastErr = null;
+        if (locId) {
+          const r = await platformSupabase.from('locations').select(select).eq('id', locId).maybeSingle();
+          row = r.data;
+          lastErr = r.error;
+          if (lastErr) console.warn('[LocationSettings] load by id failed:', lastErr);
+        }
+        if (!row) {
+          const r = await platformSupabase.from('locations').select(select).limit(1).maybeSingle();
+          row = r.data;
+          lastErr = r.error || lastErr;
+          if (lastErr && !row) console.warn('[LocationSettings] fallback load failed:', lastErr);
+        }
+        if (row) {
+          setLocation(row);
+          setTimezone(row.timezone || 'Europe/London');
+          setBizDayStart(row.business_day_start || '06:00');
+          setShifts(Array.isArray(row.shifts) ? row.shifts : []);
+          setCollectionLeadMin(typeof row.collection_lead_minutes === 'number' ? row.collection_lead_minutes : 30);
+        } else {
+          setError('Could not load any location row from the platform DB. Check VITE_PLATFORM_SUPABASE_URL/KEY and the locations table SELECT policy.');
+        }
+      } catch (e) {
+        console.error('[LocationSettings] load threw:', e);
+        setError(`Load failed: ${e.message}`);
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
-    })().catch(() => setLoading(false));
+    })();
 
     // Load show_item_images from ops DB
     (async () => {
@@ -110,7 +126,14 @@ export default function LocationSettings() {
   const removeShift = (id) => setShifts(s => s.filter(sh => sh.id !== id));
 
   const save = async () => {
-    if (!platformSupabase || !location) return;
+    if (!platformSupabase) {
+      setError('Platform DB not configured. Set VITE_PLATFORM_SUPABASE_URL/KEY.');
+      return;
+    }
+    if (!location) {
+      setError('No location loaded — nothing to save against. Check the platform DB locations table or run the load again.');
+      return;
+    }
     setSaving(true); setError(''); setSaved(false);
 
     // Sanitise shifts payload — strip any fields the JSONB column doesn't

@@ -74,6 +74,17 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.99', date: '8 May 2026', label: 'Service periods — fix silent "save does nothing" + load fallback',
+    changes: [
+      'WHY THE SAVE BUTTON FELT DEAD — v5.5.98 made the load `.eq(\'id\', getLocationId()).maybeSingle()`. If the platform DB locations row had a different id from ops (sometimes the case when the two DBs were seeded separately), the load returned null, `location` stayed null, and the save handler returned early with NO visible feedback. Click the button → nothing happens, no error, no toast.',
+      'FIXES — three layered changes:',
+      '1. Load now tries `.eq(\'id\', locId)` first, falls back to `.limit(1).maybeSingle()` if that returns nothing. So you always get a location row whenever one exists, even if the ids don\'t match across DBs.',
+      '2. Both load and save surface specific errors to the UI when something fails — "Could not load any location row from the platform DB. Check VITE_PLATFORM_SUPABASE_URL/KEY and the locations table SELECT policy." or "No location loaded — nothing to save against." So a dead button is no longer possible; you\'ll see exactly what to fix.',
+      '3. Console logs the actual Supabase error on every failure path so we can debug without guessing.',
+      'IF SHIFTS STILL DON\'T PERSIST AFTER THIS — open the browser console while saving. The error toast + console message will tell us which of the remaining causes it is: RLS denies UPDATE for the BO user (unauthenticated platformSupabase), `shifts` column type isn\'t jsonb, or another constraint. Paste the message and I\'ll point at the SQL fix.',
+    ],
+  },
+  {
     version: '5.5.98', date: '8 May 2026', label: 'Service periods — verify save round-trip + pin load to resolved location id',
     changes: [
       'BUG — service periods configured in Location Settings appeared to save but came back empty on next load. Two contributing causes:',
