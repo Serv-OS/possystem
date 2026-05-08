@@ -74,6 +74,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.92', date: '8 May 2026', label: 'ItemTrend — Debug mods diagnostic panel (stop guessing, see the data)',
+    changes: [
+      'Fix attempts on the Box of 3 / Bueno rollup were guessing at the data shape because we have no visibility into what closed_checks.items[].mods actually contains for Peter\'s installation. Stopped guessing. Added a "🔍 Debug mods" toggle in ItemTrend that surveys every modifier seen in the period and tabulates: count, id, name, label, parent line, matched?',
+      'Tells us in one screenshot whether the Box of 3 is even storing mod selections (zero rows = the cart-add path didn\'t preserve any picks; the Box of 3 itself is the only thing in items[]). Or whether mods exist but don\'t resolve (red rows show the unmatched id/name/label so we can see whether the donut name is misspelled, has different casing, or uses a different identity scheme entirely).',
+      'TO USE — open Back Office → Reports → Item sales trend, set the period to cover the Box of 3 sale, click the "🔍 Debug mods" button. Screenshot the panel and paste it back. With concrete data I can ship the actual fix in one commit instead of three more guesses.',
+    ],
+  },
+  {
     version: '5.5.91', date: '8 May 2026', label: 'Box-of-3 modifier rollup — fix root cause (id/name dropped at cart-add) + label fallback for historical sales',
     changes: [
       'WHY 5.5.90 STILL DIDN\'T SHOW BUENO — found the actual root cause. The desktop POS InlineItemFlow.jsx (the modifier picker behind every Box of 3 / steak-with-side / etc) was building the cart line\'s mods array as { groupLabel, label, price } — no id, no name. So even my name-fallback lookup had nothing to match on. The closed_check.items[].mods entries for every existing Box of 3 sale literally don\'t carry the option\'s identity. Two fixes:',

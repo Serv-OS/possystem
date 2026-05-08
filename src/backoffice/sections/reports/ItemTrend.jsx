@@ -44,6 +44,7 @@ export default function ItemTrend({ checks, fmt, fmtN, rangeFrom, rangeTo }) {
   const [catFilter, setCatFilter] = useState('all');
   const [dowFilter, setDowFilter] = useState('all'); // 'all' | 0..6 (Sun..Sat)
   const [includeMods, setIncludeMods] = useState(true); // attribute modifier components (Bueno inside Box of 3)
+  const [showDebug, setShowDebug] = useState(false); // diagnostic — what mods are actually in the data?
   // Menu item lookups for attributing modifier components back to their item
   // rows. We index by BOTH id and lowercase name. Reason: BO setups vary in
   // whether a modifier option's id equals the corresponding menu_item.id —
@@ -208,6 +209,39 @@ export default function ItemTrend({ checks, fmt, fmtN, rangeFrom, rangeTo }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, catLabel]);
 
+  // ── DIAGNOSTIC: survey every mod seen in the period ──────────────────────
+  // Surfaces exactly what shape closed_checks.items[].mods is in. If this
+  // panel shows "Box of 3" lines but every mod has empty id/name/label or
+  // nothing at all, the cart-add flow that built those rows wasn't preserving
+  // the option's identity (this is what 5.5.91 fixed for InlineItemFlow —
+  // but other code paths may still strip it).
+  const modSurvey = useMemo(() => {
+    const all = []; // { id, name, label, parentName, count, resolved }
+    const seen = new Map(); // key -> entry
+    let parentLinesWithMods = 0;
+    let parentLinesWithoutMods = 0;
+    checks.filter(c => c.status !== 'voided').forEach(c => {
+      (c.items || []).forEach(i => {
+        if (i.voided) return;
+        const mods = i.mods || [];
+        if (mods.length) parentLinesWithMods++; else parentLinesWithoutMods++;
+        mods.forEach(m => {
+          if (!m || m._instruction) return;
+          const key = `${m.id || ''}|${m.name || ''}|${m.label || ''}`;
+          const resolved = !!lookupModItem(m);
+          if (!seen.has(key)) {
+            const entry = { id: m.id || null, name: m.name || null, label: m.label || null, parentName: i.name, count: 0, resolved };
+            seen.set(key, entry);
+            all.push(entry);
+          }
+          seen.get(key).count += 1;
+        });
+      });
+    });
+    return { entries: all.sort((a, b) => b.count - a.count), parentLinesWithMods, parentLinesWithoutMods };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [checks, menuById, menuByName]);
+
   // ── Stats ──────────────────────────────────────────────────────────────────
   const avgPerDay = days.length ? periodTotal / days.length : 0;
   const topItem = rows[0];
@@ -270,9 +304,68 @@ export default function ItemTrend({ checks, fmt, fmtN, rangeFrom, rangeTo }) {
           <input type="checkbox" checked={includeMods} onChange={e => setIncludeMods(e.target.checked)}/>
           Include modifier components
         </label>
+        <button onClick={() => setShowDebug(s => !s)} style={{
+          padding:'6px 10px', borderRadius:8, background: showDebug ? 'var(--acc-d)' : 'var(--bg3)',
+          border:`1px solid ${showDebug ? 'var(--acc-b)' : 'var(--bdr)'}`,
+          color: showDebug ? 'var(--acc)' : 'var(--t3)', fontSize:12, cursor:'pointer', fontFamily:'inherit',
+        }} title="Diagnostic — shows every mod seen in the period and whether it resolved to a menu item">
+          🔍 Debug mods
+        </button>
         <div style={{ flex:1 }}/>
         <ExportBtn onClick={exportCsv}/>
       </div>
+
+      {/* Debug: modifier survey */}
+      {showDebug && (
+        <div style={{ background:'var(--bg2)', border:'1px solid var(--bdr2)', borderRadius:12, padding:'14px 16px', marginBottom:14 }}>
+          <div style={{ fontSize:12, fontWeight:800, color:'var(--t1)', marginBottom:6 }}>
+            🔍 Modifier diagnostic — what's actually in your closed_checks
+          </div>
+          <div style={{ fontSize:11, color:'var(--t4)', marginBottom:10, lineHeight:1.5 }}>
+            <b>{modSurvey.parentLinesWithMods}</b> parent line item{modSurvey.parentLinesWithMods === 1 ? '' : 's'} have mods,
+            <b> {modSurvey.parentLinesWithoutMods}</b> have none.
+            Each row below is one unique mod entry. <b>Resolved</b> = matched a menu item by id, name, or label.
+            If your Box of 3 sale is missing here, the parent line itself was added without any mods recorded — meaning the cart-add path didn't preserve the donut picks. If it shows as <b>unresolved</b>, the mod is there but the donut name doesn't match any menu_items row (check spelling / casing).
+          </div>
+          {modSurvey.entries.length === 0 ? (
+            <div style={{ fontSize:12, color:'var(--red)', padding:'10px 0' }}>
+              ⚠ Zero mod entries in this period. Every closed_check items[] row has empty mods[]. The cart-add path that produced these rows did not store mod selections at all. The Box of 3 component picks were lost at add-time.
+            </div>
+          ) : (
+            <div style={{ maxHeight:280, overflowY:'auto', fontFamily:'var(--font-mono)', fontSize:11 }}>
+              <table style={{ width:'100%', borderCollapse:'collapse' }}>
+                <thead>
+                  <tr style={{ background:'var(--bg3)' }}>
+                    <th style={dThSt}>count</th>
+                    <th style={dThSt}>id</th>
+                    <th style={dThSt}>name</th>
+                    <th style={dThSt}>label</th>
+                    <th style={dThSt}>parent</th>
+                    <th style={dThSt}>matched?</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {modSurvey.entries.slice(0, 50).map((e, idx) => (
+                    <tr key={idx} style={{ background: e.resolved ? 'transparent' : 'rgba(239,68,68,0.06)' }}>
+                      <td style={dTdSt}>{e.count}</td>
+                      <td style={dTdSt}>{e.id || <span style={{ color:'var(--red)' }}>—</span>}</td>
+                      <td style={dTdSt}>{e.name || <span style={{ color:'var(--red)' }}>—</span>}</td>
+                      <td style={dTdSt}>{e.label || '—'}</td>
+                      <td style={dTdSt}>{e.parentName}</td>
+                      <td style={{ ...dTdSt, color: e.resolved ? 'var(--grn)' : 'var(--red)', fontWeight:700 }}>
+                        {e.resolved ? '✓' : '✗ no menu item'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {modSurvey.entries.length > 50 && (
+                <div style={{ marginTop:6, color:'var(--t4)', fontSize:10 }}>… {modSurvey.entries.length - 50} more entries hidden.</div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* KPI tiles */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(180px, 1fr))', gap:10, marginBottom:14 }}>
@@ -390,3 +483,5 @@ const thDaySt   = { ...thSt, minWidth:54, padding:'10px 6px' };
 const tdSt      = { padding:'8px 12px', whiteSpace:'nowrap' };
 const tdStickySt = { ...tdSt, position:'sticky', left:0, zIndex:1, fontWeight:600, color:'var(--t1)', borderRight:'1px solid var(--bdr2)' };
 const tdDaySt   = { ...tdSt, textAlign:'right', fontFamily:'var(--font-mono)', fontSize:11, color:'var(--t2)', padding:'8px 6px', borderRight:'1px solid var(--bdr)' };
+const dThSt = { padding:'6px 8px', textAlign:'left', fontSize:10, fontWeight:700, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.05em', borderBottom:'1px solid var(--bdr2)' };
+const dTdSt = { padding:'4px 8px', borderBottom:'1px solid var(--bdr)', whiteSpace:'nowrap', maxWidth:200, overflow:'hidden', textOverflow:'ellipsis' };
