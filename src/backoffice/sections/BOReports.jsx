@@ -22,6 +22,8 @@ import Payments     from './reports/Payments';
 import Daypart      from './reports/Daypart';
 import Shifts       from './reports/Shifts';
 import ProductMix   from './reports/ProductMix';
+import ItemTrend    from './reports/ItemTrend';
+import DailyTrend   from './reports/DailyTrend';
 import MenuEngineering from './reports/MenuEngineering';
 import Servers      from './reports/Servers';
 import Tips         from './reports/Tips';
@@ -221,6 +223,8 @@ export default function BOReports() {
           {view === 'daypart'    && <Daypart      checks={filtered} fmt={fmt} locationConfig={locationConfig}/>}
           {view === 'shifts'      && <Shifts       checks={filtered} fmt={fmt} fmtN={fmtN} locationConfig={locationConfig}/>}
           {view === 'items'       && <ProductMix   checks={filtered} fmt={fmt} fmtN={fmtN}/>}
+          {view === 'item_trend'  && <ItemTrend    checks={filtered} fmt={fmt} fmtN={fmtN} rangeFrom={range.from} rangeTo={range.to}/>}
+          {view === 'daily_trend' && <DailyTrend   checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN} rangeFrom={range.from} rangeTo={range.to}/>}
           {view === 'menu_eng'    && <MenuEngineering checks={filtered} fmt={fmt} fmtN={fmtN}/>}
           {view === 'servers'     && <Servers      checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN}/>}
           {view === 'tips'        && <Tips         checks={filtered} fmt={fmt} fmtN={fmtN}/>}

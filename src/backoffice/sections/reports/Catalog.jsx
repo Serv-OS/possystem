@@ -8,9 +8,11 @@ export const CATEGORIES = [
     description: 'Net and gross sales, products, performance by channel and time.',
     reports: [
       { id:'summary',     label:'Business summary', desc:'Period stats with compare chips + net/gross ladder' },
+      { id:'daily_trend', label:'Daily trend',      desc:'Revenue / covers / avg check / tips per day with vs-prev compare', badge:'new' },
+      { id:'item_trend',  label:'Item sales trend', desc:'Items × days matrix with category + day-of-week filters', badge:'new' },
       { id:'items',       label:'Product mix',      desc:'Items, categories, modifiers and 86\'d — with time of day' },
       { id:'menu_eng',    label:'Menu engineering', desc:'Stars / Plow Horses / Puzzles / Dogs 2×2 matrix' },
-      { id:'order_types', label:'Order types',      desc:'Channel mix over time with period compare', badge:'new' },
+      { id:'order_types', label:'Order types',      desc:'Channel mix over time with period compare' },
       { id:'daypart',     label:'Daypart',          desc:'Hour × day-of-week revenue heatmap' },
     ],
   },

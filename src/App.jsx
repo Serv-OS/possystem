@@ -74,6 +74,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.88', date: '8 May 2026', label: 'Reports — Item Sales Trend (matrix) + Daily Trend dashboard',
+    changes: [
+      'ITEM SALES TREND — the donut-shop report. Matrix view: items down the left, every day across the top, qty sold (or revenue) in each cell with a heatmap-style colour intensity per cell. Row totals on the right, column totals at the bottom, frozen item / category columns so the names stay visible while you scroll horizontally across dates. Filters: metric (qty / revenue), category, day-of-week (e.g. only show Saturdays), top-N (10/25/50/100/all), free-text item search. CSV export of the full matrix including totals row.',
+      'DAILY TREND DASHBOARD — line charts of revenue / covers / avg check / tip rate per day, all four side-by-side. Each chart overlays the previous-period series as a faint dashed line so "is business growing" answers itself. Revenue chart also has a 7-day rolling-average line so weekly seasonality is visible. KPI tiles at the top with vs-prev-period compare chips. Best-day / slowest-day callouts. CSV export of the full daily series.',
+      'WIRED INTO — Back Office → Reports → Sales reports. Both reports inherit the existing period chip + custom-range + server / order-type filter chrome from BOReports, so the same date controls drive every report consistently. Same CSV pattern as ProductMix etc.',
+      'NEXT (deferred per user direction) — item-by-day-of-week heatmap matrix (rows: items, cols: Mon-Sun) for prep planning, and a simple 4-week rolling sales forecast per item per day-of-week.',
+    ],
+  },
+  {
     version: '5.5.87', date: '8 May 2026', label: 'MPOS floor plan — pinch zoom + pan + zoom controls',
     changes: [
       'PINCH ZOOM — two-finger pinch on the MPOS floor plan canvas zooms 0.6× to 4×. Auto-fit-to-screen still applies as the base scale, and the user pinch is a multiplier on top, so a default canvas always fills the phone width on first open.',
