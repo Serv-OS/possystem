@@ -137,9 +137,25 @@ export default function ItemTrend({ checks, fmt, fmtN, rangeFrom, rangeTo }) {
     let periodTotal = 0;
     const dayKeys = new Set(days.map(fmtDayKey));
 
+    // Canonical name resolver — given a menu_item, return its current
+    // display name (menuName preferred). Used for bucket keying so both
+    // the standalone path and the mod-resolve path land on the same row
+    // for renamed items. Without this, "Donut 1 → Bueno Filled" shows
+    // up as two rows: standalone under the new name, mod-resolved under
+    // the stale `name` column (which lags menuName).
+    const canonicalName = (mItem) => mItem?.menuName || mItem?.name || 'Unknown';
+
     const bump = (key, name, cat, qty, rev, dayKey, source) => {
       if (!map[key]) {
         map[key] = { name, cat: cat || null, total: 0, totalRev: 0, byDay: {}, byDayRev: {}, sources: {} };
+      }
+      // If a later bump on the same key carries a fresher/longer canonical
+      // name (e.g. the menu_item was looked up where this row was first
+      // created from a stale line.name), update the display.
+      if (name && name.length && map[key].name !== name) {
+        // Prefer the canonical menuName. If we're seeing a different name
+        // for the same key, the bucket creator was the canonical path —
+        // leave it. Either way one row per key.
       }
       map[key].total += qty;
       map[key].totalRev += rev;
@@ -157,9 +173,17 @@ export default function ItemTrend({ checks, fmt, fmtN, rangeFrom, rangeTo }) {
         if (i.voided) return;
         const lineQty = i.qty || 1;
         const lineRev = (i.price || 0) * lineQty;
-        const lineName = i.name || 'Unknown';
+        // Resolve the parent line's canonical name via itemId when possible,
+        // so historical sales recorded under the OLD line.name merge into the
+        // same row as today's sales recorded under the NEW name. Falls back
+        // to the stored line.name if itemId doesn't resolve (e.g. custom
+        // items or items no longer in the menu).
+        const lineMenuItem = i.itemId ? menuById[i.itemId] : null;
+        const lineName  = lineMenuItem ? canonicalName(lineMenuItem) : (i.name || 'Unknown');
+        // Bucket key prefers itemId (rename-stable); falls back to name.
+        const lineKey   = lineMenuItem?.id ? `id:${lineMenuItem.id}` : `name:${lineName.toLowerCase()}`;
         // 1) Parent line itself
-        bump(lineName, lineName, i.cat, lineQty, lineRev, dayKey, SRC_STANDALONE);
+        bump(lineKey, lineName, lineMenuItem?.cat || i.cat, lineQty, lineRev, dayKey, SRC_STANDALONE);
         totalsByDay[dayKey] = (totalsByDay[dayKey] || 0) + (metric === 'qty' ? lineQty : lineRev);
         periodTotal += (metric === 'qty' ? lineQty : lineRev);
 
@@ -179,7 +203,13 @@ export default function ItemTrend({ checks, fmt, fmtN, rangeFrom, rangeTo }) {
           const modQty = Number(m.qty) || 1;
           const compQty = modQty * lineQty;
           const compRev = (Number(m.price) || 0) * lineQty;
-          bump(mItem.name, mItem.name, mItem.cat || null, compQty, compRev, dayKey, lineName);
+          // Use the SAME id-keyed bucket and canonical display name as the
+          // parent-line path, so a Bueno sold standalone and a Bueno picked
+          // inside Box of 3 land in one row — even if line.name lags the
+          // current menuName.
+          const modKey  = `id:${mItem.id}`;
+          const modName = canonicalName(mItem);
+          bump(modKey, modName, mItem.cat || null, compQty, compRev, dayKey, lineName);
           totalsByDay[dayKey] = (totalsByDay[dayKey] || 0) + (metric === 'qty' ? compQty : compRev);
           periodTotal += (metric === 'qty' ? compQty : compRev);
         });

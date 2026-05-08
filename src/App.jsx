@@ -74,6 +74,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.95', date: '8 May 2026', label: 'ItemTrend — bucket by menu_item id (no more split rows after rename)',
+    changes: [
+      'TWO-ROW PROBLEM — after the rename cascade fixes, ItemTrend was showing renamed items as TWO rows: "Donut 1" (mod-resolved sales using the stale `name` column the menu_item still had) and "Bueno Filled" (standalone sales using the fresh menuName). Same item, same id, two rows — bad UX and worse for totals.',
+      'FIX — aggregation now buckets by stable menu_item id, not by display name. Both paths (parent-line AND mod-resolve) use the SAME bucket key (`id:<menu_item_id>`) and the SAME canonical display name (menuName preferred over the snake-case name column). So a Bueno sold standalone and a Bueno picked inside Box of 3 land in one row, regardless of how stale either path\'s stored name is.',
+      'BACK-FILL FOR HISTORICAL SALES — when a closed_check carries items[].itemId (the menu_item id was recorded at sale time), the row consolidates against the CURRENT canonical name. Sales recorded under the old name retroactively show under the new name in reports. Items without an itemId (custom items, legacy rows) still bucket by name — no regression.',
+      'NET — one menu_item = one row. Rename it tomorrow and the row\'s label changes; the data underneath stays continuous.',
+    ],
+  },
+  {
     version: '5.5.94', date: '8 May 2026', label: 'Rename cascade — fix stale name column + propagate rename into modifier_group options',
     changes: [
       'STALE NAME COLUMN ON RENAME — db.js upsertMenuItem was writing `name: item.name || \'Item\'` directly. Every other display field cascaded properly (menu_name / receipt_name / kitchen_name fall through item.menuName ?? item.menu_name ?? item.name). The lone holdout meant when BO patched menuName="Bueno Filled" without touching `name`, the upsert wrote the OLD `name` back to the DB. Result: menu_items.name went stale on every rename, breaking any name-keyed report. Fixed: name + menu_name + receipt_name + kitchen_name now all share the same fallback chain. One rename, all four columns update together.',
