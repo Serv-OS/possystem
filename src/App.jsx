@@ -76,6 +76,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.110', date: '8 May 2026', label: 'Online ordering branding — file uploads for logo + hero (no more URL pasting)',
+    changes: [
+      'BO Online Ordering — replaced the Logo URL / Hero URL text inputs with proper file pickers backed by Supabase Storage. Uploads land in the existing receipt-assets bucket under locations/<id>/online/<kind>.<ext>, with upsert so re-uploading replaces the old image cleanly. Cache-busting timestamp appended to the public URL so the customer surface picks up the new image instantly.',
+      'Each upload field shows a live preview (88×88 for logo, 110px tall hero strip), Replace / Remove buttons, an inline "Uploading…" state, and helper text covering the recommended dimensions + the 4 MB size cap.',
+      'Tiny things — surfaced explicit "no location resolved" / "file too big" errors so a failed upload tells the operator exactly why instead of silently doing nothing. Clear button strips the URL from local state so a Save persists the removal.',
+      'TO USE — BO → Online ordering → Branding section → click Upload logo / Upload hero → pick a file. Upload runs immediately so you can preview right away. Click Save to persist the URLs onto the platform location row. Hard-refresh the customer URL to see the new branding.',
+    ],
+  },
+  {
     version: '5.5.109', date: '8 May 2026', label: 'Online ordering — real BO config page (branding + menu picker + delivery toggle)',
     changes: [
       'NEW SCHEMA — platform.locations gets four new columns: online_branding (jsonb: logo_url, hero_url, accent_color, background, foreground), online_menu_id (text — references ops menus.id when chosen), online_collection_lead_min (int, default 30), online_delivery_enabled (bool, default false). Migration ran in Supabase against all 4 platform locations.',

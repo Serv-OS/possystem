@@ -8,8 +8,24 @@
 // timezone / business day / opening hours which are also operator-side
 // config). This page is the "front-of-house" view of the online product.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { platformSupabase, supabase, getLocationId } from '../../lib/supabase';
+
+// Reuses the existing receipt-assets bucket with an online/ prefix so logo
+// + hero uploads don't collide with the receipt branding's logo/QR assets.
+const ASSET_BUCKET = 'receipt-assets';
+
+async function uploadOnlineAsset(file, locationId, kind) {
+  const ext = (file.name.split('.').pop() || 'png').toLowerCase();
+  const path = `locations/${locationId}/online/${kind}.${ext}`;
+  const { error: upErr } = await supabase.storage
+    .from(ASSET_BUCKET)
+    .upload(path, file, { upsert: true, contentType: file.type });
+  if (upErr) throw upErr;
+  const { data: urlData } = supabase.storage.from(ASSET_BUCKET).getPublicUrl(path);
+  // Cache-bust on replace so the customer surface picks up the new image
+  return `${urlData.publicUrl}?t=${Date.now()}`;
+}
 
 const BLANK_BRANDING = {
   logo_url: '',
@@ -33,13 +49,20 @@ export default function OnlineOrdering({ setSection }) {
   const [menuId, setMenuId]   = useState('');
   const [leadMin, setLeadMin] = useState(30);
   const [deliveryOn, setDeliveryOn] = useState(false);
+  const [uploadingLogo, setUploadingLogo] = useState(false);
+  const [uploadingHero, setUploadingHero] = useState(false);
+  const [opsLocId, setOpsLocId] = useState(null);
+  const logoInputRef = useRef(null);
+  const heroInputRef = useRef(null);
 
   // ── Load ──────────────────────────────────────────────────────────────────
   useEffect(() => {
     let alive = true;
     (async () => {
       try {
-        const opsLocId = await getLocationId().catch(() => null);
+        const _opsLocId = await getLocationId().catch(() => null);
+        if (alive) setOpsLocId(_opsLocId);
+        const opsLocId = _opsLocId;
 
         // Menus — from OPS DB. They're per-location and BO is authenticated to ops.
         if (opsLocId && supabase) {
@@ -82,6 +105,27 @@ export default function OnlineOrdering({ setSection }) {
     })();
     return () => { alive = false; };
   }, []);
+
+  // ── Upload handlers ──────────────────────────────────────────────────────
+  // File picker → Supabase Storage upload → URL written back into branding
+  // state. The user still needs to hit Save to persist the URL onto the
+  // platform.locations row, but the image is uploaded immediately so the
+  // preview updates and they don't lose their work if the page reloads.
+  const handleUpload = async (file, kind, setUploading) => {
+    if (!file) return;
+    if (!opsLocId) { setError('No location resolved — set up Location Settings first.'); return; }
+    if (file.size > 4 * 1024 * 1024) { setError(`${kind} must be under 4 MB.`); return; }
+    setUploading(true); setError('');
+    try {
+      const url = await uploadOnlineAsset(file, opsLocId, kind);
+      setBranding(b => ({ ...b, [kind === 'logo' ? 'logo_url' : 'hero_url']: url }));
+    } catch (e) {
+      console.error('[OnlineOrdering] upload failed:', e);
+      setError(`${kind} upload failed: ${e?.message || e}`);
+    } finally {
+      setUploading(false);
+    }
+  };
 
   const save = async () => {
     if (!platformSupabase || !row) {
@@ -184,14 +228,26 @@ export default function OnlineOrdering({ setSection }) {
         </div>
 
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14, marginBottom:14 }}>
-          <Field label="Logo URL"
-            value={branding.logo_url}
-            onChange={v => setBranding(b => ({ ...b, logo_url: v }))}
-            placeholder="https://…/logo.png"/>
-          <Field label="Hero image URL"
-            value={branding.hero_url}
-            onChange={v => setBranding(b => ({ ...b, hero_url: v }))}
-            placeholder="https://…/hero.jpg"/>
+          <ImageUpload
+            label="Logo"
+            url={branding.logo_url}
+            kind="logo"
+            uploading={uploadingLogo}
+            inputRef={logoInputRef}
+            onPick={(file) => handleUpload(file, 'logo', setUploadingLogo)}
+            onClear={() => setBranding(b => ({ ...b, logo_url: '' }))}
+            help="Square works best · PNG with transparency recommended · max 4 MB"
+            previewBg="#0e0e10" previewWidth={88} previewHeight={88}/>
+          <ImageUpload
+            label="Hero banner"
+            url={branding.hero_url}
+            kind="hero"
+            uploading={uploadingHero}
+            inputRef={heroInputRef}
+            onPick={(file) => handleUpload(file, 'hero', setUploadingHero)}
+            onClear={() => setBranding(b => ({ ...b, hero_url: '' }))}
+            help="Wide image · 1600×600 ideal · max 4 MB"
+            previewBg="#0e0e10" previewWidth="100%" previewHeight={110}/>
         </div>
 
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:14 }}>
@@ -284,6 +340,53 @@ function StatusPill({ title, enabled, url, preview }) {
           Preview ↗
         </a>
       )}
+    </div>
+  );
+}
+
+function ImageUpload({ label, url, kind, uploading, inputRef, onPick, onClear, help, previewBg, previewWidth, previewHeight }) {
+  return (
+    <div>
+      <div style={S.label}>{label}</div>
+      <div style={{
+        background: previewBg, borderRadius: 8, border:'1px dashed var(--bdr)',
+        padding: 10, display:'flex', alignItems:'center', gap:12,
+      }}>
+        {url ? (
+          <img src={url} alt={label}
+            style={{ width: previewWidth, height: previewHeight, objectFit:'cover', borderRadius:6, flexShrink:0 }}/>
+        ) : (
+          <div style={{
+            width: previewWidth, height: previewHeight, borderRadius:6,
+            background: 'var(--bg3)', display:'flex', alignItems:'center', justifyContent:'center',
+            color:'var(--t4)', fontSize:11, flexShrink:0,
+          }}>
+            No {kind}
+          </div>
+        )}
+        <div style={{ flex:1, minWidth:0, display:'flex', flexDirection:'column', gap:6 }}>
+          <input ref={inputRef} type="file" accept="image/*" style={{ display:'none' }}
+            onChange={e => {
+              const f = e.target.files?.[0]; if (f) onPick(f);
+              if (inputRef.current) inputRef.current.value = '';
+            }}/>
+          <button onClick={() => inputRef.current?.click()} disabled={uploading}
+            style={{
+              padding:'7px 14px', borderRadius:8, border:'1px solid var(--bdr)',
+              background:'var(--bg3)', color:'var(--t1)', cursor: uploading ? 'wait' : 'pointer',
+              fontSize:12, fontWeight:700, fontFamily:'inherit',
+            }}>
+            {uploading ? 'Uploading…' : url ? `Replace ${kind}` : `Upload ${kind}`}
+          </button>
+          {url && (
+            <button onClick={onClear}
+              style={{ background:'transparent', border:'none', color:'var(--t4)', cursor:'pointer', fontSize:11, fontFamily:'inherit', padding:0, textAlign:'left' }}>
+              Remove
+            </button>
+          )}
+        </div>
+      </div>
+      {help && <div style={{ fontSize:11, color:'var(--t4)', marginTop:4 }}>{help}</div>}
     </div>
   );
 }
