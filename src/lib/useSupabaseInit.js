@@ -32,6 +32,13 @@ export default function useSupabaseInit() {
       // Store config in Zustand so components can access it
       useStore.setState({ locationConfig: locConfig });
 
+      // CRITICAL: resolve locationId up-front. fetchClosedChecks (and other
+      // location-scoped fetches below) MUST receive a real location id —
+      // calling them with undefined falls through the `.eq('location_id', null)`
+      // filter which returns 0 rows. If we then setState({ closedChecks: [] })
+      // we wipe live data that the realtime channel had already populated.
+      const locId = await getLocationId().catch(() => null);
+
       // Menu items
       const { data: items } = await fetchMenuItems();
       if (items?.length) {
@@ -74,14 +81,22 @@ export default function useSupabaseInit() {
         useStore.setState({ kdsTickets: tickets });
       }
 
-      // Today's closed checks — scoped to business day start in location timezone
-      const { data: checks } = await fetchClosedChecks(undefined, 500, todayStart);
-      if (checks) {
-        useStore.setState({ closedChecks: checks });
+      // Today's closed checks — scoped to business day start in location timezone.
+      // Pass locId explicitly. NEVER overwrite local state with an empty array —
+      // realtime may have already prepended fresh checks, and a wiped-then-empty
+      // fetch (RLS denial, transient network glitch, locId still resolving) would
+      // erase them. Merge with existing instead, dedup by id.
+      if (locId) {
+        const { data: checks } = await fetchClosedChecks(locId, 500, todayStart);
+        if (Array.isArray(checks) && checks.length) {
+          const existing = useStore.getState().closedChecks || [];
+          const byId = new Map();
+          for (const c of existing) byId.set(c.id, c);
+          for (const c of checks) byId.set(c.id, c);
+          const merged = Array.from(byId.values()).sort((a, b) => (b.closedAt || 0) - (a.closedAt || 0));
+          useStore.setState({ closedChecks: merged });
+        }
       }
-
-      // Resolve location ID (needed for tax rates + config push)
-      const locId = await getLocationId().catch(() => null);
 
       // v4.6.33: hydrate printers from Supabase so POS devices see back-office
       // changes (including the cashDrawerAttached flag) on app load. Previously

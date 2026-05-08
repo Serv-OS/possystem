@@ -36,7 +36,13 @@ export default function MOrderDetail({ check, onBack }) {
     try {
       const result = await printCustomerReceipt?.({
         location: locationConfig, check: live,
-        items: live.items, totals: { subtotal: live.subtotal, tip: live.tip, total: live.total },
+        items: live.items,
+        totals: {
+          subtotal: Number(live.subtotal) || 0,
+          service: Number(live.service) || 0,
+          tip:     Number(live.tip)     || 0,
+          grand:   Number(live.total)   || 0,
+        },
       });
       if (!result?.ok) {
         setError(`Print failed: ${result?.error || 'no printer mapped to this device'}. Check Back office → Devices → Printer routing, or use Email instead.`);

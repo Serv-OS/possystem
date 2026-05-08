@@ -61,7 +61,11 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
       };
       const printPromise = Promise.resolve(printCustomerReceipt?.({
         location: locationConfig, check: checkShape,
-        items: liveItems, totals: { subtotal: sub, tip: 0, total: sub },
+        items: liveItems,
+        // printer.js reads totals.grand / totals.subtotal / totals.service /
+        // totals.tip — not totals.total. Sending the wrong shape blows up
+        // inside the receipt builder ("undefined is not an object — i.grand.toFixed").
+        totals: { subtotal: sub, service: 0, tip: 0, grand: sub },
       }));
       const result = await Promise.race([printPromise, timeout]);
       if (result?.__timedOut) {

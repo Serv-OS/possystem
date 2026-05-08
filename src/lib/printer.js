@@ -96,6 +96,16 @@ class EscPosBuilder {
 // All branding is optional: a location with no receipt_branding falls back
 // to the legacy text-only receipt unchanged.
 export async function buildCustomerReceipt({ location, check, items, totals }) {
+  // Defensive: callers historically passed { subtotal, tip, total } instead of
+  // { subtotal, service, tip, grand }. Normalise so totals.grand.toFixed() etc
+  // never crashes, and the receipt prints with sensible numbers either way.
+  totals = {
+    subtotal: Number(totals?.subtotal ?? check?.subtotal ?? 0) || 0,
+    service:  Number(totals?.service  ?? check?.service  ?? 0) || 0,
+    tip:      Number(totals?.tip      ?? check?.tip      ?? 0) || 0,
+    grand:    Number(totals?.grand    ?? totals?.total   ?? check?.total ?? 0) || 0,
+    taxBreakdown: totals?.taxBreakdown,
+  };
   const b = new EscPosBuilder(42);
   const now = new Date();
   const timeStr = now.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});

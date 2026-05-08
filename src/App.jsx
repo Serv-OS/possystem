@@ -74,6 +74,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.81', date: '7 May 2026', label: 'CRITICAL — stop boot wiping closedChecks; fix MPOS print "totals.grand" crash',
+    changes: [
+      'DATA LOSS ROOT CAUSE — closed orders were vanishing from every device after a refresh. useSupabaseInit was calling fetchClosedChecks(undefined, 500, todayStart) — locationId arg defaults to null, the Supabase query becomes .eq(\'location_id\', null) which returns ZERO rows, the empty array is truthy, and useStore.setState({ closedChecks: [] }) wipes whatever realtime had already populated. Fix: resolve locationId BEFORE the closed_checks fetch, pass it explicitly, and merge results with existing state (dedup by id). NEVER overwrite closedChecks with [] — if the fetch returns nothing we keep what we already had.',
+      'PRINT CRASH "i.grand.toFixed" — MOrderDetail (Reprint) and MCartSheet (Print bill) were passing totals: { subtotal, tip, total } but printer.js buildCustomerReceipt reads totals.grand / totals.subtotal / totals.service / totals.tip. totals.grand was undefined and the receipt builder threw. Fix in three places: both call-sites now pass the correct { subtotal, service, tip, grand } shape, and buildCustomerReceipt is now defensive — accepts either shape and falls back to check.total / check.tip / check.service / check.subtotal so any other caller that\'s wrong won\'t crash either.',
+      'WHY THIS LOOKED LIKE THE 5.5.79 HYDRATION FIX DIDN\'T WORK — useSupabaseInit was running and printers were hydrating, but the actual print attempt blew up inside the receipt builder before a print job ever reached the printer. The error toast in MOrderDetail was showing the genuine JS error ("undefined is not an object — i.grand.toFixed") which was misleading because it was wrapped in the "no printer mapped" copy.',
+    ],
+  },
+  {
     version: '5.5.80', date: '7 May 2026', label: 'MPOS — print button unstick, history backfill, floor plan section split',
     changes: [
       'PRINT BUTTON STUCK — after the first tap, if the print store action never resolved (e.g. PrintOrchestrator queued the job but the bridge response was lost) the cart\'s "printing" state pinned the button to disabled and Peter could never re-tap. Fix: 10-second Promise.race timeout in MCartSheet.printBill so the spinner always clears, plus an explicit `transport: \'queued\'` toast for the no-bridge case so Peter sees what happened instead of silent disable.',
