@@ -74,6 +74,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.100', date: '8 May 2026', label: 'Service periods — root-cause confirmed (RLS UPDATE blocked) + actionable SQL surfaced',
+    changes: [
+      'CONFIRMED ROOT CAUSE — Peter\'s "Cannot coerce the result to a single JSON object" error is PostgREST telling us the UPDATE on platform DB locations affected 0 rows even though the SELECT found the row. That\'s the canonical signal for "RLS allows SELECT but blocks UPDATE for the current (anon) session". platformSupabase is initialised with persistSession:false so BO queries hit the platform DB unauthenticated.',
+      'IMMEDIATE FIX in code: switched the save\'s post-update read from `.single()` (which throws on 0 rows) to `.maybeSingle()` (which resolves to data:null). The handler now surfaces a clear error WITH a copy-pasteable SQL policy fix instead of crashing.',
+      'WHAT TO RUN — Supabase SQL editor on the platform DB project (yhzjgyrkyjabvhblqxzu): CREATE POLICY locations_anon_update ON public.locations FOR UPDATE USING (true) WITH CHECK (true); This unblocks Save immediately. Tighten the predicate later (e.g. WITH CHECK (id IN (SELECT location_id FROM user_locations WHERE user_id = auth.uid()))).',
+      'STRUCTURAL NOTE — long-term, location settings should probably move to ops DB (which IS authenticated for BO users) rather than fight platform DB RLS. Filed for the next pass; this commit unblocks Peter today.',
+    ],
+  },
+  {
     version: '5.5.99', date: '8 May 2026', label: 'Service periods — fix silent "save does nothing" + load fallback',
     changes: [
       'WHY THE SAVE BUTTON FELT DEAD — v5.5.98 made the load `.eq(\'id\', getLocationId()).maybeSingle()`. If the platform DB locations row had a different id from ops (sometimes the case when the two DBs were seeded separately), the load returned null, `location` stayed null, and the save handler returned early with NO visible feedback. Click the button → nothing happens, no error, no toast.',

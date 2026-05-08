@@ -159,7 +159,10 @@ export default function LocationSettings() {
       })
       .eq('id', location.id)
       .select('id, shifts, timezone, business_day_start, collection_lead_minutes')
-      .single();
+      // maybeSingle so a 0-row return doesn't throw "Cannot coerce" — it
+      // resolves to data:null which we then handle with a specific error
+      // pointing at the RLS UPDATE policy (the most common cause).
+      .maybeSingle();
 
     // Save show_item_images to ops DB (separate concern)
     const locId = await getLocationId().catch(() => null);
@@ -174,7 +177,14 @@ export default function LocationSettings() {
       return;
     }
     if (!data) {
-      setError('Save did not return a row — likely an RLS / permission issue. Sign in to the platform DB or check the locations table policies for UPDATE.');
+      // Update affected 0 rows even though SELECT found the location — almost
+      // always RLS denying UPDATE for the (anon) platformSupabase session.
+      // Surface a copy-pasteable SQL fix the user can run in Supabase SQL editor.
+      setError(
+        'Save reached the DB but updated 0 rows. This is an RLS policy on the platform DB locations table — UPDATE is blocked. Open Supabase → SQL editor and run: ' +
+        `CREATE POLICY locations_anon_update ON public.locations FOR UPDATE USING (true) WITH CHECK (true); ` +
+        '(Tighten the predicate later — this unblocks Save right now.)'
+      );
       return;
     }
     // Verify shifts round-tripped — surfaces the bug instead of hiding it
