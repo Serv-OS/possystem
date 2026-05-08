@@ -74,6 +74,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.97', date: '8 May 2026', label: 'Voice ordering — compose parent name into child variants ("Heineken — Pint" not just "Pint")',
+    changes: [
+      'WHY "PINT OF HEINEKEN" PICKED A RANDOM PINT — voice-order.js was filtering out parent-variant container items (good — they\'re unsellable £0 placeholders) but then sending children whose `name` field is just the variant label ("Pint", "Half", "Large"). The parser literally saw a sea of items called "Pint" and couldn\'t tell which beer they belonged to. Same architectural issue as the Box of 3 / Bueno problem, different surface.',
+      'FIX — for every child variant we now compose "Parent — Child" before handing the menu to the LLM. So "Heineken Pint" sends as `name: "Heineken — Pint"`, "Stella Half" as `name: "Stella — Half"`, etc. If the child name already contains the parent name (some installs store the full label on the child), we don\'t double-up. The parser can now match "pint of heineken" against the item that contains BOTH words.',
+      'BONUS — children inherit the parent\'s assigned_modifier_groups when they don\'t override. Milk-choice on a Latte parent now applies to Latte — Large / Latte — Small voice picks too, so "large latte with almond milk" lands the right modifier even though the child item itself doesn\'t list the milk group.',
+    ],
+  },
+  {
     version: '5.5.96', date: '8 May 2026', label: 'Voice ordering — modifier-aware (almond milk picks the option, not a note)',
     changes: [
       'WHY VOICE WAS WEAK — saying "latte large with almond milk" parsed almond milk as a free-form mod_label, which the cart added as { _instruction: true, price: 0 }. Result: no surcharge, no link to a real modifier option, no attribution in reports, and the customer-facing receipt printed it as a note instead of a chargeable add-on. The parser literally didn\'t know what modifier groups existed for an item.',

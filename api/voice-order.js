@@ -144,7 +144,6 @@ export default async function handler(req, res) {
   // the customer wanted. Drop parents here so Claude can only choose among
   // sellable items.
   const ids = new Set(menu.map(m => m.id));
-  const parentIds = new Set(menu.filter(m => (m.type || 'simple') === 'variants').map(m => m.id));
   const sellable = menu.filter(m => {
     const t = m.type || 'simple';
     if (t === 'variants') return false;          // never sell the parent
@@ -154,19 +153,39 @@ export default async function handler(req, res) {
     }
     return true;
   });
+  // Parent-name lookup so we can compose "Heineken — Pint" instead of sending
+  // a child with name "Pint". Children store only their own variant label
+  // (Pint / Half / Large / etc); without this the parser sees a sea of items
+  // named just "Pint" and can't tell beers apart.
+  const itemById = new Map(menu.map(m => [m.id, m]));
 
   // Compact menu representation — only the fields the parser needs. Keeps
   // tokens down so latency stays under ~1.5s. Per-item we surface the assigned
   // modifier-group ids so the LLM knows which groups to consider when the
   // customer mentions an add-on.
-  const compactMenu = sellable.slice(0, 250).map(m => ({
-    id: m.id,
-    name: m.name,
-    cat: m.cat || (Array.isArray(m.cats) ? m.cats[0] : null),
-    price: m.price ?? m.pricing?.base ?? 0,
-    allergens: m.allergens || [],
-    mod_groups: m.assignedModifierGroups || m.assigned_modifier_groups || [],
-  }));
+  const compactMenu = sellable.slice(0, 250).map(m => {
+    const parent = m.parentId ? itemById.get(m.parentId) : null;
+    const ownName = m.menuName || m.menu_name || m.name || 'Item';
+    const parentName = parent ? (parent.menuName || parent.menu_name || parent.name) : null;
+    // If the parent name isn't already part of the child's name, prepend it.
+    // Some installs already store children as "Heineken — Pint"; don't double up.
+    const composed = (parentName && !ownName.toLowerCase().includes(parentName.toLowerCase()))
+      ? `${parentName} — ${ownName}`
+      : ownName;
+    return {
+      id: m.id,
+      name: composed,
+      cat: m.cat || (Array.isArray(m.cats) ? m.cats[0] : null),
+      price: m.price ?? m.pricing?.base ?? 0,
+      allergens: m.allergens || [],
+      // Inherit the parent's modifier groups when the child doesn't override —
+      // milk choice etc are typically defined on the parent "Latte" and apply
+      // equally to "Latte — Large" / "Latte — Small".
+      mod_groups:
+        m.assignedModifierGroups || m.assigned_modifier_groups ||
+        parent?.assignedModifierGroups || parent?.assigned_modifier_groups || [],
+    };
+  });
 
   // Compact modifier-group representation. Only include groups any sellable
   // item actually references (keeps tokens down on locations with many groups).
