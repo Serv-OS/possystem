@@ -197,10 +197,11 @@ async function claimAndDispatch(jobId) {
 
 // ─── Dispatch the bytes ──────────────────────────────────────────────────────
 async function dispatchJob(job) {
-  // Mark 'sending' so other pollers don't touch it
-  await supabase.from('print_jobs')
-    .update({ status: 'sending' })
-    .eq('id', job.id);
+  // SPEED: skip the pre-dispatch `status: 'sending'` update — `claimed` already
+  // protects the row from re-pickup (the poll filter is status IN
+  // ('pending','failed'), and claim_expires_at acts as a TTL safety net via
+  // reclaimStuck). Saves a Supabase round-trip (~300-700ms) on every print
+  // before paper comes out, which is the most user-visible latency.
 
   let ok = false;
   let errMsg = null;
@@ -231,19 +232,25 @@ async function dispatchJob(job) {
     errMsg = e.message || 'Print failed';
   }
 
-  // Update job row with outcome
+  // SPEED: fire-and-forget the post-print bookkeeping. Paper is already out
+  // (or already failed) — the success/failure UPDATE on print_jobs and the
+  // health-tracking update have no bearing on perceived latency. Releasing
+  // the dispatch loop now lets the next queued job start ~500ms sooner,
+  // which compounds visibly during a service rush.
   if (ok) {
-    await supabase.from('print_jobs').update({
+    supabase.from('print_jobs').update({
       status:       'printed',
       processed_at: new Date().toISOString(),
       claimed_by:   null,
       claim_expires_at: null,
       error_message: null,
-    }).eq('id', job.id);
-
-    // Health tracking — recorded on success so dashboards go green
+    }).eq('id', job.id).then(() => {}, (e) => {
+      console.warn('[PrintOrchestrator] mark-printed failed (job already on paper):', e?.message || e);
+    });
     printService.recordPrinterHealth(job.printer_id, 'online').catch(() => {});
   } else {
+    // Failures still need to be awaited — recordFailure schedules retry, and
+    // we don't want the next tick to fire until the row is back to pending.
     await recordFailure(job, errMsg);
     printService.recordPrinterHealth(job.printer_id, 'offline', errMsg).catch(() => {});
   }

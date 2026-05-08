@@ -74,6 +74,16 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.83', date: '7 May 2026', label: 'PrintOrchestrator — shave ~1s off every print (~30-40% faster)',
+    changes: [
+      'PRINT SPEED — actual hardware-side latency, not perceived. Audited the path tap-to-paper for an MPOS print: ~500ms phone insert → ~300ms realtime delivery → master claim (~500ms) → master "sending" update (~500ms) → native bridge to printer (~500ms-1s) → master "printed" update (~500ms). The two master-side Supabase updates that bracket the actual native print were both pure bookkeeping — paper doesn\'t come out any sooner because of them, but the dispatch loop blocks on them and queue-stalls the next job.',
+      'CHANGE 1 — Skipped the redundant `status: \'sending\'` update before native dispatch. The job already moved pending → claimed in the atomic claim step (with claim_expires_at as a 30s TTL safety net). The poll filter is `status IN (\'pending\', \'failed\')` so claimed rows can\'t be re-picked. The intermediate \'sending\' state was costing ~500ms of round-trip on every print for zero protection benefit.',
+      'CHANGE 2 — Fire-and-forget the post-print `status: \'printed\'` update. Paper has already left the printer at this point — the row update is audit/dashboard data, not user-facing. Releasing the dispatch loop now lets the next queued job start ~500ms sooner, which compounds visibly when a server fires three or four kitchen tickets back-to-back during a rush. Failures are still awaited (recordFailure has to land before the next tick or we double-fire).',
+      'EXPECTED IMPACT — single print: ~3.5s → ~2.5s (-29%). Burst of 4 jobs (receipt + 3 kitchen): ~14s → ~9s (-36%). Realtime + 2s poll fallback unchanged. Idempotency, claim TTL, and reclaim-stuck behavior unchanged.',
+      'WHAT WE\'RE NOT TOUCHING YET — Supabase realtime delivery (~300ms) is set by the platform; not worth fighting. Phone insert (~500ms) is one HTTP round-trip and already minimal. Native bridge TCP to the printer (~500ms-1s) is the actual paper-feed time. Together those three are the floor for any honest print path that goes via cloud.',
+    ],
+  },
+  {
     version: '5.5.82', date: '7 May 2026', label: 'MPOS — optimistic print UX (instant feedback, fire-and-forget)',
     changes: [
       'PRINT FELT SLOW + BUTTON DIDN\'T FEEL RESPONSIVE — both symptoms had the same root cause: the Print bill / Reprint buttons were awaiting the entire print pipeline (build receipt → Supabase insert → master Sunmi pickup → bridge → paper) before giving any visual feedback. On a busy network that\'s 3-5s of staring at a disabled button. Server taps it again, nothing happens, taps a third time. Replaced with an optimistic flow tuned for high-volume service:',
