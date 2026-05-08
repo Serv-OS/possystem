@@ -74,6 +74,16 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.98', date: '8 May 2026', label: 'Service periods — verify save round-trip + pin load to resolved location id',
+    changes: [
+      'BUG — service periods configured in Location Settings appeared to save but came back empty on next load. Two contributing causes:',
+      '1. The save path was `.update().eq()` with no `.select()` — supabase-js returns success (error: null) even when RLS denies the UPDATE silently, OR when the `.eq()` predicate doesn\'t match any row. So the UI showed "✓ Saved" while nothing actually persisted.',
+      '2. The load was `.limit(1).single()` with no filter, so on a multi-location org it surfaced whichever row RLS picked first. A save could write to one row and the next mount could read a different row — making the bug look like "data lost" when it was actually written to a sibling location.',
+      'FIX — save now does `.select(\'id, shifts, ...\').single()` so we get the persisted row back. We compare sent vs returned shifts length and surface a clear error if they don\'t match (with a hint to check the JSONB column type / RLS UPDATE policy). Local state syncs to whatever actually came back. Load pins to `.eq(\'id\', getLocationId())` so we always read the correct location.',
+      'EXTRA — shifts payload is now sanitised before write (id, name, start, end only — coerced to safe types). Stops any UI-side garbage from making the JSONB column reject the update.',
+    ],
+  },
+  {
     version: '5.5.97', date: '8 May 2026', label: 'Voice ordering — compose parent name into child variants ("Heineken — Pint" not just "Pint")',
     changes: [
       'WHY "PINT OF HEINEKEN" PICKED A RANDOM PINT — voice-order.js was filtering out parent-variant container items (good — they\'re unsellable £0 placeholders) but then sending children whose `name` field is just the variant label ("Pint", "Half", "Large"). The parser literally saw a sea of items called "Pint" and couldn\'t tell which beer they belonged to. Same architectural issue as the Box of 3 / Bueno problem, different surface.',

@@ -68,18 +68,28 @@ export default function LocationSettings() {
 
   useEffect(() => {
     if (!platformSupabase) { setLoading(false); return; }
-    platformSupabase.from('locations').select('id, name, timezone, business_day_start, shifts, collection_lead_minutes').limit(1).single()
-      .then(({ data }) => {
-        if (data) {
-          setLocation(data);
-          setTimezone(data.timezone || 'Europe/London');
-          setBizDayStart(data.business_day_start || '06:00');
-          setShifts(data.shifts || []);
-          setCollectionLeadMin(typeof data.collection_lead_minutes === 'number' ? data.collection_lead_minutes : 30);
-        }
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
+    // Pin the load to the resolved location id. Previously this was
+    // `limit(1).single()` with no filter, which on a multi-location org
+    // returned whichever row RLS surfaced first — meaning a save could
+    // appear to "lose" service periods because the next mount loaded a
+    // different location's row.
+    (async () => {
+      const locId = await getLocationId().catch(() => null);
+      const q = platformSupabase
+        .from('locations')
+        .select('id, name, timezone, business_day_start, shifts, collection_lead_minutes');
+      const { data } = locId
+        ? await q.eq('id', locId).maybeSingle()
+        : await q.limit(1).maybeSingle();
+      if (data) {
+        setLocation(data);
+        setTimezone(data.timezone || 'Europe/London');
+        setBizDayStart(data.business_day_start || '06:00');
+        setShifts(Array.isArray(data.shifts) ? data.shifts : []);
+        setCollectionLeadMin(typeof data.collection_lead_minutes === 'number' ? data.collection_lead_minutes : 30);
+      }
+      setLoading(false);
+    })().catch(() => setLoading(false));
 
     // Load show_item_images from ops DB
     (async () => {
@@ -102,18 +112,56 @@ export default function LocationSettings() {
   const save = async () => {
     if (!platformSupabase || !location) return;
     setSaving(true); setError(''); setSaved(false);
-    const { error: err } = await platformSupabase
-      .from('locations')
-      .update({ timezone, business_day_start: bizDayStart, shifts, collection_lead_minutes: collectionLeadMin })
-      .eq('id', location.id);
 
-    // Save show_item_images to ops DB
+    // Sanitise shifts payload — strip any fields the JSONB column doesn't
+    // expect, coerce times to HH:MM strings. The Service Periods bug was
+    // caused by the update silently no-op'ing: .update().eq() returns success
+    // (no error) even when RLS denies the write OR when the row id mismatches.
+    // Adding .select().single() forces a round-trip on the actual mutated
+    // row, so we can confirm shifts came back persisted.
+    const cleanShifts = (shifts || []).map(sh => ({
+      id:    sh.id || `shift-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      name:  String(sh.name || 'Shift').slice(0, 60),
+      start: String(sh.start || '00:00').slice(0, 5),
+      end:   String(sh.end   || '00:00').slice(0, 5),
+    }));
+
+    const { data, error: err } = await platformSupabase
+      .from('locations')
+      .update({
+        timezone,
+        business_day_start:      bizDayStart,
+        shifts:                  cleanShifts,
+        collection_lead_minutes: collectionLeadMin,
+      })
+      .eq('id', location.id)
+      .select('id, shifts, timezone, business_day_start, collection_lead_minutes')
+      .single();
+
+    // Save show_item_images to ops DB (separate concern)
     const locId = await getLocationId().catch(() => null);
     if (locId && supabase) {
-      await supabase.from('locations').update({ show_item_images: showItemImages }).eq('id', locId);
+      try { await supabase.from('locations').update({ show_item_images: showItemImages }).eq('id', locId); } catch {}
     }
     setSaving(false);
-    if (err) { setError(err.message); return; }
+
+    if (err) {
+      console.warn('[LocationSettings] save failed:', err);
+      setError(err.message || 'Save failed (check console)');
+      return;
+    }
+    if (!data) {
+      setError('Save did not return a row — likely an RLS / permission issue. Sign in to the platform DB or check the locations table policies for UPDATE.');
+      return;
+    }
+    // Verify shifts round-tripped — surfaces the bug instead of hiding it
+    const persistedShifts = Array.isArray(data.shifts) ? data.shifts : [];
+    if (cleanShifts.length !== persistedShifts.length) {
+      setError(`Save reported success but shifts didn't persist: sent ${cleanShifts.length}, got ${persistedShifts.length} back. Check the locations.shifts column type (must be jsonb) and RLS UPDATE policy.`);
+      return;
+    }
+    // Keep local state in sync with what's actually persisted
+    setShifts(persistedShifts);
     clearLocationConfigCache(); // force refresh on next read
     setSaved(true);
     setTimeout(() => setSaved(false), 3000);
