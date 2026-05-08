@@ -70,6 +70,19 @@ const HOSTNAME  = os.hostname();
 
 const knownPrinterIds = new Set();
 const inflight = new Set();
+// FAST PATH dedup: idempotency_key -> timestamp of broadcast print. When the
+// postgres INSERT realtime arrives ~500ms after our broadcast print, we look
+// up the key and skip dispatch (the upsert path marked the row done).
+const broadcastHandled = new Map();
+
+async function markRowPrinted(jobId) {
+  try {
+    await supabase.from('print_jobs').update({
+      status: 'printed', processed_at: new Date().toISOString(),
+      claimed_by: null, claim_expires_at: null, error_message: null,
+    }).eq('id', jobId);
+  } catch {}
+}
 
 // Heartbeat. Errors surfaced (not swallowed) so upsert failures are visible.
 let _heartbeatErrLogged = false;
@@ -324,6 +337,12 @@ async function main() {
     }, payload => {
       const job = payload.new;
       if (!job || job.status !== 'pending') return;
+      // FAST PATH dedup: if we already printed this via the broadcast channel,
+      // skip the dispatch and just mark the row as printed.
+      if (job.idempotency_key && broadcastHandled.has(job.idempotency_key)) {
+        markRowPrinted(job.id).catch(() => {});
+        return;
+      }
       claimAndDispatch(job.id);
     })
     .on('postgres_changes', {
@@ -344,6 +363,78 @@ async function main() {
       if (status === 'SUBSCRIBED') console.log('  realtime subscribed\n');
       if (status === 'CLOSED')     console.log('  realtime closed, polling only');
     });
+
+  // FAST PATH — broadcast channel. The web app fires a Supabase Realtime
+  // broadcast with the print bytes embedded the moment a server taps Print.
+  // We dispatch immediately on receipt — no postgres write, no realtime
+  // fanout from logical replication, no claim round-trip. End-to-end ~250ms
+  // vs 2-9s for the postgres path.
+  if (LOCATION_ID) {
+    const fastChannel = supabase
+      .channel(`print-fast:${LOCATION_ID}`, { config: { broadcast: { self: false } } })
+      .on('broadcast', { event: 'print' }, async ({ payload }) => {
+        if (!payload || !payload.idempotency_key) return;
+        const key = payload.idempotency_key;
+        if (broadcastHandled.has(key)) return;
+        broadcastHandled.set(key, Date.now());
+        const ip   = payload.printer_ip;
+        const port = payload.printer_port || PRINTER_PORT;
+        const shortId = key.slice(0, 8);
+        if (!ip) {
+          console.warn(`  [fast ${shortId}] no printer IP in broadcast payload, falling back to postgres`);
+          broadcastHandled.delete(key);
+          return;
+        }
+        let bytes;
+        try { bytes = Buffer.from(payload.payload_b64 || '', 'base64'); }
+        catch {
+          console.warn(`  [fast ${shortId}] bad base64 payload`);
+          broadcastHandled.delete(key);
+          return;
+        }
+        const t0 = Date.now();
+        try {
+          await printTCP(ip, port, bytes);
+          const elapsed = Date.now() - t0;
+          console.log(`  [fast ${shortId}] ok ${bytes.length}b -> ${ip}:${port} in ${elapsed}ms`);
+          // Upsert audit row to status='printed'. ON CONFLICT (idempotency_key)
+          // means whether the web app's INSERT or this upsert lands first,
+          // the row ends up consistent.
+          supabase.from('print_jobs').upsert({
+            location_id:     payload.location_id,
+            printer_id:      payload.printer_id,
+            printer_ip:      payload.printer_ip,
+            printer_port:    payload.printer_port,
+            job_type:        payload.job_type || 'receipt',
+            payload:         payload.payload_b64,
+            status:          'printed',
+            idempotency_key: key,
+            processed_at:    new Date().toISOString(),
+            attempts:        1,
+            agent_id:        AGENT_ID,
+            metadata:        payload.metadata || null,
+          }, { onConflict: 'idempotency_key' }).then(() => {}, (e) => {
+            console.warn(`  [fast ${shortId}] audit upsert failed: ${e?.message}`);
+          });
+          updatePrinterHealth(payload.printer_id, 'online').catch(() => {});
+        } catch (err) {
+          console.error(`  [fast ${shortId}] tcp failed: ${err.message} — postgres path will retry`);
+          broadcastHandled.delete(key);
+          updatePrinterHealth(payload.printer_id, 'error', err.message).catch(() => {});
+        }
+      })
+      .subscribe(status => {
+        if (status === 'SUBSCRIBED') console.log('  fast-path broadcast subscribed\n');
+      });
+
+    // Periodic prune so the dedup map can't grow unbounded
+    setInterval(() => {
+      const cutoff = Date.now() - 5 * 60_000;
+      for (const [k, ts] of broadcastHandled) {
+        if (ts < cutoff) broadcastHandled.delete(k);
+      }
+    }, 60_000);
+  }
 
   setInterval(drainEligible, POLL_MS);
   setInterval(() => { _heartbeatErrLogged = false; sendHeartbeat(); }, HEARTBEAT_MS);

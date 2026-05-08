@@ -74,6 +74,17 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.85', date: '7 May 2026', label: 'Print FAST PATH — fix subscribe race + add print-agent broadcast subscriber',
+    changes: [
+      'WHY 5.5.84 STILL FELT 9 SECONDS — TWO bugs prevented the fast path from actually delivering. Both fixed here.',
+      'BUG 1 — supabase-js channel.send() silently no-ops if the channel isn\'t in SUBSCRIBED state yet. The previous code called .subscribe() and immediately .send() on the same tick — the send fired before the realtime topic join completed, the broadcast went nowhere. Fix: new _ensureFastChannel helper that AWAITS subscribe (typical 100-300ms first time, instant after) and caches the ready promise so subsequent prints fire immediately.',
+      'BUG 2 — print-agent.js was only listening on postgres-INSERT, not on the broadcast channel. If your master dispatcher is the laptop print-agent (not a Sunmi with native bridge running PrintOrchestrator), the broadcast had no subscriber at all. Every print was falling back to the postgres path with its 2s polling and full claim+update sequence — hence the 9s. Fix: print-agent now subscribes to `print-fast:${LOCATION_ID}` and dispatches via TCP immediately on broadcast receipt. Same idempotency dedup as the orchestrator (Map keyed on idempotency_key, 5min TTL).',
+      'EXPECTED IMPACT WITH BOTH FIXES — tap-to-paper drops from 9s to ~250-500ms. The print-agent log will show `[fast XXXXXX] ok 1234b -> 192.168.1.42:9100 in 180ms` lines for fast-path prints. Postgres path still works as the durable backup if the broadcast misses (master offline, channel dropped, etc).',
+      'DEPLOYMENT NOTE — restart your print-agent.js process to pick up the broadcast subscriber. The web app changes ship automatically with the next deploy.',
+      'VARIANT REGRESSION — current source still has the variant detection (children scan + variant picker routing) intact. If your device is showing variants un-stacked it\'s almost certainly a stale PWA cache; force-refresh / clear cache once 5.5.85 is live.',
+    ],
+  },
+  {
     version: '5.5.84', date: '7 May 2026', label: 'Print FAST PATH — Supabase Realtime Broadcast (~3s → ~500ms tap-to-paper)',
     changes: [
       'WHY THE PREVIOUS PATH FELT SLOW — every print went phone → Supabase INSERT → Postgres logical replication → realtime fanout → master claim → master native print. The two cloud writes either side of the actual paper feed were bookkeeping the user could feel. Browsers can\'t open raw TCP sockets, so the phone can never talk to the printer directly — but we don\'t need a postgres write to get a packet from one device to another on the same network.',

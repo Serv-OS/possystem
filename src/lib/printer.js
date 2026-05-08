@@ -497,6 +497,45 @@ class PrintService {
     return this._allPrinters().find(p => p?.id === id) || null;
   }
 
+  // FAST PATH — lazily subscribe a per-location broadcast channel and cache it.
+  // First call awaits SUBSCRIBED (typical 100-300ms); every subsequent call
+  // returns instantly. This is the single biggest cause of broadcasts being
+  // silently dropped — without awaiting subscribe, the first send no-ops
+  // because the channel hasn't joined the realtime topic yet.
+  async _ensureFastChannel(locationId) {
+    if (this._fastChannel && this._fastChannelLocId === locationId && this._fastChannelReady) {
+      try { await this._fastChannelReady; } catch {}
+      return this._fastChannel;
+    }
+    // Tear down any stale channel for a different location
+    if (this._fastChannel && this._fastChannelLocId !== locationId) {
+      try { supabase.removeChannel(this._fastChannel); } catch {}
+      this._fastChannel = null;
+      this._fastChannelReady = null;
+    }
+    if (!this._fastChannel) {
+      this._fastChannel = supabase.channel(`print-fast:${locationId}`);
+      this._fastChannelLocId = locationId;
+      this._fastChannelReady = new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('subscribe timeout')), 4000);
+        this._fastChannel.subscribe((status) => {
+          if (status === 'SUBSCRIBED') { clearTimeout(timer); resolve(); }
+          else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+            clearTimeout(timer); reject(new Error(`channel ${status}`));
+          }
+        });
+      }).catch((e) => {
+        // Don't poison the cache forever — let the next print try again
+        console.warn('[Print] fast channel subscribe failed:', e?.message);
+        this._fastChannel = null;
+        this._fastChannelReady = null;
+        throw e;
+      });
+    }
+    try { await this._fastChannelReady; return this._fastChannel; }
+    catch { return null; }
+  }
+
   // v4.3.0 — DURABLE-FIRST SUBMIT
   // Always inserts a print_jobs row before attempting to dispatch. If the app
   // crashes mid-dispatch, the row survives and the PrintRetrier picks it up.
@@ -520,35 +559,33 @@ class PrintService {
     // the row to status='printed' on broadcast print success, so the audit
     // record is consistent regardless of which path lands first.
     //
-    // Fire and forget — never await this. If the broadcast misses (master
-    // offline, channel not subscribed yet), the durable INSERT path takes over.
+    // CRITICAL: supabase-js channel.send() silently no-ops if the channel
+    // isn't in SUBSCRIBED state. We MUST await subscription before the first
+    // send. Subsequent sends fire instantly because the channel stays open.
     try {
       const fastLocId = await getLocationId();
       if (supabase && fastLocId) {
-        // One channel per location, kept subscribed for the app's lifetime
-        if (!this._fastChannel || this._fastChannelLocId !== fastLocId) {
-          if (this._fastChannel) {
-            try { supabase.removeChannel(this._fastChannel); } catch {}
-          }
-          this._fastChannel = supabase.channel(`print-fast:${fastLocId}`);
-          this._fastChannelLocId = fastLocId;
-          this._fastChannel.subscribe();
+        const ch = await this._ensureFastChannel(fastLocId);
+        if (ch) {
+          // Fire and forget — broadcast send returns 'ok' / 'timed_out' /
+          // 'rate_limited'. We don't gate on the result; the durable INSERT
+          // below is the safety net for any misses.
+          ch.send({
+            type: 'broadcast',
+            event: 'print',
+            payload: {
+              idempotency_key: idempotencyKey,
+              location_id:     fastLocId,
+              printer_id:      printer.id,
+              printer_ip:      ip,
+              printer_port:    port,
+              job_type:        jobType,
+              payload_b64:     payload,
+              metadata,
+              ts:              Date.now(),
+            },
+          }).catch(() => {});
         }
-        this._fastChannel.send({
-          type: 'broadcast',
-          event: 'print',
-          payload: {
-            idempotency_key: idempotencyKey,
-            location_id:     fastLocId,
-            printer_id:      printer.id,
-            printer_ip:      ip,
-            printer_port:    port,
-            job_type:        jobType,
-            payload_b64:     payload,
-            metadata,
-            ts:              Date.now(),
-          },
-        }).catch(() => {});
       }
     } catch (e) {
       console.warn('[Print] fast broadcast failed (falling back to durable):', e?.message);
