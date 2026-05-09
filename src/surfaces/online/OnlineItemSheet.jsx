@@ -1,40 +1,33 @@
-// v5.5.108 — Online ordering item detail sheet.
-// Slide-up bottom sheet that opens when a customer taps a menu row.
-// Shows item name + description + image, modifier groups (if any),
-// quantity stepper, and "Add to cart" CTA. Mirrors MItemDetail.jsx
-// shape so cart line items have the same { id, name, price, qty, mods }
-// schema downstream surfaces (kitchen ticket, receipt) already expect.
+// v5.5.112 — Online ordering item detail sheet (UI overhaul).
+// Full-screen on mobile, side-panel on desktop. DoorDash-style: hero image
+// at top, name + description, variant picker if applicable, modifier groups
+// with clear required/optional labels, qty stepper, sticky bottom CTA.
 
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 
-export default function OnlineItemSheet({ item, theme, allItems, orderType, onClose, onAdd }) {
-  const [qty, setQty] = useState(1);
-  const [modGroups, setModGroups] = useState([]);
-  const [selections, setSelections] = useState({}); // { groupId: option | option[] }
-  const [loading, setLoading] = useState(false);
+export default function OnlineItemSheet({ item, theme, allItems, onClose, onAdd }) {
+  const [qty, setQty]               = useState(1);
+  const [modGroups, setModGroups]   = useState([]);
+  const [selections, setSelections] = useState({});
+  const [loading, setLoading]       = useState(false);
+  const [errors, setErrors]         = useState([]);
 
-  // Variant detection — children of this item via parent_id
   const variants = useMemo(
     () => (allItems || []).filter(i => i.parent_id === item.id),
     [allItems, item.id]
   );
   const isParentVariant = variants.length > 0;
   const [selectedVariant, setSelectedVariant] = useState(null);
-
   useEffect(() => {
-    if (isParentVariant && variants.length && !selectedVariant) {
-      setSelectedVariant(variants[0]);
-    }
+    if (isParentVariant && variants.length && !selectedVariant) setSelectedVariant(variants[0]);
   }, [isParentVariant, variants, selectedVariant]);
 
   const effectiveItem = selectedVariant || item;
 
-  // Load modifier group definitions for THIS item's assigned groups (if any).
-  // assigned_modifier_groups is an array of group IDs on the item row.
+  // Modifier groups assigned to this item (or inherited from parent for child variants)
   const groupIds = useMemo(() => {
     const own = effectiveItem.assigned_modifier_groups || [];
-    // Fall back to parent's assigned groups when child doesn't override
     if (own.length === 0 && effectiveItem.parent_id) {
       const parent = (allItems || []).find(i => i.id === effectiveItem.parent_id);
       return parent?.assigned_modifier_groups || [];
@@ -44,18 +37,17 @@ export default function OnlineItemSheet({ item, theme, allItems, orderType, onCl
 
   useEffect(() => {
     let alive = true;
-    if (!groupIds.length || !supabase) { setModGroups([]); return; }
+    if (!groupIds.length || !supabase) { setModGroups([]); setSelections({}); return; }
     setLoading(true);
     (async () => {
       try {
-        const { data } = await supabase
-          .from('modifier_groups')
+        const { data } = await supabase.from('modifier_groups')
           .select('id, name, min, max, selection_type, options, sort_order')
           .in('id', groupIds);
         if (!alive) return;
         const sorted = (data || []).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
         setModGroups(sorted);
-        // Pre-fill required single-pick groups with first option to satisfy validation
+        // Pre-fill required single-pick groups with the first option
         const init = {};
         sorted.forEach(g => {
           if ((g.min ?? 0) >= 1 && (g.max ?? 1) === 1 && Array.isArray(g.options) && g.options.length) {
@@ -64,7 +56,7 @@ export default function OnlineItemSheet({ item, theme, allItems, orderType, onCl
         });
         setSelections(init);
       } catch (e) {
-        console.warn('[OnlineItemSheet] mod load failed:', e?.message);
+        console.warn('[OnlineItemSheet] mod group load failed:', e?.message);
       } finally {
         if (alive) setLoading(false);
       }
@@ -80,31 +72,31 @@ export default function OnlineItemSheet({ item, theme, allItems, orderType, onCl
   }, 0);
   const lineTotal = (basePrice + modsTotal) * qty;
 
-  const canAdd = useMemo(() => {
+  const validationErrors = useMemo(() => {
+    const errs = [];
     for (const g of modGroups) {
       const min = g.min ?? 0;
       if (min === 0) continue;
       const v = selections[g.id];
-      if (!v) return false;
-      if (Array.isArray(v) && v.length < min) return false;
+      if (!v || (Array.isArray(v) && v.length < min)) errs.push(g.id);
     }
-    return true;
+    return errs;
   }, [modGroups, selections]);
+  const canAdd = validationErrors.length === 0;
 
   const handleAdd = () => {
+    if (!canAdd) { setErrors(validationErrors); return; }
     const flatMods = [];
     Object.entries(selections).forEach(([gid, val]) => {
       const grp = modGroups.find(g => g.id === gid);
       const arr = Array.isArray(val) ? val : (val ? [val] : []);
-      arr.forEach(o => {
-        flatMods.push({
-          id: o?.id || null,
-          name: o?.name || o?.label || '',
-          label: o?.name || o?.label || '',
-          groupLabel: grp?.name || '',
-          price: Number(o?.price) || 0,
-        });
-      });
+      arr.forEach(o => flatMods.push({
+        id: o?.id || null,
+        name: o?.name || o?.label || '',
+        label: o?.name || o?.label || '',
+        groupLabel: grp?.name || '',
+        price: Number(o?.price) || 0,
+      }));
     });
     const finalItem = {
       ...effectiveItem,
@@ -115,100 +107,160 @@ export default function OnlineItemSheet({ item, theme, allItems, orderType, onCl
     onAdd(finalItem, flatMods, qty);
   };
 
-  const display = effectiveItem.menu_name || effectiveItem.name;
+  const muted    = theme.isLight ? '#6b6b70' : '#a0a0a8';
+  const cardBdr  = theme.isLight ? '#ececef' : '#2a2a30';
+  const inputBg  = theme.isLight ? '#f5f5f7' : '#1f1f24';
+  const display  = effectiveItem.menu_name || effectiveItem.name;
+  const heroImg  = item.image || effectiveItem.image;
 
   return (
-    <div style={{
+    <div onClick={onClose} style={{
       position: 'fixed', inset: 0, zIndex: 30,
-      background: 'rgba(0,0,0,0.55)',
+      background: 'rgba(0,0,0,0.6)',
       display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
-    }} onClick={onClose}>
+      animation: 'fadeIn .15s ease',
+    }}>
       <div onClick={e => e.stopPropagation()} style={{
-        width: '100%', maxWidth: 540,
-        maxHeight: '90vh', overflowY: 'auto',
-        background: theme.bg, color: theme.fg, borderRadius: '16px 16px 0 0',
-        borderTop: `1px solid ${theme.fg}20`,
+        width: '100%', maxWidth: 600,
+        maxHeight: '94vh', overflowY: 'auto',
+        background: theme.bg, color: theme.fg,
+        borderRadius: '18px 18px 0 0',
         display: 'flex', flexDirection: 'column',
+        boxShadow: '0 -10px 40px rgba(0,0,0,0.3)',
       }}>
         {/* Drag handle */}
-        <div style={{ padding: '10px 0 4px', display: 'flex', justifyContent: 'center', flexShrink: 0 }}>
-          <div style={{ width: 40, height: 4, borderRadius: 2, background: `${theme.fg}30` }}/>
+        <div style={{ padding: '10px 0 6px', display: 'flex', justifyContent: 'center', flexShrink: 0 }}>
+          <div style={{ width: 44, height: 5, borderRadius: 3, background: cardBdr }}/>
         </div>
 
-        {/* Hero / image */}
-        {item.image && (
-          <img src={item.image} alt={item.name}
-            style={{ width: '100%', maxHeight: 220, objectFit: 'cover', flexShrink: 0 }}/>
+        {/* Close (X) — floats over hero on mobile, top-right */}
+        <button onClick={onClose} style={{
+          position: 'absolute', top: 12, right: 16, zIndex: 5,
+          width: 36, height: 36, borderRadius: '50%', border: 'none',
+          background: 'rgba(0,0,0,0.55)', color: '#fff',
+          fontSize: 18, fontWeight: 900, cursor: 'pointer',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}>×</button>
+
+        {/* Hero image */}
+        {heroImg && (
+          <div style={{
+            width: '100%', height: 240,
+            backgroundImage: `url(${heroImg})`, backgroundSize: 'cover', backgroundPosition: 'center',
+            flexShrink: 0,
+          }}/>
         )}
 
-        <div style={{ padding: 18, flex: 1 }}>
-          <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 4 }}>{display}</div>
-          {item.description && <div style={{ fontSize: 13, opacity: 0.7, lineHeight: 1.5, marginBottom: 12 }}>{item.description}</div>}
+        <div style={{ padding: '20px 22px 12px', flex: 1 }}>
+          <div style={{ fontSize: 24, fontWeight: 800, letterSpacing: '-0.02em', marginBottom: 6 }}>
+            {display}
+          </div>
+          {item.description && (
+            <div style={{ fontSize: 14, color: muted, lineHeight: 1.55, marginBottom: 18 }}>
+              {item.description}
+            </div>
+          )}
 
           {/* Variant picker */}
           {isParentVariant && (
-            <div style={{ marginBottom: 18 }}>
-              <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Choose size</div>
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <Section title="Choose size" required>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {variants.map(v => {
                   const active = v.id === selectedVariant?.id;
                   const vPrice = Number(v.pricing?.base ?? v.price ?? 0);
                   return (
-                    <button key={v.id} onClick={() => setSelectedVariant(v)} style={{
-                      padding: '10px 14px', borderRadius: 10, cursor: 'pointer', fontFamily: 'inherit',
-                      background: active ? theme.accent : `${theme.fg}10`,
-                      color: active ? '#0b0c10' : theme.fg,
-                      border: active ? 'none' : `1px solid ${theme.fg}25`,
-                      fontSize: 12, fontWeight: 700,
-                    }}>
-                      {v.menu_name || v.name} · £{vPrice.toFixed(2)}
-                    </button>
+                    <OptionRow key={v.id}
+                      label={v.menu_name || v.name}
+                      priceDelta={vPrice - basePrice}
+                      checked={active}
+                      onClick={() => setSelectedVariant(v)}
+                      mode="single" theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
                   );
                 })}
               </div>
-            </div>
+            </Section>
           )}
 
           {/* Modifier groups */}
-          {loading && <div style={{ opacity: 0.6, fontSize: 12, padding: '8px 0' }}>Loading options…</div>}
-          {modGroups.map(g => (
-            <ModGroup key={g.id} group={g} value={selections[g.id]} theme={theme}
-              onChange={(v) => setSelections(s => ({ ...s, [g.id]: v }))}/>
-          ))}
+          {loading && <div style={{ padding: 12, color: muted, fontSize: 13 }}>Loading options…</div>}
+          {modGroups.map(g => {
+            const min = g.min ?? 0;
+            const max = g.max ?? 1;
+            const isSingle = max === 1;
+            const required = min >= 1;
+            const erroring = errors.includes(g.id);
+            const value = selections[g.id];
+            return (
+              <Section key={g.id}
+                title={g.name}
+                meta={required ? `Required${max > 1 ? ` · pick up to ${max}` : ''}` : (max > 1 ? `Pick up to ${max}` : 'Optional')}
+                required={required}
+                erroring={erroring}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {(g.options || []).map(opt => {
+                    const checked = isSingle
+                      ? value?.id === opt.id
+                      : Array.isArray(value) && value.some(o => o.id === opt.id);
+                    const onClick = () => {
+                      setErrors([]);
+                      setSelections(s => {
+                        const cur = s[g.id];
+                        if (isSingle) return { ...s, [g.id]: cur?.id === opt.id ? null : opt };
+                        const arr = Array.isArray(cur) ? cur : [];
+                        const has = arr.some(o => o.id === opt.id);
+                        if (has) return { ...s, [g.id]: arr.filter(o => o.id !== opt.id) };
+                        if (arr.length >= max) return s;
+                        return { ...s, [g.id]: [...arr, opt] };
+                      });
+                    };
+                    return (
+                      <OptionRow key={opt.id || opt.name}
+                        label={opt.name || opt.label}
+                        priceDelta={Number(opt.price) || 0}
+                        checked={checked}
+                        onClick={onClick}
+                        mode={isSingle ? 'single' : 'multi'}
+                        theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
+                    );
+                  })}
+                </div>
+              </Section>
+            );
+          })}
 
           {/* Quantity */}
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', margin: '20px 0' }}>
-            <div style={{ fontSize: 13, fontWeight: 700 }}>Quantity</div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-              <button onClick={() => setQty(q => Math.max(1, q - 1))}
-                style={{ ...stepBtn(theme), opacity: qty <= 1 ? 0.4 : 1 }}>−</button>
-              <span style={{ fontSize: 16, fontWeight: 800, minWidth: 24, textAlign: 'center' }}>{qty}</span>
-              <button onClick={() => setQty(q => q + 1)} style={stepBtn(theme)}>+</button>
+          <div style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            padding: '20px 0 8px',
+          }}>
+            <div style={{ fontSize: 15, fontWeight: 700 }}>Quantity</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+              <button onClick={() => setQty(q => Math.max(1, q - 1))} style={{
+                ...stepBtn, background: inputBg, color: theme.fg, opacity: qty <= 1 ? .4 : 1,
+              }}>−</button>
+              <span style={{ fontSize: 18, fontWeight: 800, minWidth: 28, textAlign: 'center' }}>{qty}</span>
+              <button onClick={() => setQty(q => q + 1)} style={{
+                ...stepBtn, background: inputBg, color: theme.fg,
+              }}>+</button>
             </div>
           </div>
         </div>
 
-        {/* Sticky CTA */}
+        {/* Sticky bottom CTA */}
         <div style={{
-          padding: '12px 18px calc(12px + env(safe-area-inset-bottom)) 18px',
-          background: theme.bg, borderTop: `1px solid ${theme.fg}15`, flexShrink: 0,
-          display: 'flex', gap: 10,
+          position: 'sticky', bottom: 0,
+          padding: '14px 22px calc(14px + env(safe-area-inset-bottom)) 22px',
+          background: theme.bg, borderTop: `1px solid ${cardBdr}`, flexShrink: 0,
         }}>
-          <button onClick={onClose} style={{
-            padding: '14px 18px', borderRadius: 12,
-            background: 'transparent', color: theme.fg,
-            border: `1px solid ${theme.fg}30`,
-            fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit',
-          }}>Cancel</button>
-          <button onClick={handleAdd} disabled={!canAdd} style={{
-            flex: 1, padding: '14px 18px', borderRadius: 12,
+          <button onClick={handleAdd} style={{
+            width: '100%', padding: '16px 22px', borderRadius: 14,
             background: canAdd ? theme.accent : `${theme.fg}20`,
-            color: canAdd ? '#0b0c10' : `${theme.fg}60`,
-            border: 'none', fontSize: 14, fontWeight: 800, cursor: canAdd ? 'pointer' : 'not-allowed',
+            color: canAdd ? contrastFg(theme.accent) : `${theme.fg}60`,
+            border: 'none', fontSize: 16, fontWeight: 800, cursor: canAdd ? 'pointer' : 'not-allowed',
             fontFamily: 'inherit',
-            display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8,
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
           }}>
-            <span>Add to cart</span>
+            <span>Add {qty} to basket</span>
             <span>£{lineTotal.toFixed(2)}</span>
           </button>
         </div>
@@ -217,60 +269,81 @@ export default function OnlineItemSheet({ item, theme, allItems, orderType, onCl
   );
 }
 
-function ModGroup({ group, value, theme, onChange }) {
-  const min = group.min ?? 0;
-  const max = group.max ?? 1;
-  const isSingle = max === 1;
-  const required = min >= 1;
-  const optionPicked = (opt) => {
-    if (isSingle) return value?.id === opt.id;
-    return Array.isArray(value) && value.some(o => o.id === opt.id);
-  };
-  const togglePick = (opt) => {
-    if (isSingle) {
-      onChange(value?.id === opt.id ? null : opt);
-      return;
-    }
-    const arr = Array.isArray(value) ? value : [];
-    const isOn = arr.some(o => o.id === opt.id);
-    if (isOn) onChange(arr.filter(o => o.id !== opt.id));
-    else if (arr.length < max) onChange([...arr, opt]);
-  };
+// ─────────────────────────────────────────────────────────────────────────────
+function Section({ title, meta, required, erroring, children }) {
   return (
-    <div style={{ marginBottom: 18 }}>
+    <div style={{ paddingTop: 16, borderTop: '1px solid transparent', marginBottom: 4 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 8 }}>
-        <div style={{ fontSize: 13, fontWeight: 700 }}>{group.name}</div>
-        <div style={{ fontSize: 11, opacity: 0.6 }}>
-          {required ? <>Required{max > 1 ? ` · pick up to ${max}` : ''}</> : (max > 1 ? `Pick up to ${max}` : 'Optional')}
-        </div>
+        <div style={{ fontSize: 16, fontWeight: 800 }}>{title}</div>
+        {meta && (
+          <div style={{
+            fontSize: 11, fontWeight: 700,
+            padding: '2px 8px', borderRadius: 99,
+            background: erroring ? 'rgba(239,68,68,0.15)' : (required ? 'rgba(232,160,32,0.15)' : 'transparent'),
+            color: erroring ? '#ef4444' : (required ? '#a16500' : '#9a9aa1'),
+            textTransform: 'uppercase', letterSpacing: '0.04em',
+          }}>{meta}</div>
+        )}
       </div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-        {(group.options || []).map(opt => {
-          const picked = optionPicked(opt);
-          const px = Number(opt.price) || 0;
-          return (
-            <button key={opt.id || opt.name} onClick={() => togglePick(opt)} style={{
-              padding: '8px 12px', borderRadius: 99, cursor: 'pointer', fontFamily: 'inherit',
-              background: picked ? theme.accent : `${theme.fg}10`,
-              color:      picked ? '#0b0c10' : theme.fg,
-              border:     picked ? 'none' : `1px solid ${theme.fg}25`,
-              fontSize: 12, fontWeight: 700,
-            }}>
-              {opt.name || opt.label}
-              {px > 0 && <span style={{ marginLeft: 6, opacity: 0.7 }}>+£{px.toFixed(2)}</span>}
-            </button>
-          );
-        })}
-      </div>
+      {children}
     </div>
   );
 }
 
-function stepBtn(theme) {
-  return {
-    width: 36, height: 36, borderRadius: '50%',
-    background: `${theme.fg}15`, color: theme.fg, border: 'none',
-    fontSize: 18, fontWeight: 800, cursor: 'pointer', fontFamily: 'inherit',
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-  };
+function OptionRow({ label, priceDelta, checked, onClick, mode, theme, cardBdr, inputBg }) {
+  return (
+    <button onClick={onClick} style={{
+      width: '100%', display: 'flex', alignItems: 'center', gap: 12,
+      padding: '12px 14px', borderRadius: 12,
+      background: checked ? `${theme.accent}15` : inputBg,
+      border: `1.5px solid ${checked ? theme.accent : cardBdr}`,
+      color: theme.fg, fontFamily: 'inherit', cursor: 'pointer', textAlign: 'left',
+      transition: 'all .12s ease',
+    }}>
+      <Indicator checked={checked} mode={mode} accent={theme.accent} cardBdr={cardBdr}/>
+      <span style={{ flex: 1, fontSize: 14, fontWeight: 600 }}>{label}</span>
+      {priceDelta !== 0 && (
+        <span style={{ fontSize: 13, fontWeight: 700, color: priceDelta > 0 ? theme.fg : '#22c55e' }}>
+          {priceDelta > 0 ? `+£${priceDelta.toFixed(2)}` : `−£${Math.abs(priceDelta).toFixed(2)}`}
+        </span>
+      )}
+    </button>
+  );
 }
+
+function Indicator({ checked, mode, accent, cardBdr }) {
+  const isCircle = mode === 'single';
+  return (
+    <div style={{
+      width: 22, height: 22, borderRadius: isCircle ? '50%' : 6,
+      border: `2px solid ${checked ? accent : cardBdr}`,
+      background: checked ? accent : 'transparent',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      flexShrink: 0,
+    }}>
+      {checked && (
+        isCircle
+          ? <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#fff' }}/>
+          : <span style={{ color: '#fff', fontSize: 14, lineHeight: 1, fontWeight: 900 }}>✓</span>
+      )}
+    </div>
+  );
+}
+
+function contrastFg(hex) {
+  if (!hex) return '#fff';
+  const c = hex.replace('#', '');
+  const n = c.length === 3 ? c.split('').map(x => x + x).join('') : c;
+  if (n.length !== 6) return '#fff';
+  const r = parseInt(n.slice(0, 2), 16);
+  const g = parseInt(n.slice(2, 4), 16);
+  const b = parseInt(n.slice(4, 6), 16);
+  return (0.299 * r + 0.587 * g + 0.114 * b) > 128 ? '#0b0c10' : '#ffffff';
+}
+
+const stepBtn = {
+  width: 38, height: 38, borderRadius: '50%',
+  border: 'none', fontSize: 20, fontWeight: 800,
+  cursor: 'pointer', fontFamily: 'inherit',
+  display: 'flex', alignItems: 'center', justifyContent: 'center',
+};

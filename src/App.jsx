@@ -76,6 +76,17 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.112', date: '8 May 2026', label: 'Online ordering UI overhaul — DoorDash / Uber Eats reference, real branded surface',
+    changes: [
+      'OnlineSurface — full visual rewrite. 280px hero banner with overlay logo (84px, three-pixel white border, drop shadow) + restaurant name + "Open now" pill + collection/delivery toggle. Blurred sticky category strip below hero with auto-scroll-to-section on tap.',
+      'Item cards — DoorDash-style two-column: name + description + price on the left, item image (130px wide, full-bleed cover) on the right. Hover lifts the card with a soft shadow. Single-column on narrow screens. Light + dark theme aware via brand colour pickers — surface auto-uses contrasting fg.',
+      'OnlineItemSheet — full-screen-on-mobile, side-panel-on-desktop. 240px hero image of the item. Variant picker with full radio rows (label + price delta). Modifier groups with required/optional pills (orange = required, red = error). Pick rows are full-width tappable, custom radio / checkbox indicators. Sticky bottom CTA: "Add 2 to basket · £18.50".',
+      'OnlineCart — same visual language. Each line: name + mods listed underneath + qty stepper + remove. Subtotal / Delivery fee placeholder / Total ladder. Sticky two-button footer (Add more / Checkout).',
+      'Theme aware throughout — operator picks brand colours in BO → Online ordering → Branding, surface auto-derives readable contrast for buttons and pills.',
+      'STILL TO COME (Phase 4) — checkout flow with customer-details form (name, phone, email, time slot for collection / address for delivery) + Stripe online payment + order confirmation page. The Checkout button currently surfaces a placeholder.',
+    ],
+  },
+  {
     version: '5.5.111', date: '8 May 2026', label: 'Online ordering — RLS anon SELECT policies + diagnostic load logging',
     changes: [
       'ROOT CAUSE OF "NO MENU LOADING" — ops DB had RLS enabled on menu_items / menu_categories / menus / menu_category_links with NO permissive SELECT policy. Anonymous customer pages got back empty arrays from every query. The kiosk worked because it ran in a browser where a BO user was logged in (BO auth context bypassed RLS); a true anon visitor hit the same wall. Operator-side data (menu_items, etc) was always public-priced anyway — adding anon SELECT policies just makes that explicit.',
