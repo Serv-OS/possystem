@@ -76,6 +76,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.138', date: '9 May 2026', label: 'ROOT CAUSE — kitchen_routed_at column missing on order_queue → silent claim error → no print / no KDS / no toast',
+    changes: [
+      'FOUND IT — every routing attempt was silently dying at the atomic claim step because the operator\'s order_queue table is missing the `kitchen_routed_at` column. Migration v5.5.57 was supposed to add it but never ran on this venue\'s DB. The Supabase update returned "Could not find the kitchen_routed_at column of order_queue in the schema cache" but the catch was a console.warn + silent return → no toast, no print, no KDS. Auto-route on INSERT had the same bug.',
+      'GRACEFUL FALLBACK — routeKioskOrderPrints now detects the column-missing error and proceeds with routing anyway. Idempotency on auto-route is forfeit when the column is missing (in-memory `_routedRefs` Set provides best-effort same-device dedup) but routing actually happens. Once you apply the SQL below, full atomic-claim idempotency comes back automatically.',
+      '⚠ APPLY THIS SQL TO YOUR OPS DB to restore proper idempotency: `alter table order_queue add column if not exists kitchen_routed_at timestamptz;` (one line, safe to run anytime — also adds the columns from migration v5.5.57 if you want: `alter table order_queue add column if not exists paid boolean default false; alter table order_queue add column if not exists payment_method text;`).',
+    ],
+  },
+  {
     version: '5.5.137', date: '9 May 2026', label: 'Online orders now arrive in PREP + manual Send-to-kitchen force-bypass for stuck orders',
     changes: [
       'PAID ONLINE ORDERS GO STRAIGHT TO PREP — OnlineCheckout now writes status=\'prep\' on the order_queue row at INSERT time. Payment is confirmed, the kitchen owns it, no operator click needed. Was status=\'received\' which forced operators to manually advance every order. KDS auto-status integration (next sprint) will tie bumped → ready → collected so operators don\'t touch the order at all.',

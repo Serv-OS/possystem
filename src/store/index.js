@@ -3672,11 +3672,17 @@ export const useStore = create((set, get) => ({
         setTimeout(() => useStore.getState().routeKioskOrderPrints?.(order), cappedWait);
         return;
       }
-      // v5.5.137: force re-route bypasses the atomic claim. Used by the
-      // manual Send-to-kitchen button when the operator knows auto-routing
-      // already fired but didn't actually print/KDS (e.g. centres misconfigured
-      // at INSERT time, fixed since). Without this the claim silently exits
-      // because kitchen_routed_at is already set.
+      // v5.5.138: claim is GRACEFUL when kitchen_routed_at column is missing.
+      // The column was supposed to be added by migration v5.5.57 but isn't on
+      // every venue's DB. When it's missing the update returns "schema cache"
+      // error and the OLD code silently exited — that's why auto-routing on
+      // INSERT was firing but no print / no KDS / no toast (caught nothing).
+      // Now: if the column-missing error surfaces, log a clear warning and
+      // PROCEED with routing anyway. Idempotency on auto-route is forfeit
+      // (extremely rare to matter — same realtime event isn't delivered twice
+      // to the same device), but routing actually happens.
+      const COL_MISSING = (err) => err?.message?.includes('kitchen_routed_at')
+        && err?.message?.includes('schema cache');
       let claimed;
       if (order.force) {
         const r = await supabase
@@ -3684,22 +3690,33 @@ export const useStore = create((set, get) => ({
           .update({ kitchen_routed_at: new Date().toISOString() })
           .eq('ref', order.ref)
           .select('ref');
-        claimed = r.data;
-        if (r.error) {
+        if (r.error && COL_MISSING(r.error)) {
+          console.warn('[routeKioskOrderPrints] kitchen_routed_at column missing — proceeding without idempotency claim. Run: alter table order_queue add column kitchen_routed_at timestamptz;');
+        } else if (r.error) {
           alert('[Send to kitchen] DB update failed: ' + r.error.message);
           return;
         }
+        claimed = r.data;
       } else {
-        // Atomic claim — only succeeds if kitchen_routed_at is still NULL
         const r = await supabase
           .from('order_queue')
           .update({ kitchen_routed_at: new Date().toISOString() })
           .eq('ref', order.ref)
           .is('kitchen_routed_at', null)
           .select('ref');
-        claimed = r.data;
-        if (r.error) { console.warn('[routeKioskOrderPrints] claim failed', r.error); return; }
-        if (!claimed?.length) return; // Another device already routed this order
+        if (r.error && COL_MISSING(r.error)) {
+          console.warn('[routeKioskOrderPrints] kitchen_routed_at column missing — proceeding without idempotency claim. Run: alter table order_queue add column kitchen_routed_at timestamptz;');
+          // Best-effort dedup using an in-memory set so the same realtime
+          // event firing on this device twice doesn't produce duplicate
+          // KDS rows. Cleared on page reload.
+          if (!useStore._routedRefs) useStore._routedRefs = new Set();
+          if (useStore._routedRefs.has(order.ref)) return;
+          useStore._routedRefs.add(order.ref);
+        } else {
+          if (r.error) { console.warn('[routeKioskOrderPrints] claim failed', r.error); return; }
+          if (!r.data?.length) return; // Another device already routed
+          claimed = r.data;
+        }
       }
 
       // Routing config + cat parent map (mirror getCentresForItem from sendToKitchen)
