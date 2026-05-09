@@ -3672,15 +3672,35 @@ export const useStore = create((set, get) => ({
         setTimeout(() => useStore.getState().routeKioskOrderPrints?.(order), cappedWait);
         return;
       }
-      // Atomic claim — only succeeds if kitchen_routed_at is still NULL
-      const { data: claimed, error: claimErr } = await supabase
-        .from('order_queue')
-        .update({ kitchen_routed_at: new Date().toISOString() })
-        .eq('ref', order.ref)
-        .is('kitchen_routed_at', null)
-        .select('ref');
-      if (claimErr) { console.warn('[routeKioskOrderPrints] claim failed', claimErr); return; }
-      if (!claimed?.length) return; // Another device already routed this order
+      // v5.5.137: force re-route bypasses the atomic claim. Used by the
+      // manual Send-to-kitchen button when the operator knows auto-routing
+      // already fired but didn't actually print/KDS (e.g. centres misconfigured
+      // at INSERT time, fixed since). Without this the claim silently exits
+      // because kitchen_routed_at is already set.
+      let claimed;
+      if (order.force) {
+        const r = await supabase
+          .from('order_queue')
+          .update({ kitchen_routed_at: new Date().toISOString() })
+          .eq('ref', order.ref)
+          .select('ref');
+        claimed = r.data;
+        if (r.error) {
+          alert('[Send to kitchen] DB update failed: ' + r.error.message);
+          return;
+        }
+      } else {
+        // Atomic claim — only succeeds if kitchen_routed_at is still NULL
+        const r = await supabase
+          .from('order_queue')
+          .update({ kitchen_routed_at: new Date().toISOString() })
+          .eq('ref', order.ref)
+          .is('kitchen_routed_at', null)
+          .select('ref');
+        claimed = r.data;
+        if (r.error) { console.warn('[routeKioskOrderPrints] claim failed', r.error); return; }
+        if (!claimed?.length) return; // Another device already routed this order
+      }
 
       // Routing config + cat parent map (mirror getCentresForItem from sendToKitchen)
       let routingConfig = useStore.getState().printRouting;

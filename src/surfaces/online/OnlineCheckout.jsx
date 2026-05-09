@@ -195,7 +195,12 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         ref,
         location_id: opsLocationId,
         type: orderType,
-        status: 'received', // operator + chime fire on this INSERT
+        // v5.5.137: paid online orders go straight to 'prep' — payment is
+        // confirmed, the kitchen owns it. 'received' was a redundant stage
+        // that required the operator to manually advance every order.
+        // KDS auto-status integration (next commit) ties bumped → ready
+        // → collected so operators don't touch the order at all.
+        status: 'prep',
         source: 'online',
         items, customer,
         total: subtotal,

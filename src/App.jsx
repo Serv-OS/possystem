@@ -76,6 +76,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.137', date: '9 May 2026', label: 'Online orders now arrive in PREP + manual Send-to-kitchen force-bypass for stuck orders',
+    changes: [
+      'PAID ONLINE ORDERS GO STRAIGHT TO PREP — OnlineCheckout now writes status=\'prep\' on the order_queue row at INSERT time. Payment is confirmed, the kitchen owns it, no operator click needed. Was status=\'received\' which forced operators to manually advance every order. KDS auto-status integration (next sprint) will tie bumped → ready → collected so operators don\'t touch the order at all.',
+      'WHY YOUR EARLIER MANUAL CLICKS DID NOTHING — routeKioskOrderPrints has an atomic claim that updates kitchen_routed_at IS NULL → NOW. Once that fires, subsequent calls return zero rows and silently exit. Auto-routing on INSERT had ALREADY claimed the row (even though the print/KDS write inside failed silently for some reason), so when you clicked Send-to-kitchen manually, the claim returned 0 rows → silent exit → "nothing happens".',
+      'FORCE FLAG ON THE MANUAL BUTTON — added a force:true parameter to routeKioskOrderPrints that bypasses the IS NULL guard on kitchen_routed_at. The OrdersHub Send-to-kitchen button now passes force:true so it always re-attempts routing. Existing kds_tickets rows for the ref aren\'t deleted (kitchen has them on screen) but new ones get inserted, and routePrintJob fires fresh print jobs.',
+      'NEXT STEP — KDS-driven auto status. When the kitchen bumps a card on KDS, that updates kds_tickets.bumped_at. We\'ll add a Realtime listener that flips order_queue.status when the last kds_ticket for a ref is bumped (→ ready) and again when the runner marks collected (→ collected). Operators stop touching the orders panel entirely.',
+    ],
+  },
+  {
     version: '5.5.136', date: '9 May 2026', label: 'Loud alert() on Send-to-kitchen click — operator reports nothing happens; need to see whether handler fires + what data it has',
     changes: [
       'TEMP DIAGNOSTIC — operator clicked the v5.5.135 🖨 Send-to-kitchen button and saw nothing. No toast, no error. Either (a) the click handler isn\'t firing (wiring issue), (b) the routeKioskOrderPrints function is missing from the store, or (c) the function is returning silently at one of its early guard clauses (no ref / no items / no supabase). Wrapped resendToKitchen with two alert() calls — one always-fires showing what we have, one for the empty-items guard. alert() can\'t be silenced by toast plumbing; if the click registers, the operator WILL see a popup. Once we have the popup contents we know exactly which side to fix.',

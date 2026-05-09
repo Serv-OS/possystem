@@ -214,6 +214,7 @@ routeKioskOrderPrints in store? ${!!routeKioskOrderPrints}`;
       items: o.items || [],
       customer: o.customer || null,
       sentAt: o.sentAt || Date.now(),
+      force: true,                                              // v5.5.137: bypass atomic claim — operator forced re-send
     });
   };
 
