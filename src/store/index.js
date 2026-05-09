@@ -3838,6 +3838,21 @@ export const useStore = create((set, get) => ({
   },
   showToast: (msg,type='info') => { set({ toast:{ msg,type,key:Date.now() } }); setTimeout(()=>set({toast:null}),2800); },
 
+  // ── Order alert (big top-of-screen banner for new customer orders) ─────
+  // Set by realtime.js when a new kiosk / online / QR order arrives.
+  // Shape: { source: 'kiosk'|'online'|'qr', who: 'name or table label', ref, total, key }
+  // Auto-dismisses after 5s; can also be dismissed manually from the UI.
+  orderAlert: null,
+  showOrderAlert: (alert) => {
+    const key = Date.now();
+    set({ orderAlert: { ...alert, key } });
+    setTimeout(() => {
+      const cur = useStore.getState().orderAlert;
+      if (cur && cur.key === key) set({ orderAlert: null });
+    }, 5000);
+  },
+  dismissOrderAlert: () => set({ orderAlert: null }),
+
   // ── Allergen pending ──────────────────────
   pendingItem: null,
   setPendingItem: item => set({ pendingItem:item }),

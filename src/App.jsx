@@ -76,6 +76,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.122', date: '9 May 2026', label: 'New-order alerts — big top-of-screen banner + much louder chime + 5s auto-dismiss',
+    changes: [
+      'BIG TOP-OF-SCREEN BANNER — when a kiosk / online / QR order arrives, a 560-px-wide banner slides down from the top of every operator device. Coloured by source (sky-blue for Kiosk, emerald for Online, purple for QR), with a big icon (📟 / 🌐 / 📱), the source label, the customer name (or table number for QR), the order ref, and the total. 4-px progress bar at the bottom counts down the 5-second auto-dismiss so the operator can see how long it\'ll stay; × button on the right dismisses immediately.',
+      'LOUDER, LONGER, DOUBLED-UP CHIME — bumped gain from 0.3 to 0.95, switched the oscillator from sine to triangle (richer, easier to hear over kitchen ambient), extended each note from 0.4s to 0.55s, and now plays the major-triad TWICE with a 0.85s gap between triads. Auto-resumes a suspended AudioContext (browser autoplay policy) on first call. Should cut through a busy floor without sounding like a fire alarm.',
+      'STORE PLUMBING — new orderAlert state on the Zustand store (parallels the existing toast state). showOrderAlert(alert) sets it + auto-clears after exactly 5s (key-comparison so a second order arriving doesn\'t clear early). dismissOrderAlert clears manually. realtime.js INSERT handler now calls showOrderAlert instead of the old showToast — keeps the regular toast surface free for confirmation/error chatter.',
+      'QR ORDERS — banner already supports source=\'qr\' so when the QR table-side surface ships its order_queue inserts, no realtime/UI changes are needed. The "who" line picks up customer.tableLabel / customer.tableId for QR, falls back to customer.name otherwise.',
+    ],
+  },
+  {
     version: '5.5.121', date: '9 May 2026', label: 'Online ordering — REUSE existing Stripe Connect plumbing (Elements + edge fn) + fix POS chime + capture every online order to customer CRM',
     changes: [
       'STOPPED REINVENTING THE WHEEL — v5.5.120 added /api/stripe-checkout + /api/stripe-verify Vercel endpoints to start a hosted Checkout session. That bypassed the existing Stripe Connect / merchant_stripe_accounts / connected-account / online_markup_percent infrastructure already wired up for in-store card payments. Removed the redundant endpoints; OnlineCheckout now uses the SAME `createPaymentIntent` edge fn + `getStripeForAccount` + `<Elements><CardElement>` flow that AdminStripeTest and the rest of the operator UI use. Direct charges on the location\'s connected account, online_markup_percent applied automatically — same money rails the venue is already testing in-store.',
@@ -3737,7 +3746,7 @@ const CHANGELOG = [
 
 
 export default function App() {
-  const { staff, surface, setSurface, toast, shift, theme, setTheme, appMode, deviceConfig } = useStore();
+  const { staff, surface, setSurface, toast, orderAlert, dismissOrderAlert, shift, theme, setTheme, appMode, deviceConfig } = useStore();
   const [showWhatsNew, setShowWhatsNew] = useState(false);
   const [syncPulse, setSyncPulse] = useState(false);
 
@@ -4212,6 +4221,7 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
         </div>
       </div>
       {toast && <Toast toast={toast} />}
+      {orderAlert && <OrderAlert alert={orderAlert} onDismiss={dismissOrderAlert} />}
       {showWhatsNew && <WhatsNewModal onClose={()=>setShowWhatsNew(false)} />}
     </div>
   );
@@ -4502,4 +4512,68 @@ function Toast({ toast }) {
   const map={success:{bg:'var(--grn-d)',bdr:'var(--grn-b)',color:'var(--grn)'},error:{bg:'var(--red-d)',bdr:'var(--red-b)',color:'var(--red)'},warning:{bg:'var(--acc-d)',bdr:'var(--acc-b)',color:'var(--acc)'},info:{bg:'var(--bg3)',bdr:'var(--bdr2)',color:'var(--t1)'}};
   const c=map[toast.type]||map.info;
   return <div className="toast" key={toast.key} style={{ background:c.bg, border:`1px solid ${c.bdr}`, color:c.color }}>{toast.msg}</div>;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// OrderAlert — top-of-screen banner for new orders from a customer surface
+// (kiosk / online / QR table-side). Dismissible × button, auto-clears after 5s
+// (the auto-clear is owned by the store action). Loud, obvious, animated in.
+function OrderAlert({ alert, onDismiss }) {
+  const SOURCE_META = {
+    kiosk:  { icon: '📟', label: 'Kiosk',  bg: '#0ea5e9' },  // sky-500
+    online: { icon: '🌐', label: 'Online', bg: '#10b981' },  // emerald-500
+    qr:     { icon: '📱', label: 'QR Code',bg: '#a855f7' },  // purple-500
+  };
+  const m = SOURCE_META[alert.source] || { icon: '🛎', label: alert.source || 'Order', bg: '#e8a020' };
+  const total = Number(alert.total || 0);
+  return (
+    <div key={alert.key} style={{
+      position: 'fixed', top: 12, left: '50%', transform: 'translateX(-50%)',
+      zIndex: 9999, minWidth: 'min(560px, calc(100vw - 24px))',
+      maxWidth: 'calc(100vw - 24px)',
+      borderRadius: 14, overflow: 'hidden',
+      boxShadow: '0 18px 48px rgba(0,0,0,0.45), 0 4px 14px rgba(0,0,0,0.25)',
+      animation: 'orderAlertIn 0.3s cubic-bezier(0.2, 0.9, 0.3, 1.4)',
+      background: m.bg, color: '#fff',
+      fontFamily: 'inherit',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '16px 18px' }}>
+        <div style={{
+          width: 56, height: 56, borderRadius: 14,
+          background: 'rgba(255,255,255,0.22)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: 30, flexShrink: 0,
+        }}>{m.icon}</div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: '0.1em', textTransform: 'uppercase', opacity: 0.85 }}>
+            New {m.label} order
+          </div>
+          <div style={{ fontSize: 20, fontWeight: 900, letterSpacing: '-0.01em', lineHeight: 1.2, marginTop: 2,
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          }}>
+            {alert.who || 'Guest'}
+          </div>
+          <div style={{ fontSize: 12, fontWeight: 700, opacity: 0.92, marginTop: 2 }}>
+            {alert.ref ? <>Ref <span style={{ fontFamily: 'monospace' }}>{alert.ref}</span></> : null}
+            {total > 0 && <> · £{total.toFixed(2)}</>}
+          </div>
+        </div>
+        <button onClick={onDismiss} style={{
+          width: 40, height: 40, borderRadius: '50%', border: 'none',
+          background: 'rgba(255,255,255,0.22)', color: '#fff',
+          fontSize: 22, fontWeight: 900, cursor: 'pointer', fontFamily: 'inherit',
+          flexShrink: 0,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }} aria-label="Dismiss">×</button>
+      </div>
+      {/* 5-second progress bar so the operator sees how long it'll stay */}
+      <div style={{ height: 4, background: 'rgba(0,0,0,0.18)' }}>
+        <div style={{
+          height: '100%', background: 'rgba(255,255,255,0.85)',
+          animation: 'orderAlertCountdown 5s linear forwards',
+          transformOrigin: 'left center',
+        }}/>
+      </div>
+    </div>
+  );
 }

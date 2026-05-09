@@ -402,3 +402,13 @@ button { font-family: inherit; }
 .op-btn:active { transform: scale(0.96); filter: brightness(0.9); }
 .op-btn-primary { transition: transform .08s ease, filter .08s ease, box-shadow .12s ease; }
 .op-btn-primary:active { transform: scale(0.98); filter: brightness(0.85); box-shadow: 0 2px 8px rgba(0,0,0,0.18) !important; }
+
+/* v5.5.122 — new-order alert banner */
+@keyframes orderAlertIn {
+  from { opacity: 0; transform: translate(-50%, -110%); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
+}
+@keyframes orderAlertCountdown {
+  from { transform: scaleX(1); }
+  to   { transform: scaleX(0); }
+}

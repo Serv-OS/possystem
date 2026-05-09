@@ -283,20 +283,26 @@ export function startRealtime(store, locationId = LOCATION_ID) {
     .on('postgres_changes', { event: '*', schema: 'public', table: 'order_queue', filter: `location_id=eq.${locationId}` }, (payload) => {
       if (payload.eventType === 'DELETE' && payload.old?.location_id && payload.old.location_id !== locationId) return;
       applyQueueRealtimeEvent(payload);
-      // v5.5.121: chime + route prints on every NEW order from a customer
-      // surface (kiosk OR online). Online orders are written to order_queue
-      // only AFTER Stripe payment succeeds, so the INSERT itself is the
-      // moment of truth — same trigger pattern as kiosk.
-      if (payload.eventType === 'INSERT' &&
-          (payload.new?.source === 'kiosk' || payload.new?.source === 'online')) {
+      // v5.5.122: every NEW order from a customer surface (kiosk / online /
+      // QR table-side) fires the loud chime + a top-of-screen OrderAlert
+      // banner that stays for 5s and is dismissable. Online orders are
+      // written to order_queue ONLY after Stripe payment succeeds, so the
+      // INSERT itself is the moment of truth.
+      if (payload.eventType === 'INSERT' && ['kiosk','online','qr'].includes(payload.new?.source)) {
         const row = payload.new;
         const src = row.source;
         const ref = row.ref || '';
-        const name = row.customer?.name || (src === 'online' ? 'Online' : 'Kiosk');
-        const type = row.type || (src === 'online' ? 'collection' : 'takeaway');
-        const label = src === 'online' ? 'Online order' : 'Kiosk order';
+        // "who" prefers table label for QR, else customer name, else fallbacks
+        const tableLabel = row.customer?.tableLabel || row.customer?.tableId;
+        const who = src === 'qr'
+          ? (tableLabel ? `Table ${tableLabel}` : (row.customer?.name || 'QR order'))
+          : (row.customer?.name || (src === 'online' ? 'Online customer' : 'Walk-in'));
         playOrderChime();
-        store.getState().showToast?.(`${label} ${ref} — ${name} (${type})`, 'info');
+        store.getState().showOrderAlert?.({
+          source: src, who, ref,
+          total: Number(row.total) || 0,
+          orderType: row.type || null,
+        });
         // Master device routes prints to production centres (idempotent — only one device claims)
         let isMaster = false;
         try { isMaster = JSON.parse(localStorage.getItem('rpos-device-config') || '{}').isMaster === true; } catch {}
