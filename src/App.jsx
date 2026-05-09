@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import './styles/globals.css';
 // v5.5.3: TENANT FENCE. Run BEFORE any other module that reads location-scoped
 // localStorage. Compares the currently-active location to the last-recorded
@@ -75,6 +75,13 @@ import useSupabaseInit from './lib/useSupabaseInit';
 import { VERSION } from './lib/version';
 
 const CHANGELOG = [
+  {
+    version: '5.5.125', date: '9 May 2026', label: 'Order alert sticks until dismissed — × button or swipe up',
+    changes: [
+      'NO MORE 5-SECOND AUTO-DISMISS — the new-order banner now stays on screen until the operator dismisses it. Missing a new kiosk / online / QR order because you blinked is worse than a slightly cluttered screen. Removed the setTimeout in showOrderAlert and the countdown progress bar in the banner UI.',
+      'SWIPE-TO-DISMISS — the banner is now draggable upward via pointer events (touch + mouse). Drag past 60-px upward and release to dismiss; release short of that and it snaps back. A small handle bar at the bottom of the banner makes the gesture discoverable. The × button still works for one-tap dismissal. The × is wrapped with `data-no-swipe` so tapping it doesn\'t accidentally trigger the swipe handler.',
+    ],
+  },
   {
     version: '5.5.124', date: '9 May 2026', label: 'Hotfix — anonKey ReferenceError in OnlineCheckout',
     changes: [
@@ -4534,8 +4541,9 @@ function Toast({ toast }) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // OrderAlert — top-of-screen banner for new orders from a customer surface
-// (kiosk / online / QR table-side). Dismissible × button, auto-clears after 5s
-// (the auto-clear is owned by the store action). Loud, obvious, animated in.
+// (kiosk / online / QR table-side). Stays on screen until dismissed via the
+// × button OR a swipe-up gesture (touch + mouse). No auto-dismiss — missing
+// a new-order alert because you blinked is worse than a cluttered screen.
 function OrderAlert({ alert, onDismiss }) {
   const SOURCE_META = {
     kiosk:  { icon: '📟', label: 'Kiosk',  bg: '#0ea5e9' },  // sky-500
@@ -4544,17 +4552,55 @@ function OrderAlert({ alert, onDismiss }) {
   };
   const m = SOURCE_META[alert.source] || { icon: '🛎', label: alert.source || 'Order', bg: '#e8a020' };
   const total = Number(alert.total || 0);
+
+  // Swipe-up-to-dismiss state. Track the live drag delta in style state so
+  // the banner follows the finger; if the gesture ends past the threshold
+  // (60-px upward or 25% banner height, whichever is smaller) we dismiss.
+  const [dragY, setDragY] = useState(0);
+  const startY = useRef(null);
+  const dragging = useRef(false);
+
+  const onPointerDown = (e) => {
+    if (e.target.closest('[data-no-swipe]')) return; // × button has its own handler
+    startY.current = e.clientY ?? e.touches?.[0]?.clientY ?? null;
+    dragging.current = true;
+  };
+  const onPointerMove = (e) => {
+    if (!dragging.current || startY.current == null) return;
+    const y = e.clientY ?? e.touches?.[0]?.clientY ?? null;
+    if (y == null) return;
+    const delta = Math.min(0, y - startY.current); // clamp to upward drag only
+    setDragY(delta);
+  };
+  const onPointerUp = () => {
+    if (!dragging.current) return;
+    dragging.current = false;
+    if (dragY < -60) onDismiss();
+    else setDragY(0); // snap back
+    startY.current = null;
+  };
+
   return (
-    <div key={alert.key} style={{
-      position: 'fixed', top: 12, left: '50%', transform: 'translateX(-50%)',
-      zIndex: 9999, minWidth: 'min(560px, calc(100vw - 24px))',
-      maxWidth: 'calc(100vw - 24px)',
-      borderRadius: 14, overflow: 'hidden',
-      boxShadow: '0 18px 48px rgba(0,0,0,0.45), 0 4px 14px rgba(0,0,0,0.25)',
-      animation: 'orderAlertIn 0.3s cubic-bezier(0.2, 0.9, 0.3, 1.4)',
-      background: m.bg, color: '#fff',
-      fontFamily: 'inherit',
-    }}>
+    <div key={alert.key}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerUp}
+      style={{
+        position: 'fixed', top: 12, left: '50%',
+        transform: `translateX(-50%) translateY(${dragY}px)`,
+        zIndex: 9999, minWidth: 'min(560px, calc(100vw - 24px))',
+        maxWidth: 'calc(100vw - 24px)',
+        borderRadius: 14, overflow: 'hidden',
+        boxShadow: '0 18px 48px rgba(0,0,0,0.45), 0 4px 14px rgba(0,0,0,0.25)',
+        animation: dragging.current ? undefined : 'orderAlertIn 0.3s cubic-bezier(0.2, 0.9, 0.3, 1.4)',
+        transition: dragging.current ? 'none' : 'transform .2s ease',
+        background: m.bg, color: '#fff',
+        fontFamily: 'inherit',
+        touchAction: 'pan-x', // let the gesture drive translate, but allow horizontal scroll on children
+        cursor: 'grab',
+        userSelect: 'none',
+      }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '16px 18px' }}>
         <div style={{
           width: 56, height: 56, borderRadius: 14,
@@ -4576,7 +4622,7 @@ function OrderAlert({ alert, onDismiss }) {
             {total > 0 && <> · £{total.toFixed(2)}</>}
           </div>
         </div>
-        <button onClick={onDismiss} style={{
+        <button data-no-swipe onClick={onDismiss} style={{
           width: 40, height: 40, borderRadius: '50%', border: 'none',
           background: 'rgba(255,255,255,0.22)', color: '#fff',
           fontSize: 22, fontWeight: 900, cursor: 'pointer', fontFamily: 'inherit',
@@ -4584,13 +4630,12 @@ function OrderAlert({ alert, onDismiss }) {
           display: 'flex', alignItems: 'center', justifyContent: 'center',
         }} aria-label="Dismiss">×</button>
       </div>
-      {/* 5-second progress bar so the operator sees how long it'll stay */}
-      <div style={{ height: 4, background: 'rgba(0,0,0,0.18)' }}>
-        <div style={{
-          height: '100%', background: 'rgba(255,255,255,0.85)',
-          animation: 'orderAlertCountdown 5s linear forwards',
-          transformOrigin: 'left center',
-        }}/>
+      {/* Swipe affordance — small handle so the gesture is discoverable */}
+      <div style={{
+        height: 14, display: 'flex', alignItems: 'center', justifyContent: 'center',
+        opacity: 0.55,
+      }}>
+        <div style={{ width: 38, height: 4, borderRadius: 2, background: 'rgba(255,255,255,0.65)' }}/>
       </div>
     </div>
   );

@@ -3841,15 +3841,12 @@ export const useStore = create((set, get) => ({
   // ── Order alert (big top-of-screen banner for new customer orders) ─────
   // Set by realtime.js when a new kiosk / online / QR order arrives.
   // Shape: { source: 'kiosk'|'online'|'qr', who: 'name or table label', ref, total, key }
-  // Auto-dismisses after 5s; can also be dismissed manually from the UI.
+  // Stays on screen until the operator dismisses it (× button or swipe up).
+  // No auto-dismiss — missing a new-order alert because you blinked is worse
+  // than a slightly cluttered screen.
   orderAlert: null,
   showOrderAlert: (alert) => {
-    const key = Date.now();
-    set({ orderAlert: { ...alert, key } });
-    setTimeout(() => {
-      const cur = useStore.getState().orderAlert;
-      if (cur && cur.key === key) set({ orderAlert: null });
-    }, 5000);
+    set({ orderAlert: { ...alert, key: Date.now() } });
   },
   dismissOrderAlert: () => set({ orderAlert: null }),
 
