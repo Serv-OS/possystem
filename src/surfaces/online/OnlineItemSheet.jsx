@@ -6,7 +6,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 
-export default function OnlineItemSheet({ item, theme, allItems, onClose, onAdd }) {
+export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs = [], onClose, onAdd }) {
   const [qty, setQty]               = useState(1);
   const [modGroups, setModGroups]   = useState([]);
   const [instGroups, setInstGroups] = useState([]); // cooking prefs etc — no price impact
@@ -49,29 +49,32 @@ export default function OnlineItemSheet({ item, theme, allItems, onClose, onAdd 
 
   useEffect(() => {
     let alive = true;
-    if (!supabase || (modGroupIds.length === 0 && instGroupIds.length === 0)) {
-      setModGroups([]); setInstGroups([]); setSelections({}); setInstSelections({}); return;
+    // Resolve instruction groups from the config_pushes snapshot the parent
+    // surface fetched at mount time — there's no `instruction_groups` DB
+    // table in this schema; defs live client-side only.
+    const resolvedInst = instGroupIds
+      .map(id => (instGroupDefs || []).find(g => g.id === id))
+      .filter(Boolean);
+    setInstGroups(resolvedInst);
+
+    if (!supabase || modGroupIds.length === 0) {
+      setModGroups([]); setSelections({}); setInstSelections({});
+      return;
     }
     setLoading(true);
     (async () => {
       try {
-        const [mRes, iRes] = await Promise.all([
-          modGroupIds.length
-            ? supabase.from('modifier_groups')
-                .select('id, name, min, max, selection_type, options, sort_order')
-                .in('id', modGroupIds)
-            : Promise.resolve({ data: [] }),
-          instGroupIds.length
-            ? supabase.from('instruction_groups')
-                .select('id, name, options, sort_order, required')
-                .in('id', instGroupIds)
-            : Promise.resolve({ data: [] }),
-        ]);
+        const { data, error } = await supabase
+          .from('modifier_groups')
+          .select('id, name, min, max, selection_type, options, sort_order')
+          .in('id', modGroupIds);
         if (!alive) return;
-        const mSorted = (mRes.data || []).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
-        const iSorted = (iRes.data || []).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+        if (error) {
+          console.warn('[OnlineItemSheet] modifier load error:', error.message);
+        }
+        const mSorted = (data || []).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+        console.log('[OnlineItemSheet] groups loaded', { mod: mSorted.length, inst: resolvedInst.length });
         setModGroups(mSorted);
-        setInstGroups(iSorted);
         // Pre-fill required single-pick mod groups with the first option
         const init = {};
         mSorted.forEach(g => {
@@ -82,7 +85,7 @@ export default function OnlineItemSheet({ item, theme, allItems, onClose, onAdd 
         setSelections(init);
         setInstSelections({});
       } catch (e) {
-        console.warn('[OnlineItemSheet] group load failed:', e?.message);
+        console.warn('[OnlineItemSheet] modifier load failed:', e?.message);
       } finally {
         if (alive) setLoading(false);
       }

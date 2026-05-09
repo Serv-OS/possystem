@@ -76,6 +76,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.114', date: '8 May 2026', label: 'Online ordering — fix modifier load + variant from-price + instructions via config snapshot',
+    changes: [
+      'WHY MODIFIERS WERE FAILING — there is NO `instruction_groups` table in the ops DB. Instruction defs live client-side and propagate via `config_pushes.snapshot.instructionGroupDefs`. My v5.5.113 OnlineItemSheet was querying the non-existent table inside a Promise.all — when that rejected, the WHOLE Promise.all rejected and modifiers ALSO failed silently. Single failed query, two broken features.',
+      'FIX 1 — OnlineSurface load uses Promise.allSettled (not Promise.all) so a single failure can\'t kill the rest. Plus fetches the latest config_pushes row for this location and pulls instructionGroupDefs from the snapshot. OnlineItemSheet now resolves instruction groups from that snapshot (passed in as props) instead of querying a DB table that doesn\'t exist.',
+      'FIX 2 — Variant parent price was showing £0.00. Variant parents have base price 0; the actual prices live on the children. ItemCard now detects variant parents (any item has parent_id === item.id) and shows "from £X" using the cheapest child price, plus a small SIZES pill so customers know to tap and pick a size.',
+      'PER-QUERY DIAGNOSTICS — load now logs each query\'s result + error message individually so a single failure surfaces clearly in DevTools console instead of vanishing into a swallowed catch.',
+    ],
+  },
+  {
     version: '5.5.113', date: '8 May 2026', label: 'Online ordering — scroll fix + welcome step + allergy + loyalty + instructions',
     changes: [
       'SCROLL FIX — global CSS sets `html, body, #root { overflow: hidden }` for the operator app. The customer surface inherited that and was un-scrollable. ScrollShell wrapper now positions the surface as a fixed-inset container with its own overflow:auto so the page scrolls naturally without touching global CSS.',

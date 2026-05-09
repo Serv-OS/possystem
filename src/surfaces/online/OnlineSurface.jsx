@@ -28,6 +28,7 @@ export default function OnlineSurface({ location }) {
   const [items, setItems]           = useState([]);
   const [categories, setCategories] = useState([]);
   const [branding, setBranding]     = useState(null);
+  const [instGroupDefs, setInstGroupDefs] = useState([]); // from config_pushes snapshot — there's no instruction_groups DB table
   const [loading, setLoading]       = useState(true);
   const [openItem, setOpenItem]     = useState(null);
   const [showCart, setShowCart]     = useState(false);
@@ -57,7 +58,11 @@ export default function OnlineSurface({ location }) {
       console.log('[OnlineSurface] load start', { opsLocationId, onlineMenuId });
       if (!opsLocationId || !supabase) { setLoading(false); return; }
       try {
-        const [iRes, cRes, lRes, mRes] = await Promise.all([
+        // Each query independent — wrap in Promise.allSettled so a single
+        // failure (e.g. missing instruction_groups table) doesn't kill
+        // the whole load. Instruction defs come from the config_pushes
+        // snapshot since there's no dedicated DB table for them.
+        const [iRes, cRes, lRes, mRes, pRes] = await Promise.allSettled([
           supabase.from('menu_items').select('*')
             .eq('location_id', opsLocationId).eq('archived', false).order('sort_order'),
           supabase.from('menu_categories').select('*')
@@ -67,17 +72,34 @@ export default function OnlineSurface({ location }) {
           onlineMenuId
             ? supabase.from('menu_category_links').select('category_id').eq('menu_id', onlineMenuId)
             : Promise.resolve({ data: null }),
+          // Latest config push for this location — carries instructionGroupDefs
+          // since there's no instruction_groups table.
+          supabase.from('config_pushes').select('snapshot')
+            .eq('location_id', opsLocationId).order('created_at', { ascending: false }).limit(1).maybeSingle(),
         ]);
         if (!alive) return;
-        let cats = cRes.data || [];
-        if (mRes.data) {
-          const linked = new Set(mRes.data.map(l => l.category_id));
+        const itemsData      = iRes.value?.data || [];
+        const categoriesData = cRes.value?.data || [];
+        const linksData      = mRes.value?.data || null;
+        const brandingData   = lRes.value?.data?.receipt_branding || null;
+        const snap           = pRes.value?.data?.snapshot || null;
+
+        let cats = categoriesData;
+        if (linksData) {
+          const linked = new Set(linksData.map(l => l.category_id));
           cats = cats.filter(c => linked.has(c.id) || (c.parent_id && linked.has(c.parent_id)));
         }
-        console.log('[OnlineSurface] fetch results', { items: (iRes.data || []).length, categories: cats.length });
-        setItems(iRes.data || []);
+        console.log('[OnlineSurface] fetch results', {
+          items: itemsData.length, categories: cats.length,
+          configPushFound: !!snap, instructionGroupDefs: snap?.instructionGroupDefs?.length || 0,
+          itemsErr: iRes.reason?.message || iRes.value?.error?.message,
+          catsErr:  cRes.reason?.message || cRes.value?.error?.message,
+          linksErr: mRes.reason?.message || mRes.value?.error?.message,
+        });
+        setItems(itemsData);
         setCategories(cats);
-        setBranding(location.online_branding || lRes.data?.receipt_branding || null);
+        setBranding(location.online_branding || brandingData);
+        setInstGroupDefs(Array.isArray(snap?.instructionGroupDefs) ? snap.instructionGroupDefs : []);
       } catch (e) {
         console.warn('[OnlineSurface] load failed:', e?.message, e);
       } finally {
@@ -102,6 +124,28 @@ export default function OnlineSurface({ location }) {
     () => (categories || []).filter(c => !c.parent_id).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)),
     [categories]
   );
+
+  // Children index — used to detect variant parents and show "from £X"
+  // (cheapest child) instead of the parent's £0 base price.
+  const childrenByParent = useMemo(() => {
+    const map = {};
+    (items || []).forEach(i => {
+      if (i.parent_id) {
+        if (!map[i.parent_id]) map[i.parent_id] = [];
+        map[i.parent_id].push(i);
+      }
+    });
+    return map;
+  }, [items]);
+
+  const variantInfo = (item) => {
+    const kids = childrenByParent[item.id];
+    if (!kids?.length) return null;
+    const prices = kids
+      .map(k => Number(k.pricing?.base ?? k.price ?? 0))
+      .filter(p => p > 0);
+    return { kids, fromPrice: prices.length ? Math.min(...prices) : 0 };
+  };
 
   const itemsForCat = (catId) => (items || []).filter(i => {
     if (i.parent_id || i.archived || i.sold_alone === false) return false;
@@ -279,6 +323,7 @@ export default function OnlineSurface({ location }) {
                 {catItems.map(item => (
                   <ItemCard key={item.id} item={item} theme={theme}
                     cardBg={cardBg} cardBdr={cardBdr} muted={muted}
+                    variantInfo={variantInfo(item)}
                     onPick={() => setOpenItem(item)}/>
                 ))}
               </div>
@@ -314,6 +359,7 @@ export default function OnlineSurface({ location }) {
       {openItem && (
         <OnlineItemSheet
           item={openItem} theme={theme} allItems={items} orderType={orderType}
+          instGroupDefs={instGroupDefs}
           onClose={() => setOpenItem(null)}
           onAdd={(item, mods, qty) => addToCart(item, mods, qty)}
         />
@@ -678,8 +724,11 @@ function Hero({ theme, muted }) {
   );
 }
 
-function ItemCard({ item, theme, cardBg, cardBdr, muted, onPick }) {
-  const price = Number(item.pricing?.base ?? item.price ?? 0);
+function ItemCard({ item, theme, cardBg, cardBdr, muted, onPick, variantInfo }) {
+  const ownPrice = Number(item.pricing?.base ?? item.price ?? 0);
+  const isVariantParent = !!variantInfo?.kids?.length;
+  // Variant parents have base price 0; show "from £X" using cheapest child.
+  const displayPrice = isVariantParent ? (variantInfo.fromPrice || 0) : ownPrice;
   const allergens = item.allergens || [];
   return (
     <button onClick={onPick} style={{
@@ -706,8 +755,21 @@ function ItemCard({ item, theme, cardBg, cardBdr, muted, onPick }) {
           </div>
         )}
         <div style={{ flex: 1 }}/>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
-          <div style={{ fontSize: 14, fontWeight: 800 }}>£{price.toFixed(2)}</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
+          <div style={{ fontSize: 14, fontWeight: 800 }}>
+            {isVariantParent && displayPrice > 0
+              ? <><span style={{ fontSize: 11, opacity: 0.7, marginRight: 4 }}>from</span>£{displayPrice.toFixed(2)}</>
+              : isVariantParent
+                ? <span style={{ fontSize: 12, opacity: 0.7 }}>Various sizes</span>
+                : <>£{displayPrice.toFixed(2)}</>}
+          </div>
+          {isVariantParent && (
+            <span style={{
+              padding: '2px 8px', borderRadius: 99,
+              background: `${theme.accent}25`, color: theme.fg,
+              fontSize: 10, fontWeight: 700,
+            }}>SIZES</span>
+          )}
           {allergens.length > 0 && (
             <span title={`Contains: ${allergens.join(', ')}`} style={{
               padding: '2px 8px', borderRadius: 99,
