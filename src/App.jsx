@@ -76,6 +76,16 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.120', date: '9 May 2026', label: 'Online ordering Phase 4 — Stripe payment gateway + live customer order tracker + POS chime/toast on paid online order',
+    changes: [
+      'STRIPE CHECKOUT — customers now PAY before the order goes through. Place Order pre-writes the order_queue row with status=\'awaiting_payment\', POSTs to /api/stripe-checkout to mint a hosted Checkout Session, and redirects to Stripe. After payment, Stripe redirects back to the same online URL with `?paid=success&ref=...&session_id=...`. The surface verifies via /api/stripe-verify (which re-checks Stripe directly — never trusts the URL) and only then promotes the row to status=\'received\'. Cancelled payments delete the awaiting_payment row so it doesn\'t pollute the queue.',
+      'NEW SERVERLESS ENDPOINTS — api/stripe-checkout.js (creates session via Stripe REST, no SDK dep) and api/stripe-verify.js (confirms payment_status=paid). Required Vercel env: STRIPE_SECRET_KEY (sk_test_... or sk_live_...). No webhook in this commit — relies on the return-URL flow + verify call. Webhook hardening lands in a follow-up so payments still reconcile if the customer closes the tab between Stripe and our return.',
+      'LIVE CUSTOMER ORDER TRACKER — after successful payment the customer surface shows OrderTracker.jsx: a 4-step indicator (📥 Received → 👨‍🍳 Preparing → 🎁 Ready → ✅ Collected) that subscribes to order_queue Realtime for that one ref AND polls every 20s as a Realtime-drop fallback. As the operator advances the order through the existing CollectionQueue stages, the customer sees their tile update live, plus a summary of what they ordered + their collection time. The current step pulses; completed steps show ✓.',
+      'POS NOTIFICATION ON ONLINE ORDER — the existing kiosk chime + toast (Web Audio major triad) now also fires for online orders. Trigger is the UPDATE event where status flips from awaiting_payment → received (the moment Stripe confirms), so the kitchen never chimes for orders that haven\'t actually been paid for. Master device also routes prints to production centres for online orders, identical to the kiosk pipeline.',
+      'OPERATOR QUEUE FILTERS — awaiting_payment rows are now filtered out of the operator\'s active queue at every layer: QueueSync.loadQueues skips them on initial backfill (`.neq(\'status\',\'awaiting_payment\')`), and applyQueueRealtimeEvent drops INSERTs/UPDATEs that arrive in that state. This means operators ONLY see online orders that have been paid for — no fake "pending" rows from customers who clicked Place Order then closed the tab.',
+    ],
+  },
+  {
     version: '5.5.119', date: '9 May 2026', label: 'Online checkout — drop `paid` column from insert (not on every venue\'s schema) + visible button-press feedback',
     changes: [
       'FIX: PLACE ORDER STILL FAILING — error was "Could not find the \'paid\' column of \'order_queue\'". Migration v5.5.57 added paid/payment_method but it hasn\'t been applied on every venue\'s ops DB. Removed both columns from the insert — they default to false on the column itself, and the operator marks paid when collecting cash. Stripe-paid orders will set them via webhook in the next commit (and that commit will also force the migration before writing).',

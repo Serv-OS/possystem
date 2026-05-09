@@ -163,7 +163,8 @@ export async function loadQueues() {
   if (!supabase) return;
   try {
     const [qRes, tRes] = await Promise.all([
-      supabase.from('order_queue').select('*').eq('location_id', _locationId).neq('status', 'collected'),
+      // Skip 'collected' (done) AND 'awaiting_payment' (online order pre-Stripe).
+      supabase.from('order_queue').select('*').eq('location_id', _locationId).neq('status', 'collected').neq('status', 'awaiting_payment'),
       supabase.from('bar_tabs').select('*').eq('location_id', _locationId).neq('status', 'closed'),
     ]);
     const patch = {};
@@ -201,6 +202,14 @@ export function applyQueueRealtimeEvent(payload) {
   }
   const row = payload.new;
   if (!row?.ref) return;
+  // Skip online orders that are still awaiting payment — they only become
+  // visible to the operator once Stripe confirms and the row promotes.
+  if (row.status === 'awaiting_payment') {
+    // If the row exists locally (shouldn't, but defensive), drop it.
+    const next = queue.filter(o => o.ref !== row.ref);
+    if (next.length !== queue.length) useStore.setState({ orderQueue: next });
+    return;
+  }
   const incoming = rowToQueue(row);
   const ourPayload = JSON.stringify(queueToRow(incoming, row.location_id));
   if (_lastSentQueue[row.ref] === ourPayload) return;

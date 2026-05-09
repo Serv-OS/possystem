@@ -97,9 +97,14 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     }));
 
     try {
-      // Write order_queue row — POS picks this up via realtime, kitchen
-      // ticket fires at sent_at via the existing collection lead-time
-      // pipeline (same path MPOS scheduled-collection flows already use).
+      // PHASE 4 FLOW:
+      // 1. Pre-write order_queue with status='awaiting_payment' (operator
+      //    queue filters this status out — see CollectionQueue / POSSurface).
+      // 2. Call /api/stripe-checkout to mint a Stripe Checkout session.
+      // 3. Redirect customer to Stripe.
+      // 4. After payment, Stripe redirects back to ?paid=success&ref=...&session_id=...
+      // 5. The customer surface verifies via /api/stripe-verify and promotes
+      //    status to 'received' so the kitchen picks it up at sent_at.
       // Schema: order_queue(ref pk, location_id, type, customer, items,
       // total, status, staff, created_at, sent_at, collection_time text,
       // is_asap, updated_at, source, paid, payment_method, kitchen_routed_at).
@@ -112,28 +117,44 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         ref,
         location_id: opsLocationId,
         type: orderType,
-        status: 'received',
+        status: 'awaiting_payment', // promoted to 'received' after Stripe success
         source: 'online',
         items,
         customer,
-        total: subtotal, // delivery fee added in a follow-up commit
+        total: subtotal,
         sent_at: sentAt.toISOString(),
         collection_time: collectionTimeLabel,
         is_asap: timeMode === 'asap',
       };
-      // `paid` / `payment_method` columns from migration v5.5.57 may not be
-      // applied on every venue's DB yet — leaving them off the row is safe
-      // because the column defaults to false. The operator marks paid when
-      // they collect cash; Stripe-paid online orders set it via webhook in
-      // the next commit.
-      // Don't try to write to closed_checks yet — payment hasn't been
-      // taken. Phase 4 (Stripe online card) lands the closed_checks row on
-      // payment success. For now we land the order_queue row so it shows
-      // up on the operator's POS as a pending unpaid online order.
       const { error: insErr } = await supabase.from('order_queue').insert(queueRow);
       if (insErr) throw insErr;
 
-      onPlaced?.({ ref, collectionAt, total: subtotal });
+      // Build Stripe line items in pence (Stripe wants integer minor units).
+      const stripeItems = cart.map(l => {
+        const unit = l.price + (l.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0);
+        return {
+          name: l.name + (l.mods?.length ? ` (${l.mods.map(m => m.label).filter(Boolean).slice(0, 3).join(', ')})` : ''),
+          qty: l.qty || 1,
+          unitAmount: Math.round(unit * 100),
+        };
+      });
+
+      // Stripe redirects back to the URL the customer is on now — keeps
+      // the slug-based subdomain / ?loc= query intact.
+      const here = `${window.location.origin}${window.location.pathname}${window.location.search}`;
+      const r = await fetch('/api/stripe-checkout', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ref, locationId: opsLocationId, currency: 'gbp', items: stripeItems,
+          customerEmail: customer.email, returnUrl: here, cancelUrl: here,
+        }),
+      });
+      const data = await r.json();
+      if (!r.ok || !data?.url) throw new Error(data?.error || 'Could not start payment.');
+
+      try { sessionStorage.setItem('rpos:online:lastRef', ref); } catch {}
+      window.location.href = data.url; // hand off to Stripe Checkout
+      return;
     } catch (e) {
       console.error('[OnlineCheckout] place failed:', e);
       setError(e?.message || 'Could not place order. Please try again.');
@@ -237,11 +258,11 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
             fontFamily: 'inherit',
             display: 'flex', justifyContent: 'space-between', alignItems: 'center',
           }}>
-            <span>{working ? 'Placing order…' : 'Place order'}</span>
+            <span>{working ? 'Redirecting to payment…' : 'Pay & place order'}</span>
             <span>£{subtotal.toFixed(2)}</span>
           </button>
           <div style={{ fontSize: 10, color: muted, textAlign: 'center', marginTop: 8 }}>
-            Online card payment lands in the next update. Right now your order goes through to the venue marked unpaid — they'll contact you to confirm.
+            🔒 Secure payment by Stripe. Your order is sent to the kitchen the moment payment is confirmed.
           </div>
         </div>
       </div>

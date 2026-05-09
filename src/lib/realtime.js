@@ -302,6 +302,31 @@ export function startRealtime(store, locationId = LOCATION_ID) {
           });
         }
       }
+      // ── v5.5.120: ONLINE order arrives ─────────────────────────────────
+      // Online orders are pre-written as status='awaiting_payment' and only
+      // promoted to 'received' AFTER Stripe confirms payment. We chime/toast
+      // on the UPDATE that flips status away from awaiting_payment — that's
+      // the moment the order is real and the kitchen should fire it.
+      if (payload.eventType === 'UPDATE' && payload.new?.source === 'online' &&
+          payload.old?.status === 'awaiting_payment' &&
+          payload.new?.status && payload.new.status !== 'awaiting_payment') {
+        const row = payload.new;
+        const ref = row.ref || '';
+        const name = row.customer?.name || 'Online';
+        const type = row.type || 'collection';
+        playOrderChime();
+        store.getState().showToast?.(`Online order ${ref} — ${name} (${type})`, 'info');
+        let isMaster = false;
+        try { isMaster = JSON.parse(localStorage.getItem('rpos-device-config') || '{}').isMaster === true; } catch {}
+        if (isMaster && !row.kitchen_routed_at) {
+          store.getState().routeKioskOrderPrints?.({
+            ref,
+            items: row.items || [],
+            customer: row.customer || null,
+            sentAt: row.sent_at ? new Date(row.sent_at).getTime() : Date.now(),
+          });
+        }
+      }
     })
     .subscribe();
 

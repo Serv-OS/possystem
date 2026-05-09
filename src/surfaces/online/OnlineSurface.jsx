@@ -17,6 +17,7 @@ import { supabase } from '../../lib/supabase';
 import OnlineCart from './OnlineCart';
 import OnlineCheckout from './OnlineCheckout';
 import OnlineItemSheet from './OnlineItemSheet';
+import OrderTracker from './OrderTracker';
 
 const FALLBACK_ACCENT = '#e8a020';
 const FALLBACK_BG     = '#ffffff';
@@ -35,6 +36,8 @@ export default function OnlineSurface({ location }) {
   const [showCart, setShowCart]     = useState(false);
   const [showCheckout, setShowCheckout] = useState(false);
   const [confirmation, setConfirmation] = useState(null); // { id, when, type }
+  const [trackerRef, setTrackerRef] = useState(null); // shows OrderTracker for this ref
+  const [paymentNotice, setPaymentNotice] = useState(''); // 'cancel' | 'verify_failed' | ''
   const [orderType, setOrderType]   = useState(null); // null until welcome screen picks
   const [showLoyalty, setShowLoyalty] = useState(false);
   const [loyalty, setLoyalty]       = useState(null); // { phone, verified }
@@ -53,6 +56,61 @@ export default function OnlineSurface({ location }) {
     (items || []).forEach(i => (i.allergens || []).forEach(a => a && set.add(a)));
     return [...set].sort();
   }, [items]);
+
+  // ── Return from Stripe ─────────────────────────────────────────────────
+  // After Stripe redirects back, the URL has either:
+  //   ?paid=success&ref=OL-XXX&session_id=cs_test_...   → verify + promote
+  //   ?paid=cancel&ref=OL-XXX                           → leave as awaiting_payment, show notice
+  // We verify server-side (never trust the URL alone) before promoting the
+  // order_queue row from awaiting_payment to received.
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const paid = url.searchParams.get('paid');
+    const ref  = url.searchParams.get('ref');
+    const sessionId = url.searchParams.get('session_id');
+    if (!paid) return;
+
+    const cleanUrl = () => {
+      ['paid', 'ref', 'session_id'].forEach(k => url.searchParams.delete(k));
+      window.history.replaceState({}, '', url.toString());
+    };
+
+    if (paid === 'cancel' && ref) {
+      // Customer bailed at Stripe — drop the awaiting_payment row so it
+      // doesn't pollute the queue.
+      supabase?.from('order_queue').delete().eq('ref', ref);
+      setPaymentNotice('cancel');
+      cleanUrl();
+      return;
+    }
+
+    if (paid === 'success' && ref && sessionId) {
+      (async () => {
+        try {
+          const r = await fetch('/api/stripe-verify', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId }),
+          });
+          const data = await r.json();
+          if (!r.ok || !data.paid) {
+            setPaymentNotice('verify_failed');
+            cleanUrl();
+            return;
+          }
+          // Promote awaiting_payment → received so kitchen picks up at sent_at.
+          await supabase?.from('order_queue')
+            .update({ status: 'received' }).eq('ref', ref);
+          setCart([]);
+          setTrackerRef(ref);
+          cleanUrl();
+        } catch (e) {
+          console.error('[OnlineSurface] stripe verify failed:', e);
+          setPaymentNotice('verify_failed');
+          cleanUrl();
+        }
+      })();
+    }
+  }, []);
 
   // ── Load menu + branding from OPS DB ─────────────────────────────────────
   useEffect(() => {
@@ -182,10 +240,34 @@ export default function OnlineSurface({ location }) {
   const cardBdr  = theme.isLight ? '#ececef' : '#2a2a30';
   const headerBg = theme.isLight ? 'rgba(255,255,255,0.95)' : 'rgba(14,14,16,0.95)';
 
+  // If we're tracking a paid order, that's the only thing on screen.
+  if (trackerRef) {
+    return (
+      <OrderTracker orderRef={trackerRef} locationId={opsLocationId} theme={theme}
+        onClose={() => { setTrackerRef(null); setOrderType(null); }}/>
+    );
+  }
+
   // Welcome step — first thing customers see
   if (!orderType) {
     return (
       <ScrollShell theme={theme}>
+        {paymentNotice === 'cancel' && (
+          <div style={{
+            position: 'fixed', top: 16, left: '50%', transform: 'translateX(-50%)', zIndex: 70,
+            padding: '12px 18px', borderRadius: 12, background: '#fef3c7',
+            border: '1px solid #f59e0b', color: '#78350f', fontSize: 13, fontWeight: 700,
+            boxShadow: '0 8px 24px rgba(0,0,0,0.15)',
+          }}>Payment cancelled — your order wasn't placed.</div>
+        )}
+        {paymentNotice === 'verify_failed' && (
+          <div style={{
+            position: 'fixed', top: 16, left: '50%', transform: 'translateX(-50%)', zIndex: 70,
+            padding: '12px 18px', borderRadius: 12, background: '#fee2e2',
+            border: '1px solid #ef4444', color: '#7f1d1d', fontSize: 13, fontWeight: 700,
+            boxShadow: '0 8px 24px rgba(0,0,0,0.15)',
+          }}>Couldn't confirm payment. If you were charged, contact the venue with your order ref.</div>
+        )}
         <Welcome
           theme={theme}
           orderTypes={allOrderTypes}
