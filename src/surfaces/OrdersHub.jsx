@@ -187,24 +187,12 @@ export default function OrdersHub() {
   // run (master device offline at INSERT, fresh deploy not yet on the
   // device, etc.) to push the order through without re-opening the cart.
   const resendToKitchen = (o) => {
-    // v5.5.136: noisy diagnostic — click is registered, what's available, what
-    // are we sending. alert() is impossible to miss; toast would be silent if
-    // the store fn returned silently or the toast itself was suppressed.
-    const dump = `Send to kitchen clicked
-Ref: ${o.ref}
-Source: ${o.source || '(none)'}
-Items count: ${(o.items || []).length}
-First item: ${JSON.stringify(o.items?.[0] || null)}
-routeKioskOrderPrints in store? ${!!routeKioskOrderPrints}`;
-    // eslint-disable-next-line no-alert
-    alert(dump);
     if (!routeKioskOrderPrints) {
       showToast('Routing function not available on this device', 'error');
       return;
     }
     if (!o.items?.length) {
-      // eslint-disable-next-line no-alert
-      alert('Order has no items — routing would silently exit. Items field shape:\n' + JSON.stringify(o.items));
+      showToast(`${o.ref} has no items to send`, 'error');
       return;
     }
     routeKioskOrderPrints({
@@ -214,7 +202,7 @@ routeKioskOrderPrints in store? ${!!routeKioskOrderPrints}`;
       items: o.items || [],
       customer: o.customer || null,
       sentAt: o.sentAt || Date.now(),
-      force: true,                                              // v5.5.137: bypass atomic claim — operator forced re-send
+      force: true, // bypass atomic claim — operator forced re-send
     });
   };
 
@@ -478,14 +466,6 @@ function OrderCard({ order, onAdvance, onOpen, onResend }) {
       <div style={{ padding:'8px 13px', borderTop:'1px solid var(--bdr)', background:'var(--bg2)', display:'flex', alignItems:'center', gap:8 }}>
         <span style={{ fontSize:14, fontWeight:800, color:'var(--acc)', fontFamily:'var(--font-mono)' }}>{money(order.total)}</span>
         <span style={{ fontSize:10, color:'var(--t4)' }}>{items.length} item{items.length !== 1 ? 's' : ''}</span>
-        {/* v5.5.135: visible `source` pill — diagnostic so we can see whether
-            the source column on this row is set correctly (online/kiosk/qr) or
-            blank/'pos'. Cheap to render, useful when "didn't auto-route" surfaces. */}
-        {order._kind === 'queue' && (
-          <span style={{ fontSize:9, fontWeight:700, padding:'1px 6px', borderRadius:8, background:'var(--bg3)', border:'1px solid var(--bdr)', color:'var(--t4)', fontFamily:'var(--font-mono)' }}>
-            src:{order.source || '?'}
-          </span>
-        )}
         <div style={{ marginLeft:'auto', display:'flex', gap:5 }}>
           {/* v5.5.135: manual fallback for queue orders that didn't auto-route.
               Fires routeKioskOrderPrints — the same path the realtime handler

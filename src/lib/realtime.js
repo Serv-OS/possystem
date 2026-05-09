@@ -303,14 +303,18 @@ export function startRealtime(store, locationId = LOCATION_ID) {
           total: Number(row.total) || 0,
           orderType: row.type || null,
         });
-        // v5.5.132: any online operator device can route. The existing
-        // atomic-claim on order_queue.kitchen_routed_at means only ONE
-        // device actually does the work — same idempotency we always had,
-        // but we no longer require the device flagged isMaster to be the
-        // one online when the INSERT arrives. Print jobs land in print_jobs
-        // which the master print agent picks up regardless of which device
-        // queued them.
-        if (!row.kitchen_routed_at) {
+        // v5.5.139: ONLY the master device fires the realtime auto-route.
+        // Reverting v5.5.132's broader gate because the cross-device atomic
+        // claim it relied on (kitchen_routed_at IS NULL) doesn't work when
+        // the column is missing from the DB — every device proceeded and
+        // we got 5 duplicate prints for one order. Master-only is the safe
+        // default. Once the SQL `alter table order_queue add column …
+        // kitchen_routed_at` is applied on this venue's DB, we could broaden
+        // the gate again, but master-only is the minimum-surprise behaviour
+        // (matches kiosk-source path that's worked correctly all along).
+        let isMaster = false;
+        try { isMaster = JSON.parse(localStorage.getItem('rpos-device-config') || '{}').isMaster === true; } catch {}
+        if (isMaster && !row.kitchen_routed_at) {
           store.getState().routeKioskOrderPrints?.({
             ref,
             source: src,                                     // 'kiosk' | 'online' | 'qr'

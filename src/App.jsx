@@ -76,6 +76,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.139', date: '9 May 2026', label: 'Fix 5× duplicate prints — restore master-only auto-routing (the broader gate relied on a missing DB column for dedup)',
+    changes: [
+      'WHY 5 PRINTS — v5.5.132 removed the isMaster gate so any operator device could route on realtime INSERT. The dedup that made that safe was the atomic claim on order_queue.kitchen_routed_at, which silently fails on this venue\'s DB because that column is missing (migration v5.5.57 not applied). With no DB-level dedup, every operator browser / tab / device subscribed to the realtime channel proceeded with routing — 5 subscribers = 5 print jobs queued for the same order. The print agent printed all 5.',
+      'RESTORED MASTER-ONLY AUTO-ROUTE — only the device flagged isMaster in its device config fires realtime auto-routing now. Same behaviour kiosk-source orders had all along (and which never duplicated). When you eventually apply the SQL `alter table order_queue add column if not exists kitchen_routed_at timestamptz;` we can broaden the gate again — but master-only is the minimum-surprise default and works regardless of DB schema state.',
+      'MANUAL Send-to-kitchen STILL WORKS — that path is force:true and intentionally bypasses the claim. If a single operator clicks it, it routes once. If two operators on different devices click within seconds, you might get 2 prints — but that\'s a deliberate user action, not a silent broadcast.',
+      'CLEANUP — removed the diagnostic `alert()` popups on the Send-to-kitchen click and the `src:online` pill on each order card. The routing path is wired correctly now; the noisy debug instrumentation has done its job. DB-update errors in the force path now surface as a regular toast instead of a blocking alert.',
+    ],
+  },
+  {
     version: '5.5.138', date: '9 May 2026', label: 'ROOT CAUSE — kitchen_routed_at column missing on order_queue → silent claim error → no print / no KDS / no toast',
     changes: [
       'FOUND IT — every routing attempt was silently dying at the atomic claim step because the operator\'s order_queue table is missing the `kitchen_routed_at` column. Migration v5.5.57 was supposed to add it but never ran on this venue\'s DB. The Supabase update returned "Could not find the kitchen_routed_at column of order_queue in the schema cache" but the catch was a console.warn + silent return → no toast, no print, no KDS. Auto-route on INSERT had the same bug.',

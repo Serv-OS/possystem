@@ -3693,7 +3693,7 @@ export const useStore = create((set, get) => ({
         if (r.error && COL_MISSING(r.error)) {
           console.warn('[routeKioskOrderPrints] kitchen_routed_at column missing — proceeding without idempotency claim. Run: alter table order_queue add column kitchen_routed_at timestamptz;');
         } else if (r.error) {
-          alert('[Send to kitchen] DB update failed: ' + r.error.message);
+          showToast?.(`Send to kitchen failed: ${r.error.message}`, 'error');
           return;
         }
         claimed = r.data;
