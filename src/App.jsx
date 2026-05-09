@@ -76,6 +76,17 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.113', date: '8 May 2026', label: 'Online ordering — scroll fix + welcome step + allergy + loyalty + instructions',
+    changes: [
+      'SCROLL FIX — global CSS sets `html, body, #root { overflow: hidden }` for the operator app. The customer surface inherited that and was un-scrollable. ScrollShell wrapper now positions the surface as a fixed-inset container with its own overflow:auto so the page scrolls naturally without touching global CSS.',
+      'WELCOME STEP — first thing customers see is a full-height branded screen with the venue logo, name, and two big buttons: 🥡 Collection / 🚴 Delivery (Delivery only shows when online_delivery_enabled is on for this location). Loyalty entry pill below. Order-type pill in the sticky header lets the customer change mode mid-flow (taps it → returns to welcome).',
+      'ALLERGY FILTER — header chip "⚠️ Allergies" opens a bottom sheet with chips for every allergen tag in the menu. Picking one or more hides any item containing those allergens AND surfaces a red banner across the menu reminding the customer to confirm with the venue for severe allergies. Item cards now also show a small "⚠ contains X" pill when the item has allergens, and the item-detail sheet shows a full allergen warning block above modifiers.',
+      'LOYALTY UI — phone number entry → "Send code" → 6-digit code input → "Verify & continue". Modal scaffolds the flow end-to-end. Real Twilio / Supabase phone-OTP wiring is a follow-up commit; for now the "send" simulates instantly so the UI is testable.',
+      'INSTRUCTION GROUPS WIRED — OnlineItemSheet now loads instruction_groups (cooking prefs etc) alongside modifier_groups. Instruction picks render as their own section in the item sheet, single-pick rows like the modifier groups but with no price impact. They\'re appended to the cart line\'s mods array with `_instruction: true` so kitchen tickets render them but checkout total is unaffected — same shape MItemDetail / InlineItemFlow already produce.',
+      'MODIFIER + VARIANT VERIFICATION — the existing variant picker (parent_id detection) and modifier groups path are now exercised end-to-end. Tapping an item with variants shows size rows with price deltas; modifier groups show required/optional pills, full-width tappable rows with custom radio/checkbox indicators.',
+    ],
+  },
+  {
     version: '5.5.112', date: '8 May 2026', label: 'Online ordering UI overhaul — DoorDash / Uber Eats reference, real branded surface',
     changes: [
       'OnlineSurface — full visual rewrite. 280px hero banner with overlay logo (84px, three-pixel white border, drop shadow) + restaurant name + "Open now" pill + collection/delivery toggle. Blurred sticky category strip below hero with auto-scroll-to-section on tap.',

@@ -31,8 +31,24 @@ export default function OnlineSurface({ location }) {
   const [loading, setLoading]       = useState(true);
   const [openItem, setOpenItem]     = useState(null);
   const [showCart, setShowCart]     = useState(false);
-  const [orderType, setOrderType]   = useState('collection');
+  const [orderType, setOrderType]   = useState(null); // null until welcome screen picks
+  const [showLoyalty, setShowLoyalty] = useState(false);
+  const [loyalty, setLoyalty]       = useState(null); // { phone, verified }
   const [cart, setCart]             = useState([]);
+  const [activeAllergens, setActiveAllergens] = useState([]); // user-picked filters
+  const [showAllergyPicker, setShowAllergyPicker] = useState(false);
+  const allOrderTypes = useMemo(() => {
+    const arr = [{ id: 'collection', label: 'Collection', icon: '🥡', desc: 'Pick up at the venue' }];
+    if (location.online_delivery_enabled) arr.push({ id: 'delivery', label: 'Delivery', icon: '🚴', desc: 'Brought to your door' });
+    return arr;
+  }, [location.online_delivery_enabled]);
+
+  // Once we've loaded menu data, work out the allergen vocabulary
+  const knownAllergens = useMemo(() => {
+    const set = new Set();
+    (items || []).forEach(i => (i.allergens || []).forEach(a => a && set.add(a)));
+    return [...set].sort();
+  }, [items]);
 
   // ── Load menu + branding from OPS DB ─────────────────────────────────────
   useEffect(() => {
@@ -87,10 +103,12 @@ export default function OnlineSurface({ location }) {
     [categories]
   );
 
-  const itemsForCat = (catId) => (items || []).filter(i =>
-    !i.parent_id && !i.archived && i.sold_alone !== false &&
-    (i.cat === catId || (Array.isArray(i.cats) && i.cats.includes(catId)))
-  );
+  const itemsForCat = (catId) => (items || []).filter(i => {
+    if (i.parent_id || i.archived || i.sold_alone === false) return false;
+    if (!(i.cat === catId || (Array.isArray(i.cats) && i.cats.includes(catId)))) return false;
+    if (activeAllergens.length && (i.allergens || []).some(a => activeAllergens.includes(a))) return false;
+    return true;
+  });
 
   // ── Cart math ────────────────────────────────────────────────────────────
   const cartCount = cart.reduce((s, l) => s + (l.qty || 1), 0);
@@ -117,64 +135,122 @@ export default function OnlineSurface({ location }) {
   const cardBdr  = theme.isLight ? '#ececef' : '#2a2a30';
   const headerBg = theme.isLight ? 'rgba(255,255,255,0.95)' : 'rgba(14,14,16,0.95)';
 
+  // Welcome step — first thing customers see
+  if (!orderType) {
+    return (
+      <ScrollShell theme={theme}>
+        <Welcome
+          theme={theme}
+          orderTypes={allOrderTypes}
+          loyalty={loyalty}
+          onPickType={setOrderType}
+          onLoyalty={() => setShowLoyalty(true)}/>
+        {showLoyalty && (
+          <LoyaltyModal theme={theme} cardBdr={cardBdr} muted={muted}
+            onClose={() => setShowLoyalty(false)}
+            onVerified={(phone) => { setLoyalty({ phone, verified: true }); setShowLoyalty(false); }}/>
+        )}
+      </ScrollShell>
+    );
+  }
+
   return (
-    <div style={{
-      minHeight: '100vh', background: theme.bg, color: theme.fg,
-      fontFamily: '-apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif',
-      paddingBottom: cart.length > 0 ? 96 : 0,
-    }}>
+    <ScrollShell theme={theme} extraBottomPad={cart.length > 0 ? 96 : 0}>
       {/* HERO with overlay logo */}
       <Hero theme={theme} muted={muted}/>
 
-      {/* Sticky category nav */}
+      {/* Sticky header — order-type pill + allergy filter + loyalty + categories */}
       <div style={{
         position: 'sticky', top: 0, zIndex: 8,
         background: headerBg, backdropFilter: 'saturate(180%) blur(12px)',
         WebkitBackdropFilter: 'saturate(180%) blur(12px)',
         borderBottom: `1px solid ${cardBdr}`,
       }}>
-        <div style={{ maxWidth: 1100, margin: '0 auto', padding: '0 20px',
-          display: 'flex', alignItems: 'center', gap: 12,
+        <div style={{ maxWidth: 1100, margin: '0 auto', padding: '12px 20px 0',
+          display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
         }}>
-          {/* Mini logo + name (visible after scrolling past hero) */}
           {theme.logo && (
             <img src={theme.logo} alt={theme.name}
               style={{ width: 36, height: 36, borderRadius: 8, objectFit: 'cover', flexShrink: 0 }}/>
           )}
-          <div style={{ fontSize: 15, fontWeight: 800, flexShrink: 0, marginRight: 4 }}>{theme.name}</div>
+          <div style={{ fontSize: 15, fontWeight: 800, flexShrink: 0, marginRight: 'auto' }}>{theme.name}</div>
 
-          {/* Order-type toggle */}
-          <select value={orderType} onChange={e => setOrderType(e.target.value)} style={{
-            padding: '6px 12px', borderRadius: 99, border: `1px solid ${cardBdr}`,
-            background: theme.bg, color: theme.fg, fontSize: 12, fontWeight: 700,
-            fontFamily: 'inherit', cursor: 'pointer', flexShrink: 0,
+          {/* Order-type pill (changeable) */}
+          <button onClick={() => setOrderType(null)} style={{
+            padding: '6px 12px', borderRadius: 99,
+            background: `${theme.accent}18`, color: theme.fg,
+            border: `1px solid ${theme.accent}55`,
+            fontSize: 12, fontWeight: 800, fontFamily: 'inherit', cursor: 'pointer',
+            display: 'inline-flex', alignItems: 'center', gap: 6,
           }}>
-            <option value="collection">Collection</option>
-            <option value="delivery">Delivery</option>
-          </select>
+            <span>{orderType === 'collection' ? '🥡' : '🚴'}</span>
+            <span>{orderType === 'collection' ? 'Collection' : 'Delivery'}</span>
+            <span style={{ opacity: 0.5, fontSize: 11 }}>↓</span>
+          </button>
 
-          {/* Category chips */}
-          <div style={{ flex: 1, overflowX: 'auto', whiteSpace: 'nowrap',
-            WebkitOverflowScrolling: 'touch', padding: '12px 0',
-            scrollbarWidth: 'none', msOverflowStyle: 'none',
+          {/* Allergy filter — only shown when there are allergens to filter */}
+          {knownAllergens.length > 0 && (
+            <button onClick={() => setShowAllergyPicker(true)} style={{
+              padding: '6px 12px', borderRadius: 99,
+              background: activeAllergens.length ? '#ef444420' : 'transparent',
+              color: activeAllergens.length ? '#ef4444' : theme.fg,
+              border: `1px solid ${activeAllergens.length ? '#ef4444' : cardBdr}`,
+              fontSize: 12, fontWeight: 700, fontFamily: 'inherit', cursor: 'pointer',
+              display: 'inline-flex', alignItems: 'center', gap: 6,
+            }}>
+              <span>⚠️</span>
+              <span>{activeAllergens.length ? `${activeAllergens.length} allergy filter${activeAllergens.length === 1 ? '' : 's'}` : 'Allergies'}</span>
+            </button>
+          )}
+
+          {/* Loyalty / sign-in */}
+          <button onClick={() => setShowLoyalty(true)} style={{
+            padding: '6px 12px', borderRadius: 99,
+            background: loyalty?.verified ? `${theme.accent}18` : 'transparent',
+            color: theme.fg, border: `1px solid ${cardBdr}`,
+            fontSize: 12, fontWeight: 700, fontFamily: 'inherit', cursor: 'pointer',
           }}>
-            {topCategories.map(c => {
-              if (itemsForCat(c.id).length === 0) return null;
-              return (
-                <button key={c.id} onClick={() => {
-                  document.getElementById(`cat-${c.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                }} style={{
-                  display: 'inline-block', padding: '8px 14px', marginRight: 6,
-                  borderRadius: 99,
-                  background: 'transparent', color: theme.fg,
-                  border: `1.5px solid ${cardBdr}`,
-                  fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit',
-                }}>{c.label || c.name}</button>
-              );
-            })}
-          </div>
+            {loyalty?.verified ? `✦ ${loyalty.phone}` : '✦ Sign in'}
+          </button>
+        </div>
+
+        {/* Category chips */}
+        <div style={{ maxWidth: 1100, margin: '0 auto', padding: '6px 20px 10px',
+          overflowX: 'auto', whiteSpace: 'nowrap',
+          WebkitOverflowScrolling: 'touch',
+          scrollbarWidth: 'none', msOverflowStyle: 'none',
+        }}>
+          {topCategories.map(c => {
+            if (itemsForCat(c.id).length === 0) return null;
+            return (
+              <button key={c.id} onClick={() => {
+                document.getElementById(`cat-${c.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              }} style={{
+                display: 'inline-block', padding: '7px 13px', marginRight: 6,
+                borderRadius: 99,
+                background: 'transparent', color: theme.fg,
+                border: `1.5px solid ${cardBdr}`,
+                fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit',
+              }}>{c.label || c.name}</button>
+            );
+          })}
         </div>
       </div>
+
+      {/* Allergy banner — visible across pages while a filter is active */}
+      {activeAllergens.length > 0 && (
+        <div style={{
+          maxWidth: 1100, margin: '0 auto', padding: '12px 20px 0',
+        }}>
+          <div style={{
+            padding: '10px 14px', borderRadius: 10,
+            background: '#ef444415', border: '1px solid #ef444455',
+            fontSize: 12, color: '#b91c1c', fontWeight: 600, lineHeight: 1.5,
+          }}>
+            ⚠ Showing items free from <b>{activeAllergens.join(', ')}</b>. Items containing those allergens are hidden from the menu. Always confirm with the venue if you have a severe allergy.
+          </div>
+        </div>
+      )}
 
       {/* MENU body */}
       <div style={{ maxWidth: 1100, margin: '0 auto', padding: '24px 20px 40px' }}>
@@ -253,8 +329,294 @@ export default function OnlineSurface({ location }) {
           }}
         />
       )}
+
+      {showAllergyPicker && (
+        <AllergyPickerModal
+          theme={theme} cardBdr={cardBdr}
+          all={knownAllergens}
+          active={activeAllergens}
+          onClose={() => setShowAllergyPicker(false)}
+          onSave={(next) => { setActiveAllergens(next); setShowAllergyPicker(false); }}/>
+      )}
+
+      {showLoyalty && (
+        <LoyaltyModal theme={theme} cardBdr={cardBdr} muted={muted}
+          onClose={() => setShowLoyalty(false)}
+          onVerified={(phone) => { setLoyalty({ phone, verified: true }); setShowLoyalty(false); }}/>
+      )}
+    </ScrollShell>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ScrollShell — wraps the surface in its own scroll container so we don't
+// inherit the operator app's body { overflow: hidden } from globals.css.
+function ScrollShell({ theme, extraBottomPad = 0, children }) {
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, overflowY: 'auto', overflowX: 'hidden',
+      WebkitOverflowScrolling: 'touch',
+      background: theme.bg, color: theme.fg,
+      fontFamily: '-apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif',
+      paddingBottom: extraBottomPad,
+    }}>
+      {children}
     </div>
   );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Welcome — first thing the customer sees. They pick collection vs delivery
+// before menu loads. Loyalty entry sits below the order-type buttons.
+function Welcome({ theme, orderTypes, loyalty, onPickType, onLoyalty }) {
+  const heroBg = theme.hero
+    ? `linear-gradient(180deg, rgba(0,0,0,0.25) 0%, rgba(0,0,0,0.65) 100%), url(${theme.hero}) center/cover no-repeat`
+    : `linear-gradient(135deg, ${theme.accent}, ${shade(theme.accent, -25)})`;
+  return (
+    <div style={{
+      minHeight: '100%', background: heroBg, color: '#fff',
+      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+      padding: '40px 20px', textAlign: 'center',
+    }}>
+      <div style={{ maxWidth: 480, width: '100%' }}>
+        {theme.logo
+          ? <img src={theme.logo} alt={theme.name} style={{
+              width: 100, height: 100, borderRadius: 22, objectFit: 'cover',
+              border: '4px solid #fff', boxShadow: '0 8px 28px rgba(0,0,0,0.4)',
+              margin: '0 auto 18px',
+            }}/>
+          : <div style={{
+              width: 100, height: 100, borderRadius: 22,
+              background: theme.accent, color: contrastFg(theme.accent),
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: 44, fontWeight: 900, border: '4px solid #fff',
+              boxShadow: '0 8px 28px rgba(0,0,0,0.4)', margin: '0 auto 18px',
+            }}>{theme.name[0]}</div>
+        }
+        <div style={{ fontSize: 32, fontWeight: 900, letterSpacing: '-0.025em',
+          textShadow: '0 2px 8px rgba(0,0,0,0.5)', marginBottom: 4,
+        }}>{theme.name}</div>
+        <div style={{ fontSize: 14, fontWeight: 600, opacity: 0.95,
+          textShadow: '0 1px 4px rgba(0,0,0,0.4)', marginBottom: 32,
+        }}>How would you like to order?</div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {orderTypes.map(t => (
+            <button key={t.id} onClick={() => onPickType(t.id)} style={{
+              padding: '20px 22px', borderRadius: 16,
+              background: 'rgba(255,255,255,0.95)', color: '#1a1a1a',
+              border: 'none', cursor: 'pointer', fontFamily: 'inherit',
+              display: 'flex', alignItems: 'center', gap: 16, textAlign: 'left',
+              boxShadow: '0 4px 14px rgba(0,0,0,0.18)',
+              transition: 'transform .12s ease',
+            }}
+              onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-2px)'; }}
+              onMouseLeave={e => { e.currentTarget.style.transform = ''; }}>
+              <div style={{ fontSize: 28 }}>{t.icon}</div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 17, fontWeight: 800 }}>{t.label}</div>
+                <div style={{ fontSize: 12, color: '#6b6b70', marginTop: 2 }}>{t.desc}</div>
+              </div>
+              <div style={{ fontSize: 22, color: '#9a9aa1' }}>→</div>
+            </button>
+          ))}
+        </div>
+
+        {/* Loyalty entry */}
+        <button onClick={onLoyalty} style={{
+          marginTop: 24, padding: '12px 20px', borderRadius: 99,
+          background: 'rgba(255,255,255,0.18)', color: '#fff',
+          border: '1px solid rgba(255,255,255,0.5)',
+          fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit',
+          backdropFilter: 'saturate(180%) blur(8px)',
+        }}>
+          {loyalty?.verified ? `✦ Signed in as ${loyalty.phone}` : '✦ Sign in for loyalty rewards'}
+        </button>
+
+        <div style={{ marginTop: 32, fontSize: 11, opacity: 0.75, textShadow: '0 1px 3px rgba(0,0,0,0.4)' }}>
+          Powered by serv-os.app
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Allergy picker — minimal modal that lets the customer toggle which
+// allergens to filter out. Mirrors the kiosk's allergen flow.
+function AllergyPickerModal({ theme, cardBdr, all, active, onClose, onSave }) {
+  const [picked, setPicked] = useState(active);
+  const togglePick = (a) => setPicked(p => p.includes(a) ? p.filter(x => x !== a) : [...p, a]);
+
+  return (
+    <div onClick={onClose} style={{
+      position: 'fixed', inset: 0, zIndex: 40, background: 'rgba(0,0,0,0.6)',
+      display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        width: '100%', maxWidth: 520, maxHeight: '92vh', overflowY: 'auto',
+        background: theme.bg, color: theme.fg,
+        borderRadius: '18px 18px 0 0',
+        boxShadow: '0 -10px 40px rgba(0,0,0,0.3)',
+      }}>
+        <div style={{ padding: '14px 0 6px', display: 'flex', justifyContent: 'center' }}>
+          <div style={{ width: 44, height: 5, borderRadius: 3, background: cardBdr }}/>
+        </div>
+        <div style={{ padding: '12px 22px 6px' }}>
+          <div style={{ fontSize: 22, fontWeight: 800, letterSpacing: '-0.02em' }}>Allergy filter</div>
+          <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4, lineHeight: 1.55 }}>
+            We'll hide items containing any of the allergens you pick. <b>Always confirm with the venue</b> if you have a severe allergy — accidental cross-contamination is possible.
+          </div>
+        </div>
+        <div style={{ padding: '12px 22px 0', display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          {all.length === 0 ? (
+            <div style={{ fontSize: 13, opacity: 0.6, padding: 12 }}>No allergen tags on this menu yet.</div>
+          ) : all.map(a => {
+            const on = picked.includes(a);
+            return (
+              <button key={a} onClick={() => togglePick(a)} style={{
+                padding: '9px 14px', borderRadius: 99, fontFamily: 'inherit', cursor: 'pointer',
+                background: on ? '#ef4444' : 'transparent',
+                color: on ? '#fff' : theme.fg,
+                border: `1.5px solid ${on ? '#ef4444' : cardBdr}`,
+                fontSize: 13, fontWeight: 700,
+                textTransform: 'capitalize',
+              }}>{on ? '✓ ' : ''}{a}</button>
+            );
+          })}
+        </div>
+        <div style={{ padding: '16px 22px calc(14px + env(safe-area-inset-bottom)) 22px', display: 'flex', gap: 10 }}>
+          <button onClick={() => onSave([])} style={{
+            padding: '12px 18px', borderRadius: 12,
+            background: 'transparent', color: theme.fg, border: `1.5px solid ${cardBdr}`,
+            fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit',
+          }}>Clear all</button>
+          <button onClick={() => onSave(picked)} style={{
+            flex: 1, padding: '12px 18px', borderRadius: 12,
+            background: theme.accent, color: contrastFg(theme.accent),
+            border: 'none', fontSize: 14, fontWeight: 800, cursor: 'pointer', fontFamily: 'inherit',
+          }}>Apply{picked.length ? ` (${picked.length})` : ''}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Loyalty modal — phone capture + SMS-code verification (UI scaffold only;
+// real Twilio / Supabase phone-OTP wiring lands in a follow-up commit).
+function LoyaltyModal({ theme, cardBdr, muted, onClose, onVerified }) {
+  const [step, setStep] = useState('phone'); // phone | code
+  const [phone, setPhone] = useState('');
+  const [code, setCode] = useState('');
+  const [working, setWorking] = useState(false);
+  const [err, setErr] = useState('');
+
+  const sendCode = async () => {
+    if (!/^\+?[0-9 ]{7,}$/.test(phone)) { setErr('Enter a valid phone number.'); return; }
+    setErr(''); setWorking(true);
+    // TODO: real SMS provider wiring (Twilio / Supabase phone OTP). For now
+    // the scaffold "sends" instantly so the UI flow is testable end-to-end.
+    await new Promise(r => setTimeout(r, 600));
+    setWorking(false);
+    setStep('code');
+  };
+  const verify = async () => {
+    if (code.replace(/\D/g, '').length < 4) { setErr('Enter the 6-digit code.'); return; }
+    setErr(''); setWorking(true);
+    await new Promise(r => setTimeout(r, 400));
+    setWorking(false);
+    onVerified(phone);
+  };
+
+  return (
+    <div onClick={onClose} style={{
+      position: 'fixed', inset: 0, zIndex: 50, background: 'rgba(0,0,0,0.65)',
+      display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        width: '100%', maxWidth: 460,
+        background: theme.bg, color: theme.fg,
+        borderRadius: '18px 18px 0 0', boxShadow: '0 -10px 40px rgba(0,0,0,0.3)',
+      }}>
+        <div style={{ padding: '14px 0 6px', display: 'flex', justifyContent: 'center' }}>
+          <div style={{ width: 44, height: 5, borderRadius: 3, background: cardBdr }}/>
+        </div>
+        <div style={{ padding: '12px 24px 24px' }}>
+          <div style={{ fontSize: 24, fontWeight: 900, letterSpacing: '-0.02em', marginBottom: 4 }}>
+            ✦ Loyalty rewards
+          </div>
+          <div style={{ fontSize: 13, color: muted, lineHeight: 1.55, marginBottom: 20 }}>
+            Sign in with your phone to earn points on every order. We'll text you a code to confirm it's you. No spam — ever.
+          </div>
+
+          {step === 'phone' && (
+            <>
+              <label style={{ fontSize: 11, fontWeight: 700, color: muted, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>
+                Mobile number
+              </label>
+              <input type="tel" inputMode="tel"
+                placeholder="07700 900000"
+                value={phone}
+                onChange={e => { setPhone(e.target.value); setErr(''); }}
+                style={inputStyle(theme, cardBdr)}/>
+              {err && <div style={{ fontSize: 12, color: '#ef4444', marginTop: 8 }}>{err}</div>}
+              <button onClick={sendCode} disabled={working} style={{
+                marginTop: 16, width: '100%', padding: '14px 18px', borderRadius: 12,
+                background: theme.accent, color: contrastFg(theme.accent),
+                border: 'none', fontSize: 15, fontWeight: 800, cursor: 'pointer',
+                fontFamily: 'inherit', opacity: working ? 0.6 : 1,
+              }}>
+                {working ? 'Sending…' : 'Send code'}
+              </button>
+            </>
+          )}
+
+          {step === 'code' && (
+            <>
+              <label style={{ fontSize: 11, fontWeight: 700, color: muted, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>
+                Code sent to {phone}
+              </label>
+              <input type="text" inputMode="numeric" autoComplete="one-time-code"
+                placeholder="123456"
+                maxLength={6}
+                value={code}
+                onChange={e => { setCode(e.target.value); setErr(''); }}
+                style={{ ...inputStyle(theme, cardBdr), textAlign: 'center', fontSize: 22, letterSpacing: '0.4em', fontWeight: 800 }}/>
+              {err && <div style={{ fontSize: 12, color: '#ef4444', marginTop: 8 }}>{err}</div>}
+              <button onClick={verify} disabled={working} style={{
+                marginTop: 16, width: '100%', padding: '14px 18px', borderRadius: 12,
+                background: theme.accent, color: contrastFg(theme.accent),
+                border: 'none', fontSize: 15, fontWeight: 800, cursor: 'pointer',
+                fontFamily: 'inherit', opacity: working ? 0.6 : 1,
+              }}>
+                {working ? 'Verifying…' : 'Verify & continue'}
+              </button>
+              <button onClick={() => setStep('phone')} style={{
+                marginTop: 10, width: '100%', padding: '10px', background: 'transparent',
+                border: 'none', color: muted, fontSize: 12, cursor: 'pointer', fontFamily: 'inherit',
+                textDecoration: 'underline',
+              }}>← Use a different number</button>
+            </>
+          )}
+
+          <div style={{ marginTop: 18, fontSize: 10, color: muted, lineHeight: 1.5 }}>
+            By continuing you agree to receive a one-time text message at the number above.
+            Standard rates may apply.
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function inputStyle(theme, cardBdr) {
+  return {
+    width: '100%', padding: '14px 16px', borderRadius: 12,
+    background: theme.isLight ? '#f5f5f7' : '#1f1f24',
+    color: theme.fg, border: `1.5px solid ${cardBdr}`,
+    fontSize: 15, fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box',
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -318,6 +680,7 @@ function Hero({ theme, muted }) {
 
 function ItemCard({ item, theme, cardBg, cardBdr, muted, onPick }) {
   const price = Number(item.pricing?.base ?? item.price ?? 0);
+  const allergens = item.allergens || [];
   return (
     <button onClick={onPick} style={{
       display: 'flex', alignItems: 'stretch',
@@ -343,7 +706,17 @@ function ItemCard({ item, theme, cardBg, cardBdr, muted, onPick }) {
           </div>
         )}
         <div style={{ flex: 1 }}/>
-        <div style={{ fontSize: 14, fontWeight: 800, marginTop: 6 }}>£{price.toFixed(2)}</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
+          <div style={{ fontSize: 14, fontWeight: 800 }}>£{price.toFixed(2)}</div>
+          {allergens.length > 0 && (
+            <span title={`Contains: ${allergens.join(', ')}`} style={{
+              padding: '2px 8px', borderRadius: 99,
+              background: '#fde6e6', color: '#991b1b',
+              fontSize: 10, fontWeight: 700, letterSpacing: '0.02em',
+              textTransform: 'capitalize',
+            }}>⚠ {allergens.length === 1 ? allergens[0] : `${allergens.length} allergens`}</span>
+          )}
+        </div>
       </div>
       {item.image && (
         <div style={{

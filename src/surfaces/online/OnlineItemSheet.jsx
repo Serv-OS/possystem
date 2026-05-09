@@ -9,7 +9,9 @@ import { supabase } from '../../lib/supabase';
 export default function OnlineItemSheet({ item, theme, allItems, onClose, onAdd }) {
   const [qty, setQty]               = useState(1);
   const [modGroups, setModGroups]   = useState([]);
+  const [instGroups, setInstGroups] = useState([]); // cooking prefs etc — no price impact
   const [selections, setSelections] = useState({});
+  const [instSelections, setInstSelections] = useState({}); // { instGroupId: optionLabel }
   const [loading, setLoading]       = useState(false);
   const [errors, setErrors]         = useState([]);
 
@@ -25,8 +27,9 @@ export default function OnlineItemSheet({ item, theme, allItems, onClose, onAdd 
 
   const effectiveItem = selectedVariant || item;
 
-  // Modifier groups assigned to this item (or inherited from parent for child variants)
-  const groupIds = useMemo(() => {
+  // Modifier + instruction groups assigned to this item (inheriting from
+  // parent for child variants when child doesn't override).
+  const modGroupIds = useMemo(() => {
     const own = effectiveItem.assigned_modifier_groups || [];
     if (own.length === 0 && effectiveItem.parent_id) {
       const parent = (allItems || []).find(i => i.id === effectiveItem.parent_id);
@@ -35,34 +38,57 @@ export default function OnlineItemSheet({ item, theme, allItems, onClose, onAdd 
     return own;
   }, [effectiveItem, allItems]);
 
+  const instGroupIds = useMemo(() => {
+    const own = effectiveItem.assigned_instruction_groups || [];
+    if (own.length === 0 && effectiveItem.parent_id) {
+      const parent = (allItems || []).find(i => i.id === effectiveItem.parent_id);
+      return parent?.assigned_instruction_groups || [];
+    }
+    return own;
+  }, [effectiveItem, allItems]);
+
   useEffect(() => {
     let alive = true;
-    if (!groupIds.length || !supabase) { setModGroups([]); setSelections({}); return; }
+    if (!supabase || (modGroupIds.length === 0 && instGroupIds.length === 0)) {
+      setModGroups([]); setInstGroups([]); setSelections({}); setInstSelections({}); return;
+    }
     setLoading(true);
     (async () => {
       try {
-        const { data } = await supabase.from('modifier_groups')
-          .select('id, name, min, max, selection_type, options, sort_order')
-          .in('id', groupIds);
+        const [mRes, iRes] = await Promise.all([
+          modGroupIds.length
+            ? supabase.from('modifier_groups')
+                .select('id, name, min, max, selection_type, options, sort_order')
+                .in('id', modGroupIds)
+            : Promise.resolve({ data: [] }),
+          instGroupIds.length
+            ? supabase.from('instruction_groups')
+                .select('id, name, options, sort_order, required')
+                .in('id', instGroupIds)
+            : Promise.resolve({ data: [] }),
+        ]);
         if (!alive) return;
-        const sorted = (data || []).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
-        setModGroups(sorted);
-        // Pre-fill required single-pick groups with the first option
+        const mSorted = (mRes.data || []).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+        const iSorted = (iRes.data || []).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+        setModGroups(mSorted);
+        setInstGroups(iSorted);
+        // Pre-fill required single-pick mod groups with the first option
         const init = {};
-        sorted.forEach(g => {
+        mSorted.forEach(g => {
           if ((g.min ?? 0) >= 1 && (g.max ?? 1) === 1 && Array.isArray(g.options) && g.options.length) {
             init[g.id] = g.options[0];
           }
         });
         setSelections(init);
+        setInstSelections({});
       } catch (e) {
-        console.warn('[OnlineItemSheet] mod group load failed:', e?.message);
+        console.warn('[OnlineItemSheet] group load failed:', e?.message);
       } finally {
         if (alive) setLoading(false);
       }
     })();
     return () => { alive = false; };
-  }, [groupIds]);
+  }, [modGroupIds.join(','), instGroupIds.join(',')]);
 
   const basePrice = Number(effectiveItem.pricing?.base ?? effectiveItem.price ?? 0);
   const modsTotal = Object.entries(selections).reduce((sum, [, val]) => {
@@ -97,6 +123,20 @@ export default function OnlineItemSheet({ item, theme, allItems, onClose, onAdd 
         groupLabel: grp?.name || '',
         price: Number(o?.price) || 0,
       }));
+    });
+    // Instruction picks — flagged as instruction so kitchen ticket renders
+    // them but no surcharge applies.
+    Object.entries(instSelections).forEach(([gid, val]) => {
+      if (!val) return;
+      const grp = instGroups.find(g => g.id === gid);
+      flatMods.push({
+        id: `ig-${gid}-${val}`,
+        name: val,
+        label: val,
+        groupLabel: grp?.name || '',
+        price: 0,
+        _instruction: true,
+      });
     });
     const finalItem = {
       ...effectiveItem,
@@ -181,6 +221,29 @@ export default function OnlineItemSheet({ item, theme, allItems, onClose, onAdd 
             </Section>
           )}
 
+          {/* Allergen warning chips — surfaced upfront so customers can see
+              before they get to the modifier flow. */}
+          {(item.allergens || []).length > 0 && (
+            <div style={{
+              padding: '12px 14px', borderRadius: 12,
+              background: '#fde6e6', border: '1px solid #fcaeae',
+              marginBottom: 18, display: 'flex', alignItems: 'flex-start', gap: 10,
+            }}>
+              <div style={{ fontSize: 18, lineHeight: 1 }}>⚠️</div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12, fontWeight: 800, color: '#991b1b', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>
+                  Contains
+                </div>
+                <div style={{ fontSize: 13, color: '#7f1d1d', textTransform: 'capitalize', lineHeight: 1.5 }}>
+                  {(item.allergens || []).join(' · ')}
+                </div>
+                <div style={{ fontSize: 11, color: '#991b1b', opacity: 0.8, marginTop: 4 }}>
+                  If you have a severe allergy, please confirm with the venue before ordering.
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Modifier groups */}
           {loading && <div style={{ padding: 12, color: muted, fontSize: 13 }}>Loading options…</div>}
           {modGroups.map(g => {
@@ -220,6 +283,34 @@ export default function OnlineItemSheet({ item, theme, allItems, onClose, onAdd 
                         checked={checked}
                         onClick={onClick}
                         mode={isSingle ? 'single' : 'multi'}
+                        theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
+                    );
+                  })}
+                </div>
+              </Section>
+            );
+          })}
+
+          {/* Instruction groups — kitchen instructions (cooking prefs etc).
+              No price impact, single-pick per group. */}
+          {instGroups.map(g => {
+            const value = instSelections[g.id];
+            const required = !!g.required;
+            return (
+              <Section key={g.id} title={g.name} meta={required ? 'Required' : 'Optional'} required={required}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {(g.options || []).map(opt => {
+                    const label = typeof opt === 'string' ? opt : (opt.label || opt.name);
+                    const checked = value === label;
+                    return (
+                      <OptionRow key={label}
+                        label={label}
+                        priceDelta={0}
+                        checked={checked}
+                        onClick={() => setInstSelections(s => ({
+                          ...s, [g.id]: checked ? null : label,
+                        }))}
+                        mode="single"
                         theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
                     );
                   })}
