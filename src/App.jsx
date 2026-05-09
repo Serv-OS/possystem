@@ -76,6 +76,13 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.134', date: '9 May 2026', label: 'Manual "Send to kitchen" button on online/kiosk/qr orders + redeploy nudge',
+    changes: [
+      'MANUAL "🖨 Send to kitchen" BUTTON — every kiosk/online/qr order in OrdersHub now has a small button next to the advance arrow. Clicking it fires the same routeKioskOrderPrints function the realtime handler fires, with the same on-screen toast diagnostic. Use this when you suspect auto-routing didn\'t fire (master device was offline at the moment of INSERT, fresh deploy hadn\'t reached the device yet, etc.) so you don\'t have to wait for the kitchen to wonder where the ticket went.',
+      'NB — DOES THE BUNDLE EVEN REACH MY DEVICE? Vercel auto-deploys the develop branch but if a previous build failed (v5.5.132 had a syntax bug) Vercel can pause re-attempts. Pushing this commit retriggers a fresh deploy. Once it lands, hard-refresh / force-quit-and-reopen the master Sunmi APK so the bundle picks up; the version in the ShiftBar should read v5.5.134.',
+    ],
+  },
+  {
     version: '5.5.133', date: '9 May 2026', label: 'Hotfix v5.5.132 build error — `await` inside non-async .map callback',
     changes: [
       'BUILD HOTFIX — v5.5.132 had `await getLocationId()` inside an `Object.entries(byCentre).map(...)` callback, which isn\'t async, so the build failed with "`await` is only allowed within async functions". Hoisted the awaited locationId resolution to a const above the map. v5.5.132 went out as a commit but Vercel rejected the deploy; this commit fixes it so the v5.5.132 fixes (KDS status, queue upsert, item flags) actually ship.',

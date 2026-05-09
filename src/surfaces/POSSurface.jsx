@@ -1797,6 +1797,22 @@ const ORDER_STATUS = {
 function OrdersHub({ orderQueue, updateQueueStatus, removeFromQueue, showToast }) {
   const [filter, setFilter] = useState('active');
   const now = new Date();
+  // v5.5.134: manual re-send button needs the routing function from the store.
+  const routeKioskOrderPrints = useStore(s => s.routeKioskOrderPrints);
+
+  const resendToKitchen = (order) => {
+    // Fire the same path the realtime handler fires — but on demand. The
+    // routing function emits on-screen toasts at every decision point so
+    // the operator can see exactly what's happening (no DevTools needed).
+    routeKioskOrderPrints?.({
+      ref: order.ref,
+      source: order.source || 'pos',
+      tableLabel: order.customer?.tableLabel || null,
+      items: order.items || [],
+      customer: order.customer || null,
+      sentAt: order.sentAt || Date.now(),
+    });
+  };
 
   const filtered = [...(orderQueue||[])].filter(o =>
     filter==='active' ? o.status!=='collected' :
@@ -1891,11 +1907,23 @@ function OrdersHub({ orderQueue, updateQueueStatus, removeFromQueue, showToast }
                   </div>
                   {order.customer?.notes&&<div style={{fontSize:11,color:'#f97316',marginTop:4,fontStyle:'italic'}}>📝 {order.customer.notes}</div>}
                 </div>
-                {sm.next&&(
-                  <button onClick={()=>advance(order)} style={{padding:'7px 14px',borderRadius:9,cursor:'pointer',fontFamily:'inherit',whiteSpace:'nowrap',fontSize:12,fontWeight:700,background:order.status==='prep'?'var(--grn-d)':'var(--bg3)',border:`1px solid ${order.status==='prep'?'var(--grn-b)':'var(--bdr2)'}`,color:order.status==='prep'?'var(--grn)':'var(--t2)'}}>
-                    {sm.next} →
-                  </button>
-                )}
+                <div style={{display:'flex',flexDirection:'column',gap:6}}>
+                  {sm.next&&(
+                    <button onClick={()=>advance(order)} style={{padding:'7px 14px',borderRadius:9,cursor:'pointer',fontFamily:'inherit',whiteSpace:'nowrap',fontSize:12,fontWeight:700,background:order.status==='prep'?'var(--grn-d)':'var(--bg3)',border:`1px solid ${order.status==='prep'?'var(--grn-b)':'var(--bdr2)'}`,color:order.status==='prep'?'var(--grn)':'var(--t2)'}}>
+                      {sm.next} →
+                    </button>
+                  )}
+                  {/* v5.5.134: manual fallback when auto-routing didn't fire (e.g.
+                      master device wasn't online at INSERT time, or routing config
+                      mismatch). Click → fires the same routing function the
+                      realtime handler fires → on-screen diagnostic toast tells
+                      operator exactly what happened. */}
+                  {(order.source==='online'||order.source==='kiosk'||order.source==='qr')&&(
+                    <button onClick={()=>resendToKitchen(order)} style={{padding:'6px 10px',borderRadius:9,cursor:'pointer',fontFamily:'inherit',whiteSpace:'nowrap',fontSize:11,fontWeight:700,background:'transparent',border:'1px solid var(--bdr2)',color:'var(--t3)'}}>
+                      🖨 Send to kitchen
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           );
