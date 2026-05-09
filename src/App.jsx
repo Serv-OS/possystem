@@ -76,6 +76,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.116', date: '8 May 2026', label: 'Online ordering — nested mods + quantity mode + rich variant rows (image / desc / allergens)',
+    changes: [
+      'NESTED MODIFIERS — option.subGroupId is now resolved. After the initial fetch, the loader scans every option for a subGroupId and fetches those groups too (recursively, so chained nesting works). When a customer picks an option in a single-pick group AND that option has a subGroupId, the sub-group renders inline beneath the parent option (indented + accent-coloured left border). Sub-pick gets emitted into the cart line\'s mods immediately after the parent option, same shape MItemDetail / kitchen tickets already understand.',
+      'QUANTITY MODE — modifier groups with selection_type=\'quantity\' (the Box of 3 / coffee shop "pick 3 donuts" pattern) now render +/- steppers per option instead of checkboxes. Customers can pick the same option multiple times. Total picks across all options enforced ≤ max with the +/- buttons disabling at the cap. flatMods emits one entry per pick on add (so 3× Bueno Filled = 3 entries) — matches the way kitchen tickets, receipts, and the modifier-rollup report all already handle the data.',
+      'RICH VARIANT ROWS — variants now render with their image (92px tile on the right), name, description (2-line clamp), allergen pill, and absolute price. Customers can SEE the difference between sizes, see what each contains, see which has nuts, and pick with full information. Same shape we use elsewhere; was just bare names + price before.',
+      'BIGGER PICTURE — the kiosk was the gold standard for this surface, and the online sheet is now closer to parity on modifier handling. Anything still missing (e.g. modifiers that themselves are sold-alone items pulling in their parent\'s allergen list, image-per-modifier-option) is a smaller polish pass; the structural pieces are now in.',
+    ],
+  },
+  {
     version: '5.5.115', date: '8 May 2026', label: 'Online ordering — REAL fix for modifiers (object {groupId} extraction) + absolute variant prices',
     changes: [
       'WHY MODIFIERS WERE STILL FAILING — looked at the actual raw rows. assigned_modifier_groups is an array of OBJECTS, not strings: `[{"groupId":"mgd-1776305729009"}, {"max":1,"min":0,"groupId":"mgd-..."}]`. The operator app stores them this way so it can override min/max per item. My code passed the array straight to `.in(\'id\', ids)` which never matched anything. Fixed: extractIds() pulls .groupId / .id off each entry, then queries with the flat string array. Same fix for assigned_instruction_groups.',

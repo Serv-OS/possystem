@@ -8,9 +8,16 @@ import { supabase } from '../../lib/supabase';
 
 export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs = [], onClose, onAdd }) {
   const [qty, setQty]               = useState(1);
-  const [modGroups, setModGroups]   = useState([]);
+  const [modGroups, setModGroups]   = useState([]);  // top-level groups assigned to item
+  const [allModGroups, setAllModGroups] = useState([]); // includes nested sub-groups (lookup)
   const [instGroups, setInstGroups] = useState([]); // cooking prefs etc — no price impact
   const [selections, setSelections] = useState({});
+  // Sub-picks for nested modifiers. Key: `${parentGroupId}:${parentOptionId}`,
+  // value: option object (single) — sub-groups are single-pick by convention.
+  const [subPicks, setSubPicks]     = useState({});
+  // Quantity-mode picks. For groups where selection_type='quantity', pick
+  // counts per option are tracked here. Key: groupId, value: { optionId: qty }.
+  const [qtyPicks, setQtyPicks]     = useState({});
   const [instSelections, setInstSelections] = useState({}); // { instGroupId: optionLabel }
   const [loading, setLoading]       = useState(false);
   const [errors, setErrors]         = useState([]);
@@ -65,32 +72,55 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
     setInstGroups(resolvedInst);
 
     if (!supabase || modGroupIds.length === 0) {
-      setModGroups([]); setSelections({}); setInstSelections({});
+      setModGroups([]); setAllModGroups([]); setSelections({}); setInstSelections({}); setSubPicks({}); setQtyPicks({});
       return;
     }
     setLoading(true);
     (async () => {
       try {
-        const { data, error } = await supabase
-          .from('modifier_groups')
-          .select('id, name, min, max, selection_type, options, sort_order')
-          .in('id', modGroupIds);
-        if (!alive) return;
-        if (error) {
-          console.warn('[OnlineItemSheet] modifier load error:', error.message);
+        // Fetch the assigned groups, then scan their options for subGroupIds
+        // and fetch those too. Sub-groups can chain (rare but allowed) so
+        // loop until we've resolved every referenced group.
+        const fetched = new Map();
+        const queue = [...modGroupIds];
+        while (queue.length) {
+          const batch = queue.filter(id => !fetched.has(id));
+          if (!batch.length) break;
+          const { data, error } = await supabase
+            .from('modifier_groups')
+            .select('id, name, min, max, selection_type, options, sort_order')
+            .in('id', batch);
+          if (error) console.warn('[OnlineItemSheet] modifier load error:', error.message);
+          (data || []).forEach(g => fetched.set(g.id, g));
+          queue.length = 0;
+          (data || []).forEach(g => (g.options || []).forEach(o => {
+            if (o?.subGroupId && !fetched.has(o.subGroupId)) queue.push(o.subGroupId);
+          }));
         }
-        const mSorted = (data || []).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
-        console.log('[OnlineItemSheet] groups loaded', { mod: mSorted.length, inst: resolvedInst.length });
-        setModGroups(mSorted);
+        if (!alive) return;
+        const all = [...fetched.values()].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+        const subGroupIds = new Set();
+        all.forEach(g => (g.options || []).forEach(o => o?.subGroupId && subGroupIds.add(o.subGroupId)));
+        // Top-level groups are the ones in modGroupIds that aren't sub-groups
+        // (we still keep sub-groups in `all` so render can find them).
+        const topMod = all.filter(g => modGroupIds.includes(g.id));
+        console.log('[OnlineItemSheet] groups loaded', {
+          top: topMod.length, totalIncludingSubs: all.length, inst: resolvedInst.length,
+        });
+        setModGroups(topMod);
+        setAllModGroups(all); // includes nested sub-groups for lookup on render
+
         // Pre-fill required single-pick mod groups with the first option
         const init = {};
-        mSorted.forEach(g => {
+        topMod.forEach(g => {
           if ((g.min ?? 0) >= 1 && (g.max ?? 1) === 1 && Array.isArray(g.options) && g.options.length) {
             init[g.id] = g.options[0];
           }
         });
         setSelections(init);
         setInstSelections({});
+        setSubPicks({});
+        setQtyPicks({});
       } catch (e) {
         console.warn('[OnlineItemSheet] modifier load failed:', e?.message);
       } finally {
@@ -101,23 +131,49 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
   }, [modGroupIds.join(','), instGroupIds.join(',')]);
 
   const basePrice = Number(effectiveItem.pricing?.base ?? effectiveItem.price ?? 0);
+
+  // Standard mod totals (single + multi-pick groups)
   const modsTotal = Object.entries(selections).reduce((sum, [, val]) => {
     if (!val) return sum;
     const arr = Array.isArray(val) ? val : [val];
     return sum + arr.reduce((s, o) => s + (Number(o?.price) || 0), 0);
   }, 0);
-  const lineTotal = (basePrice + modsTotal) * qty;
+  // Quantity-mode totals: each picked option × its qty
+  const qtyModsTotal = Object.entries(qtyPicks).reduce((sum, [gid, picks]) => {
+    const grp = (allModGroups || modGroups).find(g => g.id === gid);
+    return sum + Object.entries(picks).reduce((s, [optId, q]) => {
+      const opt = grp?.options?.find(o => (o.id || o.name) === optId);
+      return s + ((Number(opt?.price) || 0) * (Number(q) || 0));
+    }, 0);
+  }, 0);
+  // Sub-pick totals (nested options always single-pick)
+  const subTotal = Object.values(subPicks).reduce((sum, opt) => sum + (Number(opt?.price) || 0), 0);
+
+  const lineTotal = (basePrice + modsTotal + qtyModsTotal + subTotal) * qty;
+
+  // Quantity-mode total picks for a group
+  const qtyTotalForGroup = (gid) => Object.values(qtyPicks[gid] || {}).reduce((s, n) => s + (Number(n) || 0), 0);
 
   const validationErrors = useMemo(() => {
     const errs = [];
     for (const g of modGroups) {
       const min = g.min ?? 0;
+      const max = g.max ?? 1;
+      if (g.selection_type === 'quantity') {
+        // Quantity-mode: total picks across all options must satisfy min/max
+        const total = qtyTotalForGroup(g.id);
+        if (total < min) errs.push(g.id);
+        // Max enforcement happens at click-time, but flag if exceeded too
+        if (max && total > max) errs.push(g.id);
+        continue;
+      }
       if (min === 0) continue;
       const v = selections[g.id];
       if (!v || (Array.isArray(v) && v.length < min)) errs.push(g.id);
     }
     return errs;
-  }, [modGroups, selections]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modGroups, selections, qtyPicks]);
   const canAdd = validationErrors.length === 0;
 
   const handleAdd = () => {
@@ -126,13 +182,48 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
     Object.entries(selections).forEach(([gid, val]) => {
       const grp = modGroups.find(g => g.id === gid);
       const arr = Array.isArray(val) ? val : (val ? [val] : []);
-      arr.forEach(o => flatMods.push({
-        id: o?.id || null,
-        name: o?.name || o?.label || '',
-        label: o?.name || o?.label || '',
-        groupLabel: grp?.name || '',
-        price: Number(o?.price) || 0,
-      }));
+      arr.forEach(o => {
+        flatMods.push({
+          id: o?.id || null,
+          name: o?.name || o?.label || '',
+          label: o?.name || o?.label || '',
+          groupLabel: grp?.name || '',
+          price: Number(o?.price) || 0,
+        });
+        // Nested sub-pick (e.g. Peppercorn sauce → Served hot / On the side).
+        const subKey = `${gid}:${o?.id || o?.name}`;
+        const subPick = subPicks[subKey];
+        const subGroup = subPick && allModGroups.find(g => g.id === o?.subGroupId);
+        if (subPick && subGroup) {
+          flatMods.push({
+            id: subPick?.id || null,
+            name: subPick?.name || subPick?.label || '',
+            label: subPick?.name || subPick?.label || '',
+            groupLabel: subGroup.name || '',
+            price: Number(subPick?.price) || 0,
+          });
+        }
+      });
+    });
+    // Quantity-mode picks: emit one entry per pick (so a Box of 3 with 3
+    // Bueno Filled emits three separate Bueno Filled entries — same shape
+    // MItemDetail produces, which the kitchen ticket / reports / receipts
+    // already understand).
+    Object.entries(qtyPicks).forEach(([gid, picks]) => {
+      const grp = (allModGroups || modGroups).find(g => g.id === gid);
+      Object.entries(picks).forEach(([optId, count]) => {
+        const opt = grp?.options?.find(o => (o.id || o.name) === optId);
+        if (!opt || !count) return;
+        for (let i = 0; i < count; i++) {
+          flatMods.push({
+            id: opt.id || null,
+            name: opt.name || opt.label || '',
+            label: opt.name || opt.label || '',
+            groupLabel: grp?.name || '',
+            price: Number(opt.price) || 0,
+          });
+        }
+      });
     });
     // Instruction picks — flagged as instruction so kitchen ticket renders
     // them but no surcharge applies.
@@ -211,9 +302,8 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
             </div>
           )}
 
-          {/* Variant picker — show ABSOLUTE prices (not deltas). Each variant
-              IS its own product with its own price; the customer wants to see
-              "Small £2.50 / Medium £3.00 / Large £3.50", not "+£0.50". */}
+          {/* Variant picker — full rich rows: image, name, description,
+              allergen pill, absolute price. Each variant IS its own product. */}
           {isParentVariant && (
             <Section title="Choose size" required>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -221,12 +311,10 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
                   const active = v.id === selectedVariant?.id;
                   const vPrice = Number(v.pricing?.base ?? v.price ?? 0);
                   return (
-                    <OptionRow key={v.id}
-                      label={v.menu_name || v.name}
-                      absolutePrice={vPrice}
-                      checked={active}
+                    <VariantRow key={v.id}
+                      variant={v} active={active} price={vPrice}
                       onClick={() => setSelectedVariant(v)}
-                      mode="single" theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
+                      theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
                   );
                 })}
               </div>
@@ -261,10 +349,39 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
           {modGroups.map(g => {
             const min = g.min ?? 0;
             const max = g.max ?? 1;
-            const isSingle = max === 1;
+            const isQty = g.selection_type === 'quantity';
+            const isSingle = !isQty && max === 1;
             const required = min >= 1;
             const erroring = errors.includes(g.id);
             const value = selections[g.id];
+
+            // Quantity-mode: render +/- steppers per option, total picks ≤ max
+            if (isQty) {
+              const totalPicked = qtyTotalForGroup(g.id);
+              return (
+                <Section key={g.id}
+                  title={g.name}
+                  meta={`Pick ${min === max ? `${min}` : `${min}-${max}`} · ${totalPicked}/${max} chosen`}
+                  required={required}
+                  erroring={erroring}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {(g.options || []).map(opt => {
+                      const optKey = opt.id || opt.name;
+                      const count = qtyPicks[g.id]?.[optKey] || 0;
+                      const canAdd = totalPicked < max;
+                      return (
+                        <QtyOptionRow key={optKey}
+                          option={opt} count={count} canAdd={canAdd}
+                          onInc={() => { setErrors([]); setQtyPicks(s => ({ ...s, [g.id]: { ...(s[g.id] || {}), [optKey]: count + 1 } })); }}
+                          onDec={() => { setErrors([]); setQtyPicks(s => ({ ...s, [g.id]: { ...(s[g.id] || {}), [optKey]: Math.max(0, count - 1) } })); }}
+                          theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
+                      );
+                    })}
+                  </div>
+                </Section>
+              );
+            }
+
             return (
               <Section key={g.id}
                 title={g.name}
@@ -288,14 +405,49 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
                         return { ...s, [g.id]: [...arr, opt] };
                       });
                     };
+                    // Nested sub-group: revealed when this option is the
+                    // currently-picked one in a single-pick group AND has
+                    // a subGroupId. Multi-pick + sub-groups get complex —
+                    // out of scope for now.
+                    const subGroup = checked && isSingle && opt.subGroupId
+                      ? allModGroups.find(sg => sg.id === opt.subGroupId)
+                      : null;
+                    const subKey = `${g.id}:${opt.id || opt.name}`;
+                    const subPick = subPicks[subKey];
                     return (
-                      <OptionRow key={opt.id || opt.name}
-                        label={opt.name || opt.label}
-                        priceDelta={Number(opt.price) || 0}
-                        checked={checked}
-                        onClick={onClick}
-                        mode={isSingle ? 'single' : 'multi'}
-                        theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
+                      <div key={opt.id || opt.name}>
+                        <OptionRow
+                          label={opt.name || opt.label}
+                          priceDelta={Number(opt.price) || 0}
+                          checked={checked}
+                          onClick={onClick}
+                          mode={isSingle ? 'single' : 'multi'}
+                          theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
+                        {subGroup && (
+                          <div style={{
+                            marginTop: 8, marginLeft: 18,
+                            paddingLeft: 12, borderLeft: `2px solid ${theme.accent}55`,
+                          }}>
+                            <div style={{ fontSize: 12, fontWeight: 700, color: theme.fg, marginBottom: 6 }}>
+                              {subGroup.name}
+                            </div>
+                            {(subGroup.options || []).map(sopt => {
+                              const sChecked = subPick?.id === sopt.id;
+                              return (
+                                <div key={sopt.id || sopt.name} style={{ marginBottom: 6 }}>
+                                  <OptionRow
+                                    label={sopt.name || sopt.label}
+                                    priceDelta={Number(sopt.price) || 0}
+                                    checked={sChecked}
+                                    onClick={() => setSubPicks(s => ({ ...s, [subKey]: sChecked ? null : sopt }))}
+                                    mode="single"
+                                    theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
                     );
                   })}
                 </div>
@@ -420,6 +572,92 @@ function OptionRow({ label, priceDelta, absolutePrice, checked, onClick, mode, t
         <span style={{ fontSize: 13, fontWeight: 700, color: priceColor }}>{priceLabel}</span>
       )}
     </button>
+  );
+}
+
+// Rich variant row — image, name, description, allergen pill, absolute price.
+function VariantRow({ variant, active, price, onClick, theme, cardBdr, inputBg }) {
+  const allergens = variant.allergens || [];
+  return (
+    <button onClick={onClick} style={{
+      width: '100%', display: 'flex', alignItems: 'stretch', gap: 0,
+      padding: 0, borderRadius: 12, overflow: 'hidden',
+      background: active ? `${theme.accent}15` : inputBg,
+      border: `1.5px solid ${active ? theme.accent : cardBdr}`,
+      color: theme.fg, fontFamily: 'inherit', cursor: 'pointer', textAlign: 'left',
+      transition: 'all .12s ease',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', padding: '12px 0 12px 14px' }}>
+        <Indicator checked={active} mode="single" accent={theme.accent} cardBdr={cardBdr}/>
+      </div>
+      <div style={{ flex: 1, minWidth: 0, padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+          <span style={{ fontSize: 14, fontWeight: 700, flex: 1, minWidth: 0 }}>{variant.menu_name || variant.name}</span>
+          <span style={{ fontSize: 14, fontWeight: 800 }}>£{price.toFixed(2)}</span>
+        </div>
+        {variant.description && (
+          <div style={{ fontSize: 12, opacity: 0.7, lineHeight: 1.45,
+            display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+          }}>
+            {variant.description}
+          </div>
+        )}
+        {allergens.length > 0 && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
+            <span style={{
+              padding: '1px 7px', borderRadius: 99,
+              background: '#fde6e6', color: '#991b1b',
+              fontSize: 10, fontWeight: 700, textTransform: 'capitalize',
+            }}>⚠ {allergens.length === 1 ? allergens[0] : `${allergens.length} allergens`}</span>
+          </div>
+        )}
+      </div>
+      {variant.image && (
+        <div style={{
+          width: 92, flexShrink: 0,
+          backgroundImage: `url(${variant.image})`,
+          backgroundSize: 'cover', backgroundPosition: 'center',
+        }}/>
+      )}
+    </button>
+  );
+}
+
+// Quantity-mode option row — +/- stepper, current count.
+function QtyOptionRow({ option, count, canAdd, onInc, onDec, theme, cardBdr, inputBg }) {
+  const px = Number(option.price) || 0;
+  return (
+    <div style={{
+      width: '100%', display: 'flex', alignItems: 'center', gap: 12,
+      padding: '12px 14px', borderRadius: 12,
+      background: count > 0 ? `${theme.accent}15` : inputBg,
+      border: `1.5px solid ${count > 0 ? theme.accent : cardBdr}`,
+      color: theme.fg, fontFamily: 'inherit',
+    }}>
+      <span style={{ flex: 1, fontSize: 14, fontWeight: 600 }}>{option.name || option.label}</span>
+      {px > 0 && (
+        <span style={{ fontSize: 12, fontWeight: 700, opacity: 0.7 }}>+£{px.toFixed(2)}</span>
+      )}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <button onClick={onDec} disabled={count === 0} style={{
+          width: 30, height: 30, borderRadius: '50%', border: 'none',
+          background: count === 0 ? `${theme.fg}10` : theme.fg,
+          color: count === 0 ? `${theme.fg}40` : theme.bg,
+          fontSize: 18, fontWeight: 800, cursor: count === 0 ? 'not-allowed' : 'pointer',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontFamily: 'inherit',
+        }}>−</button>
+        <span style={{ minWidth: 16, textAlign: 'center', fontSize: 14, fontWeight: 800 }}>{count}</span>
+        <button onClick={onInc} disabled={!canAdd} style={{
+          width: 30, height: 30, borderRadius: '50%', border: 'none',
+          background: canAdd ? theme.accent : `${theme.fg}10`,
+          color: canAdd ? '#0b0c10' : `${theme.fg}40`,
+          fontSize: 18, fontWeight: 800, cursor: canAdd ? 'pointer' : 'not-allowed',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontFamily: 'inherit',
+        }}>+</button>
+      </div>
+    </div>
   );
 }
 
