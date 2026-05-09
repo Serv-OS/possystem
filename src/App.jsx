@@ -76,7 +76,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
-    version: '5.5.117', date: '8 May 2026', label: 'Online ordering Phase 4 — checkout sheet (customer details + ASAP/scheduled time picker) + order_queue persistence with sent_at lead time + hero polish',
+    version: '5.5.118', date: '9 May 2026', label: 'Online checkout — fix order_queue insert (column shape) + proper Day/Time dropdowns',
+    changes: [
+      'FIX: PLACE ORDER WAS FAILING — `order_queue` schema is `(ref pk, location_id, type, customer, items, total, status, source, sent_at, collection_time text, is_asap, paid, …)`. My v5.5.117 insert was sending `subtotal` and `scheduled_for` neither of which exist. Supabase was rejecting the row with "Could not find the \'scheduled_for\' column". Swapped to the real shape: `collection_time` text (HH:mm in venue tz) + `is_asap` bool + `sent_at` timestamptz (kitchen-fire moment). status=\'received\' to match the rest of the queue surfaces.',
+      'BETTER TIME PICKER UI — replaced the chronological pill grid with two proper dropdowns: <select> for Day (Today / Tomorrow / Sat 11 May…), <select> for Time (15-min slots). Picking a different day repopulates the time list and auto-selects the earliest slot so customers don\'t have to tap twice. Switching from ASAP to Schedule auto-selects the first valid slot so Place Order isn\'t gated on a micro-tap. Custom chevron icon (matches text colour for light/dark themes), 14px font, native scrollwheel/keyboard accessibility comes free with <select>.',
+    ],
+  },
+  {
+    version: '5.5.117', date: '9 May 2026', label: 'Online ordering Phase 4 — checkout sheet (customer details + ASAP/scheduled time picker) + order_queue persistence with sent_at lead time + hero polish',
     changes: [
       'CHECKOUT SHEET — new OnlineCheckout component slides up over the cart. Three sections: (1) customer details — name, phone (pre-filled if logged in via loyalty), email, plus address/postcode for delivery; (2) WHEN — ASAP or Schedule for later, with 15-min slots generated from the location\'s opening hours starting at (now + online_collection_lead_min); (3) order summary + place button.',
       'KITCHEN TIMING RESPECTED — on place, the order_queue row\'s sent_at is set to (collection_time − online_collection_lead_min). The kitchen sees the ticket exactly when they need to start cooking, not when the customer placed the order. ASAP orders use sent_at=now (kitchen fires immediately); scheduled orders sit in the queue and surface at the right moment. Mirrors the existing MPOS collection flow so any operator already using lead-time settings gets the same behaviour for online.',

@@ -48,6 +48,13 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   // next close time, snapped to :00 / :15 / :30 / :45.
   const slots = useMemo(() => buildCollectionSlots(location, tz, leadMin), [location, tz, leadMin]);
 
+  // When the customer first picks Schedule, auto-select the earliest slot
+  // so the dropdowns aren't empty and "Place order" isn't blocked on a
+  // micro-interaction.
+  useEffect(() => {
+    if (timeMode === 'scheduled' && !slot && slots.length) setSlot(slots[0]);
+  }, [timeMode, slot, slots]);
+
   const muted   = theme.isLight ? '#6b6b70' : '#a0a0a8';
   const cardBdr = theme.isLight ? '#ececef' : '#2a2a30';
   const inputBg = theme.isLight ? '#f5f5f7' : '#1f1f24';
@@ -93,19 +100,27 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       // Write order_queue row — POS picks this up via realtime, kitchen
       // ticket fires at sent_at via the existing collection lead-time
       // pipeline (same path MPOS scheduled-collection flows already use).
+      // Schema: order_queue(ref pk, location_id, type, customer, items,
+      // total, status, staff, created_at, sent_at, collection_time text,
+      // is_asap, updated_at, source, paid, payment_method, kitchen_routed_at).
+      // No `subtotal`, no `scheduled_for`. The collection time is text
+      // (HH:mm in venue tz) + is_asap; the kitchen-fire moment is sent_at.
+      const collectionTimeLabel = collectionAt.toLocaleTimeString('en-GB', {
+        timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false,
+      });
       const queueRow = {
-        location_id: opsLocationId,
         ref,
-        source: 'online',
+        location_id: opsLocationId,
         type: orderType,
-        status: 'pending',
+        status: 'received',
+        source: 'online',
         items,
         customer,
-        subtotal,
         total: subtotal, // delivery fee added in a follow-up commit
         sent_at: sentAt.toISOString(),
-        scheduled_for: collectionAt.toISOString(),
-        created_at: new Date().toISOString(),
+        collection_time: collectionTimeLabel,
+        is_asap: timeMode === 'asap',
+        paid: false,
       };
       // Don't try to write to closed_checks yet — payment hasn't been
       // taken. Phase 4 (Stripe online card) lands the closed_checks row on
@@ -266,33 +281,60 @@ function SlotPicker({ slots, value, onChange, theme, cardBdr, inputBg }) {
       No collection slots available right now. Try ASAP, or come back during opening hours.
     </div>;
   }
-  // Group by day
+  // Group by day, preserving insertion order (already chronological)
   const byDay = {};
   slots.forEach(s => {
     if (!byDay[s.day]) byDay[s.day] = [];
     byDay[s.day].push(s);
   });
+  const days = Object.keys(byDay);
+  // If no value yet, default to first slot of first day so the time
+  // dropdown isn't blank when the customer first picks Schedule.
+  const selectedDay = value ? value.day : days[0];
+  const selectedTime = value ? value.iso : '';
+  const timesForDay = byDay[selectedDay] || [];
+
+  const handleDayChange = (day) => {
+    const list = byDay[day] || [];
+    if (list.length) onChange(list[0]);
+  };
+  const handleTimeChange = (iso) => {
+    const slot = (byDay[selectedDay] || []).find(s => s.iso === iso);
+    if (slot) onChange(slot);
+  };
+
+  const selectStyle = {
+    width: '100%', padding: '12px 14px', borderRadius: 10,
+    background: inputBg, color: theme.fg, border: `1.5px solid ${cardBdr}`,
+    fontSize: 14, fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box',
+    fontWeight: 600,
+    appearance: 'none', WebkitAppearance: 'none', MozAppearance: 'none',
+    backgroundImage: `url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'><path d='M1 1l5 5 5-5' stroke='%23${(theme.isLight ? '6b6b70' : 'a0a0a8')}' stroke-width='1.6' fill='none' stroke-linecap='round'/></svg>")`,
+    backgroundRepeat: 'no-repeat',
+    backgroundPosition: 'right 14px center',
+    paddingRight: 36,
+    cursor: 'pointer',
+  };
+  const labelStyle = { fontSize: 11, fontWeight: 700, color: theme.isLight ? '#6b6b70' : '#a0a0a8', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 6, display: 'block' };
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      {Object.entries(byDay).map(([day, list]) => (
-        <div key={day}>
-          <div style={{ fontSize: 12, fontWeight: 700, opacity: 0.6, marginBottom: 6 }}>{day}</div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-            {list.map(s => {
-              const active = value?.iso === s.iso;
-              return (
-                <button key={s.iso} onClick={() => onChange(s)} style={{
-                  padding: '8px 14px', borderRadius: 99, fontFamily: 'inherit', cursor: 'pointer',
-                  background: active ? theme.accent : 'transparent',
-                  color: active ? contrastFg(theme.accent) : theme.fg,
-                  border: `1.5px solid ${active ? theme.accent : cardBdr}`,
-                  fontSize: 13, fontWeight: 700,
-                }}>{s.label}</button>
-              );
-            })}
-          </div>
-        </div>
-      ))}
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+      <div>
+        <label style={labelStyle}>Day</label>
+        <select value={selectedDay} onChange={e => handleDayChange(e.target.value)} style={selectStyle}>
+          {days.map(d => (
+            <option key={d} value={d}>{d}</option>
+          ))}
+        </select>
+      </div>
+      <div>
+        <label style={labelStyle}>Time</label>
+        <select value={selectedTime} onChange={e => handleTimeChange(e.target.value)} style={selectStyle}>
+          {timesForDay.map(s => (
+            <option key={s.iso} value={s.iso}>{s.label}</option>
+          ))}
+        </select>
+      </div>
     </div>
   );
 }
