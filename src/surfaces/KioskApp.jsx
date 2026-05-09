@@ -179,6 +179,9 @@ export default function KioskApp({ kioskId, onUnpair }) {
   const [allergenFilter, setAllergenFilter] = useState(new Set());
   const [showAllergenPicker, setShowAllergenPicker] = useState(false);
   const [tableNumber, setTableNumber] = useState('');
+  // v5.5.141: live 86 list — store auto-updates from realtime when an
+  // operator 86s an item or daily count hits zero.
+  const eightySixIds = useStore(s => s.eightySixIds || []);
   const [cart, setCart] = useState([]); // [{ key, item, qty, mods, linePrice, lineTotal, name }]
   const [tip, setTip] = useState(0);
   const [customerName, setCustomerName] = useState('');
@@ -515,7 +518,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
         else setScreen('menu');
       }} onBack={() => setScreen('attract')} />}
       {screen === 'tableNumber' && <ScreenTableNumber brandColor={brandColor} value={tableNumber} onChange={setTableNumber} onContinue={() => setScreen('menu')} onBack={() => setScreen('orderType')} />}
-      {screen === 'menu' && <ScreenMenu brandColor={brandColor} brandAccent={brandAccent} categories={visibleCategories} items={visibleItems} selectedCategoryId={selectedCategoryId} onSelectCategory={setSelectedCategoryId} onSelectItem={(item) => { setSelectedItem(item); setScreen('item'); }} cartItemCount={cartItemCount} subtotal={subtotal} onCart={() => setScreen('cart')} orderType={orderType} activeMenuId={activeMenuId} banner={bannerFor('menu')} allergenFilter={allergenFilter} onShowAllergenPicker={() => setShowAllergenPicker(true)} onBack={() => setScreen('orderType')} />}
+      {screen === 'menu' && <ScreenMenu brandColor={brandColor} brandAccent={brandAccent} categories={visibleCategories} items={visibleItems} selectedCategoryId={selectedCategoryId} onSelectCategory={setSelectedCategoryId} onSelectItem={(item) => { setSelectedItem(item); setScreen('item'); }} cartItemCount={cartItemCount} subtotal={subtotal} onCart={() => setScreen('cart')} orderType={orderType} activeMenuId={activeMenuId} banner={bannerFor('menu')} allergenFilter={allergenFilter} onShowAllergenPicker={() => setShowAllergenPicker(true)} eightySixIds={eightySixIds} onBack={() => setScreen('orderType')} />}
       {screen === 'item' && selectedItem && (
         <KioskProductModal
           item={selectedItem}
@@ -1092,7 +1095,7 @@ function ScreenTableNumber({ brandColor, value, onChange, onContinue, onBack }) 
 //   - TOP BAR simplified to back button + allergen icon button
 // All customer-facing strings translated via t().
 // ============================================================
-function ScreenMenu({ brandColor, brandAccent, categories, items, selectedCategoryId, onSelectCategory, onSelectItem, cartItemCount, subtotal, onCart, orderType, activeMenuId, banner, allergenFilter, onShowAllergenPicker, onBack }) {
+function ScreenMenu({ brandColor, brandAccent, categories, items, selectedCategoryId, onSelectCategory, onSelectItem, cartItemCount, subtotal, onCart, orderType, activeMenuId, banner, allergenFilter, onShowAllergenPicker, eightySixIds = [], onBack }) {
   const hasCart = cartItemCount > 0;
   const hasAllergenFilter = allergenFilter && allergenFilter.size > 0;
   const itemWord = cartItemCount === 1 ? t('menu.itemSingular') : t('menu.itemPlural');
@@ -1277,16 +1280,23 @@ function ScreenMenu({ brandColor, brandAccent, categories, items, selectedCatego
           }}>
             {items.length === 0 ? (
               <div style={{ gridColumn: '1 / -1', padding: 60, textAlign: 'center', color: 'var(--kFgMuted)', fontSize: 'clamp(14px, 1.7vw, 17px)' }}>{t('menu.empty')}</div>
-            ) : items.map(it => (
-              <MenuItemCard
-                key={it.id}
-                item={it}
-                price={resolvePrice(it, orderType, activeMenuId)}
-                brandColor={brandColor}
-                allergenFilter={allergenFilter}
-                onSelect={() => onSelectItem(it)}
-              />
-            ))}
+            ) : items.map(it => {
+              // v5.5.141: 86 awareness — operator 86 OR auto-86 from daily
+              // count exhaustion. Greys out the card and blocks selection.
+              const is86 = eightySixIds.includes(it.id)
+                || (it.parent_id && eightySixIds.includes(it.parent_id));
+              return (
+                <MenuItemCard
+                  key={it.id}
+                  item={it}
+                  price={resolvePrice(it, orderType, activeMenuId)}
+                  brandColor={brandColor}
+                  allergenFilter={allergenFilter}
+                  is86={is86}
+                  onSelect={() => is86 ? null : onSelectItem(it)}
+                />
+              );
+            })}
           </div>
         </div>
       </div>
@@ -1357,30 +1367,42 @@ function ScreenMenu({ brandColor, brandAccent, categories, items, selectedCatego
 }
 
 // ----- MenuItemCard (extracted so the grid map stays readable) -----
-function MenuItemCard({ item, price, brandColor, allergenFilter, onSelect }) {
+function MenuItemCard({ item, price, brandColor, allergenFilter, onSelect, is86 = false }) {
   const itemAllergens = Array.isArray(item.allergens) ? item.allergens.map(a => String(a).toLowerCase()) : [];
   const flagged = allergenFilter && Array.from(allergenFilter).some(a => itemAllergens.includes(String(a).toLowerCase()));
   return (
     <div
-      onClick={onSelect}
+      onClick={is86 ? undefined : onSelect}
       role="button"
-      tabIndex={0}
-      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(); } }}
+      tabIndex={is86 ? -1 : 0}
+      onKeyDown={(e) => { if (!is86 && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onSelect(); } }}
       style={{
         background: 'var(--kSurfaceRaised)',
         border: '1px solid ' + (flagged ? 'rgba(239,68,68,0.5)' : 'var(--kBorder1)'),
         borderRadius: 20,
         overflow: 'hidden',
-        cursor: 'pointer',
+        cursor: is86 ? 'not-allowed' : 'pointer',
         fontFamily: 'inherit',
         textAlign: 'left',
         color: 'var(--kFg)',
-        opacity: flagged ? 0.45 : 1,
+        opacity: is86 ? 0.45 : (flagged ? 0.45 : 1),
+        filter: is86 ? 'grayscale(0.6)' : undefined,
         position: 'relative',
         display: 'flex',
         flexDirection: 'column',
       }}
     >
+      {/* v5.5.141: out-of-stock badge sits left of the UNSAFE badge so both
+          can show without overlap when an item is also allergen-flagged. */}
+      {is86 && (
+        <div style={{
+          position: 'absolute', top: 12, left: 12, zIndex: 2,
+          background: '#1a1a1a', color: '#fff',
+          padding: '5px 12px', borderRadius: 8,
+          fontSize: 12, fontWeight: 800, letterSpacing: '0.04em',
+          boxShadow: '0 4px 10px rgba(0,0,0,0.3)',
+        }}>OUT OF STOCK</div>
+      )}
       {flagged && (
         <div style={{
           position: 'absolute', top: 12, right: 12, zIndex: 2,

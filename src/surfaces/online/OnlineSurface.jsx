@@ -14,6 +14,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabase';
+import { isItemEightySixed } from '../../lib/itemAvailability';
 import OnlineCart from './OnlineCart';
 import OnlineCheckout from './OnlineCheckout';
 import OnlineItemSheet from './OnlineItemSheet';
@@ -29,6 +30,7 @@ export default function OnlineSurface({ location }) {
 
   const [items, setItems]           = useState([]);
   const [categories, setCategories] = useState([]);
+  const [eightySixIds, setEightySixIds] = useState([]); // v5.5.141: live 86 list from DB
   const [branding, setBranding]     = useState(null);
   const [instGroupDefs, setInstGroupDefs] = useState([]); // from config_pushes snapshot — there's no instruction_groups DB table
   const [loading, setLoading]       = useState(true);
@@ -94,7 +96,7 @@ export default function OnlineSurface({ location }) {
         // failure (e.g. missing instruction_groups table) doesn't kill
         // the whole load. Instruction defs come from the config_pushes
         // snapshot since there's no dedicated DB table for them.
-        const [iRes, cRes, lRes, mRes, pRes] = await Promise.allSettled([
+        const [iRes, cRes, lRes, mRes, pRes, eRes] = await Promise.allSettled([
           supabase.from('menu_items').select('*')
             .eq('location_id', opsLocationId).eq('archived', false).order('sort_order'),
           supabase.from('menu_categories').select('*')
@@ -104,10 +106,11 @@ export default function OnlineSurface({ location }) {
           onlineMenuId
             ? supabase.from('menu_category_links').select('category_id').eq('menu_id', onlineMenuId)
             : Promise.resolve({ data: null }),
-          // Latest config push for this location — carries instructionGroupDefs
-          // since there's no instruction_groups table.
           supabase.from('config_pushes').select('snapshot')
             .eq('location_id', opsLocationId).order('created_at', { ascending: false }).limit(1).maybeSingle(),
+          // v5.5.141: live 86 list — manual operator 86s + auto-86s when
+          // dailyCounts.remaining hits 0 both land in this table.
+          supabase.from('eighty_six').select('item_id').eq('location_id', opsLocationId),
         ]);
         if (!alive) return;
         const itemsData      = iRes.value?.data || [];
@@ -132,13 +135,40 @@ export default function OnlineSurface({ location }) {
         setCategories(cats);
         setBranding(location.online_branding || brandingData);
         setInstGroupDefs(Array.isArray(snap?.instructionGroupDefs) ? snap.instructionGroupDefs : []);
+        setEightySixIds((eRes.value?.data || []).map(r => r.item_id));
       } catch (e) {
         console.warn('[OnlineSurface] load failed:', e?.message, e);
       } finally {
         if (alive) setLoading(false);
       }
     })();
-    return () => { alive = false; };
+
+    // v5.5.141: subscribe to eighty_six realtime so the customer's menu
+    // page reflects 86s in real time (operator 86s an item mid-browse →
+    // it greys out instantly without a refresh). Same channel pattern the
+    // operator-side realtime.js uses, scoped to this location.
+    let e86chan = null;
+    if (supabase && opsLocationId) {
+      e86chan = supabase.channel(`online-86:${opsLocationId}`)
+        .on('postgres_changes', {
+          event: '*', schema: 'public', table: 'eighty_six',
+          filter: `location_id=eq.${opsLocationId}`,
+        }, (payload) => {
+          if (!alive) return;
+          const id = payload.new?.item_id || payload.old?.item_id;
+          if (!id) return;
+          if (payload.eventType === 'INSERT') {
+            setEightySixIds(prev => prev.includes(id) ? prev : [...prev, id]);
+          } else if (payload.eventType === 'DELETE') {
+            setEightySixIds(prev => prev.filter(x => x !== id));
+          }
+        }).subscribe();
+    }
+
+    return () => {
+      alive = false;
+      if (e86chan && supabase) supabase.removeChannel(e86chan);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [opsLocationId, onlineMenuId]);
 
@@ -386,12 +416,24 @@ export default function OnlineSurface({ location }) {
                 gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
                 gap: 14,
               }}>
-                {catItems.map(item => (
-                  <ItemCard key={item.id} item={item} theme={theme}
-                    cardBg={cardBg} cardBdr={cardBdr} muted={muted}
-                    variantInfo={variantInfo(item)}
-                    onPick={() => setOpenItem(item)}/>
-                ))}
+                {catItems.map(item => {
+                  // v5.5.141: variant parent is sold-out only when ALL of its
+                  // children are 86'd. Single-variant 86 still leaves the
+                  // parent tappable so the customer can pick a sibling size.
+                  const vinfo = variantInfo(item);
+                  const itemSoldOut = isItemEightySixed(item, eightySixIds);
+                  const variantsAllSoldOut = vinfo?.kids?.length
+                    ? vinfo.kids.every(k => isItemEightySixed(k, eightySixIds))
+                    : false;
+                  const is86 = itemSoldOut || variantsAllSoldOut;
+                  return (
+                    <ItemCard key={item.id} item={item} theme={theme}
+                      cardBg={cardBg} cardBdr={cardBdr} muted={muted}
+                      variantInfo={vinfo}
+                      is86={is86}
+                      onPick={() => is86 ? null : setOpenItem(item)}/>
+                  );
+                })}
               </div>
             </section>
           );
@@ -426,6 +468,7 @@ export default function OnlineSurface({ location }) {
         <OnlineItemSheet
           item={openItem} theme={theme} allItems={items} orderType={orderType}
           instGroupDefs={instGroupDefs}
+          eightySixIds={eightySixIds}
           onClose={() => setOpenItem(null)}
           onAdd={(item, mods, qty) => addToCart(item, mods, qty)}
         />
@@ -868,27 +911,44 @@ function Hero({ theme, muted, leadMin }) {
   );
 }
 
-function ItemCard({ item, theme, cardBg, cardBdr, muted, onPick, variantInfo }) {
+function ItemCard({ item, theme, cardBg, cardBdr, muted, onPick, variantInfo, is86 = false }) {
   const ownPrice = Number(item.pricing?.base ?? item.price ?? 0);
   const isVariantParent = !!variantInfo?.kids?.length;
   // Variant parents have base price 0; show "from £X" using cheapest child.
   const displayPrice = isVariantParent ? (variantInfo.fromPrice || 0) : ownPrice;
   const allergens = item.allergens || [];
   return (
-    <button onClick={onPick} className="op-btn" style={{
-      display: 'flex', alignItems: 'stretch',
-      width: '100%', textAlign: 'left',
-      padding: 0, borderRadius: 14, overflow: 'hidden',
-      background: cardBg, border: `1px solid ${cardBdr}`,
-      color: theme.fg, fontFamily: 'inherit', cursor: 'pointer',
-      transition: 'transform .15s ease, box-shadow .15s ease',
-      WebkitTapHighlightColor: 'transparent',
-    }}
-      onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = '0 8px 24px rgba(0,0,0,0.08)'; }}
+    <button onClick={is86 ? undefined : onPick} disabled={is86}
+      className={is86 ? undefined : 'op-btn'}
+      style={{
+        display: 'flex', alignItems: 'stretch',
+        width: '100%', textAlign: 'left',
+        padding: 0, borderRadius: 14, overflow: 'hidden',
+        background: cardBg, border: `1px solid ${cardBdr}`,
+        color: theme.fg, fontFamily: 'inherit',
+        cursor: is86 ? 'not-allowed' : 'pointer',
+        opacity: is86 ? 0.55 : 1,
+        filter: is86 ? 'grayscale(0.6)' : undefined,
+        transition: 'transform .15s ease, box-shadow .15s ease',
+        WebkitTapHighlightColor: 'transparent',
+        position: 'relative',
+      }}
+      onMouseEnter={e => { if (!is86) { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = '0 8px 24px rgba(0,0,0,0.08)'; } }}
       onMouseLeave={e => { e.currentTarget.style.transform = ''; e.currentTarget.style.boxShadow = ''; }}
     >
+      {/* v5.5.141: clear OUT-OF-STOCK badge top-right when 86'd. */}
+      {is86 && (
+        <div style={{
+          position: 'absolute', top: 10, right: 10, zIndex: 2,
+          padding: '4px 10px', borderRadius: 99,
+          background: '#1a1a1ad9', color: '#fff',
+          fontSize: 10, fontWeight: 800, letterSpacing: '0.06em',
+          textTransform: 'uppercase',
+          backdropFilter: 'blur(4px)',
+        }}>Out of stock</div>
+      )}
       <div style={{ flex: 1, minWidth: 0, padding: 16, display: 'flex', flexDirection: 'column', gap: 4 }}>
-        <div style={{ fontSize: 15, fontWeight: 700, lineHeight: 1.3 }}>
+        <div style={{ fontSize: 15, fontWeight: 700, lineHeight: 1.3, textDecoration: is86 ? 'line-through' : undefined }}>
           {item.menu_name || item.name}
         </div>
         {item.description && (

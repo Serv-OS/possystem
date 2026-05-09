@@ -76,6 +76,17 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.141', date: '9 May 2026', label: 'Out-of-stock awareness on Online / Kiosk / MPOS — manual 86 + auto-86 from daily count exhaustion both flow to every customer surface',
+    changes: [
+      'AUTO-86 NOW PERSISTED — when an operator sets a daily count and the remaining hits zero, the store already auto-added the item to eightySixIds in memory. v5.5.141 ALSO writes to the eighty_six DB table so customer-facing surfaces (Online, QR) — which read from Supabase, not the operator Zustand store — see the item as unavailable. Without this the kiosk/POS knew, but the public ordering pages kept selling sold-out items.',
+      'ONLINE — fetches the eighty_six table on load AND subscribes to its realtime channel (scoped to location). Items 86\'d while a customer is browsing get the OUT OF STOCK badge instantly without a refresh. Item card greys out + line-throughs the name + becomes non-tappable. Variant rows in the item sheet do the same per-size: customer can SEE that "Large" exists but is out, while "Medium" stays selectable. Add-to-basket button switches to "Out of stock" when the chosen variant or base is unavailable.',
+      'KIOSK — the menu grid card now shows OUT OF STOCK pill (top-left, doesn\'t collide with the existing UNSAFE allergen pill on the top-right) and blocks tap. eightySixIds comes from the Zustand store which is already kept fresh by the existing realtime.js subscription. Variant inheritance: child variant inherits parent\'s 86 status.',
+      'MPOS — same treatment on the phone-shaped menu list. ItemRow now blocks tap when 86\'d, shows OUT OF STOCK pill top-right, greys + grayscales the row.',
+      'SHARED HELPER — new src/lib/itemAvailability.js exports `isItemEightySixed(item, eightySixIds)` and `isItemAvailable(item, eightySixIds, dailyCounts)`. Single source of truth so the same item shows the same state on every screen at the venue.',
+      'NB — RLS: this assumes anon SELECT is allowed on the eighty_six table at this venue. If the customer\'s Online ordering page never reflects 86s but the operator-side Kiosk does, run the SQL: `alter policy "allow all" on eighty_six rename to "allow read"; create policy "allow_anon_select" on eighty_six for select using (true);` (or whatever fits your existing RLS setup — the operator already has full access via authenticated role).',
+    ],
+  },
+  {
     version: '5.5.140', date: '9 May 2026', label: 'BO Reports — filter by order source (POS / Kiosk / Online / QR)',
     changes: [
       'SOURCE FILTER ON ALL REPORTS — every report in BO Reports (Sales summary / Payments / Daypart / Shifts / Product mix / Item trend / Daily trend / Menu engineering / Servers / Tips / Tables / Tax / Order types / Z report / etc.) now has a "All sources" dropdown next to the order type filter. Pick POS / Kiosk / Online / QR to slice revenue by channel. The dropdown only renders when the venue has multiple sources in the data, so single-channel venues see a clean filter row.',

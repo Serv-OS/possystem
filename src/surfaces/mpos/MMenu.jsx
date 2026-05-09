@@ -225,6 +225,7 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
             items={itemsToShow}
             allergenHits={allergenHits}
             variantInfo={variantInfo}
+            eightySixIds={eightySixIds}
             empty={
               showSearch
                 ? { icon:'🔍', title:`No items match "${query}"`, sub:'Try a different search term.' }
@@ -334,7 +335,7 @@ function CategoriesGrid({ categories, countFor, onPick }) {
 }
 
 // ── Items list (used for both category drill-in and search results) ──────────
-function ItemsList({ items, empty, onPick, allergenHits, variantInfo }) {
+function ItemsList({ items, empty, onPick, allergenHits, variantInfo, eightySixIds = [] }) {
   if (!items.length) {
     return (
       <div style={Sx.emptyBlock}>
@@ -346,19 +347,27 @@ function ItemsList({ items, empty, onPick, allergenHits, variantInfo }) {
   }
   return (
     <div style={{ padding:'8px 12px' }}>
-      {items.map(item => (
-        <ItemRow
-          key={item.id} item={item}
-          onTap={() => onPick?.(item)}
-          allergenHits={allergenHits ? allergenHits(item) : []}
-          variantInfo={variantInfo ? variantInfo(item) : null}
-        />
-      ))}
+      {items.map(item => {
+        // v5.5.141: 86 awareness — operator 86 OR auto-86 from daily count
+        // exhaustion. Greys the row out, shows OUT OF STOCK pill, blocks tap.
+        const is86 = eightySixIds.includes(item.id)
+          || (item.parentId && eightySixIds.includes(item.parentId))
+          || (item.parent_id && eightySixIds.includes(item.parent_id));
+        return (
+          <ItemRow
+            key={item.id} item={item}
+            onTap={() => is86 ? null : onPick?.(item)}
+            allergenHits={allergenHits ? allergenHits(item) : []}
+            variantInfo={variantInfo ? variantInfo(item) : null}
+            is86={is86}
+          />
+        );
+      })}
     </div>
   );
 }
 
-function ItemRow({ item, onTap, allergenHits = [], variantInfo = null }) {
+function ItemRow({ item, onTap, allergenHits = [], variantInfo = null, is86 = false }) {
   // If this item is a variant parent (children link to it via parentId), the
   // displayed price is "from £X" using the cheapest child — parents typically
   // have base price 0 since the price lives on the children.
@@ -373,15 +382,26 @@ function ItemRow({ item, onTap, allergenHits = [], variantInfo = null }) {
     );
   const flagged = allergenHits.length > 0;
   return (
-    <button onClick={onTap} style={{
+    <button onClick={is86 ? undefined : onTap} disabled={is86} style={{
       width:'100%', padding:'12px 14px',
       background: flagged ? 'var(--red-d)' : 'var(--bg2)',
       borderRadius:12,
       border:`1px solid ${flagged ? 'var(--red-b)' : 'var(--bdr)'}`,
-      marginBottom:8, display:'flex', gap:10, alignItems:'center', cursor:'pointer',
+      marginBottom:8, display:'flex', gap:10, alignItems:'center',
+      cursor: is86 ? 'not-allowed' : 'pointer',
       minHeight:64, fontFamily:'inherit', textAlign:'left',
-      opacity: flagged ? .85 : 1,
+      opacity: is86 ? .5 : (flagged ? .85 : 1),
+      filter: is86 ? 'grayscale(0.6)' : undefined,
+      position:'relative',
     }}>
+      {is86 && (
+        <div style={{
+          position:'absolute', top:8, right:10, zIndex:2,
+          padding:'2px 8px', borderRadius:8,
+          background:'#1a1a1a', color:'#fff',
+          fontSize:9, fontWeight:800, letterSpacing:'0.06em', textTransform:'uppercase',
+        }}>OUT OF STOCK</div>
+      )}
       <div style={{ flex:1, minWidth:0 }}>
         <div style={{
           fontSize:14, fontWeight:700, color:'var(--t1)', marginBottom:2,

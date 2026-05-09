@@ -6,7 +6,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 
-export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs = [], onClose, onAdd }) {
+export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs = [], eightySixIds = [], onClose, onAdd }) {
   const [qty, setQty]               = useState(1);
   const [modGroups, setModGroups]   = useState([]);  // top-level groups assigned to item
   const [allModGroups, setAllModGroups] = useState([]); // includes nested sub-groups (lookup)
@@ -29,10 +29,22 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
   const isParentVariant = variants.length > 0;
   const [selectedVariant, setSelectedVariant] = useState(null);
   useEffect(() => {
-    if (isParentVariant && variants.length && !selectedVariant) setSelectedVariant(variants[0]);
-  }, [isParentVariant, variants, selectedVariant]);
+    // v5.5.141: auto-pick the first AVAILABLE (not 86'd) variant. If every
+    // size is 86'd, leave selectedVariant null — the add button stays
+    // disabled because effectiveItem will be the parent which is also 86'd
+    // by inheritance (the operator typically 86s the parent, or all kids).
+    if (isParentVariant && variants.length && !selectedVariant) {
+      const firstAvailable = variants.find(v => !eightySixIds.includes(v.id));
+      setSelectedVariant(firstAvailable || variants[0]);
+    }
+  }, [isParentVariant, variants, selectedVariant, eightySixIds]);
 
   const effectiveItem = selectedVariant || item;
+  // v5.5.141: is the customer's currently-selected variant (or the base
+  // item, if no variants) actually orderable right now?
+  const effectiveIs86 = eightySixIds.includes(effectiveItem.id)
+    || (effectiveItem.parent_id && eightySixIds.includes(effectiveItem.parent_id))
+    || (item.id !== effectiveItem.id && eightySixIds.includes(item.id));
 
   // assigned_modifier_groups + assigned_instruction_groups can be EITHER
   // an array of bare ids ['mgd-123', ...] OR an array of objects with
@@ -174,7 +186,8 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
     return errs;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modGroups, selections, qtyPicks]);
-  const canAdd = validationErrors.length === 0;
+  // v5.5.141: block Add when the resolved item (variant or base) is 86'd.
+  const canAdd = validationErrors.length === 0 && !effectiveIs86;
 
   const handleAdd = () => {
     if (!canAdd) { setErrors(validationErrors); return; }
@@ -310,10 +323,14 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
                 {variants.map(v => {
                   const active = v.id === selectedVariant?.id;
                   const vPrice = Number(v.pricing?.base ?? v.price ?? 0);
+                  // v5.5.141: 86'd variants are visible but not selectable
+                  // so the customer can SEE the size exists but knows it's
+                  // out — same pattern as the menu cards.
+                  const v86 = eightySixIds.includes(v.id);
                   return (
                     <VariantRow key={v.id}
-                      variant={v} active={active} price={vPrice}
-                      onClick={() => setSelectedVariant(v)}
+                      variant={v} active={active} price={vPrice} is86={v86}
+                      onClick={() => v86 ? null : setSelectedVariant(v)}
                       theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
                   );
                 })}
@@ -507,7 +524,7 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
           padding: '14px 22px calc(14px + env(safe-area-inset-bottom)) 22px',
           background: theme.bg, borderTop: `1px solid ${cardBdr}`, flexShrink: 0,
         }}>
-          <button onClick={handleAdd} style={{
+          <button onClick={handleAdd} disabled={!canAdd} style={{
             width: '100%', padding: '16px 22px', borderRadius: 14,
             background: canAdd ? theme.accent : `${theme.fg}20`,
             color: canAdd ? contrastFg(theme.accent) : `${theme.fg}60`,
@@ -515,7 +532,7 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
             fontFamily: 'inherit',
             display: 'flex', justifyContent: 'space-between', alignItems: 'center',
           }}>
-            <span>Add {qty} to basket</span>
+            <span>{effectiveIs86 ? 'Out of stock' : `Add ${qty} to basket`}</span>
             <span>£{lineTotal.toFixed(2)}</span>
           </button>
         </div>
@@ -578,18 +595,33 @@ function OptionRow({ label, priceDelta, absolutePrice, checked, onClick, mode, t
 }
 
 // Rich variant row — image, name, description, allergen pill, absolute price.
-function VariantRow({ variant, active, price, onClick, theme, cardBdr, inputBg }) {
+function VariantRow({ variant, active, price, onClick, theme, cardBdr, inputBg, is86 = false }) {
   const allergens = variant.allergens || [];
   return (
-    <button onClick={onClick} className="op-btn" style={{
+    <button onClick={is86 ? undefined : onClick} disabled={is86}
+      className={is86 ? undefined : 'op-btn'}
+      style={{
       width: '100%', display: 'flex', alignItems: 'stretch', gap: 0,
       padding: 0, borderRadius: 12, overflow: 'hidden',
       background: active ? `${theme.accent}28` : inputBg,
       border: `${active ? 3 : 1.5}px solid ${active ? theme.accent : cardBdr}`,
       boxShadow: active ? `0 4px 14px ${theme.accent}40` : 'none',
-      color: theme.fg, fontFamily: 'inherit', cursor: 'pointer', textAlign: 'left',
+      color: theme.fg, fontFamily: 'inherit',
+      cursor: is86 ? 'not-allowed' : 'pointer',
+      opacity: is86 ? 0.5 : 1,
+      filter: is86 ? 'grayscale(0.6)' : undefined,
+      textAlign: 'left',
       transition: 'all .12s ease',
+      position: 'relative',
     }}>
+      {is86 && (
+        <div style={{
+          position: 'absolute', top: 8, right: 10, zIndex: 2,
+          padding: '3px 8px', borderRadius: 99,
+          background: '#1a1a1ad9', color: '#fff',
+          fontSize: 9, fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase',
+        }}>Out of stock</div>
+      )}
       <div style={{ display: 'flex', alignItems: 'center', padding: '12px 0 12px 14px' }}>
         <Indicator checked={active} mode="single" accent={theme.accent} cardBdr={cardBdr}/>
       </div>

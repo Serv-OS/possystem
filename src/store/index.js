@@ -2297,7 +2297,16 @@ export const useStore = create((set, get) => ({
         // 0 don't re-trigger the toast. Restores (qty<0) never un-86 automatically —
         // that's setDailyCount's job so manual toggle86's aren't clobbered.
         if (cur.remaining > 0 && newRem <= 0) {
-          if (!newEightySix.includes(id)) newEightySix.push(id);
+          if (!newEightySix.includes(id)) {
+            newEightySix.push(id);
+            // v5.5.141: also persist to the eighty_six DB table so the
+            // customer surfaces (Online, QR) — which read from Supabase,
+            // not the Zustand store — see the item as unavailable. Without
+            // this the kiosk/POS knew, but the public ordering pages kept
+            // selling sold-out items. Fire-and-forget; realtime will fan
+            // out the change to all other operator devices.
+            toggle86DB(id, true).catch(err => console.warn('[decrementDailyCount] toggle86DB:', err?.message));
+          }
           soldOutNames.push(menuItems.find(mi => mi.id === id)?.name || id);
         }
       });
