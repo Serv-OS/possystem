@@ -76,6 +76,13 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.148', date: '9 May 2026', label: 'BO QR fixes — table list now loads from floor_tables (not floor_plan); QR block constrained so hero upload button stops getting pushed off the page',
+    changes: [
+      'TABLE LIST WAS EMPTY — v5.5.147 queried `floor_plan.tables` (a JSONB column on a singular row), but tables actually live in their own `floor_tables` table (one row per table) — same source the existing fetchFloorPlan helper uses. Switched to `select id, label, parent_id, sort_order from floor_tables where location_id = ...`, filtered out parent/composite tables (parent_id set), mapped to the {id,label} shape the QR generator expects. Tables now populate.',
+      'HERO UPLOAD BUTTON OFF-PAGE — the QR settings block had three flex:1 buttons in a single row; with long labels like "Both — let customer choose" the row could exceed the page\'s 880px maxWidth on narrow viewports, pushing every following block (including the existing hero banner upload) horizontally off-screen. Added flex-wrap, shortened labels, and constrained the QR block with `boxSizing: border-box; max-width: 100%; overflow: hidden`.',
+    ],
+  },
+  {
     version: '5.5.147', date: '9 May 2026', label: 'QR commit 2 — downloadable QR-code JPEGs per table + table-mode toggle + confirm-table screen',
     changes: [
       'BO QR CODES — new QR section in BO → Online Ordering. Lists every floor-plan table with a "⬇ JPEG" tile per table. Click downloads a labelled JPEG: big QR code on a white background with "SCAN TO ORDER" + "Table T5" + venue domain footer, ready to print or send to a print shop. "⬇ Download all" loops through every table sequentially. JPEG is composed in a canvas using the new `qrcode` npm dep — fully offline, no third-party API call.',

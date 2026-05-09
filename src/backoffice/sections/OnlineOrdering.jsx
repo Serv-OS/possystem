@@ -116,17 +116,24 @@ export default function OnlineOrdering({ setSection }) {
             } catch { /* columns not migrated yet — defaults stand */ }
           }
         }
-        // v5.5.147: load floor-plan tables for the QR-code generator. Reads
-        // from ops floor_plan (single row per location, tables[] inside).
+        // v5.5.147/148: load floor-plan tables. Tables live in their own
+        // `floor_tables` table (one row per table) — NOT a JSONB array on a
+        // singular `floor_plan` row. Mirror the existing fetchFloorPlan
+        // helper. Filter out parent/composite tables (parentId set) so the
+        // QR generator only emits codes for real diners-accept tables.
         if (opsLocId && supabase) {
           try {
-            const { data: fp } = await supabase
-              .from('floor_plan')
-              .select('tables')
+            const { data: rows } = await supabase
+              .from('floor_tables')
+              .select('id, label, parent_id, sort_order')
               .eq('location_id', opsLocId)
-              .maybeSingle();
-            if (alive && fp?.tables?.length) setTables(fp.tables);
-          } catch (e) { console.warn('[OnlineOrdering] floor_plan load:', e?.message); }
+              .order('sort_order');
+            if (alive && rows?.length) {
+              setTables(rows
+                .filter(t => !t.parent_id)
+                .map(t => ({ id: t.id, label: t.label || t.id })));
+            }
+          } catch (e) { console.warn('[OnlineOrdering] floor_tables load:', e?.message); }
         }
       } catch (e) {
         console.error('[OnlineOrdering] load failed:', e);
@@ -447,37 +454,39 @@ function QrSettingsBlock({ slug, paymentMode, setPaymentMode, tableMode, setTabl
   });
 
   return (
-    <div style={S.card}>
-      <h3 style={S.h3}>QR ordering</h3>
+    <div style={{ ...S.card, boxSizing: 'border-box', maxWidth: '100%', overflow: 'hidden' }}>
+      <h3 style={S.h2}>QR ordering</h3>
       <div style={{ fontSize: 12, color: 'var(--t4)', marginBottom: 14, lineHeight: 1.5 }}>
         Settings + downloadable QR codes for table-side ordering. Print one per table or stick on table tents.
       </div>
 
-      {/* Payment mode */}
+      {/* Payment mode — flex-wrap so long labels don't push the card wider
+          than its container (which would push the hero banner upload
+          button off-screen on narrow viewports). */}
       <div style={{ marginBottom: 14 }}>
         <div style={S.label}>Payment</div>
-        <div style={{ display: 'flex', gap: 6 }}>
-          <button onClick={() => setPaymentMode('pay_now')} style={radioStyle(paymentMode === 'pay_now')}>💳 Pay now</button>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          <button onClick={() => setPaymentMode('pay_now')}  style={radioStyle(paymentMode === 'pay_now')}>💳 Pay now</button>
           <button onClick={() => setPaymentMode('open_tab')} style={radioStyle(paymentMode === 'open_tab')}>📋 Open tab</button>
-          <button onClick={() => setPaymentMode('both')} style={radioStyle(paymentMode === 'both')}>Both — let customer choose</button>
+          <button onClick={() => setPaymentMode('both')}     style={radioStyle(paymentMode === 'both')}>Both</button>
         </div>
-        <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 6 }}>
-          Pay-now charges immediately. Open-tab pre-authorises the card and bills at end (lands in v5.5.147+).
+        <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 6, lineHeight: 1.5 }}>
+          Pay-now charges immediately. Open-tab pre-authorises the card and bills at end (lands in commit 3).
         </div>
       </div>
 
       {/* Table mode */}
       <div style={{ marginBottom: 14 }}>
         <div style={S.label}>Table identification</div>
-        <div style={{ display: 'flex', gap: 6 }}>
-          <button onClick={() => setTableMode('fixed')} style={radioStyle(tableMode === 'fixed')}>🔒 Fixed (QR-only)</button>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          <button onClick={() => setTableMode('fixed')}   style={radioStyle(tableMode === 'fixed')}>🔒 Fixed</button>
           <button onClick={() => setTableMode('confirm')} style={radioStyle(tableMode === 'confirm')}>✅ Confirm</button>
-          <button onClick={() => setTableMode('free')} style={radioStyle(tableMode === 'free')}>✏️ Free-type</button>
+          <button onClick={() => setTableMode('free')}    style={radioStyle(tableMode === 'free')}>✏️ Free-type</button>
         </div>
-        <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 6 }}>
-          {tableMode === 'fixed' && 'QR code locks the table; customer can\'t change it.'}
+        <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 6, lineHeight: 1.5 }}>
+          {tableMode === 'fixed' && 'QR locks the table — customer can\'t change it.'}
           {tableMode === 'confirm' && '"You\'re at Table 5? Yes / Change" before menu loads — recommended.'}
-          {tableMode === 'free' && 'QR encodes no table; customer types their number on first screen.'}
+          {tableMode === 'free' && 'QR encodes no table — customer types their number on first screen.'}
         </div>
       </div>
 
