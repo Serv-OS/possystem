@@ -35,53 +35,62 @@ export default function OnlineSurface({ location }) {
   const [orderType, setOrderType]   = useState('collection'); // collection | delivery
 
   // ── Load menu + branding from ops DB ────────────────────────────────────
-  // Branding source of truth: location.online_branding (set in BO → Online
-  // ordering). Falls back to ops locations.receipt_branding when not set.
-  // Menu: when online_menu_id is set we filter categories via
-  // menu_category_links so only the chosen menu's categories show.
+  // Mirrors useKioskMenu in KioskApp.jsx — same query shape that's known to
+  // work. Menu filter (online_menu_id) applied AFTER fetch so we never zero-
+  // filter the categories silently. Diagnostic counts logged + surfaced so
+  // we can see exactly what the fetch returned without round-tripping with
+  // network panel each time.
+  // Stable dep — only re-fetch when ops id or chosen menu actually changes.
+  const onlineMenuId = location.online_menu_id || null;
   useEffect(() => {
     let alive = true;
     (async () => {
+      console.log('[OnlineSurface] load start', { opsLocationId, hasSupabase: !!supabase, onlineMenuId });
       if (!opsLocationId || !supabase) { setLoading(false); return; }
       try {
-        const onlineMenuId = location.online_menu_id || null;
-        const linkPromise = onlineMenuId
-          ? supabase.from('menu_category_links').select('menu_id, category_id').eq('menu_id', onlineMenuId)
-          : Promise.resolve({ data: null });
-
+        // Fetch raw rows. Ops DB schema uses cat (FK to menu_categories.id),
+        // cats (text[]), parent_id, sold_alone — all as-is. select('*') is
+        // tolerant of schema drift.
         const [iRes, cRes, lRes, mRes] = await Promise.all([
-          supabase.from('menu_items')
-            .select('id, name, menu_name, description, pricing, cat, cats, parent_id, type, allergens, image, sort_order, sold_alone, archived, assigned_modifier_groups')
+          supabase.from('menu_items').select('*')
             .eq('location_id', opsLocationId).eq('archived', false).order('sort_order'),
-          supabase.from('menu_categories')
-            .select('id, label, name, sort_order, parent_id')
+          supabase.from('menu_categories').select('*')
             .eq('location_id', opsLocationId).order('sort_order'),
-          supabase.from('locations')
-            .select('receipt_branding')
+          supabase.from('locations').select('receipt_branding')
             .eq('id', opsLocationId).maybeSingle(),
-          linkPromise,
+          onlineMenuId
+            ? supabase.from('menu_category_links').select('category_id').eq('menu_id', onlineMenuId)
+            : Promise.resolve({ data: null, error: null }),
         ]);
         if (!alive) return;
 
-        // Filter to the chosen online menu's categories when set
+        const rawItems = iRes.data || [];
         let cats = cRes.data || [];
-        if (onlineMenuId && Array.isArray(mRes.data)) {
-          const allowedCatIds = new Set(mRes.data.map(l => l.category_id));
-          cats = cats.filter(c => allowedCatIds.has(c.id) || (c.parent_id && allowedCatIds.has(c.parent_id)));
+        const linkedIds = mRes.data ? new Set(mRes.data.map(l => l.category_id)) : null;
+        if (linkedIds) {
+          cats = cats.filter(c => linkedIds.has(c.id) || (c.parent_id && linkedIds.has(c.parent_id)));
         }
 
-        setItems(iRes.data || []);
+        console.log('[OnlineSurface] fetch results', {
+          items: rawItems.length, itemsErr: iRes.error?.message,
+          categoriesRaw: (cRes.data || []).length, categoriesFiltered: cats.length, catsErr: cRes.error?.message,
+          links: mRes.data?.length, linksErr: mRes.error?.message,
+          locationsErr: lRes.error?.message,
+        });
+
+        setItems(rawItems);
         setCategories(cats);
         setBranding(location.online_branding || lRes.data?.receipt_branding || null);
         setActiveCat(cats.find(c => !c.parent_id)?.id || null);
       } catch (e) {
-        console.warn('[OnlineSurface] load failed:', e?.message);
+        console.warn('[OnlineSurface] load failed:', e?.message, e);
       } finally {
         if (alive) setLoading(false);
       }
     })();
     return () => { alive = false; };
-  }, [opsLocationId, location.online_menu_id, location.online_branding]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [opsLocationId, onlineMenuId]);
 
   // ── Theme — branding overrides fallback ──────────────────────────────────
   const theme = useMemo(() => ({

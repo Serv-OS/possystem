@@ -76,6 +76,16 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.111', date: '8 May 2026', label: 'Online ordering — RLS anon SELECT policies + diagnostic load logging',
+    changes: [
+      'ROOT CAUSE OF "NO MENU LOADING" — ops DB had RLS enabled on menu_items / menu_categories / menus / menu_category_links with NO permissive SELECT policy. Anonymous customer pages got back empty arrays from every query. The kiosk worked because it ran in a browser where a BO user was logged in (BO auth context bypassed RLS); a true anon visitor hit the same wall. Operator-side data (menu_items, etc) was always public-priced anyway — adding anon SELECT policies just makes that explicit.',
+      'SQL APPLIED — CREATE POLICY <table>_anon_read FOR SELECT USING (true) on menu_items, menu_categories, menus, menu_category_links. modifier_groups already had a permissive read policy. Verified anon SELECT against menu_items now returns rows.',
+      'OnlineSurface load REWRITTEN to mirror useKioskMenu in KioskApp.jsx — same select(\'*\') tolerant of schema drift, same field shapes, same filter chain. Stable useEffect deps so it re-fetches only when opsLocationId or online_menu_id changes. The previous version had `location.online_branding` (an object) in the dep array which can churn on re-renders.',
+      'DIAGNOSTIC LOGGING — each load now console.logs the row counts ({ items, categoriesRaw, categoriesFiltered, links }) + per-query error messages. Open DevTools console on the customer URL to see exactly what the fetch returned. Phase 4 will replace this with a proper "0 items? Here\'s what we found" empty-state explainer.',
+      'TO TEST — hard-refresh the customer URL once 5.5.111 deploys. The console should log `[OnlineSurface] fetch results { items: 92, categoriesRaw: 28, categoriesFiltered: …, links: …, ...}`. Menu rows should populate.',
+    ],
+  },
+  {
     version: '5.5.110', date: '8 May 2026', label: 'Online ordering branding — file uploads for logo + hero (no more URL pasting)',
     changes: [
       'BO Online Ordering — replaced the Logo URL / Hero URL text inputs with proper file pickers backed by Supabase Storage. Uploads land in the existing receipt-assets bucket under locations/<id>/online/<kind>.<ext>, with upsert so re-uploading replaces the old image cleanly. Cache-busting timestamp appended to the public URL so the customer surface picks up the new image instantly.',
