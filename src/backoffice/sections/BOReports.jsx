@@ -13,7 +13,7 @@ import { useState, useMemo, useEffect } from 'react';
 import { useStore } from '../../store';
 import { isMock, getLocationId } from '../../lib/supabase';
 import { fetchClosedChecksRange, fetchKDSTicketsRange } from '../../lib/db';
-import { PERIODS, buildPeriods, getPeriodRange, periodLabel, applyFilters, uniqueServers, uniqueOrderTypes } from './reports/_filters';
+import { PERIODS, buildPeriods, getPeriodRange, periodLabel, applyFilters, uniqueServers, uniqueOrderTypes, uniqueSources, SOURCE_LABEL } from './reports/_filters';
 import { getLocationConfig } from '../../lib/locationTime';
 import Catalog, { CATEGORIES, REPORT_INDEX } from './reports/Catalog';
 import SalesSummary from './reports/SalesSummary';
@@ -47,6 +47,7 @@ export default function BOReports() {
   const [locationConfig, setLocationConfig] = useState(null);  // v4.6.24
   const [serverFilter, setServerFilter]       = useState('all');
   const [orderTypeFilter, setOrderTypeFilter] = useState('all');
+  const [sourceFilter, setSourceFilter]       = useState('all'); // v5.5.140: pos / kiosk / online / qr
 
   // v4.6.24: Load location timezone + businessDayStart + service periods so reports
   // can honour real business-day boundaries and service-period grouping.
@@ -122,11 +123,12 @@ export default function BOReports() {
   }, [rangeChecks, storeChecks, range.from, range.to]);
   const allPrev   = prevChecks  || [];
 
-  const filtered     = useMemo(() => applyFilters(allChecks, { server: serverFilter, orderType: orderTypeFilter }), [allChecks, serverFilter, orderTypeFilter]);
-  const filteredPrev = useMemo(() => applyFilters(allPrev,   { server: serverFilter, orderType: orderTypeFilter }), [allPrev,   serverFilter, orderTypeFilter]);
+  const filtered     = useMemo(() => applyFilters(allChecks, { server: serverFilter, orderType: orderTypeFilter, source: sourceFilter }), [allChecks, serverFilter, orderTypeFilter, sourceFilter]);
+  const filteredPrev = useMemo(() => applyFilters(allPrev,   { server: serverFilter, orderType: orderTypeFilter, source: sourceFilter }), [allPrev,   serverFilter, orderTypeFilter, sourceFilter]);
 
   const servers    = useMemo(() => uniqueServers(allChecks),    [allChecks]);
   const orderTypes = useMemo(() => uniqueOrderTypes(allChecks), [allChecks]);
+  const sources    = useMemo(() => uniqueSources(allChecks),    [allChecks]);
 
   const openOrders = useMemo(() => (
     Object.entries(activeSessions || {})
@@ -182,7 +184,7 @@ export default function BOReports() {
           </div>
           <div style={{ fontSize:12, color:'var(--t3)', marginTop:4 }}>
             {filtered.length} checks · {fmt(totalRevenue)} revenue
-            {(serverFilter !== 'all' || orderTypeFilter !== 'all') && (
+            {(serverFilter !== 'all' || orderTypeFilter !== 'all' || sourceFilter !== 'all') && (
               <span style={{ color:'var(--acc)', marginLeft:6 }}>· filtered</span>
             )}
           </div>
@@ -219,6 +221,15 @@ export default function BOReports() {
           <select value={orderTypeFilter} onChange={e => setOrderTypeFilter(e.target.value)} style={selectSt}>
             <option value="all">All order types</option>
             {orderTypes.map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
+        )}
+        {/* v5.5.140: order source filter — POS / Kiosk / Online / QR.
+            Hidden when only one source is present so the filter row stays tidy
+            for venues that haven't enabled multi-channel ordering yet. */}
+        {sources.length > 1 && (
+          <select value={sourceFilter} onChange={e => setSourceFilter(e.target.value)} style={selectSt}>
+            <option value="all">All sources</option>
+            {sources.map(s => <option key={s} value={s}>{SOURCE_LABEL[s] || s}</option>)}
           </select>
         )}
       </div>

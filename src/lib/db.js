@@ -460,6 +460,7 @@ export const fetchClosedChecks = async (locationId = null, limit = 500, sinceDat
       closedAt: c.closed_at ? new Date(c.closed_at).getTime() : null,
       status: c.status, refunds: c.refunds || [],
       tableId: c.table_id, tableLabel: c.table_label,
+      source: c.source || 'pos', // v5.5.140: surface source for report filters (online / kiosk / qr / pos)
     }));
   }
   return result;
@@ -489,6 +490,7 @@ export const fetchClosedChecksRange = async (locationId = null, fromDate, toDate
       closedAt: c.closed_at ? new Date(c.closed_at).getTime() : null,
       status: c.status, refunds: c.refunds || [],
       tableId: c.table_id, tableLabel: c.table_label,
+      source: c.source || 'pos', // v5.5.140: surface source for report filters (online / kiosk / qr / pos)
     }));
   }
   return result;

@@ -76,6 +76,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.140', date: '9 May 2026', label: 'BO Reports — filter by order source (POS / Kiosk / Online / QR)',
+    changes: [
+      'SOURCE FILTER ON ALL REPORTS — every report in BO Reports (Sales summary / Payments / Daypart / Shifts / Product mix / Item trend / Daily trend / Menu engineering / Servers / Tips / Tables / Tax / Order types / Z report / etc.) now has a "All sources" dropdown next to the order type filter. Pick POS / Kiosk / Online / QR to slice revenue by channel. The dropdown only renders when the venue has multiple sources in the data, so single-channel venues see a clean filter row.',
+      'closed_checks NOW CARRIES `source` — kiosk insertions already tagged source=\'kiosk\' (KioskApp); online orders now also tag source=\'online\' on the closed_checks row at payment time. Walk-in / dine-in / counter inserts default to \'pos\' on read. fetchClosedChecksRange and fetchClosedChecks both surface source on the mapped check object so every report consumer has it.',
+      'PRETTY LABELS — SOURCE_LABEL map gives each source an emoji + name (🧾 POS / 📟 Kiosk / 🌐 Online / 📱 QR Code) for the dropdown options. Falls back to raw value for anything else.',
+      'COMING NEXT — same source filter on the Customers section so VIP / dormant / multi-location views can be sliced by acquisition channel, and on EOD / Z report so the front-of-house close-out shows online vs in-store revenue split at-a-glance.',
+    ],
+  },
+  {
     version: '5.5.139', date: '9 May 2026', label: 'Fix 5× duplicate prints — restore master-only auto-routing (the broader gate relied on a missing DB column for dedup)',
     changes: [
       'WHY 5 PRINTS — v5.5.132 removed the isMaster gate so any operator device could route on realtime INSERT. The dedup that made that safe was the atomic claim on order_queue.kitchen_routed_at, which silently fails on this venue\'s DB because that column is missing (migration v5.5.57 not applied). With no DB-level dedup, every operator browser / tab / device subscribed to the realtime channel proceeded with routing — 5 subscribers = 5 print jobs queued for the same order. The print agent printed all 5.',

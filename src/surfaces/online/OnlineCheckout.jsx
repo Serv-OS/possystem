@@ -244,6 +244,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           refunds: [],
           table_id: null,
           table_label: `Online ${ref}`,
+          source: 'online', // v5.5.140: tag closed_checks for report filtering
         };
         const { error: ccErr } = await supabase.from('closed_checks').insert(closedCheck);
         if (ccErr) console.warn('[OnlineCheckout] closed_checks insert failed:', ccErr.message);

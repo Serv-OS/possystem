@@ -164,11 +164,13 @@ export function periodLabel(periodId, custom, range) {
     : `${range.from.toLocaleDateString('en-GB', { day:'numeric', month:'short' })} \u2192 ${range.to.toLocaleDateString('en-GB', { day:'numeric', month:'short' })}`;
 }
 
-// Apply server + order type filters (global filters live on the shell).
+// Apply server + order type + source filters (global filters live on the shell).
+// v5.5.140: source filter — pos / kiosk / online / qr — for cross-channel report slicing.
 export function applyFilters(checks, filters) {
   return (checks||[]).filter(c => {
     if (filters?.server    && filters.server    !== 'all' && (c.server || '') !== filters.server)        return false;
     if (filters?.orderType && filters.orderType !== 'all' && (c.orderType || 'dine-in') !== filters.orderType) return false;
+    if (filters?.source    && filters.source    !== 'all' && (c.source || 'pos') !== filters.source)     return false;
     return true;
   });
 }
@@ -190,6 +192,24 @@ export function uniqueOrderTypes(checks) {
   (checks||[]).forEach(c => set.add(c.orderType || 'dine-in'));
   return [...set].sort();
 }
+
+// v5.5.140: collect distinct order sources present in the data so the BO
+// reports filter dropdown only shows options that exist (e.g. don't render
+// "Online" if the venue has never had an online order). Returns sorted.
+export function uniqueSources(checks) {
+  const set = new Set();
+  (checks||[]).forEach(c => set.add(c.source || 'pos'));
+  return [...set].sort();
+}
+
+// v5.5.140: pretty labels + emoji for the source filter pills. Falls back to
+// title-case of the raw value for unknown sources.
+export const SOURCE_LABEL = {
+  pos:    '🧾 POS',
+  kiosk:  '📟 Kiosk',
+  online: '🌐 Online',
+  qr:     '📱 QR Code',
+};
 
 // v4.6.24: Classify a check timestamp into one of the configured service
 // periods. Returns the shift object (or null for "outside any service").
