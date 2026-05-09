@@ -98,9 +98,20 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       ...(isDelivery ? { address: { line1: address1.trim(), postcode: postcode.trim().toUpperCase() } } : {}),
       ...(notes.trim() ? { notes: notes.trim() } : {}),
     };
+    // v5.5.128: include cat / cats / parentId on the queued items so the
+    // operator-side production routing (routeKioskOrderPrints → centresForItem)
+    // can bucket them into the right kitchen station even if the master
+    // device's local menuItems cache hasn't loaded a matching row yet.
+    // Pulled from the cart line if present (set by OnlineSurface when the
+    // item was added) — falls back to undefined if not, in which case the
+    // master still does its own menuItems lookup as a safety net.
     const items = cart.map(l => ({
       itemId: l.itemId, name: l.name, price: l.price,
       qty: l.qty || 1, mods: l.mods || [],
+      cat: l.cat || null,
+      cats: l.cats || null,
+      parentId: l.parentId || null,
+      kitchenName: l.kitchenName || null,
     }));
     return { ref, collectionAt, sentAt, customer, items };
     // eslint-disable-next-line react-hooks/exhaustive-deps

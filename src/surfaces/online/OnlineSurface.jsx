@@ -195,10 +195,19 @@ export default function OnlineSurface({ location }) {
 
   const addToCart = (item, mods, qty) => {
     const price = Number(item.pricing?.base ?? item.price ?? 0);
+    // v5.5.128: snapshot category info on the cart line so production
+    // routing on the operator side can bucket the item to the right
+    // kitchen station regardless of whether the master device's local
+    // menu cache has the row. cat / cats / parentId / kitchenName are
+    // exactly the fields routeKioskOrderPrints.centresForItem reads.
     setCart(c => [...c, {
       uid: `${item.id}-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
       itemId: item.id,
       name: item.menu_name || item.name,
+      kitchenName: item.kitchen_name || item.kitchenName || null,
+      cat: item.cat || null,
+      cats: Array.isArray(item.cats) ? item.cats : null,
+      parentId: item.parent_id || item.parentId || null,
       price, qty, mods,
     }]);
     setOpenItem(null);

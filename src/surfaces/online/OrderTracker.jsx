@@ -19,7 +19,10 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose }) {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
 
-  // Initial fetch + realtime + 20s polling fallback.
+  // v5.5.128: realtime channel + 5s polling fallback (was 20s — too slow if
+  // the realtime channel fails RLS auth or the customer's network drops the
+  // websocket). Polling is the workhorse; realtime is a snappy nice-to-have.
+  // Polling interval 5s gives a perceptually-live feel without slamming the DB.
   useEffect(() => {
     let alive = true;
     let chan = null;
@@ -30,8 +33,22 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose }) {
           .from('order_queue').select('*')
           .eq('ref', orderRef).maybeSingle();
         if (!alive) return;
-        if (error) { setErr(error.message); return; }
-        setOrder(data); setLoading(false);
+        if (error) {
+          console.warn('[OrderTracker] poll error:', error.message);
+          setErr(error.message); return;
+        }
+        if (data) {
+          // Only update state if status / total / items actually changed —
+          // avoids re-rendering the whole tree every 5s.
+          setOrder(prev => {
+            if (!prev) return data;
+            if (prev.status === data.status && prev.total === data.total
+                && JSON.stringify(prev.items) === JSON.stringify(data.items)) return prev;
+            console.log('[OrderTracker]', orderRef, 'status:', prev?.status, '→', data.status);
+            return data;
+          });
+        }
+        setLoading(false);
       } catch (e) {
         if (alive) { setErr(e?.message || 'Could not load order.'); setLoading(false); }
       }
@@ -44,10 +61,16 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose }) {
           event: 'UPDATE', schema: 'public', table: 'order_queue', filter: `ref=eq.${orderRef}`,
         }, (payload) => {
           if (!alive) return;
+          console.log('[OrderTracker] realtime UPDATE for', orderRef, '→', payload.new?.status);
           setOrder(payload.new);
-        }).subscribe();
+        }).subscribe((status) => {
+          if (status === 'SUBSCRIBED') console.log('[OrderTracker] subscribed to', orderRef);
+          else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+            console.warn('[OrderTracker] realtime channel issue:', status, '(polling will continue)');
+          }
+        });
     }
-    const poll = setInterval(fetchOnce, 20_000);
+    const poll = setInterval(fetchOnce, 5_000);
 
     return () => {
       alive = false;

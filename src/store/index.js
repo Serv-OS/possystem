@@ -3756,22 +3756,9 @@ export const useStore = create((set, get) => ({
         const { error: kdsErr } = await supabase.from('kds_tickets').insert(tickets);
         if (kdsErr) console.warn('[routeKioskOrderPrints] kds insert', kdsErr);
       }
-
-      // v5.5.127: once production has fired (KDS card written + per-centre
-      // print jobs queued), auto-flip the order's status from 'received' →
-      // 'prep' so the operator's queue UI reflects "kitchen has it" the
-      // moment routing succeeds. Used to be: every new order sat at
-      // 'received' until an operator manually moved it through the stages.
-      // For routed orders that's a redundant click — the kitchen DOES have
-      // it now. Operators still advance prep → ready → collected manually.
-      try {
-        await supabase.from('order_queue')
-          .update({ status: 'prep' })
-          .eq('ref', order.ref)
-          .eq('status', 'received'); // only flip if no operator has moved it further
-      } catch (e) {
-        console.warn('[routeKioskOrderPrints] status→prep update failed:', e?.message);
-      }
+      // v5.5.128: log routing outcome so silent failures (no centres / no
+      // matching cats / printer not mapped) surface clearly in DevTools.
+      console.log('[routeKioskOrderPrints]', order.ref, 'centres matched:', Object.keys(byCentre).length, 'items routed:', Object.values(byCentre).flat().length);
 
       // Print jobs per centre
       const getCentrePrinter = (centreId) => {
@@ -3798,6 +3785,24 @@ export const useStore = create((set, get) => ({
       });
 
       console.log('[routeKioskOrderPrints] routed', order.ref, 'to', Object.keys(byCentre).length, 'centres');
+
+      // v5.5.128: AFTER prints have fired (or we tried — the print path is
+      // durable so the row was at minimum queued), flip status from
+      // 'received' → 'prep' so the customer's tracker and the operator's
+      // queue both reflect "kitchen has it". Conditional on the row still
+      // being 'received' so we never clobber an operator who's already
+      // advanced it. Skipped entirely if zero centres matched — in that
+      // case nothing was routed, the order genuinely is still just queued.
+      if (Object.keys(byCentre).length > 0) {
+        try {
+          await supabase.from('order_queue')
+            .update({ status: 'prep' })
+            .eq('ref', order.ref)
+            .eq('status', 'received');
+        } catch (e) {
+          console.warn('[routeKioskOrderPrints] status→prep update failed:', e?.message);
+        }
+      }
     } catch (e) {
       console.warn('[routeKioskOrderPrints] failed:', e?.message);
     }
