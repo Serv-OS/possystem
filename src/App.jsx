@@ -76,6 +76,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.129', date: '9 May 2026', label: 'KDS items now arrive as "sent" (was "to send") + per-centre print diagnostic + "nothing routed" dump',
+    changes: [
+      'KDS ITEMS — every item routed via routeKioskOrderPrints now gets `status: \'sent\'` on the kds_tickets row, not just `fired: true`. Without status the KDS rendered them as "to send" instead of "sent". This was the bug for ALL customer-surface orders (kiosk + online + qr) — the dine-in / walk-in path always set status:\'sent\' on send-to-kitchen but the customer-surface path never did. Now matches the rest of the system.',
+      'PER-CENTRE PRINT DIAGNOSTIC — for every centre routing fires through, the master device console now logs centre name, printer name + id (or "NONE — KDS only, no paper"), and item count. So when "didn\'t print" surfaces, you can see at a glance whether (a) no centre matched the cats, (b) centre matched but printer not mapped, (c) centre matched and printer mapped (in which case the issue is downstream in the print agent). No more silent failures.',
+      'NOTHING-ROUTED DUMP — when Object.keys(byCentre).length === 0 the master console now logs centres/routingKeys/sample-item-cat/all-cats so you can immediately see which side is broken (routing config empty? cats missing on items? cat values not matching any centre\'s assignedCategories?). The "centres matched: 0" line tells you the problem; this dump tells you why.',
+    ],
+  },
+  {
     version: '5.5.128', date: '9 May 2026', label: 'Production routing fully wired for online — cat/parentId on cart lines + status flip moved AFTER prints + tracker polls every 5s',
     changes: [
       'CART LINES NOW CARRY cat / cats / parentId / kitchenName — root cause of "no print" on online orders. The operator-side production routing (routeKioskOrderPrints → centresForItem) buckets items into kitchen stations by category. Online cart lines were just { itemId, name, price, qty, mods } — no category info — so unless the master device\'s in-memory menuItems happened to have a matching row, the bucketing returned [] for every item, byCentre stayed empty, and nothing fired. OnlineSurface.addToCart now snapshots cat / cats / parentId / kitchenName onto each cart line, OnlineCheckout copies them into the order_queue items, and routeKioskOrderPrints reads them directly. Routing is now self-contained — no master-device menu cache dependency.',

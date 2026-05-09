@@ -3731,7 +3731,10 @@ export const useStore = create((set, get) => ({
       const serverName = order.customer?.name || `${srcLabel} ${order.ref}`;
       const sentAt = order.sentAt || Date.now();
 
-      // Per-centre KDS tickets (replace the generic one the kiosk inserted with centre-bucketed)
+      // Per-centre KDS tickets (replace the generic one the kiosk inserted with centre-bucketed).
+      // v5.5.129: each item gets status:'sent' — was missing, so KDS rendered them as
+      // "to send" instead of "sent". Mirrors the dine-in/walk-in path (sendToKitchen)
+      // where every item's status is flipped to 'sent' the moment it fires.
       const tickets = Object.entries(byCentre).map(([centreId, items]) => ({
         id: `kds-${sentAt}-${centreId}-${Math.random().toString(36).slice(2,6)}`,
         location_id: useStore.getState().locationConfig?.id || null,
@@ -3743,7 +3746,7 @@ export const useStore = create((set, get) => ({
           qty: i.qty,
           name: i.kitchenName || i.name,
           mods: Array.isArray(i.mods) ? i.mods.map(m => m?.name || m?.label || m).filter(Boolean) : [],
-          course: 1, fired: true, centreId,
+          course: 1, fired: true, status: 'sent', centreId,
         })),
         status: 'fired',
         sent_at: new Date(sentAt).toISOString(),
@@ -3767,6 +3770,14 @@ export const useStore = create((set, get) => ({
       };
       Object.entries(byCentre).forEach(([centreId, items]) => {
         if (!items.length) return;
+        // v5.5.129: log per-centre so we can see exactly where the path
+        // breaks down — centre matched but no printer? Centre matched and
+        // printer mapped? Surfaces the root cause when "didn't print".
+        const centre = routingConfig.centres?.find(c => c.id === centreId);
+        const printerId = centre?.printer?.id || null;
+        console.log('[routeKioskOrderPrints]', order.ref, 'centre:', centre?.name || centreId,
+          'printer:', printerId ? `${centre.printer.name} (${printerId})` : 'NONE — KDS only, no paper',
+          'items:', items.length);
         get().routePrintJob({
           centreId,
           printerName: getCentrePrinter(centreId),
@@ -3785,6 +3796,20 @@ export const useStore = create((set, get) => ({
       });
 
       console.log('[routeKioskOrderPrints] routed', order.ref, 'to', Object.keys(byCentre).length, 'centres');
+      // v5.5.129: when zero centres matched, log WHY so the operator can
+      // see what's mis-configured (no centres at all? no cats on items?
+      // routing config not loaded yet?). One of these is almost always
+      // the cause when "didn't print".
+      if (Object.keys(byCentre).length === 0) {
+        console.warn('[routeKioskOrderPrints] NOTHING ROUTED for', order.ref,
+          '— diagnostic dump:',
+          { centres: routingConfig.centres?.length || 0,
+            routingKeys: Object.keys(routingConfig.routing || {}).length,
+            sampleItem: order.items?.[0],
+            sampleItemCat: order.items?.[0]?.cat,
+            allCats: order.items?.map(i => i.cat || i.cats?.[0] || null),
+          });
+      }
 
       // v5.5.128: AFTER prints have fired (or we tried — the print path is
       // durable so the row was at minimum queued), flip status from
