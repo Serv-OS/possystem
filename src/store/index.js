@@ -3640,6 +3640,27 @@ export const useStore = create((set, get) => ({
     if (!order?.ref || !Array.isArray(order.items) || !order.items.length) return;
     if (!supabase) return;
     try {
+      // v5.5.126: scheduled-order deferral. order_queue.sent_at is the
+      // kitchen-fire moment (collection_time − online_collection_lead_min).
+      // For ASAP orders sent_at ≈ now and we route immediately. For a
+      // scheduled order whose sent_at is in the future we set a timer to
+      // re-call ourselves at that moment. We DON'T claim the row yet —
+      // claiming gates against duplicate routing once the timer fires;
+      // claiming early would block other devices from picking it up if
+      // this device disconnects before the timer pops.
+      const sentAtMs = order.sentAt || Date.now();
+      const waitMs = sentAtMs - Date.now();
+      if (waitMs > 60_000) {
+        // Cap at 24h so a scheduled-for-tomorrow order doesn't keep a
+        // setTimeout pinned forever. Master-boot backfill picks it up
+        // closer to the time. setTimeout's max safe delay is ~24.8 days.
+        const cappedWait = Math.min(waitMs, 24 * 60 * 60_000);
+        console.log('[routeKioskOrderPrints] deferring', order.ref,
+          'until', new Date(sentAtMs).toISOString(),
+          `(in ${Math.round(cappedWait/60000)} min)`);
+        setTimeout(() => useStore.getState().routeKioskOrderPrints?.(order), cappedWait);
+        return;
+      }
       // Atomic claim — only succeeds if kitchen_routed_at is still NULL
       const { data: claimed, error: claimErr } = await supabase
         .from('order_queue')
@@ -3699,8 +3720,15 @@ export const useStore = create((set, get) => ({
         });
       });
 
-      const tableLabel = `Kiosk ${order.ref}`;
-      const serverName = order.customer?.name || `Kiosk ${order.ref}`;
+      // v5.5.126: source-correct labels so the kitchen ticket / KDS card says
+      // "Online OL-XXX" or "QR T5" instead of always "Kiosk". Falls back to
+      // the previous "Kiosk" wording when source is unknown.
+      const SRC_LABEL = { kiosk: 'Kiosk', online: 'Online', qr: 'QR' };
+      const srcLabel = SRC_LABEL[order.source] || 'Kiosk';
+      const tableLabel = order.source === 'qr' && order.tableLabel
+        ? `Table ${order.tableLabel}`
+        : `${srcLabel} ${order.ref}`;
+      const serverName = order.customer?.name || `${srcLabel} ${order.ref}`;
       const sentAt = order.sentAt || Date.now();
 
       // Per-centre KDS tickets (replace the generic one the kiosk inserted with centre-bucketed)

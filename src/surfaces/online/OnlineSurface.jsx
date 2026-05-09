@@ -57,6 +57,32 @@ export default function OnlineSurface({ location }) {
     return [...set].sort();
   }, [items]);
 
+  // ── Track-an-existing-order via shareable URL ────────────────────────────
+  // Customers can return any time via ?track=OL-ABC12&p=1234 (last-4 digits
+  // of the phone they used to place the order). On match we render the
+  // OrderTracker; on mismatch we ignore the params so the page renders
+  // normally — the URL is shareable but a wrong p doesn't error in front
+  // of the customer.
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const trackRef = url.searchParams.get('track');
+    const p4       = url.searchParams.get('p');
+    if (!trackRef || !p4 || !supabase) return;
+    (async () => {
+      try {
+        const { data, error } = await supabase
+          .from('order_queue').select('ref, customer')
+          .eq('ref', trackRef).maybeSingle();
+        if (error || !data) return;
+        const phone = String(data.customer?.phone || '').replace(/\D/g, '');
+        const last4 = phone.slice(-4);
+        if (last4 && last4 === String(p4).replace(/\D/g, '').slice(-4)) {
+          setTrackerRef(trackRef);
+        }
+      } catch (e) { console.warn('[OnlineSurface] track lookup failed:', e?.message); }
+    })();
+  }, []);
+
   // ── Load menu + branding from OPS DB ─────────────────────────────────────
   useEffect(() => {
     let alive = true;

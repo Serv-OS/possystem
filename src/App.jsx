@@ -76,6 +76,16 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.126', date: '9 May 2026', label: 'Online orders now follow full production routing (KDS + per-station prints) — scheduled orders defer to sent_at — shareable customer tracker URL',
+    changes: [
+      'PRODUCTION ROUTING FOR ONLINE — routeKioskOrderPrints now accepts a `source` param (kiosk / online / qr) and uses it to label both the KDS card and the kitchen ticket: "Online OL-XXX" instead of always "Kiosk OL-XXX". For QR orders with a tableLabel, the label becomes "Table T5". This is the same function the kiosk has been using all along to bucket items by production centre, write per-centre kds_tickets rows, and fire routePrintJob — online orders now hit it identically.',
+      'SCHEDULED-ORDER DEFERRAL — order_queue.sent_at is the kitchen-fire moment (collection_time − online_collection_lead_min). For ASAP orders sent_at ≈ now and routing fires immediately. For a future-scheduled order routeKioskOrderPrints sets a setTimeout for the gap (capped at 24h so a tomorrow order doesn\'t pin a timer) and re-calls itself when it pops. Result: kitchen receives the print + KDS card EXACTLY when they need to start cooking, not when the customer placed the order.',
+      'BACKFILL EXPANDED — the master-device backfill scan that runs on Realtime boot used to look for `source = \'kiosk\'`; now it looks for `source IN (kiosk, online, qr)` and is unrouted (kitchen_routed_at IS NULL). Combined with the deferral logic, this means: master comes online → scans pending orders → orders whose sent_at has passed route immediately, orders whose sent_at is still in the future get a fresh setTimeout. No order is ever missed.',
+      'CUSTOMER TRACKER URL — every successful online order now exposes a shareable bookmark URL (track + last-4 of the phone): https://venue.example/?loc=slug&track=OL-ABC12&p=1234. The OrderTracker shows the URL with Copy + Share buttons (Web Share API where available — Safari iOS, Android Chrome — falls back to Copy on desktop). On boot, OnlineSurface checks for `?track=…&p=…`, validates the phone-last-4 against the order_queue row\'s customer.phone, and renders the live tracker if it matches. Mismatch is silent — the URL is shareable but a wrong p just renders the homepage, no error or lookup leak.',
+      'NEXT — SMS/email of the link automatically on order confirmation. We\'d need Twilio (or similar) for SMS and SES/Resend for email. The URL itself is now ready to ship; just needs the send-on-confirm hook in OnlineCheckout.onPaymentSuccess once the SMS/email creds land.',
+    ],
+  },
+  {
     version: '5.5.125', date: '9 May 2026', label: 'Order alert sticks until dismissed — × button or swipe up',
     changes: [
       'NO MORE 5-SECOND AUTO-DISMISS — the new-order banner now stays on screen until the operator dismisses it. Missing a new kiosk / online / QR order because you blinked is worse than a slightly cluttered screen. Removed the setTimeout in showOrderAlert and the countdown progress bar in the banner UI.',

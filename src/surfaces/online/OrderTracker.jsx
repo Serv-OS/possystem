@@ -4,7 +4,7 @@
 // Ready → Collected. Status flow mirrors the operator-side
 // CollectionQueue (`received` / `prep` / `ready` / `collected`).
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 
 const STEPS = [
@@ -127,6 +127,9 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose }) {
         </div>
 
         {/* Order summary */}
+        {/* Shareable link — customers can bookmark this and come back any time. */}
+        {order && <ShareLink order={order} theme={theme} cardBdr={cardBdr} muted={muted} inputBg={inputBg}/>}
+
         {order && (
           <div style={{
             background: inputBg, border: `1px solid ${cardBdr}`, borderRadius: 16,
@@ -164,6 +167,81 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose }) {
           background: 'transparent', color: theme.fg, border: `1.5px solid ${cardBdr}`,
           fontSize: 14, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit',
         }}>Place another order</button>
+      </div>
+    </div>
+  );
+}
+
+// Shareable link — combines the order ref with the last-4 digits of the
+// phone used to place the order, so the URL is bookmarkable but mildly
+// gated against random ref-guessing.
+function ShareLink({ order, theme, cardBdr, muted, inputBg }) {
+  const [copied, setCopied] = useState(false);
+  const phone = String(order?.customer?.phone || '').replace(/\D/g, '');
+  const p4 = phone.slice(-4);
+  const url = useMemo(() => {
+    if (!order?.ref || !p4) return null;
+    const u = new URL(window.location.origin + window.location.pathname);
+    // Preserve the slug-resolution query (?loc=…) if present.
+    const loc = new URL(window.location.href).searchParams.get('loc');
+    if (loc) u.searchParams.set('loc', loc);
+    u.searchParams.set('track', order.ref);
+    u.searchParams.set('p', p4);
+    return u.toString();
+  }, [order?.ref, p4]);
+  if (!url) return null;
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {}
+  };
+  const share = async () => {
+    if (navigator.share) {
+      try { await navigator.share({ title: `Order ${order.ref}`, url }); }
+      catch {}
+    } else {
+      copy();
+    }
+  };
+
+  return (
+    <div style={{
+      background: inputBg, border: `1px solid ${cardBdr}`, borderRadius: 16,
+      padding: '14px 18px', marginBottom: 16,
+    }}>
+      <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: muted, marginBottom: 8 }}>
+        Track this order anytime
+      </div>
+      <div style={{ fontSize: 12, color: muted, lineHeight: 1.5, marginBottom: 10 }}>
+        Bookmark or share this link — it'll always show the live status of your order.
+      </div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'stretch' }}>
+        <div style={{
+          flex: 1, minWidth: 0,
+          padding: '10px 12px', borderRadius: 10,
+          background: theme.isLight ? '#fff' : '#0e0e10',
+          border: `1px solid ${cardBdr}`,
+          fontSize: 11, fontFamily: 'monospace',
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          display: 'flex', alignItems: 'center',
+        }}>{url}</div>
+        <button onClick={copy} className="op-btn" style={{
+          padding: '0 14px', borderRadius: 10,
+          background: copied ? '#22c55e' : theme.accent, color: '#fff',
+          border: 'none', fontSize: 12, fontWeight: 800, cursor: 'pointer', fontFamily: 'inherit',
+          flexShrink: 0,
+        }}>{copied ? '✓ Copied' : 'Copy'}</button>
+        {typeof navigator !== 'undefined' && navigator.share && (
+          <button onClick={share} className="op-btn" style={{
+            padding: '0 14px', borderRadius: 10,
+            background: 'transparent', color: theme.fg,
+            border: `1px solid ${cardBdr}`, fontSize: 12, fontWeight: 800, cursor: 'pointer', fontFamily: 'inherit',
+            flexShrink: 0,
+          }}>Share</button>
+        )}
       </div>
     </div>
   );
