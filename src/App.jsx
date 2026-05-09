@@ -76,6 +76,12 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.130', date: '9 May 2026', label: 'Routing diagnostic — log incoming items so we can see cat/parentId/source delta vs the working POS path',
+    changes: [
+      'INCOMING-ITEMS DIAGNOSTIC — at the top of routeKioskOrderPrints we now log `ENTRY OL-XXX source: online items: [{id, name, cat, cats, parentId}]` BEFORE any routing logic runs. POS-placed orders print fine for the same items, so the delta has to be in the item shape arriving from the customer surface. This log makes the delta visible. Place a test online order and check the master device DevTools — the line will tell us whether cat / cats / parentId arrived populated or all-null.',
+    ],
+  },
+  {
     version: '5.5.129', date: '9 May 2026', label: 'KDS items now arrive as "sent" (was "to send") + per-centre print diagnostic + "nothing routed" dump',
     changes: [
       'KDS ITEMS — every item routed via routeKioskOrderPrints now gets `status: \'sent\'` on the kds_tickets row, not just `fired: true`. Without status the KDS rendered them as "to send" instead of "sent". This was the bug for ALL customer-surface orders (kiosk + online + qr) — the dine-in / walk-in path always set status:\'sent\' on send-to-kitchen but the customer-surface path never did. Now matches the rest of the system.',

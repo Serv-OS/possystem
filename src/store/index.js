@@ -3639,6 +3639,14 @@ export const useStore = create((set, get) => ({
   routeKioskOrderPrints: async (order) => {
     if (!order?.ref || !Array.isArray(order.items) || !order.items.length) return;
     if (!supabase) return;
+    // v5.5.130: log the FULL incoming items so we can see whether cat /
+    // parentId / itemId arrived. POS prints work; if online doesn't, the
+    // delta is in the items shape — this log reveals it.
+    console.log('[routeKioskOrderPrints] ENTRY', order.ref, 'source:', order.source,
+      'items:', order.items.map(i => ({
+        id: i.id || i.itemId, name: i.name, cat: i.cat, cats: i.cats,
+        parentId: i.parentId || i.parent_id,
+      })));
     try {
       // v5.5.126: scheduled-order deferral. order_queue.sent_at is the
       // kitchen-fire moment (collection_time − online_collection_lead_min).
