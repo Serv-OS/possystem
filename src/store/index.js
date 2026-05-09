@@ -3747,10 +3747,11 @@ export const useStore = create((set, get) => ({
       // IN (pending, held)`). We were writing 'fired' and KDS never showed
       // anything. Bumped via the existing bumpKDSTicket() flow → 'bumped'.
       // Same shape insertKDSTicket builds for the dine-in / walk-in path.
+      const ticketLocationId = useStore.getState().locationConfig?.id
+        || (await getLocationId().catch(() => null));
       const tickets = Object.entries(byCentre).map(([centreId, items]) => ({
         id: `kds-${sentAt}-${centreId}-${Math.random().toString(36).slice(2,6)}`,
-        location_id: useStore.getState().locationConfig?.id
-          || (await getLocationId().catch(() => null)),
+        location_id: ticketLocationId,
         centre_id: centreId,
         course: 1,
         all_courses: [1],

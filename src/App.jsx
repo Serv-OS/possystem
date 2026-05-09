@@ -76,6 +76,12 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.133', date: '9 May 2026', label: 'Hotfix v5.5.132 build error — `await` inside non-async .map callback',
+    changes: [
+      'BUILD HOTFIX — v5.5.132 had `await getLocationId()` inside an `Object.entries(byCentre).map(...)` callback, which isn\'t async, so the build failed with "`await` is only allowed within async functions". Hoisted the awaited locationId resolution to a const above the map. v5.5.132 went out as a commit but Vercel rejected the deploy; this commit fixes it so the v5.5.132 fixes (KDS status, queue upsert, item flags) actually ship.',
+    ],
+  },
+  {
     version: '5.5.132', date: '9 May 2026', label: 'THREE root-cause fixes — KDS now shows online tickets, order_queue upserts no longer silently fail, items arrive as "sent"',
     changes: [
       'KDS WAS REJECTING ALL ONLINE/KIOSK TICKETS — the KDS surface filters tickets by `status IN (pending, held)` (OtherSurfaces.jsx:420). routeKioskOrderPrints was inserting them with `status: \'fired\'` so KDS literally never showed them. Same items via the POS sendToKitchen path were going in as \'pending\' which is why those did show. Changed to \'pending\' to match — bumped via the existing bumpKDSTicket() flow → \'bumped\' just like dine-in tickets.',
