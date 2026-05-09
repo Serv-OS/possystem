@@ -19,12 +19,19 @@ import OnlineCart from './OnlineCart';
 import OnlineCheckout from './OnlineCheckout';
 import OnlineItemSheet from './OnlineItemSheet';
 import OrderTracker from './OrderTracker';
+import QrCheckout from '../qr/QrCheckout';
 
 const FALLBACK_ACCENT = '#e8a020';
 const FALLBACK_BG     = '#ffffff';
 const FALLBACK_FG     = '#1a1a1a';
 
-export default function OnlineSurface({ location }) {
+export default function OnlineSurface({ location, mode = 'online', tableId = null, tableLabel = null }) {
+  // v5.5.145: same surface drives both /?surface=online (collection/delivery)
+  // and /?surface=qr&t=T5 (table-side). Mode flips a few small pieces:
+  // welcome screen, sticky header chip, hero pills, checkout component,
+  // default order type. Everything else (menu / cart / item sheet / cart /
+  // OrderTracker / 86 awareness) is identical.
+  const isQr = mode === 'qr';
   const opsLocationId = location.ops_location_id || location.id;
   const onlineMenuId  = location.online_menu_id || null;
 
@@ -40,7 +47,9 @@ export default function OnlineSurface({ location }) {
   const [confirmation, setConfirmation] = useState(null); // { id, when, type }
   const [trackerRef, setTrackerRef] = useState(null); // shows OrderTracker for this ref
   const [paymentNotice, setPaymentNotice] = useState(''); // 'cancel' | 'verify_failed' | ''
-  const [orderType, setOrderType]   = useState(null); // null until welcome screen picks
+  // v5.5.145: QR mode skips the welcome/order-type picker — table-side is
+  // always dine-in. Online mode keeps the existing welcome flow.
+  const [orderType, setOrderType]   = useState(isQr ? 'dine-in' : null);
   const [showLoyalty, setShowLoyalty] = useState(false);
   const [loyalty, setLoyalty]       = useState(null); // { phone, verified }
   const [cart, setCart]             = useState([]);
@@ -254,7 +263,7 @@ export default function OnlineSurface({ location }) {
   if (trackerRef) {
     return (
       <OrderTracker orderRef={trackerRef} locationId={opsLocationId} theme={theme}
-        onClose={() => { setTrackerRef(null); setOrderType(null); }}/>
+        onClose={() => { setTrackerRef(null); if (!isQr) setOrderType(null); }}/>
     );
   }
 
@@ -297,7 +306,7 @@ export default function OnlineSurface({ location }) {
     <ScrollShell theme={theme} extraBottomPad={cart.length > 0 ? 96 : 0}>
       {/* HERO with overlay logo */}
       <Hero theme={theme} muted={muted}
-        leadMin={Number(location.online_collection_lead_min) || 0}/>
+        leadMin={isQr ? 0 : Number(location.online_collection_lead_min) || 0}/>
 
       {/* Sticky header — order-type pill + allergy filter + loyalty + categories */}
       <div style={{
@@ -315,18 +324,32 @@ export default function OnlineSurface({ location }) {
           )}
           <div style={{ fontSize: 15, fontWeight: 800, flexShrink: 0, marginRight: 'auto' }}>{theme.name}</div>
 
-          {/* Order-type pill (changeable) */}
-          <button onClick={() => setOrderType(null)} className="op-btn" style={{
-            padding: '6px 12px', borderRadius: 99,
-            background: `${theme.accent}18`, color: theme.fg,
-            border: `1px solid ${theme.accent}55`,
-            fontSize: 12, fontWeight: 800, fontFamily: 'inherit', cursor: 'pointer',
-            display: 'inline-flex', alignItems: 'center', gap: 6,
-          }}>
-            <span>{orderType === 'collection' ? '🥡' : '🚴'}</span>
-            <span>{orderType === 'collection' ? 'Collection' : 'Delivery'}</span>
-            <span style={{ opacity: 0.5, fontSize: 11 }}>↓</span>
-          </button>
+          {/* v5.5.145: QR mode shows a static "Table T5" chip; online mode
+              keeps the changeable order-type pill. */}
+          {isQr ? (
+            <span style={{
+              padding: '6px 12px', borderRadius: 99,
+              background: `${theme.accent}18`, color: theme.fg,
+              border: `1px solid ${theme.accent}55`,
+              fontSize: 12, fontWeight: 800, fontFamily: 'inherit',
+              display: 'inline-flex', alignItems: 'center', gap: 6,
+            }}>
+              <span>📱</span>
+              <span>Table {tableLabel || tableId || '?'}</span>
+            </span>
+          ) : (
+            <button onClick={() => setOrderType(null)} className="op-btn" style={{
+              padding: '6px 12px', borderRadius: 99,
+              background: `${theme.accent}18`, color: theme.fg,
+              border: `1px solid ${theme.accent}55`,
+              fontSize: 12, fontWeight: 800, fontFamily: 'inherit', cursor: 'pointer',
+              display: 'inline-flex', alignItems: 'center', gap: 6,
+            }}>
+              <span>{orderType === 'collection' ? '🥡' : '🚴'}</span>
+              <span>{orderType === 'collection' ? 'Collection' : 'Delivery'}</span>
+              <span style={{ opacity: 0.5, fontSize: 11 }}>↓</span>
+            </button>
+          )}
 
           {/* Allergy filter — only shown when there are allergens to filter */}
           {knownAllergens.length > 0 && (
@@ -486,7 +509,7 @@ export default function OnlineSurface({ location }) {
         />
       )}
 
-      {showCheckout && (
+      {showCheckout && !isQr && (
         <OnlineCheckout
           cart={cart} theme={theme} location={location}
           orderType={orderType} loyalty={loyalty}
@@ -495,6 +518,18 @@ export default function OnlineSurface({ location }) {
             setShowCheckout(false);
             setCart([]);
             setTrackerRef(info.ref); // → live OrderTracker
+          }}/>
+      )}
+      {showCheckout && isQr && (
+        <QrCheckout
+          cart={cart} theme={theme} location={location}
+          tableId={tableId} tableLabel={tableLabel}
+          loyalty={loyalty}
+          onClose={() => setShowCheckout(false)}
+          onPlaced={(info) => {
+            setShowCheckout(false);
+            setCart([]);
+            setTrackerRef(info.ref);
           }}/>
       )}
 

@@ -106,8 +106,24 @@ export async function lookupLocationBySlug(slug, platformSupabase) {
       .select('id, ops_location_id, name, timezone, online_slug, online_enabled, qr_enabled, opening_hours, online_branding, online_menu_id, online_collection_lead_min, online_delivery_enabled')
       .eq('online_slug', slug)
       .maybeSingle();
-    _slugCache.set(slug, { row: data || null, at: Date.now() });
-    return data || null;
+    if (!data) {
+      _slugCache.set(slug, { row: null, at: Date.now() });
+      return null;
+    }
+    // v5.5.145: defensively probe QR-mode settings in a second SELECT so a
+    // missing-column error (venue's platform.locations hasn't run the QR
+    // migration yet) only loses the QR fields — not the entire location.
+    // The first SELECT keeps the customer surface working unchanged.
+    try {
+      const { data: qrRow } = await platformSupabase
+        .from('locations')
+        .select('qr_payment_mode, qr_table_mode, qr_service_charge_pct')
+        .eq('id', data.id)
+        .maybeSingle();
+      if (qrRow) Object.assign(data, qrRow);
+    } catch { /* columns not yet migrated — fall back to defaults at use site */ }
+    _slugCache.set(slug, { row: data, at: Date.now() });
+    return data;
   } catch (e) {
     console.warn('[customerUrl] slug lookup failed:', e?.message);
     return null;

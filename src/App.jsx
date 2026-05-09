@@ -76,6 +76,16 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.145', date: '9 May 2026', label: 'QR table-side ordering — pay-now flow live (commit 1 of 3)',
+    changes: [
+      'CUSTOMER FLOW — scanning a venue QR (URL pattern `?surface=qr&t=T5` or subdomain path `/t/T5`) now lands the customer on the same branded ordering surface as online ordering, with a few small adjustments. No order-type picker — table-side is always dine-in. The sticky header shows a "📱 Table T5" chip instead of the changeable Collection/Delivery pill. The hero hides the prep-time pill (no scheduled times for table service). Everything else — menu browse, modifiers/variants, allergy filter, cart, item sheet, OUT OF STOCK awareness — is identical to online.',
+      'NEW QrCheckout SHEET — separate from OnlineCheckout to keep online stable. Two-step (details → pay) like online but: no address fields, no scheduled-time picker, adds a Tip selector (No tip / 5 / 10 / 12.5 / 15 / Custom %) and applies the location\'s configured service charge automatically (qr_service_charge_pct). On Pay, Stripe Elements card → confirm → writes a closed_checks row (status=paid, source=qr, table_label="Table T5") and an order_queue row (source=qr, type=dine-in, status=prep, customer.tableLabel set). Existing routeKioskOrderPrints handler picks up the INSERT and prints with TABLE T5 header on the kitchen ticket — no new print plumbing needed.',
+      'CRM ATTRIBUTION — when the customer provides a phone, the order attributes to the customer profile (customers + customer_locations + customer_orders) just like online. Phone is OPTIONAL for QR (not everyone wants to share at a table) — anonymous QR orders skip CRM attribution.',
+      'NEXT TWO COMMITS — (2) BO QR-code generator (download a labelled JPEG per table, plus a "Print all" zip), three-way qr_table_mode toggle (fixed / confirm / free-type), and the "you\'re at table 5?" confirm screen. (3) Open-tab path with Stripe pre-auth (capture_method=manual to verify the card without charging), bar_tabs row per scan, server captures via POS at end-of-tab + email receipt via Resend/SES.',
+      '⚠ APPLY THIS SQL on platform DB to enable QR settings (idempotent — safe to re-run): `alter table public.locations add column if not exists qr_payment_mode text default \'pay_now\'; alter table public.locations add column if not exists qr_table_mode text default \'confirm\'; alter table public.locations add column if not exists qr_service_charge_pct numeric(5,2) default 0;`. Without this the customer surface still works (defaults baked in) but BO won\'t be able to flip modes.',
+    ],
+  },
+  {
     version: '5.5.144', date: '9 May 2026', label: 'Kiosk OUT OF STOCK badge no longer overlaps product name; MPOS now shows 86\'d items greyed out instead of hiding them',
     changes: [
       'KIOSK BADGE PLACEMENT — the absolute-positioned OUT OF STOCK badge sat at top:12, left:12 of the entire card. For items WITH an image, that\'s the top-left of the image — fine. For items WITHOUT an image, the body starts at the top of the card → badge overlapped the product name. Now: absolute-positioned variant only renders when item.image is set; otherwise an inline pill sits at the top of the body, above the title, where it can never overlap.',

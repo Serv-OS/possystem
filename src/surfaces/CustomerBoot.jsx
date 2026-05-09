@@ -68,10 +68,14 @@ export default function CustomerBoot({ slug, mode, tableId }) {
     </CustomerShell>;
   }
 
-  // Online surface — the real branded ordering experience. QR is still a
-  // stub until Phase 3b lands (it needs different "fire to table session"
-  // wiring rather than the cart-checkout-Stripe flow online uses).
+  // v5.5.145: Online and QR table-side both run through OnlineSurface,
+  // which switches behaviour internally on the mode prop. QR mode auto-
+  // sets dine-in, hides the order-type picker / scheduled-time picker,
+  // shows a "Table T5" chip in the header, and routes checkout through
+  // QrCheckout (no address, no time, adds tip + service charge, will
+  // gain open-tab pre-auth in commit 2).
   if (mode === 'online') return <OnlineSurface location={loc}/>;
+  if (mode === 'qr')     return <OnlineSurface location={loc} mode="qr" tableId={tableId} tableLabel={tableId}/>;
   return <CustomerShell location={loc}><QrStub location={loc} tableId={tableId}/></CustomerShell>;
 }
 
