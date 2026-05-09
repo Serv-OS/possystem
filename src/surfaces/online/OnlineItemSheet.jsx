@@ -27,22 +27,29 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
 
   const effectiveItem = selectedVariant || item;
 
-  // Modifier + instruction groups assigned to this item (inheriting from
-  // parent for child variants when child doesn't override).
+  // assigned_modifier_groups + assigned_instruction_groups can be EITHER
+  // an array of bare ids ['mgd-123', ...] OR an array of objects with
+  // overrides like [{groupId: 'mgd-123', min: 0, max: 1}]. The operator
+  // app stores them as objects (so it can override min/max per item);
+  // `.in('id', ...)` needs flat strings. Normalise here.
+  const extractIds = (arr) => (arr || [])
+    .map(g => typeof g === 'string' ? g : (g?.groupId || g?.id))
+    .filter(Boolean);
+
   const modGroupIds = useMemo(() => {
-    const own = effectiveItem.assigned_modifier_groups || [];
+    const own = extractIds(effectiveItem.assigned_modifier_groups);
     if (own.length === 0 && effectiveItem.parent_id) {
       const parent = (allItems || []).find(i => i.id === effectiveItem.parent_id);
-      return parent?.assigned_modifier_groups || [];
+      return extractIds(parent?.assigned_modifier_groups);
     }
     return own;
   }, [effectiveItem, allItems]);
 
   const instGroupIds = useMemo(() => {
-    const own = effectiveItem.assigned_instruction_groups || [];
+    const own = extractIds(effectiveItem.assigned_instruction_groups);
     if (own.length === 0 && effectiveItem.parent_id) {
       const parent = (allItems || []).find(i => i.id === effectiveItem.parent_id);
-      return parent?.assigned_instruction_groups || [];
+      return extractIds(parent?.assigned_instruction_groups);
     }
     return own;
   }, [effectiveItem, allItems]);
@@ -204,7 +211,9 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
             </div>
           )}
 
-          {/* Variant picker */}
+          {/* Variant picker — show ABSOLUTE prices (not deltas). Each variant
+              IS its own product with its own price; the customer wants to see
+              "Small £2.50 / Medium £3.00 / Large £3.50", not "+£0.50". */}
           {isParentVariant && (
             <Section title="Choose size" required>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -214,7 +223,7 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
                   return (
                     <OptionRow key={v.id}
                       label={v.menu_name || v.name}
-                      priceDelta={vPrice - basePrice}
+                      absolutePrice={vPrice}
                       checked={active}
                       onClick={() => setSelectedVariant(v)}
                       mode="single" theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
@@ -384,7 +393,18 @@ function Section({ title, meta, required, erroring, children }) {
   );
 }
 
-function OptionRow({ label, priceDelta, checked, onClick, mode, theme, cardBdr, inputBg }) {
+function OptionRow({ label, priceDelta, absolutePrice, checked, onClick, mode, theme, cardBdr, inputBg }) {
+  // Two pricing modes:
+  //   • absolutePrice (used for variants): "£2.50" — variants ARE their own price
+  //   • priceDelta (used for modifiers):   "+£0.50" / "−£0.50" — modifies base
+  let priceLabel = null;
+  let priceColor = theme.fg;
+  if (typeof absolutePrice === 'number') {
+    priceLabel = `£${absolutePrice.toFixed(2)}`;
+  } else if (typeof priceDelta === 'number' && priceDelta !== 0) {
+    priceLabel = priceDelta > 0 ? `+£${priceDelta.toFixed(2)}` : `−£${Math.abs(priceDelta).toFixed(2)}`;
+    if (priceDelta < 0) priceColor = '#22c55e';
+  }
   return (
     <button onClick={onClick} style={{
       width: '100%', display: 'flex', alignItems: 'center', gap: 12,
@@ -396,10 +416,8 @@ function OptionRow({ label, priceDelta, checked, onClick, mode, theme, cardBdr, 
     }}>
       <Indicator checked={checked} mode={mode} accent={theme.accent} cardBdr={cardBdr}/>
       <span style={{ flex: 1, fontSize: 14, fontWeight: 600 }}>{label}</span>
-      {priceDelta !== 0 && (
-        <span style={{ fontSize: 13, fontWeight: 700, color: priceDelta > 0 ? theme.fg : '#22c55e' }}>
-          {priceDelta > 0 ? `+£${priceDelta.toFixed(2)}` : `−£${Math.abs(priceDelta).toFixed(2)}`}
-        </span>
+      {priceLabel && (
+        <span style={{ fontSize: 13, fontWeight: 700, color: priceColor }}>{priceLabel}</span>
       )}
     </button>
   );

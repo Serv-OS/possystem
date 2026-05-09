@@ -76,6 +76,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.115', date: '8 May 2026', label: 'Online ordering — REAL fix for modifiers (object {groupId} extraction) + absolute variant prices',
+    changes: [
+      'WHY MODIFIERS WERE STILL FAILING — looked at the actual raw rows. assigned_modifier_groups is an array of OBJECTS, not strings: `[{"groupId":"mgd-1776305729009"}, {"max":1,"min":0,"groupId":"mgd-..."}]`. The operator app stores them this way so it can override min/max per item. My code passed the array straight to `.in(\'id\', ids)` which never matched anything. Fixed: extractIds() pulls .groupId / .id off each entry, then queries with the flat string array. Same fix for assigned_instruction_groups.',
+      'VARIANT PRICING — was showing "+£1 / −£1" deltas relative to the FIRST variant. Customers want to see "Small £2.50 / Medium £3.00 / Large £3.50" — absolute prices because each variant IS its own product. Added absolutePrice prop to OptionRow that takes precedence over priceDelta when set. Variants use absolutePrice; modifiers (paid options that ADD to base) keep priceDelta with "+£X" prefix.',
+      'ALSO — diagnostic console.log on every modifier load shows the resolved counts (e.g. `[OnlineItemSheet] groups loaded { mod: 2, inst: 0 }`) so future "modifiers not loading" reports surface immediately whether it\'s an empty fetch, an empty assignment, or a failed query.',
+    ],
+  },
+  {
     version: '5.5.114', date: '8 May 2026', label: 'Online ordering — fix modifier load + variant from-price + instructions via config snapshot',
     changes: [
       'WHY MODIFIERS WERE FAILING — there is NO `instruction_groups` table in the ops DB. Instruction defs live client-side and propagate via `config_pushes.snapshot.instructionGroupDefs`. My v5.5.113 OnlineItemSheet was querying the non-existent table inside a Promise.all — when that rejected, the WHOLE Promise.all rejected and modifiers ALSO failed silently. Single failed query, two broken features.',
