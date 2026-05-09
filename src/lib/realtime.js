@@ -283,39 +283,21 @@ export function startRealtime(store, locationId = LOCATION_ID) {
     .on('postgres_changes', { event: '*', schema: 'public', table: 'order_queue', filter: `location_id=eq.${locationId}` }, (payload) => {
       if (payload.eventType === 'DELETE' && payload.old?.location_id && payload.old.location_id !== locationId) return;
       applyQueueRealtimeEvent(payload);
-      if (payload.eventType === 'INSERT' && payload.new?.source === 'kiosk') {
+      // v5.5.121: chime + route prints on every NEW order from a customer
+      // surface (kiosk OR online). Online orders are written to order_queue
+      // only AFTER Stripe payment succeeds, so the INSERT itself is the
+      // moment of truth — same trigger pattern as kiosk.
+      if (payload.eventType === 'INSERT' &&
+          (payload.new?.source === 'kiosk' || payload.new?.source === 'online')) {
         const row = payload.new;
+        const src = row.source;
         const ref = row.ref || '';
-        const name = row.customer?.name || 'Kiosk';
-        const type = row.type || 'takeaway';
+        const name = row.customer?.name || (src === 'online' ? 'Online' : 'Kiosk');
+        const type = row.type || (src === 'online' ? 'collection' : 'takeaway');
+        const label = src === 'online' ? 'Online order' : 'Kiosk order';
         playOrderChime();
-        store.getState().showToast?.(`Kiosk order ${ref} — ${name} (${type})`, 'info');
+        store.getState().showToast?.(`${label} ${ref} — ${name} (${type})`, 'info');
         // Master device routes prints to production centres (idempotent — only one device claims)
-        let isMaster = false;
-        try { isMaster = JSON.parse(localStorage.getItem('rpos-device-config') || '{}').isMaster === true; } catch {}
-        if (isMaster && !row.kitchen_routed_at) {
-          store.getState().routeKioskOrderPrints?.({
-            ref,
-            items: row.items || [],
-            customer: row.customer || null,
-            sentAt: row.sent_at ? new Date(row.sent_at).getTime() : Date.now(),
-          });
-        }
-      }
-      // ── v5.5.120: ONLINE order arrives ─────────────────────────────────
-      // Online orders are pre-written as status='awaiting_payment' and only
-      // promoted to 'received' AFTER Stripe confirms payment. We chime/toast
-      // on the UPDATE that flips status away from awaiting_payment — that's
-      // the moment the order is real and the kitchen should fire it.
-      if (payload.eventType === 'UPDATE' && payload.new?.source === 'online' &&
-          payload.old?.status === 'awaiting_payment' &&
-          payload.new?.status && payload.new.status !== 'awaiting_payment') {
-        const row = payload.new;
-        const ref = row.ref || '';
-        const name = row.customer?.name || 'Online';
-        const type = row.type || 'collection';
-        playOrderChime();
-        store.getState().showToast?.(`Online order ${ref} — ${name} (${type})`, 'info');
         let isMaster = false;
         try { isMaster = JSON.parse(localStorage.getItem('rpos-device-config') || '{}').isMaster === true; } catch {}
         if (isMaster && !row.kitchen_routed_at) {

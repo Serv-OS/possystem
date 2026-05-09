@@ -1,26 +1,39 @@
-// v5.5.117 — Phase 4: Online ordering checkout sheet.
-// Slide-up full-screen on mobile, centered modal on desktop. Three sections:
-//   1. Customer details (name, phone, email; + address for delivery)
-//   2. When? — ASAP / Schedule for later (15-min slots, respecting opening hours
-//      and online_collection_lead_min so the kitchen has time to prep)
-//   3. Order summary + pay button (Stripe wiring lands in a follow-up commit;
-//      this commit ships the customer-details + time-picker UX + the order
-//      persistence path).
+// v5.5.121 — Online ordering checkout sheet w/ Stripe Elements payment.
+// Two-step flow inside one sheet:
+//   STEP 1: Details + when (name/phone/email/address, ASAP / scheduled slot)
+//   STEP 2: Card details (Stripe Elements + CardElement, confirms via
+//           stripe.confirmCardPayment using the same edge fn / connected-
+//           account / markup-fee plumbing the operator UI already uses
+//           — see src/lib/stripeClient.js + stripe-create-payment-intent
+//           edge fn). channel='online' so online_markup_percent applies.
 //
-// On confirm: writes to ops `closed_checks` (paid status) AND `order_queue`
-// (status=pending, source=online, sent_at = collection_time - leadMin) so
-// the kitchen receives the ticket at the right time. Mirrors the existing
-// MPOS collection flow (see store.recordWalkInClosed + locationConfig
-// .collectionLeadMinutes for the timing logic).
+// Auth: online customers aren't logged in to Supabase, so we pass the env
+// VITE_SUPABASE_ANON_KEY as the bearer (the edge fn accepts anon-role JWTs
+// for online channel — same role the rest of the customer surface already
+// uses to read menus / write to order_queue with the existing RLS policies).
+//
+// Order_queue write: only AFTER payment succeeds. status='received' immediately
+// so the kitchen chime fires on the INSERT — no awaiting_payment placeholder
+// needed any more (we kept that for the redirect-flow window where the
+// customer left our page; with inline Elements the customer never leaves).
 
 import { useEffect, useMemo, useState } from 'react';
-import { supabase } from '../../lib/supabase';
-import { isOpenNow, getDayWindows } from '../../lib/openingHours';
+import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js';
+import { supabase, platformSupabase } from '../../lib/supabase';
+import { getStripeForAccount, createPaymentIntent } from '../../lib/stripeClient';
+import { attributeOnlineOrder } from '../../lib/customerLookup';
+import { getDayWindows } from '../../lib/openingHours';
 
 export default function OnlineCheckout({ cart, theme, location, orderType, loyalty, onClose, onPlaced }) {
-  const opsLocationId = location.ops_location_id || location.id;
+  const opsLocationId = location.ops_location_id || location.id; // ops DB
+  const platformLocationId = location.id;                         // platform DB
   const tz = location.timezone || 'Europe/London';
   const leadMin = Number(location.online_collection_lead_min) || 30;
+
+  // Payment step: 'details' or 'pay'
+  const [step, setStep] = useState('details');
+  const [pi, setPi] = useState(null);             // { client_secret, stripe_account, ... }
+  const [stripePromise, setStripePromise] = useState(null);
 
   // Customer details
   const [name, setName]   = useState('');
@@ -69,17 +82,14 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     return true;
   }, [name, phone, email, address1, postcode, isDelivery, timeMode, slot]);
 
-  const place = async () => {
-    if (!valid) { setError('Please complete the highlighted fields.'); return; }
-    setWorking(true); setError('');
-
-    // Compute collection time + sent_at (kitchen fire time)
+  // Compose order ref + customer + items + collection ISO once details are valid.
+  // Used by both the createPaymentIntent description/metadata and the
+  // post-payment order_queue write.
+  const orderShape = useMemo(() => {
     const collectionAt = timeMode === 'asap'
       ? new Date(Date.now() + leadMin * 60_000)
-      : new Date(slot.iso);
+      : (slot ? new Date(slot.iso) : new Date(Date.now() + leadMin * 60_000));
     const sentAt = new Date(collectionAt.getTime() - leadMin * 60_000);
-
-    // Compose check shape — same shape ops uses elsewhere.
     const ref = `OL-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
     const customer = {
       name: name.trim(),
@@ -89,27 +99,61 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       ...(notes.trim() ? { notes: notes.trim() } : {}),
     };
     const items = cart.map(l => ({
-      itemId: l.itemId,
-      name: l.name,
-      price: l.price,
-      qty: l.qty || 1,
-      mods: l.mods || [],
+      itemId: l.itemId, name: l.name, price: l.price,
+      qty: l.qty || 1, mods: l.mods || [],
     }));
+    return { ref, collectionAt, sentAt, customer, items };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step]); // freeze on step transition so ref stays stable
 
+  // Step 1 → 2: create the PaymentIntent on the location's connected
+  // Stripe account, then load Stripe.js with that account ID.
+  const continueToPayment = async () => {
+    if (!valid) { setError('Please complete the highlighted fields.'); return; }
+    setWorking(true); setError('');
     try {
-      // PHASE 4 FLOW:
-      // 1. Pre-write order_queue with status='awaiting_payment' (operator
-      //    queue filters this status out — see CollectionQueue / POSSurface).
-      // 2. Call /api/stripe-checkout to mint a Stripe Checkout session.
-      // 3. Redirect customer to Stripe.
-      // 4. After payment, Stripe redirects back to ?paid=success&ref=...&session_id=...
-      // 5. The customer surface verifies via /api/stripe-verify and promotes
-      //    status to 'received' so the kitchen picks it up at sent_at.
-      // Schema: order_queue(ref pk, location_id, type, customer, items,
-      // total, status, staff, created_at, sent_at, collection_time text,
-      // is_asap, updated_at, source, paid, payment_method, kitchen_routed_at).
-      // No `subtotal`, no `scheduled_for`. The collection time is text
-      // (HH:mm in venue tz) + is_asap; the kitchen-fire moment is sent_at.
+      // Online customers aren't logged in — pass the public anon key as the
+      // bearer. Edge fn's channel='online' path accepts this.
+      const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+      if (!anonKey) throw new Error('Payment not configured (anon key missing).');
+      const { ref, customer } = orderShape;
+      const piRes = await createPaymentIntent({
+        authToken: anonKey,
+        locationId: platformLocationId,
+        amountMinor: Math.round(subtotal * 100),
+        currency: 'gbp',
+        channel: 'online',
+        description: `Online order ${ref} · ${customer.name}`,
+        paymentMethodTypes: ['card'],
+        metadata: {
+          source: 'online',
+          ref,
+          ops_location_id: String(opsLocationId),
+          customer_name: customer.name,
+          customer_email: customer.email,
+          customer_phone: customer.phone,
+          order_type: orderType,
+        },
+      });
+      if (!piRes?.client_secret) throw new Error('Payment could not start. Please try again.');
+      setPi(piRes);
+      setStripePromise(getStripeForAccount(piRes.stripe_account));
+      setStep('pay');
+    } catch (e) {
+      console.error('[OnlineCheckout] createPaymentIntent failed:', e);
+      setError(e?.message || 'Could not start payment.');
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  // Called by the inner ConfirmStep after stripe.confirmCardPayment succeeds.
+  // Writes the order_queue row (status='received' so the operator chimes/
+  // sees it instantly), clears cart, hands ref up to OnlineSurface so it
+  // shows the live OrderTracker.
+  const onPaymentSuccess = async (paymentIntent) => {
+    try {
+      const { ref, collectionAt, sentAt, customer, items } = orderShape;
       const collectionTimeLabel = collectionAt.toLocaleTimeString('en-GB', {
         timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false,
       });
@@ -117,49 +161,37 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         ref,
         location_id: opsLocationId,
         type: orderType,
-        status: 'awaiting_payment', // promoted to 'received' after Stripe success
+        status: 'received', // operator + chime fire on this INSERT
         source: 'online',
-        items,
-        customer,
+        items, customer,
         total: subtotal,
         sent_at: sentAt.toISOString(),
         collection_time: collectionTimeLabel,
         is_asap: timeMode === 'asap',
       };
       const { error: insErr } = await supabase.from('order_queue').insert(queueRow);
-      if (insErr) throw insErr;
+      if (insErr) {
+        console.error('[OnlineCheckout] order_queue write failed AFTER payment:', insErr);
+        setError('Payment succeeded but we could not save the order. Contact the venue with ref ' + ref + '.');
+        return;
+      }
 
-      // Build Stripe line items in pence (Stripe wants integer minor units).
-      const stripeItems = cart.map(l => {
-        const unit = l.price + (l.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0);
-        return {
-          name: l.name + (l.mods?.length ? ` (${l.mods.map(m => m.label).filter(Boolean).slice(0, 3).join(', ')})` : ''),
-          qty: l.qty || 1,
-          unitAmount: Math.round(unit * 100),
-        };
-      });
+      // Customer profile: every online order/visit flows into the same CRM
+      // the operator UI uses (customers + customer_locations + customer_orders).
+      // Fire-and-forget — a CRM blip never blocks the confirmation flow.
+      attributeOnlineOrder({
+        phone: customer.phone,
+        name: customer.name,
+        email: customer.email,
+        marketingOptIn: false,
+        locationId: opsLocationId,
+        orderRecord: { ref, total: subtotal, items, type: orderType },
+      }).catch(e => console.warn('[OnlineCheckout] attribute failed:', e?.message || e));
 
-      // Stripe redirects back to the URL the customer is on now — keeps
-      // the slug-based subdomain / ?loc= query intact.
-      const here = `${window.location.origin}${window.location.pathname}${window.location.search}`;
-      const r = await fetch('/api/stripe-checkout', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ref, locationId: opsLocationId, currency: 'gbp', items: stripeItems,
-          customerEmail: customer.email, returnUrl: here, cancelUrl: here,
-        }),
-      });
-      const data = await r.json();
-      if (!r.ok || !data?.url) throw new Error(data?.error || 'Could not start payment.');
-
-      try { sessionStorage.setItem('rpos:online:lastRef', ref); } catch {}
-      window.location.href = data.url; // hand off to Stripe Checkout
-      return;
+      onPlaced?.({ ref, collectionAt, total: subtotal, paymentIntent });
     } catch (e) {
-      console.error('[OnlineCheckout] place failed:', e);
-      setError(e?.message || 'Could not place order. Please try again.');
-    } finally {
-      setWorking(false);
+      console.error('[OnlineCheckout] post-payment write failed:', e);
+      setError('Payment succeeded but we could not save the order. Contact the venue with ref ' + orderShape.ref + '.');
     }
   };
 
@@ -182,16 +214,37 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
 
         <div style={{ padding: '8px 24px 16px', display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
           <div>
-            <div style={{ fontSize: 22, fontWeight: 900, letterSpacing: '-0.02em' }}>Checkout</div>
+            <div style={{ fontSize: 22, fontWeight: 900, letterSpacing: '-0.02em' }}>
+              {step === 'pay' ? 'Payment' : 'Checkout'}
+            </div>
             <div style={{ fontSize: 12, color: muted, marginTop: 2 }}>{isDelivery ? 'Delivery' : 'Collection'} · {cart.length} item{cart.length === 1 ? '' : 's'} · £{subtotal.toFixed(2)}</div>
           </div>
-          <button onClick={onClose} style={{
-            width: 36, height: 36, borderRadius: '50%', border: 'none',
-            background: inputBg, color: theme.fg,
-            fontSize: 18, fontWeight: 900, cursor: 'pointer', fontFamily: 'inherit',
-          }}>×</button>
+          <button onClick={step === 'pay' ? () => { setStep('details'); setPi(null); setError(''); } : onClose}
+            className="op-btn"
+            style={{
+              padding: '0 14px', height: 36, borderRadius: 99, border: `1px solid ${cardBdr}`,
+              background: inputBg, color: theme.fg,
+              fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit',
+            }}>{step === 'pay' ? '← Edit' : '×'}</button>
         </div>
 
+        {/* Step indicator */}
+        <div style={{ display: 'flex', gap: 6, padding: '0 24px 14px' }}>
+          <div style={{ flex: 1, height: 4, borderRadius: 2, background: theme.accent }}/>
+          <div style={{ flex: 1, height: 4, borderRadius: 2, background: step === 'pay' ? theme.accent : cardBdr }}/>
+        </div>
+
+        {step === 'pay' && pi && stripePromise ? (
+          <Elements stripe={stripePromise} options={{ clientSecret: pi.client_secret, appearance: { theme: theme.isLight ? 'stripe' : 'night' } }}>
+            <PayStep
+              pi={pi} subtotal={subtotal} theme={theme} cardBdr={cardBdr} inputBg={inputBg} muted={muted}
+              cart={cart}
+              onPaid={onPaymentSuccess}
+              onError={setError}
+              error={error}
+            />
+          </Elements>
+        ) : (
         <div style={{ padding: '0 24px 12px', display: 'flex', flexDirection: 'column', gap: 18 }}>
           {/* 1. Your details */}
           <SectionTitle>Your details</SectionTitle>
@@ -242,31 +295,124 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
             </div>
           </div>
         </div>
+        )}
 
-        {/* Sticky pay button */}
-        <div style={{
-          position: 'sticky', bottom: 0,
-          padding: '14px 24px calc(14px + env(safe-area-inset-bottom)) 24px',
-          background: theme.bg, borderTop: `1px solid ${cardBdr}`,
-        }}>
-          {error && <div style={{ fontSize: 12, color: '#ef4444', marginBottom: 10 }}>{error}</div>}
-          <button onClick={place} disabled={!valid || working} className="op-btn-primary" style={{
-            width: '100%', padding: '16px 22px', borderRadius: 14,
-            background: valid ? theme.accent : `${theme.fg}20`,
-            color: valid ? contrastFg(theme.accent) : `${theme.fg}60`,
-            border: 'none', fontSize: 16, fontWeight: 800, cursor: valid && !working ? 'pointer' : 'not-allowed',
-            fontFamily: 'inherit',
-            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        {/* Sticky bottom button — only shown on details step (PayStep has its own) */}
+        {step === 'details' && (
+          <div style={{
+            position: 'sticky', bottom: 0,
+            padding: '14px 24px calc(14px + env(safe-area-inset-bottom)) 24px',
+            background: theme.bg, borderTop: `1px solid ${cardBdr}`,
           }}>
-            <span>{working ? 'Redirecting to payment…' : 'Pay & place order'}</span>
-            <span>£{subtotal.toFixed(2)}</span>
-          </button>
-          <div style={{ fontSize: 10, color: muted, textAlign: 'center', marginTop: 8 }}>
-            🔒 Secure payment by Stripe. Your order is sent to the kitchen the moment payment is confirmed.
+            {error && <div style={{ fontSize: 12, color: '#ef4444', marginBottom: 10 }}>{error}</div>}
+            <button onClick={continueToPayment} disabled={!valid || working} className="op-btn-primary" style={{
+              width: '100%', padding: '16px 22px', borderRadius: 14,
+              background: valid ? theme.accent : `${theme.fg}20`,
+              color: valid ? contrastFg(theme.accent) : `${theme.fg}60`,
+              border: 'none', fontSize: 16, fontWeight: 800, cursor: valid && !working ? 'pointer' : 'not-allowed',
+              fontFamily: 'inherit',
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            }}>
+              <span>{working ? 'Starting payment…' : 'Continue to payment'}</span>
+              <span>£{subtotal.toFixed(2)}</span>
+            </button>
+            <div style={{ fontSize: 10, color: muted, textAlign: 'center', marginTop: 8 }}>
+              🔒 Card details next, processed securely by Stripe.
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PayStep — renders the CardElement + Pay button. Lives inside <Elements>
+// so it can use useStripe() / useElements() to confirm the PaymentIntent.
+function PayStep({ pi, subtotal, theme, cardBdr, inputBg, muted, cart, onPaid, onError, error }) {
+  const stripe = useStripe();
+  const elements = useElements();
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    if (!stripe || !elements) return;
+    setBusy(true); onError('');
+    const card = elements.getElement(CardElement);
+    const { error: stripeErr, paymentIntent } = await stripe.confirmCardPayment(pi.client_secret, {
+      payment_method: { card },
+    });
+    setBusy(false);
+    if (stripeErr) {
+      onError(stripeErr.message || 'Card declined.');
+      return;
+    }
+    if (paymentIntent?.status === 'succeeded') {
+      await onPaid(paymentIntent);
+    } else {
+      onError(`Payment status: ${paymentIntent?.status || 'unknown'}.`);
+    }
+  };
+
+  return (
+    <>
+      <div style={{ padding: '0 24px 12px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <SectionTitle>Card details</SectionTitle>
+        <div style={{
+          padding: 14, borderRadius: 12, border: `1.5px solid ${cardBdr}`,
+          background: inputBg,
+        }}>
+          <CardElement options={{
+            style: { base: {
+              color: theme.fg,
+              fontSize: '16px',
+              fontFamily: 'inherit',
+              '::placeholder': { color: theme.isLight ? '#9a9aa1' : '#7d7d85' },
+            } },
+          }}/>
+        </div>
+        <div style={{ fontSize: 11, color: muted, lineHeight: 1.5 }}>
+          Test mode: use card <code style={{ fontFamily: 'monospace', fontWeight: 700 }}>4242 4242 4242 4242</code> · any future expiry · any CVC.
+        </div>
+
+        {/* Mini summary so customer sees what they're paying for */}
+        <div style={{ background: inputBg, border: `1px solid ${cardBdr}`, borderRadius: 12, padding: '12px 14px', marginTop: 4 }}>
+          {cart.map(line => {
+            const unit = line.price + (line.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0);
+            return (
+              <div key={line.uid} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 13 }}>
+                <span style={{ flex: 1, minWidth: 0 }}>{line.qty || 1} × {line.name}</span>
+                <span style={{ fontWeight: 700 }}>£{(unit * (line.qty || 1)).toFixed(2)}</span>
+              </div>
+            );
+          })}
+          <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0 0', borderTop: `1px solid ${cardBdr}`, marginTop: 6 }}>
+            <span style={{ fontSize: 14, fontWeight: 800 }}>Total</span>
+            <span style={{ fontSize: 18, fontWeight: 900 }}>£{subtotal.toFixed(2)}</span>
           </div>
         </div>
       </div>
-    </div>
+
+      <div style={{
+        position: 'sticky', bottom: 0,
+        padding: '14px 24px calc(14px + env(safe-area-inset-bottom)) 24px',
+        background: theme.bg, borderTop: `1px solid ${cardBdr}`,
+      }}>
+        {error && <div style={{ fontSize: 12, color: '#ef4444', marginBottom: 10 }}>{error}</div>}
+        <button onClick={submit} disabled={busy || !stripe} className="op-btn-primary" style={{
+          width: '100%', padding: '16px 22px', borderRadius: 14,
+          background: theme.accent, color: contrastFg(theme.accent),
+          border: 'none', fontSize: 16, fontWeight: 800, cursor: busy ? 'wait' : 'pointer',
+          fontFamily: 'inherit', opacity: busy ? 0.7 : 1,
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        }}>
+          <span>{busy ? 'Processing payment…' : 'Pay & place order'}</span>
+          <span>£{subtotal.toFixed(2)}</span>
+        </button>
+        <div style={{ fontSize: 10, color: muted, textAlign: 'center', marginTop: 8 }}>
+          🔒 Your order is only sent to the kitchen once payment clears.
+        </div>
+      </div>
+    </>
   );
 }
 

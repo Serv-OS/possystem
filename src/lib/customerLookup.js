@@ -123,3 +123,124 @@ export async function fetchCustomerByPhone(rawPhone, locationId) {
     return null;
   }
 }
+
+/**
+ * v5.5.121 — Online-order customer attribution.
+ *
+ * Records the order against the customer profile so every online order (and
+ * therefore every visit) flows into the same CRM the operator UI uses.
+ * Mirrors store.attributeOrderToCustomer but works without the operator-
+ * facing Zustand store (which isn't hydrated on the customer surface).
+ *
+ *   1. Upsert customers row by (org_id, phone)
+ *   2. Bump customer_locations.visit_count + lifetime_revenue (or insert)
+ *   3. Insert customer_orders row (denormalised — channel='online')
+ *
+ * Fire-and-forget from the caller's perspective: a CRM blip never blocks
+ * the customer's confirmation flow. Returns customerId on success, null
+ * on any failure (errors are logged for diagnostics).
+ */
+export async function attributeOnlineOrder({
+  phone, name, email, marketingOptIn = false,
+  locationId,                    // ops_location_id (locations.id in ops DB)
+  orderRecord,                   // { ref, total, items, type }
+}) {
+  if (!supabase || !phone || !locationId || !orderRecord) return null;
+  const phoneN = normalisePhone(phone);
+  if (!phoneN) return null;
+
+  const orgId = await resolveOrgIdForLocation(locationId);
+  if (!orgId) {
+    console.warn('[attributeOnlineOrder] no org_id for location', locationId);
+    return null;
+  }
+
+  let customerId = null;
+  try {
+    // 1. Upsert customers row. Use lookup-then-insert/update — same pattern
+    // as store.upsertCustomer to avoid relying on a unique constraint.
+    const { data: existing } = await supabase
+      .from('customers')
+      .select('id, name, email, marketing_opt_in')
+      .eq('org_id', orgId)
+      .eq('phone', phoneN)
+      .is('deleted_at', null)
+      .maybeSingle();
+
+    if (existing) {
+      customerId = existing.id;
+      // Only fill blank fields — never overwrite an operator-curated value.
+      const patch = {};
+      if (!existing.name && name) patch.name = name;
+      if (!existing.email && email) patch.email = email;
+      if (!existing.marketing_opt_in && marketingOptIn) patch.marketing_opt_in = true;
+      patch.last_seen_at = new Date().toISOString();
+      const { error: updErr } = await supabase.from('customers').update(patch).eq('id', customerId);
+      if (updErr) console.warn('[attributeOnlineOrder] customer update:', updErr.message);
+    } else {
+      const { data: ins, error: insErr } = await supabase
+        .from('customers')
+        .insert({
+          org_id: orgId, phone: phoneN, phone_raw: phone,
+          name: name || null, email: email || null,
+          marketing_opt_in: !!marketingOptIn,
+        })
+        .select('id').maybeSingle();
+      if (insErr) {
+        console.warn('[attributeOnlineOrder] customer insert:', insErr.message);
+        return null;
+      }
+      customerId = ins?.id;
+    }
+    if (!customerId) return null;
+
+    // 2. customer_locations stats — read then INSERT or UPDATE.
+    const incRevenue = Number(orderRecord.total) || 0;
+    const nowIso = new Date().toISOString();
+    const { data: existingLoc } = await supabase
+      .from('customer_locations')
+      .select('visit_count, lifetime_revenue')
+      .eq('customer_id', customerId)
+      .eq('location_id', locationId)
+      .maybeSingle();
+
+    if (existingLoc) {
+      const newCount = (Number(existingLoc.visit_count) || 0) + 1;
+      const newRevenue = (Number(existingLoc.lifetime_revenue) || 0) + incRevenue;
+      const { error: e1 } = await supabase
+        .from('customer_locations')
+        .update({ visit_count: newCount, lifetime_revenue: newRevenue, last_visit_at: nowIso })
+        .eq('customer_id', customerId).eq('location_id', locationId);
+      if (e1) console.warn('[attributeOnlineOrder] customer_locations update:', e1.message);
+    } else {
+      const { error: e2 } = await supabase
+        .from('customer_locations')
+        .insert({
+          customer_id: customerId, location_id: locationId,
+          visit_count: 1, lifetime_revenue: incRevenue,
+          first_visit_at: nowIso, last_visit_at: nowIso,
+        });
+      if (e2) console.warn('[attributeOnlineOrder] customer_locations insert:', e2.message);
+    }
+
+    // 3. customer_orders denormalised row.
+    const itemSummary = (orderRecord.items || []).map(i => ({
+      name: i.name, qty: i.qty, price: i.price,
+    }));
+    const { error: e3 } = await supabase.from('customer_orders').insert({
+      customer_id: customerId,
+      location_id: locationId,
+      closed_check_id: orderRecord.ref || null,
+      ordered_at: nowIso,
+      total: Number(orderRecord.total) || 0,
+      channel: 'online',
+      item_summary: itemSummary,
+    });
+    if (e3) console.warn('[attributeOnlineOrder] customer_orders insert:', e3.message);
+
+    return customerId;
+  } catch (e) {
+    console.warn('[attributeOnlineOrder] unexpected:', e?.message || e);
+    return customerId;
+  }
+}

@@ -57,61 +57,6 @@ export default function OnlineSurface({ location }) {
     return [...set].sort();
   }, [items]);
 
-  // ── Return from Stripe ─────────────────────────────────────────────────
-  // After Stripe redirects back, the URL has either:
-  //   ?paid=success&ref=OL-XXX&session_id=cs_test_...   → verify + promote
-  //   ?paid=cancel&ref=OL-XXX                           → leave as awaiting_payment, show notice
-  // We verify server-side (never trust the URL alone) before promoting the
-  // order_queue row from awaiting_payment to received.
-  useEffect(() => {
-    const url = new URL(window.location.href);
-    const paid = url.searchParams.get('paid');
-    const ref  = url.searchParams.get('ref');
-    const sessionId = url.searchParams.get('session_id');
-    if (!paid) return;
-
-    const cleanUrl = () => {
-      ['paid', 'ref', 'session_id'].forEach(k => url.searchParams.delete(k));
-      window.history.replaceState({}, '', url.toString());
-    };
-
-    if (paid === 'cancel' && ref) {
-      // Customer bailed at Stripe — drop the awaiting_payment row so it
-      // doesn't pollute the queue.
-      supabase?.from('order_queue').delete().eq('ref', ref);
-      setPaymentNotice('cancel');
-      cleanUrl();
-      return;
-    }
-
-    if (paid === 'success' && ref && sessionId) {
-      (async () => {
-        try {
-          const r = await fetch('/api/stripe-verify', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sessionId }),
-          });
-          const data = await r.json();
-          if (!r.ok || !data.paid) {
-            setPaymentNotice('verify_failed');
-            cleanUrl();
-            return;
-          }
-          // Promote awaiting_payment → received so kitchen picks up at sent_at.
-          await supabase?.from('order_queue')
-            .update({ status: 'received' }).eq('ref', ref);
-          setCart([]);
-          setTrackerRef(ref);
-          cleanUrl();
-        } catch (e) {
-          console.error('[OnlineSurface] stripe verify failed:', e);
-          setPaymentNotice('verify_failed');
-          cleanUrl();
-        }
-      })();
-    }
-  }, []);
-
   // ── Load menu + branding from OPS DB ─────────────────────────────────────
   useEffect(() => {
     let alive = true;
@@ -471,7 +416,7 @@ export default function OnlineSurface({ location }) {
           onPlaced={(info) => {
             setShowCheckout(false);
             setCart([]);
-            setConfirmation(info);
+            setTrackerRef(info.ref); // → live OrderTracker
           }}/>
       )}
 
