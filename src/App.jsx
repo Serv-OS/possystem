@@ -76,6 +76,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.143', date: '9 May 2026', label: 'Recurring locationId-bleed bug closed across db.js write paths + manual Send-to-kitchen button removed',
+    changes: [
+      'ROOT CAUSE OF "I 86\'D IT, REFRESHED, IT\'S GONE" — toggle86DB(itemId, is86, locationId=null) was writing rows with location_id=null. The eighty_six schema has `location_id text not null default \'loc-demo\'`, so the DB silently filled in \'loc-demo\'. On refresh, fetch86List filtered by the real locationId and found nothing — the 86 appeared to vanish. Same pattern hit insertConfigPush (config pushes to wrong location) and fetch86List/fetchLatestConfigPush (reading the wrong rows even when writes were correct).',
+      'FIX — every write/read wrapper now resolves the real locationId via getLocationId() / paired-device localStorage BEFORE talking to Supabase, with a hard refusal to write if locationId is null/loc-demo. Mirror of the existing pattern in insertClosedCheck / insertKDSTicket / upsertMenuItem etc. Touched: toggle86DB, fetch86List, insertConfigPush, fetchLatestConfigPush.',
+      'GUARDRAIL FOR FUTURE — added a feedback memory entry so this never recurs: "ALWAYS resolve real locationId before any DB write — never default to null/loc-demo". Whenever a new wrapper goes into src/lib/db.js it must follow the same resolve-or-fail pattern.',
+      'MANUAL "🖨 Send to kitchen" BUTTON REMOVED FROM ORDERS — auto-routing is reliable now (v5.5.139 master-only gate + v5.5.138 schema-cache fallback), so the manual fallback button is dead weight. Removed from OrdersHub OrderCard footer; resendToKitchen handler + force flag in routeKioskOrderPrints both gone. Atomic claim simplified back to a single branch.',
+    ],
+  },
+  {
     version: '5.5.142', date: '9 May 2026', label: '86 propagation actually works — fixed inverted toggle86DB call + initial fetch on boot for SyncBridge AND KioskApp',
     changes: [
       'INVERTED ARG FIX — v5.5.141 added `toggle86DB(id, true)` to persist auto-86 from daily count exhaustion. But toggle86DB\'s second argument is "was previously 86\'d, toggle OFF" → DELETE row. So my call was DELETING the 86 row instead of inserting it. Daily-count auto-86s never reached the DB. Flipped to false (= "wasn\'t before, is now" → INSERT) to match the toggle86DB inverted convention.',

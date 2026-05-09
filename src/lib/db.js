@@ -260,11 +260,30 @@ export const deleteFloorTable = async (id, locationId = null) => {
 // ── 86 list ───────────────────────────────────────────────────────────────────
 export const fetch86List = async (locationId = null) => {
   if (isMock) return { data: null, error: null };
+  // v5.5.143: same resolve-or-fail as toggle86DB. Without this a null
+  // caller-arg returns 'loc-demo' rows (never matched the writes anyway).
+  if (!locationId || locationId === 'loc-demo') locationId = await getLocationId().catch(() => null);
+  if (!locationId || locationId === 'loc-demo') return { data: [], error: null };
   return supabase.from('eighty_six').select('item_id').eq('location_id', locationId);
 };
 
 export const toggle86DB = async (itemId, is86, locationId = null) => {
   if (isMock) return { data: null, error: null };
+  // v5.5.143: ALWAYS resolve real locationId before writing. The schema has
+  // `location_id text not null default 'loc-demo'`, so a null caller-arg
+  // silently writes 'loc-demo' — fetch86List then filters by the real
+  // location and finds nothing → "I 86'd it, refreshed, the 86 is gone".
+  // This was the recurring data-loss bug.
+  if (!locationId || locationId === 'loc-demo') {
+    locationId = await getLocationId().catch(() => null);
+  }
+  if (!locationId || locationId === 'loc-demo') {
+    try { locationId = JSON.parse(localStorage.getItem('rpos-device') || '{}').locationId || null; } catch {}
+  }
+  if (!locationId) {
+    console.error('[toggle86DB] could not resolve locationId — write SKIPPED to avoid loc-demo bleed');
+    return { data: null, error: new Error('No locationId') };
+  }
   if (is86) {
     return supabase.from('eighty_six').delete().eq('location_id', locationId).eq('item_id', itemId);
   }
@@ -499,6 +518,20 @@ export const fetchClosedChecksRange = async (locationId = null, fromDate, toDate
 // ── Config pushes ─────────────────────────────────────────────────────────────
 export const insertConfigPush = async (push, locationId = null) => {
   if (isMock) return { data: null, error: null };
+  // v5.5.143: same resolve-or-fail pattern as toggle86DB / insertClosedCheck.
+  // A null/loc-demo locationId silently writes a config_push at 'loc-demo'
+  // and the venue's POS devices, filtering by their real locationId,
+  // never see it — push lost.
+  if (!locationId || locationId === 'loc-demo') {
+    locationId = await getLocationId().catch(() => null);
+  }
+  if (!locationId || locationId === 'loc-demo') {
+    try { locationId = JSON.parse(localStorage.getItem('rpos-device') || '{}').locationId || null; } catch {}
+  }
+  if (!locationId) {
+    console.error('[insertConfigPush] could not resolve locationId — push SKIPPED');
+    return { data: null, error: new Error('No locationId') };
+  }
   const result = await supabase.from('config_pushes').insert({ ...push, location_id: locationId });
   if (result.error) console.error('[DB] config_pushes insert failed:', result.error.message);
   return result;
@@ -506,6 +539,8 @@ export const insertConfigPush = async (push, locationId = null) => {
 
 export const fetchLatestConfigPush = async (locationId = null) => {
   if (isMock) return { data: null, error: null };
+  if (!locationId || locationId === 'loc-demo') locationId = await getLocationId().catch(() => null);
+  if (!locationId || locationId === 'loc-demo') return { data: null, error: null };
   return supabase
     .from('config_pushes')
     .select('*')
