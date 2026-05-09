@@ -3757,6 +3757,22 @@ export const useStore = create((set, get) => ({
         if (kdsErr) console.warn('[routeKioskOrderPrints] kds insert', kdsErr);
       }
 
+      // v5.5.127: once production has fired (KDS card written + per-centre
+      // print jobs queued), auto-flip the order's status from 'received' →
+      // 'prep' so the operator's queue UI reflects "kitchen has it" the
+      // moment routing succeeds. Used to be: every new order sat at
+      // 'received' until an operator manually moved it through the stages.
+      // For routed orders that's a redundant click — the kitchen DOES have
+      // it now. Operators still advance prep → ready → collected manually.
+      try {
+        await supabase.from('order_queue')
+          .update({ status: 'prep' })
+          .eq('ref', order.ref)
+          .eq('status', 'received'); // only flip if no operator has moved it further
+      } catch (e) {
+        console.warn('[routeKioskOrderPrints] status→prep update failed:', e?.message);
+      }
+
       // Print jobs per centre
       const getCentrePrinter = (centreId) => {
         const c = routingConfig.centres?.find(c => c.id === centreId);

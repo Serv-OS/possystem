@@ -191,6 +191,42 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         return;
       }
 
+      // v5.5.127: also write to closed_checks so the paid online order shows
+      // up in History / EOD / Payments reports identically to in-store paid
+      // orders. status='paid' (not 'open') because Stripe already collected.
+      // The receipt formatter prints check.ref as "ORDER #" — no extra wiring.
+      try {
+        const closedCheck = {
+          id: `chk-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
+          ref,
+          location_id: opsLocationId,
+          server: 'Online',
+          staff_id: null,
+          covers: 1,
+          order_type: orderType,
+          customer,
+          items: items.map(i => ({ ...i, voided: false })),
+          discounts: [],
+          subtotal,
+          service: 0,
+          tip: 0,
+          tax_amount: null,
+          total: subtotal,
+          method: 'card',
+          drawer_id: null,
+          shift_id: null,
+          closed_at: new Date().toISOString(),
+          status: 'paid',
+          refunds: [],
+          table_id: null,
+          table_label: `Online ${ref}`,
+        };
+        const { error: ccErr } = await supabase.from('closed_checks').insert(closedCheck);
+        if (ccErr) console.warn('[OnlineCheckout] closed_checks insert failed:', ccErr.message);
+      } catch (e) {
+        console.warn('[OnlineCheckout] closed_checks write threw:', e?.message);
+      }
+
       // Customer profile: every online order/visit flows into the same CRM
       // the operator UI uses (customers + customer_locations + customer_orders).
       // Fire-and-forget — a CRM blip never blocks the confirmation flow.

@@ -76,6 +76,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.127', date: '9 May 2026', label: 'Online journey edge cases — closed_checks for history + auto received→prep on routing + correct kitchen-ticket label',
+    changes: [
+      'PAID ONLINE ORDERS NOW APPEAR IN HISTORY — every successful Stripe payment in OnlineCheckout writes a closed_checks row alongside the order_queue row. Same shape every other paid order in the system uses (id / ref / location_id / items / customer / subtotal / total / method=\'card\' / status=\'paid\' / closed_at). The order shows up in BO Reports → Payments, in EOD totals, in customer profile order history, and the receipt re-print path resolves the ref correctly so "ORDER # OL-XXXXX" prints at the top of the receipt the way it does for in-store orders.',
+      'AUTO RECEIVED → PREP — once routeKioskOrderPrints has done its job (KDS card written + per-centre print jobs queued), order_queue.status auto-flips from \'received\' to \'prep\'. The kitchen now SEES the order, so the operator queue should reflect that without a manual click. Conditional update (eq status=received) so it doesn\'t stomp on an operator who has already moved it forward to ready/collected. Operators still progress prep → ready → collected manually.',
+      'KITCHEN TICKET LABEL — the format-the-table-header logic in buildKitchenTicket only knew to skip the "TABLE " prefix for hard-coded keywords (takeaway / collection / delivery / counter) and the operator-built "Takeaway . Sarah" pattern. Online / kiosk / qr orders now pass labels like "Online OL-XXX" / "Kiosk K-XXX" / "Table T5" which would have printed as absurd "TABLE Online OL-XXX". Extended the whitelist regex to recognise those prefixes so the label prints clean.',
+    ],
+  },
+  {
     version: '5.5.126', date: '9 May 2026', label: 'Online orders now follow full production routing (KDS + per-station prints) — scheduled orders defer to sent_at — shareable customer tracker URL',
     changes: [
       'PRODUCTION ROUTING FOR ONLINE — routeKioskOrderPrints now accepts a `source` param (kiosk / online / qr) and uses it to label both the KDS card and the kitchen ticket: "Online OL-XXX" instead of always "Kiosk OL-XXX". For QR orders with a tableLabel, the label becomes "Table T5". This is the same function the kiosk has been using all along to bucket items by production centre, write per-centre kds_tickets rows, and fire routePrintJob — online orders now hit it identically.',

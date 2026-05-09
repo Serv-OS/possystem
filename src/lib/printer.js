@@ -245,7 +245,13 @@ export function buildKitchenTicket({ table, server, covers, course, centreName, 
     // v4.6.5 follow-up: only prepend "TABLE" for actual table labels. Non-table
     // labels are composed as "Takeaway . Sarah" / "Bar . Maria" etc and are
     // self-describing — printing "TABLE Takeaway . Sarah" looked absurd.
-    const isNonTableLabel = / . /.test(table) || /^(takeaway|collection|delivery|counter)$/i.test(table);
+    // v5.5.127: extended whitelist — kiosk / online / qr orders pass labels
+    // like "Online OL-XXX" / "Kiosk K-XXX" / "Table T5" which are already
+    // self-describing. Prepending "TABLE Online OL-XXX" looks absurd. The
+    // ` . ` separator catches the existing "Takeaway . Sarah" pattern.
+    const isNonTableLabel = / . /.test(table)
+      || /^(takeaway|collection|delivery|counter)$/i.test(table)
+      || /^(online|kiosk|qr|table)\s/i.test(table);
     b.center().line(isNonTableLabel ? table : `TABLE ${table}`).left();
   } else {
     b.center().line('WALK-IN').left();
