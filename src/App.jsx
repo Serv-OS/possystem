@@ -76,6 +76,12 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.136', date: '9 May 2026', label: 'Loud alert() on Send-to-kitchen click — operator reports nothing happens; need to see whether handler fires + what data it has',
+    changes: [
+      'TEMP DIAGNOSTIC — operator clicked the v5.5.135 🖨 Send-to-kitchen button and saw nothing. No toast, no error. Either (a) the click handler isn\'t firing (wiring issue), (b) the routeKioskOrderPrints function is missing from the store, or (c) the function is returning silently at one of its early guard clauses (no ref / no items / no supabase). Wrapped resendToKitchen with two alert() calls — one always-fires showing what we have, one for the empty-items guard. alert() can\'t be silenced by toast plumbing; if the click registers, the operator WILL see a popup. Once we have the popup contents we know exactly which side to fix.',
+    ],
+  },
+  {
     version: '5.5.135', date: '9 May 2026', label: 'WIRED THE BUTTON IN THE RIGHT FILE — src/surfaces/OrdersHub.jsx (live), not POSSurface.jsx (dead) — plus visible source pill',
     changes: [
       'I edited the wrong OrdersHub. POSSurface.jsx contains a stale OrdersHub function (~line 1797) that hasn\'t been rendered for a while; the live orders panel is src/surfaces/OrdersHub.jsx (the one with the All orders / Tables / Bar tabs / Counter / Takeaway / Collection / Delivery tabs and Mark-in-prep buttons). The Send-to-kitchen button I added in v5.5.134 went into the dead file, which is why nothing showed. Now wired into the LIVE OrderCard footer with a yellow 🖨 button — visible on every queue order (online / kiosk / qr / walk-in) regardless of source.',

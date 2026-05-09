@@ -187,8 +187,24 @@ export default function OrdersHub() {
   // run (master device offline at INSERT, fresh deploy not yet on the
   // device, etc.) to push the order through without re-opening the cart.
   const resendToKitchen = (o) => {
+    // v5.5.136: noisy diagnostic — click is registered, what's available, what
+    // are we sending. alert() is impossible to miss; toast would be silent if
+    // the store fn returned silently or the toast itself was suppressed.
+    const dump = `Send to kitchen clicked
+Ref: ${o.ref}
+Source: ${o.source || '(none)'}
+Items count: ${(o.items || []).length}
+First item: ${JSON.stringify(o.items?.[0] || null)}
+routeKioskOrderPrints in store? ${!!routeKioskOrderPrints}`;
+    // eslint-disable-next-line no-alert
+    alert(dump);
     if (!routeKioskOrderPrints) {
       showToast('Routing function not available on this device', 'error');
+      return;
+    }
+    if (!o.items?.length) {
+      // eslint-disable-next-line no-alert
+      alert('Order has no items — routing would silently exit. Items field shape:\n' + JSON.stringify(o.items));
       return;
     }
     routeKioskOrderPrints({
