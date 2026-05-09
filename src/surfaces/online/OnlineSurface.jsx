@@ -259,6 +259,32 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   const cardBdr  = theme.isLight ? '#ececef' : '#2a2a30';
   const headerBg = theme.isLight ? 'rgba(255,255,255,0.95)' : 'rgba(14,14,16,0.95)';
 
+  // v5.5.147: QR confirm-table gate. Per-location qr_table_mode controls
+  // whether the customer is forced through this screen:
+  //   'fixed'   — skip entirely; QR scan locks the table
+  //   'confirm' — show "You're at Table T5? Yes / Change" once
+  //   'free'    — no table id in URL; customer types one before menu
+  // State: tableConfirmed=true once the gate is passed; the chosen
+  // tableLabel becomes the working table for the rest of the flow.
+  const qrTableMode = location.qr_table_mode || 'confirm';
+  const needsConfirm = isQr && (qrTableMode === 'confirm' || qrTableMode === 'free' || !tableId);
+  const [tableConfirmed, setTableConfirmed] = useState(!needsConfirm);
+  const [confirmedTable, setConfirmedTable] = useState(tableLabel || tableId || '');
+  const effectiveTableLabel = tableConfirmed ? (confirmedTable || tableLabel || tableId) : null;
+
+  if (isQr && !tableConfirmed) {
+    return (
+      <ScrollShell theme={theme}>
+        <ConfirmTableScreen
+          theme={theme} cardBdr={theme.isLight ? '#ececef' : '#2a2a30'} muted={theme.isLight ? '#6b6b70' : '#a0a0a8'}
+          locationName={location.name}
+          presetLabel={tableLabel || tableId || ''}
+          mode={qrTableMode}
+          onConfirm={(label) => { setConfirmedTable(label); setTableConfirmed(true); }}/>
+      </ScrollShell>
+    );
+  }
+
   // If we're tracking a paid order, that's the only thing on screen.
   if (trackerRef) {
     return (
@@ -307,7 +333,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
       {/* HERO with overlay logo */}
       <Hero theme={theme} muted={muted}
         leadMin={Number(location.online_collection_lead_min) || 0}
-        tableLabel={isQr ? (tableLabel || tableId) : null}/>
+        tableLabel={isQr ? effectiveTableLabel : null}/>
 
       {/* Sticky header — order-type pill + allergy filter + loyalty + categories */}
       <div style={{
@@ -336,7 +362,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
               display: 'inline-flex', alignItems: 'center', gap: 6,
             }}>
               <span>📱</span>
-              <span>Table {tableLabel || tableId || '?'}</span>
+              <span>Table {effectiveTableLabel || '?'}</span>
             </span>
           ) : (
             <button onClick={() => setOrderType(null)} className="op-btn" style={{
@@ -524,7 +550,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
       {showCheckout && isQr && (
         <QrCheckout
           cart={cart} theme={theme} location={location}
-          tableId={tableId} tableLabel={tableLabel}
+          tableId={tableId} tableLabel={effectiveTableLabel}
           loyalty={loyalty}
           onClose={() => setShowCheckout(false)}
           onPlaced={(info) => {
@@ -1052,6 +1078,103 @@ function ItemCard({ item, theme, cardBg, cardBdr, muted, onPick, variantInfo, is
         }}/>
       )}
     </button>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// v5.5.147: ConfirmTableScreen — first thing a QR customer sees in confirm /
+// free-type table modes. Pre-fills with the QR-encoded table id when present;
+// "Change" or empty preset switches to a numeric input. Locked table mode
+// skips this entirely (set tableConfirmed=true on mount).
+function ConfirmTableScreen({ theme, cardBdr, muted, locationName, presetLabel, mode, onConfirm }) {
+  const [editing, setEditing] = useState(mode === 'free' || !presetLabel);
+  const [value, setValue] = useState(presetLabel || '');
+  const heroBg = theme.hero
+    ? `linear-gradient(180deg, rgba(0,0,0,0.45) 0%, rgba(0,0,0,0.85) 100%), url(${theme.hero}) center/cover no-repeat`
+    : `linear-gradient(135deg, ${theme.accent}, ${shade(theme.accent, -25)})`;
+  return (
+    <div style={{
+      minHeight: '100%', background: heroBg, color: '#fff',
+      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+      padding: '40px 20px', textAlign: 'center',
+    }}>
+      <div style={{ maxWidth: 440, width: '100%' }}>
+        {theme.logo && (
+          <img src={theme.logo} alt={locationName} style={{
+            width: 88, height: 88, borderRadius: 20, objectFit: 'cover',
+            border: '3px solid #fff', boxShadow: '0 8px 28px rgba(0,0,0,0.4)',
+            margin: '0 auto 18px',
+          }}/>
+        )}
+        <div style={{ fontSize: 14, fontWeight: 700, opacity: 0.9, textShadow: '0 1px 4px rgba(0,0,0,0.4)' }}>
+          Welcome to {locationName}
+        </div>
+        <div style={{ fontSize: 28, fontWeight: 900, letterSpacing: '-0.02em', marginTop: 8, marginBottom: 24,
+          textShadow: '0 2px 12px rgba(0,0,0,0.6)',
+        }}>
+          {editing ? "What's your table number?" : "You're at"}
+        </div>
+
+        {!editing && (
+          <>
+            <div style={{
+              fontSize: 76, fontWeight: 900, letterSpacing: '-0.03em',
+              padding: '24px 24px',
+              background: 'rgba(255,255,255,0.15)', borderRadius: 20,
+              border: '2px solid rgba(255,255,255,0.4)',
+              backdropFilter: 'saturate(180%) blur(12px)',
+              WebkitBackdropFilter: 'saturate(180%) blur(12px)',
+              marginBottom: 18,
+            }}>
+              Table {presetLabel}
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <button onClick={() => onConfirm(presetLabel)} className="op-btn-primary" style={{
+                padding: '18px 22px', borderRadius: 14,
+                background: 'rgba(255,255,255,0.95)', color: '#1a1a1a',
+                border: 'none', fontSize: 16, fontWeight: 800, cursor: 'pointer', fontFamily: 'inherit',
+                boxShadow: '0 6px 18px rgba(0,0,0,0.25)',
+              }}>✓ Yes, that's me — start ordering</button>
+              <button onClick={() => { setEditing(true); setValue(''); }} className="op-btn" style={{
+                padding: '14px 22px', borderRadius: 14,
+                background: 'rgba(255,255,255,0.18)', color: '#fff',
+                border: '1px solid rgba(255,255,255,0.4)',
+                fontSize: 14, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit',
+              }}>Wrong table — change</button>
+            </div>
+          </>
+        )}
+
+        {editing && (
+          <>
+            <input type="text" inputMode="numeric" autoFocus
+              value={value} onChange={e => setValue(e.target.value)}
+              placeholder="e.g. 5"
+              style={{
+                width: '100%', padding: '22px 18px', borderRadius: 16,
+                background: 'rgba(255,255,255,0.95)', color: '#1a1a1a',
+                border: 'none', fontSize: 36, fontWeight: 900, fontFamily: 'inherit',
+                outline: 'none', boxSizing: 'border-box', textAlign: 'center', letterSpacing: '0.02em',
+                boxShadow: '0 6px 18px rgba(0,0,0,0.25)',
+              }}/>
+            <button onClick={() => value.trim() && onConfirm(value.trim())}
+              disabled={!value.trim()} className={value.trim() ? 'op-btn-primary' : undefined}
+              style={{
+                marginTop: 14, width: '100%', padding: '18px 22px', borderRadius: 14,
+                background: value.trim() ? 'rgba(255,255,255,0.95)' : 'rgba(255,255,255,0.4)',
+                color: value.trim() ? '#1a1a1a' : '#888',
+                border: 'none', fontSize: 16, fontWeight: 800,
+                cursor: value.trim() ? 'pointer' : 'not-allowed', fontFamily: 'inherit',
+              }}>
+              ✓ Confirm — start ordering
+            </button>
+            <div style={{ fontSize: 12, opacity: 0.85, marginTop: 14, textShadow: '0 1px 3px rgba(0,0,0,0.4)' }}>
+              Look at your table number — it's usually on a small card or sign on the table.
+            </div>
+          </>
+        )}
+      </div>
+    </div>
   );
 }
 

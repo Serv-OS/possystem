@@ -76,6 +76,16 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.147', date: '9 May 2026', label: 'QR commit 2 — downloadable QR-code JPEGs per table + table-mode toggle + confirm-table screen',
+    changes: [
+      'BO QR CODES — new QR section in BO → Online Ordering. Lists every floor-plan table with a "⬇ JPEG" tile per table. Click downloads a labelled JPEG: big QR code on a white background with "SCAN TO ORDER" + "Table T5" + venue domain footer, ready to print or send to a print shop. "⬇ Download all" loops through every table sequentially. JPEG is composed in a canvas using the new `qrcode` npm dep — fully offline, no third-party API call.',
+      'TABLE-MODE TOGGLE — three modes selectable in BO: 🔒 Fixed (QR locks the table, customer can\'t change), ✅ Confirm (recommended — "You\'re at Table 5? Yes / Change" before menu loads), ✏️ Free-type (QR encodes no table id; customer types one). Stored on platform.locations.qr_table_mode. Defaults to "confirm".',
+      'CONFIRM-TABLE SCREEN — first thing a QR customer sees in confirm or free-type mode. Shows venue logo, "Welcome to {venue}", a big "Table {N}" badge, and two buttons: ✓ Yes / Change. Tapping Change (or arriving in free-type mode) swaps in a numeric input for the customer to enter the table themselves. Only after confirming do they see the menu — prevents stickers stuck on the wrong table from sending orders to the wrong section.',
+      'PAYMENT MODE TOGGLE in BO too — pay_now / open_tab / both. Open-tab path itself isn\'t live yet (lands in commit 3 with Stripe pre-auth + email receipts), but the BO toggle persists so venues can pre-configure.',
+      'SQL — same migration as v5.5.145 covers all of this: `alter table public.locations add column if not exists qr_payment_mode text default \'pay_now\'; alter table public.locations add column if not exists qr_table_mode text default \'confirm\'; alter table public.locations add column if not exists qr_service_charge_pct numeric(5,2) default 0;`. The BO save is wrapped in try/catch so missing-column doesn\'t break the rest.',
+    ],
+  },
+  {
     version: '5.5.146', date: '9 May 2026', label: 'QR header polish — prominent TABLE badge in hero + wait time restored + pills inline',
     changes: [
       'TABLE NUMBER NOW PROMINENT — the hero shows a stacked "TABLE T5" badge under the venue name (38px, bold) so a customer who walks up to the QR mid-conversation can\'t miss which table they scanned. Replaces the v5.5.145 placement that relied on a small chip in the sticky header (kept as a scrolled-state breadcrumb).',

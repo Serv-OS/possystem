@@ -10,6 +10,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { platformSupabase, supabase, getLocationId } from '../../lib/supabase';
+import QRCode from 'qrcode';
 
 // Reuses the existing receipt-assets bucket with an online/ prefix so logo
 // + hero uploads don't collide with the receipt branding's logo/QR assets.
@@ -49,6 +50,12 @@ export default function OnlineOrdering({ setSection }) {
   const [menuId, setMenuId]   = useState('');
   const [leadMin, setLeadMin] = useState(30);
   const [deliveryOn, setDeliveryOn] = useState(false);
+  // v5.5.147: QR ordering settings + table list for QR-code generator
+  const [qrPaymentMode, setQrPaymentMode] = useState('pay_now');   // 'pay_now' | 'open_tab' | 'both'
+  const [qrTableMode,   setQrTableMode]   = useState('confirm');    // 'fixed' | 'confirm' | 'free'
+  const [qrServicePct,  setQrServicePct]  = useState(0);
+  const [tables, setTables] = useState([]);
+  const [downloading, setDownloading] = useState(false);
   const [uploadingLogo, setUploadingLogo] = useState(false);
   const [uploadingHero, setUploadingHero] = useState(false);
   const [opsLocId, setOpsLocId] = useState(null);
@@ -94,7 +101,32 @@ export default function OnlineOrdering({ setSection }) {
             setMenuId(r.online_menu_id || '');
             setLeadMin(typeof r.online_collection_lead_min === 'number' ? r.online_collection_lead_min : 30);
             setDeliveryOn(!!r.online_delivery_enabled);
+            // v5.5.147: probe QR settings separately so a missing-column error
+            // (migration not run yet) doesn't break the rest of this page.
+            try {
+              const { data: qr } = await platformSupabase
+                .from('locations')
+                .select('qr_payment_mode, qr_table_mode, qr_service_charge_pct')
+                .eq('id', r.id).maybeSingle();
+              if (qr) {
+                setQrPaymentMode(qr.qr_payment_mode || 'pay_now');
+                setQrTableMode(qr.qr_table_mode || 'confirm');
+                setQrServicePct(Number(qr.qr_service_charge_pct) || 0);
+              }
+            } catch { /* columns not migrated yet — defaults stand */ }
           }
+        }
+        // v5.5.147: load floor-plan tables for the QR-code generator. Reads
+        // from ops floor_plan (single row per location, tables[] inside).
+        if (opsLocId && supabase) {
+          try {
+            const { data: fp } = await supabase
+              .from('floor_plan')
+              .select('tables')
+              .eq('location_id', opsLocId)
+              .maybeSingle();
+            if (alive && fp?.tables?.length) setTables(fp.tables);
+          } catch (e) { console.warn('[OnlineOrdering] floor_plan load:', e?.message); }
         }
       } catch (e) {
         console.error('[OnlineOrdering] load failed:', e);
@@ -154,6 +186,17 @@ export default function OnlineOrdering({ setSection }) {
       .eq('id', row.id)
       .select('id, online_branding, online_menu_id, online_collection_lead_min, online_delivery_enabled')
       .maybeSingle();
+
+    // v5.5.147: QR settings update is a separate call wrapped in try/catch
+    // so a missing-column error (migration not run) doesn't fail the whole
+    // save — online settings still persist.
+    try {
+      await platformSupabase.from('locations').update({
+        qr_payment_mode: qrPaymentMode,
+        qr_table_mode: qrTableMode,
+        qr_service_charge_pct: Math.max(0, Math.min(50, Number(qrServicePct) || 0)),
+      }).eq('id', row.id);
+    } catch (e) { console.warn('[OnlineOrdering] QR settings save (run migration):', e?.message); }
 
     setSaving(false);
     if (err) { setError(err.message || 'Save failed'); return; }
@@ -306,6 +349,15 @@ export default function OnlineOrdering({ setSection }) {
         </div>
       </div>
 
+      {/* v5.5.147: QR ordering settings + per-table QR-code generator */}
+      <QrSettingsBlock
+        slug={row?.online_slug}
+        paymentMode={qrPaymentMode} setPaymentMode={setQrPaymentMode}
+        tableMode={qrTableMode} setTableMode={setQrTableMode}
+        servicePct={qrServicePct} setServicePct={setQrServicePct}
+        tables={tables}
+        downloading={downloading} setDownloading={setDownloading}/>
+
       {/* Save */}
       <div style={{ display:'flex', alignItems:'center', gap:12 }}>
         <button onClick={save} disabled={saving}
@@ -320,6 +372,165 @@ export default function OnlineOrdering({ setSection }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// v5.5.147: QR settings + per-table QR-code generator. JPEG output is composed
+// in a canvas: QR code on top, big "TABLE T5" label below, venue name footer.
+// Each click downloads a single labelled JPEG; "Download all" loops through
+// every table sequentially (browser handles each download as separate file).
+function QrSettingsBlock({ slug, paymentMode, setPaymentMode, tableMode, setTableMode, servicePct, setServicePct, tables, downloading, setDownloading }) {
+  const buildQrUrl = (tableId) => {
+    const base = slug
+      ? `https://${slug}.pos-up.com`
+      : `${window.location.origin}`;
+    // ?surface=qr&t=<tableId>; if free-type mode, omit table id and let
+    // the customer enter it on the confirm screen.
+    return tableMode === 'free'
+      ? `${base}/?surface=qr`
+      : `${base}/?surface=qr&t=${encodeURIComponent(tableId || '')}`;
+  };
+
+  const downloadOne = async (table) => {
+    const url = buildQrUrl(table.id);
+    // Render QR to a canvas, then composite a label + footer into a larger
+    // canvas, export as JPEG, trigger download.
+    const qrCanvas = document.createElement('canvas');
+    await QRCode.toCanvas(qrCanvas, url, { width: 720, margin: 2, errorCorrectionLevel: 'M' });
+    const W = 800, H = 1000;
+    const out = document.createElement('canvas');
+    out.width = W; out.height = H;
+    const ctx = out.getContext('2d');
+    // White background — easier to print
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, W, H);
+    // QR centered
+    ctx.drawImage(qrCanvas, (W - 720) / 2, 60, 720, 720);
+    // Label
+    ctx.fillStyle = '#000';
+    ctx.font = '700 28px -apple-system, system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('SCAN TO ORDER', W / 2, 830);
+    ctx.font = '900 84px -apple-system, system-ui, sans-serif';
+    ctx.fillText(`Table ${table.label || table.id || '?'}`, W / 2, 920);
+    ctx.font = '500 18px -apple-system, system-ui, sans-serif';
+    ctx.fillStyle = '#666';
+    ctx.fillText(slug ? `${slug}.pos-up.com` : 'serv-os.app', W / 2, 970);
+    // JPEG download
+    out.toBlob((blob) => {
+      if (!blob) return;
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `qr-table-${(table.label || table.id || 'unknown').toString().replace(/[^a-z0-9-]+/gi, '_')}.jpg`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    }, 'image/jpeg', 0.92);
+  };
+
+  const downloadAll = async () => {
+    setDownloading(true);
+    try {
+      for (const t of tables) {
+        // Slight delay between downloads so the browser doesn't block them
+        // as a "multiple files" dialog.
+        // eslint-disable-next-line no-await-in-loop
+        await downloadOne(t);
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise(r => setTimeout(r, 250));
+      }
+    } finally { setDownloading(false); }
+  };
+
+  const radioStyle = (active) => ({
+    flex: 1, padding: '8px 10px', borderRadius: 8, fontFamily: 'inherit',
+    background: active ? 'var(--acc-d)' : 'var(--bg2)',
+    color: active ? 'var(--acc)' : 'var(--t2)',
+    border: `1px solid ${active ? 'var(--acc-b)' : 'var(--bdr2)'}`,
+    fontSize: 12, fontWeight: 700, cursor: 'pointer', textAlign: 'center',
+  });
+
+  return (
+    <div style={S.card}>
+      <h3 style={S.h3}>QR ordering</h3>
+      <div style={{ fontSize: 12, color: 'var(--t4)', marginBottom: 14, lineHeight: 1.5 }}>
+        Settings + downloadable QR codes for table-side ordering. Print one per table or stick on table tents.
+      </div>
+
+      {/* Payment mode */}
+      <div style={{ marginBottom: 14 }}>
+        <div style={S.label}>Payment</div>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button onClick={() => setPaymentMode('pay_now')} style={radioStyle(paymentMode === 'pay_now')}>💳 Pay now</button>
+          <button onClick={() => setPaymentMode('open_tab')} style={radioStyle(paymentMode === 'open_tab')}>📋 Open tab</button>
+          <button onClick={() => setPaymentMode('both')} style={radioStyle(paymentMode === 'both')}>Both — let customer choose</button>
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 6 }}>
+          Pay-now charges immediately. Open-tab pre-authorises the card and bills at end (lands in v5.5.147+).
+        </div>
+      </div>
+
+      {/* Table mode */}
+      <div style={{ marginBottom: 14 }}>
+        <div style={S.label}>Table identification</div>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button onClick={() => setTableMode('fixed')} style={radioStyle(tableMode === 'fixed')}>🔒 Fixed (QR-only)</button>
+          <button onClick={() => setTableMode('confirm')} style={radioStyle(tableMode === 'confirm')}>✅ Confirm</button>
+          <button onClick={() => setTableMode('free')} style={radioStyle(tableMode === 'free')}>✏️ Free-type</button>
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 6 }}>
+          {tableMode === 'fixed' && 'QR code locks the table; customer can\'t change it.'}
+          {tableMode === 'confirm' && '"You\'re at Table 5? Yes / Change" before menu loads — recommended.'}
+          {tableMode === 'free' && 'QR encodes no table; customer types their number on first screen.'}
+        </div>
+      </div>
+
+      {/* Service charge */}
+      <Field
+        label="Service charge %"
+        type="number" min="0"
+        value={servicePct}
+        onChange={v => setServicePct(parseFloat(v) || 0)}
+        help="Auto-applied to every QR order. 0 = none. Capped at 50%."/>
+
+      {/* QR codes */}
+      <div style={{ marginTop: 18 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+          <div style={{ ...S.label, marginBottom: 0 }}>QR codes ({tables.length} table{tables.length === 1 ? '' : 's'})</div>
+          <button onClick={downloadAll} disabled={!tables.length || downloading || tableMode === 'free'}
+            style={{ ...S.btn, background: 'var(--bg3)', color: 'var(--t1)', fontSize: 12, padding: '8px 14px',
+              opacity: (!tables.length || downloading || tableMode === 'free') ? 0.4 : 1 }}>
+            {downloading ? 'Downloading…' : '⬇ Download all'}
+          </button>
+        </div>
+        {tableMode === 'free' && (
+          <div style={{ fontSize: 12, color: 'var(--t4)', padding: 12, background: 'var(--bg2)', borderRadius: 8, border: '1px solid var(--bdr2)' }}>
+            Free-type mode: a single generic QR is enough — customers type their table number on arrival. <button onClick={() => downloadOne({ id: '', label: 'Generic' })} style={{ background: 'none', border: 'none', color: 'var(--acc)', cursor: 'pointer', textDecoration: 'underline', fontFamily: 'inherit', padding: 0, fontSize: 12 }}>Download generic QR</button>
+          </div>
+        )}
+        {tableMode !== 'free' && tables.length === 0 && (
+          <div style={{ fontSize: 12, color: 'var(--t4)', padding: 16, background: 'var(--bg2)', borderRadius: 8, border: '1px dashed var(--bdr2)', textAlign: 'center' }}>
+            No tables yet. Set them up in Floor Plan first.
+          </div>
+        )}
+        {tableMode !== 'free' && tables.length > 0 && (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 8 }}>
+            {tables.map(t => (
+              <button key={t.id} onClick={() => downloadOne(t)}
+                style={{
+                  padding: '12px 10px', borderRadius: 8,
+                  background: 'var(--bg2)', border: '1px solid var(--bdr2)',
+                  color: 'var(--t1)', cursor: 'pointer', fontFamily: 'inherit',
+                  display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4,
+                }}>
+                <span style={{ fontSize: 22 }}>📱</span>
+                <span style={{ fontSize: 14, fontWeight: 700 }}>Table {t.label || t.id}</span>
+                <span style={{ fontSize: 10, color: 'var(--t4)' }}>⬇ JPEG</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function StatusPill({ title, enabled, url, preview }) {
   return (
     <div style={{ padding:'14px 16px', background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:12 }}>
