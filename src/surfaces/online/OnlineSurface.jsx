@@ -224,7 +224,7 @@ export default function OnlineSurface({ location }) {
           <div style={{ fontSize: 15, fontWeight: 800, flexShrink: 0, marginRight: 'auto' }}>{theme.name}</div>
 
           {/* Order-type pill (changeable) */}
-          <button onClick={() => setOrderType(null)} style={{
+          <button onClick={() => setOrderType(null)} className="op-btn" style={{
             padding: '6px 12px', borderRadius: 99,
             background: `${theme.accent}18`, color: theme.fg,
             border: `1px solid ${theme.accent}55`,
@@ -238,7 +238,7 @@ export default function OnlineSurface({ location }) {
 
           {/* Allergy filter — only shown when there are allergens to filter */}
           {knownAllergens.length > 0 && (
-            <button onClick={() => setShowAllergyPicker(true)} style={{
+            <button onClick={() => setShowAllergyPicker(true)} className="op-btn" style={{
               padding: '6px 12px', borderRadius: 99,
               background: activeAllergens.length ? '#ef444420' : 'transparent',
               color: activeAllergens.length ? '#ef4444' : theme.fg,
@@ -252,7 +252,7 @@ export default function OnlineSurface({ location }) {
           )}
 
           {/* Loyalty / sign-in */}
-          <button onClick={() => setShowLoyalty(true)} style={{
+          <button onClick={() => setShowLoyalty(true)} className="op-btn" style={{
             padding: '6px 12px', borderRadius: 99,
             background: loyalty?.verified ? `${theme.accent}18` : 'transparent',
             color: theme.fg, border: `1px solid ${cardBdr}`,
@@ -271,7 +271,7 @@ export default function OnlineSurface({ location }) {
           {topCategories.map(c => {
             if (itemsForCat(c.id).length === 0) return null;
             return (
-              <button key={c.id} onClick={() => {
+              <button key={c.id} className="op-btn" onClick={() => {
                 document.getElementById(`cat-${c.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
               }} style={{
                 display: 'inline-block', padding: '7px 13px', marginRight: 6,
@@ -346,7 +346,7 @@ export default function OnlineSurface({ location }) {
           borderTop: `1px solid ${cardBdr}`,
           display: 'flex', justifyContent: 'center',
         }}>
-          <button onClick={() => setShowCart(true)} style={{
+          <button onClick={() => setShowCart(true)} className="op-btn-primary" style={{
             width: '100%', maxWidth: 540,
             padding: '16px 22px', borderRadius: 14,
             background: theme.accent, color: contrastFg(theme.accent),
@@ -472,7 +472,7 @@ function Welcome({ theme, orderTypes, loyalty, onPickType, onLoyalty }) {
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {orderTypes.map(t => (
-            <button key={t.id} onClick={() => onPickType(t.id)} style={{
+            <button key={t.id} className="op-btn-primary" onClick={() => onPickType(t.id)} style={{
               padding: '20px 22px', borderRadius: 16,
               background: 'rgba(255,255,255,0.95)', color: '#1a1a1a',
               border: 'none', cursor: 'pointer', fontFamily: 'inherit',
@@ -813,7 +813,7 @@ function ItemCard({ item, theme, cardBg, cardBdr, muted, onPick, variantInfo }) 
   const displayPrice = isVariantParent ? (variantInfo.fromPrice || 0) : ownPrice;
   const allergens = item.allergens || [];
   return (
-    <button onClick={onPick} style={{
+    <button onClick={onPick} className="op-btn" style={{
       display: 'flex', alignItems: 'stretch',
       width: '100%', textAlign: 'left',
       padding: 0, borderRadius: 14, overflow: 'hidden',

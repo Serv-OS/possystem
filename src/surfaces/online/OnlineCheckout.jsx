@@ -120,8 +120,12 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         sent_at: sentAt.toISOString(),
         collection_time: collectionTimeLabel,
         is_asap: timeMode === 'asap',
-        paid: false,
       };
+      // `paid` / `payment_method` columns from migration v5.5.57 may not be
+      // applied on every venue's DB yet — leaving them off the row is safe
+      // because the column defaults to false. The operator marks paid when
+      // they collect cash; Stripe-paid online orders set it via webhook in
+      // the next commit.
       // Don't try to write to closed_checks yet — payment hasn't been
       // taken. Phase 4 (Stripe online card) lands the closed_checks row on
       // payment success. For now we land the order_queue row so it shows
@@ -225,7 +229,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           background: theme.bg, borderTop: `1px solid ${cardBdr}`,
         }}>
           {error && <div style={{ fontSize: 12, color: '#ef4444', marginBottom: 10 }}>{error}</div>}
-          <button onClick={place} disabled={!valid || working} style={{
+          <button onClick={place} disabled={!valid || working} className="op-btn-primary" style={{
             width: '100%', padding: '16px 22px', borderRadius: 14,
             background: valid ? theme.accent : `${theme.fg}20`,
             color: valid ? contrastFg(theme.accent) : `${theme.fg}60`,
@@ -266,7 +270,7 @@ function Field({ label, value, onChange, placeholder, type = 'text', theme, card
 
 function ModeChip({ active, onClick, theme, cardBdr, children }) {
   return (
-    <button onClick={onClick} style={{
+    <button onClick={onClick} className="op-btn" style={{
       flex: 1, padding: '14px 16px', borderRadius: 12,
       background: active ? `${theme.accent}15` : 'transparent',
       color: theme.fg, border: `1.5px solid ${active ? theme.accent : cardBdr}`,

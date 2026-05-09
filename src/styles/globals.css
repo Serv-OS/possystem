@@ -396,3 +396,9 @@ button { font-family: inherit; }
     border-color: #000 !important;
   }
 }
+
+/* v5.5.119 — online ordering surface: visible press feedback */
+.op-btn { transition: transform .08s ease, filter .08s ease, box-shadow .12s ease; }
+.op-btn:active { transform: scale(0.96); filter: brightness(0.9); }
+.op-btn-primary { transition: transform .08s ease, filter .08s ease, box-shadow .12s ease; }
+.op-btn-primary:active { transform: scale(0.98); filter: brightness(0.85); box-shadow: 0 2px 8px rgba(0,0,0,0.18) !important; }

@@ -76,6 +76,13 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.119', date: '9 May 2026', label: 'Online checkout — drop `paid` column from insert (not on every venue\'s schema) + visible button-press feedback',
+    changes: [
+      'FIX: PLACE ORDER STILL FAILING — error was "Could not find the \'paid\' column of \'order_queue\'". Migration v5.5.57 added paid/payment_method but it hasn\'t been applied on every venue\'s ops DB. Removed both columns from the insert — they default to false on the column itself, and the operator marks paid when collecting cash. Stripe-paid orders will set them via webhook in the next commit (and that commit will also force the migration before writing).',
+      'PRESS FEEDBACK — button presses on the online surface were silent (just a colour change) so customers couldn\'t tell whether their tap registered. Added two utility classes in globals.css: `.op-btn` (scale 0.96 + brightness 0.9 on :active) for chips/cards/secondary buttons, `.op-btn-primary` (scale 0.98 + brightness 0.85 + softer shadow on :active) for the big colour-filled primary buttons. Applied to: Place order, View basket cart CTA, item cards, category chips, order-type pill, allergy + loyalty pills, welcome screen Collection / Delivery buttons, ASAP / Schedule mode chips. 80ms transitions so feedback feels instant without making the UI feel laggy.',
+    ],
+  },
+  {
     version: '5.5.118', date: '9 May 2026', label: 'Online checkout — fix order_queue insert (column shape) + proper Day/Time dropdowns',
     changes: [
       'FIX: PLACE ORDER WAS FAILING — `order_queue` schema is `(ref pk, location_id, type, customer, items, total, status, source, sent_at, collection_time text, is_asap, paid, …)`. My v5.5.117 insert was sending `subtotal` and `scheduled_for` neither of which exist. Supabase was rejecting the row with "Could not find the \'scheduled_for\' column". Swapped to the real shape: `collection_time` text (HH:mm in venue tz) + `is_asap` bool + `sent_at` timestamptz (kitchen-fire moment). status=\'received\' to match the rest of the queue surfaces.',
