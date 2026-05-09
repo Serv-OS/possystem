@@ -76,6 +76,13 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.131', date: '9 May 2026', label: 'Routing diagnostics surface as on-screen toasts on the master device — no DevTools needed for Sunmi',
+    changes: [
+      'ROUTING TOASTS — every customer-surface order routing run now surfaces its outcome as a visible toast on the master device, so operators on a Sunmi/Android-APK install (no Chrome DevTools) can see exactly what happened. Three states: ✓ "ONLINE OL-XXX routed → Hot Kitchen, Bar" (success), ⚠ "...routed to X — but Y has no printer mapped (KDS only)" (centres matched but no paper output), or ❌ "...did not print: <specific reason>" (zero centres matched, with the actual cause: no centres / no routing rules / items have no cat / cats don\'t match any centre\'s assigned categories).',
+      'WHY THIS HELPS — the user reported "still didnt print" but POS-placed orders DO print. Same routing function, same physical printers, different item shape arriving from the customer surface. The toast on the master POS will pinpoint the delta in plain English the moment they place a test order. No need to plug the Sunmi into a desktop Chrome via USB-debug.',
+    ],
+  },
+  {
     version: '5.5.130', date: '9 May 2026', label: 'Routing diagnostic — log incoming items so we can see cat/parentId/source delta vs the working POS path',
     changes: [
       'INCOMING-ITEMS DIAGNOSTIC — at the top of routeKioskOrderPrints we now log `ENTRY OL-XXX source: online items: [{id, name, cat, cats, parentId}]` BEFORE any routing logic runs. POS-placed orders print fine for the same items, so the delta has to be in the item shape arriving from the customer surface. This log makes the delta visible. Place a test online order and check the master device DevTools — the line will tell us whether cat / cats / parentId arrived populated or all-null.',

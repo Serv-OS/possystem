@@ -3639,14 +3639,17 @@ export const useStore = create((set, get) => ({
   routeKioskOrderPrints: async (order) => {
     if (!order?.ref || !Array.isArray(order.items) || !order.items.length) return;
     if (!supabase) return;
-    // v5.5.130: log the FULL incoming items so we can see whether cat /
-    // parentId / itemId arrived. POS prints work; if online doesn't, the
-    // delta is in the items shape — this log reveals it.
+    // v5.5.131: surface routing diagnostics as on-screen toasts on the master
+    // device — DevTools isn't accessible on Sunmi/Android-APK installs.
+    const showToast = useStore.getState().showToast;
+    const srcLabel = order.source ? order.source.toUpperCase() : 'ORDER';
+    // Log AND toast the entry so the operator sees the order arrive.
     console.log('[routeKioskOrderPrints] ENTRY', order.ref, 'source:', order.source,
       'items:', order.items.map(i => ({
         id: i.id || i.itemId, name: i.name, cat: i.cat, cats: i.cats,
         parentId: i.parentId || i.parent_id,
       })));
+    showToast?.(`Routing ${srcLabel} ${order.ref}…`, 'info');
     try {
       // v5.5.126: scheduled-order deferral. order_queue.sent_at is the
       // kitchen-fire moment (collection_time − online_collection_lead_min).
@@ -3809,14 +3812,35 @@ export const useStore = create((set, get) => ({
       // routing config not loaded yet?). One of these is almost always
       // the cause when "didn't print".
       if (Object.keys(byCentre).length === 0) {
-        console.warn('[routeKioskOrderPrints] NOTHING ROUTED for', order.ref,
-          '— diagnostic dump:',
-          { centres: routingConfig.centres?.length || 0,
-            routingKeys: Object.keys(routingConfig.routing || {}).length,
-            sampleItem: order.items?.[0],
-            sampleItemCat: order.items?.[0]?.cat,
-            allCats: order.items?.map(i => i.cat || i.cats?.[0] || null),
-          });
+        const dump = {
+          centres: routingConfig.centres?.length || 0,
+          routingKeys: Object.keys(routingConfig.routing || {}).length,
+          allCats: order.items?.map(i => i.cat || i.cats?.[0] || null),
+        };
+        console.warn('[routeKioskOrderPrints] NOTHING ROUTED for', order.ref, '— diagnostic dump:', dump);
+        // v5.5.131: on-screen diagnostic toast for Sunmi (no DevTools).
+        // Tells the operator EXACTLY which side is broken.
+        let reason;
+        if (!dump.centres) reason = 'no production centres configured';
+        else if (!dump.routingKeys) reason = 'centres exist but no category routing rules';
+        else if (dump.allCats?.every(c => !c)) reason = 'order items have no `cat` field — try refreshing customer browser';
+        else reason = `item cats (${dump.allCats?.join(', ')}) don\'t match any centre`;
+        showToast?.(`⚠ ${srcLabel} ${order.ref} did not print: ${reason}`, 'error');
+      } else {
+        const centreNames = Object.keys(byCentre).map(cid =>
+          routingConfig.centres?.find(c => c.id === cid)?.name || cid
+        );
+        // Also report which (if any) centres lack a printer mapping.
+        const noPrinter = centreNames.filter((_, idx) => {
+          const cid = Object.keys(byCentre)[idx];
+          const c = routingConfig.centres?.find(c => c.id === cid);
+          return !c?.printer?.id;
+        });
+        if (noPrinter.length) {
+          showToast?.(`⚠ ${srcLabel} ${order.ref} routed to ${centreNames.join(', ')} — but ${noPrinter.join(', ')} has no printer mapped (KDS only)`, 'warning');
+        } else {
+          showToast?.(`✓ ${srcLabel} ${order.ref} routed → ${centreNames.join(', ')}`, 'success');
+        }
       }
 
       // v5.5.128: AFTER prints have fired (or we tried — the print path is
