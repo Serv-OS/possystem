@@ -15,6 +15,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import OnlineCart from './OnlineCart';
+import OnlineCheckout from './OnlineCheckout';
 import OnlineItemSheet from './OnlineItemSheet';
 
 const FALLBACK_ACCENT = '#e8a020';
@@ -32,6 +33,8 @@ export default function OnlineSurface({ location }) {
   const [loading, setLoading]       = useState(true);
   const [openItem, setOpenItem]     = useState(null);
   const [showCart, setShowCart]     = useState(false);
+  const [showCheckout, setShowCheckout] = useState(false);
+  const [confirmation, setConfirmation] = useState(null); // { id, when, type }
   const [orderType, setOrderType]   = useState(null); // null until welcome screen picks
   const [showLoyalty, setShowLoyalty] = useState(false);
   const [loyalty, setLoyalty]       = useState(null); // { phone, verified }
@@ -201,7 +204,8 @@ export default function OnlineSurface({ location }) {
   return (
     <ScrollShell theme={theme} extraBottomPad={cart.length > 0 ? 96 : 0}>
       {/* HERO with overlay logo */}
-      <Hero theme={theme} muted={muted}/>
+      <Hero theme={theme} muted={muted}
+        leadMin={Number(location.online_collection_lead_min) || 0}/>
 
       {/* Sticky header — order-type pill + allergy filter + loyalty + categories */}
       <div style={{
@@ -371,9 +375,29 @@ export default function OnlineSurface({ location }) {
           onClose={() => setShowCart(false)}
           onRemove={removeFromCart} onUpdateQty={updateQty}
           onCheckout={() => {
-            alert('Checkout coming next — Phase 4 builds the customer-details form + Stripe payment.');
+            setShowCart(false);
+            setShowCheckout(true);
           }}
         />
+      )}
+
+      {showCheckout && (
+        <OnlineCheckout
+          cart={cart} theme={theme} location={location}
+          orderType={orderType} loyalty={loyalty}
+          onClose={() => setShowCheckout(false)}
+          onPlaced={(info) => {
+            setShowCheckout(false);
+            setCart([]);
+            setConfirmation(info);
+          }}/>
+      )}
+
+      {confirmation && (
+        <ConfirmationModal
+          theme={theme} cardBdr={cardBdr} muted={muted}
+          info={confirmation}
+          onClose={() => setConfirmation(null)}/>
       )}
 
       {showAllergyPicker && (
@@ -656,6 +680,53 @@ function LoyaltyModal({ theme, cardBdr, muted, onClose, onVerified }) {
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ConfirmationModal — shown after a successful order. The kitchen receives
+// the ticket at sent_at (collection time minus leadMin) — we just confirm
+// to the customer.
+function ConfirmationModal({ theme, cardBdr, muted, info, onClose }) {
+  const whenLabel = info?.when
+    ? new Date(info.when).toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit' })
+    : 'as soon as possible';
+  return (
+    <div onClick={onClose} style={{
+      position: 'fixed', inset: 0, zIndex: 60, background: 'rgba(0,0,0,0.7)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        width: '100%', maxWidth: 460,
+        background: theme.bg, color: theme.fg,
+        borderRadius: 18, boxShadow: '0 20px 60px rgba(0,0,0,0.4)',
+        padding: 32, textAlign: 'center',
+      }}>
+        <div style={{ fontSize: 56, marginBottom: 12 }}>✅</div>
+        <div style={{ fontSize: 24, fontWeight: 900, letterSpacing: '-0.02em', marginBottom: 8 }}>
+          Order placed!
+        </div>
+        <div style={{ fontSize: 14, color: muted, lineHeight: 1.55, marginBottom: 20 }}>
+          {info?.type === 'delivery' ? 'Delivery' : 'Collection'} {info?.when ? 'scheduled for' : ''}
+          {' '}<b style={{ color: theme.fg }}>{whenLabel}</b>.
+          {' '}You'll receive a confirmation shortly.
+        </div>
+        {info?.id && (
+          <div style={{
+            padding: '10px 14px', borderRadius: 10,
+            background: `${theme.accent}15`, border: `1px solid ${cardBdr}`,
+            fontSize: 12, fontWeight: 700, marginBottom: 18,
+          }}>
+            Order ref: <span style={{ fontFamily: 'monospace', letterSpacing: '0.05em' }}>{info.id}</span>
+          </div>
+        )}
+        <button onClick={onClose} style={{
+          width: '100%', padding: '14px 18px', borderRadius: 12,
+          background: theme.accent, color: contrastFg(theme.accent),
+          border: 'none', fontSize: 14, fontWeight: 800, cursor: 'pointer', fontFamily: 'inherit',
+        }}>Done</button>
+      </div>
+    </div>
+  );
+}
+
 function inputStyle(theme, cardBdr) {
   return {
     width: '100%', padding: '14px 16px', borderRadius: 12,
@@ -666,11 +737,15 @@ function inputStyle(theme, cardBdr) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-function Hero({ theme, muted }) {
+function Hero({ theme, muted, leadMin }) {
   // Tall hero. Background image OR brand-colour gradient. Logo + name overlaid.
+  // Stronger gradient + heavier text-shadows for legibility against any photo.
   const heroBg = theme.hero
-    ? `linear-gradient(180deg, rgba(0,0,0,0.15) 0%, rgba(0,0,0,0.55) 100%), url(${theme.hero}) center/cover no-repeat`
+    ? `linear-gradient(180deg, rgba(0,0,0,0.45) 0%, rgba(0,0,0,0.85) 100%), url(${theme.hero}) center/cover no-repeat`
     : `linear-gradient(135deg, ${theme.accent}, ${shade(theme.accent, -25)})`;
+  const leadLabel = leadMin > 0
+    ? `${leadMin < 60 ? `${leadMin} min` : `${Math.round(leadMin/60)} h`} prep time`
+    : null;
   return (
     <div style={{
       position: 'relative',
@@ -690,7 +765,7 @@ function Hero({ theme, muted }) {
           {theme.logo
             ? <img src={theme.logo} alt={theme.name} style={{
                 width: 84, height: 84, borderRadius: 18, objectFit: 'cover',
-                border: '3px solid #fff', boxShadow: '0 8px 24px rgba(0,0,0,0.25)',
+                border: '3px solid #fff', boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
                 flexShrink: 0,
               }}/>
             : <div style={{
@@ -698,24 +773,31 @@ function Hero({ theme, muted }) {
                 background: theme.accent, color: contrastFg(theme.accent),
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                 fontSize: 38, fontWeight: 900, border: '3px solid #fff',
-                boxShadow: '0 8px 24px rgba(0,0,0,0.25)', flexShrink: 0,
+                boxShadow: '0 8px 24px rgba(0,0,0,0.4)', flexShrink: 0,
               }}>{theme.name[0]}</div>
           }
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 32, fontWeight: 900, letterSpacing: '-0.025em',
-              textShadow: '0 2px 8px rgba(0,0,0,0.3)',
+            <div style={{ fontSize: 34, fontWeight: 900, letterSpacing: '-0.025em', lineHeight: 1.1,
+              textShadow: '0 2px 12px rgba(0,0,0,0.6), 0 1px 2px rgba(0,0,0,0.5)',
             }}>{theme.name}</div>
-            <div style={{ fontSize: 13, fontWeight: 600, opacity: 0.95, marginTop: 2,
-              textShadow: '0 1px 4px rgba(0,0,0,0.4)',
-            }}>
+            <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
               <span style={{
                 display: 'inline-flex', alignItems: 'center', gap: 6,
-                padding: '3px 10px', borderRadius: 99,
-                background: 'rgba(34,197,94,0.85)', color: '#fff',
-                fontSize: 11, fontWeight: 800, letterSpacing: '0.02em',
-                marginRight: 8, textShadow: 'none',
+                padding: '5px 12px', borderRadius: 99,
+                background: 'rgba(34,197,94,0.95)', color: '#fff',
+                fontSize: 12, fontWeight: 800, letterSpacing: '0.02em',
               }}>● Open now</span>
-              Order online for collection or delivery
+              {leadLabel && (
+                <span style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 6,
+                  padding: '5px 12px', borderRadius: 99,
+                  background: 'rgba(0,0,0,0.55)', color: '#fff',
+                  fontSize: 12, fontWeight: 700,
+                  border: '1px solid rgba(255,255,255,0.2)',
+                  backdropFilter: 'saturate(180%) blur(8px)',
+                  WebkitBackdropFilter: 'saturate(180%) blur(8px)',
+                }}>⏱ {leadLabel}</span>
+              )}
             </div>
           </div>
         </div>

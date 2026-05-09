@@ -76,6 +76,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.117', date: '8 May 2026', label: 'Online ordering Phase 4 — checkout sheet (customer details + ASAP/scheduled time picker) + order_queue persistence with sent_at lead time + hero polish',
+    changes: [
+      'CHECKOUT SHEET — new OnlineCheckout component slides up over the cart. Three sections: (1) customer details — name, phone (pre-filled if logged in via loyalty), email, plus address/postcode for delivery; (2) WHEN — ASAP or Schedule for later, with 15-min slots generated from the location\'s opening hours starting at (now + online_collection_lead_min); (3) order summary + place button.',
+      'KITCHEN TIMING RESPECTED — on place, the order_queue row\'s sent_at is set to (collection_time − online_collection_lead_min). The kitchen sees the ticket exactly when they need to start cooking, not when the customer placed the order. ASAP orders use sent_at=now (kitchen fires immediately); scheduled orders sit in the queue and surface at the right moment. Mirrors the existing MPOS collection flow so any operator already using lead-time settings gets the same behaviour for online.',
+      'CONFIRMATION — after placing, customer sees a success modal with their collection/delivery time and a short order ref. Cart clears. Stripe online payment is the next commit; this commit ships the customer-details + time-picker UX + the order-persistence path so operators can already start fulfilling online orders even before card-on-file is wired.',
+      'HERO POLISH — the hero now shows a "⏱ X min prep time" pill next to the "● Open now" status (using online_collection_lead_min so customers know what wait to expect before they even add items). Removed the "Order online for collection or delivery" subtitle that was clashing with the order-type pill in the sticky header. Stronger gradient (0.45 → 0.85) + heavier text-shadows so the venue name + status pills stay legible against any uploaded hero photo.',
+    ],
+  },
+  {
     version: '5.5.116', date: '8 May 2026', label: 'Online ordering — nested mods + quantity mode + rich variant rows (image / desc / allergens)',
     changes: [
       'NESTED MODIFIERS — option.subGroupId is now resolved. After the initial fetch, the loader scans every option for a subGroupId and fetches those groups too (recursively, so chained nesting works). When a customer picks an option in a single-pick group AND that option has a subGroupId, the sub-group renders inline beneath the parent option (indented + accent-coloured left border). Sub-pick gets emitted into the cart line\'s mods immediately after the parent option, same shape MItemDetail / kitchen tickets already understand.',
