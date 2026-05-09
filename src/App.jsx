@@ -76,6 +76,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.146', date: '9 May 2026', label: 'QR header polish — prominent TABLE badge in hero + wait time restored + pills inline',
+    changes: [
+      'TABLE NUMBER NOW PROMINENT — the hero shows a stacked "TABLE T5" badge under the venue name (38px, bold) so a customer who walks up to the QR mid-conversation can\'t miss which table they scanned. Replaces the v5.5.145 placement that relied on a small chip in the sticky header (kept as a scrolled-state breadcrumb).',
+      'WAIT TIME RESTORED FOR QR — v5.5.145 zeroed out the prep-time pill on QR mode because table-side has no scheduled-collection logic. But customers on a table want to know "how long until food arrives" too. The hero pill now shows for QR using the same online_collection_lead_min config and switches its label from "X min prep time" → "X min wait" when in QR mode.',
+      'PILL ROW IS A SINGLE INLINE LINE — the green "● Open now" + dark "⏱ X min wait" sit on one row (flex with wrap fallback). When the venue has a tableLabel the venue-name font scales down (34→22px) and the logo from 84→70px so the TABLE badge has the visual weight without the hero feeling crowded. Hero height grows 280→320px to keep breathing room.',
+    ],
+  },
+  {
     version: '5.5.145', date: '9 May 2026', label: 'QR table-side ordering — pay-now flow live (commit 1 of 3)',
     changes: [
       'CUSTOMER FLOW — scanning a venue QR (URL pattern `?surface=qr&t=T5` or subdomain path `/t/T5`) now lands the customer on the same branded ordering surface as online ordering, with a few small adjustments. No order-type picker — table-side is always dine-in. The sticky header shows a "📱 Table T5" chip instead of the changeable Collection/Delivery pill. The hero hides the prep-time pill (no scheduled times for table service). Everything else — menu browse, modifiers/variants, allergy filter, cart, item sheet, OUT OF STOCK awareness — is identical to online.',

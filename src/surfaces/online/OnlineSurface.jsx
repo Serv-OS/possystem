@@ -306,7 +306,8 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
     <ScrollShell theme={theme} extraBottomPad={cart.length > 0 ? 96 : 0}>
       {/* HERO with overlay logo */}
       <Hero theme={theme} muted={muted}
-        leadMin={isQr ? 0 : Number(location.online_collection_lead_min) || 0}/>
+        leadMin={Number(location.online_collection_lead_min) || 0}
+        tableLabel={isQr ? (tableLabel || tableId) : null}/>
 
       {/* Sticky header — order-type pill + allergy filter + loyalty + categories */}
       <div style={{
@@ -877,19 +878,22 @@ function inputStyle(theme, cardBdr) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-function Hero({ theme, muted, leadMin }) {
+function Hero({ theme, muted, leadMin, tableLabel }) {
   // Tall hero. Background image OR brand-colour gradient. Logo + name overlaid.
   // Stronger gradient + heavier text-shadows for legibility against any photo.
+  // v5.5.146: tableLabel renders a prominent "TABLE T5" badge stacked under
+  // the venue name when present. Wait-time + open pills sit inline alongside
+  // each other on a single row, so the eye reads top→down: brand → table → state.
   const heroBg = theme.hero
     ? `linear-gradient(180deg, rgba(0,0,0,0.45) 0%, rgba(0,0,0,0.85) 100%), url(${theme.hero}) center/cover no-repeat`
     : `linear-gradient(135deg, ${theme.accent}, ${shade(theme.accent, -25)})`;
   const leadLabel = leadMin > 0
-    ? `${leadMin < 60 ? `${leadMin} min` : `${Math.round(leadMin/60)} h`} prep time`
+    ? `${leadMin < 60 ? `${leadMin} min` : `${Math.round(leadMin/60)} h`} ${tableLabel ? 'wait' : 'prep time'}`
     : null;
   return (
     <div style={{
       position: 'relative',
-      height: 280, background: heroBg, backgroundSize: 'cover',
+      height: tableLabel ? 320 : 280, background: heroBg, backgroundSize: 'cover',
       display: 'flex', flexDirection: 'column', justifyContent: 'flex-end',
       padding: '28px 24px',
       color: '#fff',
@@ -904,12 +908,14 @@ function Hero({ theme, muted, leadMin }) {
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
           {theme.logo
             ? <img src={theme.logo} alt={theme.name} style={{
-                width: 84, height: 84, borderRadius: 18, objectFit: 'cover',
+                width: tableLabel ? 70 : 84, height: tableLabel ? 70 : 84,
+                borderRadius: 18, objectFit: 'cover',
                 border: '3px solid #fff', boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
                 flexShrink: 0,
               }}/>
             : <div style={{
-                width: 84, height: 84, borderRadius: 18,
+                width: tableLabel ? 70 : 84, height: tableLabel ? 70 : 84,
+                borderRadius: 18,
                 background: theme.accent, color: contrastFg(theme.accent),
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                 fontSize: 38, fontWeight: 900, border: '3px solid #fff',
@@ -917,10 +923,29 @@ function Hero({ theme, muted, leadMin }) {
               }}>{theme.name[0]}</div>
           }
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 34, fontWeight: 900, letterSpacing: '-0.025em', lineHeight: 1.1,
+            <div style={{
+              fontSize: tableLabel ? 22 : 34,
+              fontWeight: 800, letterSpacing: '-0.02em', lineHeight: 1.1,
+              opacity: tableLabel ? 0.92 : 1,
               textShadow: '0 2px 12px rgba(0,0,0,0.6), 0 1px 2px rgba(0,0,0,0.5)',
             }}>{theme.name}</div>
-            <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+
+            {/* v5.5.146: prominent table number — only when QR mode passed it. */}
+            {tableLabel && (
+              <div style={{
+                marginTop: 6, fontSize: 38, fontWeight: 900,
+                letterSpacing: '-0.025em', lineHeight: 1, color: '#fff',
+                textShadow: '0 2px 14px rgba(0,0,0,0.7), 0 1px 2px rgba(0,0,0,0.5)',
+              }}>
+                <span style={{ fontSize: 14, opacity: 0.7, fontWeight: 700, letterSpacing: '0.12em', display: 'block', textTransform: 'uppercase', marginBottom: 2 }}>
+                  Table
+                </span>
+                {tableLabel}
+              </div>
+            )}
+
+            {/* Status pills — single inline row. */}
+            <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
               <span style={{
                 display: 'inline-flex', alignItems: 'center', gap: 6,
                 padding: '5px 12px', borderRadius: 99,
