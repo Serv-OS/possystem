@@ -558,13 +558,15 @@ function OptionRow({ label, priceDelta, absolutePrice, checked, onClick, mode, t
     if (priceDelta < 0) priceColor = '#22c55e';
   }
   return (
-    <button onClick={onClick} style={{
+    <button onClick={onClick} className="op-btn" style={{
       width: '100%', display: 'flex', alignItems: 'center', gap: 12,
       padding: '12px 14px', borderRadius: 12,
-      background: checked ? `${theme.accent}15` : inputBg,
-      border: `1.5px solid ${checked ? theme.accent : cardBdr}`,
+      background: checked ? `${theme.accent}28` : inputBg,
+      border: `${checked ? 3 : 1.5}px solid ${checked ? theme.accent : cardBdr}`,
+      boxShadow: checked ? `0 4px 14px ${theme.accent}40` : 'none',
       color: theme.fg, fontFamily: 'inherit', cursor: 'pointer', textAlign: 'left',
       transition: 'all .12s ease',
+      fontWeight: checked ? 800 : 600,
     }}>
       <Indicator checked={checked} mode={mode} accent={theme.accent} cardBdr={cardBdr}/>
       <span style={{ flex: 1, fontSize: 14, fontWeight: 600 }}>{label}</span>
@@ -579,11 +581,12 @@ function OptionRow({ label, priceDelta, absolutePrice, checked, onClick, mode, t
 function VariantRow({ variant, active, price, onClick, theme, cardBdr, inputBg }) {
   const allergens = variant.allergens || [];
   return (
-    <button onClick={onClick} style={{
+    <button onClick={onClick} className="op-btn" style={{
       width: '100%', display: 'flex', alignItems: 'stretch', gap: 0,
       padding: 0, borderRadius: 12, overflow: 'hidden',
-      background: active ? `${theme.accent}15` : inputBg,
-      border: `1.5px solid ${active ? theme.accent : cardBdr}`,
+      background: active ? `${theme.accent}28` : inputBg,
+      border: `${active ? 3 : 1.5}px solid ${active ? theme.accent : cardBdr}`,
+      boxShadow: active ? `0 4px 14px ${theme.accent}40` : 'none',
       color: theme.fg, fontFamily: 'inherit', cursor: 'pointer', textAlign: 'left',
       transition: 'all .12s ease',
     }}>
@@ -630,8 +633,9 @@ function QtyOptionRow({ option, count, canAdd, onInc, onDec, theme, cardBdr, inp
     <div style={{
       width: '100%', display: 'flex', alignItems: 'center', gap: 12,
       padding: '12px 14px', borderRadius: 12,
-      background: count > 0 ? `${theme.accent}15` : inputBg,
-      border: `1.5px solid ${count > 0 ? theme.accent : cardBdr}`,
+      background: count > 0 ? `${theme.accent}28` : inputBg,
+      border: `${count > 0 ? 3 : 1.5}px solid ${count > 0 ? theme.accent : cardBdr}`,
+      boxShadow: count > 0 ? `0 4px 14px ${theme.accent}40` : 'none',
       color: theme.fg, fontFamily: 'inherit',
     }}>
       <span style={{ flex: 1, fontSize: 14, fontWeight: 600 }}>{option.name || option.label}</span>

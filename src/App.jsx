@@ -76,6 +76,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.123', date: '9 May 2026', label: 'Three fixes — OrderAlert ReferenceError + Stripe 401 (anonymous sign-in) + selected buttons now obvious',
+    changes: [
+      'FIX: ORDERALERT REFERENCEERROR — v5.5.122 destructured orderAlert/dismissOrderAlert in App() and rendered <OrderAlert> there, but the actual operator UI tree lives inside ValidatedPOSApp (App is just a router wrapper). ValidatedPOSApp had no orderAlert in scope so the JSX threw "orderAlert is not defined" the moment the app rendered. Moved both the subscription and the render into ValidatedPOSApp via useStore selector hooks (`useStore(s => s.orderAlert)`, `useStore(s => s.dismissOrderAlert)`) so the banner renders for every operator surface that currently runs through that wrapper (POS / Bar / Tables / Orders / KDS).',
+      'FIX: STRIPE 401 "INVALID TOKEN" — the edge fn rejects raw anon keys; it expects a real user JWT. For online customers (who aren\'t signed in to Supabase Auth) we now call supabase.auth.signInAnonymously() to obtain a one-shot session with role=\'authenticated\' (and is_anonymous=true), then use that session\'s access_token as the bearer for createPaymentIntent. If the project doesn\'t have Anonymous sign-ins enabled in Supabase Auth settings we surface a clear error pointing the operator at the right toggle to flip — no more "Invalid token" mystery.',
+      'OBVIOUS SELECTED STATES — across the online ordering surface, the selected option used to be a thin border + 15% accent tint. Bumped to: 3-px border (vs 1.5-px when not selected), 28% accent fill (vs 15%), a 4px-blur 14-px-radius accent-coloured shadow underneath, and bold (800) text instead of regular (600). Plus a checkmark on selected ASAP/Schedule chips. Applied to OptionRow (modifier checkbox/radio rows), VariantRow (size pickers), QtyOptionRow (Box-of-3 style steppers), and ModeChip (ASAP / Schedule). Customers can now see at a glance which size or modifier they\'ve picked.',
+    ],
+  },
+  {
     version: '5.5.122', date: '9 May 2026', label: 'New-order alerts — big top-of-screen banner + much louder chime + 5s auto-dismiss',
     changes: [
       'BIG TOP-OF-SCREEN BANNER — when a kiosk / online / QR order arrives, a 560-px-wide banner slides down from the top of every operator device. Coloured by source (sky-blue for Kiosk, emerald for Online, purple for QR), with a big icon (📟 / 🌐 / 📱), the source label, the customer name (or table number for QR), the order ref, and the total. 4-px progress bar at the bottom counts down the 5-second auto-dismiss so the operator can see how long it\'ll stay; × button on the right dismisses immediately.',
@@ -3746,7 +3754,7 @@ const CHANGELOG = [
 
 
 export default function App() {
-  const { staff, surface, setSurface, toast, orderAlert, dismissOrderAlert, shift, theme, setTheme, appMode, deviceConfig } = useStore();
+  const { staff, surface, setSurface, toast, shift, theme, setTheme, appMode, deviceConfig } = useStore();
   const [showWhatsNew, setShowWhatsNew] = useState(false);
   const [syncPulse, setSyncPulse] = useState(false);
 
@@ -3857,6 +3865,10 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
   const [deviceValid, setDeviceValid] = useState(null); // null=checking, true=ok, false=revoked
   const [masterOffline, setMasterOffline] = useState(false);
   const [masterInfo, setMasterInfo] = useState(null);
+  // OrderAlert state lives on the store; ValidatedPOSApp owns the render
+  // for it because that's where the operator UI tree lives.
+  const orderAlert = useStore(s => s.orderAlert);
+  const dismissOrderAlert = useStore(s => s.dismissOrderAlert);
   // No "dismissed" state — master offline is a hard block
 
   // Start master/child sync after device is validated

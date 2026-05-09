@@ -112,10 +112,25 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     if (!valid) { setError('Please complete the highlighted fields.'); return; }
     setWorking(true); setError('');
     try {
-      // Online customers aren't logged in — pass the public anon key as the
-      // bearer. Edge fn's channel='online' path accepts this.
-      const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
-      if (!anonKey) throw new Error('Payment not configured (anon key missing).');
+      // The edge fn rejects raw anon keys ("Invalid token") — it expects
+      // a real Supabase user JWT. For online customers we use anonymous
+      // auth: get a one-shot signed-in session (role='authenticated' with
+      // is_anonymous=true), use its access_token as the bearer, then sign
+      // back out so we don't keep stale sessions hanging on the device.
+      // REQUIRES: Anonymous sign-ins enabled in Supabase Auth settings.
+      let authToken = null;
+      try {
+        const existing = await supabase?.auth.getSession();
+        authToken = existing?.data?.session?.access_token || null;
+        if (!authToken) {
+          const { data, error: anonErr } = await supabase.auth.signInAnonymously();
+          if (anonErr) throw new Error('Could not start payment session: ' + anonErr.message + '. Enable Anonymous sign-ins in your Supabase Auth settings.');
+          authToken = data?.session?.access_token;
+        }
+      } catch (e) {
+        throw new Error('Payment auth failed: ' + (e?.message || 'unknown'));
+      }
+      if (!authToken) throw new Error('Could not obtain auth token for payment.');
       const { ref, customer } = orderShape;
       const piRes = await createPaymentIntent({
         authToken: anonKey,
@@ -438,11 +453,20 @@ function Field({ label, value, onChange, placeholder, type = 'text', theme, card
 function ModeChip({ active, onClick, theme, cardBdr, children }) {
   return (
     <button onClick={onClick} className="op-btn" style={{
-      flex: 1, padding: '14px 16px', borderRadius: 12,
-      background: active ? `${theme.accent}15` : 'transparent',
-      color: theme.fg, border: `1.5px solid ${active ? theme.accent : cardBdr}`,
+      flex: 1, padding: '16px 16px', borderRadius: 12,
+      // Active = solid accent fill + contrast text + checkmark.
+      // Inactive = transparent with thin border, dimmed.
+      background: active ? theme.accent : 'transparent',
+      color: active ? contrastFg(theme.accent) : theme.fg,
+      border: `2px solid ${active ? theme.accent : cardBdr}`,
+      boxShadow: active ? `0 4px 14px ${theme.accent}55` : 'none',
       fontSize: 14, fontWeight: 800, cursor: 'pointer', fontFamily: 'inherit',
-    }}>{children}</button>
+      opacity: active ? 1 : 0.7,
+      display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+    }}>
+      {active && <span style={{ fontSize: 14 }}>✓</span>}
+      {children}
+    </button>
   );
 }
 
