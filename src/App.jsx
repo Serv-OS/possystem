@@ -76,6 +76,12 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.124', date: '9 May 2026', label: 'Hotfix — anonKey ReferenceError in OnlineCheckout',
+    changes: [
+      'FIX — v5.5.123 swapped the anon-key bearer for an anonymous-sign-in access token, but left a stale `authToken: anonKey` reference in the createPaymentIntent call. Pay button threw "anonKey is not defined". Now passes the actual `authToken` returned from the anonymous sign-in.',
+    ],
+  },
+  {
     version: '5.5.123', date: '9 May 2026', label: 'Three fixes — OrderAlert ReferenceError + Stripe 401 (anonymous sign-in) + selected buttons now obvious',
     changes: [
       'FIX: ORDERALERT REFERENCEERROR — v5.5.122 destructured orderAlert/dismissOrderAlert in App() and rendered <OrderAlert> there, but the actual operator UI tree lives inside ValidatedPOSApp (App is just a router wrapper). ValidatedPOSApp had no orderAlert in scope so the JSX threw "orderAlert is not defined" the moment the app rendered. Moved both the subscription and the render into ValidatedPOSApp via useStore selector hooks (`useStore(s => s.orderAlert)`, `useStore(s => s.dismissOrderAlert)`) so the banner renders for every operator surface that currently runs through that wrapper (POS / Bar / Tables / Orders / KDS).',

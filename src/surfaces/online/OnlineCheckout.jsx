@@ -133,7 +133,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       if (!authToken) throw new Error('Could not obtain auth token for payment.');
       const { ref, customer } = orderShape;
       const piRes = await createPaymentIntent({
-        authToken: anonKey,
+        authToken,
         locationId: platformLocationId,
         amountMinor: Math.round(subtotal * 100),
         currency: 'gbp',
