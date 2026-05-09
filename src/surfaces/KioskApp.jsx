@@ -1432,9 +1432,10 @@ function MenuItemCard({ item, price, brandColor, allergenFilter, onSelect, is86 
         flexDirection: 'column',
       }}
     >
-      {/* v5.5.141: out-of-stock badge sits left of the UNSAFE badge so both
-          can show without overlap when an item is also allergen-flagged. */}
-      {is86 && (
+      {/* v5.5.144: OUT OF STOCK is now positioned over the IMAGE only. When
+          the item has no image, it renders inline above the title (in the
+          body block below) instead of floating over the product name. */}
+      {is86 && item.image && (
         <div style={{
           position: 'absolute', top: 12, left: 12, zIndex: 2,
           background: '#1a1a1a', color: '#fff',
@@ -1474,6 +1475,18 @@ function MenuItemCard({ item, price, brandColor, allergenFilter, onSelect, is86 
         flexDirection: 'column',
         gap: 'clamp(6px, 1vw, 10px)',
       }}>
+        {/* v5.5.144: inline OUT OF STOCK pill for items without an image —
+            sits above the title so it can never overlap the product name.
+            For items WITH an image the badge floats over the image instead
+            (see absolute-positioned variant above). */}
+        {is86 && !item.image && (
+          <div style={{
+            display: 'inline-block', alignSelf: 'flex-start',
+            background: '#1a1a1a', color: '#fff',
+            padding: '4px 10px', borderRadius: 8,
+            fontSize: 11, fontWeight: 800, letterSpacing: '0.04em',
+          }}>OUT OF STOCK</div>
+        )}
         {/* Name + price */}
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
           <div style={{

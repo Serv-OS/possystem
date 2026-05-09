@@ -76,6 +76,13 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.144', date: '9 May 2026', label: 'Kiosk OUT OF STOCK badge no longer overlaps product name; MPOS now shows 86\'d items greyed out instead of hiding them',
+    changes: [
+      'KIOSK BADGE PLACEMENT — the absolute-positioned OUT OF STOCK badge sat at top:12, left:12 of the entire card. For items WITH an image, that\'s the top-left of the image — fine. For items WITHOUT an image, the body starts at the top of the card → badge overlapped the product name. Now: absolute-positioned variant only renders when item.image is set; otherwise an inline pill sits at the top of the body, above the title, where it can never overlap.',
+      'MPOS NO LONGER HIDES 86\'D ITEMS — MMenu had pre-existing `!eightySixIds.includes(i.id)` filters on both the category-list and search-results paths that DROPPED 86\'d items entirely before the v5.5.141 ItemRow renderer ever saw them. Result: items vanished instead of showing greyed out. Removed both filters; the renderer\'s grey-out + OUT OF STOCK pill now matches the main POS, kiosk, and online surface behaviour. Customers and staff can SEE the item is on the menu but not orderable right now.',
+    ],
+  },
+  {
     version: '5.5.143', date: '9 May 2026', label: 'Recurring locationId-bleed bug closed across db.js write paths + manual Send-to-kitchen button removed',
     changes: [
       'ROOT CAUSE OF "I 86\'D IT, REFRESHED, IT\'S GONE" — toggle86DB(itemId, is86, locationId=null) was writing rows with location_id=null. The eighty_six schema has `location_id text not null default \'loc-demo\'`, so the DB silently filled in \'loc-demo\'. On refresh, fetch86List filtered by the real locationId and found nothing — the 86 appeared to vanish. Same pattern hit insertConfigPush (config pushes to wrong location) and fetch86List/fetchLatestConfigPush (reading the wrong rows even when writes were correct).',

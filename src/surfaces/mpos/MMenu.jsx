@@ -71,8 +71,11 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
 
   // Items by predicate. Hide child variants here (parentId set) so they don't
   // appear as their own rows — they show up inside the parent variant picker.
+  // v5.5.144: do NOT filter out 86'd items here — the ItemRow renderer below
+  // shows them greyed-out with an OUT OF STOCK pill instead of vanishing,
+  // matching the main POS behaviour and what every customer surface does.
   const itemsForCategory = (catId) => (menuItems || []).filter(i =>
-    !i.hidden && !eightySixIds.includes(i.id) && !i.parentId &&
+    !i.hidden && !i.parentId &&
     (i.cat === catId || (Array.isArray(i.cats) && i.cats.includes(catId)))
   );
 
@@ -100,7 +103,10 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
     if (!query.trim()) return [];
     const q = query.toLowerCase();
     return (menuItems || [])
-      .filter(i => !i.hidden && !eightySixIds.includes(i.id) && !i.parentId)
+      // v5.5.144: 86'd items stay in the search results so customers/staff
+      // can still see them (greyed out + OUT OF STOCK pill), matching the
+      // category-list behaviour and the main POS.
+      .filter(i => !i.hidden && !i.parentId)
       .filter(itemBelongsToActiveMenu)
       .filter(i =>
         (i.name || '').toLowerCase().includes(q) ||
