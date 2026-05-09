@@ -86,7 +86,7 @@ export default function SyncBridge({ onSyncPulse }) {
           const paired = JSON.parse(localStorage.getItem('rpos-device') || 'null');
           const locationId = paired?.locationId;
           if (!locationId) return;
-          const { fetchLatestConfigPush, fetchFloorPlan, fetchMenuItems, fetchMenuCategories, fetchMenus } = await import('../lib/db.js');
+          const { fetchLatestConfigPush, fetchFloorPlan, fetchMenuItems, fetchMenuCategories, fetchMenus, fetch86List } = await import('../lib/db.js');
           const { supabase: sb2 } = await import('../lib/supabase.js');
 
           // Load config push (menus, layout, sections)
@@ -98,7 +98,7 @@ export default function SyncBridge({ onSyncPulse }) {
 
           // Load floor plan + active sessions atomically — never set session:null then restore
           const { supabase: sb, getLocationId } = await import('../lib/supabase.js');
-          const [floorRes, itemsRes, catsRes, menusRes, sessionsRes, profilesRes, modGroupsRes] = await Promise.all([
+          const [floorRes, itemsRes, catsRes, menusRes, sessionsRes, profilesRes, modGroupsRes, e86Res] = await Promise.all([
             fetchFloorPlan(locationId),
             fetchMenuItems(locationId),
             fetchMenuCategories(locationId),
@@ -106,7 +106,20 @@ export default function SyncBridge({ onSyncPulse }) {
             sb ? sb.from('active_sessions').select('table_id,session').eq('location_id', locationId) : Promise.resolve({ data: [] }),
             sb2 ? sb2.from('device_profiles').select('*').eq('location_id', locationId) : Promise.resolve({ data: [] }),
             sb ? sb.from('modifier_groups').select('*').eq('location_id', locationId).order('sort_order') : Promise.resolve({ data: [] }),
+            fetch86List(locationId),                                  // v5.5.142: hydrate eightySixIds on boot
           ]);
+          // v5.5.142: write fetched 86 list into the store immediately so
+          // any items already 86'd at boot show OUT OF STOCK on Kiosk / MPOS
+          // / POS without waiting for a realtime event that won't fire
+          // (realtime only delivers INSERT / DELETE going forward, not
+          // existing rows). Merge with whatever's already in the store so
+          // we don't clobber an in-flight local toggle.
+          if (e86Res?.data?.length) {
+            const remoteIds = e86Res.data.map(r => r.item_id).filter(Boolean);
+            useStore.setState(s => ({
+              eightySixIds: [...new Set([...(s.eightySixIds || []), ...remoteIds])],
+            }));
+          }
           // Cache profiles to localStorage so they survive offline
           if (profilesRes?.data?.length) {
             const mapped = profilesRes.data.map(p => ({

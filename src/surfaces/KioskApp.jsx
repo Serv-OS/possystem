@@ -179,9 +179,49 @@ export default function KioskApp({ kioskId, onUnpair }) {
   const [allergenFilter, setAllergenFilter] = useState(new Set());
   const [showAllergenPicker, setShowAllergenPicker] = useState(false);
   const [tableNumber, setTableNumber] = useState('');
-  // v5.5.141: live 86 list — store auto-updates from realtime when an
-  // operator 86s an item or daily count hits zero.
+  // v5.5.141/142: live 86 list. The dedicated kiosk device path
+  // (App.jsx deviceMode === 'kiosk') renders KioskSurface WITHOUT
+  // SyncBridge, so the operator-side realtime + initial 86 fetch never
+  // run for a public kiosk. We do them here instead so OUT OF STOCK
+  // shows the moment the operator 86s an item — and on boot if any items
+  // were already 86'd before this kiosk powered on.
   const eightySixIds = useStore(s => s.eightySixIds || []);
+  useEffect(() => {
+    if (!locationId || !supabase) return;
+    let alive = true;
+    let chan = null;
+    (async () => {
+      try {
+        const { data } = await supabase.from('eighty_six').select('item_id').eq('location_id', locationId);
+        if (!alive) return;
+        const ids = (data || []).map(r => r.item_id).filter(Boolean);
+        useStore.setState(s => ({
+          eightySixIds: [...new Set([...(s.eightySixIds || []), ...ids])],
+        }));
+      } catch (e) { console.warn('[KioskApp] 86 fetch:', e?.message); }
+    })();
+    chan = supabase.channel(`kiosk-86:${locationId}`)
+      .on('postgres_changes', {
+        event: '*', schema: 'public', table: 'eighty_six',
+        filter: `location_id=eq.${locationId}`,
+      }, (payload) => {
+        const id = payload.new?.item_id || payload.old?.item_id;
+        if (!id) return;
+        if (payload.eventType === 'INSERT') {
+          useStore.setState(s => ({
+            eightySixIds: s.eightySixIds.includes(id) ? s.eightySixIds : [...s.eightySixIds, id],
+          }));
+        } else if (payload.eventType === 'DELETE') {
+          useStore.setState(s => ({
+            eightySixIds: s.eightySixIds.filter(x => x !== id),
+          }));
+        }
+      }).subscribe();
+    return () => {
+      alive = false;
+      if (chan && supabase) supabase.removeChannel(chan);
+    };
+  }, [locationId]);
   const [cart, setCart] = useState([]); // [{ key, item, qty, mods, linePrice, lineTotal, name }]
   const [tip, setTip] = useState(0);
   const [customerName, setCustomerName] = useState('');

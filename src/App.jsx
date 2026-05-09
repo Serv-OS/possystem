@@ -76,6 +76,16 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.142', date: '9 May 2026', label: '86 propagation actually works — fixed inverted toggle86DB call + initial fetch on boot for SyncBridge AND KioskApp',
+    changes: [
+      'INVERTED ARG FIX — v5.5.141 added `toggle86DB(id, true)` to persist auto-86 from daily count exhaustion. But toggle86DB\'s second argument is "was previously 86\'d, toggle OFF" → DELETE row. So my call was DELETING the 86 row instead of inserting it. Daily-count auto-86s never reached the DB. Flipped to false (= "wasn\'t before, is now" → INSERT) to match the toggle86DB inverted convention.',
+      'INITIAL 86 FETCH ON BOOT — both SyncBridge and KioskApp only listened to live INSERT/DELETE events on the eighty_six table; neither fetched the existing rows on mount. So any item 86\'d BEFORE the device powered on was invisible to that device — only items 86\'d while the device was already running would propagate. Both paths now do an initial `fetch86List(locationId)` SELECT and merge the result into `eightySixIds`. Operator POS / MPOS / Kiosk now see the full live list from the moment they boot.',
+      'KIOSK STANDALONE PATH — App.jsx renders <KioskSurface /> WITHOUT SyncBridge when deviceMode === \'kiosk\' (the dedicated public kiosk path). That meant the operator-side realtime + boot fetches in lib/realtime.js never ran for a public kiosk. Added a self-contained useEffect inside KioskApp that does both the initial fetch AND a realtime subscription on `eighty_six` filtered by location. Manual 86 from BO/POS now greys out kiosk items instantly.',
+      'WHY THIS MATTERS — together with v5.5.141\'s OUT OF STOCK rendering on Online / Kiosk / MPOS, the chain is now end-to-end: operator 86s on POS → toggle86DB INSERT → realtime fans out → SyncBridge handler updates eightySixIds in store → MPOS / desktop POS render OUT OF STOCK; KioskApp\'s own subscription updates its store → Kiosk renders OUT OF STOCK; OnlineSurface\'s own subscription does the same → public ordering page greys out + blocks add-to-basket.',
+      'ANON RLS REMINDER — for the customer-facing Online ordering page to read the eighty_six list, your venue\'s Supabase needs anon-role SELECT on that table. If 86s show on Kiosk/MPOS/POS but not Online, run: `create policy "anon_read_eighty_six" on eighty_six for select to anon using (true);` (one-time, idempotent if you already have it).',
+    ],
+  },
+  {
     version: '5.5.141', date: '9 May 2026', label: 'Out-of-stock awareness on Online / Kiosk / MPOS — manual 86 + auto-86 from daily count exhaustion both flow to every customer surface',
     changes: [
       'AUTO-86 NOW PERSISTED — when an operator sets a daily count and the remaining hits zero, the store already auto-added the item to eightySixIds in memory. v5.5.141 ALSO writes to the eighty_six DB table so customer-facing surfaces (Online, QR) — which read from Supabase, not the operator Zustand store — see the item as unavailable. Without this the kiosk/POS knew, but the public ordering pages kept selling sold-out items.',

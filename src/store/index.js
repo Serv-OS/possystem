@@ -2299,13 +2299,12 @@ export const useStore = create((set, get) => ({
         if (cur.remaining > 0 && newRem <= 0) {
           if (!newEightySix.includes(id)) {
             newEightySix.push(id);
-            // v5.5.141: also persist to the eighty_six DB table so the
-            // customer surfaces (Online, QR) — which read from Supabase,
-            // not the Zustand store — see the item as unavailable. Without
-            // this the kiosk/POS knew, but the public ordering pages kept
-            // selling sold-out items. Fire-and-forget; realtime will fan
-            // out the change to all other operator devices.
-            toggle86DB(id, true).catch(err => console.warn('[decrementDailyCount] toggle86DB:', err?.message));
+            // v5.5.141/142: persist the auto-86 to the eighty_six DB table
+            // so customer surfaces see it. NOTE the toggle86DB second arg
+            // is "was previously 86'd" — passing FALSE means "wasn't before,
+            // is now → INSERT". v5.5.141 incorrectly passed true, which
+            // DELETEd from the table.
+            toggle86DB(id, false).catch(err => console.warn('[decrementDailyCount] toggle86DB:', err?.message));
           }
           soldOutNames.push(menuItems.find(mi => mi.id === id)?.name || id);
         }
