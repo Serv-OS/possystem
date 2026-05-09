@@ -303,11 +303,14 @@ export function startRealtime(store, locationId = LOCATION_ID) {
           total: Number(row.total) || 0,
           orderType: row.type || null,
         });
-        // Master device routes prints to production centres (idempotent — only one device claims).
-        // For scheduled online orders, the routing function defers internally until sent_at.
-        let isMaster = false;
-        try { isMaster = JSON.parse(localStorage.getItem('rpos-device-config') || '{}').isMaster === true; } catch {}
-        if (isMaster && !row.kitchen_routed_at) {
+        // v5.5.132: any online operator device can route. The existing
+        // atomic-claim on order_queue.kitchen_routed_at means only ONE
+        // device actually does the work — same idempotency we always had,
+        // but we no longer require the device flagged isMaster to be the
+        // one online when the INSERT arrives. Print jobs land in print_jobs
+        // which the master print agent picks up regardless of which device
+        // queued them.
+        if (!row.kitchen_routed_at) {
           store.getState().routeKioskOrderPrints?.({
             ref,
             source: src,                                     // 'kiosk' | 'online' | 'qr'

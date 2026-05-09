@@ -3742,13 +3742,15 @@ export const useStore = create((set, get) => ({
       const serverName = order.customer?.name || `${srcLabel} ${order.ref}`;
       const sentAt = order.sentAt || Date.now();
 
-      // Per-centre KDS tickets (replace the generic one the kiosk inserted with centre-bucketed).
-      // v5.5.129: each item gets status:'sent' — was missing, so KDS rendered them as
-      // "to send" instead of "sent". Mirrors the dine-in/walk-in path (sendToKitchen)
-      // where every item's status is flipped to 'sent' the moment it fires.
+      // Per-centre KDS tickets. v5.5.132: status MUST be 'pending' — that's
+      // what the KDS surface filters on (OtherSurfaces.jsx:420 — `status
+      // IN (pending, held)`). We were writing 'fired' and KDS never showed
+      // anything. Bumped via the existing bumpKDSTicket() flow → 'bumped'.
+      // Same shape insertKDSTicket builds for the dine-in / walk-in path.
       const tickets = Object.entries(byCentre).map(([centreId, items]) => ({
         id: `kds-${sentAt}-${centreId}-${Math.random().toString(36).slice(2,6)}`,
-        location_id: useStore.getState().locationConfig?.id || null,
+        location_id: useStore.getState().locationConfig?.id
+          || (await getLocationId().catch(() => null)),
         centre_id: centreId,
         course: 1,
         all_courses: [1],
@@ -3759,7 +3761,7 @@ export const useStore = create((set, get) => ({
           mods: Array.isArray(i.mods) ? i.mods.map(m => m?.name || m?.label || m).filter(Boolean) : [],
           course: 1, fired: true, status: 'sent', centreId,
         })),
-        status: 'fired',
+        status: 'pending',                                                   // ← was 'fired'
         sent_at: new Date(sentAt).toISOString(),
         table_id: null,
         table_label: tableLabel,

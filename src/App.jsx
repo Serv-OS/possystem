@@ -76,6 +76,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.132', date: '9 May 2026', label: 'THREE root-cause fixes — KDS now shows online tickets, order_queue upserts no longer silently fail, items arrive as "sent"',
+    changes: [
+      'KDS WAS REJECTING ALL ONLINE/KIOSK TICKETS — the KDS surface filters tickets by `status IN (pending, held)` (OtherSurfaces.jsx:420). routeKioskOrderPrints was inserting them with `status: \'fired\'` so KDS literally never showed them. Same items via the POS sendToKitchen path were going in as \'pending\' which is why those did show. Changed to \'pending\' to match — bumped via the existing bumpKDSTicket() flow → \'bumped\' just like dine-in tickets.',
+      'STATUS UPDATES WERE FAILING SILENTLY — every time the operator advanced an order through received → prep → ready → collected, QueueSync.flushQueues fired an order_queue upsert that included `paid` and `payment_method` columns. Migration v5.5.57 added them, but they\'re not applied on every venue\'s DB (you saw "could not find the \'paid\' column" earlier). The upsert errored, status update never reached Supabase, customer\'s tracker never saw the change. Dropped both columns from queueToRow until the migration is universally applied. Status updates now propagate cleanly.',
+      'ORDER ITEMS ARRIVE AS "SENT" — online cart items now stamp `status: \'sent\'`, `fired: true`, `course: 1` at insert time. Online orders are paid before they enter order_queue — the kitchen DOES have them, there\'s no operator decision pending. Previously items came in as undefined-status and the POS UI showed "to send", forcing operators to manually open the order and click save-and-send before anything fired. No more.',
+      'LOCATION_ID FALLBACK — kds_tickets row falls back to `await getLocationId()` if `useStore.getState().locationConfig?.id` is null at routing time (which can happen if the realtime INSERT lands before locationConfig hydrates). Without this, kds_tickets rows could be inserted with location_id=null and would never appear on the venue\'s KDS.',
+    ],
+  },
+  {
     version: '5.5.131', date: '9 May 2026', label: 'Routing diagnostics surface as on-screen toasts on the master device — no DevTools needed for Sunmi',
     changes: [
       'ROUTING TOASTS — every customer-surface order routing run now surfaces its outcome as a visible toast on the master device, so operators on a Sunmi/Android-APK install (no Chrome DevTools) can see exactly what happened. Three states: ✓ "ONLINE OL-XXX routed → Hot Kitchen, Bar" (success), ⚠ "...routed to X — but Y has no printer mapped (KDS only)" (centres matched but no paper output), or ❌ "...did not print: <specific reason>" (zero centres matched, with the actual cause: no centres / no routing rules / items have no cat / cats don\'t match any centre\'s assigned categories).',

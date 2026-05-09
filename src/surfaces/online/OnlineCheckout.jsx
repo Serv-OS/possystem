@@ -105,6 +105,11 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     // Pulled from the cart line if present (set by OnlineSurface when the
     // item was added) — falls back to undefined if not, in which case the
     // master still does its own menuItems lookup as a safety net.
+    // v5.5.132: stamp items as already 'sent' + fired:true. Online orders
+    // are paid before they enter order_queue — the kitchen DOES have them,
+    // there's no operator decision pending. Without these flags the
+    // operator's queue UI shows them as "to send" and the operator has
+    // to manually open + click save-and-send before anything fires.
     const items = cart.map(l => ({
       itemId: l.itemId, name: l.name, price: l.price,
       qty: l.qty || 1, mods: l.mods || [],
@@ -112,6 +117,9 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       cats: l.cats || null,
       parentId: l.parentId || null,
       kitchenName: l.kitchenName || null,
+      status: 'sent',
+      fired: true,
+      course: 1,
     }));
     return { ref, collectionAt, sentAt, customer, items };
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -20,6 +20,14 @@ let _lastSentQueue = {};
 let _lastSentTab = {};
 
 function queueToRow(o, locationId) {
+  // v5.5.132: dropped `paid` and `payment_method` from the upsert payload.
+  // Migration v5.5.57 added them but they're not applied on every venue's
+  // DB. Including them in upsert() causes "could not find the 'paid'
+  // column" errors that silently fail every status update — and that's
+  // the root cause of "customer tracker never updates when I advance the
+  // order on POS". The columns are optional on the row anyway. Re-introduce
+  // when the migration is universally applied + the schema-cache miss is
+  // resolved on every venue.
   return {
     ref: o.ref,
     location_id: locationId,
@@ -34,8 +42,6 @@ function queueToRow(o, locationId) {
     collection_time: o.collectionTime || null,
     is_asap: !!o.isASAP,
     source: o.source || 'pos',
-    paid: !!o.paid,
-    payment_method: o.paymentMethod || null,
   };
 }
 
