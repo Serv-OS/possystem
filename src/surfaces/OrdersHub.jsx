@@ -57,6 +57,7 @@ export default function OrdersHub() {
     updateQueueStatus, removeFromQueue,
     showToast, setSurface, setActiveTableId,
     staff,
+    routeKioskOrderPrints,
   } = useStore();
 
   const [filter, setFilter]     = useState('all');
@@ -180,6 +181,26 @@ export default function OrdersHub() {
     if (next === 'collected') { showToast(`${o.ref} collected`, 'info'); setTimeout(() => removeFromQueue(o.ref), 8000); }
   };
 
+  // v5.5.135: manual re-route for online/kiosk/qr orders. Fires the same
+  // routing function the realtime handler fires, so the on-screen toast
+  // diagnostic surfaces immediately. Use this when auto-routing didn't
+  // run (master device offline at INSERT, fresh deploy not yet on the
+  // device, etc.) to push the order through without re-opening the cart.
+  const resendToKitchen = (o) => {
+    if (!routeKioskOrderPrints) {
+      showToast('Routing function not available on this device', 'error');
+      return;
+    }
+    routeKioskOrderPrints({
+      ref: o.ref,
+      source: o.source || 'pos',
+      tableLabel: o.customer?.tableLabel || null,
+      items: o.items || [],
+      customer: o.customer || null,
+      sentAt: o.sentAt || Date.now(),
+    });
+  };
+
   const openOrder = (o) => {
     if (o._kind === 'table') { setActiveTableId(o.tableId); setSurface('tables'); }
     else if (o._kind === 'tab') { setSurface('bar'); }
@@ -298,21 +319,21 @@ export default function OrdersHub() {
             {tableOrders.length > 0 && (
               <Section title="Tables" icon="⬚" color="#3b82f6" count={tableOrders.length}>
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))', gap:10 }}>
-                  {tableOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onOpen={()=>openOrder(o)} />)}
+                  {tableOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onOpen={()=>openOrder(o)} onResend={()=>resendToKitchen(o)} />)}
                 </div>
               </Section>
             )}
             {barOrders.length > 0 && (
               <Section title="Bar tabs" icon="🍸" color="#a855f7" count={barOrders.length}>
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))', gap:10 }}>
-                  {barOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onOpen={()=>openOrder(o)} />)}
+                  {barOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onOpen={()=>openOrder(o)} onResend={()=>resendToKitchen(o)} />)}
                 </div>
               </Section>
             )}
             {queueOrders.length > 0 && (
               <Section title="Walk-in / Takeaway / Delivery" icon="🏷" color="#22d3ee" count={queueOrders.length}>
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))', gap:10 }}>
-                  {queueOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onOpen={()=>openOrder(o)} />)}
+                  {queueOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onOpen={()=>openOrder(o)} onResend={()=>resendToKitchen(o)} />)}
                 </div>
               </Section>
             )}
@@ -320,7 +341,7 @@ export default function OrdersHub() {
         ) : (
           // Flat filtered view
           <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))', gap:10 }}>
-            {filtered.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onOpen={()=>openOrder(o)} />)}
+            {filtered.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onOpen={()=>openOrder(o)} onResend={()=>resendToKitchen(o)} />)}
           </div>
         )}
       </div>
@@ -351,7 +372,7 @@ function Section({ title, icon, color, count, children }) {
 }
 
 // ── Order card ────────────────────────────────────────────────────────────────
-function OrderCard({ order, onAdvance, onOpen }) {
+function OrderCard({ order, onAdvance, onOpen, onResend }) {
   const tab    = FILTER_TABS.find(t => t.id === order.channel) || FILTER_TABS[0];
   const color  = SECTION_COLORS[order.channel] || 'var(--acc)';
   const qs     = Q_STATUS[order.status] || Q_STATUS.received;
@@ -440,7 +461,25 @@ function OrderCard({ order, onAdvance, onOpen }) {
       <div style={{ padding:'8px 13px', borderTop:'1px solid var(--bdr)', background:'var(--bg2)', display:'flex', alignItems:'center', gap:8 }}>
         <span style={{ fontSize:14, fontWeight:800, color:'var(--acc)', fontFamily:'var(--font-mono)' }}>{money(order.total)}</span>
         <span style={{ fontSize:10, color:'var(--t4)' }}>{items.length} item{items.length !== 1 ? 's' : ''}</span>
+        {/* v5.5.135: visible `source` pill — diagnostic so we can see whether
+            the source column on this row is set correctly (online/kiosk/qr) or
+            blank/'pos'. Cheap to render, useful when "didn't auto-route" surfaces. */}
+        {order._kind === 'queue' && (
+          <span style={{ fontSize:9, fontWeight:700, padding:'1px 6px', borderRadius:8, background:'var(--bg3)', border:'1px solid var(--bdr)', color:'var(--t4)', fontFamily:'var(--font-mono)' }}>
+            src:{order.source || '?'}
+          </span>
+        )}
         <div style={{ marginLeft:'auto', display:'flex', gap:5 }}>
+          {/* v5.5.135: manual fallback for queue orders that didn't auto-route.
+              Fires routeKioskOrderPrints — the same path the realtime handler
+              uses. On-screen toast tells operator exactly what happened
+              (no DevTools needed for Sunmi). Hidden for tables/tabs because
+              they have their own send-to-kitchen flow via the cart. */}
+          {order._kind === 'queue' && onResend && (
+            <button onClick={onResend} style={{ padding:'4px 10px', borderRadius:7, cursor:'pointer', fontFamily:'inherit', background:'#fbbf2418', border:'1px solid #f59e0b66', color:'#f59e0b', fontSize:11, fontWeight:700 }}>
+              🖨 Send to kitchen
+            </button>
+          )}
           <button onClick={onOpen} style={{ padding:'4px 10px', borderRadius:7, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr2)', color:'var(--t2)', fontSize:11, fontWeight:600 }}>
             Open →
           </button>

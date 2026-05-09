@@ -76,6 +76,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.135', date: '9 May 2026', label: 'WIRED THE BUTTON IN THE RIGHT FILE — src/surfaces/OrdersHub.jsx (live), not POSSurface.jsx (dead) — plus visible source pill',
+    changes: [
+      'I edited the wrong OrdersHub. POSSurface.jsx contains a stale OrdersHub function (~line 1797) that hasn\'t been rendered for a while; the live orders panel is src/surfaces/OrdersHub.jsx (the one with the All orders / Tables / Bar tabs / Counter / Takeaway / Collection / Delivery tabs and Mark-in-prep buttons). The Send-to-kitchen button I added in v5.5.134 went into the dead file, which is why nothing showed. Now wired into the LIVE OrderCard footer with a yellow 🖨 button — visible on every queue order (online / kiosk / qr / walk-in) regardless of source.',
+      'VISIBLE SOURCE PILL — added a tiny `src:online` / `src:kiosk` / `src:?` badge in the order card footer so we can finally see what `order.source` actually is for each row. If an online order shows `src:?` or `src:pos` then the source column wasn\'t preserved and the realtime handler\'s `[\'kiosk\',\'online\',\'qr\'].includes(payload.new?.source)` filter never matched — that\'s why auto-routing didn\'t fire. The pill makes that visible without DevTools.',
+      'POSSurface dead OrdersHub left untouched — per the user, that function should have been removed a while ago and any edits to it are wasted work.',
+    ],
+  },
+  {
     version: '5.5.134', date: '9 May 2026', label: 'Manual "Send to kitchen" button on online/kiosk/qr orders + redeploy nudge',
     changes: [
       'MANUAL "🖨 Send to kitchen" BUTTON — every kiosk/online/qr order in OrdersHub now has a small button next to the advance arrow. Clicking it fires the same routeKioskOrderPrints function the realtime handler fires, with the same on-screen toast diagnostic. Use this when you suspect auto-routing didn\'t fire (master device was offline at the moment of INSERT, fresh deploy hadn\'t reached the device yet, etc.) so you don\'t have to wait for the kitchen to wonder where the ticket went.',
