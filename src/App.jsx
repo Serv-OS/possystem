@@ -76,6 +76,13 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.152', date: '9 May 2026', label: 'BO QR table list — fix silent SELECT failure (parent_id column doesn\'t exist on floor_tables)',
+    changes: [
+      'TABLES STILL EMPTY IN BO QR SECTION — v5.5.148 selected `id, label, parent_id, sort_order` from floor_tables to filter out composite/parent tables. But floor_tables\' real schema is (id, location_id, label, x, y, w, h, shape, max_covers, section, sort_order) — there is NO parent_id column. PostgREST returned a "column does not exist" error which the surrounding try/catch swallowed, leaving the QR table list permanently empty even when the venue had floor tables set up.',
+      'FIX — drop parent_id from the SELECT (and the filter that depended on it). floor_tables doesn\'t have composite parents anyway — that concept exists on menu_items, not tables. Errors now surface to the console as a warn instead of being eaten silently. Once Vercel deploys, BO → Online Ordering → QR ordering should populate the table list and the per-table JPEG download tiles will appear.',
+    ],
+  },
+  {
     version: '5.5.151', date: '9 May 2026', label: 'QR commit 3c — auto-surcharge for left-open tabs + over-auth shortfall warning',
     changes: [
       'AUTO-SURCHARGE — when an operator force-closes a QR open-tab past the BO-configured threshold (qr_tab_force_close_after_minutes), the system now automatically adds the configured % surcharge AND/OR fixed-£ surcharge to the captured amount. The surcharge config is SNAPSHOTTED on the tab\'s customer jsonb at open-time (tab_surcharge_pct, tab_surcharge_fixed, tab_force_close_after_min, tab_opened_at) so a BO config change after the tab is open doesn\'t retroactively change the policy the customer already agreed to. The confirm dialog tells the operator exactly how much surcharge is being applied and why.',

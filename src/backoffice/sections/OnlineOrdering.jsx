@@ -138,24 +138,22 @@ export default function OnlineOrdering({ setSection }) {
             } catch { /* columns not migrated — defaults stand */ }
           }
         }
-        // v5.5.147/148: load floor-plan tables. Tables live in their own
-        // `floor_tables` table (one row per table) — NOT a JSONB array on a
-        // singular `floor_plan` row. Mirror the existing fetchFloorPlan
-        // helper. Filter out parent/composite tables (parentId set) so the
-        // QR generator only emits codes for real diners-accept tables.
+        // v5.5.147/148/152: load floor-plan tables. floor_tables schema is
+        // (id, location_id, label, x, y, w, h, shape, max_covers, section,
+        // sort_order) — there is NO parent_id column, so v5.5.148 silently
+        // failed the SELECT and left the QR table list empty. Now selecting
+        // only columns we know exist.
         if (opsLocId && supabase) {
-          try {
-            const { data: rows } = await supabase
-              .from('floor_tables')
-              .select('id, label, parent_id, sort_order')
-              .eq('location_id', opsLocId)
-              .order('sort_order');
-            if (alive && rows?.length) {
-              setTables(rows
-                .filter(t => !t.parent_id)
-                .map(t => ({ id: t.id, label: t.label || t.id })));
-            }
-          } catch (e) { console.warn('[OnlineOrdering] floor_tables load:', e?.message); }
+          const { data: rows, error: tErr } = await supabase
+            .from('floor_tables')
+            .select('id, label, sort_order')
+            .eq('location_id', opsLocId)
+            .order('sort_order');
+          if (tErr) {
+            console.warn('[OnlineOrdering] floor_tables load:', tErr.message);
+          } else if (alive && rows?.length) {
+            setTables(rows.map(t => ({ id: t.id, label: t.label || t.id })));
+          }
         }
       } catch (e) {
         console.error('[OnlineOrdering] load failed:', e);
