@@ -76,6 +76,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.153', date: '9 May 2026', label: 'BO QR settings save now SURFACES errors (no more silent migration-needed swallow); customer surface cache TTL 30s → 5s',
+    changes: [
+      'BO QR SAVE NOW EXPLICIT — v5.5.147 / 5.5.149 wrapped the QR-settings + tab-guardrail UPDATEs in try/catch so they wouldn\'t fail the whole page if the column migration hadn\'t been run. Side effect: settings appeared to save (green ✓ Saved) but actually no-oped, and the customer surface kept reading defaults. Now: a missing-column error from EITHER UPDATE shows a clear "DB migration missing — run the SQL from the v5.5.151 changelog" banner in the BO save area instead of silently succeeding.',
+      'CUSTOMER SLUG CACHE 30s → 5s — lookupLocationBySlug had a 30-second TTL that hid BO setting changes for up to 30s after save. Dropped to 5s so operators testing toggles see the customer-side effect on the next refresh, not a minute later. Cost is one extra slug SELECT per customer every 5s — cheap.',
+      'IF YOU SAVE QR SETTINGS AND SEE A RED ERROR — run this SQL on the platform DB (idempotent, full QR migration block): `alter table public.locations add column if not exists qr_payment_mode text default \'pay_now\'; alter table public.locations add column if not exists qr_table_mode text default \'confirm\'; alter table public.locations add column if not exists qr_service_charge_pct numeric(5,2) default 0; alter table public.locations add column if not exists qr_tab_pre_auth_amount numeric(10,2) default 100; alter table public.locations add column if not exists qr_tab_warning_message text; alter table public.locations add column if not exists qr_tab_left_open_surcharge_pct numeric(5,2) default 0; alter table public.locations add column if not exists qr_tab_left_open_surcharge_fixed numeric(10,2) default 0; alter table public.locations add column if not exists qr_tab_force_close_after_minutes integer default 0;`',
+    ],
+  },
+  {
     version: '5.5.152', date: '9 May 2026', label: 'BO QR table list — fix silent SELECT failure (parent_id column doesn\'t exist on floor_tables)',
     changes: [
       'TABLES STILL EMPTY IN BO QR SECTION — v5.5.148 selected `id, label, parent_id, sort_order` from floor_tables to filter out composite/parent tables. But floor_tables\' real schema is (id, location_id, label, x, y, w, h, shape, max_covers, section, sort_order) — there is NO parent_id column. PostgREST returned a "column does not exist" error which the surrounding try/catch swallowed, leaving the QR table list permanently empty even when the venue had floor tables set up.',

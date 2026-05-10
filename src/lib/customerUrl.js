@@ -88,7 +88,11 @@ export function parseCustomerUrl(loc = (typeof window !== 'undefined' ? window.l
 // operator changes (slug move, hours edit, enable toggle) propagate quickly
 // and we don't get stuck on a row that was migrated away in BO.
 const _slugCache = new Map();
-const SLUG_CACHE_TTL_MS = 30_000;
+// v5.5.153: dropped from 30s → 5s. With BO QR settings now persisting,
+// operators expect changes to be visible on the customer surface
+// immediately after a refresh — 30s of stale cache hides BO toggles.
+// Trade-off is one extra slug-lookup per customer every 5s (cheap).
+const SLUG_CACHE_TTL_MS = 5_000;
 
 export async function lookupLocationBySlug(slug, platformSupabase) {
   if (!slug || !platformSupabase) return null;

@@ -214,26 +214,43 @@ export default function OnlineOrdering({ setSection }) {
       .select('id, online_branding, online_menu_id, online_collection_lead_min, online_delivery_enabled')
       .maybeSingle();
 
-    // v5.5.147: QR settings update is a separate call wrapped in try/catch
-    // so a missing-column error (migration not run) doesn't fail the whole
-    // save — online settings still persist.
-    try {
-      await platformSupabase.from('locations').update({
-        qr_payment_mode: qrPaymentMode,
-        qr_table_mode: qrTableMode,
-        qr_service_charge_pct: Math.max(0, Math.min(50, Number(qrServicePct) || 0)),
-      }).eq('id', row.id);
-    } catch (e) { console.warn('[OnlineOrdering] QR settings save (run migration):', e?.message); }
-    // v5.5.149: open-tab guardrails — separate try/catch for the same reason.
-    try {
-      await platformSupabase.from('locations').update({
-        qr_tab_pre_auth_amount:           Math.max(0, Number(qrTabPreAuth) || 0),
-        qr_tab_warning_message:           (qrTabWarning || '').trim() || null,
-        qr_tab_left_open_surcharge_pct:   Math.max(0, Math.min(50, Number(qrTabSurchargePct) || 0)),
-        qr_tab_left_open_surcharge_fixed: Math.max(0, Number(qrTabSurchargeFixed) || 0),
-        qr_tab_force_close_after_minutes: Math.max(0, parseInt(qrTabForceCloseMin, 10) || 0),
-      }).eq('id', row.id);
-    } catch (e) { console.warn('[OnlineOrdering] tab guardrail save (run migration):', e?.message); }
+    // v5.5.153: QR settings save now SURFACES errors to the BO UI instead
+    // of silently swallowing them. Most common cause was the column
+    // migration not having been run — settings appeared to save but the
+    // customer surface kept reading defaults. Operator now sees a clear
+    // "Run this SQL" message instead of a silent no-op.
+    const qrCoreUpd = await platformSupabase.from('locations').update({
+      qr_payment_mode: qrPaymentMode,
+      qr_table_mode: qrTableMode,
+      qr_service_charge_pct: Math.max(0, Math.min(50, Number(qrServicePct) || 0)),
+    }).eq('id', row.id).select('qr_payment_mode').maybeSingle();
+    if (qrCoreUpd.error) {
+      const msg = qrCoreUpd.error.message || '';
+      if (msg.includes('column') && msg.includes('schema')) {
+        setError('QR settings can\'t save — DB migration missing. Run the SQL from the v5.5.151 changelog (qr_payment_mode / qr_table_mode / qr_service_charge_pct columns).');
+      } else {
+        setError('QR settings save failed: ' + msg);
+      }
+      setSaving(false);
+      return;
+    }
+    const qrTabUpd = await platformSupabase.from('locations').update({
+      qr_tab_pre_auth_amount:           Math.max(0, Number(qrTabPreAuth) || 0),
+      qr_tab_warning_message:           (qrTabWarning || '').trim() || null,
+      qr_tab_left_open_surcharge_pct:   Math.max(0, Math.min(50, Number(qrTabSurchargePct) || 0)),
+      qr_tab_left_open_surcharge_fixed: Math.max(0, Number(qrTabSurchargeFixed) || 0),
+      qr_tab_force_close_after_minutes: Math.max(0, parseInt(qrTabForceCloseMin, 10) || 0),
+    }).eq('id', row.id).select('qr_tab_pre_auth_amount').maybeSingle();
+    if (qrTabUpd.error) {
+      const msg = qrTabUpd.error.message || '';
+      if (msg.includes('column') && msg.includes('schema')) {
+        setError('Open-tab settings can\'t save — DB migration missing. Run the SQL from the v5.5.151 changelog (qr_tab_* columns).');
+      } else {
+        setError('Open-tab settings save failed: ' + msg);
+      }
+      setSaving(false);
+      return;
+    }
 
     setSaving(false);
     if (err) { setError(err.message || 'Save failed'); return; }
