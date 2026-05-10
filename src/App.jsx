@@ -76,6 +76,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.154', date: '9 May 2026', label: 'QR cart label fix (Dine-in not Delivery) + UK VAT breakdown on every customer-facing total (legal compliance)',
+    changes: [
+      'CART HEADER + TOTALS LINE NOW DINE-IN AWARE — OnlineCart was hardcoded to show "Collection" or "Delivery" in the basket pill and a "Collection · Free" / "Delivery fee" totals row. For QR table-side that\'s nonsense — it\'s eat-in. Header now reads "Dine-in" when orderType === \'dine-in\', and the fulfilment-cost row is hidden entirely (no charge applies for table service).',
+      'UK VAT BREAKDOWN ON EVERY CUSTOMER TOTAL — legally required and previously missing on Online + QR (Kiosk + POS already handled it via recordWalkInClosed → calculateOrderTax → printer.js). OnlineSurface now fetches `tax_rates` from ops DB at load. addToCart snapshots `taxRateId` + `taxOverrides` onto each cart line. OnlineCart, OnlineCheckout, and QrCheckout all render `incl. VAT 20%: £X.XX` lines (one per applicable rate) using the existing `calculateOrderTax` helper. Closed_checks insert from both checkouts now persists `tax_amount` so reports + receipt re-print show VAT correctly.',
+      'WHY "INCL." NOT ADDED-ON — UK menu prices are gross (already contain VAT). Showing "added VAT" would imply tax-on-top US-style and double-charge. The breakdown extracts the contained VAT and shows it as an info line beneath the subtotal so customers see the tax content of the bill without changing the headline price.',
+      'NB — VAT lines only render when the venue has tax_rates set up against menu items in BO Tax settings. Items without a tax_rate_id stay zero-rated in the breakdown. If you\'re not seeing VAT lines on a venue with VAT-rated items, check BO → Tax that the rates are active and assigned.',
+    ],
+  },
+  {
     version: '5.5.153', date: '9 May 2026', label: 'BO QR settings save now SURFACES errors (no more silent migration-needed swallow); customer surface cache TTL 30s → 5s',
     changes: [
       'BO QR SAVE NOW EXPLICIT — v5.5.147 / 5.5.149 wrapped the QR-settings + tab-guardrail UPDATEs in try/catch so they wouldn\'t fail the whole page if the column migration hadn\'t been run. Side effect: settings appeared to save (green ✓ Saved) but actually no-oped, and the customer surface kept reading defaults. Now: a missing-column error from EITHER UPDATE shows a clear "DB migration missing — run the SQL from the v5.5.151 changelog" banner in the BO save area instead of silently succeeding.',

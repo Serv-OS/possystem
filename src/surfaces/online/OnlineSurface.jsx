@@ -38,6 +38,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   const [items, setItems]           = useState([]);
   const [categories, setCategories] = useState([]);
   const [eightySixIds, setEightySixIds] = useState([]); // v5.5.141: live 86 list from DB
+  const [taxRates, setTaxRates]     = useState([]); // v5.5.154: UK VAT for cart breakdown
   const [branding, setBranding]     = useState(null);
   const [instGroupDefs, setInstGroupDefs] = useState([]); // from config_pushes snapshot — there's no instruction_groups DB table
   const [loading, setLoading]       = useState(true);
@@ -105,7 +106,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
         // failure (e.g. missing instruction_groups table) doesn't kill
         // the whole load. Instruction defs come from the config_pushes
         // snapshot since there's no dedicated DB table for them.
-        const [iRes, cRes, lRes, mRes, pRes, eRes] = await Promise.allSettled([
+        const [iRes, cRes, lRes, mRes, pRes, eRes, tRes] = await Promise.allSettled([
           supabase.from('menu_items').select('*')
             .eq('location_id', opsLocationId).eq('archived', false).order('sort_order'),
           supabase.from('menu_categories').select('*')
@@ -120,6 +121,9 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           // v5.5.141: live 86 list — manual operator 86s + auto-86s when
           // dailyCounts.remaining hits 0 both land in this table.
           supabase.from('eighty_six').select('item_id').eq('location_id', opsLocationId),
+          // v5.5.154: tax rates — UK VAT must show on every customer-
+          // facing total for compliance. Selecting the columns calculateOrderTax needs.
+          supabase.from('tax_rates').select('id, name, rate, type, active').eq('location_id', opsLocationId),
         ]);
         if (!alive) return;
         const itemsData      = iRes.value?.data || [];
@@ -145,6 +149,9 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
         setBranding(location.online_branding || brandingData);
         setInstGroupDefs(Array.isArray(snap?.instructionGroupDefs) ? snap.instructionGroupDefs : []);
         setEightySixIds((eRes.value?.data || []).map(r => r.item_id));
+        // v5.5.154: only keep active rates; calculateOrderTax also filters
+        // but doing it once here keeps the cart breakdown loop tight.
+        setTaxRates((tRes.value?.data || []).filter(r => r.active !== false));
       } catch (e) {
         console.warn('[OnlineSurface] load failed:', e?.message, e);
       } finally {
@@ -247,6 +254,10 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
       cat: item.cat || null,
       cats: Array.isArray(item.cats) ? item.cats : null,
       parentId: item.parent_id || item.parentId || null,
+      // v5.5.154: snapshot tax info so the cart + checkout VAT breakdown
+      // works without re-fetching menu_items for each line.
+      taxRateId: item.tax_rate_id || item.taxRateId || null,
+      taxOverrides: item.tax_overrides || item.taxOverrides || {},
       price, qty, mods,
     }]);
     setOpenItem(null);
@@ -527,6 +538,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
       {showCart && (
         <OnlineCart
           cart={cart} theme={theme} orderType={orderType}
+          taxRates={taxRates}
           onClose={() => setShowCart(false)}
           onRemove={removeFromCart} onUpdateQty={updateQty}
           onCheckout={() => {
@@ -540,6 +552,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
         <OnlineCheckout
           cart={cart} theme={theme} location={location}
           orderType={orderType} loyalty={loyalty}
+          taxRates={taxRates}
           onClose={() => setShowCheckout(false)}
           onPlaced={(info) => {
             setShowCheckout(false);
@@ -551,6 +564,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
         <QrCheckout
           cart={cart} theme={theme} location={location}
           tableId={tableId} tableLabel={effectiveTableLabel}
+          taxRates={taxRates}
           loyalty={loyalty}
           onClose={() => setShowCheckout(false)}
           onPlaced={(info) => {

@@ -23,8 +23,9 @@ import { supabase, platformSupabase } from '../../lib/supabase';
 import { getStripeForAccount, createPaymentIntent } from '../../lib/stripeClient';
 import { attributeOnlineOrder } from '../../lib/customerLookup';
 import { getDayWindows } from '../../lib/openingHours';
+import { calculateOrderTax } from '../../lib/tax';
 
-export default function OnlineCheckout({ cart, theme, location, orderType, loyalty, onClose, onPlaced }) {
+export default function OnlineCheckout({ cart, theme, location, orderType, loyalty, taxRates = [], onClose, onPlaced }) {
   const opsLocationId = location.ops_location_id || location.id; // ops DB
   const platformLocationId = location.id;                         // platform DB
   const tz = location.timezone || 'Europe/London';
@@ -56,6 +57,18 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     const unit = l.price + (l.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0);
     return s + unit * (l.qty || 1);
   }, 0), [cart]);
+
+  // v5.5.154: UK VAT breakdown — required on customer-facing receipts/totals.
+  const taxBreakdown = useMemo(() => calculateOrderTax(
+    cart.map(l => ({
+      price: l.price + (l.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0),
+      qty: l.qty || 1,
+      taxRateId: l.taxRateId || l.tax_rate_id || null,
+      taxOverrides: l.taxOverrides || l.tax_overrides || {},
+    })),
+    taxRates,
+    orderType || 'collection',
+  ), [cart, taxRates, orderType]);
 
   // Build collection slots — every 15 min between (now + leadMin) and the
   // next close time, snapped to :00 / :15 / :30 / :45.
@@ -234,7 +247,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           subtotal,
           service: 0,
           tip: 0,
-          tax_amount: null,
+          tax_amount: taxBreakdown?.totalTax || null, // v5.5.154: VAT for reports + receipt
           total: subtotal,
           method: 'card',
           drawer_id: null,
@@ -365,6 +378,13 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
                 </div>
               );
             })}
+            {/* v5.5.154: UK VAT breakdown */}
+            {taxBreakdown.totalTax > 0 && taxBreakdown.breakdown.map((b, i) => (
+              <div key={`vat-${i}`} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 12, color: muted }}>
+                <span>incl. {b.rate.name || `VAT ${(Number(b.rate.rate) * 100).toFixed(0)}%`}</span>
+                <span>£{b.tax.toFixed(2)}</span>
+              </div>
+            ))}
             <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0 0', borderTop: `1px solid ${cardBdr}`, marginTop: 8 }}>
               <span style={{ fontSize: 14, fontWeight: 800 }}>Total</span>
               <span style={{ fontSize: 18, fontWeight: 900 }}>£{subtotal.toFixed(2)}</span>

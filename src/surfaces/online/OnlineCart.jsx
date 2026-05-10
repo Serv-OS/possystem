@@ -1,12 +1,24 @@
 // v5.5.112 — Online ordering cart sheet (UI overhaul).
-// Matches the new branded look: light or dark theme-aware, larger touch
-// targets, real DoorDash/Uber Eats vibe.
+// v5.5.154 — order-type-aware (dine-in / collection / delivery) + UK VAT
+// breakdown for legal compliance on customer-facing surfaces.
 
-export default function OnlineCart({ cart, theme, orderType, onClose, onRemove, onUpdateQty, onCheckout }) {
+import { calculateOrderTax } from '../../lib/tax';
+
+export default function OnlineCart({ cart, theme, orderType, taxRates = [], onClose, onRemove, onUpdateQty, onCheckout }) {
   const subtotal = cart.reduce((s, l) => {
     const unit = l.price + (l.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0);
     return s + unit * (l.qty || 1);
   }, 0);
+  // v5.5.154: VAT breakdown — UK prices are inclusive (price already
+  // contains the tax), so we extract for display. Required on every
+  // customer-facing total for compliance.
+  const taxLineItems = cart.map(l => ({
+    price: l.price + (l.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0),
+    qty: l.qty || 1,
+    taxRateId: l.taxRateId || l.tax_rate_id || null,
+    taxOverrides: l.taxOverrides || l.tax_overrides || {},
+  }));
+  const taxBreakdown = calculateOrderTax(taxLineItems, taxRates, orderType || 'dine-in');
 
   const muted   = theme.isLight ? '#6b6b70' : '#a0a0a8';
   const cardBdr = theme.isLight ? '#ececef' : '#2a2a30';
@@ -34,8 +46,12 @@ export default function OnlineCart({ cart, theme, orderType, onClose, onRemove, 
 
         <div style={{ padding: '10px 22px 12px', display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
           <div style={{ fontSize: 22, fontWeight: 800, letterSpacing: '-0.02em' }}>Your basket</div>
+          {/* v5.5.154: order-type-aware label. dine-in (QR) is neither
+              collection nor delivery — it's eat-in at the table. */}
           <div style={{ fontSize: 12, fontWeight: 700, color: muted, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-            {orderType === 'collection' ? 'Collection' : 'Delivery'}
+            {orderType === 'dine-in'    ? 'Dine-in'
+              : orderType === 'collection' ? 'Collection'
+              : 'Delivery'}
           </div>
         </div>
 
@@ -89,9 +105,23 @@ export default function OnlineCart({ cart, theme, orderType, onClose, onRemove, 
         {cart.length > 0 && (
           <div style={{ padding: '16px 22px 0', flexShrink: 0 }}>
             <Row label="Subtotal" value={`£${subtotal.toFixed(2)}`} muted={muted}/>
-            <Row label={orderType === 'delivery' ? 'Delivery fee' : 'Collection'}
-              value={orderType === 'delivery' ? 'Calculated at checkout' : 'Free'}
-              muted={muted}/>
+            {/* v5.5.154: dine-in (QR) gets neither a delivery fee nor a
+                collection line — it's eat-in at the table, no fulfilment
+                cost. Only show the row for online order types. */}
+            {orderType !== 'dine-in' && (
+              <Row label={orderType === 'delivery' ? 'Delivery fee' : 'Collection'}
+                value={orderType === 'delivery' ? 'Calculated at checkout' : 'Free'}
+                muted={muted}/>
+            )}
+            {/* v5.5.154: UK VAT breakdown — required on every customer-
+                facing total for compliance. Prices are inclusive so we
+                show "incl VAT" rather than adding on top. */}
+            {taxBreakdown.totalTax > 0 && taxBreakdown.breakdown.map((b, i) => (
+              <Row key={i}
+                label={`incl. ${b.rate.name || `VAT ${(Number(b.rate.rate) * 100).toFixed(0)}%`}`}
+                value={`£${b.tax.toFixed(2)}`}
+                muted={muted}/>
+            ))}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline',
               padding: '12px 0 6px', borderTop: `1px solid ${cardBdr}`, marginTop: 6,
             }}>

@@ -19,8 +19,9 @@ import { Elements, CardElement, useStripe, useElements } from '@stripe/react-str
 import { supabase } from '../../lib/supabase';
 import { getStripeForAccount, createPaymentIntent } from '../../lib/stripeClient';
 import { attributeOnlineOrder } from '../../lib/customerLookup';
+import { calculateOrderTax } from '../../lib/tax';
 
-export default function QrCheckout({ cart, theme, location, tableId, tableLabel, loyalty, onClose, onPlaced }) {
+export default function QrCheckout({ cart, theme, location, tableId, tableLabel, loyalty, taxRates = [], onClose, onPlaced }) {
   const opsLocationId      = location.ops_location_id || location.id;
   const platformLocationId = location.id;
   const tz                 = location.timezone || 'Europe/London';
@@ -80,6 +81,20 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
     () => +(subtotal + serviceCharge + tipAmount).toFixed(2),
     [subtotal, serviceCharge, tipAmount]
   );
+
+  // v5.5.154: UK VAT breakdown over the gross subtotal — items only.
+  // Service charge and tip aren't VAT-rated. UK uses inclusive tax so
+  // the figure shown is "incl. VAT £X.XX", not added on top.
+  const taxBreakdown = useMemo(() => calculateOrderTax(
+    cart.map(l => ({
+      price: l.price + (l.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0),
+      qty: l.qty || 1,
+      taxRateId: l.taxRateId || l.tax_rate_id || null,
+      taxOverrides: l.taxOverrides || l.tax_overrides || {},
+    })),
+    taxRates,
+    'dine-in',
+  ), [cart, taxRates]);
 
   const valid = useMemo(() => {
     if (!name.trim()) return false;
@@ -252,7 +267,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
             subtotal,
             service: serviceCharge,
             tip: tipAmount,
-            tax_amount: null,
+            tax_amount: taxBreakdown?.totalTax || null, // v5.5.154: VAT for reports + receipt
             total,
             method: 'card',
             drawer_id: null,
@@ -332,7 +347,8 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
               pi={pi} subtotal={subtotal} serviceCharge={serviceCharge} tipAmount={tipAmount} total={total}
               tableLabel={tableLabel || tableId}
               theme={theme} cardBdr={cardBdr} inputBg={inputBg} muted={muted}
-              cart={cart} onPaid={onPaymentSuccess} onError={setError} error={error}
+              cart={cart} taxBreakdown={taxBreakdown}
+              onPaid={onPaymentSuccess} onError={setError} error={error}
               isOpenTab={isOpenTab} tabPreAuthAmount={tabPreAuthAmount}
             />
           </Elements>
@@ -388,6 +404,14 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
               );
             })}
             <SummaryLine label="Subtotal" value={subtotal} muted={muted}/>
+            {/* v5.5.154: UK VAT breakdown — required on every customer-
+                facing total for compliance. Inclusive: shown as "incl."
+                on top of the subtotal which already contains the tax. */}
+            {taxBreakdown.totalTax > 0 && taxBreakdown.breakdown.map((b, i) => (
+              <SummaryLine key={`vat-${i}`}
+                label={`incl. ${b.rate.name || `VAT ${(Number(b.rate.rate) * 100).toFixed(0)}%`}`}
+                value={b.tax} muted={muted}/>
+            ))}
             {serviceCharge > 0 && <SummaryLine label={`Service charge (${serviceChargePct}%)`} value={serviceCharge} muted={muted}/>}
             {tipAmount > 0 && <SummaryLine label="Tip" value={tipAmount} muted={muted}/>}
             <div style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 0 0', borderTop: `1px solid ${cardBdr}`, marginTop: 8 }}>
@@ -443,7 +467,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
   );
 }
 
-function PayStep({ pi, subtotal, serviceCharge, tipAmount, total, tableLabel, theme, cardBdr, inputBg, muted, cart, onPaid, onError, error, isOpenTab, tabPreAuthAmount }) {
+function PayStep({ pi, subtotal, serviceCharge, tipAmount, total, tableLabel, theme, cardBdr, inputBg, muted, cart, taxBreakdown, onPaid, onError, error, isOpenTab, tabPreAuthAmount }) {
   const stripe = useStripe();
   const elements = useElements();
   const [busy, setBusy] = useState(false);
@@ -493,6 +517,11 @@ function PayStep({ pi, subtotal, serviceCharge, tipAmount, total, tableLabel, th
             );
           })}
           <SummaryLine label="Subtotal" value={subtotal} muted={muted}/>
+          {taxBreakdown?.totalTax > 0 && taxBreakdown.breakdown.map((b, i) => (
+            <SummaryLine key={`vat-${i}`}
+              label={`incl. ${b.rate.name || `VAT ${(Number(b.rate.rate) * 100).toFixed(0)}%`}`}
+              value={b.tax} muted={muted}/>
+          ))}
           {serviceCharge > 0 && <SummaryLine label="Service charge" value={serviceCharge} muted={muted}/>}
           {tipAmount > 0 && <SummaryLine label="Tip" value={tipAmount} muted={muted}/>}
           <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0 0', borderTop: `1px solid ${cardBdr}`, marginTop: 6 }}>
