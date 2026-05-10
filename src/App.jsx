@@ -76,6 +76,16 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.150', date: '9 May 2026', label: 'QR commit 3b — open-tab pre-auth path + Pay-now/Open-tab radio + force-close-and-capture from operator queue',
+    changes: [
+      'CUSTOMER PAY-NOW vs OPEN-TAB CHOICE — when the venue\'s qr_payment_mode is "both", QrCheckout shows two big cards on the details step: 💳 Pay now (charges this round) and 📋 Open tab (holds £X on the card; staff close it later). When the BO has it forced to one mode, that\'s what the customer gets. The customer-facing tab warning text from BO renders inline above the Continue button so guests see the surcharge policy before they commit.',
+      'STRIPE PRE-AUTH ON TAB OPEN — open-tab path uses captureMethod="manual" + the BO-configured qr_tab_pre_auth_amount (default £100) so Stripe holds but doesn\'t charge. Pay-now keeps captureMethod="automatic" (charged immediately, unchanged from v5.5.145). Customer.payment_intent_id and customer.stripe_account get stashed on the order_queue row\'s `customer` jsonb at tab open — no schema migration on bar_tabs needed (per memory: QR open-tabs MUST stay isolated from the bar_tabs schema).',
+      'OPERATOR FORCE-CLOSE — Orders tab now shows a yellow "TAB · £100 HELD" badge on QR open-tabs and a 🔒 Close & charge button. Click confirms with a "Charge £X to the customer\'s card?" prompt, calls the new /api/stripe-capture Vercel endpoint with the saved payment_intent_id + connected account id, captures the actual final amount on the connected Stripe account (Stripe-Account header), writes the closed_checks row (status=paid, source=qr), and marks the order_queue row collected. Auto-surcharge for left-open tabs lands in commit 3c.',
+      'NEW VERCEL ENDPOINT — api/stripe-capture.js. POST { paymentIntentId, stripeAccount, amountToCapture (pence) } → calls Stripe REST POST /v1/payment_intents/{id}/capture with the Stripe-Account header. amountToCapture defaults to the full pre-auth if omitted. Errors surface a clear message (Stripe code + type) to the operator UI. Requires the same STRIPE_SECRET_KEY env you already have on Vercel.',
+      'NB — capture amount must be ≤ pre-auth. If a customer\'s tab exceeds the £100 hold, Stripe will reject. Commit 3c will add cancel-and-recharge for that overflow case + the auto-surcharge sweep.',
+    ],
+  },
+  {
     version: '5.5.149', date: '9 May 2026', label: 'QR commit 3a — open-tab guardrails (BO settings + customer-facing warning); pre-auth/force-close/capture lands in 3b',
     changes: [
       'BO QR section now exposes 5 new fields (only when payment mode is open_tab or both): pre-authorisation hold (£100 default — Stripe holds this on the card when the tab opens), customer-facing warning text (textarea, plain text, e.g. "⚠ Tabs left open at close incur a 10% surcharge"), left-open surcharge % AND/OR fixed £ alternatives, and an auto-force-close-after-minutes threshold (0 = manual only). All persist defensively (try/catch) so a missing-column DB doesn\'t break the rest of the page.',

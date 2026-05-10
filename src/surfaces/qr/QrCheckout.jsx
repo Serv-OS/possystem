@@ -44,6 +44,16 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
   const [tipMode, setTipMode] = useState('10');                // '0' | '5' | '10' | '12.5' | '15' | 'custom'
   const [customTip, setCustomTip] = useState('');
 
+  // v5.5.150: payNow vs openTab. Defaults sensibly per location.qr_payment_mode:
+  //   pay_now  → forced 'pay_now'
+  //   open_tab → forced 'open_tab'
+  //   both     → customer chooses, defaults to 'pay_now'
+  const [payChoice, setPayChoice] = useState(
+    paymentMode === 'open_tab' ? 'open_tab' : 'pay_now'
+  );
+  const isOpenTab = payChoice === 'open_tab';
+  const tabPreAuthAmount = Number(location.qr_tab_pre_auth_amount ?? 100);
+
   const [working, setWorking] = useState(false);
   const [error, setError]     = useState('');
 
@@ -122,13 +132,22 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
       if (!authToken) throw new Error('Could not obtain auth token for payment.');
 
       const { ref, customer } = orderShape;
+      // v5.5.150: open-tab path uses captureMethod='manual' + a pre-auth
+      // hold (set in BO). Pay-now path captures immediately for the actual
+      // total. Same edge fn either way; the captureMethod flag is what
+      // changes Stripe's behaviour.
       const piRes = await createPaymentIntent({
         authToken,
         locationId: platformLocationId,
-        amountMinor: Math.round(total * 100),
+        amountMinor: isOpenTab
+          ? Math.round(tabPreAuthAmount * 100)
+          : Math.round(total * 100),
         currency: 'gbp',
         channel: 'online', // applies online_markup_percent on the connected account
-        description: `QR Table ${tableLabel || tableId} — ${ref} — ${customer.name}`,
+        captureMethod: isOpenTab ? 'manual' : 'automatic',
+        description: isOpenTab
+          ? `QR Tab open · Table ${tableLabel || tableId} · ${ref} · ${customer.name}`
+          : `QR Table ${tableLabel || tableId} — ${ref} — ${customer.name}`,
         paymentMethodTypes: ['card'],
         metadata: {
           source: 'qr',
@@ -142,6 +161,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
           subtotal: String(subtotal),
           service_charge: String(serviceCharge),
           tip: String(tipAmount),
+          tab_open: isOpenTab ? 'true' : 'false',
         },
       });
       if (!piRes?.client_secret) throw new Error('Payment could not start. Please try again.');
@@ -161,17 +181,35 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
       const { ref, customer, items } = orderShape;
       const tableLabelStr = `Table ${tableLabel || tableId || '?'}`;
 
+      // v5.5.150: stash payment metadata in the order_queue.customer jsonb
+      // (no schema migration needed). Force-close on POS reads these fields,
+      // calls /api/stripe-capture, then writes closed_checks + marks the
+      // queue row collected. tab_open=true tells the operator UI it's an
+      // unpaid tab so it can show a "Force close & charge" button instead
+      // of the regular advance buttons.
+      const customerWithPayment = {
+        ...customer,
+        payment_intent_id: paymentIntent?.id || null,
+        stripe_account: pi?.stripe_account || null,
+        ...(isOpenTab ? {
+          tab_open: true,
+          pre_auth_amount: tabPreAuthAmount,
+          tab_running_total: total, // grows as more rounds are added (commit 3c)
+        } : { paid: true }),
+      };
+
       // 1. order_queue — kitchen routing fires off this INSERT (master device
       // realtime handler). source='qr' + type='dine-in' + table_label so the
       // kitchen ticket prints "TABLE T5" header, the orders panel shows it
-      // in the right bucket. No sent_at delay — fire immediately.
+      // in the right bucket. No sent_at delay — fire immediately, even for
+      // open-tab orders (table-service pattern: cook now, pay later).
       const queueRow = {
         ref,
         location_id: opsLocationId,
         type: 'dine-in',
         status: 'prep',
         source: 'qr',
-        items, customer,
+        items, customer: customerWithPayment,
         total,
         sent_at: new Date().toISOString(),
         collection_time: null,
@@ -180,41 +218,46 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
       const { error: qErr } = await supabase.from('order_queue').insert(queueRow);
       if (qErr) {
         console.error('[QrCheckout] order_queue write failed AFTER payment:', qErr);
-        setError('Payment succeeded but we could not save the order. Please show this to staff. Ref ' + ref + '.');
+        setError(isOpenTab
+          ? `Card was authorised but we could not save the tab. Please show this to staff. Ref ${ref}.`
+          : `Payment succeeded but we could not save the order. Please show this to staff. Ref ${ref}.`);
         return;
       }
 
-      // 2. closed_checks — appears in BO Reports, EOD, customer profile,
-      // receipt re-print resolves the ref. Same shape OnlineCheckout writes.
-      try {
-        await supabase.from('closed_checks').insert({
-          id: `chk-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
-          ref,
-          location_id: opsLocationId,
-          server: 'QR',
-          staff_id: null,
-          covers: 1,
-          order_type: 'dine-in',
-          customer,
-          items: items.map(i => ({ ...i, voided: false })),
-          discounts: [],
-          subtotal,
-          service: serviceCharge,
-          tip: tipAmount,
-          tax_amount: null,
-          total,
-          method: 'card',
-          drawer_id: null,
-          shift_id: null,
-          closed_at: new Date().toISOString(),
-          status: 'paid',
-          refunds: [],
-          table_id: tableId || null,
-          table_label: tableLabelStr,
-          source: 'qr',
-        });
-      } catch (e) {
-        console.warn('[QrCheckout] closed_checks insert failed:', e?.message);
+      // 2. closed_checks — only on PAY-NOW orders. For open-tab the bill
+      // isn't paid yet (status is requires_capture in Stripe) — closed_checks
+      // gets written on force-close-and-capture by the operator (commit 3c).
+      if (!isOpenTab) {
+        try {
+          await supabase.from('closed_checks').insert({
+            id: `chk-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
+            ref,
+            location_id: opsLocationId,
+            server: 'QR',
+            staff_id: null,
+            covers: 1,
+            order_type: 'dine-in',
+            customer: customerWithPayment,
+            items: items.map(i => ({ ...i, voided: false })),
+            discounts: [],
+            subtotal,
+            service: serviceCharge,
+            tip: tipAmount,
+            tax_amount: null,
+            total,
+            method: 'card',
+            drawer_id: null,
+            shift_id: null,
+            closed_at: new Date().toISOString(),
+            status: 'paid',
+            refunds: [],
+            table_id: tableId || null,
+            table_label: tableLabelStr,
+            source: 'qr',
+          });
+        } catch (e) {
+          console.warn('[QrCheckout] closed_checks insert failed:', e?.message);
+        }
       }
 
       // 3. Customer CRM (fire-and-forget — phone optional for QR, only
@@ -281,6 +324,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
               tableLabel={tableLabel || tableId}
               theme={theme} cardBdr={cardBdr} inputBg={inputBg} muted={muted}
               cart={cart} onPaid={onPaymentSuccess} onError={setError} error={error}
+              isOpenTab={isOpenTab} tabPreAuthAmount={tabPreAuthAmount}
             />
           </Elements>
         ) : (
@@ -292,6 +336,23 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
             <Field label="Email (optional)" value={email} onChange={setEmail} placeholder="for receipt" type="email" theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
           </div>
           <Field label="Notes for the kitchen (optional)" value={notes} onChange={setNotes} placeholder="Allergies, preferences, etc." theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
+
+          {/* v5.5.150: Pay-now / Open-tab choice — only when venue allows
+              both. Open-tab pre-authorises the card; the bill is captured
+              when staff close the tab from the POS. */}
+          {paymentMode === 'both' && (
+            <>
+              <SectionTitle>How would you like to pay?</SectionTitle>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                <PayChoiceCard active={payChoice === 'pay_now'} onClick={() => setPayChoice('pay_now')}
+                  theme={theme} cardBdr={cardBdr} inputBg={inputBg}
+                  title="💳 Pay now" sub="Pay this round and we'll bring it over."/>
+                <PayChoiceCard active={payChoice === 'open_tab'} onClick={() => setPayChoice('open_tab')}
+                  theme={theme} cardBdr={cardBdr} inputBg={inputBg}
+                  title="📋 Open tab" sub={`Hold £${tabPreAuthAmount} on your card; staff close the tab when you're done.`}/>
+              </div>
+            </>
+          )}
 
           <SectionTitle>Tip</SectionTitle>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 6 }}>
@@ -358,11 +419,13 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
                 fontFamily: 'inherit',
                 display: 'flex', justifyContent: 'space-between', alignItems: 'center',
               }}>
-              <span>{working ? 'Starting payment…' : 'Continue to payment'}</span>
-              <span>£{total.toFixed(2)}</span>
+              <span>{working ? 'Starting payment…' : (isOpenTab ? 'Continue — open a tab' : 'Continue to payment')}</span>
+              <span>£{(isOpenTab ? tabPreAuthAmount : total).toFixed(2)}{isOpenTab ? ' hold' : ''}</span>
             </button>
             <div style={{ fontSize: 10, color: muted, textAlign: 'center', marginTop: 8 }}>
-              🔒 Card next, processed securely by Stripe.
+              {isOpenTab
+                ? `🔒 We'll hold £${tabPreAuthAmount} on your card. Final bill is taken when staff close the tab.`
+                : '🔒 Card next, processed securely by Stripe.'}
             </div>
           </div>
         )}
@@ -371,7 +434,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
   );
 }
 
-function PayStep({ pi, subtotal, serviceCharge, tipAmount, total, tableLabel, theme, cardBdr, inputBg, muted, cart, onPaid, onError, error }) {
+function PayStep({ pi, subtotal, serviceCharge, tipAmount, total, tableLabel, theme, cardBdr, inputBg, muted, cart, onPaid, onError, error, isOpenTab, tabPreAuthAmount }) {
   const stripe = useStripe();
   const elements = useElements();
   const [busy, setBusy] = useState(false);
@@ -442,11 +505,15 @@ function PayStep({ pi, subtotal, serviceCharge, tipAmount, total, tableLabel, th
           fontFamily: 'inherit', opacity: busy ? 0.7 : 1,
           display: 'flex', justifyContent: 'space-between', alignItems: 'center',
         }}>
-          <span>{busy ? 'Processing payment…' : 'Pay & send to kitchen'}</span>
-          <span>£{total.toFixed(2)}</span>
+          <span>{busy
+            ? (isOpenTab ? 'Authorising…' : 'Processing payment…')
+            : (isOpenTab ? 'Authorise & open tab' : 'Pay & send to kitchen')}</span>
+          <span>£{(isOpenTab ? tabPreAuthAmount : total).toFixed(2)}{isOpenTab ? ' hold' : ''}</span>
         </button>
         <div style={{ fontSize: 10, color: muted, textAlign: 'center', marginTop: 8 }}>
-          🔒 Your order goes to the kitchen the moment payment clears.
+          {isOpenTab
+            ? `🔒 £${tabPreAuthAmount} card hold. Actual bill taken when staff close the tab.`
+            : '🔒 Your order goes to the kitchen the moment payment clears.'}
         </div>
       </div>
     </>
@@ -468,6 +535,25 @@ function Field({ label, value, onChange, placeholder, type = 'text', theme, card
           fontSize: 14, fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box',
         }}/>
     </div>
+  );
+}
+
+function PayChoiceCard({ active, onClick, title, sub, theme, cardBdr, inputBg }) {
+  return (
+    <button onClick={onClick} className="op-btn"
+      style={{
+        padding: '14px 14px', borderRadius: 14,
+        background: active ? `${theme.accent}28` : inputBg,
+        color: theme.fg,
+        border: `${active ? 3 : 1.5}px solid ${active ? theme.accent : cardBdr}`,
+        boxShadow: active ? `0 4px 14px ${theme.accent}40` : 'none',
+        cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left',
+        opacity: active ? 1 : 0.85,
+        display: 'flex', flexDirection: 'column', gap: 4,
+      }}>
+      <div style={{ fontSize: 14, fontWeight: 800 }}>{title}</div>
+      <div style={{ fontSize: 11, color: theme.isLight ? '#6b6b70' : '#a0a0a8', lineHeight: 1.4 }}>{sub}</div>
+    </button>
   );
 }
 

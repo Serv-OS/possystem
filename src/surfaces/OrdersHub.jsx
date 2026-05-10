@@ -11,6 +11,7 @@
  */
 import { useState, useMemo, useEffect } from 'react';
 import { useStore } from '../store';
+import { supabase } from '../lib/supabase';
 
 // ── Channel definitions ────────────────────────────────────────────────────────
 const FILTER_TABS = [
@@ -64,6 +65,7 @@ export default function OrdersHub() {
   const [myOrders, setMyOrders] = useState(false);
   const [showDone, setShowDone] = useState(false);
   const [tick, setTick]         = useState(0);
+  const [closingTabRef, setClosingTabRef] = useState(null); // ref currently being captured
 
   useEffect(() => {
     const id = setInterval(() => setTick(t => t + 1), 30000);
@@ -178,6 +180,73 @@ export default function OrdersHub() {
     updateQueueStatus(o.ref, next);
     if (next === 'ready')     showToast(`${o.displayName} — ready!`, 'success');
     if (next === 'collected') { showToast(`${o.ref} collected`, 'info'); setTimeout(() => removeFromQueue(o.ref), 8000); }
+  };
+
+  // v5.5.150: force-close a QR open-tab. Calls /api/stripe-capture to capture
+  // the held pre-auth amount on the connected Stripe account, then writes
+  // closed_checks + marks the order_queue row collected.
+  // Customer.payment_intent_id + customer.stripe_account were stashed at
+  // tab open by QrCheckout (no schema migration on bar_tabs needed —
+  // see feedback_qr_no_bartabs memory).
+  // Auto-surcharge for left-open tabs: deferred to commit 3c (this commit
+  // covers the manual force-close from the operator queue).
+  const forceCloseTab = async (o) => {
+    if (closingTabRef) return;
+    const pi = o.customer?.payment_intent_id;
+    const acct = o.customer?.stripe_account;
+    if (!pi || !acct) {
+      showToast(`${o.ref}: no payment intent on this tab — can't capture`, 'error');
+      return;
+    }
+    if (!confirm(`Close this tab and charge £${(o.total || 0).toFixed(2)} to the customer's card?`)) return;
+    setClosingTabRef(o.ref);
+    try {
+      const res = await fetch('/api/stripe-capture', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          paymentIntentId: pi,
+          stripeAccount: acct,
+          amountToCapture: Math.round((o.total || 0) * 100), // pence
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.captured) {
+        throw new Error(data?.error || 'Capture failed');
+      }
+      // Write closed_checks now that the bill has been captured.
+      try {
+        await supabase.from('closed_checks').insert({
+          id: `chk-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
+          ref: o.ref,
+          location_id: o.location_id || null,
+          server: 'QR (force-closed)',
+          covers: 1,
+          order_type: 'dine-in',
+          customer: o.customer,
+          items: (o.items || []).map(i => ({ ...i, voided: false })),
+          discounts: [],
+          subtotal: o.total,
+          service: 0, tip: 0, tax_amount: null,
+          total: o.total,
+          method: 'card',
+          closed_at: new Date().toISOString(),
+          status: 'paid',
+          refunds: [],
+          table_id: null,
+          table_label: o.customer?.tableLabel ? `Table ${o.customer.tableLabel}` : null,
+          source: 'qr',
+        });
+      } catch (e) { console.warn('[OrdersHub force-close] closed_checks insert:', e?.message); }
+      updateQueueStatus(o.ref, 'collected');
+      showToast(`${o.ref} captured £${(o.total || 0).toFixed(2)}`, 'success');
+      setTimeout(() => removeFromQueue(o.ref), 8000);
+    } catch (e) {
+      console.error('[OrdersHub] force-close failed:', e);
+      showToast(`Force-close failed: ${e?.message || 'unknown'}`, 'error');
+    } finally {
+      setClosingTabRef(null);
+    }
   };
 
   const openOrder = (o) => {
@@ -298,21 +367,21 @@ export default function OrdersHub() {
             {tableOrders.length > 0 && (
               <Section title="Tables" icon="⬚" color="#3b82f6" count={tableOrders.length}>
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))', gap:10 }}>
-                  {tableOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onOpen={()=>openOrder(o)} />)}
+                  {tableOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onOpen={()=>openOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref}/>)}
                 </div>
               </Section>
             )}
             {barOrders.length > 0 && (
               <Section title="Bar tabs" icon="🍸" color="#a855f7" count={barOrders.length}>
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))', gap:10 }}>
-                  {barOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onOpen={()=>openOrder(o)} />)}
+                  {barOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onOpen={()=>openOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref}/>)}
                 </div>
               </Section>
             )}
             {queueOrders.length > 0 && (
               <Section title="Walk-in / Takeaway / Delivery" icon="🏷" color="#22d3ee" count={queueOrders.length}>
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))', gap:10 }}>
-                  {queueOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onOpen={()=>openOrder(o)} />)}
+                  {queueOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onOpen={()=>openOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref}/>)}
                 </div>
               </Section>
             )}
@@ -320,7 +389,7 @@ export default function OrdersHub() {
         ) : (
           // Flat filtered view
           <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))', gap:10 }}>
-            {filtered.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onOpen={()=>openOrder(o)} />)}
+            {filtered.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onOpen={()=>openOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref}/>)}
           </div>
         )}
       </div>
@@ -351,7 +420,11 @@ function Section({ title, icon, color, count, children }) {
 }
 
 // ── Order card ────────────────────────────────────────────────────────────────
-function OrderCard({ order, onAdvance, onOpen }) {
+function OrderCard({ order, onAdvance, onOpen, onForceClose, closingTab }) {
+  // v5.5.150: QR open-tab detection. Customer set tab_open=true at tab
+  // creation; we surface a "Close & charge" button so the operator can
+  // capture the pre-auth at end-of-meal.
+  const isOpenTab = order._kind === 'queue' && order.customer?.tab_open === true && !order.customer?.tab_closed;
   const tab    = FILTER_TABS.find(t => t.id === order.channel) || FILTER_TABS[0];
   const color  = SECTION_COLORS[order.channel] || 'var(--acc)';
   const qs     = Q_STATUS[order.status] || Q_STATUS.received;
@@ -440,11 +513,30 @@ function OrderCard({ order, onAdvance, onOpen }) {
       <div style={{ padding:'8px 13px', borderTop:'1px solid var(--bdr)', background:'var(--bg2)', display:'flex', alignItems:'center', gap:8 }}>
         <span style={{ fontSize:14, fontWeight:800, color:'var(--acc)', fontFamily:'var(--font-mono)' }}>{money(order.total)}</span>
         <span style={{ fontSize:10, color:'var(--t4)' }}>{items.length} item{items.length !== 1 ? 's' : ''}</span>
+        {/* v5.5.150: tab badge so operators can spot QR open-tabs at a glance */}
+        {isOpenTab && (
+          <span style={{ fontSize:9, fontWeight:800, padding:'2px 7px', borderRadius:8,
+            background:'#fde68a', color:'#78350f', border:'1px solid #f59e0b', letterSpacing:'.04em',
+          }}>TAB · £{order.customer?.pre_auth_amount ?? '?'} HELD</span>
+        )}
         <div style={{ marginLeft:'auto', display:'flex', gap:5 }}>
           <button onClick={onOpen} style={{ padding:'4px 10px', borderRadius:7, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr2)', color:'var(--t2)', fontSize:11, fontWeight:600 }}>
             Open →
           </button>
-          {canAdvance && (
+          {/* v5.5.150: force-close-and-charge button for open QR tabs.
+              Capture flows through /api/stripe-capture on the connected
+              account; on success closed_checks is written and the row
+              is marked collected. */}
+          {isOpenTab && (
+            <button onClick={onForceClose} disabled={!!closingTab} style={{
+              padding:'4px 12px', borderRadius:7, cursor: closingTab ? 'wait' : 'pointer',
+              fontFamily:'inherit', background:'#f59e0b', border:'none', color:'#0b0c10',
+              fontSize:11, fontWeight:800, opacity: closingTab ? 0.6 : 1,
+            }}>
+              {closingTab ? 'Capturing…' : '🔒 Close & charge'}
+            </button>
+          )}
+          {!isOpenTab && canAdvance && (
             <button onClick={onAdvance} style={{ padding:'4px 12px', borderRadius:7, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:11, fontWeight:700 }}>
               {NEXT[order.status]}
             </button>
