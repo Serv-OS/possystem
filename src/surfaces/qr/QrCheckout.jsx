@@ -20,8 +20,17 @@ import { supabase } from '../../lib/supabase';
 import { getStripeForAccount, createPaymentIntent } from '../../lib/stripeClient';
 import { attributeOnlineOrder } from '../../lib/customerLookup';
 import { calculateOrderTax } from '../../lib/tax';
+import { stashTab } from '../../lib/qrTabStorage';
 
-export default function QrCheckout({ cart, theme, location, tableId, tableLabel, loyalty, taxRates = [], onClose, onPlaced }) {
+export default function QrCheckout({ cart, theme, location, tableId, tableLabel, loyalty, taxRates = [], existingTab = null, onClose, onPlaced }) {
+  // v5.5.155: when existingTab is set the customer is in "Add more"
+  // mode — they already opened a tab earlier and tapped Add more on
+  // the resume screen. Skip Stripe pre-auth + card input entirely;
+  // append a new order_queue row with the same payment_intent_id and
+  // tab_open=true. Force-close (or the customer's Close & pay) captures
+  // the lot at end. No tip/service/customer-detail re-prompts —
+  // the round just goes to the kitchen.
+  const isAddMoreRound = !!existingTab;
   const opsLocationId      = location.ops_location_id || location.id;
   const platformLocationId = location.id;
   const tz                 = location.timezone || 'Europe/London';
@@ -130,6 +139,49 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step]);
 
+  // v5.5.155: append a new round to an already-open tab. No Stripe call —
+  // we reuse the existing payment_intent that was pre-auth'd at first
+  // open. Just insert another order_queue row tagged with the same
+  // payment_intent_id so the close-and-capture sweep finds it.
+  const addToExistingTab = async () => {
+    if (working) return;
+    if (!cart.length) { setError('Cart is empty.'); return; }
+    setWorking(true); setError('');
+    try {
+      const { ref, customer, items } = orderShape;
+      const roundCustomer = {
+        ...customer,
+        // Inherit identity + payment refs from the round-1 customer record
+        // so the close-and-capture sweep can join all rounds by PI.
+        ...(existingTab?.rounds?.[0]?.customer || {}),
+        // Override per-round: a new ref per round, but keep tab_open until close
+        tab_open: true,
+        round_ref: ref,
+      };
+      const queueRow = {
+        ref,
+        location_id: opsLocationId,
+        type: 'dine-in',
+        status: 'prep',
+        source: 'qr',
+        items,
+        customer: roundCustomer,
+        total: subtotal, // round subtotal — close-time aggregates across rounds
+        sent_at: new Date().toISOString(),
+        collection_time: null,
+        is_asap: true,
+      };
+      const { error: qErr } = await supabase.from('order_queue').insert(queueRow);
+      if (qErr) throw qErr;
+      onPlaced?.({ ref, total: subtotal, addedToTab: true });
+    } catch (e) {
+      console.error('[QrCheckout addToTab] failed:', e);
+      setError(e?.message || 'Could not add to tab.');
+    } finally {
+      setWorking(false);
+    }
+  };
+
   const continueToPayment = async () => {
     if (!valid) { setError('Please enter your name (and a valid email if provided).'); return; }
     setWorking(true); setError('');
@@ -194,7 +246,28 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
   const onPaymentSuccess = async (paymentIntent) => {
     try {
       const { ref, customer, items } = orderShape;
-      const tableLabelStr = `Table ${tableLabel || tableId || '?'}`;
+
+      // v5.5.155: sub-numbering for multiple tabs at the same table.
+      // First customer at table 4 → "4.1"; second customer (separate scan,
+      // separate tab, separate Stripe pre-auth) → "4.2", and so on. The
+      // count is over OPEN tabs only — once a tab is captured the slot
+      // frees up. Pay-now QR orders use the bare tableLabel (no sub).
+      let effectiveTableLabel = tableLabel || tableId;
+      if (isOpenTab && tableId) {
+        try {
+          const { data: existingTabs } = await supabase
+            .from('order_queue')
+            .select('ref')
+            .eq('location_id', opsLocationId)
+            .eq('source', 'qr')
+            .neq('status', 'collected')
+            .filter('customer->>tableId', 'eq', String(tableId))
+            .filter('customer->>tab_open', 'eq', 'true');
+          const subNum = (existingTabs?.length || 0) + 1;
+          effectiveTableLabel = `${tableLabel || tableId}.${subNum}`;
+        } catch (e) { console.warn('[QrCheckout] sub-numbering query failed:', e?.message); }
+      }
+      const tableLabelStr = `Table ${effectiveTableLabel}`;
 
       // v5.5.150: stash payment metadata in the order_queue.customer jsonb
       // (no schema migration needed). Force-close on POS reads these fields,
@@ -204,6 +277,9 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
       // of the regular advance buttons.
       const customerWithPayment = {
         ...customer,
+        // Override the orderShape.customer.tableLabel with the sub-numbered
+        // version so POS displays "Table 4.2" not "Table 4".
+        tableLabel: effectiveTableLabel,
         payment_intent_id: paymentIntent?.id || null,
         stripe_account: pi?.stripe_account || null,
         ...(isOpenTab ? {
@@ -296,12 +372,115 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
         }).catch(e => console.warn('[QrCheckout] attribute failed:', e?.message));
       }
 
+      // v5.5.155: stash for silent resume on next scan from this device.
+      // Only for OPEN-TAB orders — pay-now orders are already paid in full
+      // and don't need a resume flow.
+      if (isOpenTab && location.online_slug && tableId) {
+        try {
+          stashTab(location.online_slug, tableId, {
+            tab_ref: ref,
+            payment_intent_id: paymentIntent?.id || null,
+            stripe_account: pi?.stripe_account || null,
+            phone_last4: (customer.phone || '').replace(/\D/g, '').slice(-4),
+            opened_at: new Date().toISOString(),
+            table_label: effectiveTableLabel, // sub-numbered (4.1, 4.2, ...)
+            pre_auth_amount: tabPreAuthAmount,
+          });
+        } catch (e) { console.warn('[QrCheckout] stashTab:', e?.message); }
+      }
       onPlaced?.({ ref, total, paymentIntent });
     } catch (e) {
       console.error('[QrCheckout] post-payment write failed:', e);
       setError('Payment succeeded but we could not save the order. Show this to staff. Ref ' + orderShape.ref + '.');
     }
   };
+
+  // v5.5.155: ADD-MORE-TO-TAB sheet — short-circuit render. Customer is
+  // already on an open tab; no Stripe round-trip, no re-collect of name/
+  // tip/service. Just confirm the round and send to kitchen.
+  if (isAddMoreRound) {
+    return (
+      <div onClick={onClose} style={{
+        position: 'fixed', inset: 0, zIndex: 40, background: 'rgba(0,0,0,0.6)',
+        display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
+      }}>
+        <div onClick={e => e.stopPropagation()} style={{
+          width: '100%', maxWidth: 600, maxHeight: '96vh', overflowY: 'auto',
+          background: theme.bg, color: theme.fg,
+          borderRadius: '18px 18px 0 0',
+          boxShadow: '0 -10px 40px rgba(0,0,0,0.3)',
+          fontFamily: '-apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif',
+        }}>
+          <div style={{ padding: '12px 0 6px', display: 'flex', justifyContent: 'center' }}>
+            <div style={{ width: 44, height: 5, borderRadius: 3, background: cardBdr }}/>
+          </div>
+          <div style={{ padding: '8px 24px 16px', display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
+            <div>
+              <div style={{ fontSize: 22, fontWeight: 900, letterSpacing: '-0.02em' }}>Add to your tab</div>
+              <div style={{ fontSize: 12, color: muted, marginTop: 2 }}>
+                Table {existingTab?.table_label || tableLabel || tableId} · already on the tab: £{Number(existingTab?.runningTotal || 0).toFixed(2)}
+              </div>
+            </div>
+            <button onClick={onClose} style={{
+              padding: '0 14px', height: 36, borderRadius: 99, border: `1px solid ${cardBdr}`,
+              background: inputBg, color: theme.fg,
+              fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit',
+            }}>×</button>
+          </div>
+
+          <div style={{ padding: '0 24px 12px' }}>
+            <div style={{ background: inputBg, border: `1px solid ${cardBdr}`, borderRadius: 12, padding: '12px 14px' }}>
+              <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: muted, marginBottom: 8 }}>
+                This round
+              </div>
+              {cart.map(line => {
+                const unit = line.price + (line.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0);
+                return (
+                  <div key={line.uid} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13 }}>
+                    <span style={{ flex: 1, minWidth: 0 }}>{line.qty || 1} × {line.name}</span>
+                    <span style={{ fontWeight: 700 }}>£{(unit * (line.qty || 1)).toFixed(2)}</span>
+                  </div>
+                );
+              })}
+              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0 0', borderTop: `1px solid ${cardBdr}`, marginTop: 6 }}>
+                <span style={{ fontSize: 14, fontWeight: 800 }}>This round</span>
+                <span style={{ fontSize: 18, fontWeight: 900 }}>£{subtotal.toFixed(2)}</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0 0', fontSize: 12, color: muted }}>
+                <span>Tab total after this round</span>
+                <span style={{ fontWeight: 700 }}>£{(Number(existingTab?.runningTotal || 0) + subtotal).toFixed(2)}</span>
+              </div>
+            </div>
+            <div style={{ marginTop: 14, fontSize: 11, color: muted, lineHeight: 1.5 }}>
+              No card needed — added to the tab you opened earlier. Pay it all when you tap "Close &amp; pay" on the welcome-back screen.
+            </div>
+          </div>
+
+          <div style={{
+            position: 'sticky', bottom: 0,
+            padding: '14px 24px calc(14px + env(safe-area-inset-bottom)) 24px',
+            background: theme.bg, borderTop: `1px solid ${cardBdr}`,
+          }}>
+            {error && <div style={{ fontSize: 12, color: '#ef4444', marginBottom: 10 }}>{error}</div>}
+            <button onClick={addToExistingTab} disabled={working || !cart.length}
+              className="op-btn-primary"
+              style={{
+                width: '100%', padding: '16px 22px', borderRadius: 14,
+                background: cart.length ? theme.accent : `${theme.fg}20`,
+                color: cart.length ? contrastFg(theme.accent) : `${theme.fg}60`,
+                border: 'none', fontSize: 16, fontWeight: 800,
+                cursor: working ? 'wait' : (cart.length ? 'pointer' : 'not-allowed'),
+                fontFamily: 'inherit',
+                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              }}>
+              <span>{working ? 'Sending…' : '🍽 Send to kitchen'}</span>
+              <span>£{subtotal.toFixed(2)}</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div onClick={onClose} style={{

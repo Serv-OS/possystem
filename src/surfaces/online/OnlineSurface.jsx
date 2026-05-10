@@ -15,11 +15,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { isItemEightySixed } from '../../lib/itemAvailability';
+import { getStashedTab, clearStashedTab } from '../../lib/qrTabStorage';
 import OnlineCart from './OnlineCart';
 import OnlineCheckout from './OnlineCheckout';
 import OnlineItemSheet from './OnlineItemSheet';
 import OrderTracker from './OrderTracker';
 import QrCheckout from '../qr/QrCheckout';
+import TabResumeScreen from '../qr/TabResumeScreen';
 
 const FALLBACK_ACCENT = '#e8a020';
 const FALLBACK_BG     = '#ffffff';
@@ -39,6 +41,15 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   const [categories, setCategories] = useState([]);
   const [eightySixIds, setEightySixIds] = useState([]); // v5.5.141: live 86 list from DB
   const [taxRates, setTaxRates]     = useState([]); // v5.5.154: UK VAT for cart breakdown
+  // v5.5.155: tab-resume state. resumeTab/rounds/total populated when an
+  // open-tab is found in localStorage AND verified live in DB.
+  // existingTab stays set after the customer taps "Add more" — QrCheckout
+  // uses it to add a new round to the same payment_intent instead of
+  // creating a fresh pre-auth.
+  const [resumeTab, setResumeTab]     = useState(null);
+  const [resumeRounds, setResumeRounds] = useState([]);
+  const [resumeChecked, setResumeChecked] = useState(false);
+  const [existingTab, setExistingTab] = useState(null);
   const [branding, setBranding]     = useState(null);
   const [instGroupDefs, setInstGroupDefs] = useState([]); // from config_pushes snapshot — there's no instruction_groups DB table
   const [loading, setLoading]       = useState(true);
@@ -68,6 +79,44 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
     (items || []).forEach(i => (i.allergens || []).forEach(a => a && set.add(a)));
     return [...set].sort();
   }, [items]);
+
+  // ── v5.5.155: QR open-tab resume via localStorage ───────────────────────
+  // On mount, if QR mode + a tab is stashed for this slug+table, fetch all
+  // open rounds keyed by the stashed payment_intent_id. If still open in
+  // the DB, render the TabResumeScreen; otherwise clear the stale stash.
+  useEffect(() => {
+    if (!isQr || !location.online_slug || !tableId || !supabase) {
+      setResumeChecked(true);
+      return;
+    }
+    let alive = true;
+    (async () => {
+      const stashed = getStashedTab(location.online_slug, tableId);
+      if (!stashed?.payment_intent_id) { if (alive) setResumeChecked(true); return; }
+      try {
+        // All rounds for this tab share customer.payment_intent_id. Use a
+        // jsonb @> filter to find them. status != 'collected' = still open.
+        const { data, error } = await supabase
+          .from('order_queue')
+          .select('ref, status, items, total, customer, location_id')
+          .eq('location_id', opsLocationId)
+          .eq('source', 'qr')
+          .neq('status', 'collected')
+          .filter('customer->>payment_intent_id', 'eq', stashed.payment_intent_id);
+        if (!alive) return;
+        if (error || !data?.length) {
+          // Tab no longer open — clear the stale stash
+          clearStashedTab(location.online_slug, tableId);
+        } else {
+          setResumeTab(stashed);
+          setResumeRounds(data);
+        }
+      } catch (e) { console.warn('[OnlineSurface] resume check failed:', e?.message); }
+      finally { if (alive) setResumeChecked(true); }
+    })();
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isQr, location.online_slug, tableId, opsLocationId]);
 
   // ── Track-an-existing-order via shareable URL ────────────────────────────
   // Customers can return any time via ?track=OL-ABC12&p=1234 (last-4 digits
@@ -292,6 +341,37 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           presetLabel={tableLabel || tableId || ''}
           mode={qrTableMode}
           onConfirm={(label) => { setConfirmedTable(label); setTableConfirmed(true); }}/>
+      </ScrollShell>
+    );
+  }
+
+  // v5.5.155: QR tab-resume gate. Renders before the menu / cart so a
+  // returning customer's tab is the FIRST thing they see. existingTab is
+  // null until they tap Add more — until then the resume screen is the
+  // only thing on screen. After Add more, the menu loads and a small
+  // "Adding to Table 4.1 · £23.50 so far" badge surfaces in the header
+  // (built next).
+  if (isQr && resumeChecked && resumeTab && !existingTab) {
+    const runningTotal = (resumeRounds || []).reduce((s, r) => s + Number(r.total || 0), 0);
+    return (
+      <ScrollShell theme={theme}>
+        <TabResumeScreen
+          slug={location.online_slug}
+          tableId={tableId}
+          tableLabel={effectiveTableLabel}
+          tab={resumeTab}
+          rounds={resumeRounds}
+          runningTotal={runningTotal}
+          theme={theme}
+          onAddMore={() => setExistingTab({ ...resumeTab, runningTotal, rounds: resumeRounds })}
+          onClosed={() => {
+            setResumeTab(null); setResumeRounds([]); setExistingTab(null);
+            setTrackerRef(resumeTab.tab_ref); // jump to live tracker
+          }}
+          onAbandon={() => {
+            clearStashedTab(location.online_slug, tableId);
+            setResumeTab(null); setResumeRounds([]);
+          }}/>
       </ScrollShell>
     );
   }
@@ -565,6 +645,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           cart={cart} theme={theme} location={location}
           tableId={tableId} tableLabel={effectiveTableLabel}
           taxRates={taxRates}
+          existingTab={existingTab}
           loyalty={loyalty}
           onClose={() => setShowCheckout(false)}
           onPlaced={(info) => {
