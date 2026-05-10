@@ -263,16 +263,25 @@ export default function OrdersHub() {
       }
     }
     const finalTotal = +(tab.total + surcharge).toFixed(2);
-    const captureAmount = tab.preAuthAmount > 0 ? Math.min(finalTotal, tab.preAuthAmount) : finalTotal;
-    if (tab.preAuthAmount > 0 && finalTotal > tab.preAuthAmount) {
+    // v5.5.160: ALWAYS request the full bill. The capture endpoint clamps
+    // to the actual amount_capturable on the PI and reports any shortfall;
+    // we then charge the difference off_session on the saved payment_method
+    // (saved at tab open via setup_future_usage='off_session'). User no
+    // longer has to remember the £/percent pre-auth — bill above pre-auth
+    // is now a normal flow, not an error.
+    const willOverage = tab.preAuthAmount > 0 && finalTotal > tab.preAuthAmount;
+    const paymentMethodId = tab.firstRow?.customer?.payment_method_id || null;
+    if (willOverage && !paymentMethodId) {
       if (!confirm(
-        `WARNING: bill is £${finalTotal.toFixed(2)} but only £${tab.preAuthAmount.toFixed(2)} was pre-authorised.\n\n`
-        + `Stripe will only capture £${tab.preAuthAmount.toFixed(2)}. The £${(finalTotal - tab.preAuthAmount).toFixed(2)} shortfall must be collected separately.\n\nProceed?`
+        `Bill is £${finalTotal.toFixed(2)} but only £${tab.preAuthAmount.toFixed(2)} was pre-authorised, and this tab was opened BEFORE v5.5.160 (no saved card on file).\n\n`
+        + `Only £${tab.preAuthAmount.toFixed(2)} can be captured. The £${(finalTotal - tab.preAuthAmount).toFixed(2)} shortfall must be collected via terminal or cash.\n\nProceed?`
       )) return;
     } else if (!confirm(
-      surcharge > 0
-        ? `Close Table ${tab.tableLabel}? Bill £${tab.total.toFixed(2)} + surcharge £${surcharge.toFixed(2)} (${surchargeReason}) = £${finalTotal.toFixed(2)} captured.`
-        : `Close Table ${tab.tableLabel} (${tab.rows.length} round${tab.rows.length === 1 ? '' : 's'}) and charge £${finalTotal.toFixed(2)}?`
+      willOverage
+        ? `Close Table ${tab.tableLabel}? Capture £${tab.preAuthAmount.toFixed(2)} pre-auth + charge £${(finalTotal - tab.preAuthAmount).toFixed(2)} overage on saved card = £${finalTotal.toFixed(2)} total.`
+        : surcharge > 0
+          ? `Close Table ${tab.tableLabel}? Bill £${tab.total.toFixed(2)} + surcharge £${surcharge.toFixed(2)} (${surchargeReason}) = £${finalTotal.toFixed(2)} captured.`
+          : `Close Table ${tab.tableLabel} (${tab.rows.length} round${tab.rows.length === 1 ? '' : 's'}) and charge £${finalTotal.toFixed(2)}?`
     )) return;
 
     setClosingTabRef(tab.payment_intent_id);
@@ -283,11 +292,51 @@ export default function OrdersHub() {
         body: JSON.stringify({
           paymentIntentId: tab.payment_intent_id,
           stripeAccount: tab.stripe_account,
-          amountToCapture: Math.round(captureAmount * 100),
+          amountToCapture: Math.round(finalTotal * 100),
         }),
       });
       const data = await res.json();
       if (!res.ok || !data.captured) throw new Error(data?.error || 'Capture failed');
+
+      // v5.5.160: if the capture was capped at the auth amount, charge the
+      // shortfall off_session on the saved payment_method. Stripe will
+      // immediately confirm or decline; if decline, surface a clear error
+      // to the operator so they can collect via terminal/cash.
+      let overageCaptured = 0;
+      let overageError = null;
+      const shortfallMinor = Number(data.shortfall || 0);
+      if (shortfallMinor > 0) {
+        if (!paymentMethodId) {
+          overageError = `Could not auto-charge £${(shortfallMinor / 100).toFixed(2)} overage — no saved card on this tab.`;
+        } else {
+          try {
+            const ovRes = await fetch('/api/stripe-charge-overage', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                stripeAccount: tab.stripe_account,
+                paymentMethodId,
+                amount: shortfallMinor,
+                currency: data.currency || 'gbp',
+                description: `QR tab overage · Table ${tab.tableLabel} · ${tab.payment_intent_id}`,
+                metadata: {
+                  source: 'qr_overage',
+                  parent_payment_intent: tab.payment_intent_id,
+                  table_label: String(tab.tableLabel || ''),
+                },
+              }),
+            });
+            const ov = await ovRes.json();
+            if (!ovRes.ok || !ov.ok) {
+              overageError = ov?.error || `Overage charge failed (HTTP ${ovRes.status}).`;
+            } else {
+              overageCaptured = Number(ov.amount || shortfallMinor) / 100;
+            }
+          } catch (e) {
+            overageError = e?.message || 'Overage charge failed.';
+          }
+        }
+      }
 
       // Mark every round on this PI as collected
       try {
@@ -298,6 +347,9 @@ export default function OrdersHub() {
         }
       } catch (e) { console.warn('[forceCloseQrTab] mark-collected:', e?.message); }
 
+      const capturedFromAuth = Number(data.captured_amount || 0) / 100;
+      const totalCollected = +(capturedFromAuth + overageCaptured).toFixed(2);
+
       // ONE closed_check for the whole tab
       try {
         await supabase.from('closed_checks').insert({
@@ -307,16 +359,24 @@ export default function OrdersHub() {
           server: 'QR (force-closed)',
           covers: 1,
           order_type: 'dine-in',
-          customer: { ...(tab.firstRow?.customer || {}), tab_closed_at: new Date().toISOString(), surcharge_applied: surcharge },
+          customer: {
+            ...(tab.firstRow?.customer || {}),
+            tab_closed_at: new Date().toISOString(),
+            surcharge_applied: surcharge,
+            captured_from_pre_auth: capturedFromAuth,
+            overage_charged: overageCaptured,
+            overage_outstanding: overageError ? +(finalTotal - totalCollected).toFixed(2) : 0,
+            overage_error: overageError || null,
+          },
           items: tab.allItems.map(i => ({ ...i, voided: false })),
           discounts: [],
           subtotal: tab.total,
           service: surcharge,
           tip: 0, tax_amount: null,
-          total: captureAmount,
+          total: totalCollected,
           method: 'card',
           closed_at: new Date().toISOString(),
-          status: 'paid',
+          status: overageError ? 'partial' : 'paid',
           refunds: [],
           table_id: tab.tableId || null,
           table_label: `Table ${tab.tableLabel}`,
@@ -324,12 +384,24 @@ export default function OrdersHub() {
         });
       } catch (e) { console.warn('[forceCloseQrTab] closed_checks insert:', e?.message); }
 
-      showToast(
-        surcharge > 0
-          ? `Table ${tab.tableLabel} captured £${captureAmount.toFixed(2)} (incl £${surcharge.toFixed(2)} surcharge)`
-          : `Table ${tab.tableLabel} captured £${captureAmount.toFixed(2)}`,
-        'success'
-      );
+      if (overageError) {
+        showToast(
+          `Table ${tab.tableLabel}: captured £${capturedFromAuth.toFixed(2)} from pre-auth, but overage £${(finalTotal - capturedFromAuth).toFixed(2)} could not be charged: ${overageError}. Collect via terminal/cash.`,
+          'error', 12000
+        );
+      } else if (overageCaptured > 0) {
+        showToast(
+          `Table ${tab.tableLabel}: £${capturedFromAuth.toFixed(2)} captured + £${overageCaptured.toFixed(2)} overage on saved card = £${totalCollected.toFixed(2)} total ✓`,
+          'success'
+        );
+      } else {
+        showToast(
+          surcharge > 0
+            ? `Table ${tab.tableLabel} captured £${capturedFromAuth.toFixed(2)} (incl £${surcharge.toFixed(2)} surcharge)`
+            : `Table ${tab.tableLabel} captured £${capturedFromAuth.toFixed(2)}`,
+          'success'
+        );
+      }
       tab.rows.forEach(r => setTimeout(() => removeFromQueue(r.ref), 8000));
       // v5.5.157: refresh the floor-plan table session so the closed
       // tab's items disappear from TablesSurface. If other QR tabs are

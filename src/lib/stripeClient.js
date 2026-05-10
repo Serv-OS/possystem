@@ -45,6 +45,7 @@ export async function createPaymentIntent({
   description,
   paymentMethodTypes = ['card'],
   captureMethod = 'automatic',
+  setupFutureUsage = undefined, // v5.5.160: 'off_session' = save card for later overage charge
   metadata = {},
 }) {
   const baseUrl = import.meta.env.VITE_SUPABASE_URL;
@@ -63,6 +64,7 @@ export async function createPaymentIntent({
       description,
       payment_method_types: paymentMethodTypes,
       capture_method: captureMethod,
+      ...(setupFutureUsage ? { setup_future_usage: setupFutureUsage } : {}),
       metadata,
     }),
   });

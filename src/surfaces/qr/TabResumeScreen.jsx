@@ -36,7 +36,9 @@ export default function TabResumeScreen({
     setClosing(true); setError('');
     try {
       // Capture the pre-auth on the connected account. Same endpoint the
-      // operator force-close uses — capture_amount can be ≤ pre-auth.
+      // operator force-close uses — server clamps to amount_capturable and
+      // reports any shortfall so we can charge an off_session overage on
+      // the saved payment_method (v5.5.160).
       const res = await fetch('/api/stripe-capture', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -48,6 +50,40 @@ export default function TabResumeScreen({
       });
       const data = await res.json();
       if (!res.ok || !data.captured) throw new Error(data?.error || 'Capture failed');
+
+      // v5.5.160: charge any shortfall off_session on the saved card.
+      const shortfallMinor = Number(data.shortfall || 0);
+      const paymentMethodId = rounds?.[0]?.customer?.payment_method_id || null;
+      if (shortfallMinor > 0 && paymentMethodId) {
+        try {
+          const ovRes = await fetch('/api/stripe-charge-overage', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              stripeAccount: tab.stripe_account,
+              paymentMethodId,
+              amount: shortfallMinor,
+              currency: data.currency || 'gbp',
+              description: `QR tab overage · self-close · ${tab.payment_intent_id}`,
+              metadata: {
+                source: 'qr_overage',
+                parent_payment_intent: tab.payment_intent_id,
+                table_label: String(tab.table_label || tableLabel || ''),
+              },
+            }),
+          });
+          const ov = await ovRes.json();
+          if (!ovRes.ok || !ov.ok) {
+            // Customer-facing: don't block the close — surface a soft note.
+            console.warn('[TabResume] overage failed:', ov?.error);
+            setError(`We charged £${(data.amount / 100).toFixed(2)} to your card. The remaining £${(shortfallMinor / 100).toFixed(2)} could not be captured automatically — please ask staff to settle the balance.`);
+          }
+        } catch (e) {
+          console.warn('[TabResume] overage failed:', e?.message);
+        }
+      } else if (shortfallMinor > 0 && !paymentMethodId) {
+        setError(`We charged £${(data.amount / 100).toFixed(2)} (the held amount). The remaining £${(shortfallMinor / 100).toFixed(2)} needs to be settled with staff — your tab was opened before saved-card support was added.`);
+      }
 
       // Mark every round on this tab as collected so they leave the
       // operator's open-orders pane. Use the same payment_intent_id as

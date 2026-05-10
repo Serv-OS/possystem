@@ -63,7 +63,13 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
     paymentMode === 'open_tab' ? 'open_tab' : 'pay_now'
   );
   const isOpenTab = payChoice === 'open_tab';
-  const tabPreAuthAmount = Number(location.qr_tab_pre_auth_amount ?? 100);
+  // v5.5.160: enforce a sensible MINIMUM pre-auth even when the venue config
+  // is 0 / null. Stripe rejects amount=0 PIs and a £0 hold leaves us with
+  // no card on file to capture from. £25 is a safe starter — if the bill
+  // exceeds it at close we charge the overage off-session on the saved card.
+  const MIN_PRE_AUTH = 25;
+  const configuredPreAuth = Number(location.qr_tab_pre_auth_amount ?? 0);
+  const tabPreAuthAmount = Math.max(configuredPreAuth, MIN_PRE_AUTH);
 
   const [working, setWorking] = useState(false);
   const [error, setError]     = useState('');
@@ -223,6 +229,11 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
         currency: 'gbp',
         channel: 'online', // applies online_markup_percent on the connected account
         captureMethod: isOpenTab ? 'manual' : 'automatic',
+        // v5.5.160: open-tab needs the card saved off_session so we can
+        // charge an overage if the actual bill exceeds the pre-auth.
+        // Stripe rejects capture amounts > authorized; off_session re-charge
+        // on the same payment_method is the only way to recover the diff.
+        setupFutureUsage: isOpenTab ? 'off_session' : undefined,
         description: isOpenTab
           ? `QR Tab open · Table ${tableLabel || tableId} · ${ref} · ${customer.name}`
           : `QR Table ${tableLabel || tableId} — ${ref} — ${customer.name}`,
@@ -293,6 +304,10 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
         tableLabel: effectiveTableLabel,
         payment_intent_id: paymentIntent?.id || null,
         stripe_account: pi?.stripe_account || null,
+        // v5.5.160: stash payment_method id so we can charge an off_session
+        // overage if the bill > pre-auth at close time. Stripe sets this on
+        // the PI after confirm. Without it the overage path can't run.
+        payment_method_id: paymentIntent?.payment_method || null,
         ...(isOpenTab ? {
           tab_open: true,
           tab_opened_at: new Date().toISOString(),

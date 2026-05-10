@@ -35,6 +35,7 @@ interface Body {
   channel?: 'card_present' | 'online';
   payment_method_types?: string[];
   capture_method?: 'automatic' | 'manual';
+  setup_future_usage?: 'on_session' | 'off_session';
   closed_check_id?: string;
   description?: string;
   statement_descriptor_suffix?: string;
@@ -58,6 +59,7 @@ Deno.serve(async (req) => {
     location_id, amount_minor, currency,
     channel = 'online',
     payment_method_types, capture_method = 'automatic',
+    setup_future_usage,
     closed_check_id, description, statement_descriptor_suffix,
     metadata = {},
   } = body;
@@ -108,6 +110,11 @@ Deno.serve(async (req) => {
       },
     };
     if (applicationFeeMinor > 0) piParams.application_fee_amount = applicationFeeMinor;
+    // v5.5.160: when set, Stripe saves the payment method to the connected
+    // account's customer (or attaches it for future off_session re-use).
+    // Used by QR open-tab pre-auth so we can charge an overage on the
+    // saved card if the final bill > pre-auth.
+    if (setup_future_usage) piParams.setup_future_usage = setup_future_usage;
 
     pi = await stripe.paymentIntents.create(piParams, { stripeAccount: msa.stripe_account_id });
   } catch (e) {

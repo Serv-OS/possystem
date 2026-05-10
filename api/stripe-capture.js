@@ -45,8 +45,33 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'amountToCapture must be a positive integer (minor units)' });
     }
 
+    // v5.5.160: clamp the capture amount to the actual `amount_capturable`
+    // on the PI before calling capture. Stripe REJECTS amount_to_capture >
+    // authorized — and we'd rather capture what we can than fail outright.
+    // The caller (operator force-close / customer self-close) then charges
+    // the overage off_session via /api/stripe-charge-overage.
+    let capturable = null;
+    try {
+      const piRes = await fetch(`https://api.stripe.com/v1/payment_intents/${encodeURIComponent(paymentIntentId)}`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${key}`, 'Stripe-Account': stripeAccount },
+      });
+      const piData = await piRes.json();
+      if (piRes.ok) {
+        // amount_capturable = how much we can still capture (auth - already-captured)
+        capturable = Number(piData.amount_capturable ?? piData.amount ?? 0);
+      }
+    } catch (e) { /* fall through — capture will surface the real error */ }
+
+    let effectiveCapture = amountToCapture;
+    let cappedFromOverage = false;
+    if (capturable != null && amountToCapture != null && Math.round(amountToCapture) > capturable) {
+      effectiveCapture = capturable;
+      cappedFromOverage = true;
+    }
+
     const params = new URLSearchParams();
-    if (amountToCapture != null) params.set('amount_to_capture', String(Math.round(amountToCapture)));
+    if (effectiveCapture != null) params.set('amount_to_capture', String(Math.round(effectiveCapture)));
 
     const r = await fetch(`https://api.stripe.com/v1/payment_intents/${encodeURIComponent(paymentIntentId)}/capture`, {
       method: 'POST',
@@ -72,6 +97,12 @@ export default async function handler(req, res) {
       currency: data.currency,
       status: data.status,
       payment_intent: data.id,
+      // v5.5.160: tells the caller how much of the requested total is still
+      // outstanding so they can charge it as overage on the saved card.
+      requested_amount: amountToCapture != null ? Math.round(amountToCapture) : null,
+      captured_amount: data.amount,
+      shortfall: cappedFromOverage ? (Math.round(amountToCapture) - data.amount) : 0,
+      capped_from_overage: cappedFromOverage,
     });
   } catch (e) {
     console.error('[stripe-capture] failed:', e);
