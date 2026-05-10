@@ -12,6 +12,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useStore } from '../store';
 import { supabase } from '../lib/supabase';
+import { syncQrTableSession } from '../lib/qrTableSession';
 
 // ── Channel definitions ────────────────────────────────────────────────────────
 const FILTER_TABS = [
@@ -155,7 +156,49 @@ export default function OrdersHub() {
   // Split into sections
   const tableOrders = filtered.filter(o => o.channel === 'table');
   const barOrders   = filtered.filter(o => o.channel === 'bar');
-  const queueOrders = filtered.filter(o => !['table', 'bar'].includes(o.channel));
+
+  // v5.5.157: pool QR open-tab rounds by customer.payment_intent_id so the
+  // operator sees ONE card per tab (Table 4.1 · 3 rounds · £45.20 [Close & charge])
+  // not three separate cards. Each round is still its own order_queue row
+  // (kitchen prints each round as a fresh ticket — table-service correct)
+  // but the operator UI groups them. Force-close captures the SUM across
+  // all rounds tied to the same payment_intent.
+  const isQrOpenTab = (o) => o._kind === 'queue' && o.source === 'qr' && o.customer?.tab_open === true && !o.customer?.tab_closed;
+  const qrTabRows = filtered.filter(isQrOpenTab);
+  const qrTabs = useMemo(() => {
+    const byPi = {};
+    qrTabRows.forEach(o => {
+      const pi = o.customer?.payment_intent_id;
+      if (!pi) return;
+      if (!byPi[pi]) {
+        byPi[pi] = {
+          payment_intent_id: pi,
+          stripe_account: o.customer?.stripe_account || null,
+          tableLabel: o.customer?.tableLabel || '?',
+          tableId: o.customer?.tableId || null,
+          customerName: o.customer?.name || 'Guest',
+          customerPhone: o.customer?.phone || '',
+          preAuthAmount: Number(o.customer?.pre_auth_amount || 0),
+          tabOpenedAt: o.customer?.tab_opened_at || o.createdAt,
+          tabSurchargePct:   Number(o.customer?.tab_surcharge_pct || 0),
+          tabSurchargeFixed: Number(o.customer?.tab_surcharge_fixed || 0),
+          tabForceCloseMin:  Number(o.customer?.tab_force_close_after_min || 0),
+          rows: [],
+          total: 0,
+          allItems: [],
+          firstRow: o,
+        };
+      }
+      byPi[pi].rows.push(o);
+      byPi[pi].total += Number(o.total || 0);
+      byPi[pi].allItems.push(...(o.items || []));
+    });
+    return Object.values(byPi).sort((a, b) => (a.tableLabel || '').localeCompare(b.tableLabel || ''));
+  }, [qrTabRows]);
+
+  // queueOrders excludes QR open-tab rows so they don't ALSO appear in the
+  // Walk-in / Takeaway / Delivery section.
+  const queueOrders = filtered.filter(o => !['table', 'bar'].includes(o.channel) && !isQrOpenTab(o));
 
   // Counts for tab badges
   const counts = useMemo(() => {
@@ -180,6 +223,114 @@ export default function OrdersHub() {
     updateQueueStatus(o.ref, next);
     if (next === 'ready')     showToast(`${o.displayName} — ready!`, 'success');
     if (next === 'collected') { showToast(`${o.ref} collected`, 'info'); setTimeout(() => removeFromQueue(o.ref), 8000); }
+  };
+
+  // v5.5.157: force-close a POOLED QR tab (multiple rounds aggregated by
+  // payment_intent_id). Sums totals across all rounds, applies the auto-
+  // surcharge if the tab is past the threshold, captures the held pre-auth
+  // (capped at the held amount — Stripe rejects over-capture), marks
+  // every round on this PI as collected, writes ONE closed_check covering
+  // the full bill.
+  const forceCloseQrTab = async (tab) => {
+    if (closingTabRef) return;
+    if (!tab.payment_intent_id || !tab.stripe_account) {
+      showToast('Tab missing payment info — cannot capture', 'error');
+      return;
+    }
+    // Surcharge math (snapshotted on the tab at open-time)
+    let surcharge = 0;
+    let surchargeReason = '';
+    if (tab.tabOpenedAt && tab.tabForceCloseMin > 0) {
+      const ageMin = (Date.now() - new Date(tab.tabOpenedAt).getTime()) / 60_000;
+      if (ageMin > tab.tabForceCloseMin) {
+        surcharge = +((tab.total * tab.tabSurchargePct / 100) + tab.tabSurchargeFixed).toFixed(2);
+        surchargeReason = `${Math.round(ageMin)} min open · `
+          + (tab.tabSurchargePct ? `${tab.tabSurchargePct}%` : '')
+          + (tab.tabSurchargePct && tab.tabSurchargeFixed ? ' + ' : '')
+          + (tab.tabSurchargeFixed ? `£${tab.tabSurchargeFixed.toFixed(2)}` : '');
+      }
+    }
+    const finalTotal = +(tab.total + surcharge).toFixed(2);
+    const captureAmount = tab.preAuthAmount > 0 ? Math.min(finalTotal, tab.preAuthAmount) : finalTotal;
+    if (tab.preAuthAmount > 0 && finalTotal > tab.preAuthAmount) {
+      if (!confirm(
+        `WARNING: bill is £${finalTotal.toFixed(2)} but only £${tab.preAuthAmount.toFixed(2)} was pre-authorised.\n\n`
+        + `Stripe will only capture £${tab.preAuthAmount.toFixed(2)}. The £${(finalTotal - tab.preAuthAmount).toFixed(2)} shortfall must be collected separately.\n\nProceed?`
+      )) return;
+    } else if (!confirm(
+      surcharge > 0
+        ? `Close Table ${tab.tableLabel}? Bill £${tab.total.toFixed(2)} + surcharge £${surcharge.toFixed(2)} (${surchargeReason}) = £${finalTotal.toFixed(2)} captured.`
+        : `Close Table ${tab.tableLabel} (${tab.rows.length} round${tab.rows.length === 1 ? '' : 's'}) and charge £${finalTotal.toFixed(2)}?`
+    )) return;
+
+    setClosingTabRef(tab.payment_intent_id);
+    try {
+      const res = await fetch('/api/stripe-capture', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          paymentIntentId: tab.payment_intent_id,
+          stripeAccount: tab.stripe_account,
+          amountToCapture: Math.round(captureAmount * 100),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.captured) throw new Error(data?.error || 'Capture failed');
+
+      // Mark every round on this PI as collected
+      try {
+        const refs = tab.rows.map(r => r.ref).filter(Boolean);
+        if (refs.length) {
+          await supabase.from('order_queue').update({ status: 'collected' }).in('ref', refs);
+          refs.forEach(ref => updateQueueStatus(ref, 'collected'));
+        }
+      } catch (e) { console.warn('[forceCloseQrTab] mark-collected:', e?.message); }
+
+      // ONE closed_check for the whole tab
+      try {
+        await supabase.from('closed_checks').insert({
+          id: `chk-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
+          ref: tab.firstRow?.ref || tab.payment_intent_id,
+          location_id: tab.firstRow?.location_id || null,
+          server: 'QR (force-closed)',
+          covers: 1,
+          order_type: 'dine-in',
+          customer: { ...(tab.firstRow?.customer || {}), tab_closed_at: new Date().toISOString(), surcharge_applied: surcharge },
+          items: tab.allItems.map(i => ({ ...i, voided: false })),
+          discounts: [],
+          subtotal: tab.total,
+          service: surcharge,
+          tip: 0, tax_amount: null,
+          total: captureAmount,
+          method: 'card',
+          closed_at: new Date().toISOString(),
+          status: 'paid',
+          refunds: [],
+          table_id: tab.tableId || null,
+          table_label: `Table ${tab.tableLabel}`,
+          source: 'qr',
+        });
+      } catch (e) { console.warn('[forceCloseQrTab] closed_checks insert:', e?.message); }
+
+      showToast(
+        surcharge > 0
+          ? `Table ${tab.tableLabel} captured £${captureAmount.toFixed(2)} (incl £${surcharge.toFixed(2)} surcharge)`
+          : `Table ${tab.tableLabel} captured £${captureAmount.toFixed(2)}`,
+        'success'
+      );
+      tab.rows.forEach(r => setTimeout(() => removeFromQueue(r.ref), 8000));
+      // v5.5.157: refresh the floor-plan table session so the closed
+      // tab's items disappear from TablesSurface. If other QR tabs are
+      // still open at this table the helper preserves their items.
+      if (tab.tableId && tab.firstRow?.location_id) {
+        syncQrTableSession(tab.firstRow.location_id, tab.tableId).catch(() => {});
+      }
+    } catch (e) {
+      console.error('[forceCloseQrTab] failed:', e);
+      showToast(`Force-close failed: ${e?.message || 'unknown'}`, 'error');
+    } finally {
+      setClosingTabRef(null);
+    }
   };
 
   // v5.5.150: force-close a QR open-tab. Calls /api/stripe-capture to capture
@@ -422,6 +573,21 @@ export default function OrdersHub() {
                 </div>
               </Section>
             )}
+            {/* v5.5.157: QR open-tabs grouped by payment_intent_id. One card
+                per tab even if the customer added multiple rounds — Force
+                close & charge captures the SUM across all rounds. */}
+            {qrTabs.length > 0 && (
+              <Section title="📱 Open QR tabs" icon="📱" color="#10b981" count={qrTabs.length}>
+                <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(300px,1fr))', gap:10 }}>
+                  {qrTabs.map(t => (
+                    <QrTabCard key={t.payment_intent_id}
+                      tab={t}
+                      onForceClose={() => forceCloseQrTab(t)}
+                      closingTab={closingTabRef === t.payment_intent_id}/>
+                  ))}
+                </div>
+              </Section>
+            )}
             {queueOrders.length > 0 && (
               <Section title="Walk-in / Takeaway / Delivery" icon="🏷" color="#22d3ee" count={queueOrders.length}>
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))', gap:10 }}>
@@ -442,6 +608,66 @@ export default function OrdersHub() {
 }
 
 // ── Section header ────────────────────────────────────────────────────────────
+// v5.5.157: pooled QR-tab card. One per payment_intent_id, even when the
+// customer has added multiple rounds. Shows running total, rounds count,
+// time open, single Force-close button that captures the lot.
+function QrTabCard({ tab, onForceClose, closingTab }) {
+  const ageMin = tab.tabOpenedAt ? Math.round((Date.now() - new Date(tab.tabOpenedAt).getTime()) / 60_000) : 0;
+  const headerColor = '#10b981'; // emerald — matches the section
+  return (
+    <div style={{
+      background:'var(--bg1)', borderRadius:13, overflow:'hidden',
+      border:`1.5px solid ${headerColor}40`,
+      display:'flex', flexDirection:'column',
+    }}>
+      <div style={{ height:3, background:`linear-gradient(90deg,${headerColor},${headerColor}88)` }}/>
+      <div style={{ padding:'12px 14px', display:'flex', alignItems:'flex-start', gap:10 }}>
+        <span style={{ fontSize:22 }}>📱</span>
+        <div style={{ flex:1, minWidth:0 }}>
+          <div style={{ display:'flex', gap:8, alignItems:'baseline', flexWrap:'wrap' }}>
+            <span style={{ fontSize:15, fontWeight:800, color:'var(--t1)' }}>Table {tab.tableLabel}</span>
+            <span style={{ fontSize:10, color:'var(--t4)', fontFamily:'var(--font-mono)' }}>tab</span>
+          </div>
+          <div style={{ display:'flex', gap:10, marginTop:3, flexWrap:'wrap', fontSize:11, color:'var(--t3)' }}>
+            <span>👤 {tab.customerName}</span>
+            {tab.customerPhone && <span>📞 ··{(tab.customerPhone.replace(/\D/g, '').slice(-4))}</span>}
+            <span>⏱ {ageMin} min open</span>
+          </div>
+        </div>
+        <span style={{ fontSize:10, fontWeight:800, padding:'3px 8px', borderRadius:12,
+          background:'#fde68a', color:'#78350f', border:'1px solid #f59e0b', whiteSpace:'nowrap',
+        }}>£{tab.preAuthAmount.toFixed(0)} HELD</span>
+      </div>
+      <div style={{ padding:'0 14px 10px' }}>
+        <div style={{ fontSize:11, fontWeight:700, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.05em', marginBottom:6 }}>
+          {tab.rows.length} round{tab.rows.length === 1 ? '' : 's'}
+        </div>
+        {tab.allItems.slice(0, 6).map((item, i) => (
+          <div key={i} style={{ display:'flex', gap:6, marginBottom:2, alignItems:'baseline', fontSize:12, color:'var(--t1)' }}>
+            <span style={{ fontWeight:800, color:'var(--t4)', fontFamily:'var(--font-mono)', minWidth:18, textAlign:'right' }}>{item.qty}×</span>
+            <span style={{ flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{item.kitchenName || item.name}</span>
+          </div>
+        ))}
+        {tab.allItems.length > 6 && (
+          <div style={{ fontSize:11, color:'var(--t4)', marginTop:2 }}>+{tab.allItems.length - 6} more</div>
+        )}
+      </div>
+      <div style={{ padding:'10px 14px', borderTop:'1px solid var(--bdr)', background:'var(--bg2)', display:'flex', alignItems:'center', gap:8 }}>
+        <span style={{ fontSize:18, fontWeight:900, color:'var(--acc)', fontFamily:'var(--font-mono)' }}>£{tab.total.toFixed(2)}</span>
+        <span style={{ fontSize:10, color:'var(--t4)' }}>running total</span>
+        <button onClick={onForceClose} disabled={!!closingTab} style={{
+          marginLeft:'auto', padding:'6px 14px', borderRadius:8,
+          cursor: closingTab ? 'wait' : 'pointer', fontFamily:'inherit',
+          background:'#f59e0b', border:'none', color:'#0b0c10',
+          fontSize:12, fontWeight:800, opacity: closingTab ? 0.6 : 1,
+        }}>
+          {closingTab ? 'Capturing…' : '🔒 Close & charge'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function Section({ title, icon, color, count, children }) {
   const [open, setOpen] = useState(true);
   return (

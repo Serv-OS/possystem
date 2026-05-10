@@ -21,6 +21,7 @@ import { getStripeForAccount, createPaymentIntent } from '../../lib/stripeClient
 import { attributeOnlineOrder } from '../../lib/customerLookup';
 import { calculateOrderTax } from '../../lib/tax';
 import { stashTab } from '../../lib/qrTabStorage';
+import { syncQrTableSession } from '../../lib/qrTableSession';
 
 export default function QrCheckout({ cart, theme, location, tableId, tableLabel, loyalty, taxRates = [], existingTab = null, onClose, onPlaced }) {
   // v5.5.155: when existingTab is set the customer is in "Add more"
@@ -177,6 +178,9 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
       };
       const { error: qErr } = await supabase.from('order_queue').insert(queueRow);
       if (qErr) throw qErr;
+      // v5.5.157: refresh the floor-plan table session so the new round
+      // shows up on TablesSurface alongside any other open QR rounds.
+      syncQrTableSession(opsLocationId, tableId).catch(() => {});
       onPlaced?.({ ref, total: subtotal, addedToTab: true });
     } catch (e) {
       console.error('[QrCheckout addToTab] failed:', e);
@@ -394,6 +398,12 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
             pre_auth_amount: tabPreAuthAmount,
           });
         } catch (e) { console.warn('[QrCheckout] stashTab:', e?.message); }
+      }
+      // v5.5.157: also surface the order on the floor-plan table session
+      // so operators see the table as in-service from the moment of
+      // first round, not just in the OrdersHub QR-tabs section.
+      if (tableId) {
+        syncQrTableSession(opsLocationId, tableId).catch(() => {});
       }
       onPlaced?.({ ref, total, paymentIntent });
     } catch (e) {
