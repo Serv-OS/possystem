@@ -412,3 +412,26 @@ button { font-family: inherit; }
   from { transform: scaleX(1); }
   to   { transform: scaleX(0); }
 }
+
+/* v5.5.158 — responsive full-width BO pages.
+   Single shared spec so every BO section follows the same layout:
+   - Full-width up to 1600px (then centered)
+   - Consistent fluid padding (16px tight on mobile, 48px breathing on desktop)
+   - Overrides per-section maxWidth/padding via direct-child !important so
+     individual sections don't need editing one by one. */
+.bo-page-shell {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.bo-page-shell > * {
+  max-width: 1600px !important;
+  width: 100% !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+  padding: clamp(16px, 2.5vw, 28px) clamp(20px, 4vw, 48px) !important;
+  box-sizing: border-box !important;
+}

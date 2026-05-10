@@ -76,6 +76,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.158', date: '9 May 2026', label: 'BO pages — single responsive full-width spec across every section (one shared CSS rule overrides 20+ per-section maxWidth / padding values)',
+    changes: [
+      'BO PAGES NOW FULL-WIDTH + RESPONSIVE — every section in BackOffice (Overview, Menu, Floor Plan, Inventory, Online Ordering, Printers, Card Readers, Cash Drawers, Staff, Print Routing, Reports, Shift, EOD, Petty Cash, Customers, Company Admin, AI, Network, Location, Receipt, Tax, etc.) now follows the same responsive layout: full-width up to 1600px (centered on ultra-wide displays), with fluid padding that scales 16px on phones → 48px on desktop via clamp(). Was a hodgepodge — pages capped at 700, 760, 820, 860, 880, 900, 1080, 1100, depending on which file you opened.',
+      'ONE-CLASS APPROACH — added a `.bo-page-shell` wrapper class in globals.css that uses CSS direct-child !important to override each section\'s own maxWidth / padding values. Wrapped the section render in BackOfficeApp with `<div className="bo-page-shell">`. Zero edits to the 20+ section files — sections keep their internal layout, the shell just standardises the outer page frame.',
+      'WHY 1600px NOT FULLY UNCAPPED — content density gets uncomfortable past ~1600px on a 4K display (long table rows, sparse forms). 1600px keeps line lengths readable on big monitors while still using more horizontal real estate than the previous narrow caps. If a section needs to genuinely fill an ultra-wide screen (e.g. a future analytics dashboard) we can add a per-section opt-out class.',
+    ],
+  },
+  {
     version: '5.5.157', date: '9 May 2026', label: 'QR open-tab pooling on operator side — Open QR tabs section + floor-plan table session sync + force-close sums all rounds',
     changes: [
       'OPEN QR TABS SECTION IN ORDERSHUB — QR open-tab orders no longer appear in the Walk-in / Takeaway / Delivery list. They now have their own emerald-coloured "📱 Open QR tabs" section ABOVE Walk-in. One card per tab (grouped by customer.payment_intent_id) even when the customer has added multiple rounds — the card shows table label (4.1 / 4.2), customer name + last-4 phone, time open, the £ pre-auth held, a roll-up of items across all rounds, and the running total. Single 🔒 Close & charge button captures the full sum across rounds.',

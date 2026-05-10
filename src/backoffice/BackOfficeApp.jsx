@@ -438,8 +438,12 @@ export default function BackOfficeApp() {
           </div>
         </div>
 
-        {/* Sections */}
-        <div style={{ flex:1, overflow:'hidden', display:'flex', flexDirection:'column' }}>
+        {/* v5.5.158: every BO section now follows the same full-width
+            responsive spec. The .bo-page-shell class in globals.css clamps
+            the inner page wrapper to max-width 1600px, applies fluid
+            padding (16px → 48px), and overrides any per-section maxWidth
+            via !important so we don't have to edit 20 files individually. */}
+        <div className="bo-page-shell">
           {section === 'overview'   && <BOOverview setSection={setSection} orgCtx={orgCtx} />}
           {section === 'menu'       && <MenuManager />}
           {section === 'floorplan'  && <FloorPlanBuilder />}
