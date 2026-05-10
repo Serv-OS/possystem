@@ -277,11 +277,14 @@ export default function OrdersHub() {
         + `Only £${tab.preAuthAmount.toFixed(2)} can be captured. The £${(finalTotal - tab.preAuthAmount).toFixed(2)} shortfall must be collected via terminal or cash.\n\nProceed?`
       )) return;
     } else if (!confirm(
-      willOverage
+      (willOverage
         ? `Close Table ${tab.tableLabel}? Capture £${tab.preAuthAmount.toFixed(2)} pre-auth + charge £${(finalTotal - tab.preAuthAmount).toFixed(2)} overage on saved card = £${finalTotal.toFixed(2)} total.`
         : surcharge > 0
           ? `Close Table ${tab.tableLabel}? Bill £${tab.total.toFixed(2)} + surcharge £${surcharge.toFixed(2)} (${surchargeReason}) = £${finalTotal.toFixed(2)} captured.`
-          : `Close Table ${tab.tableLabel} (${tab.rows.length} round${tab.rows.length === 1 ? '' : 's'}) and charge £${finalTotal.toFixed(2)}?`
+          : `Close Table ${tab.tableLabel} (${tab.rows.length} round${tab.rows.length === 1 ? '' : 's'}) and charge £${finalTotal.toFixed(2)}?`)
+      + (tab.preAuthAmount > finalTotal
+        ? `\n\nNOTE: customer's card was HELD for £${tab.preAuthAmount.toFixed(2)} when the tab opened. Stripe captures £${finalTotal.toFixed(2)} now; the remaining £${(tab.preAuthAmount - finalTotal).toFixed(2)} hold is released by their bank in 1–7 days. Customer's bank statement may briefly show both — this is normal.`
+        : '')
     )) return;
 
     setClosingTabRef(tab.payment_intent_id);
@@ -351,8 +354,12 @@ export default function OrdersHub() {
       const totalCollected = +(capturedFromAuth + overageCaptured).toFixed(2);
 
       // ONE closed_check for the whole tab
+      // v5.5.162: was silently swallowing errors via console.warn — meaning
+      // a failed insert just disappeared and the order never reached the
+      // history view. Capture the error and surface it as a toast.
+      let closedCheckError = null;
       try {
-        await supabase.from('closed_checks').insert({
+        const { error: ccErr } = await supabase.from('closed_checks').insert({
           id: `chk-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
           ref: tab.firstRow?.ref || tab.payment_intent_id,
           location_id: tab.firstRow?.location_id || null,
@@ -376,13 +383,30 @@ export default function OrdersHub() {
           total: totalCollected,
           method: 'card',
           closed_at: new Date().toISOString(),
-          status: overageError ? 'partial' : 'paid',
+          // v5.5.162: was using 'partial' on shortfall but that may violate
+          // a status enum/check constraint and silently fail the insert →
+          // order vanishes from history. Always use 'paid'; partial state
+          // lives in customer.overage_outstanding for any reporting.
+          status: 'paid',
           refunds: [],
           table_id: tab.tableId || null,
           table_label: `Table ${tab.tableLabel}`,
           source: 'qr',
         });
-      } catch (e) { console.warn('[forceCloseQrTab] closed_checks insert:', e?.message); }
+        if (ccErr) {
+          closedCheckError = ccErr.message || JSON.stringify(ccErr);
+          console.error('[forceCloseQrTab] closed_checks insert FAILED:', ccErr);
+        }
+      } catch (e) {
+        closedCheckError = e?.message || 'unknown error';
+        console.error('[forceCloseQrTab] closed_checks insert threw:', e);
+      }
+      if (closedCheckError) {
+        showToast(
+          `⚠ Capture succeeded but order didn't save to history: ${closedCheckError}`,
+          'error', 12000
+        );
+      }
 
       if (overageError) {
         showToast(

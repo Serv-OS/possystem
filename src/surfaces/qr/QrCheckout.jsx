@@ -269,23 +269,33 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
     try {
       const { ref, customer, items } = orderShape;
 
-      // v5.5.155: sub-numbering for multiple tabs at the same table.
-      // First customer at table 4 → "4.1"; second customer (separate scan,
-      // separate tab, separate Stripe pre-auth) → "4.2", and so on. The
-      // count is over OPEN tabs only — once a tab is captured the slot
-      // frees up. Pay-now QR orders use the bare tableLabel (no sub).
+      // v5.5.155: sub-numbering for multiple QR orders at the same table.
+      // First customer at table 2 → "2.1"; second customer (separate scan,
+      // separate order, separate Stripe charge) → "2.2", and so on.
+      // v5.5.162: ALSO applies to pay-now (was open-tab only) — operators
+      // expect ALL QR orders at the same table to be sub-numbered so they
+      // can tell which guest ordered which round. Count over any non-
+      // collected QR order at this table, regardless of pay-now vs open-tab.
+      // Group by payment_intent_id so multiple rounds of the same tab
+      // share one sub-number (they're already pooled in OrdersHub).
       let effectiveTableLabel = tableLabel || tableId;
-      if (isOpenTab && tableId) {
+      if (tableId) {
         try {
-          const { data: existingTabs } = await supabase
+          const { data: existing } = await supabase
             .from('order_queue')
-            .select('ref')
+            .select('ref, customer')
             .eq('location_id', opsLocationId)
             .eq('source', 'qr')
             .neq('status', 'collected')
-            .filter('customer->>tableId', 'eq', String(tableId))
-            .filter('customer->>tab_open', 'eq', 'true');
-          const subNum = (existingTabs?.length || 0) + 1;
+            .filter('customer->>tableId', 'eq', String(tableId));
+          // Count DISTINCT payment_intent_id (one number per tab/charge),
+          // fall back to ref for any order without a PI.
+          const distinctPIs = new Set();
+          (existing || []).forEach(r => {
+            const k = r.customer?.payment_intent_id || `ref:${r.ref}`;
+            distinctPIs.add(k);
+          });
+          const subNum = distinctPIs.size + 1;
           effectiveTableLabel = `${tableLabel || tableId}.${subNum}`;
         } catch (e) { console.warn('[QrCheckout] sub-numbering query failed:', e?.message); }
       }

@@ -41,8 +41,15 @@ export default async function handler(req, res) {
     const { paymentIntentId, stripeAccount, amountToCapture } = req.body || {};
     if (!paymentIntentId) return res.status(400).json({ error: 'Missing paymentIntentId' });
     if (!stripeAccount)   return res.status(400).json({ error: 'Missing stripeAccount (connected account id)' });
-    if (amountToCapture != null && (typeof amountToCapture !== 'number' || amountToCapture <= 0)) {
-      return res.status(400).json({ error: 'amountToCapture must be a positive integer (minor units)' });
+    // v5.5.162: amountToCapture is now REQUIRED. Was optional → if the
+    // client accidentally sent null/undefined Stripe captured the FULL
+    // authorised amount (saw a £50 hold captured for an £18 bill in prod).
+    // Force the caller to be explicit about the amount.
+    if (amountToCapture == null) {
+      return res.status(400).json({ error: 'amountToCapture is required (minor units, integer > 0). Refusing to silently capture full auth.' });
+    }
+    if (typeof amountToCapture !== 'number' || !Number.isFinite(amountToCapture) || amountToCapture <= 0) {
+      return res.status(400).json({ error: `amountToCapture must be a positive finite number in minor units (got: ${JSON.stringify(amountToCapture)})` });
     }
 
     // v5.5.160: clamp the capture amount to the actual `amount_capturable`
