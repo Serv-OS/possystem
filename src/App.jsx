@@ -76,6 +76,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.149', date: '9 May 2026', label: 'QR commit 3a — open-tab guardrails (BO settings + customer-facing warning); pre-auth/force-close/capture lands in 3b',
+    changes: [
+      'BO QR section now exposes 5 new fields (only when payment mode is open_tab or both): pre-authorisation hold (£100 default — Stripe holds this on the card when the tab opens), customer-facing warning text (textarea, plain text, e.g. "⚠ Tabs left open at close incur a 10% surcharge"), left-open surcharge % AND/OR fixed £ alternatives, and an auto-force-close-after-minutes threshold (0 = manual only). All persist defensively (try/catch) so a missing-column DB doesn\'t break the rest of the page.',
+      'CUSTOMER QrCheckout shows the warning text right above the "Continue to payment" button when the venue allows tabs. Hidden for pay-now-only venues since the surcharge wouldn\'t apply. The text is whatever the operator typed in BO — fully editable per location.',
+      'COMMIT 3b NEXT — Pay-now / Open-tab radio on the customer side, Stripe pre-auth via the existing edge fn (captureMethod=manual), bar_tabs row on tab open with payment_intent_id + connected stripe_account, force-close button on the operator-side tab UI, new Vercel /api/stripe-capture endpoint that calls Stripe REST with the Stripe-Account header, and the auto-surcharge math when force-closed past the threshold.',
+      '⚠ APPLY THIS SQL on platform DB to enable the BO toggles + customer warning (idempotent — safe to re-run alongside the v5.5.145 migration): `alter table public.locations add column if not exists qr_payment_mode text default \'pay_now\'; alter table public.locations add column if not exists qr_table_mode text default \'confirm\'; alter table public.locations add column if not exists qr_service_charge_pct numeric(5,2) default 0; alter table public.locations add column if not exists qr_tab_pre_auth_amount numeric(10,2) default 100; alter table public.locations add column if not exists qr_tab_warning_message text; alter table public.locations add column if not exists qr_tab_left_open_surcharge_pct numeric(5,2) default 0; alter table public.locations add column if not exists qr_tab_left_open_surcharge_fixed numeric(10,2) default 0; alter table public.locations add column if not exists qr_tab_force_close_after_minutes integer default 0;`',
+    ],
+  },
+  {
     version: '5.5.148', date: '9 May 2026', label: 'BO QR fixes — table list now loads from floor_tables (not floor_plan); QR block constrained so hero upload button stops getting pushed off the page',
     changes: [
       'TABLE LIST WAS EMPTY — v5.5.147 queried `floor_plan.tables` (a JSONB column on a singular row), but tables actually live in their own `floor_tables` table (one row per table) — same source the existing fetchFloorPlan helper uses. Switched to `select id, label, parent_id, sort_order from floor_tables where location_id = ...`, filtered out parent/composite tables (parent_id set), mapped to the {id,label} shape the QR generator expects. Tables now populate.',

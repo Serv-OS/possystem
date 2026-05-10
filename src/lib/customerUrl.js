@@ -122,6 +122,16 @@ export async function lookupLocationBySlug(slug, platformSupabase) {
         .maybeSingle();
       if (qrRow) Object.assign(data, qrRow);
     } catch { /* columns not yet migrated — fall back to defaults at use site */ }
+    // v5.5.149: open-tab guardrails — separate defensive SELECT so missing
+    // columns from a partial migration don't poison the rest of the load.
+    try {
+      const { data: tabRow } = await platformSupabase
+        .from('locations')
+        .select('qr_tab_pre_auth_amount, qr_tab_warning_message, qr_tab_left_open_surcharge_pct, qr_tab_left_open_surcharge_fixed, qr_tab_force_close_after_minutes')
+        .eq('id', data.id)
+        .maybeSingle();
+      if (tabRow) Object.assign(data, tabRow);
+    } catch { /* columns not yet migrated */ }
     _slugCache.set(slug, { row: data, at: Date.now() });
     return data;
   } catch (e) {

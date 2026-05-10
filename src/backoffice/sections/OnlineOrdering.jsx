@@ -54,6 +54,12 @@ export default function OnlineOrdering({ setSection }) {
   const [qrPaymentMode, setQrPaymentMode] = useState('pay_now');   // 'pay_now' | 'open_tab' | 'both'
   const [qrTableMode,   setQrTableMode]   = useState('confirm');    // 'fixed' | 'confirm' | 'free'
   const [qrServicePct,  setQrServicePct]  = useState(0);
+  // v5.5.149: open-tab guardrails. Shown to customer + enforced on close.
+  const [qrTabPreAuth,        setQrTabPreAuth]        = useState(100);   // £ held on the card when tab opens
+  const [qrTabWarning,        setQrTabWarning]        = useState('Note: tabs left open at close-time may incur a surcharge.');
+  const [qrTabSurchargePct,   setQrTabSurchargePct]   = useState(0);
+  const [qrTabSurchargeFixed, setQrTabSurchargeFixed] = useState(0);
+  const [qrTabForceCloseMin,  setQrTabForceCloseMin]  = useState(0);     // 0 = manual only
   const [tables, setTables] = useState([]);
   const [downloading, setDownloading] = useState(false);
   const [uploadingLogo, setUploadingLogo] = useState(false);
@@ -114,6 +120,22 @@ export default function OnlineOrdering({ setSection }) {
                 setQrServicePct(Number(qr.qr_service_charge_pct) || 0);
               }
             } catch { /* columns not migrated yet — defaults stand */ }
+            // v5.5.149: open-tab guardrail settings — separate defensive
+            // SELECT so missing columns from a partial migration don't
+            // poison the rest of the page load.
+            try {
+              const { data: tab } = await platformSupabase
+                .from('locations')
+                .select('qr_tab_pre_auth_amount, qr_tab_warning_message, qr_tab_left_open_surcharge_pct, qr_tab_left_open_surcharge_fixed, qr_tab_force_close_after_minutes')
+                .eq('id', r.id).maybeSingle();
+              if (tab) {
+                if (tab.qr_tab_pre_auth_amount != null) setQrTabPreAuth(Number(tab.qr_tab_pre_auth_amount));
+                if (tab.qr_tab_warning_message)         setQrTabWarning(tab.qr_tab_warning_message);
+                if (tab.qr_tab_left_open_surcharge_pct != null)   setQrTabSurchargePct(Number(tab.qr_tab_left_open_surcharge_pct));
+                if (tab.qr_tab_left_open_surcharge_fixed != null) setQrTabSurchargeFixed(Number(tab.qr_tab_left_open_surcharge_fixed));
+                if (tab.qr_tab_force_close_after_minutes != null) setQrTabForceCloseMin(Number(tab.qr_tab_force_close_after_minutes));
+              }
+            } catch { /* columns not migrated — defaults stand */ }
           }
         }
         // v5.5.147/148: load floor-plan tables. Tables live in their own
@@ -204,6 +226,16 @@ export default function OnlineOrdering({ setSection }) {
         qr_service_charge_pct: Math.max(0, Math.min(50, Number(qrServicePct) || 0)),
       }).eq('id', row.id);
     } catch (e) { console.warn('[OnlineOrdering] QR settings save (run migration):', e?.message); }
+    // v5.5.149: open-tab guardrails — separate try/catch for the same reason.
+    try {
+      await platformSupabase.from('locations').update({
+        qr_tab_pre_auth_amount:           Math.max(0, Number(qrTabPreAuth) || 0),
+        qr_tab_warning_message:           (qrTabWarning || '').trim() || null,
+        qr_tab_left_open_surcharge_pct:   Math.max(0, Math.min(50, Number(qrTabSurchargePct) || 0)),
+        qr_tab_left_open_surcharge_fixed: Math.max(0, Number(qrTabSurchargeFixed) || 0),
+        qr_tab_force_close_after_minutes: Math.max(0, parseInt(qrTabForceCloseMin, 10) || 0),
+      }).eq('id', row.id);
+    } catch (e) { console.warn('[OnlineOrdering] tab guardrail save (run migration):', e?.message); }
 
     setSaving(false);
     if (err) { setError(err.message || 'Save failed'); return; }
@@ -356,12 +388,17 @@ export default function OnlineOrdering({ setSection }) {
         </div>
       </div>
 
-      {/* v5.5.147: QR ordering settings + per-table QR-code generator */}
+      {/* v5.5.147/149: QR ordering settings + per-table QR-code generator */}
       <QrSettingsBlock
         slug={row?.online_slug}
         paymentMode={qrPaymentMode} setPaymentMode={setQrPaymentMode}
         tableMode={qrTableMode} setTableMode={setQrTableMode}
         servicePct={qrServicePct} setServicePct={setQrServicePct}
+        tabPreAuth={qrTabPreAuth} setTabPreAuth={setQrTabPreAuth}
+        tabWarning={qrTabWarning} setTabWarning={setQrTabWarning}
+        tabSurchargePct={qrTabSurchargePct} setTabSurchargePct={setQrTabSurchargePct}
+        tabSurchargeFixed={qrTabSurchargeFixed} setTabSurchargeFixed={setQrTabSurchargeFixed}
+        tabForceCloseMin={qrTabForceCloseMin} setTabForceCloseMin={setQrTabForceCloseMin}
         tables={tables}
         downloading={downloading} setDownloading={setDownloading}/>
 
@@ -383,7 +420,19 @@ export default function OnlineOrdering({ setSection }) {
 // in a canvas: QR code on top, big "TABLE T5" label below, venue name footer.
 // Each click downloads a single labelled JPEG; "Download all" loops through
 // every table sequentially (browser handles each download as separate file).
-function QrSettingsBlock({ slug, paymentMode, setPaymentMode, tableMode, setTableMode, servicePct, setServicePct, tables, downloading, setDownloading }) {
+function QrSettingsBlock({
+  slug,
+  paymentMode, setPaymentMode,
+  tableMode, setTableMode,
+  servicePct, setServicePct,
+  tabPreAuth, setTabPreAuth,
+  tabWarning, setTabWarning,
+  tabSurchargePct, setTabSurchargePct,
+  tabSurchargeFixed, setTabSurchargeFixed,
+  tabForceCloseMin, setTabForceCloseMin,
+  tables, downloading, setDownloading,
+}) {
+  const showsTabSettings = paymentMode === 'open_tab' || paymentMode === 'both';
   const buildQrUrl = (tableId) => {
     const base = slug
       ? `https://${slug}.pos-up.com`
@@ -497,6 +546,57 @@ function QrSettingsBlock({ slug, paymentMode, setPaymentMode, tableMode, setTabl
         value={servicePct}
         onChange={v => setServicePct(parseFloat(v) || 0)}
         help="Auto-applied to every QR order. 0 = none. Capped at 50%."/>
+
+      {/* v5.5.149: open-tab guardrails — only relevant when tabs are allowed */}
+      {showsTabSettings && (
+        <div style={{ marginTop: 18, padding: 14, background: 'var(--bg2)', border: '1px dashed var(--bdr)', borderRadius: 10 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--t1)', marginBottom: 8 }}>Open-tab guardrails</div>
+          <div style={{ fontSize: 11, color: 'var(--t4)', lineHeight: 1.5, marginBottom: 12 }}>
+            How tabs behave when a customer opens one and walks away. The customer sees the warning message + your surcharge policy on the QR checkout before they commit.
+          </div>
+
+          <Field
+            label="Pre-authorisation hold (£)"
+            type="number" min="0"
+            value={tabPreAuth}
+            onChange={v => setTabPreAuth(parseFloat(v) || 0)}
+            help="Amount Stripe holds on the card when the tab opens. Higher = covers more. Released or captured at close. Default £100."/>
+
+          <div style={{ marginTop: 12 }}>
+            <div style={S.label}>Customer warning message</div>
+            <textarea value={tabWarning} onChange={e => setTabWarning(e.target.value)}
+              rows={2} placeholder="e.g. ⚠ Tabs left open at close incur a 10% surcharge."
+              style={{ ...S.input, resize: 'vertical', minHeight: 56, fontFamily: 'inherit' }}/>
+            <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 4 }}>
+              Shown next to the "Open tab" option on the QR checkout. Plain text — no HTML.
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 12 }}>
+            <Field
+              label="Left-open surcharge %"
+              type="number" min="0"
+              value={tabSurchargePct}
+              onChange={v => setTabSurchargePct(parseFloat(v) || 0)}
+              help="0 = none. Applied on top of the bill if force-closed."/>
+            <Field
+              label="Left-open surcharge (£ flat)"
+              type="number" min="0"
+              value={tabSurchargeFixed}
+              onChange={v => setTabSurchargeFixed(parseFloat(v) || 0)}
+              help="Fixed-£ alternative or in addition to %."/>
+          </div>
+
+          <div style={{ marginTop: 12 }}>
+            <Field
+              label="Auto force-close after (minutes)"
+              type="number" min="0"
+              value={tabForceCloseMin}
+              onChange={v => setTabForceCloseMin(parseInt(v, 10) || 0)}
+              help="0 = manual only. If set, master device captures any tab past this age + applies the surcharge."/>
+          </div>
+        </div>
+      )}
 
       {/* QR codes */}
       <div style={{ marginTop: 18 }}>

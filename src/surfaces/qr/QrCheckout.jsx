@@ -25,9 +25,12 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
   const platformLocationId = location.id;
   const tz                 = location.timezone || 'Europe/London';
   const serviceChargePct   = Number(location.qr_service_charge_pct ?? 0);
-  // Open-tab gate. Hidden in commit 1; surfaces when location.qr_payment_mode
-  // is set and v5.5.146 ships the pre-auth flow.
-  // const paymentMode      = location.qr_payment_mode || 'pay_now';
+  // v5.5.149: open-tab support is BO-toggleable. When the venue allows tabs
+  // we surface the customer-facing warning message + (commit 3b) a Pay-now
+  // / Open-tab radio. paymentMode='pay_now' is the safe default.
+  const paymentMode    = location.qr_payment_mode || 'pay_now';
+  const tabWarning     = (location.qr_tab_warning_message || '').trim();
+  const tabsAllowed    = paymentMode === 'open_tab' || paymentMode === 'both';
 
   const [step, setStep] = useState('details');
   const [pi, setPi] = useState(null);
@@ -331,6 +334,18 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
             padding: '14px 24px calc(14px + env(safe-area-inset-bottom)) 24px',
             background: theme.bg, borderTop: `1px solid ${cardBdr}`,
           }}>
+            {/* v5.5.149: customer-facing tab guardrail warning. Only shown
+                when the venue allows open tabs; hidden for pay-now-only
+                venues since the surcharge wouldn't apply to them. */}
+            {tabsAllowed && tabWarning && (
+              <div style={{
+                marginBottom: 10, padding: '10px 12px', borderRadius: 10,
+                background: '#fef3c7', border: '1px solid #f59e0b',
+                color: '#78350f', fontSize: 12, fontWeight: 600, lineHeight: 1.5,
+              }}>
+                {tabWarning}
+              </div>
+            )}
             {error && <div style={{ fontSize: 12, color: '#ef4444', marginBottom: 10 }}>{error}</div>}
             <button onClick={continueToPayment} disabled={!valid || working}
               className={valid && !working ? 'op-btn-primary' : undefined}
