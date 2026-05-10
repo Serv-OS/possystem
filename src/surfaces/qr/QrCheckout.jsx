@@ -193,8 +193,17 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
         stripe_account: pi?.stripe_account || null,
         ...(isOpenTab ? {
           tab_open: true,
+          tab_opened_at: new Date().toISOString(),
           pre_auth_amount: tabPreAuthAmount,
-          tab_running_total: total, // grows as more rounds are added (commit 3c)
+          tab_running_total: total,
+          // v5.5.151: snapshot the venue's surcharge config at tab-open time
+          // so the operator's force-close can apply auto-surcharge without
+          // another platform.locations fetch. Snapshotting also means a
+          // BO config change after tabs are open doesn't retroactively
+          // change the policy customers already agreed to.
+          tab_surcharge_pct:           Number(location.qr_tab_left_open_surcharge_pct ?? 0),
+          tab_surcharge_fixed:         Number(location.qr_tab_left_open_surcharge_fixed ?? 0),
+          tab_force_close_after_min:   Number(location.qr_tab_force_close_after_minutes ?? 0),
         } : { paid: true }),
       };
 

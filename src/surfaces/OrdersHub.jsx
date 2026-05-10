@@ -198,8 +198,46 @@ export default function OrdersHub() {
       showToast(`${o.ref}: no payment intent on this tab — can't capture`, 'error');
       return;
     }
-    if (!confirm(`Close this tab and charge £${(o.total || 0).toFixed(2)} to the customer's card?`)) return;
+
+    // v5.5.151: auto-surcharge for left-open tabs. Config snapshotted on
+    // the tab at open-time (see QrCheckout). Apply when tab age exceeds
+    // tab_force_close_after_min. Both pct AND fixed can stack.
+    let surcharge = 0;
+    let surchargeReason = '';
+    const openedAtMs = o.customer?.tab_opened_at ? new Date(o.customer.tab_opened_at).getTime() : null;
+    const thresholdMin = Number(o.customer?.tab_force_close_after_min ?? 0);
+    if (openedAtMs && thresholdMin > 0) {
+      const ageMin = (Date.now() - openedAtMs) / 60_000;
+      if (ageMin > thresholdMin) {
+        const pct   = Number(o.customer?.tab_surcharge_pct ?? 0);
+        const fixed = Number(o.customer?.tab_surcharge_fixed ?? 0);
+        surcharge = +((Number(o.total || 0) * pct / 100) + fixed).toFixed(2);
+        surchargeReason = `Tab open ${Math.round(ageMin)} min · `
+          + (pct > 0 ? `${pct}%` : '')
+          + (pct > 0 && fixed > 0 ? ' + ' : '')
+          + (fixed > 0 ? `£${fixed.toFixed(2)}` : '');
+      }
+    }
+    const finalTotal = +(Number(o.total || 0) + surcharge).toFixed(2);
+
+    // Cap at pre-auth — Stripe rejects capture > authorised amount. The
+    // operator gets a clear warning if the auth wasn't enough so they can
+    // chase the customer for the difference manually.
+    const preAuth = Number(o.customer?.pre_auth_amount || 0);
+    if (preAuth > 0 && finalTotal > preAuth) {
+      if (!confirm(
+        `WARNING: bill is £${finalTotal.toFixed(2)} but only £${preAuth.toFixed(2)} was pre-authorised.\n\n`
+        + `Stripe will only capture £${preAuth.toFixed(2)}. The £${(finalTotal - preAuth).toFixed(2)} shortfall must be collected separately.\n\n`
+        + `Proceed?`
+      )) return;
+    } else if (!confirm(
+      surcharge > 0
+        ? `Close this tab? Bill £${Number(o.total || 0).toFixed(2)} + surcharge £${surcharge.toFixed(2)} (${surchargeReason}) = £${finalTotal.toFixed(2)} charged.`
+        : `Close this tab and charge £${finalTotal.toFixed(2)} to the customer's card?`
+    )) return;
+
     setClosingTabRef(o.ref);
+    const captureAmount = preAuth > 0 ? Math.min(finalTotal, preAuth) : finalTotal;
     try {
       const res = await fetch('/api/stripe-capture', {
         method: 'POST',
@@ -207,7 +245,7 @@ export default function OrdersHub() {
         body: JSON.stringify({
           paymentIntentId: pi,
           stripeAccount: acct,
-          amountToCapture: Math.round((o.total || 0) * 100), // pence
+          amountToCapture: Math.round(captureAmount * 100), // pence
         }),
       });
       const data = await res.json();
@@ -223,12 +261,13 @@ export default function OrdersHub() {
           server: 'QR (force-closed)',
           covers: 1,
           order_type: 'dine-in',
-          customer: o.customer,
+          customer: { ...o.customer, tab_closed_at: new Date().toISOString(), surcharge_applied: surcharge },
           items: (o.items || []).map(i => ({ ...i, voided: false })),
           discounts: [],
           subtotal: o.total,
-          service: 0, tip: 0, tax_amount: null,
-          total: o.total,
+          service: surcharge,                 // surface the auto-surcharge in the service line
+          tip: 0, tax_amount: null,
+          total: captureAmount,                // what was actually charged
           method: 'card',
           closed_at: new Date().toISOString(),
           status: 'paid',
@@ -239,7 +278,12 @@ export default function OrdersHub() {
         });
       } catch (e) { console.warn('[OrdersHub force-close] closed_checks insert:', e?.message); }
       updateQueueStatus(o.ref, 'collected');
-      showToast(`${o.ref} captured £${(o.total || 0).toFixed(2)}`, 'success');
+      showToast(
+        surcharge > 0
+          ? `${o.ref} captured £${captureAmount.toFixed(2)} (incl £${surcharge.toFixed(2)} surcharge)`
+          : `${o.ref} captured £${captureAmount.toFixed(2)}`,
+        'success'
+      );
       setTimeout(() => removeFromQueue(o.ref), 8000);
     } catch (e) {
       console.error('[OrdersHub] force-close failed:', e);
