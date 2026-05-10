@@ -76,6 +76,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.161', date: '9 May 2026', label: 'QR URLs now use friendly table label (?t=T4) not the auto-generated id (?t=t-1776905944421); BO warns about unlabeled tables',
+    changes: [
+      'QR URLS NOW USE THE TABLE LABEL — buildQrUrl prefers `t.label` over `t.id` so a QR for a table labeled "T4" encodes `/?t=T4` not `/?t=t-1776905944421`. The customer-facing confirm screen reads `Table T4` cleanly. When the table has no friendly label set in Floor Plan we still fall back to the id (so existing flows keep working) and surface a loud warning in the BO QR generator instead.',
+      'BO NOW WARNS ABOUT UNLABELED TABLES — Online Ordering → QR Codes section detects tables whose label is null, equals their id, or matches the auto-generated `t-<digits>` pattern. Shows an amber banner counting how many are unlabeled with one-line instructions to fix in Floor Plan. Each unlabeled table card is amber-bordered with an UNLABELED badge so you know exactly which ones need attention. Once labels are set, re-download the QRs and the URLs/displays clean up automatically.',
+      'NOTE — existing QRs already printed with `?t=t-...` will keep working (customer JSON.tableId stores whatever the URL says, so QR-to-QR queries stay consistent). Only the floor-plan active_sessions linkage uses the literal value, so a QR tab opened with the auto-id won\'t link to the floor-plan table card UNTIL you set proper labels and re-print. For dev/testing this is fine; before going live with printed table tents, label every table.',
+    ],
+  },
+  {
     version: '5.5.160', date: '9 May 2026', label: 'QR overage charging — bills above pre-auth no longer error; off_session re-charge on saved card; £25 minimum auth so £0-config tabs still work',
     changes: [
       'BILLS ABOVE PRE-AUTH NOW CHARGE AUTOMATICALLY — was the #1 reason "Close & charge" failed (Stripe rejects capture > authorised). New flow: capture clamps at the actual amount_capturable on the PI, reports any shortfall in the response, OrdersHub then immediately calls a NEW endpoint /api/stripe-charge-overage which creates a second PI off_session=true + confirm=true on the SAME payment_method (saved at tab open via setup_future_usage="off_session"). Customer doesn\'t see a 3DS challenge — the saved-card auth carries over. Bill £80 with £25 pre-auth = £25 captured + £55 off_session charge = £80 total, one operator click. closed_check now records both amounts plus any shortfall not collected.',

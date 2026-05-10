@@ -152,7 +152,17 @@ export default function OnlineOrdering({ setSection }) {
           if (tErr) {
             console.warn('[OnlineOrdering] floor_tables load:', tErr.message);
           } else if (alive && rows?.length) {
-            setTables(rows.map(t => ({ id: t.id, label: t.label || t.id })));
+            // v5.5.161: keep `label` nullable so we can DETECT auto-named
+            // tables (no friendly label set in Floor Plan) and warn the
+            // operator. The auto-generated `id` looks like `t-1776905944421`
+            // which makes for a horrid QR URL like `/?t=t-1776905944421`
+            // and an even worse "Table t-1776905944421" header on the QR
+            // confirm screen. Customers expect to see "Table T4" or "Table 5".
+            setTables(rows.map(t => {
+              const rawLabel = t.label || '';
+              const looksAutoNamed = !rawLabel || rawLabel === t.id || /^t-\d+$/i.test(rawLabel);
+              return { id: t.id, label: looksAutoNamed ? null : rawLabel, isUnlabeled: looksAutoNamed };
+            }));
           }
         }
       } catch (e) {
@@ -448,20 +458,27 @@ function QrSettingsBlock({
   tables, downloading, setDownloading,
 }) {
   const showsTabSettings = paymentMode === 'open_tab' || paymentMode === 'both';
-  const buildQrUrl = (tableId) => {
+  const buildQrUrl = (table) => {
     // v5.5.159: while we're on the shared dev host (dev.pos-up.com /
     // possystem-liard.vercel.app) we don't have per-slug subdomain DNS, so
     // pass the slug as ?loc=… instead. Once *.pos-up.com routing is live we
     // can flip back to the subdomain form.
     const base = 'https://dev.pos-up.com';
     const locParam = slug ? `&loc=${encodeURIComponent(slug)}` : '';
-    return tableMode === 'free'
-      ? `${base}/?surface=qr${locParam}`
-      : `${base}/?surface=qr${locParam}&t=${encodeURIComponent(tableId || '')}`;
+    if (tableMode === 'free') return `${base}/?surface=qr${locParam}`;
+    // v5.5.161: prefer the friendly label as the URL "t" so QRs encode
+    // `?t=T4` not `?t=t-1776905944421`. The QR side resolves label → real
+    // floor_tables.id when it needs to write to active_sessions. When no
+    // friendly label is set we still ship the id so existing flows don't
+    // break — but the BO grid surfaces an "unlabeled" warning so the
+    // operator knows to set proper labels in Floor Plan.
+    const t = table || {};
+    const tParam = t.label || t.id || '';
+    return `${base}/?surface=qr${locParam}&t=${encodeURIComponent(tParam)}`;
   };
 
   const downloadOne = async (table) => {
-    const url = buildQrUrl(table.id);
+    const url = buildQrUrl(table);
     // Render QR to a canvas, then composite a label + footer into a larger
     // canvas, export as JPEG, trigger download.
     const qrCanvas = document.createElement('canvas');
@@ -634,20 +651,32 @@ function QrSettingsBlock({
             No tables yet. Set them up in Floor Plan first.
           </div>
         )}
+        {tableMode !== 'free' && tables.length > 0 && tables.some(t => t.isUnlabeled) && (
+          <div style={{
+            marginBottom:10, padding:'12px 14px', borderRadius:8,
+            background:'#7c2d1220', border:'1px solid #f59e0b', color:'var(--t1)',
+            fontSize:12, lineHeight:1.5,
+          }}>
+            <strong>⚠ {tables.filter(t => t.isUnlabeled).length} of {tables.length} tables have no label set.</strong>
+            {' '}Their QR URLs will use the auto-generated id (e.g. <code>?t=t-1776905944421</code>) and customers will see "Table t-1776905944421" on the confirm screen.
+            {' '}Open <strong>Floor Plan → click each table → set Label</strong> to "T4", "5", etc., then come back and re-download the QRs.
+          </div>
+        )}
         {tableMode !== 'free' && tables.length > 0 && (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 10 }}>
             {tables.map(t => {
-              const url = buildQrUrl(t.id);
+              const url = buildQrUrl(t);
               return (
                 <div key={t.id} style={{
                   padding: '12px 10px', borderRadius: 8,
-                  background: 'var(--bg2)', border: '1px solid var(--bdr2)',
+                  background: 'var(--bg2)', border: t.isUnlabeled ? '1px solid #f59e0b' : '1px solid var(--bdr2)',
                   display: 'flex', flexDirection: 'column', gap: 6,
                 }}>
                   <div style={{ display:'flex', alignItems:'center', gap:8 }}>
                     <span style={{ fontSize: 22 }}>📱</span>
-                    <span style={{ fontSize: 14, fontWeight: 700, color:'var(--t1)' }}>Table {t.label || t.id}</span>
-                    <span style={{ marginLeft:'auto', fontSize:10, color:'var(--t4)', fontFamily:'var(--font-mono)' }}>id: {t.id}</span>
+                    <span style={{ fontSize: 14, fontWeight: 700, color:'var(--t1)' }}>Table {t.label || '(no label)'}</span>
+                    {t.isUnlabeled && <span style={{ fontSize:9, fontWeight:800, color:'#92400e', background:'#fde68a', padding:'2px 6px', borderRadius:6 }}>UNLABELED</span>}
+                    <span style={{ marginLeft:'auto', fontSize:10, color:'var(--t4)', fontFamily:'var(--font-mono)' }}>id: {t.id.length > 12 ? t.id.slice(0,12)+'…' : t.id}</span>
                   </div>
                   <a href={url} target="_blank" rel="noopener" style={{
                     fontSize: 10, color:'var(--acc)', wordBreak:'break-all', textDecoration:'none',
