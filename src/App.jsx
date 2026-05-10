@@ -76,6 +76,13 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.156', date: '9 May 2026', label: 'QR fixes — phone now required + open-tab "requires_capture" status accepted (was throwing processing error)',
+    changes: [
+      'PHONE NOW REQUIRED ON QR CHECKOUT — was optional. Tab resume + force-close + (post-launch) phone-fallback recovery all key off the phone-last-4 digits, so an empty phone broke every recovery path. Validation now requires a 7+ digit phone (UK 07-prefixed or international with leading +). Email stays optional. Field label drops the "(optional)" suffix. Error message under the Continue button is now specific: "Please enter your name and a valid phone number (we use the last 4 digits to reconnect you with your tab)".',
+      'OPEN-TAB "PROCESSING ERROR" FIXED — the open-tab path uses Stripe captureMethod=\'manual\' so the post-confirm PaymentIntent status is `requires_capture` (auth held, awaiting capture at close-time). My PayStep submit handler was only accepting `succeeded` and rejecting everything else as an error — meaning EVERY successful tab open hit "Payment status: requires_capture" and looked broken to the customer even though their card had been authorised correctly. Now: pay-now expects `succeeded`, open-tab also accepts `requires_capture` as the success path. Both route to onPaid which writes the order_queue row and stashes for resume.',
+    ],
+  },
+  {
     version: '5.5.155', date: '9 May 2026', label: 'QR commit 3d — silent tab resume on rescan + 4.1/4.2 sub-numbering + Add more / Close & pay flow',
     changes: [
       'SILENT TAB RESUME — when a customer opens a tab via QR, we stash a small marker in their browser localStorage (tab_ref / payment_intent_id / stripe_account / phone_last4 / table_label / pre_auth_amount) under `rpos:qr-tab` keyed by slug+tableId. On next scan from the same browser at the same QR (~95% of cases) we silently detect it, validate against the live DB (any unclosed order_queue rows tied to that payment_intent?), and render the new TabResumeScreen instead of an empty menu. If the tab was already closed by staff or another device the stash is cleared automatically.',

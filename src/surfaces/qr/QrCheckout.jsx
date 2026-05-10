@@ -105,11 +105,15 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
     'dine-in',
   ), [cart, taxRates]);
 
+  // v5.5.156: phone required (was optional). Tab resume + force-close
+  // identification key off phone-last-4, so an empty phone breaks the
+  // recovery flow. Email stays optional.
   const valid = useMemo(() => {
     if (!name.trim()) return false;
+    if (!/^\+?[0-9 ]{7,}$/.test(phone)) return false;
     if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return false;
     return true;
-  }, [name, email]);
+  }, [name, phone, email]);
 
   const orderShape = useMemo(() => {
     const ref = `QR-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
@@ -183,7 +187,10 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
   };
 
   const continueToPayment = async () => {
-    if (!valid) { setError('Please enter your name (and a valid email if provided).'); return; }
+    if (!valid) {
+      setError('Please enter your name and a valid phone number (we use the last 4 digits to reconnect you with your tab).');
+      return;
+    }
     setWorking(true); setError('');
     try {
       // Anonymous sign-in so the connected-account edge fn accepts the JWT
@@ -536,7 +543,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
           <SectionTitle>Your details</SectionTitle>
           <Field label="Name" value={name} onChange={setName} placeholder="Your name (so we know whose order this is)" theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-            <Field label="Phone (optional)" value={phone} onChange={setPhone} placeholder="07700 900000" type="tel" theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
+            <Field label="Phone" value={phone} onChange={setPhone} placeholder="07700 900000" type="tel" theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
             <Field label="Email (optional)" value={email} onChange={setEmail} placeholder="for receipt" type="email" theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
           </div>
           <Field label="Notes for the kitchen (optional)" value={notes} onChange={setNotes} placeholder="Allergies, preferences, etc." theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
@@ -660,7 +667,13 @@ function PayStep({ pi, subtotal, serviceCharge, tipAmount, total, tableLabel, th
     });
     setBusy(false);
     if (stripeErr) { onError(stripeErr.message || 'Card declined.'); return; }
-    if (paymentIntent?.status === 'succeeded') {
+    // v5.5.156: open-tab uses captureMethod='manual' so the post-confirm
+    // status is 'requires_capture' (auth held, capture later) — that's the
+    // success path for an open tab. Pay-now stays 'succeeded' (captured
+    // immediately). Both are valid outcomes that route to onPaid.
+    const ok = paymentIntent?.status === 'succeeded'
+      || (isOpenTab && paymentIntent?.status === 'requires_capture');
+    if (ok) {
       await onPaid(paymentIntent);
     } else {
       onError(`Payment status: ${paymentIntent?.status || 'unknown'}.`);
