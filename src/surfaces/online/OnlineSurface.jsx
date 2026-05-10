@@ -50,6 +50,11 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   const [resumeRounds, setResumeRounds] = useState([]);
   const [resumeChecked, setResumeChecked] = useState(false);
   const [existingTab, setExistingTab] = useState(null);
+  // v5.5.159: ANY open tab at this tableId — surfaced on the start
+  // screen as "Settle the bill" so a customer (or anyone) can close
+  // the tab even when the original phone isn't around.
+  const [tableTabs, setTableTabs]     = useState([]);
+  const [pickedTableTab, setPickedTableTab] = useState(null);
   const [branding, setBranding]     = useState(null);
   const [instGroupDefs, setInstGroupDefs] = useState([]); // from config_pushes snapshot — there's no instruction_groups DB table
   const [loading, setLoading]       = useState(true);
@@ -91,6 +96,40 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
     }
     let alive = true;
     (async () => {
+      // v5.5.159: also list ANY open tab at this tableId (not just the
+      // localStorage match). Lets the start screen offer "Settle bill".
+      try {
+        const { data: anyTabs } = await supabase
+          .from('order_queue')
+          .select('ref, status, items, total, customer, location_id, created_at')
+          .eq('location_id', opsLocationId)
+          .eq('source', 'qr')
+          .neq('status', 'collected')
+          .filter('customer->>tableId', 'eq', String(tableId))
+          .filter('customer->>tab_open', 'eq', 'true');
+        if (alive && Array.isArray(anyTabs) && anyTabs.length) {
+          // Pool by payment_intent_id (one card per tab even if multiple rounds)
+          const byPi = {};
+          anyTabs.forEach(r => {
+            const pi = r.customer?.payment_intent_id;
+            if (!pi) return;
+            if (!byPi[pi]) byPi[pi] = {
+              payment_intent_id: pi,
+              stripe_account: r.customer?.stripe_account || null,
+              tab_ref: r.customer?.tab_ref || r.ref,
+              table_label: r.customer?.tableLabel || tableLabel || tableId,
+              pre_auth_amount: Number(r.customer?.pre_auth_amount || 0),
+              opened_at: r.customer?.tab_opened_at || r.created_at,
+              rounds: [],
+              total: 0,
+            };
+            byPi[pi].rounds.push(r);
+            byPi[pi].total += Number(r.total || 0);
+          });
+          setTableTabs(Object.values(byPi));
+        }
+      } catch (e) { /* swallow — non-blocking */ }
+
       const stashed = getStashedTab(location.online_slug, tableId);
       if (!stashed?.payment_intent_id) { if (alive) setResumeChecked(true); return; }
       try {
@@ -340,6 +379,21 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           locationName={location.name}
           presetLabel={tableLabel || tableId || ''}
           mode={qrTableMode}
+          openTabs={tableTabs}
+          onSettleTab={(tab) => {
+            // v5.5.159: jump straight to TabResumeScreen for the picked tab.
+            setPickedTableTab(tab);
+            setResumeTab({
+              payment_intent_id: tab.payment_intent_id,
+              stripe_account: tab.stripe_account,
+              tab_ref: tab.tab_ref,
+              table_label: tab.table_label,
+              pre_auth_amount: tab.pre_auth_amount,
+            });
+            setResumeRounds(tab.rounds || []);
+            setResumeChecked(true);
+            setTableConfirmed(true);
+          }}
           onConfirm={(label) => { setConfirmedTable(label); setTableConfirmed(true); }}/>
       </ScrollShell>
     );
@@ -1181,7 +1235,7 @@ function ItemCard({ item, theme, cardBg, cardBdr, muted, onPick, variantInfo, is
 // free-type table modes. Pre-fills with the QR-encoded table id when present;
 // "Change" or empty preset switches to a numeric input. Locked table mode
 // skips this entirely (set tableConfirmed=true on mount).
-function ConfirmTableScreen({ theme, cardBdr, muted, locationName, presetLabel, mode, onConfirm }) {
+function ConfirmTableScreen({ theme, cardBdr, muted, locationName, presetLabel, mode, onConfirm, openTabs = [], onSettleTab }) {
   const [editing, setEditing] = useState(mode === 'free' || !presetLabel);
   const [value, setValue] = useState(presetLabel || '');
   const heroBg = theme.hero
@@ -1236,6 +1290,28 @@ function ConfirmTableScreen({ theme, cardBdr, muted, locationName, presetLabel, 
                 border: '1px solid rgba(255,255,255,0.4)',
                 fontSize: 14, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit',
               }}>Wrong table — change</button>
+              {/* v5.5.159: settle-from-start. If any tab is open at this
+                  table (e.g. left open by an earlier guest), surface a
+                  "Settle the bill" entry so anyone at the table can pay. */}
+              {openTabs.length > 0 && onSettleTab && (
+                <div style={{ marginTop: 18, padding: 14, background:'rgba(0,0,0,0.35)', borderRadius:14, border:'1px solid rgba(255,255,255,0.25)' }}>
+                  <div style={{ fontSize:12, fontWeight:800, opacity:0.95, marginBottom:8, textTransform:'uppercase', letterSpacing:'0.05em' }}>
+                    💳 Open bill{openTabs.length > 1 ? 's' : ''} at this table
+                  </div>
+                  {openTabs.map(t => (
+                    <button key={t.payment_intent_id} onClick={() => onSettleTab(t)}
+                      style={{
+                        width:'100%', padding:'12px 14px', marginBottom:6, borderRadius:10,
+                        background:'rgba(255,255,255,0.95)', color:'#1a1a1a', border:'none',
+                        fontSize:14, fontWeight:800, cursor:'pointer', fontFamily:'inherit',
+                        display:'flex', justifyContent:'space-between', alignItems:'center',
+                      }}>
+                      <span>Table {t.table_label} · {t.rounds.length} round{t.rounds.length===1?'':'s'}</span>
+                      <span>£{t.total.toFixed(2)}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           </>
         )}

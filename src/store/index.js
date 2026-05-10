@@ -3696,6 +3696,19 @@ export const useStore = create((set, get) => ({
         .select('ref');
       if (r.error && COL_MISSING(r.error)) {
         console.warn('[routeKioskOrderPrints] kitchen_routed_at column missing — proceeding without idempotency claim. Run: alter table order_queue add column kitchen_routed_at timestamptz;');
+        // v5.5.159: surface a loud, visible toast — silent console warnings
+        // were missed for weeks while every venue with N master devices
+        // got N duplicate kitchen tickets per round. The ONE-LINE SQL fix
+        // is right there in the toast.
+        try {
+          if (!useStore._colWarningShown) {
+            useStore._colWarningShown = true;
+            useStore.getState().showToast?.(
+              '⚠ Duplicate prints risk: order_queue.kitchen_routed_at column missing. Run: alter table order_queue add column if not exists kitchen_routed_at timestamptz; (one-time, on Supabase SQL editor)',
+              'error', 15000
+            );
+          }
+        } catch {}
         if (!useStore._routedRefs) useStore._routedRefs = new Set();
         if (useStore._routedRefs.has(order.ref)) return;
         useStore._routedRefs.add(order.ref);

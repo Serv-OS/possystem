@@ -163,16 +163,27 @@ export default function OrdersHub() {
   // (kitchen prints each round as a fresh ticket — table-service correct)
   // but the operator UI groups them. Force-close captures the SUM across
   // all rounds tied to the same payment_intent.
-  const isQrOpenTab = (o) => o._kind === 'queue' && o.source === 'qr' && o.customer?.tab_open === true && !o.customer?.tab_closed;
-  const qrTabRows = filtered.filter(isQrOpenTab);
+  // v5.5.159: catch ALL QR orders (pay-now AND open-tab), not just open-tab.
+  // Pay-now orders are already captured but still belong in the QR section
+  // alongside their tab siblings — operators expect "everything from QR
+  // shows in QR" not "QR pay-now lives with walk-in/takeaway/delivery".
+  const isQrOrder    = (o) => o._kind === 'queue' && o.source === 'qr';
+  const isQrOpenTab  = (o) => isQrOrder(o) && o.customer?.tab_open === true && !o.customer?.tab_closed;
+  const qrTabRows    = filtered.filter(isQrOrder);
   const qrTabs = useMemo(() => {
-    const byPi = {};
+    const byKey = {};
     qrTabRows.forEach(o => {
+      // v5.5.159: open-tab rounds pool by PI (so 3 rounds = 1 card).
+      // Pay-now orders have no PI to pool by, so they each become their own
+      // card under the QR section keyed by ref.
+      const isOpen = o.customer?.tab_open === true && !o.customer?.tab_closed;
       const pi = o.customer?.payment_intent_id;
-      if (!pi) return;
-      if (!byPi[pi]) {
-        byPi[pi] = {
-          payment_intent_id: pi,
+      const key = (isOpen && pi) ? pi : `paynow:${o.ref}`;
+      if (!byKey[key]) {
+        byKey[key] = {
+          key,
+          isOpenTab: isOpen,
+          payment_intent_id: pi || null,
           stripe_account: o.customer?.stripe_account || null,
           tableLabel: o.customer?.tableLabel || '?',
           tableId: o.customer?.tableId || null,
@@ -189,16 +200,17 @@ export default function OrdersHub() {
           firstRow: o,
         };
       }
-      byPi[pi].rows.push(o);
-      byPi[pi].total += Number(o.total || 0);
-      byPi[pi].allItems.push(...(o.items || []));
+      byKey[key].rows.push(o);
+      byKey[key].total += Number(o.total || 0);
+      byKey[key].allItems.push(...(o.items || []));
     });
-    return Object.values(byPi).sort((a, b) => (a.tableLabel || '').localeCompare(b.tableLabel || ''));
+    return Object.values(byKey).sort((a, b) => (a.tableLabel || '').localeCompare(b.tableLabel || ''));
   }, [qrTabRows]);
 
-  // queueOrders excludes QR open-tab rows so they don't ALSO appear in the
-  // Walk-in / Takeaway / Delivery section.
-  const queueOrders = filtered.filter(o => !['table', 'bar'].includes(o.channel) && !isQrOpenTab(o));
+  // v5.5.159: queueOrders excludes ALL QR rows (pay-now + open-tab) so they
+  // don't double-appear under Walk-in/Takeaway/Delivery. Everything QR is
+  // surfaced in the dedicated QR section above.
+  const queueOrders = filtered.filter(o => !['table', 'bar'].includes(o.channel) && !isQrOrder(o));
 
   // Counts for tab badges
   const counts = useMemo(() => {
@@ -580,10 +592,11 @@ export default function OrdersHub() {
               <Section title="📱 Open QR tabs" icon="📱" color="#10b981" count={qrTabs.length}>
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(300px,1fr))', gap:10 }}>
                   {qrTabs.map(t => (
-                    <QrTabCard key={t.payment_intent_id}
+                    <QrTabCard key={t.key}
                       tab={t}
                       onForceClose={() => forceCloseQrTab(t)}
-                      closingTab={closingTabRef === t.payment_intent_id}/>
+                      onAdvance={() => t.firstRow && advance(t.firstRow)}
+                      closingTab={closingTabRef === (t.payment_intent_id || t.key)}/>
                   ))}
                 </div>
               </Section>
@@ -611,9 +624,9 @@ export default function OrdersHub() {
 // v5.5.157: pooled QR-tab card. One per payment_intent_id, even when the
 // customer has added multiple rounds. Shows running total, rounds count,
 // time open, single Force-close button that captures the lot.
-function QrTabCard({ tab, onForceClose, closingTab }) {
+function QrTabCard({ tab, onForceClose, onAdvance, closingTab }) {
   const ageMin = tab.tabOpenedAt ? Math.round((Date.now() - new Date(tab.tabOpenedAt).getTime()) / 60_000) : 0;
-  const headerColor = '#10b981'; // emerald — matches the section
+  const headerColor = tab.isOpenTab ? '#10b981' : '#22d3ee'; // emerald for tabs, cyan for paid
   return (
     <div style={{
       background:'var(--bg1)', borderRadius:13, overflow:'hidden',
@@ -626,7 +639,7 @@ function QrTabCard({ tab, onForceClose, closingTab }) {
         <div style={{ flex:1, minWidth:0 }}>
           <div style={{ display:'flex', gap:8, alignItems:'baseline', flexWrap:'wrap' }}>
             <span style={{ fontSize:15, fontWeight:800, color:'var(--t1)' }}>Table {tab.tableLabel}</span>
-            <span style={{ fontSize:10, color:'var(--t4)', fontFamily:'var(--font-mono)' }}>tab</span>
+            <span style={{ fontSize:10, color:'var(--t4)', fontFamily:'var(--font-mono)' }}>{tab.isOpenTab ? 'tab' : 'pay-now'}</span>
           </div>
           <div style={{ display:'flex', gap:10, marginTop:3, flexWrap:'wrap', fontSize:11, color:'var(--t3)' }}>
             <span>👤 {tab.customerName}</span>
@@ -634,9 +647,15 @@ function QrTabCard({ tab, onForceClose, closingTab }) {
             <span>⏱ {ageMin} min open</span>
           </div>
         </div>
-        <span style={{ fontSize:10, fontWeight:800, padding:'3px 8px', borderRadius:12,
-          background:'#fde68a', color:'#78350f', border:'1px solid #f59e0b', whiteSpace:'nowrap',
-        }}>£{tab.preAuthAmount.toFixed(0)} HELD</span>
+        {tab.isOpenTab ? (
+          <span style={{ fontSize:10, fontWeight:800, padding:'3px 8px', borderRadius:12,
+            background:'#fde68a', color:'#78350f', border:'1px solid #f59e0b', whiteSpace:'nowrap',
+          }}>£{tab.preAuthAmount.toFixed(0)} HELD</span>
+        ) : (
+          <span style={{ fontSize:10, fontWeight:800, padding:'3px 8px', borderRadius:12,
+            background:'#bbf7d0', color:'#14532d', border:'1px solid #22c55e', whiteSpace:'nowrap',
+          }}>PAID</span>
+        )}
       </div>
       <div style={{ padding:'0 14px 10px' }}>
         <div style={{ fontSize:11, fontWeight:700, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.05em', marginBottom:6 }}>
@@ -654,15 +673,26 @@ function QrTabCard({ tab, onForceClose, closingTab }) {
       </div>
       <div style={{ padding:'10px 14px', borderTop:'1px solid var(--bdr)', background:'var(--bg2)', display:'flex', alignItems:'center', gap:8 }}>
         <span style={{ fontSize:18, fontWeight:900, color:'var(--acc)', fontFamily:'var(--font-mono)' }}>£{tab.total.toFixed(2)}</span>
-        <span style={{ fontSize:10, color:'var(--t4)' }}>running total</span>
-        <button onClick={onForceClose} disabled={!!closingTab} style={{
-          marginLeft:'auto', padding:'6px 14px', borderRadius:8,
-          cursor: closingTab ? 'wait' : 'pointer', fontFamily:'inherit',
-          background:'#f59e0b', border:'none', color:'#0b0c10',
-          fontSize:12, fontWeight:800, opacity: closingTab ? 0.6 : 1,
-        }}>
-          {closingTab ? 'Capturing…' : '🔒 Close & charge'}
-        </button>
+        <span style={{ fontSize:10, color:'var(--t4)' }}>{tab.isOpenTab ? 'running total' : 'paid'}</span>
+        {tab.isOpenTab ? (
+          <button onClick={onForceClose} disabled={!!closingTab} style={{
+            marginLeft:'auto', padding:'6px 14px', borderRadius:8,
+            cursor: closingTab ? 'wait' : 'pointer', fontFamily:'inherit',
+            background:'#f59e0b', border:'none', color:'#0b0c10',
+            fontSize:12, fontWeight:800, opacity: closingTab ? 0.6 : 1,
+          }}>
+            {closingTab ? 'Capturing…' : '🔒 Close & charge'}
+          </button>
+        ) : (
+          <button onClick={onAdvance} style={{
+            marginLeft:'auto', padding:'6px 14px', borderRadius:8,
+            cursor:'pointer', fontFamily:'inherit',
+            background:'var(--acc)', border:'none', color:'#0b0c10',
+            fontSize:12, fontWeight:800,
+          }}>
+            Advance →
+          </button>
+        )}
       </div>
     </div>
   );

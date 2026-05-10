@@ -278,8 +278,8 @@ export default function OnlineOrdering({ setSection }) {
   const slug = row.online_slug;
   const onlineUrl = slug ? `https://${slug}.${ROOT}` : null;
   const qrUrl     = slug ? `https://${slug}.${ROOT}/t/<table-id>` : null;
-  const previewOnline = slug ? `https://possystem-liard.vercel.app/?loc=${slug}&surface=online` : null;
-  const previewQr     = slug ? `https://possystem-liard.vercel.app/?loc=${slug}&surface=qr&t=t1` : null;
+  const previewOnline = slug ? `https://dev.pos-up.com/?loc=${slug}&surface=online` : null;
+  const previewQr     = slug ? `https://dev.pos-up.com/?loc=${slug}&surface=qr&t=t1` : null;
 
   return (
     <div style={S.page}>
@@ -449,14 +449,15 @@ function QrSettingsBlock({
 }) {
   const showsTabSettings = paymentMode === 'open_tab' || paymentMode === 'both';
   const buildQrUrl = (tableId) => {
-    const base = slug
-      ? `https://${slug}.pos-up.com`
-      : `${window.location.origin}`;
-    // ?surface=qr&t=<tableId>; if free-type mode, omit table id and let
-    // the customer enter it on the confirm screen.
+    // v5.5.159: while we're on the shared dev host (dev.pos-up.com /
+    // possystem-liard.vercel.app) we don't have per-slug subdomain DNS, so
+    // pass the slug as ?loc=… instead. Once *.pos-up.com routing is live we
+    // can flip back to the subdomain form.
+    const base = 'https://dev.pos-up.com';
+    const locParam = slug ? `&loc=${encodeURIComponent(slug)}` : '';
     return tableMode === 'free'
-      ? `${base}/?surface=qr`
-      : `${base}/?surface=qr&t=${encodeURIComponent(tableId || '')}`;
+      ? `${base}/?surface=qr${locParam}`
+      : `${base}/?surface=qr${locParam}&t=${encodeURIComponent(tableId || '')}`;
   };
 
   const downloadOne = async (table) => {
@@ -634,20 +635,37 @@ function QrSettingsBlock({
           </div>
         )}
         {tableMode !== 'free' && tables.length > 0 && (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 8 }}>
-            {tables.map(t => (
-              <button key={t.id} onClick={() => downloadOne(t)}
-                style={{
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 10 }}>
+            {tables.map(t => {
+              const url = buildQrUrl(t.id);
+              return (
+                <div key={t.id} style={{
                   padding: '12px 10px', borderRadius: 8,
                   background: 'var(--bg2)', border: '1px solid var(--bdr2)',
-                  color: 'var(--t1)', cursor: 'pointer', fontFamily: 'inherit',
-                  display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4,
+                  display: 'flex', flexDirection: 'column', gap: 6,
                 }}>
-                <span style={{ fontSize: 22 }}>📱</span>
-                <span style={{ fontSize: 14, fontWeight: 700 }}>Table {t.label || t.id}</span>
-                <span style={{ fontSize: 10, color: 'var(--t4)' }}>⬇ JPEG</span>
-              </button>
-            ))}
+                  <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                    <span style={{ fontSize: 22 }}>📱</span>
+                    <span style={{ fontSize: 14, fontWeight: 700, color:'var(--t1)' }}>Table {t.label || t.id}</span>
+                    <span style={{ marginLeft:'auto', fontSize:10, color:'var(--t4)', fontFamily:'var(--font-mono)' }}>id: {t.id}</span>
+                  </div>
+                  <a href={url} target="_blank" rel="noopener" style={{
+                    fontSize: 10, color:'var(--acc)', wordBreak:'break-all', textDecoration:'none',
+                    fontFamily:'var(--font-mono)', lineHeight:1.4,
+                  }}>{url}</a>
+                  <div style={{ display:'flex', gap:6 }}>
+                    <button onClick={() => downloadOne(t)} style={{
+                      flex:1, padding:'6px 8px', borderRadius:6, fontSize:11, fontWeight:700,
+                      background:'var(--acc)', color:'#0b0c10', border:'none', cursor:'pointer',
+                    }}>⬇ JPEG</button>
+                    <button onClick={() => { navigator.clipboard?.writeText(url); }} style={{
+                      flex:1, padding:'6px 8px', borderRadius:6, fontSize:11, fontWeight:700,
+                      background:'var(--bg3)', color:'var(--t2)', border:'1px solid var(--bdr2)', cursor:'pointer',
+                    }}>📋 Copy URL</button>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>

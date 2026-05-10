@@ -19,8 +19,23 @@
  */
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-  const key = process.env.STRIPE_SECRET_KEY;
-  if (!key) return res.status(500).json({ error: 'Stripe not configured. Set STRIPE_SECRET_KEY in Vercel env.' });
+  // v5.5.159: try common Stripe env var names so a venue using a non-default
+  // name (e.g. STRIPE_API_KEY, STRIPE_TEST_KEY) still works.
+  const key = process.env.STRIPE_SECRET_KEY
+           || process.env.STRIPE_API_KEY
+           || process.env.STRIPE_TEST_KEY
+           || process.env.STRIPE_LIVE_KEY;
+  if (!key) {
+    // Surface ACTUAL Vercel env var names that look Stripe-related, so
+    // the operator can see exactly what IS set vs what we're looking for
+    // — saves the "I added it but it's not working" guessing game.
+    const stripeEnvs = Object.keys(process.env).filter(k => /stripe/i.test(k));
+    return res.status(500).json({
+      error: 'Stripe not configured on Vercel. Add env var STRIPE_SECRET_KEY (your sk_test_… or sk_live_… key) under Vercel Dashboard → Settings → Environment Variables → Production AND Preview, then REDEPLOY (env vars only apply to new deploys).',
+      vercelStripeEnvVarsFound: stripeEnvs.length ? stripeEnvs : 'none — confirm spelling and that you\'re editing the right Vercel project',
+      hint: 'NB: Supabase Edge Function secrets and Vercel env vars are separate stores. Your existing in-store Stripe uses the Supabase store; this capture endpoint runs on Vercel and needs the key there too.',
+    });
+  }
 
   try {
     const { paymentIntentId, stripeAccount, amountToCapture } = req.body || {};

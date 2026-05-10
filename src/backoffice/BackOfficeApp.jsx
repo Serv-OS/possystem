@@ -846,13 +846,13 @@ function OnlineOrderingSection({ setSection }) {
                 Open Location Settings
               </button>
               {slug && (
-                <a href={`https://possystem-liard.vercel.app/?loc=${slug}&surface=online`} target="_blank" rel="noopener"
+                <a href={`https://dev.pos-up.com/?loc=${slug}&surface=online`} target="_blank" rel="noopener"
                   style={{ ...secondaryBtn(), textDecoration:'none' }}>
                   Preview online ↗
                 </a>
               )}
               {slug && (
-                <a href={`https://possystem-liard.vercel.app/?loc=${slug}&surface=qr&t=t1`} target="_blank" rel="noopener"
+                <a href={`https://dev.pos-up.com/?loc=${slug}&surface=qr&t=t1`} target="_blank" rel="noopener"
                   style={{ ...secondaryBtn(), textDecoration:'none' }}>
                   Preview QR (table t1) ↗
                 </a>
