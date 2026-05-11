@@ -76,6 +76,12 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.167', date: '11 May 2026', label: 'Challenge 21 — category names now display (store uses `label`, not `name`)',
+    changes: [
+      'Categories were showing as "(unnamed)" because store rows use `label` for the display string (Menu Manager terminology) while my mapping was reading `c.name`. Now reads `c.label || c.name` so both store rows and direct-DB rows render properly.',
+    ],
+  },
+  {
     version: '5.5.166', date: '11 May 2026', label: 'Challenge 21 — fix categories list (store key is `menuCategories`, not `categories`)',
     changes: [
       'Wrong destructure key in Challenge21.jsx meant the store fallback never returned anything — `useStore()` was being read as `.categories` but the actual state key is `.menuCategories`. The DB-direct path was failing too (menu_categories rows on this venue\'s ops DB don\'t have location_id matching 7218c716-... which is what getLocationId resolves the BO session to), so both paths returned 0 and the page rendered "No categories anywhere". Now reads `menuCategories` correctly — same source Menu Manager uses — so your alcohol category list will populate.',

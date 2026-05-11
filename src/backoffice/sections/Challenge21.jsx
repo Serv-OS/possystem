@@ -63,7 +63,8 @@ export default function Challenge21() {
         // surfaces the queried location_id so a mismatch is obvious.
         let cats = [];
         if (Array.isArray(storeCats) && storeCats.length) {
-          cats = storeCats.map(c => ({ id: c.id, name: c.name, parent_id: c.parentId, sort_order: c.sortOrder }));
+          // v5.5.167: store cats use `label` (Menu Manager terminology); DB cats use `name`.
+          cats = storeCats.map(c => ({ id: c.id, name: c.label || c.name || '', parent_id: c.parentId, sort_order: c.sortOrder }));
         }
         if (!cats.length && supabase) {
           try {
