@@ -76,6 +76,12 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.168', date: '11 May 2026', label: 'Challenge 21 — fix unreadable selected-category contrast in dark mode',
+    changes: [
+      'Selected category chips had a cream-yellow background with `var(--t1)` text — in dark theme that resolves to near-white, which disappears on the yellow. Forced dark text (#0b0c10) on the checked state regardless of theme.',
+    ],
+  },
+  {
     version: '5.5.167', date: '11 May 2026', label: 'Challenge 21 — category names now display (store uses `label`, not `name`)',
     changes: [
       'Categories were showing as "(unnamed)" because store rows use `label` for the display string (Menu Manager terminology) while my mapping was reading `c.name`. Now reads `c.label || c.name` so both store rows and direct-DB rows render properly.',

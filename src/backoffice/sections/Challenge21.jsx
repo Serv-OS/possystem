@@ -226,7 +226,11 @@ export default function Challenge21() {
                         padding:'10px 12px', borderRadius: 8,
                         background: checked ? '#fef3c7' : 'var(--bg2)',
                         border: checked ? '1px solid #f59e0b' : '1px solid var(--bdr2)',
-                        cursor:'pointer', fontSize: 13, color:'var(--t1)',
+                        cursor:'pointer', fontSize: 13,
+                        // v5.5.168: force dark text on the cream-yellow checked
+                        // background — without this, dark-theme --t1 is near-white
+                        // and becomes invisible.
+                        color: checked ? '#0b0c10' : 'var(--t1)',
                       }}>
                         <input type="checkbox" checked={checked} onChange={() => toggleCat(c.id)}
                           style={{ width: 16, height: 16, cursor:'pointer' }}/>
