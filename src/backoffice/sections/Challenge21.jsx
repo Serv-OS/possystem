@@ -20,7 +20,11 @@ import { useStore } from '../../store';
 import Challenge21Report from './Challenge21Report';
 
 export default function Challenge21() {
-  const { categories: storeCats } = useStore();
+  // v5.5.166: store key is `menuCategories` not `categories` — wrong key
+  // meant the store fallback was always empty, leaving us with the
+  // DB-direct path which returns 0 if the BO's ops_location_id doesn't
+  // match the menu_categories rows.
+  const { menuCategories: storeCats } = useStore();
   const [loading, setLoading]       = useState(true);
   const [saving, setSaving]         = useState(false);
   const [savedAt, setSavedAt]       = useState(null);

@@ -76,6 +76,12 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.166', date: '11 May 2026', label: 'Challenge 21 — fix categories list (store key is `menuCategories`, not `categories`)',
+    changes: [
+      'Wrong destructure key in Challenge21.jsx meant the store fallback never returned anything — `useStore()` was being read as `.categories` but the actual state key is `.menuCategories`. The DB-direct path was failing too (menu_categories rows on this venue\'s ops DB don\'t have location_id matching 7218c716-... which is what getLocationId resolves the BO session to), so both paths returned 0 and the page rendered "No categories anywhere". Now reads `menuCategories` correctly — same source Menu Manager uses — so your alcohol category list will populate.',
+    ],
+  },
+  {
     version: '5.5.165', date: '11 May 2026', label: 'Challenge 21 — fix "No categories loaded" (prefer store cats, surface location-id mismatch)',
     changes: [
       'CATEGORIES NOW LOAD FROM STORE FIRST — was querying menu_categories directly with eq("location_id", opsId), which returned empty if the rows on the DB are stored under a different location_id string than getLocationId() resolves to. The store is already hydrated by SyncBridge from the right location, and is the same source Menu Manager renders from, so it\'s the more reliable primary source.',
