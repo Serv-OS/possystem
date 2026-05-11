@@ -29,6 +29,7 @@ import LocationSettings from './sections/LocationSettings';
 import ReceiptBranding from './sections/ReceiptBranding';
 import TaxManager from './sections/TaxManager';
 import PettyCash from './sections/PettyCash';
+import Challenge21 from './sections/Challenge21';
 
 const NAV = [
   { id:'overview',   label:'Overview',        icon:'◈',  group:'Dashboard' },
@@ -54,6 +55,7 @@ const NAV = [
   { id:'network',    label:'Network & Sync',     icon:'📡',  group:'Analytics' },
   { id:'location',   label:'Location settings', icon:'⚙️',  group:'Analytics' },
   { id: 'receipt', label: 'Receipt', icon: '🧾', group: 'Configuration' },
+  { id: 'challenge21', label: 'Challenge 21', icon: '🪪', group: 'Configuration' },
 ];
 
 export default function BackOfficeApp() {
@@ -468,6 +470,7 @@ export default function BackOfficeApp() {
           {section === 'location'   && <LocationSettings />}
           {section === 'receipt' && <ReceiptBranding/>}
           {section === 'tax'        && <TaxManager />}
+          {section === 'challenge21' && <Challenge21 />}
         </div>
       </div>
       {showLocationSwitcher && <LocationSwitcher onClose={() => setShowLocationSwitcher(false)} />}

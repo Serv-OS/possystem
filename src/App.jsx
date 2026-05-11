@@ -76,6 +76,27 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.163', date: '11 May 2026', label: 'Challenge 21 — UK alcohol ID-check workflow (BO config + POS prompt + audit report)',
+    changes: [
+      'NEW BO SECTION: Challenge 21 — enable toggle, alcohol-containing category multi-select (loaded live from your menu), and trigger frequency input. Counter visible with a Reset button. Sidebar nav item added under Configuration with the 🪪 icon. Settings persist to four new platform.locations columns: `challenge_21_enabled`, `challenge_21_alcohol_category_ids[]`, `challenge_21_trigger_every`, `challenge_21_counter`.',
+      'POS PROMPT — Challenge21Modal mounts inside POSSurface. Fires automatically when an alcohol-containing closed check pushes the counter to the configured threshold. Captures customer first name, last-name initial (A-Z dropdown), ID type (Passport / Driving License / PASS Card / National ID / Military ID / Other), and ID document number. Submits to ops.challenge_21_checks and resets the counter.',
+      'TRIGGER LOGIC — every closeCheck path (POS dine-in via recordClosedCheck, walk-in/takeaway/delivery/QR via recordWalkInClosed, bar tabs via recordWalkInClosedCheck) calls triggerChallenge21Check(record) which: (a) loads the config snapshot from platform.locations if not cached, (b) checks if any item\'s cat / cats[] / parentCat matches the flagged set, (c) increments the counter on platform.locations, (d) opens the prompt when counter >= triggerEvery. Wrapped in try/catch so a Challenge 21 error never blocks a close.',
+      'CANCELLATION PATH — staff may need to refuse a sale rather than collect ID. "Refuse sale" button switches to a cancellation form (free-text reason required); logs with cancelled=true + cancel_reason to the same table so the audit log shows it. Status badge in the report distinguishes ✓ LOGGED from CANCELLED.',
+      'REPORT — Challenge21Report.jsx — filterable table (date range, default last 7 days), three KPI stat cards (Total / Completed / Cancelled), full row table with timestamp + staff + customer + ID type + ID number + status, CSV export. Surfaces inside Challenge 21 BO section as a tab.',
+      '⚠ SQL MIGRATION REQUIRED — two idempotent blocks in /migrations/v5.5.163-challenge-21.sql. Block 1 on PLATFORM project adds the four locations columns. Block 2 on OPS project creates the challenge_21_checks table + index + permissive RLS policy. Run BOTH before testing or the BO save / prompt submit will surface "DB migration missing" errors.',
+    ],
+  },
+  {
+    version: '5.5.162', date: '10 May 2026', label: 'QR fix — pay-now sub-numbering; require amountToCapture; surface closed_checks insert errors; safer status value',
+    changes: [
+      'SUB-NUMBERING NOW COVERS PAY-NOW QR — v5.5.155 only fired sub-numbering for open-tab orders. v5.5.162 extended it to ALL non-collected QR orders at the table (pay-now + open-tab pool together, counted by distinct payment_intent_id). First customer at T2 → "T2.1", second → "T2.2".',
+      'STRIPE-CAPTURE NOW REFUSES NULL AMOUNT — if the client accidentally sent a null/undefined amountToCapture, Stripe was silently defaulting to capturing the FULL authorised amount (looked like overcharging). The endpoint now 400s on null instead. Also validates Number.isFinite to catch NaN.',
+      'CLOSED_CHECKS INSERT ERRORS NOW VISIBLE — was a silent console.warn → order vanished from history. Now surfaces the actual DB error as a 12-second toast so the next failure tells us exactly which column / constraint is blocking the write.',
+      'STATUS NOW ALWAYS \'paid\' — was using \'partial\' on shortfall, which may violate a status enum/check constraint and silently fail the insert. Partial state is recorded in customer.overage_outstanding instead so reporting still has it.',
+      'CLOSE-CONFIRM DIALOG EXPLAINS HOLD vs CAPTURE — when the pre-auth amount is larger than the bill, the operator confirm dialog now spells out: capture £X now, the remaining £Y on the customer\'s card is released by the bank in 1–7 days. Stops the "they were charged £50 but the bill was £18!" support panic.',
+    ],
+  },
+  {
     version: '5.5.161', date: '9 May 2026', label: 'QR URLs now use friendly table label (?t=T4) not the auto-generated id (?t=t-1776905944421); BO warns about unlabeled tables',
     changes: [
       'QR URLS NOW USE THE TABLE LABEL — buildQrUrl prefers `t.label` over `t.id` so a QR for a table labeled "T4" encodes `/?t=T4` not `/?t=t-1776905944421`. The customer-facing confirm screen reads `Table T4` cleanly. When the table has no friendly label set in Floor Plan we still fall back to the id (so existing flows keep working) and surface a loud warning in the BO QR generator instead.',

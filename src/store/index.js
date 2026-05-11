@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { supabase, isMock, getLocationId } from '../lib/supabase';
+import { supabase, platformSupabase, isMock, getLocationId } from '../lib/supabase';
 import { calculateOrderTax } from '../lib/tax';
 import { resolveServiceCharge } from '../lib/serviceCharge';
 import { upsertMenuItem, upsertFloorTable, deleteFloorTable, insertKDSTicket, insertClosedCheck, toggle86DB, getNextOrderRefLocal, updateClosedCheckRefunds } from '../lib/db';
@@ -3197,6 +3197,93 @@ export const useStore = create((set, get) => ({
       closedAt:Date.now()-90*60000, status:'paid', refunds:[] },
   ] : [],
 
+  // v5.5.163 — Challenge 21 (UK alcohol ID-check) state + actions
+  //   `challenge21Config` is a snapshot of the platform.locations columns,
+  //   refreshed on demand from loadChallenge21Config().
+  //   `challenge21Prompt` is the trigger state — when .open=true the POS
+  //   surface renders Challenge21Modal.
+  challenge21Config: null,
+  challenge21Prompt: { open: false, triggerCount: 0 },
+
+  loadChallenge21Config: async () => {
+    if (isMock || !platformSupabase) return;
+    try {
+      const opsId = await getLocationId();
+      if (!opsId || opsId === 'loc-demo') return;
+      const { data, error } = await platformSupabase.from('locations')
+        .select('id, ops_location_id, challenge_21_enabled, challenge_21_alcohol_category_ids, challenge_21_trigger_every, challenge_21_counter')
+        .eq('ops_location_id', opsId).maybeSingle();
+      if (error) {
+        if (!/column .* does not exist/i.test(error.message)) console.warn('[challenge21] config load:', error.message);
+        return;
+      }
+      if (!data) return;
+      set({
+        challenge21Config: {
+          locationId:        data.id,
+          opsLocationId:     data.ops_location_id || opsId,
+          enabled:           !!data.challenge_21_enabled,
+          alcoholCategoryIds: Array.isArray(data.challenge_21_alcohol_category_ids) ? data.challenge_21_alcohol_category_ids : [],
+          triggerEvery:      Number(data.challenge_21_trigger_every) || 10,
+          counter:           Number(data.challenge_21_counter) || 0,
+        },
+      });
+    } catch (e) { console.warn('[challenge21] config load failed:', e?.message); }
+  },
+
+  // Called from every recordClosedCheck path. Checks for alcohol-flagged
+  // items in the closed record, increments the counter on platform.locations
+  // if found, and opens the prompt when the counter hits triggerEvery.
+  // Best-effort — wrapped in try/catch so any failure here never blocks
+  // the close flow.
+  triggerChallenge21Check: async (record) => {
+    try {
+      if (isMock || !platformSupabase) return;
+      let cfg = get().challenge21Config;
+      if (!cfg) { await get().loadChallenge21Config(); cfg = get().challenge21Config; }
+      if (!cfg?.enabled) return;
+      if (!cfg.alcoholCategoryIds?.length) return;
+      const items = record?.items || [];
+      if (!items.length) return;
+
+      const flagged = new Set(cfg.alcoholCategoryIds);
+      const hasAlcohol = items.some(i => {
+        if (!i || i.voided) return false;
+        if (i.cat && flagged.has(i.cat)) return true;
+        if (Array.isArray(i.cats) && i.cats.some(c => flagged.has(c))) return true;
+        if (i.parentCat && flagged.has(i.parentCat)) return true;
+        return false;
+      });
+      if (!hasAlcohol) return;
+
+      const next = (cfg.counter || 0) + 1;
+      try {
+        await platformSupabase.from('locations')
+          .update({ challenge_21_counter: next })
+          .eq('id', cfg.locationId);
+      } catch (e) { console.warn('[challenge21] counter update failed:', e?.message); }
+
+      set({ challenge21Config: { ...cfg, counter: next } });
+
+      if (next >= cfg.triggerEvery) {
+        set({
+          challenge21Prompt: {
+            open: true,
+            triggerCount: next,
+            locationId: cfg.locationId,
+            opsLocationId: cfg.opsLocationId,
+          },
+        });
+      }
+    } catch (e) { console.warn('[challenge21] trigger failed:', e?.message); }
+  },
+
+  dismissChallenge21Prompt: (resetCounter = true) => {
+    const cfg = get().challenge21Config;
+    set({ challenge21Prompt: { open: false, triggerCount: 0 } });
+    if (resetCounter && cfg) set({ challenge21Config: { ...cfg, counter: 0 } });
+  },
+
   recordClosedCheck: (tableId, paymentInfo = {}) => {
     const { tables, staff, taxRates } = get();
     const table = tables.find(t => t.id === tableId);
@@ -3234,6 +3321,8 @@ export const useStore = create((set, get) => ({
     };
     set(s => ({ closedChecks: [record, ...s.closedChecks] }));
     insertClosedCheck(record);
+    // v5.5.163: Challenge 21 — increment alcohol counter; fire prompt at threshold.
+    get().triggerChallenge21Check?.(record);
     // v4.6.65: dine-in customer attribution. Reads session.customer (attached
     // manually via the Add customer button on the order panel — no order-type
     // switch required).
@@ -3269,6 +3358,8 @@ export const useStore = create((set, get) => ({
     };
     set(s => ({ closedChecks: [fullRecord, ...s.closedChecks] }));
     insertClosedCheck(fullRecord).catch(()=>{});
+    // v5.5.163: Challenge 21 — alcohol counter + prompt
+    get().triggerChallenge21Check?.(fullRecord);
     // v4.6.30: cash drawer auto-fire on cash payment
     // v4.6.62: attribute bar-tab orders to customer DB if customer was set on tab
     if (fullRecord.customer?.phone) {
@@ -3353,6 +3444,8 @@ export const useStore = create((set, get) => ({
       });
     }
     insertClosedCheck(record);
+    // v5.5.163: Challenge 21 — alcohol counter + prompt
+    get().triggerChallenge21Check?.(record);
     return record;
   },
 

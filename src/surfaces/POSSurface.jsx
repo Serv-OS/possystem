@@ -21,6 +21,7 @@ import OrderReviewModal from '../components/OrderReviewModal';
 import OrderTypeModal from '../components/OrderTypeModal';
 import AllergenCheckoutModal from '../components/AllergenCheckoutModal';
 import TableActionsModal from '../components/TableActionsModal';
+import Challenge21Modal from '../components/Challenge21Modal';
 
 const COURSE_COLORS = {
   0:{label:'Immediate',color:'#22d3ee',bg:'rgba(34,211,238,.1)'},
@@ -561,6 +562,9 @@ export default function POSSurface() {
 
   return (
     <div style={{display:'flex',flex:1,overflow:'hidden',minWidth:0}}>
+
+      {/* v5.5.163: Challenge 21 prompt — fires when the alcohol-sale counter hits the threshold */}
+      <Challenge21PromptHost/>
 
       {/* v4.6.53: POS lock overlay (inside POSSurface main return) */}
       {staff && (() => {
@@ -2053,5 +2057,25 @@ function OrdersHub({ orderQueue, updateQueueStatus, removeFromQueue, showToast }
     </div>
 
 
+  );
+}
+
+// v5.5.163 — small host component that subscribes to challenge21Prompt state
+// and renders the modal when .open is true. Loads config on mount so the
+// trigger has something to compare against when a sale closes.
+function Challenge21PromptHost() {
+  const prompt = useStore(s => s.challenge21Prompt);
+  const dismiss = useStore(s => s.dismissChallenge21Prompt);
+  const loadCfg = useStore(s => s.loadChallenge21Config);
+  useEffect(() => { loadCfg?.(); /* eslint-disable-next-line */ }, []);
+  if (!prompt?.open) return null;
+  return (
+    <Challenge21Modal
+      open={true}
+      locationId={prompt.locationId}
+      opsLocationId={prompt.opsLocationId}
+      triggerCount={prompt.triggerCount}
+      onClose={() => dismiss?.(true)}
+    />
   );
 }
