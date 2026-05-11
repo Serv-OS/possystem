@@ -76,6 +76,12 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.169', date: '11 May 2026', label: 'Rename "Challenge 21" → "Challenge ID" across BO + POS modal',
+    changes: [
+      'User-facing strings only — file names, store keys, table names and SQL columns keep the `challenge_21` identifier to avoid a migration. BO sidebar, page header, enable-toggle label, modal header, and confirm dialog all now read "Challenge ID". Same UK-licensing workflow under a slightly broader name (covers Challenge 21 / Challenge 25 / any age-check rule).',
+    ],
+  },
+  {
     version: '5.5.168', date: '11 May 2026', label: 'Challenge 21 — fix unreadable selected-category contrast in dark mode',
     changes: [
       'Selected category chips had a cream-yellow background with `var(--t1)` text — in dark theme that resolves to near-white, which disappears on the yellow. Forced dark text (#0b0c10) on the checked state regardless of theme.',

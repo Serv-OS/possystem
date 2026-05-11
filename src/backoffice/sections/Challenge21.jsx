@@ -155,7 +155,7 @@ export default function Challenge21() {
 
   const resetCounter = async () => {
     if (!locationId) return;
-    if (!confirm('Reset the Challenge 21 counter to 0? The next alcohol sale will start fresh.')) return;
+    if (!confirm('Reset the Challenge ID counter to 0? The next alcohol sale will start fresh.')) return;
     await platformSupabase.from('locations').update({ challenge_21_counter: 0 }).eq('id', locationId);
     setCounter(0);
   };
@@ -165,9 +165,9 @@ export default function Challenge21() {
   return (
     <div style={pageStyle}>
       <div style={{ padding: '28px 0' }}>
-        <h1 style={{ fontSize: 26, fontWeight: 900, margin: 0, color:'var(--t1)' }}>Challenge 21</h1>
+        <h1 style={{ fontSize: 26, fontWeight: 900, margin: 0, color:'var(--t1)' }}>Challenge ID</h1>
         <p style={{ fontSize: 14, color: 'var(--t3)', margin: '8px 0 0', maxWidth: 680, lineHeight: 1.6 }}>
-          UK licensing compliance. When enabled, the POS will prompt staff every Nth alcohol-containing sale to record ID details for an under-21 (or under-25) customer. Submissions log to a date-filtered report you can export for licensing reviews.
+          UK licensing compliance. When enabled, the POS will prompt staff every Nth alcohol-containing sale to record ID details for the customer. Submissions log to a date-filtered report you can export for licensing reviews.
         </p>
 
         {/* Tab switch */}
@@ -197,7 +197,7 @@ export default function Challenge21() {
             <Card>
               <Row>
                 <div>
-                  <div style={{ fontSize: 15, fontWeight: 700, color:'var(--t1)' }}>Enable Challenge 21</div>
+                  <div style={{ fontSize: 15, fontWeight: 700, color:'var(--t1)' }}>Enable Challenge ID</div>
                   <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 3 }}>
                     Off by default. Turn on when ready to enforce ID checks.
                   </div>

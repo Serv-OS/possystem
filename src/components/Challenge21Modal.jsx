@@ -1,4 +1,4 @@
-// v5.5.163 — Challenge 21 modal for the POS surface.
+// v5.5.163 — Challenge ID modal for the POS surface.
 //
 // Surfaces when the alcohol-sale counter on platform.locations hits the
 // configured threshold. Captures:
@@ -69,7 +69,7 @@ export default function Challenge21Modal({ open, onClose, locationId, opsLocatio
       });
       if (iErr) {
         if (/relation .* does not exist/i.test(iErr.message)) {
-          setError('DB missing — run the Challenge 21 migration SQL.');
+          setError('DB missing — run the Challenge ID migration SQL.');
         } else {
           setError(iErr.message);
         }
@@ -130,7 +130,7 @@ export default function Challenge21Modal({ open, onClose, locationId, opsLocatio
             <div style={{ fontSize: 32 }}>🪪</div>
             <div>
               <div style={{ fontSize: 11, fontWeight: 800, letterSpacing:'0.1em', textTransform:'uppercase' }}>
-                UK Licensing · Challenge 21
+                UK Licensing · Challenge ID
               </div>
               <div style={{ fontSize: 20, fontWeight: 900 }}>ID check required</div>
             </div>
@@ -190,7 +190,7 @@ export default function Challenge21Modal({ open, onClose, locationId, opsLocatio
                 Refusing this sale?
               </div>
               <div style={{ fontSize: 12, color:'var(--t3)', marginBottom: 14, lineHeight: 1.5 }}>
-                We'll log this as a cancellation against the Challenge 21 prompt. Briefly note why so it's clear in the audit log.
+                We'll log this as a cancellation against the Challenge ID prompt. Briefly note why so it's clear in the audit log.
               </div>
               <Field label="Reason">
                 <textarea value={cancelReason} onChange={e => setCancelReason(e.target.value)}

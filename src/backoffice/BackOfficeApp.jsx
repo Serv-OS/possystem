@@ -55,7 +55,7 @@ const NAV = [
   { id:'network',    label:'Network & Sync',     icon:'📡',  group:'Analytics' },
   { id:'location',   label:'Location settings', icon:'⚙️',  group:'Analytics' },
   { id: 'receipt', label: 'Receipt', icon: '🧾', group: 'Configuration' },
-  { id: 'challenge21', label: 'Challenge 21', icon: '🪪', group: 'Configuration' },
+  { id: 'challenge21', label: 'Challenge ID', icon: '🪪', group: 'Configuration' },
 ];
 
 export default function BackOfficeApp() {
