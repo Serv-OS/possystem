@@ -76,6 +76,13 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.165', date: '11 May 2026', label: 'Challenge 21 — fix "No categories loaded" (prefer store cats, surface location-id mismatch)',
+    changes: [
+      'CATEGORIES NOW LOAD FROM STORE FIRST — was querying menu_categories directly with eq("location_id", opsId), which returned empty if the rows on the DB are stored under a different location_id string than getLocationId() resolves to. The store is already hydrated by SyncBridge from the right location, and is the same source Menu Manager renders from, so it\'s the more reliable primary source.',
+      'DIAGNOSTIC FALLBACK — if both store and the location-filtered DB query are empty, we now run an UNFILTERED query and surface the location_ids it does find. So if there\'s a mismatch (e.g. BO resolved one locationId but your menu lives under another), you see exactly which location_ids the DB has and can fix the mapping rather than staring at a generic "no categories" message.',
+    ],
+  },
+  {
     version: '5.5.164', date: '11 May 2026', label: 'Challenge 21 — fix "Not signed in" error (BO uses ops Supabase auth, not platform)',
     changes: [
       'BO Challenge 21 was calling `platformSupabase.auth.getUser()` to find the operator\'s location_id — but the BO session lives on the OPS supabase client, not platform. So the page rendered "Not signed in" even when the operator was logged into the BO normally. Replaced with the standard `getLocationId()` helper (the same path every other BO section uses) and a lookup of `platform.locations` joined by `ops_location_id`. Same fix applied to Challenge21Report.jsx.',

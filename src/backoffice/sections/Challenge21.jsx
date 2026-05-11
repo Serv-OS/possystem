@@ -51,15 +51,42 @@ export default function Challenge21() {
           setLoading(false); return;
         }
 
-        // Categories from ops DB
-        if (supabase) {
-          const { data: cats } = await supabase
-            .from('menu_categories').select('id, name, parent_id, sort_order')
-            .eq('location_id', opsId).order('sort_order');
-          setCategories(cats || []);
-        } else if (storeCats?.length) {
-          setCategories(storeCats);
+        // v5.5.165: categories — prefer the store (already hydrated by
+        // SyncBridge from the BO's resolved location, matches what Menu
+        // Manager renders). Fall back to a direct DB query if the store is
+        // empty, and finally fall back to an UNFILTERED query that surfaces
+        // any rows we can find so the user can see what's there. Diagnostic
+        // surfaces the queried location_id so a mismatch is obvious.
+        let cats = [];
+        if (Array.isArray(storeCats) && storeCats.length) {
+          cats = storeCats.map(c => ({ id: c.id, name: c.name, parent_id: c.parentId, sort_order: c.sortOrder }));
         }
+        if (!cats.length && supabase) {
+          try {
+            const { data } = await supabase
+              .from('menu_categories').select('id, name, parent_id, sort_order')
+              .eq('location_id', opsId).order('sort_order');
+            cats = Array.isArray(data) ? data : [];
+          } catch (e) { console.warn('[Challenge21] cats fetch threw:', e?.message); }
+        }
+        if (!cats.length && supabase) {
+          // Last-ditch: any categories at all on the ops DB? Surfaces what
+          // location_ids exist so the user can see if there's a mismatch.
+          try {
+            const { data: anyCats } = await supabase
+              .from('menu_categories').select('id, name, location_id, sort_order')
+              .order('sort_order').limit(50);
+            if (anyCats?.length) {
+              const otherLocs = [...new Set(anyCats.map(c => c.location_id).filter(Boolean))];
+              setError(`No categories found for your location (${opsId}). The ops DB has ${anyCats.length} categor${anyCats.length === 1 ? 'y' : 'ies'} under other location_id${otherLocs.length === 1 ? '' : 's'}: ${otherLocs.join(', ')}. If one of those is yours, set rpos-bo-location in localStorage or fix user_profiles.location_id.`);
+              cats = anyCats.map(c => ({ id: c.id, name: c.name + ` (${c.location_id})`, sort_order: c.sort_order }));
+            }
+          } catch {}
+        }
+        if (!cats.length) {
+          setError(prev => prev || `No categories anywhere. Resolved BO location: ${opsId}. Open Menu Manager first.`);
+        }
+        setCategories(cats);
 
         // Challenge 21 config + counter from platform DB, joined by ops_location_id
         const { data: loc, error: lErr } = await platformSupabase
