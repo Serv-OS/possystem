@@ -76,6 +76,13 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.164', date: '11 May 2026', label: 'Challenge 21 — fix "Not signed in" error (BO uses ops Supabase auth, not platform)',
+    changes: [
+      'BO Challenge 21 was calling `platformSupabase.auth.getUser()` to find the operator\'s location_id — but the BO session lives on the OPS supabase client, not platform. So the page rendered "Not signed in" even when the operator was logged into the BO normally. Replaced with the standard `getLocationId()` helper (the same path every other BO section uses) and a lookup of `platform.locations` joined by `ops_location_id`. Same fix applied to Challenge21Report.jsx.',
+      'Better error messages — if no matching platform row exists for the current ops_location_id, the page tells you exactly which value couldn\'t be resolved instead of "Not signed in".',
+    ],
+  },
+  {
     version: '5.5.163', date: '11 May 2026', label: 'Challenge 21 — UK alcohol ID-check workflow (BO config + POS prompt + audit report)',
     changes: [
       'NEW BO SECTION: Challenge 21 — enable toggle, alcohol-containing category multi-select (loaded live from your menu), and trigger frequency input. Counter visible with a Reset button. Sidebar nav item added under Configuration with the 🪪 icon. Settings persist to four new platform.locations columns: `challenge_21_enabled`, `challenge_21_alcohol_category_ids[]`, `challenge_21_trigger_every`, `challenge_21_counter`.',

@@ -15,7 +15,7 @@
 // and surface in the Challenge 21 report (filterable by date range).
 
 import { useEffect, useState } from 'react';
-import { platformSupabase, supabase, isMock } from '../../lib/supabase';
+import { platformSupabase, supabase, isMock, getLocationId } from '../../lib/supabase';
 import { useStore } from '../../store';
 import Challenge21Report from './Challenge21Report';
 
@@ -37,41 +37,22 @@ export default function Challenge21() {
   // Categories list — fall back to store cats if BO categories are loaded there
   const [categories, setCategories] = useState([]);
 
-  // Load location id from platform DB scoped to current user
+  // v5.5.164: BO auth uses the OPS supabase client (not platform). Resolve
+  // the working location id via getLocationId() — the same path every other
+  // BO section uses — then look up the matching platform.locations row by
+  // ops_location_id for the Challenge 21 config.
   useEffect(() => {
     if (isMock) { setLoading(false); return; }
     (async () => {
       try {
-        const { data: { user } } = await platformSupabase.auth.getUser();
-        if (!user) { setError('Not signed in'); setLoading(false); return; }
-        const { data: profile } = await platformSupabase
-          .from('user_profiles').select('location_id').eq('id', user.id).maybeSingle();
-        const locId = profile?.location_id;
-        if (!locId) { setError('No location attached to your account'); setLoading(false); return; }
-        setLocationId(locId);
-
-        const { data: loc, error: lErr } = await platformSupabase
-          .from('locations')
-          .select('challenge_21_enabled, challenge_21_alcohol_category_ids, challenge_21_trigger_every, challenge_21_counter, ops_location_id')
-          .eq('id', locId).maybeSingle();
-        if (lErr) {
-          if (/column .* does not exist/i.test(lErr.message)) {
-            setError('DB migration missing — run the Challenge 21 SQL from the v5.5.163 changelog before configuring.');
-          } else {
-            setError(lErr.message);
-          }
+        const opsId = await getLocationId();
+        if (!opsId || opsId === 'loc-demo') {
+          setError('Not signed in — open the back office (?mode=office) and sign in first');
           setLoading(false); return;
         }
-        if (loc) {
-          setEnabled(!!loc.challenge_21_enabled);
-          setCategoryIds(Array.isArray(loc.challenge_21_alcohol_category_ids) ? loc.challenge_21_alcohol_category_ids : []);
-          setTriggerEvery(Number(loc.challenge_21_trigger_every) || 10);
-          setCounter(Number(loc.challenge_21_counter) || 0);
-        }
 
-        // Pull categories from ops DB (so we don't depend on store hydration)
-        const opsId = loc?.ops_location_id;
-        if (opsId && supabase) {
+        // Categories from ops DB
+        if (supabase) {
           const { data: cats } = await supabase
             .from('menu_categories').select('id, name, parent_id, sort_order')
             .eq('location_id', opsId).order('sort_order');
@@ -79,6 +60,29 @@ export default function Challenge21() {
         } else if (storeCats?.length) {
           setCategories(storeCats);
         }
+
+        // Challenge 21 config + counter from platform DB, joined by ops_location_id
+        const { data: loc, error: lErr } = await platformSupabase
+          .from('locations')
+          .select('id, challenge_21_enabled, challenge_21_alcohol_category_ids, challenge_21_trigger_every, challenge_21_counter')
+          .eq('ops_location_id', opsId).maybeSingle();
+        if (lErr) {
+          if (/column .* does not exist/i.test(lErr.message)) {
+            setError('DB migration missing — run the Challenge 21 SQL from the v5.5.163 changelog on the PLATFORM project.');
+          } else {
+            setError(lErr.message);
+          }
+          setLoading(false); return;
+        }
+        if (!loc) {
+          setError(`No platform row found for ops location ${opsId}. Check platform.locations.ops_location_id is populated.`);
+          setLoading(false); return;
+        }
+        setLocationId(loc.id);
+        setEnabled(!!loc.challenge_21_enabled);
+        setCategoryIds(Array.isArray(loc.challenge_21_alcohol_category_ids) ? loc.challenge_21_alcohol_category_ids : []);
+        setTriggerEvery(Number(loc.challenge_21_trigger_every) || 10);
+        setCounter(Number(loc.challenge_21_counter) || 0);
       } catch (e) {
         setError(e?.message || 'Failed to load');
       } finally {

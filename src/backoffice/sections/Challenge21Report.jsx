@@ -5,7 +5,7 @@
 // Default range: last 7 days. Filter inputs at the top; CSV export below.
 
 import { useEffect, useMemo, useState } from 'react';
-import { supabase, platformSupabase, isMock } from '../../lib/supabase';
+import { supabase, isMock, getLocationId } from '../../lib/supabase';
 
 function isoDateInput(d) {
   return new Date(d).toISOString().slice(0, 10);
@@ -21,16 +21,16 @@ export default function Challenge21Report({ locationId }) {
   const [error, setError] = useState('');
   const [opsLocationId, setOpsLocationId] = useState(null);
 
-  // Resolve ops_location_id once
+  // v5.5.164: ops location id resolves directly via getLocationId() — same
+  // pattern as every other BO section. No need to round-trip through
+  // platform.locations.
   useEffect(() => {
-    if (isMock || !locationId) return;
+    if (isMock) return;
     (async () => {
-      const { data: loc } = await platformSupabase
-        .from('locations').select('ops_location_id')
-        .eq('id', locationId).maybeSingle();
-      if (loc?.ops_location_id) setOpsLocationId(loc.ops_location_id);
+      const opsId = await getLocationId();
+      if (opsId && opsId !== 'loc-demo') setOpsLocationId(opsId);
     })();
-  }, [locationId]);
+  }, []);
 
   const load = async () => {
     if (!opsLocationId || !supabase) return;
