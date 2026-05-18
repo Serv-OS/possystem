@@ -76,6 +76,13 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.174', date: '11 May 2026', label: 'Reader tip prompt — pass process_config.tipping.amount_eligible (was missing, reader was skipping the tip step)',
+    changes: [
+      'TIPPING ON READER NOW ACTUALLY FIRES — stripe-process-payment-on-reader was calling processPaymentIntent with `{ payment_intent }` only, no process_config. Stripe needs `process_config.tipping.amount_eligible` to compute % options and fire the tip step on the reader — without it the reader skips straight to the card prompt, regardless of what the Terminal Configuration says about tipping being enabled. Now passes `process_config.tipping.amount_eligible = amount_minor` (the base bill) when tipping is enabled per location_reader_settings.',
+      '⚠ THIS FIX REQUIRES REDEPLOYING stripe-process-payment-on-reader. Until that edge fn is redeployed via Supabase Dashboard, the tip prompt still won\'t fire even on this version of the frontend.',
+    ],
+  },
+  {
     version: '5.5.173', date: '11 May 2026', label: 'Fix reader stuck after cancel + re-push live cart after cancel',
     changes: [
       'CANCEL-STAYS-STUCK fixed — stripe-cancel-reader-action was calling setReaderDisplay with `line_items: []`, which Stripe rejects (must contain ≥1 line). The cancel succeeded but the reset to "ready" failed silently, leaving the reader stuck on the cancelled-payment screen. Now sends a single zero-amount "Welcome" line (same trick as the new live-display fn) and the reset actually fires.',

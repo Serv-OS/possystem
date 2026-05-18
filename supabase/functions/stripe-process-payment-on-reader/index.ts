@@ -169,11 +169,20 @@ Deno.serve(async (req) => {
   }
 
   // 6. Process the PaymentIntent on the reader — this triggers the reader UI
+  // v5.5.174: pass process_config.tipping.amount_eligible so the reader
+  // actually fires the tip prompt. Without this, even with tipping enabled
+  // in BO + the Terminal Configuration assigned to the reader, the reader
+  // skips the tip step because Stripe needs amount_eligible to compute the
+  // % options against. Use the base bill amount as the eligible amount.
   let action: Stripe.Terminal.Reader;
   try {
+    const processConfig: { tipping?: { amount_eligible: number } } = {};
+    if (tippingEnabled) {
+      processConfig.tipping = { amount_eligible: amount_minor };
+    }
     action = await stripe.terminal.readers.processPaymentIntent(
       reader.stripe_reader_id,
-      { payment_intent: pi.id },
+      { payment_intent: pi.id, process_config: processConfig },
       { stripeAccount: msa.stripe_account_id },
     );
   } catch (e) {
