@@ -97,20 +97,26 @@ Deno.serve(async (req) => {
     return json({ ok: true, skipped: 'no_reader_at_location' });
   }
 
-  // 3. Check the reader's current action — if a payment is in progress,
-  //    DON'T overwrite the display. Customer is mid-tap/insert.
+  // 3. Check the reader's current action — only skip when an actual
+  //    PAYMENT is in progress, not when our own set_reader_display is
+  //    still resolving. v5.5.177: previous check skipped on ANY
+  //    in_progress action which meant the 2nd/3rd/etc. cart pushes
+  //    were dropped because the first push's set_reader_display action
+  //    was still resolving.
   try {
     const live = await stripe.terminal.readers.retrieve(
       reader.stripe_reader_id,
       { stripeAccount: reader.stripe_account_id! },
     );
-    const actionStatus = (live as Stripe.Terminal.Reader)?.action?.status;
-    if (actionStatus === 'in_progress') {
+    const action = (live as Stripe.Terminal.Reader)?.action;
+    const isPaymentInProgress = action?.status === 'in_progress'
+      && (action?.type === 'process_payment_intent'
+       || action?.type === 'process_setup_intent'
+       || action?.type === 'collect_payment_method');
+    if (isPaymentInProgress) {
       return json({ ok: true, skipped: 'payment_in_progress' });
     }
   } catch (e) {
-    // Reader retrieve failed — proceed anyway; set_reader_display will fail
-    // cleanly if the reader is offline.
     console.warn('[stripe-update-reader-display] retrieve failed:', (e as Error).message);
   }
 

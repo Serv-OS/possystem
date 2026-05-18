@@ -76,6 +76,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.177', date: '11 May 2026', label: 'Live reader display — fix root cause: in_progress guard was matching our own set_reader_display actions',
+    changes: [
+      'ROOT CAUSE found: every Stripe Terminal Reader API call creates an "action" on the reader. setReaderDisplay creates a `set_reader_display` action that goes through `in_progress` → `succeeded`. My edge-fn guard was checking `action.status === "in_progress"` without checking the TYPE — so when push #2 arrived 600ms after push #1, push #1\'s action was still resolving on the reader and my guard skipped #2 thinking a payment was in flight. Same for #3, #4, etc. Net effect: only the FIRST item ever made it to the reader; subsequent pushes were silently dropped.',
+      'Fix: the in_progress guard now only matches PAYMENT-type actions (process_payment_intent, process_setup_intent, collect_payment_method). Our own set_reader_display in_progress no longer blocks subsequent updates. Items now stream live, and the empty-cart clear actually fires too.',
+      'Edge fn redeployed.',
+    ],
+  },
+  {
     version: '5.5.176', date: '11 May 2026', label: 'Reader clear path — call cancelAction so the previous subtotal actually drops from the screen',
     changes: [
       'Reader was clinging to the last subtotal after all items were removed — setReaderDisplay with total=0 succeeded on Stripe\'s side but the reader UI didn\'t visibly repaint. New clear path: cancelAction first (forces the reader off the cart view), then set a "Ready for next order" placeholder so the next live push has a fresh canvas.',
