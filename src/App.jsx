@@ -76,6 +76,13 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.170', date: '11 May 2026', label: 'Fix "POS device not found" — both card-payment surfaces were sending the entire rpos-device JSON blob as the device id',
+    changes: [
+      'CheckoutModal.jsx and MCardFlow.jsx were doing `localStorage.getItem("rpos-device")` and passing the raw return value as `pos_device_id` to the stripe-process-payment-on-reader edge fn. But `rpos-device` stores a JSON-STRINGIFIED object `{id, name, type, locationId, locationName, ...}` (written by PairingScreen.jsx), so the edge fn was looking up `pos_devices.id = "{the entire JSON blob}"` → no match → "POS device not found".',
+      'Both call sites now `JSON.parse(raw)` and pick `.id`. Better error message too — "POS device id missing — pair this device in BO → Device Pairing first" instead of the cryptic edge-fn response. Same bug shape existed in two files; both fixed.',
+    ],
+  },
+  {
     version: '5.5.169', date: '11 May 2026', label: 'Rename "Challenge 21" → "Challenge ID" across BO + POS modal',
     changes: [
       'User-facing strings only — file names, store keys, table names and SQL columns keep the `challenge_21` identifier to avoid a migration. BO sidebar, page header, enable-toggle label, modal header, and confirm dialog all now read "Challenge ID". Same UK-licensing workflow under a slightly broader name (covers Challenge 21 / Challenge 25 / any age-check rule).',

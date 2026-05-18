@@ -69,7 +69,17 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
     }));
     if (payment?.tip > 0) lineItems.push({ description:'Tip', amount: Math.round(payment.tip * 100), quantity:1 });
 
-    const opsDeviceId = (() => { try { return localStorage.getItem('rpos-device') || ''; } catch { return ''; } })();
+    // v5.5.170: was sending the whole rpos-device JSON blob as opsDeviceId,
+    // edge fn looked up pos_devices.id and returned "device not found".
+    // Parse + extract the id field. Same fix as CheckoutModal.
+    const opsDeviceId = (() => {
+      try {
+        const raw = localStorage.getItem('rpos-device');
+        if (!raw) return '';
+        const parsed = JSON.parse(raw);
+        return parsed?.id || '';
+      } catch { return ''; }
+    })();
     const { data: session } = await supabase.auth.getSession();
     const token = session?.session?.access_token;
 

@@ -172,10 +172,17 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
         lineItems.push({ description: 'Tip', amount: Math.round(tipAmt * 100), quantity: 1 });
       }
 
+      // v5.5.170: was sending the whole rpos-device JSON blob as opsDeviceId.
+      // Edge fn looks up pos_devices.id and got "device not found". Parse + extract.
       const opsDeviceId = (() => {
-        try { return localStorage.getItem('rpos-device') || ''; } catch { return ''; }
+        try {
+          const raw = localStorage.getItem('rpos-device');
+          if (!raw) return '';
+          const parsed = JSON.parse(raw);
+          return parsed?.id || '';
+        } catch { return ''; }
       })();
-      if (!opsDeviceId) throw new Error('POS device id missing — run BO setup');
+      if (!opsDeviceId) throw new Error('POS device id missing — pair this device in BO → Device Pairing first.');
 
       const { data: session } = await supabase.auth.getSession();
       const token = session?.session?.access_token;
