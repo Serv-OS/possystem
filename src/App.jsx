@@ -76,6 +76,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.173', date: '11 May 2026', label: 'Fix reader stuck after cancel + re-push live cart after cancel',
+    changes: [
+      'CANCEL-STAYS-STUCK fixed — stripe-cancel-reader-action was calling setReaderDisplay with `line_items: []`, which Stripe rejects (must contain ≥1 line). The cancel succeeded but the reset to "ready" failed silently, leaving the reader stuck on the cancelled-payment screen. Now sends a single zero-amount "Welcome" line (same trick as the new live-display fn) and the reset actually fires.',
+      'CURRENCY no longer hardcoded `usd` in the cancel fn — accepts the body `currency` param (defaults to gbp). UK venues won\'t see the reader briefly switch to dollars during a cancel.',
+      'POS PUSHES CURRENT CART AFTER CANCEL — when the cashier cancels, CardTerminal now pushes the active cart back to the reader (bypasses debounce, 50ms) so the reader returns to showing the live cart immediately. Cashier can hit Card again without seeing a "Welcome" stall.',
+      '⚠ TWO EDGE FNS NEED REDEPLOYING — stripe-cancel-reader-action (fix above) AND stripe-update-reader-display (the v5.5.171 new fn). Both must be deployed via Supabase Dashboard → Edge Functions before the live cart works.',
+    ],
+  },
+  {
     version: '5.5.172', date: '11 May 2026', label: 'Tipping moved from POS → reader screen for card payments (Stripe Terminal Configuration)',
     changes: [
       'TIP PROMPT NOW ON THE READER — was double-prompting: POS asked for tip first, then the reader\'s Stripe Terminal Configuration ALSO prompted (or vice-versa depending on the venue). The POS card-payment path now skips its own `card_tip` step entirely and goes straight to the reader. Customer sees tip options (% buttons / custom / no tip) directly on the reader screen — same UX as a high-street POS.',

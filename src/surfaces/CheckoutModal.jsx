@@ -9,6 +9,7 @@ import {
   getAssignedNetworkReader,
 } from '../lib/networkReader';
 import { getActiveLocationSync, supabase } from '../lib/supabase';
+import { pushReaderDisplay } from '../lib/readerDisplay';
 
 // ─── Tip picker ───────────────────────────────────────────────────────────────
 function TipPicker({ total, onSelect }) {
@@ -288,6 +289,21 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
     } catch (e) {
       console.warn('[CardTerminal] cancel failed:', e?.message ?? e);
     }
+    // v5.5.173: after cancel completes, push the current cart back to the
+    // reader so it returns to the live cart view (instead of staying on the
+    // cleared "Welcome" state). The cashier may want to retry immediately.
+    try {
+      const lineItems = (items ?? [])
+        .filter(it => it && it.price != null)
+        .map(it => ({
+          description: String(it.name || it.title || 'Item').slice(0, 60),
+          amount: Math.round(Number(it.price) * 100),
+          quantity: Math.max(1, Math.round(Number(it.qty || it.quantity || 1))),
+        }));
+      const totalMinor = Math.round((Number(grand) || 0) * 100);
+      // Bypass the debounce so this fires immediately
+      pushReaderDisplay({ lineItems, totalMinor, currency: 'gbp', debounceMs: 50 });
+    } catch (e) { console.warn('[CardTerminal] post-cancel cart push:', e?.message); }
     onBack();
   };
 

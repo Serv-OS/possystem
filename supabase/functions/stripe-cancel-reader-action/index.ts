@@ -39,9 +39,9 @@ Deno.serve(async (req) => {
   const { data: { user: caller } } = await opsAdmin.auth.getUser(authHeader.replace('Bearer ', ''));
   if (!caller) return json({ error: 'Invalid token' }, 401);
 
-  let body: { payment_intent_id?: string; reader_id?: string; location_id?: string };
+  let body: { payment_intent_id?: string; reader_id?: string; location_id?: string; currency?: string };
   try { body = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
-  const { payment_intent_id, reader_id, location_id } = body ?? {};
+  const { payment_intent_id, reader_id, location_id, currency = 'gbp' } = body ?? {};
   if (!location_id) return json({ error: 'location_id required' }, 400);
 
   const { data: msa } = await platformAdmin.from('merchant_stripe_accounts')
@@ -76,14 +76,23 @@ Deno.serve(async (req) => {
     }
   }
 
-  // 3. Clear the reader display (best effort)
+  // 3. Clear the reader display back to a neutral "Welcome" state.
+  // v5.5.173: Stripe rejects setReaderDisplay with line_items: [] (must
+  // have at least one item) — that's why cancels were leaving the reader
+  // stuck on the failed/cancelled state. Send one zero-amount line as a
+  // reset. Currency now respects the body param so non-USD venues don't
+  // see a £ cart suddenly switch to $.
   if (reader_id) {
     try {
       await stripe.terminal.readers.setReaderDisplay(reader_id, {
         type: 'cart',
-        cart: { line_items: [], total: 0, currency: 'usd' },
+        cart: {
+          line_items: [{ description: 'Welcome', amount: 0, quantity: 1 }],
+          total: 0,
+          currency: currency.toLowerCase(),
+        },
       }, { stripeAccount: msa.stripe_account_id });
-    } catch { /* non-fatal */ }
+    } catch (e) { console.warn('[cancel] reset display failed:', (e as Error).message); }
   }
 
   return json({ success: errors.length === 0, errors });
