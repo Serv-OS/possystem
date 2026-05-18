@@ -5,6 +5,7 @@ import DrawerCashModal from '../components/DrawerCashModal';
 import { useStore } from '../store';
 import { fetchMenuCategoryLinks } from '../lib/db';
 import { supabase } from '../lib/supabase';
+import { pushReaderDisplay, clearReaderDisplay } from '../lib/readerDisplay';
 import { CATEGORIES, MENU_ITEMS as SEED_MENU_ITEMS, ALLERGENS, QUICK_IDS, getDaypart, CAT_META } from '../data/seed';
 import { calculateOrderTax } from '../lib/tax';
 import ProductModal, { AllergenModal } from '../components/ProductModal';
@@ -280,6 +281,30 @@ export default function POSSurface() {
   const items = getPOSItems();
   const { subtotal, service, total, itemCount, checkDiscount, discountedSub, serviceChargeWaived, serviceChargeApplicable } = getPOSTotals();
   const orderNote = getPOSOrderNote();
+
+  // v5.5.171: live cart push to the connected Stripe reader. As items are
+  // added, removed, modified — the customer-facing reader screen updates
+  // in real time so they can see their order forming. Debounced 600ms
+  // inside readerDisplay.js. Edge fn no-ops if no reader is assigned at
+  // this location, and skips the update if a payment is in flight.
+  useEffect(() => {
+    const lineItems = (items || []).filter(i => !i.voided).map(i => {
+      const unitMods = (i.mods || []).reduce((s, m) => s + (Number(m.price) || 0), 0);
+      const unit = (Number(i.price) || 0) + unitMods - (Number(i.discountAmount) || 0);
+      return {
+        description: String(i.menuName || i.name || 'Item').slice(0, 60),
+        amount: Math.max(0, Math.round(unit * 100)),
+        quantity: Math.max(1, Number(i.qty) || 1),
+      };
+    });
+    const totalMinor = Math.round(((total || 0)) * 100);
+    if (lineItems.length === 0) {
+      clearReaderDisplay();
+    } else {
+      pushReaderDisplay({ lineItems, totalMinor, currency: 'gbp' });
+    }
+  }, [items, total]);
+
   const firedCourses = session?.firedCourses || [];
   // v4.5.1: course management is gated per device profile. Hides per-course header (Fire button)
   // and the standalone Fire-course banner. Item.course data is preserved internally.

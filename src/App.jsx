@@ -76,6 +76,16 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.171', date: '11 May 2026', label: 'Live customer-facing reader display — cart updates push to the Stripe reader as items are added',
+    changes: [
+      'LIVE CART ON THE READER — was only pushing line items to the customer-facing display at payment-collection time. Now POSSurface watches the cart, debounces 600ms, and pushes the FULL current cart to the assigned Stripe reader via a new edge fn (stripe-update-reader-display). Customer sees each item land on the reader screen as the cashier rings it up — same UX as a high-street POS.',
+      'IN-FLIGHT SAFETY — edge fn first checks `reader.action.status` on Stripe; if a payment is currently in progress (customer is tapping/inserting) the live cart push is silently skipped so the screen doesn\'t yank back to the cart mid-transaction.',
+      'EMPTY-CART RESET — clearing the cart pushes a single "Welcome" line at £0 so the reader resets to a friendly idle state instead of holding the last sent cart on screen.',
+      'NO-READER GRACE — when the venue has no reader at the location, the edge fn returns `{ ok: true, skipped: "no_reader_at_location" }`. No errors, no toasts; the POS just doesn\'t have anywhere to push to and carries on.',
+      'NEW EDGE FN /stripe-update-reader-display — must be deployed via the Supabase dashboard (Edge Functions → New) after this release. Until deployed, the POS will silently no-op (calls 404 and logs).',
+    ],
+  },
+  {
     version: '5.5.170', date: '11 May 2026', label: 'Fix "POS device not found" — both card-payment surfaces were sending the entire rpos-device JSON blob as the device id',
     changes: [
       'CheckoutModal.jsx and MCardFlow.jsx were doing `localStorage.getItem("rpos-device")` and passing the raw return value as `pos_device_id` to the stripe-process-payment-on-reader edge fn. But `rpos-device` stores a JSON-STRINGIFIED object `{id, name, type, locationId, locationName, ...}` (written by PairingScreen.jsx), so the edge fn was looking up `pos_devices.id = "{the entire JSON blob}"` → no match → "POS device not found".',
