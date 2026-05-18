@@ -76,6 +76,13 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.175', date: '11 May 2026', label: 'Live reader display — do not push Welcome on fresh load; add console diagnostics',
+    changes: [
+      'Previously the live-cart effect pushed an empty "Welcome / £0.00" payload to the reader on every fresh POS mount with no active check. That stamped the operator\'s idle screen with our Welcome state immediately and confused diagnostics. Now we only reset to Welcome when the cart goes from >0 items back to 0 (i.e. post-transaction).',
+      'Console diagnostics added — POSSurface logs `[POSSurface] cart → N lines, £X.XX` on every push attempt, and readerDisplay logs `[readerDisplay] push ok N items, £X.XX` (or `skipped: payment_in_progress` / `no_reader_at_location`) on the edge fn response. Open DevTools console on the POS and you can see exactly what\'s being sent and the edge fn\'s reply.',
+    ],
+  },
+  {
     version: '5.5.174', date: '11 May 2026', label: 'Reader tip prompt — pass process_config.tipping.amount_eligible (was missing, reader was skipping the tip step)',
     changes: [
       'TIPPING ON READER NOW ACTUALLY FIRES — stripe-process-payment-on-reader was calling processPaymentIntent with `{ payment_intent }` only, no process_config. Stripe needs `process_config.tipping.amount_eligible` to compute % options and fire the tip step on the reader — without it the reader skips straight to the card prompt, regardless of what the Terminal Configuration says about tipping being enabled. Now passes `process_config.tipping.amount_eligible = amount_minor` (the base bill) when tipping is enabled per location_reader_settings.',

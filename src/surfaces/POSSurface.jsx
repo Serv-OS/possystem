@@ -283,12 +283,16 @@ export default function POSSurface() {
   const orderNote = getPOSOrderNote();
 
   // v5.5.171: live cart push to the connected Stripe reader. As items are
-  // added, removed, modified — the customer-facing reader screen updates
-  // in real time so they can see their order forming. Debounced 600ms
-  // inside readerDisplay.js. Edge fn no-ops if no reader is assigned at
-  // this location, and skips the update if a payment is in flight.
+  // added/removed/modified — the customer-facing reader screen updates in
+  // real time. Debounced 600ms inside readerDisplay.js. Edge fn no-ops if
+  // no reader assigned, and skips when a payment is in flight.
+  // v5.5.175: track previous item count so we only push "Welcome" when
+  // going from a non-empty cart back to empty (post-transaction). On a
+  // fresh POS mount with no cart the reader keeps its prior state.
+  const _prevItemCountRef = useRef(0);
   useEffect(() => {
-    const lineItems = (items || []).filter(i => !i.voided).map(i => {
+    const nonVoided = (items || []).filter(i => !i.voided);
+    const lineItems = nonVoided.map(i => {
       const unitMods = (i.mods || []).reduce((s, m) => s + (Number(m.price) || 0), 0);
       const unit = (Number(i.price) || 0) + unitMods - (Number(i.discountAmount) || 0);
       return {
@@ -298,9 +302,18 @@ export default function POSSurface() {
       };
     });
     const totalMinor = Math.round(((total || 0)) * 100);
+    const prevCount = _prevItemCountRef.current;
+    _prevItemCountRef.current = lineItems.length;
+
     if (lineItems.length === 0) {
-      clearReaderDisplay();
+      // Only reset the reader if we previously HAD a cart — avoids stomping
+      // the idle screen on every fresh POS load with no active check.
+      if (prevCount > 0) {
+        console.log('[POSSurface] cart emptied → clearing reader display');
+        clearReaderDisplay();
+      }
     } else {
+      console.log('[POSSurface] cart →', lineItems.length, 'lines, £', (totalMinor / 100).toFixed(2));
       pushReaderDisplay({ lineItems, totalMinor, currency: 'gbp' });
     }
   }, [items, total]);

@@ -87,8 +87,13 @@ export function pushReaderDisplay({ lineItems = [], totalMinor = 0, currency = '
           }),
         }
       );
-      if (res.ok) _lastSentKey = key;
-      else {
+      if (res.ok) {
+        _lastSentKey = key;
+        try {
+          const j = await res.json();
+          console.log('[readerDisplay] push ok', j?.skipped || j?.cleared || `${j?.items || 0} items, £${((j?.total || 0) / 100).toFixed(2)}`);
+        } catch {}
+      } else {
         const txt = await res.text().catch(() => '');
         console.warn('[readerDisplay] push failed', res.status, txt.slice(0, 200));
       }
