@@ -49,20 +49,45 @@ Deno.serve(async (req) => {
   if (!msa?.stripe_account_id) return json({ error: 'Merchant Stripe account not linked' }, 400);
 
   const errors: string[] = [];
+  let preActionStatus: string | null = null;
+  let preActionType: string | null = null;
+  let postActionStatus: string | null = null;
+  let cancelAttempted = false;
+  let cancelSucceeded = false;
 
-  // 1. Cancel reader action (clears the reader screen)
+  // v5.5.178: diagnose cancel by capturing reader state before AND after.
   if (reader_id) {
+    try {
+      const before = await stripe.terminal.readers.retrieve(reader_id, {
+        stripeAccount: msa.stripe_account_id,
+      });
+      const a = (before as Stripe.Terminal.Reader)?.action;
+      preActionStatus = a?.status ?? 'idle';
+      preActionType   = a?.type ?? 'none';
+      console.log('[cancel] reader pre-cancel:', preActionType, preActionStatus);
+    } catch (e) { console.warn('[cancel] pre-retrieve:', (e as Error).message); }
+
+    cancelAttempted = true;
     try {
       await stripe.terminal.readers.cancelAction(reader_id, undefined, {
         stripeAccount: msa.stripe_account_id,
       });
+      cancelSucceeded = true;
     } catch (e) {
-      // If the reader has no action in progress, Stripe returns 400. That's fine.
       const msg = (e as Error).message;
       if (!msg.includes('no action') && !msg.includes('not found')) {
         errors.push(`reader: ${msg}`);
       }
+      console.log('[cancel] cancelAction:', msg);
     }
+
+    try {
+      const after = await stripe.terminal.readers.retrieve(reader_id, {
+        stripeAccount: msa.stripe_account_id,
+      });
+      postActionStatus = (after as Stripe.Terminal.Reader)?.action?.status ?? 'idle';
+      console.log('[cancel] reader post-cancel:', postActionStatus);
+    } catch (e) { console.warn('[cancel] post-retrieve:', (e as Error).message); }
   }
 
   // 2. Cancel PaymentIntent (so the merchant doesn't accidentally capture later)
@@ -95,5 +120,15 @@ Deno.serve(async (req) => {
     } catch (e) { console.warn('[cancel] reset display failed:', (e as Error).message); }
   }
 
-  return json({ success: errors.length === 0, errors });
+  return json({
+    success: errors.length === 0,
+    errors,
+    diag: {
+      cancel_attempted: cancelAttempted,
+      cancel_succeeded: cancelSucceeded,
+      pre_action_type: preActionType,
+      pre_action_status: preActionStatus,
+      post_action_status: postActionStatus,
+    },
+  });
 });

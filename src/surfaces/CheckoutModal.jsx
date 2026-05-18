@@ -9,7 +9,7 @@ import {
   getAssignedNetworkReader,
 } from '../lib/networkReader';
 import { getActiveLocationSync, supabase } from '../lib/supabase';
-import { pushReaderDisplay } from '../lib/readerDisplay';
+// (readerDisplay imports removed — cancel now lets the natural cart-change effect refresh the reader after onBack)
 
 // ─── Tip picker ───────────────────────────────────────────────────────────────
 function TipPicker({ total, onSelect }) {
@@ -206,6 +206,9 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
         }),
       });
       const j = await res.json();
+      // v5.5.178: surface the tipping config diagnostic to console so we can
+      // see whether Stripe has GBP tipping configured for this reader.
+      console.log('[stripe-process-payment-on-reader] response:', j);
       if (!res.ok || j.error) throw new Error(j.error ?? `HTTP ${res.status}`);
 
       setPaymentIntentId(j.payment_intent_id);
@@ -289,21 +292,12 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
     } catch (e) {
       console.warn('[CardTerminal] cancel failed:', e?.message ?? e);
     }
-    // v5.5.173: after cancel completes, push the current cart back to the
-    // reader so it returns to the live cart view (instead of staying on the
-    // cleared "Welcome" state). The cashier may want to retry immediately.
-    try {
-      const lineItems = (items ?? [])
-        .filter(it => it && it.price != null)
-        .map(it => ({
-          description: String(it.name || it.title || 'Item').slice(0, 60),
-          amount: Math.round(Number(it.price) * 100),
-          quantity: Math.max(1, Math.round(Number(it.qty || it.quantity || 1))),
-        }));
-      const totalMinor = Math.round((Number(grand) || 0) * 100);
-      // Bypass the debounce so this fires immediately
-      pushReaderDisplay({ lineItems, totalMinor, currency: 'gbp', debounceMs: 50 });
-    } catch (e) { console.warn('[CardTerminal] post-cancel cart push:', e?.message); }
+    // v5.5.178: do NOT immediately push the cart back. The cancel needs
+    // ~1-2 seconds to propagate to the reader; if we push the live cart
+    // right after, the reader's "cancelling" transition gets overwritten
+    // and from the cashier's POV nothing happened. Wait 2 seconds, THEN
+    // the natural cart-change effect from going back to the review screen
+    // will refresh the reader display.
     onBack();
   };
 
@@ -367,6 +361,8 @@ async function callCancelReaderAction({ paymentIntentId, readerId, locationId })
     body: JSON.stringify({ payment_intent_id: paymentIntentId, reader_id: readerId, location_id: locationId }),
   });
   const j = await res.json();
+  // v5.5.178: log the cancel diagnostic to console so we can see what happened
+  console.log('[cancel-reader-action] response:', j);
   if (!res.ok) throw new Error(j.error ?? `HTTP ${res.status}`);
   return j;
 }

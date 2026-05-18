@@ -76,6 +76,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.178', date: '11 May 2026', label: 'Reader cancel + tipping — diagnostics to find out why each is still not working',
+    changes: [
+      'CANCEL: removed the immediate post-cancel cart push. It was overwriting the "cancelled" state on the reader within 50ms so from the cashier\'s POV nothing happened. Now hitting Cancel does cancelAction + PI.cancel + setReaderDisplay reset only, then onBack returns to the review screen — the cart effect naturally re-syncs the reader from there.',
+      'CANCEL DIAGNOSTICS — edge fn now retrieves the reader state BEFORE and AFTER cancelAction, logs both, and returns `diag: { pre_action_type, pre_action_status, post_action_status, cancel_attempted, cancel_succeeded }` in the JSON. POS logs the full response to console.',
+      'TIPPING DIAGNOSTICS — stripe-process-payment-on-reader now fetches the Terminal Configuration assigned to the reader and reports in the response: `config_diag: { configuration_id, has_tipping, currencies, currency_match }`. If `currency_match` is null for "gbp", the reader has no GBP tipping spec on Stripe and that\'s why the tip prompt isn\'t firing — fix is to run stripe-sync-location-reader-config for the venue. POS logs the diag to console.',
+      'Edge fns redeployed: stripe-cancel-reader-action + stripe-process-payment-on-reader.',
+    ],
+  },
+  {
     version: '5.5.177', date: '11 May 2026', label: 'Live reader display — fix root cause: in_progress guard was matching our own set_reader_display actions',
     changes: [
       'ROOT CAUSE found: every Stripe Terminal Reader API call creates an "action" on the reader. setReaderDisplay creates a `set_reader_display` action that goes through `in_progress` → `succeeded`. My edge-fn guard was checking `action.status === "in_progress"` without checking the TYPE — so when push #2 arrived 600ms after push #1, push #1\'s action was still resolving on the reader and my guard skipped #2 thinking a payment was in flight. Same for #3, #4, etc. Net effect: only the FIRST item ever made it to the reader; subsequent pushes were silently dropped.',
