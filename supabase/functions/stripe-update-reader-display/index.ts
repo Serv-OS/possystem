@@ -117,18 +117,33 @@ Deno.serve(async (req) => {
   // 4. Push the cart, or clear to idle if empty
   try {
     if (!line_items.length || total_minor <= 0) {
-      // Empty cart — clear the display by setting an empty cart. Stripe
-      // doesn't have a single "idle" call; the simplest reset is a cart
-      // with one zero-amount line that says "Welcome".
-      await stripe.terminal.readers.setReaderDisplay(reader.stripe_reader_id, {
+      // v5.5.176: clear back to idle. Two-step approach because the
+      // reader's cart view doesn't visibly repaint when total drops to 0
+      // (it clings to the last visible subtotal). Step 1: try cancelAction
+      // to force the reader off the cart view. Step 2: set a "ready"
+      // placeholder so any subsequent live push has a fresh canvas.
+      try {
+        await stripe.terminal.readers.cancelAction(
+          reader.stripe_reader_id,
+          undefined,
+          { stripeAccount: reader.stripe_account_id! },
+        );
+      } catch (e) {
+        // "no action in progress" is fine — reader is already idle-ish.
+        const msg = (e as Error).message;
+        if (!/no action|not found|in_progress/i.test(msg)) {
+          console.warn('[clear] cancelAction unexpected:', msg);
+        }
+      }
+      const setRes = await stripe.terminal.readers.setReaderDisplay(reader.stripe_reader_id, {
         type: 'cart',
         cart: {
-          line_items: [{ description: 'Welcome', amount: 0, quantity: 1 }],
+          line_items: [{ description: 'Ready for next order', amount: 0, quantity: 1 }],
           total: 0,
           currency: currency.toLowerCase(),
         },
       }, { stripeAccount: reader.stripe_account_id! });
-      return json({ ok: true, cleared: true });
+      return json({ ok: true, cleared: true, reader_id: setRes.id, action: setRes.action?.status ?? null });
     }
 
     await stripe.terminal.readers.setReaderDisplay(reader.stripe_reader_id, {
@@ -145,6 +160,8 @@ Deno.serve(async (req) => {
     }, { stripeAccount: reader.stripe_account_id! });
     return json({ ok: true, items: line_items.length, total: total_minor });
   } catch (e) {
-    return json({ error: (e as Error).message, code: 'set_display_failed' }, 400);
+    const msg = (e as Error).message;
+    console.error('[update-reader-display] failed:', msg);
+    return json({ error: msg, code: 'set_display_failed' }, 400);
   }
 });

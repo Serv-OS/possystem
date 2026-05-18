@@ -76,6 +76,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.176', date: '11 May 2026', label: 'Reader clear path — call cancelAction so the previous subtotal actually drops from the screen',
+    changes: [
+      'Reader was clinging to the last subtotal after all items were removed — setReaderDisplay with total=0 succeeded on Stripe\'s side but the reader UI didn\'t visibly repaint. New clear path: cancelAction first (forces the reader off the cart view), then set a "Ready for next order" placeholder so the next live push has a fresh canvas.',
+      'cancelAction errors silently when no action is in progress (expected case after a successful payment) — we ignore the standard "no action / not found" messages.',
+      'Edge fn now console.errors any setReaderDisplay failure (was silent) so we can see what Stripe rejected.',
+      'Edge fn redeployed.',
+    ],
+  },
+  {
     version: '5.5.175', date: '11 May 2026', label: 'Live reader display — do not push Welcome on fresh load; add console diagnostics',
     changes: [
       'Previously the live-cart effect pushed an empty "Welcome / £0.00" payload to the reader on every fresh POS mount with no active check. That stamped the operator\'s idle screen with our Welcome state immediately and confused diagnostics. Now we only reset to Welcome when the cart goes from >0 items back to 0 (i.e. post-transaction).',
