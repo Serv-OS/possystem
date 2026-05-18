@@ -653,10 +653,17 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
                 fontSize:10, fontWeight:700, cursor:'pointer', fontFamily:'inherit', whiteSpace:'nowrap',
               }}>≡ Names</button>
             )}
-            {screen!=='review' && (
+            {/* v5.5.181: while a card payment is in flight on the reader,
+                HIDE both the Back chevron and the X close button. The only
+                way out is the explicit Cancel payment button inside the
+                CardTerminal screen — prevents the cashier accidentally
+                dismissing the modal while the customer is mid-tap. */}
+            {screen!=='review' && screen!=='card_terminal' && (
               <button className="btn btn-ghost btn-sm" onClick={()=>setScreen('review')}>← Back</button>
             )}
-            <button onClick={onClose} style={{ width:32, height:32, borderRadius:9, border:'1px solid var(--bdr2)', background:'transparent', color:'var(--t3)', cursor:'pointer', fontFamily:'inherit', fontSize:18, display:'flex', alignItems:'center', justifyContent:'center' }}>×</button>
+            {screen!=='card_terminal' && (
+              <button onClick={onClose} style={{ width:32, height:32, borderRadius:9, border:'1px solid var(--bdr2)', background:'transparent', color:'var(--t3)', cursor:'pointer', fontFamily:'inherit', fontSize:18, display:'flex', alignItems:'center', justifyContent:'center' }}>×</button>
+            )}
           </div>
         </div>
 

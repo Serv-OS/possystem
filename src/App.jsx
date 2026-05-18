@@ -76,6 +76,13 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.181', date: '11 May 2026', label: 'Card-payment screen — hide Back + X while reader is processing (only Cancel button remains)',
+    changes: [
+      'On the customer-facing card payment screen, the header ← Back chevron and × close button are now hidden. The ONLY exit during an in-flight reader transaction is the explicit "✕ Cancel payment" button inside the screen — same as the screenshot reference. Prevents the cashier accidentally dismissing the modal while the customer is mid-tap.',
+      'On the error state (payment failed) the inner Back button still appears so the cashier can return to the review screen and retry / pick a different method.',
+    ],
+  },
+  {
     version: '5.5.180', date: '11 May 2026', label: 'Split modal — hide Cash button when this POS has no bound drawer (reverted POS force-cancel button)',
     changes: [
       'Split portion-tender screen now respects `canTakeCash` (passed down from CheckoutModal). On a POS terminal with no bound cash drawer, the Cash button is hidden in each portion-pay step — matching the main single-payment screen which already gated this correctly.',
