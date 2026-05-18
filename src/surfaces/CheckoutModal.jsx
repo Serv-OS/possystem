@@ -134,13 +134,15 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
     runRestFlow();
   }, [networkReader, platformLocId, restState]);
 
-  // Smooth transition to "approved" → call onComplete after brief moment
+  // Smooth transition to "approved" → call onComplete after brief moment.
+  // v5.5.172: pass the captured PI through so the parent can derive the
+  // ACTUAL reader-collected tip (amountReceived - base bill).
   useEffect(() => {
     if (state === 'approved' || restState === 'success') {
-      const t = setTimeout(onComplete, 900);
+      const t = setTimeout(() => onComplete(piResult), 900);
       return () => clearTimeout(t);
     }
-  }, [state, restState, onComplete]);
+  }, [state, restState, onComplete, piResult]);
 
   // Cleanup: cancel any in-flight reader action when this screen unmounts
   useEffect(() => () => {
@@ -160,6 +162,10 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
 
     try {
       // Build line items for set_reader_display
+      // v5.5.172: NO tip line item — Stripe Terminal Configuration prompts
+      // the customer for a tip on the reader after the cart screen. The
+      // tip the customer picks is added to amount_received automatically
+      // and surfaces back in piResult.amountReceived after capture.
       const lineItems = (items ?? [])
         .filter(it => it && it.price != null)
         .map(it => ({
@@ -167,10 +173,6 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
           amount: Math.round(Number(it.price) * 100),
           quantity: Math.max(1, Math.round(Number(it.qty || it.quantity || 1))),
         }));
-      // Tip line if applicable
-      if (tipAmt && tipAmt > 0) {
-        lineItems.push({ description: 'Tip', amount: Math.round(tipAmt * 100), quantity: 1 });
-      }
 
       // v5.5.170: was sending the whole rpos-device JSON blob as opsDeviceId.
       // Edge fn looks up pos_devices.id and got "device not found". Parse + extract.
@@ -193,6 +195,10 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
         headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
         body: JSON.stringify({
           pos_device_id: opsDeviceId,
+          // v5.5.172: send the base bill (before tip). tipAmt is now always
+          // 0 because handleCardPress skips the POS tip picker; the reader
+          // prompts the customer for the tip and Stripe adjusts the PI
+          // amount on confirm. amountReceived post-capture = base + tip.
           amount_minor: Math.round(grand * 100),
           currency: 'gbp',                                              // TODO: read from location.currency
           line_items: lineItems,
@@ -579,9 +585,13 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
     onComplete({ method: method, tip, grand: total+tip, tendered, printReceipt });
   };
 
+  // v5.5.172: tipping is collected ON THE READER for card payments — Stripe
+  // Terminal Configuration handles the % / custom / no-tip prompt customer-
+  // side. The POS no longer pre-collects a tip. Goes straight from review
+  // to card_terminal. The actual tip the customer chose comes back via the
+  // payment intent's amount_received and is reflected in `complete()` below.
   const handleCardPress = () => {
-    if (skipTip) setScreen('card_terminal');
-    else setScreen('card_tip');
+    setScreen('card_terminal');
   };
 
   const nonVoided = items.filter(i=>!i.voided);
@@ -774,7 +784,8 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
                   <div style={{ fontSize:compact?24:36 }}>💳</div>
                   <div style={{ fontSize:compact?13:17, fontWeight:800, color:'var(--card-text)' }}>Card</div>
                   <div style={{ fontSize:11, color:'var(--card-sub)' }}>Tap, chip, contactless</div>
-                  {!skipTip && <div style={{ fontSize:10, color:'var(--card-sub)', opacity:.7, marginTop:-2 }}>Tip step included</div>}
+                  {/* v5.5.172: tip prompt is now ON THE READER, not on POS */}
+                  <div style={{ fontSize:10, color:'var(--card-sub)', opacity:.7, marginTop:-2 }}>Tip prompt on reader</div>
                 </button>
 
                 {_canTakeCash && <button onClick={()=>setScreen('cash')} style={{
@@ -816,8 +827,16 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
               items={items}
               grand={grand}
               tipAmt={tipAmt}
-              onComplete={()=>complete('card')}
-              onBack={()=>setScreen(skipTip?'review':'card_tip')}
+              onComplete={(pi)=>{
+                // v5.5.172: derive the real reader-collected tip from the
+                // captured PaymentIntent. amountReceived = (base + tip).
+                // Fall back to 0 if the simulated path (no reader) ran.
+                const receivedMinor = pi?.amountReceived ?? null;
+                const receivedGbp   = receivedMinor != null ? receivedMinor / 100 : null;
+                const realTip = receivedGbp != null ? Math.max(0, +(receivedGbp - total).toFixed(2)) : 0;
+                complete('card', realTip);
+              }}
+              onBack={()=>setScreen('review')}
             />
           )}
 

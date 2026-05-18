@@ -76,6 +76,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.172', date: '11 May 2026', label: 'Tipping moved from POS → reader screen for card payments (Stripe Terminal Configuration)',
+    changes: [
+      'TIP PROMPT NOW ON THE READER — was double-prompting: POS asked for tip first, then the reader\'s Stripe Terminal Configuration ALSO prompted (or vice-versa depending on the venue). The POS card-payment path now skips its own `card_tip` step entirely and goes straight to the reader. Customer sees tip options (% buttons / custom / no tip) directly on the reader screen — same UX as a high-street POS.',
+      'REAL TIP CAPTURED IN closed_checks — the polled PaymentIntent\'s `amount_received` reflects (base bill + tip-as-chosen-by-customer-on-reader). CardTerminal now passes the captured PI back through onComplete; CheckoutModal derives `realTip = amount_received - total` and writes that into the closed_check. So your tip reports show what the customer actually authorised on the reader, not a pre-flight guess by the cashier.',
+      'POS amount_minor IS NOW BASE BILL — was sending grand (base + cashier-picked tip) to /api/stripe-process-payment-on-reader. Now sends the base. Stripe\'s Terminal Configuration on the reader adjusts the PI amount on confirm when the customer picks a tip.',
+      'Cashier-side hint copy updated — Card button now says "Tip prompt on reader" instead of the old "Tip step included" (which referred to the POS tip step).',
+    ],
+  },
+  {
     version: '5.5.171', date: '11 May 2026', label: 'Live customer-facing reader display — cart updates push to the Stripe reader as items are added',
     changes: [
       'LIVE CART ON THE READER — was only pushing line items to the customer-facing display at payment-collection time. Now POSSurface watches the cart, debounces 600ms, and pushes the FULL current cart to the assigned Stripe reader via a new edge fn (stripe-update-reader-display). Customer sees each item land on the reader screen as the cashier rings it up — same UX as a high-street POS.',
