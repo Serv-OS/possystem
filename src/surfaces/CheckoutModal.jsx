@@ -867,6 +867,7 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
           items={items}
           total={total}
           covers={covers}
+          canTakeCash={_canTakeCash}
           onComplete={(portions)=>{ setShowSplit(false); onComplete({ method:'split', tip:0, grand:total, portions, printReceipt }); }}
           onClose={()=>setShowSplit(false)}
         />

@@ -76,6 +76,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.180', date: '11 May 2026', label: 'Split modal — hide Cash button when this POS has no bound drawer (reverted POS force-cancel button)',
+    changes: [
+      'Split portion-tender screen now respects `canTakeCash` (passed down from CheckoutModal). On a POS terminal with no bound cash drawer, the Cash button is hidden in each portion-pay step — matching the main single-payment screen which already gated this correctly.',
+      'Reverted v5.5.180 POS-side force-cancel button per user request — to revisit later. The BO Card Readers force-cancel button (v5.5.179) stays for manager use.',
+      'KNOWN: card payments inside split currently mark the portion paid WITHOUT actually charging via the Stripe reader (legacy simulated path). Real reader-driven card payments for each split portion is the next commit.',
+    ],
+  },
+  {
     version: '5.5.179', date: '11 May 2026', label: 'Force-cancel button on BO Card Readers — kick a stuck transaction off the reader without touching the POS',
     changes: [
       'BO → Card Readers — each network reader now has a ⛔ Force cancel button. Calls stripe-cancel-reader-action with just the reader_id (no payment_intent_id). Server runs cancelAction + resets the reader display to "Ready for next order".',

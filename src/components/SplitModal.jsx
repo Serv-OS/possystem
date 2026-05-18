@@ -66,7 +66,7 @@ function SplitCashTender({ amount, onComplete, onBack }) {
 }
 
 // ─── Portion tender screen ────────────────────────────────────────────────────
-function PortionTender({ portion, portionNum, total, onComplete, onBack }) {
+function PortionTender({ portion, portionNum, total, canTakeCash = true, onComplete, onBack }) {
   const [screen, setScreen] = useState('method'); // method | cash
 
   return (
@@ -83,11 +83,14 @@ function PortionTender({ portion, portionNum, total, onComplete, onBack }) {
               <span style={{ fontSize:14, fontWeight:800, color:'#e8f0ff' }}>Card</span>
               <span style={{ fontSize:10, color:'rgba(200,210,255,.5)' }}>Tap or chip</span>
             </button>
-            <button onClick={()=>setScreen('cash')} style={{ flex:1, padding:'18px 12px', borderRadius:14, cursor:'pointer', fontFamily:'inherit', background:'linear-gradient(135deg,#162a1a,#0d1f10)', border:'1px solid rgba(60,180,80,.3)', display:'flex', flexDirection:'column', alignItems:'center', gap:6 }}>
-              <span style={{ fontSize:28 }}>💵</span>
-              <span style={{ fontSize:14, fontWeight:800, color:'#d4f0d8' }}>Cash</span>
-              <span style={{ fontSize:10, color:'rgba(160,210,170,.5)' }}>With change</span>
-            </button>
+            {/* v5.5.180: only show Cash when this POS has a bound drawer */}
+            {canTakeCash && (
+              <button onClick={()=>setScreen('cash')} style={{ flex:1, padding:'18px 12px', borderRadius:14, cursor:'pointer', fontFamily:'inherit', background:'linear-gradient(135deg,#162a1a,#0d1f10)', border:'1px solid rgba(60,180,80,.3)', display:'flex', flexDirection:'column', alignItems:'center', gap:6 }}>
+                <span style={{ fontSize:28 }}>💵</span>
+                <span style={{ fontSize:14, fontWeight:800, color:'#d4f0d8' }}>Cash</span>
+                <span style={{ fontSize:10, color:'rgba(160,210,170,.5)' }}>With change</span>
+              </button>
+            )}
           </div>
           <button className="btn btn-ghost btn-full" onClick={onBack}>← Back to split</button>
         </>
@@ -104,7 +107,7 @@ function PortionTender({ portion, portionNum, total, onComplete, onBack }) {
 }
 
 // ─── Main Split Modal ─────────────────────────────────────────────────────────
-export default function SplitModal({ items, total, covers, onComplete, onClose }) {
+export default function SplitModal({ items, total, covers, canTakeCash = true, onComplete, onClose }) {
   const [mode, setMode]         = useState(null);     // null|even|seat|item|amount
   const [portions, setPortions] = useState([]);       // built split portions
   const [numWays, setNumWays]   = useState(Math.max(2, covers));
@@ -510,6 +513,7 @@ export default function SplitModal({ items, total, covers, onComplete, onClose }
               portion={portions[tenderingIdx]}
               portionNum={tenderingIdx+1}
               total={total}
+              canTakeCash={canTakeCash}
               onComplete={(method, tendered, change) => handlePortionPaid(tenderingIdx, method, tendered, change)}
               onBack={() => setTenderingIdx(null)}
             />
