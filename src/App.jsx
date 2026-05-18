@@ -76,6 +76,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.179', date: '11 May 2026', label: 'Force-cancel button on BO Card Readers — kick a stuck transaction off the reader without touching the POS',
+    changes: [
+      'BO → Card Readers — each network reader now has a ⛔ Force cancel button. Calls stripe-cancel-reader-action with just the reader_id (no payment_intent_id). Server runs cancelAction + resets the reader display to "Ready for next order".',
+      'Confirmation prompt before firing. Result diagnostic (pre/post action state) renders inline under the reader card so you can see whether cancelAction actually did anything.',
+      'No new edge fn needed — uses the existing stripe-cancel-reader-action endpoint which already handles the no-PI case (it only cancels what was passed).',
+    ],
+  },
+  {
     version: '5.5.178', date: '11 May 2026', label: 'Reader cancel + tipping — diagnostics to find out why each is still not working',
     changes: [
       'CANCEL: removed the immediate post-cancel cart push. It was overwriting the "cancelled" state on the reader within 50ms so from the cashier\'s POV nothing happened. Now hitting Cancel does cancelAction + PI.cancel + setReaderDisplay reset only, then onBack returns to the review screen — the cart effect naturally re-syncs the reader from there.',

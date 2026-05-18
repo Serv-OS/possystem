@@ -195,7 +195,7 @@ export default function CardReaders() {
               <div style={S.empty}>None registered yet — click "+ Register network reader" above to add one.</div>
             ) : (
               networkReaders.map(r => (
-                <ReaderRow key={r.id} reader={r} devices={devices} onUnregister={() => onUnregister(r)} onReassign={() => setReassignReader(r)} />
+                <ReaderRow key={r.id} reader={r} devices={devices} platformLocationId={platformLocationId} onUnregister={() => onUnregister(r)} onReassign={() => setReassignReader(r)} />
               ))
             )}
           </div>
@@ -227,8 +227,41 @@ export default function CardReaders() {
   );
 }
 
-function ReaderRow({ reader, devices, onUnregister, onReassign }) {
+function ReaderRow({ reader, devices, onUnregister, onReassign, platformLocationId }) {
   const [expanded, setExpanded] = useState(false);
+  const [forceCancelling, setForceCancelling] = useState(false);
+  const [forceCancelResult, setForceCancelResult] = useState(null);
+
+  // v5.5.179: force-cancel any in-flight action on the reader. Calls
+  // stripe-cancel-reader-action with reader_id only (no payment_intent_id)
+  // so it just runs cancelAction + reset display. Useful when the reader
+  // is stuck on a payment screen and the POS isn't around to cancel it.
+  const forceCancel = async () => {
+    if (!platformLocationId) { setForceCancelResult({ error: 'No platform location id' }); return; }
+    if (!confirm(`Force-cancel any active payment on ${reader.label || reader.stripe_reader_id}? This will void the current transaction on the reader screen.`)) return;
+    setForceCancelling(true); setForceCancelResult(null);
+    try {
+      const { data: session } = await supabase.auth.getSession();
+      const token = session?.session?.access_token;
+      const res = await fetch(`${FUNCTIONS_URL}/stripe-cancel-reader-action`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          reader_id: reader.stripe_reader_id,
+          location_id: platformLocationId,
+          currency: 'gbp',
+          // No payment_intent_id — server skips the PI.cancel step
+        }),
+      });
+      const j = await res.json();
+      setForceCancelResult(j);
+    } catch (e) {
+      setForceCancelResult({ error: e?.message || 'failed' });
+    } finally {
+      setForceCancelling(false);
+    }
+  };
+
   const isOnline = reader.status === 'online';
   const isNetwork = reader.connection_kind === 'network';
   const lastSeen = reader.last_seen_at ? new Date(reader.last_seen_at) : null;
@@ -294,10 +327,31 @@ function ReaderRow({ reader, devices, onUnregister, onReassign }) {
             </button>
           </div>
         </div>
-        <button onClick={onUnregister} style={{ ...S.btn, ...S.btnDan, padding: '6px 10px', fontSize: 12 }}>
-          Unregister
-        </button>
+        <div style={{ display:'flex', gap:6, flexDirection:'column', alignItems:'flex-end' }}>
+          {isNetwork && (
+            <button onClick={forceCancel} disabled={forceCancelling} style={{ ...S.btn, ...S.btnGhost, padding: '6px 10px', fontSize: 12, color:'var(--red, #c0392b)', borderColor:'var(--red, #c0392b)' }}>
+              {forceCancelling ? '⟳ Cancelling…' : '⛔ Force cancel'}
+            </button>
+          )}
+          <button onClick={onUnregister} style={{ ...S.btn, ...S.btnDan, padding: '6px 10px', fontSize: 12 }}>
+            Unregister
+          </button>
+        </div>
       </div>
+      {forceCancelResult && (
+        <div style={{
+          marginTop:10, padding:'8px 12px', borderRadius:8, fontSize:11,
+          background: forceCancelResult.error || (forceCancelResult.errors?.length) ? 'var(--red-d, #fde0d6)' : 'var(--grn-d, #d4f5dc)',
+          color: forceCancelResult.error || (forceCancelResult.errors?.length) ? 'var(--red, #c0392b)' : 'var(--grn, #1a6b3a)',
+          fontFamily:'var(--font-mono, monospace)', wordBreak:'break-all',
+        }}>
+          {forceCancelResult.error
+            ? `❌ ${forceCancelResult.error}`
+            : forceCancelResult.diag
+              ? `✓ pre: ${forceCancelResult.diag.pre_action_type || 'none'}/${forceCancelResult.diag.pre_action_status || 'idle'} → post: ${forceCancelResult.diag.post_action_status || 'idle'}${forceCancelResult.errors?.length ? ' · errors: ' + forceCancelResult.errors.join(', ') : ''}`
+              : '✓ Reader cancel sent'}
+        </div>
+      )}
 
       {expanded && (
         <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--bdr)', display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10, fontSize: 11 }}>
