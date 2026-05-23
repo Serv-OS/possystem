@@ -560,6 +560,257 @@ function CashTransaction({ grand, onComplete, onBack }) {
   );
 }
 
+// ─── Gift card entry (v5.5.193) ─────────────────────────────────────────────
+const GIFT_FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
+
+function GiftCardEntry({ totalMinor, giftAlreadyApplied, onApplied, onBack, tableId, orderType }) {
+  const compact = useCompact();
+  const [code, setCode] = useState('');
+  const [pin, setPin] = useState('');
+  const [showPin, setShowPin] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [cardInfo, setCardInfo] = useState(null); // looked-up card details
+  const codeRef = useRef(null);
+
+  useEffect(() => { codeRef.current?.focus(); }, []);
+
+  // Step 1: look up the card to check balance and PIN requirement
+  const handleLookup = async () => {
+    if (code.replace(/[\s-]/g, '').length < 16) {
+      setError('Enter the full 16 character code');
+      return;
+    }
+    setError(null); setLoading(true); setCardInfo(null);
+    try {
+      const { data: session } = await supabase.auth.getSession();
+      const token = session?.session?.access_token;
+      if (!token) throw new Error('Not authenticated');
+      const res = await fetch(`${GIFT_FUNCTIONS_URL}/gift-lookup`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({ code: code.replace(/[\s-]/g, '') }),
+      });
+      const j = await res.json();
+      if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
+      if (j.status !== 'active') throw new Error(`Card is ${j.status}`);
+      if (j.balance <= 0) throw new Error('Card has zero balance');
+      setCardInfo(j);
+      if (j.has_pin) setShowPin(true);
+    } catch (e) {
+      setError(String(e?.message ?? e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Step 2: redeem
+  const handleRedeem = async () => {
+    if (!cardInfo) return;
+    setError(null); setLoading(true);
+    try {
+      const alreadyApplied = giftAlreadyApplied?.applied || 0;
+      const remainingDue = totalMinor - alreadyApplied;
+      const redeemAmount = Math.min(cardInfo.balance, remainingDue);
+      if (redeemAmount <= 0) { setError('Nothing to redeem'); setLoading(false); return; }
+
+      const idempotencyKey = `pos:${tableId || 'walkin'}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+
+      const { data: session } = await supabase.auth.getSession();
+      const token = session?.session?.access_token;
+      const res = await fetch(`${GIFT_FUNCTIONS_URL}/gift-redeem`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          code: code.replace(/[\s-]/g, ''),
+          pin: pin || undefined,
+          amount: redeemAmount,
+          order_id: tableId || `walkin-${Date.now()}`,
+          location_id: getActiveLocationSync(),
+          channel: 'pos',
+          idempotency_key: idempotencyKey,
+        }),
+      });
+      const j = await res.json();
+      if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
+
+      onApplied({
+        card_id: j.card_id,
+        code_last4: cardInfo.code_last4,
+        applied: j.applied,
+        remaining_balance: j.remaining_balance,
+        idempotency_key: idempotencyKey,
+        currency: j.currency || 'gbp',
+      });
+    } catch (e) {
+      setError(String(e?.message ?? e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const sym = String.fromCodePoint(0x00A3);
+  const alreadyAppliedAmt = (giftAlreadyApplied?.applied || 0) / 100;
+  const remainingDue = (totalMinor - (giftAlreadyApplied?.applied || 0)) / 100;
+
+  return (
+    <div>
+      <div style={{ textAlign:'center', marginBottom:compact?12:20 }}>
+        <div style={{ fontSize:compact?28:40, marginBottom:6 }}>{String.fromCodePoint(0x1F381)}</div>
+        <div style={{ fontSize:compact?18:24, fontWeight:800, color:'var(--t1)' }}>
+          {sym}{remainingDue.toFixed(2)} due
+        </div>
+        {alreadyAppliedAmt > 0 && (
+          <div style={{ fontSize:12, color:'var(--grn)', marginTop:4 }}>
+            {sym}{alreadyAppliedAmt.toFixed(2)} already applied from gift card
+          </div>
+        )}
+      </div>
+
+      {/* Code entry */}
+      {!cardInfo && (
+        <div>
+          <label style={{ fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.06em', marginBottom:6, display:'block' }}>
+            Gift card code
+          </label>
+          <input
+            ref={codeRef}
+            type="text"
+            value={code}
+            onChange={e => setCode(e.target.value.toUpperCase().replace(/[^A-Z2-9\s-]/g, ''))}
+            placeholder="ABCD EFGH JKLM NPQR"
+            maxLength={19}
+            style={{
+              width:'100%', padding:'12px 14px', borderRadius:12,
+              border:'2px solid var(--bdr2)', background:'var(--bg2)', color:'var(--t1)',
+              fontSize:18, fontFamily:'var(--font-mono, monospace)', letterSpacing:'0.15em',
+              textAlign:'center', outline:'none', boxSizing:'border-box',
+            }}
+            onKeyDown={e => e.key === 'Enter' && handleLookup()}
+          />
+          <button
+            onClick={handleLookup}
+            disabled={loading || code.replace(/[\s-]/g, '').length < 16}
+            style={{
+              width:'100%', marginTop:12, padding:'14px', borderRadius:12,
+              border:'none', cursor:'pointer', fontFamily:'inherit',
+              background:'var(--acc)', color:'#0b0c10', fontSize:15, fontWeight:800,
+              opacity: loading || code.replace(/[\s-]/g, '').length < 16 ? 0.5 : 1,
+            }}
+          >
+            {loading ? 'Checking...' : 'Look up card'}
+          </button>
+        </div>
+      )}
+
+      {/* Card found: show balance and redeem */}
+      {cardInfo && (
+        <div style={{
+          padding:16, borderRadius:14, background:'var(--bg2)',
+          border:'1px solid var(--bdr)', marginBottom:12,
+        }}>
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:10 }}>
+            <div>
+              <div style={{ fontSize:11, color:'var(--t4)', fontWeight:700, textTransform:'uppercase', letterSpacing:'.06em' }}>Card balance</div>
+              <div style={{ fontSize:22, fontWeight:800, color:'var(--t1)' }}>
+                {sym}{(cardInfo.balance / 100).toFixed(2)}
+              </div>
+            </div>
+            <div style={{
+              padding:'4px 10px', borderRadius:99, fontSize:11, fontWeight:700,
+              background:'var(--grn-d)', color:'var(--grn)', border:'1px solid var(--grn)',
+            }}>
+              {cardInfo.status}
+            </div>
+          </div>
+          <div style={{ fontSize:12, color:'var(--t3)', marginBottom:4 }}>
+            Code ending in <strong style={{ fontFamily:'var(--font-mono)' }}>...{cardInfo.code_last4}</strong>
+            {cardInfo.recipient_name && ` ${String.fromCodePoint(0x00B7)} ${cardInfo.recipient_name}`}
+          </div>
+          <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)', marginTop:8 }}>
+            Will apply: {sym}{(Math.min(cardInfo.balance, Math.round(remainingDue * 100)) / 100).toFixed(2)}
+            {cardInfo.balance < Math.round(remainingDue * 100) && (
+              <span style={{ fontWeight:400, color:'var(--t3)', marginLeft:8 }}>
+                (partial, {sym}{(remainingDue - cardInfo.balance / 100).toFixed(2)} remaining)
+              </span>
+            )}
+          </div>
+
+          {/* PIN entry if required */}
+          {showPin && (
+            <div style={{ marginTop:12 }}>
+              <label style={{ fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.06em', marginBottom:4, display:'block' }}>
+                PIN required
+              </label>
+              <input
+                type="password"
+                value={pin}
+                onChange={e => setPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                placeholder="4 digit PIN"
+                maxLength={4}
+                style={{
+                  width:120, padding:'8px 12px', borderRadius:8,
+                  border:'1px solid var(--bdr2)', background:'var(--bg1)', color:'var(--t1)',
+                  fontSize:18, fontFamily:'var(--font-mono)', letterSpacing:'0.2em',
+                  textAlign:'center', outline:'none',
+                }}
+                autoFocus
+                onKeyDown={e => e.key === 'Enter' && handleRedeem()}
+              />
+            </div>
+          )}
+
+          <button
+            onClick={handleRedeem}
+            disabled={loading || (showPin && pin.length < 4)}
+            style={{
+              width:'100%', marginTop:14, padding:'14px', borderRadius:12,
+              border:'none', cursor:'pointer', fontFamily:'inherit',
+              background:'var(--acc)', color:'#0b0c10', fontSize:15, fontWeight:800,
+              opacity: loading || (showPin && pin.length < 4) ? 0.5 : 1,
+            }}
+          >
+            {loading ? 'Processing...' : `Apply ${sym}${(Math.min(cardInfo.balance, Math.round(remainingDue * 100)) / 100).toFixed(2)} from gift card`}
+          </button>
+
+          <button
+            onClick={() => { setCardInfo(null); setCode(''); setPin(''); setShowPin(false); setError(null); }}
+            style={{
+              width:'100%', marginTop:8, padding:'10px', borderRadius:10,
+              border:'1px solid var(--bdr2)', background:'transparent',
+              color:'var(--t3)', fontSize:13, fontWeight:600, cursor:'pointer', fontFamily:'inherit',
+            }}
+          >
+            Use a different card
+          </button>
+        </div>
+      )}
+
+      {error && (
+        <div style={{
+          marginTop:12, padding:12, borderRadius:10,
+          background:'var(--red-d)', color:'var(--red)',
+          fontSize:13, border:'1px solid var(--red-b)',
+        }}>
+          {error}
+        </div>
+      )}
+
+      <button
+        onClick={onBack}
+        disabled={loading}
+        style={{
+          width:'100%', marginTop:12, padding:'12px', borderRadius:10,
+          border:'1px solid var(--bdr2)', background:'transparent',
+          color:'var(--t3)', fontSize:13, fontWeight:600, cursor:'pointer', fontFamily:'inherit',
+        }}
+      >
+        {String.fromCodePoint(0x2190)} Back to payment options
+      </button>
+    </div>
+  );
+}
+
 // ─── Main checkout modal ──────────────────────────────────────────────────────
 export default function CheckoutModal({ items, subtotal, service, total, orderType, covers, tableId, tabName, onClose, onComplete }) {
   const compact = useCompact();
@@ -580,9 +831,14 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
   // toggle is true (legacy). When toggle is false the checkbox lands unchecked.
   const [printReceipt, setPrintReceipt] = useState(deviceConfig?.autoPrintReceiptOnClose !== false);
 
+  // v5.5.193: gift card partial payment state
+  const [giftApplied, setGiftApplied] = useState(null);
+  // giftApplied: { card_id, code_last4, applied, remaining_balance, idempotency_key, currency }
+
   const isBarTab = orderType==='bar-tab';
   const skipTip  = isBarTab || orderType==='takeaway' || orderType==='collection';
-  const grand    = total + tipAmt;
+  const giftCredit = giftApplied?.applied ? giftApplied.applied / 100 : 0;
+  const grand    = Math.max(0, total + tipAmt - giftCredit);
 
   // Calculate tax breakdown
   const taxBreakdown = useMemo(() => {
@@ -593,7 +849,14 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
   const hasExclusive = taxBreakdown?.hasExclusiveTax;
 
   const complete = (method, tip=tipAmt, tendered=null) => {
-    onComplete({ method: method, tip, grand: total+tip, tendered, printReceipt });
+    onComplete({
+      method: giftApplied && grand > 0 ? `gift_card+${method}` : giftApplied ? 'gift_card' : method,
+      tip,
+      grand: total+tip,
+      tendered,
+      printReceipt,
+      giftCard: giftApplied || undefined,
+    });
   };
 
   // v5.5.172: tipping is collected ON THE READER for card payments — Stripe
@@ -625,6 +888,7 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
   const SCREENS = {
     review:'Checkout', card_tip:'Gratuity',
     card_terminal:'Card payment', cash:'Cash payment',
+    gift_card:'Gift card',
   };
 
   return (
@@ -760,9 +1024,22 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
                 ) : null}
                 <div style={{ height:1, background:'var(--bdr)', margin:'8px 0' }}/>
                 <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
-                  <span style={{ fontSize:15, fontWeight:600, color:'var(--t2)' }}>Total due</span>
-                  <span style={{ fontSize:compact?20:26, fontWeight:800, color:'var(--acc)', fontFamily:'var(--font-mono)', letterSpacing:'-.02em' }}>£{total.toFixed(2)}</span>
+                  <span style={{ fontSize:15, fontWeight:600, color:'var(--t2)' }}>{giftApplied ? 'Subtotal' : 'Total due'}</span>
+                  <span style={{ fontSize:giftApplied?(compact?16:18):(compact?20:26), fontWeight:800, color:giftApplied?'var(--t2)':'var(--acc)', fontFamily:'var(--font-mono)', letterSpacing:'-.02em' }}>{String.fromCodePoint(0x00A3)}{total.toFixed(2)}</span>
                 </div>
+                {giftApplied && (
+                  <>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginTop:4 }}>
+                      <span style={{ fontSize:13, color:'var(--grn)', fontWeight:600 }}>{String.fromCodePoint(0x1F381)} Gift card (...{giftApplied.code_last4})</span>
+                      <span style={{ fontSize:14, fontWeight:700, color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{String.fromCodePoint(0x2212)}{String.fromCodePoint(0x00A3)}{giftCredit.toFixed(2)}</span>
+                    </div>
+                    <div style={{ height:1, background:'var(--bdr)', margin:'6px 0' }}/>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
+                      <span style={{ fontSize:15, fontWeight:700, color:'var(--t1)' }}>Remaining due</span>
+                      <span style={{ fontSize:compact?20:26, fontWeight:800, color:'var(--acc)', fontFamily:'var(--font-mono)', letterSpacing:'-.02em' }}>{String.fromCodePoint(0x00A3)}{grand.toFixed(2)}</span>
+                    </div>
+                  </>
+                )}
               </div>
 
               {/* ── Print receipt checkbox ── */}
@@ -814,12 +1091,28 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
                 }}
                 onMouseEnter={e=>{e.currentTarget.style.transform='translateY(-2px)';e.currentTarget.style.boxShadow='var(--sh2)';}}
                 onMouseLeave={e=>{e.currentTarget.style.transform='';e.currentTarget.style.boxShadow='';}}>
-                  <div style={{ fontSize:compact?24:36 }}>💵</div>
+                  <div style={{ fontSize:compact?24:36 }}>{String.fromCodePoint(0x1F4B5)}</div>
                   <div style={{ fontSize:compact?13:17, fontWeight:800, color:'var(--cash-text)' }}>Cash</div>
                   <div style={{ fontSize:11, color:'var(--cash-sub)' }}>Change calculated</div>
                   <div style={{ fontSize:10, color:'var(--cash-sub)', opacity:.7, marginTop:-2 }}>Instant, no tip prompt</div>
                 </button>}
               </div>
+
+              {/* v5.5.193: Gift card button */}
+              <button onClick={()=>setScreen('gift_card')} style={{
+                width:'100%', padding:'13px', borderRadius:13, cursor:'pointer', fontFamily:'inherit',
+                background:'var(--bg3)', border:'1.5px solid var(--bdr2)',
+                display:'flex', alignItems:'center', justifyContent:'center', gap:10,
+                color:'var(--t3)', fontSize:13, fontWeight:600, transition:'all .14s',
+                marginBottom:10,
+              }}
+              onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--acc-b)';e.currentTarget.style.color='var(--acc)';}}
+              onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--bdr2)';e.currentTarget.style.color='var(--t3)';}}>
+                <span>{String.fromCodePoint(0x1F381)}</span>
+                {giftApplied
+                  ? `Gift card applied: ${String.fromCodePoint(0x00A3)}${giftCredit.toFixed(2)} (${String.fromCodePoint(0x00A3)}${grand.toFixed(2)} remaining)`
+                  : 'Pay with gift card'}
+              </button>
 
               {/* Split — secondary */}
               <button onClick={()=>setShowSplit(true)} style={{
@@ -863,6 +1156,27 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
               grand={total}
               onComplete={(tendered)=>complete('cash', 0, tendered)}
               onBack={()=>setScreen('review')}
+            />
+          )}
+
+          {screen==='gift_card' && (
+            <GiftCardEntry
+              totalMinor={Math.round((total + tipAmt) * 100)}
+              giftAlreadyApplied={giftApplied}
+              onApplied={(result) => {
+                setGiftApplied(result);
+                const remainingDue = Math.round((total + tipAmt) * 100) - result.applied;
+                if (remainingDue <= 0) {
+                  // Gift card covers full amount
+                  complete('gift_card', tipAmt);
+                } else {
+                  // Partial: go back to review to pay remainder
+                  setScreen('review');
+                }
+              }}
+              onBack={()=>setScreen('review')}
+              tableId={tableId}
+              orderType={orderType}
             />
           )}
         </div>

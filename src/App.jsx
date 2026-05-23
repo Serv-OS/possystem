@@ -76,6 +76,16 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.193', date: '23 May 2026', label: 'Gift Cards Phase 1: schema, edge functions, back office, POS tender',
+    changes: [
+      'New gift card system. Cards belong to an org, valid at any location. 16 char codes (alphabet excludes I,1,O,0), stored as argon2id hash with HMAC-SHA256 lookup index. Optional PIN for high-value cards.',
+      'Platform DB schema: gift_brand_config (org settings), gift_cards (hashed codes, cached balance), gift_card_transactions (append-only ledger with idempotent redeems), gift_card_pins (separate PIN hashes). Full RLS scoped to user company.',
+      'Five Supabase Edge Functions: gift-issue, gift-lookup, gift-redeem (with idempotency), gift-reverse-redeem (for order voids), gift-void. Shared utility module in _shared/gift-card-utils.ts.',
+      'Back office Gift Cards section: Issue new card (amount, recipient, PIN, note), Look up card (by full code or last4+email, with transaction history and void action), Recent cards table.',
+      'POS: Gift Card tender button on checkout screen. Code entry, balance lookup, PIN prompt if required. Partial redemption supported: gift portion applied, remainder due via card or cash. Split tender shown as gift_card+card or gift_card+cash.',
+    ],
+  },
+  {
     version: '5.5.192', date: '23 May 2026', label: 'Card reader screensaver — upload idle screen image from back office',
     changes: [
       'New "Idle screen / screensaver" section in Back Office → Card Readers → Reader Settings. Upload a PNG or JPEG (max 512 KB, recommended 1080×1920) to display on readers when no payment is in progress.',

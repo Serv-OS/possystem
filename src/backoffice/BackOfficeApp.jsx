@@ -31,6 +31,7 @@ import TaxManager from './sections/TaxManager';
 import PettyCash from './sections/PettyCash';
 import Challenge21 from './sections/Challenge21';
 import DiscountManager from './sections/DiscountManager';
+import GiftCards from './sections/GiftCards';
 
 const NAV = [
   { id:'overview',   label:'Overview',        icon:'◈',  group:'Dashboard' },
@@ -57,7 +58,8 @@ const NAV = [
   { id:'location',   label:'Location settings', icon:'⚙️',  group:'Analytics' },
   { id: 'discounts', label: 'Discounts',     icon: '🏷', group: 'Configuration' },
   { id: 'receipt', label: 'Receipt', icon: '🧾', group: 'Configuration' },
-  { id: 'challenge21', label: 'Challenge ID', icon: '🪪', group: 'Configuration' },
+  { id: 'challenge21', label: 'Challenge ID', icon: '\u{1F4AA}', group: 'Configuration' },
+  { id: 'giftcards', label: 'Gift Cards', icon: '\u{1F381}', group: 'Analytics' },
 ];
 
 export default function BackOfficeApp() {
@@ -474,6 +476,7 @@ export default function BackOfficeApp() {
           {section === 'tax'        && <TaxManager />}
           {section === 'discounts'  && <DiscountManager />}
           {section === 'challenge21' && <Challenge21 />}
+          {section === 'giftcards' && <GiftCards />}
         </div>
       </div>
       {showLocationSwitcher && <LocationSwitcher onClose={() => setShowLocationSwitcher(false)} />}
