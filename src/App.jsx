@@ -76,6 +76,17 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.198', date: '23 May 2026', label: 'Gift cards: resend email, POS fix, flexible lookup, code visibility',
+    changes: [
+      'New gift-resend edge function: re-sends the delivery email to the recipient from the back office. Reads the plaintext code from the purchase record stored at fulfillment time.',
+      'POS gift card redemption fix: gift-redeem and gift-lookup now fall back to resolving company_id from location_id when the POS user has no user_company_roles row (anonymous auth). CheckoutModal passes location_id.',
+      'Flexible gift card lookup: single smart search box replaces the rigid code/last4+email toggle. Auto-detects full code, last 4, email, or name. Returns multiple matches with a picker UI.',
+      'Online purchases tab now shows the full gift card code (click to copy) for fulfilled orders. New fulfilled_code column on gift_card_purchases stores the plaintext code at fulfillment.',
+      'Back office lookup panel: "Resend email to recipient" button for cards with a recipient email. Multiple-result picker when search returns more than one card.',
+      'Migration: gift_card_purchases.fulfilled_code column added for resend capability.',
+    ],
+  },
+  {
     version: '5.5.197', date: '23 May 2026', label: 'Gift cards: BO management upgrade, branding, preview links',
     changes: [
       'Gift Cards back office section now has a full management overview: enable/disable toggle (controls gift_brand_config.enabled), customer-facing URLs with Preview and Copy buttons, config summary (min/max value, expiry, currency).',

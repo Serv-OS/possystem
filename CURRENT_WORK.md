@@ -1,130 +1,73 @@
-# RPOS session handoff — 23 May (v5.5.188)
+# RPOS session handoff — 23 May (v5.5.198)
 
-> Continues from previous session. Critical work: POS payment auth fix,
-> cash drawer RLS fix, multi-tenant safety audit, DeviceProfiles crash fix,
-> and per-reader customer display toggle — all before customer deploy.
+> Gift Cards Phase 2 complete + POS fix, flexible lookup, resend, code visibility.
 
 ---
 
-## What shipped today (23 May): v5.5.183 → v5.5.188
+## What shipped today (23 May): v5.5.193 → v5.5.198
 
-### v5.5.183 — Bundle / meal-deal pricing for auto-discount rules
-- Bundle trigger type on discount_rules with `trigger_groups` jsonb column
-- DiscountManager displays bundle rules as "1 × Starters + 1 × Mains = £15"
-- Migration updated: `v5.5.63-discount-system.sql` with `trigger_groups` column
+### v5.5.198 — Gift cards: resend, POS fix, flexible lookup, code visibility
+- **gift-resend edge function** — re-sends delivery email from BO. Reads `fulfilled_code` from purchase record, rebuilds branded HTML email, sends via `send-receipt`.
+- **POS redemption fix** — `gift-redeem` and `gift-lookup` now have `resolveCompanyForPOS()` fallback: tries `user_company_roles` first, then resolves `company_id` from `location_id` via Platform DB `locations` table (handles anonymous auth POS devices).
+- **Flexible lookup** — single smart search box in BO + edge function. Auto-detects: full 16-char code, last 4 digits, email, or name. Returns multiple matches with picker UI.
+- **Code visibility** — new `fulfilled_code` column on `gift_card_purchases` stores plaintext code at fulfillment. BO purchases tab shows full code (click to copy). Migration: `v5.5.198-gift-resend-code-storage.sql`.
+- **gift-fulfill updated** — now writes `fulfilled_code` to purchase record alongside `code_last4`.
+- **CheckoutModal.jsx** — passes `location_id` to gift-lookup call for POS company resolution.
 
-### v5.5.184 — Fix POS/Sunmi "not authenticated" payment failure
-- POS devices paired via pairing code have no Supabase Auth session
-- Created `ensureAuthToken()` helper: tries existing session first, falls back to `signInAnonymously()`
-- Applied to all 5 payment files: CheckoutModal, MCardFlow, forceCancelReader, readerDisplay, sendReceipt
+### v5.5.197 — Gift cards: BO management upgrade, branding, preview links
+- Full BO management overview: enable/disable toggle, customer URLs with Preview/Copy, config summary
+- Customer-facing pages now use `location.online_branding` (logo, colours)
+- Online purchases tab in BO
+- `buildGiftTheme()` helper + logo in gift surface headers
 
-### v5.5.185 — Fix POS boot auth: cash drawers + RLS tables load
-- Moved `ensureAuthToken()` into `useSupabaseInit` boot flow (before any data fetching)
-- Fixes cash_drawers, shifts, drawer_sessions, closed_checks returning empty on paired POS devices
+### v5.5.196 — Gift Cards Phase 2: customer-facing purchase, balance check, email delivery
+- Customer-facing purchase page, balance check, success page
+- Edge functions: gift-checkout-session, gift-fulfill, gift-balance-public, gift-purchase-status
+- Stripe webhook handler for checkout.session.completed → auto-fulfill
+- Branded HTML delivery emails via send-receipt
 
-### v5.5.186 — Multi-tenant safety audit
-- Fixed `fetchKDSTickets` not self-resolving locationId (was receiving null on boot → 0 rows)
-- `useSupabaseInit` now passes resolved `locId` to `fetchKDSTickets` explicitly
-- **Full audit result:** every `.from()` Supabase call across the entire codebase is correctly
-  scoped by `location_id`. Safe for multi-location customer deployment.
-
-### v5.5.187 — DeviceProfiles crash fix
-- Fixed `TypeError: Cannot read properties of undefined (reading 'map')` in DeviceProfiles
-- Added defensive `|| []` fallbacks on `enabledOrderTypes` and `hiddenFeatures` arrays
-- Profiles from localStorage may have undefined arrays — now safe to render
-
-### v5.5.188 — Per-reader customer display toggle
-- New `customer_display_enabled` boolean column on `payment_devices` (Platform DB)
-- Toggle UI in CardReaders back-office section per reader row
-- `pushReaderDisplay()` gated by localStorage-cached setting — zero-latency check
-- POS boot effect fetches reader's setting and caches it
-- Edge function `stripe-assign-reader-to-pos` extended to accept the toggle
-- **Migration run on Platform DB** ✅ — `ALTER TABLE payment_devices ADD COLUMN IF NOT EXISTS customer_display_enabled boolean NOT NULL DEFAULT true`
-- Graceful degradation: if column doesn't exist, value is undefined → defaults to enabled
+### v5.5.193–195 — Gift Cards Phase 1
+- Platform DB schema, edge functions (issue, lookup, redeem, void, reverse-redeem)
+- POS checkout tender integration
+- gift-list endpoint for BO
 
 ---
 
-## Database changes (done via Supabase SQL editor, NOT in code)
+## Files changed in v5.5.198
 
-These were applied during today's session directly in the Supabase SQL editor:
-
-1. **Enabled anonymous sign-ins** — Authentication → Providers → Allow anonymous sign-ins toggle
-2. **Replaced restrictive RLS policies** on POS-accessed tables:
-   - `cash_drawers` → `USING (true) WITH CHECK (true)` (was `user_locations`-based)
-   - `cash_movements` → `USING (true) WITH CHECK (true)` (was `user_locations`-based)
-   - `shifts` → `USING (true) WITH CHECK (true)` (was `user_locations`-based)
-   - `drawer_sessions` → `USING (true) WITH CHECK (true)` (was `user_locations`-based)
-3. **Dropped restrictive sub-policies** on:
-   - `closed_checks` → dropped `closed_checks_select_by_user_locations`
-   - `kds_tickets` → dropped `kds_tickets_select_by_user_locations`
-   (These tables still have their other `USING (true)` policies)
-4. **Platform DB migration** — `v5.5.188-customer-display-toggle.sql`:
-   - `ALTER TABLE payment_devices ADD COLUMN IF NOT EXISTS customer_display_enabled boolean NOT NULL DEFAULT true`
-   - `COMMENT ON COLUMN payment_devices.customer_display_enabled IS '...'`
+| File | Change |
+|------|--------|
+| `src/lib/version.js` | 5.5.197 → 5.5.198 |
+| `src/App.jsx` | CHANGELOG entry |
+| `src/backoffice/sections/GiftCards.jsx` | Smart search lookup, multi-result picker, resend button, CodeCell component, purchases tab shows full code |
+| `src/surfaces/CheckoutModal.jsx` | Pass `location_id` to gift-lookup |
+| `supabase/functions/gift-redeem/index.ts` | `resolveCompanyForPOS()` fallback for POS anon auth |
+| `supabase/functions/gift-lookup/index.ts` | `resolveCompanyForPOS()` + smart `{ search }` param |
+| `supabase/functions/gift-fulfill/index.ts` | Stores `fulfilled_code` on purchase record |
+| `supabase/functions/gift-resend/index.ts` | **NEW** — resend delivery email |
+| `migrations/v5.5.198-gift-resend-code-storage.sql` | Add `fulfilled_code` column |
 
 ---
 
-## Multi-tenant safety audit results
+## Deployment checklist
 
-### RLS coverage: ALL 63 tables have RLS enabled (0 unprotected)
-
-### Policy categories:
-- **`USING (true)`** — POS tables (cash_drawers, cash_movements, shifts, drawer_sessions, closed_checks, kds_tickets, etc.) — rely on application-level location_id filtering
-- **`auth.role()='authenticated'`** — config tables (discount_rules, discounts, tax_rates, printers, etc.) — anonymous auth satisfies this
-- **`user_locations`** — CRM tables (customers, customer_locations, customer_orders) — still enforced, only accessed from back-office which has real user sessions
-
-### Application-level location_id filtering — VERIFIED ✓
-Every `.from()` Supabase call across the codebase was audited:
-- **db.js** — all fetch/upsert/delete functions resolve locationId with `loc-demo` guard ✓
-- **store/index.js** — loadCashDrawers, shifts, drawer_sessions, cash_movements all filter by locId ✓
-- **SyncBridge.jsx** — all boot queries pass locationId explicitly ✓
-- **SessionSync.js** — all upserts/deletes scoped by _locationId ✓
-- **SessionReconciler.js** — polls with `.eq('location_id', _locationId)` ✓
-- **DataSafe.js** — reconcilePendingChecks scoped by locationId ✓
-- **realtime.js** — every channel subscription has `filter: location_id=eq.${locationId}` ✓
-- **All backoffice sections** — verified ✓
-
-### Queries that filter by record ID instead of location_id (safe):
-- `updateCashDrawer(id, patch)` — `.eq('id', id)` — records already location-scoped at creation
-- `bumpKDSTicket(id)` — `.eq('id', id)` — records created with location_id
-- `archiveMenuItem(id)` — `.eq('id', id)` — records created with location_id
-- `updateClosedCheckRefunds(checkId, ...)` — `.eq('id', checkId)` — records created with location_id
+1. **Run migration** on Platform DB: `v5.5.198-gift-resend-code-storage.sql` (adds `fulfilled_code` column)
+2. **Deploy edge functions** via Supabase Dashboard (Via Editor):
+   - `gift-redeem` — updated with POS fallback
+   - `gift-lookup` — updated with smart search + POS fallback
+   - `gift-fulfill` — updated to store `fulfilled_code`
+   - `gift-resend` — **NEW** function
+3. **Stripe webhook** — still needs `checkout.session.completed` event enabled on the Connect endpoint
+4. **Email delivery** — `send-receipt` is still in 'log' mode. Set `RECEIPT_EMAIL_PROVIDER=resend` and `RESEND_API_KEY` on Ops DB edge function env vars.
 
 ---
 
-## Current architecture: auth on POS devices
+## Still pending
 
-1. POS devices authenticate via **pairing code** (stored in `localStorage` as `rpos-device`)
-2. They have **no Supabase Auth password session** (no `signInWithPassword`)
-3. On boot, `useSupabaseInit` calls `ensureAuthToken()` which does `signInAnonymously()`
-4. This gives a lightweight JWT with `role='authenticated'` — satisfies `auth.role()='authenticated'` RLS policies
-5. All data queries then filter by `location_id` at the application level
-
-### Future enhancement (recommended before scaling to 10+ locations):
-- Attach `location_id` claim to the anonymous session JWT via Supabase custom claims
-- Replace `USING (true)` policies with `USING (location_id = auth.jwt() ->> 'location_id')`
-- This gives database-level tenant isolation independent of application code
-
----
-
-## What's working end-to-end
-
-- ✅ POS card payments on Sunmi/Android devices
-- ✅ Cash drawer management on POS (cash-in, cash-out, movements)
-- ✅ Shift lifecycle (open, close, Z-report)
-- ✅ KDS tickets load on boot AND via Realtime
-- ✅ Closed checks load on boot scoped to business day
-- ✅ Multi-device sync (sessions, 86 list, config push)
-- ✅ All data correctly scoped to location_id
-- ✅ Bundle/meal-deal discount rules in back office
-- ✅ DeviceProfiles renders without crash
-- ✅ Per-reader customer display toggle (CardReaders back office + POS gate)
-
----
-
-## Pending / next priorities
-
-1. **Deploy edge function** — `stripe-assign-reader-to-pos` updated to accept `customer_display_enabled`; needs redeployment if not auto-deployed from git
-2. **Verify customer display toggle end-to-end** — toggle a reader off in back office → POS should stop pushing cart to that reader's screen
-3. **Consider stronger RLS for production scale** — custom JWT claims with location_id
-4. Continue with any remaining feature work for customer deployment
+- **Email deliverability** — Resend API key not yet configured. send-receipt is in log mode.
+- **Twilio SMS** — user has Twilio account, wants SMS delivery option for gift cards
+- **Stripe webhook** — `checkout.session.completed` not yet enabled
+- **Subdomain DNS** — `slug.pos-up.com` not configured yet (using `dev.pos-up.com` with query params)
+- **Order void → auto-reverse** — voiding an order that used gift card should refund the card
+- **Online ordering gift redemption** — let customers apply gift cards during online checkout
+- **Reporting** — gift card revenue/liability reports in BO

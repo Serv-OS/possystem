@@ -1,14 +1,40 @@
 // supabase/functions/gift-lookup/index.ts
 //
-// Look up a gift card by full code or by code_last4 + email.
-// Returns card details and recent transactions.
+// v5.5.197: Flexible gift card lookup.
 //
-// Body: { code } or { code_last4, email }
+// Accepts multiple search strategies:
+//   { code }                    — full 16-char code (HMAC lookup)
+//   { code_last4, email }       — last 4 + recipient email
+//   { search }                  — smart search: auto-detects whether
+//                                 input is a code, last4, email, or name
+//   { location_id }             — optional, for POS anonymous auth fallback
+//
+// Returns card details and recent transactions.
 
 import {
   cors, json, platformAdmin, authenticateCaller, resolveCompanyId,
   normalizeCode, hmacLookup,
 } from '../_shared/gift-card-utils.ts';
+
+// Resolve company_id with POS fallback: try user role first, then location.
+async function resolveCompanyForPOS(
+  userId: string,
+  locationId?: string | null,
+): Promise<string | Response> {
+  const result = await resolveCompanyId(userId);
+  if (typeof result === 'string') return result;
+  if (locationId) {
+    const { data: locByOps } = await platformAdmin
+      .from('locations').select('company_id')
+      .eq('ops_location_id', locationId).maybeSingle();
+    if (locByOps?.company_id) return locByOps.company_id;
+    const { data: locById } = await platformAdmin
+      .from('locations').select('company_id')
+      .eq('id', locationId).maybeSingle();
+    if (locById?.company_id) return locById.company_id;
+  }
+  return json({ error: 'Could not resolve company. Ensure location is linked.' }, 403);
+}
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -19,27 +45,27 @@ Deno.serve(async (req) => {
   if (authResult instanceof Response) return authResult;
   const caller = authResult.user;
 
-  // Resolve company
-  const companyResult = await resolveCompanyId(caller.id);
-  if (companyResult instanceof Response) return companyResult;
-  const companyId = companyResult;
-
   // Parse body
   let body: Record<string, unknown>;
   try { body = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
 
-  const { code, code_last4, email } = body as any;
+  const { code, code_last4, email, search, location_id: bodyLocationId } = body as any;
+
+  // Resolve company with POS fallback via location_id
+  const companyResult = await resolveCompanyForPOS(caller.id, bodyLocationId as string);
+  if (companyResult instanceof Response) return companyResult;
+  const companyId = companyResult;
 
   let card: any = null;
+  let cards: any[] = [];
+  let multiResult = false;
 
   if (code) {
-    // Full code lookup via HMAC index
+    // ── Full code lookup via HMAC ──────────────────────────────────────
     const normalized = normalizeCode(code as string);
     if (normalized.length !== 16) {
       return json({ error: 'Code must be 16 characters' }, 400);
     }
-
-    // Get org's HMAC secret
     const { data: config } = await platformAdmin
       .from('gift_brand_config')
       .select('hmac_secret, currency')
@@ -55,8 +81,9 @@ Deno.serve(async (req) => {
       .eq('company_id', companyId)
       .maybeSingle();
     card = data;
+
   } else if (code_last4 && email) {
-    // Support lookup by last4 + email
+    // ── Legacy: last4 + email ─────────────────────────────────────────
     const { data } = await platformAdmin
       .from('gift_cards')
       .select('*')
@@ -65,8 +92,108 @@ Deno.serve(async (req) => {
       .eq('recipient_email', String(email).toLowerCase().trim())
       .maybeSingle();
     card = data;
+
+  } else if (search) {
+    // ── Smart search: auto-detect what was typed ──────────────────────
+    const q = String(search).trim();
+
+    // 1. Looks like a full 16-char code?
+    const cleaned = q.replace(/[\s-]/g, '').toUpperCase();
+    if (/^[A-Z2-9]{16}$/.test(cleaned)) {
+      const { data: config } = await platformAdmin
+        .from('gift_brand_config')
+        .select('hmac_secret, currency')
+        .eq('company_id', companyId)
+        .maybeSingle();
+      if (config) {
+        const lookup = await hmacLookup(cleaned, config.hmac_secret);
+        const { data } = await platformAdmin
+          .from('gift_cards')
+          .select('*')
+          .eq('code_lookup', lookup)
+          .eq('company_id', companyId)
+          .maybeSingle();
+        card = data;
+      }
+    }
+
+    // 2. If no full-code match, try by last4 (2-4 uppercase chars)
+    if (!card && /^[A-Z2-9]{2,4}$/i.test(cleaned)) {
+      const { data } = await platformAdmin
+        .from('gift_cards')
+        .select('*')
+        .eq('company_id', companyId)
+        .eq('code_last4', cleaned.toUpperCase())
+        .order('created_at', { ascending: false })
+        .limit(10);
+      if (data?.length === 1) {
+        card = data[0];
+      } else if (data?.length > 1) {
+        cards = data;
+        multiResult = true;
+      }
+    }
+
+    // 3. If no match yet, try email (contains @)
+    if (!card && !multiResult && q.includes('@')) {
+      const { data } = await platformAdmin
+        .from('gift_cards')
+        .select('*')
+        .eq('company_id', companyId)
+        .ilike('recipient_email', q.toLowerCase().trim())
+        .order('created_at', { ascending: false })
+        .limit(10);
+      if (data?.length === 1) {
+        card = data[0];
+      } else if (data?.length > 1) {
+        cards = data;
+        multiResult = true;
+      }
+    }
+
+    // 4. Try name search (ilike)
+    if (!card && !multiResult && q.length >= 2 && !q.includes('@')) {
+      const { data } = await platformAdmin
+        .from('gift_cards')
+        .select('*')
+        .eq('company_id', companyId)
+        .ilike('recipient_name', `%${q}%`)
+        .order('created_at', { ascending: false })
+        .limit(10);
+      if (data?.length === 1) {
+        card = data[0];
+      } else if (data?.length > 1) {
+        cards = data;
+        multiResult = true;
+      }
+    }
   } else {
-    return json({ error: 'Provide either { code } or { code_last4, email }' }, 400);
+    return json({ error: 'Provide { code }, { code_last4, email }, or { search }' }, 400);
+  }
+
+  // ── Multiple results ──────────────────────────────────────────────────
+  if (multiResult && cards.length > 0) {
+    const { data: config } = await platformAdmin
+      .from('gift_brand_config')
+      .select('currency')
+      .eq('company_id', companyId)
+      .maybeSingle();
+    return json({
+      multiple: true,
+      count: cards.length,
+      cards: cards.map(c => ({
+        card_id: c.id,
+        status: c.status,
+        balance: c.balance_minor,
+        initial_amount: c.initial_amount_minor,
+        currency: config?.currency || 'gbp',
+        code_last4: c.code_last4,
+        expires_at: c.expires_at,
+        issued_at: c.issued_at,
+        recipient_name: c.recipient_name,
+        recipient_email: c.recipient_email,
+      })),
+    });
   }
 
   if (!card) return json({ error: 'Card not found' }, 404);

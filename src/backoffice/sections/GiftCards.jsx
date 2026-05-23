@@ -1,5 +1,5 @@
 // src/backoffice/sections/GiftCards.jsx
-// v5.5.197 — Back office gift card management.
+// v5.5.198 — Back office gift card management.
 // Full management surface: enable toggle, customer-facing URLs with preview
 // links, branding (uses online_branding from location), issue, lookup, void,
 // recent cards list, and purchase history.
@@ -402,31 +402,60 @@ function IssuePanel() {
 }
 
 // ─── Lookup Panel ───────────────────────────────────────────────────────
+// v5.5.197: Single search box — type a full code, last 4, email, or name.
+// The edge function auto-detects the input type.
 function LookupPanel() {
-  const [code, setCode] = useState('');
-  const [last4, setLast4] = useState('');
-  const [email, setEmail] = useState('');
-  const [lookupMode, setLookupMode] = useState('code'); // code | last4
+  const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [card, setCard] = useState(null);
+  const [multiCards, setMultiCards] = useState(null); // multiple matches
   const [voidConfirm, setVoidConfirm] = useState(false);
   const [voidReason, setVoidReason] = useState('');
   const [voiding, setVoiding] = useState(false);
+  const [resending, setResending] = useState(false);
+  const [resendOk, setResendOk] = useState(false);
 
-  const handleLookup = async () => {
-    setError(null); setCard(null); setLoading(true); setVoidConfirm(false);
+  const handleSearch = async () => {
+    const q = query.trim();
+    if (!q) { setError('Enter a code, email, or name'); return; }
+    setError(null); setCard(null); setMultiCards(null); setLoading(true); setVoidConfirm(false); setResendOk(false);
     try {
+      // Detect: if it looks like a full 16-char code, use { code }
+      const cleaned = q.replace(/[\s-]/g, '').toUpperCase();
       let body;
-      if (lookupMode === 'code') {
-        if (!code.trim()) throw new Error('Enter a gift card code');
-        body = { code: code.trim() };
+      if (/^[A-Z2-9]{16}$/.test(cleaned)) {
+        body = { code: cleaned };
       } else {
-        if (!last4.trim() || !email.trim()) throw new Error('Enter both last 4 and email');
-        body = { code_last4: last4.trim(), email: email.trim() };
+        body = { search: q };
       }
       const res = await callGift('gift-lookup', body);
-      setCard(res);
+      if (res.multiple) {
+        setMultiCards(res.cards);
+      } else {
+        setCard(res);
+      }
+    } catch (e) {
+      setError(String(e?.message ?? e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Select from multiple results — re-lookup by last4+email for that specific card
+  const selectCard = async (c) => {
+    setError(null); setMultiCards(null); setLoading(true);
+    try {
+      const body = c.recipient_email
+        ? { code_last4: c.code_last4, email: c.recipient_email }
+        : { search: c.code_last4 };
+      const res = await callGift('gift-lookup', body);
+      if (res.multiple) {
+        // Still multiple — just show the first
+        setCard(res.cards?.[0] || null);
+      } else {
+        setCard(res);
+      }
     } catch (e) {
       setError(String(e?.message ?? e));
     } finally {
@@ -438,11 +467,7 @@ function LookupPanel() {
     if (!voidReason.trim()) { setError('Enter a reason for voiding'); return; }
     setError(null); setVoiding(true);
     try {
-      await callGift('gift-void', {
-        card_id: card.card_id,
-        reason: voidReason.trim(),
-      });
-      // Re-lookup to refresh state
+      await callGift('gift-void', { card_id: card.card_id, reason: voidReason.trim() });
       setCard({ ...card, status: 'voided', balance: 0 });
       setVoidConfirm(false);
       setVoidReason('');
@@ -450,6 +475,21 @@ function LookupPanel() {
       setError(String(e?.message ?? e));
     } finally {
       setVoiding(false);
+    }
+  };
+
+  // Resend the gift card email
+  const handleResend = async () => {
+    if (!card?.recipient_email || !card?.card_id) return;
+    setResending(true); setError(null); setResendOk(false);
+    try {
+      await callGift('gift-resend', { card_id: card.card_id });
+      setResendOk(true);
+      setTimeout(() => setResendOk(false), 5000);
+    } catch (e) {
+      setError(`Resend failed: ${e?.message ?? e}`);
+    } finally {
+      setResending(false);
     }
   };
 
@@ -463,69 +503,60 @@ function LookupPanel() {
 
   return (
     <div style={S.card}>
-      <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--t1)', marginBottom: 14 }}>Look up a gift card</div>
-
-      {/* Lookup mode toggle */}
-      <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
-        <button
-          onClick={() => setLookupMode('code')}
-          style={{ ...S.btn, ...(lookupMode === 'code' ? S.btnPrim : S.btnGhost), padding: '6px 12px', fontSize: 12 }}
-        >By full code</button>
-        <button
-          onClick={() => setLookupMode('last4')}
-          style={{ ...S.btn, ...(lookupMode === 'last4' ? S.btnPrim : S.btnGhost), padding: '6px 12px', fontSize: 12 }}
-        >By last 4 + email</button>
+      <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--t1)', marginBottom: 4 }}>Look up a gift card</div>
+      <div style={{ fontSize: 12, color: 'var(--t4)', marginBottom: 14 }}>
+        Search by full code, last 4 digits, recipient email, or recipient name.
       </div>
 
-      {lookupMode === 'code' ? (
-        <div>
-          <label style={S.label}>Gift card code (16 characters)</label>
-          <input
-            type="text"
-            value={code}
-            onChange={e => setCode(e.target.value.toUpperCase().replace(/[^A-Z2-9]/g, ''))}
-            placeholder="ABCD EFGH JKLM NPQR"
-            maxLength={19}
-            style={{ ...S.input, ...S.inputMono, fontSize: 16 }}
-            onKeyDown={e => e.key === 'Enter' && handleLookup()}
-          />
-        </div>
-      ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 12 }}>
-          <div>
-            <label style={S.label}>Last 4 of code</label>
-            <input
-              type="text"
-              value={last4}
-              onChange={e => setLast4(e.target.value.toUpperCase().replace(/[^A-Z2-9]/g, '').slice(0, 4))}
-              placeholder="NPQR"
-              maxLength={4}
-              style={{ ...S.input, ...S.inputMono }}
-            />
-          </div>
-          <div>
-            <label style={S.label}>Recipient email</label>
-            <input
-              type="email"
-              value={email}
-              onChange={e => setEmail(e.target.value)}
-              placeholder="jane@example.com"
-              style={S.input}
-              onKeyDown={e => e.key === 'Enter' && handleLookup()}
-            />
-          </div>
-        </div>
-      )}
-
-      <div style={{ marginTop: 12 }}>
-        <button onClick={handleLookup} disabled={loading} style={{ ...S.btn, ...S.btnPrim }}>
-          {loading ? 'Looking up...' : 'Look up'}
+      <div style={{ display: 'flex', gap: 8 }}>
+        <input
+          type="text"
+          value={query}
+          onChange={e => setQuery(e.target.value)}
+          placeholder="Code, last 4, email, or name..."
+          style={{ ...S.input, flex: 1, fontSize: 14 }}
+          onKeyDown={e => e.key === 'Enter' && handleSearch()}
+          autoFocus
+        />
+        <button onClick={handleSearch} disabled={loading} style={{ ...S.btn, ...S.btnPrim, whiteSpace: 'nowrap' }}>
+          {loading ? 'Searching...' : 'Search'}
         </button>
       </div>
 
       {error && <div style={{ ...S.errorBox, marginTop: 14 }}>{error}</div>}
 
-      {/* Card result */}
+      {/* Multiple matches — let user pick */}
+      {multiCards && (
+        <div style={{ marginTop: 14 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--t2)', marginBottom: 8 }}>
+            {multiCards.length} cards found — select one:
+          </div>
+          {multiCards.map(c => (
+            <button
+              key={c.card_id}
+              onClick={() => selectCard(c)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 10, width: '100%',
+                padding: '10px 12px', background: 'var(--bg2)', border: '1px solid var(--bdr)',
+                borderRadius: 8, marginBottom: 6, cursor: 'pointer', textAlign: 'left',
+                fontFamily: 'inherit',
+              }}
+            >
+              <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, color: 'var(--t1)' }}>...{c.code_last4}</span>
+              <span style={{ ...S.pill, ...statusColor(c.status), fontSize: 10 }}>{c.status}</span>
+              <span style={{ fontWeight: 700, color: 'var(--t1)' }}>{fmtMoney(c.balance, c.currency)}</span>
+              <span style={{ color: 'var(--t3)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12 }}>
+                {c.recipient_name || c.recipient_email || ''}
+              </span>
+              <span style={{ fontSize: 11, color: 'var(--t4)' }}>
+                {c.issued_at ? new Date(c.issued_at).toLocaleDateString() : ''}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Single card result */}
       {card && (
         <div style={{ marginTop: 18, padding: 16, background: 'var(--bg2)', borderRadius: 10, border: '1px solid var(--bdr)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
@@ -545,6 +576,15 @@ function LookupPanel() {
             {card.recipient_name && <div><strong style={{ color: 'var(--t3)' }}>Recipient:</strong><br/>{card.recipient_name}</div>}
             {card.recipient_email && <div><strong style={{ color: 'var(--t3)' }}>Email:</strong><br/>{card.recipient_email}</div>}
             {card.note && <div><strong style={{ color: 'var(--t3)' }}>Note:</strong><br/>{card.note}</div>}
+          </div>
+
+          {/* Action buttons: resend email */}
+          <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+            {card.recipient_email && (
+              <button onClick={handleResend} disabled={resending} style={{ ...S.btn, ...S.btnGhost, fontSize: 12 }}>
+                {resending ? 'Sending...' : resendOk ? String.fromCodePoint(0x2713) + ' Sent!' : String.fromCodePoint(0x2709) + ' Resend email to recipient'}
+              </button>
+            )}
           </div>
 
           {/* Transaction history */}
@@ -696,6 +736,26 @@ function RecentCardsPanel() {
   );
 }
 
+// ─── Code Cell (shows full code with copy) ─────────────────────────────
+function CodeCell({ code }) {
+  const [copied, setCopied] = useState(false);
+  const formatted = code.replace(/\s/g, '').toUpperCase().match(/.{1,4}/g)?.join(' ') || code;
+  const copy = () => {
+    navigator.clipboard?.writeText(formatted);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+  return (
+    <span
+      onClick={copy}
+      title="Click to copy code"
+      style={{ cursor: 'pointer', fontSize: 11, letterSpacing: '0.06em', fontWeight: 600, color: copied ? 'var(--grn)' : 'var(--t1)' }}
+    >
+      {copied ? String.fromCodePoint(0x2713) + ' Copied' : formatted}
+    </span>
+  );
+}
+
 // ─── Online Purchases Panel ─────────────────────────────────────────────
 // Shows gift cards purchased by customers via Stripe Checkout.
 function PurchasesPanel({ companyId }) {
@@ -709,7 +769,7 @@ function PurchasesPanel({ companyId }) {
       try {
         const { data, error: qErr } = await platformSupabase
           .from('gift_card_purchases')
-          .select('id, amount_minor, currency, sender_name, sender_email, recipient_name, recipient_email, delivery_type, status, code_last4, created_at, fulfilled_at')
+          .select('id, amount_minor, currency, sender_name, sender_email, recipient_name, recipient_email, delivery_type, status, code_last4, fulfilled_code, created_at, fulfilled_at')
           .eq('company_id', companyId)
           .order('created_at', { ascending: false })
           .limit(50);
@@ -750,7 +810,7 @@ function PurchasesPanel({ companyId }) {
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead>
               <tr style={{ borderBottom: '2px solid var(--bdr)' }}>
-                {['Amount', 'Status', 'Card', 'From', 'To', 'Type', 'Date'].map(h => (
+                {['Amount', 'Status', 'Code', 'From', 'To', 'Type', 'Date'].map(h => (
                   <th key={h} style={{ textAlign: 'left', padding: '6px 8px', fontSize: 10, fontWeight: 700, color: 'var(--t4)', textTransform: 'uppercase', letterSpacing: '.06em' }}>
                     {h}
                   </th>
@@ -765,7 +825,9 @@ function PurchasesPanel({ companyId }) {
                     <span style={{ ...S.pill, ...statusColor(p.status), fontSize: 10, padding: '1px 6px' }}>{p.status}</span>
                   </td>
                   <td style={{ padding: '8px', fontFamily: 'var(--font-mono)', color: 'var(--t2)' }}>
-                    {p.code_last4 ? `...${p.code_last4}` : String.fromCodePoint(0x2014)}
+                    {p.fulfilled_code ? (
+                      <CodeCell code={p.fulfilled_code} />
+                    ) : p.code_last4 ? `...${p.code_last4}` : String.fromCodePoint(0x2014)}
                   </td>
                   <td style={{ padding: '8px', color: 'var(--t2)', maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {p.sender_name || p.sender_email}

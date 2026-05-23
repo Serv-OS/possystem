@@ -5,6 +5,11 @@
 // Body: { code, amount, order_id, location_id, channel,
 //         idempotency_key, staff_id? }
 //
+// v5.5.197: Company resolution now falls back to looking up the company_id
+// from the location_id via the Platform DB locations table. This fixes POS
+// devices which authenticate via anonymous auth and have no user_company_roles
+// row. Resolution order: user_company_roles → locations.company_id.
+//
 // Validations:
 //   1. Code resolves to active card in caller's org
 //   2. Card not expired, not void
@@ -16,6 +21,37 @@ import {
   normalizeCode, hmacLookup,
 } from '../_shared/gift-card-utils.ts';
 
+// Resolve company_id with POS fallback: try user role first, then location.
+async function resolveCompanyForPOS(
+  userId: string,
+  locationId?: string | null,
+): Promise<string | Response> {
+  // 1. Try user_company_roles (works for BO users)
+  const result = await resolveCompanyId(userId);
+  if (typeof result === 'string') return result;
+
+  // 2. Fallback: look up company_id from location_id (POS anonymous auth)
+  if (locationId) {
+    // Try ops_location_id first (POS sends the ops DB location ID)
+    const { data: locByOps } = await platformAdmin
+      .from('locations')
+      .select('company_id')
+      .eq('ops_location_id', locationId)
+      .maybeSingle();
+    if (locByOps?.company_id) return locByOps.company_id;
+
+    // Try as platform location ID
+    const { data: locById } = await platformAdmin
+      .from('locations')
+      .select('company_id')
+      .eq('id', locationId)
+      .maybeSingle();
+    if (locById?.company_id) return locById.company_id;
+  }
+
+  return json({ error: 'Could not resolve company. Ensure location is linked.' }, 403);
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
@@ -25,11 +61,6 @@ Deno.serve(async (req) => {
   if (authResult instanceof Response) return authResult;
   const caller = authResult.user;
 
-  // Resolve company
-  const companyResult = await resolveCompanyId(caller.id);
-  if (companyResult instanceof Response) return companyResult;
-  const companyId = companyResult;
-
   // Parse body
   let body: Record<string, unknown>;
   try { body = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
@@ -37,6 +68,11 @@ Deno.serve(async (req) => {
   const {
     code, amount, order_id, location_id, channel, idempotency_key, staff_id,
   } = body as any;
+
+  // Resolve company with POS fallback
+  const companyResult = await resolveCompanyForPOS(caller.id, location_id as string);
+  if (companyResult instanceof Response) return companyResult;
+  const companyId = companyResult;
 
   if (!code) return json({ error: 'code required' }, 400);
   if (!amount) return json({ error: 'amount required' }, 400);
@@ -76,7 +112,6 @@ Deno.serve(async (req) => {
     .maybeSingle();
 
   if (existingTx) {
-    // Return the prior result without re-debiting
     return json({
       card_id: card.id,
       applied: Math.abs(existingTx.amount_minor),
@@ -91,7 +126,6 @@ Deno.serve(async (req) => {
   if (card.status === 'voided') return json({ error: 'Card has been voided' }, 400);
   if (card.status === 'expired') return json({ error: 'Card has expired' }, 400);
   if (card.expires_at && new Date(card.expires_at) < new Date()) {
-    // Auto-expire
     await platformAdmin.from('gift_cards').update({ status: 'expired' }).eq('id', card.id);
     return json({ error: 'Card has expired' }, 400);
   }
@@ -106,10 +140,7 @@ Deno.serve(async (req) => {
     }, 400);
   }
 
-  // ── Debit: ledger insert + balance update in a pseudo-transaction ─────
-  // Supabase JS doesn't support DB transactions directly, so we use
-  // optimistic locking via the idempotency unique index. If two requests
-  // race, the second insert fails on the unique constraint.
+  // ── Debit ─────────────────────────────────────────────────────────────
   const newBalance = card.balance_minor - amountMinor;
   const newStatus = newBalance === 0 ? 'redeemed' : 'active';
 
@@ -119,7 +150,7 @@ Deno.serve(async (req) => {
       card_id: card.id,
       company_id: companyId,
       type: 'redeem',
-      amount_minor: -amountMinor,    // negative = debit
+      amount_minor: -amountMinor,
       balance_after_minor: newBalance,
       location_id: location_id || null,
       order_id: order_id || null,
@@ -129,9 +160,7 @@ Deno.serve(async (req) => {
     });
 
   if (txErr) {
-    // Unique constraint violation = idempotency race condition
     if (txErr.code === '23505') {
-      // Re-fetch the existing tx and return it
       const { data: raceTx } = await platformAdmin
         .from('gift_card_transactions')
         .select('*')
@@ -152,7 +181,6 @@ Deno.serve(async (req) => {
     return json({ error: `Ledger write failed: ${txErr.message}` }, 500);
   }
 
-  // Update cached balance and status
   const { error: updErr } = await platformAdmin
     .from('gift_cards')
     .update({ balance_minor: newBalance, status: newStatus })
@@ -160,7 +188,6 @@ Deno.serve(async (req) => {
 
   if (updErr) {
     console.error('[gift-redeem] Balance update failed:', updErr.message);
-    // Ledger is the source of truth; balance will reconcile on next write.
   }
 
   return json({

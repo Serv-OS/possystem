@@ -587,7 +587,7 @@ function GiftCardEntry({ totalMinor, giftAlreadyApplied, onApplied, onBack, tabl
       const res = await fetch(`${GIFT_FUNCTIONS_URL}/gift-lookup`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-        body: JSON.stringify({ code: code.replace(/[\s-]/g, '') }),
+        body: JSON.stringify({ code: code.replace(/[\s-]/g, ''), location_id: getActiveLocationSync() }),
       });
       const j = await res.json();
       if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);

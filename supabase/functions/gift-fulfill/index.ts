@@ -244,13 +244,14 @@ Deno.serve(async (req) => {
     return json({ error: `Ledger entry failed: ${txErr.message}` }, 500);
   }
 
-  // Update purchase → fulfilled
+  // Update purchase → fulfilled (store plaintext code for resend capability)
   await platformAdmin
     .from('gift_card_purchases')
     .update({
       status: 'fulfilled',
       gift_card_id: card.id,
       code_last4: last4,
+      fulfilled_code: normalized,
       fulfilled_at: new Date().toISOString(),
     })
     .eq('id', purchaseId);
