@@ -53,7 +53,74 @@ export const evaluateAutoDiscounts = (items, rules, channel = 'pos') => {
     const rewardType = rule.rewardType || rule.reward_type || 'percent';
     const rewardValue = parseFloat(rule.rewardValue ?? rule.reward_value ?? 0);
 
-    if (rule.triggerType === 'buy_x' || rule.trigger_type === 'buy_x') {
+    const triggerType = rule.triggerType || rule.trigger_type || 'buy_x';
+
+    // ── Bundle / meal-deal rules ──────────────────────────────────────────
+    // trigger_type='bundle': each group in triggerGroups must be satisfied
+    // reward_type='fixed_price': total for the bundle = rewardValue
+    if (triggerType === 'bundle') {
+      const groups = rule.triggerGroups || rule.trigger_groups || [];
+      if (!groups.length) continue;
+
+      // For each group, find matching items and expand by qty
+      const groupMatches = groups.map(g => {
+        const catIds = g.categoryIds || g.category_ids || [];
+        const needed = g.qty ?? 1;
+        const expanded = [];
+        for (const item of activeItems) {
+          if (itemMatchesCategories(item, catIds)) {
+            for (let q = 0; q < item.qty; q++) {
+              expanded.push({ ...item, _unitPrice: item.price, _originalUid: item.uid });
+            }
+          }
+        }
+        return { catIds, needed, expanded };
+      });
+
+      // Check all groups are satisfied
+      if (groupMatches.some(g => g.expanded.length < g.needed)) continue;
+
+      // How many full bundles can we make? Limited by the group with the
+      // fewest multiples of its needed count.
+      const fireCount = Math.min(...groupMatches.map(g => Math.floor(g.expanded.length / g.needed)));
+      if (fireCount < 1) continue;
+
+      // Collect the items that form each bundle (cheapest first per group)
+      const appliedItems = [];
+      let totalOriginalPrice = 0;
+      for (const g of groupMatches) {
+        g.expanded.sort((a, b) => a._unitPrice - b._unitPrice);
+        const picked = g.expanded.slice(0, g.needed * fireCount);
+        for (const p of picked) {
+          totalOriginalPrice += p._unitPrice;
+          appliedItems.push({ uid: p._originalUid, name: p.name, originalPrice: p._unitPrice });
+        }
+      }
+
+      const bundlePrice = rewardValue * fireCount;
+      const totalSaving = Math.round(Math.max(0, totalOriginalPrice - bundlePrice) * 100) / 100;
+
+      if (totalSaving <= 0) continue;
+
+      // Distribute the saving proportionally across bundle items
+      for (const ai of appliedItems) {
+        ai.saving = Math.round((ai.originalPrice / totalOriginalPrice) * totalSaving * 100) / 100;
+      }
+
+      results.push({
+        ruleId: rule.id,
+        ruleName: rule.name,
+        rewardType: 'fixed_price',
+        rewardValue,
+        bundlePrice: bundlePrice,
+        appliedItems,
+        totalSaving,
+      });
+      continue;
+    }
+
+    // ── Buy-X-get-Y rules ─────────────────────────────────────────────────
+    if (triggerType === 'buy_x') {
       // Expand items by qty so each unit is individually addressable
       const expandedQualifying = [];
       for (const item of activeItems) {

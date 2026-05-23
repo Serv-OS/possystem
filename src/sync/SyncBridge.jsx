@@ -268,6 +268,7 @@ export default function SyncBridge({ onSyncPulse }) {
                 id: r.id, name: r.name, active: r.active,
                 triggerType: r.trigger_type, triggerCategoryIds: r.trigger_category_ids || [],
                 triggerQty: r.trigger_qty,
+                triggerGroups: r.trigger_groups || null,
                 rewardType: r.reward_type, rewardValue: parseFloat(r.reward_value),
                 rewardQty: r.reward_qty,
                 rewardCategoryIds: r.reward_category_ids || [],

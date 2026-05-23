@@ -76,6 +76,17 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.183', date: '23 May 2026', label: 'Bundle / meal-deal pricing — auto-discount rules now support fixed-price bundles',
+    changes: [
+      'Auto-discount rules extended with a new "Bundle / Meal deal" type alongside existing "Buy X get Y" rules.',
+      'Bundle rules let you define multiple category groups (e.g. 1 × Starters + 1 × Mains + 1 × Drinks) and set a fixed total price. The saving is the difference between individual item prices and the bundle price, distributed proportionally.',
+      'New trigger_groups jsonb column on discount_rules table (migration updated). Each group specifies a category list and required quantity.',
+      'Discount engine (discountEngine.js) evaluates bundles: checks all groups are satisfied, calculates how many full bundles can fire, picks cheapest items, and distributes savings proportionally.',
+      'Rule list in back office shows bundle rules as "1 × Category + 1 × Category = £X.XX" instead of buy-X-get-Y format.',
+      'SyncBridge and config push hydrate triggerGroups for POS/Kiosk/Online/QR surfaces.',
+    ],
+  },
+  {
     version: '5.5.182', date: '23 May 2026', label: 'Custom discounts — manage presets & auto-discount rules from back office',
     changes: [
       'New "Discounts" section in back office (Configuration group). Two tabs: Discount Presets for staff-applied discounts, and Auto-Discount Rules for cart-triggered deals.',

@@ -30,13 +30,14 @@ CREATE TABLE IF NOT EXISTS public.discount_rules (
   location_id text NOT NULL DEFAULT 'loc-demo',
   name text NOT NULL,
   active boolean DEFAULT true,
-  trigger_type text NOT NULL DEFAULT 'buy_x',  -- 'buy_x' (buy X from category)
+  trigger_type text NOT NULL DEFAULT 'buy_x',  -- 'buy_x' | 'bundle' (meal deal)
   trigger_category_ids text[] DEFAULT '{}',
   trigger_qty integer NOT NULL DEFAULT 2,
-  reward_type text NOT NULL DEFAULT 'percent', -- 'percent' | 'amount' | 'free'
+  reward_type text NOT NULL DEFAULT 'percent', -- 'percent' | 'amount' | 'free' | 'fixed_price'
   reward_value numeric(10,4) DEFAULT 0,
   reward_qty integer DEFAULT 1,
   reward_category_ids text[] DEFAULT '{}',
+  trigger_groups jsonb DEFAULT NULL,            -- bundle mode: [{categoryIds:[], qty:1}, ...]
   channels jsonb DEFAULT '{"pos":true,"online":true,"qr":true,"kiosk":true}',
   schedule jsonb DEFAULT NULL,                 -- future: day/time scheduling
   priority integer DEFAULT 0,

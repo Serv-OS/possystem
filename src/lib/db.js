@@ -1225,6 +1225,7 @@ export const upsertDiscountRule = async (rule, locationId = null) => {
     reward_qty:           rule.rewardQty ?? rule.reward_qty ?? 1,
     reward_category_ids:  rule.rewardCategoryIds || rule.reward_category_ids || [],
     channels:             rule.channels || { pos: true, online: true, qr: true, kiosk: true },
+    trigger_groups:       rule.triggerGroups || rule.trigger_groups || null,
     schedule:             rule.schedule || null,
     priority:             rule.priority ?? 0,
     sort_order:           rule.sortOrder ?? rule.sort_order ?? 0,

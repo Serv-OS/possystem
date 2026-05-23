@@ -33,9 +33,12 @@ const EMPTY_DISCOUNT = {
 const EMPTY_RULE = {
   name:'', active:true,
   triggerType:'buy_x', triggerCategoryIds:[], triggerQty:2,
+  triggerGroups: [{ categoryIds: [], qty: 1 }],
   rewardType:'percent', rewardValue:'', rewardQty:1, rewardCategoryIds:[],
   channels:{ pos:true, online:true, qr:true, kiosk:true },
 };
+
+const EMPTY_TRIGGER_GROUP = { categoryIds: [], qty: 1 };
 
 const CHANNEL_LABELS = { pos:'POS', online:'Online ordering', qr:'QR code ordering', kiosk:'Kiosk' };
 
@@ -171,6 +174,7 @@ function RuleForm({ rule, categories, onSave, onCancel }) {
     rewardValue: rule?.rewardValue ?? '',
     triggerQty: rule?.triggerQty ?? 2,
     rewardQty: rule?.rewardQty ?? 1,
+    triggerGroups: rule?.triggerGroups?.length ? rule.triggerGroups : [{ ...EMPTY_TRIGGER_GROUP }],
   });
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }));
   const [saving, setSaving] = useState(false);
@@ -178,8 +182,21 @@ function RuleForm({ rule, categories, onSave, onCancel }) {
     !rule?.rewardCategoryIds?.length || JSON.stringify(rule?.rewardCategoryIds) === JSON.stringify(rule?.triggerCategoryIds)
   );
 
+  const isBundle = form.triggerType === 'bundle';
+
   const toggleChannel = (ch) => {
     f('channels', { ...form.channels, [ch]: !form.channels[ch] });
+  };
+
+  // ── Trigger group helpers (for bundle mode) ──
+  const updateGroup = (idx, patch) => {
+    const next = form.triggerGroups.map((g, i) => i === idx ? { ...g, ...patch } : g);
+    f('triggerGroups', next);
+  };
+  const addGroup = () => f('triggerGroups', [...form.triggerGroups, { ...EMPTY_TRIGGER_GROUP }]);
+  const removeGroup = (idx) => {
+    if (form.triggerGroups.length <= 1) return;
+    f('triggerGroups', form.triggerGroups.filter((_, i) => i !== idx));
   };
 
   const handleSave = async () => {
@@ -191,17 +208,30 @@ function RuleForm({ rule, categories, onSave, onCancel }) {
       triggerQty: parseInt(form.triggerQty) || 2,
       rewardQty: parseInt(form.rewardQty) || 1,
       rewardCategoryIds: sameRewardCats ? [] : form.rewardCategoryIds,
+      // For bundle type, set reward type to fixed_price automatically
+      ...(isBundle ? { rewardType: 'fixed_price', rewardQty: 0 } : {}),
+      // Only include triggerGroups for bundle type
+      triggerGroups: isBundle ? form.triggerGroups : null,
     };
     await onSave(payload);
     setSaving(false);
   };
 
   // Build human-readable summary
-  const triggerCatNames = categories.filter(c => form.triggerCategoryIds.includes(c.id)).map(c => c.label).join(', ') || 'any category';
-  const rewardLabel = form.rewardType === 'free' ? 'free'
-    : form.rewardType === 'percent' ? `${form.rewardValue || '?'}% off`
-    : `£${form.rewardValue || '?'} off`;
-  const summary = `Buy ${form.triggerQty} from ${triggerCatNames}, get ${form.rewardQty} ${rewardLabel}`;
+  let summary;
+  if (isBundle) {
+    const groupParts = form.triggerGroups.map(g => {
+      const names = categories.filter(c => g.categoryIds.includes(c.id)).map(c => c.label).join(', ') || 'any';
+      return `${g.qty} from ${names}`;
+    });
+    summary = `${groupParts.join(' + ')} = £${form.rewardValue || '?'}`;
+  } else {
+    const triggerCatNames = categories.filter(c => form.triggerCategoryIds.includes(c.id)).map(c => c.label).join(', ') || 'any category';
+    const rewardLabel = form.rewardType === 'free' ? 'free'
+      : form.rewardType === 'percent' ? `${form.rewardValue || '?'}% off`
+      : `£${form.rewardValue || '?'} off`;
+    summary = `Buy ${form.triggerQty} from ${triggerCatNames}, get ${form.rewardQty} ${rewardLabel}`;
+  }
 
   return (
     <div style={{ ...S.card, border:'1.5px solid var(--acc-b)', background:'var(--acc-d)' }}>
@@ -213,64 +243,137 @@ function RuleForm({ rule, categories, onSave, onCancel }) {
       <div style={{ marginBottom:14 }}>
         <label style={S.label}>Rule name</label>
         <input style={S.input} value={form.name} onChange={e => f('name', e.target.value)}
-          placeholder="e.g. Buy 2 pizzas get 3rd 50% off" />
+          placeholder={isBundle ? 'e.g. Lunch deal — starter + main + drink £15' : 'e.g. Buy 2 pizzas get 3rd 50% off'} />
       </div>
 
-      {/* Trigger section */}
-      <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:10, padding:14, marginBottom:14 }}>
-        <div style={{ fontSize:12, fontWeight:700, color:'var(--t1)', marginBottom:10 }}>Trigger condition</div>
-        <div style={S.row}>
-          <div>
-            <label style={S.label}>Buy quantity</label>
-            <input style={S.input} type="number" min="1" value={form.triggerQty}
-              onChange={e => f('triggerQty', e.target.value)} />
-          </div>
-          <div>
-            <label style={S.label}>From categories</label>
-            <CategoryPicker selected={form.triggerCategoryIds} onChange={v => f('triggerCategoryIds', v)} categories={categories} />
-          </div>
+      {/* Rule type selector */}
+      <div style={{ marginBottom:14 }}>
+        <label style={S.label}>Rule type</label>
+        <div style={{ display:'flex', gap:6 }}>
+          {[['buy_x','Buy X get Y'],['bundle','Bundle / Meal deal']].map(([val, label]) => (
+            <button key={val} type="button" onClick={() => f('triggerType', val)} style={{
+              flex:1, padding:'10px 14px', borderRadius:8, cursor:'pointer', fontFamily:'inherit',
+              fontSize:12, fontWeight:700, textAlign:'center',
+              border:`1.5px solid ${form.triggerType === val ? 'var(--acc)' : 'var(--bdr)'}`,
+              background: form.triggerType === val ? 'var(--acc-d)' : 'var(--bg3)',
+              color: form.triggerType === val ? 'var(--acc)' : 'var(--t2)',
+            }}>
+              {label}
+            </button>
+          ))}
         </div>
       </div>
 
-      {/* Reward section */}
-      <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:10, padding:14, marginBottom:14 }}>
-        <div style={{ fontSize:12, fontWeight:700, color:'var(--t1)', marginBottom:10 }}>Reward</div>
-        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:14, marginBottom:14 }}>
-          <div>
-            <label style={S.label}>Reward quantity</label>
-            <input style={S.input} type="number" min="1" value={form.rewardQty}
-              onChange={e => f('rewardQty', e.target.value)} />
-          </div>
-          <div>
-            <label style={S.label}>Discount type</label>
-            <select style={S.select} value={form.rewardType} onChange={e => f('rewardType', e.target.value)}>
-              <option value="percent">% off</option>
-              <option value="amount">£ off</option>
-              <option value="free">Free (100% off)</option>
-            </select>
-          </div>
-          {form.rewardType !== 'free' && (
+      {/* ── Buy-X trigger ── */}
+      {!isBundle && (
+        <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:10, padding:14, marginBottom:14 }}>
+          <div style={{ fontSize:12, fontWeight:700, color:'var(--t1)', marginBottom:10 }}>Trigger condition</div>
+          <div style={S.row}>
             <div>
-              <label style={S.label}>{form.rewardType === 'percent' ? 'Percentage' : 'Amount'}</label>
-              <input style={S.input} type="number" min="0" value={form.rewardValue}
-                onChange={e => f('rewardValue', e.target.value)}
-                placeholder={form.rewardType === 'percent' ? '50' : '5.00'} />
+              <label style={S.label}>Buy quantity</label>
+              <input style={S.input} type="number" min="1" value={form.triggerQty}
+                onChange={e => f('triggerQty', e.target.value)} />
+            </div>
+            <div>
+              <label style={S.label}>From categories</label>
+              <CategoryPicker selected={form.triggerCategoryIds} onChange={v => f('triggerCategoryIds', v)} categories={categories} />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Bundle trigger groups ── */}
+      {isBundle && (
+        <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:10, padding:14, marginBottom:14 }}>
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:10 }}>
+            <div style={{ fontSize:12, fontWeight:700, color:'var(--t1)' }}>Bundle items</div>
+            <button type="button" onClick={addGroup} style={{
+              ...S.btn, padding:'4px 12px', fontSize:11, background:'var(--acc)', color:'#0e0f14',
+            }}>+ Add category group</button>
+          </div>
+          <div style={{ fontSize:11, color:'var(--t3)', marginBottom:12 }}>
+            Customer must buy the specified quantity from each category group to qualify
+          </div>
+          {form.triggerGroups.map((group, idx) => (
+            <div key={idx} style={{
+              display:'flex', alignItems:'flex-start', gap:10, padding:10, marginBottom:6,
+              background:'var(--bg2)', borderRadius:8, border:'1px solid var(--bdr)',
+            }}>
+              <div style={{ width:60, flexShrink:0 }}>
+                <label style={{ ...S.label, fontSize:10 }}>Qty</label>
+                <input style={{ ...S.input, textAlign:'center' }} type="number" min="1" value={group.qty}
+                  onChange={e => updateGroup(idx, { qty: parseInt(e.target.value) || 1 })} />
+              </div>
+              <div style={{ flex:1 }}>
+                <label style={{ ...S.label, fontSize:10 }}>From categories</label>
+                <CategoryPicker selected={group.categoryIds} onChange={v => updateGroup(idx, { categoryIds: v })} categories={categories} />
+              </div>
+              {form.triggerGroups.length > 1 && (
+                <button type="button" onClick={() => removeGroup(idx)} style={{
+                  ...S.btn, padding:'6px 8px', background:'none', color:'var(--red)', fontSize:16, marginTop:18,
+                }}>×</button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Reward section — different for buy_x vs bundle */}
+      {!isBundle && (
+        <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:10, padding:14, marginBottom:14 }}>
+          <div style={{ fontSize:12, fontWeight:700, color:'var(--t1)', marginBottom:10 }}>Reward</div>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:14, marginBottom:14 }}>
+            <div>
+              <label style={S.label}>Reward quantity</label>
+              <input style={S.input} type="number" min="1" value={form.rewardQty}
+                onChange={e => f('rewardQty', e.target.value)} />
+            </div>
+            <div>
+              <label style={S.label}>Discount type</label>
+              <select style={S.select} value={form.rewardType} onChange={e => f('rewardType', e.target.value)}>
+                <option value="percent">% off</option>
+                <option value="amount">£ off</option>
+                <option value="free">Free (100% off)</option>
+              </select>
+            </div>
+            {form.rewardType !== 'free' && (
+              <div>
+                <label style={S.label}>{form.rewardType === 'percent' ? 'Percentage' : 'Amount'}</label>
+                <input style={S.input} type="number" min="0" value={form.rewardValue}
+                  onChange={e => f('rewardValue', e.target.value)}
+                  placeholder={form.rewardType === 'percent' ? '50' : '5.00'} />
+              </div>
+            )}
+          </div>
+
+          <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom: sameRewardCats ? 0 : 10 }}>
+            <Toggle value={sameRewardCats} onChange={setSameRewardCats} />
+            <span style={{ fontSize:12, color:'var(--t2)' }}>Reward applies to same categories as trigger</span>
+          </div>
+
+          {!sameRewardCats && (
+            <div>
+              <label style={S.label}>Reward categories</label>
+              <CategoryPicker selected={form.rewardCategoryIds} onChange={v => f('rewardCategoryIds', v)} categories={categories} />
             </div>
           )}
         </div>
+      )}
 
-        <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom: sameRewardCats ? 0 : 10 }}>
-          <Toggle value={sameRewardCats} onChange={setSameRewardCats} />
-          <span style={{ fontSize:12, color:'var(--t2)' }}>Reward applies to same categories as trigger</span>
-        </div>
-
-        {!sameRewardCats && (
-          <div>
-            <label style={S.label}>Reward categories</label>
-            <CategoryPicker selected={form.rewardCategoryIds} onChange={v => f('rewardCategoryIds', v)} categories={categories} />
+      {/* Bundle fixed price */}
+      {isBundle && (
+        <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:10, padding:14, marginBottom:14 }}>
+          <div style={{ fontSize:12, fontWeight:700, color:'var(--t1)', marginBottom:10 }}>Bundle price</div>
+          <div style={{ fontSize:11, color:'var(--t3)', marginBottom:10 }}>
+            Set the total price customers pay for the bundle. The difference from individual item prices is the discount.
           </div>
-        )}
-      </div>
+          <div style={{ maxWidth:200 }}>
+            <label style={S.label}>Fixed price (£)</label>
+            <input style={S.input} type="number" min="0" step="0.01" value={form.rewardValue}
+              onChange={e => f('rewardValue', e.target.value)} placeholder="e.g. 15.00" />
+          </div>
+        </div>
+      )}
 
       {/* Channel targeting */}
       <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:10, padding:14, marginBottom:14 }}>
@@ -340,6 +443,7 @@ export default function DiscountManager() {
           rewardValue: parseFloat(r.reward_value), rewardQty: r.reward_qty,
           rewardCategoryIds: r.reward_category_ids || [],
           channels: r.channels || { pos:true, online:true, qr:true, kiosk:true },
+          triggerGroups: r.trigger_groups || null,
           priority: r.priority ?? 0, sortOrder: r.sort_order ?? 0,
         })));
       } catch (e) { console.error('[DiscountManager] load error:', e); }
@@ -407,6 +511,7 @@ export default function DiscountManager() {
         rewardValue: parseFloat(r.reward_value), rewardQty: r.reward_qty,
         rewardCategoryIds: r.reward_category_ids || [],
         channels: r.channels || { pos:true, online:true, qr:true, kiosk:true },
+        triggerGroups: r.trigger_groups || null,
         priority: r.priority ?? 0, sortOrder: r.sort_order ?? 0,
       }));
       setRules(mapped);
@@ -559,10 +664,22 @@ export default function DiscountManager() {
                       <span style={{ fontSize:14, fontWeight:700, color:'var(--t1)' }}>{rule.name}</span>
                     </div>
                     <div style={{ fontSize:12, color:'var(--t2)', marginBottom:6 }}>
-                      Buy {rule.triggerQty} from{' '}
-                      <strong>{categories.filter(c => rule.triggerCategoryIds.includes(c.id)).map(c => c.label).join(', ') || 'any'}</strong>
-                      {' → '}get {rule.rewardQty}{' '}
-                      {rule.rewardType === 'free' ? 'free' : rule.rewardType === 'percent' ? `${rule.rewardValue}% off` : `£${rule.rewardValue} off`}
+                      {rule.triggerType === 'bundle' ? (
+                        <>
+                          {(rule.triggerGroups || []).map((g, i) => {
+                            const names = categories.filter(c => (g.categoryIds || g.category_ids || []).includes(c.id)).map(c => c.label).join(', ') || 'any';
+                            return <span key={i}>{i > 0 && ' + '}<strong>{g.qty ?? 1} × {names}</strong></span>;
+                          })}
+                          {' = '}<strong>£{Number(rule.rewardValue || 0).toFixed(2)}</strong>
+                        </>
+                      ) : (
+                        <>
+                          Buy {rule.triggerQty} from{' '}
+                          <strong>{categories.filter(c => rule.triggerCategoryIds.includes(c.id)).map(c => c.label).join(', ') || 'any'}</strong>
+                          {' → '}get {rule.rewardQty}{' '}
+                          {rule.rewardType === 'free' ? 'free' : rule.rewardType === 'percent' ? `${rule.rewardValue}% off` : `£${rule.rewardValue} off`}
+                        </>
+                      )}
                     </div>
                     <div style={{ display:'flex', gap:4 }}>
                       {Object.entries(CHANNEL_LABELS).map(([key, label]) => (
