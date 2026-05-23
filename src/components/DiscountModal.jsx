@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useStore } from '../store';
 
-const PRESETS = [
+const FALLBACK_PRESETS = [
   { id:'staff50',  label:'Staff meal',       type:'percent', value:50,  requiresManager:false },
   { id:'staff_d',  label:'Staff drinks',      type:'percent', value:50,  requiresManager:false },
   { id:'loyalty',  label:'Loyalty 10%',       type:'percent', value:10,  requiresManager:false },
@@ -16,7 +16,11 @@ const managersFrom = (staffMembers) =>
     .map(s => ({ pin: s.pin, name: s.name, id: s.id }));
 
 export default function DiscountModal({ items, subtotal, onConfirm, onCancel }) {
-  const { staffMembers, staff: currentUser } = useStore();
+  const { staffMembers, staff: currentUser, discountPresets } = useStore();
+  // Use DB-driven presets if available, otherwise fall back to hardcoded defaults
+  const PRESETS = discountPresets?.length
+    ? discountPresets.map(d => ({ id: d.id, label: d.label || d.name, type: d.type, value: d.value, requiresManager: d.requiresManager ?? false }))
+    : FALLBACK_PRESETS;
   const mgrs = managersFrom(staffMembers);
   const managerLoggedIn = currentUser?.role === 'Manager';
 
@@ -38,7 +42,7 @@ export default function DiscountModal({ items, subtotal, onConfirm, onCancel }) 
       const v = parseFloat(customVal)||0;
       return customType==='percent' ? base*v/100 : Math.min(v, base);
     }
-    if (preset) return base * preset.value / 100;
+    if (preset) return preset.type === 'amount' ? Math.min(preset.value, base) : base * preset.value / 100;
     return 0;
   };
 
@@ -114,7 +118,7 @@ export default function DiscountModal({ items, subtotal, onConfirm, onCancel }) 
                   <button key={p.id} onClick={()=>setSelected(p.id)} style={{padding:'10px 6px',borderRadius:10,cursor:'pointer',textAlign:'center',fontFamily:'inherit',border:`1.5px solid ${selected===p.id?'var(--acc)':'var(--bdr)'}`,background:selected===p.id?'var(--acc-d)':'var(--bg3)',position:'relative'}}>
                     {p.requiresManager&&<div style={{position:'absolute',top:4,right:4,width:6,height:6,borderRadius:'50%',background:'var(--acc)'}}/>}
                     <div style={{fontSize:11,fontWeight:700,color:selected===p.id?'var(--acc)':'var(--t1)',lineHeight:1.3}}>{p.label}</div>
-                    <div style={{fontSize:14,fontWeight:800,color:selected===p.id?'var(--acc)':'var(--t2)',marginTop:3,fontFamily:'DM Mono,monospace'}}>{p.value}%</div>
+                    <div style={{fontSize:14,fontWeight:800,color:selected===p.id?'var(--acc)':'var(--t2)',marginTop:3,fontFamily:'DM Mono,monospace'}}>{p.type==='amount'?`£${p.value}`:`${p.value}%`}</div>
                   </button>
                 ))}
               </div>

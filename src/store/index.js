@@ -228,6 +228,9 @@ export const useStore = create((set, get) => ({
       ...(snap.menuCategories ? { menuCategories: snap.menuCategories } : {}),
       // Tax rates — full replace
       ...(snap.taxRates?.length ? { taxRates: snap.taxRates } : {}),
+      // Discount presets + rules — full replace
+      ...(snap.discountPresets ? { discountPresets: snap.discountPresets } : {}),
+      ...(snap.discountRules ? { discountRules: snap.discountRules } : {}),
       // Modifier + instruction groups — full replace
       ...(snap.modifierGroupDefs ? { modifierGroupDefs: snap.modifierGroupDefs } : {}),
       ...(snap.instructionGroupDefs ? { instructionGroupDefs: snap.instructionGroupDefs } : {}),
@@ -597,6 +600,8 @@ export const useStore = create((set, get) => ({
   quickScreenIds: isMock ? QUICK_IDS : [],
   locationConfig: { timezone: 'Europe/London', businessDayStart: '06:00', shifts: [] },
   taxRates: [],
+  discountPresets: [],   // from discounts table — manual presets staff can apply
+  discountRules: [],     // from discount_rules table — auto-discount rules
   setQuickScreenIds: (ids) => set({ quickScreenIds: ids }),
 
   menuItems: (isMock ? MENU_ITEMS : []).map((item, idx) => ({

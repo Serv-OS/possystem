@@ -248,6 +248,34 @@ export default function SyncBridge({ onSyncPulse }) {
               }));
             } catch {}
           }
+
+          // Load discount presets + auto-discount rules
+          if (sb && locationId) {
+            try {
+              const [discRes, rulesRes] = await Promise.all([
+                sb.from('discounts').select('*').eq('location_id', locationId).eq('active', true).order('sort_order'),
+                sb.from('discount_rules').select('*').eq('location_id', locationId).eq('active', true).order('priority', { ascending: false }),
+              ]);
+              if (discRes.data?.length) patch.discountPresets = discRes.data.map(d => ({
+                id: d.id, name: d.name, label: d.name,
+                type: d.type, value: parseFloat(d.value),
+                scope: d.scope,
+                categoryIds: d.category_ids || [],
+                requiresManager: d.requires_manager ?? false,
+                active: d.active, sortOrder: d.sort_order ?? 0,
+              }));
+              if (rulesRes.data?.length) patch.discountRules = rulesRes.data.map(r => ({
+                id: r.id, name: r.name, active: r.active,
+                triggerType: r.trigger_type, triggerCategoryIds: r.trigger_category_ids || [],
+                triggerQty: r.trigger_qty,
+                rewardType: r.reward_type, rewardValue: parseFloat(r.reward_value),
+                rewardQty: r.reward_qty,
+                rewardCategoryIds: r.reward_category_ids || [],
+                channels: r.channels || { pos: true, online: true, qr: true, kiosk: true },
+                priority: r.priority ?? 0, sortOrder: r.sort_order ?? 0,
+              }));
+            } catch (e) { console.warn('[SyncBridge] discount load error:', e?.message); }
+          }
           if (catsRes.data?.length) patch.menuCategories = catsRes.data.map(cat => ({
             ...cat,
             parentId: cat.parent_id ?? cat.parentId ?? null,

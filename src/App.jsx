@@ -76,6 +76,18 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.182', date: '23 May 2026', label: 'Custom discounts — manage presets & auto-discount rules from back office',
+    changes: [
+      'New "Discounts" section in back office (Configuration group). Two tabs: Discount Presets for staff-applied discounts, and Auto-Discount Rules for cart-triggered deals.',
+      'Discount presets: custom name, % or £ amount, global or category-scoped, optional manager PIN requirement, active toggle.',
+      'Auto-discount rules: "Buy X from category, get Y at Z% off" with channel targeting (POS, Online, QR, Kiosk). Rules evaluate against cart contents automatically.',
+      'New DB tables: discounts + discount_rules (migration v5.5.63). RLS enabled with authenticated access policies.',
+      'POS DiscountModal now uses DB-driven presets (falls back to hardcoded defaults if none configured). Supports both % and £ discount types in preset grid.',
+      'Discounts sync to POS devices via config push and boot hydration in SyncBridge.',
+      'New discount evaluation engine (discountEngine.js) for auto-discount rule processing.',
+    ],
+  },
+  {
     version: '5.5.181', date: '11 May 2026', label: 'Card-payment screen — hide Back + X while reader is processing (only Cancel button remains)',
     changes: [
       'On the customer-facing card payment screen, the header ← Back chevron and × close button are now hidden. The ONLY exit during an in-flight reader transaction is the explicit "✕ Cancel payment" button inside the screen — same as the screenshot reference. Prevents the cashier accidentally dismissing the modal while the customer is mid-tap.',

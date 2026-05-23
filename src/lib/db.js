@@ -1130,3 +1130,112 @@ export const unlinkCategoryFromMenu = async (menuId, categoryId) => {
   if (error) { console.error('[unlinkCategoryFromMenu]', error); return { ok: false, error }; }
   return { ok: true };
 };
+
+// ── Discounts ─────────────────────────────────────────────────────────────────
+
+export const fetchDiscounts = async (locationId = null) => {
+  if (isMock) return { data: null, error: null };
+  if (!locationId || locationId === 'loc-demo') locationId = await getLocationId();
+  if (!locationId || locationId === 'loc-demo') return { data: null, error: new Error('No location') };
+  return supabase
+    .from('discounts')
+    .select('*')
+    .eq('location_id', locationId)
+    .order('sort_order');
+};
+
+export const fetchActiveDiscounts = async (locationId = null) => {
+  if (isMock) return { data: null, error: null };
+  if (!locationId || locationId === 'loc-demo') locationId = await getLocationId();
+  if (!locationId || locationId === 'loc-demo') return { data: null, error: new Error('No location') };
+  return supabase
+    .from('discounts')
+    .select('*')
+    .eq('location_id', locationId)
+    .eq('active', true)
+    .order('sort_order');
+};
+
+export const upsertDiscount = async (discount, locationId = null) => {
+  if (isMock) return { data: null, error: null };
+  if (!locationId || locationId === 'loc-demo') locationId = await getLocationId();
+  if (!locationId || locationId === 'loc-demo') return { data: null, error: new Error('No location') };
+  const dbRow = {
+    id:               discount.id,
+    location_id:      locationId,
+    name:             discount.name || 'Discount',
+    type:             discount.type || 'percent',
+    value:            discount.value ?? 0,
+    scope:            discount.scope || 'global',
+    category_ids:     discount.categoryIds || discount.category_ids || [],
+    requires_manager: discount.requiresManager ?? discount.requires_manager ?? false,
+    active:           discount.active ?? true,
+    sort_order:       discount.sortOrder ?? discount.sort_order ?? 0,
+    updated_at:       new Date().toISOString(),
+  };
+  const result = await supabase.from('discounts').upsert(dbRow, { onConflict: 'id' });
+  if (result.error) console.error('[DB] discounts upsert failed:', result.error.message);
+  return result;
+};
+
+export const deleteDiscount = async (id) => {
+  if (isMock) return { data: null, error: null };
+  return supabase.from('discounts').delete().eq('id', id);
+};
+
+// ── Auto-discount rules ──────────────────────────────────────────────────────
+
+export const fetchDiscountRules = async (locationId = null) => {
+  if (isMock) return { data: null, error: null };
+  if (!locationId || locationId === 'loc-demo') locationId = await getLocationId();
+  if (!locationId || locationId === 'loc-demo') return { data: null, error: new Error('No location') };
+  return supabase
+    .from('discount_rules')
+    .select('*')
+    .eq('location_id', locationId)
+    .order('priority', { ascending: false });
+};
+
+export const fetchActiveDiscountRules = async (locationId = null) => {
+  if (isMock) return { data: null, error: null };
+  if (!locationId || locationId === 'loc-demo') locationId = await getLocationId();
+  if (!locationId || locationId === 'loc-demo') return { data: null, error: new Error('No location') };
+  return supabase
+    .from('discount_rules')
+    .select('*')
+    .eq('location_id', locationId)
+    .eq('active', true)
+    .order('priority', { ascending: false });
+};
+
+export const upsertDiscountRule = async (rule, locationId = null) => {
+  if (isMock) return { data: null, error: null };
+  if (!locationId || locationId === 'loc-demo') locationId = await getLocationId();
+  if (!locationId || locationId === 'loc-demo') return { data: null, error: new Error('No location') };
+  const dbRow = {
+    id:                   rule.id,
+    location_id:          locationId,
+    name:                 rule.name || 'Auto discount',
+    active:               rule.active ?? true,
+    trigger_type:         rule.triggerType || rule.trigger_type || 'buy_x',
+    trigger_category_ids: rule.triggerCategoryIds || rule.trigger_category_ids || [],
+    trigger_qty:          rule.triggerQty ?? rule.trigger_qty ?? 2,
+    reward_type:          rule.rewardType || rule.reward_type || 'percent',
+    reward_value:         rule.rewardValue ?? rule.reward_value ?? 0,
+    reward_qty:           rule.rewardQty ?? rule.reward_qty ?? 1,
+    reward_category_ids:  rule.rewardCategoryIds || rule.reward_category_ids || [],
+    channels:             rule.channels || { pos: true, online: true, qr: true, kiosk: true },
+    schedule:             rule.schedule || null,
+    priority:             rule.priority ?? 0,
+    sort_order:           rule.sortOrder ?? rule.sort_order ?? 0,
+    updated_at:           new Date().toISOString(),
+  };
+  const result = await supabase.from('discount_rules').upsert(dbRow, { onConflict: 'id' });
+  if (result.error) console.error('[DB] discount_rules upsert failed:', result.error.message);
+  return result;
+};
+
+export const deleteDiscountRule = async (id) => {
+  if (isMock) return { data: null, error: null };
+  return supabase.from('discount_rules').delete().eq('id', id);
+};

@@ -30,6 +30,7 @@ import ReceiptBranding from './sections/ReceiptBranding';
 import TaxManager from './sections/TaxManager';
 import PettyCash from './sections/PettyCash';
 import Challenge21 from './sections/Challenge21';
+import DiscountManager from './sections/DiscountManager';
 
 const NAV = [
   { id:'overview',   label:'Overview',        icon:'◈',  group:'Dashboard' },
@@ -54,6 +55,7 @@ const NAV = [
   { id:'ai',         label:'AI Assistant',      icon:'✦',   group:'Analytics' },
   { id:'network',    label:'Network & Sync',     icon:'📡',  group:'Analytics' },
   { id:'location',   label:'Location settings', icon:'⚙️',  group:'Analytics' },
+  { id: 'discounts', label: 'Discounts',     icon: '🏷', group: 'Configuration' },
   { id: 'receipt', label: 'Receipt', icon: '🧾', group: 'Configuration' },
   { id: 'challenge21', label: 'Challenge ID', icon: '🪪', group: 'Configuration' },
 ];
@@ -470,6 +472,7 @@ export default function BackOfficeApp() {
           {section === 'location'   && <LocationSettings />}
           {section === 'receipt' && <ReceiptBranding/>}
           {section === 'tax'        && <TaxManager />}
+          {section === 'discounts'  && <DiscountManager />}
           {section === 'challenge21' && <Challenge21 />}
         </div>
       </div>
@@ -538,6 +541,8 @@ function PushToPOSButton() {
       menuItems,
       menuCategories,
       taxRates: useStore.getState().taxRates || [],
+      discountPresets: useStore.getState().discountPresets || [],
+      discountRules: useStore.getState().discountRules || [],
       quickScreenIds: useStore.getState().quickScreenIds || [],
       changeCount: pendingBOChanges,
       profiles: deviceProfiles,
