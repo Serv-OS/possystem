@@ -76,6 +76,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.190', date: '23 May 2026', label: 'Cash-up logs out POS + "Open drawer" button on cash-in denomination screen',
+    changes: [
+      'After cashing up a drawer on the POS, the system now automatically logs the user out and returns to the PIN screen. The next person logging in sees the drawer-idle blocker: non-managers get a "POS locked" message with sign-out option; managers/admins get the cash-in denomination screen to open the next trading day.',
+      'Cash-in denomination screen now has an "Open cash drawer" button so the manager can physically pop the drawer, place the float, then confirm the counted amount.',
+      'Removed duplicate POS lock overlay (v4.6.53) that was rendering alongside the canonical version — only one lock screen now fires.',
+    ],
+  },
+  {
     version: '5.5.189', date: '23 May 2026', label: '86\'d stock countdown for modifier/combo sub-items — auto-block when sold out',
     changes: [
       'Modifier options created from sub-items now store an explicit itemId back-reference. Older options fall back to name-matching for backward compatibility.',

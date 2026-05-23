@@ -642,48 +642,8 @@ export default function POSSurface() {
       {/* v5.5.163: Challenge 21 prompt — fires when the alcohol-sale counter hits the threshold */}
       <Challenge21PromptHost/>
 
-      {/* v4.6.53: POS lock overlay (inside POSSurface main return) */}
-      {staff && (() => {
-        let _lockDevId = null;
-        try { _lockDevId = JSON.parse(localStorage.getItem('rpos-device') || '{}')?.id || null; } catch {}
-        const _lockDrawer = Array.isArray(cashDrawers)
-          ? cashDrawers.find(d => d.deviceId === _lockDevId) || null
-          : null;
-        if (!_lockDrawer) return null;
-        if (_lockDrawer.status === 'open' || _lockDrawer.status === 'counting') return null;
-        console.log('[POSLockV453] FIRING', { drawer: _lockDrawer.name, status: _lockDrawer.status, staffRole: staff?.role });
-        const _canCash = staff?.role === 'Manager' || staff?.role === 'Admin' || (Array.isArray(staff?.permissions) && staff.permissions.includes('cashup'));
-        if (_canCash) {
-          return (
-            <DrawerCashModal
-              mode="in"
-              drawer={_lockDrawer}
-              locked={true}
-              onComplete={async ({ amount, denominations }) => {
-                await cashInDrawer?.(_lockDrawer.id, { openingFloat: amount, denominations });
-                await loadCurrentDrawerSession?.();
-                if (typeof useStore.getState().loadCashDrawers === 'function') await useStore.getState().loadCashDrawers();
-              }}
-            />
-          );
-        }
-        return (
-          <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.78)',zIndex:99999,display:'flex',alignItems:'center',justifyContent:'center',padding:20}}>
-            <div style={{background:'var(--bg1)',border:'1.5px solid var(--bdr2)',borderRadius:20,padding:'36px 32px',maxWidth:460,textAlign:'center'}}>
-              <div style={{fontSize:46,marginBottom:18}}>&#128274;</div>
-              <div style={{fontSize:20,fontWeight:800,color:'var(--t1)',marginBottom:10}}>POS locked</div>
-              <div style={{fontSize:14,color:'var(--t2)',marginBottom:26,lineHeight:1.5}}>
-                <b>{_lockDrawer.name}</b> needs to be cashed in before this terminal can trade. Ask a manager to sign in and declare the opening float.
-              </div>
-              <button
-                onClick={() => { try { useStore.getState().logout?.(); } catch {} }}
-                style={{padding:'11px 28px',borderRadius:10,border:'1px solid var(--bdr2)',background:'var(--bg3)',color:'var(--t2)',fontFamily:'inherit',fontWeight:700,fontSize:13,cursor:'pointer'}}>
-                Sign out
-              </button>
-            </div>
-          </div>
-        );
-      })()}
+      {/* v5.5.190: removed duplicate POS lock overlay (v4.6.53) — the canonical
+          version is in the overlay section near the end of POSSurface return. */}
 
       {/* v4.6.54: drawer menu (POSSurface main return) */}
       {showDrawerMenu && (() => {
@@ -2127,6 +2087,11 @@ function OrdersHub({ orderQueue, updateQueueStatus, removeFromQueue, showToast }
           onComplete={async ({ amount, denominations, notes }) => {
             await cashOutDrawer?.(_myDrw.id, { declaredCash: amount, denominations, notes });
             setShowCashOut(false);
+            // v5.5.190: after cash-up, log the user out so the POS returns to
+            // the PINScreen. The next person logging in will see the drawer-idle
+            // blocker — non-managers get a "POS locked" message, managers get
+            // the cash-in denomination screen to open the next trading day.
+            try { useStore.getState().logout?.(); } catch {}
           }}
         />
       )}

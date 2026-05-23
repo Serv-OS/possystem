@@ -39,11 +39,13 @@ export default function DrawerCashModal({
   onClose,
   onComplete,        // called with { amount, denominations, variance }
 }) {
+  const openCashDrawer = useStore(s => s.openCashDrawer);
   const [counts, setCounts] = useState(Object.fromEntries(DENOMS.map(d => [d.value, 0])));
   const [quickAmount, setQuickAmount] = useState('');
   const [mode2, setMode2] = useState('denoms'); // 'denoms' | 'quick' — allow a flat amount entry
   const [notes, setNotes] = useState('');
   const [busy, setBusy] = useState(false);
+  const [drawerFired, setDrawerFired] = useState(false);
 
   const total = useMemo(() => {
     if (mode2 === 'quick') return parseFloat(quickAmount) || 0;
@@ -198,10 +200,31 @@ export default function DrawerCashModal({
             </>
           )}
           {mode === 'in' && (
-            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginBottom:12 }}>
-              <span style={{ fontSize:13, fontWeight:700, color:'var(--t1)' }}>Opening float</span>
-              <span style={{ fontSize:20, fontWeight:900, fontFamily:'var(--font-mono)', color:'var(--acc)' }}>{fmt(total)}</span>
-            </div>
+            <>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginBottom:12 }}>
+                <span style={{ fontSize:13, fontWeight:700, color:'var(--t1)' }}>Opening float</span>
+                <span style={{ fontSize:20, fontWeight:900, fontFamily:'var(--font-mono)', color:'var(--acc)' }}>{fmt(total)}</span>
+              </div>
+              {/* v5.5.190: fire the cash drawer so the manager can place the float */}
+              <button
+                onClick={() => {
+                  openCashDrawer?.({ type: 'drawer_open', reason: 'Cash-in: open drawer for float', amount: 0, force: true });
+                  setDrawerFired(true);
+                  setTimeout(() => setDrawerFired(false), 3000);
+                }}
+                style={{
+                  width:'100%', padding:'10px 14px', borderRadius:8, marginBottom:10,
+                  border: `1.5px solid ${drawerFired ? 'var(--grn-b)' : 'var(--bdr2)'}`,
+                  background: drawerFired ? 'var(--grn-d)' : 'var(--bg3)',
+                  color: drawerFired ? 'var(--grn)' : 'var(--t2)',
+                  fontFamily:'inherit', cursor:'pointer', fontSize:13, fontWeight:700,
+                  display:'flex', alignItems:'center', justifyContent:'center', gap:8,
+                  transition:'all .2s',
+                }}>
+                <span style={{ fontSize:16 }}>{drawerFired ? '✓' : '💵'}</span>
+                {drawerFired ? 'Drawer opened — place your float' : 'Open cash drawer'}
+              </button>
+            </>
           )}
 
           <div style={{ display:'flex', gap:8 }}>
