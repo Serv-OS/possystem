@@ -868,6 +868,15 @@ function OnlineOrderingSection({ setSection }) {
                   Preview QR (table t1) ↗
                 </a>
               )}
+              {slug && (
+                <a href={`https://dev.pos-up.com/?loc=${slug}&surface=gift`} target="_blank" rel="noopener"
+                  style={{ ...secondaryBtn(), textDecoration:'none' }}>
+                  Preview gift cards ↗
+                </a>
+              )}
+              <button onClick={() => setSection('giftcards')} style={secondaryBtn()}>
+                Gift card settings
+              </button>
             </div>
           </div>
 

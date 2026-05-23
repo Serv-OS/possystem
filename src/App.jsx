@@ -76,6 +76,17 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.197', date: '23 May 2026', label: 'Gift cards: BO management upgrade, branding, preview links',
+    changes: [
+      'Gift Cards back office section now has a full management overview: enable/disable toggle (controls gift_brand_config.enabled), customer-facing URLs with Preview and Copy buttons, config summary (min/max value, expiry, currency).',
+      'Customer-facing gift card pages now use the location\'s online_branding (logo, accent colour, background/foreground) — same branding as online ordering and QR. Falls back to the default dark theme if no branding is set.',
+      'Logo now renders in the header of all three gift surfaces (purchase, balance check, success). Colours derive from the branding with blended muted/dim variants.',
+      'New "Online purchases" tab in Gift Cards back office — shows all customer Stripe Checkout purchases with status, sender, recipient, and fulfillment state.',
+      'Online Ordering overview section now includes "Preview gift cards" and "Gift card settings" buttons alongside the existing preview links.',
+      'buildGiftTheme() helper in giftHelpers.js builds a complete theme object from location.online_branding with colour blending for derived tokens.',
+    ],
+  },
+  {
     version: '5.5.196', date: '23 May 2026', label: 'Gift Cards Phase 2: customer-facing purchase, balance check, email delivery',
     changes: [
       'New customer-facing gift card purchase page at /<slug>/gift. Preset and custom amounts, sender/recipient details, personal message. Payment via Stripe Checkout on merchant\'s connected account.',

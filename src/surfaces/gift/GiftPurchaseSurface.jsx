@@ -10,9 +10,10 @@
 //   6. Customer lands on /gift/success with session_id in query string
 
 import { useState, useMemo } from 'react';
-import { callGiftPublic, formatAmount, PRESET_AMOUNTS, giftTheme as t } from './giftHelpers';
+import { callGiftPublic, formatAmount, PRESET_AMOUNTS, buildGiftTheme } from './giftHelpers';
 
 export default function GiftPurchaseSurface({ location }) {
+  const t = useMemo(() => buildGiftTheme(location), [location]);
   // Amount (minor units)
   const [selectedPreset, setSelectedPreset] = useState(null);
   const [customAmount, setCustomAmount] = useState('');
@@ -83,6 +84,12 @@ export default function GiftPurchaseSurface({ location }) {
     }}>
       {/* Header */}
       <div style={{ textAlign: 'center', marginBottom: 32 }}>
+        {t.logo && (
+          <img src={t.logo} alt={location.name} style={{
+            width: 72, height: 72, borderRadius: 14, objectFit: 'cover',
+            marginBottom: 12,
+          }}/>
+        )}
         <div style={{ fontSize: 24, fontWeight: 800 }}>{location.name}</div>
         <div style={{ fontSize: 13, color: t.textMuted, marginTop: 4 }}>
           Send a gift card to someone special

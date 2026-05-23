@@ -6,10 +6,11 @@
 // verifies the code via HMAC lookup + argon2id hash, returning only
 // safe-to-display fields (balance, last4, status, expiry).
 
-import { useState, useRef } from 'react';
-import { callGiftPublic, formatAmount, giftTheme as t } from './giftHelpers';
+import { useState, useRef, useMemo } from 'react';
+import { callGiftPublic, formatAmount, buildGiftTheme } from './giftHelpers';
 
 export default function GiftBalanceSurface({ location }) {
+  const t = useMemo(() => buildGiftTheme(location), [location]);
   const [code, setCode] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null); // { balance_minor, code_last4, status, expires_at, currency }
@@ -53,6 +54,12 @@ export default function GiftBalanceSurface({ location }) {
     }}>
       {/* Header */}
       <div style={{ textAlign: 'center', marginBottom: 32 }}>
+        {t.logo && (
+          <img src={t.logo} alt={location.name} style={{
+            width: 72, height: 72, borderRadius: 14, objectFit: 'cover',
+            marginBottom: 12,
+          }}/>
+        )}
         <div style={{ fontSize: 24, fontWeight: 800 }}>{location.name}</div>
         <div style={{ fontSize: 12, color: t.textDim, marginTop: 4 }}>
           Gift Card Balance

@@ -5,10 +5,11 @@
 // polls gift-purchase-status to check whether the gift-fulfill webhook
 // handler has finished issuing the card. Shows a confirmation once ready.
 
-import { useEffect, useState } from 'react';
-import { callGiftPublic, formatAmount, giftTheme as t } from './giftHelpers';
+import { useEffect, useState, useMemo } from 'react';
+import { callGiftPublic, formatAmount, buildGiftTheme } from './giftHelpers';
 
 export default function GiftSuccessSurface({ location }) {
+  const t = useMemo(() => buildGiftTheme(location), [location]);
   const [status, setStatus] = useState('loading'); // 'loading' | 'complete' | 'pending' | 'error'
   const [purchase, setPurchase] = useState(null);
   const [error, setError] = useState('');
@@ -79,20 +80,26 @@ export default function GiftSuccessSurface({ location }) {
     }}>
       {/* Header */}
       <div style={{ textAlign: 'center', marginBottom: 32 }}>
+        {t.logo && (
+          <img src={t.logo} alt={location.name} style={{
+            width: 72, height: 72, borderRadius: 14, objectFit: 'cover',
+            marginBottom: 12,
+          }}/>
+        )}
         <div style={{ fontSize: 24, fontWeight: 800 }}>{location.name}</div>
       </div>
 
       <div style={{ width: '100%', maxWidth: 420 }}>
         {status === 'loading' && (
-          <StatusCard icon="⏳" title="Processing your purchase…" subtitle="Please wait while we set up your gift card." />
+          <StatusCard t={t} icon="⏳" title="Processing your purchase…" subtitle="Please wait while we set up your gift card." />
         )}
 
         {status === 'pending' && (
-          <StatusCard icon="✨" title="Payment received!" subtitle="We're generating your gift card now. This usually takes just a few seconds…" />
+          <StatusCard t={t} icon="✨" title="Payment received!" subtitle="We're generating your gift card now. This usually takes just a few seconds…" />
         )}
 
         {status === 'error' && (
-          <StatusCard icon="⚠️" title="Something went wrong" subtitle={error}>
+          <StatusCard t={t} icon="⚠️" title="Something went wrong" subtitle={error}>
             <div style={{ marginTop: 20, display: 'flex', gap: 10 }}>
               <a href={`${window.location.origin}/gift`} style={{
                 flex: 1, textAlign: 'center', padding: '12px 16px', borderRadius: 99,
@@ -175,7 +182,7 @@ export default function GiftSuccessSurface({ location }) {
   );
 }
 
-function StatusCard({ icon, title, subtitle, children }) {
+function StatusCard({ t, icon, title, subtitle, children }) {
   return (
     <div style={{
       background: t.card, border: `1px solid ${t.border}`, borderRadius: t.radius,
