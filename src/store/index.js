@@ -1409,10 +1409,24 @@ export const useStore = create((set, get) => ({
       return matched;
     };
 
-    const createKdsTickets = (items, tableLabel, serverName, covers) => {
+    // v5.5.191: compute which courses auto-fire on send. Always includes 0
+    // (immediate) and 1 (starters). If the lowest occupied course is higher
+    // than 1 (e.g. only course 2 items exist), auto-fire all empty leading
+    // courses up through it so the kitchen doesn't hold items for a course
+    // that has no food in it.
+    const computeFiredOnSend = (items) => {
+      const pending = (items || []).filter(i => !i.voided && (i.status === 'pending' || i.status === 'sent'));
+      const courses = [...new Set(pending.map(i => i.course ?? 1))].filter(c => c >= 1).sort((a,b) => a-b);
+      const lowest = courses[0] || 1;
+      const fired = [0];
+      for (let c = 1; c <= lowest; c++) fired.push(c);
+      return fired;
+    };
+
+    const createKdsTickets = (items, tableLabel, serverName, covers, _firedOnSend) => {
       const routingConfig = getRoutingConfig();
       const byCenter = {};
-      const FIRED_ON_SEND = [0, 1];
+      const FIRED_ON_SEND = _firedOnSend;
       // Send ALL non-voided pending items — not just courses 0+1
       items.filter(i => !i.voided && i.status === 'pending').forEach(item => {
         const centres = getCentresForItem(item, routingConfig);
@@ -1453,7 +1467,8 @@ export const useStore = create((set, get) => ({
       const table = tables.find(t => t.id === activeTableId);
       const session = table?.session;
       const pendingItems = session?.items?.filter(i => i.status === 'pending' && !i.voided) || [];
-      const newTickets = createKdsTickets(pendingItems, table?.label || activeTableId, staff?.name || 'Server', session?.covers || 2);
+      const firedOnSend = computeFiredOnSend(session?.items || []);
+      const newTickets = createKdsTickets(pendingItems, table?.label || activeTableId, staff?.name || 'Server', session?.covers || 2, firedOnSend);
       // Route print jobs for each ticket (fires to mapped printer per centre)
       const printConfig = getRoutingConfig();
       const getCentrePrinter = (centreId) => {
@@ -1492,8 +1507,7 @@ export const useStore = create((set, get) => ({
           // re-included them in pendingItems and re-printed every fired course's
           // tickets. Now: every printed item flips to status:'sent', and only the
           // 'fired' flag gates fire-vs-hold.
-          const fired=[0,1];
-          const firedCourses=[...new Set([...(t.session.firedCourses||[]),...fired])];
+          const firedCourses=[...new Set([...(t.session.firedCourses||[]),...firedOnSend])];
           const items=t.session.items.map(i => {
             if (i.status !== 'pending' || i.voided) return i;
             return { ...i, fired: firedCourses.includes(i.course), status: 'sent' };
@@ -1571,7 +1585,8 @@ export const useStore = create((set, get) => ({
       }
       const pendingItems = order.items.filter(i => i.status === 'pending' && !i.voided);
       const label = customer?.name ? `${orderType.charAt(0).toUpperCase()+orderType.slice(1)} · ${customer.name}` : orderType;
-      const newTickets = createKdsTickets(pendingItems, label, staff?.name || 'Server', 1);
+      const wiFiredOnSend = computeFiredOnSend(order.items || []);
+      const newTickets = createKdsTickets(pendingItems, label, staff?.name || 'Server', 1, wiFiredOnSend);
       // v4.6.5 Bug 3: walk-in / takeaway / collection / delivery orders must ALSO route
       // print jobs to each production centre. Previously only the table branch did this,
       // so non-table orders only hit the KDS screen and silently skipped every printer.
@@ -1605,7 +1620,7 @@ export const useStore = create((set, get) => ({
         // rehydrate from) was capturing items pre-mutation, so reopens rendered them as
         // pending (not green). Apply the same mutation here so reopens show them sent/green.
         items: order.items.filter(i => !i.voided).map(i =>
-          [0, 1].includes(i.course ?? 1) ? { ...i, fired: true, status: 'sent' } : i
+          wiFiredOnSend.includes(i.course ?? 1) ? { ...i, fired: true, status: 'sent' } : i
         ),
         total: order.items.reduce((s, i) => s + i.price * i.qty, 0),
         status: 'prep', createdAt: order.createdAt || Date.now(), sentAt: Date.now(),
@@ -1618,7 +1633,7 @@ export const useStore = create((set, get) => ({
         addToQueue(queueEntry);
       }
       set(s => ({
-        walkInOrder: { ...(s.walkInOrder||{}), ref, sentAt: Date.now(), items: (s.walkInOrder?.items||[]).map(i => [0,1].includes(i.course ?? 1) ? {...i, fired:true, status:'sent'} : i) },
+        walkInOrder: { ...(s.walkInOrder||{}), ref, sentAt: Date.now(), items: (s.walkInOrder?.items||[]).map(i => wiFiredOnSend.includes(i.course ?? 1) ? {...i, fired:true, status:'sent'} : i) },
         kdsTickets: [...s.kdsTickets, ...newTickets],
       }));
       newTickets.forEach(t => insertKDSTicket(t));

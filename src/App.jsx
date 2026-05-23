@@ -76,6 +76,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.191', date: '23 May 2026', label: 'Auto-fire empty leading courses — no more holding course 2/3 when course 1 is empty',
+    changes: [
+      'When only course 2 or 3 items exist on a check (no course 1 items), the system now auto-fires all empty leading courses so the kitchen sees them as FIRE, not HOLD.',
+      'Example: a table with only mains (course 2) and desserts (course 3) — course 2 fires immediately on send because there are no starters to wait for.',
+      'Applies to both dine-in table orders and walk-in/takeaway orders. The computeFiredOnSend() helper calculates the lowest occupied course and includes everything up to it.',
+    ],
+  },
+  {
     version: '5.5.190', date: '23 May 2026', label: 'Cash-up logs out POS + "Open drawer" button on cash-in denomination screen',
     changes: [
       'After cashing up a drawer on the POS, the system now automatically logs the user out and returns to the PIN screen. The next person logging in sees the drawer-idle blocker: non-managers get a "POS locked" message with sign-out option; managers/admins get the cash-in denomination screen to open the next trading day.',
