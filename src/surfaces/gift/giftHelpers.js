@@ -52,12 +52,16 @@ const DEFAULT_THEME = {
 };
 
 /**
- * Build a theme object from the location's online_branding (same branding
- * the online ordering + QR surfaces use). Falls back to the default dark
- * theme if the venue hasn't set branding yet.
+ * Build a theme object from gift-specific branding if set, otherwise from
+ * the location's online_branding. Falls back to the default dark theme if
+ * neither is configured.
+ *
+ * @param {object} location - Platform DB location row (has online_branding)
+ * @param {object} [giftBranding] - gift_brand_config.branding (per-feature override)
  */
-export function buildGiftTheme(location) {
-  const b = location?.online_branding;
+export function buildGiftTheme(location, giftBranding) {
+  // Gift-specific branding takes priority over online_branding
+  const b = giftBranding || location?.online_branding;
   if (!b) return DEFAULT_THEME;
   const bg = b.background || DEFAULT_THEME.bg;
   const fg = b.foreground || DEFAULT_THEME.text;

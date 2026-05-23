@@ -76,6 +76,20 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.199', date: '23 May 2026', label: 'Gift cards: bulk create, import, branding, split checks, settings',
+    changes: [
+      'Bulk create: generate batches of anonymous gift cards (1-500) with a custom name and value. Download CSV of codes for distribution.',
+      'Import: import cards from external systems with balances. Supports manual row entry and CSV paste. Each imported card gets a new code; old codes stored in notes.',
+      'Per-feature branding editor: customise logo, accent colour, background, and foreground for gift card pages independently of online ordering branding. Live preview.',
+      'Settings panel: configure min/max card values, expiry rules (never or X months from issue), and currency (GBP/USD/EUR).',
+      'Split check gift card support: gift card is now a payment method in the split check tender flow alongside Card and Cash.',
+      'Fixed RLS on gift_brand_config: authenticated users can now INSERT/UPDATE rows for their company (was SELECT-only, causing "violates row-level security" error).',
+      'Fixed gift card URL routing: /gift, /gift/balance, /gift/success paths now correctly route to CustomerBoot (were only accepting /online and /qr).',
+      'New schema: gift_cards gains batch_id, batch_name, and source columns. gift_brand_config gains branding JSONB column.',
+      'New edge functions: gift-bulk-create, gift-import.',
+    ],
+  },
+  {
     version: '5.5.198', date: '23 May 2026', label: 'Gift cards: resend email, POS fix, flexible lookup, code visibility',
     changes: [
       'New gift-resend edge function: re-sends the delivery email to the recipient from the back office. Reads the plaintext code from the purchase record stored at fulfillment time.',
@@ -4445,10 +4459,11 @@ export default function App() {
   // customers never see the device pairing / mode selector screens.
   // Operator URLs (?mode=pos / mpos / office / admin / kiosk) take
   // precedence so an operator on the same hostname still gets their tools.
+  const CUSTOMER_MODES = ['online', 'qr', 'gift', 'gift_balance', 'gift_success'];
   const urlMode = new URLSearchParams(window.location.search).get('mode');
   if (!urlMode) {
     const customerCtx = parseCustomerUrlForBoot();
-    if (customerCtx?.slug && (customerCtx.mode === 'online' || customerCtx.mode === 'qr')) {
+    if (customerCtx?.slug && CUSTOMER_MODES.includes(customerCtx.mode)) {
       return <CustomerBoot slug={customerCtx.slug} mode={customerCtx.mode} tableId={customerCtx.tableId} />;
     }
   }

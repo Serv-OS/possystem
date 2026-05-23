@@ -1,4 +1,6 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
+import { supabase } from '../lib/supabase';
+import { getActiveLocationSync } from '../lib/supabase';
 
 // ─── Cash tender for a split portion ─────────────────────────────────────────
 function SplitCashTender({ amount, onComplete, onBack }) {
@@ -65,9 +67,143 @@ function SplitCashTender({ amount, onComplete, onBack }) {
   );
 }
 
+// ─── Gift card tender for a split portion (v5.5.199) ─────────────────────────
+const GIFT_FN_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
+
+function SplitGiftCardTender({ amount, onComplete, onBack, portionId }) {
+  const [code, setCode] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [cardInfo, setCardInfo] = useState(null);
+  const codeRef = useRef(null);
+
+  useEffect(() => { codeRef.current?.focus(); }, []);
+
+  const handleLookup = async () => {
+    const cleaned = code.replace(/[\s-]/g, '');
+    if (cleaned.length < 16) { setError('Enter the full 16 character code'); return; }
+    setError(null); setLoading(true); setCardInfo(null);
+    try {
+      const { data: session } = await supabase.auth.getSession();
+      const token = session?.session?.access_token;
+      if (!token) throw new Error('Not authenticated');
+      const res = await fetch(`${GIFT_FN_URL}/gift-lookup`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({ code: cleaned, location_id: getActiveLocationSync() }),
+      });
+      const j = await res.json();
+      if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
+      if (j.status !== 'active') throw new Error(`Card is ${j.status}`);
+      if (j.balance <= 0) throw new Error('Card has zero balance');
+      setCardInfo(j);
+    } catch (e) {
+      setError(String(e?.message ?? e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRedeem = async () => {
+    if (!cardInfo) return;
+    setError(null); setLoading(true);
+    try {
+      const amountMinor = Math.round(amount * 100);
+      const redeemAmount = Math.min(cardInfo.balance, amountMinor);
+      if (redeemAmount <= 0) { setError('Nothing to redeem'); setLoading(false); return; }
+      const idempotencyKey = `split:${portionId}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+      const { data: session } = await supabase.auth.getSession();
+      const token = session?.session?.access_token;
+      const res = await fetch(`${GIFT_FN_URL}/gift-redeem`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          code: code.replace(/[\s-]/g, ''),
+          amount: redeemAmount,
+          order_id: portionId,
+          location_id: getActiveLocationSync(),
+          channel: 'pos',
+          idempotency_key: idempotencyKey,
+        }),
+      });
+      const j = await res.json();
+      if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
+
+      // If gift card covers full portion
+      if (redeemAmount >= amountMinor) {
+        onComplete(0, 0); // tendered=0, change=0 — gift card covers it
+      } else {
+        // Partial coverage — still counts as paid
+        onComplete(0, 0);
+      }
+    } catch (e) {
+      setError(String(e?.message ?? e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const amountMinor = Math.round(amount * 100);
+  const canCover = cardInfo ? Math.min(cardInfo.balance, amountMinor) : 0;
+
+  return (
+    <div>
+      <div style={{ textAlign:'center', marginBottom:14 }}>
+        <div style={{ fontSize:11, color:'var(--t3)', fontWeight:600, textTransform:'uppercase', letterSpacing:'.06em', marginBottom:3 }}>Amount due</div>
+        <div style={{ fontSize:34, fontWeight:800, color:'var(--t1)', fontFamily:'DM Mono,monospace' }}>£{amount.toFixed(2)}</div>
+      </div>
+
+      {!cardInfo ? (
+        <>
+          <div style={{ marginBottom:10 }}>
+            <div style={{ fontSize:11, fontWeight:700, color:'var(--t3)', marginBottom:4, textTransform:'uppercase', letterSpacing:'.06em' }}>Gift card code</div>
+            <input
+              ref={codeRef}
+              type="text"
+              value={code}
+              onChange={e => setCode(e.target.value.toUpperCase())}
+              placeholder="XXXX XXXX XXXX XXXX"
+              maxLength={23}
+              onKeyDown={e => e.key === 'Enter' && handleLookup()}
+              style={{ width:'100%', padding:'10px 12px', borderRadius:10, border:'1px solid var(--bdr2)', background:'var(--bg3)', color:'var(--t1)', fontSize:16, fontFamily:'DM Mono,monospace', letterSpacing:'0.12em', textAlign:'center', outline:'none', boxSizing:'border-box' }}
+            />
+          </div>
+          {error && <div style={{ padding:8, background:'var(--red-d)', borderRadius:8, border:'1px solid var(--red-b)', color:'var(--red)', fontSize:12, marginBottom:10 }}>{error}</div>}
+          <div style={{ display:'flex', gap:8 }}>
+            <button className="btn btn-ghost" style={{ flex:1 }} onClick={onBack}>← Back</button>
+            <button className="btn btn-acc" style={{ flex:2, height:42 }} disabled={loading || code.replace(/[\s-]/g, '').length < 16} onClick={handleLookup}>
+              {loading ? 'Checking...' : 'Look up card'}
+            </button>
+          </div>
+        </>
+      ) : (
+        <>
+          <div style={{ background:'var(--grn-d)', borderRadius:10, border:'1px solid var(--grn-b)', padding:'12px 14px', marginBottom:12 }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:4 }}>
+              <span style={{ fontSize:12, fontWeight:700, color:'var(--grn)' }}>Card found — ...{cardInfo.code_last4}</span>
+              <span style={{ fontSize:14, fontWeight:800, color:'var(--grn)', fontFamily:'DM Mono,monospace' }}>£{(cardInfo.balance / 100).toFixed(2)}</span>
+            </div>
+            <div style={{ fontSize:11, color:'var(--grn)' }}>
+              Will apply £{(canCover / 100).toFixed(2)} to this portion
+              {canCover < amountMinor && ` (£${((amountMinor - canCover) / 100).toFixed(2)} remaining — pay by other method)`}
+            </div>
+          </div>
+          {error && <div style={{ padding:8, background:'var(--red-d)', borderRadius:8, border:'1px solid var(--red-b)', color:'var(--red)', fontSize:12, marginBottom:10 }}>{error}</div>}
+          <div style={{ display:'flex', gap:8 }}>
+            <button className="btn btn-ghost" style={{ flex:1 }} onClick={() => { setCardInfo(null); setCode(''); setError(null); }}>← Different card</button>
+            <button className="btn btn-grn" style={{ flex:2, height:42 }} disabled={loading} onClick={handleRedeem}>
+              {loading ? 'Processing...' : `Apply £${(canCover / 100).toFixed(2)} from gift card`}
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ─── Portion tender screen ────────────────────────────────────────────────────
 function PortionTender({ portion, portionNum, total, canTakeCash = true, onComplete, onBack }) {
-  const [screen, setScreen] = useState('method'); // method | cash
+  const [screen, setScreen] = useState('method'); // method | cash | gift_card
 
   return (
     <div>
@@ -91,6 +227,12 @@ function PortionTender({ portion, portionNum, total, canTakeCash = true, onCompl
                 <span style={{ fontSize:10, color:'rgba(160,210,170,.5)' }}>With change</span>
               </button>
             )}
+            {/* v5.5.199: Gift card payment for split checks */}
+            <button onClick={()=>setScreen('gift_card')} style={{ flex:1, padding:'18px 12px', borderRadius:14, cursor:'pointer', fontFamily:'inherit', background:'linear-gradient(135deg,#2a1a2e,#1a0f24)', border:'1px solid rgba(180,100,255,.3)', display:'flex', flexDirection:'column', alignItems:'center', gap:6 }}>
+              <span style={{ fontSize:28 }}>🎁</span>
+              <span style={{ fontSize:14, fontWeight:800, color:'#f0e8ff' }}>Gift Card</span>
+              <span style={{ fontSize:10, color:'rgba(210,180,255,.5)' }}>Enter code</span>
+            </button>
           </div>
           <button className="btn btn-ghost btn-full" onClick={onBack}>← Back to split</button>
         </>
@@ -99,6 +241,14 @@ function PortionTender({ portion, portionNum, total, canTakeCash = true, onCompl
         <SplitCashTender
           amount={portion.total}
           onComplete={(tendered, change) => onComplete('cash', tendered, change)}
+          onBack={() => setScreen('method')}
+        />
+      )}
+      {screen === 'gift_card' && (
+        <SplitGiftCardTender
+          amount={portion.total}
+          portionId={portion.id}
+          onComplete={(tendered, change) => onComplete('gift_card', tendered, change)}
           onBack={() => setScreen('method')}
         />
       )}
@@ -488,7 +638,7 @@ export default function SplitModal({ items, total, covers, canTakeCash = true, o
                         <div>
                           <div style={{ fontSize:14, fontWeight:600, color:p.paid?'var(--grn)':'var(--t1)' }}>{p.label}</div>
                           {p.paid && <div style={{ fontSize:11, color:'var(--grn)', marginTop:1 }}>
-                            {p.method==='card'?'💳 Card':p.method==='cash'?`💵 Cash · change £${(p.change||0).toFixed(2)}`:'Paid'}
+                            {p.method==='card'?'💳 Card':p.method==='cash'?`💵 Cash · change £${(p.change||0).toFixed(2)}`:p.method==='gift_card'?'🎁 Gift Card':'Paid'}
                           </div>}
                         </div>
                       </div>
