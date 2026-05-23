@@ -1,9 +1,9 @@
 // supabase/functions/gift-issue/index.ts
 //
 // Issue a new gift card for an org. Generates a unique code, hashes it,
-// creates the card + initial ledger entry, and optionally sets a PIN.
+// and creates the card + initial ledger entry.
 //
-// Body: { org_id?, amount, recipient_email?, recipient_name?, pin?,
+// Body: { org_id?, amount, recipient_email?, recipient_name?,
 //         expires_at?, note?, staff_id?, location_id?, channel? }
 //
 // org_id is optional: if omitted, resolved from the caller's company role.
@@ -32,7 +32,6 @@ Deno.serve(async (req) => {
     amount,
     recipient_email,
     recipient_name,
-    pin,
     expires_at,
     note,
     staff_id,
@@ -87,11 +86,6 @@ Deno.serve(async (req) => {
   }
   if (amountMinor > config.max_card_value_minor) {
     return json({ error: `Amount exceeds maximum (${config.max_card_value_minor} minor units)` }, 400);
-  }
-
-  // Check if PIN is required (above threshold) but not provided
-  if (amountMinor >= config.pin_threshold_minor && !pin) {
-    return json({ error: `PIN required for cards valued at or above ${config.pin_threshold_minor} minor units` }, 400);
   }
 
   // Generate code and hashes
@@ -166,18 +160,6 @@ Deno.serve(async (req) => {
     // Rollback: delete the card
     await platformAdmin.from('gift_cards').delete().eq('id', card.id);
     return json({ error: `Failed to create ledger entry: ${txErr.message}` }, 500);
-  }
-
-  // Insert PIN if provided
-  if (pin) {
-    const pinHash = await hashValue(String(pin));
-    const { error: pinErr } = await platformAdmin
-      .from('gift_card_pins')
-      .insert({ card_id: card.id, pin_hash: pinHash });
-    if (pinErr) {
-      // Non-fatal: card is usable, PIN just wasn't set
-      console.warn('[gift-issue] PIN insert failed:', pinErr.message);
-    }
   }
 
   return json({

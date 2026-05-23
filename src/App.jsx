@@ -76,13 +76,22 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.194', date: '23 May 2026', label: 'Gift cards: remove PIN requirement',
+    changes: [
+      'Removed PIN from gift card system. Cards are secured by unique 16-char randomly generated codes only. No PIN field on issue, no PIN prompt on redeem.',
+      'Updated edge functions (gift-issue, gift-lookup, gift-redeem) to strip all PIN logic. gift-redeem no longer imports argon2Verify.',
+      'Back office: removed PIN input from issue form, removed "PIN set" badge from lookup results.',
+      'POS checkout: removed PIN entry step from gift card redemption flow. Code entry goes straight to redeem.',
+    ],
+  },
+  {
     version: '5.5.193', date: '23 May 2026', label: 'Gift Cards Phase 1: schema, edge functions, back office, POS tender',
     changes: [
-      'New gift card system. Cards belong to an org, valid at any location. 16 char codes (alphabet excludes I,1,O,0), stored as argon2id hash with HMAC-SHA256 lookup index. Optional PIN for high-value cards.',
-      'Platform DB schema: gift_brand_config (org settings), gift_cards (hashed codes, cached balance), gift_card_transactions (append-only ledger with idempotent redeems), gift_card_pins (separate PIN hashes). Full RLS scoped to user company.',
+      'New gift card system. Cards belong to an org, valid at any location. 16 char codes (alphabet excludes I,1,O,0), stored as argon2id hash with HMAC-SHA256 lookup index.',
+      'Platform DB schema: gift_brand_config (org settings), gift_cards (hashed codes, cached balance), gift_card_transactions (append-only ledger with idempotent redeems). Full RLS scoped to user company.',
       'Five Supabase Edge Functions: gift-issue, gift-lookup, gift-redeem (with idempotency), gift-reverse-redeem (for order voids), gift-void. Shared utility module in _shared/gift-card-utils.ts.',
-      'Back office Gift Cards section: Issue new card (amount, recipient, PIN, note), Look up card (by full code or last4+email, with transaction history and void action), Recent cards table.',
-      'POS: Gift Card tender button on checkout screen. Code entry, balance lookup, PIN prompt if required. Partial redemption supported: gift portion applied, remainder due via card or cash. Split tender shown as gift_card+card or gift_card+cash.',
+      'Back office Gift Cards section: Issue new card (amount, recipient, note), Look up card (by full code or last4+email, with transaction history and void action), Recent cards table.',
+      'POS: Gift Card tender button on checkout screen. Code entry, balance lookup. Partial redemption supported: gift portion applied, remainder due via card or cash. Split tender shown as gift_card+card or gift_card+cash.',
     ],
   },
   {

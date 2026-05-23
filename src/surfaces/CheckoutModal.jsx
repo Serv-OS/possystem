@@ -566,8 +566,6 @@ const GIFT_FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 function GiftCardEntry({ totalMinor, giftAlreadyApplied, onApplied, onBack, tableId, orderType }) {
   const compact = useCompact();
   const [code, setCode] = useState('');
-  const [pin, setPin] = useState('');
-  const [showPin, setShowPin] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [cardInfo, setCardInfo] = useState(null); // looked-up card details
@@ -596,7 +594,6 @@ function GiftCardEntry({ totalMinor, giftAlreadyApplied, onApplied, onBack, tabl
       if (j.status !== 'active') throw new Error(`Card is ${j.status}`);
       if (j.balance <= 0) throw new Error('Card has zero balance');
       setCardInfo(j);
-      if (j.has_pin) setShowPin(true);
     } catch (e) {
       setError(String(e?.message ?? e));
     } finally {
@@ -623,7 +620,6 @@ function GiftCardEntry({ totalMinor, giftAlreadyApplied, onApplied, onBack, tabl
         headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
         body: JSON.stringify({
           code: code.replace(/[\s-]/g, ''),
-          pin: pin || undefined,
           amount: redeemAmount,
           order_id: tableId || `walkin-${Date.now()}`,
           location_id: getActiveLocationSync(),
@@ -736,45 +732,21 @@ function GiftCardEntry({ totalMinor, giftAlreadyApplied, onApplied, onBack, tabl
             )}
           </div>
 
-          {/* PIN entry if required */}
-          {showPin && (
-            <div style={{ marginTop:12 }}>
-              <label style={{ fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.06em', marginBottom:4, display:'block' }}>
-                PIN required
-              </label>
-              <input
-                type="password"
-                value={pin}
-                onChange={e => setPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
-                placeholder="4 digit PIN"
-                maxLength={4}
-                style={{
-                  width:120, padding:'8px 12px', borderRadius:8,
-                  border:'1px solid var(--bdr2)', background:'var(--bg1)', color:'var(--t1)',
-                  fontSize:18, fontFamily:'var(--font-mono)', letterSpacing:'0.2em',
-                  textAlign:'center', outline:'none',
-                }}
-                autoFocus
-                onKeyDown={e => e.key === 'Enter' && handleRedeem()}
-              />
-            </div>
-          )}
-
           <button
             onClick={handleRedeem}
-            disabled={loading || (showPin && pin.length < 4)}
+            disabled={loading}
             style={{
               width:'100%', marginTop:14, padding:'14px', borderRadius:12,
               border:'none', cursor:'pointer', fontFamily:'inherit',
               background:'var(--acc)', color:'#0b0c10', fontSize:15, fontWeight:800,
-              opacity: loading || (showPin && pin.length < 4) ? 0.5 : 1,
+              opacity: loading ? 0.5 : 1,
             }}
           >
             {loading ? 'Processing...' : `Apply ${sym}${(Math.min(cardInfo.balance, Math.round(remainingDue * 100)) / 100).toFixed(2)} from gift card`}
           </button>
 
           <button
-            onClick={() => { setCardInfo(null); setCode(''); setPin(''); setShowPin(false); setError(null); }}
+            onClick={() => { setCardInfo(null); setCode(''); setError(null); }}
             style={{
               width:'100%', marginTop:8, padding:'10px', borderRadius:10,
               border:'1px solid var(--bdr2)', background:'transparent',

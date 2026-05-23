@@ -2,19 +2,18 @@
 //
 // Redeem (debit) a gift card. Idempotent via idempotency_key.
 //
-// Body: { code, pin?, amount, order_id, location_id, channel,
+// Body: { code, amount, order_id, location_id, channel,
 //         idempotency_key, staff_id? }
 //
 // Validations:
 //   1. Code resolves to active card in caller's org
 //   2. Card not expired, not void
-//   3. PIN matches if PIN is set
-//   4. Amount > 0 and <= balance
-//   5. Idempotency key not already used (if used, return prior result)
+//   3. Amount > 0 and <= balance
+//   4. Idempotency key not already used (if used, return prior result)
 
 import {
   cors, json, platformAdmin, authenticateCaller, resolveCompanyId,
-  normalizeCode, hmacLookup, verifyHash,
+  normalizeCode, hmacLookup,
 } from '../_shared/gift-card-utils.ts';
 
 Deno.serve(async (req) => {
@@ -36,7 +35,7 @@ Deno.serve(async (req) => {
   try { body = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
 
   const {
-    code, pin, amount, order_id, location_id, channel, idempotency_key, staff_id,
+    code, amount, order_id, location_id, channel, idempotency_key, staff_id,
   } = body as any;
 
   if (!code) return json({ error: 'code required' }, 400);
@@ -97,19 +96,6 @@ Deno.serve(async (req) => {
     return json({ error: 'Card has expired' }, 400);
   }
   if (card.status === 'redeemed') return json({ error: 'Card has zero balance' }, 400);
-
-  // ── PIN check ─────────────────────────────────────────────────────────
-  const { data: pinRow } = await platformAdmin
-    .from('gift_card_pins')
-    .select('pin_hash')
-    .eq('card_id', card.id)
-    .maybeSingle();
-
-  if (pinRow) {
-    if (!pin) return json({ error: 'PIN required for this card' }, 400);
-    const pinValid = await verifyHash(String(pin), pinRow.pin_hash);
-    if (!pinValid) return json({ error: 'Invalid PIN' }, 400);
-  }
 
   // ── Balance check ─────────────────────────────────────────────────────
   if (amountMinor > card.balance_minor) {

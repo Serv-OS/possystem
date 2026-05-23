@@ -93,7 +93,6 @@ function IssuePanel() {
   const [amount, setAmount] = useState('');
   const [recipientName, setRecipientName] = useState('');
   const [recipientEmail, setRecipientEmail] = useState('');
-  const [pin, setPin] = useState('');
   const [note, setNote] = useState('');
   const [issuing, setIssuing] = useState(false);
   const [error, setError] = useState(null);
@@ -110,12 +109,11 @@ function IssuePanel() {
         amount: amountMinor,
         recipient_name: recipientName || undefined,
         recipient_email: recipientEmail || undefined,
-        pin: pin || undefined,
         note: note || undefined,
       });
       setResult(res);
       // Clear form
-      setAmount(''); setRecipientName(''); setRecipientEmail(''); setPin(''); setNote('');
+      setAmount(''); setRecipientName(''); setRecipientEmail(''); setNote('');
     } catch (e) {
       setError(String(e?.message ?? e));
     } finally {
@@ -138,17 +136,6 @@ function IssuePanel() {
             step="0.01"
             min="0"
             style={S.input}
-          />
-        </div>
-        <div>
-          <label style={S.label}>PIN (optional, 4 digits)</label>
-          <input
-            type="text"
-            value={pin}
-            onChange={e => setPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
-            placeholder="1234"
-            maxLength={4}
-            style={{ ...S.input, ...S.inputMono }}
           />
         </div>
         <div>
@@ -323,7 +310,6 @@ function LookupPanel() {
               {fmtMoney(card.balance, card.currency)}
             </span>
             <span style={{ ...S.pill, ...statusColor(card.status) }}>{card.status}</span>
-            {card.has_pin && <span style={{ ...S.pill, background: 'var(--bg3)', color: 'var(--t2)' }}>PIN set</span>}
             <span style={{ fontSize: 12, color: 'var(--t4)', fontFamily: 'var(--font-mono)', marginLeft: 'auto' }}>
               ...{card.code_last4}
             </span>

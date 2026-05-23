@@ -78,13 +78,6 @@ Deno.serve(async (req) => {
     .eq('company_id', companyId)
     .maybeSingle();
 
-  // Check if card has a PIN
-  const { data: pinRow } = await platformAdmin
-    .from('gift_card_pins')
-    .select('card_id')
-    .eq('card_id', card.id)
-    .maybeSingle();
-
   // Fetch recent transactions (last 20)
   const { data: txns } = await platformAdmin
     .from('gift_card_transactions')
@@ -100,7 +93,6 @@ Deno.serve(async (req) => {
     initial_amount: card.initial_amount_minor,
     currency: config?.currency || 'gbp',
     code_last4: card.code_last4,
-    has_pin: !!pinRow,
     expires_at: card.expires_at,
     issued_at: card.issued_at,
     recipient_name: card.recipient_name,
