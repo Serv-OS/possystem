@@ -1165,6 +1165,14 @@ export const useStore = create((set, get) => ({
 
     // Decrement daily count if set (respects qty per v4.6.11)
     if (item.id) get().decrementDailyCount(item.id, qty);
+    // v5.5.189: also decrement daily counts for modifier options that reference
+    // menu items (e.g. "Bueno Donut" as a sub-item in a "Box of 3" combo).
+    // Each mod's usage = (mod.qty || 1) per parent unit × parent qty.
+    if (mods?.length) {
+      mods.forEach(mod => {
+        if (mod.itemId) get().decrementDailyCount(mod.itemId, (mod.qty || 1) * qty);
+      });
+    }
 
     if (activeTableId) {
       // Add to the table's session
@@ -1213,6 +1221,10 @@ export const useStore = create((set, get) => ({
     const removed = sourceItems.find(i => i.uid === itemUid);
     if (removed && !removed.voided && removed.status !== 'sent') {
       get().decrementDailyCount(removed.itemId, -(removed.qty || 1));
+      // v5.5.189: restore modifier sub-item counts too
+      (removed.mods || []).forEach(mod => {
+        if (mod.itemId) get().decrementDailyCount(mod.itemId, -((mod.qty || 1) * (removed.qty || 1)));
+      });
     }
     if (activeTableId) {
       set(s=>({ tables:s.tables.map(t=>{
@@ -1241,6 +1253,10 @@ export const useStore = create((set, get) => ({
       actualChange = newQty - target.qty;
       if (actualChange !== 0) {
         get().decrementDailyCount(target.itemId, actualChange);
+        // v5.5.189: adjust modifier sub-item counts too
+        (target.mods || []).forEach(mod => {
+          if (mod.itemId) get().decrementDailyCount(mod.itemId, (mod.qty || 1) * actualChange);
+        });
       }
     }
 
@@ -2349,6 +2365,10 @@ export const useStore = create((set, get) => ({
     (items || []).forEach(i => {
       const id = i.itemId || i.id;
       if (id) get().decrementDailyCount(id, i.qty || 1);
+      // v5.5.189: bar rounds also deplete modifier sub-item counts
+      (i.mods || []).forEach(mod => {
+        if (mod.itemId) get().decrementDailyCount(mod.itemId, (mod.qty || 1) * (i.qty || 1));
+      });
     });
     set(s=>({ tabs:s.tabs.map(t=>{ if(t.id!==tabId)return t; const rounds=[...t.rounds,round]; return{...t,rounds,status:'running',total:rounds.reduce((s,r)=>s+r.subtotal,0)}; }) }));
     // v4.6.5 Bug 5: bar tab rounds never hit production centres. Now mirrors sendToKitchen
@@ -3502,6 +3522,10 @@ export const useStore = create((set, get) => ({
     // v4.6.11: restore daily count — the voided item is not being consumed.
     if (item.itemId && !item.voided) {
       get().decrementDailyCount(item.itemId, -(item.qty || 1));
+      // v5.5.189: restore modifier sub-item counts too
+      (item.mods || []).forEach(mod => {
+        if (mod.itemId) get().decrementDailyCount(mod.itemId, -((mod.qty || 1) * (item.qty || 1)));
+      });
     }
 
     // Mark item as voided (keep visible with strikethrough)
@@ -3531,7 +3555,13 @@ export const useStore = create((set, get) => ({
 
     // v4.6.11: restore daily count for every non-voided item before we void the check.
     (session.items || []).forEach(i => {
-      if (i.itemId && !i.voided) get().decrementDailyCount(i.itemId, -(i.qty || 1));
+      if (i.itemId && !i.voided) {
+        get().decrementDailyCount(i.itemId, -(i.qty || 1));
+        // v5.5.189: restore modifier sub-item counts too
+        (i.mods || []).forEach(mod => {
+          if (mod.itemId) get().decrementDailyCount(mod.itemId, -((mod.qty || 1) * (i.qty || 1)));
+        });
+      }
     });
 
     const totalValue = session.items.reduce((s,i) => s+i.price*i.qty, 0);

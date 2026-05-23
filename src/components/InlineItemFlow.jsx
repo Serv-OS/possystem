@@ -8,8 +8,23 @@ import { ALLERGENS } from '../data/seed';
 // Animates between steps with a slide transition
 // ══════════════════════════════════════════════════════════════════════════════
 
+// v5.5.189: resolve the menu item ID for a modifier option.
+// Options created from sub-items after v5.5.189 carry an explicit `itemId`.
+// For older options or manually-created ones, fall back to name matching.
+function resolveOptItemId(opt, menuItems) {
+  if (!opt || !menuItems) return null;
+  if (opt.itemId) return opt.itemId;
+  const name = (opt.name || opt.label || '').toLowerCase();
+  if (!name) return null;
+  const match = menuItems.find(i =>
+    i.type === 'subitem' && !i.archived &&
+    (i.menuName || i.name || '').toLowerCase() === name
+  );
+  return match?.id || null;
+}
+
 export default function InlineItemFlow({ item, menuItems, activeAllergens = [], onConfirm, onCancel }) {
-  const { modifierGroupDefs, instructionGroupDefs } = useStore();
+  const { modifierGroupDefs, instructionGroupDefs, eightySixIds, dailyCounts } = useStore();
 
   // ── Resolve variant children from menuItems ──────────────────────────────
   const variantChildren = useMemo(() =>
@@ -161,6 +176,8 @@ export default function InlineItemFlow({ item, menuItems, activeAllergens = [], 
         return Object.entries(val).filter(([,q]) => q > 0).map(([id, qty]) => {
           const opt = (group.options||[]).find(o => (o.id||o.name) === id);
           const label = opt?.name || opt?.label || id;
+          // v5.5.189: resolve itemId so daily count decrements for sub-items
+          const resolvedItemId = opt?.itemId || resolveOptItemId(opt, menuItems);
           return {
             // id + name preserved so reports can attribute this option back to
             // its menu_item row (e.g. count "Bueno Filled" sales when sold as
@@ -168,6 +185,7 @@ export default function InlineItemFlow({ item, menuItems, activeAllergens = [], 
             // print; id/name are the audit trail.
             id: opt?.id || id,
             name: opt?.name || label,
+            itemId: resolvedItemId,
             groupLabel: group.name || group.label,
             label: qty > 1 ? `${label} ×${qty}` : label,
             price: (opt?.price || 0) * qty,
@@ -176,14 +194,19 @@ export default function InlineItemFlow({ item, menuItems, activeAllergens = [], 
         });
       }
       const arr = Array.isArray(val) ? val : [val];
-      return arr.filter(Boolean).map(m => ({
-        // Same audit-trail fields as quantity mode above.
-        id: m.id || null,
-        name: m.name || m.label || '',
-        groupLabel: group?.name || group?.label,
-        label: m.name || m.label || '',
-        price: m.price || 0,
-      }));
+      return arr.filter(Boolean).map(m => {
+        // v5.5.189: resolve itemId so daily count decrements for sub-items
+        const resolvedItemId = m.itemId || resolveOptItemId(m, menuItems);
+        return {
+          // Same audit-trail fields as quantity mode above.
+          id: m.id || null,
+          name: m.name || m.label || '',
+          itemId: resolvedItemId,
+          groupLabel: group?.name || group?.label,
+          label: m.name || m.label || '',
+          price: m.price || 0,
+        };
+      });
     });
     Object.entries(instSelections).forEach(([gid, val]) => {
       if (val) {
@@ -277,6 +300,8 @@ export default function InlineItemFlow({ item, menuItems, activeAllergens = [], 
             instGroups={instGroups}
             allModDefs={modifierGroupDefs}
             menuItems={menuItems}
+            eightySixIds={eightySixIds}
+            dailyCounts={dailyCounts}
             selections={selections}
             instSelections={instSelections}
             qty={qty}
@@ -376,7 +401,7 @@ function VariantStep({ item, variantChildren, onPick }) {
 }
 
 // ── Modifier step: sequential groups ─────────────────────────────────────────
-function ModifierStep({ modGroups, instGroups, allModDefs, menuItems, selections, instSelections, qty, notes, missingRequired = [], onToggleSingle, onAddMulti, onRemoveMulti, onQtyChange, onToggleInst, onQty, onNotes }) {
+function ModifierStep({ modGroups, instGroups, allModDefs, menuItems, eightySixIds = [], dailyCounts = {}, selections, instSelections, qty, notes, missingRequired = [], onToggleSingle, onAddMulti, onRemoveMulti, onQtyChange, onToggleInst, onQty, onNotes }) {
   // Resolve image for a modifier option: option's own image > matching sub-item image
   const resolveOptImage = (opt) => {
     if (opt.image) return opt.image;
@@ -454,11 +479,15 @@ function ModifierStep({ modGroups, instGroups, allModDefs, menuItems, selections
                 {(group.options || []).map(opt => {
                   const id = opt.id || opt.label || opt.name;
                   const optQty = (cur || {})[id] || 0;
-                  const canAdd = !atMax || optQty > 0; // can always reduce; can only add if not at max
+                  // v5.5.189: resolve sub-item and check 86'd / stock
+                  const optItemId = resolveOptItemId(opt, menuItems);
+                  const opt86 = optItemId && eightySixIds.includes(optItemId);
+                  const optStock = optItemId && dailyCounts[optItemId];
+                  const canAdd = !opt86 && (!atMax || optQty > 0); // can always reduce; can only add if not at max or 86'd
                   const optImage = resolveOptImage(opt);
 
                   return (
-                    <div key={id} style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 14px', borderRadius:12, border:`2px solid ${optQty > 0 ? 'var(--acc)' : 'var(--bdr)'}`, background: optQty > 0 ? 'var(--acc-d)' : 'var(--bg2)', transition:'all .1s' }}>
+                    <div key={id} style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 14px', borderRadius:12, border:`2px solid ${opt86 ? 'var(--red-b)' : optQty > 0 ? 'var(--acc)' : 'var(--bdr)'}`, background: opt86 ? 'var(--bg5)' : optQty > 0 ? 'var(--acc-d)' : 'var(--bg2)', transition:'all .1s', opacity: opt86 ? 0.5 : 1 }}>
                       {/* Image — from option directly or inherited from matching sub-item */}
                       {optImage && (
                         <div style={{ width:40, height:40, borderRadius:8, overflow:'hidden', flexShrink:0 }}>
@@ -467,8 +496,14 @@ function ModifierStep({ modGroups, instGroups, allModDefs, menuItems, selections
                       )}
                       {/* Name + price */}
                       <div style={{ flex:1, minWidth:0 }}>
-                        <div style={{ fontSize:13, fontWeight: optQty > 0 ? 700 : 400, color: optQty > 0 ? 'var(--acc)' : 'var(--t1)' }}>
-                          {opt.name || opt.label}
+                        <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+                          <span style={{ fontSize:13, fontWeight: optQty > 0 ? 700 : 400, color: opt86 ? 'var(--t4)' : optQty > 0 ? 'var(--acc)' : 'var(--t1)' }}>
+                            {opt.name || opt.label}
+                          </span>
+                          {opt86 && <span style={{ fontSize:9, fontWeight:800, padding:'2px 5px', borderRadius:4, background:'var(--red-d)', color:'var(--red)', border:'1px solid var(--red-b)' }}>86'd</span>}
+                          {optStock && !opt86 && optStock.remaining <= 3 && (
+                            <span style={{ fontSize:9, fontWeight:700, padding:'2px 5px', borderRadius:4, background:'var(--wrn-d,#fff3cd)', color:'var(--wrn,#856404)', border:'1px solid var(--wrn-b,#ffc107)' }}>{optStock.remaining} left</span>
+                          )}
                         </div>
                         {(opt.price || 0) > 0 && (
                           <div style={{ fontSize:11, color:'var(--t3)', fontFamily:'var(--font-mono)' }}>+£{opt.price.toFixed(2)} each</div>
@@ -486,9 +521,9 @@ function ModifierStep({ modGroups, instGroups, allModDefs, menuItems, selections
                           {optQty}
                         </span>
                         <button
-                          onClick={() => { if (!atMax) onQtyChange(group.id, id, +1); }}
-                          disabled={atMax}
-                          style={{ width:32, height:32, borderRadius:8, border:`1.5px solid ${atMax?'var(--bdr)':'var(--acc)'}`, background:atMax?'var(--bg3)':'var(--acc)', color:atMax?'var(--t4)':'#0b0c10', cursor:atMax?'not-allowed':'pointer', fontSize:18, fontWeight:800, display:'flex', alignItems:'center', justifyContent:'center', fontFamily:'inherit', opacity:atMax?0.4:1 }}>
+                          onClick={() => { if (canAdd && !atMax) onQtyChange(group.id, id, +1); }}
+                          disabled={atMax || opt86}
+                          style={{ width:32, height:32, borderRadius:8, border:`1.5px solid ${(atMax||opt86)?'var(--bdr)':'var(--acc)'}`, background:(atMax||opt86)?'var(--bg3)':'var(--acc)', color:(atMax||opt86)?'var(--t4)':'#0b0c10', cursor:(atMax||opt86)?'not-allowed':'pointer', fontSize:18, fontWeight:800, display:'flex', alignItems:'center', justifyContent:'center', fontFamily:'inherit', opacity:(atMax||opt86)?0.4:1 }}>
                           +
                         </button>
                       </div>
@@ -516,11 +551,17 @@ function ModifierStep({ modGroups, instGroups, allModDefs, menuItems, selections
                     : (cur?.id === id || cur?.label === id ? 1 : 0);
                   const isSel = optQty > 0;
                   const optImage = resolveOptImage(opt);
+                  // v5.5.189: resolve sub-item and check 86'd / stock
+                  const optItemId = resolveOptItemId(opt, menuItems);
+                  const opt86 = optItemId && eightySixIds.includes(optItemId);
+                  const optStock = optItemId && dailyCounts[optItemId];
+                  const optDisabled = opt86 || (atMax && !isSel);
 
                   return (
                     <div key={id} style={{ position:'relative' }}>
                       <button
                         onClick={() => {
+                          if (opt86) return; // blocked
                           if (isMulti) {
                             if (!atMax) onAddMulti(group.id, { ...opt, id, label: opt.name || opt.label || id }, maxPicks);
                           } else {
@@ -531,11 +572,11 @@ function ModifierStep({ modGroups, instGroups, allModDefs, menuItems, selections
                           width:'100%', display:'flex', alignItems:'center', justifyContent:'space-between',
                           padding: optImage ? '8px 14px' : '12px 14px',
                           borderRadius:12,
-                          cursor: atMax && !isSel ? 'not-allowed' : 'pointer',
+                          cursor: optDisabled ? 'not-allowed' : 'pointer',
                           fontFamily:'inherit', textAlign:'left', transition:'all .1s',
-                          border:`2px solid ${isSel ? 'var(--acc)' : 'var(--bdr)'}`,
-                          background: isSel ? 'var(--acc-d)' : 'var(--bg2)',
-                          opacity: atMax && !isSel ? 0.4 : 1,
+                          border:`2px solid ${opt86 ? 'var(--red-b)' : isSel ? 'var(--acc)' : 'var(--bdr)'}`,
+                          background: opt86 ? 'var(--bg5)' : isSel ? 'var(--acc-d)' : 'var(--bg2)',
+                          opacity: optDisabled ? 0.4 : 1,
                           paddingRight: isSel && isMulti ? 40 : 14,
                         }}>
                         <div style={{ display:'flex', alignItems:'center', gap:10 }}>
@@ -544,12 +585,20 @@ function ModifierStep({ modGroups, instGroups, allModDefs, menuItems, selections
                               <img src={optImage} alt={opt.name||opt.label} style={{ width:'100%', height:'100%', objectFit:'cover' }} />
                             </div>
                           )}
-                          <div style={{ width:18, height:18, borderRadius: isMulti ? 4 : '50%', border:`2px solid ${isSel ? 'var(--acc)' : 'var(--bdr2)'}`, background: isSel ? 'var(--acc)' : 'transparent', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
-                            {isSel && <div style={{ width:6, height:6, borderRadius: isMulti ? 2 : '50%', background:'#0b0c10' }}/>}
+                          <div style={{ width:18, height:18, borderRadius: isMulti ? 4 : '50%', border:`2px solid ${opt86 ? 'var(--red-b)' : isSel ? 'var(--acc)' : 'var(--bdr2)'}`, background: opt86 ? 'var(--red-d)' : isSel ? 'var(--acc)' : 'transparent', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+                            {opt86 ? <span style={{ fontSize:10, lineHeight:1 }}>🚫</span> : isSel && <div style={{ width:6, height:6, borderRadius: isMulti ? 2 : '50%', background:'#0b0c10' }}/>}
                           </div>
-                          <span style={{ fontSize:13, fontWeight: isSel ? 700 : 400, color: isSel ? 'var(--acc)' : 'var(--t1)' }}>
-                            {opt.name || opt.label}
-                          </span>
+                          <div style={{ display:'flex', flexDirection:'column' }}>
+                            <div style={{ display:'flex', alignItems:'center', gap:5 }}>
+                              <span style={{ fontSize:13, fontWeight: isSel ? 700 : 400, color: opt86 ? 'var(--t4)' : isSel ? 'var(--acc)' : 'var(--t1)', textDecoration: opt86 ? 'line-through' : 'none' }}>
+                                {opt.name || opt.label}
+                              </span>
+                              {opt86 && <span style={{ fontSize:9, fontWeight:800, padding:'1px 5px', borderRadius:4, background:'var(--red-d)', color:'var(--red)', border:'1px solid var(--red-b)' }}>86'd</span>}
+                              {optStock && !opt86 && optStock.remaining <= 3 && (
+                                <span style={{ fontSize:9, fontWeight:700, padding:'1px 5px', borderRadius:4, background:'var(--wrn-d,#fff3cd)', color:'var(--wrn,#856404)', border:'1px solid var(--wrn-b,#ffc107)' }}>{optStock.remaining} left</span>
+                              )}
+                            </div>
+                          </div>
                         </div>
                         {(opt.price || 0) > 0 && (
                           <span style={{ fontSize:12, fontWeight:700, color: isSel ? 'var(--acc)' : 'var(--t3)', fontFamily:'var(--font-mono)', flexShrink:0 }}>

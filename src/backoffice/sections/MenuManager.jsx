@@ -2659,7 +2659,7 @@ function ModifiersTab() {
                       const price = it.pricing?.base ?? it.price ?? 0;
                       return (
                         <button key={it.id} onClick={()=>{
-                          upd({ options:[...(sel.options||[]), { id:`opt-${Date.now()}-${it.id}`, name, price }] });
+                          upd({ options:[...(sel.options||[]), { id:`opt-${Date.now()}-${it.id}`, name, price, itemId: it.id }] });
                           setItemSearch('');
                         }} style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'7px 10px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', background:'var(--bg2)', border:'1px solid var(--bdr)', fontSize:12, color:'var(--t1)', textAlign:'left' }}
                         onMouseEnter={e=>e.currentTarget.style.borderColor='var(--acc)'}

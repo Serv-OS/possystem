@@ -76,6 +76,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.189', date: '23 May 2026', label: '86\'d stock countdown for modifier/combo sub-items — auto-block when sold out',
+    changes: [
+      'Modifier options created from sub-items now store an explicit itemId back-reference. Older options fall back to name-matching for backward compatibility.',
+      'Daily count (par) decrements now propagate to modifier sub-items: selling a "Box of 3" with 2× Bueno Donut correctly decrements the Bueno Donut stock by 2. Applies to addItem, removeItem, updateItemQty, voidItem, voidCheck, and bar tab addRoundToTab.',
+      'Modifier picker UI (InlineItemFlow) blocks 86\'d sub-item options: disabled state, red border, 🚫 icon, "86\'d" badge. Also shows "X left" warning when stock ≤ 3.',
+      'Parent item blocked at tap time when ALL options in a required modifier group are 86\'d — shows toast "Item unavailable — all [group] options are 86\'d". Prevents selling a combo that can\'t be fulfilled.',
+    ],
+  },
+  {
     version: '5.5.188', date: '23 May 2026', label: 'Per-reader customer display toggle — disable live cart push for table-service restaurants',
     changes: [
       'New "Customer display" toggle on each card reader in back office → Card Readers. When disabled, the POS skips pushing cart line items to the reader screen — reader stays on idle until payment time. Ideal for table service where the reader isn\'t customer-facing.',

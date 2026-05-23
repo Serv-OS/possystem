@@ -416,6 +416,28 @@ export default function POSSurface() {
 
   const handleItemTap = (item) => {
     if (eightySixIds.includes(item.id)) { showToast(`${item.name} is 86'd`,'error'); return; }
+    // v5.5.189: block item if ALL options in any required modifier group are 86'd.
+    // The combo/modifiable item can't be fulfilled if no choices remain.
+    const _modGroupDefs = useStore.getState().modifierGroupDefs || [];
+    const assignedGroups = item.assignedModifierGroups || [];
+    for (const ag of assignedGroups) {
+      const def = _modGroupDefs.find(d => d.id === ag.groupId);
+      if (!def || (def.min || 0) === 0) continue; // not required — skip
+      const opts = def.options || [];
+      if (opts.length === 0) continue;
+      const availableOpts = opts.filter(opt => {
+        const optItemId = opt.itemId || (() => {
+          const name = (opt.name || '').toLowerCase();
+          if (!name) return null;
+          return (MENU_ITEMS || []).find(i => i.type === 'subitem' && !i.archived && (i.menuName || i.name || '').toLowerCase() === name)?.id;
+        })();
+        return !optItemId || !eightySixIds.includes(optItemId);
+      });
+      if (availableOpts.length === 0) {
+        showToast(`${item.name} unavailable — all ${def.name || 'required'} options are 86'd`, 'error');
+        return;
+      }
+    }
     if (allergens.some(a=>(item.allergens||[]).includes(a))) { setPendingItem(item); return; }
     openFlow(item);
   };

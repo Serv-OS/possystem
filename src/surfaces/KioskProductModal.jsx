@@ -159,6 +159,7 @@ function buildModsArray(groups, selections, nestedSelections, subGroupsCache) {
         label: opt.name,
         price: typeof opt.price === 'number' ? opt.price : 0,
         groupLabel: g.name,
+        ...(opt.itemId ? { itemId: opt.itemId } : {}),
         ...(isInstrGroup ? { _instruction: true } : {}),
       });
       // If this option has nested config, emit the nested picks tagged with parent
