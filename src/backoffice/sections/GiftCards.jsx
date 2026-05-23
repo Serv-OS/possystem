@@ -3,7 +3,7 @@
 // Phase 1: manual operations only. No batch, no design, no online purchase.
 
 import { useState, useEffect, useCallback } from 'react';
-import { supabase, platformSupabase } from '../../lib/supabase';
+import { supabase } from '../../lib/supabase';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 
@@ -405,16 +405,10 @@ function RecentCardsPanel() {
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    if (!platformSupabase) { setLoading(false); return; }
     (async () => {
       try {
-        const { data, error: err } = await platformSupabase
-          .from('gift_cards')
-          .select('id, code_last4, initial_amount_minor, balance_minor, status, issued_at, expires_at, recipient_name, recipient_email, note')
-          .order('created_at', { ascending: false })
-          .limit(50);
-        if (err) throw err;
-        setCards(data ?? []);
+        const res = await callGift('gift-list', {});
+        setCards(res.cards ?? []);
       } catch (e) {
         setError(String(e?.message ?? e));
       } finally {

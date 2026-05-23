@@ -76,6 +76,13 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.195', date: '23 May 2026', label: 'Gift cards: fix recent cards list, add gift-list endpoint',
+    changes: [
+      'Fixed "Recent cards" tab not showing any cards. Was querying Platform DB directly with anon key (no auth session). Now routes through new gift-list edge function using Ops DB auth.',
+      'New gift-list edge function: authenticates caller, resolves company, returns up to 200 recent cards for the org.',
+    ],
+  },
+  {
     version: '5.5.194', date: '23 May 2026', label: 'Gift cards: remove PIN requirement',
     changes: [
       'Removed PIN from gift card system. Cards are secured by unique 16-char randomly generated codes only. No PIN field on issue, no PIN prompt on redeem.',
