@@ -9,7 +9,7 @@
 
 import { useEffect } from 'react';
 import { useStore } from '../store';
-import { supabase, isMock, getLocationId } from './supabase';
+import { supabase, isMock, getLocationId, ensureAuthToken } from './supabase';
 import {
   fetchMenuItems, fetchFloorPlan, fetch86List,
   fetchKDSTickets, fetchClosedChecks, fetchLatestConfigPush,
@@ -24,6 +24,15 @@ export default function useSupabaseInit() {
 
     async function init() {
       const store = useStore.getState();
+
+      // v5.5.184: POS devices (paired via pairing code) have no Supabase Auth
+      // session. With RLS enabled on tables like cash_drawers, cash_movements,
+      // closed_checks, etc., the anon key (role='anon') gets blocked. Ensure we
+      // have an authenticated session BEFORE any data fetching — uses existing
+      // BO session if present, otherwise falls back to signInAnonymously().
+      try { await ensureAuthToken(); } catch (e) {
+        console.warn('[useSupabaseInit] ensureAuthToken failed:', e.message);
+      }
 
       // Load location config first — needed for timezone-correct reporting
       const locConfig = await getLocationConfig();

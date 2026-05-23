@@ -76,6 +76,12 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.185', date: '23 May 2026', label: 'Fix POS boot auth — cash drawers + RLS-protected tables now load on paired devices',
+    changes: [
+      'Moved ensureAuthToken() into useSupabaseInit boot flow so POS devices get an authenticated session BEFORE any Supabase queries run. Fixes cash drawers (and other RLS-protected tables) returning empty on paired devices that have no back-office login session.',
+    ],
+  },
+  {
     version: '5.5.184', date: '23 May 2026', label: 'Fix POS/Sunmi "not authenticated" payment failure — anonymous auth fallback',
     changes: [
       'POS devices paired via pairing code had no Supabase Auth session, so card payments via Stripe reader failed with "not authenticated". Now uses signInAnonymously() as fallback — same approach QR and Online ordering already use.',
