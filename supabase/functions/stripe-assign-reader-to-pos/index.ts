@@ -2,9 +2,10 @@
 // Reassign a network payment reader to a specific POS or kiosk device (or
 // clear the assignment by passing pos_device_id=null).
 //
-// Body: { reader_id, pos_device_id }
-//   reader_id        — payment_devices.id (UUID)
-//   pos_device_id    — devices.id (UUID, Ops DB) OR null to unassign
+// Body: { reader_id, pos_device_id, customer_display_enabled? }
+//   reader_id                  — payment_devices.id (UUID)
+//   pos_device_id              — devices.id (UUID, Ops DB) OR null to unassign
+//   customer_display_enabled   — optional boolean; when present, updates the flag
 //
 // Anon RLS only permits BT updates; this edge function uses service_role to
 // update network rows. Bluetooth assignment happens automatically when the POS
@@ -38,9 +39,9 @@ Deno.serve(async (req) => {
   const { data: { user: caller } } = await opsAdmin.auth.getUser(authHeader.replace('Bearer ', ''));
   if (!caller) return json({ error: 'Invalid token' }, 401);
 
-  let body: { reader_id?: string; pos_device_id?: string | null };
+  let body: { reader_id?: string; pos_device_id?: string | null; customer_display_enabled?: boolean };
   try { body = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
-  const { reader_id, pos_device_id } = body ?? {};
+  const { reader_id, pos_device_id, customer_display_enabled } = body ?? {};
   if (!reader_id) return json({ error: 'reader_id required' }, 400);
 
   // Validate the reader exists and is a network reader
@@ -71,10 +72,16 @@ Deno.serve(async (req) => {
     }
   }
 
+  // Build update payload — only include fields that were provided
+  const updatePayload: Record<string, unknown> = { bound_pos_device_id: pos_device_id || null };
+  if (typeof customer_display_enabled === 'boolean') {
+    updatePayload.customer_display_enabled = customer_display_enabled;
+  }
+
   const { error: updErr } = await platformAdmin.from('payment_devices')
-    .update({ bound_pos_device_id: pos_device_id || null })
+    .update(updatePayload)
     .eq('id', reader_id);
   if (updErr) return json({ error: `update failed: ${updErr.message}` }, 500);
 
-  return json({ success: true, reader_id, bound_pos_device_id: pos_device_id || null });
+  return json({ success: true, reader_id, bound_pos_device_id: pos_device_id || null, customer_display_enabled });
 });

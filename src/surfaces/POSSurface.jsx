@@ -5,7 +5,8 @@ import DrawerCashModal from '../components/DrawerCashModal';
 import { useStore } from '../store';
 import { fetchMenuCategoryLinks } from '../lib/db';
 import { supabase } from '../lib/supabase';
-import { pushReaderDisplay, clearReaderDisplay } from '../lib/readerDisplay';
+import { pushReaderDisplay, clearReaderDisplay, cacheReaderDisplaySetting } from '../lib/readerDisplay';
+import { getAssignedNetworkReader } from '../lib/networkReader';
 import { CATEGORIES, MENU_ITEMS as SEED_MENU_ITEMS, ALLERGENS, QUICK_IDS, getDaypart, CAT_META } from '../data/seed';
 import { calculateOrderTax } from '../lib/tax';
 import ProductModal, { AllergenModal } from '../components/ProductModal';
@@ -281,6 +282,21 @@ export default function POSSurface() {
   const items = getPOSItems();
   const { subtotal, service, total, itemCount, checkDiscount, discountedSub, serviceChargeWaived, serviceChargeApplicable } = getPOSTotals();
   const orderNote = getPOSOrderNote();
+
+  // v5.5.188: cache the per-reader customer display setting on boot.
+  // Reads payment_devices.customer_display_enabled once; pushReaderDisplay
+  // then checks localStorage synchronously on every cart change.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const reader = await getAssignedNetworkReader();
+        if (cancelled) return;
+        cacheReaderDisplaySetting(reader?.customer_display_enabled);
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   // v5.5.171: live cart push to the connected Stripe reader. As items are
   // added/removed/modified — the customer-facing reader screen updates in

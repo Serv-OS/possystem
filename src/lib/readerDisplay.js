@@ -21,6 +21,26 @@
 
 import { supabase, isMock, ensureAuthToken } from './supabase';
 
+// ── Per-reader customer display toggle ──────────────────────────────────────
+// Cached in localStorage so every pushReaderDisplay call is a sync read (no DB).
+// Back office writes the flag to payment_devices; POS caches it on boot via
+// getAssignedNetworkReader().customer_display_enabled.
+const DISPLAY_ENABLED_KEY = 'rpos-reader-display-enabled';
+
+/** Call once at POS boot with the reader's customer_display_enabled value. */
+export function cacheReaderDisplaySetting(enabled) {
+  try {
+    localStorage.setItem(DISPLAY_ENABLED_KEY, enabled === false ? '0' : '1');
+  } catch {}
+}
+
+function isCustomerDisplayEnabled() {
+  try {
+    const v = localStorage.getItem(DISPLAY_ENABLED_KEY);
+    return v !== '0'; // default true if missing
+  } catch { return true; }
+}
+
 let _timer = null;
 let _inflight = null;
 let _lastSentKey = null;
@@ -44,6 +64,7 @@ function getOpsDeviceId() {
  */
 export function pushReaderDisplay({ lineItems = [], totalMinor = 0, currency = 'gbp', debounceMs = 600 } = {}) {
   if (isMock) return; // No network reader in mock mode
+  if (!isCustomerDisplayEnabled()) return; // v5.5.188: per-reader toggle
 
   // Build a stable key so identical successive cart states don't re-fire
   const key = JSON.stringify({

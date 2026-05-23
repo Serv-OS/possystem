@@ -76,6 +76,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.188', date: '23 May 2026', label: 'Per-reader customer display toggle — disable live cart push for table-service restaurants',
+    changes: [
+      'New "Customer display" toggle on each card reader in back office → Card Readers. When disabled, the POS skips pushing cart line items to the reader screen — reader stays on idle until payment time. Ideal for table service where the reader isn\'t customer-facing.',
+      'Setting stored per reader in payment_devices.customer_display_enabled (platform DB). POS caches the value in localStorage on boot for zero-latency checks on every cart change.',
+      'Edge function stripe-assign-reader-to-pos extended to accept optional customer_display_enabled boolean.',
+      'Requires migration: migrations/v5.5.188-customer-display-toggle.sql on platform DB.',
+    ],
+  },
+  {
     version: '5.5.187', date: '23 May 2026', label: 'Fix DeviceProfiles crash — defensive array access for enabledOrderTypes/hiddenFeatures',
     changes: [
       'DeviceProfiles crashed with "Cannot read properties of undefined (reading \'map\')" when profiles loaded from localStorage or DB had missing enabledOrderTypes or hiddenFeatures arrays. Added || [] fallbacks across all render paths + editor form.',

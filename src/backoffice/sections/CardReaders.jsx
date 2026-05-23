@@ -74,7 +74,7 @@ export default function CardReaders() {
       const [{ data: loc }, { data: rdrs }, { data: devs }] = await Promise.all([
         platformSupabase.from('locations').select('id, name, company_id').eq('id', platformId).maybeSingle(),
         platformSupabase.from('payment_devices')
-          .select('id, stripe_reader_id, label, device_type, connection_kind, serial_number, status, last_seen_at, bound_pos_device_id, created_at, registration_code, ip_address, firmware_version, last_status_check_at')
+          .select('id, stripe_reader_id, label, device_type, connection_kind, serial_number, status, last_seen_at, bound_pos_device_id, created_at, registration_code, ip_address, firmware_version, last_status_check_at, customer_display_enabled')
           .eq('location_id', platformId)
           .order('created_at', { ascending: false }),
         // Devices live in Ops DB. Pull POS + kiosk types only — those are what can take payments.
@@ -231,6 +231,36 @@ function ReaderRow({ reader, devices, onUnregister, onReassign, platformLocation
   const [expanded, setExpanded] = useState(false);
   const [forceCancelling, setForceCancelling] = useState(false);
   const [forceCancelResult, setForceCancelResult] = useState(null);
+  // v5.5.188: per-reader customer display toggle
+  const [displayEnabled, setDisplayEnabled] = useState(reader.customer_display_enabled !== false);
+  const [displaySaving, setDisplaySaving] = useState(false);
+
+  const handleDisplayToggle = async () => {
+    const newVal = !displayEnabled;
+    setDisplayEnabled(newVal); // optimistic
+    setDisplaySaving(true);
+    try {
+      const { data: session } = await supabase.auth.getSession();
+      const token = session?.session?.access_token;
+      if (!token) throw new Error('not authenticated');
+      const res = await fetch(`${FUNCTIONS_URL}/stripe-assign-reader-to-pos`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          reader_id: reader.id,
+          pos_device_id: reader.bound_pos_device_id || null,
+          customer_display_enabled: newVal,
+        }),
+      });
+      const j = await res.json();
+      if (!res.ok || j.error) throw new Error(j.error ?? `HTTP ${res.status}`);
+    } catch (e) {
+      setDisplayEnabled(!newVal); // revert
+      alert(`Failed to update: ${e.message}`);
+    } finally {
+      setDisplaySaving(false);
+    }
+  };
 
   // v5.5.179: force-cancel any in-flight action on the reader. Calls
   // stripe-cancel-reader-action with reader_id only (no payment_intent_id)
@@ -311,6 +341,26 @@ function ReaderRow({ reader, devices, onUnregister, onReassign, platformLocation
                 </button>
               )}
             </div>
+          </div>
+
+          {/* Customer display toggle */}
+          <div style={{ marginTop: 8, padding: '8px 10px', borderRadius: 8, background: displayEnabled ? 'var(--bg3)' : 'var(--bg2)', border: '1px solid var(--bdr)', opacity: displaySaving ? 0.6 : 1, transition: 'opacity .2s' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: displaySaving ? 'wait' : 'pointer' }}>
+              <div onClick={displaySaving ? undefined : handleDisplayToggle} style={{
+                width: 38, height: 20, borderRadius: 10, position: 'relative', flexShrink: 0,
+                background: displayEnabled ? 'var(--grn)' : 'var(--bg4)', transition: 'all .2s', cursor: displaySaving ? 'wait' : 'pointer',
+              }}>
+                <div style={{ width: 16, height: 16, borderRadius: '50%', background: '#fff', position: 'absolute', top: 2, left: displayEnabled ? 20 : 2, transition: 'left .2s', boxShadow: '0 1px 3px rgba(0,0,0,.3)' }}/>
+              </div>
+              <div onClick={displaySaving ? undefined : handleDisplayToggle}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--t1)' }}>Customer display</div>
+                <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 1 }}>
+                  {displayEnabled
+                    ? 'Live cart items shown on reader screen as they\'re rung up'
+                    : 'Reader screen stays idle — for table service where reader isn\'t customer-facing'}
+                </div>
+              </div>
+            </label>
           </div>
 
           <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap', alignItems: 'center' }}>

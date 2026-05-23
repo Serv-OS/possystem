@@ -60,7 +60,7 @@ export async function getAssignedNetworkReader() {
   if (!platformLocationId) return null;
   const { data } = await platformSupabase
     .from('payment_devices')
-    .select('id, stripe_reader_id, label, status, ip_address, device_type, last_seen_at, serial_number')
+    .select('id, stripe_reader_id, label, status, ip_address, device_type, last_seen_at, serial_number, customer_display_enabled')
     .eq('location_id', platformLocationId)
     .eq('connection_kind', 'network')
     .eq('bound_pos_device_id', posDeviceId)
