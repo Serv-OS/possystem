@@ -15,6 +15,9 @@ import { platformSupabase } from '../lib/supabase';
 import { lookupLocationBySlug } from '../lib/customerUrl';
 import { isOpenNow, nextOpensAt, formatHoursPreview } from '../lib/openingHours';
 import OnlineSurface from './online/OnlineSurface';
+import GiftPurchaseSurface from './gift/GiftPurchaseSurface';
+import GiftBalanceSurface from './gift/GiftBalanceSurface';
+import GiftSuccessSurface from './gift/GiftSuccessSurface';
 
 export default function CustomerBoot({ slug, mode, tableId }) {
   const [state, setState] = useState({ loading: true, location: null, error: null });
@@ -50,6 +53,13 @@ export default function CustomerBoot({ slug, mode, tableId }) {
   }
 
   const loc = state.location;
+
+  // v5.5.196: Gift card surfaces skip opening-hours and enabled-surface
+  // gates — gift cards are purchasable 24/7 as long as the location exists.
+  if (mode === 'gift')         return <GiftPurchaseSurface location={loc}/>;
+  if (mode === 'gift_balance') return <GiftBalanceSurface location={loc}/>;
+  if (mode === 'gift_success') return <GiftSuccessSurface location={loc}/>;
+
   // Surface enabled check
   if (mode === 'online' && !loc.online_enabled) {
     return <CustomerShell><ErrorState icon="🚫" title="Online ordering not enabled" body={<>Visit {loc.name} in person, or contact them directly.</>}/></CustomerShell>;

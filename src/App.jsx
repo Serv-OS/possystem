@@ -76,6 +76,19 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.196', date: '23 May 2026', label: 'Gift Cards Phase 2: customer-facing purchase, balance check, email delivery',
+    changes: [
+      'New customer-facing gift card purchase page at /<slug>/gift. Preset and custom amounts, sender/recipient details, personal message. Payment via Stripe Checkout on merchant\'s connected account.',
+      'Balance check page at /<slug>/gift/balance. Enter gift card code to see current balance, status, and expiry.',
+      'Post-purchase success page at /<slug>/gift/success. Polls for fulfillment and shows confirmation with card details.',
+      'Four new edge functions: gift-checkout-session (Stripe Checkout), gift-fulfill (issue card + email on payment), gift-balance-public (anonymous balance check), gift-purchase-status (success page polling).',
+      'Stripe webhook handler extended: checkout.session.completed with type=gift_card_purchase triggers automatic card issuance and email delivery via Resend.',
+      'Gift card delivery email: branded HTML email with code, amount, venue name, personal message, and balance-check link. Sender gets a confirmation email too.',
+      'New schema: gift_card_purchases table tracks the full purchase→payment→fulfillment lifecycle.',
+      'URL routing extended: /gift, /gift/balance, /gift/success paths. Gift card pages skip opening-hours gate — available 24/7.',
+    ],
+  },
+  {
     version: '5.5.195', date: '23 May 2026', label: 'Gift cards: fix recent cards list, add gift-list endpoint',
     changes: [
       'Fixed "Recent cards" tab not showing any cards. Was querying Platform DB directly with anon key (no auth session). Now routes through new gift-list edge function using Ops DB auth.',

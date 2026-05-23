@@ -60,8 +60,11 @@ export function parseCustomerUrl(loc = (typeof window !== 'undefined' ? window.l
   }
 
   // 2. Mode — path takes precedence, then ?surface, then default
-  // /t/<id>     → qr
-  // /k          → kiosk
+  // /t/<id>           → qr
+  // /k                → kiosk
+  // /gift             → gift (purchase page)
+  // /gift/balance     → gift_balance (balance check)
+  // /gift/success     → gift_success (post-purchase confirmation)
   // anything else with a slug → online
   let mode = null;
   let tableId = null;
@@ -69,13 +72,21 @@ export function parseCustomerUrl(loc = (typeof window !== 'undefined' ? window.l
   if (tableMatch) {
     mode = 'qr';
     tableId = decodeURIComponent(tableMatch[1]);
+  } else if (pathname.startsWith('/gift/balance')) {
+    mode = 'gift_balance';
+  } else if (pathname.startsWith('/gift/success')) {
+    mode = 'gift_success';
+  } else if (pathname === '/gift' || pathname.startsWith('/gift/')) {
+    mode = 'gift';
   } else if (pathname.startsWith('/k')) {
     mode = 'kiosk';
   } else {
     const surface = params.get('surface');
-    if (surface === 'qr')      { mode = 'qr';     tableId = params.get('t'); }
-    else if (surface === 'kiosk') mode = 'kiosk';
-    else if (surface === 'online') mode = 'online';
+    if (surface === 'qr')           { mode = 'qr';     tableId = params.get('t'); }
+    else if (surface === 'kiosk')     mode = 'kiosk';
+    else if (surface === 'gift')      mode = 'gift';
+    else if (surface === 'gift_balance') mode = 'gift_balance';
+    else if (surface === 'online')    mode = 'online';
     else if (slug) mode = 'online'; // having a slug implies online by default
   }
 
@@ -107,7 +118,7 @@ export async function lookupLocationBySlug(slug, platformSupabase) {
       // v5.5.109 — all platform-DB columns, not ops. (Reminder: receipt_branding
       // lives on OPS — fetched by OnlineSurface as a fallback only when
       // online_branding is empty.)
-      .select('id, ops_location_id, name, timezone, online_slug, online_enabled, qr_enabled, opening_hours, online_branding, online_menu_id, online_collection_lead_min, online_delivery_enabled')
+      .select('id, ops_location_id, name, timezone, online_slug, online_enabled, qr_enabled, opening_hours, online_branding, online_menu_id, online_collection_lead_min, online_delivery_enabled, company_id')
       .eq('online_slug', slug)
       .maybeSingle();
     if (!data) {

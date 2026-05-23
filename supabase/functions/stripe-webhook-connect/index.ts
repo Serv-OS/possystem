@@ -23,6 +23,8 @@ const platformDb = createClient(
 );
 
 const SECRET = Deno.env.get('STRIPE_CONNECT_WEBHOOK_SECRET');
+const OPS_URL = Deno.env.get('SUPABASE_URL') ?? '';
+const OPS_SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 
 Deno.serve(async (req) => {
   if (req.method !== 'POST') return new Response('method not allowed', { status: 405 });
@@ -100,6 +102,40 @@ async function dispatch(event: Stripe.Event, accountId: string | null) {
         await platformDb.from('merchant_stripe_accounts').update({
           capabilities, last_webhook_at: new Date().toISOString(),
         }).eq('stripe_account_id', accountId);
+      }
+      break;
+    }
+    case 'checkout.session.completed': {
+      // v5.5.196: Gift card purchase fulfillment.
+      // When a Checkout Session completes and its metadata has type=gift_card_purchase,
+      // call the gift-fulfill edge function to issue the card and email it.
+      const session = event.data.object as Stripe.Checkout.Session;
+      const meta = session.metadata ?? {};
+      if (meta.type === 'gift_card_purchase' && meta.purchase_id) {
+        console.log('[stripe-webhook-connect] fulfilling gift card purchase:', meta.purchase_id);
+        // Update purchase status to 'paid' first
+        await platformDb.from('gift_card_purchases')
+          .update({ status: 'paid', stripe_payment_intent_id: (session as any).payment_intent })
+          .eq('id', meta.purchase_id);
+        // Call gift-fulfill to issue + email
+        try {
+          const fulfillRes = await fetch(`${OPS_URL}/functions/v1/gift-fulfill`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${OPS_SERVICE_KEY}`,
+            },
+            body: JSON.stringify({ purchase_id: meta.purchase_id }),
+          });
+          const fulfillData = await fulfillRes.json();
+          if (!fulfillRes.ok) {
+            console.error('[stripe-webhook-connect] gift-fulfill failed:', fulfillData);
+          } else {
+            console.log('[stripe-webhook-connect] gift card fulfilled:', fulfillData);
+          }
+        } catch (e) {
+          console.error('[stripe-webhook-connect] gift-fulfill call error:', e);
+        }
       }
       break;
     }
