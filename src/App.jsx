@@ -76,6 +76,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.186', date: '23 May 2026', label: 'Multi-tenant safety audit — fix KDS boot fetch + verify all queries scoped to location',
+    changes: [
+      'fetchKDSTickets now self-resolves locationId (same pattern as fetchMenuItems). Previously called with null from boot, .eq(\'location_id\', null) returned 0 rows — KDS tickets only appeared via Realtime after boot, never on initial load.',
+      'useSupabaseInit now passes the already-resolved locId to fetchKDSTickets explicitly, avoiding a redundant getLocationId() round-trip.',
+      'Full audit of every .from() Supabase call across db.js, store/index.js, SyncBridge, SessionSync, SessionReconciler, DataSafe, realtime.js, and all backoffice sections confirms all queries are correctly scoped by location_id. Safe for multi-location deployment.',
+    ],
+  },
+  {
     version: '5.5.185', date: '23 May 2026', label: 'Fix POS boot auth — cash drawers + RLS-protected tables now load on paired devices',
     changes: [
       'Moved ensureAuthToken() into useSupabaseInit boot flow so POS devices get an authenticated session BEFORE any Supabase queries run. Fixes cash drawers (and other RLS-protected tables) returning empty on paired devices that have no back-office login session.',

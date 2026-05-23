@@ -293,6 +293,11 @@ export const toggle86DB = async (itemId, is86, locationId = null) => {
 // ── KDS ───────────────────────────────────────────────────────────────────────
 export const fetchKDSTickets = async (locationId = null) => {
   if (isMock) return { data: null, error: null };
+  // v5.5.186: self-resolve locationId — same pattern as fetchMenuItems etc.
+  // Previously a null caller-arg passed null to .eq('location_id', null)
+  // which returned 0 rows, so KDS tickets never loaded on boot.
+  if (!locationId || locationId === 'loc-demo') locationId = await getLocationId().catch(() => null);
+  if (!locationId || locationId === 'loc-demo') return { data: null, error: null };
   return supabase
     .from('kds_tickets')
     .select('*')

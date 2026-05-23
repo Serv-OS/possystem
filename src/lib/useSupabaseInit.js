@@ -102,8 +102,9 @@ export default function useSupabaseInit() {
         useStore.setState({ eightySixIds: e86.map(r => r.item_id) });
       }
 
-      // Active KDS tickets
-      const { data: tickets } = await fetchKDSTickets();
+      // Active KDS tickets — pass locId explicitly (fetchKDSTickets also
+      // self-resolves, but we already have the value; avoids a wasted round trip).
+      const { data: tickets } = await fetchKDSTickets(locId);
       if (tickets) {
         useStore.setState({ kdsTickets: tickets });
       }
