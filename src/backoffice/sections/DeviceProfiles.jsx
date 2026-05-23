@@ -247,7 +247,9 @@ export default function DeviceProfiles() {
       {/* Profile cards */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(320px, 1fr))', gap:14 }}>
         {profiles.map(prof => {
-          const devCount = devices.filter(d => d.profileId === prof.id).length || prof.deviceCount;
+          const devCount = (devices || []).filter(d => d.profileId === prof.id).length || prof.deviceCount || 0;
+          const orderTypes = prof.enabledOrderTypes || [];
+          const hiddenFeats = prof.hiddenFeatures || [];
           return (
             <div key={prof.id} style={{
               background:'var(--bg1)', border:'1px solid var(--bdr)',
@@ -275,12 +277,12 @@ export default function DeviceProfiles() {
                 {/* Config summary */}
                 <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
                   <ConfigRow label="Default screen" value={SURFACES.find(s => s.id === prof.defaultSurface)?.label}/>
-                  <ConfigRow label="Order types" value={prof.enabledOrderTypes.map(t => ORDER_TYPES.find(o => o.id === t)?.icon + ' ' + ORDER_TYPES.find(o => o.id === t)?.label).join(' · ')}/>
+                  <ConfigRow label="Order types" value={orderTypes.map(t => ORDER_TYPES.find(o => o.id === t)?.icon + ' ' + ORDER_TYPES.find(o => o.id === t)?.label).join(' · ') || 'None'}/>
                   <ConfigRow label="Table service" value={prof.tableServiceEnabled ? '✓ Enabled' : '✕ Disabled'} valueColor={prof.tableServiceEnabled ? 'var(--grn)' : 'var(--red)'}/>
                   <ConfigRow label="Auto-print receipt" value={prof.autoPrintReceiptOnClose !== false ? '✓ Enabled' : '✕ Disabled'} valueColor={prof.autoPrintReceiptOnClose !== false ? 'var(--grn)' : 'var(--red)'}/>
                   <ConfigRow label="Section" value={prof.assignedSection || 'All sections'}/>
-                  {prof.hiddenFeatures.length > 0 && (
-                    <ConfigRow label="Hidden features" value={prof.hiddenFeatures.join(', ')} truncate/>
+                  {hiddenFeats.length > 0 && (
+                    <ConfigRow label="Hidden features" value={hiddenFeats.join(', ')} truncate/>
                   )}
                 </div>
               </div>
@@ -296,9 +298,9 @@ export default function DeviceProfiles() {
                     profileId: prof.id,
                     profileName: prof.name,
                     defaultSurface: prof.defaultSurface,
-                    enabledOrderTypes: prof.enabledOrderTypes,
+                    enabledOrderTypes: orderTypes,
                     assignedSection: prof.assignedSection,
-                    hiddenFeatures: prof.hiddenFeatures,
+                    hiddenFeatures: hiddenFeats,
                     tableServiceEnabled: prof.tableServiceEnabled,
                     quickScreenEnabled: prof.quickScreenEnabled,
                     autoPrintReceiptOnClose: prof.autoPrintReceiptOnClose !== false,
@@ -345,8 +347,8 @@ function ProfileEditor({ profile, onSave, onDelete, onClose }) {
   });
 
   const upd = (key, val) => setForm(f => ({ ...f, [key]: val }));
-  const toggleOrderType = id => upd('enabledOrderTypes', form.enabledOrderTypes.includes(id) ? form.enabledOrderTypes.filter(x => x !== id) : [...form.enabledOrderTypes, id]);
-  const toggleFeature = id => upd('hiddenFeatures', form.hiddenFeatures.includes(id) ? form.hiddenFeatures.filter(x => x !== id) : [...form.hiddenFeatures, id]);
+  const toggleOrderType = id => { const arr = form.enabledOrderTypes || []; upd('enabledOrderTypes', arr.includes(id) ? arr.filter(x => x !== id) : [...arr, id]); };
+  const toggleFeature = id => { const arr = form.hiddenFeatures || []; upd('hiddenFeatures', arr.includes(id) ? arr.filter(x => x !== id) : [...arr, id]); };
 
   const COLORS = ['#3b82f6','#e8a020','#22c55e','#a855f7','#ef4444','#22d3ee','#f97316'];
   const SECTIONS = [null, 'main', 'bar', 'patio'];
@@ -444,7 +446,7 @@ function ProfileEditor({ profile, onSave, onDelete, onClose }) {
             <label style={{ display:'block', fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.07em', marginBottom:8 }}>Enabled order types</label>
             <div style={{ display:'flex', gap:8 }}>
               {ORDER_TYPES.map(t => {
-                const on = form.enabledOrderTypes.includes(t.id);
+                const on = (form.enabledOrderTypes || []).includes(t.id);
                 return (
                   <button key={t.id} onClick={() => toggleOrderType(t.id)} style={{
                     flex:1, padding:'10px', borderRadius:10, cursor:'pointer', fontFamily:'inherit', textAlign:'center',
@@ -587,7 +589,7 @@ function ProfileEditor({ profile, onSave, onDelete, onClose }) {
             <label style={{ display:'block', fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.07em', marginBottom:8 }}>Hide features from this terminal</label>
             <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
               {FEATURES.map(f => {
-                const hidden = form.hiddenFeatures.includes(f.id);
+                const hidden = (form.hiddenFeatures || []).includes(f.id);
                 return (
                   <div key={f.id} onClick={() => toggleFeature(f.id)} style={{
                     display:'flex', justifyContent:'space-between', alignItems:'center',
@@ -630,7 +632,7 @@ function ProfileEditor({ profile, onSave, onDelete, onClose }) {
         <div style={{ padding:'12px 20px', borderTop:'1px solid var(--bdr)', display:'flex', gap:8, flexShrink:0 }}>
           {!isNew && onDelete && <button onClick={onDelete} style={{ padding:'8px 14px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--red-d)', border:'1px solid var(--red-b)', color:'var(--red)', fontSize:12, fontWeight:700 }}>Delete</button>}
           <button className="btn btn-ghost" style={{ flex:1 }} onClick={onClose}>Cancel</button>
-          <button className="btn btn-acc" style={{ flex:2, height:42 }} disabled={!form.name.trim() || form.enabledOrderTypes.length === 0} onClick={() => onSave(form)}>
+          <button className="btn btn-acc" style={{ flex:2, height:42 }} disabled={!form.name.trim() || (form.enabledOrderTypes || []).length === 0} onClick={() => onSave(form)}>
             {isNew ? 'Create profile' : 'Save changes'}
           </button>
         </div>

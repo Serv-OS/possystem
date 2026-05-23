@@ -76,6 +76,13 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.187', date: '23 May 2026', label: 'Fix DeviceProfiles crash — defensive array access for enabledOrderTypes/hiddenFeatures',
+    changes: [
+      'DeviceProfiles crashed with "Cannot read properties of undefined (reading \'map\')" when profiles loaded from localStorage or DB had missing enabledOrderTypes or hiddenFeatures arrays. Added || [] fallbacks across all render paths + editor form.',
+      'Also guard devices from store (could be undefined before hydration).',
+    ],
+  },
+  {
     version: '5.5.186', date: '23 May 2026', label: 'Multi-tenant safety audit — fix KDS boot fetch + verify all queries scoped to location',
     changes: [
       'fetchKDSTickets now self-resolves locationId (same pattern as fetchMenuItems). Previously called with null from boot, .eq(\'location_id\', null) returned 0 rows — KDS tickets only appeared via Realtime after boot, never on initial load.',
