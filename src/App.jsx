@@ -76,6 +76,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.192', date: '23 May 2026', label: 'Card reader screensaver — upload idle screen image from back office',
+    changes: [
+      'New "Idle screen / screensaver" section in Back Office → Card Readers → Reader Settings. Upload a PNG or JPEG (max 512 KB, recommended 1080×1920) to display on readers when no payment is in progress.',
+      'Image uploads to Stripe Files API via new edge function stripe-upload-reader-splashscreen. File is stored on the connected Stripe account with purpose terminal_reader_splashscreen.',
+      'Enable/disable toggle controls whether the screensaver is active. "Save & sync to readers" pushes the configuration (including the splashscreen file) to all readers at the location.',
+      'Remove button clears the image from Stripe config and reverts to the default idle screen. Drag-and-drop upload supported alongside file picker.',
+    ],
+  },
+  {
     version: '5.5.191', date: '23 May 2026', label: 'Auto-fire empty leading courses — no more holding course 2/3 when course 1 is empty',
     changes: [
       'When only course 2 or 3 items exist on a check (no course 1 items), the system now auto-fires all empty leading courses so the kitchen sees them as FIRE, not HOLD.',

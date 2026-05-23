@@ -605,6 +605,102 @@ function ReaderSettingsPanel({ locationId }) {
   const [allowCustom, setAllowCustom] = useState(true);
   const [smartThreshold, setSmartThreshold] = useState('');
 
+  // Screensaver state
+  const [ssEnabled, setSsEnabled] = useState(false);
+  const [ssFileId, setSsFileId] = useState(null);
+  const [ssPreview, setSsPreview] = useState(null);   // data URL for preview
+  const [ssUploading, setSsUploading] = useState(false);
+  const [ssError, setSsError] = useState(null);
+  const [ssNote, setSsNote] = useState(null);
+
+  // ── Screensaver upload handler ──────────────────────────────────────
+  const handleSsUpload = async (file) => {
+    setSsError(null); setSsNote(null); setSsUploading(true);
+    try {
+      // Validate client-side
+      const allowed = ['image/png', 'image/jpeg', 'image/jpg'];
+      if (!allowed.includes(file.type)) {
+        throw new Error(`Unsupported image type: ${file.type}. Use PNG or JPEG.`);
+      }
+      if (file.size > 512 * 1024) {
+        throw new Error(`Image too large (${Math.round(file.size / 1024)} KB). Max 512 KB.`);
+      }
+
+      // Read file as base64
+      const base64 = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const dataUrl = reader.result;
+          // Strip the "data:image/...;base64," prefix
+          const b64 = dataUrl.split(',')[1];
+          resolve(b64);
+        };
+        reader.onerror = () => reject(new Error('Failed to read file'));
+        reader.readAsDataURL(file);
+      });
+
+      // Show local preview immediately
+      const previewUrl = URL.createObjectURL(file);
+      setSsPreview(previewUrl);
+
+      // Call edge function
+      const { data: session } = await supabase.auth.getSession();
+      const token = session?.session?.access_token;
+      if (!token) throw new Error('Not authenticated');
+
+      const res = await fetch(`${FUNCTIONS_URL}/stripe-upload-reader-splashscreen`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          location_id: locationId,
+          image_base64: base64,
+          mime_type: file.type,
+          action: 'upload',
+        }),
+      });
+      const j = await res.json();
+      if (!res.ok || j.error) throw new Error(j.error ?? `HTTP ${res.status}`);
+
+      setSsFileId(j.file_id);
+      setSsEnabled(true);
+      setSsNote(`Uploaded (${j.size_kb} KB) — tap "Save & sync to readers" to push to devices`);
+    } catch (e) {
+      setSsError(String(e?.message ?? e));
+    } finally {
+      setSsUploading(false);
+    }
+  };
+
+  // ── Screensaver remove handler ──────────────────────────────────────
+  const handleSsRemove = async () => {
+    setSsError(null); setSsNote(null); setSsUploading(true);
+    try {
+      const { data: session } = await supabase.auth.getSession();
+      const token = session?.session?.access_token;
+      if (!token) throw new Error('Not authenticated');
+
+      const res = await fetch(`${FUNCTIONS_URL}/stripe-upload-reader-splashscreen`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          location_id: locationId,
+          action: 'remove',
+        }),
+      });
+      const j = await res.json();
+      if (!res.ok || j.error) throw new Error(j.error ?? `HTTP ${res.status}`);
+
+      setSsFileId(null);
+      setSsPreview(null);
+      setSsEnabled(false);
+      setSsNote('Screensaver removed — tap "Save & sync to readers" to update devices');
+    } catch (e) {
+      setSsError(String(e?.message ?? e));
+    } finally {
+      setSsUploading(false);
+    }
+  };
+
   useEffect(() => {
     if (!locationId || !platformSupabase) return;
     (async () => {
@@ -616,6 +712,8 @@ function ReaderSettingsPanel({ locationId }) {
         setTipPcts(data.tip_percentages ?? [15, 18, 20]);
         setAllowCustom(data.allow_custom_tip);
         setSmartThreshold(data.smart_tip_threshold_minor != null ? String(data.smart_tip_threshold_minor / 100) : '');
+        setSsEnabled(!!data.idle_screen_enabled);
+        setSsFileId(data.idle_screen_file_id || null);
       }
     })();
   }, [locationId]);
@@ -635,6 +733,7 @@ function ReaderSettingsPanel({ locationId }) {
         tip_percentages: cleanedPcts.length > 0 ? cleanedPcts : [15, 18, 20],
         allow_custom_tip: allowCustom,
         smart_tip_threshold_minor: thresholdMinor,
+        idle_screen_enabled: ssEnabled,
       }).eq('location_id', locationId);
       if (updErr) throw updErr;
 
@@ -741,6 +840,108 @@ function ReaderSettingsPanel({ locationId }) {
           </div>
         </div>
       )}
+
+      {/* ── Screensaver / idle screen ──────────────────────────────── */}
+      <div style={{ marginTop: 20, paddingTop: 18, borderTop: '1px solid var(--bdr)' }}>
+        <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--t1)', marginBottom: 4 }}>Idle screen / screensaver</div>
+        <div style={{ fontSize: 12, color: 'var(--t3)', marginBottom: 14, lineHeight: 1.5 }}>
+          Display a custom image on the reader screen when no payment is in progress. Great for branding, promotions, or a welcome message. Image must be PNG or JPEG, max 512 KB.
+        </div>
+
+        <div style={{ padding: 12, background: 'var(--bg2)', border: '1px solid var(--bdr)', borderRadius: 8, marginBottom: 12 }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
+            <input type="checkbox" checked={ssEnabled} onChange={e => setSsEnabled(e.target.checked)} style={{ width: 16, height: 16 }}/>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)' }}>Enable idle screen image</div>
+              <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2 }}>
+                {ssFileId
+                  ? 'A screensaver image is uploaded. Toggle off to show the default Stripe screen.'
+                  : 'Upload an image below to display when the reader is idle.'}
+              </div>
+            </div>
+          </label>
+        </div>
+
+        {/* Upload / preview area */}
+        <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+          {/* Preview */}
+          {(ssPreview || ssFileId) && (
+            <div style={{
+              width: 180, height: 108, borderRadius: 10, overflow: 'hidden',
+              border: '2px solid var(--bdr2)', background: 'var(--bg3)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              position: 'relative', flexShrink: 0,
+            }}>
+              {ssPreview ? (
+                <img src={ssPreview} alt="Screensaver preview" style={{ width: '100%', height: '100%', objectFit: 'cover' }}/>
+              ) : (
+                <div style={{ fontSize: 11, color: 'var(--t4)', textAlign: 'center', padding: 8 }}>
+                  Image uploaded<br/><span style={{ fontSize: 10, fontFamily: 'var(--font-mono)' }}>{ssFileId}</span>
+                </div>
+              )}
+              {ssFileId && (
+                <div style={{
+                  position: 'absolute', top: 4, right: 4, width: 8, height: 8,
+                  borderRadius: '50%', background: ssEnabled ? 'var(--grn)' : 'var(--t4)',
+                  border: '1.5px solid var(--bg1)',
+                }} title={ssEnabled ? 'Active' : 'Disabled'}/>
+              )}
+            </div>
+          )}
+
+          {/* Upload controls */}
+          <div style={{ flex: 1, minWidth: 200 }}>
+            <label style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+              padding: '14px 16px', borderRadius: 10, cursor: ssUploading ? 'wait' : 'pointer',
+              border: '2px dashed var(--bdr2)', background: 'var(--bg2)',
+              color: 'var(--t2)', fontSize: 13, fontWeight: 600, fontFamily: 'inherit',
+              transition: 'all .15s',
+            }}
+            onDragOver={e => { e.preventDefault(); e.currentTarget.style.borderColor = 'var(--acc)'; }}
+            onDragLeave={e => { e.currentTarget.style.borderColor = 'var(--bdr2)'; }}
+            onDrop={e => {
+              e.preventDefault();
+              e.currentTarget.style.borderColor = 'var(--bdr2)';
+              const file = e.dataTransfer.files[0];
+              if (file) handleSsUpload(file);
+            }}>
+              <input
+                type="file"
+                accept="image/png,image/jpeg"
+                style={{ display: 'none' }}
+                onChange={e => { const f = e.target.files?.[0]; if (f) handleSsUpload(f); e.target.value = ''; }}
+              />
+              <span style={{ fontSize: 18 }}>{ssUploading ? '⏳' : '🖼️'}</span>
+              {ssUploading ? 'Uploading to Stripe…' : ssFileId ? 'Replace image' : 'Choose image or drag & drop'}
+            </label>
+
+            {ssFileId && (
+              <button
+                onClick={handleSsRemove}
+                disabled={ssUploading}
+                style={{
+                  marginTop: 8, padding: '6px 12px', borderRadius: 6, fontSize: 11,
+                  fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer',
+                  background: 'transparent', color: 'var(--red)', border: '1px solid var(--red-b)',
+                }}>
+                Remove image
+              </button>
+            )}
+
+            {ssError && <div style={{ ...S.errorBox, marginTop: 8, fontSize: 12 }}>{ssError}</div>}
+            {ssNote && (
+              <div style={{ marginTop: 8, padding: 8, background: 'var(--grn-d)', color: 'var(--grn)', borderRadius: 6, fontSize: 11, border: '1px solid var(--grn-b, var(--grn))' }}>
+                ✓ {ssNote}
+              </div>
+            )}
+
+            <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 10, lineHeight: 1.45 }}>
+              Recommended: 1080 × 1920 pixels for WisePOS E / S700. PNG or JPEG, max 512 KB. After uploading, tap "Save & sync to readers" below to push it to your readers.
+            </div>
+          </div>
+        </div>
+      </div>
 
       {error && <div style={{ ...S.errorBox, marginTop: 14 }}>{error}</div>}
       {savedNote && (

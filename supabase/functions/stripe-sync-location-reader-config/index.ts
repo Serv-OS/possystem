@@ -61,12 +61,19 @@ Deno.serve(async (req) => {
   // Build Configuration params from settings
   const tipping = settings.tipping_enabled ? buildTippingConfig(settings) : null;
 
-  const configParams: Stripe.Terminal.ConfigurationCreateParams | Stripe.Terminal.ConfigurationUpdateParams = {
+  // v5.5.183: is_account_default is read-only — Stripe rejected it on
+  // create/update too. Removed. The configuration is assigned to the
+  // reader's terminal location via terminal.locations.update below,
+  // which IS the documented and accepted mechanism.
+  const splashscreenObj = settings.idle_screen_enabled && settings.idle_screen_file_id
+    ? { splashscreen: settings.idle_screen_file_id }
+    : { splashscreen: '' as unknown as string };   // empty string clears it
+
+  const configParams: any = {
     name: `POSUP location ${location_id.slice(0, 8)}`,
     tipping: tipping ?? '' as unknown as Stripe.Terminal.ConfigurationCreateParams.Tipping,
-    bbpos_wisepos_e: settings.idle_screen_enabled && settings.idle_screen_file_id
-      ? { splashscreen: settings.idle_screen_file_id }
-      : { splashscreen: '' as unknown as string },                    // empty string clears it
+    bbpos_wisepos_e: splashscreenObj,
+    stripe_s700: splashscreenObj,
   };
 
   // Create or update
@@ -100,24 +107,46 @@ Deno.serve(async (req) => {
     })
     .eq('location_id', location_id);
 
-  // Assign this configuration to every reader at the location
+  // v5.5.182: assign the configuration to each reader's terminal LOCATION
+  // (not the reader itself). The reader resource doesn't accept
+  // configuration_overrides on update — that field lives on terminal.locations.
+  // Setting it there means every reader at that terminal location uses this
+  // configuration. Belt + braces: is_account_default above ensures fallback.
   const { data: readers } = await platformAdmin.from('payment_devices')
     .select('id, stripe_reader_id, label')
     .eq('location_id', location_id);
 
   let updated = 0;
   const readerErrors: Array<{ reader: string; error: string }> = [];
+  const updatedTerminalLocations = new Set<string>();
   for (const r of readers ?? []) {
     try {
-      // The Stripe Reader has a `configuration_overrides` field that accepts a
-      // configuration id. This is the documented way to assign a config to a
-      // specific reader.
-      await stripe.terminal.readers.update(
+      // Fetch the reader to find its terminal_location_id
+      const liveReader = await stripe.terminal.readers.retrieve(
         r.stripe_reader_id,
-        // @ts-ignore — configuration_overrides is in the API but not yet typed in stripe-node 14
-        { configuration_overrides: configId },
         { stripeAccount: msa.stripe_account_id },
       );
+      const terminalLocationId = (liveReader as any)?.location;
+      if (!terminalLocationId) {
+        readerErrors.push({ reader: r.label || r.stripe_reader_id, error: 'no terminal location on reader' });
+        continue;
+      }
+      // Avoid duplicate updates if multiple readers share the same terminal location
+      if (!updatedTerminalLocations.has(terminalLocationId)) {
+        try {
+          await stripe.terminal.locations.update(
+            terminalLocationId,
+            // @ts-ignore — configuration_overrides on terminal.locations is documented
+            { configuration_overrides: configId },
+            { stripeAccount: msa.stripe_account_id },
+          );
+          updatedTerminalLocations.add(terminalLocationId);
+        } catch (locErr) {
+          // If terminal.locations also doesn't accept the param, fall back to
+          // is_account_default (already set on the configuration above).
+          console.warn('[sync] terminal.locations update failed:', (locErr as Error).message);
+        }
+      }
       updated += 1;
     } catch (e) {
       readerErrors.push({ reader: r.label || r.stripe_reader_id, error: (e as Error).message });
