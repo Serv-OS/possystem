@@ -8,7 +8,7 @@ import {
   resolvePlatformLocationId,
   getAssignedNetworkReader,
 } from '../lib/networkReader';
-import { getActiveLocationSync, supabase } from '../lib/supabase';
+import { getActiveLocationSync, supabase, ensureAuthToken } from '../lib/supabase';
 // (readerDisplay imports removed — cancel now lets the natural cart-change effect refresh the reader after onBack)
 
 // ─── Tip picker ───────────────────────────────────────────────────────────────
@@ -187,9 +187,10 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
       })();
       if (!opsDeviceId) throw new Error('POS device id missing — pair this device in BO → Device Pairing first.');
 
-      const { data: session } = await supabase.auth.getSession();
-      const token = session?.session?.access_token;
-      if (!token) throw new Error('not authenticated');
+      // v5.5.183: use ensureAuthToken() — POS devices don't have a BO login
+      // session, so fall back to anonymous sign-in for the edge-function JWT.
+      const token = await ensureAuthToken();
+      if (!token) throw new Error('Could not obtain auth token — check Anonymous sign-ins are enabled in Supabase Auth.');
 
       const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-process-payment-on-reader`, {
         method: 'POST',
@@ -232,11 +233,10 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
       await new Promise(r => setTimeout(r, POLL_INTERVAL));
       if (pollAbortRef.current) return;
       try {
-        const { data: session } = await supabase.auth.getSession();
-        const token = session?.session?.access_token;
+        const pollToken = await ensureAuthToken();
         const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-poll-reader-action`, {
           method: 'POST',
-          headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${pollToken}` },
           body: JSON.stringify({ payment_intent_id: piId, reader_id: readerId, location_id: locId }),
         });
         const j = await res.json();
@@ -352,9 +352,8 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
 }
 
 async function callCancelReaderAction({ paymentIntentId, readerId, locationId }) {
-  const { data: session } = await supabase.auth.getSession();
-  const token = session?.session?.access_token;
-  if (!token) throw new Error('not authenticated');
+  const token = await ensureAuthToken();
+  if (!token) throw new Error('Could not obtain auth token for cancel.');
   const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-cancel-reader-action`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },

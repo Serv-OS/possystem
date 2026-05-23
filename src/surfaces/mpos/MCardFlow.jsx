@@ -12,7 +12,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useStore } from '../../store';
 import { resolvePlatformLocationId, getAssignedNetworkReader } from '../../lib/networkReader';
-import { getActiveLocationSync, supabase } from '../../lib/supabase';
+import { getActiveLocationSync, supabase, ensureAuthToken } from '../../lib/supabase';
 import { Sx, money } from './MShellStyles';
 
 export default function MCardFlow({ payment, onCancel, onApproved }) {
@@ -80,8 +80,8 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
         return parsed?.id || '';
       } catch { return ''; }
     })();
-    const { data: session } = await supabase.auth.getSession();
-    const token = session?.session?.access_token;
+    const token = await ensureAuthToken();
+    if (!token) throw new Error('Could not obtain auth token — check Anonymous sign-ins are enabled in Supabase Auth.');
 
     const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-process-payment-on-reader`, {
       method:'POST',
@@ -102,11 +102,10 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
     while (!pollAbortRef.current && Date.now() - start < 5*60*1000) {
       await new Promise(r => setTimeout(r, 1500));
       if (pollAbortRef.current) return;
-      const { data: s2 } = await supabase.auth.getSession();
-      const tok2 = s2?.session?.access_token;
+      const pollToken = await ensureAuthToken();
       const pr = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-poll-reader-action`, {
         method:'POST',
-        headers:{ 'content-type':'application/json', authorization:`Bearer ${tok2}` },
+        headers:{ 'content-type':'application/json', authorization:`Bearer ${pollToken}` },
         body: JSON.stringify({ payment_intent_id: piId, reader_id: j.reader_id, location_id: platformLocId }),
       });
       const pj = await pr.json();

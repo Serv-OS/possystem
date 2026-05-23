@@ -69,6 +69,23 @@ export const setResolvedLocationId = (id) => {
 export const clearResolvedLocationId = () => { _resolvedLocationId = null; };
 export const LOCATION_ID = 'loc-demo';
 
+/**
+ * v5.5.183: Get a valid Supabase access token for edge-function calls.
+ * Back-office users already have a session (signInWithPassword). POS devices
+ * (paired via pairing code) do NOT — so we fall back to signInAnonymously()
+ * which gives us a lightweight JWT with role='authenticated'. The same
+ * approach QR and Online checkout already use.
+ */
+export const ensureAuthToken = async () => {
+  if (!supabase) return null;
+  const { data: existing } = await supabase.auth.getSession();
+  const token = existing?.session?.access_token;
+  if (token) return token;
+  // No session (POS device, expired, etc.) — anonymous sign-in
+  const { data, error } = await supabase.auth.signInAnonymously();
+  if (error) throw new Error('Could not start auth session: ' + error.message);
+  return data?.session?.access_token || null;
+};
 
 // ──────────────────────────────────────────────────────────────────
 // v5.5.3 — TENANT FENCE  (hotfixed in v5.5.4)

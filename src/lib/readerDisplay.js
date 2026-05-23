@@ -19,7 +19,7 @@
 //   import { pushReaderDisplay } from '../lib/readerDisplay';
 //   useEffect(() => { pushReaderDisplay({ lineItems, totalMinor }); }, [cart]);
 
-import { supabase, isMock } from './supabase';
+import { supabase, isMock, ensureAuthToken } from './supabase';
 
 let _timer = null;
 let _inflight = null;
@@ -64,8 +64,8 @@ export function pushReaderDisplay({ lineItems = [], totalMinor = 0, currency = '
     if (!supabase) return;
 
     try {
-      const { data: session } = await supabase.auth.getSession();
-      const token = session?.session?.access_token;
+      let token;
+      try { token = await ensureAuthToken(); } catch { return; }
       if (!token) return;
 
       // Cancel any in-flight push — last-wins

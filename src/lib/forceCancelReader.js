@@ -8,7 +8,7 @@
 // uses (getAssignedNetworkReader). Returns the JSON diag from the server
 // so the caller can show before/after action state.
 
-import { supabase } from './supabase';
+import { supabase, ensureAuthToken } from './supabase';
 import { resolvePlatformLocationId, getAssignedNetworkReader } from './networkReader';
 import { getLocationId } from './supabase';
 
@@ -25,10 +25,10 @@ export async function forceCancelReader() {
     return { ok: false, error: 'No reader assigned to this POS' };
   }
 
-  // 2. Auth
-  const { data: session } = await supabase.auth.getSession();
-  const token = session?.session?.access_token;
-  if (!token) return { ok: false, error: 'Not signed in' };
+  // 2. Auth — v5.5.183: ensureAuthToken handles POS devices with no BO login
+  let token;
+  try { token = await ensureAuthToken(); } catch (e) { return { ok: false, error: e.message }; }
+  if (!token) return { ok: false, error: 'Could not obtain auth token' };
 
   // 3. Call the edge fn — no payment_intent_id so it only runs cancelAction + display reset
   try {

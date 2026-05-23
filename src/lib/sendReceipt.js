@@ -2,7 +2,7 @@
 // edge function. Builds the receipt HTML from a check + items + totals so we
 // have a single rendering source of truth across MPOS / desktop / kiosk.
 
-import { supabase } from './supabase';
+import { supabase, ensureAuthToken } from './supabase';
 
 const money = (n) => `£${(Number(n) || 0).toFixed(2)}`;
 
@@ -19,8 +19,8 @@ export async function sendEmailReceipt({ to, locationId, check, locationLabel })
   const html = buildReceiptHtml({ check, locationLabel });
   const text = buildReceiptText({ check, locationLabel });
   try {
-    const { data: session } = await supabase.auth.getSession();
-    const token = session?.session?.access_token;
+    let token;
+    try { token = await ensureAuthToken(); } catch { token = null; }
     const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-receipt`, {
       method:'POST',
       headers:{

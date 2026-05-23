@@ -76,6 +76,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.184', date: '23 May 2026', label: 'Fix POS/Sunmi "not authenticated" payment failure — anonymous auth fallback',
+    changes: [
+      'POS devices paired via pairing code had no Supabase Auth session, so card payments via Stripe reader failed with "not authenticated". Now uses signInAnonymously() as fallback — same approach QR and Online ordering already use.',
+      'New ensureAuthToken() helper in supabase.js: tries existing session first, falls back to anonymous sign-in for a lightweight JWT with role=\'authenticated\'. All payment paths (CheckoutModal, MCardFlow, forceCancelReader, readerDisplay, sendReceipt) now use it.',
+      'Clearer error messages when auth fails — points operators to enable Anonymous sign-ins in Supabase Auth settings if needed.',
+    ],
+  },
+  {
     version: '5.5.183', date: '23 May 2026', label: 'Bundle / meal-deal pricing — auto-discount rules now support fixed-price bundles',
     changes: [
       'Auto-discount rules extended with a new "Bundle / Meal deal" type alongside existing "Buy X get Y" rules.',
