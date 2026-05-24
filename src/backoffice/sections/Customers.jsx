@@ -1,16 +1,32 @@
-// v4.6.63: Back-office Customers section.
+// v5.5.203: Back-office Customers section.
 //
 // Tier-1 features:
 //   - List of every customer at this org (across locations)
 //   - Search by name, phone, email
 //   - Filters: location, last visit window, marketing opt-in
 //   - Sortable columns
-//   - Click row → detail panel: profile + per-location stats grid + order history
+//   - Click row → detail panel: profile + per-location stats grid + order history + gift cards
 //   - CSV export of current filter
 
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../store';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
+
+const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
+
+async function callGift(endpoint, body) {
+  const { data: session } = await supabase.auth.getSession();
+  const token = session?.session?.access_token;
+  if (!token) throw new Error('Not authenticated');
+  const res = await fetch(`${FUNCTIONS_URL}/${endpoint}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  });
+  const j = await res.json();
+  if (!res.ok || j.error) throw new Error(j.error ?? `HTTP ${res.status}`);
+  return j;
+}
 
 const fmtMoney = (n) => '£' + (Number(n) || 0).toFixed(2);
 
@@ -318,6 +334,8 @@ function DetailPanel({ customer, onClose, onChanged, onDeleted }) {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(false);
+  const [giftCards, setGiftCards] = useState([]);
+  const [giftLoading, setGiftLoading] = useState(false);
   const [form, setForm] = useState({
     name: customer.name || '',
     phone_raw: customer.phone_raw || customer.phone || '',
@@ -345,6 +363,46 @@ function DetailPanel({ customer, onClose, onChanged, onDeleted }) {
         setLoading(false);
       }
     })();
+
+    // v5.5.203: Fetch gift cards linked to this customer by email or phone
+    (async () => {
+      if (isMock || !supabase) return;
+      const email = customer.email?.trim();
+      const phone = customer.phone_raw?.trim() || customer.phone?.trim();
+      if (!email && !phone) { setGiftCards([]); return; }
+      setGiftLoading(true);
+      try {
+        const seen = new Set();
+        const cards = [];
+        // Search by email first
+        if (email) {
+          const res = await callGift('gift-list', { search: email, limit: 100 });
+          (res.cards || []).forEach(c => {
+            if ((c.recipient_email || '').toLowerCase() === email.toLowerCase()) {
+              seen.add(c.id);
+              cards.push(c);
+            }
+          });
+        }
+        // Search by phone (dedup)
+        if (phone) {
+          const res = await callGift('gift-list', { search: phone, limit: 100 });
+          (res.cards || []).forEach(c => {
+            if (!seen.has(c.id) && (c.recipient_phone || '') === phone) {
+              seen.add(c.id);
+              cards.push(c);
+            }
+          });
+        }
+        setGiftCards(cards);
+      } catch (err) {
+        console.warn('[DetailPanel giftCards] failed:', err?.message || err);
+        setGiftCards([]);
+      } finally {
+        setGiftLoading(false);
+      }
+    })();
+
     setForm({
       name: customer.name || '',
       phone_raw: customer.phone_raw || customer.phone || '',
@@ -405,10 +463,13 @@ function DetailPanel({ customer, onClose, onChanged, onDeleted }) {
       </div>
 
       {/* Stats overview */}
-      <div style={{ padding:'14px 22px', borderBottom:'1px solid var(--bdr)', display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:10 }}>
+      <div style={{ padding:'14px 22px', borderBottom:'1px solid var(--bdr)', display:'grid', gridTemplateColumns: giftCards.length > 0 ? 'repeat(4, 1fr)' : 'repeat(3, 1fr)', gap:10 }}>
         <Stat label="Lifetime spend" value={fmtMoney(customer.totalSpend)} color="var(--acc)"/>
         <Stat label="Total visits" value={customer.totalVisits || 0}/>
         <Stat label="Last visit" value={fmtRel(customer.lastVisit)}/>
+        {giftCards.length > 0 && (
+          <Stat label="Gift cards" value={giftCards.length} color="var(--grn,#4caf50)"/>
+        )}
       </div>
 
       {/* Per-location breakdown */}
@@ -479,6 +540,33 @@ function DetailPanel({ customer, onClose, onChanged, onDeleted }) {
           </div>
         )}
       </div>
+
+      {/* Gift cards — v5.5.203 */}
+      {(giftLoading || giftCards.length > 0) && (
+        <div style={{ padding:'14px 22px', borderBottom:'1px solid var(--bdr)' }}>
+          <div style={{ fontSize:10, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:10 }}>Gift cards</div>
+          {giftLoading ? (
+            <div style={{ fontSize:12, color:'var(--t4)' }}>Loading…</div>
+          ) : (
+            <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+              {giftCards.map(c => {
+                const statusColors = { active:'var(--grn,#4caf50)', redeemed:'var(--t4)', voided:'var(--red,#cc5959)', expired:'var(--red,#cc5959)' };
+                const sColor = statusColors[c.status] || 'var(--t4)';
+                return (
+                  <div key={c.id} style={{ display:'grid', gridTemplateColumns:'auto 1fr auto auto', gap:10, padding:'8px 10px', fontSize:12, background:'var(--bg2)', borderRadius:6, alignItems:'center' }}>
+                    <div style={{ fontFamily:'var(--font-mono)', color:'var(--t2)', fontWeight:700 }}>····{c.code_last4}</div>
+                    <div style={{ color:'var(--t3)' }}>
+                      {fmtMoney((c.balance_minor || 0) / 100)} / {fmtMoney((c.initial_amount_minor || 0) / 100)}
+                    </div>
+                    <div style={{ fontSize:11, color:sColor, fontWeight:700, textTransform:'capitalize' }}>{c.status}</div>
+                    <div style={{ fontSize:11, color:'var(--t4)' }}>{fmtDate(c.issued_at || c.created_at)}</div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Order history */}
       <div style={{ flex:1, overflowY:'auto' }}>

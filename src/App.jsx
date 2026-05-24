@@ -76,6 +76,13 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.203', date: '23 May 2026', label: 'Gift cards on customer profiles + purchase page scroll fix',
+    changes: [
+      'Customer CRM integration: gift cards now appear on the customer detail panel. Cards are matched by recipient email or phone. Shows code, balance, status, and issue date. Gift card count added to stats overview.',
+      'Scroll fix: all 3 customer-facing gift card pages (purchase, balance, success) now use position:fixed scroll shell, matching the OnlineSurface pattern. Fixes the page being unscrollable due to global overflow:hidden on html/body/#root.',
+    ],
+  },
+  {
     version: '5.5.202', date: '23 May 2026', label: 'Gift card PDF voucher download',
     changes: [
       'PDF voucher download: styled gift card voucher opens in new window with print dialog for save-as-PDF. Available after issuing a card and from the Purchases tab for online purchases.',

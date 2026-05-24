@@ -73,7 +73,9 @@ export default function GiftSuccessSurface({ location }) {
 
   return (
     <div style={{
-      minHeight: '100vh', background: t.bg, color: t.text,
+      position: 'fixed', inset: 0, overflowY: 'auto', overflowX: 'hidden',
+      WebkitOverflowScrolling: 'touch',
+      background: t.bg, color: t.text,
       fontFamily: 'system-ui, -apple-system, sans-serif',
       display: 'flex', flexDirection: 'column', alignItems: 'center',
       padding: '40px 20px',
