@@ -1,4 +1,4 @@
-// v5.5.196 — Gift card purchase success page.
+// v5.5.205 — Gift card purchase success page.
 // URL: https://<slug>.serv-os.app/gift/success?session_id=cs_xxxx
 //
 // Stripe Checkout redirects here after a successful payment. The page
@@ -6,10 +6,14 @@
 // handler has finished issuing the card. Shows a confirmation once ready.
 
 import { useEffect, useState, useMemo } from 'react';
-import { callGiftPublic, formatAmount, buildGiftTheme } from './giftHelpers';
+import { callGiftPublic, formatAmount, buildGiftTheme, fetchGiftBranding } from './giftHelpers';
 
 export default function GiftSuccessSurface({ location }) {
-  const t = useMemo(() => buildGiftTheme(location), [location]);
+  const [giftBranding, setGiftBranding] = useState(null);
+  useEffect(() => {
+    fetchGiftBranding(location?.company_id).then(b => { if (b) setGiftBranding(b); });
+  }, [location?.company_id]);
+  const t = useMemo(() => buildGiftTheme(location, giftBranding), [location, giftBranding]);
   const [status, setStatus] = useState('loading'); // 'loading' | 'complete' | 'pending' | 'error'
   const [purchase, setPurchase] = useState(null);
   const [error, setError] = useState('');

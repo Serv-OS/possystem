@@ -218,6 +218,7 @@ Deno.serve(async (req) => {
       recipient_name: purchase.recipient_name,
       recipient_email: purchase.recipient_email,
       note: purchase.message || null,
+      source: 'online',
     })
     .select('id')
     .single();

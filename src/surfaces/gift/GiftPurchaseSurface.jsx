@@ -1,4 +1,4 @@
-// v5.5.196 — Customer-facing gift card purchase page.
+// v5.5.205 — Customer-facing gift card purchase page.
 // URL: https://<slug>.serv-os.app/gift
 //
 // Flow:
@@ -9,11 +9,15 @@
 //   5. On success, Stripe webhook fires → gift-fulfill issues card + emails it
 //   6. Customer lands on /gift/success with session_id in query string
 
-import { useState, useMemo } from 'react';
-import { callGiftPublic, formatAmount, PRESET_AMOUNTS, buildGiftTheme } from './giftHelpers';
+import { useState, useEffect, useMemo } from 'react';
+import { callGiftPublic, formatAmount, PRESET_AMOUNTS, buildGiftTheme, fetchGiftBranding } from './giftHelpers';
 
 export default function GiftPurchaseSurface({ location }) {
-  const t = useMemo(() => buildGiftTheme(location), [location]);
+  const [giftBranding, setGiftBranding] = useState(null);
+  useEffect(() => {
+    fetchGiftBranding(location?.company_id).then(b => { if (b) setGiftBranding(b); });
+  }, [location?.company_id]);
+  const t = useMemo(() => buildGiftTheme(location, giftBranding), [location, giftBranding]);
   // Amount (minor units)
   const [selectedPreset, setSelectedPreset] = useState(null);
   const [customAmount, setCustomAmount] = useState('');

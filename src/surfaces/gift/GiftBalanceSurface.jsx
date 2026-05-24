@@ -1,4 +1,4 @@
-// v5.5.196 — Customer-facing gift card balance check.
+// v5.5.205 — Customer-facing gift card balance check.
 // URL: https://<slug>.serv-os.app/gift/balance
 //
 // Simple form: enter the 16-char gift card code, see the current balance.
@@ -6,11 +6,15 @@
 // verifies the code via HMAC lookup + argon2id hash, returning only
 // safe-to-display fields (balance, last4, status, expiry).
 
-import { useState, useRef, useMemo } from 'react';
-import { callGiftPublic, formatAmount, buildGiftTheme } from './giftHelpers';
+import { useState, useEffect, useRef, useMemo } from 'react';
+import { callGiftPublic, formatAmount, buildGiftTheme, fetchGiftBranding } from './giftHelpers';
 
 export default function GiftBalanceSurface({ location }) {
-  const t = useMemo(() => buildGiftTheme(location), [location]);
+  const [giftBranding, setGiftBranding] = useState(null);
+  useEffect(() => {
+    fetchGiftBranding(location?.company_id).then(b => { if (b) setGiftBranding(b); });
+  }, [location?.company_id]);
+  const t = useMemo(() => buildGiftTheme(location, giftBranding), [location, giftBranding]);
   const [code, setCode] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null); // { balance_minor, code_last4, status, expires_at, currency }

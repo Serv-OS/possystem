@@ -76,6 +76,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.205', date: '23 May 2026', label: 'Gift cards: branding on customer pages + online source fix',
+    changes: [
+      'Gift-specific branding (colours, logo, hero) now loads on all 3 customer-facing gift card pages (purchase, success, balance). Previously only the generic online_branding was used; now the gift_brand_config.branding set in the back office takes effect.',
+      'New gift-branding-public edge function: lightweight public endpoint returning gift branding for a company_id without auth.',
+      'Online-purchased gift cards now tagged with source=online (was defaulting to manual). Cards show correctly in All Cards filtered by Online source.',
+    ],
+  },
+  {
     version: '5.5.204', date: '23 May 2026', label: 'Gift cards: full code display + PDF voucher in All Cards',
     changes: [
       'All Cards tab now shows full 16-character gift card codes (not just last 4 digits). Codes are formatted with spaces for readability and click-to-copy.',

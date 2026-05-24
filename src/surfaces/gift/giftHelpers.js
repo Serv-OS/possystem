@@ -1,9 +1,29 @@
-// v5.5.197 — Shared helpers for customer-facing gift card surfaces.
+// v5.5.205 — Shared helpers for customer-facing gift card surfaces.
 // Calls the Ops DB edge functions. Customer surfaces use anon-key auth
 // (same pattern as OnlineCheckout).
 
 const OPS_URL = import.meta.env.VITE_SUPABASE_URL;
 const OPS_ANON = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+// ── Branding cache (per company, per page load) ────────────────────────────
+const _brandingCache = {};
+
+/**
+ * Fetch gift-specific branding for a company from gift_brand_config.
+ * Returns the branding object or null. Caches per company_id.
+ */
+export async function fetchGiftBranding(companyId) {
+  if (!companyId) return null;
+  if (_brandingCache[companyId] !== undefined) return _brandingCache[companyId];
+  try {
+    const data = await callGiftPublic('gift-branding-public', { company_id: companyId });
+    _brandingCache[companyId] = data?.branding || null;
+    return _brandingCache[companyId];
+  } catch {
+    _brandingCache[companyId] = null;
+    return null;
+  }
+}
 
 /**
  * Call a gift-card edge function on the Ops DB project.
