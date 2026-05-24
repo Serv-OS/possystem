@@ -57,14 +57,15 @@ export const PRESET_AMOUNTS = [1000, 2000, 2500, 5000, 7500, 10000];
 // ── Default dark theme (fallback when no branding is set) ───────────────
 const DEFAULT_THEME = {
   bg: '#0e0e10',
-  card: '#16161a',
-  border: '#2a2a30',
+  card: 'rgba(255,255,255,0.07)',
+  border: 'rgba(255,255,255,0.14)',
+  inputBg: 'rgba(0,0,0,0.25)',
   accent: '#e8a020',
   accentHover: '#f0b040',
   accentText: '#0b0c10',
   text: '#fff',
-  textMuted: '#aaa',
-  textDim: '#666',
+  textMuted: 'rgba(255,255,255,0.65)',
+  textDim: 'rgba(255,255,255,0.35)',
   error: '#ff4466',
   success: '#22c55e',
   radius: 14,
@@ -78,8 +79,9 @@ const DEFAULT_THEME = {
  * the location's online_branding. Falls back to the default dark theme if
  * neither is configured.
  *
- * v5.5.208: improved color derivation — increased card/border contrast,
- * auto-computed accentText for readable buttons, added companyName.
+ * v5.5.209: rgba-based cards and borders that adapt to ANY background.
+ * Section labels use foreground (not accent). Added inputBg for sunken
+ * text fields. Accent is reserved for interactive elements only.
  *
  * @param {object} location - Platform DB location row (has online_branding)
  * @param {object} [giftBranding] - gift_brand_config.branding (per-feature override)
@@ -91,16 +93,15 @@ export function buildGiftTheme(location, giftBranding) {
   const bg = b.background || DEFAULT_THEME.bg;
   const fg = b.foreground || DEFAULT_THEME.text;
   const accent = b.accent_color || DEFAULT_THEME.accent;
-  // Derive muted/dim from the foreground colour at reduced opacity.
-  // v5.5.208: bumped blend factors so cards and borders stand out more,
-  // especially on vivid backgrounds (e.g. red/blue).
   const bgLum = luminance(bg);
-  const isDark = bgLum < 0.35;
+  const isDark = bgLum < 0.45;
   return {
     bg,
-    // Cards: slight lighten on dark bg, slight darken on light bg
-    card: isDark ? blendColor(bg, '#ffffff', 0.06) : blendColor(bg, '#000000', 0.04),
-    border: isDark ? blendColor(bg, '#ffffff', 0.14) : blendColor(bg, '#000000', 0.10),
+    // Cards: transparent overlays that adapt to any background colour
+    card: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+    border: isDark ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.12)',
+    // Input fields sit inside cards — slightly darker to create a "sunken" look
+    inputBg: isDark ? 'rgba(0,0,0,0.25)' : 'rgba(0,0,0,0.06)',
     accent,
     accentHover: isDark ? lightenColor(accent, 0.12) : darkenColor(accent, 0.12),
     // Button text: auto-contrast — dark text on light accent, white on dark

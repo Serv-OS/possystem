@@ -152,7 +152,7 @@ export default function GiftPurchaseSurface({ location }) {
                   autoFocus
                   style={{
                     width: '100%', padding: '14px 16px 14px 32px', borderRadius: 10,
-                    border: `1px solid ${t.border}`, background: t.bg, color: t.text,
+                    border: `1px solid ${t.border}`, background: t.inputBg, color: t.text,
                     fontSize: 18, fontWeight: 700, boxSizing: 'border-box', outline: 'none',
                   }}
                   onFocus={e => e.target.style.borderColor = t.accent}
@@ -205,7 +205,7 @@ export default function GiftPurchaseSurface({ location }) {
                   rows={3}
                   style={{
                     width: '100%', padding: '12px 14px', borderRadius: 10,
-                    border: `1px solid ${t.border}`, background: t.bg, color: t.text,
+                    border: `1px solid ${t.border}`, background: t.inputBg, color: t.text,
                     fontSize: 14, resize: 'none', boxSizing: 'border-box',
                     fontFamily: 'inherit', outline: 'none',
                   }}
@@ -295,8 +295,8 @@ function Section({ title, children, t }) {
       padding: '24px 24px 20px', marginBottom: 16,
     }}>
       <div style={{
-        fontSize: 11, fontWeight: 800, color: t.accent, textTransform: 'uppercase',
-        letterSpacing: '0.08em', marginBottom: 14,
+        fontSize: 11, fontWeight: 800, color: t.text, textTransform: 'uppercase',
+        letterSpacing: '0.08em', marginBottom: 14, opacity: 0.7,
       }}>{title}</div>
       {children}
     </div>
@@ -316,7 +316,7 @@ function Input({ label, value, onChange, placeholder, type = 'text', t }) {
         placeholder={placeholder}
         style={{
           width: '100%', padding: '12px 14px', borderRadius: 10,
-          border: `1px solid ${t.border}`, background: t.bg, color: t.text,
+          border: `1px solid ${t.border}`, background: t.inputBg, color: t.text,
           fontSize: 14, boxSizing: 'border-box', outline: 'none',
           fontFamily: 'inherit',
         }}
@@ -332,9 +332,10 @@ function AmountChip({ label, selected, onClick, t }) {
     <button
       onClick={onClick}
       style={{
-        padding: '14px 8px', borderRadius: 10, border: `1px solid ${selected ? t.accent : t.border}`,
-        background: selected ? t.accent + '18' : 'transparent',
-        color: selected ? t.accent : t.text, fontWeight: 800, fontSize: 16,
+        padding: '14px 8px', borderRadius: 10,
+        border: `1px solid ${selected ? t.accent : t.border}`,
+        background: selected ? t.accent : 'transparent',
+        color: selected ? t.accentText : t.text, fontWeight: 800, fontSize: 16,
         cursor: 'pointer', textAlign: 'center',
       }}
     >
@@ -350,8 +351,8 @@ function ToggleChip({ label, selected, onClick, t }) {
       style={{
         flex: 1, padding: '10px 14px', borderRadius: 10,
         border: `1px solid ${selected ? t.accent : t.border}`,
-        background: selected ? t.accent + '18' : 'transparent',
-        color: selected ? t.accent : t.textMuted,
+        background: selected ? t.accent : 'transparent',
+        color: selected ? t.accentText : t.textMuted,
         fontWeight: 700, fontSize: 13, cursor: 'pointer',
       }}
     >

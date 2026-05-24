@@ -76,6 +76,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.209', date: '24 May 2026', label: 'Gift card branding: colour overhaul',
+    changes: [
+      'Reworked gift page colour system — cards and borders now use rgba overlays that adapt to any background colour. Section titles use the text colour (not accent) so they don\'t clash with vivid backgrounds.',
+      'Input fields now have a "sunken" darker background inside cards, making them clearly distinguishable as editable fields.',
+      'Selected amount chips and delivery toggles now use a solid accent fill (not a faint wash), making the active selection obvious.',
+      'Accent colour is now reserved for interactive elements only (buttons, links, selected states). Labels and headings use the foreground colour for readability.',
+    ],
+  },
+  {
     version: '5.5.208', date: '24 May 2026', label: 'Gift card branding improvements',
     changes: [
       'Customer-facing gift pages now show the organisation name instead of the location name. Gift cards are company-level so the header reflects the business, not an individual site.',

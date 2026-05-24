@@ -104,7 +104,7 @@ export default function GiftBalanceSurface({ location }) {
               spellCheck={false}
               style={{
                 width: '100%', padding: '14px 16px', borderRadius: 10,
-                border: `1px solid ${t.border}`, background: t.bg, color: t.text,
+                border: `1px solid ${t.border}`, background: t.inputBg, color: t.text,
                 fontSize: 16, fontFamily: 'monospace', letterSpacing: '0.08em',
                 textAlign: 'center', boxSizing: 'border-box',
                 outline: 'none',
