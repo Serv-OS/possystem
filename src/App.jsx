@@ -76,6 +76,18 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.200', date: '23 May 2026', label: 'Gift cards: phone/expiry support, RLS fix, all-cards view with filters',
+    changes: [
+      'Fixed RLS error on gift_brand_config: all config writes now route through gift-config edge function using service_role, bypassing Platform DB RLS that blocked authenticated users.',
+      'All cards view: "Recent cards" tab replaced with "All cards" showing every gift card with filter dropdowns for status, source, and batch name search.',
+      'Phone number support: recipient phone field added to Issue, Bulk Create, and Import panels. Phone stored on gift_cards table for CRM integration.',
+      'Expiry date support: date picker added to Issue, Bulk Create, and Import panels. Expiry dates now settable at card creation time.',
+      'Import panel: CSV parser updated to accept phone column, batch-level expiry date applied to all imported cards.',
+      'Edge functions updated: gift-issue and gift-import now accept recipient_phone and expires_at parameters. gift-list returns additional fields (source, batch_name, batch_id, created_at) with filter support.',
+      'New gift-config edge function: centralises all gift_brand_config operations (get, enable, disable, settings, branding) through service_role to avoid RLS issues.',
+    ],
+  },
+  {
     version: '5.5.199', date: '23 May 2026', label: 'Gift cards: bulk create, import, branding, split checks, settings',
     changes: [
       'Bulk create: generate batches of anonymous gift cards (1-500) with a custom name and value. Download CSV of codes for distribution.',

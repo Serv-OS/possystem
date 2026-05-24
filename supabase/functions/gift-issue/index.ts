@@ -3,7 +3,7 @@
 // Issue a new gift card for an org. Generates a unique code, hashes it,
 // and creates the card + initial ledger entry.
 //
-// Body: { org_id?, amount, recipient_email?, recipient_name?,
+// Body: { org_id?, amount, recipient_email?, recipient_name?, recipient_phone?,
 //         expires_at?, note?, staff_id?, location_id?, channel? }
 //
 // org_id is optional: if omitted, resolved from the caller's company role.
@@ -32,6 +32,7 @@ Deno.serve(async (req) => {
     amount,
     recipient_email,
     recipient_name,
+    recipient_phone,
     expires_at,
     note,
     staff_id,
@@ -134,6 +135,7 @@ Deno.serve(async (req) => {
       issued_at_location_id: location_id || null,
       recipient_name: recipient_name || null,
       recipient_email: recipient_email || null,
+      recipient_phone: recipient_phone || null,
       note: note || null,
     })
     .select('id')

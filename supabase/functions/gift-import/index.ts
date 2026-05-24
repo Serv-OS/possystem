@@ -1,12 +1,13 @@
 // supabase/functions/gift-import/index.ts
 //
-// v5.5.199: Import gift cards from external sources. Accepts an array of
+// v5.5.200: Import gift cards from external sources. Accepts an array of
 // cards with their balances. Each card gets a NEW code generated (the
 // imported card's original code from the old system is stored as a note).
 //
 // Body: {
 //   batch_name: string,
-//   cards: [{ balance, recipient_name?, recipient_email?, note?, original_code? }]
+//   expires_at?: string (ISO date — applies to all cards in this batch),
+//   cards: [{ balance, recipient_name?, recipient_email?, recipient_phone?, note?, original_code? }]
 // }
 //
 // Returns: { batch_id, imported: number, cards: [{ code, code_last4, card_id }] }
@@ -33,7 +34,7 @@ Deno.serve(async (req) => {
   let body: Record<string, unknown>;
   try { body = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
 
-  const { batch_name, cards: inputCards } = body as any;
+  const { batch_name, cards: inputCards, expires_at } = body as any;
 
   // Resolve company
   const companyResult = await resolveCompanyId(caller.id);
@@ -109,6 +110,9 @@ Deno.serve(async (req) => {
       if (input.note) notes.push(input.note);
       const fullNote = notes.join(' | ') || `Imported in batch: ${trimmedName}`;
 
+      // Determine expiry: use batch-level expires_at if provided
+      const cardExpiresAt = expires_at ? new Date(expires_at).toISOString() : null;
+
       // Insert card
       const { data: card, error: cardErr } = await platformAdmin
         .from('gift_cards')
@@ -120,12 +124,13 @@ Deno.serve(async (req) => {
           initial_amount_minor: balanceMinor,
           balance_minor: balanceMinor,
           status: 'active',
-          expires_at: null, // imported cards don't get auto-expiry
+          expires_at: cardExpiresAt,
           batch_id: batchId,
           batch_name: trimmedName,
           source: 'import',
           recipient_name: input.recipient_name || null,
           recipient_email: input.recipient_email || null,
+          recipient_phone: input.recipient_phone || null,
           note: fullNote,
         })
         .select('id')

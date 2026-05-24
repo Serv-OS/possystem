@@ -1,5 +1,5 @@
 // src/backoffice/sections/GiftCards.jsx
-// v5.5.199 — Back office gift card management.
+// v5.5.200 — Back office gift card management.
 // Full management surface: enable toggle, branding editor, customer URLs,
 // issue, lookup, void, bulk create, import, purchase history, settings.
 
@@ -103,11 +103,17 @@ export default function GiftCards() {
         }
         if (alive) setLocationRow(loc);
 
-        // Load gift brand config for this company
+        // Load gift brand config via edge function (bypasses Platform DB RLS)
         if (loc?.company_id) {
-          const { data: cfg } = await platformSupabase.from('gift_brand_config')
-            .select('*').eq('company_id', loc.company_id).maybeSingle();
-          if (alive) setBrandConfig(cfg);
+          try {
+            const cfgRes = await callGift('gift-config', { action: 'get' });
+            if (alive) setBrandConfig(cfgRes.config || null);
+          } catch {
+            // Fallback to direct query for backwards compat
+            const { data: cfg } = await platformSupabase.from('gift_brand_config')
+              .select('*').eq('company_id', loc.company_id).maybeSingle();
+            if (alive) setBrandConfig(cfg);
+          }
         }
       } catch (e) {
         console.error('[GiftCards] load:', e);
@@ -118,33 +124,15 @@ export default function GiftCards() {
     return () => { alive = false; };
   }, []);
 
-  // Toggle enabled
+  // Toggle enabled — via edge function to bypass Platform DB RLS
   const toggleEnabled = async () => {
-    if (!locationRow?.company_id || !platformSupabase) return;
+    if (!locationRow?.company_id) return;
     setEnabling(true);
     setEnableError('');
     try {
       const newVal = !brandConfig?.enabled;
-      if (brandConfig) {
-        const { error } = await platformSupabase.from('gift_brand_config')
-          .update({ enabled: newVal }).eq('company_id', locationRow.company_id);
-        if (error) throw error;
-        setBrandConfig(c => ({ ...c, enabled: newVal }));
-      } else {
-        // Create config via gift-issue pattern (edge function creates it with hmac_secret)
-        // But now we have INSERT RLS, so we can do it directly
-        const hmacSecret = crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '');
-        const { data, error } = await platformSupabase.from('gift_brand_config')
-          .insert({
-            company_id: locationRow.company_id,
-            enabled: true,
-            hmac_secret: hmacSecret,
-          })
-          .select('*')
-          .single();
-        if (error) throw error;
-        setBrandConfig(data);
-      }
+      const res = await callGift('gift-config', { action: newVal ? 'enable' : 'disable' });
+      setBrandConfig(res.config);
     } catch (e) {
       setEnableError(e?.message || 'Failed to toggle');
     } finally {
@@ -236,7 +224,7 @@ export default function GiftCards() {
           { id: 'bulk', label: 'Bulk create' },
           { id: 'import', label: 'Import' },
           { id: 'lookup', label: 'Look up' },
-          { id: 'history', label: 'Recent cards' },
+          { id: 'history', label: 'All cards' },
           { id: 'purchases', label: 'Online purchases' },
           { id: 'branding', label: 'Branding' },
           { id: 'settings', label: 'Settings' },
@@ -319,7 +307,9 @@ function IssuePanel() {
   const [amount, setAmount] = useState('');
   const [recipientName, setRecipientName] = useState('');
   const [recipientEmail, setRecipientEmail] = useState('');
+  const [recipientPhone, setRecipientPhone] = useState('');
   const [note, setNote] = useState('');
+  const [expiresAt, setExpiresAt] = useState('');
   const [issuing, setIssuing] = useState(false);
   const [error, setError] = useState(null);
   const [result, setResult] = useState(null);
@@ -333,10 +323,12 @@ function IssuePanel() {
         amount: amountMinor,
         recipient_name: recipientName || undefined,
         recipient_email: recipientEmail || undefined,
+        recipient_phone: recipientPhone || undefined,
         note: note || undefined,
+        expires_at: expiresAt || undefined,
       });
       setResult(res);
-      setAmount(''); setRecipientName(''); setRecipientEmail(''); setNote('');
+      setAmount(''); setRecipientName(''); setRecipientEmail(''); setRecipientPhone(''); setNote(''); setExpiresAt('');
     } catch (e) {
       setError(String(e?.message ?? e));
     } finally {
@@ -360,7 +352,16 @@ function IssuePanel() {
           <label style={S.label}>Recipient email (optional)</label>
           <input type="email" value={recipientEmail} onChange={e => setRecipientEmail(e.target.value)} placeholder="jane@example.com" style={S.input}/>
         </div>
-        <div style={{ gridColumn: 'span 2' }}>
+        <div>
+          <label style={S.label}>Recipient phone (optional)</label>
+          <input type="tel" value={recipientPhone} onChange={e => setRecipientPhone(e.target.value)} placeholder="+44 7700 900000" style={S.input}/>
+        </div>
+        <div>
+          <label style={S.label}>Expiry date (optional)</label>
+          <input type="date" value={expiresAt} onChange={e => setExpiresAt(e.target.value)} style={S.input}/>
+          <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 4 }}>Leave blank to use default from settings</div>
+        </div>
+        <div>
           <label style={S.label}>Note (optional)</label>
           <input type="text" value={note} onChange={e => setNote(e.target.value)} placeholder="Happy birthday, etc." style={S.input}/>
         </div>
@@ -397,6 +398,7 @@ function BulkCreatePanel({ config }) {
   const [amount, setAmount] = useState('');
   const [quantity, setQuantity] = useState('10');
   const [batchName, setBatchName] = useState('');
+  const [expiresAt, setExpiresAt] = useState('');
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState(null);
   const [result, setResult] = useState(null);
@@ -414,6 +416,7 @@ function BulkCreatePanel({ config }) {
         amount: amountMinor,
         quantity: qty,
         batch_name: batchName.trim(),
+        expires_at: expiresAt || undefined,
       });
       setResult(res);
     } catch (e) {
@@ -446,7 +449,7 @@ function BulkCreatePanel({ config }) {
 
       {!result ? (
         <>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 14 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 14 }}>
             <div>
               <label style={S.label}>Amount per card</label>
               <input type="number" value={amount} onChange={e => setAmount(e.target.value)} placeholder="25.00" step="0.01" min="0" style={S.input}/>
@@ -458,6 +461,11 @@ function BulkCreatePanel({ config }) {
             <div>
               <label style={S.label}>Batch name</label>
               <input type="text" value={batchName} onChange={e => setBatchName(e.target.value)} placeholder="e.g. Christmas 2026 promo" style={S.input}/>
+            </div>
+            <div>
+              <label style={S.label}>Expiry date (optional)</label>
+              <input type="date" value={expiresAt} onChange={e => setExpiresAt(e.target.value)} style={S.input}/>
+              <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 4 }}>Leave blank for default</div>
             </div>
           </div>
 
@@ -528,7 +536,8 @@ function BulkCreatePanel({ config }) {
 // ─── Import Panel ──────────────────────────────────────────────────────
 function ImportPanel() {
   const [batchName, setBatchName] = useState('');
-  const [rows, setRows] = useState([{ balance: '', recipient_name: '', recipient_email: '', note: '', original_code: '' }]);
+  const [expiresAt, setExpiresAt] = useState('');
+  const [rows, setRows] = useState([{ balance: '', recipient_name: '', recipient_email: '', recipient_phone: '', note: '', original_code: '' }]);
   const [csvText, setCsvText] = useState('');
   const [mode, setMode] = useState('manual'); // manual | csv
   const [importing, setImporting] = useState(false);
@@ -554,8 +563,9 @@ function ImportPanel() {
           balance: cols[0] || '',
           recipient_name: cols[1] || '',
           recipient_email: cols[2] || '',
-          note: cols[3] || '',
-          original_code: cols[4] || '',
+          recipient_phone: cols[3] || '',
+          note: cols[4] || '',
+          original_code: cols[5] || '',
         };
       }).filter(r => r.balance);
       if (parsed.length === 0) throw new Error('No valid rows found');
@@ -575,13 +585,16 @@ function ImportPanel() {
         balance: Math.round(parseFloat(r.balance) * 100),
         recipient_name: r.recipient_name || undefined,
         recipient_email: r.recipient_email || undefined,
+        recipient_phone: r.recipient_phone || undefined,
         note: r.note || undefined,
         original_code: r.original_code || undefined,
       }));
       if (cards.length === 0) throw new Error('Add at least one card with a balance');
       if (cards.some(c => !Number.isFinite(c.balance) || c.balance <= 0)) throw new Error('All balances must be positive numbers');
 
-      const res = await callGift('gift-import', { batch_name: batchName.trim(), cards });
+      const payload = { batch_name: batchName.trim(), cards };
+      if (expiresAt) payload.expires_at = new Date(expiresAt).toISOString();
+      const res = await callGift('gift-import', payload);
       setResult(res);
     } catch (e) {
       setError(String(e?.message ?? e));
@@ -622,7 +635,7 @@ function ImportPanel() {
           <button onClick={downloadCSV} style={{ ...S.btn, ...S.btnPrim }}>
             {String.fromCodePoint(0x2B07)} Download new codes CSV
           </button>
-          <button onClick={() => { setResult(null); setRows([{ balance: '', recipient_name: '', recipient_email: '', note: '', original_code: '' }]); setBatchName(''); }} style={{ ...S.btn, ...S.btnGhost }}>
+          <button onClick={() => { setResult(null); setRows([{ balance: '', recipient_name: '', recipient_email: '', recipient_phone: '', note: '', original_code: '' }]); setBatchName(''); setExpiresAt(''); }} style={{ ...S.btn, ...S.btnGhost }}>
             Import more
           </button>
         </div>
@@ -662,9 +675,16 @@ function ImportPanel() {
         Import cards from another system. Each card gets a new code — the old code is stored in the notes for reference.
       </div>
 
-      <div style={{ marginBottom: 14 }}>
-        <label style={S.label}>Batch name</label>
-        <input type="text" value={batchName} onChange={e => setBatchName(e.target.value)} placeholder="e.g. Migration from Square, Dec 2026" style={{ ...S.input, maxWidth: 400 }}/>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 14, maxWidth: 600 }}>
+        <div>
+          <label style={S.label}>Batch name</label>
+          <input type="text" value={batchName} onChange={e => setBatchName(e.target.value)} placeholder="e.g. Migration from Square, Dec 2026" style={S.input}/>
+        </div>
+        <div>
+          <label style={S.label}>Expiry date (optional)</label>
+          <input type="date" value={expiresAt} onChange={e => setExpiresAt(e.target.value)} min={new Date().toISOString().split('T')[0]} style={S.input}/>
+          <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 4 }}>Applies to all imported cards</div>
+        </div>
       </div>
 
       {/* Mode tabs */}
@@ -675,11 +695,11 @@ function ImportPanel() {
 
       {mode === 'csv' && (
         <div style={{ marginBottom: 14 }}>
-          <label style={S.label}>Paste CSV (balance, name, email, note, old code)</label>
+          <label style={S.label}>Paste CSV (balance, name, email, phone, note, old code)</label>
           <textarea
             value={csvText}
             onChange={e => setCsvText(e.target.value)}
-            placeholder={"25.00, Jane Smith, jane@email.com, VIP customer, OLD-CODE-123\n50.00, Bob Jones, , , OLD-456"}
+            placeholder={"25.00, Jane Smith, jane@email.com, 07700900123, VIP customer, OLD-CODE-123\n50.00, Bob Jones, , , , OLD-456"}
             rows={6}
             style={{ ...S.input, resize: 'vertical', fontFamily: 'var(--font-mono)', fontSize: 11 }}
           />
@@ -693,7 +713,7 @@ function ImportPanel() {
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
               <thead>
                 <tr style={{ borderBottom: '2px solid var(--bdr)', position: 'sticky', top: 0, background: 'var(--bg1)', zIndex: 1 }}>
-                  {['Balance', 'Name', 'Email', 'Note', 'Old code', ''].map(h => (
+                  {['Balance', 'Name', 'Email', 'Phone', 'Note', 'Old code', ''].map(h => (
                     <th key={h} style={{ textAlign: 'left', padding: '6px 8px', fontSize: 10, fontWeight: 700, color: 'var(--t4)', textTransform: 'uppercase' }}>{h}</th>
                   ))}
                 </tr>
@@ -708,13 +728,16 @@ function ImportPanel() {
                       <input type="text" value={r.recipient_name} onChange={e => updateRow(i, 'recipient_name', e.target.value)} placeholder="Optional" style={{ ...S.input, width: 110, padding: '4px 6px', fontSize: 12 }}/>
                     </td>
                     <td style={{ padding: '4px 6px' }}>
-                      <input type="text" value={r.recipient_email} onChange={e => updateRow(i, 'recipient_email', e.target.value)} placeholder="Optional" style={{ ...S.input, width: 140, padding: '4px 6px', fontSize: 12 }}/>
+                      <input type="text" value={r.recipient_email} onChange={e => updateRow(i, 'recipient_email', e.target.value)} placeholder="Optional" style={{ ...S.input, width: 130, padding: '4px 6px', fontSize: 12 }}/>
                     </td>
                     <td style={{ padding: '4px 6px' }}>
-                      <input type="text" value={r.note} onChange={e => updateRow(i, 'note', e.target.value)} placeholder="Optional" style={{ ...S.input, width: 110, padding: '4px 6px', fontSize: 12 }}/>
+                      <input type="tel" value={r.recipient_phone} onChange={e => updateRow(i, 'recipient_phone', e.target.value)} placeholder="Optional" style={{ ...S.input, width: 110, padding: '4px 6px', fontSize: 12 }}/>
                     </td>
                     <td style={{ padding: '4px 6px' }}>
-                      <input type="text" value={r.original_code} onChange={e => updateRow(i, 'original_code', e.target.value)} placeholder="Old system code" style={{ ...S.input, width: 120, padding: '4px 6px', fontSize: 12 }}/>
+                      <input type="text" value={r.note} onChange={e => updateRow(i, 'note', e.target.value)} placeholder="Optional" style={{ ...S.input, width: 100, padding: '4px 6px', fontSize: 12 }}/>
+                    </td>
+                    <td style={{ padding: '4px 6px' }}>
+                      <input type="text" value={r.original_code} onChange={e => updateRow(i, 'original_code', e.target.value)} placeholder="Old system code" style={{ ...S.input, width: 110, padding: '4px 6px', fontSize: 12 }}/>
                     </td>
                     <td style={{ padding: '4px 6px' }}>
                       {rows.length > 1 && (
@@ -958,24 +981,34 @@ function LookupPanel() {
   );
 }
 
-// ─── Recent Cards Panel ─────────────────────────────────────────────────
+// ─── All Cards Panel (was Recent Cards) ─────────────────────────────────
 function RecentCardsPanel() {
   const [cards, setCards] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [statusFilter, setStatusFilter] = useState('');
+  const [sourceFilter, setSourceFilter] = useState('');
+  const [batchFilter, setBatchFilter] = useState('');
+  const [searchText, setSearchText] = useState('');
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await callGift('gift-list', {});
-        setCards(res.cards ?? []);
-      } catch (e) {
-        setError(String(e?.message ?? e));
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, []);
+  const fetchCards = useCallback(async () => {
+    setLoading(true); setError(null);
+    try {
+      const body = {};
+      if (statusFilter) body.status = statusFilter;
+      if (sourceFilter) body.source = sourceFilter;
+      if (batchFilter.trim()) body.batch_name = batchFilter.trim();
+      if (searchText.trim()) body.search = searchText.trim();
+      const res = await callGift('gift-list', body);
+      setCards(res.cards ?? []);
+    } catch (e) {
+      setError(String(e?.message ?? e));
+    } finally {
+      setLoading(false);
+    }
+  }, [statusFilter, sourceFilter, batchFilter, searchText]);
+
+  useEffect(() => { fetchCards(); }, [fetchCards]);
 
   const statusColor = (s) => {
     if (s === 'active') return { background: 'var(--grn-d)', color: 'var(--grn)', borderColor: 'var(--grn)' };
@@ -985,22 +1018,68 @@ function RecentCardsPanel() {
     return {};
   };
 
+  const filSel = { ...S.input, width: 'auto', minWidth: 100, padding: '6px 8px', fontSize: 12 };
+
   return (
     <div style={S.card}>
-      <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--t1)', marginBottom: 14 }}>Recent gift cards</div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+        <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--t1)' }}>All gift cards</div>
+        <div style={{ fontSize: 12, color: 'var(--t3)' }}>{cards.length} card{cards.length !== 1 ? 's' : ''}</div>
+      </div>
+
+      {/* Filters */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap', alignItems: 'end' }}>
+        <div>
+          <label style={{ ...S.label, marginBottom: 3 }}>Status</label>
+          <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} style={filSel}>
+            <option value="">All</option>
+            <option value="active">Active</option>
+            <option value="redeemed">Redeemed</option>
+            <option value="voided">Voided</option>
+            <option value="expired">Expired</option>
+          </select>
+        </div>
+        <div>
+          <label style={{ ...S.label, marginBottom: 3 }}>Source</label>
+          <select value={sourceFilter} onChange={e => setSourceFilter(e.target.value)} style={filSel}>
+            <option value="">All</option>
+            <option value="manual">Manual</option>
+            <option value="online">Online</option>
+            <option value="bulk">Bulk</option>
+            <option value="import">Import</option>
+          </select>
+        </div>
+        <div>
+          <label style={{ ...S.label, marginBottom: 3 }}>Batch name</label>
+          <input type="text" value={batchFilter} onChange={e => setBatchFilter(e.target.value)} placeholder="Search batch..." style={{ ...filSel, minWidth: 150 }}/>
+        </div>
+        <div>
+          <label style={{ ...S.label, marginBottom: 3 }}>Search</label>
+          <input type="text" value={searchText} onChange={e => setSearchText(e.target.value)} placeholder="Code, name, email, phone..." style={{ ...filSel, minWidth: 180 }}/>
+        </div>
+        {(statusFilter || sourceFilter || batchFilter || searchText) && (
+          <button onClick={() => { setStatusFilter(''); setSourceFilter(''); setBatchFilter(''); setSearchText(''); }}
+            style={{ ...S.btn, ...S.btnGhost, fontSize: 11, padding: '6px 10px', alignSelf: 'end' }}>
+            Clear filters
+          </button>
+        )}
+      </div>
+
       {error && <div style={S.errorBox}>{error}</div>}
       {loading ? (
         <div style={{ padding: 20, textAlign: 'center', color: 'var(--t3)', fontSize: 13 }}>Loading...</div>
       ) : cards.length === 0 ? (
         <div style={{ padding: 20, textAlign: 'center', color: 'var(--t3)', fontSize: 13, background: 'var(--bg2)', borderRadius: 8, border: '1px dashed var(--bdr)' }}>
-          No gift cards issued yet.
+          {(statusFilter || sourceFilter || batchFilter || searchText)
+            ? 'No cards match the current filters.'
+            : 'No gift cards issued yet.'}
         </div>
       ) : (
-        <div style={{ overflowX: 'auto' }}>
+        <div style={{ overflowX: 'auto', maxHeight: 600, overflowY: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead>
-              <tr style={{ borderBottom: '2px solid var(--bdr)' }}>
-                {['Code', 'Status', 'Initial', 'Balance', 'Recipient', 'Source', 'Issued', 'Expires'].map(h => (
+              <tr style={{ borderBottom: '2px solid var(--bdr)', position: 'sticky', top: 0, background: 'var(--bg1)', zIndex: 1 }}>
+                {['Code', 'Status', 'Initial', 'Balance', 'Recipient', 'Source', 'Batch', 'Issued', 'Expires'].map(h => (
                   <th key={h} style={{ textAlign: 'left', padding: '6px 8px', fontSize: 10, fontWeight: 700, color: 'var(--t4)', textTransform: 'uppercase', letterSpacing: '.06em' }}>{h}</th>
                 ))}
               </tr>
@@ -1013,9 +1092,10 @@ function RecentCardsPanel() {
                   <td style={{ padding: '8px', color: 'var(--t2)' }}>{fmtMoney(c.initial_amount_minor)}</td>
                   <td style={{ padding: '8px', fontWeight: 700, color: c.balance_minor > 0 ? 'var(--t1)' : 'var(--t4)' }}>{fmtMoney(c.balance_minor)}</td>
                   <td style={{ padding: '8px', color: 'var(--t2)', maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {c.recipient_name || c.recipient_email || String.fromCodePoint(0x2014)}
+                    {c.recipient_name || c.recipient_email || c.recipient_phone || String.fromCodePoint(0x2014)}
                   </td>
                   <td style={{ padding: '8px', color: 'var(--t3)', fontSize: 11 }}>{c.source || 'manual'}</td>
+                  <td style={{ padding: '8px', color: 'var(--t3)', fontSize: 11, maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.batch_name || String.fromCodePoint(0x2014)}</td>
                   <td style={{ padding: '8px', color: 'var(--t3)', fontSize: 11 }}>{c.issued_at ? new Date(c.issued_at).toLocaleDateString() : ''}</td>
                   <td style={{ padding: '8px', color: 'var(--t3)', fontSize: 11 }}>{c.expires_at ? new Date(c.expires_at).toLocaleDateString() : 'Never'}</td>
                 </tr>
@@ -1154,7 +1234,7 @@ function BrandingPanel({ locationRow, opsLocId, brandConfig, onConfigUpdate }) {
   };
 
   const handleSave = async () => {
-    if (!platformSupabase || !locationRow?.company_id) return;
+    if (!locationRow?.company_id) return;
     setSaving(true); setError(null); setSaved(false);
     try {
       const cleanBranding = {
@@ -1164,11 +1244,8 @@ function BrandingPanel({ locationRow, opsLocId, brandConfig, onConfigUpdate }) {
         background:   branding.background || BLANK_BRANDING.background,
         foreground:   branding.foreground || BLANK_BRANDING.foreground,
       };
-      const { error: upErr } = await platformSupabase
-        .from('gift_brand_config')
-        .update({ branding: cleanBranding })
-        .eq('company_id', locationRow.company_id);
-      if (upErr) throw upErr;
+      const res = await callGift('gift-config', { action: 'branding', branding: cleanBranding });
+      if (res.error) throw new Error(res.error);
       onConfigUpdate(c => ({ ...c, branding: cleanBranding }));
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
@@ -1286,7 +1363,7 @@ function SettingsPanel({ brandConfig, companyId, onConfigUpdate }) {
   }, [brandConfig]);
 
   const handleSave = async () => {
-    if (!platformSupabase || !companyId) return;
+    if (!companyId) return;
     setSaving(true); setError(null); setSaved(false);
     try {
       const minMinor = Math.round(parseFloat(minValue) * 100);
@@ -1302,16 +1379,14 @@ function SettingsPanel({ brandConfig, companyId, onConfigUpdate }) {
         defaultExpiryMonths = m;
       }
 
-      const { error: upErr } = await platformSupabase
-        .from('gift_brand_config')
-        .update({
-          min_card_value_minor: minMinor,
-          max_card_value_minor: maxMinor,
-          default_expiry_months: defaultExpiryMonths,
-          currency: currency.toLowerCase(),
-        })
-        .eq('company_id', companyId);
-      if (upErr) throw upErr;
+      const res = await callGift('gift-config', {
+        action: 'settings',
+        min_card_value_minor: minMinor,
+        max_card_value_minor: maxMinor,
+        default_expiry_months: defaultExpiryMonths,
+        currency: currency.toLowerCase(),
+      });
+      if (res.error) throw new Error(res.error);
       onConfigUpdate(c => ({
         ...c,
         min_card_value_minor: minMinor,

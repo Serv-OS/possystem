@@ -1,20 +1,23 @@
-# RPOS session handoff — 23 May (v5.5.199)
+# RPOS session handoff — 23 May (v5.5.200)
 
-> Gift cards feature substantially complete: bulk create, import, branding, split checks, settings, POS fix, flexible lookup, resend.
+> Gift cards v5.5.200: RLS fix via edge function, phone/expiry support, all-cards view with filters, 4 edge functions deployed.
 
 ---
 
-## What shipped today (23 May): v5.5.193 → v5.5.199
+## What shipped today (23 May): v5.5.193 → v5.5.200
+
+### v5.5.200 — RLS fix, phone/expiry, all-cards view, filters
+- **RLS fix** — All `gift_brand_config` writes now route through `gift-config` edge function using `platformAdmin` (service_role), bypassing Platform DB RLS that blocked back office users (who authenticate on Ops DB, not Platform DB).
+- **All cards view** — "Recent cards" tab replaced with "All cards" showing every gift card with filter dropdowns for status (active/redeemed/voided/expired), source (manual/online/bulk/import), and batch name search.
+- **Phone number support** — `recipient_phone` field added to Issue, Bulk Create, and Import panels. Stored on `gift_cards` table for CRM integration. New column + partial index on Platform DB.
+- **Expiry date support** — Date picker added to Issue, Bulk Create, and Import panels. Cards can now have expiry set at creation time.
+- **Import panel updates** — CSV parser accepts phone column (col 3), batch-level `expires_at` applied to all imported cards.
+- **New edge function**: `gift-config` — centralises all `gift_brand_config` operations (get, enable, disable, settings, branding) through service_role.
+- **Updated edge functions**: `gift-issue` (phone + expiry), `gift-import` (phone + batch expiry), `gift-list` (filters + extra fields).
+- **Schema**: `gift_cards.recipient_phone` column + index on Platform DB.
 
 ### v5.5.199 — Bulk create, import, branding, split checks, settings, RLS fix, URL fix
-- **Bulk create** — `gift-bulk-create` edge function + BO panel. Create 1-500 anonymous cards with same value and a batch name. Download CSV of codes.
-- **Import** — `gift-import` edge function + BO panel. Import cards from external systems with balances. Manual rows or CSV paste. Each card gets a new code; old code stored in notes.
-- **Per-feature branding** — Branding tab in Gift Cards BO section. Logo upload, accent/background/foreground colour pickers. Stored on `gift_brand_config.branding` JSONB. Falls back to `location.online_branding` if not set. Live preview.
-- **Settings panel** — Min/max card values, expiry rules (never or X months), currency selector. Saves to `gift_brand_config`.
-- **Split check gift cards** — Gift card added as payment method in `SplitModal.jsx` PortionTender. Full code entry, lookup, redeem flow within each split portion.
-- **RLS fix** — Added INSERT/UPDATE policies on `gift_brand_config` for authenticated users (was SELECT-only, caused "violates row-level security" error when enabling).
-- **URL routing fix** — App.jsx now routes `gift`, `gift_balance`, `gift_success` modes to CustomerBoot (was only routing `online` and `qr`, causing blank page on `slug.pos-up.com/gift`).
-- **Schema** — `gift_cards` gains `batch_id`, `batch_name`, `source` columns. `gift_brand_config` gains `branding` JSONB column.
+- Bulk create, import, per-feature branding, settings panel, split check gift cards, URL routing fix, schema additions.
 
 ### v5.5.198 — Resend, POS fix, flexible lookup, code visibility
 - `gift-resend` edge function; POS `resolveCompanyForPOS()` fallback; smart search; `fulfilled_code` storage.
@@ -25,42 +28,43 @@
 
 ---
 
-## Files changed in v5.5.199
+## Files changed in v5.5.200
 
 | File | Change |
 |------|--------|
-| `src/lib/version.js` | 5.5.198 → 5.5.199 |
-| `src/App.jsx` | CHANGELOG + URL routing fix (gift modes in CustomerBoot dispatch) |
-| `src/backoffice/sections/GiftCards.jsx` | **Major rewrite**: bulk create, import, branding editor, settings panel, 8 tabs |
-| `src/components/SplitModal.jsx` | Gift card payment method in split check tender |
-| `src/surfaces/gift/giftHelpers.js` | `buildGiftTheme()` accepts optional `giftBranding` override |
-| `supabase/functions/gift-bulk-create/index.ts` | **NEW** — bulk-create endpoint |
-| `supabase/functions/gift-import/index.ts` | **NEW** — import endpoint |
-| `migrations/v5.5.199-gift-rls-batch-import.sql` | RLS fix + new columns |
+| `src/lib/version.js` | 5.5.199 → 5.5.200 |
+| `src/App.jsx` | CHANGELOG entry for v5.5.200 |
+| `src/backoffice/sections/GiftCards.jsx` | BrandingPanel + SettingsPanel save via edge function, ImportPanel phone+expiry, AllCardsPanel filters |
+| `supabase/functions/gift-config/index.ts` | **NEW** — config operations edge function |
+| `supabase/functions/gift-issue/index.ts` | Added `recipient_phone`, already had `expires_at` |
+| `supabase/functions/gift-import/index.ts` | Added `recipient_phone`, batch-level `expires_at` |
+| `supabase/functions/gift-list/index.ts` | Filters (status, source, batch_name, search), extra select fields |
 
 ---
 
-## Deployment checklist
+## Edge functions deployed (all 4 confirmed via Supabase Dashboard)
 
-1. **Run migration** on Platform DB: `v5.5.199-gift-rls-batch-import.sql`
-   - Adds INSERT/UPDATE policies on `gift_brand_config`
-   - Adds `batch_id`, `batch_name`, `source` columns to `gift_cards`
-   - Adds `branding` JSONB column to `gift_brand_config`
-2. **Also run** (if not already): `v5.5.198-gift-resend-code-storage.sql` (adds `fulfilled_code`)
-3. **Deploy edge functions** via Supabase Dashboard:
-   - `gift-bulk-create` — **NEW**
-   - `gift-import` — **NEW**
-   - `gift-redeem` — updated (POS fallback)
-   - `gift-lookup` — updated (smart search + POS fallback)
-   - `gift-fulfill` — updated (stores `fulfilled_code`)
-   - `gift-resend` — **NEW** (from v5.5.198)
-4. **Stripe webhook** — `checkout.session.completed` still needs enabling
-5. **Email** — `send-receipt` still in log mode. Set `RECEIPT_EMAIL_PROVIDER=resend` + `RESEND_API_KEY`
+| Function | Status | DB |
+|----------|--------|----|
+| `gift-config` | ✅ NEW — deployed | Ops DB |
+| `gift-list` | ✅ Updated — deployed | Ops DB |
+| `gift-issue` | ✅ Updated — deployed | Ops DB |
+| `gift-import` | ✅ Updated — deployed | Ops DB |
+
+---
+
+## Platform DB migration applied
+
+```sql
+ALTER TABLE gift_cards ADD COLUMN IF NOT EXISTS recipient_phone text;
+CREATE INDEX IF NOT EXISTS idx_gift_cards_recipient_phone ON gift_cards (recipient_phone) WHERE recipient_phone IS NOT NULL;
+```
 
 ---
 
 ## Still pending
 
+- **CRM integration** — Wire gift cards into customers section using phone as unique identifier
 - **Email deliverability** — Resend API key not configured
 - **Twilio SMS** — user has account ready, wants SMS delivery
 - **Stripe webhook** — not yet enabled for checkout.session.completed
