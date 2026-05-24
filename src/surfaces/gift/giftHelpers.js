@@ -180,5 +180,18 @@ function darkenColor(hex, amount) {
   } catch { return hex; }
 }
 
+/**
+ * Build a customer-facing gift URL that preserves the slug context.
+ * On subdomain hosts (posup-test.serv-os.app) the slug is implicit.
+ * On Vercel/test hosts (?loc=posup-test) we must carry the ?loc= param
+ * forward, otherwise the link falls through to back office.
+ */
+export function giftUrl(path) {
+  const params = new URLSearchParams(window.location.search);
+  const loc = params.get('loc');
+  const base = `${window.location.origin}${path}`;
+  return loc ? `${base}?loc=${encodeURIComponent(loc)}` : base;
+}
+
 /** Legacy export — kept for import compatibility, returns default theme */
 export const giftTheme = DEFAULT_THEME;

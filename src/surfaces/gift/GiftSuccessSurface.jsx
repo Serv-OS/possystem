@@ -6,7 +6,7 @@
 // handler has finished issuing the card. Shows a confirmation once ready.
 
 import { useEffect, useState, useMemo } from 'react';
-import { callGiftPublic, formatAmount, buildGiftTheme, fetchGiftBranding } from './giftHelpers';
+import { callGiftPublic, formatAmount, buildGiftTheme, fetchGiftBranding, giftUrl } from './giftHelpers';
 
 export default function GiftSuccessSurface({ location }) {
   const [giftBranding, setGiftBranding] = useState(null);
@@ -107,12 +107,12 @@ export default function GiftSuccessSurface({ location }) {
         {status === 'error' && (
           <StatusCard t={t} icon="⚠️" title="Something went wrong" subtitle={error}>
             <div style={{ marginTop: 20, display: 'flex', gap: 10 }}>
-              <a href={`${window.location.origin}/gift`} style={{
+              <a href={giftUrl('/gift')} style={{
                 flex: 1, textAlign: 'center', padding: '12px 16px', borderRadius: 99,
                 background: t.accent, color: t.accentText, fontWeight: 800, fontSize: 13,
                 textDecoration: 'none',
               }}>Try again</a>
-              <a href={`${window.location.origin}/gift/balance`} style={{
+              <a href={giftUrl('/gift/balance')} style={{
                 flex: 1, textAlign: 'center', padding: '12px 16px', borderRadius: 99,
                 background: 'transparent', border: `1px solid ${t.border}`, color: t.text,
                 fontWeight: 800, fontSize: 13, textDecoration: 'none',
@@ -166,12 +166,12 @@ export default function GiftSuccessSurface({ location }) {
 
             {/* Actions */}
             <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
-              <a href={`${window.location.origin}/gift`} style={{
+              <a href={giftUrl('/gift')} style={{
                 flex: 1, textAlign: 'center', padding: '14px 16px', borderRadius: 99,
                 background: t.accent, color: t.accentText, fontWeight: 800, fontSize: 14,
                 textDecoration: 'none',
               }}>Buy another</a>
-              <a href={`${window.location.origin}/`} style={{
+              <a href={giftUrl('/')} style={{
                 flex: 1, textAlign: 'center', padding: '14px 16px', borderRadius: 99,
                 background: 'transparent', border: `1px solid ${t.border}`, color: t.text,
                 fontWeight: 800, fontSize: 14, textDecoration: 'none',

@@ -10,7 +10,7 @@
 //   6. Customer lands on /gift/success with session_id in query string
 
 import { useState, useEffect, useMemo } from 'react';
-import { callGiftPublic, formatAmount, PRESET_AMOUNTS, buildGiftTheme, fetchGiftBranding } from './giftHelpers';
+import { callGiftPublic, formatAmount, PRESET_AMOUNTS, buildGiftTheme, fetchGiftBranding, giftUrl } from './giftHelpers';
 
 export default function GiftPurchaseSurface({ location }) {
   const [giftBranding, setGiftBranding] = useState(null);
@@ -64,8 +64,11 @@ export default function GiftPurchaseSurface({ location }) {
         recipient_email: deliveryType === 'self' ? senderEmail.trim() : recipientEmail.trim(),
         message: message.trim() || null,
         delivery_type: deliveryType,
-        success_url: `${window.location.origin}/gift/success?session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${window.location.origin}/gift`,
+        success_url: (() => {
+          const loc = new URLSearchParams(window.location.search).get('loc');
+          return `${window.location.origin}/gift/success?session_id={CHECKOUT_SESSION_ID}${loc ? `&loc=${encodeURIComponent(loc)}` : ''}`;
+        })(),
+        cancel_url: giftUrl('/gift'),
       };
       const data = await callGiftPublic('gift-checkout-session', body);
       if (data.checkout_url) {
@@ -271,7 +274,7 @@ export default function GiftPurchaseSurface({ location }) {
         {/* Links */}
         <div style={{ textAlign: 'center', marginTop: 8 }}>
           <a
-            href={`${window.location.origin}/gift/balance`}
+            href={giftUrl('/gift/balance')}
             style={{ color: t.accent, fontSize: 13, fontWeight: 600, textDecoration: 'none' }}
           >
             Check gift card balance →

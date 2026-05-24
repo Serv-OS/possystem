@@ -7,7 +7,7 @@
 // safe-to-display fields (balance, last4, status, expiry).
 
 import { useState, useEffect, useRef, useMemo } from 'react';
-import { callGiftPublic, formatAmount, buildGiftTheme, fetchGiftBranding } from './giftHelpers';
+import { callGiftPublic, formatAmount, buildGiftTheme, fetchGiftBranding, giftUrl } from './giftHelpers';
 
 export default function GiftBalanceSurface({ location }) {
   const [giftBranding, setGiftBranding] = useState(null);
@@ -194,7 +194,7 @@ export default function GiftBalanceSurface({ location }) {
         {/* Navigation links */}
         <div style={{ textAlign: 'center', marginTop: 24 }}>
           <a
-            href={`${window.location.origin}/gift`}
+            href={giftUrl('/gift')}
             style={{ color: t.accent, fontSize: 13, fontWeight: 600, textDecoration: 'none' }}
           >
             Buy a gift card →
