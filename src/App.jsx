@@ -76,6 +76,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.202', date: '23 May 2026', label: 'Gift card PDF voucher download',
+    changes: [
+      'PDF voucher download: styled gift card voucher opens in new window with print dialog for save-as-PDF. Available after issuing a card and from the Purchases tab for online purchases.',
+      'Issue panel: "Download voucher" and "Copy code" buttons shown after successful card issue.',
+      'Purchases panel: "Voucher" button per row for online purchases with fulfilled codes.',
+    ],
+  },
+  {
     version: '5.5.201', date: '23 May 2026', label: 'Fix gift card purchase page crash',
     changes: [
       'Fixed ReferenceError: t is not defined on customer-facing gift card purchase page. Sub-components (Section, Input, AmountChip, ToggleChip) were referencing theme variable outside their scope.',

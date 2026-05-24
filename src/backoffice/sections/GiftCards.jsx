@@ -71,6 +71,52 @@ function fmtMoney(minor, currency = 'gbp') {
   return `${sym}${amt.toFixed(2)}`;
 }
 
+// ── Voucher PDF generator ──────────────────────────────────────────────
+// Opens a styled print-ready voucher in a new window. User can print or
+// save as PDF via the browser's native print dialog.
+function openVoucher({ code, amount, currency = 'gbp', recipientName, businessName, expiresAt, note }) {
+  const formattedCode = code.replace(/\s/g, '').match(/.{1,4}/g)?.join(' ') || code;
+  const amtDisplay = fmtMoney(amount, currency);
+  const expiryLine = expiresAt ? `Valid until ${new Date(expiresAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}` : 'No expiry date';
+  const recipientLine = recipientName ? `<div style="font-size:16px;color:#666;margin-top:12px;">For: <strong style="color:#333">${recipientName}</strong></div>` : '';
+  const noteLine = note ? `<div style="font-size:13px;color:#888;margin-top:10px;font-style:italic;">"${note}"</div>` : '';
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Gift Card Voucher</title>
+<style>
+@media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } @page { margin: 0; size: A5 landscape; } }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; background: #f0f0f0; display: flex; justify-content: center; align-items: center; min-height: 100vh; padding: 20px; }
+.voucher { width: 600px; background: #fff; border-radius: 20px; overflow: hidden; box-shadow: 0 4px 30px rgba(0,0,0,0.12); }
+.top { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); color: #fff; padding: 40px 40px 32px; text-align: center; }
+.top h1 { font-size: 22px; font-weight: 800; letter-spacing: -0.01em; margin-bottom: 8px; }
+.top .gift-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em; color: rgba(255,255,255,0.5); }
+.amount { font-size: 52px; font-weight: 900; color: #e8a020; margin: 16px 0 4px; letter-spacing: -0.02em; }
+.bottom { padding: 32px 40px 36px; text-align: center; }
+.code-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.15em; color: #999; margin-bottom: 10px; }
+.code { font-size: 28px; font-weight: 800; font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; letter-spacing: 0.18em; color: #1a1a2e; background: #f5f5f5; border: 2px dashed #ddd; border-radius: 12px; padding: 16px 20px; display: inline-block; }
+.expiry { font-size: 12px; color: #999; margin-top: 18px; }
+.footer { font-size: 10px; color: #bbb; margin-top: 16px; padding-top: 14px; border-top: 1px solid #eee; }
+</style></head><body>
+<div class="voucher">
+  <div class="top">
+    <div class="gift-label">Gift Card</div>
+    <h1>${businessName || 'Gift Card'}</h1>
+    <div class="amount">${amtDisplay}</div>
+  </div>
+  <div class="bottom">
+    <div class="code-label">Your gift card code</div>
+    <div class="code">${formattedCode}</div>
+    ${recipientLine}
+    ${noteLine}
+    <div class="expiry">${expiryLine}</div>
+    <div class="footer">Present this code at the till or enter it online to redeem. This card cannot be exchanged for cash.</div>
+  </div>
+</div>
+<script>window.onafterprint=()=>window.close();setTimeout(()=>window.print(),400);</script>
+</body></html>`;
+  const w = window.open('', '_blank', 'width=700,height=600');
+  if (w) { w.document.write(html); w.document.close(); }
+}
+
 export default function GiftCards() {
   const [tab, setTab] = useState('overview'); // overview | issue | bulk | import | lookup | history | purchases | settings
   const [loading, setLoading] = useState(true);
@@ -247,12 +293,12 @@ export default function GiftCards() {
         ))}
       </div>
 
-      {tab === 'issue' && <IssuePanel />}
+      {tab === 'issue' && <IssuePanel businessName={locationRow?.name} />}
       {tab === 'bulk' && <BulkCreatePanel config={brandConfig} />}
       {tab === 'import' && <ImportPanel />}
       {tab === 'lookup' && <LookupPanel />}
       {tab === 'history' && <RecentCardsPanel />}
-      {tab === 'purchases' && <PurchasesPanel companyId={locationRow?.company_id} />}
+      {tab === 'purchases' && <PurchasesPanel companyId={locationRow?.company_id} businessName={locationRow?.name} />}
       {tab === 'branding' && <BrandingPanel locationRow={locationRow} opsLocId={opsLocId} brandConfig={brandConfig} onConfigUpdate={setBrandConfig} />}
       {tab === 'settings' && <SettingsPanel brandConfig={brandConfig} companyId={locationRow?.company_id} onConfigUpdate={setBrandConfig} />}
     </div>
@@ -303,7 +349,7 @@ function UrlRow({ label, liveUrl, previewUrl, enabled }) {
 }
 
 // ─── Issue Panel ────────────────────────────────────────────────────────
-function IssuePanel() {
+function IssuePanel({ businessName }) {
   const [amount, setAmount] = useState('');
   const [recipientName, setRecipientName] = useState('');
   const [recipientEmail, setRecipientEmail] = useState('');
@@ -327,6 +373,9 @@ function IssuePanel() {
         note: note || undefined,
         expires_at: expiresAt || undefined,
       });
+      // Stash recipient info on result before clearing form
+      res._recipientName = recipientName;
+      res._note = note;
       setResult(res);
       setAmount(''); setRecipientName(''); setRecipientEmail(''); setRecipientPhone(''); setNote(''); setExpiresAt('');
     } catch (e) {
@@ -377,6 +426,22 @@ function IssuePanel() {
             <div><strong>Balance:</strong> {fmtMoney(result.balance, result.currency)}</div>
             <div><strong>Last 4:</strong> {result.code_last4}</div>
             <div><strong>Expires:</strong> {result.expires_at ? new Date(result.expires_at).toLocaleDateString() : 'Never'}</div>
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <button onClick={() => openVoucher({
+              code: result.code,
+              amount: result.balance,
+              currency: result.currency,
+              recipientName: result._recipientName,
+              businessName,
+              expiresAt: result.expires_at,
+              note: result._note,
+            })} style={{ ...S.btn, ...S.btnPrim }}>
+              {String.fromCodePoint(0x1F4E4)} Download voucher
+            </button>
+            <button onClick={() => { navigator.clipboard?.writeText(result.code); }} style={{ ...S.btn, ...S.btnGhost }}>
+              {String.fromCodePoint(0x1F4CB)} Copy code
+            </button>
           </div>
           <div style={{ marginTop: 10, padding: 10, background: 'rgba(0,0,0,0.1)', borderRadius: 6, fontSize: 12, lineHeight: 1.5, color: 'var(--t1)' }}>
             {String.fromCodePoint(0x26A0)} Write down or copy this code now. It cannot be displayed again after leaving this screen.
@@ -1126,7 +1191,7 @@ function CodeCell({ code }) {
 }
 
 // ─── Online Purchases Panel ─────────────────────────────────────────────
-function PurchasesPanel({ companyId }) {
+function PurchasesPanel({ companyId, businessName }) {
   const [purchases, setPurchases] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -1174,7 +1239,7 @@ function PurchasesPanel({ companyId }) {
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead>
               <tr style={{ borderBottom: '2px solid var(--bdr)' }}>
-                {['Amount', 'Status', 'Code', 'From', 'To', 'Type', 'Date'].map(h => (
+                {['Amount', 'Status', 'Code', 'From', 'To', 'Type', 'Date', ''].map(h => (
                   <th key={h} style={{ textAlign: 'left', padding: '6px 8px', fontSize: 10, fontWeight: 700, color: 'var(--t4)', textTransform: 'uppercase', letterSpacing: '.06em' }}>{h}</th>
                 ))}
               </tr>
@@ -1191,6 +1256,19 @@ function PurchasesPanel({ companyId }) {
                   <td style={{ padding: '8px', color: 'var(--t2)', maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.recipient_name || p.recipient_email}</td>
                   <td style={{ padding: '8px', color: 'var(--t3)' }}>{p.delivery_type === 'self' ? 'Self' : 'Email'}</td>
                   <td style={{ padding: '8px', color: 'var(--t3)', fontSize: 11 }}>{new Date(p.created_at).toLocaleDateString()}</td>
+                  <td style={{ padding: '8px' }}>
+                    {p.fulfilled_code && (
+                      <button onClick={() => openVoucher({
+                        code: p.fulfilled_code,
+                        amount: p.amount_minor,
+                        currency: p.currency,
+                        recipientName: p.recipient_name,
+                        businessName,
+                      })} style={{ ...S.btn, ...S.btnGhost, fontSize: 10, padding: '3px 8px' }}>
+                        {String.fromCodePoint(0x1F4E4)} Voucher
+                      </button>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
