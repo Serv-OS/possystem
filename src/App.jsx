@@ -76,6 +76,13 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.210', date: '24 May 2026', label: 'Voucher PDF: org name, compact layout',
+    changes: [
+      'Voucher PDF now shows the organisation name instead of the location name. Fetches company name from Platform DB companies table on gift card load.',
+      'Voucher layout compacted: logo 56px (was 96px), tighter padding, smaller amount text — fits cleanly within A5 landscape without clipping.',
+    ],
+  },
+  {
     version: '5.5.209', date: '24 May 2026', label: 'Gift card branding: colour overhaul',
     changes: [
       'Reworked gift page colour system — cards and borders now use rgba overlays that adapt to any background colour. Section titles use the text colour (not accent) so they don\'t clash with vivid backgrounds.',

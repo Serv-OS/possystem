@@ -86,7 +86,7 @@ function openVoucher({ code, amount, currency = 'gbp', recipientName, businessNa
   const expiryLine = expiresAt ? `Valid until ${new Date(expiresAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}` : 'No expiry date';
   const recipientLine = recipientName ? `<div style="font-size:16px;color:#666;margin-top:12px;">For: <strong style="color:#333">${recipientName}</strong></div>` : '';
   const noteLine = note ? `<div style="font-size:13px;color:#888;margin-top:10px;font-style:italic;">"${note}"</div>` : '';
-  const logoLine = logoUrl ? `<img src="${logoUrl}" alt="" style="width:96px;height:96px;border-radius:16px;object-fit:cover;margin-bottom:14px;" crossorigin="anonymous"/>` : '';
+  const logoLine = logoUrl ? `<img src="${logoUrl}" alt="" style="width:56px;height:56px;border-radius:12px;object-fit:cover;margin-bottom:10px;" crossorigin="anonymous"/>` : '';
   // Branding: derive gradient from bgColor, or fall back to dark navy
   const topBg = bgColor || '#1a1a2e';
   const topFg = fgColor || '#ffffff';
@@ -99,15 +99,15 @@ function openVoucher({ code, amount, currency = 'gbp', recipientName, businessNa
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; background: #f0f0f0; display: flex; justify-content: center; align-items: center; min-height: 100vh; padding: 20px; }
 .voucher { width: 600px; background: #fff; border-radius: 20px; overflow: hidden; box-shadow: 0 4px 30px rgba(0,0,0,0.12); }
-.top { background: linear-gradient(135deg, ${topBg} 0%, ${gradEnd} 100%); color: ${topFg}; padding: 40px 40px 32px; text-align: center; }
-.top h1 { font-size: 22px; font-weight: 800; letter-spacing: -0.01em; margin-bottom: 8px; }
-.top .gift-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em; opacity: 0.5; }
-.amount { font-size: 52px; font-weight: 900; color: ${accent}; margin: 16px 0 4px; letter-spacing: -0.02em; }
-.bottom { padding: 32px 40px 36px; text-align: center; }
-.code-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.15em; color: #999; margin-bottom: 10px; }
-.code { font-size: 28px; font-weight: 800; font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; letter-spacing: 0.18em; color: ${topBg}; background: #f5f5f5; border: 2px dashed ${accent}40; border-radius: 12px; padding: 16px 20px; display: inline-block; }
-.expiry { font-size: 12px; color: #999; margin-top: 18px; }
-.footer { font-size: 10px; color: #bbb; margin-top: 16px; padding-top: 14px; border-top: 1px solid #eee; }
+.top { background: linear-gradient(135deg, ${topBg} 0%, ${gradEnd} 100%); color: ${topFg}; padding: 28px 40px 24px; text-align: center; }
+.top h1 { font-size: 20px; font-weight: 800; letter-spacing: -0.01em; margin-bottom: 4px; }
+.top .gift-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em; opacity: 0.5; }
+.amount { font-size: 46px; font-weight: 900; color: ${accent}; margin: 10px 0 0; letter-spacing: -0.02em; }
+.bottom { padding: 24px 40px 28px; text-align: center; }
+.code-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.15em; color: #999; margin-bottom: 8px; }
+.code { font-size: 26px; font-weight: 800; font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; letter-spacing: 0.18em; color: ${topBg}; background: #f5f5f5; border: 2px dashed ${accent}40; border-radius: 12px; padding: 14px 18px; display: inline-block; }
+.expiry { font-size: 11px; color: #999; margin-top: 14px; }
+.footer { font-size: 10px; color: #bbb; margin-top: 12px; padding-top: 12px; border-top: 1px solid #eee; }
 </style></head><body>
 <div class="voucher">
   <div class="top">
@@ -171,6 +171,15 @@ export default function GiftCards() {
               .eq('id', locId).maybeSingle();
             loc = r2;
           }
+        }
+        // v5.5.210: Fetch company name for voucher — gift cards are org-level
+        if (loc?.company_id) {
+          try {
+            const { data: co } = await platformSupabase
+              .from('companies').select('name')
+              .eq('id', loc.company_id).maybeSingle();
+            if (co?.name) loc.company_name = co.name;
+          } catch { /* not critical */ }
         }
         if (alive) setLocationRow(loc);
 
@@ -318,12 +327,12 @@ export default function GiftCards() {
         ))}
       </div>
 
-      {tab === 'issue' && <IssuePanel businessName={locationRow?.name} brandConfig={brandConfig} />}
+      {tab === 'issue' && <IssuePanel businessName={locationRow?.company_name || locationRow?.name} brandConfig={brandConfig} />}
       {tab === 'bulk' && <BulkCreatePanel config={brandConfig} />}
       {tab === 'import' && <ImportPanel />}
       {tab === 'lookup' && <LookupPanel />}
-      {tab === 'history' && <RecentCardsPanel businessName={locationRow?.name} brandConfig={brandConfig} />}
-      {tab === 'purchases' && <PurchasesPanel companyId={locationRow?.company_id} businessName={locationRow?.name} brandConfig={brandConfig} />}
+      {tab === 'history' && <RecentCardsPanel businessName={locationRow?.company_name || locationRow?.name} brandConfig={brandConfig} />}
+      {tab === 'purchases' && <PurchasesPanel companyId={locationRow?.company_id} businessName={locationRow?.company_name || locationRow?.name} brandConfig={brandConfig} />}
       {tab === 'branding' && <BrandingPanel locationRow={locationRow} opsLocId={opsLocId} brandConfig={brandConfig} onConfigUpdate={setBrandConfig} />}
       {tab === 'settings' && <SettingsPanel brandConfig={brandConfig} companyId={locationRow?.company_id} onConfigUpdate={setBrandConfig} />}
     </div>
