@@ -76,6 +76,12 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.201', date: '23 May 2026', label: 'Fix gift card purchase page crash',
+    changes: [
+      'Fixed ReferenceError: t is not defined on customer-facing gift card purchase page. Sub-components (Section, Input, AmountChip, ToggleChip) were referencing theme variable outside their scope.',
+    ],
+  },
+  {
     version: '5.5.200', date: '23 May 2026', label: 'Gift cards: phone/expiry support, RLS fix, all-cards view with filters',
     changes: [
       'Fixed RLS error on gift_brand_config: all config writes now route through gift-config edge function using service_role, bypassing Platform DB RLS that blocked authenticated users.',

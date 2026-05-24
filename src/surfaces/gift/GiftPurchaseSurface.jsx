@@ -99,7 +99,7 @@ export default function GiftPurchaseSurface({ location }) {
       <div style={{ width: '100%', maxWidth: 420 }}>
 
         {/* ── Amount selection ───────────────────────────── */}
-        <Section title="Choose an amount">
+        <Section title="Choose an amount" t={t}>
           <div style={{
             display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10,
           }}>
@@ -109,6 +109,7 @@ export default function GiftPurchaseSurface({ location }) {
                 label={formatAmount(amt)}
                 selected={!isCustom && selectedPreset === amt}
                 onClick={() => { setSelectedPreset(amt); setIsCustom(false); }}
+                t={t}
               />
             ))}
           </div>
@@ -160,30 +161,32 @@ export default function GiftPurchaseSurface({ location }) {
         </Section>
 
         {/* ── Your details ───────────────────────────────── */}
-        <Section title="Your details">
-          <Input label="Your name" value={senderName} onChange={setSenderName} placeholder="Your name" />
-          <Input label="Your email" type="email" value={senderEmail} onChange={setSenderEmail} placeholder="you@email.com" />
+        <Section title="Your details" t={t}>
+          <Input label="Your name" value={senderName} onChange={setSenderName} placeholder="Your name" t={t} />
+          <Input label="Your email" type="email" value={senderEmail} onChange={setSenderEmail} placeholder="you@email.com" t={t} />
         </Section>
 
         {/* ── Delivery ───────────────────────────────────── */}
-        <Section title="Send to">
+        <Section title="Send to" t={t}>
           <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
             <ToggleChip
               label="Someone else"
               selected={deliveryType === 'email'}
               onClick={() => setDeliveryType('email')}
+              t={t}
             />
             <ToggleChip
               label="Myself"
               selected={deliveryType === 'self'}
               onClick={() => setDeliveryType('self')}
+              t={t}
             />
           </div>
 
           {deliveryType === 'email' && (
             <>
-              <Input label="Recipient name" value={recipientName} onChange={setRecipientName} placeholder="Their name" />
-              <Input label="Recipient email" type="email" value={recipientEmail} onChange={setRecipientEmail} placeholder="them@email.com" />
+              <Input label="Recipient name" value={recipientName} onChange={setRecipientName} placeholder="Their name" t={t} />
+              <Input label="Recipient email" type="email" value={recipientEmail} onChange={setRecipientEmail} placeholder="them@email.com" t={t} />
               <div style={{ marginTop: 12 }}>
                 <label style={{ fontSize: 12, fontWeight: 600, color: t.textMuted, display: 'block', marginBottom: 6 }}>
                   Personal message <span style={{ fontWeight: 400, color: t.textDim }}>(optional)</span>
@@ -279,7 +282,7 @@ export default function GiftPurchaseSurface({ location }) {
 
 // ── Sub-components ──────────────────────────────────────────────────────────
 
-function Section({ title, children }) {
+function Section({ title, children, t }) {
   return (
     <div style={{
       background: t.card, border: `1px solid ${t.border}`, borderRadius: t.radius,
@@ -294,7 +297,7 @@ function Section({ title, children }) {
   );
 }
 
-function Input({ label, value, onChange, placeholder, type = 'text' }) {
+function Input({ label, value, onChange, placeholder, type = 'text', t }) {
   return (
     <div style={{ marginBottom: 12 }}>
       <label style={{ fontSize: 12, fontWeight: 600, color: t.textMuted, display: 'block', marginBottom: 6 }}>
@@ -318,7 +321,7 @@ function Input({ label, value, onChange, placeholder, type = 'text' }) {
   );
 }
 
-function AmountChip({ label, selected, onClick }) {
+function AmountChip({ label, selected, onClick, t }) {
   return (
     <button
       onClick={onClick}
@@ -334,7 +337,7 @@ function AmountChip({ label, selected, onClick }) {
   );
 }
 
-function ToggleChip({ label, selected, onClick }) {
+function ToggleChip({ label, selected, onClick, t }) {
   return (
     <button
       onClick={onClick}
