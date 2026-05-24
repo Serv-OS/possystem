@@ -113,7 +113,7 @@ Deno.serve(async (req) => {
       // Determine expiry: use batch-level expires_at if provided
       const cardExpiresAt = expires_at ? new Date(expires_at).toISOString() : null;
 
-      // Insert card
+      // Insert card (store plaintext code for back-office voucher/resend)
       const { data: card, error: cardErr } = await platformAdmin
         .from('gift_cards')
         .insert({
@@ -121,6 +121,7 @@ Deno.serve(async (req) => {
           code_hash: codeHash,
           code_lookup: lookup,
           code_last4: last4,
+          code_plain: normalized,
           initial_amount_minor: balanceMinor,
           balance_minor: balanceMinor,
           status: 'active',

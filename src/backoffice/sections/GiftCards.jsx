@@ -297,7 +297,7 @@ export default function GiftCards() {
       {tab === 'bulk' && <BulkCreatePanel config={brandConfig} />}
       {tab === 'import' && <ImportPanel />}
       {tab === 'lookup' && <LookupPanel />}
-      {tab === 'history' && <RecentCardsPanel />}
+      {tab === 'history' && <RecentCardsPanel businessName={locationRow?.name} />}
       {tab === 'purchases' && <PurchasesPanel companyId={locationRow?.company_id} businessName={locationRow?.name} />}
       {tab === 'branding' && <BrandingPanel locationRow={locationRow} opsLocId={opsLocId} brandConfig={brandConfig} onConfigUpdate={setBrandConfig} />}
       {tab === 'settings' && <SettingsPanel brandConfig={brandConfig} companyId={locationRow?.company_id} onConfigUpdate={setBrandConfig} />}
@@ -1047,7 +1047,7 @@ function LookupPanel() {
 }
 
 // ─── All Cards Panel (was Recent Cards) ─────────────────────────────────
-function RecentCardsPanel() {
+function RecentCardsPanel({ businessName }) {
   const [cards, setCards] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -1144,27 +1144,48 @@ function RecentCardsPanel() {
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead>
               <tr style={{ borderBottom: '2px solid var(--bdr)', position: 'sticky', top: 0, background: 'var(--bg1)', zIndex: 1 }}>
-                {['Code', 'Status', 'Initial', 'Balance', 'Recipient', 'Source', 'Batch', 'Issued', 'Expires'].map(h => (
-                  <th key={h} style={{ textAlign: 'left', padding: '6px 8px', fontSize: 10, fontWeight: 700, color: 'var(--t4)', textTransform: 'uppercase', letterSpacing: '.06em' }}>{h}</th>
+                {['Code', 'Status', 'Initial', 'Balance', 'Recipient', 'Source', 'Batch', 'Issued', 'Expires', ''].map(h => (
+                  <th key={h || '_actions'} style={{ textAlign: 'left', padding: '6px 8px', fontSize: 10, fontWeight: 700, color: 'var(--t4)', textTransform: 'uppercase', letterSpacing: '.06em' }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {cards.map(c => (
-                <tr key={c.id} style={{ borderBottom: '1px solid var(--bdr)' }}>
-                  <td style={{ padding: '8px', fontFamily: 'var(--font-mono)', color: 'var(--t1)', fontWeight: 600 }}>...{c.code_last4}</td>
-                  <td style={{ padding: '8px' }}><span style={{ ...S.pill, ...statusColor(c.status), fontSize: 10, padding: '1px 6px' }}>{c.status}</span></td>
-                  <td style={{ padding: '8px', color: 'var(--t2)' }}>{fmtMoney(c.initial_amount_minor)}</td>
-                  <td style={{ padding: '8px', fontWeight: 700, color: c.balance_minor > 0 ? 'var(--t1)' : 'var(--t4)' }}>{fmtMoney(c.balance_minor)}</td>
-                  <td style={{ padding: '8px', color: 'var(--t2)', maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {c.recipient_name || c.recipient_email || c.recipient_phone || String.fromCodePoint(0x2014)}
-                  </td>
-                  <td style={{ padding: '8px', color: 'var(--t3)', fontSize: 11 }}>{c.source || 'manual'}</td>
-                  <td style={{ padding: '8px', color: 'var(--t3)', fontSize: 11, maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.batch_name || String.fromCodePoint(0x2014)}</td>
-                  <td style={{ padding: '8px', color: 'var(--t3)', fontSize: 11 }}>{c.issued_at ? new Date(c.issued_at).toLocaleDateString() : ''}</td>
-                  <td style={{ padding: '8px', color: 'var(--t3)', fontSize: 11 }}>{c.expires_at ? new Date(c.expires_at).toLocaleDateString() : 'Never'}</td>
-                </tr>
-              ))}
+              {cards.map(c => {
+                const fullCode = c.code_plain || '';
+                const displayCode = fullCode
+                  ? fullCode.match(/.{1,4}/g)?.join(' ') || fullCode
+                  : `...${c.code_last4}`;
+                return (
+                  <tr key={c.id} style={{ borderBottom: '1px solid var(--bdr)' }}>
+                    <td style={{ padding: '8px', fontFamily: 'var(--font-mono)', color: 'var(--t1)', fontWeight: 600, whiteSpace: 'nowrap', cursor: fullCode ? 'pointer' : 'default' }}
+                      title={fullCode ? 'Click to copy' : ''}
+                      onClick={() => { if (fullCode) { navigator.clipboard.writeText(fullCode); } }}
+                    >{displayCode}</td>
+                    <td style={{ padding: '8px' }}><span style={{ ...S.pill, ...statusColor(c.status), fontSize: 10, padding: '1px 6px' }}>{c.status}</span></td>
+                    <td style={{ padding: '8px', color: 'var(--t2)' }}>{fmtMoney(c.initial_amount_minor)}</td>
+                    <td style={{ padding: '8px', fontWeight: 700, color: c.balance_minor > 0 ? 'var(--t1)' : 'var(--t4)' }}>{fmtMoney(c.balance_minor)}</td>
+                    <td style={{ padding: '8px', color: 'var(--t2)', maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {c.recipient_name || c.recipient_email || c.recipient_phone || String.fromCodePoint(0x2014)}
+                    </td>
+                    <td style={{ padding: '8px', color: 'var(--t3)', fontSize: 11 }}>{c.source || 'manual'}</td>
+                    <td style={{ padding: '8px', color: 'var(--t3)', fontSize: 11, maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.batch_name || String.fromCodePoint(0x2014)}</td>
+                    <td style={{ padding: '8px', color: 'var(--t3)', fontSize: 11 }}>{c.issued_at ? new Date(c.issued_at).toLocaleDateString() : ''}</td>
+                    <td style={{ padding: '8px', color: 'var(--t3)', fontSize: 11 }}>{c.expires_at ? new Date(c.expires_at).toLocaleDateString() : 'Never'}</td>
+                    <td style={{ padding: '8px', whiteSpace: 'nowrap' }}>
+                      {fullCode && (
+                        <button onClick={() => openVoucher({
+                          code: fullCode,
+                          amount: c.initial_amount_minor,
+                          recipientName: c.recipient_name,
+                          businessName,
+                          expiresAt: c.expires_at,
+                          note: c.note,
+                        })} style={{ ...S.btn, ...S.btnGhost, fontSize: 10, padding: '3px 8px' }}>Voucher</button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

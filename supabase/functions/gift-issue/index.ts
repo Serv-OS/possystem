@@ -119,7 +119,7 @@ Deno.serve(async (req) => {
     expiresAt = d.toISOString();
   }
 
-  // Insert card
+  // Insert card (store plaintext code for back-office voucher/resend)
   const { data: card, error: cardErr } = await platformAdmin
     .from('gift_cards')
     .insert({
@@ -127,6 +127,7 @@ Deno.serve(async (req) => {
       code_hash: codeHash,
       code_lookup: lookup,
       code_last4: last4,
+      code_plain: normalized,
       initial_amount_minor: amountMinor,
       balance_minor: amountMinor,
       status: 'active',

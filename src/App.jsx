@@ -76,6 +76,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.204', date: '23 May 2026', label: 'Gift cards: full code display + PDF voucher in All Cards',
+    changes: [
+      'All Cards tab now shows full 16-character gift card codes (not just last 4 digits). Codes are formatted with spaces for readability and click-to-copy.',
+      'PDF Voucher download button added per card in All Cards tab. Opens styled A5 landscape voucher in new window with print dialog for save-as-PDF.',
+      'All 5 gift card edge functions updated to store plaintext code (code_plain column) for back-office voucher generation and code display.',
+    ],
+  },
+  {
     version: '5.5.203', date: '23 May 2026', label: 'Gift cards on customer profiles + purchase page scroll fix',
     changes: [
       'Customer CRM integration: gift cards now appear on the customer detail panel. Cards are matched by recipient email or phone. Shows code, balance, status, and issue date. Gift card count added to stats overview.',

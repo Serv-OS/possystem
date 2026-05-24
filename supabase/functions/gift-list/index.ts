@@ -31,7 +31,7 @@ Deno.serve(async (req) => {
 
   let query = platformAdmin
     .from('gift_cards')
-    .select('id, code_last4, initial_amount_minor, balance_minor, status, issued_at, expires_at, recipient_name, recipient_email, recipient_phone, note, source, batch_name, batch_id, created_at')
+    .select('id, code_last4, code_plain, initial_amount_minor, balance_minor, status, issued_at, expires_at, recipient_name, recipient_email, recipient_phone, note, source, batch_name, batch_id, created_at')
     .eq('company_id', companyId);
 
   // Apply filters
