@@ -1,4 +1,4 @@
-// v5.5.203: Back-office Customers section.
+// v5.5.206: Back-office Customers section.
 //
 // Tier-1 features:
 //   - List of every customer at this org (across locations)
@@ -117,7 +117,8 @@ export default function Customers() {
             if (!x.last_visit_at) return latest;
             return !latest || new Date(x.last_visit_at) > new Date(latest) ? x.last_visit_at : latest;
           }, null);
-          return { ...c, stats, totalSpend, totalVisits, lastVisit };
+          const siteCount = stats.filter(s => (s.visit_count || 0) > 0).length;
+          return { ...c, stats, totalSpend, totalVisits, lastVisit, siteCount };
         });
         setCustomers(enriched);
       } catch (err) {
@@ -166,6 +167,7 @@ export default function Customers() {
       if (sortBy === 'lastVisit') { av = a.lastVisit ? new Date(a.lastVisit).getTime() : 0; bv = b.lastVisit ? new Date(b.lastVisit).getTime() : 0; }
       else if (sortBy === 'spend') { av = a.totalSpend; bv = b.totalSpend; }
       else if (sortBy === 'visits') { av = a.totalVisits; bv = b.totalVisits; }
+      else if (sortBy === 'sites') { av = a.siteCount || 0; bv = b.siteCount || 0; }
       else { av = (a.name || '').toLowerCase(); bv = (b.name || '').toLowerCase(); }
       if (av < bv) return sortDir === 'asc' ? -1 : 1;
       if (av > bv) return sortDir === 'asc' ? 1 : -1;
@@ -260,19 +262,20 @@ export default function Customers() {
           ) : (
             <div>
               {/* Header row */}
-              <div style={{ display:'grid', gridTemplateColumns:'2.4fr 1.4fr 0.8fr 1fr 1fr 1fr', padding:'10px 24px', fontSize:10, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', background:'var(--bg2)', borderBottom:'1px solid var(--bdr)', position:'sticky', top:0, zIndex:1 }}>
+              <div style={{ display:'grid', gridTemplateColumns:'2.4fr 1.4fr 0.8fr 1fr 1fr 0.6fr 1fr', padding:'10px 24px', fontSize:10, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', background:'var(--bg2)', borderBottom:'1px solid var(--bdr)', position:'sticky', top:0, zIndex:1 }}>
                 <SortHeader col="name" sortBy={sortBy} sortDir={sortDir} onClick={toggleSort}>Customer</SortHeader>
                 <span>Phone</span>
                 <SortHeader col="visits" sortBy={sortBy} sortDir={sortDir} onClick={toggleSort} align="right">Visits</SortHeader>
                 <SortHeader col="spend" sortBy={sortBy} sortDir={sortDir} onClick={toggleSort} align="right">Lifetime</SortHeader>
                 <SortHeader col="lastVisit" sortBy={sortBy} sortDir={sortDir} onClick={toggleSort} align="right">Last visit</SortHeader>
+                <SortHeader col="sites" sortBy={sortBy} sortDir={sortDir} onClick={toggleSort} align="center">Sites</SortHeader>
                 <span>Locations</span>
               </div>
               {filtered.map(c => {
                 const isSel = selectedId === c.id;
                 return (
                   <div key={c.id} onClick={() => setSelectedId(isSel ? null : c.id)}
-                    style={{ display:'grid', gridTemplateColumns:'2.4fr 1.4fr 0.8fr 1fr 1fr 1fr', padding:'10px 24px', fontSize:13, alignItems:'center', borderBottom:'1px solid var(--bdr)', cursor:'pointer', background: isSel ? 'var(--acc-d)' : 'transparent' }}>
+                    style={{ display:'grid', gridTemplateColumns:'2.4fr 1.4fr 0.8fr 1fr 1fr 0.6fr 1fr', padding:'10px 24px', fontSize:13, alignItems:'center', borderBottom:'1px solid var(--bdr)', cursor:'pointer', background: isSel ? 'var(--acc-d)' : 'transparent' }}>
                     <div style={{ minWidth:0 }}>
                       <div style={{ fontWeight:700, color:'var(--t1)', overflow:'hidden', textOverflow:'ellipsis' }}>{c.name}</div>
                       {c.email && <div style={{ fontSize:11, color:'var(--t4)', marginTop:2, overflow:'hidden', textOverflow:'ellipsis' }}>{c.email}</div>}
@@ -281,11 +284,18 @@ export default function Customers() {
                     <div style={{ textAlign:'right', color:'var(--t1)', fontWeight:700, fontFamily:'var(--font-mono)' }}>{c.totalVisits}</div>
                     <div style={{ textAlign:'right', color:'var(--acc)', fontWeight:700, fontFamily:'var(--font-mono)' }}>{fmtMoney(c.totalSpend)}</div>
                     <div style={{ textAlign:'right', color:'var(--t3)', fontSize:12 }}>{fmtRel(c.lastVisit)}</div>
+                    <div style={{ textAlign:'center' }}>
+                      {c.siteCount >= 2 ? (
+                        <span style={{ fontSize:12, fontWeight:800, padding:'2px 8px', borderRadius:10, background:'rgba(168,85,247,0.12)', color:'#a855f7', border:'1px solid rgba(168,85,247,0.25)' }}>{c.siteCount}</span>
+                      ) : (
+                        <span style={{ fontSize:12, fontWeight:700, color:'var(--t4)', fontFamily:'var(--font-mono)' }}>{c.siteCount || 0}</span>
+                      )}
+                    </div>
                     <div style={{ display:'flex', gap:4, flexWrap:'wrap' }}>
-                      {c.stats.slice(0, 3).map(s => (
+                      {c.stats.filter(s => (s.visit_count || 0) > 0).slice(0, 3).map(s => (
                         <span key={s.location_id} style={{ fontSize:10, fontWeight:600, padding:'2px 7px', borderRadius:5, background:'var(--bg3)', color:'var(--t3)' }}>{s.locationName}</span>
                       ))}
-                      {c.stats.length > 3 && <span style={{ fontSize:10, color:'var(--t4)' }}>+{c.stats.length - 3}</span>}
+                      {c.stats.filter(s => (s.visit_count || 0) > 0).length > 3 && <span style={{ fontSize:10, color:'var(--t4)' }}>+{c.stats.filter(s => (s.visit_count || 0) > 0).length - 3}</span>}
                     </div>
                   </div>
                 );

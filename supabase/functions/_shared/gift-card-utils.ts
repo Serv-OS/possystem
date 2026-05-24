@@ -135,6 +135,10 @@ export async function authenticateCaller(
 
 // Resolve the caller's company_id from user_company_roles in Platform DB.
 // Returns company_id or a Response (error).
+// NOTE: This function has a known limitation — it uses the Ops DB user UUID
+// to query Platform DB user_company_roles, which may not match when the two
+// projects have different user tables. Prefer resolveCompanyForLocation()
+// when a location_id is available.
 export async function resolveCompanyId(
   userId: string,
 ): Promise<string | Response> {
@@ -148,4 +152,42 @@ export async function resolveCompanyId(
     return json({ error: 'No company linked to this user' }, 403);
   }
   return data.company_id;
+}
+
+// ── Location-based company resolution ──────────────────────────────────
+// v5.5.207: Reliable company resolution via location_id.
+// Priority: location_id → user_company_roles fallback.
+//
+// This solves the cross-DB UUID mismatch where Ops DB user UUIDs don't
+// match Platform DB user_company_roles entries. When a back-office user
+// is viewing a specific location, the location_id is the most reliable
+// way to determine which company's data to access.
+export async function resolveCompanyForLocation(
+  userId: string,
+  locationId?: string | null,
+): Promise<string | Response> {
+  // 1. Try location_id first (most reliable — no cross-DB UUID issues)
+  if (locationId) {
+    // Try as ops_location_id (back office and POS send the Ops DB location ID)
+    const { data: locByOps } = await platformAdmin
+      .from('locations')
+      .select('company_id')
+      .eq('ops_location_id', locationId)
+      .maybeSingle();
+    if (locByOps?.company_id) return locByOps.company_id;
+
+    // Try as platform location ID
+    const { data: locById } = await platformAdmin
+      .from('locations')
+      .select('company_id')
+      .eq('id', locationId)
+      .maybeSingle();
+    if (locById?.company_id) return locById.company_id;
+  }
+
+  // 2. Fallback: try user_company_roles (may not work due to cross-DB UUIDs)
+  const result = await resolveCompanyId(userId);
+  if (typeof result === 'string') return result;
+
+  return json({ error: 'Could not resolve company. Ensure location is linked.' }, 403);
 }

@@ -16,7 +16,7 @@
 // with the org's HMAC secret. The plaintext code is returned once.
 
 import {
-  cors, json, platformAdmin, authenticateCaller, resolveCompanyId,
+  cors, json, platformAdmin, authenticateCaller, resolveCompanyForLocation,
   generateCode, normalizeCode, codeLast4, formatCode,
   hmacLookup, hashValue, generateHmacSecret,
 } from '../_shared/gift-card-utils.ts';
@@ -36,8 +36,8 @@ Deno.serve(async (req) => {
 
   const { batch_name, cards: inputCards, expires_at } = body as any;
 
-  // Resolve company
-  const companyResult = await resolveCompanyId(caller.id);
+  // v5.5.207: resolve company via location_id (reliable) with user fallback
+  const companyResult = await resolveCompanyForLocation(caller.id, body.location_id as string);
   if (companyResult instanceof Response) return companyResult;
   const companyId = companyResult;
 

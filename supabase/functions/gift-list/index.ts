@@ -9,7 +9,7 @@
 //   search     — search code_last4, recipient_name, or recipient_email
 
 import {
-  cors, json, platformAdmin, authenticateCaller, resolveCompanyId,
+  cors, json, platformAdmin, authenticateCaller, resolveCompanyForLocation,
 } from '../_shared/gift-card-utils.ts';
 
 Deno.serve(async (req) => {
@@ -20,12 +20,13 @@ Deno.serve(async (req) => {
   if (authResult instanceof Response) return authResult;
   const caller = authResult.user;
 
-  const companyResult = await resolveCompanyId(caller.id);
-  if (companyResult instanceof Response) return companyResult;
-  const companyId = companyResult;
-
   let body: Record<string, unknown> = {};
   try { body = await req.json(); } catch { /* empty body OK */ }
+
+  // v5.5.207: resolve company via location_id (reliable) with user fallback
+  const companyResult = await resolveCompanyForLocation(caller.id, body.location_id as string);
+  if (companyResult instanceof Response) return companyResult;
+  const companyId = companyResult;
 
   const limit = Math.min(Number(body.limit) || 500, 1000);
 

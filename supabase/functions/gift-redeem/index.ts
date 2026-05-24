@@ -17,40 +17,9 @@
 //   4. Idempotency key not already used (if used, return prior result)
 
 import {
-  cors, json, platformAdmin, authenticateCaller, resolveCompanyId,
+  cors, json, platformAdmin, authenticateCaller, resolveCompanyForLocation,
   normalizeCode, hmacLookup,
 } from '../_shared/gift-card-utils.ts';
-
-// Resolve company_id with POS fallback: try user role first, then location.
-async function resolveCompanyForPOS(
-  userId: string,
-  locationId?: string | null,
-): Promise<string | Response> {
-  // 1. Try user_company_roles (works for BO users)
-  const result = await resolveCompanyId(userId);
-  if (typeof result === 'string') return result;
-
-  // 2. Fallback: look up company_id from location_id (POS anonymous auth)
-  if (locationId) {
-    // Try ops_location_id first (POS sends the ops DB location ID)
-    const { data: locByOps } = await platformAdmin
-      .from('locations')
-      .select('company_id')
-      .eq('ops_location_id', locationId)
-      .maybeSingle();
-    if (locByOps?.company_id) return locByOps.company_id;
-
-    // Try as platform location ID
-    const { data: locById } = await platformAdmin
-      .from('locations')
-      .select('company_id')
-      .eq('id', locationId)
-      .maybeSingle();
-    if (locById?.company_id) return locById.company_id;
-  }
-
-  return json({ error: 'Could not resolve company. Ensure location is linked.' }, 403);
-}
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -69,8 +38,8 @@ Deno.serve(async (req) => {
     code, amount, order_id, location_id, channel, idempotency_key, staff_id,
   } = body as any;
 
-  // Resolve company with POS fallback
-  const companyResult = await resolveCompanyForPOS(caller.id, location_id as string);
+  // v5.5.207: resolve company via location_id (reliable) with user fallback
+  const companyResult = await resolveCompanyForLocation(caller.id, location_id as string);
   if (companyResult instanceof Response) return companyResult;
   const companyId = companyResult;
 

@@ -1,75 +1,72 @@
-# RPOS session handoff — 23 May (v5.5.200)
+# RPOS session handoff — 23 May (v5.5.207)
 
-> Gift cards v5.5.200: RLS fix via edge function, phone/expiry support, all-cards view with filters, 4 edge functions deployed.
-
----
-
-## What shipped today (23 May): v5.5.193 → v5.5.200
-
-### v5.5.200 — RLS fix, phone/expiry, all-cards view, filters
-- **RLS fix** — All `gift_brand_config` writes now route through `gift-config` edge function using `platformAdmin` (service_role), bypassing Platform DB RLS that blocked back office users (who authenticate on Ops DB, not Platform DB).
-- **All cards view** — "Recent cards" tab replaced with "All cards" showing every gift card with filter dropdowns for status (active/redeemed/voided/expired), source (manual/online/bulk/import), and batch name search.
-- **Phone number support** — `recipient_phone` field added to Issue, Bulk Create, and Import panels. Stored on `gift_cards` table for CRM integration. New column + partial index on Platform DB.
-- **Expiry date support** — Date picker added to Issue, Bulk Create, and Import panels. Cards can now have expiry set at creation time.
-- **Import panel updates** — CSV parser accepts phone column (col 3), batch-level `expires_at` applied to all imported cards.
-- **New edge function**: `gift-config` — centralises all `gift_brand_config` operations (get, enable, disable, settings, branding) through service_role.
-- **Updated edge functions**: `gift-issue` (phone + expiry), `gift-import` (phone + batch expiry), `gift-list` (filters + extra fields).
-- **Schema**: `gift_cards.recipient_phone` column + index on Platform DB.
-
-### v5.5.199 — Bulk create, import, branding, split checks, settings, RLS fix, URL fix
-- Bulk create, import, per-feature branding, settings panel, split check gift cards, URL routing fix, schema additions.
-
-### v5.5.198 — Resend, POS fix, flexible lookup, code visibility
-- `gift-resend` edge function; POS `resolveCompanyForPOS()` fallback; smart search; `fulfilled_code` storage.
-
-### v5.5.197 — BO management, branding, preview links
-### v5.5.196 — Phase 2: customer-facing purchase, balance check, email delivery
-### v5.5.193-195 — Phase 1: schema, edge functions, BO UI, POS tender
+> CRITICAL FIX: Multi-tenant gift card isolation. All edge functions now resolve company via location_id instead of broken cross-DB user UUID lookup.
 
 ---
 
-## Files changed in v5.5.200
+## What shipped today (23 May): v5.5.206 → v5.5.207
+
+### v5.5.207 — CRITICAL: Gift card multi-tenant isolation fix
+- **Root cause**: All 10 gift card edge functions used `resolveCompanyId(userId)` which looked up the Ops DB user UUID in Platform DB `user_company_roles`. Since these are different Supabase projects with different user tables, the UUID match was unreliable. When a super_admin switched locations in the BO, edge functions still returned data for whatever company the user UUID happened to match — not the location being viewed.
+- **Fix 1 — Edge functions**: New `resolveCompanyForLocation(userId, locationId)` in `gift-card-utils.ts`. Priority: location_id → ops_location_id → platform location ID → user_company_roles fallback. All 10 authenticated edge functions updated.
+- **Fix 2 — Client**: `callGift()` in GiftCards.jsx now automatically injects `location_id` (via `getActiveLocationSync()`) into every edge function request body.
+- **Fix 3 — LocationSwitcher**: Super_admin users now scoped to their company via current location. Previously loaded ALL companies from ALL organisations. Now resolves user's company from their `location_id` and only shows that company's locations.
+- **Fix 4 — gift-resend**: Refactored to use shared `authenticateCaller` + `resolveCompanyForLocation` from `gift-card-utils.ts` instead of inline duplicate implementations.
+
+### v5.5.206 — Customers: sites-visited column + Gift voucher logo
+- Customer list "Sites" column with multi-site badges
+- Gift card voucher PDF includes branding logo
+
+---
+
+## Files changed in v5.5.207
 
 | File | Change |
 |------|--------|
-| `src/lib/version.js` | 5.5.199 → 5.5.200 |
-| `src/App.jsx` | CHANGELOG entry for v5.5.200 |
-| `src/backoffice/sections/GiftCards.jsx` | BrandingPanel + SettingsPanel save via edge function, ImportPanel phone+expiry, AllCardsPanel filters |
-| `supabase/functions/gift-config/index.ts` | **NEW** — config operations edge function |
-| `supabase/functions/gift-issue/index.ts` | Added `recipient_phone`, already had `expires_at` |
-| `supabase/functions/gift-import/index.ts` | Added `recipient_phone`, batch-level `expires_at` |
-| `supabase/functions/gift-list/index.ts` | Filters (status, source, batch_name, search), extra select fields |
+| `src/lib/version.js` | 5.5.206 → 5.5.207 |
+| `src/App.jsx` | CHANGELOG entry for v5.5.207 |
+| `src/backoffice/sections/GiftCards.jsx` | `callGift()` auto-injects `location_id`; imports `getActiveLocationSync` |
+| `src/backoffice/LocationSwitcher.jsx` | Super_admin scoped to company via current location |
+| `supabase/functions/_shared/gift-card-utils.ts` | NEW `resolveCompanyForLocation()` function |
+| `supabase/functions/gift-config/index.ts` | Uses `resolveCompanyForLocation` |
+| `supabase/functions/gift-list/index.ts` | Uses `resolveCompanyForLocation` |
+| `supabase/functions/gift-void/index.ts` | Uses `resolveCompanyForLocation` |
+| `supabase/functions/gift-bulk-create/index.ts` | Uses `resolveCompanyForLocation` |
+| `supabase/functions/gift-import/index.ts` | Uses `resolveCompanyForLocation` |
+| `supabase/functions/gift-issue/index.ts` | Uses `resolveCompanyForLocation` |
+| `supabase/functions/gift-reverse-redeem/index.ts` | Uses `resolveCompanyForLocation` |
+| `supabase/functions/gift-resend/index.ts` | Refactored to shared utils |
+| `supabase/functions/gift-lookup/index.ts` | Uses shared `resolveCompanyForLocation` (was inline) |
+| `supabase/functions/gift-redeem/index.ts` | Uses shared `resolveCompanyForLocation` (was inline) |
 
 ---
 
-## Edge functions deployed (all 4 confirmed via Supabase Dashboard)
+## ⚠️ DEPLOYMENT REQUIRED — Edge Functions
 
-| Function | Status | DB |
-|----------|--------|----|
-| `gift-config` | ✅ NEW — deployed | Ops DB |
-| `gift-list` | ✅ Updated — deployed | Ops DB |
-| `gift-issue` | ✅ Updated — deployed | Ops DB |
-| `gift-import` | ✅ Updated — deployed | Ops DB |
+The following 10 edge functions MUST be deployed to Supabase (Ops DB: `tbetcegmszzotrwdtqhi`) for the fix to take effect. The client-side changes (GiftCards.jsx, LocationSwitcher.jsx) deploy automatically via Vercel, but the edge functions need manual deployment:
 
----
+| Function | Status | Notes |
+|----------|--------|-------|
+| `gift-config` | ⏳ Needs deploy | Uses resolveCompanyForLocation |
+| `gift-list` | ⏳ Needs deploy | Uses resolveCompanyForLocation |
+| `gift-void` | ⏳ Needs deploy | Uses resolveCompanyForLocation |
+| `gift-bulk-create` | ⏳ Needs deploy | Uses resolveCompanyForLocation |
+| `gift-import` | ⏳ Needs deploy | Uses resolveCompanyForLocation |
+| `gift-issue` | ⏳ Needs deploy | Uses resolveCompanyForLocation |
+| `gift-reverse-redeem` | ⏳ Needs deploy | Uses resolveCompanyForLocation |
+| `gift-resend` | ⏳ Needs deploy | Refactored + resolveCompanyForLocation |
+| `gift-lookup` | ⏳ Needs deploy | Now uses shared resolver |
+| `gift-redeem` | ⏳ Needs deploy | Now uses shared resolver |
 
-## Platform DB migration applied
-
-```sql
-ALTER TABLE gift_cards ADD COLUMN IF NOT EXISTS recipient_phone text;
-CREATE INDEX IF NOT EXISTS idx_gift_cards_recipient_phone ON gift_cards (recipient_phone) WHERE recipient_phone IS NOT NULL;
-```
+Deploy via Supabase Dashboard → Edge Functions → each function → paste code → Deploy.
 
 ---
 
 ## Still pending
 
-- **CRM integration** — Wire gift cards into customers section using phone as unique identifier
+- **Branding not taking effect** — Customer-facing gift card pages not reflecting branding color changes. Edge function works but values may be defaults. Needs investigation after isolation fix.
+- **Card not found (MQFBEBZVDLJYLYQV)** — POS lookup failed. May be resolved by isolation fix (wrong company → wrong HMAC → no match). Re-test after edge function deployment.
+- **User role check** — Verify pwar2804@gmail.com's role in `user_profiles`. If `super_admin`, consider changing to `owner`. The LocationSwitcher fix scopes super_admin to their company, but the role should match the intended access level.
+- **Stripe webhook** — Online purchase status still "pending"; webhook not configured
 - **Email deliverability** — Resend API key not configured
-- **Twilio SMS** — user has account ready, wants SMS delivery
-- **Stripe webhook** — not yet enabled for checkout.session.completed
-- **Subdomain DNS** — `slug.pos-up.com` not configured (using dev.pos-up.com)
 - **Order void → auto-reverse** — void order should refund gift card
-- **Online ordering gift redemption** — apply gift cards during online checkout
-- **Reporting** — gift card revenue/liability reports in BO
-- **Gift card on receipts** — show gift card details on printed/email receipts

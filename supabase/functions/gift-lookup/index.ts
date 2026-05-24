@@ -12,29 +12,9 @@
 // Returns card details and recent transactions.
 
 import {
-  cors, json, platformAdmin, authenticateCaller, resolveCompanyId,
+  cors, json, platformAdmin, authenticateCaller, resolveCompanyForLocation,
   normalizeCode, hmacLookup,
 } from '../_shared/gift-card-utils.ts';
-
-// Resolve company_id with POS fallback: try user role first, then location.
-async function resolveCompanyForPOS(
-  userId: string,
-  locationId?: string | null,
-): Promise<string | Response> {
-  const result = await resolveCompanyId(userId);
-  if (typeof result === 'string') return result;
-  if (locationId) {
-    const { data: locByOps } = await platformAdmin
-      .from('locations').select('company_id')
-      .eq('ops_location_id', locationId).maybeSingle();
-    if (locByOps?.company_id) return locByOps.company_id;
-    const { data: locById } = await platformAdmin
-      .from('locations').select('company_id')
-      .eq('id', locationId).maybeSingle();
-    if (locById?.company_id) return locById.company_id;
-  }
-  return json({ error: 'Could not resolve company. Ensure location is linked.' }, 403);
-}
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -51,8 +31,8 @@ Deno.serve(async (req) => {
 
   const { code, code_last4, email, search, location_id: bodyLocationId } = body as any;
 
-  // Resolve company with POS fallback via location_id
-  const companyResult = await resolveCompanyForPOS(caller.id, bodyLocationId as string);
+  // v5.5.207: resolve company via location_id (reliable) with user fallback
+  const companyResult = await resolveCompanyForLocation(caller.id, bodyLocationId as string);
   if (companyResult instanceof Response) return companyResult;
   const companyId = companyResult;
 

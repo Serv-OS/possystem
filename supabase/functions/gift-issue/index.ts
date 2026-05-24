@@ -9,7 +9,7 @@
 // org_id is optional: if omitted, resolved from the caller's company role.
 
 import {
-  cors, json, platformAdmin, authenticateCaller, resolveCompanyId,
+  cors, json, platformAdmin, authenticateCaller, resolveCompanyForLocation,
   generateCode, normalizeCode, codeLast4, formatCode,
   hmacLookup, hashValue, generateHmacSecret,
 } from '../_shared/gift-card-utils.ts';
@@ -40,10 +40,10 @@ Deno.serve(async (req) => {
     channel = 'backoffice',
   } = body as any;
 
-  // Resolve company
+  // v5.5.207: resolve company via location_id (reliable) with user fallback
   let companyId = org_id as string | undefined;
   if (!companyId) {
-    const resolved = await resolveCompanyId(caller.id);
+    const resolved = await resolveCompanyForLocation(caller.id, location_id as string);
     if (resolved instanceof Response) return resolved;
     companyId = resolved;
   }

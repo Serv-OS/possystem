@@ -7,7 +7,7 @@
 // Body: { card_id, original_idempotency_key, reason, staff_id? }
 
 import {
-  cors, json, platformAdmin, authenticateCaller, resolveCompanyId,
+  cors, json, platformAdmin, authenticateCaller, resolveCompanyForLocation,
 } from '../_shared/gift-card-utils.ts';
 
 Deno.serve(async (req) => {
@@ -19,14 +19,14 @@ Deno.serve(async (req) => {
   if (authResult instanceof Response) return authResult;
   const caller = authResult.user;
 
-  // Resolve company
-  const companyResult = await resolveCompanyId(caller.id);
-  if (companyResult instanceof Response) return companyResult;
-  const companyId = companyResult;
-
   // Parse body
   let body: Record<string, unknown>;
   try { body = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
+
+  // v5.5.207: resolve company via location_id (reliable) with user fallback
+  const companyResult = await resolveCompanyForLocation(caller.id, body.location_id as string);
+  if (companyResult instanceof Response) return companyResult;
+  const companyId = companyResult;
 
   const { card_id, original_idempotency_key, reason, staff_id } = body as any;
 

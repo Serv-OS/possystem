@@ -1,10 +1,10 @@
 // src/backoffice/sections/GiftCards.jsx
-// v5.5.200 — Back office gift card management.
+// v5.5.206 — Back office gift card management.
 // Full management surface: enable toggle, branding editor, customer URLs,
 // issue, lookup, void, bulk create, import, purchase history, settings.
 
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { supabase, platformSupabase, getLocationId } from '../../lib/supabase';
+import { supabase, platformSupabase, getLocationId, getActiveLocationSync } from '../../lib/supabase';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 const DEV_HOST = 'https://dev.pos-up.com';
@@ -38,14 +38,18 @@ const S = {
 };
 
 // ── Helper: call edge function ──────────────────────────────────────────
+// v5.5.207: automatically injects location_id into every request body so
+// edge functions can reliably resolve the correct company via location,
+// avoiding the cross-DB UUID mismatch in user_company_roles.
 async function callGift(endpoint, body) {
   const { data: session } = await supabase.auth.getSession();
   const token = session?.session?.access_token;
   if (!token) throw new Error('Not authenticated');
+  const locationId = getActiveLocationSync();
   const res = await fetch(`${FUNCTIONS_URL}/${endpoint}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-    body: JSON.stringify(body),
+    body: JSON.stringify({ ...body, location_id: body?.location_id || locationId }),
   });
   const j = await res.json();
   if (!res.ok || j.error) throw new Error(j.error ?? `HTTP ${res.status}`);
@@ -74,12 +78,13 @@ function fmtMoney(minor, currency = 'gbp') {
 // ── Voucher PDF generator ──────────────────────────────────────────────
 // Opens a styled print-ready voucher in a new window. User can print or
 // save as PDF via the browser's native print dialog.
-function openVoucher({ code, amount, currency = 'gbp', recipientName, businessName, expiresAt, note }) {
+function openVoucher({ code, amount, currency = 'gbp', recipientName, businessName, expiresAt, note, logoUrl }) {
   const formattedCode = code.replace(/\s/g, '').match(/.{1,4}/g)?.join(' ') || code;
   const amtDisplay = fmtMoney(amount, currency);
   const expiryLine = expiresAt ? `Valid until ${new Date(expiresAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}` : 'No expiry date';
   const recipientLine = recipientName ? `<div style="font-size:16px;color:#666;margin-top:12px;">For: <strong style="color:#333">${recipientName}</strong></div>` : '';
   const noteLine = note ? `<div style="font-size:13px;color:#888;margin-top:10px;font-style:italic;">"${note}"</div>` : '';
+  const logoLine = logoUrl ? `<img src="${logoUrl}" alt="" style="width:64px;height:64px;border-radius:12px;object-fit:cover;margin-bottom:12px;" crossorigin="anonymous"/>` : '';
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Gift Card Voucher</title>
 <style>
 @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } @page { margin: 0; size: A5 landscape; } }
@@ -98,6 +103,7 @@ body { font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; background
 </style></head><body>
 <div class="voucher">
   <div class="top">
+    ${logoLine}
     <div class="gift-label">Gift Card</div>
     <h1>${businessName || 'Gift Card'}</h1>
     <div class="amount">${amtDisplay}</div>
@@ -293,12 +299,12 @@ export default function GiftCards() {
         ))}
       </div>
 
-      {tab === 'issue' && <IssuePanel businessName={locationRow?.name} />}
+      {tab === 'issue' && <IssuePanel businessName={locationRow?.name} brandConfig={brandConfig} />}
       {tab === 'bulk' && <BulkCreatePanel config={brandConfig} />}
       {tab === 'import' && <ImportPanel />}
       {tab === 'lookup' && <LookupPanel />}
-      {tab === 'history' && <RecentCardsPanel businessName={locationRow?.name} />}
-      {tab === 'purchases' && <PurchasesPanel companyId={locationRow?.company_id} businessName={locationRow?.name} />}
+      {tab === 'history' && <RecentCardsPanel businessName={locationRow?.name} brandConfig={brandConfig} />}
+      {tab === 'purchases' && <PurchasesPanel companyId={locationRow?.company_id} businessName={locationRow?.name} brandConfig={brandConfig} />}
       {tab === 'branding' && <BrandingPanel locationRow={locationRow} opsLocId={opsLocId} brandConfig={brandConfig} onConfigUpdate={setBrandConfig} />}
       {tab === 'settings' && <SettingsPanel brandConfig={brandConfig} companyId={locationRow?.company_id} onConfigUpdate={setBrandConfig} />}
     </div>
@@ -349,7 +355,7 @@ function UrlRow({ label, liveUrl, previewUrl, enabled }) {
 }
 
 // ─── Issue Panel ────────────────────────────────────────────────────────
-function IssuePanel({ businessName }) {
+function IssuePanel({ businessName, brandConfig }) {
   const [amount, setAmount] = useState('');
   const [recipientName, setRecipientName] = useState('');
   const [recipientEmail, setRecipientEmail] = useState('');
@@ -436,6 +442,7 @@ function IssuePanel({ businessName }) {
               businessName,
               expiresAt: result.expires_at,
               note: result._note,
+              logoUrl: brandConfig?.branding?.logo_url,
             })} style={{ ...S.btn, ...S.btnPrim }}>
               {String.fromCodePoint(0x1F4E4)} Download voucher
             </button>
@@ -1047,7 +1054,7 @@ function LookupPanel() {
 }
 
 // ─── All Cards Panel (was Recent Cards) ─────────────────────────────────
-function RecentCardsPanel({ businessName }) {
+function RecentCardsPanel({ businessName, brandConfig }) {
   const [cards, setCards] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -1180,6 +1187,7 @@ function RecentCardsPanel({ businessName }) {
                           businessName,
                           expiresAt: c.expires_at,
                           note: c.note,
+                          logoUrl: brandConfig?.branding?.logo_url,
                         })} style={{ ...S.btn, ...S.btnGhost, fontSize: 10, padding: '3px 8px' }}>Voucher</button>
                       )}
                     </td>
@@ -1212,7 +1220,7 @@ function CodeCell({ code }) {
 }
 
 // ─── Online Purchases Panel ─────────────────────────────────────────────
-function PurchasesPanel({ companyId, businessName }) {
+function PurchasesPanel({ companyId, businessName, brandConfig }) {
   const [purchases, setPurchases] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -1285,6 +1293,7 @@ function PurchasesPanel({ companyId, businessName }) {
                         currency: p.currency,
                         recipientName: p.recipient_name,
                         businessName,
+                        logoUrl: brandConfig?.branding?.logo_url,
                       })} style={{ ...S.btn, ...S.btnGhost, fontSize: 10, padding: '3px 8px' }}>
                         {String.fromCodePoint(0x1F4E4)} Voucher
                       </button>

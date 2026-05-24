@@ -13,54 +13,11 @@
 // For manually-issued cards (no purchase record), the code is not stored
 // and cannot be resent — returns an error explaining this.
 
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import {
+  cors, json, platformAdmin, authenticateCaller, resolveCompanyForLocation,
+} from '../_shared/gift-card-utils.ts';
 
-const cors = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-};
-const json = (b: unknown, s = 200) =>
-  new Response(JSON.stringify(b), {
-    status: s,
-    headers: { ...cors, 'Content-Type': 'application/json' },
-  });
-
-const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
-const SUPABASE_ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY') ?? '';
 const OPS_SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
-
-const platformAdmin = createClient(
-  Deno.env.get('PLATFORM_SUPABASE_URL') ?? '',
-  Deno.env.get('PLATFORM_SUPABASE_SERVICE_ROLE_KEY') ?? '',
-  { auth: { autoRefreshToken: false, persistSession: false } },
-);
-
-// ── Authenticate caller via Ops Supabase Auth ─────────────────────────────
-async function authenticateCaller(req: Request) {
-  const authHeader = req.headers.get('Authorization') || '';
-  const token = authHeader.replace('Bearer ', '');
-  if (!token) return json({ error: 'Missing auth token' }, 401);
-
-  const opsClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    auth: { autoRefreshToken: false, persistSession: false },
-    global: { headers: { Authorization: `Bearer ${token}` } },
-  });
-  const { data: { user }, error } = await opsClient.auth.getUser(token);
-  if (error || !user) return json({ error: 'Invalid auth token' }, 401);
-  return { user };
-}
-
-// ── Resolve company_id from user ──────────────────────────────────────────
-async function resolveCompanyId(userId: string): Promise<string | Response> {
-  const { data } = await platformAdmin
-    .from('user_company_roles')
-    .select('company_id')
-    .eq('user_id', userId)
-    .limit(1)
-    .maybeSingle();
-  if (data?.company_id) return data.company_id;
-  return json({ error: 'No company linked to this user' }, 403);
-}
 
 // ── Format code into groups of 4 ─────────────────────────────────────────
 function formatCode(code: string): string {
@@ -129,14 +86,14 @@ Deno.serve(async (req) => {
   if (authResult instanceof Response) return authResult;
   const caller = authResult.user;
 
-  // Resolve company
-  const companyResult = await resolveCompanyId(caller.id);
-  if (companyResult instanceof Response) return companyResult;
-  const companyId = companyResult;
-
   // Parse body
   let body: Record<string, unknown>;
   try { body = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
+
+  // v5.5.207: resolve company via location_id (reliable) with user fallback
+  const companyResult = await resolveCompanyForLocation(caller.id, body.location_id as string);
+  if (companyResult instanceof Response) return companyResult;
+  const companyId = companyResult;
 
   const cardId = body.card_id as string;
   if (!cardId) return json({ error: 'card_id required' }, 400);

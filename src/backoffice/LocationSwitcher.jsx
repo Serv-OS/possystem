@@ -30,16 +30,47 @@ export default function LocationSwitcher({ onClose }) {
       setIsSuperAdmin(superAdmin);
 
       if (superAdmin && platformSupabase) {
-        // Super admin: load ALL companies + locations from Platform DB
-        const [{ data: companies }, { data: locations }] = await Promise.all([
-          platformSupabase.from('companies').select('id, name, slug, plan').order('name'),
-          platformSupabase.from('locations').select('id, company_id, name, ops_location_id').order('name'),
-        ]);
-        const grouped = (companies || []).map(c => ({
-          company: c,
-          locations: (locations || []).filter(l => l.company_id === c.id),
-        }));
-        setItems(grouped);
+        // v5.5.207: super_admin scoped to their company via current location.
+        // Previously loaded ALL companies + ALL locations — caused cross-org
+        // data bleed when switching to unrelated organisations. Now we resolve
+        // the user's company from their current location and only show that
+        // company's locations. Prevents accidental data cross-contamination.
+        let companyId = null;
+        const currentLoc = profile?.location_id;
+        if (currentLoc) {
+          // Try ops_location_id first, then id
+          let { data: locRow } = await platformSupabase
+            .from('locations').select('company_id')
+            .eq('ops_location_id', currentLoc).maybeSingle();
+          if (!locRow) {
+            ({ data: locRow } = await platformSupabase
+              .from('locations').select('company_id')
+              .eq('id', currentLoc).maybeSingle());
+          }
+          companyId = locRow?.company_id;
+        }
+
+        if (companyId) {
+          // Show only this company's locations
+          const [{ data: company }, { data: locations }] = await Promise.all([
+            platformSupabase.from('companies').select('id, name, slug, plan').eq('id', companyId).maybeSingle(),
+            platformSupabase.from('locations').select('id, company_id, name, ops_location_id').eq('company_id', companyId).order('name'),
+          ]);
+          if (company) {
+            setItems([{ company, locations: locations || [] }]);
+          }
+        } else {
+          // Fallback: no location set, show all (rare edge case)
+          const [{ data: companies }, { data: locations }] = await Promise.all([
+            platformSupabase.from('companies').select('id, name, slug, plan').order('name'),
+            platformSupabase.from('locations').select('id, company_id, name, ops_location_id').order('name'),
+          ]);
+          const grouped = (companies || []).map(c => ({
+            company: c,
+            locations: (locations || []).filter(l => l.company_id === c.id),
+          }));
+          setItems(grouped);
+        }
       } else {
         // Regular user (v4.6.23): prefer the user_locations junction so a user
         // linked to multiple sites sees all of them. Falls back internally to

@@ -76,6 +76,23 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.207', date: '23 May 2026', label: 'CRITICAL: Gift card multi-tenant isolation fix',
+    changes: [
+      'Fixed gift cards bleeding across organisations. All 10 gift card edge functions now resolve company via location_id (reliable) instead of cross-DB user UUID lookup (broken). Company resolution priority: location first, user_company_roles fallback.',
+      'New resolveCompanyForLocation() in gift-card-utils.ts replaces resolveCompanyId() as the primary company resolver. Maps ops_location_id to company_id via Platform DB locations table.',
+      'GiftCards.jsx callGift() helper now automatically injects location_id into every edge function request, ensuring location-scoped company isolation for all operations.',
+      'gift-resend refactored to use shared authenticateCaller + resolveCompanyForLocation from gift-card-utils.ts instead of inline duplicate implementations.',
+    ],
+  },
+  {
+    version: '5.5.206', date: '23 May 2026', label: 'Customers: sites-visited column + Gift voucher logo',
+    changes: [
+      'Customer list now has a sortable "Sites" column showing how many distinct locations each customer has visited. Multi-site customers (2+) are highlighted with a purple badge.',
+      'Location badges in the customer list now only show locations the customer has actually visited (visit_count > 0), not just linked locations.',
+      'Gift card voucher (PDF print) now includes the branding logo from gift_brand_config at the top of the voucher, above the business name.',
+    ],
+  },
+  {
     version: '5.5.205', date: '23 May 2026', label: 'Gift cards: branding on customer pages + online source fix',
     changes: [
       'Gift-specific branding (colours, logo, hero) now loads on all 3 customer-facing gift card pages (purchase, success, balance). Previously only the generic online_branding was used; now the gift_brand_config.branding set in the back office takes effect.',
