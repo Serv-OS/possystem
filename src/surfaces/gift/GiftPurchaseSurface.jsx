@@ -88,15 +88,15 @@ export default function GiftPurchaseSurface({ location }) {
       display: 'flex', flexDirection: 'column', alignItems: 'center',
       padding: '40px 20px 60px',
     }}>
-      {/* Header */}
+      {/* Header — v5.5.208: larger logo, org name instead of location */}
       <div style={{ textAlign: 'center', marginBottom: 32 }}>
         {t.logo && (
-          <img src={t.logo} alt={location.name} style={{
-            width: 72, height: 72, borderRadius: 14, objectFit: 'cover',
-            marginBottom: 12,
+          <img src={t.logo} alt={t.companyName || location.name} style={{
+            width: 144, height: 144, borderRadius: 20, objectFit: 'cover',
+            marginBottom: 16,
           }}/>
         )}
-        <div style={{ fontSize: 24, fontWeight: 800 }}>{location.name}</div>
+        <div style={{ fontSize: 26, fontWeight: 800 }}>{t.companyName || location.name}</div>
         <div style={{ fontSize: 13, color: t.textMuted, marginTop: 4 }}>
           Send a gift card to someone special
         </div>
@@ -259,7 +259,7 @@ export default function GiftPurchaseSurface({ location }) {
           style={{
             width: '100%', padding: '16px 0', borderRadius: 99,
             background: (!canSubmit || loading) ? t.textDim : t.accent,
-            color: '#0b0c10', border: 'none', fontWeight: 800, fontSize: 16,
+            color: t.accentText, border: 'none', fontWeight: 800, fontSize: 16,
             cursor: (!canSubmit || loading) ? 'not-allowed' : 'pointer',
             opacity: (!canSubmit || loading) ? 0.5 : 1,
             marginBottom: 16,

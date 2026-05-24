@@ -1,4 +1,4 @@
-// v5.5.205 — Shared helpers for customer-facing gift card surfaces.
+// v5.5.208 — Shared helpers for customer-facing gift card surfaces.
 // Calls the Ops DB edge functions. Customer surfaces use anon-key auth
 // (same pattern as OnlineCheckout).
 
@@ -61,6 +61,7 @@ const DEFAULT_THEME = {
   border: '#2a2a30',
   accent: '#e8a020',
   accentHover: '#f0b040',
+  accentText: '#0b0c10',
   text: '#fff',
   textMuted: '#aaa',
   textDim: '#666',
@@ -69,6 +70,7 @@ const DEFAULT_THEME = {
   radius: 14,
   logo: null,
   hero: null,
+  companyName: null,
 };
 
 /**
@@ -76,23 +78,33 @@ const DEFAULT_THEME = {
  * the location's online_branding. Falls back to the default dark theme if
  * neither is configured.
  *
+ * v5.5.208: improved color derivation — increased card/border contrast,
+ * auto-computed accentText for readable buttons, added companyName.
+ *
  * @param {object} location - Platform DB location row (has online_branding)
  * @param {object} [giftBranding] - gift_brand_config.branding (per-feature override)
  */
 export function buildGiftTheme(location, giftBranding) {
   // Gift-specific branding takes priority over online_branding
   const b = giftBranding || location?.online_branding;
-  if (!b) return DEFAULT_THEME;
+  if (!b) return { ...DEFAULT_THEME, companyName: location?.company_name || null };
   const bg = b.background || DEFAULT_THEME.bg;
   const fg = b.foreground || DEFAULT_THEME.text;
   const accent = b.accent_color || DEFAULT_THEME.accent;
-  // Derive muted/dim from the foreground colour at reduced opacity
+  // Derive muted/dim from the foreground colour at reduced opacity.
+  // v5.5.208: bumped blend factors so cards and borders stand out more,
+  // especially on vivid backgrounds (e.g. red/blue).
+  const bgLum = luminance(bg);
+  const isDark = bgLum < 0.35;
   return {
     bg,
-    card: blendColor(bg, fg, 0.04),
-    border: blendColor(bg, fg, 0.12),
+    // Cards: slight lighten on dark bg, slight darken on light bg
+    card: isDark ? blendColor(bg, '#ffffff', 0.06) : blendColor(bg, '#000000', 0.04),
+    border: isDark ? blendColor(bg, '#ffffff', 0.14) : blendColor(bg, '#000000', 0.10),
     accent,
-    accentHover: accent,
+    accentHover: isDark ? lightenColor(accent, 0.12) : darkenColor(accent, 0.12),
+    // Button text: auto-contrast — dark text on light accent, white on dark
+    accentText: luminance(accent) > 0.45 ? '#0b0c10' : '#ffffff',
     text: fg,
     textMuted: blendColor(bg, fg, 0.65),
     textDim: blendColor(bg, fg, 0.38),
@@ -101,25 +113,70 @@ export function buildGiftTheme(location, giftBranding) {
     radius: 14,
     logo: b.logo_url || null,
     hero: b.hero_url || null,
+    companyName: location?.company_name || null,
   };
+}
+
+// ── Colour utilities ────────────────────────────────────────────────────
+
+/** Parse hex to [r,g,b] 0-255. */
+function parseHex(hex) {
+  const h = hex.replace('#', '');
+  return [parseInt(h.slice(0,2),16), parseInt(h.slice(2,4),16), parseInt(h.slice(4,6),16)];
+}
+
+/** Format [r,g,b] → hex string. */
+function toHex(r, g, b) {
+  return `#${r.toString(16).padStart(2,'0')}${g.toString(16).padStart(2,'0')}${b.toString(16).padStart(2,'0')}`;
 }
 
 /** Blend two hex colours. t=0 → bg, t=1 → fg. */
 function blendColor(bg, fg, t) {
-  const parse = (hex) => {
-    const h = hex.replace('#', '');
-    return [parseInt(h.slice(0,2),16), parseInt(h.slice(2,4),16), parseInt(h.slice(4,6),16)];
-  };
   try {
-    const [br,bg2,bb] = parse(bg);
-    const [fr,fg2,fb] = parse(fg);
+    const [br,bg2,bb] = parseHex(bg);
+    const [fr,fg2,fb] = parseHex(fg);
     const r = Math.round(br + (fr - br) * t);
     const g = Math.round(bg2 + (fg2 - bg2) * t);
     const b2 = Math.round(bb + (fb - bb) * t);
-    return `#${r.toString(16).padStart(2,'0')}${g.toString(16).padStart(2,'0')}${b2.toString(16).padStart(2,'0')}`;
+    return toHex(r, g, b2);
   } catch {
     return t > 0.5 ? fg : bg;
   }
+}
+
+/** Relative luminance (0-1) for contrast decisions. */
+function luminance(hex) {
+  try {
+    const [r, g, b] = parseHex(hex).map(c => {
+      const s = c / 255;
+      return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  } catch { return 0.5; }
+}
+
+/** Lighten a hex colour by a factor (0-1). */
+function lightenColor(hex, amount) {
+  try {
+    const [r, g, b] = parseHex(hex);
+    return toHex(
+      Math.min(255, Math.round(r + (255 - r) * amount)),
+      Math.min(255, Math.round(g + (255 - g) * amount)),
+      Math.min(255, Math.round(b + (255 - b) * amount)),
+    );
+  } catch { return hex; }
+}
+
+/** Darken a hex colour by a factor (0-1). */
+function darkenColor(hex, amount) {
+  try {
+    const [r, g, b] = parseHex(hex);
+    return toHex(
+      Math.round(r * (1 - amount)),
+      Math.round(g * (1 - amount)),
+      Math.round(b * (1 - amount)),
+    );
+  } catch { return hex; }
 }
 
 /** Legacy export — kept for import compatibility, returns default theme */

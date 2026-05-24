@@ -58,15 +58,15 @@ export default function GiftBalanceSurface({ location }) {
       display: 'flex', flexDirection: 'column', alignItems: 'center',
       padding: '40px 20px',
     }}>
-      {/* Header */}
+      {/* Header — v5.5.208: larger logo, org name instead of location */}
       <div style={{ textAlign: 'center', marginBottom: 32 }}>
         {t.logo && (
-          <img src={t.logo} alt={location.name} style={{
-            width: 72, height: 72, borderRadius: 14, objectFit: 'cover',
-            marginBottom: 12,
+          <img src={t.logo} alt={t.companyName || location.name} style={{
+            width: 144, height: 144, borderRadius: 20, objectFit: 'cover',
+            marginBottom: 16,
           }}/>
         )}
-        <div style={{ fontSize: 24, fontWeight: 800 }}>{location.name}</div>
+        <div style={{ fontSize: 26, fontWeight: 800 }}>{t.companyName || location.name}</div>
         <div style={{ fontSize: 12, color: t.textDim, marginTop: 4 }}>
           Gift Card Balance
         </div>
@@ -124,7 +124,7 @@ export default function GiftBalanceSurface({ location }) {
               disabled={loading || code.replace(/[\s-]/g, '').length < 4}
               style={{
                 width: '100%', marginTop: 16, padding: '14px 0', borderRadius: 99,
-                background: loading ? t.textDim : t.accent, color: '#0b0c10',
+                background: loading ? t.textDim : t.accent, color: t.accentText,
                 border: 'none', fontWeight: 800, fontSize: 15, cursor: loading ? 'wait' : 'pointer',
                 opacity: (loading || code.replace(/[\s-]/g, '').length < 4) ? 0.5 : 1,
               }}

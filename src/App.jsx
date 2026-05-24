@@ -76,6 +76,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.208', date: '24 May 2026', label: 'Gift card branding improvements',
+    changes: [
+      'Customer-facing gift pages now show the organisation name instead of the location name. Gift cards are company-level so the header reflects the business, not an individual site.',
+      'Logo on gift card pages doubled from 72px to 144px for better brand presence.',
+      'Improved colour derivation in buildGiftTheme — cards and borders now contrast better on vivid backgrounds (red, blue). Auto-computed accentText ensures button labels are always readable.',
+      'Voucher PDF now uses branding colours: top gradient matches the brand background, amount uses the accent colour, code box uses branded dashed border. Logo enlarged to 96px.',
+    ],
+  },
+  {
     version: '5.5.207', date: '23 May 2026', label: 'CRITICAL: Gift card multi-tenant isolation fix',
     changes: [
       'Fixed gift cards bleeding across organisations. All 10 gift card edge functions now resolve company via location_id (reliable) instead of cross-DB user UUID lookup (broken). Company resolution priority: location first, user_company_roles fallback.',

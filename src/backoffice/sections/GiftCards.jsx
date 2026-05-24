@@ -78,26 +78,34 @@ function fmtMoney(minor, currency = 'gbp') {
 // ── Voucher PDF generator ──────────────────────────────────────────────
 // Opens a styled print-ready voucher in a new window. User can print or
 // save as PDF via the browser's native print dialog.
-function openVoucher({ code, amount, currency = 'gbp', recipientName, businessName, expiresAt, note, logoUrl }) {
+// v5.5.208: accepts branding colours (accentColor, bgColor, fgColor) and
+// uses them in the gradient, amount colour, and code styling.
+function openVoucher({ code, amount, currency = 'gbp', recipientName, businessName, expiresAt, note, logoUrl, accentColor, bgColor, fgColor }) {
   const formattedCode = code.replace(/\s/g, '').match(/.{1,4}/g)?.join(' ') || code;
   const amtDisplay = fmtMoney(amount, currency);
   const expiryLine = expiresAt ? `Valid until ${new Date(expiresAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}` : 'No expiry date';
   const recipientLine = recipientName ? `<div style="font-size:16px;color:#666;margin-top:12px;">For: <strong style="color:#333">${recipientName}</strong></div>` : '';
   const noteLine = note ? `<div style="font-size:13px;color:#888;margin-top:10px;font-style:italic;">"${note}"</div>` : '';
-  const logoLine = logoUrl ? `<img src="${logoUrl}" alt="" style="width:64px;height:64px;border-radius:12px;object-fit:cover;margin-bottom:12px;" crossorigin="anonymous"/>` : '';
+  const logoLine = logoUrl ? `<img src="${logoUrl}" alt="" style="width:96px;height:96px;border-radius:16px;object-fit:cover;margin-bottom:14px;" crossorigin="anonymous"/>` : '';
+  // Branding: derive gradient from bgColor, or fall back to dark navy
+  const topBg = bgColor || '#1a1a2e';
+  const topFg = fgColor || '#ffffff';
+  const accent = accentColor || '#e8a020';
+  // Darken the bg slightly for gradient end
+  const gradEnd = darkenHex(topBg, 0.15);
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Gift Card Voucher</title>
 <style>
 @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } @page { margin: 0; size: A5 landscape; } }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; background: #f0f0f0; display: flex; justify-content: center; align-items: center; min-height: 100vh; padding: 20px; }
 .voucher { width: 600px; background: #fff; border-radius: 20px; overflow: hidden; box-shadow: 0 4px 30px rgba(0,0,0,0.12); }
-.top { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); color: #fff; padding: 40px 40px 32px; text-align: center; }
+.top { background: linear-gradient(135deg, ${topBg} 0%, ${gradEnd} 100%); color: ${topFg}; padding: 40px 40px 32px; text-align: center; }
 .top h1 { font-size: 22px; font-weight: 800; letter-spacing: -0.01em; margin-bottom: 8px; }
-.top .gift-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em; color: rgba(255,255,255,0.5); }
-.amount { font-size: 52px; font-weight: 900; color: #e8a020; margin: 16px 0 4px; letter-spacing: -0.02em; }
+.top .gift-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em; opacity: 0.5; }
+.amount { font-size: 52px; font-weight: 900; color: ${accent}; margin: 16px 0 4px; letter-spacing: -0.02em; }
 .bottom { padding: 32px 40px 36px; text-align: center; }
 .code-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.15em; color: #999; margin-bottom: 10px; }
-.code { font-size: 28px; font-weight: 800; font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; letter-spacing: 0.18em; color: #1a1a2e; background: #f5f5f5; border: 2px dashed #ddd; border-radius: 12px; padding: 16px 20px; display: inline-block; }
+.code { font-size: 28px; font-weight: 800; font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; letter-spacing: 0.18em; color: ${topBg}; background: #f5f5f5; border: 2px dashed ${accent}40; border-radius: 12px; padding: 16px 20px; display: inline-block; }
 .expiry { font-size: 12px; color: #999; margin-top: 18px; }
 .footer { font-size: 10px; color: #bbb; margin-top: 16px; padding-top: 14px; border-top: 1px solid #eee; }
 </style></head><body>
@@ -121,6 +129,17 @@ body { font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; background
 </body></html>`;
   const w = window.open('', '_blank', 'width=700,height=600');
   if (w) { w.document.write(html); w.document.close(); }
+}
+
+/** Darken a hex colour by a factor (0-1). Used by voucher gradient. */
+function darkenHex(hex, amount) {
+  try {
+    const h = hex.replace('#', '');
+    const r = Math.round(parseInt(h.slice(0,2),16) * (1 - amount));
+    const g = Math.round(parseInt(h.slice(2,4),16) * (1 - amount));
+    const b = Math.round(parseInt(h.slice(4,6),16) * (1 - amount));
+    return `#${r.toString(16).padStart(2,'0')}${g.toString(16).padStart(2,'0')}${b.toString(16).padStart(2,'0')}`;
+  } catch { return hex; }
 }
 
 export default function GiftCards() {
@@ -443,6 +462,9 @@ function IssuePanel({ businessName, brandConfig }) {
               expiresAt: result.expires_at,
               note: result._note,
               logoUrl: brandConfig?.branding?.logo_url,
+              accentColor: brandConfig?.branding?.accent_color,
+              bgColor: brandConfig?.branding?.background,
+              fgColor: brandConfig?.branding?.foreground,
             })} style={{ ...S.btn, ...S.btnPrim }}>
               {String.fromCodePoint(0x1F4E4)} Download voucher
             </button>
@@ -1188,6 +1210,9 @@ function RecentCardsPanel({ businessName, brandConfig }) {
                           expiresAt: c.expires_at,
                           note: c.note,
                           logoUrl: brandConfig?.branding?.logo_url,
+                          accentColor: brandConfig?.branding?.accent_color,
+                          bgColor: brandConfig?.branding?.background,
+                          fgColor: brandConfig?.branding?.foreground,
                         })} style={{ ...S.btn, ...S.btnGhost, fontSize: 10, padding: '3px 8px' }}>Voucher</button>
                       )}
                     </td>
@@ -1294,6 +1319,9 @@ function PurchasesPanel({ companyId, businessName, brandConfig }) {
                         recipientName: p.recipient_name,
                         businessName,
                         logoUrl: brandConfig?.branding?.logo_url,
+                        accentColor: brandConfig?.branding?.accent_color,
+                        bgColor: brandConfig?.branding?.background,
+                        fgColor: brandConfig?.branding?.foreground,
                       })} style={{ ...S.btn, ...S.btnGhost, fontSize: 10, padding: '3px 8px' }}>
                         {String.fromCodePoint(0x1F4E4)} Voucher
                       </button>

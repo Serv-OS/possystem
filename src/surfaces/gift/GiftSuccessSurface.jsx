@@ -84,15 +84,15 @@ export default function GiftSuccessSurface({ location }) {
       display: 'flex', flexDirection: 'column', alignItems: 'center',
       padding: '40px 20px',
     }}>
-      {/* Header */}
+      {/* Header — v5.5.208: larger logo, org name instead of location */}
       <div style={{ textAlign: 'center', marginBottom: 32 }}>
         {t.logo && (
-          <img src={t.logo} alt={location.name} style={{
-            width: 72, height: 72, borderRadius: 14, objectFit: 'cover',
-            marginBottom: 12,
+          <img src={t.logo} alt={t.companyName || location.name} style={{
+            width: 144, height: 144, borderRadius: 20, objectFit: 'cover',
+            marginBottom: 16,
           }}/>
         )}
-        <div style={{ fontSize: 24, fontWeight: 800 }}>{location.name}</div>
+        <div style={{ fontSize: 26, fontWeight: 800 }}>{t.companyName || location.name}</div>
       </div>
 
       <div style={{ width: '100%', maxWidth: 420 }}>
@@ -109,7 +109,7 @@ export default function GiftSuccessSurface({ location }) {
             <div style={{ marginTop: 20, display: 'flex', gap: 10 }}>
               <a href={`${window.location.origin}/gift`} style={{
                 flex: 1, textAlign: 'center', padding: '12px 16px', borderRadius: 99,
-                background: t.accent, color: '#0b0c10', fontWeight: 800, fontSize: 13,
+                background: t.accent, color: t.accentText, fontWeight: 800, fontSize: 13,
                 textDecoration: 'none',
               }}>Try again</a>
               <a href={`${window.location.origin}/gift/balance`} style={{
@@ -168,7 +168,7 @@ export default function GiftSuccessSurface({ location }) {
             <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
               <a href={`${window.location.origin}/gift`} style={{
                 flex: 1, textAlign: 'center', padding: '14px 16px', borderRadius: 99,
-                background: t.accent, color: '#0b0c10', fontWeight: 800, fontSize: 14,
+                background: t.accent, color: t.accentText, fontWeight: 800, fontSize: 14,
                 textDecoration: 'none',
               }}>Buy another</a>
               <a href={`${window.location.origin}/`} style={{

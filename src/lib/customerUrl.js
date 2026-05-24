@@ -147,6 +147,16 @@ export async function lookupLocationBySlug(slug, platformSupabase) {
         .maybeSingle();
       if (tabRow) Object.assign(data, tabRow);
     } catch { /* columns not yet migrated */ }
+    // v5.5.208: Fetch company name for customer-facing gift card pages.
+    // Gift cards are org-level, so show company name instead of location name.
+    if (data.company_id) {
+      try {
+        const { data: co } = await platformSupabase
+          .from('companies').select('name')
+          .eq('id', data.company_id).maybeSingle();
+        if (co?.name) data.company_name = co.name;
+      } catch { /* not critical — surfaces fall back to location.name */ }
+    }
     _slugCache.set(slug, { row: data, at: Date.now() });
     return data;
   } catch (e) {
