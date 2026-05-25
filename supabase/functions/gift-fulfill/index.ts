@@ -1,10 +1,12 @@
 // supabase/functions/gift-fulfill/index.ts
 //
 // Called by stripe-webhook-connect on checkout.session.completed for gift
-// card purchases. Issues the card (generates code, hashes, creates card +
-// ledger entry) and sends the delivery email.
+// card purchases, OR from back office "Manual Fulfill" button.
+// Issues the card (generates code, hashes, creates card + ledger entry)
+// and sends the delivery email.
 //
-// Body: { purchase_id }   (internal call, service-role auth)
+// Body: { purchase_id }
+// Auth: service-role key (webhook) OR user JWT (back office)
 //
 // Idempotent: if the purchase is already fulfilled, returns success without
 // re-issuing. This protects against duplicate webhook deliveries.
@@ -21,6 +23,12 @@ const json = (b: unknown, s = 200) =>
     status: s,
     headers: { ...cors, 'Content-Type': 'application/json' },
   });
+
+const opsAdmin = createClient(
+  Deno.env.get('SUPABASE_URL') ?? '',
+  Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
+  { auth: { autoRefreshToken: false, persistSession: false } },
+);
 
 const platformAdmin = createClient(
   Deno.env.get('PLATFORM_SUPABASE_URL') ?? '',
@@ -78,18 +86,38 @@ function generateHmacSecret(): string {
 }
 
 // ── Email template ─────────────────────────────────────────────────────────
+interface EmailBranding {
+  logo_url?: string | null;
+  background?: string;
+  foreground?: string;
+  accent_color?: string;
+}
+
 function buildGiftCardEmail(opts: {
   senderName: string; recipientName: string; message: string | null;
   code: string; amountFormatted: string; expiresAt: string | null;
-  venueName: string; balanceUrl: string;
+  venueName: string; balanceUrl: string; branding?: EmailBranding | null;
 }): string {
   const { senderName, recipientName, message, code, amountFormatted, expiresAt, venueName, balanceUrl } = opts;
+  const b = opts.branding || {};
+  const bg = b.background || '#0e0e10';
+  const fg = b.foreground || '#ffffff';
+  const accent = b.accent_color || '#e8a020';
+  const logoUrl = b.logo_url || null;
+  // Derive a subtle foreground for secondary text on the header
+  const fgSub = fg === '#ffffff' ? 'rgba(255,255,255,0.6)' : 'rgba(0,0,0,0.5)';
+  // Derive accent text colour (dark on light accent, white on dark)
+  const accentText = isLightColor(accent) ? '#0b0c10' : '#ffffff';
+
   const expiryLine = expiresAt
     ? `<p style="color:#888;font-size:13px;">Valid until ${new Date(expiresAt).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })}</p>`
     : '';
   const messageLine = message
     ? `<div style="background:#f8f5f0;border-radius:12px;padding:16px 20px;margin:16px 0;font-style:italic;color:#555;">"${message}"</div>`
     : '';
+  const logoBlock = logoUrl
+    ? `<img src="${logoUrl}" alt="${venueName}" style="max-width:160px;max-height:64px;margin-bottom:16px;" />`
+    : `<div style="font-size:36px;margin-bottom:12px;">🎁</div>`;
 
   return `<!DOCTYPE html>
 <html>
@@ -98,10 +126,10 @@ function buildGiftCardEmail(opts: {
 <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f6;padding:40px 20px;">
 <tr><td align="center">
 <table width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;background:#fff;border-radius:16px;overflow:hidden;">
-  <tr><td style="background:#0e0e10;padding:32px 24px;text-align:center;">
-    <div style="font-size:40px;margin-bottom:12px;">🎁</div>
-    <div style="color:#fff;font-size:22px;font-weight:800;">You've received a gift card!</div>
-    <div style="color:#aaa;font-size:14px;margin-top:6px;">From ${senderName} at ${venueName}</div>
+  <tr><td style="background:${bg};padding:32px 24px;text-align:center;">
+    ${logoBlock}
+    <div style="color:${fg};font-size:22px;font-weight:800;">You've received a gift card!</div>
+    <div style="color:${fgSub};font-size:14px;margin-top:6px;">From ${senderName} at ${venueName}</div>
   </td></tr>
   <tr><td style="padding:28px 24px;">
     ${messageLine}
@@ -116,7 +144,7 @@ function buildGiftCardEmail(opts: {
     </div>
     ${expiryLine}
     <div style="text-align:center;margin-top:24px;">
-      <a href="${balanceUrl}" style="display:inline-block;padding:12px 28px;background:#e8a020;color:#0b0c10;border-radius:99px;font-weight:800;font-size:14px;text-decoration:none;">Check Balance</a>
+      <a href="${balanceUrl}" style="display:inline-block;padding:12px 28px;background:${accent};color:${accentText};border-radius:99px;font-weight:800;font-size:14px;text-decoration:none;">Check Balance</a>
     </div>
   </td></tr>
   <tr><td style="padding:16px 24px;border-top:1px solid #eee;text-align:center;">
@@ -129,15 +157,70 @@ function buildGiftCardEmail(opts: {
 </html>`;
 }
 
+function buildSenderConfirmEmail(opts: {
+  amountFormatted: string; venueName: string; recipientName: string;
+  recipientEmail: string; last4: string; branding?: EmailBranding | null;
+}): string {
+  const { amountFormatted, venueName, recipientName, recipientEmail, last4 } = opts;
+  const b = opts.branding || {};
+  const bg = b.background || '#0e0e10';
+  const fg = b.foreground || '#ffffff';
+  const logoUrl = b.logo_url || null;
+  const logoBlock = logoUrl
+    ? `<img src="${logoUrl}" alt="${venueName}" style="max-width:120px;max-height:48px;margin-bottom:12px;" />`
+    : `<div style="font-size:32px;margin-bottom:8px;">✅</div>`;
+
+  return `<!DOCTYPE html>
+<html><head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background:#f4f4f6;font-family:system-ui,-apple-system,sans-serif;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f6;padding:40px 20px;">
+<tr><td align="center">
+<table width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;background:#fff;border-radius:16px;overflow:hidden;">
+  <tr><td style="background:${bg};padding:28px 24px;text-align:center;">
+    ${logoBlock}
+    <div style="color:${fg};font-size:18px;font-weight:800;">Gift card sent!</div>
+  </td></tr>
+  <tr><td style="padding:24px;">
+    <p style="color:#333;font-size:14px;line-height:1.6;">
+      Your <b>${amountFormatted}</b> gift card for <b>${venueName}</b> has been emailed to <b>${recipientName}</b> at ${recipientEmail}.
+    </p>
+    <p style="color:#888;font-size:13px;">Card ending in ····${last4}</p>
+  </td></tr>
+  <tr><td style="padding:16px 24px;border-top:1px solid #eee;text-align:center;">
+    <div style="font-size:11px;color:#aaa;">Powered by serv-os.app</div>
+  </td></tr>
+</table>
+</td></tr>
+</table>
+</body></html>`;
+}
+
+/** Quick luminance check — returns true if the colour is "light" */
+function isLightColor(hex: string): boolean {
+  const c = hex.replace('#', '');
+  const r = parseInt(c.substring(0, 2), 16);
+  const g = parseInt(c.substring(2, 4), 16);
+  const b = parseInt(c.substring(4, 6), 16);
+  return (r * 299 + g * 587 + b * 114) / 1000 > 128;
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
 
-  // Auth: require service_role key (internal call from webhook handler)
+  // Auth: accept service_role key (webhook) OR user JWT (back office)
   const authHeader = req.headers.get('Authorization') || '';
   const token = authHeader.replace('Bearer ', '');
-  if (token !== OPS_SERVICE_KEY) {
-    return json({ error: 'Unauthorized — internal only' }, 401);
+  let callerUserId: string | null = null;
+  if (token === OPS_SERVICE_KEY) {
+    // Internal call from webhook handler — trusted
+  } else {
+    // Try user JWT auth (back office manual fulfill)
+    const { data: { user } } = await opsAdmin.auth.getUser(token);
+    if (!user) {
+      return json({ error: 'Unauthorized' }, 401);
+    }
+    callerUserId = user.id;
   }
 
   let body: Record<string, unknown>;
@@ -154,6 +237,18 @@ Deno.serve(async (req) => {
     .maybeSingle();
 
   if (!purchase) return json({ error: 'Purchase not found' }, 404);
+
+  // If called via user JWT, verify user has access to this company
+  if (callerUserId) {
+    const { data: loc } = await platformAdmin
+      .from('locations')
+      .select('company_id')
+      .eq('id', purchase.location_id)
+      .maybeSingle();
+    if (!loc || loc.company_id !== purchase.company_id) {
+      return json({ error: 'Location/company mismatch' }, 403);
+    }
+  }
 
   // Idempotent: already fulfilled
   if (purchase.status === 'fulfilled') {
@@ -288,6 +383,7 @@ Deno.serve(async (req) => {
       expiresAt,
       venueName,
       balanceUrl,
+      branding: config.branding || null,
     });
 
     // Call send-receipt on Ops DB
@@ -312,29 +408,14 @@ Deno.serve(async (req) => {
   // Also email the sender a confirmation if they bought for someone else
   if (purchase.delivery_type === 'email' && purchase.sender_email !== purchase.recipient_email) {
     try {
-      const senderHtml = `<!DOCTYPE html>
-<html><head><meta charset="utf-8"></head>
-<body style="margin:0;padding:0;background:#f4f4f6;font-family:system-ui,-apple-system,sans-serif;">
-<table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f6;padding:40px 20px;">
-<tr><td align="center">
-<table width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;background:#fff;border-radius:16px;overflow:hidden;">
-  <tr><td style="background:#0e0e10;padding:28px 24px;text-align:center;">
-    <div style="font-size:32px;margin-bottom:8px;">✅</div>
-    <div style="color:#fff;font-size:18px;font-weight:800;">Gift card sent!</div>
-  </td></tr>
-  <tr><td style="padding:24px;">
-    <p style="color:#333;font-size:14px;line-height:1.6;">
-      Your <b>${amountFormatted}</b> gift card for <b>${venueName}</b> has been emailed to <b>${purchase.recipient_name}</b> at ${purchase.recipient_email}.
-    </p>
-    <p style="color:#888;font-size:13px;">Card ending in ····${last4}</p>
-  </td></tr>
-  <tr><td style="padding:16px 24px;border-top:1px solid #eee;text-align:center;">
-    <div style="font-size:11px;color:#aaa;">Powered by serv-os.app</div>
-  </td></tr>
-</table>
-</td></tr>
-</table>
-</body></html>`;
+      const senderHtml = buildSenderConfirmEmail({
+        amountFormatted,
+        venueName,
+        recipientName: purchase.recipient_name,
+        recipientEmail: purchase.recipient_email,
+        last4,
+        branding: config.branding || null,
+      });
 
       await fetch(`${OPS_URL}/functions/v1/send-receipt`, {
         method: 'POST',
@@ -356,5 +437,7 @@ Deno.serve(async (req) => {
     ok: true,
     card_id: card.id,
     code_last4: last4,
+    // Include full code for back-office manual fulfillment display
+    ...(callerUserId ? { code: formatCode(code) } : {}),
   });
 });

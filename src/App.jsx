@@ -76,6 +76,13 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.213', date: '24 May 2026', label: 'Gift card emails use venue branding',
+    changes: [
+      'Gift card delivery and sender confirmation emails now use branding (logo, colours) from gift_brand_config instead of hardcoded defaults.',
+      'Header background, text colour, accent/button colour, and venue logo all pulled from the branding set in the Gift Cards section of back office.',
+    ],
+  },
+  {
     version: '5.5.212', date: '24 May 2026', label: 'Message Templates — customise SMS & email wording',
     changes: [
       'New "Messages" section in back office: edit every transactional SMS and email your venue sends — order ready, gift card delivery, table ready, receipts, reservation confirmations.',
