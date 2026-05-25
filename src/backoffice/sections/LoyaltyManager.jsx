@@ -32,7 +32,7 @@ async function callLoyalty(endpoint, bodyOrNull, method = 'POST') {
   const { data: session } = await supabase.auth.getSession();
   const token = session?.session?.access_token;
   if (!token) throw new Error('Not authenticated');
-  const locationId = getActiveLocationSync();
+  const locationId = getActiveLocationSync() || await getLocationId();
   if (method === 'GET') {
     const params = new URLSearchParams(bodyOrNull || {});
     if (!params.has('location_id') && locationId) params.set('location_id', locationId);
@@ -59,7 +59,7 @@ async function callLoyaltyPatch(endpoint, body) {
   const { data: session } = await supabase.auth.getSession();
   const token = session?.session?.access_token;
   if (!token) throw new Error('Not authenticated');
-  const locationId = getActiveLocationSync();
+  const locationId = getActiveLocationSync() || await getLocationId();
   const res = await fetch(`${FUNCTIONS_URL}/${endpoint}`, {
     method: 'PATCH',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
@@ -75,7 +75,7 @@ async function callLoyaltyDelete(endpoint, body) {
   const { data: session } = await supabase.auth.getSession();
   const token = session?.session?.access_token;
   if (!token) throw new Error('Not authenticated');
-  const locationId = getActiveLocationSync();
+  const locationId = getActiveLocationSync() || await getLocationId();
   const res = await fetch(`${FUNCTIONS_URL}/${endpoint}`, {
     method: 'DELETE',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
