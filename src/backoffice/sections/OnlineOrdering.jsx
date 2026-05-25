@@ -10,7 +10,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { platformSupabase, supabase, getLocationId } from '../../lib/supabase';
-import { CUSTOMER_ROOT } from '../../lib/env';
+import { CUSTOMER_ROOT, customerUrl } from '../../lib/env';
 import QRCode from 'qrcode';
 
 // Reuses the existing receipt-assets bucket with an online/ prefix so logo
@@ -37,7 +37,7 @@ const BLANK_BRANDING = {
   foreground:   '#ffffff',
 };
 
-const ROOT = 'pos-up.com';
+const ROOT = CUSTOMER_ROOT;
 
 export default function OnlineOrdering({ setSection }) {
   const [loading, setLoading] = useState(true);
@@ -289,8 +289,8 @@ export default function OnlineOrdering({ setSection }) {
   const slug = row.online_slug;
   const onlineUrl = slug ? `https://${slug}.${ROOT}` : null;
   const qrUrl     = slug ? `https://${slug}.${ROOT}/t/<table-id>` : null;
-  const previewOnline = slug ? `https://dev.pos-up.com/?loc=${slug}&surface=online` : null;
-  const previewQr     = slug ? `https://dev.pos-up.com/?loc=${slug}&surface=qr&t=t1` : null;
+  const previewOnline = customerUrl(slug, '') || null;
+  const previewQr     = customerUrl(slug, '/t/t1') || null;
 
   return (
     <div style={S.page}>
@@ -503,7 +503,7 @@ function QrSettingsBlock({
     ctx.fillText(`Table ${table.label || table.id || '?'}`, W / 2, 920);
     ctx.font = '500 18px -apple-system, system-ui, sans-serif';
     ctx.fillStyle = '#666';
-    ctx.fillText(slug ? `${slug}.pos-up.com` : 'serv-os.app', W / 2, 970);
+    ctx.fillText(slug ? `${slug}.${CUSTOMER_ROOT}` : CUSTOMER_ROOT, W / 2, 970);
     // JPEG download
     out.toBlob((blob) => {
       if (!blob) return;

@@ -76,6 +76,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.215', date: '25 May 2026', label: 'Fix remaining hardcoded domain references',
+    changes: [
+      'BackOfficeApp: preview links (online, QR, gift cards) now use customerUrl() instead of hardcoded dev.pos-up.com.',
+      'GiftCards: purchase and balance preview URLs now use customerUrl() — removed DEV_HOST and PROD_ROOT constants.',
+      'OnlineOrdering: preview links and QR code footer text now use CUSTOMER_ROOT instead of pos-up.com.',
+      'Zero hardcoded pos-up.com references remain in the front-end codebase.',
+    ],
+  },
+  {
     version: '5.5.214', date: '25 May 2026', label: 'Multi-environment support — dev / stage / prod',
     changes: [
       'New env config (VITE_APP_TIER + VITE_CUSTOMER_DOMAIN) drives all customer-facing URLs: dev.serv-os.app, stage.serv-os.app, app.serv-os.app.',

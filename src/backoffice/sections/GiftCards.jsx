@@ -7,8 +7,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { supabase, platformSupabase, getLocationId, getActiveLocationSync } from '../../lib/supabase';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
-const DEV_HOST = 'https://dev.pos-up.com';
-const PROD_ROOT = 'pos-up.com';
+import { CUSTOMER_ROOT, customerUrl } from '../../lib/env';
 const ASSET_BUCKET = 'receipt-assets';
 
 const BLANK_BRANDING = {
@@ -224,10 +223,10 @@ export default function GiftCards() {
   const giftEnabled = !!brandConfig?.enabled;
 
   // Customer-facing URLs
-  const previewPurchase = slug ? `${DEV_HOST}/?loc=${slug}&surface=gift` : null;
-  const previewBalance  = slug ? `${DEV_HOST}/?loc=${slug}&surface=gift_balance` : null;
-  const prodPurchase    = slug ? `https://${slug}.${PROD_ROOT}/gift` : null;
-  const prodBalance     = slug ? `https://${slug}.${PROD_ROOT}/gift/balance` : null;
+  const previewPurchase = customerUrl(slug, '/gift') || null;
+  const previewBalance  = customerUrl(slug, '/gift/balance') || null;
+  const prodPurchase    = previewPurchase;
+  const prodBalance     = previewBalance;
 
   if (loading) return <div style={{ padding: 40, color: 'var(--t4)', fontSize: 13 }}>Loading...</div>;
 
@@ -1258,26 +1257,45 @@ function PurchasesPanel({ companyId, businessName, brandConfig }) {
   const [purchases, setPurchases] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [fulfillingId, setFulfillingId] = useState(null);
 
-  useEffect(() => {
+  const loadPurchases = useCallback(async () => {
     if (!companyId || !platformSupabase) { setLoading(false); return; }
-    (async () => {
-      try {
-        const { data, error: qErr } = await platformSupabase
-          .from('gift_card_purchases')
-          .select('id, amount_minor, currency, sender_name, sender_email, recipient_name, recipient_email, delivery_type, status, code_last4, fulfilled_code, created_at, fulfilled_at')
-          .eq('company_id', companyId)
-          .order('created_at', { ascending: false })
-          .limit(50);
-        if (qErr) throw qErr;
-        setPurchases(data || []);
-      } catch (e) {
-        setError(String(e?.message ?? e));
-      } finally {
-        setLoading(false);
-      }
-    })();
+    try {
+      const { data, error: qErr } = await platformSupabase
+        .from('gift_card_purchases')
+        .select('id, amount_minor, currency, sender_name, sender_email, recipient_name, recipient_email, delivery_type, status, code_last4, fulfilled_code, created_at, fulfilled_at')
+        .eq('company_id', companyId)
+        .order('created_at', { ascending: false })
+        .limit(50);
+      if (qErr) throw qErr;
+      setPurchases(data || []);
+    } catch (e) {
+      setError(String(e?.message ?? e));
+    } finally {
+      setLoading(false);
+    }
   }, [companyId]);
+
+  useEffect(() => { loadPurchases(); }, [loadPurchases]);
+
+  const handleManualFulfill = async (purchaseId) => {
+    if (fulfillingId) return;
+    setFulfillingId(purchaseId);
+    setError(null);
+    try {
+      const result = await callGift('gift-fulfill', { purchase_id: purchaseId });
+      if (result.already_fulfilled) {
+        setError(null);
+      }
+      // Reload purchases to show updated status
+      await loadPurchases();
+    } catch (e) {
+      setError(`Fulfill failed: ${e?.message || 'Unknown error'}`);
+    } finally {
+      setFulfillingId(null);
+    }
+  };
 
   const statusColor = (s) => {
     if (s === 'fulfilled') return { background: 'var(--grn-d)', color: 'var(--grn)', borderColor: 'var(--grn)' };
@@ -1288,7 +1306,11 @@ function PurchasesPanel({ companyId, businessName, brandConfig }) {
 
   return (
     <div style={S.card}>
-      <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--t1)', marginBottom: 4 }}>Online purchases</div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+        <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--t1)' }}>Online purchases</div>
+        <button onClick={() => { setLoading(true); loadPurchases(); }}
+          style={{ ...S.btn, ...S.btnGhost, fontSize: 10, padding: '3px 8px' }}>Refresh</button>
+      </div>
       <div style={{ fontSize: 12, color: 'var(--t4)', marginBottom: 14 }}>Gift cards bought by customers via Stripe Checkout.</div>
       {error && <div style={S.errorBox}>{error}</div>}
       {loading ? (
@@ -1319,7 +1341,16 @@ function PurchasesPanel({ companyId, businessName, brandConfig }) {
                   <td style={{ padding: '8px', color: 'var(--t2)', maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.recipient_name || p.recipient_email}</td>
                   <td style={{ padding: '8px', color: 'var(--t3)' }}>{p.delivery_type === 'self' ? 'Self' : 'Email'}</td>
                   <td style={{ padding: '8px', color: 'var(--t3)', fontSize: 11 }}>{new Date(p.created_at).toLocaleDateString()}</td>
-                  <td style={{ padding: '8px' }}>
+                  <td style={{ padding: '8px', whiteSpace: 'nowrap' }}>
+                    {p.status !== 'fulfilled' && (
+                      <button
+                        onClick={() => handleManualFulfill(p.id)}
+                        disabled={fulfillingId === p.id}
+                        style={{ ...S.btn, ...S.btnPrim, fontSize: 10, padding: '3px 8px', marginRight: 4, opacity: fulfillingId === p.id ? 0.5 : 1 }}
+                      >
+                        {fulfillingId === p.id ? 'Fulfilling...' : 'Fulfill'}
+                      </button>
+                    )}
                     {p.fulfilled_code && (
                       <button onClick={() => openVoucher({
                         code: p.fulfilled_code,
@@ -1332,7 +1363,7 @@ function PurchasesPanel({ companyId, businessName, brandConfig }) {
                         bgColor: brandConfig?.branding?.background,
                         fgColor: brandConfig?.branding?.foreground,
                       })} style={{ ...S.btn, ...S.btnGhost, fontSize: 10, padding: '3px 8px' }}>
-                        {String.fromCodePoint(0x1F4E4)} Voucher
+                        Voucher
                       </button>
                     )}
                   </td>

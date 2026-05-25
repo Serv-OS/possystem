@@ -5,6 +5,7 @@ import { supabase, isMock, getLocationId, setResolvedLocationId, clearResolvedLo
 import BOLogin from './BOLogin';
 import LocationSwitcher from './LocationSwitcher';
 import { VERSION } from '../lib/version';
+import { CUSTOMER_ROOT, customerUrl } from '../lib/env';
 import MenuManager from './sections/MenuManager';
 import FloorPlanBuilder from './sections/FloorPlanBuilder';
 import DeviceProfiles from './sections/DeviceProfiles';
@@ -806,7 +807,7 @@ function OnlineOrderingSection({ setSection }) {
     return () => { alive = false; };
   }, []);
 
-  const ROOT = 'pos-up.com';
+  const ROOT = CUSTOMER_ROOT;
   const slug = row?.online_slug;
   const onlineEnabled = !!row?.online_enabled;
   const qrEnabled     = !!row?.qr_enabled;
@@ -860,19 +861,19 @@ function OnlineOrderingSection({ setSection }) {
                 Open Location Settings
               </button>
               {slug && (
-                <a href={`https://dev.pos-up.com/?loc=${slug}&surface=online`} target="_blank" rel="noopener"
+                <a href={customerUrl(slug, '')} target="_blank" rel="noopener"
                   style={{ ...secondaryBtn(), textDecoration:'none' }}>
                   Preview online ↗
                 </a>
               )}
               {slug && (
-                <a href={`https://dev.pos-up.com/?loc=${slug}&surface=qr&t=t1`} target="_blank" rel="noopener"
+                <a href={customerUrl(slug, '/t/t1')} target="_blank" rel="noopener"
                   style={{ ...secondaryBtn(), textDecoration:'none' }}>
                   Preview QR (table t1) ↗
                 </a>
               )}
               {slug && (
-                <a href={`https://dev.pos-up.com/?loc=${slug}&surface=gift`} target="_blank" rel="noopener"
+                <a href={customerUrl(slug, '/gift')} target="_blank" rel="noopener"
                   style={{ ...secondaryBtn(), textDecoration:'none' }}>
                   Preview gift cards ↗
                 </a>
