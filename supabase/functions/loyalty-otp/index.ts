@@ -164,7 +164,7 @@ Deno.serve(async (req) => {
 
     // Send SMS via send-sms edge function
     try {
-      await fetch(`${OPS_URL}/functions/v1/send-sms`, {
+      const smsRes = await fetch(`${OPS_URL}/functions/v1/send-sms`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -173,13 +173,18 @@ Deno.serve(async (req) => {
         body: JSON.stringify({
           to: phone,
           message: `Your ${companyName} verification code is: ${code}. Valid for 5 minutes.`,
-          location_id: locationId,
+          location_id: locationId || companyId, // fallback to companyId if no ops location found
           type: 'otp',
           reference_id: companyId,
         }),
       });
+      if (!smsRes.ok) {
+        const smsErr = await smsRes.json().catch(() => ({}));
+        console.error('[loyalty-otp] SMS send failed:', smsErr);
+        return json({ error: `Failed to send verification code: ${(smsErr as any)?.error || 'SMS service error'}` }, 500);
+      }
     } catch (e) {
-      console.error('[loyalty-otp] SMS send failed:', e);
+      console.error('[loyalty-otp] SMS send threw:', e);
       return json({ error: 'Failed to send verification code' }, 500);
     }
 
