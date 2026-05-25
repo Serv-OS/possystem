@@ -536,7 +536,7 @@ function OnlineOrderingCard({
       {slug && (
         <div style={{ marginTop:14, padding:'10px 12px', background:'var(--bg3)', borderRadius:8, border:'1px solid var(--bdr)' }}>
           <div style={{ fontSize:11, color:'var(--t4)', lineHeight:1.6 }}>
-            <b>DNS pending.</b> Once <code style={{ fontFamily:'var(--font-mono)' }}>*.{ROOT}</code> is wired (Vercel + registrar), the URLs above go live.
+            <b>DNS pending.</b> Once <code style={{ fontFamily:'var(--font-mono)' }}>*.{CUSTOMER_ROOT}</code> is wired (Vercel + registrar), the URLs above go live.
             <br/>Test now (no DNS) on the existing host:&nbsp;
             <code style={{ fontFamily:'var(--font-mono)' }}>?loc={slug}&surface=online</code>
             &nbsp;or&nbsp;

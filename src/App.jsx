@@ -76,6 +76,12 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.225', date: '25 May 2026', label: 'Fix LocationSettings crash — undefined ROOT variable',
+    changes: [
+      'Fixed ReferenceError: ROOT is not defined in LocationSettings.jsx OnlineOrderingCard — changed to use imported CUSTOMER_ROOT.',
+    ],
+  },
+  {
     version: '5.5.224', date: '25 May 2026', label: 'Registration flow fix + gift card codes visible',
     changes: [
       'Registration page (/account/register) now collects all details FIRST (first name, last name, email, phone, DOB, marketing opt-in) then sends OTP to verify the phone number.',
