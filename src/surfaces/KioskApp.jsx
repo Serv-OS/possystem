@@ -19,7 +19,7 @@
 */
 
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { supabase, getLocationId } from '../lib/supabase';
+import { supabase, getLocationId, ensureAuthToken } from '../lib/supabase';
 import { useStore } from '../store';
 import KioskProductModal from './KioskProductModal';
 import { t, setLang, useKioskLang, LANGUAGES, getLanguageMeta } from '../lib/i18n';
@@ -230,6 +230,9 @@ export default function KioskApp({ kioskId, onUnpair }) {
   // Email is optional (for emailed receipts); opt-in defaults to false.
   const [customerEmail, setCustomerEmail] = useState('');
   const [customerMarketingOptIn, setCustomerMarketingOptIn] = useState(false);
+  // v5.5.219: Loyalty reward redemption at kiosk checkout
+  const [loyaltyRedemption, setLoyaltyRedemption] = useState(null);
+  // loyaltyRedemption: { reward_id, reward_name, points_deducted, discount_type, discount_value, idempotency_key, balance_after }
   const [selectedItem, setSelectedItem] = useState(null);
   const [selectedCategoryId, setSelectedCategoryId] = useState(null);
   const [orderNumber, setOrderNumber] = useState(null);
@@ -354,6 +357,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
     setCustomerMarketingOptIn(false);
     setSelectedItem(null);
     setSelectedCategoryId(null);
+    setLoyaltyRedemption(null);
     setAllergenFilter(new Set());
     setShowAllergenPicker(false);
     setOrderNumber(null);
@@ -408,10 +412,14 @@ export default function KioskApp({ kioskId, onUnpair }) {
   }, [resetIdle]);
 
   // ─── Order submission ───
+  // v5.5.219: Loyalty credit reduces the total paid by card
+  const loyaltyCredit = loyaltyRedemption?.discount_value ? loyaltyRedemption.discount_value / 100 : 0;
+  const grandTotal = Math.max(0, total - loyaltyCredit);
+
   // On 'simulate paid' → write closed_checks + kds_tickets row, set orderNumber, advance.
   const submitOrder = useCallback(async (nameOverride, phoneOverride) => {
     if (submitting) return;
-    console.log('[kiosk] submitOrder called', { nameOverride, phoneOverride, customerName, customerPhone });
+    console.log('[kiosk] submitOrder called', { nameOverride, phoneOverride, customerName, customerPhone, loyaltyRedemption: loyaltyRedemption ? 'yes' : 'no' });
     setSubmitting(true);
     setSubmitError(null);
     try {
@@ -441,11 +449,11 @@ export default function KioskApp({ kioskId, onUnpair }) {
         subtotal: subtotal,
         tip: tip,
         tax: 0,
-        total: total,
+        total: grandTotal,
         order_type: orderTypeOut,
         status: 'paid',
-        payment_method: 'card-external',
-        method: 'card',
+        payment_method: loyaltyCredit > 0 ? 'split' : 'card-external',
+        method: loyaltyCredit > 0 ? 'split' : 'card',
         closed_at: new Date().toISOString(),
         source: 'kiosk',
         kiosk_id: kioskId,
@@ -453,6 +461,14 @@ export default function KioskApp({ kioskId, onUnpair }) {
         customer_phone: (phoneOverride ?? customerPhone) || null,
         kiosk_table_number: tableNumber || null,
         covers: 1,
+        // v5.5.219: Stamp loyalty redemption on check for receipt / refund use
+        loyalty: loyaltyRedemption ? {
+          reward_id: loyaltyRedemption.reward_id,
+          reward_name: loyaltyRedemption.reward_name,
+          points_deducted: loyaltyRedemption.points_deducted,
+          discount_value: loyaltyRedemption.discount_value,
+          idempotency_key: loyaltyRedemption.idempotency_key,
+        } : null,
       });
       if (e1) throw e1;
       // 2. v5.5.5: customer attribution — kiosks were missing this path, so a customer
@@ -469,11 +485,11 @@ export default function KioskApp({ kioskId, onUnpair }) {
           const orderRecord = {
             id: checkId,
             ref: num,
-            total: total,
+            total: grandTotal,
             tip: tip,
             subtotal: subtotal,
             items: itemsPayload,
-            method: 'card',
+            method: loyaltyCredit > 0 ? 'split' : 'card',
             order_type: orderTypeOut,
             location_id: locationId,
             closedAt: Date.now(),
@@ -508,7 +524,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
           phone: (phoneOverride ?? customerPhone) || null,
         },
         items: itemsPayload,
-        total: total,
+        total: grandTotal,
         status: 'received',
         staff: null,
         created_at: new Date().toISOString(),
@@ -516,7 +532,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
         is_asap: true,
         source: 'kiosk',
         paid: true,
-        payment_method: 'card-external',
+        payment_method: loyaltyCredit > 0 ? 'split' : 'card-external',
       });
       if (e3) console.warn('[kiosk] order_queue insert failed:', e3);
       // 4. Heartbeat
@@ -531,7 +547,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
     } finally {
       setSubmitting(false);
     }
-  }, [submitting, kioskId, locationId, cart, subtotal, total, tip, orderType, customerName, customerPhone, customerEmail, customerMarketingOptIn, tableNumber, resetSession]);
+  }, [submitting, kioskId, locationId, cart, subtotal, total, grandTotal, loyaltyCredit, loyaltyRedemption, tip, orderType, customerName, customerPhone, customerEmail, customerMarketingOptIn, tableNumber, resetSession]);
 
   // ─── Loading + error gates ───
   if (profLoading || menuLoading) {
@@ -575,9 +591,10 @@ export default function KioskApp({ kioskId, onUnpair }) {
         />
       )}
       {screen === 'cart' && <ScreenCart brandColor={brandColor} cart={cart} subtotal={subtotal} cartItemCount={cartItemCount} orderType={orderType} onUpdate={updateCartQty} onAddMore={() => setScreen('menu')} onContinue={() => setScreen('tip')} onShowAllergenPicker={() => setShowAllergenPicker(true)} onBack={() => setScreen('menu')} />}
-      {screen === 'tip' && <ScreenTip brandColor={brandColor} subtotal={subtotal} tipPresets={tipPresets} tip={tip} onSetTip={setTip} onContinue={() => setScreen('pay')} onBack={() => setScreen('cart')} />}
-      {screen === 'pay' && <ScreenPay brandColor={brandColor} total={total} submitting={submitting} error={submitError} onSimulatePaid={() => { if (loyaltyEnabled) setScreen('loyalty'); else submitOrder('', ''); }} onBack={() => setScreen('tip')} />}
-      {screen === 'loyalty' && <ScreenLoyalty brandColor={brandColor} customerName={customerName} customerPhone={customerPhone} customerEmail={customerEmail} marketingOptIn={customerMarketingOptIn} locationId={locationId} onName={setCustomerName} onPhone={setCustomerPhone} onEmail={setCustomerEmail} onMarketingOptIn={setCustomerMarketingOptIn} onContinue={(n, p) => submitOrder(n, p)} onSkip={(n, p) => submitOrder(n, p)} submitting={submitting} placeOrderLabel={labelPlaceOrder} />}
+      {screen === 'tip' && <ScreenTip brandColor={brandColor} subtotal={subtotal} tipPresets={tipPresets} tip={tip} onSetTip={setTip} onContinue={() => { if (loyaltyEnabled) setScreen('loyalty'); else setScreen('pay'); }} onBack={() => setScreen('cart')} />}
+      {/* v5.5.219: loyalty/customer-details BEFORE pay so reward discount adjusts amount due */}
+      {screen === 'loyalty' && <ScreenLoyalty brandColor={brandColor} customerName={customerName} customerPhone={customerPhone} customerEmail={customerEmail} marketingOptIn={customerMarketingOptIn} locationId={locationId} subtotal={subtotal} loyaltyRedemption={loyaltyRedemption} onLoyaltyRedeem={setLoyaltyRedemption} onName={setCustomerName} onPhone={setCustomerPhone} onEmail={setCustomerEmail} onMarketingOptIn={setCustomerMarketingOptIn} onContinue={() => setScreen('pay')} onSkip={() => setScreen('pay')} submitting={submitting} placeOrderLabel={labelPlaceOrder} />}
+      {screen === 'pay' && <ScreenPay brandColor={brandColor} total={grandTotal} submitting={submitting} error={submitError} onSimulatePaid={() => submitOrder(customerName, customerPhone)} onBack={() => { if (loyaltyEnabled) setScreen('loyalty'); else setScreen('tip'); }} />}
       {screen === 'done' && <ScreenDone brandColor={brandColor} customerName={customerName} customerPhone={customerPhone} orderNumber={orderNumber} orderType={orderType} tableNumber={tableNumber} avgWaitMinutes={avgWaitMinutes} banner={bannerFor('done')} onDone={resetSession} />}
 
       {/* v5.4.0: Allergen picker overlay */}
@@ -2027,20 +2044,19 @@ function ScreenPay({ brandColor, total, submitting, error, onSimulatePaid, onBac
 // SCREEN: LOYALTY (single-screen name + phone)
 // ============================================================
 // ============================================================
-// SCREEN: CUSTOMER DETAILS  (v5.5.37 redesign — formerly "loyalty")
+// SCREEN: CUSTOMER DETAILS + LOYALTY REDEMPTION (v5.5.219)
 // Modal-style card centered on screen with brand-color title, name field,
 // mobile field with country prefix, divider, optional email field, brand-
 // color Continue, opt-in checkbox.
 //
-// LOYALTY HOOK (stubbed): when a complete phone is typed (debounced ~600ms),
-// fetchCustomerByPhone() looks up the customers table for the active org.
-// On match, the screen pre-fills name + email and reserves vertical space
-// for a "Welcome back, NAME" + rewards/credit block. Today rewards/credit
-// are stubs returning empty/zero — when the loyalty system is built, only
-// src/lib/customerLookup.js needs updating (extend fetch to return real
-// rewards). The render block in this screen is already in place.
+// LOYALTY: when a complete phone is typed (debounced ~600ms),
+// fetchCustomerByPhone() looks up the customers table for the active org
+// + fetches live loyalty data (points, rewards, tier) from loyalty-balance.
+// On match: pre-fills name + email, shows "Welcome back" + points balance,
+// and lists redeemable rewards. Customer taps a reward → loyalty-redeem is
+// called → discount applied as a credit deduction on the order total.
 // ============================================================
-function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail, marketingOptIn, locationId, onName, onPhone, onEmail, onMarketingOptIn, onContinue, onSkip, submitting, placeOrderLabel }) {
+function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail, marketingOptIn, locationId, subtotal, loyaltyRedemption, onLoyaltyRedeem, onName, onPhone, onEmail, onMarketingOptIn, onContinue, onSkip, submitting, placeOrderLabel }) {
   // Local field state mirrors props on mount; we lift back to parent on submit.
   const [name, setName] = useState(customerName || '');
   const [phone, setPhone] = useState(customerPhone || '');
@@ -2052,6 +2068,9 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
   // false = looked up, no match.
   const [customerLookup, setCustomerLookup] = useState(null);
   const [lookingUp, setLookingUp] = useState(false);
+  // v5.5.219: Reward redemption state
+  const [redeeming, setRedeeming] = useState(null); // reward id being redeemed
+  const [redeemError, setRedeemError] = useState('');
 
   // Debounce phone changes — only query after the user pauses typing.
   // 600ms feels right for a customer-facing input.
@@ -2085,6 +2104,57 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
     return () => { cancelled = true; clearTimeout(timer); };
   }, [phone, locationId]);
 
+  // v5.5.219: Redeem a loyalty reward
+  const redeemReward = async (reward) => {
+    setRedeeming(reward.id);
+    setRedeemError('');
+    try {
+      const token = await ensureAuthToken();
+      if (!token) throw new Error('Auth unavailable');
+      const res = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/loyalty-redeem`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+          body: JSON.stringify({
+            customer_id: customerLookup.customerId,
+            location_id: locationId,
+            reward_id: reward.id,
+            channel: 'kiosk',
+          }),
+        }
+      );
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+
+      // Calculate discount value in minor units based on reward type
+      let discountMinor = 0;
+      const rv = j.reward?.value || reward.value || {};
+      if (j.reward?.type === 'discount_fixed' || reward.type === 'discount_fixed') {
+        discountMinor = rv.amount_minor || 0;
+      } else if (j.reward?.type === 'discount_percent' || reward.type === 'discount_percent') {
+        discountMinor = Math.round((subtotal || 0) * 100 * (rv.percent || 0) / 100);
+      }
+      // Don't discount more than the subtotal
+      discountMinor = Math.min(discountMinor, Math.round((subtotal || 0) * 100));
+
+      onLoyaltyRedeem({
+        reward_id: reward.id,
+        reward_name: j.reward?.name || reward.label,
+        points_deducted: j.points_deducted || reward.pointsCost,
+        discount_type: j.reward?.type || reward.type,
+        discount_value: discountMinor,
+        idempotency_key: j.idempotency_key || null,
+        balance_after: j.balance,
+      });
+    } catch (e) {
+      console.warn('[kiosk] loyalty redeem failed:', e?.message || e);
+      setRedeemError(e?.message || 'Could not redeem reward');
+    } finally {
+      setRedeeming(null);
+    }
+  };
+
   const submit = () => {
     const n = name.trim();
     const p = phone.trim();
@@ -2107,11 +2177,12 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
   const canSubmit = name.trim().length > 0 && !submitting;
 
   // Loyalty greeting — renders when we have a known customer match.
-  // Today rewards/credit are always empty/zero — when loyalty ships, this
-  // block will also render the rewards list / credit balance.
   const showWelcome = !!(customerLookup && customerLookup.knownCustomer);
   const hasRewards = !!(customerLookup && customerLookup.rewards && customerLookup.rewards.length > 0);
   const hasCredit = !!(customerLookup && customerLookup.credit > 0);
+
+  // v5.5.219: Calculate applied loyalty credit for display
+  const loyaltyCredit = loyaltyRedemption?.discount_value ? loyaltyRedemption.discount_value / 100 : 0;
 
   return (
     <div style={{ ...fullScreen(), display: 'grid', placeItems: 'center', padding: '4vh 4vw' }}>
@@ -2173,13 +2244,10 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
           padding: '0 clamp(0px, 2vw, 16px)',
         }}>{t('details.subtitle')}</div>
 
-        {/* Welcome-back / loyalty placeholder block.
-            Renders when a known customer is matched. Today shows the welcome
-            line only — the rewards/credit list is wired but stays empty until
-            the loyalty system populates customerLookup.rewards / .credit. */}
+        {/* Welcome-back / loyalty block */}
         {showWelcome && (
           <div style={{
-            background: brandColor + '15', // 15 hex ≈ 8% opacity
+            background: brandColor + '15',
             border: '1.5px solid ' + brandColor,
             borderRadius: 16,
             padding: 'clamp(14px, 1.8vw, 20px)',
@@ -2193,25 +2261,134 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
             }}>
               {t('details.welcome')}{customerLookup.name ? ', ' + customerLookup.name : ''}!
             </div>
-            {/* Rewards list — empty array today; loyalty system will populate */}
-            {hasRewards && (
-              <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {customerLookup.rewards.map(r => (
-                  <div key={r.id} style={{
-                    fontSize: 'clamp(13px, 1.5vw, 16px)',
-                    color: 'var(--kFg)',
-                    fontWeight: 600,
-                  }}>★ {r.label}</div>
-                ))}
-              </div>
-            )}
+            {/* Points balance */}
             {hasCredit && (
               <div style={{
                 marginTop: 8,
                 fontSize: 'clamp(13px, 1.5vw, 16px)',
                 fontWeight: 700,
                 color: 'var(--kFg)',
-              }}>£{customerLookup.credit.toFixed(2)} in credit</div>
+              }}>
+                {customerLookup.credit} loyalty points
+                {customerLookup.tier && (
+                  <span style={{ marginLeft: 8, color: customerLookup.tier.color || brandColor, fontWeight: 800 }}>
+                    {customerLookup.tier.icon || ''} {customerLookup.tier.name}
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* v5.5.219: Redeemable rewards — customer can tap to redeem */}
+            {hasRewards && !loyaltyRedemption && (
+              <div style={{ marginTop: 12 }}>
+                <div style={{
+                  fontSize: 'clamp(11px, 1.3vw, 13px)',
+                  fontWeight: 700,
+                  color: brandColor,
+                  textTransform: 'uppercase',
+                  letterSpacing: '.06em',
+                  marginBottom: 8,
+                }}>Redeem a reward</div>
+                {redeemError && (
+                  <div style={{
+                    padding: 8, borderRadius: 8, marginBottom: 8,
+                    fontSize: 'clamp(11px, 1.3vw, 13px)',
+                    color: '#e55',
+                    background: '#e5555515',
+                    border: '1px solid #e5555533',
+                    fontWeight: 600,
+                  }}>{redeemError}</div>
+                )}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {customerLookup.rewards.map(r => (
+                    <button
+                      key={r.id}
+                      onClick={() => redeemReward(r)}
+                      disabled={!!redeeming}
+                      style={{
+                        width: '100%',
+                        padding: 'clamp(10px, 1.4vw, 14px) clamp(12px, 1.6vw, 16px)',
+                        borderRadius: 12,
+                        border: '1.5px solid ' + brandColor + '44',
+                        background: 'var(--kSurfaceRaised)',
+                        cursor: redeeming ? 'wait' : 'pointer',
+                        fontFamily: 'inherit',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 10,
+                        opacity: redeeming && redeeming !== r.id ? 0.5 : 1,
+                        transition: 'border-color .14s, transform .14s',
+                      }}
+                    >
+                      <div style={{
+                        width: 'clamp(32px, 3.6vw, 40px)',
+                        height: 'clamp(32px, 3.6vw, 40px)',
+                        borderRadius: 8,
+                        background: brandColor + '22',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: 'clamp(14px, 1.6vw, 18px)',
+                        flexShrink: 0,
+                      }}>
+                        {r.icon || '🎁'}
+                      </div>
+                      <div style={{ flex: 1, textAlign: 'left' }}>
+                        <div style={{ fontSize: 'clamp(13px, 1.5vw, 16px)', fontWeight: 700, color: 'var(--kFg)' }}>{r.label}</div>
+                        <div style={{ fontSize: 'clamp(11px, 1.2vw, 13px)', color: 'var(--kFgMuted)', marginTop: 1 }}>
+                          {r.pointsCost} points
+                          {r.type === 'discount_fixed' && r.value?.amount_minor && (
+                            <span style={{ color: brandColor, fontWeight: 700, marginLeft: 6 }}>
+                              · {String.fromCodePoint(0x00A3)}{(r.value.amount_minor / 100).toFixed(2)} off
+                            </span>
+                          )}
+                          {r.type === 'discount_percent' && r.value?.percent && (
+                            <span style={{ color: brandColor, fontWeight: 700, marginLeft: 6 }}>
+                              · {r.value.percent}% off
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <div style={{
+                        fontSize: 'clamp(12px, 1.4vw, 15px)',
+                        fontWeight: 800,
+                        color: brandColor,
+                        flexShrink: 0,
+                      }}>
+                        {redeeming === r.id ? '...' : 'Redeem'}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* v5.5.219: Show applied reward */}
+            {loyaltyRedemption && (
+              <div style={{
+                marginTop: 12,
+                padding: 'clamp(10px, 1.4vw, 14px)',
+                borderRadius: 12,
+                background: '#22c55e22',
+                border: '1.5px solid #22c55e44',
+              }}>
+                <div style={{
+                  fontSize: 'clamp(14px, 1.6vw, 17px)',
+                  fontWeight: 800,
+                  color: '#22c55e',
+                }}>
+                  {String.fromCodePoint(0x2713)} {loyaltyRedemption.reward_name} applied!
+                </div>
+                <div style={{
+                  fontSize: 'clamp(12px, 1.3vw, 14px)',
+                  color: 'var(--kFg)',
+                  marginTop: 4,
+                  fontWeight: 600,
+                }}>
+                  {loyaltyRedemption.points_deducted} points used
+                  {loyaltyCredit > 0 && ` · ${String.fromCodePoint(0x00A3)}${loyaltyCredit.toFixed(2)} off your order`}
+                </div>
+              </div>
             )}
           </div>
         )}

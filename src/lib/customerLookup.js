@@ -3,30 +3,17 @@
 // ============================================================
 // Looks up an existing customer record by normalized phone, scoped to the
 // kiosk's org. Returns the customer's saved name + email so the kiosk can
-// pre-fill those fields, plus a `rewards` slot that the loyalty system will
-// populate when it ships.
+// pre-fill those fields, plus loyalty rewards and points balance.
 //
-// Today (v5.5.37): rewards / credit / discounts are STUBS. They always
-// return empty / zero. The contract is locked in here so that when loyalty
-// gets built, only this file changes — the kiosk UI doesn't need rewiring.
-//
-// Loyalty integration TODO (separate sprint):
-//   - Add a `customer_rewards` table (or column on customers): { reward_id,
-//     customer_id, label, value, expires_at, redeemed_at }
-//   - In fetchCustomerByPhone(): SELECT eligible rewards alongside the
-//     customer record, return them in the `rewards: []` array
-//   - Add a `loyaltyCredit` numeric balance — extend the return shape with
-//     { credit: number } when the loyalty wallet is built
-//   - The kiosk UI in ScreenDetails already reserves layout space for
-//     "Welcome back, NAME" + a rewards/credit list block — it only renders
-//     when fetchCustomerByPhone returns a knownCustomer:true with non-empty
-//     rewards/credit
+// v5.5.218: Loyalty integration live — rewards[] and credit populated from
+// the loyalty-balance edge function. The kiosk UI in ScreenDetails renders
+// "Welcome back, NAME" + rewards/credit when these are non-empty.
 //
 // Phone normalization matches store/index.js _normalisePhone exactly so the
 // same key resolves whether saved via POS or kiosk.
 // ============================================================
 
-import { supabase, getLocationId } from './supabase';
+import { supabase, platformSupabase, getLocationId, ensureAuthToken } from './supabase';
 
 // Mirror of store._normalisePhone — kept local so this util can be used
 // without depending on the Zustand store (the kiosk's customer-details
@@ -107,16 +94,58 @@ export async function fetchCustomerByPhone(rawPhone, locationId) {
       return null;
     }
     if (!data) return null;
+
+    // v5.5.218: Fetch live loyalty data from the public balance endpoint.
+    // Non-blocking — if it fails we still return the customer with empty loyalty.
+    let rewards = [];
+    let credit = 0;
+    let loyaltyData = null;
+    try {
+      // Resolve company_id from the platform DB (locations → company_id)
+      if (!platformSupabase) throw new Error('platformSupabase not available');
+      const { data: locRow } = await platformSupabase
+        .from('locations')
+        .select('company_id')
+        .or(`ops_location_id.eq.${locId},id.eq.${locId}`)
+        .limit(1)
+        .maybeSingle();
+      const companyId = locRow?.company_id;
+      if (companyId) {
+        const balanceUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/loyalty-balance`
+          + `?customer_id=${encodeURIComponent(data.id)}&company_id=${encodeURIComponent(companyId)}`;
+        const balRes = await fetch(balanceUrl);
+        if (balRes.ok) {
+          loyaltyData = await balRes.json();
+          credit = loyaltyData.points_balance || 0;
+          rewards = (loyaltyData.rewards_available || []).map(r => ({
+            id: r.id,
+            label: r.name,
+            description: r.description || '',
+            icon: r.icon || 'gift',
+            pointsCost: r.points_cost,
+            type: r.reward_type,
+            value: r.reward_value,
+          }));
+        }
+      }
+    } catch (loyaltyErr) {
+      console.warn('[customerLookup] loyalty fetch failed (non-fatal):', loyaltyErr?.message || loyaltyErr);
+    }
+
     return {
       customerId: data.id,
       name: data.name || '',
       email: data.email || null,
       marketingOptIn: !!data.marketing_opt_in,
       knownCustomer: true,
-      // STUB. Loyalty system not built yet. When it ships, populate from a
-      // sibling SELECT or extend this function to JOIN against rewards.
-      rewards: [],
-      credit: 0,
+      rewards,
+      credit,
+      // Extended loyalty data for richer UI
+      memberCode: loyaltyData?.member_code || null,
+      tier: loyaltyData?.tier || null,
+      pointsEarnedTotal: loyaltyData?.points_earned_total || 0,
+      enrolledAt: loyaltyData?.enrolled_at || null,
+      allRewards: loyaltyData?.all_rewards || [],
     };
   } catch (e) {
     console.warn('[customerLookup] unexpected error:', e?.message || e);
@@ -237,6 +266,44 @@ export async function attributeOnlineOrder({
       item_summary: itemSummary,
     });
     if (e3) console.warn('[attributeOnlineOrder] customer_orders insert:', e3.message);
+
+    // v5.5.218: Loyalty points earn for online orders — fire-and-forget.
+    // Uses the same edge function as the POS store's attributeOrderToCustomer.
+    (async () => {
+      try {
+        const token = await ensureAuthToken();
+        if (!token) return;
+        const earnBody = {
+          customer_id: customerId,
+          location_id: locationId,
+          closed_check_id: orderRecord.ref || `online-${Date.now()}`,
+          channel: 'online',
+          items: (orderRecord.items || []).map(i => ({
+            name: i.name, qty: i.qty || 1, price: i.price || 0,
+            cat: i.cat || i.category || null,
+            id: i.itemId || i.id || null,
+            isGiftCard: !!i.isGiftCard,
+          })),
+          subtotal: Number(orderRecord.total) || 0,
+        };
+        const res = await fetch(
+          `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/loyalty-earn`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+            body: JSON.stringify(earnBody),
+          }
+        );
+        const j = await res.json().catch(() => ({}));
+        if (res.ok) {
+          console.info('[attributeOnlineOrder] loyalty earn:', j.points_earned, 'pts → balance:', j.balance);
+        } else if (res.status !== 404) {
+          console.warn('[attributeOnlineOrder] loyalty earn HTTP', res.status, j.error || '');
+        }
+      } catch (le) {
+        console.warn('[attributeOnlineOrder] loyalty earn failed (non-fatal):', le?.message || le);
+      }
+    })();
 
     return customerId;
   } catch (e) {

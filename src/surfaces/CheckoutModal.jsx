@@ -1,5 +1,5 @@
 import { useCompact } from '../lib/useCompact';
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { ALLERGENS } from '../data/seed';
 import SplitModal from '../components/SplitModal';
 import { useStore } from '../store';
@@ -9,6 +9,7 @@ import {
   getAssignedNetworkReader,
 } from '../lib/networkReader';
 import { getActiveLocationSync, supabase, ensureAuthToken } from '../lib/supabase';
+import { fetchCustomerByPhone } from '../lib/customerLookup';
 // (readerDisplay imports removed — cancel now lets the natural cart-change effect refresh the reader after onBack)
 
 // ─── Tip picker ───────────────────────────────────────────────────────────────
@@ -783,8 +784,171 @@ function GiftCardEntry({ totalMinor, giftAlreadyApplied, onApplied, onBack, tabl
   );
 }
 
+// ─── Loyalty rewards entry (v5.5.218) ─────────────────────────────────────────
+// Staff selects a reward to redeem, we call loyalty-redeem, and apply the
+// resulting discount to the checkout total. Follows the same pattern as
+// GiftCardEntry above.
+const FUNCTIONS_URL_LOYALTY = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
+
+function LoyaltyRewardsEntry({ customer, loyaltyData, total, onApplied, onBack }) {
+  const compact = useCompact();
+  const [redeeming, setRedeeming] = useState(null); // reward id being redeemed
+  const [error, setError] = useState('');
+
+  const rewards = loyaltyData?.rewards || [];
+
+  const redeem = async (reward) => {
+    setRedeeming(reward.id);
+    setError('');
+    try {
+      const token = await ensureAuthToken();
+      if (!token) throw new Error('Not authenticated');
+      const res = await fetch(`${FUNCTIONS_URL_LOYALTY}/loyalty-redeem`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          customer_id: loyaltyData.customerId || customer?.customerId,
+          location_id: getActiveLocationSync(),
+          reward_id: reward.id,
+          channel: 'pos',
+        }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+
+      // Calculate the discount value in minor units based on reward type
+      let discountMinor = 0;
+      const rv = j.reward?.value || reward.value || {};
+      if (j.reward?.type === 'discount_fixed' || reward.type === 'discount_fixed') {
+        discountMinor = rv.amount_minor || 0;
+      } else if (j.reward?.type === 'discount_percent' || reward.type === 'discount_percent') {
+        discountMinor = Math.round(total * 100 * (rv.percent || 0) / 100);
+      } else if (j.reward?.type === 'free_delivery' || reward.type === 'free_delivery') {
+        discountMinor = 0; // handled separately
+      } else {
+        // custom / free_item — show on receipt but no automatic discount
+        discountMinor = 0;
+      }
+      // Don't discount more than the total
+      discountMinor = Math.min(discountMinor, Math.round(total * 100));
+
+      onApplied({
+        reward_id: reward.id,
+        reward_name: j.reward?.name || reward.label,
+        points_deducted: j.points_deducted || reward.pointsCost,
+        discount_type: j.reward?.type || reward.type,
+        discount_value: discountMinor,
+        idempotency_key: j.idempotency_key || null,
+        balance_after: j.balance,
+      });
+    } catch (e) {
+      setError(e?.message || 'Redemption failed');
+    } finally {
+      setRedeeming(null);
+    }
+  };
+
+  return (
+    <div>
+      {/* Customer info */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16,
+        padding: '12px 16px', borderRadius: 12,
+        background: 'var(--acc-d, #2a1a0a)', border: '1px solid var(--acc-b, #E8743C33)',
+      }}>
+        <div style={{
+          width: 40, height: 40, borderRadius: '50%', background: 'var(--acc)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: 18, fontWeight: 800, color: '#0b0c10',
+        }}>
+          {(customer?.name || '?').charAt(0).toUpperCase()}
+        </div>
+        <div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--t1)' }}>{customer?.name || 'Customer'}</div>
+          <div style={{ fontSize: 12, color: 'var(--acc)' }}>
+            {loyaltyData.credit} points available
+            {loyaltyData.tier && <span style={{ marginLeft: 6, color: loyaltyData.tier.color || 'var(--t3)' }}>· {loyaltyData.tier.name}</span>}
+          </div>
+        </div>
+      </div>
+
+      {error && (
+        <div style={{ padding: 12, background: 'var(--red-d)', color: 'var(--red)', borderRadius: 8, marginBottom: 12, fontSize: 13, border: '1px solid var(--red-b)' }}>
+          {error}
+        </div>
+      )}
+
+      {/* Rewards list */}
+      <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 10 }}>
+        Choose a reward to redeem
+      </div>
+
+      {rewards.length === 0 && (
+        <div style={{ padding: 20, textAlign: 'center', color: 'var(--t4)', fontSize: 13 }}>
+          No rewards available at current points balance.
+        </div>
+      )}
+
+      {rewards.map(r => (
+        <button
+          key={r.id}
+          onClick={() => redeem(r)}
+          disabled={!!redeeming}
+          style={{
+            width: '100%', padding: compact ? '12px 14px' : '14px 18px',
+            borderRadius: 12, border: '1.5px solid var(--bdr2)', background: 'var(--bg2)',
+            cursor: redeeming ? 'wait' : 'pointer', fontFamily: 'inherit',
+            display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8,
+            opacity: redeeming && redeeming !== r.id ? 0.5 : 1,
+            transition: 'border-color .14s, transform .14s',
+          }}
+          onMouseEnter={e => { if (!redeeming) { e.currentTarget.style.borderColor = 'var(--acc)'; e.currentTarget.style.transform = 'translateY(-1px)'; }}}
+          onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--bdr2)'; e.currentTarget.style.transform = ''; }}
+        >
+          <div style={{
+            width: 36, height: 36, borderRadius: 8, background: 'var(--acc-d, var(--bg3))',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: 14, flexShrink: 0, border: '1px solid var(--bdr)',
+          }}>
+            {r.icon || 'gift'}
+          </div>
+          <div style={{ flex: 1, textAlign: 'left' }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--t1)' }}>{r.label}</div>
+            {r.description && <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2 }}>{r.description}</div>}
+            {r.type === 'discount_fixed' && r.value?.amount_minor && (
+              <div style={{ fontSize: 11, color: 'var(--grn)', marginTop: 2, fontWeight: 600 }}>
+                {String.fromCodePoint(0x00A3)}{(r.value.amount_minor / 100).toFixed(2)} off
+              </div>
+            )}
+            {r.type === 'discount_percent' && r.value?.percent && (
+              <div style={{ fontSize: 11, color: 'var(--grn)', marginTop: 2, fontWeight: 600 }}>
+                {r.value.percent}% off
+              </div>
+            )}
+          </div>
+          <div style={{ textAlign: 'right', flexShrink: 0 }}>
+            <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--acc)', fontFamily: 'var(--font-mono)' }}>
+              {r.pointsCost}
+            </div>
+            <div style={{ fontSize: 10, color: 'var(--t4)' }}>pts</div>
+          </div>
+          {redeeming === r.id && <div style={{ fontSize: 11, color: 'var(--t3)', marginLeft: 6 }}>...</div>}
+        </button>
+      ))}
+
+      <button onClick={onBack} style={{
+        marginTop: 12, width: '100%', padding: '10px', borderRadius: 10,
+        border: '1px solid var(--bdr2)', background: 'transparent',
+        color: 'var(--t3)', fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+      }}>
+        {String.fromCodePoint(0x2190)} Back to payment options
+      </button>
+    </div>
+  );
+}
+
 // ─── Main checkout modal ──────────────────────────────────────────────────────
-export default function CheckoutModal({ items, subtotal, service, total, orderType, covers, tableId, tabName, onClose, onComplete }) {
+export default function CheckoutModal({ items, subtotal, service, total, orderType, covers, tableId, tabName, customer, onClose, onComplete }) {
   const compact = useCompact();
   const { taxRates, deviceConfig, myDrawer } = useStore();
   // v4.6.50: resolve the drawer bound to this POS terminal. If the POS has
@@ -807,10 +971,30 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
   const [giftApplied, setGiftApplied] = useState(null);
   // giftApplied: { card_id, code_last4, applied, remaining_balance, idempotency_key, currency }
 
+  // v5.5.218: loyalty state
+  const [loyaltyData, setLoyaltyData] = useState(null); // { credit, rewards, memberCode, tier, ... }
+  const [loyaltyLoading, setLoyaltyLoading] = useState(false);
+  const [loyaltyApplied, setLoyaltyApplied] = useState(null);
+  // loyaltyApplied: { reward_id, reward_name, points_deducted, discount_type, discount_value, idempotency_key }
+
+  // Fetch loyalty data when checkout opens with a customer that has a phone
+  useEffect(() => {
+    if (!customer?.phone) return;
+    let alive = true;
+    setLoyaltyLoading(true);
+    fetchCustomerByPhone(customer.phone).then(data => {
+      if (!alive) return;
+      if (data?.knownCustomer) setLoyaltyData(data);
+    }).catch(() => {}).finally(() => { if (alive) setLoyaltyLoading(false); });
+    return () => { alive = false; };
+  }, [customer?.phone]);
+
   const isBarTab = orderType==='bar-tab';
   const skipTip  = isBarTab || orderType==='takeaway' || orderType==='collection';
   const giftCredit = giftApplied?.applied ? giftApplied.applied / 100 : 0;
-  const grand    = Math.max(0, total + tipAmt - giftCredit);
+  // Loyalty discount applied to total
+  const loyaltyCredit = loyaltyApplied?.discount_value ? loyaltyApplied.discount_value / 100 : 0;
+  const grand    = Math.max(0, total + tipAmt - giftCredit - loyaltyCredit);
 
   // Calculate tax breakdown
   const taxBreakdown = useMemo(() => {
@@ -821,13 +1005,20 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
   const hasExclusive = taxBreakdown?.hasExclusiveTax;
 
   const complete = (method, tip=tipAmt, tendered=null) => {
+    const hasGift = !!giftApplied;
+    const hasLoyalty = !!loyaltyApplied;
+    let finalMethod = method;
+    if (hasGift && grand > 0) finalMethod = `gift_card+${method}`;
+    else if (hasGift) finalMethod = 'gift_card';
+    if (hasLoyalty) finalMethod = `loyalty+${finalMethod}`;
     onComplete({
-      method: giftApplied && grand > 0 ? `gift_card+${method}` : giftApplied ? 'gift_card' : method,
+      method: finalMethod,
       tip,
       grand: total+tip,
       tendered,
       printReceipt,
       giftCard: giftApplied || undefined,
+      loyaltyRedemption: loyaltyApplied || undefined,
     });
   };
 
@@ -860,7 +1051,7 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
   const SCREENS = {
     review:'Checkout', card_tip:'Gratuity',
     card_terminal:'Card payment', cash:'Cash payment',
-    gift_card:'Gift card',
+    gift_card:'Gift card', loyalty_rewards:'Loyalty rewards',
   };
 
   return (
@@ -954,6 +1145,42 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
                 ))}
               </div>
 
+              {/* v5.5.218: Loyalty banner — show when customer has loyalty data */}
+              {loyaltyData && loyaltyData.credit > 0 && (
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12,
+                  padding: '10px 14px', borderRadius: 10,
+                  background: 'var(--acc-d, #2a1a0a)', border: '1px solid var(--acc-b, #E8743C33)',
+                }}>
+                  <span style={{ fontSize: 18 }}>{'⭐'}</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--acc)' }}>
+                      {loyaltyData.memberCode || customer?.name || 'Loyalty member'}
+                      {loyaltyData.tier && <span style={{ marginLeft: 8, fontSize: 11, color: loyaltyData.tier.color || 'var(--t3)' }}>({loyaltyData.tier.name})</span>}
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2 }}>
+                      {loyaltyData.credit} points
+                      {loyaltyData.rewards?.length > 0 && ` · ${loyaltyData.rewards.length} reward${loyaltyData.rewards.length !== 1 ? 's' : ''} available`}
+                    </div>
+                  </div>
+                  {loyaltyData.rewards?.length > 0 && !loyaltyApplied && (
+                    <button
+                      onClick={() => setScreen('loyalty_rewards')}
+                      style={{
+                        padding: '6px 12px', borderRadius: 8, border: '1px solid var(--acc)',
+                        background: 'transparent', color: 'var(--acc)', fontSize: 11, fontWeight: 700,
+                        cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap',
+                      }}
+                    >
+                      Redeem
+                    </button>
+                  )}
+                </div>
+              )}
+              {loyaltyLoading && customer?.phone && (
+                <div style={{ fontSize: 11, color: 'var(--t4)', marginBottom: 10, textAlign: 'center' }}>Loading loyalty...</div>
+              )}
+
               {/* Totals */}
               <div style={{ background:'var(--bg3)', borderRadius:compact?10:14, padding:compact?'10px 12px':'14px 16px', marginBottom:compact?12:20, border:'1px solid var(--bdr)' }}>
                 {hasTax && hasExclusive ? (
@@ -996,15 +1223,23 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
                 ) : null}
                 <div style={{ height:1, background:'var(--bdr)', margin:'8px 0' }}/>
                 <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
-                  <span style={{ fontSize:15, fontWeight:600, color:'var(--t2)' }}>{giftApplied ? 'Subtotal' : 'Total due'}</span>
-                  <span style={{ fontSize:giftApplied?(compact?16:18):(compact?20:26), fontWeight:800, color:giftApplied?'var(--t2)':'var(--acc)', fontFamily:'var(--font-mono)', letterSpacing:'-.02em' }}>{String.fromCodePoint(0x00A3)}{total.toFixed(2)}</span>
+                  <span style={{ fontSize:15, fontWeight:600, color:'var(--t2)' }}>{(giftApplied || loyaltyApplied) ? 'Subtotal' : 'Total due'}</span>
+                  <span style={{ fontSize:(giftApplied || loyaltyApplied)?(compact?16:18):(compact?20:26), fontWeight:800, color:(giftApplied || loyaltyApplied)?'var(--t2)':'var(--acc)', fontFamily:'var(--font-mono)', letterSpacing:'-.02em' }}>{String.fromCodePoint(0x00A3)}{total.toFixed(2)}</span>
                 </div>
+                {loyaltyApplied && (
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginTop:4 }}>
+                    <span style={{ fontSize:13, color:'var(--grn)', fontWeight:600 }}>{'⭐'} {loyaltyApplied.reward_name} ({loyaltyApplied.points_deducted} pts)</span>
+                    <span style={{ fontSize:14, fontWeight:700, color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{String.fromCodePoint(0x2212)}{String.fromCodePoint(0x00A3)}{loyaltyCredit.toFixed(2)}</span>
+                  </div>
+                )}
                 {giftApplied && (
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginTop:4 }}>
+                    <span style={{ fontSize:13, color:'var(--grn)', fontWeight:600 }}>{String.fromCodePoint(0x1F381)} Gift card (...{giftApplied.code_last4})</span>
+                    <span style={{ fontSize:14, fontWeight:700, color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{String.fromCodePoint(0x2212)}{String.fromCodePoint(0x00A3)}{giftCredit.toFixed(2)}</span>
+                  </div>
+                )}
+                {(giftApplied || loyaltyApplied) && (
                   <>
-                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginTop:4 }}>
-                      <span style={{ fontSize:13, color:'var(--grn)', fontWeight:600 }}>{String.fromCodePoint(0x1F381)} Gift card (...{giftApplied.code_last4})</span>
-                      <span style={{ fontSize:14, fontWeight:700, color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{String.fromCodePoint(0x2212)}{String.fromCodePoint(0x00A3)}{giftCredit.toFixed(2)}</span>
-                    </div>
                     <div style={{ height:1, background:'var(--bdr)', margin:'6px 0' }}/>
                     <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
                       <span style={{ fontSize:15, fontWeight:700, color:'var(--t1)' }}>Remaining due</span>
@@ -1128,6 +1363,19 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
               grand={total}
               onComplete={(tendered)=>complete('cash', 0, tendered)}
               onBack={()=>setScreen('review')}
+            />
+          )}
+
+          {screen==='loyalty_rewards' && loyaltyData && (
+            <LoyaltyRewardsEntry
+              customer={customer}
+              loyaltyData={loyaltyData}
+              total={total}
+              onApplied={(result) => {
+                setLoyaltyApplied(result);
+                setScreen('review');
+              }}
+              onBack={() => setScreen('review')}
             />
           )}
 

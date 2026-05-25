@@ -76,6 +76,27 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.219', date: '25 May 2026', label: 'Loyalty — POS + kiosk reward redemption',
+    changes: [
+      'POS CheckoutModal: loyalty banner shows points balance, tier badge, and redeemable rewards. Staff can redeem a reward mid-checkout — discount applied as credit deduction alongside gift cards.',
+      'Kiosk ScreenLoyalty: returning customers see their points balance, tier, and available rewards after phone lookup. Tap to redeem — calls loyalty-redeem, discount deducted from order total. Screen flow reordered: customer details + reward redemption now happens BEFORE payment so the card reader shows the correct (discounted) amount.',
+      'Points-earned toast: after order close, a delayed toast shows how many loyalty points were earned (1.5s delay so payment confirmation clears first).',
+      'Kiosk submitOrder stamps loyalty redemption on closed_checks.loyalty jsonb and adjusts total/payment_method for split payments.',
+    ],
+  },
+  {
+    version: '5.5.218', date: '25 May 2026', label: 'Loyalty system — Phase 1 complete',
+    changes: [
+      'Back office Loyalty section: enable/disable toggle, points-per-£ config, rounding, expiry, earning exclusions (gift cards, comps, staff discounts), registration/birthday/referral bonuses.',
+      'Rewards catalog CRUD: create, edit, deactivate, reactivate rewards with type (fixed discount, percentage, free item, free delivery, custom), points cost, icons, descriptions.',
+      'Tier management: create tiers with minimum points threshold and earning multiplier (e.g. Gold = 1.5x points).',
+      'Member lookup: search by member code (SRV-XXXXXX), phone, or customer ID. Shows points balance, tier, affordable rewards, gift cards, visit stats.',
+      'POS integration: loyalty-earn fires on every customer-attributed order close. Points earned stamped on closed_checks.loyalty jsonb. Refund reversal via loyalty-refund (fire-and-forget, idempotent).',
+      'Customer lookup (kiosk + POS) returns live loyalty data: points balance, available rewards, tier, member code. Online orders earn points via attributeOnlineOrder.',
+      'Multi-tenant isolation: all edge functions scoped via resolveCompanyForLocation. Idempotency queries scoped by company_id. Public balance endpoint redacted (no referral codes, birthday, staff notes).',
+    ],
+  },
+  {
     version: '5.5.217', date: '25 May 2026', label: 'Gift card auto-reversal on refund',
     changes: [
       'When a closed check that was paid (fully or partially) with a gift card is refunded, the gift card balance is automatically restored via the gift-reverse-redeem edge function.',

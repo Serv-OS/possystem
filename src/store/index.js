@@ -2256,6 +2256,83 @@ export const useStore = create((set, get) => ({
           .eq('location_id', locId);
         if (stampErr) console.warn('[attributeOrderToCustomer] closed_checks customer_id stamp failed:', stampErr.message);
       }
+
+      // v5.5.218: Loyalty points earn — fire-and-forget after customer is resolved.
+      // Same async IIFE pattern as gift card reversal: local mutation already happened
+      // so UX stays snappy. If the edge function is unreachable the points aren't
+      // earned — acceptable because the customer can contact support, and we log it.
+      (async () => {
+        try {
+          const token = await ensureAuthToken();
+          if (!token) { console.warn('[attributeOrderToCustomer] loyalty earn skipped — no auth token'); return; }
+          const earnBody = {
+            customer_id: customerId,
+            location_id: locId,
+            closed_check_id: orderRecord.ref || orderRecord.id,
+            channel: orderRecord.orderType || orderRecord.source || 'pos',
+            items: (orderRecord.items || []).map(i => ({
+              name: i.name, qty: i.qty || 1, price: i.price || 0,
+              cat: i.cat || i.category || null,
+              id: i.itemId || i.id || null,
+              isComp: !!i.isComp,
+              staffDiscount: !!i.isStaffDiscount,
+              isGiftCard: !!i.isGiftCard,
+            })),
+            subtotal: Number(orderRecord.total) || 0,
+            staff_id: orderRecord.staffId || null,
+          };
+          const res = await fetch(
+            `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/loyalty-earn`,
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+              body: JSON.stringify(earnBody),
+            }
+          );
+          const j = await res.json().catch(() => ({}));
+          if (res.ok) {
+            console.info('[loyalty-earn] ✓', j.points_earned, 'pts → balance:', j.balance, j.is_new_member ? '(new member)' : '');
+            // Show points-earned toast (fire after short delay so payment toast clears first)
+            if (j.points_earned > 0) {
+              setTimeout(() => {
+                get().showToast?.(
+                  j.is_new_member
+                    ? `⭐ Welcome! ${j.points_earned} loyalty points earned`
+                    : `⭐ ${j.points_earned} loyalty points earned (balance: ${j.balance})`,
+                  'success'
+                );
+              }, 1500);
+            }
+            // Stamp loyalty summary on the closed check in local state for receipt/refund use
+            if (j.points_earned > 0 || j.is_new_member) {
+              const loyaltySummary = {
+                points_earned: j.points_earned,
+                balance: j.balance,
+                member_code: j.member_code || null,
+                is_new_member: !!j.is_new_member,
+              };
+              set(s => ({
+                closedChecks: s.closedChecks.map(chk =>
+                  chk.id === orderRecord.id ? { ...chk, loyalty: loyaltySummary } : chk
+                ),
+              }));
+              // Best-effort persist loyalty jsonb to Supabase
+              supabase.from('closed_checks')
+                .update({ loyalty: loyaltySummary })
+                .eq('id', orderRecord.id)
+                .then(({ error: le }) => { if (le) console.warn('[loyalty-earn] closed_check update:', le.message); });
+            }
+          } else {
+            // 404 = loyalty not configured for this company — not an error
+            if (res.status !== 404) {
+              console.warn('[loyalty-earn] HTTP', res.status, j.error || '');
+            }
+          }
+        } catch (e) {
+          console.warn('[loyalty-earn] failed:', e?.message || e);
+        }
+      })();
+
       return customerId;
     } catch (err) {
       console.warn('[attributeOrderToCustomer] failed:', err?.message || err);
@@ -3556,6 +3633,46 @@ export const useStore = create((set, get) => ({
           }
         } catch (e) {
           console.warn('[refundCheck] gift reversal failed:', e?.message || e);
+        }
+      })();
+    }
+    // v5.5.218: Loyalty points reversal — clawback earned points and restore
+    // redeemed points. Fire-and-forget, same pattern as gift card reversal.
+    // The edge function is idempotent via refund:{closed_check_id}.
+    if (check?.customer?.phone || check?.customer_id || check?.loyalty) {
+      (async () => {
+        try {
+          const token = await ensureAuthToken();
+          if (!token) { console.warn('[refundCheck] loyalty reversal skipped — no auth token'); return; }
+          // Resolve customer_id: check may have it directly, or we find it from loyalty data
+          const customerId = check.customer_id || check.loyalty?.customer_id || null;
+          if (!customerId) {
+            console.warn('[refundCheck] loyalty reversal skipped — no customer_id on check');
+            return;
+          }
+          const res = await fetch(
+            `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/loyalty-refund`,
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+              body: JSON.stringify({
+                customer_id: customerId,
+                location_id: getActiveLocationSync(),
+                closed_check_id: check.ref || check.id,
+                reason: reason || 'refund',
+                staff_id: manager?.id || null,
+              }),
+            }
+          );
+          const j = await res.json().catch(() => ({}));
+          if (res.ok) {
+            console.info('[refundCheck] loyalty reversed:', j.status, 'points:', j.points_reversed);
+          } else if (res.status !== 404) {
+            // 404 = no loyalty transactions for this check — not an error
+            console.warn('[refundCheck] loyalty reversal HTTP', res.status, j.error || '');
+          }
+        } catch (e) {
+          console.warn('[refundCheck] loyalty reversal failed:', e?.message || e);
         }
       })();
     }
