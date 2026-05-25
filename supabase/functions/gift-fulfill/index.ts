@@ -301,6 +301,7 @@ Deno.serve(async (req) => {
   }
 
   // Insert card (store plaintext code for back-office voucher/resend)
+  // v5.5.220: recipient_phone set from sender_phone (self-purchase links to buyer)
   const { data: card, error: cardErr } = await platformAdmin
     .from('gift_cards')
     .insert({
@@ -315,6 +316,7 @@ Deno.serve(async (req) => {
       expires_at: expiresAt,
       recipient_name: purchase.recipient_name,
       recipient_email: purchase.recipient_email,
+      recipient_phone: purchase.sender_phone || null,
       note: purchase.message || null,
       source: 'online',
     })
@@ -355,6 +357,71 @@ Deno.serve(async (req) => {
       fulfilled_at: new Date().toISOString(),
     })
     .eq('id', purchaseId);
+
+  // v5.5.220: Create/link customer profile for the sender so the purchase
+  // shows up in CRM and loyalty. Fire-and-forget — never block card issuance.
+  if (purchase.sender_phone) {
+    (async () => {
+      try {
+        const phoneN = normalisePhone(purchase.sender_phone);
+        if (!phoneN) return;
+
+        // Resolve org_id from location
+        const { data: locRow } = await platformAdmin
+          .from('locations')
+          .select('org_id')
+          .eq('id', purchase.location_id)
+          .maybeSingle();
+        if (!locRow?.org_id) return;
+
+        // Upsert customer by phone in ops DB
+        const { data: existing } = await opsAdmin
+          .from('customers')
+          .select('id')
+          .eq('org_id', locRow.org_id)
+          .eq('phone', phoneN)
+          .is('deleted_at', null)
+          .maybeSingle();
+
+        let customerId: string;
+        if (existing) {
+          customerId = existing.id;
+          // Update name/email if they're blank
+          await opsAdmin.from('customers')
+            .update({
+              name: purchase.sender_name,
+              ...(purchase.sender_email ? { email: purchase.sender_email } : {}),
+            })
+            .eq('id', customerId)
+            .is('name', null); // only update if name was null
+        } else {
+          const { data: newCust } = await opsAdmin
+            .from('customers')
+            .insert({
+              org_id: locRow.org_id,
+              name: purchase.sender_name,
+              email: purchase.sender_email || null,
+              phone: phoneN,
+            })
+            .select('id')
+            .single();
+          if (!newCust) return;
+          customerId = newCust.id;
+        }
+
+        // Upsert customer_locations junction
+        await opsAdmin.from('customer_locations')
+          .upsert({
+            customer_id: customerId,
+            location_id: purchase.location_id,
+          }, { onConflict: 'customer_id,location_id' });
+
+        console.log('[gift-fulfill] customer linked:', customerId, phoneN);
+      } catch (e) {
+        console.warn('[gift-fulfill] customer link failed (non-fatal):', e);
+      }
+    })();
+  }
 
   // Send delivery email via send-receipt edge function
   const currency = (config.currency || 'gbp').toLowerCase();
@@ -444,3 +511,14 @@ Deno.serve(async (req) => {
     ...(callerUserId ? { code: formatCode(code) } : {}),
   });
 });
+
+// ── Phone normalisation ──────────────────────────────────────────────────
+function normalisePhone(raw: string): string | null {
+  if (!raw) return null;
+  const digits = String(raw).replace(/[^\d+]/g, '');
+  if (!digits) return null;
+  if (digits.startsWith('+')) return digits;
+  if (digits.startsWith('07') && digits.length === 11) return '+44' + digits.slice(1);
+  if (digits.startsWith('44')) return '+' + digits;
+  return digits;
+}

@@ -50,7 +50,7 @@ Deno.serve(async (req) => {
 
   const {
     company_id, location_id, amount_minor,
-    sender_name, sender_email,
+    sender_name, sender_email, sender_phone,
     recipient_name, recipient_email, message,
     delivery_type = 'email',
     success_url, cancel_url,
@@ -119,6 +119,7 @@ Deno.serve(async (req) => {
       currency: config.currency || 'gbp',
       sender_name,
       sender_email,
+      sender_phone: sender_phone || null,
       recipient_name,
       recipient_email,
       message: message || null,

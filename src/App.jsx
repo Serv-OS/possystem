@@ -76,6 +76,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.220', date: '25 May 2026', label: 'Gift card purchase — mandatory phone + customer linking',
+    changes: [
+      'Online gift card purchase form now requires a mobile number. Links the buyer to a customer profile in the CRM so the purchase appears in their loyalty history.',
+      'gift-checkout-session: accepts and stores sender_phone on gift_card_purchases.',
+      'gift-fulfill: sets recipient_phone on the issued gift card, and creates/links a customer profile (upsert by phone in ops DB) with customer_locations junction. Fire-and-forget — never blocks card issuance.',
+      'Schema: sender_phone column added to gift_card_purchases (Platform DB).',
+    ],
+  },
+  {
     version: '5.5.219', date: '25 May 2026', label: 'Loyalty — POS + kiosk reward redemption',
     changes: [
       'POS CheckoutModal: loyalty banner shows points balance, tier badge, and redeemable rewards. Staff can redeem a reward mid-checkout — discount applied as credit deduction alongside gift cards.',

@@ -26,6 +26,7 @@ export default function GiftPurchaseSurface({ location }) {
   // Sender
   const [senderName, setSenderName] = useState('');
   const [senderEmail, setSenderEmail] = useState('');
+  const [senderPhone, setSenderPhone] = useState('');
 
   // Recipient
   const [deliveryType, setDeliveryType] = useState('email'); // 'email' | 'self'
@@ -46,7 +47,10 @@ export default function GiftPurchaseSurface({ location }) {
     return selectedPreset || 0;
   }, [isCustom, customAmount, selectedPreset]);
 
-  const canSubmit = amountMinor >= 500 && senderName.trim() && senderEmail.trim()
+  // v5.5.220: phone mandatory — links purchase to customer profile for loyalty
+  const phoneClean = senderPhone.replace(/[^\d+]/g, '');
+  const phoneValid = phoneClean.length >= 10;
+  const canSubmit = amountMinor >= 500 && senderName.trim() && senderEmail.trim() && phoneValid
     && (deliveryType === 'self' || (recipientName.trim() && recipientEmail.trim()));
 
   const handleBuy = async () => {
@@ -60,6 +64,7 @@ export default function GiftPurchaseSurface({ location }) {
         amount_minor: amountMinor,
         sender_name: senderName.trim(),
         sender_email: senderEmail.trim(),
+        sender_phone: senderPhone.trim(),
         recipient_name: deliveryType === 'self' ? senderName.trim() : recipientName.trim(),
         recipient_email: deliveryType === 'self' ? senderEmail.trim() : recipientEmail.trim(),
         message: message.trim() || null,
@@ -173,6 +178,7 @@ export default function GiftPurchaseSurface({ location }) {
         <Section title="Your details" t={t}>
           <Input label="Your name" value={senderName} onChange={setSenderName} placeholder="Your name" t={t} />
           <Input label="Your email" type="email" value={senderEmail} onChange={setSenderEmail} placeholder="you@email.com" t={t} />
+          <Input label="Your mobile number" type="tel" value={senderPhone} onChange={v => setSenderPhone(v.replace(/[^0-9 +]/g, ''))} placeholder="07xxx xxx xxx" t={t} inputMode="tel" />
         </Section>
 
         {/* ── Delivery ───────────────────────────────────── */}
@@ -306,7 +312,7 @@ function Section({ title, children, t }) {
   );
 }
 
-function Input({ label, value, onChange, placeholder, type = 'text', t }) {
+function Input({ label, value, onChange, placeholder, type = 'text', t, inputMode }) {
   return (
     <div style={{ marginBottom: 12 }}>
       <label style={{ fontSize: 12, fontWeight: 600, color: t.textMuted, display: 'block', marginBottom: 6 }}>
@@ -314,6 +320,7 @@ function Input({ label, value, onChange, placeholder, type = 'text', t }) {
       </label>
       <input
         type={type}
+        inputMode={inputMode}
         value={value}
         onChange={e => onChange(e.target.value)}
         placeholder={placeholder}
