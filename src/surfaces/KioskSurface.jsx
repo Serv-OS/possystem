@@ -146,7 +146,7 @@ export default function KioskSurface() {
           }}>
           {working ? 'Pairing…' : 'Pair'}
         </button>
-        <div style={{ marginTop: 24, fontSize: 11.5, color: 'rgba(255,255,255,0.4)' }}>Restaurant OS · Kiosk</div>
+        <div style={{ marginTop: 24, fontSize: 11.5, color: 'rgba(255,255,255,0.4)' }}>Serv OS · Kiosk</div>
       </div>
     </div>
   );

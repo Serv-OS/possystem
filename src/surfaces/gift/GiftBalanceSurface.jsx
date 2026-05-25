@@ -202,7 +202,7 @@ export default function GiftBalanceSurface({ location }) {
         </div>
 
         <div style={{ textAlign: 'center', marginTop: 32, fontSize: 11, color: t.textDim }}>
-          Powered by serv-os.app
+          Powered by Serv OS
         </div>
       </div>
     </div>

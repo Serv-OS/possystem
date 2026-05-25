@@ -101,7 +101,7 @@ function CustomerShell({ children, location }) {
         <div style={{ marginBottom:24, textAlign:'center' }}>
           <div style={{ fontSize:24, fontWeight:800 }}>{location.name}</div>
           <div style={{ fontSize:12, color:'#777', marginTop:4 }}>
-            Powered by serv-os.app
+            Powered by Serv OS
           </div>
         </div>
       )}

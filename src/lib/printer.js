@@ -223,7 +223,7 @@ export async function buildCustomerReceipt({ location, check, items, totals }) {
     }
   }
 
-  b.fontB().line('Powered by Restaurant OS').fontA()
+  b.fontB().line('Powered by Serv OS').fontA()
    .lf(4).cut();
 
   return b.toBytes();

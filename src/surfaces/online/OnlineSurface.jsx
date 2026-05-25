@@ -820,7 +820,7 @@ function Welcome({ theme, orderTypes, loyalty, onPickType, onLoyalty }) {
         </button>
 
         <div style={{ marginTop: 32, fontSize: 11, opacity: 0.75, textShadow: '0 1px 3px rgba(0,0,0,0.4)' }}>
-          Powered by serv-os.app
+          Powered by Serv OS
         </div>
       </div>
     </div>

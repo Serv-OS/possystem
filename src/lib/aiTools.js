@@ -1,5 +1,5 @@
 /**
- * Restaurant OS — AI Tool Executor
+ * Serv OS — AI Tool Executor
  * Runs tool calls returned by the AI, reading data from Supabase.
  * Write tools return a "pending" action — the user must confirm before execution.
  */

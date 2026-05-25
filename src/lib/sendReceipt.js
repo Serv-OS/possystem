@@ -85,7 +85,7 @@ function buildReceiptHtml({ check, locationLabel }) {
     </div>
 
     <div style="margin-top:24px;padding-top:14px;border-top:1px solid #e2e8f0;text-align:center;font-size:11px;color:#94a3b8;">
-      Powered by Restaurant OS
+      Powered by Serv OS
     </div>
   </div>
 </body></html>`;
@@ -113,7 +113,7 @@ function buildReceiptText({ check, locationLabel }) {
   lines.push(`Total     ${money(total)}`);
   if (check.method) lines.push(`Paid by ${check.method}`);
   lines.push('');
-  lines.push('Powered by Restaurant OS');
+  lines.push('Powered by Serv OS');
   return lines.join('\n');
 }
 

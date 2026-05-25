@@ -105,7 +105,7 @@ function buildGiftCardEmail(opts: {
   const b = opts.branding || {};
   const bg = b.background || '#0e0e10';
   const fg = b.foreground || '#ffffff';
-  const accent = b.accent_color || '#e8a020';
+  const accent = b.accent_color || '#E8743C';
   const logoUrl = b.logo_url || null;
   // Derive a subtle foreground for secondary text on the header
   const fgSub = fg === '#ffffff' ? 'rgba(255,255,255,0.6)' : 'rgba(0,0,0,0.5)';

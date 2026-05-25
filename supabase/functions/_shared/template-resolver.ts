@@ -83,7 +83,7 @@ export function wrapInEmailHtml(
   body: string,
   opts?: { venueName?: string; accentColor?: string },
 ): string {
-  const accent = opts?.accentColor || '#e8a020';
+  const accent = opts?.accentColor || '#E8743C';
   const venue = opts?.venueName || '';
   // Convert text to HTML paragraphs
   const htmlBody = body

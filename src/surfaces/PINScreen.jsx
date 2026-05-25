@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useStore } from '../store';
 import { supabase, isMock } from '../lib/supabase';
+import { ServOSIcon, ServOSWordmark } from '../components/ServOSBrand';
 
 export default function PINScreen() {
   const { login, staffMembers } = useStore();
@@ -84,8 +85,8 @@ export default function PINScreen() {
     }}>
       {/* Logo */}
       <div style={{ textAlign:'center' }}>
-        <div style={{ width:56, height:56, background:'var(--acc)', borderRadius:16, display:'flex', alignItems:'center', justifyContent:'center', fontSize:26, fontWeight:800, color:'#0e0f14', margin:'0 auto 14px' }}>R</div>
-        <div style={{ fontSize:22, fontWeight:800, color:'var(--t1)', letterSpacing:'-.02em' }}>Restaurant OS</div>
+        <div style={{ margin:'0 auto 14px', width:56 }}><ServOSIcon size={56} /></div>
+        <ServOSWordmark fontSize={24} />
         <div style={{ fontSize:13, color:'var(--t3)', marginTop:4 }}>
           {loadedStaff === null ? 'Loading staff…' : staff.length ? 'Select your profile to continue' : 'No staff configured — go to Back Office → Staff'}
         </div>

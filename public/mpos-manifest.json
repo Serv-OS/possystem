@@ -1,12 +1,12 @@
 {
-  "name": "Restaurant OS · MPOS",
+  "name": "Serv OS · MPOS",
   "short_name": "MPOS",
   "description": "Mobile POS for servers and runners",
   "start_url": "/?mode=mpos",
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#0f1117",
-  "theme_color": "#d4881c",
+  "theme_color": "#C75A29",
   "categories": ["business", "productivity"],
   "icons": [
     { "src": "/icons/icon-72x72.png",   "sizes": "72x72",   "type": "image/png" },

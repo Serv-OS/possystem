@@ -339,8 +339,8 @@ function AdminPanel({ authUser }) {
       {/* ── Sidebar ── */}
       <div style={S.sidebar}>
         <div style={S.brand}>
-          <div style={S.brandBadge}>R</div>
-          <div style={{ fontSize:14, fontWeight:800, color:'var(--t1)' }}>Restaurant OS</div>
+          <div style={S.brandBadge}>S</div>
+          <div style={{ fontSize:14, fontWeight:800, color:'var(--t1)' }}>Serv OS</div>
           <div style={{ fontSize:11, color:'var(--acc)', fontWeight:700, letterSpacing:'.06em', textTransform:'uppercase' }}>Company Admin</div>
         </div>
         {[

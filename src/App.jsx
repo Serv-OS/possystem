@@ -76,6 +76,16 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.216', date: '25 May 2026', label: 'ServOS rebrand — new name, icon, and colour system',
+    changes: [
+      'Full rebrand from "Restaurant OS" to "Serv OS" across all surfaces — login, device setup, mode selector, pairing, PIN screen, kiosk, MPOS, receipts, admin.',
+      'New ServOS icon mark (ember tile with S/OS path) replaces the "R" badge. Shared components: ServOSIcon, ServOSWordmark, ServOSLockup.',
+      'Accent colour updated from gold (#e8a020) to Ember (#E8743C) across CSS variables, gift card defaults, email templates, and edge functions.',
+      'Instrument Serif font loaded for brand wordmark. Favicon and PWA manifest updated with new icon and theme colour (#C75A29).',
+      'All "Powered by" footers updated to "Powered by Serv OS".',
+    ],
+  },
+  {
     version: '5.5.215', date: '25 May 2026', label: 'Fix remaining hardcoded domain references',
     changes: [
       'BackOfficeApp: preview links (online, QR, gift cards) now use customerUrl() instead of hardcoded dev.pos-up.com.',
@@ -5172,7 +5182,7 @@ function WhatsNewModal({ onClose }) {
         <div style={{ padding:'18px 22px 14px', borderBottom:'1px solid var(--bdr)', display:'flex', alignItems:'center', justifyContent:'space-between', flexShrink:0 }}>
           <div>
             <div style={{ fontSize:17, fontWeight:700, color:'var(--t1)' }}>What's new</div>
-            <div style={{ fontSize:12, color:'var(--t3)', marginTop:2 }}>Restaurant OS · version history</div>
+            <div style={{ fontSize:12, color:'var(--t3)', marginTop:2 }}>Serv OS · version history</div>
           </div>
           <button onClick={onClose} style={{ background:'none', border:'none', color:'var(--t3)', cursor:'pointer', fontSize:22, lineHeight:1 }}>×</button>
         </div>

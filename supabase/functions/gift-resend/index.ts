@@ -65,7 +65,7 @@ function buildGiftCardEmail(opts: {
     </div>
     ${expiryLine}
     <div style="text-align:center;margin-top:24px;">
-      <a href="${balanceUrl}" style="display:inline-block;padding:12px 28px;background:#e8a020;color:#0b0c10;border-radius:99px;font-weight:800;font-size:14px;text-decoration:none;">Check Balance</a>
+      <a href="${balanceUrl}" style="display:inline-block;padding:12px 28px;background:#E8743C;color:#0b0c10;border-radius:99px;font-weight:800;font-size:14px;text-decoration:none;">Check Balance</a>
     </div>
   </td></tr>
   <tr><td style="padding:16px 24px;border-top:1px solid #eee;text-align:center;">

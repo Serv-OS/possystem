@@ -32,7 +32,7 @@ async function uploadOnlineAsset(file, locationId, kind) {
 const BLANK_BRANDING = {
   logo_url: '',
   hero_url: '',
-  accent_color: '#e8a020',
+  accent_color: '#E8743C',
   background:   '#0e0e10',
   foreground:   '#ffffff',
 };

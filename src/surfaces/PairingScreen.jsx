@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { supabase, isMock, LOCATION_ID, enforceTenantFence } from '../lib/supabase';
 import { VERSION } from '../lib/version';
+import { ServOSIcon, ServOSWordmark } from '../components/ServOSBrand';
 
 export default function PairingScreen({ onPaired }) {
   const [code, setCode] = useState('');
@@ -114,14 +115,10 @@ export default function PairingScreen({ onPaired }) {
         boxShadow: '0 8px 40px rgba(0,0,0,0.12)',
       }}>
         {/* Logo */}
-        <div style={{
-          width: 56, height: 56, borderRadius: 16, background: 'var(--acc)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: 28, fontWeight: 800, color: '#fff', margin: '0 auto 16px',
-        }}>R</div>
+        <div style={{ margin: '0 auto 16px', width: 56 }}><ServOSIcon size={56} /></div>
 
         <div style={{ fontSize: 22, fontWeight: 800, color: 'var(--t1)', marginBottom: 6 }}>
-          Welcome to Restaurant OS
+          Welcome to <ServOSWordmark fontSize={22} />
         </div>
         <div style={{ fontSize: 14, color: 'var(--t3)', marginBottom: 40, lineHeight: 1.5 }}>
           This device hasn't been set up yet.<br />

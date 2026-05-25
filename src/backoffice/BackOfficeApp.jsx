@@ -117,7 +117,7 @@ export default function BackOfficeApp() {
         // Set orgCtx anyway so the gate doesn't hang. boAccess defaults true so
         // existing users keep working — same fallback we use when bo_access is
         // undefined on the row.
-        setOrgCtx({ role: null, boAccess: true, orgId: null, orgName: 'Restaurant OS', locationId: null, locationName: null });
+        setOrgCtx({ role: null, boAccess: true, orgId: null, orgName: 'Serv OS', locationId: null, locationName: null });
         return;
       }
       profile = data;
@@ -152,7 +152,7 @@ export default function BackOfficeApp() {
           // their existing users before the migration runs.
           boAccess: profile.role === 'super_admin' || profile.bo_access !== false,
           orgId: profile.org_id,
-          orgName: profile.organisations?.name || 'Restaurant OS',
+          orgName: profile.organisations?.name || 'Serv OS',
           locationId: effectiveLocId,
           locationName,
         });
@@ -312,7 +312,7 @@ export default function BackOfficeApp() {
             }}>{orgCtx?.orgName?.[0] || 'R'}</div>
             <div>
               <div style={{ fontSize:13, fontWeight:800, color:'var(--t1)', letterSpacing:'-.01em' }}>
-                {orgCtx?.orgName || 'Restaurant OS'}
+                {orgCtx?.orgName || 'Serv OS'}
               </div>
               <div style={{ fontSize:10, color:'var(--acc)', fontWeight:700, letterSpacing:'.05em', textTransform:'uppercase' }}>
                 {orgCtx?.locationName || 'Back Office'}
@@ -682,7 +682,7 @@ function BOOverview({ setSection, orgCtx }) {
 
       <div style={{ marginBottom:28 }}>
         <div style={{ fontSize:11, fontWeight:700, color:'var(--acc)', letterSpacing:'.08em', textTransform:'uppercase', marginBottom:4 }}>
-          {orgCtx?.locationName ? `${orgCtx.orgName} · ${orgCtx.locationName}` : orgCtx?.orgName || 'Restaurant OS'}
+          {orgCtx?.locationName ? `${orgCtx.orgName} · ${orgCtx.locationName}` : orgCtx?.orgName || 'Serv OS'}
         </div>
         <div style={{ fontSize:24, fontWeight:800, color:'var(--t1)', letterSpacing:'-.01em', marginBottom:4 }}>
           Good {new Date().getHours() < 12 ? 'morning' : new Date().getHours() < 17 ? 'afternoon' : 'evening'}

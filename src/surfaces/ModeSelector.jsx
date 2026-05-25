@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { VERSION } from '../lib/version';
+import { ServOSIcon, ServOSWordmark } from '../components/ServOSBrand';
 
 function Card({ icon, title, desc, note, accent, onClick }) {
   const [hover, setHover] = useState(false);
@@ -34,15 +35,8 @@ export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelect
     }}>
       {/* Header */}
       <div style={{ textAlign: 'center', marginBottom: 56 }}>
-        <div style={{
-          width: 56, height: 56, borderRadius: 16,
-          background: 'linear-gradient(135deg, #d4881c, #e8a020)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: 28, fontWeight: 800, color: '#fff',
-          margin: '0 auto 20px',
-          boxShadow: '0 8px 30px rgba(212,136,28,0.25)',
-        }}>R</div>
-        <div style={{ fontSize: 32, fontWeight: 800, color: '#f1f5f9', marginBottom: 10 }}>Restaurant OS</div>
+        <div style={{ margin: '0 auto 20px', width: 56 }}><ServOSIcon size={56} /></div>
+        <div style={{ marginBottom: 10 }}><ServOSWordmark fontSize={34} color="#f1f5f9" /></div>
         <div style={{ fontSize: 16, color: '#64748b' }}>What is this device being used for?</div>
       </div>
 
@@ -53,7 +47,7 @@ export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelect
           title="POS Terminal"
           desc="A till, counter screen, or handheld used by staff to take orders and process payments."
           note="Requires a pairing code from Back Office"
-          accent="#d4881c"
+          accent="#E8743C"
           onClick={onSelectPOS}
         />
         <Card
@@ -68,7 +62,7 @@ export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelect
           icon="🏢"
           title="Back Office"
           desc="For owners and managers — menu builder, staff, reports, device management and settings."
-          note="Requires a Restaurant OS account"
+          note="Requires a Serv OS account"
           accent="#6366f1"
           onClick={onSelectBackOffice}
         />
@@ -90,8 +84,8 @@ export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelect
         >
           <span style={{ fontSize: 18 }}>🔐</span>
           <div style={{ textAlign: 'left' }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: '#64748b' }}>Restaurant OS Internal — Company Admin</div>
-            <div style={{ fontSize: 12, color: '#334155' }}>Your internal tool for creating and managing restaurants on the platform</div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#64748b' }}>Serv OS Internal — Company Admin</div>
+            <div style={{ fontSize: 12, color: '#334155' }}>Your internal tool for creating and managing venues on the platform</div>
           </div>
         </button>
       </div>

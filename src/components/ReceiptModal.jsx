@@ -46,7 +46,7 @@ export function ReceiptModal({ items, subtotal, service, total, checkDiscount, o
         .void { text-decoration:line-through; color:#999; }
       </style>
       </head><body>
-      <div class="center bold big">Restaurant OS</div>
+      <div class="center bold big">Serv OS</div>
       <div class="center muted" style="margin:4px 0 8px">
         ${tableLabel ? tableLabel : customer?.name ? customer.name : orderType}<br>
         ${server ? `Server: ${server}` : ''}${covers>1 ? ` · ${covers} covers` : ''}<br>
@@ -106,7 +106,7 @@ export function ReceiptModal({ items, subtotal, service, total, checkDiscount, o
         {/* Receipt preview */}
         <div style={{padding:'16px 20px',fontFamily:'DM Mono, monospace'}}>
           <div style={{textAlign:'center',marginBottom:12}}>
-            <div style={{fontSize:14,fontWeight:700,color:'var(--t1)'}}>Restaurant OS</div>
+            <div style={{fontSize:14,fontWeight:700,color:'var(--t1)'}}>Serv OS</div>
             <div style={{fontSize:11,color:'var(--t3)',marginTop:3}}>
               {tableLabel || orderType}{server?` · ${server}`:''}{covers>1?` · ${covers} covers`:''}
             </div>

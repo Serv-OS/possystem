@@ -85,13 +85,13 @@ export default function UpdateBanner() {
           Update available
         </div>
         <div style={{ fontSize: 11, color: '#64748b' }}>
-          A new version of Restaurant OS is ready
+          A new version of Serv OS is ready
         </div>
       </div>
       <button
         onClick={applyUpdate}
         style={{
-          background: '#d4881c',
+          background: '#C75A29',
           color: '#0b0c10',
           border: 'none',
           borderRadius: 9,

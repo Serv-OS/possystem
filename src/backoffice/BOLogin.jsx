@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { VERSION } from '../lib/version';
+import { ServOSIcon, ServOSWordmark } from '../components/ServOSBrand';
 
 export default function BOLogin({ onLogin }) {
   const [email, setEmail] = useState('');
@@ -35,22 +36,16 @@ export default function BOLogin({ onLogin }) {
       }}>
         {/* Logo */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 'auto' }}>
-          <div style={{
-            width: 44, height: 44, borderRadius: 12,
-            background: 'linear-gradient(135deg, #d4881c, #e8a020)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: 22, fontWeight: 800, color: '#fff',
-            boxShadow: '0 4px 20px rgba(212,136,28,0.3)',
-          }}>R</div>
+          <ServOSIcon size={44} />
           <div>
-            <div style={{ fontSize: 18, fontWeight: 800, color: '#f1f5f9' }}>Restaurant OS</div>
+            <ServOSWordmark fontSize={20} color="#f1f5f9" />
             <div style={{ fontSize: 11, color: '#6366f1', fontWeight: 600, letterSpacing: '.08em', textTransform: 'uppercase' }}>Back Office</div>
           </div>
         </div>
 
         <div style={{ marginBottom: 'auto', paddingTop: 80 }}>
           <div style={{ fontSize: 32, fontWeight: 800, color: '#f1f5f9', lineHeight: 1.2, marginBottom: 16 }}>
-            Manage your restaurant from anywhere
+            Manage your venue from anywhere
           </div>
           <div style={{ fontSize: 15, color: '#64748b', lineHeight: 1.7 }}>
             Menus, staff, floor plans, reports and device management — all in one place.

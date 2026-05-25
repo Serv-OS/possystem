@@ -610,7 +610,7 @@ function ReceiptPreview({ branding }) {
           )}
 
           <div style={{ textAlign: 'center', fontSize: 8, color: '#666', marginTop: 12 }}>
-            Powered by Restaurant OS
+            Powered by Serv OS
           </div>
         </div>
       </div>

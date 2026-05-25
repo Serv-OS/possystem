@@ -13,7 +13,7 @@ const ASSET_BUCKET = 'receipt-assets';
 const BLANK_BRANDING = {
   logo_url: '',
   hero_url: '',
-  accent_color: '#e8a020',
+  accent_color: '#E8743C',
   background:   '#0e0e10',
   foreground:   '#ffffff',
 };
@@ -89,7 +89,7 @@ function openVoucher({ code, amount, currency = 'gbp', recipientName, businessNa
   // Branding: derive gradient from bgColor, or fall back to dark navy
   const topBg = bgColor || '#1a1a2e';
   const topFg = fgColor || '#ffffff';
-  const accent = accentColor || '#e8a020';
+  const accent = accentColor || '#E8743C';
   // Darken the bg slightly for gradient end
   const gradEnd = darkenHex(topBg, 0.15);
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Gift Card Voucher</title>
