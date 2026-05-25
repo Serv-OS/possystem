@@ -76,8 +76,9 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
-    version: '5.5.225', date: '25 May 2026', label: 'Fix LocationSettings crash — undefined ROOT variable',
+    version: '5.5.226', date: '25 May 2026', label: 'Fix Members panel crash + LocationSettings ROOT fix',
     changes: [
+      'Fixed MembersPanel crash — useMemo was missing from React imports in LoyaltyManager.jsx.',
       'Fixed ReferenceError: ROOT is not defined in LocationSettings.jsx OnlineOrderingCard — changed to use imported CUSTOMER_ROOT.',
     ],
   },

@@ -6,7 +6,7 @@
 //   - platformSupabase for location/company resolution
 //   - Tab-based sub-sections
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase, platformSupabase, getLocationId, getActiveLocationSync } from '../../lib/supabase';
 import { customerUrl } from '../../lib/env';
 
