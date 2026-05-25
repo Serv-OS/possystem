@@ -933,8 +933,13 @@ function GiftCardsTab({ t, giftCards }) {
 
 // ── Profile Tab ──────────────────────────────────────────────────────────
 function ProfileTab({ t, customer, loyalty, token, location, onRefresh, onLogout }) {
-  const [name, setName] = useState(customer?.name || '');
+  // Split stored name into first/last for editing
+  const nameParts = (customer?.name || '').split(' ');
+  const [firstName, setFirstName] = useState(nameParts[0] || '');
+  const [lastName, setLastName] = useState(nameParts.slice(1).join(' ') || '');
   const [email, setEmail] = useState(customer?.email || '');
+  const [birthday, setBirthday] = useState(customer?.birthday || '');
+  const [marketingOptIn, setMarketingOptIn] = useState(customer?.marketing_opt_in || false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -942,13 +947,16 @@ function ProfileTab({ t, customer, loyalty, token, location, onRefresh, onLogout
     setSaving(true);
     setSaved(false);
     try {
+      const fullName = `${firstName.trim()} ${lastName.trim()}`.trim();
       await callPortal({
         action: 'update_profile',
         token,
         phone: customer?.phone || '_',
         company_id: location.company_id,
-        name: name.trim(),
+        name: fullName,
         email: email.trim(),
+        birthday: birthday || null,
+        marketing_opt_in: marketingOptIn,
       });
       setSaved(true);
       onRefresh();
@@ -965,14 +973,28 @@ function ProfileTab({ t, customer, loyalty, token, location, onRefresh, onLogout
       <Card t={t} style={{ marginBottom: 14 }}>
         <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 16 }}>Your details</div>
 
-        <FieldLabel t={t}>Name</FieldLabel>
-        <input
-          type="text"
-          value={name}
-          onChange={e => setName(e.target.value)}
-          placeholder="Your name"
-          style={inputStyle(t)}
-        />
+        <div style={{ display: 'flex', gap: 12 }}>
+          <div style={{ flex: 1 }}>
+            <FieldLabel t={t}>First name</FieldLabel>
+            <input
+              type="text"
+              value={firstName}
+              onChange={e => setFirstName(e.target.value)}
+              placeholder="First name"
+              style={inputStyle(t)}
+            />
+          </div>
+          <div style={{ flex: 1 }}>
+            <FieldLabel t={t}>Last name</FieldLabel>
+            <input
+              type="text"
+              value={lastName}
+              onChange={e => setLastName(e.target.value)}
+              placeholder="Last name"
+              style={inputStyle(t)}
+            />
+          </div>
+        </div>
 
         <FieldLabel t={t} style={{ marginTop: 14 }}>Email</FieldLabel>
         <input
@@ -991,7 +1013,37 @@ function ProfileTab({ t, customer, loyalty, token, location, onRefresh, onLogout
           style={{ ...inputStyle(t), opacity: 0.5, cursor: 'not-allowed' }}
         />
         <div style={{ fontSize: 11, color: t.textDim, marginTop: 4 }}>
-          Phone number cannot be changed
+          Verified via SMS — cannot be changed
+        </div>
+
+        <FieldLabel t={t} style={{ marginTop: 14 }}>Date of birth</FieldLabel>
+        <input
+          type="date"
+          value={birthday}
+          onChange={e => setBirthday(e.target.value)}
+          style={{ ...inputStyle(t), colorScheme: t.bg === '#0e0e10' ? 'dark' : 'light' }}
+        />
+
+        {/* Marketing opt-in */}
+        <div
+          onClick={() => setMarketingOptIn(!marketingOptIn)}
+          style={{
+            display: 'flex', alignItems: 'flex-start', gap: 10, marginTop: 16,
+            cursor: 'pointer', userSelect: 'none',
+          }}
+        >
+          <div style={{
+            width: 20, height: 20, borderRadius: 5, flexShrink: 0, marginTop: 1,
+            border: `2px solid ${marketingOptIn ? t.accent : t.border}`,
+            background: marketingOptIn ? t.accent : 'transparent',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            transition: 'all 0.2s',
+          }}>
+            {marketingOptIn && <span style={{ color: t.accentText, fontSize: 12, fontWeight: 700 }}>✓</span>}
+          </div>
+          <div style={{ fontSize: 12, color: t.textMuted, lineHeight: 1.5 }}>
+            Receive offers, rewards, and news
+          </div>
         </div>
 
         <button

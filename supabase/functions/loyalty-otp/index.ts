@@ -244,11 +244,12 @@ Deno.serve(async (req) => {
       return json({ error: 'Company configuration error: org not found' }, 500);
     }
 
-    // Find customer by phone in ops DB
+    // Find customer by phone in ops DB — customers table is the single
+    // source of truth for ALL profile data (name, email, phone, birthday, etc.)
     let customer: any = null;
     const { data: existing } = await opsAdmin
       .from('customers')
-      .select('id, name, email, phone, marketing_opt_in')
+      .select('id, name, email, phone, birthday, marketing_opt_in')
       .eq('org_id', orgId)
       .eq('phone', phone)
       .is('deleted_at', null)
@@ -266,7 +267,7 @@ Deno.serve(async (req) => {
           name: null,
           email: null,
         })
-        .select('id, name, email, phone, marketing_opt_in')
+        .select('id, name, email, phone, birthday, marketing_opt_in')
         .single();
       customer = newCust;
     }
@@ -390,6 +391,8 @@ Deno.serve(async (req) => {
         name: customer.name,
         email: customer.email,
         phone: customer.phone,
+        birthday: customer.birthday || null,
+        marketing_opt_in: customer.marketing_opt_in || false,
       },
       loyalty: loyaltyData ? {
         member_code: loyaltyData.member_code,
@@ -437,10 +440,10 @@ Deno.serve(async (req) => {
     if (!balRes.ok) return json({ error: 'Failed to fetch loyalty data' }, 500);
     const loyaltyData = await balRes.json();
 
-    // Fetch customer profile
+    // Fetch customer profile (single source of truth for all profile data)
     const { data: cust } = await opsAdmin
       .from('customers')
-      .select('id, name, email, phone')
+      .select('id, name, email, phone, birthday, marketing_opt_in')
       .eq('id', session.customerId)
       .maybeSingle();
 
@@ -467,6 +470,7 @@ Deno.serve(async (req) => {
     return json({
       customer: cust ? {
         id: cust.id, name: cust.name, email: cust.email, phone: cust.phone,
+        birthday: cust.birthday || null, marketing_opt_in: cust.marketing_opt_in || false,
       } : null,
       loyalty: loyaltyData,
       gift_cards: giftCards,
@@ -481,9 +485,11 @@ Deno.serve(async (req) => {
     const session = await verifySessionToken(token);
     if (!session) return json({ error: 'Invalid or expired session' }, 401);
 
+    // All profile data lives on the customers table (single source of truth)
     const updates: Record<string, unknown> = {};
     if (typeof body.name === 'string') updates.name = body.name.trim() || null;
     if (typeof body.email === 'string') updates.email = body.email.trim() || null;
+    if (typeof body.birthday === 'string') updates.birthday = body.birthday || null;
     if (typeof body.marketing_opt_in === 'boolean') updates.marketing_opt_in = body.marketing_opt_in;
 
     if (Object.keys(updates).length === 0) return json({ error: 'No fields to update' }, 400);
@@ -494,15 +500,6 @@ Deno.serve(async (req) => {
       .eq('id', session.customerId);
 
     if (upErr) return json({ error: upErr.message }, 500);
-
-    // Update birthday on loyalty membership if provided
-    if (typeof body.birthday === 'string') {
-      await platformAdmin
-        .from('customer_loyalty')
-        .update({ birthday: body.birthday || null })
-        .eq('customer_id', session.customerId)
-        .eq('company_id', session.companyId);
-    }
 
     return json({ updated: true });
   }
