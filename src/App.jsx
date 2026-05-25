@@ -76,6 +76,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.214', date: '25 May 2026', label: 'Multi-environment support — dev / stage / prod',
+    changes: [
+      'New env config (VITE_APP_TIER + VITE_CUSTOMER_DOMAIN) drives all customer-facing URLs: dev.serv-os.app, stage.serv-os.app, app.serv-os.app.',
+      'Removed all hardcoded domain references. Back office slug preview, QR code URLs, gift card balance links, and customer error pages all read from the environment.',
+      'Edge functions (gift-fulfill, gift-resend) use CUSTOMER_DOMAIN secret for email links.',
+      'New src/lib/env.js: single source of truth for CUSTOMER_ROOT, customerUrl(), OPERATOR_HOST, APP_TIER, TIER_LABEL.',
+    ],
+  },
+  {
     version: '5.5.213', date: '24 May 2026', label: 'Gift card emails use venue branding',
     changes: [
       'Gift card delivery and sender confirmation emails now use branding (logo, colours) from gift_brand_config instead of hardcoded defaults.',

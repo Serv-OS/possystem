@@ -18,6 +18,7 @@ import {
 } from '../_shared/gift-card-utils.ts';
 
 const OPS_SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+const CUSTOMER_DOMAIN = Deno.env.get('CUSTOMER_DOMAIN') ?? 'serv-os.app';
 
 // ── Format code into groups of 4 ─────────────────────────────────────────
 function formatCode(code: string): string {
@@ -151,7 +152,7 @@ Deno.serve(async (req) => {
       .maybeSingle();
     if (loc?.name) venueName = loc.name;
     const slug = loc?.online_slug || '';
-    balanceUrl = slug ? `https://${slug}.serv-os.app/gift/balance` : '';
+    balanceUrl = slug ? `https://${slug}.${CUSTOMER_DOMAIN}/gift/balance` : '';
   } catch { /* fallback to defaults */ }
 
   // Build email

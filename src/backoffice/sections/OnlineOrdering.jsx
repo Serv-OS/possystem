@@ -10,6 +10,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { platformSupabase, supabase, getLocationId } from '../../lib/supabase';
+import { CUSTOMER_ROOT } from '../../lib/env';
 import QRCode from 'qrcode';
 
 // Reuses the existing receipt-assets bucket with an online/ prefix so logo
@@ -459,19 +460,20 @@ function QrSettingsBlock({
 }) {
   const showsTabSettings = paymentMode === 'open_tab' || paymentMode === 'both';
   const buildQrUrl = (table) => {
-    // v5.5.159: while we're on the shared dev host (dev.pos-up.com /
-    // possystem-liard.vercel.app) we don't have per-slug subdomain DNS, so
-    // pass the slug as ?loc=… instead. Once *.pos-up.com routing is live we
-    // can flip back to the subdomain form.
-    const base = 'https://dev.pos-up.com';
+    // v5.5.214: use proper subdomain URLs now that wildcard DNS is set up.
+    // Falls back to ?loc= query param when slug isn't set (shouldn't happen
+    // since QR is disabled until slug exists, but defensive).
+    if (slug) {
+      const base = `https://${slug}.${CUSTOMER_ROOT}`;
+      if (tableMode === 'free') return `${base}/t/free`;
+      const t = table || {};
+      const tParam = t.label || t.id || '';
+      return `${base}/t/${encodeURIComponent(tParam)}`;
+    }
+    // Fallback: query-param form for testing without subdomain DNS
+    const base = window.location.origin;
     const locParam = slug ? `&loc=${encodeURIComponent(slug)}` : '';
     if (tableMode === 'free') return `${base}/?surface=qr${locParam}`;
-    // v5.5.161: prefer the friendly label as the URL "t" so QRs encode
-    // `?t=T4` not `?t=t-1776905944421`. The QR side resolves label → real
-    // floor_tables.id when it needs to write to active_sessions. When no
-    // friendly label is set we still ship the id so existing flows don't
-    // break — but the BO grid surfaces an "unlabeled" warning so the
-    // operator knows to set proper labels in Floor Plan.
     const t = table || {};
     const tParam = t.label || t.id || '';
     return `${base}/?surface=qr${locParam}&t=${encodeURIComponent(tParam)}`;

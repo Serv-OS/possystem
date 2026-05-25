@@ -1,8 +1,12 @@
 // v5.5.103 — Customer-facing URL parser.
 // Handles three customer surfaces from the same web app:
-//   • Online ordering    https://(slug).serv-os.app/        → mode: 'online'
-//   • QR table-side      https://(slug).serv-os.app/t/<id>  → mode: 'qr', tableId
-//   • Kiosk (legacy)     https://possystem-liard.vercel.app/?mode=kiosk
+//   • Online ordering    https://<slug>.<customer-root>/        → mode: 'online'
+//   • QR table-side      https://<slug>.<customer-root>/t/<id>  → mode: 'qr', tableId
+//
+// Customer root is tier-dependent (see src/lib/env.js):
+//   dev   → <slug>.dev.serv-os.app
+//   stage → <slug>.stage.serv-os.app
+//   prod  → <slug>.serv-os.app
 //
 // Local / preview testing falls back to query params so we can iterate
 // without DNS:
@@ -14,9 +18,10 @@
 // hit Supabase. The caller (boot loader) takes the slug and resolves it
 // to a platform location row via lookupLocationBySlug() in supabase.js.
 
+import { CUSTOMER_ROOT } from './env';
+
 // Subdomains reserved for operator / infra surfaces — never customer slugs.
-// "de" is the BO host on pos-up.com today; "app", "bo", "admin", "api",
-// "staging", "dev", "test" are the usual suspects we should defend against.
+// "app" is the prod operator host; "dev", "stage" are tier hosts.
 // If anyone tries to register a slug that collides with this list, the BO
 // validator should also block it (TODO when we wire onboarding).
 const NON_SLUG_SUBDOMAINS = new Set([
@@ -25,12 +30,13 @@ const NON_SLUG_SUBDOMAINS = new Set([
 ]);
 
 // Domains we treat as the customer-facing root. The first match wins.
-//   • serv-os.app    → final intended customer domain
-//   • pos-up.com     → today's operating domain (de.pos-up.com is BO; future
-//                      <slug>.pos-up.com is customer ordering)
-//   • servos.app     → typo-friendly fallback
+// Built dynamically from env config so all tiers are recognised,
+// plus legacy domains for backward compat during migration.
 const ROOT_DOMAIN_SUFFIXES = [
-  '.serv-os.app', '.servos.app', '.pos-up.com',
+  `.${CUSTOMER_ROOT}`,       // e.g. .dev.serv-os.app (current tier)
+  '.serv-os.app',            // prod / catch-all
+  '.servos.app',             // typo-friendly fallback
+  '.pos-up.com',             // legacy operating domain
 ];
 
 export function parseCustomerUrl(loc = (typeof window !== 'undefined' ? window.location : null)) {

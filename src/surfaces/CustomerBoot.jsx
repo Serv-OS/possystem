@@ -13,6 +13,7 @@
 import { useEffect, useState } from 'react';
 import { platformSupabase } from '../lib/supabase';
 import { lookupLocationBySlug } from '../lib/customerUrl';
+import { CUSTOMER_ROOT } from '../lib/env';
 import { isOpenNow, nextOpensAt, formatHoursPreview } from '../lib/openingHours';
 import OnlineSurface from './online/OnlineSurface';
 import GiftPurchaseSurface from './gift/GiftPurchaseSurface';
@@ -44,7 +45,7 @@ export default function CustomerBoot({ slug, mode, tableId }) {
       <ErrorState
         icon="🔍"
         title="Shop not found"
-        body={<>We couldn't find a shop at <code style={{ fontFamily:'var(--font-mono)' }}>{slug}.serv-os.app</code>. Check the link with the venue.</>}
+        body={<>We couldn't find a shop at <code style={{ fontFamily:'var(--font-mono)' }}>{slug}.{CUSTOMER_ROOT}</code>. Check the link with the venue.</>}
       />
     </CustomerShell>;
   }

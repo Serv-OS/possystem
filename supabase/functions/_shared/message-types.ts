@@ -52,7 +52,7 @@ const TAG_AMOUNT: MergeTag = { tag: 'amount', label: 'Amount', example: '£25.00
 const TAG_CODE: MergeTag = { tag: 'code', label: 'Gift Card Code', example: 'ABCD EFGH JKLM NPQR' };
 const TAG_CODE_LAST4: MergeTag = { tag: 'code_last4', label: 'Code Last 4', example: 'NPQR' };
 const TAG_EXPIRY_DATE: MergeTag = { tag: 'expiry_date', label: 'Expiry Date', example: 'May 2027' };
-const TAG_BALANCE_URL: MergeTag = { tag: 'balance_url', label: 'Balance Check URL', example: 'https://venue.serv-os.app/gift/balance' };
+const TAG_BALANCE_URL: MergeTag = { tag: 'balance_url', label: 'Balance Check URL', example: 'https://venue.app.serv-os.app/gift/balance' };
 const TAG_MESSAGE: MergeTag = { tag: 'message', label: 'Personal Message', example: 'Happy Birthday! Enjoy a meal on us.' };
 const TAG_COLLECTION_POINT: MergeTag = { tag: 'collection_point', label: 'Collection Point', example: 'the counter' };
 

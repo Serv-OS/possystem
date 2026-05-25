@@ -3,6 +3,7 @@ import { platformSupabase, supabase, getLocationId } from '../../lib/supabase';
 import { clearLocationConfigCache } from '../../lib/locationTime';
 import { defaultOpeningHours, emptyOpeningHours, isOpenNow, formatHoursPreview } from '../../lib/openingHours';
 import { isValidSlug, suggestSlug } from '../../lib/customerUrl';
+import { CUSTOMER_ROOT } from '../../lib/env';
 
 const TIMEZONES = [
   { value:'Europe/London',      label:'Europe/London (UK)' },
@@ -476,14 +477,10 @@ function OnlineOrderingCard({
   locationName, slug, setSlug, slugError, setSlugError,
   onlineEnabled, setOnlineEnabled, qrEnabled, setQrEnabled,
 }) {
-  // Domain shown in the preview is what's actually live for the customer
-  // today (pos-up.com). The serv-os.app subdomain is the planned final
-  // customer domain — keep both wired in customerUrl.js so flipping over
-  // later is just a DNS change.
-  const ROOT = 'pos-up.com';
-  const previewHost = slug ? `${slug}.${ROOT}` : `(slug).${ROOT}`;
-  const onlineUrl   = slug ? `https://${slug}.${ROOT}`               : '';
-  const qrUrl       = slug ? `https://${slug}.${ROOT}/t/<table-id>`  : '';
+  // Domain shown in the preview matches the active tier (dev/stage/prod).
+  const previewHost = slug ? `${slug}.${CUSTOMER_ROOT}` : `(slug).${CUSTOMER_ROOT}`;
+  const onlineUrl   = slug ? `https://${slug}.${CUSTOMER_ROOT}`               : '';
+  const qrUrl       = slug ? `https://${slug}.${CUSTOMER_ROOT}/t/<table-id>`  : '';
 
   return (
     <div style={S.card}>
@@ -502,7 +499,7 @@ function OnlineOrderingCard({
           value={slug}
           placeholder={locationName ? suggestSlug(locationName) : 'peters-cafe'}
           onChange={e => { setSlug(e.target.value.toLowerCase()); setSlugError(''); }}/>
-        <span style={{ fontSize:12, color:'var(--t4)', fontFamily:'var(--font-mono)' }}>.serv-os.app</span>
+        <span style={{ fontSize:12, color:'var(--t4)', fontFamily:'var(--font-mono)' }}>.{CUSTOMER_ROOT}</span>
         {locationName && !slug && (
           <button onClick={() => setSlug(suggestSlug(locationName))} style={{ ...S.btn, background:'var(--bg3)', color:'var(--t2)', border:'1px solid var(--bdr)', padding:'7px 10px', fontSize:11 }}>
             Suggest

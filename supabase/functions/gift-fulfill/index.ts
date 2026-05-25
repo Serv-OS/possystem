@@ -38,6 +38,9 @@ const platformAdmin = createClient(
 
 const OPS_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const OPS_SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+// Customer-facing domain for links in emails (e.g. balance check URL).
+// Set via Supabase secrets: CUSTOMER_DOMAIN=serv-os.app (prod) or dev.serv-os.app (dev)
+const CUSTOMER_DOMAIN = Deno.env.get('CUSTOMER_DOMAIN') ?? 'serv-os.app';
 
 // ── Code generation (same as gift-card-utils.ts) ───────────────────────────
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -371,7 +374,7 @@ Deno.serve(async (req) => {
     // Build balance check URL
     const slug = loc?.online_slug || '';
     const balanceUrl = slug
-      ? `https://${slug}.serv-os.app/gift/balance`
+      ? `https://${slug}.${CUSTOMER_DOMAIN}/gift/balance`
       : '';
 
     const html = buildGiftCardEmail({
