@@ -76,6 +76,18 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.223', date: '25 May 2026', label: 'Customers section enriched with loyalty data',
+    changes: [
+      'Customers list now shows Loyalty status column (Member badge with tier name, or dash if not enrolled) and Points balance column.',
+      'New "Loyalty" filter in Customers — filter by Members only or Not enrolled to quickly find loyalty-enrolled or unenrolled customers.',
+      'Customer detail panel: new Loyalty & Gift Cards stats row (loyalty status pill, points balance, gift card count).',
+      'Customer detail panel: full Loyalty Details section when enrolled — member code, points balance/earned/redeemed, loyalty visits, spend, enrolled date, tier.',
+      'Points column is sortable to find highest-points customers.',
+      'CSV export now includes Loyalty member (yes/no) and Points balance columns.',
+      'Loyalty data fetched from platform DB (customer_loyalty + loyalty_tiers) and joined by customer_id.',
+    ],
+  },
+  {
     version: '5.5.222', date: '25 May 2026', label: 'Loyalty registration page + Twilio UK SMS fix',
     changes: [
       'New registration page at <slug>.serv-os.app/account/register — sign-up focused landing for new customers with "Join our loyalty programme" messaging.',

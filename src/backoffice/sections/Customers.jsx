@@ -1,4 +1,4 @@
-// v5.5.206: Back-office Customers section.
+// v5.5.223: Back-office Customers section.
 //
 // Tier-1 features:
 //   - List of every customer at this org (across locations)
@@ -10,7 +10,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../store';
-import { supabase, isMock, getLocationId } from '../../lib/supabase';
+import { supabase, platformSupabase, isMock, getLocationId, getActiveLocationSync } from '../../lib/supabase';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 
@@ -57,11 +57,14 @@ export default function Customers() {
   const [filterLoc, setFilterLoc] = useState('all');
   const [filterRange, setFilterRange] = useState('all');     // all | 7d | 30d | 90d | dormant (90d+)
   const [filterMarketing, setFilterMarketing] = useState('all'); // all | optIn | optOut
+  const [filterLoyalty, setFilterLoyalty] = useState('all');     // all | member | notMember
   const [sortBy, setSortBy] = useState('lastVisit');         // lastVisit | spend | visits | name
   const [sortDir, setSortDir] = useState('desc');
   const [selectedId, setSelectedId] = useState(null);
   const [view, setView] = useState('list');           // v4.6.64: 'list' | 'insights'
   const [insightsTab, setInsightsTab] = useState('vips'); // vips | multi | crossSell | dormant
+  const [loyaltyMap, setLoyaltyMap] = useState({});    // v5.5.223: customer_id → loyalty record
+  const [tierMap, setTierMap] = useState({});           // v5.5.223: tier_id → tier record
 
   // Load all customers + their per-location stats (for the org)
   useEffect(() => {
@@ -121,6 +124,44 @@ export default function Customers() {
           return { ...c, stats, totalSpend, totalVisits, lastVisit, siteCount };
         });
         setCustomers(enriched);
+
+        // v5.5.223: Fetch loyalty data from platform DB
+        if (platformSupabase && ids.length) {
+          try {
+            // Resolve company_id via platform locations
+            const activeLocId = getActiveLocationSync() || locId;
+            const { data: platLoc } = await platformSupabase.from('locations')
+              .select('company_id')
+              .or(`ops_location_id.eq.${activeLocId},id.eq.${activeLocId}`)
+              .limit(1).maybeSingle();
+
+            if (platLoc?.company_id) {
+              // Fetch all loyalty memberships for this company
+              const { data: loyaltyRows } = await platformSupabase
+                .from('customer_loyalty')
+                .select('customer_id, points_balance, points_earned_total, points_redeemed_total, visit_count, lifetime_spend_minor, member_code, tier_id, enrolled_at, last_earn_at')
+                .eq('company_id', platLoc.company_id);
+
+              const lMap = {};
+              (loyaltyRows || []).forEach(r => { lMap[r.customer_id] = r; });
+              setLoyaltyMap(lMap);
+
+              // Fetch tier names
+              const loyaltyTierIds = [...new Set((loyaltyRows || []).filter(r => r.tier_id).map(r => r.tier_id))];
+              if (loyaltyTierIds.length) {
+                const { data: tRows } = await platformSupabase
+                  .from('loyalty_tiers')
+                  .select('id, name, color, icon')
+                  .in('id', loyaltyTierIds);
+                const tMap = {};
+                (tRows || []).forEach(t => { tMap[t.id] = t; });
+                setTierMap(tMap);
+              }
+            }
+          } catch (loyaltyErr) {
+            console.warn('[Customers] loyalty fetch failed:', loyaltyErr?.message);
+          }
+        }
       } catch (err) {
         console.warn('[Customers] load failed:', err?.message || err);
       } finally {
@@ -160,6 +201,8 @@ export default function Customers() {
     }
     if (filterMarketing === 'optIn')  rows = rows.filter(c => c.marketing_opt_in);
     if (filterMarketing === 'optOut') rows = rows.filter(c => !c.marketing_opt_in);
+    if (filterLoyalty === 'member')    rows = rows.filter(c => !!loyaltyMap[c.id]);
+    if (filterLoyalty === 'notMember') rows = rows.filter(c => !loyaltyMap[c.id]);
 
     // Sort
     rows = [...rows].sort((a, b) => {
@@ -168,13 +211,14 @@ export default function Customers() {
       else if (sortBy === 'spend') { av = a.totalSpend; bv = b.totalSpend; }
       else if (sortBy === 'visits') { av = a.totalVisits; bv = b.totalVisits; }
       else if (sortBy === 'sites') { av = a.siteCount || 0; bv = b.siteCount || 0; }
+      else if (sortBy === 'points') { av = loyaltyMap[a.id]?.points_balance || 0; bv = loyaltyMap[b.id]?.points_balance || 0; }
       else { av = (a.name || '').toLowerCase(); bv = (b.name || '').toLowerCase(); }
       if (av < bv) return sortDir === 'asc' ? -1 : 1;
       if (av > bv) return sortDir === 'asc' ? 1 : -1;
       return 0;
     });
     return rows;
-  }, [customers, search, filterLoc, filterRange, filterMarketing, sortBy, sortDir]);
+  }, [customers, search, filterLoc, filterRange, filterMarketing, filterLoyalty, loyaltyMap, sortBy, sortDir]);
 
   const selected = useMemo(() => filtered.find(c => c.id === selectedId) || customers.find(c => c.id === selectedId) || null, [filtered, customers, selectedId]);
 
@@ -188,6 +232,8 @@ export default function Customers() {
       ['Name',         c => c.name],
       ['Phone',        c => c.phone_raw || c.phone || ''],
       ['Email',        c => c.email || ''],
+      ['Loyalty member', c => loyaltyMap[c.id] ? 'yes' : 'no'],
+      ['Points',       c => loyaltyMap[c.id]?.points_balance || 0],
       ['Total visits', c => c.totalVisits || 0],
       ['Lifetime spend', c => (c.totalSpend || 0).toFixed(2)],
       ['Last visit',   c => c.lastVisit ? new Date(c.lastVisit).toISOString() : ''],
@@ -246,6 +292,7 @@ export default function Customers() {
             <Filter label="Location" value={filterLoc} onChange={setFilterLoc} options={[['all','All locations'], ...allLocations.map(l => [l.id, l.name])]} />
             <Filter label="Last visit" value={filterRange} onChange={setFilterRange} options={[['all','All time'],['7d','Last 7 days'],['30d','Last 30 days'],['90d','Last 90 days'],['dormant','Dormant (90+)']]}/>
             <Filter label="Marketing" value={filterMarketing} onChange={setFilterMarketing} options={[['all','All'],['optIn','Opt-in only'],['optOut','Opt-out only']]}/>
+            <Filter label="Loyalty" value={filterLoyalty} onChange={setFilterLoyalty} options={[['all','All'],['member','Members only'],['notMember','Not enrolled']]}/>
           </div>
         </div>
 
@@ -262,10 +309,11 @@ export default function Customers() {
           ) : (
             <div>
               {/* Header row */}
-              <div style={{ display:'grid', gridTemplateColumns:'2.4fr 1.4fr 0.8fr 1fr 1fr 0.6fr 1fr', padding:'10px 24px', fontSize:10, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', background:'var(--bg2)', borderBottom:'1px solid var(--bdr)', position:'sticky', top:0, zIndex:1 }}>
+              <div style={{ display:'grid', gridTemplateColumns:'2.2fr 1.2fr 0.7fr 0.7fr 0.9fr 0.9fr 0.5fr 1fr', padding:'10px 24px', fontSize:10, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', background:'var(--bg2)', borderBottom:'1px solid var(--bdr)', position:'sticky', top:0, zIndex:1 }}>
                 <SortHeader col="name" sortBy={sortBy} sortDir={sortDir} onClick={toggleSort}>Customer</SortHeader>
                 <span>Phone</span>
-                <SortHeader col="visits" sortBy={sortBy} sortDir={sortDir} onClick={toggleSort} align="right">Visits</SortHeader>
+                <span style={{ textAlign:'center' }}>Loyalty</span>
+                <SortHeader col="points" sortBy={sortBy} sortDir={sortDir} onClick={toggleSort} align="right">Points</SortHeader>
                 <SortHeader col="spend" sortBy={sortBy} sortDir={sortDir} onClick={toggleSort} align="right">Lifetime</SortHeader>
                 <SortHeader col="lastVisit" sortBy={sortBy} sortDir={sortDir} onClick={toggleSort} align="right">Last visit</SortHeader>
                 <SortHeader col="sites" sortBy={sortBy} sortDir={sortDir} onClick={toggleSort} align="center">Sites</SortHeader>
@@ -273,15 +321,28 @@ export default function Customers() {
               </div>
               {filtered.map(c => {
                 const isSel = selectedId === c.id;
+                const loyalty = loyaltyMap[c.id];
+                const tier = loyalty?.tier_id ? tierMap[loyalty.tier_id] : null;
                 return (
                   <div key={c.id} onClick={() => setSelectedId(isSel ? null : c.id)}
-                    style={{ display:'grid', gridTemplateColumns:'2.4fr 1.4fr 0.8fr 1fr 1fr 0.6fr 1fr', padding:'10px 24px', fontSize:13, alignItems:'center', borderBottom:'1px solid var(--bdr)', cursor:'pointer', background: isSel ? 'var(--acc-d)' : 'transparent' }}>
+                    style={{ display:'grid', gridTemplateColumns:'2.2fr 1.2fr 0.7fr 0.7fr 0.9fr 0.9fr 0.5fr 1fr', padding:'10px 24px', fontSize:13, alignItems:'center', borderBottom:'1px solid var(--bdr)', cursor:'pointer', background: isSel ? 'var(--acc-d)' : 'transparent' }}>
                     <div style={{ minWidth:0 }}>
                       <div style={{ fontWeight:700, color:'var(--t1)', overflow:'hidden', textOverflow:'ellipsis' }}>{c.name}</div>
                       {c.email && <div style={{ fontSize:11, color:'var(--t4)', marginTop:2, overflow:'hidden', textOverflow:'ellipsis' }}>{c.email}</div>}
                     </div>
                     <div style={{ color:'var(--t2)', fontFamily:'var(--font-mono)', fontSize:12 }}>{c.phone_raw || c.phone || '—'}</div>
-                    <div style={{ textAlign:'right', color:'var(--t1)', fontWeight:700, fontFamily:'var(--font-mono)' }}>{c.totalVisits}</div>
+                    <div style={{ textAlign:'center' }}>
+                      {loyalty ? (
+                        <span style={{ fontSize:10, fontWeight:800, padding:'2px 8px', borderRadius:10, background:'rgba(76,175,80,0.12)', color:'var(--grn,#4caf50)', border:'1px solid rgba(76,175,80,0.25)' }}>
+                          {tier ? tier.name : 'Member'}
+                        </span>
+                      ) : (
+                        <span style={{ fontSize:10, fontWeight:600, color:'var(--t4)' }}>—</span>
+                      )}
+                    </div>
+                    <div style={{ textAlign:'right', color: loyalty ? 'var(--t1)' : 'var(--t4)', fontWeight:700, fontFamily:'var(--font-mono)', fontSize:12 }}>
+                      {loyalty ? (loyalty.points_balance || 0) : '—'}
+                    </div>
                     <div style={{ textAlign:'right', color:'var(--acc)', fontWeight:700, fontFamily:'var(--font-mono)' }}>{fmtMoney(c.totalSpend)}</div>
                     <div style={{ textAlign:'right', color:'var(--t3)', fontSize:12 }}>{fmtRel(c.lastVisit)}</div>
                     <div style={{ textAlign:'center' }}>
@@ -306,7 +367,7 @@ export default function Customers() {
       </div>
 
       {/* Right: detail panel */}
-      {selected && <DetailPanel customer={selected} onClose={() => setSelectedId(null)} onChanged={(updated) => {
+      {selected && <DetailPanel customer={selected} loyalty={loyaltyMap[selected.id]} tier={loyaltyMap[selected.id]?.tier_id ? tierMap[loyaltyMap[selected.id].tier_id] : null} onClose={() => setSelectedId(null)} onChanged={(updated) => {
         setCustomers(cs => cs.map(c => c.id === updated.id ? { ...c, ...updated } : c));
       }} onDeleted={() => {
         setCustomers(cs => cs.filter(c => c.id !== selected.id));
@@ -340,7 +401,7 @@ function SortHeader({ col, sortBy, sortDir, onClick, align = 'left', children })
   );
 }
 
-function DetailPanel({ customer, onClose, onChanged, onDeleted }) {
+function DetailPanel({ customer, loyalty, tier, onClose, onChanged, onDeleted }) {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(false);
@@ -473,14 +534,47 @@ function DetailPanel({ customer, onClose, onChanged, onDeleted }) {
       </div>
 
       {/* Stats overview */}
-      <div style={{ padding:'14px 22px', borderBottom:'1px solid var(--bdr)', display:'grid', gridTemplateColumns: giftCards.length > 0 ? 'repeat(4, 1fr)' : 'repeat(3, 1fr)', gap:10 }}>
+      <div style={{ padding:'14px 22px', borderBottom:'1px solid var(--bdr)', display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:10 }}>
         <Stat label="Lifetime spend" value={fmtMoney(customer.totalSpend)} color="var(--acc)"/>
         <Stat label="Total visits" value={customer.totalVisits || 0}/>
         <Stat label="Last visit" value={fmtRel(customer.lastVisit)}/>
-        {giftCards.length > 0 && (
-          <Stat label="Gift cards" value={giftCards.length} color="var(--grn,#4caf50)"/>
-        )}
       </div>
+
+      {/* v5.5.223: Loyalty & gift card stats */}
+      <div style={{ padding:'14px 22px', borderBottom:'1px solid var(--bdr)', display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:10 }}>
+        <div style={{ background:'var(--bg2)', borderRadius:8, padding:'8px 10px' }}>
+          <div style={{ fontSize:10, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.07em' }}>Loyalty</div>
+          <div style={{ marginTop:4 }}>
+            {loyalty ? (
+              <span style={{ fontSize:12, fontWeight:800, padding:'3px 10px', borderRadius:10, background:'rgba(76,175,80,0.12)', color:'var(--grn,#4caf50)', border:'1px solid rgba(76,175,80,0.25)' }}>
+                {tier ? tier.name : 'Member'}
+              </span>
+            ) : (
+              <span style={{ fontSize:12, fontWeight:600, color:'var(--t4)' }}>Not enrolled</span>
+            )}
+          </div>
+        </div>
+        <Stat label="Points" value={loyalty ? (loyalty.points_balance || 0) : '—'} color={loyalty ? 'var(--acc)' : 'var(--t4)'}/>
+        <Stat label="Gift cards" value={giftCards.length} color={giftCards.length > 0 ? 'var(--grn,#4caf50)' : 'var(--t4)'}/>
+      </div>
+
+      {/* v5.5.223: Loyalty details (when enrolled) */}
+      {loyalty && (
+        <div style={{ padding:'14px 22px', borderBottom:'1px solid var(--bdr)' }}>
+          <div style={{ fontSize:10, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:8 }}>Loyalty details</div>
+          <div style={{ display:'flex', flexDirection:'column', gap:6, fontSize:12 }}>
+            <Row label="Member code" value={loyalty.member_code || '—'}/>
+            <Row label="Points balance" value={loyalty.points_balance || 0}/>
+            <Row label="Total earned" value={loyalty.points_earned_total || 0}/>
+            <Row label="Total redeemed" value={loyalty.points_redeemed_total || 0}/>
+            <Row label="Loyalty visits" value={loyalty.visit_count || 0}/>
+            {loyalty.lifetime_spend_minor > 0 && <Row label="Loyalty spend" value={fmtMoney((loyalty.lifetime_spend_minor || 0) / 100)}/>}
+            <Row label="Enrolled" value={fmtDate(loyalty.enrolled_at)}/>
+            {loyalty.last_earn_at && <Row label="Last earned" value={fmtRel(loyalty.last_earn_at)}/>}
+            {tier && <Row label="Tier" value={tier.name}/>}
+          </div>
+        </div>
+      )}
 
       {/* Per-location breakdown */}
       {customer.stats?.length > 0 && (

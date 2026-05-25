@@ -362,7 +362,16 @@ Deno.serve(async (req) => {
     try {
       const conditions: string[] = [];
       if (customer.email) conditions.push(`recipient_email.eq.${customer.email}`);
-      if (customer.phone) conditions.push(`recipient_phone.eq.${customer.phone}`);
+      if (customer.phone) {
+        conditions.push(`recipient_phone.eq.${customer.phone}`);
+        // Also match alternative UK phone formats (e.g. +447931... vs 07931...)
+        if (customer.phone.startsWith('+44')) {
+          conditions.push(`recipient_phone.eq.0${customer.phone.slice(3)}`);
+        } else if (customer.phone.startsWith('0')) {
+          conditions.push(`recipient_phone.eq.+44${customer.phone.slice(1)}`);
+        }
+      }
+      if (customer.name) conditions.push(`recipient_name.eq.${customer.name}`);
       if (conditions.length > 0) {
         const { data: cards } = await platformAdmin
           .from('gift_cards')
@@ -452,7 +461,16 @@ Deno.serve(async (req) => {
     try {
       const conditions: string[] = [];
       if (cust?.email) conditions.push(`recipient_email.eq.${cust.email}`);
-      if (cust?.phone) conditions.push(`recipient_phone.eq.${cust.phone}`);
+      if (cust?.phone) {
+        conditions.push(`recipient_phone.eq.${cust.phone}`);
+        // Also match alternative UK phone formats (e.g. +447931... vs 07931...)
+        if (cust.phone.startsWith('+44')) {
+          conditions.push(`recipient_phone.eq.0${cust.phone.slice(3)}`);
+        } else if (cust.phone.startsWith('0')) {
+          conditions.push(`recipient_phone.eq.+44${cust.phone.slice(1)}`);
+        }
+      }
+      if (cust?.name) conditions.push(`recipient_name.eq.${cust.name}`);
       if (conditions.length > 0) {
         const { data: cards } = await platformAdmin
           .from('gift_cards')

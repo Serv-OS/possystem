@@ -682,141 +682,192 @@ function ToggleRow({ label, checked, onChange }) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// Members Panel — search and view loyalty members
+// Members Panel — full list of all loyalty members, searchable and filterable
 // ═══════════════════════════════════════════════════════════════════════
 function MembersPanel({ config }) {
-  const [query, setQuery] = useState('');
-  const [result, setResult] = useState(null);
-  const [searching, setSearching] = useState(false);
-  const [error, setError] = useState('');
+  const [members, setMembers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
+  const [sortBy, setSortBy] = useState('enrolled'); // enrolled | points | visits | spend | name
+  const [sortDir, setSortDir] = useState('desc');
 
-  const search = async () => {
-    if (!query.trim()) return;
-    setSearching(true);
-    setError('');
-    setResult(null);
-    try {
-      const body = { location_id: getActiveLocationSync() };
-      const q = query.trim();
-      if (q.startsWith('SRV-') || q.startsWith('srv-')) {
-        body.member_code = q;
-      } else if (/^[0-9+]/.test(q)) {
-        body.phone = q;
-      } else {
-        // Try as customer_id UUID
-        body.customer_id = q;
+  // Load all members: customer_loyalty (platform) + customers (ops)
+  useEffect(() => {
+    (async () => {
+      if (!platformSupabase || !supabase) { setLoading(false); return; }
+      try {
+        // Resolve company_id
+        const locId = getActiveLocationSync() || await getLocationId();
+        const { data: loc } = await platformSupabase.from('locations')
+          .select('company_id')
+          .or(`ops_location_id.eq.${locId},id.eq.${locId}`)
+          .limit(1).maybeSingle();
+        if (!loc?.company_id) { setLoading(false); return; }
+
+        // Get all loyalty memberships for this company
+        const { data: loyaltyRows } = await platformSupabase
+          .from('customer_loyalty')
+          .select('customer_id, points_balance, points_earned_total, points_redeemed_total, visit_count, lifetime_spend_minor, member_code, tier_id, enrolled_at, last_earn_at, referral_code')
+          .eq('company_id', loc.company_id)
+          .order('enrolled_at', { ascending: false });
+
+        if (!loyaltyRows?.length) { setMembers([]); setLoading(false); return; }
+
+        // Fetch customer details from ops DB
+        const custIds = loyaltyRows.map(r => r.customer_id);
+        const { data: custRows } = await supabase
+          .from('customers')
+          .select('id, name, phone, phone_raw, email, birthday, marketing_opt_in')
+          .in('id', custIds)
+          .is('deleted_at', null);
+
+        const custMap = {};
+        (custRows || []).forEach(c => { custMap[c.id] = c; });
+
+        // Get tier names
+        let tierMap = {};
+        const tierIds = [...new Set(loyaltyRows.filter(r => r.tier_id).map(r => r.tier_id))];
+        if (tierIds.length) {
+          const { data: tRows } = await platformSupabase
+            .from('loyalty_tiers')
+            .select('id, name, color, icon')
+            .in('id', tierIds);
+          (tRows || []).forEach(t => { tierMap[t.id] = t; });
+        }
+
+        // Merge
+        const merged = loyaltyRows.map(l => {
+          const c = custMap[l.customer_id] || {};
+          return {
+            ...l,
+            name: c.name || null,
+            phone: c.phone_raw || c.phone || null,
+            email: c.email || null,
+            birthday: c.birthday || null,
+            tier: l.tier_id ? tierMap[l.tier_id] || null : null,
+          };
+        }).filter(m => custMap[m.customer_id]); // Only include members whose customer record exists
+
+        setMembers(merged);
+      } catch (err) {
+        console.warn('[MembersPanel] load failed:', err?.message);
+      } finally {
+        setLoading(false);
       }
-      const data = await callLoyalty('loyalty-member-lookup', body);
-      setResult(data);
-    } catch (e) {
-      setError(e?.message || 'Not found');
-    } finally {
-      setSearching(false);
+    })();
+  }, []);
+
+  // Filter + sort
+  const filtered = useMemo(() => {
+    let rows = members;
+    const s = search.trim().toLowerCase();
+    if (s) {
+      rows = rows.filter(m =>
+        (m.name || '').toLowerCase().includes(s) ||
+        (m.phone || '').replace(/\s/g, '').includes(s.replace(/\s/g, '')) ||
+        (m.email || '').toLowerCase().includes(s) ||
+        (m.member_code || '').toLowerCase().includes(s)
+      );
     }
+    rows = [...rows].sort((a, b) => {
+      let av, bv;
+      if (sortBy === 'enrolled') { av = new Date(a.enrolled_at || 0).getTime(); bv = new Date(b.enrolled_at || 0).getTime(); }
+      else if (sortBy === 'points') { av = a.points_balance || 0; bv = b.points_balance || 0; }
+      else if (sortBy === 'visits') { av = a.visit_count || 0; bv = b.visit_count || 0; }
+      else if (sortBy === 'spend') { av = a.lifetime_spend_minor || 0; bv = b.lifetime_spend_minor || 0; }
+      else { av = (a.name || '').toLowerCase(); bv = (b.name || '').toLowerCase(); }
+      if (av < bv) return sortDir === 'asc' ? -1 : 1;
+      if (av > bv) return sortDir === 'asc' ? 1 : -1;
+      return 0;
+    });
+    return rows;
+  }, [members, search, sortBy, sortDir]);
+
+  const toggleSort = (col) => {
+    if (sortBy === col) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+    else { setSortBy(col); setSortDir('desc'); }
   };
+  const sortArrow = (col) => sortBy === col ? (sortDir === 'asc' ? ' ↑' : ' ↓') : '';
+
+  if (loading) return <div style={{ padding: 40, color: 'var(--t4)', fontSize: 13 }}>Loading members…</div>;
 
   return (
     <div>
-      <div style={S.card}>
-        <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--t1)', marginBottom: 12 }}>Look up a member</div>
-        <div style={{ display: 'flex', gap: 10 }}>
-          <input
-            style={{ ...S.input, flex: 1 }}
-            value={query}
-            onChange={e => setQuery(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && search()}
-            placeholder="Member code (SRV-XXXXXX), phone number, or customer ID"
-          />
-          <button onClick={search} disabled={searching} style={{ ...S.btn, ...S.btnPrim, whiteSpace: 'nowrap' }}>
-            {searching ? 'Searching...' : 'Look up'}
-          </button>
-        </div>
+      {/* Summary strip */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 14 }}>
+        <ConfigStat label="Total members" value={members.length} />
+        <ConfigStat label="Total points in circulation" value={members.reduce((s, m) => s + (m.points_balance || 0), 0).toLocaleString()} />
+        <ConfigStat label="Total earned (all time)" value={members.reduce((s, m) => s + (m.points_earned_total || 0), 0).toLocaleString()} />
+        <ConfigStat label="Total visits" value={members.reduce((s, m) => s + (m.visit_count || 0), 0).toLocaleString()} />
       </div>
 
-      {error && <div style={S.errorBox}>{error}</div>}
+      {/* Search */}
+      <div style={{ marginBottom: 14 }}>
+        <input
+          style={{ ...S.input, padding: '10px 14px', fontSize: 14 }}
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          placeholder="Search by name, phone, email, or member code…"
+        />
+      </div>
 
-      {result && result.found && (
-        <div style={S.card}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 16 }}>
-            <div style={{
-              width: 48, height: 48, borderRadius: '50%', background: 'var(--acc-d, var(--bg2))',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              fontSize: 20, fontWeight: 800, color: 'var(--acc)', border: '2px solid var(--acc)',
+      <div style={{ fontSize: 12, color: 'var(--t3)', marginBottom: 10 }}>
+        {filtered.length} member{filtered.length !== 1 ? 's' : ''}{search ? ' matching' : ''}
+      </div>
+
+      {filtered.length === 0 ? (
+        <div style={{ ...S.card, textAlign: 'center', padding: 40 }}>
+          <div style={{ fontSize: 36, marginBottom: 8, opacity: 0.3 }}>⭐</div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--t3)' }}>
+            {members.length === 0 ? 'No loyalty members yet' : 'No matches'}
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--t4)', marginTop: 4 }}>
+            {members.length === 0 ? 'Customers are auto-enrolled when they interact with the portal or POS.' : 'Try a different search term.'}
+          </div>
+        </div>
+      ) : (
+        <div style={{ background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 10, overflow: 'hidden' }}>
+          {/* Header */}
+          <div style={{
+            display: 'grid', gridTemplateColumns: '2fr 1.2fr 1.2fr 0.8fr 0.8fr 1fr 0.8fr',
+            padding: '10px 16px', fontSize: 10, fontWeight: 800, color: 'var(--t4)',
+            textTransform: 'uppercase', letterSpacing: '.07em', background: 'var(--bg2)',
+            borderBottom: '1px solid var(--bdr)',
+          }}>
+            <span onClick={() => toggleSort('name')} style={{ cursor: 'pointer', color: sortBy === 'name' ? 'var(--acc)' : undefined }}>Member{sortArrow('name')}</span>
+            <span>Phone</span>
+            <span>Member code</span>
+            <span onClick={() => toggleSort('points')} style={{ cursor: 'pointer', textAlign: 'right', color: sortBy === 'points' ? 'var(--acc)' : undefined }}>Points{sortArrow('points')}</span>
+            <span onClick={() => toggleSort('visits')} style={{ cursor: 'pointer', textAlign: 'right', color: sortBy === 'visits' ? 'var(--acc)' : undefined }}>Visits{sortArrow('visits')}</span>
+            <span onClick={() => toggleSort('spend')} style={{ cursor: 'pointer', textAlign: 'right', color: sortBy === 'spend' ? 'var(--acc)' : undefined }}>Spend{sortArrow('spend')}</span>
+            <span onClick={() => toggleSort('enrolled')} style={{ cursor: 'pointer', textAlign: 'right', color: sortBy === 'enrolled' ? 'var(--acc)' : undefined }}>Enrolled{sortArrow('enrolled')}</span>
+          </div>
+          {/* Rows */}
+          {filtered.map(m => (
+            <div key={m.customer_id} style={{
+              display: 'grid', gridTemplateColumns: '2fr 1.2fr 1.2fr 0.8fr 0.8fr 1fr 0.8fr',
+              padding: '10px 16px', fontSize: 12, alignItems: 'center',
+              borderBottom: '1px solid var(--bdr)',
             }}>
-              {(result.name || '?').charAt(0).toUpperCase()}
-            </div>
-            <div>
-              <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--t1)' }}>{result.name || 'Unknown'}</div>
-              <div style={{ fontSize: 12, color: 'var(--t3)' }}>
-                {result.phone || ''} {result.email ? `· ${result.email}` : ''}
-              </div>
-              {result.member_code && (
-                <div style={{ fontSize: 11, color: 'var(--t4)', fontFamily: 'var(--font-mono, monospace)', marginTop: 2 }}>
-                  {result.member_code}
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontWeight: 700, color: 'var(--t1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {m.name || 'Unnamed'}
+                  {m.tier && (
+                    <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 4, background: `${m.tier.color || 'var(--acc)'}20`, color: m.tier.color || 'var(--acc)' }}>
+                      {m.tier.icon || '⭐'} {m.tier.name}
+                    </span>
+                  )}
                 </div>
-              )}
-            </div>
-          </div>
-
-          {/* Stats grid */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 14 }}>
-            <ConfigStat label="Points balance" value={result.points_balance ?? 0} />
-            <ConfigStat label="Total earned" value={result.points_earned_total ?? 0} />
-            <ConfigStat label="Visits" value={result.visit_count ?? 0} />
-            <ConfigStat label="Lifetime spend" value={result.lifetime_spend ? `£${(result.lifetime_spend / 100).toFixed(2)}` : '£0.00'} />
-          </div>
-
-          {/* Tier */}
-          {result.tier && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, padding: '8px 12px', background: 'var(--bg2)', borderRadius: 8, border: '1px solid var(--bdr)' }}>
-              <span style={{ fontSize: 14 }}>{result.tier.icon || '⭐'}</span>
-              <span style={{ fontWeight: 700, fontSize: 13, color: result.tier.color || 'var(--t1)' }}>{result.tier.name}</span>
-              {result.tier.multiplier > 1 && (
-                <span style={{ fontSize: 11, color: 'var(--t4)' }}>({result.tier.multiplier}x points)</span>
-              )}
-            </div>
-          )}
-
-          {/* Available rewards */}
-          {result.rewards_available?.length > 0 && (
-            <div style={{ marginBottom: 12 }}>
-              <div style={{ ...S.label, marginBottom: 8 }}>Can redeem</div>
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                {result.rewards_available.map(r => (
-                  <div key={r.id} style={{
-                    padding: '6px 12px', borderRadius: 8, background: 'var(--grn-d, var(--bg2))',
-                    border: '1px solid var(--grn-b, var(--bdr))', fontSize: 12, fontWeight: 600, color: 'var(--grn)',
-                  }}>
-                    {r.name} ({r.points_cost} pts)
-                  </div>
-                ))}
+                {m.email && <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.email}</div>}
               </div>
+              <div style={{ color: 'var(--t2)', fontFamily: 'var(--font-mono)', fontSize: 11 }}>{m.phone || '—'}</div>
+              <div style={{ color: 'var(--t4)', fontFamily: 'var(--font-mono)', fontSize: 11 }}>{m.member_code || '—'}</div>
+              <div style={{ textAlign: 'right', color: 'var(--acc)', fontWeight: 700, fontFamily: 'var(--font-mono)' }}>{(m.points_balance || 0).toLocaleString()}</div>
+              <div style={{ textAlign: 'right', color: 'var(--t1)', fontFamily: 'var(--font-mono)' }}>{m.visit_count || 0}</div>
+              <div style={{ textAlign: 'right', color: 'var(--t2)', fontFamily: 'var(--font-mono)' }}>£{((m.lifetime_spend_minor || 0) / 100).toFixed(2)}</div>
+              <div style={{ textAlign: 'right', color: 'var(--t3)', fontSize: 11 }}>{m.enrolled_at ? new Date(m.enrolled_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) : '—'}</div>
             </div>
-          )}
-
-          {/* Gift cards */}
-          {result.gift_cards?.length > 0 && (
-            <div>
-              <div style={{ ...S.label, marginBottom: 8 }}>Gift cards</div>
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                {result.gift_cards.map(gc => (
-                  <div key={gc.id} style={{
-                    padding: '6px 12px', borderRadius: 8, background: 'var(--bg2)',
-                    border: '1px solid var(--bdr)', fontSize: 12, color: 'var(--t2)',
-                  }}>
-                    ****{gc.last4} — {'£'}{(gc.balance / 100).toFixed(2)}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Dates */}
-          <div style={{ display: 'flex', gap: 20, marginTop: 14, fontSize: 11, color: 'var(--t4)' }}>
-            {result.enrolled_at && <span>Enrolled: {new Date(result.enrolled_at).toLocaleDateString('en-GB')}</span>}
-            {result.last_visit_at && <span>Last visit: {new Date(result.last_visit_at).toLocaleDateString('en-GB')}</span>}
-            {result.referral_code && <span>Referral code: {result.referral_code}</span>}
-          </div>
+          ))}
         </div>
       )}
     </div>
