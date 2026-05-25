@@ -57,12 +57,16 @@ export default function CustomerPortal({ location }) {
     window.location.pathname.includes('/account/register');
 
   // Auth state
-  const [screen, setScreen] = useState('login'); // login | otp | register | dashboard
+  const [screen, setScreen] = useState(isRegisterUrl ? 'register_form' : 'login');
+  // login | otp | register_form | register_otp | register | dashboard
   const [phone, setPhone] = useState('');
   const [otpCode, setOtpCode] = useState('');
   const [token, setToken] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+
+  // Registration pre-fill data (collected before OTP)
+  const [regData, setRegData] = useState(null);
 
   // Dashboard data
   const [customer, setCustomer] = useState(null);
@@ -145,9 +149,34 @@ export default function CustomerPortal({ location }) {
         setCustomer(data.customer);
         setLoyalty(data.loyalty);
         setGiftCards(data.gift_cards || []);
-        // First-time registration: if customer has no name, show the
-        // signup form before the dashboard so they complete their profile.
-        if (!data.customer?.name) {
+
+        // If this verification came from the registration flow,
+        // save the pre-collected profile data now
+        if (screen === 'register_otp' && regData) {
+          try {
+            await callPortal({
+              action: 'update_profile',
+              token: data.token,
+              phone: phone.replace(/\s+/g, ''),
+              company_id: location.company_id,
+              name: regData.name,
+              email: regData.email || null,
+              birthday: regData.birthday || null,
+              marketing_opt_in: regData.marketingOptIn,
+            });
+            setCustomer(c => ({
+              ...c,
+              name: regData.name,
+              email: regData.email || c?.email,
+            }));
+            setRegData(null);
+          } catch (profileErr) {
+            console.warn('[Portal] Profile save after reg:', profileErr?.message);
+          }
+          setScreen('dashboard');
+        } else if (!data.customer?.name) {
+          // Existing sign-in flow: if customer has no name, show
+          // the signup form before the dashboard so they complete their profile.
           setScreen('register');
         } else {
           setScreen('dashboard');
@@ -169,8 +198,9 @@ export default function CustomerPortal({ location }) {
     setGiftCards([]);
     setPhone('');
     setOtpCode('');
+    setRegData(null);
     setTab('home');
-    setScreen('login');
+    setScreen(isRegisterUrl ? 'register_form' : 'login');
   };
 
   return (
@@ -193,10 +223,15 @@ export default function CustomerPortal({ location }) {
         <div style={{ fontSize: 24, fontWeight: 800 }}>{t.companyName || location.name}</div>
         {screen === 'login' && (
           <div style={{ fontSize: 13, color: t.textMuted, marginTop: 4 }}>
-            {isRegisterUrl ? 'Join our loyalty programme' : 'Sign in to your loyalty account'}
+            Sign in to your loyalty account
           </div>
         )}
-        {screen === 'register' && (
+        {screen === 'register_form' && (
+          <div style={{ fontSize: 13, color: t.textMuted, marginTop: 4 }}>
+            Join our loyalty programme
+          </div>
+        )}
+        {(screen === 'register' || screen === 'register_otp') && (
           <div style={{ fontSize: 13, color: t.textMuted, marginTop: 4 }}>
             Complete your registration
           </div>
@@ -208,7 +243,35 @@ export default function CustomerPortal({ location }) {
           <LoginScreen
             t={t} phone={phone} setPhone={setPhone}
             loading={loading} error={error} onSubmit={sendOtp}
-            isRegister={isRegisterUrl}
+            isRegister={false}
+          />
+        )}
+        {screen === 'register_form' && (
+          <RegisterFormScreen
+            t={t} location={location}
+            loading={loading} error={error}
+            onSubmit={(data) => {
+              setRegData(data);
+              setPhone(data.phone);
+              // Send OTP to verify the phone
+              (async () => {
+                setError('');
+                setLoading(true);
+                try {
+                  await callPortal({
+                    action: 'send',
+                    phone: data.phone.replace(/\s+/g, ''),
+                    company_id: location.company_id,
+                  });
+                  setOtpCode('');
+                  setScreen('register_otp');
+                } catch (e) {
+                  setError(e.message);
+                } finally {
+                  setLoading(false);
+                }
+              })();
+            }}
           />
         )}
         {screen === 'register' && (
@@ -221,11 +284,15 @@ export default function CustomerPortal({ location }) {
             }}
           />
         )}
-        {screen === 'otp' && (
+        {(screen === 'otp' || screen === 'register_otp') && (
           <OtpScreen
             t={t} phone={phone} otpCode={otpCode} setOtpCode={setOtpCode}
             loading={loading} error={error} onVerify={verifyOtp}
-            onResend={sendOtp} onBack={() => { setScreen('login'); setOtpCode(''); setError(''); }}
+            onResend={sendOtp}
+            onBack={() => {
+              setOtpCode(''); setError('');
+              setScreen(screen === 'register_otp' ? 'register_form' : 'login');
+            }}
           />
         )}
         {screen === 'dashboard' && (
@@ -249,16 +316,12 @@ export default function CustomerPortal({ location }) {
 // ═══════════════════════════════════════════════════════════════════════════
 // LOGIN SCREEN
 // ═══════════════════════════════════════════════════════════════════════════
-function LoginScreen({ t, phone, setPhone, loading, error, onSubmit, isRegister }) {
+function LoginScreen({ t, phone, setPhone, loading, error, onSubmit }) {
   return (
     <Card t={t}>
-      <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>
-        {isRegister ? 'Create your account' : 'Welcome'}
-      </div>
+      <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>Welcome</div>
       <div style={{ fontSize: 13, color: t.textMuted, marginBottom: 20, lineHeight: 1.5 }}>
-        {isRegister
-          ? 'Enter your mobile number to sign up and start earning points & rewards.'
-          : 'Enter your mobile number to access your loyalty points, rewards, and gift cards.'}
+        Enter your mobile number to access your loyalty points, rewards, and gift cards.
       </div>
 
       <label style={{ fontSize: 12, fontWeight: 600, color: t.textMuted, marginBottom: 6, display: 'block' }}>
@@ -292,26 +355,161 @@ function LoginScreen({ t, phone, setPhone, loading, error, onSubmit, isRegister 
           opacity: loading ? 0.6 : 1,
         }}
       >
-        {loading ? 'Sending code…' : isRegister ? 'Sign up' : 'Send verification code'}
+        {loading ? 'Sending code…' : 'Send verification code'}
       </button>
 
-      {/* Toggle between sign-in / sign-up */}
+      {/* Link to registration */}
       <div style={{ fontSize: 13, color: t.textMuted, marginTop: 16, textAlign: 'center' }}>
-        {isRegister ? (
-          <>Already a member?{' '}
-            <a href={window.location.pathname.replace('/register', '')}
-              style={{ color: t.accent, fontWeight: 600, textDecoration: 'none' }}>
-              Sign in
-            </a>
-          </>
-        ) : (
-          <>New here?{' '}
-            <a href={`${window.location.pathname.replace(/\/$/, '')}/register`}
-              style={{ color: t.accent, fontWeight: 600, textDecoration: 'none' }}>
-              Join our loyalty programme
-            </a>
-          </>
-        )}
+        New here?{' '}
+        <a href={`${window.location.pathname.replace(/\/$/, '')}/register`}
+          style={{ color: t.accent, fontWeight: 600, textDecoration: 'none' }}>
+          Join our loyalty programme
+        </a>
+      </div>
+    </Card>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// REGISTER FORM SCREEN — collect details BEFORE OTP verification
+// ═══════════════════════════════════════════════════════════════════════════
+function RegisterFormScreen({ t, location, loading, error, onSubmit }) {
+  const [firstName, setFirstName] = useState('');
+  const [lastName, setLastName] = useState('');
+  const [email, setEmail] = useState('');
+  const [phone, setPhone] = useState('');
+  const [birthday, setBirthday] = useState('');
+  const [marketingOptIn, setMarketingOptIn] = useState(false);
+  const [localError, setLocalError] = useState('');
+
+  const handleSubmit = () => {
+    setLocalError('');
+    if (!firstName.trim()) { setLocalError('Please enter your first name'); return; }
+    if (!lastName.trim()) { setLocalError('Please enter your last name'); return; }
+    const cleanPhone = phone.replace(/\s+/g, '');
+    if (cleanPhone.length < 10) { setLocalError('Please enter a valid mobile number'); return; }
+    onSubmit({
+      name: `${firstName.trim()} ${lastName.trim()}`,
+      email: email.trim() || null,
+      phone: cleanPhone,
+      birthday: birthday || null,
+      marketingOptIn,
+    });
+  };
+
+  return (
+    <Card t={t}>
+      <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>Create your account</div>
+      <div style={{ fontSize: 13, color: t.textMuted, marginBottom: 20, lineHeight: 1.5 }}>
+        Fill in your details to join our loyalty programme and start earning points & rewards.
+      </div>
+
+      {/* First name + Last name side by side */}
+      <div style={{ display: 'flex', gap: 12 }}>
+        <div style={{ flex: 1 }}>
+          <FieldLabel t={t}>First name *</FieldLabel>
+          <input
+            type="text" value={firstName}
+            onChange={e => setFirstName(e.target.value)}
+            placeholder="First name" autoFocus
+            style={inputStyle(t)}
+          />
+        </div>
+        <div style={{ flex: 1 }}>
+          <FieldLabel t={t}>Last name *</FieldLabel>
+          <input
+            type="text" value={lastName}
+            onChange={e => setLastName(e.target.value)}
+            placeholder="Last name"
+            style={inputStyle(t)}
+          />
+        </div>
+      </div>
+
+      <FieldLabel t={t} style={{ marginTop: 16 }}>Email</FieldLabel>
+      <input
+        type="email" value={email}
+        onChange={e => setEmail(e.target.value)}
+        placeholder="you@example.com"
+        style={inputStyle(t)}
+      />
+      <div style={{ fontSize: 11, color: t.textDim, marginTop: 4 }}>
+        For receipts, order updates, and reward notifications
+      </div>
+
+      <FieldLabel t={t} style={{ marginTop: 16 }}>Mobile number *</FieldLabel>
+      <input
+        type="tel" inputMode="tel" value={phone}
+        onChange={e => setPhone(e.target.value)}
+        placeholder="07931 123456"
+        style={inputStyle(t)}
+      />
+      <div style={{ fontSize: 11, color: t.textDim, marginTop: 4 }}>
+        We'll send a verification code to confirm your number
+      </div>
+
+      <FieldLabel t={t} style={{ marginTop: 16 }}>Date of birth</FieldLabel>
+      <input
+        type="date" value={birthday}
+        onChange={e => setBirthday(e.target.value)}
+        style={{ ...inputStyle(t), colorScheme: t.bg === '#0e0e10' ? 'dark' : 'light' }}
+      />
+      <div style={{ fontSize: 11, color: t.textDim, marginTop: 4 }}>
+        We'll send you a birthday treat!
+      </div>
+
+      {/* Marketing opt-in */}
+      <div
+        onClick={() => setMarketingOptIn(!marketingOptIn)}
+        style={{
+          display: 'flex', alignItems: 'flex-start', gap: 10, marginTop: 18,
+          cursor: 'pointer', userSelect: 'none',
+        }}
+      >
+        <div style={{
+          width: 22, height: 22, borderRadius: 6, flexShrink: 0, marginTop: 1,
+          border: `2px solid ${marketingOptIn ? t.accent : t.border}`,
+          background: marketingOptIn ? t.accent : 'transparent',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          transition: 'all 0.2s',
+        }}>
+          {marketingOptIn && <span style={{ color: t.accentText, fontSize: 14, fontWeight: 700 }}>✓</span>}
+        </div>
+        <div style={{ fontSize: 13, color: t.textMuted, lineHeight: 1.5 }}>
+          Keep me updated with exclusive offers, rewards, and news
+        </div>
+      </div>
+
+      {(localError || error) && (
+        <div style={{ fontSize: 12, color: t.error, marginTop: 12 }}>{localError || error}</div>
+      )}
+
+      <button
+        onClick={handleSubmit}
+        disabled={loading}
+        style={{
+          width: '100%', marginTop: 22, padding: '15px',
+          borderRadius: 99, border: 'none',
+          background: t.accent, color: t.accentText,
+          fontSize: 15, fontWeight: 700,
+          cursor: loading ? 'wait' : 'pointer',
+          opacity: loading ? 0.6 : 1,
+        }}
+      >
+        {loading ? 'Sending code…' : 'Continue — verify your number'}
+      </button>
+
+      <div style={{ fontSize: 11, color: t.textDim, marginTop: 12, textAlign: 'center', lineHeight: 1.5 }}>
+        By joining, you agree to receive points and rewards. You can opt out at any time from your profile.
+      </div>
+
+      {/* Link to sign-in */}
+      <div style={{ fontSize: 13, color: t.textMuted, marginTop: 16, textAlign: 'center' }}>
+        Already a member?{' '}
+        <a href={window.location.pathname.replace('/register', '')}
+          style={{ color: t.accent, fontWeight: 600, textDecoration: 'none' }}>
+          Sign in
+        </a>
       </div>
     </Card>
   );
@@ -896,6 +1094,17 @@ function HistoryTab({ t, loyalty }) {
 
 // ── Gift Cards Tab ───────────────────────────────────────────────────────
 function GiftCardsTab({ t, giftCards }) {
+  const [copiedId, setCopiedId] = useState(null);
+
+  const copyCode = (gc) => {
+    const code = gc.code || gc.last4 || '';
+    if (!code) return;
+    navigator.clipboard.writeText(code).then(() => {
+      setCopiedId(gc.id);
+      setTimeout(() => setCopiedId(null), 2000);
+    }).catch(() => {});
+  };
+
   if (!giftCards || giftCards.length === 0) {
     return <Card t={t}><EmptyState icon="💳" text="No active gift cards linked to your account" /></Card>;
   }
@@ -903,11 +1112,11 @@ function GiftCardsTab({ t, giftCards }) {
   return (
     <>
       {giftCards.map((gc, i) => (
-        <Card key={gc.id || i} t={t} style={{ marginBottom: 10 }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Card key={gc.id || i} t={t} style={{ marginBottom: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: gc.code ? 12 : 0 }}>
             <div>
               <div style={{ fontSize: 11, color: t.textMuted, fontWeight: 600, letterSpacing: '0.04em' }}>
-                GIFT CARD ····{gc.last4}
+                GIFT CARD
               </div>
               <div style={{ fontSize: 22, fontWeight: 800, marginTop: 4 }}>
                 {formatAmount(gc.balance)}
@@ -925,6 +1134,46 @@ function GiftCardsTab({ t, giftCards }) {
               💳
             </div>
           </div>
+
+          {/* Full gift card code — visible for customer to use */}
+          {gc.code && (
+            <div
+              onClick={() => copyCode(gc)}
+              style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                padding: '12px 14px', borderRadius: t.radius - 4,
+                background: `${t.text}08`, border: `1px dashed ${t.border}`,
+                cursor: 'pointer', userSelect: 'all',
+              }}
+            >
+              <div>
+                <div style={{ fontSize: 10, color: t.textDim, fontWeight: 600, letterSpacing: '0.04em', marginBottom: 4 }}>
+                  CARD CODE
+                </div>
+                <div style={{ fontSize: 18, fontWeight: 800, fontFamily: 'monospace', letterSpacing: '0.12em' }}>
+                  {gc.code}
+                </div>
+              </div>
+              <div style={{
+                fontSize: 11, fontWeight: 700, padding: '6px 12px', borderRadius: 99,
+                background: copiedId === gc.id ? `${t.accent}20` : `${t.text}10`,
+                color: copiedId === gc.id ? t.accent : t.textMuted,
+                transition: 'all 0.2s',
+              }}>
+                {copiedId === gc.id ? 'Copied!' : 'Copy'}
+              </div>
+            </div>
+          )}
+          {/* Fallback: show last 4 if no full code */}
+          {!gc.code && gc.last4 && (
+            <div style={{
+              padding: '10px 14px', borderRadius: t.radius - 4,
+              background: `${t.text}08`, marginTop: 0,
+              fontSize: 13, color: t.textMuted, fontFamily: 'monospace',
+            }}>
+              Card ending ····{gc.last4}
+            </div>
+          )}
         </Card>
       ))}
     </>

@@ -375,13 +375,14 @@ Deno.serve(async (req) => {
       if (conditions.length > 0) {
         const { data: cards } = await platformAdmin
           .from('gift_cards')
-          .select('id, code_last4, balance_minor, status, expires_at, initial_amount_minor')
+          .select('id, code_last4, code_plain, balance_minor, status, expires_at, initial_amount_minor')
           .eq('company_id', companyId)
           .eq('status', 'active')
           .or(conditions.join(','));
         giftCards = (cards || []).map(c => ({
           id: c.id,
           last4: c.code_last4,
+          code: c.code_plain || null,
           balance: c.balance_minor,
           initial: c.initial_amount_minor,
           expires_at: c.expires_at,
@@ -474,13 +475,14 @@ Deno.serve(async (req) => {
       if (conditions.length > 0) {
         const { data: cards } = await platformAdmin
           .from('gift_cards')
-          .select('id, code_last4, balance_minor, status, expires_at, initial_amount_minor')
+          .select('id, code_last4, code_plain, balance_minor, status, expires_at, initial_amount_minor')
           .eq('company_id', session.companyId)
           .eq('status', 'active')
           .or(conditions.join(','));
         giftCards = (cards || []).map(c => ({
-          id: c.id, last4: c.code_last4, balance: c.balance_minor,
-          initial: c.initial_amount_minor, expires_at: c.expires_at,
+          id: c.id, last4: c.code_last4, code: c.code_plain || null,
+          balance: c.balance_minor, initial: c.initial_amount_minor,
+          expires_at: c.expires_at,
         }));
       }
     } catch {}

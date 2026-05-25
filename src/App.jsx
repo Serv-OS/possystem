@@ -76,6 +76,16 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.224', date: '25 May 2026', label: 'Registration flow fix + gift card codes visible',
+    changes: [
+      'Registration page (/account/register) now collects all details FIRST (first name, last name, email, phone, DOB, marketing opt-in) then sends OTP to verify the phone number.',
+      'After OTP verification on registration, profile data is automatically saved — no extra step needed.',
+      'Gift cards tab on customer portal now shows the full gift card code (not just last 4 digits) with a tap-to-copy button.',
+      'Gift card codes displayed in large monospace font with dashed border — easy to read and use at checkout.',
+      'Sign-in page simplified — registration logic moved to dedicated /register flow.',
+    ],
+  },
+  {
     version: '5.5.223', date: '25 May 2026', label: 'Customers section enriched with loyalty data',
     changes: [
       'Customers list now shows Loyalty status column (Member badge with tier name, or dash if not enrolled) and Points balance column.',
