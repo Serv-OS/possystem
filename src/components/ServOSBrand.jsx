@@ -35,15 +35,15 @@ export function ServOSIcon({ size = 44, variant = 'ember', style = {} }) {
 export function ServOSWordmark({ fontSize = 22, color, style = {} }) {
   return (
     <span style={{
-      fontFamily: "'Instrument Serif', Georgia, serif",
+      fontFamily: 'inherit',
       fontSize,
-      fontWeight: 400,
+      fontWeight: 800,
       lineHeight: 0.95,
       letterSpacing: '-0.02em',
       color: color || 'var(--t1)',
       ...style,
     }}>
-      Serv<span style={{ color: '#E8743C', fontStyle: 'italic' }}>OS</span>
+      Serv<span style={{ color: '#E8743C' }}>OS</span>
     </span>
   );
 }
