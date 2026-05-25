@@ -321,17 +321,20 @@ function LoginScreen({ t, phone, setPhone, loading, error, onSubmit, isRegister 
 // REGISTER SCREEN — first-time signup after OTP verification
 // ═══════════════════════════════════════════════════════════════════════════
 function RegisterScreen({ t, location, token, customer, loyalty, onComplete }) {
-  const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
+  const [firstName, setFirstName] = useState('');
+  const [lastName, setLastName] = useState('');
+  const [email, setEmail] = useState(customer?.email || '');
   const [birthday, setBirthday] = useState('');
   const [marketingOptIn, setMarketingOptIn] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
-  const valid = name.trim().length >= 2;
+  const valid = firstName.trim().length >= 1 && lastName.trim().length >= 1;
+  const fullName = `${firstName.trim()} ${lastName.trim()}`.trim();
 
   const submit = async () => {
-    if (!valid) { setError('Please enter your name'); return; }
+    if (!firstName.trim()) { setError('Please enter your first name'); return; }
+    if (!lastName.trim()) { setError('Please enter your last name'); return; }
     setSaving(true);
     setError('');
     try {
@@ -340,14 +343,14 @@ function RegisterScreen({ t, location, token, customer, loyalty, onComplete }) {
         token,
         phone: customer?.phone || '_',
         company_id: location.company_id,
-        name: name.trim(),
+        name: fullName,
         email: email.trim() || null,
         birthday: birthday || null,
         marketing_opt_in: marketingOptIn,
       });
       onComplete({
         ...customer,
-        name: name.trim(),
+        name: fullName,
         email: email.trim() || customer?.email,
       });
     } catch (e) {
@@ -384,15 +387,30 @@ function RegisterScreen({ t, location, token, customer, loyalty, onComplete }) {
           Tell us a bit about yourself to get the most from your loyalty membership.
         </div>
 
-        <FieldLabel t={t}>Name *</FieldLabel>
-        <input
-          type="text"
-          value={name}
-          onChange={e => setName(e.target.value)}
-          placeholder="Your full name"
-          autoFocus
-          style={inputStyle(t)}
-        />
+        {/* First name + Last name side by side */}
+        <div style={{ display: 'flex', gap: 12 }}>
+          <div style={{ flex: 1 }}>
+            <FieldLabel t={t}>First name *</FieldLabel>
+            <input
+              type="text"
+              value={firstName}
+              onChange={e => setFirstName(e.target.value)}
+              placeholder="First name"
+              autoFocus
+              style={inputStyle(t)}
+            />
+          </div>
+          <div style={{ flex: 1 }}>
+            <FieldLabel t={t}>Last name *</FieldLabel>
+            <input
+              type="text"
+              value={lastName}
+              onChange={e => setLastName(e.target.value)}
+              placeholder="Last name"
+              style={inputStyle(t)}
+            />
+          </div>
+        </div>
 
         <FieldLabel t={t} style={{ marginTop: 16 }}>Email</FieldLabel>
         <input
@@ -406,6 +424,18 @@ function RegisterScreen({ t, location, token, customer, loyalty, onComplete }) {
           For receipts, order updates, and reward notifications
         </div>
 
+        {/* Phone — pre-filled from OTP, read-only */}
+        <FieldLabel t={t} style={{ marginTop: 16 }}>Phone</FieldLabel>
+        <input
+          type="tel"
+          value={customer?.phone || ''}
+          readOnly
+          style={{ ...inputStyle(t), opacity: 0.6, cursor: 'not-allowed' }}
+        />
+        <div style={{ fontSize: 11, color: t.textDim, marginTop: 4 }}>
+          Verified via SMS — cannot be changed
+        </div>
+
         <FieldLabel t={t} style={{ marginTop: 16 }}>Date of birth</FieldLabel>
         <input
           type="date"
@@ -414,7 +444,7 @@ function RegisterScreen({ t, location, token, customer, loyalty, onComplete }) {
           style={{ ...inputStyle(t), colorScheme: t.bg === '#0e0e10' ? 'dark' : 'light' }}
         />
         <div style={{ fontSize: 11, color: t.textDim, marginTop: 4 }}>
-          Optional — we'll send you a birthday treat!
+          We'll send you a birthday treat!
         </div>
 
         {/* Marketing opt-in */}
