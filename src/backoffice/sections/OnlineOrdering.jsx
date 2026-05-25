@@ -289,8 +289,12 @@ export default function OnlineOrdering({ setSection }) {
   const slug = row.online_slug;
   const onlineUrl = slug ? `https://${slug}.${ROOT}` : null;
   const qrUrl     = slug ? `https://${slug}.${ROOT}/t/<table-id>` : null;
+  const giftUrl   = slug ? `https://${slug}.${ROOT}/gift` : null;
+  const portalUrl = slug ? `https://${slug}.${ROOT}/account` : null;
   const previewOnline = customerUrl(slug, '') || null;
   const previewQr     = customerUrl(slug, '/t/t1') || null;
+  const previewGift   = customerUrl(slug, '/gift') || null;
+  const previewPortal = customerUrl(slug, '/account') || null;
 
   return (
     <div style={S.page}>
@@ -304,6 +308,8 @@ export default function OnlineOrdering({ setSection }) {
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(280px, 1fr))', gap:12, marginBottom:24 }}>
         <StatusPill title="🌐 Online" enabled={row.online_enabled} url={onlineUrl} preview={previewOnline}/>
         <StatusPill title="📱 QR table-side" enabled={row.qr_enabled} url={qrUrl} preview={previewQr}/>
+        <StatusPill title="🎁 Gift cards" enabled={true} url={giftUrl} preview={previewGift}/>
+        <StatusPill title="⭐ Loyalty portal" enabled={true} url={portalUrl} preview={previewPortal}/>
       </div>
 
       {/* Menu picker */}

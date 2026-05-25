@@ -881,6 +881,12 @@ function OnlineOrderingSection({ setSection }) {
                   Preview gift cards ↗
                 </a>
               )}
+              {slug && (
+                <a href={customerUrl(slug, '/account')} target="_blank" rel="noopener"
+                  style={{ ...secondaryBtn(), textDecoration:'none' }}>
+                  Preview loyalty portal ↗
+                </a>
+              )}
               <button onClick={() => setSection('giftcards')} style={secondaryBtn()}>
                 Gift card settings
               </button>
