@@ -76,6 +76,25 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.212', date: '24 May 2026', label: 'Message Templates — customise SMS & email wording',
+    changes: [
+      'New "Messages" section in back office: edit every transactional SMS and email your venue sends — order ready, gift card delivery, table ready, receipts, reservation confirmations.',
+      'Merge tags ({{customer_name}}, {{order_number}}, etc.) auto-replaced with real values at send time. Click a tag to insert it at the cursor.',
+      'Live preview: see how your SMS or email will look with sample data before saving.',
+      'Per-template enable/disable toggle: turn off specific message types without deleting the template.',
+      'Reset to default: one click reverts a customised template back to the system default.',
+      'New message-templates edge function (CRUD) + message_templates table on Platform DB. Shared template-resolver module for send-time resolution.',
+    ],
+  },
+  {
+    version: '5.5.211', date: '24 May 2026', label: 'Manual fulfill for stuck online purchases',
+    changes: [
+      'Online purchases panel: added "Fulfill" button for pending/paid purchases that did not auto-fulfill via Stripe webhook. Triggers card issuance, code generation, and email delivery.',
+      'gift-fulfill edge function now accepts both service-role auth (webhook) and user JWT auth (back office manual fulfill).',
+      'Online purchases panel: added Refresh button and improved loading UX.',
+    ],
+  },
+  {
     version: '5.5.210', date: '24 May 2026', label: 'Voucher PDF: org name, compact layout',
     changes: [
       'Voucher PDF now shows the organisation name instead of the location name. Fetches company name from Platform DB companies table on gift card load.',
