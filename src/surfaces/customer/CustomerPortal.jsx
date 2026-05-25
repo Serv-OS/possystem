@@ -53,7 +53,7 @@ export default function CustomerPortal({ location }) {
   const t = useMemo(() => buildGiftTheme(location, giftBranding), [location, giftBranding]);
 
   // Auth state
-  const [screen, setScreen] = useState('login'); // login | otp | dashboard
+  const [screen, setScreen] = useState('login'); // login | otp | register | dashboard
   const [phone, setPhone] = useState('');
   const [otpCode, setOtpCode] = useState('');
   const [token, setToken] = useState(null);
@@ -141,7 +141,13 @@ export default function CustomerPortal({ location }) {
         setCustomer(data.customer);
         setLoyalty(data.loyalty);
         setGiftCards(data.gift_cards || []);
-        setScreen('dashboard');
+        // First-time registration: if customer has no name, show the
+        // signup form before the dashboard so they complete their profile.
+        if (!data.customer?.name) {
+          setScreen('register');
+        } else {
+          setScreen('dashboard');
+        }
       }
     } catch (e) {
       setError(e.message);
@@ -186,6 +192,11 @@ export default function CustomerPortal({ location }) {
             Sign in to your loyalty account
           </div>
         )}
+        {screen === 'register' && (
+          <div style={{ fontSize: 13, color: t.textMuted, marginTop: 4 }}>
+            Join our loyalty programme
+          </div>
+        )}
       </div>
 
       <div style={{ width: '100%', maxWidth: 440 }}>
@@ -193,6 +204,16 @@ export default function CustomerPortal({ location }) {
           <LoginScreen
             t={t} phone={phone} setPhone={setPhone}
             loading={loading} error={error} onSubmit={sendOtp}
+          />
+        )}
+        {screen === 'register' && (
+          <RegisterScreen
+            t={t} location={location} token={token} customer={customer}
+            loyalty={loyalty}
+            onComplete={(updatedCustomer) => {
+              setCustomer(updatedCustomer);
+              setScreen('dashboard');
+            }}
           />
         )}
         {screen === 'otp' && (
@@ -265,6 +286,153 @@ function LoginScreen({ t, phone, setPhone, loading, error, onSubmit }) {
         {loading ? 'Sending code…' : 'Send verification code'}
       </button>
     </Card>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// REGISTER SCREEN — first-time signup after OTP verification
+// ═══════════════════════════════════════════════════════════════════════════
+function RegisterScreen({ t, location, token, customer, loyalty, onComplete }) {
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [birthday, setBirthday] = useState('');
+  const [marketingOptIn, setMarketingOptIn] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const valid = name.trim().length >= 2;
+
+  const submit = async () => {
+    if (!valid) { setError('Please enter your name'); return; }
+    setSaving(true);
+    setError('');
+    try {
+      await callPortal({
+        action: 'update_profile',
+        token,
+        phone: customer?.phone || '_',
+        company_id: location.company_id,
+        name: name.trim(),
+        email: email.trim() || null,
+        birthday: birthday || null,
+        marketing_opt_in: marketingOptIn,
+      });
+      onComplete({
+        ...customer,
+        name: name.trim(),
+        email: email.trim() || customer?.email,
+      });
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const welcomePoints = loyalty?.points_balance || 0;
+
+  return (
+    <>
+      {/* Welcome hero */}
+      {welcomePoints > 0 && (
+        <div style={{
+          background: `linear-gradient(135deg, ${t.accent}, ${t.accentHover})`,
+          borderRadius: t.radius + 4, padding: '24px 20px', marginBottom: 18,
+          color: t.accentText, textAlign: 'center',
+        }}>
+          <div style={{ fontSize: 36, marginBottom: 6 }}>🎉</div>
+          <div style={{ fontSize: 18, fontWeight: 800 }}>
+            You've earned {welcomePoints} welcome points!
+          </div>
+          <div style={{ fontSize: 13, opacity: 0.8, marginTop: 4 }}>
+            Complete your registration to start earning rewards
+          </div>
+        </div>
+      )}
+
+      <Card t={t}>
+        <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>Create your account</div>
+        <div style={{ fontSize: 13, color: t.textMuted, marginBottom: 20, lineHeight: 1.5 }}>
+          Tell us a bit about yourself to get the most from your loyalty membership.
+        </div>
+
+        <FieldLabel t={t}>Name *</FieldLabel>
+        <input
+          type="text"
+          value={name}
+          onChange={e => setName(e.target.value)}
+          placeholder="Your full name"
+          autoFocus
+          style={inputStyle(t)}
+        />
+
+        <FieldLabel t={t} style={{ marginTop: 16 }}>Email</FieldLabel>
+        <input
+          type="email"
+          value={email}
+          onChange={e => setEmail(e.target.value)}
+          placeholder="you@example.com"
+          style={inputStyle(t)}
+        />
+        <div style={{ fontSize: 11, color: t.textDim, marginTop: 4 }}>
+          For receipts, order updates, and reward notifications
+        </div>
+
+        <FieldLabel t={t} style={{ marginTop: 16 }}>Date of birth</FieldLabel>
+        <input
+          type="date"
+          value={birthday}
+          onChange={e => setBirthday(e.target.value)}
+          style={{ ...inputStyle(t), colorScheme: t.bg === '#0e0e10' ? 'dark' : 'light' }}
+        />
+        <div style={{ fontSize: 11, color: t.textDim, marginTop: 4 }}>
+          Optional — we'll send you a birthday treat!
+        </div>
+
+        {/* Marketing opt-in */}
+        <div
+          onClick={() => setMarketingOptIn(!marketingOptIn)}
+          style={{
+            display: 'flex', alignItems: 'flex-start', gap: 10, marginTop: 18,
+            cursor: 'pointer', userSelect: 'none',
+          }}
+        >
+          <div style={{
+            width: 22, height: 22, borderRadius: 6, flexShrink: 0, marginTop: 1,
+            border: `2px solid ${marketingOptIn ? t.accent : t.border}`,
+            background: marketingOptIn ? t.accent : 'transparent',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            transition: 'all 0.2s',
+          }}>
+            {marketingOptIn && <span style={{ color: t.accentText, fontSize: 14, fontWeight: 700 }}>✓</span>}
+          </div>
+          <div style={{ fontSize: 13, color: t.textMuted, lineHeight: 1.5 }}>
+            Keep me updated with exclusive offers, rewards, and news
+          </div>
+        </div>
+
+        {error && <div style={{ fontSize: 12, color: t.error, marginTop: 12 }}>{error}</div>}
+
+        <button
+          onClick={submit}
+          disabled={saving || !valid}
+          style={{
+            width: '100%', marginTop: 22, padding: '15px',
+            borderRadius: 99, border: 'none',
+            background: valid ? t.accent : `${t.text}20`,
+            color: valid ? t.accentText : `${t.text}60`,
+            fontSize: 15, fontWeight: 700, cursor: saving ? 'wait' : valid ? 'pointer' : 'not-allowed',
+            opacity: saving ? 0.6 : 1,
+          }}
+        >
+          {saving ? 'Creating account…' : 'Join loyalty programme'}
+        </button>
+
+        <div style={{ fontSize: 11, color: t.textDim, marginTop: 12, textAlign: 'center', lineHeight: 1.5 }}>
+          By joining, you agree to receive points and rewards. You can opt out at any time from your profile.
+        </div>
+      </Card>
+    </>
   );
 }
 
