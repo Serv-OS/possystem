@@ -52,6 +52,10 @@ export default function CustomerPortal({ location }) {
   }, [location?.company_id]);
   const t = useMemo(() => buildGiftTheme(location, giftBranding), [location, giftBranding]);
 
+  // Detect /account/register URL → signup-focused messaging
+  const isRegisterUrl = typeof window !== 'undefined' &&
+    window.location.pathname.includes('/account/register');
+
   // Auth state
   const [screen, setScreen] = useState('login'); // login | otp | register | dashboard
   const [phone, setPhone] = useState('');
@@ -189,12 +193,12 @@ export default function CustomerPortal({ location }) {
         <div style={{ fontSize: 24, fontWeight: 800 }}>{t.companyName || location.name}</div>
         {screen === 'login' && (
           <div style={{ fontSize: 13, color: t.textMuted, marginTop: 4 }}>
-            Sign in to your loyalty account
+            {isRegisterUrl ? 'Join our loyalty programme' : 'Sign in to your loyalty account'}
           </div>
         )}
         {screen === 'register' && (
           <div style={{ fontSize: 13, color: t.textMuted, marginTop: 4 }}>
-            Join our loyalty programme
+            Complete your registration
           </div>
         )}
       </div>
@@ -204,6 +208,7 @@ export default function CustomerPortal({ location }) {
           <LoginScreen
             t={t} phone={phone} setPhone={setPhone}
             loading={loading} error={error} onSubmit={sendOtp}
+            isRegister={isRegisterUrl}
           />
         )}
         {screen === 'register' && (
@@ -244,12 +249,16 @@ export default function CustomerPortal({ location }) {
 // ═══════════════════════════════════════════════════════════════════════════
 // LOGIN SCREEN
 // ═══════════════════════════════════════════════════════════════════════════
-function LoginScreen({ t, phone, setPhone, loading, error, onSubmit }) {
+function LoginScreen({ t, phone, setPhone, loading, error, onSubmit, isRegister }) {
   return (
     <Card t={t}>
-      <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>Welcome</div>
+      <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>
+        {isRegister ? 'Create your account' : 'Welcome'}
+      </div>
       <div style={{ fontSize: 13, color: t.textMuted, marginBottom: 20, lineHeight: 1.5 }}>
-        Enter your mobile number to access your loyalty points, rewards, and gift cards.
+        {isRegister
+          ? 'Enter your mobile number to sign up and start earning points & rewards.'
+          : 'Enter your mobile number to access your loyalty points, rewards, and gift cards.'}
       </div>
 
       <label style={{ fontSize: 12, fontWeight: 600, color: t.textMuted, marginBottom: 6, display: 'block' }}>
@@ -283,8 +292,27 @@ function LoginScreen({ t, phone, setPhone, loading, error, onSubmit }) {
           opacity: loading ? 0.6 : 1,
         }}
       >
-        {loading ? 'Sending code…' : 'Send verification code'}
+        {loading ? 'Sending code…' : isRegister ? 'Sign up' : 'Send verification code'}
       </button>
+
+      {/* Toggle between sign-in / sign-up */}
+      <div style={{ fontSize: 13, color: t.textMuted, marginTop: 16, textAlign: 'center' }}>
+        {isRegister ? (
+          <>Already a member?{' '}
+            <a href={window.location.pathname.replace('/register', '')}
+              style={{ color: t.accent, fontWeight: 600, textDecoration: 'none' }}>
+              Sign in
+            </a>
+          </>
+        ) : (
+          <>New here?{' '}
+            <a href={`${window.location.pathname.replace(/\/$/, '')}/register`}
+              style={{ color: t.accent, fontWeight: 600, textDecoration: 'none' }}>
+              Join our loyalty programme
+            </a>
+          </>
+        )}
+      </div>
     </Card>
   );
 }

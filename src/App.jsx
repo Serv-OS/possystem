@@ -76,6 +76,16 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.222', date: '25 May 2026', label: 'Loyalty registration page + Twilio UK SMS fix',
+    changes: [
+      'New registration page at <slug>.serv-os.app/account/register — sign-up focused landing for new customers with "Join our loyalty programme" messaging.',
+      'Login screen now shows "New here? Join our loyalty programme" link; registration page shows "Already a member? Sign in" link.',
+      'Back office loyalty section now shows both sign-in and registration URLs with separate Preview/Copy buttons.',
+      'Fixed Twilio SMS geographic permissions — enabled United Kingdom (+44) for OTP delivery.',
+      'Fixed OTP edge function: null location_id fallback + response status checking for send-sms calls.',
+    ],
+  },
+  {
     version: '5.5.221', date: '25 May 2026', label: 'Customer loyalty portal + gift cards on online ordering',
     changes: [
       'New customer-facing loyalty portal at <slug>.serv-os.app/account — phone OTP login, points dashboard, rewards catalog, transaction history, gift cards, and profile management.',

@@ -965,21 +965,29 @@ function TiersPanel({ tiers, onReload }) {
 // ── Customer portal link ─────────────────────────────────────────────────
 function PortalLink({ slug, enabled }) {
   const [copied, setCopied] = useState(false);
+  const [copiedReg, setCopiedReg] = useState(false);
   const portalUrl = customerUrl(slug, '/account');
+  const registerUrl = customerUrl(slug, '/account/register');
   const copy = () => {
     navigator.clipboard?.writeText(portalUrl);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+  const copyReg = () => {
+    navigator.clipboard?.writeText(registerUrl);
+    setCopiedReg(true);
+    setTimeout(() => setCopiedReg(false), 2000);
   };
   return (
     <div style={{ padding: '14px 16px', background: 'var(--bg2)', borderRadius: 10, border: '1px solid var(--bdr)', marginBottom: 14 }}>
       <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 10 }}>
         Customer loyalty portal
       </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      {/* Sign-in link */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
         <div style={{ width: 8, height: 8, borderRadius: 4, flexShrink: 0, background: enabled ? 'var(--grn)' : 'var(--t4)' }}/>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--t2)' }}>Account portal</div>
+          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--t2)' }}>Account sign-in</div>
           <div style={{ fontSize: 11, color: 'var(--t4)', fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {portalUrl}
           </div>
@@ -995,8 +1003,28 @@ function PortalLink({ slug, enabled }) {
           {copied ? '✓ Copied' : 'Copy'}
         </button>
       </div>
-      <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 8, lineHeight: 1.5 }}>
-        Customers log in with their phone number to view points, rewards, gift cards, and manage their profile.
+      {/* Registration link */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ width: 8, height: 8, borderRadius: 4, flexShrink: 0, background: enabled ? 'var(--grn)' : 'var(--t4)' }}/>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--t2)' }}>Registration / sign-up</div>
+          <div style={{ fontSize: 11, color: 'var(--t4)', fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {registerUrl}
+          </div>
+        </div>
+        <a href={registerUrl} target="_blank" rel="noopener" style={{
+          padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 700,
+          background: 'var(--acc-d)', border: '1px solid var(--acc-b)', color: 'var(--acc)',
+          textDecoration: 'none', whiteSpace: 'nowrap',
+        }}>
+          Preview ↗
+        </a>
+        <button onClick={copyReg} style={{ ...S.btn, padding: '4px 10px', fontSize: 11, ...S.btnGhost, whiteSpace: 'nowrap' }}>
+          {copiedReg ? '✓ Copied' : 'Copy'}
+        </button>
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 10, lineHeight: 1.5 }}>
+        Share the <b>sign-up</b> link with new customers. The <b>sign-in</b> link is for existing members to check points, rewards, gift cards, and manage their profile.
       </div>
     </div>
   );
