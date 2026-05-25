@@ -76,10 +76,13 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
-    version: '5.5.226', date: '25 May 2026', label: 'Fix Members panel crash + LocationSettings ROOT fix',
+    version: '5.5.227', date: '25 May 2026', label: 'Manual points adjustment + Customers UI cleanup',
     changes: [
+      'New "± Points" button on each member row in Loyalty → Members — opens a modal to manually add or remove points.',
+      'Points adjustment modal: add/remove toggle, amount input, optional reason, live preview of new balance, writes to transaction ledger.',
+      'Customers list UI: reduced from 8 cramped columns to 6 well-spaced columns (Customer, Phone, Loyalty, Points, Spend, Last visit). Sites/Locations moved to detail panel only.',
       'Fixed MembersPanel crash — useMemo was missing from React imports in LoyaltyManager.jsx.',
-      'Fixed ReferenceError: ROOT is not defined in LocationSettings.jsx OnlineOrderingCard — changed to use imported CUSTOMER_ROOT.',
+      'Fixed ReferenceError: ROOT is not defined in LocationSettings.jsx OnlineOrderingCard.',
     ],
   },
   {

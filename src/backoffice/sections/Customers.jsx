@@ -309,15 +309,13 @@ export default function Customers() {
           ) : (
             <div>
               {/* Header row */}
-              <div style={{ display:'grid', gridTemplateColumns:'2.2fr 1.2fr 0.7fr 0.7fr 0.9fr 0.9fr 0.5fr 1fr', padding:'10px 24px', fontSize:10, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', background:'var(--bg2)', borderBottom:'1px solid var(--bdr)', position:'sticky', top:0, zIndex:1 }}>
+              <div style={{ display:'grid', gridTemplateColumns:'2.2fr 1.4fr 0.9fr 0.8fr 1fr 1fr', gap:4, padding:'10px 24px', fontSize:10, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', background:'var(--bg2)', borderBottom:'1px solid var(--bdr)', position:'sticky', top:0, zIndex:1 }}>
                 <SortHeader col="name" sortBy={sortBy} sortDir={sortDir} onClick={toggleSort}>Customer</SortHeader>
                 <span>Phone</span>
                 <span style={{ textAlign:'center' }}>Loyalty</span>
                 <SortHeader col="points" sortBy={sortBy} sortDir={sortDir} onClick={toggleSort} align="right">Points</SortHeader>
-                <SortHeader col="spend" sortBy={sortBy} sortDir={sortDir} onClick={toggleSort} align="right">Lifetime</SortHeader>
+                <SortHeader col="spend" sortBy={sortBy} sortDir={sortDir} onClick={toggleSort} align="right">Spend</SortHeader>
                 <SortHeader col="lastVisit" sortBy={sortBy} sortDir={sortDir} onClick={toggleSort} align="right">Last visit</SortHeader>
-                <SortHeader col="sites" sortBy={sortBy} sortDir={sortDir} onClick={toggleSort} align="center">Sites</SortHeader>
-                <span>Locations</span>
               </div>
               {filtered.map(c => {
                 const isSel = selectedId === c.id;
@@ -325,10 +323,10 @@ export default function Customers() {
                 const tier = loyalty?.tier_id ? tierMap[loyalty.tier_id] : null;
                 return (
                   <div key={c.id} onClick={() => setSelectedId(isSel ? null : c.id)}
-                    style={{ display:'grid', gridTemplateColumns:'2.2fr 1.2fr 0.7fr 0.7fr 0.9fr 0.9fr 0.5fr 1fr', padding:'10px 24px', fontSize:13, alignItems:'center', borderBottom:'1px solid var(--bdr)', cursor:'pointer', background: isSel ? 'var(--acc-d)' : 'transparent' }}>
+                    style={{ display:'grid', gridTemplateColumns:'2.2fr 1.4fr 0.9fr 0.8fr 1fr 1fr', gap:4, padding:'10px 24px', fontSize:13, alignItems:'center', borderBottom:'1px solid var(--bdr)', cursor:'pointer', background: isSel ? 'var(--acc-d)' : 'transparent' }}>
                     <div style={{ minWidth:0 }}>
-                      <div style={{ fontWeight:700, color:'var(--t1)', overflow:'hidden', textOverflow:'ellipsis' }}>{c.name}</div>
-                      {c.email && <div style={{ fontSize:11, color:'var(--t4)', marginTop:2, overflow:'hidden', textOverflow:'ellipsis' }}>{c.email}</div>}
+                      <div style={{ fontWeight:700, color:'var(--t1)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{c.name}</div>
+                      {c.email && <div style={{ fontSize:11, color:'var(--t4)', marginTop:2, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{c.email}</div>}
                     </div>
                     <div style={{ color:'var(--t2)', fontFamily:'var(--font-mono)', fontSize:12 }}>{c.phone_raw || c.phone || '—'}</div>
                     <div style={{ textAlign:'center' }}>
@@ -345,19 +343,6 @@ export default function Customers() {
                     </div>
                     <div style={{ textAlign:'right', color:'var(--acc)', fontWeight:700, fontFamily:'var(--font-mono)' }}>{fmtMoney(c.totalSpend)}</div>
                     <div style={{ textAlign:'right', color:'var(--t3)', fontSize:12 }}>{fmtRel(c.lastVisit)}</div>
-                    <div style={{ textAlign:'center' }}>
-                      {c.siteCount >= 2 ? (
-                        <span style={{ fontSize:12, fontWeight:800, padding:'2px 8px', borderRadius:10, background:'rgba(168,85,247,0.12)', color:'#a855f7', border:'1px solid rgba(168,85,247,0.25)' }}>{c.siteCount}</span>
-                      ) : (
-                        <span style={{ fontSize:12, fontWeight:700, color:'var(--t4)', fontFamily:'var(--font-mono)' }}>{c.siteCount || 0}</span>
-                      )}
-                    </div>
-                    <div style={{ display:'flex', gap:4, flexWrap:'wrap' }}>
-                      {c.stats.filter(s => (s.visit_count || 0) > 0).slice(0, 3).map(s => (
-                        <span key={s.location_id} style={{ fontSize:10, fontWeight:600, padding:'2px 7px', borderRadius:5, background:'var(--bg3)', color:'var(--t3)' }}>{s.locationName}</span>
-                      ))}
-                      {c.stats.filter(s => (s.visit_count || 0) > 0).length > 3 && <span style={{ fontSize:10, color:'var(--t4)' }}>+{c.stats.filter(s => (s.visit_count || 0) > 0).length - 3}</span>}
-                    </div>
                   </div>
                 );
               })}

@@ -690,6 +690,8 @@ function MembersPanel({ config }) {
   const [search, setSearch] = useState('');
   const [sortBy, setSortBy] = useState('enrolled'); // enrolled | points | visits | spend | name
   const [sortDir, setSortDir] = useState('desc');
+  const [adjustMember, setAdjustMember] = useState(null); // member obj for the adjust modal
+  const [companyId, setCompanyId] = useState(null);
 
   // Load all members: customer_loyalty (platform) + customers (ops)
   useEffect(() => {
@@ -703,6 +705,7 @@ function MembersPanel({ config }) {
           .or(`ops_location_id.eq.${locId},id.eq.${locId}`)
           .limit(1).maybeSingle();
         if (!loc?.company_id) { setLoading(false); return; }
+        setCompanyId(loc.company_id);
 
         // Get all loyalty memberships for this company
         const { data: loyaltyRows } = await platformSupabase
@@ -829,24 +832,25 @@ function MembersPanel({ config }) {
         <div style={{ background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 10, overflow: 'hidden' }}>
           {/* Header */}
           <div style={{
-            display: 'grid', gridTemplateColumns: '2fr 1.2fr 1.2fr 0.8fr 0.8fr 1fr 0.8fr',
-            padding: '10px 16px', fontSize: 10, fontWeight: 800, color: 'var(--t4)',
+            display: 'grid', gridTemplateColumns: '2fr 1.2fr 1fr 0.8fr 0.8fr 0.8fr 0.7fr auto',
+            gap: 6, padding: '10px 16px', fontSize: 10, fontWeight: 800, color: 'var(--t4)',
             textTransform: 'uppercase', letterSpacing: '.07em', background: 'var(--bg2)',
             borderBottom: '1px solid var(--bdr)',
           }}>
             <span onClick={() => toggleSort('name')} style={{ cursor: 'pointer', color: sortBy === 'name' ? 'var(--acc)' : undefined }}>Member{sortArrow('name')}</span>
             <span>Phone</span>
-            <span>Member code</span>
+            <span>Code</span>
             <span onClick={() => toggleSort('points')} style={{ cursor: 'pointer', textAlign: 'right', color: sortBy === 'points' ? 'var(--acc)' : undefined }}>Points{sortArrow('points')}</span>
             <span onClick={() => toggleSort('visits')} style={{ cursor: 'pointer', textAlign: 'right', color: sortBy === 'visits' ? 'var(--acc)' : undefined }}>Visits{sortArrow('visits')}</span>
             <span onClick={() => toggleSort('spend')} style={{ cursor: 'pointer', textAlign: 'right', color: sortBy === 'spend' ? 'var(--acc)' : undefined }}>Spend{sortArrow('spend')}</span>
             <span onClick={() => toggleSort('enrolled')} style={{ cursor: 'pointer', textAlign: 'right', color: sortBy === 'enrolled' ? 'var(--acc)' : undefined }}>Enrolled{sortArrow('enrolled')}</span>
+            <span></span>
           </div>
           {/* Rows */}
           {filtered.map(m => (
             <div key={m.customer_id} style={{
-              display: 'grid', gridTemplateColumns: '2fr 1.2fr 1.2fr 0.8fr 0.8fr 1fr 0.8fr',
-              padding: '10px 16px', fontSize: 12, alignItems: 'center',
+              display: 'grid', gridTemplateColumns: '2fr 1.2fr 1fr 0.8fr 0.8fr 0.8fr 0.7fr auto',
+              gap: 6, padding: '10px 16px', fontSize: 12, alignItems: 'center',
               borderBottom: '1px solid var(--bdr)',
             }}>
               <div style={{ minWidth: 0 }}>
@@ -866,10 +870,201 @@ function MembersPanel({ config }) {
               <div style={{ textAlign: 'right', color: 'var(--t1)', fontFamily: 'var(--font-mono)' }}>{m.visit_count || 0}</div>
               <div style={{ textAlign: 'right', color: 'var(--t2)', fontFamily: 'var(--font-mono)' }}>£{((m.lifetime_spend_minor || 0) / 100).toFixed(2)}</div>
               <div style={{ textAlign: 'right', color: 'var(--t3)', fontSize: 11 }}>{m.enrolled_at ? new Date(m.enrolled_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) : '—'}</div>
+              <button onClick={() => setAdjustMember(m)} style={{
+                padding: '4px 10px', fontSize: 10, fontWeight: 700, borderRadius: 6,
+                border: '1px solid var(--bdr)', background: 'var(--bg3)', color: 'var(--t2)',
+                cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap',
+              }}>± Points</button>
             </div>
           ))}
         </div>
       )}
+
+      {/* Adjust Points Modal */}
+      {adjustMember && (
+        <AdjustPointsModal
+          member={adjustMember}
+          companyId={companyId}
+          onClose={() => setAdjustMember(null)}
+          onSaved={(custId, newBalance, delta) => {
+            setMembers(ms => ms.map(m => {
+              if (m.customer_id !== custId) return m;
+              return {
+                ...m,
+                points_balance: newBalance,
+                points_earned_total: delta > 0 ? (m.points_earned_total || 0) + delta : m.points_earned_total,
+                points_redeemed_total: delta < 0 ? (m.points_redeemed_total || 0) + Math.abs(delta) : m.points_redeemed_total,
+              };
+            }));
+            setAdjustMember(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Adjust Points Modal — manual add/remove points for a member
+// ═══════════════════════════════════════════════════════════════════════
+function AdjustPointsModal({ member, companyId, onClose, onSaved }) {
+  const [mode, setMode] = useState('add'); // add | remove
+  const [amount, setAmount] = useState('');
+  const [reason, setReason] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const pts = parseInt(amount, 10) || 0;
+  const delta = mode === 'add' ? pts : -pts;
+  const newBalance = (member.points_balance || 0) + delta;
+  const valid = pts > 0 && (mode === 'add' || newBalance >= 0);
+
+  const submit = async () => {
+    if (!valid) return;
+    setSaving(true);
+    setError('');
+    try {
+      // 1. Update points_balance on platform DB
+      const { data: current, error: readErr } = await platformSupabase
+        .from('customer_loyalty')
+        .select('id, points_balance, points_earned_total, points_redeemed_total')
+        .eq('customer_id', member.customer_id)
+        .eq('company_id', companyId)
+        .single();
+      if (readErr || !current) throw new Error('Could not find loyalty record');
+
+      const updatedBalance = current.points_balance + delta;
+      if (updatedBalance < 0) throw new Error('Insufficient points');
+
+      const updates = { points_balance: updatedBalance };
+      if (delta > 0) {
+        updates.points_earned_total = (current.points_earned_total || 0) + pts;
+        updates.last_earn_at = new Date().toISOString();
+      } else {
+        updates.points_redeemed_total = (current.points_redeemed_total || 0) + Math.abs(delta);
+        updates.last_redeem_at = new Date().toISOString();
+      }
+
+      const { error: upErr } = await platformSupabase
+        .from('customer_loyalty')
+        .update(updates)
+        .eq('id', current.id);
+      if (upErr) throw new Error(upErr.message);
+
+      // 2. Write transaction to ops DB ledger
+      const locId = getActiveLocationSync() || await getLocationId();
+      await supabase.from('loyalty_transactions').insert({
+        customer_id: member.customer_id,
+        company_id: companyId,
+        location_id: locId,
+        type: delta > 0 ? 'earn' : 'redeem',
+        points: Math.abs(delta),
+        balance_after: updatedBalance,
+        source: 'manual_adjust',
+        note: reason.trim() || `Manual ${mode} by staff`,
+        idempotency_key: `manual:${member.customer_id}:${Date.now()}`,
+      });
+
+      onSaved(member.customer_id, updatedBalance, delta);
+    } catch (e) {
+      setError(e.message || 'Failed to adjust points');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div onClick={onClose} style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', display: 'flex',
+      alignItems: 'center', justifyContent: 'center', zIndex: 9999,
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        width: 420, background: 'var(--bg1)', border: '1px solid var(--bdr)',
+        borderRadius: 14, padding: 24, boxShadow: '0 12px 40px rgba(0,0,0,.3)',
+      }}>
+        <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--t1)', marginBottom: 4 }}>
+          Adjust points
+        </div>
+        <div style={{ fontSize: 12, color: 'var(--t3)', marginBottom: 18 }}>
+          {member.name || 'Unnamed'} · Current balance: <b style={{ color: 'var(--acc)' }}>{(member.points_balance || 0).toLocaleString()} pts</b>
+        </div>
+
+        {/* Add / Remove toggle */}
+        <div style={{ display: 'flex', gap: 0, marginBottom: 16, borderRadius: 8, overflow: 'hidden', border: '1px solid var(--bdr)' }}>
+          {['add', 'remove'].map(m => (
+            <button key={m} onClick={() => setMode(m)} style={{
+              flex: 1, padding: '10px 0', border: 'none', fontFamily: 'inherit',
+              fontSize: 13, fontWeight: 700, cursor: 'pointer',
+              background: mode === m ? (m === 'add' ? 'var(--grn,#4caf50)' : 'var(--red,#cc5959)') : 'var(--bg2)',
+              color: mode === m ? '#fff' : 'var(--t3)',
+            }}>
+              {m === 'add' ? '+ Add points' : '− Remove points'}
+            </button>
+          ))}
+        </div>
+
+        {/* Amount */}
+        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t4)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>
+          Points
+        </div>
+        <input
+          type="number"
+          min="1"
+          value={amount}
+          onChange={e => setAmount(e.target.value)}
+          placeholder="e.g. 50"
+          autoFocus
+          style={{ ...S.input, padding: '12px 14px', fontSize: 16, fontFamily: 'var(--font-mono)', marginBottom: 14 }}
+        />
+
+        {/* Reason */}
+        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t4)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>
+          Reason (optional)
+        </div>
+        <input
+          type="text"
+          value={reason}
+          onChange={e => setReason(e.target.value)}
+          placeholder="e.g. Forgot to scan on last visit"
+          style={{ ...S.input, padding: '10px 14px', fontSize: 13, marginBottom: 16 }}
+        />
+
+        {/* Preview */}
+        {pts > 0 && (
+          <div style={{
+            padding: '10px 14px', borderRadius: 8, marginBottom: 16,
+            background: mode === 'add' ? 'rgba(76,175,80,.08)' : 'rgba(204,89,89,.08)',
+            border: `1px solid ${mode === 'add' ? 'rgba(76,175,80,.2)' : 'rgba(204,89,89,.2)'}`,
+            fontSize: 13, color: 'var(--t2)',
+          }}>
+            {member.points_balance || 0} {mode === 'add' ? '+' : '−'} {pts} = <b style={{ color: mode === 'add' ? 'var(--grn,#4caf50)' : 'var(--red,#cc5959)' }}>{newBalance} pts</b>
+            {mode === 'remove' && newBalance < 0 && (
+              <div style={{ fontSize: 11, color: 'var(--red,#cc5959)', marginTop: 4 }}>Cannot go below zero</div>
+            )}
+          </div>
+        )}
+
+        {error && <div style={{ fontSize: 12, color: 'var(--red,#cc5959)', marginBottom: 12 }}>{error}</div>}
+
+        {/* Actions */}
+        <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+          <button onClick={onClose} style={{
+            padding: '10px 18px', borderRadius: 8, border: '1px solid var(--bdr)',
+            background: 'var(--bg3)', color: 'var(--t2)', fontSize: 13, fontWeight: 700,
+            fontFamily: 'inherit', cursor: 'pointer',
+          }}>Cancel</button>
+          <button onClick={submit} disabled={!valid || saving} style={{
+            padding: '10px 22px', borderRadius: 8, border: 'none',
+            background: valid && !saving ? (mode === 'add' ? 'var(--grn,#4caf50)' : 'var(--red,#cc5959)') : 'var(--bg3)',
+            color: valid && !saving ? '#fff' : 'var(--t4)',
+            fontSize: 13, fontWeight: 700, fontFamily: 'inherit',
+            cursor: valid && !saving ? 'pointer' : 'not-allowed',
+            opacity: saving ? 0.6 : 1,
+          }}>
+            {saving ? 'Saving…' : mode === 'add' ? `Add ${pts || 0} points` : `Remove ${pts || 0} points`}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
