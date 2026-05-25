@@ -1,16 +1,19 @@
-// v5.5.121 — Online ordering checkout sheet w/ Stripe Elements payment.
-// Two-step flow inside one sheet:
+// v5.5.221 — Online ordering checkout sheet w/ Stripe Elements + gift card payment.
+// Three-step flow inside one sheet:
 //   STEP 1: Details + when (name/phone/email/address, ASAP / scheduled slot)
-//   STEP 2: Card details (Stripe Elements + CardElement, confirms via
-//           stripe.confirmCardPayment using the same edge fn / connected-
-//           account / markup-fee plumbing the operator UI already uses
-//           — see src/lib/stripeClient.js + stripe-create-payment-intent
-//           edge fn). channel='online' so online_markup_percent applies.
+//   STEP 2: Gift card (optional — enter code, apply balance toward order)
+//   STEP 3: Card details (Stripe Elements + CardElement, skipped if gift card
+//           covers the full amount)
 //
 // Auth: online customers aren't logged in to Supabase, so we pass the env
 // VITE_SUPABASE_ANON_KEY as the bearer (the edge fn accepts anon-role JWTs
 // for online channel — same role the rest of the customer surface already
 // uses to read menus / write to order_queue with the existing RLS policies).
+//
+// Gift card flow:
+//   Customer enters 16-char code → gift-lookup verifies balance →
+//   gift-redeem deducts amount → remaining balance (if any) charged via Stripe.
+//   If the gift card covers 100% of the order, Stripe is skipped entirely.
 //
 // Order_queue write: only AFTER payment succeeds. status='received' immediately
 // so the kitchen chime fires on the INSERT — no awaiting_payment placeholder
@@ -31,7 +34,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   const tz = location.timezone || 'Europe/London';
   const leadMin = Number(location.online_collection_lead_min) || 30;
 
-  // Payment step: 'details' or 'pay'
+  // Payment step: 'details' → 'gift' → 'pay'
   const [step, setStep] = useState('details');
   const [pi, setPi] = useState(null);             // { client_secret, stripe_account, ... }
   const [stripePromise, setStripePromise] = useState(null);
@@ -43,6 +46,13 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   const [address1, setAddress1] = useState('');
   const [postcode, setPostcode] = useState('');
   const [notes, setNotes] = useState('');
+
+  // v5.5.221: Gift card payment
+  const [giftCode, setGiftCode] = useState('');
+  const [giftCard, setGiftCard] = useState(null);   // looked-up card info
+  const [giftApplied, setGiftApplied] = useState(null); // { card_id, applied, remaining_balance, idempotency_key, code_last4 }
+  const [giftLoading, setGiftLoading] = useState(false);
+  const [giftError, setGiftError] = useState('');
 
   // Timing — ASAP or scheduled
   const [timeMode, setTimeMode] = useState('asap'); // 'asap' | 'scheduled'
@@ -69,6 +79,12 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     taxRates,
     orderType || 'collection',
   ), [cart, taxRates, orderType]);
+
+  // v5.5.221: Gift card amount calculation
+  const giftAppliedMinor = giftApplied?.applied || 0;
+  const subtotalMinor = Math.round(subtotal * 100);
+  const remainingMinor = Math.max(0, subtotalMinor - giftAppliedMinor);
+  const giftCoversAll = giftAppliedMinor >= subtotalMinor;
 
   // Build collection slots — every 15 min between (now + leadMin) and the
   // next close time, snapped to :00 / :15 / :30 / :45.
@@ -138,36 +154,142 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step]); // freeze on step transition so ref stays stable
 
-  // Step 1 → 2: create the PaymentIntent on the location's connected
-  // Stripe account, then load Stripe.js with that account ID.
-  const continueToPayment = async () => {
+  // ── Auth helper — get or create anonymous Supabase session ──────────
+  const getAuthToken = async () => {
+    const existing = await supabase?.auth.getSession();
+    let token = existing?.data?.session?.access_token || null;
+    if (!token) {
+      const { data, error: anonErr } = await supabase.auth.signInAnonymously();
+      if (anonErr) throw new Error('Could not start payment session: ' + anonErr.message);
+      token = data?.session?.access_token;
+    }
+    if (!token) throw new Error('Could not obtain auth token.');
+    return token;
+  };
+
+  // Step 1 → Gift step: validate details, move to gift card entry
+  const continueToGift = () => {
     if (!valid) { setError('Please complete the highlighted fields.'); return; }
+    setError('');
+    setStep('gift');
+  };
+
+  // ── Gift card lookup ──────────────────────────────────────────────────
+  const lookupGiftCard = async () => {
+    const clean = giftCode.replace(/[\s-]/g, '');
+    if (clean.length < 16) { setGiftError('Enter the full 16-character code'); return; }
+    setGiftLoading(true); setGiftError(''); setGiftCard(null);
+    try {
+      const token = await getAuthToken();
+      const baseUrl = import.meta.env.VITE_SUPABASE_URL;
+      const res = await fetch(`${baseUrl}/functions/v1/gift-lookup`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'authorization': `Bearer ${token}` },
+        body: JSON.stringify({ code: clean, location_id: opsLocationId }),
+      });
+      const j = await res.json();
+      if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
+      if (j.status !== 'active') throw new Error(`Card is ${j.status}`);
+      if (j.balance <= 0) throw new Error('Card has zero balance');
+      setGiftCard(j);
+    } catch (e) {
+      setGiftError(e?.message || 'Could not look up card');
+    } finally {
+      setGiftLoading(false);
+    }
+  };
+
+  // ── Gift card redeem + continue ───────────────────────────────────────
+  const applyGiftCard = async () => {
+    if (!giftCard) return;
+    setGiftLoading(true); setGiftError('');
+    try {
+      const redeemAmount = Math.min(giftCard.balance, subtotalMinor);
+      if (redeemAmount <= 0) { setGiftError('Nothing to redeem'); setGiftLoading(false); return; }
+      const idempotencyKey = `online:${orderShape.ref}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+      const token = await getAuthToken();
+      const baseUrl = import.meta.env.VITE_SUPABASE_URL;
+      const res = await fetch(`${baseUrl}/functions/v1/gift-redeem`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'authorization': `Bearer ${token}` },
+        body: JSON.stringify({
+          code: giftCode.replace(/[\s-]/g, ''),
+          amount: redeemAmount,
+          order_id: `online-${orderShape.ref}`,
+          location_id: opsLocationId,
+          channel: 'online',
+          idempotency_key: idempotencyKey,
+        }),
+      });
+      const j = await res.json();
+      if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
+      setGiftApplied({
+        card_id: j.card_id,
+        applied: j.applied,
+        remaining_balance: j.remaining_balance,
+        idempotency_key: idempotencyKey,
+        code_last4: giftCard.code_last4 || giftCode.slice(-4),
+      });
+    } catch (e) {
+      setGiftError(e?.message || 'Could not redeem gift card');
+    } finally {
+      setGiftLoading(false);
+    }
+  };
+
+  // Gift step → pay (or place order if fully covered)
+  const continueFromGift = async () => {
     setWorking(true); setError('');
     try {
-      // The edge fn rejects raw anon keys ("Invalid token") — it expects
-      // a real Supabase user JWT. For online customers we use anonymous
-      // auth: get a one-shot signed-in session (role='authenticated' with
-      // is_anonymous=true), use its access_token as the bearer, then sign
-      // back out so we don't keep stale sessions hanging on the device.
-      // REQUIRES: Anonymous sign-ins enabled in Supabase Auth settings.
-      let authToken = null;
-      try {
-        const existing = await supabase?.auth.getSession();
-        authToken = existing?.data?.session?.access_token || null;
-        if (!authToken) {
-          const { data, error: anonErr } = await supabase.auth.signInAnonymously();
-          if (anonErr) throw new Error('Could not start payment session: ' + anonErr.message + '. Enable Anonymous sign-ins in your Supabase Auth settings.');
-          authToken = data?.session?.access_token;
-        }
-      } catch (e) {
-        throw new Error('Payment auth failed: ' + (e?.message || 'unknown'));
+      if (giftCoversAll) {
+        // Gift card covers 100% — place order directly, no Stripe needed
+        await onGiftOnlyPayment();
+      } else {
+        // Remaining balance needs card payment via Stripe
+        const token = await getAuthToken();
+        const { ref, customer } = orderShape;
+        const piRes = await createPaymentIntent({
+          authToken: token,
+          locationId: platformLocationId,
+          amountMinor: remainingMinor,
+          currency: 'gbp',
+          channel: 'online',
+          description: `Online order ${ref} · ${customer.name}${giftApplied ? ' (partial gift card)' : ''}`,
+          paymentMethodTypes: ['card'],
+          metadata: {
+            source: 'online',
+            ref,
+            ops_location_id: String(opsLocationId),
+            customer_name: customer.name,
+            customer_email: customer.email,
+            customer_phone: customer.phone,
+            order_type: orderType,
+            ...(giftApplied ? { gift_card_applied: String(giftApplied.applied) } : {}),
+          },
+        });
+        if (!piRes?.client_secret) throw new Error('Payment could not start. Please try again.');
+        setPi(piRes);
+        setStripePromise(getStripeForAccount(piRes.stripe_account));
+        setStep('pay');
       }
-      if (!authToken) throw new Error('Could not obtain auth token for payment.');
+    } catch (e) {
+      console.error('[OnlineCheckout] continueFromGift failed:', e);
+      setError(e?.message || 'Could not start payment.');
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  // Skip gift card → go straight to Stripe payment
+  const skipGiftCard = async () => {
+    setWorking(true); setError('');
+    try {
+      const token = await getAuthToken();
       const { ref, customer } = orderShape;
       const piRes = await createPaymentIntent({
-        authToken,
+        authToken: token,
         locationId: platformLocationId,
-        amountMinor: Math.round(subtotal * 100),
+        amountMinor: subtotalMinor,
         currency: 'gbp',
         channel: 'online',
         description: `Online order ${ref} · ${customer.name}`,
@@ -187,10 +309,90 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       setStripePromise(getStripeForAccount(piRes.stripe_account));
       setStep('pay');
     } catch (e) {
-      console.error('[OnlineCheckout] createPaymentIntent failed:', e);
+      console.error('[OnlineCheckout] skipGiftCard failed:', e);
       setError(e?.message || 'Could not start payment.');
     } finally {
       setWorking(false);
+    }
+  };
+
+  // ── Gift-only payment (no Stripe) ─────────────────────────────────────
+  const onGiftOnlyPayment = async () => {
+    try {
+      const { ref, collectionAt, sentAt, customer, items } = orderShape;
+      const collectionTimeLabel = collectionAt.toLocaleTimeString('en-GB', {
+        timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false,
+      });
+      const queueRow = {
+        ref,
+        location_id: opsLocationId,
+        type: orderType,
+        status: 'prep',
+        source: 'online',
+        items, customer,
+        total: subtotal,
+        sent_at: sentAt.toISOString(),
+        collection_time: collectionTimeLabel,
+        is_asap: timeMode === 'asap',
+      };
+      const { error: insErr } = await supabase.from('order_queue').insert(queueRow);
+      if (insErr) {
+        console.error('[OnlineCheckout] order_queue write failed:', insErr);
+        setError('Could not save the order. Contact the venue with ref ' + ref + '.');
+        return;
+      }
+
+      try {
+        const closedCheck = {
+          id: `chk-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
+          ref,
+          location_id: opsLocationId,
+          server: 'Online',
+          staff_id: null,
+          covers: 1,
+          order_type: orderType,
+          customer,
+          items: items.map(i => ({ ...i, voided: false })),
+          discounts: [],
+          subtotal,
+          service: 0,
+          tip: 0,
+          tax_amount: taxBreakdown?.totalTax || null,
+          total: subtotal,
+          method: 'gift_card',
+          drawer_id: null,
+          shift_id: null,
+          closed_at: new Date().toISOString(),
+          status: 'paid',
+          refunds: [],
+          table_id: null,
+          table_label: `Online ${ref}`,
+          source: 'online',
+          gift_card: giftApplied ? {
+            card_id: giftApplied.card_id,
+            idempotency_key: giftApplied.idempotency_key,
+            amount: giftApplied.applied,
+          } : null,
+        };
+        const { error: ccErr } = await supabase.from('closed_checks').insert(closedCheck);
+        if (ccErr) console.warn('[OnlineCheckout] closed_checks insert failed:', ccErr.message);
+      } catch (e) {
+        console.warn('[OnlineCheckout] closed_checks write threw:', e?.message);
+      }
+
+      attributeOnlineOrder({
+        phone: customer.phone,
+        name: customer.name,
+        email: customer.email,
+        marketingOptIn: false,
+        locationId: opsLocationId,
+        orderRecord: { ref, total: subtotal, items, type: orderType },
+      }).catch(e => console.warn('[OnlineCheckout] attribute failed:', e?.message || e));
+
+      onPlaced?.({ ref, collectionAt, total: subtotal, paymentIntent: null });
+    } catch (e) {
+      console.error('[OnlineCheckout] gift-only order failed:', e);
+      setError('Could not save the order. Contact the venue.');
     }
   };
 
@@ -249,7 +451,8 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           tip: 0,
           tax_amount: taxBreakdown?.totalTax || null, // v5.5.154: VAT for reports + receipt
           total: subtotal,
-          method: 'card',
+          method: giftApplied ? 'split' : 'card',
+          payment_method: giftApplied ? `gift_card:${(giftApplied.applied / 100).toFixed(2)},card:${(remainingMinor / 100).toFixed(2)}` : undefined,
           drawer_id: null,
           shift_id: null,
           closed_at: new Date().toISOString(),
@@ -258,6 +461,11 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           table_id: null,
           table_label: `Online ${ref}`,
           source: 'online', // v5.5.140: tag closed_checks for report filtering
+          gift_card: giftApplied ? {
+            card_id: giftApplied.card_id,
+            idempotency_key: giftApplied.idempotency_key,
+            amount: giftApplied.applied,
+          } : null,
         };
         const { error: ccErr } = await supabase.from('closed_checks').insert(closedCheck);
         if (ccErr) console.warn('[OnlineCheckout] closed_checks insert failed:', ccErr.message);
@@ -304,36 +512,175 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         <div style={{ padding: '8px 24px 16px', display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
           <div>
             <div style={{ fontSize: 22, fontWeight: 900, letterSpacing: '-0.02em' }}>
-              {step === 'pay' ? 'Payment' : 'Checkout'}
+              {step === 'pay' ? 'Payment' : step === 'gift' ? 'Gift Card' : 'Checkout'}
             </div>
-            <div style={{ fontSize: 12, color: muted, marginTop: 2 }}>{isDelivery ? 'Delivery' : 'Collection'} · {cart.length} item{cart.length === 1 ? '' : 's'} · £{subtotal.toFixed(2)}</div>
+            <div style={{ fontSize: 12, color: muted, marginTop: 2 }}>
+              {isDelivery ? 'Delivery' : 'Collection'} · {cart.length} item{cart.length === 1 ? '' : 's'} · £{subtotal.toFixed(2)}
+              {giftApplied ? ` · Gift card -£${(giftApplied.applied / 100).toFixed(2)}` : ''}
+            </div>
           </div>
-          <button onClick={step === 'pay' ? () => { setStep('details'); setPi(null); setError(''); } : onClose}
+          <button onClick={
+            step === 'pay' ? () => { setStep('gift'); setPi(null); setError(''); }
+            : step === 'gift' ? () => { setStep('details'); setError(''); }
+            : onClose
+          }
             className="op-btn"
             style={{
               padding: '0 14px', height: 36, borderRadius: 99, border: `1px solid ${cardBdr}`,
               background: inputBg, color: theme.fg,
               fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit',
-            }}>{step === 'pay' ? '← Edit' : '×'}</button>
+            }}>{step === 'details' ? '×' : '← Back'}</button>
         </div>
 
         {/* Step indicator */}
         <div style={{ display: 'flex', gap: 6, padding: '0 24px 14px' }}>
           <div style={{ flex: 1, height: 4, borderRadius: 2, background: theme.accent }}/>
+          <div style={{ flex: 1, height: 4, borderRadius: 2, background: step !== 'details' ? theme.accent : cardBdr }}/>
           <div style={{ flex: 1, height: 4, borderRadius: 2, background: step === 'pay' ? theme.accent : cardBdr }}/>
         </div>
 
+        {/* ── STEP: PAY (Stripe card) ─────────────────────────────────── */}
         {step === 'pay' && pi && stripePromise ? (
           <Elements stripe={stripePromise} options={{ clientSecret: pi.client_secret, appearance: { theme: theme.isLight ? 'stripe' : 'night' } }}>
             <PayStep
-              pi={pi} subtotal={subtotal} theme={theme} cardBdr={cardBdr} inputBg={inputBg} muted={muted}
-              cart={cart}
+              pi={pi} subtotal={remainingMinor / 100} theme={theme} cardBdr={cardBdr} inputBg={inputBg} muted={muted}
+              cart={cart} giftApplied={giftApplied}
               onPaid={onPaymentSuccess}
               onError={setError}
               error={error}
             />
           </Elements>
+        ) : step === 'gift' ? (
+        /* ── STEP: GIFT CARD ──────────────────────────────────────────── */
+        <div style={{ padding: '0 24px 12px', display: 'flex', flexDirection: 'column', gap: 18 }}>
+          <SectionTitle>Have a gift card?</SectionTitle>
+          <div style={{ fontSize: 13, color: muted, lineHeight: 1.5, marginTop: -8 }}>
+            Enter your gift card code to apply it to this order. You can also skip this step and pay by card.
+          </div>
+
+          {/* Gift card code entry */}
+          {!giftApplied && (
+            <>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input
+                  type="text"
+                  value={giftCode}
+                  onChange={e => setGiftCode(e.target.value.toUpperCase())}
+                  placeholder="XXXX XXXX XXXX XXXX"
+                  maxLength={19}
+                  style={{
+                    flex: 1, padding: '13px 14px', borderRadius: 10,
+                    background: inputBg, color: theme.fg, border: `1.5px solid ${cardBdr}`,
+                    fontSize: 15, fontFamily: 'monospace', letterSpacing: '0.06em',
+                    outline: 'none', boxSizing: 'border-box',
+                  }}
+                />
+                <button
+                  onClick={lookupGiftCard}
+                  disabled={giftLoading || giftCode.replace(/[\s-]/g, '').length < 16}
+                  className="op-btn"
+                  style={{
+                    padding: '0 18px', borderRadius: 10,
+                    background: theme.accent, color: contrastFg(theme.accent),
+                    border: 'none', fontSize: 13, fontWeight: 700, cursor: 'pointer',
+                    fontFamily: 'inherit', opacity: giftLoading ? 0.6 : 1,
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {giftLoading ? '…' : 'Look up'}
+                </button>
+              </div>
+
+              {giftError && <div style={{ fontSize: 12, color: '#ef4444' }}>{giftError}</div>}
+
+              {/* Card info + apply button */}
+              {giftCard && (
+                <div style={{ background: inputBg, border: `1px solid ${cardBdr}`, borderRadius: 12, padding: '14px 16px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                    <div>
+                      <div style={{ fontSize: 12, color: muted, fontWeight: 600 }}>Gift card ····{giftCard.code_last4}</div>
+                      <div style={{ fontSize: 20, fontWeight: 800, marginTop: 2 }}>
+                        £{(giftCard.balance / 100).toFixed(2)} <span style={{ fontSize: 12, fontWeight: 500, color: muted }}>balance</span>
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 28 }}>💳</div>
+                  </div>
+                  <div style={{ fontSize: 12, color: muted, marginBottom: 10 }}>
+                    {giftCard.balance >= subtotalMinor
+                      ? `This card will cover the full order (£${subtotal.toFixed(2)}). No card payment needed.`
+                      : `This card will pay £${(giftCard.balance / 100).toFixed(2)} of your £${subtotal.toFixed(2)} order. You'll pay the remaining £${((subtotalMinor - giftCard.balance) / 100).toFixed(2)} by card.`
+                    }
+                  </div>
+                  <button
+                    onClick={applyGiftCard}
+                    disabled={giftLoading}
+                    className="op-btn-primary"
+                    style={{
+                      width: '100%', padding: '13px', borderRadius: 10,
+                      background: theme.accent, color: contrastFg(theme.accent),
+                      border: 'none', fontSize: 14, fontWeight: 700, cursor: 'pointer',
+                      fontFamily: 'inherit', opacity: giftLoading ? 0.6 : 1,
+                    }}
+                  >
+                    {giftLoading ? 'Applying…' : `Apply £${(Math.min(giftCard.balance, subtotalMinor) / 100).toFixed(2)} from gift card`}
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* Applied confirmation */}
+          {giftApplied && (
+            <div style={{
+              background: `${theme.accent}18`, border: `1.5px solid ${theme.accent}50`,
+              borderRadius: 12, padding: '16px',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                <span style={{ fontSize: 18 }}>✅</span>
+                <span style={{ fontSize: 14, fontWeight: 700 }}>Gift card applied</span>
+              </div>
+              <div style={{ fontSize: 13, color: muted }}>
+                £{(giftApplied.applied / 100).toFixed(2)} deducted from card ····{giftApplied.code_last4}
+              </div>
+              {!giftCoversAll && (
+                <div style={{ fontSize: 13, color: muted, marginTop: 4 }}>
+                  Remaining to pay by card: <strong style={{ color: theme.fg }}>£{(remainingMinor / 100).toFixed(2)}</strong>
+                </div>
+              )}
+              {giftCoversAll && (
+                <div style={{ fontSize: 13, fontWeight: 600, color: theme.accent, marginTop: 4 }}>
+                  Your order is fully covered — no card needed!
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Order summary */}
+          <SectionTitle>Order summary</SectionTitle>
+          <div style={{ background: inputBg, border: `1px solid ${cardBdr}`, borderRadius: 12, padding: '12px 14px' }}>
+            {cart.map(line => {
+              const unit = line.price + (line.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0);
+              return (
+                <div key={line.uid} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13 }}>
+                  <span style={{ flex: 1, minWidth: 0 }}>{line.qty || 1} × {line.name}</span>
+                  <span style={{ fontWeight: 700 }}>£{(unit * (line.qty || 1)).toFixed(2)}</span>
+                </div>
+              );
+            })}
+            {giftApplied && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13, color: theme.accent }}>
+                <span>💳 Gift card</span>
+                <span style={{ fontWeight: 700 }}>-£{(giftApplied.applied / 100).toFixed(2)}</span>
+              </div>
+            )}
+            <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0 0', borderTop: `1px solid ${cardBdr}`, marginTop: 8 }}>
+              <span style={{ fontSize: 14, fontWeight: 800 }}>{giftApplied ? 'Remaining' : 'Total'}</span>
+              <span style={{ fontSize: 18, fontWeight: 900 }}>£{(remainingMinor / 100).toFixed(2)}</span>
+            </div>
+          </div>
+        </div>
         ) : (
+        /* ── STEP: DETAILS ────────────────────────────────────────────── */
         <div style={{ padding: '0 24px 12px', display: 'flex', flexDirection: 'column', gap: 18 }}>
           {/* 1. Your details */}
           <SectionTitle>Your details</SectionTitle>
@@ -378,7 +725,6 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
                 </div>
               );
             })}
-            {/* v5.5.154: UK VAT breakdown */}
             {taxBreakdown.totalTax > 0 && taxBreakdown.breakdown.map((b, i) => (
               <div key={`vat-${i}`} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 12, color: muted }}>
                 <span>incl. {b.rate.name || `VAT ${(Number(b.rate.rate) * 100).toFixed(0)}%`}</span>
@@ -393,7 +739,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         </div>
         )}
 
-        {/* Sticky bottom button — only shown on details step (PayStep has its own) */}
+        {/* Sticky bottom button — details step */}
         {step === 'details' && (
           <div style={{
             position: 'sticky', bottom: 0,
@@ -401,7 +747,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
             background: theme.bg, borderTop: `1px solid ${cardBdr}`,
           }}>
             {error && <div style={{ fontSize: 12, color: '#ef4444', marginBottom: 10 }}>{error}</div>}
-            <button onClick={continueToPayment} disabled={!valid || working} className="op-btn-primary" style={{
+            <button onClick={continueToGift} disabled={!valid || working} className="op-btn-primary" style={{
               width: '100%', padding: '16px 22px', borderRadius: 14,
               background: valid ? theme.accent : `${theme.fg}20`,
               color: valid ? contrastFg(theme.accent) : `${theme.fg}60`,
@@ -409,12 +755,48 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
               fontFamily: 'inherit',
               display: 'flex', justifyContent: 'space-between', alignItems: 'center',
             }}>
-              <span>{working ? 'Starting payment…' : 'Continue to payment'}</span>
+              <span>Continue to payment</span>
               <span>£{subtotal.toFixed(2)}</span>
             </button>
-            <div style={{ fontSize: 10, color: muted, textAlign: 'center', marginTop: 8 }}>
-              🔒 Card details next, processed securely by Stripe.
-            </div>
+          </div>
+        )}
+
+        {/* Sticky bottom buttons — gift step */}
+        {step === 'gift' && (
+          <div style={{
+            position: 'sticky', bottom: 0,
+            padding: '14px 24px calc(14px + env(safe-area-inset-bottom)) 24px',
+            background: theme.bg, borderTop: `1px solid ${cardBdr}`,
+          }}>
+            {error && <div style={{ fontSize: 12, color: '#ef4444', marginBottom: 10 }}>{error}</div>}
+            {giftApplied ? (
+              <button onClick={continueFromGift} disabled={working} className="op-btn-primary" style={{
+                width: '100%', padding: '16px 22px', borderRadius: 14,
+                background: theme.accent, color: contrastFg(theme.accent),
+                border: 'none', fontSize: 16, fontWeight: 800, cursor: working ? 'wait' : 'pointer',
+                fontFamily: 'inherit', opacity: working ? 0.7 : 1,
+                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              }}>
+                <span>{working ? 'Processing…' : giftCoversAll ? 'Place order' : 'Continue to card payment'}</span>
+                <span>£{(remainingMinor / 100).toFixed(2)}</span>
+              </button>
+            ) : (
+              <button onClick={skipGiftCard} disabled={working} className="op-btn-primary" style={{
+                width: '100%', padding: '16px 22px', borderRadius: 14,
+                background: theme.accent, color: contrastFg(theme.accent),
+                border: 'none', fontSize: 16, fontWeight: 800, cursor: working ? 'wait' : 'pointer',
+                fontFamily: 'inherit', opacity: working ? 0.7 : 1,
+                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              }}>
+                <span>{working ? 'Starting payment…' : 'Pay by card'}</span>
+                <span>£{subtotal.toFixed(2)}</span>
+              </button>
+            )}
+            {!giftApplied && (
+              <div style={{ fontSize: 10, color: muted, textAlign: 'center', marginTop: 8 }}>
+                🔒 Card details next, processed securely by Stripe.
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -425,7 +807,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
 // ─────────────────────────────────────────────────────────────────────────────
 // PayStep — renders the CardElement + Pay button. Lives inside <Elements>
 // so it can use useStripe() / useElements() to confirm the PaymentIntent.
-function PayStep({ pi, subtotal, theme, cardBdr, inputBg, muted, cart, onPaid, onError, error }) {
+function PayStep({ pi, subtotal, theme, cardBdr, inputBg, muted, cart, giftApplied, onPaid, onError, error }) {
   const stripe = useStripe();
   const elements = useElements();
   const [busy, setBusy] = useState(false);
@@ -481,8 +863,14 @@ function PayStep({ pi, subtotal, theme, cardBdr, inputBg, muted, cart, onPaid, o
               </div>
             );
           })}
+          {giftApplied && (
+            <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 13, color: theme.accent }}>
+              <span>💳 Gift card</span>
+              <span style={{ fontWeight: 700 }}>-£{(giftApplied.applied / 100).toFixed(2)}</span>
+            </div>
+          )}
           <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0 0', borderTop: `1px solid ${cardBdr}`, marginTop: 6 }}>
-            <span style={{ fontSize: 14, fontWeight: 800 }}>Total</span>
+            <span style={{ fontSize: 14, fontWeight: 800 }}>{giftApplied ? 'Card payment' : 'Total'}</span>
             <span style={{ fontSize: 18, fontWeight: 900 }}>£{subtotal.toFixed(2)}</span>
           </div>
         </div>

@@ -1,7 +1,11 @@
-// v5.5.103 — Customer-facing URL parser.
-// Handles three customer surfaces from the same web app:
-//   • Online ordering    https://<slug>.<customer-root>/        → mode: 'online'
-//   • QR table-side      https://<slug>.<customer-root>/t/<id>  → mode: 'qr', tableId
+// v5.5.221 — Customer-facing URL parser.
+// Handles customer surfaces from the same web app:
+//   • Online ordering    https://<slug>.<customer-root>/          → mode: 'online'
+//   • QR table-side      https://<slug>.<customer-root>/t/<id>    → mode: 'qr', tableId
+//   • Gift purchase      https://<slug>.<customer-root>/gift      → mode: 'gift'
+//   • Gift balance       https://<slug>.<customer-root>/gift/balance → mode: 'gift_balance'
+//   • Gift success       https://<slug>.<customer-root>/gift/success → mode: 'gift_success'
+//   • Loyalty portal     https://<slug>.<customer-root>/account   → mode: 'account'
 //
 // Customer root is tier-dependent (see src/lib/env.js):
 //   dev   → <slug>.dev.serv-os.app
@@ -84,6 +88,8 @@ export function parseCustomerUrl(loc = (typeof window !== 'undefined' ? window.l
     mode = 'gift_success';
   } else if (pathname === '/gift' || pathname.startsWith('/gift/')) {
     mode = 'gift';
+  } else if (pathname === '/account' || pathname.startsWith('/account/')) {
+    mode = 'account';
   } else if (pathname.startsWith('/k')) {
     mode = 'kiosk';
   } else {

@@ -19,6 +19,7 @@ import OnlineSurface from './online/OnlineSurface';
 import GiftPurchaseSurface from './gift/GiftPurchaseSurface';
 import GiftBalanceSurface from './gift/GiftBalanceSurface';
 import GiftSuccessSurface from './gift/GiftSuccessSurface';
+import CustomerPortal from './customer/CustomerPortal';
 
 export default function CustomerBoot({ slug, mode, tableId }) {
   const [state, setState] = useState({ loading: true, location: null, error: null });
@@ -60,6 +61,9 @@ export default function CustomerBoot({ slug, mode, tableId }) {
   if (mode === 'gift')         return <GiftPurchaseSurface location={loc}/>;
   if (mode === 'gift_balance') return <GiftBalanceSurface location={loc}/>;
   if (mode === 'gift_success') return <GiftSuccessSurface location={loc}/>;
+
+  // v5.5.221: Customer loyalty portal — always available (like gift cards).
+  if (mode === 'account')      return <CustomerPortal location={loc}/>;
 
   // Surface enabled check
   if (mode === 'online' && !loc.online_enabled) {

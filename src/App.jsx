@@ -76,6 +76,22 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.221', date: '25 May 2026', label: 'Customer loyalty portal + gift cards on online ordering',
+    changes: [
+      'New customer-facing loyalty portal at <slug>.serv-os.app/account — phone OTP login, points dashboard, rewards catalog, transaction history, gift cards, and profile management.',
+      'OTP authentication: 6-digit SMS verification with HMAC session tokens (24h expiry). Auto-enrolls customers in loyalty on first login.',
+      'Dashboard: points balance hero with tier badge, quick stats grid (total earned, visits, rewards ready, gift cards), ready-to-redeem preview.',
+      'Rewards tab: available and locked rewards with progress bars. History tab: recent loyalty transactions with earn/redeem labels.',
+      'Gift cards tab: linked active cards with balances. Profile tab: edit name/email, view membership details, sign out.',
+      'Full branding support — uses gift_brand_config or online_branding (same theme system as gift card pages).',
+      'New loyalty_otp_codes table (Platform DB) + loyalty-otp edge function deployed.',
+      'Route wiring: /account path added to customerUrl.js parser, CUSTOMER_MODES, and CustomerBoot.jsx.',
+      'Gift card payment on online ordering: customers can now pay with a gift card during checkout. Three-step flow: details → gift card (optional) → card payment.',
+      'Full or partial gift card payment: if the gift card covers the full order, Stripe is skipped entirely. Partial balances reduce the card payment amount.',
+      'Gift card deduction shown in order summary on both the gift step and card payment step. Split payment method stamped on closed_checks with gift_card jsonb for auto-reversal on refund.',
+    ],
+  },
+  {
     version: '5.5.220', date: '25 May 2026', label: 'Gift card purchase — mandatory phone + customer linking',
     changes: [
       'Online gift card purchase form now requires a mobile number. Links the buyer to a customer profile in the CRM so the purchase appears in their loyalty history.',
@@ -4643,7 +4659,7 @@ export default function App() {
   // customers never see the device pairing / mode selector screens.
   // Operator URLs (?mode=pos / mpos / office / admin / kiosk) take
   // precedence so an operator on the same hostname still gets their tools.
-  const CUSTOMER_MODES = ['online', 'qr', 'gift', 'gift_balance', 'gift_success'];
+  const CUSTOMER_MODES = ['online', 'qr', 'gift', 'gift_balance', 'gift_success', 'account'];
   const urlMode = new URLSearchParams(window.location.search).get('mode');
   if (!urlMode) {
     const customerCtx = parseCustomerUrlForBoot();
