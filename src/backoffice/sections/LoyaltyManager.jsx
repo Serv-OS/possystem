@@ -8,6 +8,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { supabase, platformSupabase, getLocationId, getActiveLocationSync } from '../../lib/supabase';
+import { customerUrl } from '../../lib/env';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 
@@ -108,6 +109,7 @@ export default function LoyaltyManager() {
   const [tiers, setTiers] = useState([]);
   const [enabling, setEnabling] = useState(false);
   const [enableError, setEnableError] = useState('');
+  const [slug, setSlug] = useState(null);
 
   // Load config on mount
   const loadConfig = useCallback(async () => {
@@ -121,6 +123,18 @@ export default function LoyaltyManager() {
     } finally {
       setLoading(false);
     }
+    // Resolve slug for customer portal link
+    try {
+      const locId = getActiveLocationSync() || await getLocationId();
+      if (locId && platformSupabase) {
+        const { data: loc } = await platformSupabase
+          .from('locations')
+          .select('online_slug')
+          .eq('ops_location_id', locId)
+          .maybeSingle();
+        if (loc?.online_slug) setSlug(loc.online_slug);
+      }
+    } catch {}
   }, []);
 
   useEffect(() => { loadConfig(); }, [loadConfig]);
@@ -183,6 +197,11 @@ export default function LoyaltyManager() {
         </div>
 
         {enableError && <div style={S.errorBox}>{enableError}</div>}
+
+        {/* Customer portal link */}
+        {slug && (
+          <PortalLink slug={slug} enabled={loyaltyEnabled} />
+        )}
 
         {/* Config summary stats */}
         {config && (
@@ -939,6 +958,46 @@ function TiersPanel({ tiers, onReload }) {
           </button>
         </div>
       ))}
+    </div>
+  );
+}
+
+// ── Customer portal link ─────────────────────────────────────────────────
+function PortalLink({ slug, enabled }) {
+  const [copied, setCopied] = useState(false);
+  const portalUrl = customerUrl(slug, '/account');
+  const copy = () => {
+    navigator.clipboard?.writeText(portalUrl);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+  return (
+    <div style={{ padding: '14px 16px', background: 'var(--bg2)', borderRadius: 10, border: '1px solid var(--bdr)', marginBottom: 14 }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 10 }}>
+        Customer loyalty portal
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ width: 8, height: 8, borderRadius: 4, flexShrink: 0, background: enabled ? 'var(--grn)' : 'var(--t4)' }}/>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--t2)' }}>Account portal</div>
+          <div style={{ fontSize: 11, color: 'var(--t4)', fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {portalUrl}
+          </div>
+        </div>
+        <a href={portalUrl} target="_blank" rel="noopener" style={{
+          padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 700,
+          background: 'var(--acc-d)', border: '1px solid var(--acc-b)', color: 'var(--acc)',
+          textDecoration: 'none', whiteSpace: 'nowrap',
+        }}>
+          Preview ↗
+        </a>
+        <button onClick={copy} style={{ ...S.btn, padding: '4px 10px', fontSize: 11, ...S.btnGhost, whiteSpace: 'nowrap' }}>
+          {copied ? '✓ Copied' : 'Copy'}
+        </button>
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 8, lineHeight: 1.5 }}>
+        Customers log in with their phone number to view points, rewards, gift cards, and manage their profile.
+      </div>
     </div>
   );
 }
