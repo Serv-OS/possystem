@@ -220,15 +220,28 @@ Deno.serve(async (req) => {
       .eq('id', otpRow.id);
 
     // ── Resolve org + find/create customer ────────────────────────────
-    const { data: locRow } = await platformAdmin
+    // org_id lives on the OPS locations table, not platform. Resolve via
+    // platform → ops_location_id → ops locations.org_id.
+    const { data: platLoc } = await platformAdmin
       .from('locations')
-      .select('ops_location_id, org_id')
+      .select('ops_location_id')
       .eq('company_id', companyId)
       .limit(1)
       .maybeSingle();
 
-    if (!locRow?.org_id) {
-      return json({ error: 'Company configuration error' }, 500);
+    if (!platLoc?.ops_location_id) {
+      return json({ error: 'Company configuration error: no linked location' }, 500);
+    }
+
+    const { data: opsLoc } = await opsAdmin
+      .from('locations')
+      .select('org_id')
+      .eq('id', platLoc.ops_location_id)
+      .maybeSingle();
+
+    const orgId = opsLoc?.org_id;
+    if (!orgId) {
+      return json({ error: 'Company configuration error: org not found' }, 500);
     }
 
     // Find customer by phone in ops DB
@@ -236,7 +249,7 @@ Deno.serve(async (req) => {
     const { data: existing } = await opsAdmin
       .from('customers')
       .select('id, name, email, phone, marketing_opt_in')
-      .eq('org_id', locRow.org_id)
+      .eq('org_id', orgId)
       .eq('phone', phone)
       .is('deleted_at', null)
       .maybeSingle();
@@ -248,7 +261,7 @@ Deno.serve(async (req) => {
       const { data: newCust } = await opsAdmin
         .from('customers')
         .insert({
-          org_id: locRow.org_id,
+          org_id: orgId,
           phone,
           name: null,
           email: null,
