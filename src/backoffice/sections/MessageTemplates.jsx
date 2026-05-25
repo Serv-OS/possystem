@@ -64,22 +64,29 @@ export default function MessageTemplates() {
 
   // ── Load templates ────────────────────────────────────────────────────────
 
-  const loadTemplates = useCallback(async () => {
+  const loadTemplates = useCallback(async (reselectType, reselectChannel) => {
     try {
       setLoading(true);
       const data = await callApi('list', {});
+      const freshTypes = data.types || [];
       setCategories(data.categories || []);
-      setTypes(data.types || []);
-      // Auto-select first type
-      if (!selectedType && data.types?.length) {
-        const first = data.types[0];
-        setSelectedType(first.type);
-        setSelectedChannel(first.channels[0]);
-        const tpl = first.templates[first.channels[0]];
-        setEditSubject(tpl?.subject || '');
-        setEditBody(tpl?.body_text || '');
-        setEditEnabled(tpl?.enabled !== false);
-        setDirty(false);
+      setTypes(freshTypes);
+      // Re-select the given type from fresh data, or auto-select first
+      const typeKey = reselectType || (!selectedType && freshTypes.length ? freshTypes[0].type : null);
+      if (typeKey) {
+        const mt = freshTypes.find(t => t.type === typeKey);
+        if (mt) {
+          const ch = reselectChannel || mt.channels[0];
+          setSelectedType(typeKey);
+          setSelectedChannel(ch);
+          const tpl = mt.templates[ch];
+          setEditSubject(tpl?.subject || '');
+          setEditBody(tpl?.body_text || '');
+          setEditEnabled(tpl?.enabled !== false);
+          setDirty(false);
+          setShowPreview(false);
+          setPreviewData(null);
+        }
       }
     } catch (e) {
       console.error('[MessageTemplates] load error:', e);
@@ -123,9 +130,8 @@ export default function MessageTemplates() {
       });
       showToast?.('Template saved', 'success');
       setDirty(false);
-      await loadTemplates();
-      // Re-select to refresh state
-      selectType(selectedType, selectedChannel);
+      // Reload and re-select from fresh data (avoids stale closure)
+      await loadTemplates(selectedType, selectedChannel);
     } catch (e) {
       showToast?.(`Save failed: ${e.message}`, 'error');
     } finally {
@@ -151,8 +157,7 @@ export default function MessageTemplates() {
       });
       showToast?.('Reset to default', 'success');
       setDirty(false);
-      await loadTemplates();
-      selectType(selectedType, selectedChannel);
+      await loadTemplates(selectedType, selectedChannel);
     } catch (e) {
       showToast?.(`Reset failed: ${e.message}`, 'error');
     } finally {
