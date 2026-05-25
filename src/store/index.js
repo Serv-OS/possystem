@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { supabase, platformSupabase, isMock, getLocationId } from '../lib/supabase';
+import { supabase, platformSupabase, isMock, getLocationId, ensureAuthToken, getActiveLocationSync } from '../lib/supabase';
 import { calculateOrderTax } from '../lib/tax';
 import { resolveServiceCharge } from '../lib/serviceCharge';
 import { upsertMenuItem, upsertFloorTable, deleteFloorTable, insertKDSTicket, insertClosedCheck, toggle86DB, getNextOrderRefLocal, updateClosedCheckRefunds } from '../lib/db';
@@ -3354,6 +3354,7 @@ export const useStore = create((set, get) => ({
       total:      paymentInfo.grand || session.total || 0,
       taxAmount:  taxBreakdown?.totalTax != null ? taxBreakdown.totalTax : null,  // v4.6.19
       method:     paymentInfo.method || 'card',
+      giftCard:   paymentInfo.giftCard || null,                  // v5.5.217: gift card reversal on refund
       closedAt:   Date.now(),
       status:     'paid',
       refunds:    [],
@@ -3452,6 +3453,7 @@ export const useStore = create((set, get) => ({
       total: paymentInfo.grand || subtotal,
       taxAmount: taxBreakdown?.totalTax != null ? taxBreakdown.totalTax : null, // v4.6.19
       method: paymentInfo.method || 'card',
+      giftCard: paymentInfo.giftCard || null,                                        // v5.5.217
       drawerId: get().myDrawer?.()?.id || null,                                   // v4.6.37
       shiftId:  get().currentShift?.id || null,                                   // v4.6.37
       closedAt: Date.now(),
@@ -3521,6 +3523,41 @@ export const useStore = create((set, get) => ({
     if (nextRefunds && nextStatus) {
       updateClosedCheckRefunds(checkId, nextRefunds, nextStatus)
         .catch(err => console.warn('[refundCheck] persist failed', err?.message || err));
+    }
+    // v5.5.217: Gift card balance reversal — restore the debited amount back
+    // to the card. Fire-and-forget (same pattern as updateClosedCheckRefunds):
+    // the local refund mutation already happened so UX stays responsive.
+    // The edge function is idempotent (refund:{original_key}) — safe to retry.
+    const check = get().closedChecks.find(c => c.id === checkId);
+    if (check?.giftCard?.card_id && check.giftCard.idempotency_key) {
+      (async () => {
+        try {
+          const token = await ensureAuthToken();
+          if (!token) { console.warn('[refundCheck] gift reversal skipped — no auth token'); return; }
+          const res = await fetch(
+            `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/gift-reverse-redeem`,
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+              body: JSON.stringify({
+                card_id: check.giftCard.card_id,
+                original_idempotency_key: check.giftCard.idempotency_key,
+                reason: `POS refund: ${reason || 'refund'}`,
+                staff_id: manager?.id || null,
+                location_id: getActiveLocationSync(),
+              }),
+            }
+          );
+          const j = await res.json().catch(() => ({}));
+          if (res.ok) {
+            console.info('[refundCheck] gift card reversed:', j.status || 'ok', 'restored:', j.restored);
+          } else {
+            console.warn('[refundCheck] gift reversal HTTP error:', res.status, j.error || '');
+          }
+        } catch (e) {
+          console.warn('[refundCheck] gift reversal failed:', e?.message || e);
+        }
+      })();
     }
     get().showToast(`Refund of £${amount?.toFixed(2)} processed via ${tenderMethod}`, 'success');
   },

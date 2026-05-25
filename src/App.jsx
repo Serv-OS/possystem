@@ -76,6 +76,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.217', date: '25 May 2026', label: 'Gift card auto-reversal on refund',
+    changes: [
+      'When a closed check that was paid (fully or partially) with a gift card is refunded, the gift card balance is automatically restored via the gift-reverse-redeem edge function.',
+      'Gift card payment data (card_id, idempotency_key, amount applied) is now persisted on the closed check record in Supabase (gift_card jsonb column).',
+      'Reversal is fire-and-forget and idempotent — safe across multi-device refund sync, offline/retry, and duplicate triggers.',
+      'All check-close paths updated: dine-in (recordClosedCheck), walk-in (recordWalkInClosed), bar tabs (BarSurface).',
+    ],
+  },
+  {
     version: '5.5.216', date: '25 May 2026', label: 'ServOS rebrand — new name, icon, and colour system',
     changes: [
       'Full rebrand from "Restaurant OS" to "Serv OS" across all surfaces — login, device setup, mode selector, pairing, PIN screen, kiosk, MPOS, receipts, admin.',

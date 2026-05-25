@@ -427,6 +427,7 @@ export const insertClosedCheck = async (check, locationId = null) => {
     refunds:      check.refunds || [],
     table_id:     check.tableId || null,
     table_label:  check.tableLabel || null,
+    gift_card:    check.giftCard || null,   // v5.5.217: gift card reversal on refund
   };
 
   // Use DataSafe triple-write: localStorage → Supabase (queued if offline)
@@ -484,6 +485,7 @@ export const fetchClosedChecks = async (locationId = null, limit = 500, sinceDat
       closedAt: c.closed_at ? new Date(c.closed_at).getTime() : null,
       status: c.status, refunds: c.refunds || [],
       tableId: c.table_id, tableLabel: c.table_label,
+      giftCard: c.gift_card || null,
       source: c.source || 'pos', // v5.5.140: surface source for report filters (online / kiosk / qr / pos)
     }));
   }
@@ -514,6 +516,7 @@ export const fetchClosedChecksRange = async (locationId = null, fromDate, toDate
       closedAt: c.closed_at ? new Date(c.closed_at).getTime() : null,
       status: c.status, refunds: c.refunds || [],
       tableId: c.table_id, tableLabel: c.table_label,
+      giftCard: c.gift_card || null,
       source: c.source || 'pos', // v5.5.140: surface source for report filters (online / kiosk / qr / pos)
     }));
   }

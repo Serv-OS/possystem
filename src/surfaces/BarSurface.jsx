@@ -597,6 +597,7 @@ export default function BarSurface() {
                 tip: payInfo?.tip || 0,
                 total: payInfo?.grand || subtotal,
                 method: payInfo?.method || 'card',
+                giftCard: payInfo?.giftCard || null,
               });
               closeTab(activeTab.id);
               setActiveTab(null);
