@@ -28,13 +28,28 @@ export const getLocationId = async () => {
   if (_resolvedLocationId) return _resolvedLocationId;
   if (!supabase) return null;
 
+  // v5.5.245: check localStorage FIRST (sync, instant) before any network call.
+  // This matches getActiveLocationSync() priority and prevents hangs on POS
+  // devices where supabase.auth.getUser() fails without an auth session.
+
   // Back office explicit location override
   try {
     const boLoc = JSON.parse(localStorage.getItem('rpos-bo-location') || 'null');
     if (boLoc) { _resolvedLocationId = boLoc; return boLoc; }
   } catch {}
 
+  // POS: paired device locationId (moved BEFORE auth — localStorage is instant,
+  // auth.getUser() is a network call that hangs on Android POS without a session)
+  try {
+    const paired = JSON.parse(localStorage.getItem('rpos-device') || 'null');
+    if (paired?.locationId) {
+      _resolvedLocationId = paired.locationId;
+      return _resolvedLocationId;
+    }
+  } catch {}
+
   // Authenticated user — read location from user_profiles in Ops DB
+  // (only reached when neither BO override nor device pairing is set)
   try {
     const { data: { user } } = await supabase.auth.getUser();
     if (user) {
@@ -43,15 +58,6 @@ export const getLocationId = async () => {
         _resolvedLocationId = profile.location_id;
         return _resolvedLocationId;
       }
-    }
-  } catch {}
-
-  // POS fallback: paired device locationId
-  try {
-    const paired = JSON.parse(localStorage.getItem('rpos-device') || 'null');
-    if (paired?.locationId) {
-      _resolvedLocationId = paired.locationId;
-      return _resolvedLocationId;
     }
   } catch {}
 

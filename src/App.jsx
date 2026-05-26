@@ -76,9 +76,10 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
-    version: '5.5.245', date: '26 May 2026', label: 'Fix customer search on Android POS — bypass async auth',
+    version: '5.5.246', date: '26 May 2026', label: 'Fix getLocationId() — check device pairing before auth call',
     changes: [
-      'searchCustomersLive, upsertCustomer, attributeOrderToCustomer now try getActiveLocationSync() first, falling back to async getLocationId() only if needed. Same root cause as v5.5.242 stock fix: getLocationId() calls supabase.auth.getUser() which fails on Android POS devices without auth sessions.',
+      'ROOT CAUSE FIX: getLocationId() now checks rpos-device localStorage BEFORE calling supabase.auth.getUser(). Previously the auth call (a network request) ran before the POS device pairing check (instant localStorage read). On Android POS devices without an auth session, auth.getUser() would fail/hang, and the function never reached the device pairing fallback — returning null.',
+      'This fixes customer search, customer upsert, order attribution, printing, cash drawers, shifts, KDS tickets, and every other store/db function on Android POS in one shot. The per-function getActiveLocationSync() patches in store/index.js are now belts-and-suspenders.',
     ],
   },
   {

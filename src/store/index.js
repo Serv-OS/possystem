@@ -8,7 +8,7 @@ import { printService } from '../lib/printer';
 // ── Supabase helpers ─────────────────────────────────────────────────────────
 const sbUpsertMenu = async (menu) => {
   if (isMock) return;
-  const locationId = await getLocationId();
+  const locationId = getActiveLocationSync() || await getLocationId();
   if (!locationId) return console.warn('[Supabase] no location ID — menu not saved');
   const { error } = await supabase.from('menus').upsert({
     id: menu.id,
@@ -34,7 +34,7 @@ const sbDeleteMenu = async (id) => {
 };
 const sbUpsertCategory = async (cat) => {
   if (isMock) return;
-  const locationId = await getLocationId();
+  const locationId = getActiveLocationSync() || await getLocationId();
   if (!locationId) return console.warn('[Supabase] no location ID — category not saved');
   const { error } = await supabase.from('menu_categories').upsert({
     id: cat.id,
@@ -58,7 +58,7 @@ const sbDeleteCategory = async (id) => {
 };
 const sbUpsertMenuItem = async (item) => {
   if (isMock) return;
-  const locationId = await getLocationId();
+  const locationId = getActiveLocationSync() || await getLocationId();
   if (!locationId) return console.warn('[Supabase] no location ID — item not saved');
   await supabase.from('menu_items').upsert({
     id: item.id, location_id: locationId, name: item.menuName||item.menu_name||item.name||'Item',
@@ -522,7 +522,7 @@ export const useStore = create((set, get) => ({
     try {
       const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
       const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
-      const locId = await getLocationId();
+      const locId = getActiveLocationSync() || await getLocationId();
       await fetch(`${SUPABASE_URL}/rest/v1/modifier_groups?on_conflict=id`, {
         method: 'POST',
         headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}`, 'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates,return=minimal' },
@@ -806,7 +806,7 @@ export const useStore = create((set, get) => ({
     // has data to work with from the very first upsert. Without this, a brand-new table has no
     // locationId and the guard can't tell whether subsequent moves are legitimate.
     let locId = null;
-    try { locId = await getLocationId(); } catch {}
+    try { locId = getActiveLocationSync() || await getLocationId(); } catch {}
     const newTable = { id:`t-${Date.now()}`, status:'available', session:null, locationId: locId, ...table };
     // If caller passed an explicit locationId in `table`, that wins (spread above).
     set(s => ({ tables: [...s.tables, newTable] }));
@@ -1727,10 +1727,10 @@ export const useStore = create((set, get) => ({
     }));
 
     // Update kds_tickets in Supabase so KDS screen reacts via realtime
-    import('../lib/supabase.js').then(async ({ supabase, getLocationId }) => {
+    import('../lib/supabase.js').then(async ({ supabase, getLocationId, getActiveLocationSync }) => {
       try {
         if (!supabase) return;
-        const locId = await getLocationId();
+        const locId = getActiveLocationSync() || await getLocationId();
         if (!locId) return;
         const { data: tickets } = await supabase
           .from('kds_tickets')
@@ -2658,7 +2658,7 @@ export const useStore = create((set, get) => ({
   loadCashDrawers: async () => {
     if (isMock || !supabase) return;
     try {
-      const locId = await getLocationId();
+      const locId = getActiveLocationSync() || await getLocationId();
       if (!locId) return;
       const { data } = await supabase
         .from('cash_drawers')
@@ -2680,7 +2680,7 @@ export const useStore = create((set, get) => ({
   },
 
   createCashDrawer: async (drawer) => {
-    const locId = await getLocationId();
+    const locId = getActiveLocationSync() || await getLocationId();
     if (!locId) { get().showToast?.('No location selected', 'error'); return null; }
     const row = {
       id: drawer.id || `drw-${Date.now()}`,
@@ -2790,7 +2790,7 @@ export const useStore = create((set, get) => ({
   cashInDrawer: async (drawerId, { openingFloat, denominations = null, notes = '' } = {}) => {
     if (isMock || !supabase) return null;
     try {
-      const locId = await getLocationId();
+      const locId = getActiveLocationSync() || await getLocationId();
       if (!locId) { get().showToast?.('No location', 'error'); return null; }
       const staff = get().staff;
       const shiftId = get().currentShift?.id || null;
@@ -3001,7 +3001,7 @@ export const useStore = create((set, get) => ({
   loadCurrentShift: async () => {
     if (isMock || !supabase) return null;
     try {
-      const locId = await getLocationId();
+      const locId = getActiveLocationSync() || await getLocationId();
       if (!locId) return null;
       const { data } = await supabase
         .from('shifts')
@@ -3031,7 +3031,7 @@ export const useStore = create((set, get) => ({
   loadShiftHistory: async (limit = 30) => {
     if (isMock || !supabase) return;
     try {
-      const locId = await getLocationId();
+      const locId = getActiveLocationSync() || await getLocationId();
       if (!locId) return;
       const { data } = await supabase
         .from('shifts')
@@ -3050,7 +3050,7 @@ export const useStore = create((set, get) => ({
     if (get().currentShift?.status === 'open') return get().currentShift;
     if (isMock || !supabase) return null;
     try {
-      const locId = await getLocationId();
+      const locId = getActiveLocationSync() || await getLocationId();
       if (!locId) return null;
       const row = {
         id: `shift-${Date.now()}`,
@@ -3317,7 +3317,7 @@ export const useStore = create((set, get) => ({
     const resolvedShiftId = shiftId || get().currentShift?.id || null;
     const resolvedSessionId = sessionId || get().currentDrawerSession?.id || null;
     try {
-      const locId = await getLocationId();
+      const locId = getActiveLocationSync() || await getLocationId();
       if (!locId) return null;
       const row = {
         id: `mov-${Date.now()}-${Math.random().toString(36).slice(2,6)}`,
@@ -3371,7 +3371,7 @@ export const useStore = create((set, get) => ({
   loadChallenge21Config: async () => {
     if (isMock || !platformSupabase) return;
     try {
-      const opsId = await getLocationId();
+      const opsId = getActiveLocationSync() || await getLocationId();
       if (!opsId || opsId === 'loc-demo') return;
       const { data, error } = await platformSupabase.from('locations')
         .select('id, ops_location_id, challenge_21_enabled, challenge_21_alcohol_category_ids, challenge_21_trigger_every, challenge_21_counter')
@@ -4126,6 +4126,7 @@ export const useStore = create((set, get) => ({
       // anything. Bumped via the existing bumpKDSTicket() flow → 'bumped'.
       // Same shape insertKDSTicket builds for the dine-in / walk-in path.
       const ticketLocationId = useStore.getState().locationConfig?.id
+        || getActiveLocationSync()
         || (await getLocationId().catch(() => null));
       const tickets = Object.entries(byCentre).map(([centreId, items]) => ({
         id: `kds-${sentAt}-${centreId}-${Math.random().toString(36).slice(2,6)}`,
