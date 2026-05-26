@@ -76,6 +76,17 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.233', date: '26 May 2026', label: 'Wallet passes — Apple Wallet + Google Wallet loyalty cards',
+    changes: [
+      'New wallet-pass edge function: generates Apple Wallet .pkpass files (signed PKCS#7) and Google Wallet save URLs (JWT/RS256).',
+      'Pass contains venue-branded loyalty card with points balance, tier, member code, and QR barcode for scanning.',
+      'Customer portal: "Add to Apple Wallet" and "Add to Google Wallet" buttons on Home tab, platform-detected (iOS → Apple, Android → Google, desktop → both).',
+      'Supports check action to conditionally show buttons only when certificates are configured.',
+      'Apple: pass.json storeCard layout with header points, secondary member/tier, auxiliary member code, QR barcode, back-of-card portal link.',
+      'Google: skinny JWT with loyalty class + object, QR barcode, portal link.',
+    ],
+  },
+  {
     version: '5.5.232', date: '26 May 2026', label: 'Bug fixes — stamp card race conditions, OTP validation, send-welcome dedup',
     changes: [
       'loyalty-earn: Atomic stamp card upsert via RPC to prevent duplicate cards on concurrent orders.',

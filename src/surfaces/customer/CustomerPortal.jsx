@@ -74,6 +74,50 @@ export default function CustomerPortal({ location }) {
   const [giftCards, setGiftCards] = useState([]);
   const [stampCards, setStampCards] = useState([]);
 
+  // Wallet pass availability
+  const [walletAvail, setWalletAvail] = useState({ apple: false, google: false });
+  const [walletLoading, setWalletLoading] = useState(false);
+  useEffect(() => {
+    fetch(`${OPS_URL}/functions/v1/wallet-pass`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'check' }),
+    })
+      .then(r => r.json()).then(j => { if (j.apple || j.google) setWalletAvail(j); })
+      .catch(() => {});
+  }, []);
+
+  const addToWallet = useCallback(async (type) => {
+    if (!token) return;
+    setWalletLoading(true);
+    try {
+      const locId = location.ops_location_id || location.id;
+      const res = await fetch(`${OPS_URL}/functions/v1/wallet-pass`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: type, token, location_id: locId }),
+      });
+      if (type === 'apple') {
+        if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || 'Failed'); }
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        // On iOS, navigating to the blob triggers the Wallet add dialog
+        const a = document.createElement('a');
+        a.href = url;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+      } else {
+        const j = await res.json();
+        if (!res.ok) throw new Error(j.error || 'Failed');
+        if (j.url) window.open(j.url, '_blank');
+      }
+    } catch (e) {
+      console.warn('[wallet]', e?.message || e);
+    } finally {
+      setWalletLoading(false);
+    }
+  }, [token, location]);
+
   // Dashboard tab
   const [tab, setTab] = useState('home'); // home | rewards | history | stamps | cards | profile
 
@@ -305,6 +349,7 @@ export default function CustomerPortal({ location }) {
             giftCards={giftCards} stampCards={stampCards} tab={tab} setTab={setTab}
             onRefresh={() => refreshData(token)} onLogout={logout}
             token={token}
+            walletAvail={walletAvail} walletLoading={walletLoading} addToWallet={addToWallet}
           />
         )}
       </div>
@@ -812,7 +857,7 @@ function OtpScreen({ t, phone, otpCode, setOtpCode, loading, error, onVerify, on
 // ═══════════════════════════════════════════════════════════════════════════
 // DASHBOARD
 // ═══════════════════════════════════════════════════════════════════════════
-function Dashboard({ t, location, customer, loyalty, giftCards, stampCards, tab, setTab, onRefresh, onLogout, token }) {
+function Dashboard({ t, location, customer, loyalty, giftCards, stampCards, tab, setTab, onRefresh, onLogout, token, walletAvail, walletLoading, addToWallet }) {
   const hasStamps = stampCards && stampCards.length > 0;
   const tabs = [
     { id: 'home', label: 'Home', icon: '🏠' },
@@ -851,7 +896,7 @@ function Dashboard({ t, location, customer, loyalty, giftCards, stampCards, tab,
         ))}
       </div>
 
-      {tab === 'home' && <HomeTab t={t} loyalty={loyalty} customer={customer} giftCards={giftCards} stampCards={stampCards} setTab={setTab} />}
+      {tab === 'home' && <HomeTab t={t} loyalty={loyalty} customer={customer} giftCards={giftCards} stampCards={stampCards} setTab={setTab} walletAvail={walletAvail} walletLoading={walletLoading} addToWallet={addToWallet} />}
       {tab === 'rewards' && <RewardsTab t={t} loyalty={loyalty} />}
       {tab === 'stamps' && <StampCardsTab t={t} stampCards={stampCards} />}
       {tab === 'history' && <HistoryTab t={t} loyalty={loyalty} />}
@@ -900,14 +945,58 @@ function PointsHero({ t, loyalty, customer }) {
 }
 
 // ── Home Tab ─────────────────────────────────────────────────────────────
-function HomeTab({ t, loyalty, customer, giftCards, stampCards, setTab }) {
+function HomeTab({ t, loyalty, customer, giftCards, stampCards, setTab, walletAvail, walletLoading, addToWallet }) {
   const rewardsAvail = loyalty?.rewards_available?.length || 0;
   const giftActive = giftCards?.length || 0;
   const totalBalance = giftCards.reduce((s, c) => s + (c.balance || 0), 0);
   const activeStamps = (stampCards || []).filter(sc => sc.stamps_collected > 0);
 
+  // Platform detection for showing relevant wallet button
+  const isIOS = typeof navigator !== 'undefined' && /iPhone|iPad|iPod/.test(navigator.userAgent);
+  const isAndroid = typeof navigator !== 'undefined' && /Android/.test(navigator.userAgent);
+  const showApple = walletAvail.apple && (isIOS || (!isIOS && !isAndroid));
+  const showGoogle = walletAvail.google && (isAndroid || (!isIOS && !isAndroid));
+
   return (
     <>
+      {/* Add to Wallet */}
+      {(showApple || showGoogle) && loyalty?.member_code && (
+        <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
+          {showApple && (
+            <button onClick={() => addToWallet('apple')} disabled={walletLoading}
+              style={{
+                flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                padding: '13px 16px', borderRadius: t.radius,
+                background: '#000', color: '#fff', border: 'none',
+                fontSize: 13, fontWeight: 700, cursor: 'pointer',
+                fontFamily: 'inherit', opacity: walletLoading ? 0.5 : 1,
+              }}>
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                <rect x="1" y="3" width="18" height="14" rx="2.5" stroke="#fff" strokeWidth="1.3"/>
+                <rect x="1" y="6" width="18" height="3" fill="#fff" opacity=".2"/>
+                <circle cx="15" cy="13" r="1.5" fill="#fff" opacity=".5"/>
+              </svg>
+              Add to Apple Wallet
+            </button>
+          )}
+          {showGoogle && (
+            <button onClick={() => addToWallet('google')} disabled={walletLoading}
+              style={{
+                flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                padding: '13px 16px', borderRadius: t.radius,
+                background: '#000', color: '#fff', border: 'none',
+                fontSize: 13, fontWeight: 700, cursor: 'pointer',
+                fontFamily: 'inherit', opacity: walletLoading ? 0.5 : 1,
+              }}>
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                <path d="M9 1.5a7.5 7.5 0 1 0 0 15 7.5 7.5 0 0 0 0-15zm3.3 5.4L8.7 12l-2.4-2.4.9-.9 1.5 1.5 2.7-3.3.9.9z" fill="#fff"/>
+              </svg>
+              Add to Google Wallet
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Quick stats */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 16 }}>
         <StatCard t={t} label="Total earned" value={(loyalty?.points_earned_total || 0).toLocaleString()} icon="📈" />
