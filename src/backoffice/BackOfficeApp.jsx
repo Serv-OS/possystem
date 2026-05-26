@@ -131,6 +131,24 @@ export default function BackOfficeApp() {
         // WRITE upserts to a different one, resulting in tables being moved across locations.
         let overrideLocId = null;
         try { overrideLocId = JSON.parse(localStorage.getItem('rpos-bo-location') || 'null'); } catch (e) { console.warn('[BackOfficeApp] bad rpos-bo-location:', e?.message); }
+
+        // v5.5.236: validate override belongs to this user. rpos-bo-location survives
+        // sign-out (e.g. browser crash, stale tab). If a different user logs in and
+        // the override points to a location they don't have access to, they'd see
+        // another tenant's data. super_admin bypasses — they can access any location.
+        if (overrideLocId && overrideLocId !== profile.location_id && profile.role !== 'super_admin') {
+          try {
+            const { fetchAccessibleLocations } = await import('../lib/db.js');
+            const { data: accessible } = await fetchAccessibleLocations();
+            const accessibleIds = new Set((accessible || []).map(l => l.id));
+            if (!accessibleIds.has(overrideLocId)) {
+              console.warn('[BackOfficeApp] rpos-bo-location', overrideLocId, 'not in user accessible locations — clearing stale override');
+              localStorage.removeItem('rpos-bo-location');
+              overrideLocId = null;
+            }
+          } catch (e) { console.warn('[BackOfficeApp] accessible locations check failed:', e?.message); }
+        }
+
         const effectiveLocId = overrideLocId || profile.location_id;
 
         // If the override differs from user_profiles, fetch the correct location's name for display
@@ -284,7 +302,7 @@ export default function BackOfficeApp() {
         Your account ({authUser.email}) doesn't have permission to use the back office.
         Contact your administrator if you think this is wrong.
       </div>
-      <button onClick={() => supabase.auth.signOut().then(() => window.location.reload())}
+      <button onClick={() => { localStorage.removeItem('rpos-bo-location'); supabase.auth.signOut().then(() => window.location.reload()); }}
         style={{ marginTop:8, padding:'10px 22px', borderRadius:8, border:'1px solid var(--bdr)', background:'transparent', color:'var(--t2)', cursor:'pointer', fontFamily:'inherit', fontSize:13 }}>
         Sign out
       </button>
@@ -401,7 +419,7 @@ export default function BackOfficeApp() {
             </button>
           )}
           {authUser && !isMock && (
-            <button onClick={() => { clearResolvedLocationId(); supabase.auth.signOut(); }} style={{
+            <button onClick={() => { localStorage.removeItem('rpos-bo-location'); clearResolvedLocationId(); supabase.auth.signOut(); }} style={{
               width:'100%', padding:'8px 10px', borderRadius:9,
               cursor:'pointer', textAlign:'left', fontSize:12,
               fontWeight:600, border:'1px solid var(--bdr)',

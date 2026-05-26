@@ -76,6 +76,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.236', date: '26 May 2026', label: 'CRITICAL — cross-user location bleed on sign-out/sign-in',
+    changes: [
+      'Sign-out now clears rpos-bo-location from localStorage. Previously the location override survived logout, so a second user logging into the same browser would see the first user\'s location data — even if they had no access to it.',
+      'Sign-in now validates the rpos-bo-location override against the user\'s accessible locations. If the override points to a location the new user can\'t access, it\'s discarded and falls back to user_profiles.location_id.',
+      'Both sign-out buttons (sidebar + "no BO access" screen) now clear the override.',
+    ],
+  },
+  {
     version: '5.5.235', date: '26 May 2026', label: 'CRITICAL — fix multi-location menu bleed',
     changes: [
       'ROOT CAUSE: SyncBridge boot path read rpos-device.locationId directly, bypassing the getLocationId() priority chain. When the same browser was previously paired as POS at Location A then used as Back Office for Location B, SyncBridge loaded Location A\'s menu data into the store while BackOfficeApp loaded Location B\'s — a race condition where the last writer won. Fix: SyncBridge now uses getLocationId() which respects rpos-bo-location first.',
