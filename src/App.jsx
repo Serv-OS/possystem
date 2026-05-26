@@ -76,6 +76,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.235', date: '26 May 2026', label: 'CRITICAL — fix multi-location menu bleed',
+    changes: [
+      'ROOT CAUSE: SyncBridge boot path read rpos-device.locationId directly, bypassing the getLocationId() priority chain. When the same browser was previously paired as POS at Location A then used as Back Office for Location B, SyncBridge loaded Location A\'s menu data into the store while BackOfficeApp loaded Location B\'s — a race condition where the last writer won. Fix: SyncBridge now uses getLocationId() which respects rpos-bo-location first.',
+      'KioskApp: menu_category_links query was unfiltered (SELECT * with no WHERE). Now scopes to the kiosk\'s loaded menu IDs, matching the db.js fetchMenuCategoryLinks() pattern.',
+      'RLS hardening: dropped overly permissive "allow all" (USING true, cmd ALL) policies on menu_items, menu_categories, menus, menu_category_links, floor_tables, config_pushes. Replaced with auth-required write policies. Kept _anon_read SELECT policies for kiosk + online ordering.',
+    ],
+  },
+  {
     version: '5.5.234', date: '26 May 2026', label: 'Wallet passes — Apple Wallet + Google Wallet loyalty cards',
     changes: [
       'New wallet-pass edge function: generates Apple Wallet .pkpass files (signed PKCS#7) and Google Wallet save URLs (JWT/RS256).',

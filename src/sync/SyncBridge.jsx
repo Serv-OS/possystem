@@ -3,7 +3,7 @@ import { useStore } from '../store';
 import { subscribeToSessions, scheduleFlush, teardown as teardownSessions } from './SessionSync';
 import { loadQueues, scheduleQueueFlush, teardownQueueSync } from './QueueSync';
 import { initOfflineQueue } from './OfflineQueue';
-import { isMock, supabase, getActiveLocationSync } from '../lib/supabase';
+import { isMock, supabase, getActiveLocationSync, getLocationId } from '../lib/supabase';
 import { startSessionReconciler, stopSessionReconciler } from './SessionReconciler';
 // v4.6.27: static import per ADR-008. Dynamic imports inside callbacks silently
 // fail in production bundles and have caused multiple data-loss bugs.
@@ -83,9 +83,15 @@ export default function SyncBridge({ onSyncPulse }) {
       // Load latest config push from Supabase for this location
       (async () => {
         try {
-          const paired = JSON.parse(localStorage.getItem('rpos-device') || 'null');
-          const locationId = paired?.locationId;
-          if (!locationId) return;
+          // v5.5.235: MUST use getLocationId() — NOT rpos-device.locationId directly.
+          // getLocationId() respects the rpos-bo-location override first (set by
+          // LocationSwitcher) before falling back to the POS pairing record. Reading
+          // rpos-device directly skipped the BO override, so when the same browser
+          // was paired as POS at Loc A and then used as BO for Loc B, SyncBridge
+          // loaded Loc A's menus into the same store that BackOfficeApp was loading
+          // Loc B's data into — a race condition that caused menu bleed.
+          const locationId = await getLocationId().catch(() => null);
+          if (!locationId || locationId === 'loc-demo') return;
           const { fetchLatestConfigPush, fetchFloorPlan, fetchMenuItems, fetchMenuCategories, fetchMenus, fetch86List } = await import('../lib/db.js');
           const { supabase: sb2 } = await import('../lib/supabase.js');
 

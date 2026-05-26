@@ -84,12 +84,19 @@ function useKioskMenu(profile, locationId) {
     (async () => {
       if (!locationId) { setLoading(false); return; }
       try {
-        const [iRes, cRes, mRes, lRes] = await Promise.all([
+        // v5.5.235: menu_category_links has no location_id column — filter via
+        // the loaded menus' ids (which are already location-scoped). Previously
+        // this was an unfiltered select('*') returning links from ALL locations.
+        const [iRes, cRes, mRes] = await Promise.all([
           supabase.from('menu_items').select('*').eq('location_id', locationId).eq('archived', false).order('sort_order'),
           supabase.from('menu_categories').select('*').eq('location_id', locationId).order('sort_order'),
           supabase.from('menus').select('*').eq('location_id', locationId).eq('is_active', true),
-          supabase.from('menu_category_links').select('*'),
         ]);
+        // Fetch links only for this location's menus
+        const menuIds = (mRes.data || []).map(m => m.id);
+        const lRes = menuIds.length
+          ? await supabase.from('menu_category_links').select('*').in('menu_id', menuIds)
+          : { data: [] };
         if (!alive) return;
         setData({
           items: iRes.data || [],
