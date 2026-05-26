@@ -100,113 +100,96 @@ export default function BackOfficeApp() {
   useEffect(() => {
     if (!authUser || isMock) return;
     (async () => {
-      // v5.5.16: defensive SELECT. If supabase/migrations/20260430_bo_access_flag.sql
-      // hasn't run yet, the bo_access column doesn't exist and PostgREST returns
-      // PGRST204 (column not found) on the original SELECT. Pre-v5.5.16 the gate
-      // hung at 'Loading profile…' because the failed query left orgCtx null.
-      // Retry without bo_access if the first SELECT errors. Also surface the
-      // error to console so the next time something fails it's visible.
+      // v5.5.241: profile query rewrite. Previous versions used PostgREST
+      // embedded resource syntax (organisations(name), locations(name)) which
+      // fails when PostgREST's schema cache is stale — *both* the primary and
+      // fallback queries used it, so a stale cache left orgCtx.locationId null
+      // → "No location assigned" banner even for users WITH a location.
+      // Now we query plain columns only, then fetch names separately. This
+      // makes the login query immune to PostgREST schema cache issues.
       let profile = null;
-      const fullSelect = 'role, org_id, location_id, bo_access, organisations(name), locations(name)';
-      const safeSelect = 'role, org_id, location_id, organisations(name), locations(name)';
+
+      // Step 1: fetch core profile — plain columns only, no embedded resources
       let { data, error } = await supabase
         .from('user_profiles')
-        .select(fullSelect)
+        .select('role, org_id, location_id, bo_access')
         .eq('id', authUser.id)
         .single();
-      // v5.5.240: if the first query fails for ANY reason (bo_access missing,
-      // schema cache stale, PostgREST version mismatch), always retry without
-      // bo_access. Previously a regex check gated the fallback and could miss
-      // error message format changes — leaving orgCtx.locationId null.
+      // Fallback: if bo_access column doesn't exist yet, retry without it
       if (error) {
-        console.warn('[BackOfficeApp] full SELECT failed:', error.message, '— retrying without bo_access');
+        console.warn('[BackOfficeApp] profile SELECT failed:', error.message, '— retrying without bo_access');
         ({ data, error } = await supabase
           .from('user_profiles')
-          .select(safeSelect)
+          .select('role, org_id, location_id')
           .eq('id', authUser.id)
           .single());
       }
-      if (error) {
-        console.error('[BackOfficeApp] user_profiles SELECT failed:', error.message);
-        // Set orgCtx anyway so the gate doesn't hang. boAccess defaults true so
-        // existing users keep working — same fallback we use when bo_access is
-        // undefined on the row.
+      if (error || !data) {
+        console.error('[BackOfficeApp] user_profiles query failed:', error?.message);
         setOrgCtx({ role: null, boAccess: true, orgId: null, orgName: 'Serv OS', locationId: null, locationName: null });
         return;
       }
       profile = data;
-      if (profile) {
-        // v5.5.2: BackOfficeApp must respect the BO location override (set by LocationSwitcher)
-        // BEFORE falling back to user_profiles.location_id. Previously this ran user_profiles only,
-        // which silently disagreed with getLocationId() — that path always reads the localStorage
-        // override first. The disagreement caused the BO to LOAD floor data for one location but
-        // WRITE upserts to a different one, resulting in tables being moved across locations.
-        let overrideLocId = null;
-        try { overrideLocId = JSON.parse(localStorage.getItem('rpos-bo-location') || 'null'); } catch (e) { console.warn('[BackOfficeApp] bad rpos-bo-location:', e?.message); }
 
-        // v5.5.236: validate override belongs to this user. rpos-bo-location survives
-        // sign-out (e.g. browser crash, stale tab). If a different user logs in and
-        // the override points to a location they don't have access to, they'd see
-        // another tenant's data. super_admin bypasses — they can access any location.
-        if (overrideLocId && overrideLocId !== profile.location_id && profile.role !== 'super_admin') {
-          try {
-            const { fetchAccessibleLocations } = await import('../lib/db.js');
-            const { data: accessible } = await fetchAccessibleLocations();
-            const accessibleIds = new Set((accessible || []).map(l => l.id));
-            if (!accessibleIds.has(overrideLocId)) {
-              console.warn('[BackOfficeApp] rpos-bo-location', overrideLocId, 'not in user accessible locations — clearing stale override');
-              localStorage.removeItem('rpos-bo-location');
-              overrideLocId = null;
-            }
-          } catch (e) { console.warn('[BackOfficeApp] accessible locations check failed:', e?.message); }
-        }
+      // Step 2: resolve effective location
+      let overrideLocId = null;
+      try { overrideLocId = JSON.parse(localStorage.getItem('rpos-bo-location') || 'null'); } catch (e) { console.warn('[BackOfficeApp] bad rpos-bo-location:', e?.message); }
 
-        let effectiveLocId = overrideLocId || profile.location_id;
+      // v5.5.236: validate override belongs to this user
+      if (overrideLocId && overrideLocId !== profile.location_id && profile.role !== 'super_admin') {
+        try {
+          const { fetchAccessibleLocations } = await import('../lib/db.js');
+          const { data: accessible } = await fetchAccessibleLocations();
+          const accessibleIds = new Set((accessible || []).map(l => l.id));
+          if (!accessibleIds.has(overrideLocId)) {
+            console.warn('[BackOfficeApp] rpos-bo-location', overrideLocId, 'not in user accessible locations — clearing');
+            localStorage.removeItem('rpos-bo-location');
+            overrideLocId = null;
+          }
+        } catch (e) { console.warn('[BackOfficeApp] accessible locations check failed:', e?.message); }
+      }
 
-        // v5.5.240: if no location from override or profile, auto-select the first
-        // accessible location. Prevents "No location assigned" for super_admins and
-        // owners whose profile.location_id is null (e.g. multi-location operators).
-        if (!effectiveLocId) {
-          try {
-            const { fetchAccessibleLocations } = await import('../lib/db.js');
-            const { data: accessible } = await fetchAccessibleLocations();
-            if (accessible?.length) {
-              effectiveLocId = accessible[0].id;
-              console.log('[BackOfficeApp] v5.5.240: auto-selected first accessible location:', effectiveLocId, accessible[0].name);
-            }
-          } catch (e) { console.warn('[BackOfficeApp] accessible locations auto-select failed:', e?.message); }
-        }
+      let effectiveLocId = overrideLocId || profile.location_id;
 
-        // If the effective location differs from user_profiles, fetch the correct name
-        let locationName = profile.locations?.name || null;
-        if (effectiveLocId && effectiveLocId !== profile.location_id) {
-          try {
-            const { data: locRow } = await supabase
-              .from('locations')
-              .select('name')
-              .eq('id', effectiveLocId)
-              .single();
-            if (locRow?.name) locationName = locRow.name;
-          } catch (e) { console.warn('[BackOfficeApp] failed to fetch location name:', e?.message); }
-        }
+      // Auto-select first accessible location if none resolved
+      if (!effectiveLocId) {
+        try {
+          const { fetchAccessibleLocations } = await import('../lib/db.js');
+          const { data: accessible } = await fetchAccessibleLocations();
+          if (accessible?.length) {
+            effectiveLocId = accessible[0].id;
+            console.log('[BackOfficeApp] auto-selected first accessible location:', effectiveLocId, accessible[0].name);
+          }
+        } catch (e) { console.warn('[BackOfficeApp] accessible locations auto-select failed:', e?.message); }
+      }
 
-        setOrgCtx({
-          role: profile.role,
-          // v5.5.15: bo_access flag gates BO entry. super_admin always passes.
-          // If bo_access is undefined (column missing from DB / pre-v5.5.15
-          // schema), default to true so existing deployments don't lock out
-          // their existing users before the migration runs.
-          boAccess: profile.role === 'super_admin' || profile.bo_access !== false,
-          orgId: profile.org_id,
-          orgName: profile.organisations?.name || 'Serv OS',
-          locationId: effectiveLocId,
-          locationName,
-        });
-        if (effectiveLocId) {
-          setResolvedLocationId(effectiveLocId);
-          // Load all location data from Supabase
-          loadLocationData(effectiveLocId);
-        }
+      // Step 3: fetch org + location names separately (can fail gracefully)
+      let orgName = 'Serv OS';
+      let locationName = null;
+      try {
+        const [orgRes, locRes] = await Promise.all([
+          profile.org_id
+            ? supabase.from('organisations').select('name').eq('id', profile.org_id).single()
+            : Promise.resolve({ data: null }),
+          effectiveLocId
+            ? supabase.from('locations').select('name').eq('id', effectiveLocId).single()
+            : Promise.resolve({ data: null }),
+        ]);
+        if (orgRes.data?.name) orgName = orgRes.data.name;
+        if (locRes.data?.name) locationName = locRes.data.name;
+      } catch (e) { console.warn('[BackOfficeApp] org/location name lookup failed:', e?.message); }
+
+      setOrgCtx({
+        role: profile.role,
+        boAccess: profile.role === 'super_admin' || profile.bo_access !== false,
+        orgId: profile.org_id,
+        orgName,
+        locationId: effectiveLocId,
+        locationName,
+      });
+      if (effectiveLocId) {
+        setResolvedLocationId(effectiveLocId);
+        loadLocationData(effectiveLocId);
       }
     })();
   }, [authUser]);

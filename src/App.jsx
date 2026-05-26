@@ -76,6 +76,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.241', date: '26 May 2026', label: 'Fix login — remove fragile PostgREST joins',
+    changes: [
+      'Profile query no longer uses PostgREST embedded resources (organisations(name), locations(name)). A stale PostgREST schema cache caused BOTH the primary and fallback queries to fail, leaving locationId null → "No location assigned" banner.',
+      'Org and location names are now fetched separately with graceful fallback — a name lookup failure can never block login.',
+      'Added missing bo_access column to user_profiles table so the primary query never needs to fall back.',
+    ],
+  },
+  {
     version: '5.5.240', date: '26 May 2026', label: 'Fix "No location assigned" on login',
     changes: [
       'Profile query fallback is now unconditional — if the first SELECT fails for any reason (not just bo_access column missing), it always retries without bo_access. Previously a regex gate could miss new error message formats, leaving locationId null.',
