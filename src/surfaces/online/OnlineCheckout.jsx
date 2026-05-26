@@ -203,7 +203,16 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   // show a gate prompt instead of proceeding. If they've already signed in,
   // dismissed the hint, or the phone isn't a member — proceed straight through.
   const continueToGift = async () => {
-    if (!valid) { setError('Please complete the highlighted fields.'); return; }
+    if (!valid) {
+      const missing = [];
+      if (!name.trim()) missing.push('name');
+      if (!/^\+?[0-9 ]{7,}$/.test(phone)) missing.push('phone number');
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) missing.push('email');
+      if (isDelivery && !address1.trim()) missing.push('delivery address');
+      if (isDelivery && !postcode.trim()) missing.push('postcode');
+      setError(missing.length ? `Please enter your ${missing.join(', ')}` : 'Please complete all required fields.');
+      return;
+    }
     setError('');
     // Already signed in or already dismissed loyalty — go straight through
     if (loyalty?.verified || loyaltyHintDismissed) { setStep('gift'); return; }
@@ -988,10 +997,10 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         <div style={{ padding: '0 24px 12px', display: 'flex', flexDirection: 'column', gap: 18 }}>
           {/* 1. Your details */}
           <SectionTitle>Your details</SectionTitle>
-          <Field label="Name" value={name} onChange={setName} placeholder="Full name" theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
+          <Field label="Name" value={name} onChange={setName} placeholder="Full name" required theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-            <Field label="Phone" value={phone} onChange={setPhone} placeholder="07700 900000" type="tel" theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
-            <Field label="Email" value={email} onChange={setEmail} placeholder="you@example.com" type="email" theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
+            <Field label="Phone" value={phone} onChange={setPhone} placeholder="07700 900000" type="tel" required theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
+            <Field label="Email" value={email} onChange={setEmail} placeholder="you@example.com" type="email" required theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
           </div>
           {/* v5.5.243: Loyalty member detection hint */}
           {loyaltyHint && !loyaltyHintDismissed && !loyalty?.verified && (
@@ -1326,10 +1335,12 @@ function SectionTitle({ children }) {
   return <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: '-0.01em', textTransform: 'uppercase', opacity: 0.7 }}>{children}</div>;
 }
 
-function Field({ label, value, onChange, placeholder, type = 'text', theme, cardBdr, inputBg }) {
+function Field({ label, value, onChange, placeholder, type = 'text', required, theme, cardBdr, inputBg }) {
   return (
     <div>
-      <div style={{ fontSize: 11, fontWeight: 700, color: theme.isLight ? '#6b6b70' : '#a0a0a8', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 6 }}>{label}</div>
+      <div style={{ fontSize: 11, fontWeight: 700, color: theme.isLight ? '#6b6b70' : '#a0a0a8', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 6 }}>
+        {label}{required && <span style={{ color: '#ef4444', marginLeft: 3 }}>*</span>}
+      </div>
       <input type={type} value={value || ''} onChange={e => onChange(e.target.value)} placeholder={placeholder}
         style={{
           width: '100%', padding: '12px 14px', borderRadius: 10,

@@ -76,12 +76,12 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
-    version: '5.5.249', date: '26 May 2026', label: 'Online checkout — loyalty gate prompt before payment',
+    version: '5.5.249', date: '26 May 2026', label: 'Online checkout — loyalty gate + mandatory fields',
     changes: [
       'When a customer clicks "Continue to payment" and their phone number matches a loyalty member, a full-screen prompt now appears asking them to either sign in (text code auth) or continue without loyalty.',
       'If the debounced phone lookup hasn\'t fired yet (e.g. user typed quickly and hit Continue), a one-shot check runs inline before proceeding.',
       'If the user dismisses or chooses "Continue without", the gate won\'t appear again for that checkout session.',
-      'Previously the loyalty hint was only shown as a small banner inline in the details form — easy to miss. Now it\'s impossible to miss.',
+      'Name, Phone, and Email now show red asterisks (*) to indicate they\'re required. Error message specifies which fields are missing.',
     ],
   },
   {
