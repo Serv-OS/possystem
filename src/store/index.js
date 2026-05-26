@@ -2387,9 +2387,15 @@ export const useStore = create((set, get) => ({
       dailyCounts: { ...s.dailyCounts, [itemId]: { par: n, remaining: n } },
       eightySixIds: was86 ? s.eightySixIds.filter(x => x !== itemId) : s.eightySixIds,
     }));
-    // v5.5.239: persist to stock_levels for cross-device sync
-    upsertStockLevel(itemId, n).catch(err =>
-      console.warn('[setDailyCount] upsertStockLevel:', err?.message));
+    // v5.5.241: persist to stock_levels for cross-device sync.
+    // Pass the location from getActiveLocationSync() so we never wait on
+    // getLocationId()'s async auth.getUser() call, and log the full response
+    // so PostgREST errors are visible (the previous .catch() only caught
+    // thrown errors — Supabase returns { data, error } as resolved promises).
+    const _loc = getActiveLocationSync();
+    upsertStockLevel(itemId, n, null, _loc).then(res => {
+      if (res?.error) console.error('[setDailyCount] upsertStockLevel error:', res.error.message, res.error);
+    }).catch(err => console.error('[setDailyCount] upsertStockLevel threw:', err?.message));
     // Un-86 in DB too if applicable
     if (was86) {
       toggle86DB(itemId, true).catch(err =>
@@ -2400,9 +2406,11 @@ export const useStore = create((set, get) => ({
     set(s => ({
       dailyCounts: { ...s.dailyCounts, [itemId]: undefined },
     }));
-    // v5.5.239: remove from stock_levels
-    deleteStockLevel(itemId).catch(err =>
-      console.warn('[clearDailyCount] deleteStockLevel:', err?.message));
+    // v5.5.241: remove from stock_levels — pass location directly
+    const _loc2 = getActiveLocationSync();
+    deleteStockLevel(itemId, _loc2).then(res => {
+      if (res?.error) console.error('[clearDailyCount] deleteStockLevel error:', res.error.message);
+    }).catch(err => console.error('[clearDailyCount] deleteStockLevel threw:', err?.message));
   },
   decrementDailyCount: (itemId, qty = 1) => {
     // v4.6.11: single source of truth for daily-count adjustments.
@@ -2453,15 +2461,17 @@ export const useStore = create((set, get) => ({
       return { dailyCounts: newCounts, eightySixIds: newEightySix };
     });
 
-    // v5.5.239: DB-level atomic decrement (fire-and-forget).
-    // The RPC handles auto-86 atomically; realtime syncs the result to all devices.
+    // v5.5.241: DB-level atomic decrement — pass location directly.
+    const _loc3 = getActiveLocationSync();
     ids.forEach(id => {
       if (qty > 0) {
-        decrementStockRPC(id, qty).catch(err =>
-          console.warn('[decrementDailyCount] decrement RPC:', err?.message));
+        decrementStockRPC(id, qty, _loc3).then(res => {
+          if (res?.error) console.error('[decrementDailyCount] decrement RPC error:', res.error.message);
+        }).catch(err => console.error('[decrementDailyCount] decrement RPC threw:', err?.message));
       } else {
-        restoreStockRPC(id, Math.abs(qty)).catch(err =>
-          console.warn('[decrementDailyCount] restore RPC:', err?.message));
+        restoreStockRPC(id, Math.abs(qty), _loc3).then(res => {
+          if (res?.error) console.error('[decrementDailyCount] restore RPC error:', res.error.message);
+        }).catch(err => console.error('[decrementDailyCount] restore RPC threw:', err?.message));
       }
     });
   },

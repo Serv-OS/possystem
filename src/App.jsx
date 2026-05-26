@@ -76,6 +76,13 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.242', date: '26 May 2026', label: 'Fix stock sync — bypass async location resolver',
+    changes: [
+      'Stock writes (setDailyCount, clearDailyCount, decrementDailyCount) now pass locationId from getActiveLocationSync() directly, bypassing the async getLocationId() which goes through supabase.auth.getUser() — a network call that can fail silently on POS devices without auth sessions.',
+      'Properly log PostgREST errors from stock_levels writes (Supabase returns {data, error} as resolved promises — the old .catch() only caught thrown errors, so DB failures were completely invisible).',
+    ],
+  },
+  {
     version: '5.5.241', date: '26 May 2026', label: 'Fix login — remove fragile PostgREST joins',
     changes: [
       'Profile query no longer uses PostgREST embedded resources (organisations(name), locations(name)). A stale PostgREST schema cache caused BOTH the primary and fallback queries to fail, leaving locationId null → "No location assigned" banner.',
