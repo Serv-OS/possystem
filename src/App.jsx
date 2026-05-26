@@ -76,7 +76,7 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
-    version: '5.5.233', date: '26 May 2026', label: 'Wallet passes — Apple Wallet + Google Wallet loyalty cards',
+    version: '5.5.234', date: '26 May 2026', label: 'Wallet passes — Apple Wallet + Google Wallet loyalty cards',
     changes: [
       'New wallet-pass edge function: generates Apple Wallet .pkpass files (signed PKCS#7) and Google Wallet save URLs (JWT/RS256).',
       'Pass contains venue-branded loyalty card with points balance, tier, member code, and QR barcode for scanning.',
@@ -84,6 +84,7 @@ const CHANGELOG = [
       'Supports check action to conditionally show buttons only when certificates are configured.',
       'Apple: pass.json storeCard layout with header points, secondary member/tier, auxiliary member code, QR barcode, back-of-card portal link.',
       'Google: skinny JWT with loyalty class + object, QR barcode, portal link.',
+      'Bug fix: added Authorization/apikey headers to wallet-pass API calls; fixed .pkpass blob download with proper MIME type handling.',
     ],
   },
   {

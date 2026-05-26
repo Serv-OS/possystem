@@ -80,7 +80,7 @@ export default function CustomerPortal({ location }) {
   useEffect(() => {
     fetch(`${OPS_URL}/functions/v1/wallet-pass`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OPS_ANON}`, 'apikey': OPS_ANON },
       body: JSON.stringify({ action: 'check' }),
     })
       .then(r => r.json()).then(j => { if (j.apple || j.google) setWalletAvail(j); })
@@ -94,17 +94,20 @@ export default function CustomerPortal({ location }) {
       const locId = location.ops_location_id || location.id;
       const res = await fetch(`${OPS_URL}/functions/v1/wallet-pass`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OPS_ANON}`, 'apikey': OPS_ANON },
         body: JSON.stringify({ action: type, token, location_id: locId }),
       });
       if (type === 'apple') {
         if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || 'Failed'); }
-        const blob = await res.blob();
+        const blob = new Blob([await res.arrayBuffer()], { type: 'application/vnd.apple.pkpass' });
         const url = URL.createObjectURL(blob);
-        // On iOS, navigating to the blob triggers the Wallet add dialog
         const a = document.createElement('a');
         a.href = url;
+        // On iOS, omit download attr so Safari opens Wallet dialog; elsewhere set filename
+        if (!/iPhone|iPad|iPod/.test(navigator.userAgent)) a.download = 'loyalty.pkpass';
+        document.body.appendChild(a);
         a.click();
+        document.body.removeChild(a);
         setTimeout(() => URL.revokeObjectURL(url), 5000);
       } else {
         const j = await res.json();

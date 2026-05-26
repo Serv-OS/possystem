@@ -150,7 +150,9 @@ function pngChunk(type: string, data: Uint8Array): Uint8Array {
   return buf;
 }
 
+// Note: fflate must be loaded before calling (lazy-loaded in generateApplePass)
 function solidPng(w: number, h: number, r: number, g: number, b: number): Uint8Array {
+  if (!fflate) throw new Error('fflate not loaded — call from generateApplePass');
   // Raw scanlines: filter-byte(0) + RGB per pixel, per row
   const raw = new Uint8Array(h * (1 + w * 3));
   for (let y = 0; y < h; y++) {
