@@ -114,8 +114,12 @@ export default function BackOfficeApp() {
         .select(fullSelect)
         .eq('id', authUser.id)
         .single();
-      if (error && /bo_access|column.*not.*exist|PGRST204/i.test(error.message || '')) {
-        console.warn('[BackOfficeApp] bo_access column missing — falling back. Run supabase/migrations/20260430_bo_access_flag.sql to enable the BO-access gate.');
+      // v5.5.240: if the first query fails for ANY reason (bo_access missing,
+      // schema cache stale, PostgREST version mismatch), always retry without
+      // bo_access. Previously a regex check gated the fallback and could miss
+      // error message format changes — leaving orgCtx.locationId null.
+      if (error) {
+        console.warn('[BackOfficeApp] full SELECT failed:', error.message, '— retrying without bo_access');
         ({ data, error } = await supabase
           .from('user_profiles')
           .select(safeSelect)
@@ -157,19 +161,33 @@ export default function BackOfficeApp() {
           } catch (e) { console.warn('[BackOfficeApp] accessible locations check failed:', e?.message); }
         }
 
-        const effectiveLocId = overrideLocId || profile.location_id;
+        let effectiveLocId = overrideLocId || profile.location_id;
 
-        // If the override differs from user_profiles, fetch the correct location's name for display
+        // v5.5.240: if no location from override or profile, auto-select the first
+        // accessible location. Prevents "No location assigned" for super_admins and
+        // owners whose profile.location_id is null (e.g. multi-location operators).
+        if (!effectiveLocId) {
+          try {
+            const { fetchAccessibleLocations } = await import('../lib/db.js');
+            const { data: accessible } = await fetchAccessibleLocations();
+            if (accessible?.length) {
+              effectiveLocId = accessible[0].id;
+              console.log('[BackOfficeApp] v5.5.240: auto-selected first accessible location:', effectiveLocId, accessible[0].name);
+            }
+          } catch (e) { console.warn('[BackOfficeApp] accessible locations auto-select failed:', e?.message); }
+        }
+
+        // If the effective location differs from user_profiles, fetch the correct name
         let locationName = profile.locations?.name || null;
-        if (overrideLocId && overrideLocId !== profile.location_id) {
+        if (effectiveLocId && effectiveLocId !== profile.location_id) {
           try {
             const { data: locRow } = await supabase
               .from('locations')
               .select('name')
-              .eq('id', overrideLocId)
+              .eq('id', effectiveLocId)
               .single();
             if (locRow?.name) locationName = locRow.name;
-          } catch (e) { console.warn('[BackOfficeApp] failed to fetch override location name:', e?.message); }
+          } catch (e) { console.warn('[BackOfficeApp] failed to fetch location name:', e?.message); }
         }
 
         setOrgCtx({

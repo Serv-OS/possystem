@@ -76,6 +76,13 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.240', date: '26 May 2026', label: 'Fix "No location assigned" on login',
+    changes: [
+      'Profile query fallback is now unconditional — if the first SELECT fails for any reason (not just bo_access column missing), it always retries without bo_access. Previously a regex gate could miss new error message formats, leaving locationId null.',
+      'Auto-select first accessible location when neither rpos-bo-location override nor profile.location_id are set. Prevents "No location assigned" for super_admins and multi-location operators.',
+    ],
+  },
+  {
     version: '5.5.239', date: '26 May 2026', label: 'Cross-device stock tracking',
     changes: [
       'Stock counts now sync across all devices in real-time. Set "2 in stock" on POS → every MPOS, Kiosk, Online Ordering page, and Back Office inventory sees it instantly.',
