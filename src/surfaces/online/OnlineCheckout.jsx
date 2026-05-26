@@ -1,24 +1,19 @@
-// v5.5.221 — Online ordering checkout sheet w/ Stripe Elements + gift card payment.
-// Three-step flow inside one sheet:
+// v5.5.243 — Online ordering checkout w/ Stripe, gift cards, & loyalty rewards.
+// Four-step flow (rewards step only if loyalty signed in):
 //   STEP 1: Details + when (name/phone/email/address, ASAP / scheduled slot)
 //   STEP 2: Gift card (optional — enter code, apply balance toward order)
-//   STEP 3: Card details (Stripe Elements + CardElement, skipped if gift card
-//           covers the full amount)
+//   STEP 3: Rewards (if loyalty signed in — browse & redeem a reward for a discount)
+//   STEP 4: Card details (Stripe Elements + CardElement, skipped if fully covered)
 //
-// Auth: online customers aren't logged in to Supabase, so we pass the env
-// VITE_SUPABASE_ANON_KEY as the bearer (the edge fn accepts anon-role JWTs
-// for online channel — same role the rest of the customer surface already
-// uses to read menus / write to order_queue with the existing RLS policies).
+// Auth: online customers aren't logged in to Supabase, so we use
+// signInAnonymously() — the edge fns accept anon-role JWTs for the
+// online channel.
 //
-// Gift card flow:
-//   Customer enters 16-char code → gift-lookup verifies balance →
-//   gift-redeem deducts amount → remaining balance (if any) charged via Stripe.
-//   If the gift card covers 100% of the order, Stripe is skipped entirely.
-//
-// Order_queue write: only AFTER payment succeeds. status='received' immediately
-// so the kitchen chime fires on the INSERT — no awaiting_payment placeholder
-// needed any more (we kept that for the redirect-flow window where the
-// customer left our page; with inline Elements the customer never leaves).
+// v5.5.243 additions:
+//   - Phone → loyalty member detection: debounced lookup on phone input,
+//     shows "You're a member! Sign in" banner if found.
+//   - Rewards step: browse available rewards, redeem for a discount.
+//     Calls loyalty-redeem edge fn. Discount applied like gift cards.
 
 import { useEffect, useMemo, useState } from 'react';
 import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js';
@@ -28,7 +23,9 @@ import { attributeOnlineOrder } from '../../lib/customerLookup';
 import { getDayWindows } from '../../lib/openingHours';
 import { calculateOrderTax } from '../../lib/tax';
 
-export default function OnlineCheckout({ cart, theme, location, orderType, loyalty, taxRates = [], onClose, onPlaced }) {
+const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
+
+export default function OnlineCheckout({ cart, theme, location, orderType, loyalty, taxRates = [], onClose, onPlaced, onOpenLoyalty }) {
   const opsLocationId = location.ops_location_id || location.id; // ops DB
   const platformLocationId = location.id;                         // platform DB
   const tz = location.timezone || 'Europe/London';
@@ -53,6 +50,36 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   const [giftApplied, setGiftApplied] = useState(null); // { card_id, applied, remaining_balance, idempotency_key, code_last4 }
   const [giftLoading, setGiftLoading] = useState(false);
   const [giftError, setGiftError] = useState('');
+
+  // v5.5.243: Loyalty reward redemption
+  const [rewardApplied, setRewardApplied] = useState(null); // { reward_id, reward_name, points_deducted, discount_type, discount_value, idempotency_key }
+  const [rewardLoading, setRewardLoading] = useState(false);
+  const [rewardError, setRewardError] = useState('');
+  const [availableRewards, setAvailableRewards] = useState(null); // fetched when entering rewards step
+  const hasLoyalty = !!(loyalty?.verified && loyalty?.loyalty);
+
+  // v5.5.243: Phone → loyalty member detection
+  const [loyaltyHint, setLoyaltyHint] = useState(null); // { enrolled, points_balance, member_code }
+  const [loyaltyHintDismissed, setLoyaltyHintDismissed] = useState(false);
+
+  // Debounced phone lookup for loyalty member detection
+  useEffect(() => {
+    if (loyalty?.verified || loyaltyHintDismissed) return; // already signed in or dismissed
+    const normalised = (phone || '').replace(/[\s\-()]/g, '');
+    if (normalised.length < 7) { setLoyaltyHint(null); return; }
+    const companyId = location.company_id;
+    if (!companyId) return;
+    const timer = setTimeout(() => {
+      fetch(`${FUNCTIONS_URL}/loyalty-balance?phone=${encodeURIComponent(normalised)}&company_id=${encodeURIComponent(companyId)}`)
+        .then(r => r.ok ? r.json() : null)
+        .then(j => { if (j?.member_code) setLoyaltyHint(j); })
+        .catch(() => {});
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [phone, loyalty?.verified, loyaltyHintDismissed, location.company_id]);
+
+  // Clear hint when loyalty sign-in succeeds
+  useEffect(() => { if (loyalty?.verified) setLoyaltyHint(null); }, [loyalty?.verified]);
 
   // Timing — ASAP or scheduled
   const [timeMode, setTimeMode] = useState('asap'); // 'asap' | 'scheduled'
@@ -80,11 +107,13 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     orderType || 'collection',
   ), [cart, taxRates, orderType]);
 
-  // v5.5.221: Gift card amount calculation
+  // v5.5.243: Combined deduction calculation (gift card + loyalty reward)
   const giftAppliedMinor = giftApplied?.applied || 0;
+  const rewardDiscountMinor = rewardApplied?.discount_value || 0;
   const subtotalMinor = Math.round(subtotal * 100);
-  const remainingMinor = Math.max(0, subtotalMinor - giftAppliedMinor);
-  const giftCoversAll = giftAppliedMinor >= subtotalMinor;
+  const remainingMinor = Math.max(0, subtotalMinor - giftAppliedMinor - rewardDiscountMinor);
+  const fullyPaid = (giftAppliedMinor + rewardDiscountMinor) >= subtotalMinor;
+  const giftCoversAll = giftAppliedMinor >= subtotalMinor; // keep for gift-only path
 
   // Build collection slots — every 15 min between (now + leadMin) and the
   // next close time, snapped to :00 / :15 / :30 / :45.
@@ -237,40 +266,19 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     }
   };
 
-  // Gift step → pay (or place order if fully covered)
+  // Gift step → rewards (if loyalty) or pay
   const continueFromGift = async () => {
+    // v5.5.243: route through rewards step if loyalty is active
+    if (hasLoyalty && !giftCoversAll) {
+      setStep('rewards');
+      return;
+    }
     setWorking(true); setError('');
     try {
-      if (giftCoversAll) {
-        // Gift card covers 100% — place order directly, no Stripe needed
+      if (giftCoversAll || fullyPaid) {
         await onGiftOnlyPayment();
       } else {
-        // Remaining balance needs card payment via Stripe
-        const token = await getAuthToken();
-        const { ref, customer } = orderShape;
-        const piRes = await createPaymentIntent({
-          authToken: token,
-          locationId: platformLocationId,
-          amountMinor: remainingMinor,
-          currency: 'gbp',
-          channel: 'online',
-          description: `Online order ${ref} · ${customer.name}${giftApplied ? ' (partial gift card)' : ''}`,
-          paymentMethodTypes: ['card'],
-          metadata: {
-            source: 'online',
-            ref,
-            ops_location_id: String(opsLocationId),
-            customer_name: customer.name,
-            customer_email: customer.email,
-            customer_phone: customer.phone,
-            order_type: orderType,
-            ...(giftApplied ? { gift_card_applied: String(giftApplied.applied) } : {}),
-          },
-        });
-        if (!piRes?.client_secret) throw new Error('Payment could not start. Please try again.');
-        setPi(piRes);
-        setStripePromise(getStripeForAccount(piRes.stripe_account));
-        setStep('pay');
+        await startStripePayment();
       }
     } catch (e) {
       console.error('[OnlineCheckout] continueFromGift failed:', e);
@@ -280,40 +288,146 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     }
   };
 
-  // Skip gift card → go straight to Stripe payment
+  // Skip gift card → rewards (if loyalty) or Stripe payment
   const skipGiftCard = async () => {
+    if (hasLoyalty) { setStep('rewards'); return; }
     setWorking(true); setError('');
     try {
-      const token = await getAuthToken();
-      const { ref, customer } = orderShape;
-      const piRes = await createPaymentIntent({
-        authToken: token,
-        locationId: platformLocationId,
-        amountMinor: subtotalMinor,
-        currency: 'gbp',
-        channel: 'online',
-        description: `Online order ${ref} · ${customer.name}`,
-        paymentMethodTypes: ['card'],
-        metadata: {
-          source: 'online',
-          ref,
-          ops_location_id: String(opsLocationId),
-          customer_name: customer.name,
-          customer_email: customer.email,
-          customer_phone: customer.phone,
-          order_type: orderType,
-        },
-      });
-      if (!piRes?.client_secret) throw new Error('Payment could not start. Please try again.');
-      setPi(piRes);
-      setStripePromise(getStripeForAccount(piRes.stripe_account));
-      setStep('pay');
+      await startStripePayment();
     } catch (e) {
       console.error('[OnlineCheckout] skipGiftCard failed:', e);
       setError(e?.message || 'Could not start payment.');
     } finally {
       setWorking(false);
     }
+  };
+
+  // Rewards step → pay (or place order if fully covered)
+  const continueFromRewards = async () => {
+    setWorking(true); setError('');
+    try {
+      if (fullyPaid) {
+        await onGiftOnlyPayment();
+      } else {
+        await startStripePayment();
+      }
+    } catch (e) {
+      console.error('[OnlineCheckout] continueFromRewards failed:', e);
+      setError(e?.message || 'Could not start payment.');
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  // v5.5.243: Shared Stripe PI creation (used by multiple paths)
+  const startStripePayment = async () => {
+    const token = await getAuthToken();
+    const { ref, customer } = orderShape;
+    const amountMinor = remainingMinor;
+    const parts = [];
+    if (giftApplied) parts.push('gift card');
+    if (rewardApplied) parts.push('loyalty');
+    const desc = `Online order ${ref} · ${customer.name}${parts.length ? ` (partial ${parts.join(' + ')})` : ''}`;
+    const piRes = await createPaymentIntent({
+      authToken: token,
+      locationId: platformLocationId,
+      amountMinor,
+      currency: 'gbp',
+      channel: 'online',
+      description: desc,
+      paymentMethodTypes: ['card'],
+      metadata: {
+        source: 'online',
+        ref,
+        ops_location_id: String(opsLocationId),
+        customer_name: customer.name,
+        customer_email: customer.email,
+        customer_phone: customer.phone,
+        order_type: orderType,
+        ...(giftApplied ? { gift_card_applied: String(giftApplied.applied) } : {}),
+        ...(rewardApplied ? { loyalty_reward: rewardApplied.reward_name, loyalty_discount: String(rewardApplied.discount_value) } : {}),
+      },
+    });
+    if (!piRes?.client_secret) throw new Error('Payment could not start. Please try again.');
+    setPi(piRes);
+    setStripePromise(getStripeForAccount(piRes.stripe_account));
+    setStep('pay');
+  };
+
+  // ── Fetch available rewards when entering rewards step ─────────────────
+  useEffect(() => {
+    if (step !== 'rewards' || !hasLoyalty || availableRewards) return;
+    (async () => {
+      try {
+        setRewardLoading(true);
+        const token = await getAuthToken();
+        const res = await fetch(`${FUNCTIONS_URL}/loyalty-rewards?company_id=${encodeURIComponent(loyalty.loyalty.company_id)}`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        const j = await res.json();
+        if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+        setAvailableRewards(j.rewards || []);
+      } catch (e) {
+        console.warn('[OnlineCheckout] fetch rewards failed:', e?.message);
+        setAvailableRewards([]);
+      } finally {
+        setRewardLoading(false);
+      }
+    })();
+  }, [step, hasLoyalty]);
+
+  // ── Redeem a loyalty reward ───────────────────────────────────────────
+  const redeemReward = async (reward) => {
+    setRewardLoading(true); setRewardError('');
+    try {
+      const token = await getAuthToken();
+      const idempotencyKey = `online:${orderShape.ref}:reward:${Date.now()}`;
+      const res = await fetch(`${FUNCTIONS_URL}/loyalty-redeem`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          company_id: loyalty.loyalty.company_id,
+          customer_id: loyalty.loyalty.customer_id,
+          reward_id: reward.id,
+          order_id: `online-${orderShape.ref}`,
+          channel: 'online',
+          idempotency_key: idempotencyKey,
+        }),
+      });
+      const j = await res.json();
+      if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
+      // Calculate discount value in minor units
+      let discountMinor = 0;
+      if (reward.discount_type === 'fixed') {
+        discountMinor = Math.round((reward.discount_value || 0) * 100);
+      } else if (reward.discount_type === 'percentage') {
+        discountMinor = Math.round(subtotalMinor * (reward.discount_value || 0) / 100);
+      } else if (reward.discount_type === 'free_item') {
+        // Free item: discount = price of the cheapest qualifying item
+        const cheapest = [...cart].sort((a, b) => a.price - b.price)[0];
+        discountMinor = cheapest ? Math.round(cheapest.price * 100) : 0;
+      }
+      discountMinor = Math.min(discountMinor, subtotalMinor - giftAppliedMinor); // can't exceed remaining
+      setRewardApplied({
+        reward_id: reward.id,
+        reward_name: reward.name,
+        points_deducted: j.points_deducted || reward.points_cost || 0,
+        discount_type: reward.discount_type,
+        discount_value: discountMinor,
+        idempotency_key: idempotencyKey,
+        redemption_id: j.redemption_id || j.id,
+      });
+    } catch (e) {
+      setRewardError(e?.message || 'Could not redeem reward');
+    } finally {
+      setRewardLoading(false);
+    }
+  };
+
+  // ── Remove applied reward ─────────────────────────────────────────────
+  const removeReward = () => {
+    setRewardApplied(null);
+    setRewardError('');
   };
 
   // ── Gift-only payment (no Stripe) ─────────────────────────────────────
@@ -359,7 +473,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           tip: 0,
           tax_amount: taxBreakdown?.totalTax || null,
           total: subtotal,
-          method: 'gift_card',
+          method: rewardApplied && giftApplied ? 'split' : giftApplied ? 'gift_card' : rewardApplied ? 'loyalty' : 'gift_card',
           drawer_id: null,
           shift_id: null,
           closed_at: new Date().toISOString(),
@@ -372,6 +486,13 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
             card_id: giftApplied.card_id,
             idempotency_key: giftApplied.idempotency_key,
             amount: giftApplied.applied,
+          } : null,
+          loyalty_reward: rewardApplied ? {
+            reward_id: rewardApplied.reward_id,
+            reward_name: rewardApplied.reward_name,
+            points_deducted: rewardApplied.points_deducted,
+            discount_value: rewardApplied.discount_value,
+            idempotency_key: rewardApplied.idempotency_key,
           } : null,
         };
         const { error: ccErr } = await supabase.from('closed_checks').insert(closedCheck);
@@ -451,8 +572,14 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           tip: 0,
           tax_amount: taxBreakdown?.totalTax || null, // v5.5.154: VAT for reports + receipt
           total: subtotal,
-          method: giftApplied ? 'split' : 'card',
-          payment_method: giftApplied ? `gift_card:${(giftApplied.applied / 100).toFixed(2)},card:${(remainingMinor / 100).toFixed(2)}` : undefined,
+          method: (giftApplied || rewardApplied) ? 'split' : 'card',
+          payment_method: (giftApplied || rewardApplied)
+            ? [
+                giftApplied ? `gift_card:${(giftApplied.applied / 100).toFixed(2)}` : null,
+                rewardApplied ? `loyalty:${(rewardApplied.discount_value / 100).toFixed(2)}` : null,
+                `card:${(remainingMinor / 100).toFixed(2)}`,
+              ].filter(Boolean).join(',')
+            : undefined,
           drawer_id: null,
           shift_id: null,
           closed_at: new Date().toISOString(),
@@ -465,6 +592,13 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
             card_id: giftApplied.card_id,
             idempotency_key: giftApplied.idempotency_key,
             amount: giftApplied.applied,
+          } : null,
+          loyalty_reward: rewardApplied ? {
+            reward_id: rewardApplied.reward_id,
+            reward_name: rewardApplied.reward_name,
+            points_deducted: rewardApplied.points_deducted,
+            discount_value: rewardApplied.discount_value,
+            idempotency_key: rewardApplied.idempotency_key,
           } : null,
         };
         const { error: ccErr } = await supabase.from('closed_checks').insert(closedCheck);
@@ -512,15 +646,17 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         <div style={{ padding: '8px 24px 16px', display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
           <div>
             <div style={{ fontSize: 22, fontWeight: 900, letterSpacing: '-0.02em' }}>
-              {step === 'pay' ? 'Payment' : step === 'gift' ? 'Gift Card' : 'Checkout'}
+              {step === 'pay' ? 'Payment' : step === 'rewards' ? 'Rewards' : step === 'gift' ? 'Gift Card' : 'Checkout'}
             </div>
             <div style={{ fontSize: 12, color: muted, marginTop: 2 }}>
               {isDelivery ? 'Delivery' : 'Collection'} · {cart.length} item{cart.length === 1 ? '' : 's'} · £{subtotal.toFixed(2)}
               {giftApplied ? ` · Gift card -£${(giftApplied.applied / 100).toFixed(2)}` : ''}
+              {rewardApplied ? ` · Reward -£${(rewardApplied.discount_value / 100).toFixed(2)}` : ''}
             </div>
           </div>
           <button onClick={
-            step === 'pay' ? () => { setStep('gift'); setPi(null); setError(''); }
+            step === 'pay' ? () => { setStep(hasLoyalty ? 'rewards' : 'gift'); setPi(null); setError(''); }
+            : step === 'rewards' ? () => { setStep('gift'); setRewardError(''); setError(''); }
             : step === 'gift' ? () => { setStep('details'); setError(''); }
             : onClose
           }
@@ -536,6 +672,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         <div style={{ display: 'flex', gap: 6, padding: '0 24px 14px' }}>
           <div style={{ flex: 1, height: 4, borderRadius: 2, background: theme.accent }}/>
           <div style={{ flex: 1, height: 4, borderRadius: 2, background: step !== 'details' ? theme.accent : cardBdr }}/>
+          {hasLoyalty && <div style={{ flex: 1, height: 4, borderRadius: 2, background: (step === 'rewards' || step === 'pay') ? theme.accent : cardBdr }}/>}
           <div style={{ flex: 1, height: 4, borderRadius: 2, background: step === 'pay' ? theme.accent : cardBdr }}/>
         </div>
 
@@ -544,7 +681,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           <Elements stripe={stripePromise} options={{ clientSecret: pi.client_secret, appearance: { theme: theme.isLight ? 'stripe' : 'night' } }}>
             <PayStep
               pi={pi} subtotal={remainingMinor / 100} theme={theme} cardBdr={cardBdr} inputBg={inputBg} muted={muted}
-              cart={cart} giftApplied={giftApplied}
+              cart={cart} giftApplied={giftApplied} rewardApplied={rewardApplied}
               onPaid={onPaymentSuccess}
               onError={setError}
               error={error}
@@ -679,6 +816,134 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
             </div>
           </div>
         </div>
+        ) : step === 'rewards' ? (
+        /* ── STEP: REWARDS ───────────────────────────────────────────── */
+        <div style={{ padding: '0 24px 12px', display: 'flex', flexDirection: 'column', gap: 18 }}>
+          <SectionTitle>Your rewards</SectionTitle>
+          <div style={{ fontSize: 13, color: muted, lineHeight: 1.5, marginTop: -8 }}>
+            {loyalty?.loyalty?.points_balance != null
+              ? `You have ${loyalty.loyalty.points_balance} points. Browse available rewards below.`
+              : 'Browse available rewards to redeem with your order.'}
+          </div>
+
+          {/* Applied reward confirmation */}
+          {rewardApplied && (
+            <div style={{
+              background: `${theme.accent}18`, border: `1.5px solid ${theme.accent}50`,
+              borderRadius: 12, padding: '16px',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                <span style={{ fontSize: 18 }}>🎁</span>
+                <span style={{ fontSize: 14, fontWeight: 700 }}>Reward applied</span>
+              </div>
+              <div style={{ fontSize: 13, color: muted }}>
+                {rewardApplied.reward_name} — £{(rewardApplied.discount_value / 100).toFixed(2)} off
+              </div>
+              <button onClick={removeReward} className="op-btn" style={{
+                marginTop: 10, padding: '8px 16px', borderRadius: 8,
+                background: 'transparent', color: '#ef4444',
+                border: '1px solid #ef444440', fontSize: 12, fontWeight: 700,
+                cursor: 'pointer', fontFamily: 'inherit',
+              }}>Remove reward</button>
+            </div>
+          )}
+
+          {/* Available rewards list */}
+          {!rewardApplied && (
+            <>
+              {rewardLoading && (
+                <div style={{ textAlign: 'center', padding: '20px 0', color: muted, fontSize: 13 }}>
+                  Loading rewards...
+                </div>
+              )}
+              {!rewardLoading && availableRewards && availableRewards.length === 0 && (
+                <div style={{
+                  background: inputBg, border: `1px solid ${cardBdr}`, borderRadius: 12,
+                  padding: '20px 16px', textAlign: 'center',
+                }}>
+                  <div style={{ fontSize: 28, marginBottom: 8 }}>🏆</div>
+                  <div style={{ fontSize: 13, color: muted }}>
+                    No rewards available right now. Keep earning points!
+                  </div>
+                </div>
+              )}
+              {!rewardLoading && availableRewards && availableRewards.length > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {availableRewards.map(reward => {
+                    const canAfford = (loyalty?.loyalty?.points_balance || 0) >= (reward.points_cost || 0);
+                    return (
+                      <div key={reward.id} style={{
+                        background: inputBg, border: `1px solid ${cardBdr}`, borderRadius: 12,
+                        padding: '14px 16px', opacity: canAfford ? 1 : 0.5,
+                      }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: 14, fontWeight: 700 }}>{reward.name}</div>
+                            {reward.description && (
+                              <div style={{ fontSize: 12, color: muted, marginTop: 2 }}>{reward.description}</div>
+                            )}
+                            <div style={{ fontSize: 12, color: theme.accent, fontWeight: 600, marginTop: 4 }}>
+                              {reward.points_cost} points
+                              {reward.discount_type === 'fixed' && ` · £${(reward.discount_value || 0).toFixed(2)} off`}
+                              {reward.discount_type === 'percentage' && ` · ${reward.discount_value || 0}% off`}
+                              {reward.discount_type === 'free_item' && ' · Free item'}
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => redeemReward(reward)}
+                            disabled={!canAfford || rewardLoading}
+                            className="op-btn"
+                            style={{
+                              padding: '8px 16px', borderRadius: 8, marginLeft: 10,
+                              background: canAfford ? theme.accent : `${theme.fg}20`,
+                              color: canAfford ? contrastFg(theme.accent) : `${theme.fg}60`,
+                              border: 'none', fontSize: 12, fontWeight: 700,
+                              cursor: canAfford ? 'pointer' : 'not-allowed',
+                              fontFamily: 'inherit', whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {canAfford ? 'Redeem' : 'Not enough'}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {rewardError && <div style={{ fontSize: 12, color: '#ef4444' }}>{rewardError}</div>}
+            </>
+          )}
+
+          {/* Order summary */}
+          <SectionTitle>Order summary</SectionTitle>
+          <div style={{ background: inputBg, border: `1px solid ${cardBdr}`, borderRadius: 12, padding: '12px 14px' }}>
+            {cart.map(line => {
+              const unit = line.price + (line.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0);
+              return (
+                <div key={line.uid} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13 }}>
+                  <span style={{ flex: 1, minWidth: 0 }}>{line.qty || 1} × {line.name}</span>
+                  <span style={{ fontWeight: 700 }}>£{(unit * (line.qty || 1)).toFixed(2)}</span>
+                </div>
+              );
+            })}
+            {giftApplied && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13, color: theme.accent }}>
+                <span>💳 Gift card</span>
+                <span style={{ fontWeight: 700 }}>-£{(giftApplied.applied / 100).toFixed(2)}</span>
+              </div>
+            )}
+            {rewardApplied && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13, color: theme.accent }}>
+                <span>🎁 {rewardApplied.reward_name}</span>
+                <span style={{ fontWeight: 700 }}>-£{(rewardApplied.discount_value / 100).toFixed(2)}</span>
+              </div>
+            )}
+            <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0 0', borderTop: `1px solid ${cardBdr}`, marginTop: 8 }}>
+              <span style={{ fontSize: 14, fontWeight: 800 }}>{(giftApplied || rewardApplied) ? 'Remaining' : 'Total'}</span>
+              <span style={{ fontSize: 18, fontWeight: 900 }}>£{(remainingMinor / 100).toFixed(2)}</span>
+            </div>
+          </div>
+        </div>
         ) : (
         /* ── STEP: DETAILS ────────────────────────────────────────────── */
         <div style={{ padding: '0 24px 12px', display: 'flex', flexDirection: 'column', gap: 18 }}>
@@ -689,6 +954,38 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
             <Field label="Phone" value={phone} onChange={setPhone} placeholder="07700 900000" type="tel" theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
             <Field label="Email" value={email} onChange={setEmail} placeholder="you@example.com" type="email" theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
           </div>
+          {/* v5.5.243: Loyalty member detection hint */}
+          {loyaltyHint && !loyaltyHintDismissed && !loyalty?.verified && (
+            <div style={{
+              background: `${theme.accent}12`, border: `1.5px solid ${theme.accent}40`,
+              borderRadius: 12, padding: '12px 14px',
+              display: 'flex', alignItems: 'center', gap: 10,
+            }}>
+              <span style={{ fontSize: 22 }}>⭐</span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 700 }}>You're a loyalty member!</div>
+                <div style={{ fontSize: 12, color: muted, marginTop: 2 }}>
+                  {loyaltyHint.points_balance != null ? `${loyaltyHint.points_balance} points available. ` : ''}
+                  Sign in to redeem rewards with your order.
+                </div>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flexShrink: 0 }}>
+                {onOpenLoyalty && (
+                  <button onClick={onOpenLoyalty} className="op-btn" style={{
+                    padding: '7px 14px', borderRadius: 8,
+                    background: theme.accent, color: contrastFg(theme.accent),
+                    border: 'none', fontSize: 12, fontWeight: 700,
+                    cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap',
+                  }}>Sign in</button>
+                )}
+                <button onClick={() => setLoyaltyHintDismissed(true)} className="op-btn" style={{
+                  padding: '4px 8px', background: 'transparent', border: 'none',
+                  fontSize: 11, color: muted, cursor: 'pointer', fontFamily: 'inherit',
+                }}>Dismiss</button>
+              </div>
+            </div>
+          )}
+
           {isDelivery && (
             <>
               <Field label="Delivery address" value={address1} onChange={setAddress1} placeholder="House / flat number, street" theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
@@ -777,7 +1074,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
                 fontFamily: 'inherit', opacity: working ? 0.7 : 1,
                 display: 'flex', justifyContent: 'space-between', alignItems: 'center',
               }}>
-                <span>{working ? 'Processing…' : giftCoversAll ? 'Place order' : 'Continue to card payment'}</span>
+                <span>{working ? 'Processing…' : giftCoversAll ? 'Place order' : hasLoyalty ? 'Continue to rewards' : 'Continue to card payment'}</span>
                 <span>£{(remainingMinor / 100).toFixed(2)}</span>
               </button>
             ) : (
@@ -788,11 +1085,37 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
                 fontFamily: 'inherit', opacity: working ? 0.7 : 1,
                 display: 'flex', justifyContent: 'space-between', alignItems: 'center',
               }}>
-                <span>{working ? 'Starting payment…' : 'Pay by card'}</span>
+                <span>{working ? 'Starting payment…' : hasLoyalty ? 'Skip to rewards' : 'Pay by card'}</span>
                 <span>£{subtotal.toFixed(2)}</span>
               </button>
             )}
-            {!giftApplied && (
+            {!giftApplied && !hasLoyalty && (
+              <div style={{ fontSize: 10, color: muted, textAlign: 'center', marginTop: 8 }}>
+                🔒 Card details next, processed securely by Stripe.
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Sticky bottom button — rewards step */}
+        {step === 'rewards' && (
+          <div style={{
+            position: 'sticky', bottom: 0,
+            padding: '14px 24px calc(14px + env(safe-area-inset-bottom)) 24px',
+            background: theme.bg, borderTop: `1px solid ${cardBdr}`,
+          }}>
+            {error && <div style={{ fontSize: 12, color: '#ef4444', marginBottom: 10 }}>{error}</div>}
+            <button onClick={continueFromRewards} disabled={working} className="op-btn-primary" style={{
+              width: '100%', padding: '16px 22px', borderRadius: 14,
+              background: theme.accent, color: contrastFg(theme.accent),
+              border: 'none', fontSize: 16, fontWeight: 800, cursor: working ? 'wait' : 'pointer',
+              fontFamily: 'inherit', opacity: working ? 0.7 : 1,
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            }}>
+              <span>{working ? 'Processing…' : fullyPaid ? 'Place order' : rewardApplied ? 'Continue to card payment' : 'Skip rewards'}</span>
+              <span>£{(remainingMinor / 100).toFixed(2)}</span>
+            </button>
+            {!rewardApplied && !fullyPaid && (
               <div style={{ fontSize: 10, color: muted, textAlign: 'center', marginTop: 8 }}>
                 🔒 Card details next, processed securely by Stripe.
               </div>
@@ -807,7 +1130,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
 // ─────────────────────────────────────────────────────────────────────────────
 // PayStep — renders the CardElement + Pay button. Lives inside <Elements>
 // so it can use useStripe() / useElements() to confirm the PaymentIntent.
-function PayStep({ pi, subtotal, theme, cardBdr, inputBg, muted, cart, giftApplied, onPaid, onError, error }) {
+function PayStep({ pi, subtotal, theme, cardBdr, inputBg, muted, cart, giftApplied, rewardApplied, onPaid, onError, error }) {
   const stripe = useStripe();
   const elements = useElements();
   const [busy, setBusy] = useState(false);
@@ -869,8 +1192,14 @@ function PayStep({ pi, subtotal, theme, cardBdr, inputBg, muted, cart, giftAppli
               <span style={{ fontWeight: 700 }}>-£{(giftApplied.applied / 100).toFixed(2)}</span>
             </div>
           )}
+          {rewardApplied && (
+            <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 13, color: theme.accent }}>
+              <span>🎁 {rewardApplied.reward_name}</span>
+              <span style={{ fontWeight: 700 }}>-£{(rewardApplied.discount_value / 100).toFixed(2)}</span>
+            </div>
+          )}
           <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0 0', borderTop: `1px solid ${cardBdr}`, marginTop: 6 }}>
-            <span style={{ fontSize: 14, fontWeight: 800 }}>{giftApplied ? 'Card payment' : 'Total'}</span>
+            <span style={{ fontSize: 14, fontWeight: 800 }}>{(giftApplied || rewardApplied) ? 'Card payment' : 'Total'}</span>
             <span style={{ fontSize: 18, fontWeight: 900 }}>£{subtotal.toFixed(2)}</span>
           </div>
         </div>

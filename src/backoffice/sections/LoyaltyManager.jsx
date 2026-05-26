@@ -1707,6 +1707,18 @@ function PortalLink({ slug, enabled }) {
       <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 10, lineHeight: 1.5 }}>
         Share the <b>sign-up</b> link with new customers. The <b>sign-in</b> link is for existing members to check points, rewards, gift cards, and manage their profile.
       </div>
+      {/* Wallet info */}
+      <div style={{
+        marginTop: 12, padding: '10px 12px', borderRadius: 8,
+        background: 'var(--bg3)', border: '1px solid var(--bdr)',
+      }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t2)', marginBottom: 4 }}>
+          📱 Apple Wallet & Google Wallet
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--t4)', lineHeight: 1.5 }}>
+          Loyalty members can add their card to Apple Wallet or Google Wallet from the customer portal or during online checkout sign-in. No setup needed — it's automatic.
+        </div>
+      </div>
     </div>
   );
 }

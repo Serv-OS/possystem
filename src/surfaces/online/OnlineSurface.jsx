@@ -727,6 +727,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           orderType={orderType} loyalty={loyalty}
           taxRates={taxRates}
           onClose={() => setShowCheckout(false)}
+          onOpenLoyalty={() => { setShowCheckout(false); setShowLoyalty(true); }}
           onPlaced={(info) => {
             setShowCheckout(false);
             setCart([]);
@@ -1039,6 +1040,15 @@ function LoyaltyModal({ theme, cardBdr, muted, companyId, onClose, onVerified })
                 <div style={{ fontSize: 13, color: muted, marginTop: 8 }}>
                   You'll earn points on this order automatically.
                 </div>
+                {/* Wallet buttons */}
+                {loyaltyData?.loyalty?.member_code && (
+                  <div style={{ marginTop: 16, display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
+                    <WalletButton type="apple" theme={theme} cardBdr={cardBdr}
+                      token={loyaltyData.token} companyId={companyId}/>
+                    <WalletButton type="google" theme={theme} cardBdr={cardBdr}
+                      token={loyaltyData.token} companyId={companyId}/>
+                  </div>
+                )}
               </div>
             </>
           ) : (
@@ -1112,6 +1122,60 @@ function LoyaltyModal({ theme, cardBdr, muted, companyId, onClose, onVerified })
         </div>
       </div>
     </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WalletButton — "Add to Apple Wallet" / "Add to Google Wallet" buttons.
+// Calls the wallet-pass edge function to generate a .pkpass or Google save URL.
+function WalletButton({ type, theme, cardBdr, token, companyId }) {
+  const [busy, setBusy] = useState(false);
+  const walletUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/wallet-pass`;
+  const isApple = type === 'apple';
+
+  const handleClick = async () => {
+    setBusy(true);
+    try {
+      const res = await fetch(walletUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          action: isApple ? 'apple' : 'google',
+          token,
+          company_id: companyId,
+        }),
+      });
+      if (isApple) {
+        if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || `HTTP ${res.status}`); }
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = 'loyalty.pkpass'; a.click();
+        URL.revokeObjectURL(url);
+      } else {
+        const j = await res.json();
+        if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
+        if (j.url) window.open(j.url, '_blank');
+      }
+    } catch (e) {
+      console.warn(`[WalletButton] ${type} failed:`, e?.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <button onClick={handleClick} disabled={busy} style={{
+      padding: '8px 16px', borderRadius: 8,
+      background: isApple ? '#000' : '#fff',
+      color: isApple ? '#fff' : '#000',
+      border: `1px solid ${isApple ? '#000' : cardBdr}`,
+      fontSize: 12, fontWeight: 700, cursor: busy ? 'wait' : 'pointer',
+      fontFamily: 'inherit', opacity: busy ? 0.6 : 1,
+      display: 'inline-flex', alignItems: 'center', gap: 6,
+    }}>
+      {isApple ? '🍎 Add to Apple Wallet' : '📱 Add to Google Wallet'}
+    </button>
   );
 }
 

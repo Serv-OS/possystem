@@ -76,6 +76,16 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.243', date: '26 May 2026', label: 'Online loyalty — rewards step, phone detection, wallet buttons',
+    changes: [
+      'Online checkout: new Rewards step (step 3 of 4) lets loyalty members browse and redeem rewards for a discount before card payment.',
+      'Phone detection: entering your phone number at checkout triggers a debounced lookup — if you\'re a loyalty member, a banner prompts you to sign in.',
+      'Apple Wallet + Google Wallet buttons now appear in the loyalty sign-in confirmation modal.',
+      'Reward discounts tracked in closed_checks (loyalty_reward field) and payment_method split for reports.',
+      'Back office LoyaltyManager: wallet discoverability info added to the PortalLink section.',
+    ],
+  },
+  {
     version: '5.5.242', date: '26 May 2026', label: 'Fix stock sync — bypass async location resolver',
     changes: [
       'Stock writes (setDailyCount, clearDailyCount, decrementDailyCount) now pass locationId from getActiveLocationSync() directly, bypassing the async getLocationId() which goes through supabase.auth.getUser() — a network call that can fail silently on POS devices without auth sessions.',
