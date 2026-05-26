@@ -50,24 +50,47 @@ Deno.serve(async (req) => {
     const phoneN = normalisePhone(phone);
     if (!phoneN) return json({ error: 'Invalid phone number' }, 400);
 
-    // Resolve org_id from company
-    const { data: locations } = await platformAdmin
+    // Resolve org_id: platform locations has ops_location_id, ops locations has org_id
+    const { data: platLoc } = await platformAdmin
       .from('locations')
-      .select('ops_location_id, org_id')
+      .select('ops_location_id')
       .eq('company_id', companyId)
       .limit(1)
       .maybeSingle();
 
-    if (!locations?.org_id) return json({ error: 'Company has no locations' }, 404);
+    if (!platLoc?.ops_location_id) return json({ error: 'Company has no locations' }, 404);
 
-    // Find customer by phone in ops DB
-    const { data: customer } = await opsAdmin
+    const { data: opsLoc } = await opsAdmin
+      .from('locations')
+      .select('org_id')
+      .eq('id', platLoc.ops_location_id)
+      .maybeSingle();
+
+    if (!opsLoc?.org_id) return json({ error: 'Location org not found' }, 404);
+
+    // Find customer by phone in ops DB — try normalised first, fallback to raw
+    let customer: any = null;
+    const { data: c1 } = await opsAdmin
       .from('customers')
       .select('id')
-      .eq('org_id', locations.org_id)
+      .eq('org_id', opsLoc.org_id)
       .eq('phone', phoneN)
       .is('deleted_at', null)
       .maybeSingle();
+    customer = c1;
+
+    // Fallback: try phone_raw column too (UK 07xxx format)
+    if (!customer) {
+      const rawPhone = phoneN.startsWith('+44') ? '0' + phoneN.slice(3) : phoneN;
+      const { data: c2 } = await opsAdmin
+        .from('customers')
+        .select('id')
+        .eq('org_id', opsLoc.org_id)
+        .eq('phone_raw', rawPhone)
+        .is('deleted_at', null)
+        .maybeSingle();
+      customer = c2;
+    }
 
     if (customer) {
       const { data } = await platformAdmin
