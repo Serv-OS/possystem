@@ -521,6 +521,33 @@ Deno.serve(async (req) => {
 
     if (upErr) return json({ error: upErr.message }, 500);
 
+    // Fire-and-forget: send welcome notification (SMS + email) on first profile update
+    try {
+      // Resolve a location_id from company_id for branding
+      let welcomeLocId = companyId;
+      if (platformAdmin) {
+        const { data: wLoc } = await platformAdmin
+          .from('locations')
+          .select('ops_location_id')
+          .eq('company_id', session.companyId)
+          .limit(1).maybeSingle();
+        if (wLoc?.ops_location_id) welcomeLocId = wLoc.ops_location_id;
+      }
+      const welcomeUrl = `${Deno.env.get('SUPABASE_URL')}/functions/v1/send-welcome`;
+      fetch(welcomeUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}`,
+        },
+        body: JSON.stringify({
+          customer_id: session.customerId,
+          company_id: session.companyId,
+          location_id: welcomeLocId,
+        }),
+      }).catch(() => {});
+    } catch {}
+
     return json({ updated: true });
   }
 

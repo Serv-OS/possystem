@@ -76,6 +76,16 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.229', date: '25 May 2026', label: 'Welcome notifications — branded SMS + email on first customer sign-up',
+    changes: [
+      'New send-welcome edge function: sends branded SMS + email when a customer is first created anywhere in the system.',
+      'SMS includes personalised greeting, venue name, and portal sign-up link. Email uses branded HTML template with loyalty call-to-action.',
+      'Deduplication via welcome_sent_at column — each customer only receives a welcome once, regardless of channel.',
+      'Wired into loyalty-otp (portal registration) and customerLookup.js (online ordering) — both fire-and-forget so customer flow is never blocked.',
+      'Audit trail: SMS logged to sms_messages table, email logged to receipt_emails table.',
+    ],
+  },
+  {
     version: '5.5.227', date: '25 May 2026', label: 'Manual points adjustment + Customers UI cleanup',
     changes: [
       'New "± Points" button on each member row in Loyalty → Members — opens a modal to manually add or remove points.',

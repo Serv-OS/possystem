@@ -220,6 +220,35 @@ export async function attributeOnlineOrder({
         return null;
       }
       customerId = ins?.id;
+
+      // Fire-and-forget: send branded welcome SMS + email for new customers
+      if (customerId) {
+        try {
+          let companyId = null;
+          if (platformSupabase) {
+            const { data: pLoc } = await platformSupabase
+              .from('locations')
+              .select('company_id')
+              .or(`ops_location_id.eq.${locationId},id.eq.${locationId}`)
+              .limit(1).maybeSingle();
+            companyId = pLoc?.company_id;
+          }
+          if (companyId) {
+            const welcomeUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-welcome`;
+            fetch(welcomeUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                customer_id: customerId,
+                company_id: companyId,
+                location_id: locationId,
+              }),
+            }).catch(() => {});
+          }
+        } catch (e) {
+          console.warn('[attributeOnlineOrder] welcome send failed (non-fatal):', e?.message);
+        }
+      }
     }
     if (!customerId) return null;
 
