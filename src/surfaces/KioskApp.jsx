@@ -233,6 +233,8 @@ export default function KioskApp({ kioskId, onUnpair }) {
   // v5.5.219: Loyalty reward redemption at kiosk checkout
   const [loyaltyRedemption, setLoyaltyRedemption] = useState(null);
   // loyaltyRedemption: { reward_id, reward_name, points_deducted, discount_type, discount_value, idempotency_key, balance_after }
+  // Track where to return after early loyalty sign-in (from orderType screen)
+  const [loyaltyReturnScreen, setLoyaltyReturnScreen] = useState(null);
   const [selectedItem, setSelectedItem] = useState(null);
   const [selectedCategoryId, setSelectedCategoryId] = useState(null);
   const [orderNumber, setOrderNumber] = useState(null);
@@ -568,7 +570,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
   return (
     <div onPointerDown={resetIdle} data-kiosk-theme={isLight ? "light" : "dark"} style={kioskShell(brandColor, effectiveBg, brandAccent)}>
       {screen === 'attract' && <ScreenAttract brandName={brandName} brandColor={brandColor} brandAccent={brandAccent} brandLogoUrl={brandLogoUrl} attractVideoUrl={attractVideoUrl} avgWaitMinutes={avgWaitMinutes} banner={bannerFor('attract')} ctaLabel={labelTapToOrder} onStart={() => { resetIdle(); setScreen('orderType'); }} />}
-      {screen === 'orderType' && <ScreenOrderType brandColor={brandColor} brandLogoUrl={brandLogoUrl} brandName={brandName} tableMode={tableMode} lang={lang} onOpenLanguagePicker={() => setShowLangPicker(true)} onPick={(t) => {
+      {screen === 'orderType' && <ScreenOrderType brandColor={brandColor} brandLogoUrl={brandLogoUrl} brandName={brandName} tableMode={tableMode} lang={lang} onOpenLanguagePicker={() => setShowLangPicker(true)} loyaltyEnabled={loyaltyEnabled} customerName={customerName} onLoyaltySignIn={() => { setLoyaltyReturnScreen('orderType'); setScreen('loyalty'); }} onPick={(t) => {
         setOrderType(t);
         if (t === 'dineIn' && (tableMode === 'enter' || tableMode === 'either')) setScreen('tableNumber');
         else setScreen('menu');
@@ -593,7 +595,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
       {screen === 'cart' && <ScreenCart brandColor={brandColor} cart={cart} subtotal={subtotal} cartItemCount={cartItemCount} orderType={orderType} onUpdate={updateCartQty} onAddMore={() => setScreen('menu')} onContinue={() => setScreen('tip')} onShowAllergenPicker={() => setShowAllergenPicker(true)} onBack={() => setScreen('menu')} />}
       {screen === 'tip' && <ScreenTip brandColor={brandColor} subtotal={subtotal} tipPresets={tipPresets} tip={tip} onSetTip={setTip} onContinue={() => { if (loyaltyEnabled) setScreen('loyalty'); else setScreen('pay'); }} onBack={() => setScreen('cart')} />}
       {/* v5.5.219: loyalty/customer-details BEFORE pay so reward discount adjusts amount due */}
-      {screen === 'loyalty' && <ScreenLoyalty brandColor={brandColor} customerName={customerName} customerPhone={customerPhone} customerEmail={customerEmail} marketingOptIn={customerMarketingOptIn} locationId={locationId} subtotal={subtotal} loyaltyRedemption={loyaltyRedemption} onLoyaltyRedeem={setLoyaltyRedemption} onName={setCustomerName} onPhone={setCustomerPhone} onEmail={setCustomerEmail} onMarketingOptIn={setCustomerMarketingOptIn} onContinue={() => setScreen('pay')} onSkip={() => setScreen('pay')} submitting={submitting} placeOrderLabel={labelPlaceOrder} />}
+      {screen === 'loyalty' && <ScreenLoyalty brandColor={brandColor} customerName={customerName} customerPhone={customerPhone} customerEmail={customerEmail} marketingOptIn={customerMarketingOptIn} locationId={locationId} subtotal={subtotal} loyaltyRedemption={loyaltyRedemption} onLoyaltyRedeem={setLoyaltyRedemption} onName={setCustomerName} onPhone={setCustomerPhone} onEmail={setCustomerEmail} onMarketingOptIn={setCustomerMarketingOptIn} onContinue={() => { const ret = loyaltyReturnScreen; setLoyaltyReturnScreen(null); setScreen(ret || 'pay'); }} onSkip={() => { const ret = loyaltyReturnScreen; setLoyaltyReturnScreen(null); setScreen(ret || 'pay'); }} submitting={submitting} placeOrderLabel={labelPlaceOrder} earlySignIn={!!loyaltyReturnScreen} />}
       {screen === 'pay' && <ScreenPay brandColor={brandColor} total={grandTotal} submitting={submitting} error={submitError} onSimulatePaid={() => submitOrder(customerName, customerPhone)} onBack={() => { if (loyaltyEnabled) setScreen('loyalty'); else setScreen('tip'); }} />}
       {screen === 'done' && <ScreenDone brandColor={brandColor} customerName={customerName} customerPhone={customerPhone} orderNumber={orderNumber} orderType={orderType} tableNumber={tableNumber} avgWaitMinutes={avgWaitMinutes} banner={bannerFor('done')} onDone={resetSession} />}
 
@@ -722,7 +724,7 @@ function shade(hex, percent) {
 // Light surface, brand logo at top, outline cards with line-art
 // SVG icons in brand color, language picker pill at the bottom.
 // ============================================================
-function ScreenOrderType({ brandColor, brandLogoUrl, brandName, tableMode, lang, onOpenLanguagePicker, onPick, onBack }) {
+function ScreenOrderType({ brandColor, brandLogoUrl, brandName, tableMode, lang, onOpenLanguagePicker, onPick, onBack, loyaltyEnabled, customerName, onLoyaltySignIn }) {
   const dineInAvailable = tableMode !== 'none';
   const langMeta = getLanguageMeta(lang);
   // Force re-render of t() strings when lang changes (parent already
@@ -790,8 +792,42 @@ function ScreenOrderType({ brandColor, brandLogoUrl, brandName, tableMode, lang,
         </div>
       </div>
 
+      {/* Loyalty sign-in prompt */}
+      {loyaltyEnabled && (
+        <div style={{ padding: '0 6vw 2vh', display: 'flex', justifyContent: 'center', flexShrink: 0 }}>
+          {customerName ? (
+            <div style={{
+              padding: 'clamp(12px, 1.6vw, 18px) clamp(20px, 2.6vw, 32px)',
+              borderRadius: 16, background: brandColor + '15', border: '1.5px solid ' + brandColor + '44',
+              display: 'flex', alignItems: 'center', gap: 10,
+            }}>
+              <span style={{ fontSize: 'clamp(18px, 2.2vw, 24px)' }}>✦</span>
+              <span style={{ fontSize: 'clamp(14px, 1.7vw, 18px)', fontWeight: 700, color: brandColor }}>
+                Welcome back, {customerName}!
+              </span>
+            </div>
+          ) : (
+            <button onClick={onLoyaltySignIn} style={{
+              padding: 'clamp(14px, 1.8vw, 20px) clamp(24px, 3vw, 40px)',
+              borderRadius: 99, background: 'var(--kSurfaceRaised)',
+              border: '1.5px solid ' + brandColor + '44',
+              cursor: 'pointer', fontFamily: 'inherit',
+              display: 'flex', alignItems: 'center', gap: 10,
+              boxShadow: '0 2px 10px rgba(0,0,0,0.06)',
+            }}>
+              <span style={{ fontSize: 'clamp(18px, 2.2vw, 24px)' }}>⭐</span>
+              <span style={{
+                fontSize: 'clamp(15px, 1.8vw, 19px)', fontWeight: 800, color: brandColor,
+              }}>
+                {t('orderType.loyaltySignIn') || 'Sign in for rewards'}
+              </span>
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Language pill */}
-      <div style={{ padding: '3vh 6vw 4vh', display: 'flex', justifyContent: 'center', flexShrink: 0 }}>
+      <div style={{ padding: '1vh 6vw 4vh', display: 'flex', justifyContent: 'center', flexShrink: 0 }}>
         <button onClick={onOpenLanguagePicker} style={otLanguagePill(brandColor)} aria-label="Choose language">
           <span style={{ fontSize: 22, lineHeight: 1 }}>{langMeta.flag}</span>
           <span style={{ fontSize: 'clamp(15px, 1.8vw, 18px)', fontWeight: 700, color: brandColor }}>
@@ -2056,7 +2092,7 @@ function ScreenPay({ brandColor, total, submitting, error, onSimulatePaid, onBac
 // and lists redeemable rewards. Customer taps a reward → loyalty-redeem is
 // called → discount applied as a credit deduction on the order total.
 // ============================================================
-function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail, marketingOptIn, locationId, subtotal, loyaltyRedemption, onLoyaltyRedeem, onName, onPhone, onEmail, onMarketingOptIn, onContinue, onSkip, submitting, placeOrderLabel }) {
+function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail, marketingOptIn, locationId, subtotal, loyaltyRedemption, onLoyaltyRedeem, onName, onPhone, onEmail, onMarketingOptIn, onContinue, onSkip, submitting, placeOrderLabel, earlySignIn }) {
   // Local field state mirrors props on mount; we lift back to parent on submit.
   const [name, setName] = useState(customerName || '');
   const [phone, setPhone] = useState(customerPhone || '');
@@ -2516,8 +2552,8 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
             marginBottom: 'clamp(16px, 2vw, 20px)',
           }}
         >
-          {submitting ? 'Placing order…' : t('details.continue')}
-          {!submitting && <span style={{ fontSize: 14 }}>›</span>}
+          {submitting ? 'Placing order…' : earlySignIn ? 'Continue to menu →' : t('details.continue')}
+          {!submitting && !earlySignIn && <span style={{ fontSize: 14 }}>›</span>}
         </button>
 
         {/* Marketing opt-in row */}

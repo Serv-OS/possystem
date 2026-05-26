@@ -39,10 +39,10 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   const [pi, setPi] = useState(null);             // { client_secret, stripe_account, ... }
   const [stripePromise, setStripePromise] = useState(null);
 
-  // Customer details
-  const [name, setName]   = useState('');
+  // Customer details — pre-fill from loyalty sign-in if available
+  const [name, setName]   = useState(loyalty?.customer?.name || '');
   const [phone, setPhone] = useState(loyalty?.phone || '');
-  const [email, setEmail] = useState('');
+  const [email, setEmail] = useState(loyalty?.customer?.email || '');
   const [address1, setAddress1] = useState('');
   const [postcode, setPostcode] = useState('');
   const [notes, setNotes] = useState('');

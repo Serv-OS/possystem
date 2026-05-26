@@ -76,6 +76,19 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.231', date: '26 May 2026', label: 'Loyalty on kiosk + online ordering — real OTP sign-in, pre-fill, and early sign-in',
+    changes: [
+      'Online ordering: LoyaltyModal now uses real SMS OTP via loyalty-otp edge function (was previously a UI scaffold with fake verification).',
+      'Online ordering: After OTP sign-in, customer name/email/phone are pre-filled in the checkout details step.',
+      'Online ordering: Signed-in state shows customer name and points balance in the sticky header and welcome screen.',
+      'Online ordering: Success screen after verification shows personalised welcome with points balance.',
+      'Kiosk: New "Sign in for rewards" button on the order-type screen — highly visible before browsing the menu.',
+      'Kiosk: Early sign-in from order-type screen flows through the loyalty details screen then returns to continue ordering.',
+      'Kiosk: Welcome-back message shows on order-type screen when already signed in.',
+      'Kiosk: Continue button adapts text based on flow context ("Continue to menu" vs standard checkout continue).',
+    ],
+  },
+  {
     version: '5.5.230', date: '26 May 2026', label: 'Stamp cards — "Buy X get 1 free" digital loyalty cards',
     changes: [
       'New Stamp Cards tab in Loyalty Manager: create, edit, pause/activate, and delete stamp card programs.',

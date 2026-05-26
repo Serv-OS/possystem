@@ -68,7 +68,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   // always dine-in. Online mode keeps the existing welcome flow.
   const [orderType, setOrderType]   = useState(isQr ? 'dine-in' : null);
   const [showLoyalty, setShowLoyalty] = useState(false);
-  const [loyalty, setLoyalty]       = useState(null); // { phone, verified }
+  const [loyalty, setLoyalty]       = useState(null); // { phone, verified, customer?, loyalty?, giftCards?, stampCards?, token? }
   const [cart, setCart]             = useState([]);
   const [activeAllergens, setActiveAllergens] = useState([]); // user-picked filters
   const [showAllergyPicker, setShowAllergyPicker] = useState(false);
@@ -466,8 +466,9 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           onLoyalty={() => setShowLoyalty(true)}/>
         {showLoyalty && (
           <LoyaltyModal theme={theme} cardBdr={cardBdr} muted={muted}
+            companyId={location.company_id}
             onClose={() => setShowLoyalty(false)}
-            onVerified={(phone) => { setLoyalty({ phone, verified: true }); setShowLoyalty(false); }}/>
+            onVerified={(phone, data) => { setLoyalty({ phone, verified: true, ...data }); setShowLoyalty(false); }}/>
         )}
       </ScrollShell>
     );
@@ -539,13 +540,16 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           )}
 
           {/* Loyalty / sign-in */}
-          <button onClick={() => setShowLoyalty(true)} className="op-btn" style={{
+          <button onClick={() => { if (!loyalty?.verified) setShowLoyalty(true); }} className="op-btn" style={{
             padding: '6px 12px', borderRadius: 99,
             background: loyalty?.verified ? `${theme.accent}18` : 'transparent',
-            color: theme.fg, border: `1px solid ${cardBdr}`,
-            fontSize: 12, fontWeight: 700, fontFamily: 'inherit', cursor: 'pointer',
+            color: loyalty?.verified ? theme.accent : theme.fg,
+            border: `1px solid ${loyalty?.verified ? theme.accent + '44' : cardBdr}`,
+            fontSize: 12, fontWeight: 700, fontFamily: 'inherit', cursor: loyalty?.verified ? 'default' : 'pointer',
           }}>
-            {loyalty?.verified ? `✦ ${loyalty.phone}` : '✦ Sign in'}
+            {loyalty?.verified
+              ? `✦ ${loyalty.customer?.name?.split(' ')[0] || loyalty.phone}${loyalty.loyalty?.points_balance ? ` · ${loyalty.loyalty.points_balance} pts` : ''}`
+              : '✦ Sign in for rewards'}
           </button>
         </div>
 
@@ -727,8 +731,9 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
 
       {showLoyalty && (
         <LoyaltyModal theme={theme} cardBdr={cardBdr} muted={muted}
+          companyId={location.company_id}
           onClose={() => setShowLoyalty(false)}
-          onVerified={(phone) => { setLoyalty({ phone, verified: true }); setShowLoyalty(false); }}/>
+          onVerified={(phone, data) => { setLoyalty({ phone, verified: true, ...data }); setShowLoyalty(false); }}/>
       )}
     </ScrollShell>
   );
@@ -809,14 +814,26 @@ function Welcome({ theme, orderTypes, loyalty, onPickType, onLoyalty }) {
         </div>
 
         {/* Loyalty entry */}
-        <button onClick={onLoyalty} style={{
-          marginTop: 24, padding: '12px 20px', borderRadius: 99,
-          background: 'rgba(255,255,255,0.18)', color: '#fff',
-          border: '1px solid rgba(255,255,255,0.5)',
-          fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit',
-          backdropFilter: 'saturate(180%) blur(8px)',
+        <button onClick={() => { if (!loyalty?.verified) onLoyalty(); }} style={{
+          marginTop: 24, padding: loyalty?.verified ? '14px 24px' : '12px 20px', borderRadius: loyalty?.verified ? 16 : 99,
+          background: loyalty?.verified ? 'rgba(255,255,255,0.95)' : 'rgba(255,255,255,0.18)',
+          color: loyalty?.verified ? '#1a1a1a' : '#fff',
+          border: loyalty?.verified ? 'none' : '1px solid rgba(255,255,255,0.5)',
+          fontSize: 13, fontWeight: 700, cursor: loyalty?.verified ? 'default' : 'pointer', fontFamily: 'inherit',
+          backdropFilter: loyalty?.verified ? 'none' : 'saturate(180%) blur(8px)',
+          boxShadow: loyalty?.verified ? '0 4px 14px rgba(0,0,0,0.18)' : 'none',
+          textAlign: 'center',
         }}>
-          {loyalty?.verified ? `✦ Signed in as ${loyalty.phone}` : '✦ Sign in for loyalty rewards'}
+          {loyalty?.verified
+            ? <>
+                <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 2 }}>
+                  ✦ Welcome{loyalty.customer?.name ? `, ${loyalty.customer.name.split(' ')[0]}` : ''}!
+                </div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#6b6b70' }}>
+                  {loyalty.loyalty?.points_balance ? `${loyalty.loyalty.points_balance} points` : 'Earning points on this order'}
+                </div>
+              </>
+            : '✦ Sign in for loyalty rewards'}
         </button>
 
         <div style={{ marginTop: 32, fontSize: 11, opacity: 0.75, textShadow: '0 1px 3px rgba(0,0,0,0.4)' }}>
@@ -889,30 +906,71 @@ function AllergyPickerModal({ theme, cardBdr, all, active, onClose, onSave }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Loyalty modal — phone capture + SMS-code verification (UI scaffold only;
-// real Twilio / Supabase phone-OTP wiring lands in a follow-up commit).
-function LoyaltyModal({ theme, cardBdr, muted, onClose, onVerified }) {
-  const [step, setStep] = useState('phone'); // phone | code
+// Loyalty modal — phone capture + SMS OTP verification via loyalty-otp edge function.
+function LoyaltyModal({ theme, cardBdr, muted, companyId, onClose, onVerified }) {
+  const [step, setStep] = useState('phone'); // phone | code | done
   const [phone, setPhone] = useState('');
   const [code, setCode] = useState('');
   const [working, setWorking] = useState(false);
   const [err, setErr] = useState('');
+  const [loyaltyData, setLoyaltyData] = useState(null);
+
+  const otpUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/loyalty-otp`;
 
   const sendCode = async () => {
-    if (!/^\+?[0-9 ]{7,}$/.test(phone)) { setErr('Enter a valid phone number.'); return; }
+    const cleaned = phone.replace(/[^\d+]/g, '');
+    if (cleaned.length < 10) { setErr('Enter a valid UK mobile number.'); return; }
+    if (!companyId) { setErr('Unable to resolve venue. Please try again.'); return; }
     setErr(''); setWorking(true);
-    // TODO: real SMS provider wiring (Twilio / Supabase phone OTP). For now
-    // the scaffold "sends" instantly so the UI flow is testable end-to-end.
-    await new Promise(r => setTimeout(r, 600));
-    setWorking(false);
-    setStep('code');
+    try {
+      const res = await fetch(otpUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'send', phone: cleaned, company_id: companyId }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+      setStep('code');
+    } catch (e) {
+      setErr(e?.message || 'Failed to send code. Please try again.');
+    } finally {
+      setWorking(false);
+    }
   };
+
   const verify = async () => {
-    if (code.replace(/\D/g, '').length < 4) { setErr('Enter the 6-digit code.'); return; }
+    const cleaned = code.replace(/\D/g, '');
+    if (cleaned.length < 4) { setErr('Enter the 6-digit code from your text message.'); return; }
     setErr(''); setWorking(true);
-    await new Promise(r => setTimeout(r, 400));
-    setWorking(false);
-    onVerified(phone);
+    try {
+      const res = await fetch(otpUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'verify', phone: phone.replace(/[^\d+]/g, ''), company_id: companyId, code: cleaned }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || 'Invalid code. Please try again.');
+      if (j.verified) {
+        setLoyaltyData(j);
+        setStep('done');
+        // Brief delay so user sees the success state before modal closes
+        setTimeout(() => {
+          onVerified(phone.replace(/[^\d+]/g, ''), {
+            customer: j.customer,
+            loyalty: j.loyalty,
+            giftCards: j.gift_cards,
+            stampCards: j.stamp_cards,
+            token: j.token,
+          });
+        }, 800);
+      } else {
+        throw new Error('Verification failed. Check the code and try again.');
+      }
+    } catch (e) {
+      setErr(e?.message || 'Verification failed.');
+    } finally {
+      setWorking(false);
+    }
   };
 
   return (
@@ -929,67 +987,91 @@ function LoyaltyModal({ theme, cardBdr, muted, onClose, onVerified }) {
           <div style={{ width: 44, height: 5, borderRadius: 3, background: cardBdr }}/>
         </div>
         <div style={{ padding: '12px 24px 24px' }}>
-          <div style={{ fontSize: 24, fontWeight: 900, letterSpacing: '-0.02em', marginBottom: 4 }}>
-            ✦ Loyalty rewards
-          </div>
-          <div style={{ fontSize: 13, color: muted, lineHeight: 1.55, marginBottom: 20 }}>
-            Sign in with your phone to earn points on every order. We'll text you a code to confirm it's you. No spam — ever.
-          </div>
-
-          {step === 'phone' && (
+          {step === 'done' ? (
             <>
-              <label style={{ fontSize: 11, fontWeight: 700, color: muted, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>
-                Mobile number
-              </label>
-              <input type="tel" inputMode="tel"
-                placeholder="07700 900000"
-                value={phone}
-                onChange={e => { setPhone(e.target.value); setErr(''); }}
-                style={inputStyle(theme, cardBdr)}/>
-              {err && <div style={{ fontSize: 12, color: '#ef4444', marginTop: 8 }}>{err}</div>}
-              <button onClick={sendCode} disabled={working} style={{
-                marginTop: 16, width: '100%', padding: '14px 18px', borderRadius: 12,
-                background: theme.accent, color: contrastFg(theme.accent),
-                border: 'none', fontSize: 15, fontWeight: 800, cursor: 'pointer',
-                fontFamily: 'inherit', opacity: working ? 0.6 : 1,
-              }}>
-                {working ? 'Sending…' : 'Send code'}
-              </button>
+              <div style={{ textAlign: 'center', padding: '20px 0' }}>
+                <div style={{ fontSize: 48, marginBottom: 12 }}>✦</div>
+                <div style={{ fontSize: 22, fontWeight: 900, color: theme.accent, marginBottom: 6 }}>
+                  Welcome{loyaltyData?.customer?.name ? `, ${loyaltyData.customer.name.split(' ')[0]}` : ''}!
+                </div>
+                {loyaltyData?.loyalty?.points_balance > 0 && (
+                  <div style={{ fontSize: 14, fontWeight: 700, color: theme.fg }}>
+                    {loyaltyData.loyalty.points_balance} points available
+                  </div>
+                )}
+                <div style={{ fontSize: 13, color: muted, marginTop: 8 }}>
+                  You'll earn points on this order automatically.
+                </div>
+              </div>
+            </>
+          ) : (
+            <>
+              <div style={{ fontSize: 24, fontWeight: 900, letterSpacing: '-0.02em', marginBottom: 4 }}>
+                ✦ Loyalty rewards
+              </div>
+              <div style={{ fontSize: 13, color: muted, lineHeight: 1.55, marginBottom: 20 }}>
+                Sign in with your phone to earn points on every order. We'll text you a code to confirm it's you. No spam — ever.
+              </div>
+
+              {step === 'phone' && (
+                <>
+                  <label style={{ fontSize: 11, fontWeight: 700, color: muted, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>
+                    Mobile number
+                  </label>
+                  <input type="tel" inputMode="tel"
+                    placeholder="07700 900000"
+                    value={phone}
+                    onChange={e => { setPhone(e.target.value); setErr(''); }}
+                    onKeyDown={e => { if (e.key === 'Enter') sendCode(); }}
+                    style={inputStyle(theme, cardBdr)}/>
+                  {err && <div style={{ fontSize: 12, color: '#ef4444', marginTop: 8 }}>{err}</div>}
+                  <button onClick={sendCode} disabled={working} style={{
+                    marginTop: 16, width: '100%', padding: '14px 18px', borderRadius: 12,
+                    background: theme.accent, color: contrastFg(theme.accent),
+                    border: 'none', fontSize: 15, fontWeight: 800, cursor: 'pointer',
+                    fontFamily: 'inherit', opacity: working ? 0.6 : 1,
+                  }}>
+                    {working ? 'Sending…' : 'Send code'}
+                  </button>
+                </>
+              )}
+
+              {step === 'code' && (
+                <>
+                  <label style={{ fontSize: 11, fontWeight: 700, color: muted, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>
+                    Code sent to {phone}
+                  </label>
+                  <input type="text" inputMode="numeric" autoComplete="one-time-code"
+                    placeholder="123456"
+                    maxLength={6}
+                    value={code}
+                    onChange={e => { setCode(e.target.value); setErr(''); }}
+                    onKeyDown={e => { if (e.key === 'Enter') verify(); }}
+                    autoFocus
+                    style={{ ...inputStyle(theme, cardBdr), textAlign: 'center', fontSize: 22, letterSpacing: '0.4em', fontWeight: 800 }}/>
+                  {err && <div style={{ fontSize: 12, color: '#ef4444', marginTop: 8 }}>{err}</div>}
+                  <button onClick={verify} disabled={working} style={{
+                    marginTop: 16, width: '100%', padding: '14px 18px', borderRadius: 12,
+                    background: theme.accent, color: contrastFg(theme.accent),
+                    border: 'none', fontSize: 15, fontWeight: 800, cursor: 'pointer',
+                    fontFamily: 'inherit', opacity: working ? 0.6 : 1,
+                  }}>
+                    {working ? 'Verifying…' : 'Verify & continue'}
+                  </button>
+                  <button onClick={() => { setStep('phone'); setErr(''); }} style={{
+                    marginTop: 10, width: '100%', padding: '10px', background: 'transparent',
+                    border: 'none', color: muted, fontSize: 12, cursor: 'pointer', fontFamily: 'inherit',
+                    textDecoration: 'underline',
+                  }}>← Use a different number</button>
+                </>
+              )}
+
+              <div style={{ marginTop: 18, fontSize: 10, color: muted, lineHeight: 1.5 }}>
+                By continuing you agree to receive a one-time text message at the number above.
+                Standard rates may apply.
+              </div>
             </>
           )}
-
-          {step === 'code' && (
-            <>
-              <label style={{ fontSize: 11, fontWeight: 700, color: muted, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>
-                Code sent to {phone}
-              </label>
-              <input type="text" inputMode="numeric" autoComplete="one-time-code"
-                placeholder="123456"
-                maxLength={6}
-                value={code}
-                onChange={e => { setCode(e.target.value); setErr(''); }}
-                style={{ ...inputStyle(theme, cardBdr), textAlign: 'center', fontSize: 22, letterSpacing: '0.4em', fontWeight: 800 }}/>
-              {err && <div style={{ fontSize: 12, color: '#ef4444', marginTop: 8 }}>{err}</div>}
-              <button onClick={verify} disabled={working} style={{
-                marginTop: 16, width: '100%', padding: '14px 18px', borderRadius: 12,
-                background: theme.accent, color: contrastFg(theme.accent),
-                border: 'none', fontSize: 15, fontWeight: 800, cursor: 'pointer',
-                fontFamily: 'inherit', opacity: working ? 0.6 : 1,
-              }}>
-                {working ? 'Verifying…' : 'Verify & continue'}
-              </button>
-              <button onClick={() => setStep('phone')} style={{
-                marginTop: 10, width: '100%', padding: '10px', background: 'transparent',
-                border: 'none', color: muted, fontSize: 12, cursor: 'pointer', fontFamily: 'inherit',
-                textDecoration: 'underline',
-              }}>← Use a different number</button>
-            </>
-          )}
-
-          <div style={{ marginTop: 18, fontSize: 10, color: muted, lineHeight: 1.5 }}>
-            By continuing you agree to receive a one-time text message at the number above.
-            Standard rates may apply.
-          </div>
         </div>
       </div>
     </div>
