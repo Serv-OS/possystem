@@ -728,6 +728,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           taxRates={taxRates}
           onClose={() => setShowCheckout(false)}
           onOpenLoyalty={() => { setShowCheckout(false); setShowLoyalty(true); }}
+          onLoyaltyVerified={(ph, data) => { setLoyalty({ phone: ph, verified: true, ...data }); }}
           onPlaced={(info) => {
             setShowCheckout(false);
             setCart([]);

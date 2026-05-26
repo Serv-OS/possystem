@@ -76,6 +76,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.250', date: '26 May 2026', label: 'Online checkout — inline loyalty OTP sign-in',
+    changes: [
+      'When the loyalty gate prompt appears at checkout, clicking "Sign in with text code" now sends an OTP and shows a 6-digit code entry — all inline, without leaving the checkout. Customer details (name, phone, email) are preserved throughout.',
+      'After successful verification, the checkout automatically proceeds to the Gift Card / Rewards step with loyalty applied.',
+      'Includes "Back" and "Resend code" buttons in the code entry view.',
+    ],
+  },
+  {
     version: '5.5.249', date: '26 May 2026', label: 'Online checkout — loyalty gate + mandatory fields',
     changes: [
       'When a customer clicks "Continue to payment" and their phone number matches a loyalty member, a full-screen prompt now appears asking them to either sign in (text code auth) or continue without loyalty.',

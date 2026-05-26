@@ -25,7 +25,7 @@ import { calculateOrderTax } from '../../lib/tax';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 
-export default function OnlineCheckout({ cart, theme, location, orderType, loyalty, taxRates = [], onClose, onPlaced, onOpenLoyalty }) {
+export default function OnlineCheckout({ cart, theme, location, orderType, loyalty, taxRates = [], onClose, onPlaced, onOpenLoyalty, onLoyaltyVerified }) {
   const opsLocationId = location.ops_location_id || location.id; // ops DB
   const platformLocationId = location.id;                         // platform DB
   const tz = location.timezone || 'Europe/London';
@@ -63,6 +63,11 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   const [loyaltyHintDismissed, setLoyaltyHintDismissed] = useState(false);
   // v5.5.249: gate prompt — shown when user clicks Continue and phone is a loyalty member
   const [showLoyaltyGate, setShowLoyaltyGate] = useState(false);
+  // v5.5.250: Inline OTP flow inside the loyalty gate (no more closing checkout)
+  const [gateStep, setGateStep]       = useState('prompt'); // 'prompt' | 'code' | 'done'
+  const [gateCode, setGateCode]       = useState('');
+  const [gateWorking, setGateWorking] = useState(false);
+  const [gateError, setGateError]     = useState('');
 
   // Debounced phone lookup for loyalty member detection
   useEffect(() => {
@@ -235,7 +240,66 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     setStep('gift');
   };
   // Gate: user chose "continue without loyalty"
-  const skipLoyaltyGate = () => { setShowLoyaltyGate(false); setLoyaltyHintDismissed(true); setStep('gift'); };
+  const skipLoyaltyGate = () => { setShowLoyaltyGate(false); setGateStep('prompt'); setGateCode(''); setGateError(''); setLoyaltyHintDismissed(true); setStep('gift'); };
+
+  // v5.5.250: Inline OTP — send code using the phone already in the checkout form
+  const otpUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/loyalty-otp`;
+  const sendGateCode = async () => {
+    const cleaned = phone.replace(/[^\d+]/g, '');
+    if (cleaned.length < 10) { setGateError('Phone number is too short.'); return; }
+    const companyId = location.company_id;
+    if (!companyId) { setGateError('Unable to resolve venue.'); return; }
+    setGateError(''); setGateWorking(true);
+    try {
+      const res = await fetch(otpUrl, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'send', phone: cleaned, company_id: companyId }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+      setGateStep('code');
+    } catch (e) {
+      setGateError(e?.message || 'Failed to send code.');
+    } finally {
+      setGateWorking(false);
+    }
+  };
+
+  // v5.5.250: Inline OTP — verify code, then proceed with loyalty
+  const verifyGateCode = async () => {
+    const cleaned = gateCode.replace(/\D/g, '');
+    if (cleaned.length < 6) { setGateError('Enter the 6-digit code.'); return; }
+    const companyId = location.company_id;
+    setGateError(''); setGateWorking(true);
+    try {
+      const res = await fetch(otpUrl, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'verify', phone: phone.replace(/[^\d+]/g, ''), company_id: companyId, code: cleaned }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || 'Invalid code.');
+      if (!j.verified) throw new Error('Verification failed.');
+      // Success — update loyalty state in parent, then proceed
+      setGateStep('done');
+      onLoyaltyVerified?.(phone.replace(/[^\d+]/g, ''), {
+        customer: j.customer,
+        loyalty: j.loyalty,
+        giftCards: j.gift_cards,
+        stampCards: j.stamp_cards,
+        token: j.token,
+      });
+      // Brief success flash, then close gate and advance
+      setTimeout(() => {
+        setShowLoyaltyGate(false);
+        setGateStep('prompt'); setGateCode(''); setGateError('');
+        setStep('gift');
+      }, 800);
+    } catch (e) {
+      setGateError(e?.message || 'Verification failed.');
+    } finally {
+      setGateWorking(false);
+    }
+  };
 
   // ── Gift card lookup ──────────────────────────────────────────────────
   const lookupGiftCard = async () => {
@@ -1172,55 +1236,154 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         )}
       </div>
 
-      {/* v5.5.249: Loyalty gate prompt — shown when user clicks Continue and
-          their phone matches a loyalty member but they haven't signed in */}
+      {/* v5.5.250: Loyalty gate with inline OTP — stays inside checkout,
+          no form data lost. Three sub-steps: prompt → code → done */}
       {showLoyaltyGate && (
         <div style={{
           position: 'fixed', inset: 0, zIndex: 9999,
           background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center',
           padding: 20,
-        }} onClick={() => setShowLoyaltyGate(false)}>
+        }} onClick={() => { if (gateStep === 'prompt') { setShowLoyaltyGate(false); } }}>
           <div onClick={e => e.stopPropagation()} style={{
             background: theme.bg, borderRadius: 20, padding: '28px 24px',
             maxWidth: 380, width: '100%', boxShadow: '0 20px 60px rgba(0,0,0,0.4)',
             border: `1px solid ${cardBdr}`,
           }}>
-            <div style={{ textAlign: 'center', marginBottom: 18 }}>
-              <div style={{ fontSize: 40, marginBottom: 8 }}>⭐</div>
-              <div style={{ fontSize: 18, fontWeight: 800, color: theme.fg }}>
-                You're a loyalty member!
+            {gateStep === 'done' ? (
+              /* ── Success flash ─────────────────────────────────────── */
+              <div style={{ textAlign: 'center', padding: '20px 0' }}>
+                <div style={{ fontSize: 48, marginBottom: 10 }}>✦</div>
+                <div style={{ fontSize: 20, fontWeight: 900, color: theme.accent }}>
+                  You're signed in!
+                </div>
+                <div style={{ fontSize: 13, color: muted, marginTop: 8 }}>
+                  Your rewards will be available at the next step.
+                </div>
               </div>
-              <div style={{ fontSize: 13, color: muted, marginTop: 8, lineHeight: 1.5 }}>
-                {loyaltyHint?.points_balance != null
-                  ? `You have ${loyaltyHint.points_balance} points. Sign in to redeem rewards and earn points on this order.`
-                  : 'Sign in to redeem rewards and earn points on this order.'}
-              </div>
-            </div>
+            ) : gateStep === 'code' ? (
+              /* ── Enter 6-digit code ────────────────────────────────── */
+              <>
+                <div style={{ textAlign: 'center', marginBottom: 18 }}>
+                  <div style={{ fontSize: 40, marginBottom: 8 }}>📱</div>
+                  <div style={{ fontSize: 18, fontWeight: 800, color: theme.fg }}>
+                    Check your texts
+                  </div>
+                  <div style={{ fontSize: 13, color: muted, marginTop: 8, lineHeight: 1.5 }}>
+                    We've sent a 6-digit code to <strong style={{ color: theme.fg }}>{phone}</strong>. Enter it below to sign in.
+                  </div>
+                </div>
 
-            <button
-              onClick={() => { setShowLoyaltyGate(false); onOpenLoyalty?.(); }}
-              className="op-btn"
-              style={{
-                width: '100%', padding: '14px 20px', borderRadius: 12,
-                background: theme.accent, color: contrastFg(theme.accent),
-                border: 'none', fontSize: 15, fontWeight: 800,
-                cursor: 'pointer', fontFamily: 'inherit', marginBottom: 10,
-              }}
-            >
-              Sign in with text code
-            </button>
-            <button
-              onClick={skipLoyaltyGate}
-              className="op-btn"
-              style={{
-                width: '100%', padding: '12px 20px', borderRadius: 12,
-                background: 'transparent', color: muted,
-                border: `1px solid ${cardBdr}`, fontSize: 13, fontWeight: 600,
-                cursor: 'pointer', fontFamily: 'inherit',
-              }}
-            >
-              Continue without loyalty
-            </button>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  maxLength={6}
+                  value={gateCode}
+                  onChange={e => setGateCode(e.target.value.replace(/\D/g, ''))}
+                  onKeyDown={e => { if (e.key === 'Enter') verifyGateCode(); }}
+                  placeholder="000000"
+                  autoFocus
+                  style={{
+                    width: '100%', padding: '16px 0', borderRadius: 12,
+                    background: inputBg, color: theme.fg, border: `1.5px solid ${cardBdr}`,
+                    fontSize: 28, fontWeight: 800, fontFamily: 'monospace',
+                    textAlign: 'center', letterSpacing: '0.3em',
+                    outline: 'none', boxSizing: 'border-box', marginBottom: 12,
+                  }}
+                />
+
+                {gateError && <div style={{ fontSize: 12, color: '#ef4444', textAlign: 'center', marginBottom: 10 }}>{gateError}</div>}
+
+                <button
+                  onClick={verifyGateCode}
+                  disabled={gateWorking || gateCode.length < 6}
+                  className="op-btn"
+                  style={{
+                    width: '100%', padding: '14px 20px', borderRadius: 12,
+                    background: gateCode.length >= 6 ? theme.accent : `${theme.fg}20`,
+                    color: gateCode.length >= 6 ? contrastFg(theme.accent) : `${theme.fg}60`,
+                    border: 'none', fontSize: 15, fontWeight: 800,
+                    cursor: gateWorking ? 'wait' : gateCode.length >= 6 ? 'pointer' : 'not-allowed',
+                    fontFamily: 'inherit', marginBottom: 10,
+                    opacity: gateWorking ? 0.7 : 1,
+                  }}
+                >
+                  {gateWorking ? 'Verifying…' : 'Verify & sign in'}
+                </button>
+
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button
+                    onClick={() => { setGateStep('prompt'); setGateCode(''); setGateError(''); }}
+                    className="op-btn"
+                    style={{
+                      flex: 1, padding: '10px 14px', borderRadius: 10,
+                      background: 'transparent', color: muted,
+                      border: `1px solid ${cardBdr}`, fontSize: 12, fontWeight: 600,
+                      cursor: 'pointer', fontFamily: 'inherit',
+                    }}
+                  >
+                    ← Back
+                  </button>
+                  <button
+                    onClick={sendGateCode}
+                    disabled={gateWorking}
+                    className="op-btn"
+                    style={{
+                      flex: 1, padding: '10px 14px', borderRadius: 10,
+                      background: 'transparent', color: theme.accent,
+                      border: `1px solid ${theme.accent}40`, fontSize: 12, fontWeight: 600,
+                      cursor: gateWorking ? 'wait' : 'pointer', fontFamily: 'inherit',
+                    }}
+                  >
+                    Resend code
+                  </button>
+                </div>
+              </>
+            ) : (
+              /* ── Initial prompt ────────────────────────────────────── */
+              <>
+                <div style={{ textAlign: 'center', marginBottom: 18 }}>
+                  <div style={{ fontSize: 40, marginBottom: 8 }}>⭐</div>
+                  <div style={{ fontSize: 18, fontWeight: 800, color: theme.fg }}>
+                    You're a loyalty member!
+                  </div>
+                  <div style={{ fontSize: 13, color: muted, marginTop: 8, lineHeight: 1.5 }}>
+                    {loyaltyHint?.points_balance != null
+                      ? `You have ${loyaltyHint.points_balance} points. Sign in to redeem rewards and earn points on this order.`
+                      : 'Sign in to redeem rewards and earn points on this order.'}
+                  </div>
+                </div>
+
+                {gateError && <div style={{ fontSize: 12, color: '#ef4444', textAlign: 'center', marginBottom: 10 }}>{gateError}</div>}
+
+                <button
+                  onClick={sendGateCode}
+                  disabled={gateWorking}
+                  className="op-btn"
+                  style={{
+                    width: '100%', padding: '14px 20px', borderRadius: 12,
+                    background: theme.accent, color: contrastFg(theme.accent),
+                    border: 'none', fontSize: 15, fontWeight: 800,
+                    cursor: gateWorking ? 'wait' : 'pointer', fontFamily: 'inherit', marginBottom: 10,
+                    opacity: gateWorking ? 0.7 : 1,
+                  }}
+                >
+                  {gateWorking ? 'Sending code…' : 'Sign in with text code'}
+                </button>
+                <button
+                  onClick={skipLoyaltyGate}
+                  className="op-btn"
+                  style={{
+                    width: '100%', padding: '12px 20px', borderRadius: 12,
+                    background: 'transparent', color: muted,
+                    border: `1px solid ${cardBdr}`, fontSize: 13, fontWeight: 600,
+                    cursor: 'pointer', fontFamily: 'inherit',
+                  }}
+                >
+                  Continue without loyalty
+                </button>
+              </>
+            )}
           </div>
         </div>
       )}
