@@ -3,7 +3,7 @@ import { useStore } from '../store';
 import { subscribeToSessions, scheduleFlush, teardown as teardownSessions } from './SessionSync';
 import { loadQueues, scheduleQueueFlush, teardownQueueSync } from './QueueSync';
 import { initOfflineQueue } from './OfflineQueue';
-import { isMock, supabase, getActiveLocationSync, getLocationId } from '../lib/supabase';
+import { isMock, supabase, getActiveLocationSync } from '../lib/supabase';
 import { startSessionReconciler, stopSessionReconciler } from './SessionReconciler';
 // v4.6.27: static import per ADR-008. Dynamic imports inside callbacks silently
 // fail in production bundles and have caused multiple data-loss bugs.
@@ -83,14 +83,18 @@ export default function SyncBridge({ onSyncPulse }) {
       // Load latest config push from Supabase for this location
       (async () => {
         try {
-          // v5.5.235: MUST use getLocationId() — NOT rpos-device.locationId directly.
-          // getLocationId() respects the rpos-bo-location override first (set by
-          // LocationSwitcher) before falling back to the POS pairing record. Reading
-          // rpos-device directly skipped the BO override, so when the same browser
-          // was paired as POS at Loc A and then used as BO for Loc B, SyncBridge
-          // loaded Loc A's menus into the same store that BackOfficeApp was loading
-          // Loc B's data into — a race condition that caused menu bleed.
-          const locationId = await getLocationId().catch(() => null);
+          // v5.5.235: respect rpos-bo-location override BEFORE rpos-device.
+          // Previously this read rpos-device.locationId directly, skipping the BO
+          // override. When the same browser was paired as POS at Loc A then used
+          // as BO for Loc B, SyncBridge loaded Loc A's menus — causing menu bleed.
+          //
+          // v5.5.237: use getActiveLocationSync() instead of async getLocationId().
+          // getLocationId() calls supabase.auth.getUser() which is a network
+          // round-trip that hangs on POS/MPOS devices without an auth session,
+          // causing menus and tables to never load. getActiveLocationSync() is
+          // synchronous (reads localStorage only) and has the same priority chain:
+          // rpos-bo-location first, then rpos-device.locationId.
+          const locationId = getActiveLocationSync();
           if (!locationId || locationId === 'loc-demo') return;
           const { fetchLatestConfigPush, fetchFloorPlan, fetchMenuItems, fetchMenuCategories, fetchMenus, fetch86List } = await import('../lib/db.js');
           const { supabase: sb2 } = await import('../lib/supabase.js');

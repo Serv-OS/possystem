@@ -76,6 +76,13 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.237', date: '26 May 2026', label: 'HOTFIX — restore MPOS menu + table loading broken by v5.5.235',
+    changes: [
+      'v5.5.235 replaced SyncBridge\'s synchronous localStorage read with async getLocationId() which calls supabase.auth.getUser() — a network round-trip that hangs on POS/MPOS devices without an auth session. Menus and tables never loaded.',
+      'Fix: use getActiveLocationSync() instead — synchronous, reads localStorage only, same priority chain (rpos-bo-location first, then rpos-device.locationId). Fixes the BO bleed without breaking POS/MPOS.',
+    ],
+  },
+  {
     version: '5.5.236', date: '26 May 2026', label: 'CRITICAL — cross-user location bleed on sign-out/sign-in',
     changes: [
       'Sign-out now clears rpos-bo-location from localStorage. Previously the location override survived logout, so a second user logging into the same browser would see the first user\'s location data — even if they had no access to it.',
