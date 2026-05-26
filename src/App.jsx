@@ -76,6 +76,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.248', date: '26 May 2026', label: 'Fix customer search on Android POS + duplicate prevention',
+    changes: [
+      'ROOT CAUSE: customers RLS policy blocked queries from POS devices. On boot, ensureAuthToken() calls signInAnonymously() which sets auth.uid() to a real UUID. The old policy allowed access when auth.uid() IS NULL (no auth), but anonymous auth made uid non-null while having no user_locations rows. Policy now adds OR is_anonymous=true clause. Same fix applied to customer_locations and customer_orders tables.',
+      'searchCustomersLive: added error logging for org_id lookup, plus a direct phone-match fallback if the org_id path returns no results.',
+      'CustomerModal: on confirm, checks DB for existing customer with same phone number. If found, auto-populates from existing profile and shows a toast. Prevents operator from thinking they\'re creating a duplicate.',
+      'DB already had a unique constraint on (org_id, phone) preventing actual duplicate inserts — the fix is purely UX: search now works so operators see existing customers instead of "not found".',
+    ],
+  },
+  {
     version: '5.5.247', date: '26 May 2026', label: 'Free item rewards — eligible items picker + auto-apply at checkout',
     changes: [
       'Back office: New ItemMultiPicker component for selecting eligible menu items on free_item rewards and stamp cards. Operators choose exactly which items a customer can get for free.',

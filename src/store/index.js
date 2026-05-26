@@ -1988,25 +1988,45 @@ export const useStore = create((set, get) => ({
     if (isMock || !supabase) return get().searchCustomers(q);
     try {
       const locId = getActiveLocationSync() || await getLocationId();
-      if (!locId) return [];
+      if (!locId) { console.warn('[searchCustomersLive] no locId'); return []; }
       let orgId = get()._cachedOrgId;
       if (!orgId) {
-        const { data: loc } = await supabase.from('locations').select('org_id').eq('id', locId).single();
+        const { data: loc, error: locErr } = await supabase.from('locations').select('org_id').eq('id', locId).single();
+        if (locErr) console.warn('[searchCustomersLive] locations lookup failed:', locErr.message);
         orgId = loc?.org_id;
         if (orgId) set({ _cachedOrgId: orgId });
       }
-      if (!orgId) return [];
       const term = String(q).trim();
-      // Escape % and , for or() syntax — keep simple. Term is operator-typed so length is bounded.
       const safe = term.replace(/[,%]/g, '');
-      const { data } = await supabase
-        .from('customers')
-        .select('id, name, phone, phone_raw, email, marketing_opt_in, notes, allergens')
-        .eq('org_id', orgId)
-        .is('deleted_at', null)
-        .or(`name.ilike.%${safe}%,phone.ilike.%${safe}%,phone_raw.ilike.%${safe}%,email.ilike.%${safe}%`)
-        .limit(8);
-      const enriched = data || [];
+      let enriched = [];
+      if (orgId) {
+        // Primary path: search within the organisation
+        const { data, error: searchErr } = await supabase
+          .from('customers')
+          .select('id, name, phone, phone_raw, email, marketing_opt_in, notes, allergens')
+          .eq('org_id', orgId)
+          .is('deleted_at', null)
+          .or(`name.ilike.%${safe}%,phone.ilike.%${safe}%,phone_raw.ilike.%${safe}%,email.ilike.%${safe}%`)
+          .limit(8);
+        if (searchErr) console.warn('[searchCustomersLive] query failed:', searchErr.message);
+        enriched = data || [];
+      }
+      // v5.5.248: fallback — if org_id lookup failed or query returned nothing,
+      // try a direct phone match using normalised phone. Ensures POS devices
+      // with anonymous auth can still find customers by phone number.
+      if (enriched.length === 0 && safe.length >= 3) {
+        const phoneN = get()._normalisePhone(safe);
+        const phoneFilters = [safe];
+        if (phoneN && phoneN !== safe) phoneFilters.push(phoneN);
+        const orFilter = phoneFilters.map(p => `phone.eq.${p},phone_raw.eq.${p}`).join(',');
+        const { data: fallback } = await supabase
+          .from('customers')
+          .select('id, name, phone, phone_raw, email, marketing_opt_in, notes, allergens')
+          .is('deleted_at', null)
+          .or(orFilter)
+          .limit(8);
+        if (fallback?.length) enriched = fallback;
+      }
       // Merge into customerHistory cache, deduped
       const merged = [...enriched, ...(get().customerHistory || [])];
       const seen = new Set();

@@ -58,12 +58,35 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
     setResults([]); setSearched(false);
   };
 
-  const handleConfirm = () => {
+  const handleConfirm = async () => {
     if (!name.trim() || !phone.trim()) {
       showToast('Name and phone number are required', 'error'); return;
     }
+    // v5.5.248: before creating, check if this phone already exists in the DB.
+    // If it does, auto-populate from the existing profile to prevent duplicates.
+    let finalName = name.trim();
+    let finalEmail = email.trim();
+    let finalNotes = notes.trim();
+    try {
+      const live = typeof searchCustomersLive === 'function' ? await searchCustomersLive(phone.trim()) : [];
+      const phoneDigits = phone.trim().replace(/[^\d+]/g, '');
+      const match = (live || []).find(c => {
+        const cp = (c.phone || '').replace(/[^\d+]/g, '');
+        const cr = (c.phone_raw || '').replace(/[^\d+]/g, '');
+        return cp === phoneDigits || cr === phoneDigits
+          || (phoneDigits.startsWith('07') && (cp === '+44' + phoneDigits.slice(1) || cr === phoneDigits))
+          || (phoneDigits.startsWith('+44') && (cr === '0' + phoneDigits.slice(3)));
+      });
+      if (match) {
+        // Use existing profile — operator keeps their typed name/email if they entered something new
+        finalName = name.trim() || match.name || 'Customer';
+        finalEmail = email.trim() || match.email || '';
+        finalNotes = notes.trim() || match.notes || '';
+        showToast(`Matched existing customer: ${match.name}`, 'success');
+      }
+    } catch {}
     const customer = {
-      name: name.trim(), phone: phone.trim(), email: email.trim(), notes: notes.trim(),
+      name: finalName, phone: phone.trim(), email: finalEmail, notes: finalNotes,
       isASAP,
       collectionTime: isASAP ? slots[0]?.label : slots[slotIdx]?.label,
       collectionISO:  isASAP ? slots[0]?.value  : slots[slotIdx]?.value,
