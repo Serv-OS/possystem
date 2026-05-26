@@ -205,9 +205,8 @@ export default function LoyaltyManager() {
 
         {/* Config summary stats */}
         {config && (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginTop: 6, fontSize: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginTop: 6, fontSize: 12 }}>
             <ConfigStat label="Points per £1" value={config.points_per_currency_unit ?? 1} />
-            <ConfigStat label="Point value" value={config.points_currency_value ? `${config.points_currency_value}p` : '1p'} />
             <ConfigStat label="Rounding" value={(config.points_rounding || 'floor').charAt(0).toUpperCase() + (config.points_rounding || 'floor').slice(1)} />
             <ConfigStat label="Rewards" value={rewards.filter(r => r.active).length} />
           </div>
@@ -523,7 +522,6 @@ function RewardsPanel({ rewards, onReload }) {
 function SettingsPanel({ config, onUpdate }) {
   const [form, setForm] = useState({
     points_per_currency_unit: config?.points_per_currency_unit ?? 1,
-    points_currency_value: config?.points_currency_value ?? 1,
     points_rounding: config?.points_rounding || 'floor',
     points_expiry_months: config?.points_expiry_months || 0,
     registration_bonus: config?.registration_bonus || 0,
@@ -574,17 +572,6 @@ function SettingsPanel({ config, onUpdate }) {
             />
           </div>
           <div>
-            <label style={S.label}>Point value (pence)</label>
-            <input
-              style={S.input} type="number" min="0.1" step="0.1"
-              value={form.points_currency_value}
-              onChange={e => setForm(f => ({ ...f, points_currency_value: Number(e.target.value) }))}
-            />
-            <div style={{ fontSize: 10, color: 'var(--t4)', marginTop: 4 }}>
-              1 point = {form.points_currency_value || 1}p
-            </div>
-          </div>
-          <div>
             <label style={S.label}>Rounding</label>
             <select style={S.input} value={form.points_rounding} onChange={e => setForm(f => ({ ...f, points_rounding: e.target.value }))}>
               <option value="floor">Floor (round down)</option>
@@ -611,7 +598,6 @@ function SettingsPanel({ config, onUpdate }) {
           <strong style={{ color: 'var(--acc)' }}>
             {Math.floor(25 * (form.points_per_currency_unit || 1))} points
           </strong>
-          {' '}(worth {'£'}{((Math.floor(25 * (form.points_per_currency_unit || 1)) * (form.points_currency_value || 1)) / 100).toFixed(2)})
         </div>
       </div>
 

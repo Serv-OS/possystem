@@ -76,6 +76,12 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.244', date: '26 May 2026', label: 'Remove dead "Point value (pence)" config field',
+    changes: [
+      'Removed "Point value (pence)" from loyalty settings — it was saved to the database but never consumed by any earning, redemption, or balance logic. Rewards use explicit discount values; earning uses points_per_currency_unit. The field was pure dead config.',
+    ],
+  },
+  {
     version: '5.5.243', date: '26 May 2026', label: 'Online loyalty — rewards step, phone detection, wallet buttons',
     changes: [
       'Online checkout: new Rewards step (step 3 of 4) lets loyalty members browse and redeem rewards for a discount before card payment.',
