@@ -117,7 +117,7 @@ export default function SyncBridge({ onSyncPulse }) {
             });
           }
 
-          const { fetchLatestConfigPush, fetchFloorPlan, fetchMenuItems, fetchMenuCategories, fetchMenus, fetch86List } = await import('../lib/db.js');
+          const { fetchLatestConfigPush, fetchFloorPlan, fetchMenuItems, fetchMenuCategories, fetchMenus, fetch86List, fetchStockLevels } = await import('../lib/db.js');
           const { supabase: sb2 } = await import('../lib/supabase.js');
 
           // Load config push (menus, layout, sections)
@@ -129,7 +129,7 @@ export default function SyncBridge({ onSyncPulse }) {
 
           // Load floor plan + active sessions atomically — never set session:null then restore
           const { supabase: sb, getLocationId } = await import('../lib/supabase.js');
-          const [floorRes, itemsRes, catsRes, menusRes, sessionsRes, profilesRes, modGroupsRes, e86Res] = await Promise.all([
+          const [floorRes, itemsRes, catsRes, menusRes, sessionsRes, profilesRes, modGroupsRes, e86Res, stockRes] = await Promise.all([
             fetchFloorPlan(locationId),
             fetchMenuItems(locationId),
             fetchMenuCategories(locationId),
@@ -138,6 +138,7 @@ export default function SyncBridge({ onSyncPulse }) {
             sb2 ? sb2.from('device_profiles').select('*').eq('location_id', locationId) : Promise.resolve({ data: [] }),
             sb ? sb.from('modifier_groups').select('*').eq('location_id', locationId).order('sort_order') : Promise.resolve({ data: [] }),
             fetch86List(locationId),                                  // v5.5.142: hydrate eightySixIds on boot
+            fetchStockLevels(locationId),                             // v5.5.239: hydrate stock counts on boot
           ]);
           // v5.5.142: write fetched 86 list into the store immediately so
           // any items already 86'd at boot show OUT OF STOCK on Kiosk / MPOS
@@ -149,6 +150,17 @@ export default function SyncBridge({ onSyncPulse }) {
             const remoteIds = e86Res.data.map(r => r.item_id).filter(Boolean);
             useStore.setState(s => ({
               eightySixIds: [...new Set([...(s.eightySixIds || []), ...remoteIds])],
+            }));
+          }
+          // v5.5.239: hydrate dailyCounts from stock_levels so every device sees
+          // the current stock on boot — not just the device that set it.
+          if (stockRes?.data?.length) {
+            const dbCounts = {};
+            stockRes.data.forEach(r => {
+              dbCounts[r.item_id] = { par: r.par, remaining: r.remaining };
+            });
+            useStore.setState(s => ({
+              dailyCounts: { ...s.dailyCounts, ...dbCounts },
             }));
           }
           // Cache profiles to localStorage so they survive offline

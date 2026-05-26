@@ -229,6 +229,50 @@ export default function KioskApp({ kioskId, onUnpair }) {
       if (chan && supabase) supabase.removeChannel(chan);
     };
   }, [locationId]);
+
+  // v5.5.239: live stock levels so kiosk shows remaining counts and blocks
+  // ordering items at zero stock (before the 86 realtime event arrives).
+  const dailyCounts = useStore(s => s.dailyCounts || {});
+  useEffect(() => {
+    if (!locationId || !supabase) return;
+    let alive = true;
+    let chan = null;
+    (async () => {
+      try {
+        const { data } = await supabase.from('stock_levels').select('item_id, par, remaining').eq('location_id', locationId);
+        if (!alive || !data?.length) return;
+        const counts = {};
+        data.forEach(r => { counts[r.item_id] = { par: r.par, remaining: r.remaining }; });
+        useStore.setState(s => ({ dailyCounts: { ...s.dailyCounts, ...counts } }));
+      } catch (e) { console.warn('[KioskApp] stock fetch:', e?.message); }
+    })();
+    chan = supabase.channel(`kiosk-stock:${locationId}`)
+      .on('postgres_changes', {
+        event: '*', schema: 'public', table: 'stock_levels',
+        filter: `location_id=eq.${locationId}`,
+      }, (payload) => {
+        if (!alive) return;
+        const row = payload.new || payload.old;
+        const itemId = row?.item_id;
+        if (!itemId) return;
+        if (payload.eventType === 'DELETE') {
+          useStore.setState(s => {
+            const next = { ...s.dailyCounts };
+            delete next[itemId];
+            return { dailyCounts: next };
+          });
+        } else {
+          useStore.setState(s => ({
+            dailyCounts: { ...s.dailyCounts, [itemId]: { par: payload.new.par, remaining: payload.new.remaining } },
+          }));
+        }
+      }).subscribe();
+    return () => {
+      alive = false;
+      if (chan && supabase) supabase.removeChannel(chan);
+    };
+  }, [locationId]);
+
   const [cart, setCart] = useState([]); // [{ key, item, qty, mods, linePrice, lineTotal, name }]
   const [tip, setTip] = useState(0);
   const [customerName, setCustomerName] = useState('');
@@ -1385,6 +1429,7 @@ function ScreenMenu({ brandColor, brandAccent, categories, items, selectedCatego
               // count exhaustion. Greys out the card and blocks selection.
               const is86 = eightySixIds.includes(it.id)
                 || (it.parent_id && eightySixIds.includes(it.parent_id));
+              const stock = dailyCounts[it.id] || null;
               return (
                 <MenuItemCard
                   key={it.id}
@@ -1393,6 +1438,7 @@ function ScreenMenu({ brandColor, brandAccent, categories, items, selectedCatego
                   brandColor={brandColor}
                   allergenFilter={allergenFilter}
                   is86={is86}
+                  stock={stock}
                   onSelect={() => is86 ? null : onSelectItem(it)}
                 />
               );
@@ -1467,7 +1513,7 @@ function ScreenMenu({ brandColor, brandAccent, categories, items, selectedCatego
 }
 
 // ----- MenuItemCard (extracted so the grid map stays readable) -----
-function MenuItemCard({ item, price, brandColor, allergenFilter, onSelect, is86 = false }) {
+function MenuItemCard({ item, price, brandColor, allergenFilter, onSelect, is86 = false, stock = null }) {
   const itemAllergens = Array.isArray(item.allergens) ? item.allergens.map(a => String(a).toLowerCase()) : [];
   const flagged = allergenFilter && Array.from(allergenFilter).some(a => itemAllergens.includes(String(a).toLowerCase()));
   return (
@@ -1512,6 +1558,16 @@ function MenuItemCard({ item, price, brandColor, allergenFilter, onSelect, is86 
           fontSize: 12, fontWeight: 800, letterSpacing: '0.04em',
           boxShadow: '0 4px 10px rgba(0,0,0,0.3)',
         }}>UNSAFE</div>
+      )}
+      {/* v5.5.239: low-stock badge */}
+      {!is86 && !flagged && stock && stock.remaining > 0 && stock.remaining / stock.par <= 0.4 && (
+        <div style={{
+          position: 'absolute', top: 12, right: 12, zIndex: 2,
+          background: '#f59e0b', color: '#fff',
+          padding: '5px 12px', borderRadius: 8,
+          fontSize: 12, fontWeight: 800, letterSpacing: '0.04em',
+          boxShadow: '0 4px 10px rgba(0,0,0,0.3)',
+        }}>Only {stock.remaining} left</div>
       )}
 
       {/* Image (only render when available — no emoji placeholder) */}

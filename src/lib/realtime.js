@@ -73,6 +73,48 @@ export function startRealtime(store, locationId = LOCATION_ID) {
     })
     .subscribe();
 
+  // ── Stock levels — cross-device daily count sync (v5.5.239) ─────────────────
+  const stockChannel = supabase
+    .channel(`stock_levels:${locationId}`)
+    .on('postgres_changes', {
+      event: 'INSERT',
+      schema: 'public',
+      table: 'stock_levels',
+      filter: `location_id=eq.${locationId}`,
+    }, ({ new: row }) => {
+      if (!row?.item_id) return;
+      store.setState(s => ({
+        dailyCounts: { ...s.dailyCounts, [row.item_id]: { par: row.par, remaining: row.remaining } },
+      }));
+    })
+    .on('postgres_changes', {
+      event: 'UPDATE',
+      schema: 'public',
+      table: 'stock_levels',
+      filter: `location_id=eq.${locationId}`,
+    }, ({ new: row }) => {
+      if (!row?.item_id) return;
+      store.setState(s => ({
+        dailyCounts: { ...s.dailyCounts, [row.item_id]: { par: row.par, remaining: row.remaining } },
+      }));
+    })
+    .on('postgres_changes', {
+      event: 'DELETE',
+      schema: 'public',
+      table: 'stock_levels',
+      // No row-level filter on DELETE — Supabase doesn't support it
+    }, ({ old: row }) => {
+      if (row?.location_id && row.location_id !== locationId) return;
+      const itemId = row?.item_id;
+      if (!itemId) return;
+      store.setState(s => {
+        const next = { ...s.dailyCounts };
+        delete next[itemId];
+        return { dailyCounts: next };
+      });
+    })
+    .subscribe();
+
   // ── Config pushes ──────────────────────────────────────────────────────────
   const configChannel = supabase
     .channel(`config:${locationId}`)
@@ -337,7 +379,7 @@ export function startRealtime(store, locationId = LOCATION_ID) {
     })
     .subscribe();
 
-  channels = [kdsChannel, e86Channel, configChannel, taxChannel, sessionsChannel, checksChannel, queueChannel, tabsChannel];
+  channels = [kdsChannel, e86Channel, stockChannel, configChannel, taxChannel, sessionsChannel, checksChannel, queueChannel, tabsChannel];
 
   // Backfill: master scans for unrouted customer-surface orders (kiosk / online / qr)
   // that arrived while it was offline OR that were scheduled and are now due.

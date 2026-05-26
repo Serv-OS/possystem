@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { supabase, platformSupabase, isMock, getLocationId, ensureAuthToken, getActiveLocationSync } from '../lib/supabase';
 import { calculateOrderTax } from '../lib/tax';
 import { resolveServiceCharge } from '../lib/serviceCharge';
-import { upsertMenuItem, upsertFloorTable, deleteFloorTable, insertKDSTicket, insertClosedCheck, toggle86DB, getNextOrderRefLocal, updateClosedCheckRefunds } from '../lib/db';
+import { upsertMenuItem, upsertFloorTable, deleteFloorTable, insertKDSTicket, insertClosedCheck, toggle86DB, getNextOrderRefLocal, updateClosedCheckRefunds, upsertStockLevel, deleteStockLevel, decrementStockRPC, restoreStockRPC } from '../lib/db';
 import { printService } from '../lib/printer';
 
 // ── Supabase helpers ─────────────────────────────────────────────────────────
@@ -2382,19 +2382,27 @@ export const useStore = create((set, get) => ({
   setDailyCount: (itemId, count) => {
     const n = parseInt(count);
     if (!n || n <= 0) return;
-    set(s => {
-      // Un-86 if previously auto-86'd from count
-      const was86 = s.eightySixIds.includes(itemId);
-      return {
-        dailyCounts: { ...s.dailyCounts, [itemId]: { par: n, remaining: n } },
-        eightySixIds: was86 ? s.eightySixIds.filter(x => x !== itemId) : s.eightySixIds,
-      };
-    });
+    const was86 = get().eightySixIds.includes(itemId);
+    set(s => ({
+      dailyCounts: { ...s.dailyCounts, [itemId]: { par: n, remaining: n } },
+      eightySixIds: was86 ? s.eightySixIds.filter(x => x !== itemId) : s.eightySixIds,
+    }));
+    // v5.5.239: persist to stock_levels for cross-device sync
+    upsertStockLevel(itemId, n).catch(err =>
+      console.warn('[setDailyCount] upsertStockLevel:', err?.message));
+    // Un-86 in DB too if applicable
+    if (was86) {
+      toggle86DB(itemId, true).catch(err =>
+        console.warn('[setDailyCount] toggle86DB un-86:', err?.message));
+    }
   },
   clearDailyCount: (itemId) => {
     set(s => ({
       dailyCounts: { ...s.dailyCounts, [itemId]: undefined },
     }));
+    // v5.5.239: remove from stock_levels
+    deleteStockLevel(itemId).catch(err =>
+      console.warn('[clearDailyCount] deleteStockLevel:', err?.message));
   },
   decrementDailyCount: (itemId, qty = 1) => {
     // v4.6.11: single source of truth for daily-count adjustments.
@@ -2414,6 +2422,7 @@ export const useStore = create((set, get) => ({
     if (parentId && state.dailyCounts[parentId]) ids.push(parentId);
     if (!ids.length) return;
 
+    // Local optimistic update (instant UI responsiveness)
     set(s => {
       const newCounts = { ...s.dailyCounts };
       const newEightySix = [...s.eightySixIds];
@@ -2431,12 +2440,8 @@ export const useStore = create((set, get) => ({
         if (cur.remaining > 0 && newRem <= 0) {
           if (!newEightySix.includes(id)) {
             newEightySix.push(id);
-            // v5.5.141/142: persist the auto-86 to the eighty_six DB table
-            // so customer surfaces see it. NOTE the toggle86DB second arg
-            // is "was previously 86'd" — passing FALSE means "wasn't before,
-            // is now → INSERT". v5.5.141 incorrectly passed true, which
-            // DELETEd from the table.
-            toggle86DB(id, false).catch(err => console.warn('[decrementDailyCount] toggle86DB:', err?.message));
+            // v5.5.239: auto-86 is now also handled atomically by the
+            // decrement_stock RPC, but we keep the local push for instant UI
           }
           soldOutNames.push(menuItems.find(mi => mi.id === id)?.name || id);
         }
@@ -2446,6 +2451,18 @@ export const useStore = create((set, get) => ({
         setTimeout(() => get().showToast(`${soldOutNames[0]} sold out — auto 86'd`, 'warning'), 0);
       }
       return { dailyCounts: newCounts, eightySixIds: newEightySix };
+    });
+
+    // v5.5.239: DB-level atomic decrement (fire-and-forget).
+    // The RPC handles auto-86 atomically; realtime syncs the result to all devices.
+    ids.forEach(id => {
+      if (qty > 0) {
+        decrementStockRPC(id, qty).catch(err =>
+          console.warn('[decrementDailyCount] decrement RPC:', err?.message));
+      } else {
+        restoreStockRPC(id, Math.abs(qty)).catch(err =>
+          console.warn('[decrementDailyCount] restore RPC:', err?.message));
+      }
     });
   },
 

@@ -76,6 +76,16 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.239', date: '26 May 2026', label: 'Cross-device stock tracking',
+    changes: [
+      'Stock counts now sync across all devices in real-time. Set "2 in stock" on POS → every MPOS, Kiosk, Online Ordering page, and Back Office inventory sees it instantly.',
+      'New stock_levels table with atomic decrement_stock/restore_stock Postgres RPCs — prevents two devices selling the last item simultaneously.',
+      'SyncBridge hydrates dailyCounts from stock_levels on boot. Realtime subscription keeps all devices in sync as counts change.',
+      'Kiosk and Online Ordering surfaces now fetch and subscribe to stock_levels. Low-stock items show "Only X left" badge.',
+      'Auto-86 on stock exhaustion is now atomic in the database (decrement + 86 insert in one transaction).',
+    ],
+  },
+  {
     version: '5.5.238', date: '26 May 2026', label: 'Location isolation hardening',
     changes: [
       'Auth state change handler: onAuthStateChange SIGNED_OUT event now clears rpos-bo-location and the resolved location cache. Catches session expiry, DevTools signOut, multi-tab races — a safety net beyond the sign-out buttons.',

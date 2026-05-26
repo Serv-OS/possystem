@@ -40,6 +40,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   const [items, setItems]           = useState([]);
   const [categories, setCategories] = useState([]);
   const [eightySixIds, setEightySixIds] = useState([]); // v5.5.141: live 86 list from DB
+  const [stockLevels, setStockLevels]   = useState({}); // v5.5.239: live stock counts from DB
   const [taxRates, setTaxRates]     = useState([]); // v5.5.154: UK VAT for cart breakdown
   // v5.5.155: tab-resume state. resumeTab/rounds/total populated when an
   // open-tab is found in localStorage AND verified live in DB.
@@ -194,7 +195,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
         // failure (e.g. missing instruction_groups table) doesn't kill
         // the whole load. Instruction defs come from the config_pushes
         // snapshot since there's no dedicated DB table for them.
-        const [iRes, cRes, lRes, mRes, pRes, eRes, tRes] = await Promise.allSettled([
+        const [iRes, cRes, lRes, mRes, pRes, eRes, tRes, sRes] = await Promise.allSettled([
           supabase.from('menu_items').select('*')
             .eq('location_id', opsLocationId).eq('archived', false).order('sort_order'),
           supabase.from('menu_categories').select('*')
@@ -212,6 +213,8 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           // v5.5.154: tax rates — UK VAT must show on every customer-
           // facing total for compliance. Selecting the columns calculateOrderTax needs.
           supabase.from('tax_rates').select('id, name, rate, type, active').eq('location_id', opsLocationId),
+          // v5.5.239: stock levels for remaining-count display + availability check
+          supabase.from('stock_levels').select('item_id, par, remaining').eq('location_id', opsLocationId),
         ]);
         if (!alive) return;
         const itemsData      = iRes.value?.data || [];
@@ -240,6 +243,13 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
         // v5.5.154: only keep active rates; calculateOrderTax also filters
         // but doing it once here keeps the cart breakdown loop tight.
         setTaxRates((tRes.value?.data || []).filter(r => r.active !== false));
+        // v5.5.239: stock levels — build { itemId: { par, remaining } } map
+        const stockData = sRes.value?.data || [];
+        if (stockData.length) {
+          const counts = {};
+          stockData.forEach(r => { counts[r.item_id] = { par: r.par, remaining: r.remaining }; });
+          setStockLevels(counts);
+        }
       } catch (e) {
         console.warn('[OnlineSurface] load failed:', e?.message, e);
       } finally {
@@ -269,9 +279,32 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
         }).subscribe();
     }
 
+    // v5.5.239: subscribe to stock_levels realtime so counts update live
+    let stockChan = null;
+    if (supabase && opsLocationId) {
+      stockChan = supabase.channel(`online-stock:${opsLocationId}`)
+        .on('postgres_changes', {
+          event: '*', schema: 'public', table: 'stock_levels',
+          filter: `location_id=eq.${opsLocationId}`,
+        }, (payload) => {
+          if (!alive) return;
+          const row = payload.new || payload.old;
+          const itemId = row?.item_id;
+          if (!itemId) return;
+          if (payload.eventType === 'DELETE') {
+            setStockLevels(prev => { const n = { ...prev }; delete n[itemId]; return n; });
+          } else {
+            setStockLevels(prev => ({
+              ...prev, [itemId]: { par: payload.new.par, remaining: payload.new.remaining },
+            }));
+          }
+        }).subscribe();
+    }
+
     return () => {
       alive = false;
       if (e86chan && supabase) supabase.removeChannel(e86chan);
+      if (stockChan && supabase) supabase.removeChannel(stockChan);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [opsLocationId, onlineMenuId]);
@@ -625,11 +658,13 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
                     ? vinfo.kids.every(k => isItemEightySixed(k, eightySixIds))
                     : false;
                   const is86 = itemSoldOut || variantsAllSoldOut;
+                  const stock = stockLevels[item.id] || null;
                   return (
                     <ItemCard key={item.id} item={item} theme={theme}
                       cardBg={cardBg} cardBdr={cardBdr} muted={muted}
                       variantInfo={vinfo}
                       is86={is86}
+                      stock={stock}
                       onPick={() => is86 ? null : setOpenItem(item)}/>
                   );
                 })}
@@ -1230,7 +1265,7 @@ function Hero({ theme, muted, leadMin, tableLabel }) {
   );
 }
 
-function ItemCard({ item, theme, cardBg, cardBdr, muted, onPick, variantInfo, is86 = false }) {
+function ItemCard({ item, theme, cardBg, cardBdr, muted, onPick, variantInfo, is86 = false, stock = null }) {
   const ownPrice = Number(item.pricing?.base ?? item.price ?? 0);
   const isVariantParent = !!variantInfo?.kids?.length;
   // Variant parents have base price 0; show "from £X" using cheapest child.
@@ -1265,6 +1300,16 @@ function ItemCard({ item, theme, cardBg, cardBdr, muted, onPick, variantInfo, is
           textTransform: 'uppercase',
           backdropFilter: 'blur(4px)',
         }}>Out of stock</div>
+      )}
+      {/* v5.5.239: low-stock badge when tracked and remaining ≤ 40% of par */}
+      {!is86 && stock && stock.remaining > 0 && stock.remaining / stock.par <= 0.4 && (
+        <div style={{
+          position: 'absolute', top: 10, right: 10, zIndex: 2,
+          padding: '4px 10px', borderRadius: 99,
+          background: '#f59e0bd9', color: '#fff',
+          fontSize: 10, fontWeight: 800, letterSpacing: '0.04em',
+          backdropFilter: 'blur(4px)',
+        }}>Only {stock.remaining} left</div>
       )}
       <div style={{ flex: 1, minWidth: 0, padding: 16, display: 'flex', flexDirection: 'column', gap: 4 }}>
         <div style={{ fontSize: 15, fontWeight: 700, lineHeight: 1.3, textDecoration: is86 ? 'line-through' : undefined }}>

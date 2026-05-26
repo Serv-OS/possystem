@@ -1,90 +1,61 @@
-# RPOS session handoff — 25 May (v5.5.218)
+# RPOS session handoff — 26 May (v5.5.238)
 
-> Loyalty system Phase 1 — POS store integration complete. Points earn, refund reversal, and customer lookup all wired up.
-
----
-
-## What shipped: v5.5.218
-
-### v5.5.218 — Loyalty system POS integration (Phase 1)
-
-**Backend (deployed in earlier session):**
-- 7 edge functions: `loyalty-config`, `loyalty-earn`, `loyalty-redeem`, `loyalty-refund`, `loyalty-balance`, `loyalty-member-lookup`, `loyalty-rewards`
-- Shared utilities: `_shared/loyalty-utils.ts` (auth, member code generation, points calculation, balance updates)
-- Database: `loyalty_config`, `loyalty_tiers`, `customer_loyalty`, `loyalty_rewards`, `loyalty_earning_rules` (Platform DB), `loyalty_transactions` (Ops DB), `loyalty` jsonb column on `closed_checks`
-
-**POS store integration (this session):**
-- `attributeOrderToCustomer` in `store/index.js` now fires `loyalty-earn` as async IIFE after customer_id is resolved (step 4/4 after customer upsert, visit stats, orders insert)
-- Points earned summary stamped on closed check in local state + Supabase `closed_checks.loyalty` jsonb
-- Item shape mapped correctly: `cat`, `id`, `isComp`, `staffDiscount`, `isGiftCard` → matches `calculateQualifyingAmount` expectations
-- `refundCheck` in `store/index.js` fires `loyalty-refund` as async IIFE (after gift card reversal block). Triggers if check has customer_id, customer phone, or loyalty data
-- `insertClosedCheck` in `db.js` now persists `loyalty` jsonb field
-
-**Customer lookup integration:**
-- `fetchCustomerByPhone` in `customerLookup.js` now fetches live loyalty data from `loyalty-balance` edge function
-- Returns: `rewards[]` (affordable rewards), `credit` (points balance), `memberCode`, `tier`, `pointsEarnedTotal`, `enrolledAt`, `allRewards`
-- Replaces the empty stubs from v5.5.37
-- `platformSupabase` guarded for null (mock mode)
-- `attributeOnlineOrder` now fires `loyalty-earn` for online orders (same edge function)
+> Location isolation hardening complete. Four-layer defence against cross-location data bleed.
 
 ---
 
-## Phase 1 Loyalty Architecture
+## What shipped: v5.5.235 → v5.5.238
+
+### v5.5.235 — Fix multi-location menu bleed (root cause)
+- SyncBridge was reading `rpos-device.locationId` directly, bypassing `rpos-bo-location` override
+- Fixed: now uses `getActiveLocationSync()` with correct priority chain
+
+### v5.5.236 — Cross-user location bleed on sign-out/sign-in
+- `rpos-bo-location` survived logout — second user inherited first user's location
+- Fixed: both sign-out buttons clear override; sign-in validates against accessible locations
+
+### v5.5.237 — HOTFIX: MPOS menu + table loading
+- v5.5.235 used async `getLocationId()` in SyncBridge boot — hangs on POS/MPOS without auth session
+- Fixed: switched to synchronous `getActiveLocationSync()` (localStorage-only)
+
+### v5.5.238 — Location isolation hardening
+- **Auth state SIGNED_OUT handler**: clears `rpos-bo-location` + `_resolvedLocationId` on session expiry
+- **Sidebar sign-out reload**: `.then(() => window.location.reload())` flushes all in-memory state
+- **Runtime store guard**: `_dataLocationId` stamp on Zustand store; SyncBridge pre-load purge if location changed; post-load validation filters cross-location items
+- **RLS tightening**: dropped permissive "allow all" policies on menu tables, floor_tables, config_pushes; replaced with `_auth_write`
+- **INVARIANTS.md**: documented location isolation rules, resolution priority chain, and all guard layers
+
+---
+
+## Location isolation architecture (v5.5.238)
 
 ```
-Customer places order → POS closes check
-  → attributeOrderToCustomer() fires
-    → (existing) customer upsert, visit stats, customer_orders
-    → (NEW) loyalty-earn edge function (fire-and-forget)
-      → auto-enroll if first purchase (ensureMembership)
-      → calculateQualifyingAmount (item-level exclusions)
-      → calculatePoints (tier multiplier, rounding)
-      → updateBalance (optimistic concurrency)
-      → write loyalty_transactions ledger
-      → return points_earned, balance, member_code
+Layer 1: Tenant Fence (App.jsx boot)
+  enforceTenantFence() purges localStorage when location changes
 
-Refund processed → refundCheck() fires
-  → (existing) gift card reversal
-  → (NEW) loyalty-refund edge function (fire-and-forget)
-    → find all earn/redeem transactions for check
-    → reverse: earn → clawback, redeem → restore
-    → update lifetime stats
-    → idempotent via refund:{check_id}
+Layer 2: Auth Event Handler (BackOfficeApp.jsx)
+  onAuthStateChange(SIGNED_OUT) clears rpos-bo-location + cache
+  Sign-in validates override against fetchAccessibleLocations()
 
-Customer lookup (kiosk/POS) → fetchCustomerByPhone()
-  → (existing) customers table lookup
-  → (NEW) loyalty-balance edge function
-    → returns points, tier, affordable rewards, recent transactions
+Layer 3: Runtime Store Guard (SyncBridge.jsx)
+  _dataLocationId stamp → pre-load purge → post-load validation
+  Any menuItems with wrong location_id are filtered out
+
+Layer 4: Database RLS
+  _auth_write policies on menu_items, menu_categories, menus,
+  menu_category_links, floor_tables, config_pushes
 ```
 
 ---
 
-## Next steps — Loyalty Phase 1 remaining
+## Key rule for future development
 
-- [ ] **Back office loyalty config UI** — Settings panel to configure points_per_pound, rewards catalog CRUD, tier management
-- [ ] **POS checkout loyalty display** — Show points earned on receipt, loyalty member indicator on checkout
-- [ ] **Redemption UI on POS** — Allow staff to redeem rewards at checkout (calls loyalty-redeem)
-
-## Next steps — Loyalty Phase 2+
-
-- [ ] **Stamp cards** — category-based buy-X-get-next-free
-- [ ] **Customer portal** — web portal at `<slug>.serv-os.app/account`
-- [ ] **Wallet passes** — Apple/Google Wallet integration
-- [ ] **Email marketing** — campaign builder with templates
-- [ ] **Kiosk + Online + QR** — points across all surfaces
+**NEVER use async `getLocationId()` in SyncBridge's boot path.** It calls `supabase.auth.getUser()` — a network round-trip that hangs on POS/MPOS devices without auth sessions. Use `getActiveLocationSync()` instead (synchronous, localStorage-only, same priority chain).
 
 ---
 
-## Deployment status — 25 May
+## Next steps
 
-| Component | Status | Method |
-|-----------|--------|--------|
-| Frontend (Vercel) | 🔄 Ready to push | `git push origin main` |
-| `loyalty-config` | ✅ Deployed | Supabase CLI |
-| `loyalty-earn` | ✅ Deployed | Supabase CLI |
-| `loyalty-redeem` | ✅ Deployed | Supabase CLI |
-| `loyalty-refund` | ✅ Deployed | Supabase CLI |
-| `loyalty-balance` | ✅ Deployed | Supabase CLI |
-| `loyalty-member-lookup` | ✅ Deployed | Supabase CLI |
-| `loyalty-rewards` | ✅ Deployed | Supabase CLI |
-| DB migrations | ✅ Applied | Both Ops + Platform DB |
+- [ ] **Loyalty Phase 1 remaining**: BO config UI, POS checkout display, redemption UI
+- [ ] **Wallet passes**: Apple Pay / Google Pay on online ordering (deferred post-launch)
+- [ ] **Loyalty Phase 2**: stamp cards, customer portal, wallet passes, email marketing

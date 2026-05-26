@@ -1249,3 +1249,51 @@ export const deleteDiscountRule = async (id) => {
   if (isMock) return { data: null, error: null };
   return supabase.from('discount_rules').delete().eq('id', id);
 };
+
+// ── Stock levels (v5.5.239) ──────────────────────────────────────────────────
+// Cross-device stock tracking. Replaces in-memory-only dailyCounts with a
+// Supabase-backed source of truth synced via Realtime.
+
+export const fetchStockLevels = async (locationId = null) => {
+  if (isMock) return { data: null, error: null };
+  if (!locationId || locationId === 'loc-demo') locationId = await getLocationId().catch(() => null);
+  if (!locationId || locationId === 'loc-demo') return { data: [], error: null };
+  return supabase.from('stock_levels').select('item_id, par, remaining').eq('location_id', locationId);
+};
+
+export const upsertStockLevel = async (itemId, par, remaining = null, locationId = null) => {
+  if (isMock) return { data: null, error: null };
+  if (!locationId || locationId === 'loc-demo') locationId = await getLocationId().catch(() => null);
+  if (!locationId || locationId === 'loc-demo') {
+    console.error('[upsertStockLevel] could not resolve locationId');
+    return { data: null, error: new Error('No locationId') };
+  }
+  return supabase.from('stock_levels').upsert({
+    location_id: locationId,
+    item_id: itemId,
+    par: par,
+    remaining: remaining ?? par,
+    updated_at: new Date().toISOString(),
+  }, { onConflict: 'location_id,item_id' });
+};
+
+export const deleteStockLevel = async (itemId, locationId = null) => {
+  if (isMock) return { data: null, error: null };
+  if (!locationId || locationId === 'loc-demo') locationId = await getLocationId().catch(() => null);
+  if (!locationId || locationId === 'loc-demo') return { data: null, error: new Error('No locationId') };
+  return supabase.from('stock_levels').delete().eq('location_id', locationId).eq('item_id', itemId);
+};
+
+export const decrementStockRPC = async (itemId, qty = 1, locationId = null) => {
+  if (isMock) return { data: { tracked: false }, error: null };
+  if (!locationId || locationId === 'loc-demo') locationId = await getLocationId().catch(() => null);
+  if (!locationId || locationId === 'loc-demo') return { data: { tracked: false }, error: null };
+  return supabase.rpc('decrement_stock', { p_location_id: locationId, p_item_id: itemId, p_qty: qty });
+};
+
+export const restoreStockRPC = async (itemId, qty = 1, locationId = null) => {
+  if (isMock) return { data: { tracked: false }, error: null };
+  if (!locationId || locationId === 'loc-demo') locationId = await getLocationId().catch(() => null);
+  if (!locationId || locationId === 'loc-demo') return { data: { tracked: false }, error: null };
+  return supabase.rpc('restore_stock', { p_location_id: locationId, p_item_id: itemId, p_qty: qty });
+};
