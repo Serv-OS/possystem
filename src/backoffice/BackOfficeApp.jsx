@@ -82,7 +82,15 @@ export default function BackOfficeApp() {
       setAuthUser(data?.session?.user || null);
       setAuthChecked(true);
     });
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      // v5.5.238: clear location overrides on sign-out so a second user logging
+      // into the same browser never inherits the previous user's location.
+      // This is the safety net — sign-out buttons also clear, but this catches
+      // session expiry, signOut from DevTools, multi-tab races, etc.
+      if (event === 'SIGNED_OUT') {
+        localStorage.removeItem('rpos-bo-location');
+        clearResolvedLocationId();
+      }
       setAuthUser(session?.user || null);
     });
     return () => subscription.unsubscribe();
@@ -419,7 +427,7 @@ export default function BackOfficeApp() {
             </button>
           )}
           {authUser && !isMock && (
-            <button onClick={() => { localStorage.removeItem('rpos-bo-location'); clearResolvedLocationId(); supabase.auth.signOut(); }} style={{
+            <button onClick={() => { localStorage.removeItem('rpos-bo-location'); clearResolvedLocationId(); supabase.auth.signOut().then(() => window.location.reload()); }} style={{
               width:'100%', padding:'8px 10px', borderRadius:9,
               cursor:'pointer', textAlign:'left', fontSize:12,
               fontWeight:600, border:'1px solid var(--bdr)',

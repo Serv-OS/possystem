@@ -153,6 +153,12 @@ const _savedBO = (() => {
 
 export const useStore = create((set, get) => ({
 
+  // ── Location integrity (v5.5.238) ─────────
+  // Stamps which location the in-memory data belongs to. SyncBridge sets this
+  // after loading data. If a subsequent boot detects a mismatch, it purges
+  // stale data BEFORE loading fresh — preventing cross-location bleed.
+  _dataLocationId: null,
+
   // ── Auth ──────────────────────────────────
   staff: null,
   staffMembers: isMock ? STAFF_SEED : [],

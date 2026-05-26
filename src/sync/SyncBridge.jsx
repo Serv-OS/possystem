@@ -96,6 +96,27 @@ export default function SyncBridge({ onSyncPulse }) {
           // rpos-bo-location first, then rpos-device.locationId.
           const locationId = getActiveLocationSync();
           if (!locationId || locationId === 'loc-demo') return;
+
+          // v5.5.238: Location integrity guard — if the store has data from a
+          // DIFFERENT location (e.g. browser was used for Location A then switched
+          // to Location B without a full reload), purge stale menu/table data
+          // BEFORE loading fresh data. This prevents cross-location bleed even if
+          // the tenant fence missed a transition.
+          const prevDataLoc = useStore.getState()._dataLocationId;
+          if (prevDataLoc && prevDataLoc !== locationId) {
+            console.warn('[SyncBridge] v5.5.238: location changed', prevDataLoc, '→', locationId, '— purging stale data');
+            useStore.setState({
+              menuItems: [],
+              menuCategories: [],
+              menus: [],
+              modifierGroupDefs: [],
+              tables: [],
+              sections: [],
+              closedChecks: [],
+              _dataLocationId: null,
+            });
+          }
+
           const { fetchLatestConfigPush, fetchFloorPlan, fetchMenuItems, fetchMenuCategories, fetchMenus, fetch86List } = await import('../lib/db.js');
           const { supabase: sb2 } = await import('../lib/supabase.js');
 
@@ -327,6 +348,16 @@ export default function SyncBridge({ onSyncPulse }) {
           } catch(e) { console.warn('[SyncBridge] closed checks load error:', e.message); }
 
           if (Object.keys(patch).length) useStore.setState(patch);
+
+          // v5.5.238: Stamp the store with the location this data belongs to,
+          // and validate that no cross-location items snuck in.
+          useStore.setState({ _dataLocationId: locationId });
+          const loadedItems = useStore.getState().menuItems || [];
+          const foreignItems = loadedItems.filter(i => i.location_id && i.location_id !== locationId);
+          if (foreignItems.length > 0) {
+            console.error('[SyncBridge] v5.5.238: CROSS-LOCATION DATA DETECTED —', foreignItems.length, 'items from wrong location. Purging.');
+            useStore.setState({ menuItems: loadedItems.filter(i => !i.location_id || i.location_id === locationId) });
+          }
 
           // Reconcile any pending checks that didn't make it to Supabase
           // (e.g. payment taken while offline, page reloaded before sync)

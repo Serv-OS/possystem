@@ -55,6 +55,32 @@ Must include: `menus`, `menuItems`, `menuCategories`, `tables`, `sections`, `qui
 
 ---
 
+## Location Isolation (v5.5.238)
+
+Multi-location data bleed is a **critical severity** bug. These rules exist to prevent it at every layer:
+
+### Location Resolution Priority Chain
+`rpos-bo-location` (BO override) → `rpos-device.locationId` (POS pairing) → `user_profiles.location_id` (DB)
+- `getActiveLocationSync()` — **synchronous**, localStorage-only, safe for boot paths. Used by SyncBridge.
+- `getLocationId()` — **async**, calls `supabase.auth.getUser()`. **NEVER use in SyncBridge boot** — it hangs on POS/MPOS devices without auth sessions.
+
+### Sign-Out Must Clear Location State
+Every sign-out path must: (1) `localStorage.removeItem('rpos-bo-location')`, (2) `clearResolvedLocationId()`, (3) full page reload. The `onAuthStateChange(SIGNED_OUT)` handler is a safety net for session expiry and edge cases.
+
+### Sign-In Must Validate Location Override
+On sign-in, if `rpos-bo-location` is set and the user is not `super_admin`, validate the override against `fetchAccessibleLocations()`. Discard if the user can't access that location.
+
+### Runtime Store Guard (`_dataLocationId`)
+SyncBridge stamps `useStore._dataLocationId` after loading data. On subsequent boots, if the active location differs from `_dataLocationId`, all menu/table data is purged BEFORE loading fresh. Post-load validation filters out any `menuItems` whose `location_id` doesn't match.
+
+### Tenant Fence (`enforceTenantFence`)
+Runs at app load (App.jsx) and on every `setResolvedLocationId()` call. Compares active location to `rpos-active-location` tag — if they differ, `purgeStaleLocationData()` wipes all localStorage except the keep-set.
+
+### RLS Policies
+Menu tables (`menu_items`, `menu_categories`, `menus`, `menu_category_links`), `floor_tables`, and `config_pushes` have `_auth_write` policies requiring `auth.role() IN ('authenticated', 'anon')`. No permissive "allow all" policies exist on location-scoped tables.
+
+---
+
 ## Looks Wrong But Intentional
 
 - **`isMock = !SUPABASE_URL || !SUPABASE_ANON`** — This evaluates at build time from env vars. In local dev, `VITE_SUPABASE_ANON_KEY=PASTE_YOUR_ANON_KEY_HERE` makes `isMock=true`. On Vercel, real keys make `isMock=false`. This is correct behaviour.

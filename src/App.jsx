@@ -76,6 +76,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.238', date: '26 May 2026', label: 'Location isolation hardening',
+    changes: [
+      'Auth state change handler: onAuthStateChange SIGNED_OUT event now clears rpos-bo-location and the resolved location cache. Catches session expiry, DevTools signOut, multi-tab races — a safety net beyond the sign-out buttons.',
+      'Sidebar sign-out now triggers a full page reload after signOut(), ensuring all in-memory state is flushed.',
+      'Runtime location integrity guard: SyncBridge now stamps the store with _dataLocationId on every boot. If a subsequent boot detects stale data from a different location, it purges menu/table data before loading fresh. Post-load validation filters out any menu items whose location_id doesn\'t match the active location.',
+      'Dropped permissive RLS policies ("allow all" USING true) on menu_items, menu_categories, menus, menu_category_links, floor_tables, config_pushes. Replaced with _auth_write requiring authenticated role.',
+    ],
+  },
+  {
     version: '5.5.237', date: '26 May 2026', label: 'HOTFIX — restore MPOS menu + table loading broken by v5.5.235',
     changes: [
       'v5.5.235 replaced SyncBridge\'s synchronous localStorage read with async getLocationId() which calls supabase.auth.getUser() — a network round-trip that hangs on POS/MPOS devices without an auth session. Menus and tables never loaded.',
