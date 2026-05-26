@@ -76,6 +76,12 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.245', date: '26 May 2026', label: 'Fix customer search on Android POS — bypass async auth',
+    changes: [
+      'searchCustomersLive, upsertCustomer, attributeOrderToCustomer now try getActiveLocationSync() first, falling back to async getLocationId() only if needed. Same root cause as v5.5.242 stock fix: getLocationId() calls supabase.auth.getUser() which fails on Android POS devices without auth sessions.',
+    ],
+  },
+  {
     version: '5.5.244', date: '26 May 2026', label: 'Remove dead "Point value (pence)" config field',
     changes: [
       'Removed "Point value (pence)" from loyalty settings — it was saved to the database but never consumed by any earning, redemption, or balance logic. Rewards use explicit discount values; earning uses points_per_currency_unit. The field was pure dead config.',

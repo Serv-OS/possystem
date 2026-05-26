@@ -1987,7 +1987,7 @@ export const useStore = create((set, get) => ({
     if (!q || q.length < 2) return [];
     if (isMock || !supabase) return get().searchCustomers(q);
     try {
-      const locId = await getLocationId();
+      const locId = getActiveLocationSync() || await getLocationId();
       if (!locId) return [];
       let orgId = get()._cachedOrgId;
       if (!orgId) {
@@ -2051,7 +2051,7 @@ export const useStore = create((set, get) => ({
   upsertCustomer: async (c) => {
     if (isMock || !supabase) return null;
     try {
-      const locId = await getLocationId();
+      const locId = getActiveLocationSync() || await getLocationId();
       if (!locId) {
         console.warn('[upsertCustomer] no locationId resolved — customer not saved');
         return null;
@@ -2132,7 +2132,7 @@ export const useStore = create((set, get) => ({
       return null;
     }
     try {
-      const locId = await getLocationId();
+      const locId = getActiveLocationSync() || await getLocationId();
       if (!locId) {
         console.warn('[attributeOrderToCustomer] skipped — no locationId resolved');
         return null;
