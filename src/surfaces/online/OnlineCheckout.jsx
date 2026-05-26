@@ -61,6 +61,8 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   // v5.5.243: Phone → loyalty member detection
   const [loyaltyHint, setLoyaltyHint] = useState(null); // { enrolled, points_balance, member_code }
   const [loyaltyHintDismissed, setLoyaltyHintDismissed] = useState(false);
+  // v5.5.249: gate prompt — shown when user clicks Continue and phone is a loyalty member
+  const [showLoyaltyGate, setShowLoyaltyGate] = useState(false);
 
   // Debounced phone lookup for loyalty member detection
   useEffect(() => {
@@ -196,12 +198,35 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     return token;
   };
 
-  // Step 1 → Gift step: validate details, move to gift card entry
-  const continueToGift = () => {
+  // Step 1 → Gift step: validate details, move to gift card entry.
+  // v5.5.249: If the phone matches a loyalty member and they haven't signed in,
+  // show a gate prompt instead of proceeding. If they've already signed in,
+  // dismissed the hint, or the phone isn't a member — proceed straight through.
+  const continueToGift = async () => {
     if (!valid) { setError('Please complete the highlighted fields.'); return; }
     setError('');
+    // Already signed in or already dismissed loyalty — go straight through
+    if (loyalty?.verified || loyaltyHintDismissed) { setStep('gift'); return; }
+    // If we already detected a hint, show the gate
+    if (loyaltyHint) { setShowLoyaltyGate(true); return; }
+    // Otherwise do a quick one-shot check before proceeding
+    const companyId = location.company_id;
+    if (companyId && phone) {
+      const normalised = phone.replace(/[\s\-()]/g, '');
+      if (normalised.length >= 7) {
+        try {
+          const r = await fetch(`${FUNCTIONS_URL}/loyalty-balance?phone=${encodeURIComponent(normalised)}&company_id=${encodeURIComponent(companyId)}`);
+          if (r.ok) {
+            const j = await r.json();
+            if (j?.member_code) { setLoyaltyHint(j); setShowLoyaltyGate(true); return; }
+          }
+        } catch {}
+      }
+    }
     setStep('gift');
   };
+  // Gate: user chose "continue without loyalty"
+  const skipLoyaltyGate = () => { setShowLoyaltyGate(false); setLoyaltyHintDismissed(true); setStep('gift'); };
 
   // ── Gift card lookup ──────────────────────────────────────────────────
   const lookupGiftCard = async () => {
@@ -1137,6 +1162,59 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           </div>
         )}
       </div>
+
+      {/* v5.5.249: Loyalty gate prompt — shown when user clicks Continue and
+          their phone matches a loyalty member but they haven't signed in */}
+      {showLoyaltyGate && (
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 9999,
+          background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+          padding: 20,
+        }} onClick={() => setShowLoyaltyGate(false)}>
+          <div onClick={e => e.stopPropagation()} style={{
+            background: theme.bg, borderRadius: 20, padding: '28px 24px',
+            maxWidth: 380, width: '100%', boxShadow: '0 20px 60px rgba(0,0,0,0.4)',
+            border: `1px solid ${cardBdr}`,
+          }}>
+            <div style={{ textAlign: 'center', marginBottom: 18 }}>
+              <div style={{ fontSize: 40, marginBottom: 8 }}>⭐</div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: theme.fg }}>
+                You're a loyalty member!
+              </div>
+              <div style={{ fontSize: 13, color: muted, marginTop: 8, lineHeight: 1.5 }}>
+                {loyaltyHint?.points_balance != null
+                  ? `You have ${loyaltyHint.points_balance} points. Sign in to redeem rewards and earn points on this order.`
+                  : 'Sign in to redeem rewards and earn points on this order.'}
+              </div>
+            </div>
+
+            <button
+              onClick={() => { setShowLoyaltyGate(false); onOpenLoyalty?.(); }}
+              className="op-btn"
+              style={{
+                width: '100%', padding: '14px 20px', borderRadius: 12,
+                background: theme.accent, color: contrastFg(theme.accent),
+                border: 'none', fontSize: 15, fontWeight: 800,
+                cursor: 'pointer', fontFamily: 'inherit', marginBottom: 10,
+              }}
+            >
+              Sign in with text code
+            </button>
+            <button
+              onClick={skipLoyaltyGate}
+              className="op-btn"
+              style={{
+                width: '100%', padding: '12px 20px', borderRadius: 12,
+                background: 'transparent', color: muted,
+                border: `1px solid ${cardBdr}`, fontSize: 13, fontWeight: 600,
+                cursor: 'pointer', fontFamily: 'inherit',
+              }}
+            >
+              Continue without loyalty
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
