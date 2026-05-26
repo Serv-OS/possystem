@@ -12,7 +12,7 @@
 // as KioskApp.useKioskMenu). Branding from location.online_branding (set
 // in BO → Online ordering) with fallback to ops receipt_branding.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { isItemEightySixed } from '../../lib/itemAvailability';
 import { getStashedTab, clearStashedTab } from '../../lib/qrTabStorage';
@@ -914,6 +914,8 @@ function LoyaltyModal({ theme, cardBdr, muted, companyId, onClose, onVerified })
   const [working, setWorking] = useState(false);
   const [err, setErr] = useState('');
   const [loyaltyData, setLoyaltyData] = useState(null);
+  const timerRef = useRef(null);
+  useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
 
   const otpUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/loyalty-otp`;
 
@@ -940,7 +942,7 @@ function LoyaltyModal({ theme, cardBdr, muted, companyId, onClose, onVerified })
 
   const verify = async () => {
     const cleaned = code.replace(/\D/g, '');
-    if (cleaned.length < 4) { setErr('Enter the 6-digit code from your text message.'); return; }
+    if (cleaned.length < 6) { setErr('Enter the 6-digit code from your text message.'); return; }
     setErr(''); setWorking(true);
     try {
       const res = await fetch(otpUrl, {
@@ -954,7 +956,7 @@ function LoyaltyModal({ theme, cardBdr, muted, companyId, onClose, onVerified })
         setLoyaltyData(j);
         setStep('done');
         // Brief delay so user sees the success state before modal closes
-        setTimeout(() => {
+        timerRef.current = setTimeout(() => {
           onVerified(phone.replace(/[^\d+]/g, ''), {
             customer: j.customer,
             loyalty: j.loyalty,

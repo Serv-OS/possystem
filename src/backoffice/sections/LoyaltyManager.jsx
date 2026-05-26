@@ -1420,8 +1420,12 @@ function StampCardForm({ program, companyId, categories, onClose, onSaved }) {
     if (!program?.id) return;
     if (!confirm('Delete this stamp card program? Customer progress will be lost.')) return;
     try {
-      await platformSupabase.from('customer_stamp_cards').delete().eq('program_id', program.id);
-      await platformSupabase.from('stamp_card_programs').delete().eq('id', program.id);
+      // Delete customer cards first, then the program. If program delete fails,
+      // orphaned customer cards are harmless (no FK, just dangling data).
+      const { error: cardsErr } = await platformSupabase.from('customer_stamp_cards').delete().eq('program_id', program.id);
+      if (cardsErr) throw cardsErr;
+      const { error: progErr } = await platformSupabase.from('stamp_card_programs').delete().eq('id', program.id);
+      if (progErr) throw progErr;
       onSaved();
     } catch (e) {
       setError(e?.message || 'Delete failed');

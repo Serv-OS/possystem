@@ -76,6 +76,18 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.232', date: '26 May 2026', label: 'Bug fixes — stamp card race conditions, OTP validation, send-welcome dedup',
+    changes: [
+      'loyalty-earn: Atomic stamp card upsert via RPC to prevent duplicate cards on concurrent orders.',
+      'loyalty-earn: Idempotency key on stamp transactions to prevent duplicate stamps on retry.',
+      'send-welcome: Atomic dedup using update-where-null pattern to prevent double welcome sends.',
+      'send-welcome: Fixed Resend API to field (must be array).',
+      'Online ordering: OTP code validation now requires 6 digits (was accepting 4+).',
+      'Online ordering: LoyaltyModal setTimeout cleanup on unmount to prevent leaked callbacks.',
+      'Back office: Stamp card delete now checks for errors on each step to avoid silent partial deletes.',
+    ],
+  },
+  {
     version: '5.5.231', date: '26 May 2026', label: 'Loyalty on kiosk + online ordering — real OTP sign-in, pre-fill, and early sign-in',
     changes: [
       'Online ordering: LoyaltyModal now uses real SMS OTP via loyalty-otp edge function (was previously a UI scaffold with fake verification).',

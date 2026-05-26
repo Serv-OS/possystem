@@ -229,23 +229,21 @@ Deno.serve(async (req) => {
 
         if (qualifyingCount <= 0) continue;
 
-        // Get or create customer stamp card
-        let { data: card } = await platformAdmin
-          .from('customer_stamp_cards')
-          .select('id, stamps_collected, completed_count')
-          .eq('customer_id', customer_id)
-          .eq('program_id', prog.id)
-          .eq('company_id', companyId)
+        // Idempotency: skip if stamps already awarded for this check
+        const stampIdemKey = `stamp:${closed_check_id}:${prog.id}`;
+        const { data: existingStamp } = await opsAdmin
+          .from('stamp_transactions')
+          .select('id')
+          .eq('idempotency_key', stampIdemKey)
           .maybeSingle();
+        if (existingStamp) continue;
 
-        if (!card) {
-          const { data: newCard } = await platformAdmin
-            .from('customer_stamp_cards')
-            .insert({ customer_id, program_id: prog.id, company_id: companyId, stamps_collected: 0, completed_count: 0 })
-            .select('id, stamps_collected, completed_count')
-            .single();
-          card = newCard;
-        }
+        // Get or create customer stamp card (upsert to avoid race condition)
+        const { data: card } = await platformAdmin.rpc('upsert_customer_stamp_card', {
+          p_customer_id: customer_id,
+          p_program_id: prog.id,
+          p_company_id: companyId,
+        });
         if (!card) continue;
 
         let newStamps = (card.stamps_collected || 0) + qualifyingCount;
@@ -269,7 +267,7 @@ Deno.serve(async (req) => {
           })
           .eq('id', card.id);
 
-        // Audit trail on ops DB
+        // Audit trail on ops DB (with idempotency key)
         await opsAdmin.from('stamp_transactions').insert({
           customer_id,
           program_id: prog.id,
@@ -278,6 +276,7 @@ Deno.serve(async (req) => {
           trigger_item_name: (items as any[]).filter(i => !i.isComp && !i.isGiftCard).map(i => i.name).join(', ').slice(0, 200),
           order_ref: String(closed_check_id),
           type: 'earn',
+          idempotency_key: stampIdemKey,
         });
 
         stampsAwarded.push({

@@ -90,7 +90,7 @@ async function sendEmail(to: string, subject: string, html: string): Promise<boo
       const res = await fetch('https://api.resend.com/emails', {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ from: EMAIL_FROM, to, subject, html }),
+        body: JSON.stringify({ from: EMAIL_FROM, to: [to], subject, html }),
       });
       return res.ok;
     }
@@ -161,15 +161,20 @@ Deno.serve(async (req) => {
     return json({ error: 'missing: customer_id, company_id, location_id' }, 400);
   }
 
-  // ── 1. Fetch customer (dedup check) ────────────────────────────────
-  const { data: customer } = await opsAdmin
+  // ── 1. Atomic dedup: try to claim this customer's welcome slot ──────
+  // Uses update-where-null pattern to prevent race conditions.
+  const { data: claimed, error: claimErr } = await opsAdmin
     .from('customers')
-    .select('id, name, phone, email, welcome_sent_at')
+    .update({ welcome_sent_at: new Date().toISOString() })
     .eq('id', customer_id)
+    .is('welcome_sent_at', null)
+    .select('id, name, phone, email')
     .maybeSingle();
 
-  if (!customer) return json({ error: 'customer not found' }, 404);
-  if (customer.welcome_sent_at) return json({ skipped: true, reason: 'already sent' });
+  if (claimErr) return json({ error: claimErr.message }, 500);
+  if (!claimed) return json({ skipped: true, reason: 'already sent or not found' });
+
+  const customer = claimed;
 
   if (!customer.phone && !customer.email) {
     return json({ skipped: true, reason: 'no phone or email' });
@@ -187,12 +192,6 @@ Deno.serve(async (req) => {
   const portalUrl = slug
     ? `https://${slug}.${CUSTOMER_DOMAIN}/account/register`
     : '';
-
-  // ── 3. Mark as sent (before sending — prevents duplicates on retry) ─
-  await opsAdmin
-    .from('customers')
-    .update({ welcome_sent_at: new Date().toISOString() })
-    .eq('id', customer_id);
 
   let smsSent = false;
   let emailSent = false;
