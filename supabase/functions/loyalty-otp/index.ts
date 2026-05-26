@@ -390,6 +390,36 @@ Deno.serve(async (req) => {
       }
     } catch {}
 
+    // ── Fetch stamp card programs + customer progress ──────────────
+    let stampCardsVerify: any[] = [];
+    try {
+      const { data: programs } = await platformAdmin
+        .from('stamp_card_programs')
+        .select('id, name, description, icon, stamps_required, reward_type, reward_description, active')
+        .eq('company_id', companyId)
+        .eq('active', true)
+        .order('created_at');
+      if (programs && programs.length > 0) {
+        const progIds = programs.map((p: any) => p.id);
+        const { data: progress } = await platformAdmin
+          .from('customer_stamp_cards')
+          .select('program_id, stamps_collected, completed_count, last_stamp_at')
+          .eq('customer_id', customer.id)
+          .eq('company_id', companyId)
+          .in('program_id', progIds);
+        const progressMap: Record<string, any> = {};
+        (progress || []).forEach((p: any) => { progressMap[p.program_id] = p; });
+        stampCardsVerify = programs.map((p: any) => ({
+          id: p.id, name: p.name, description: p.description, icon: p.icon || '☕',
+          stamps_required: p.stamps_required, reward_type: p.reward_type,
+          reward_description: p.reward_description,
+          stamps_collected: progressMap[p.id]?.stamps_collected || 0,
+          completed_count: progressMap[p.id]?.completed_count || 0,
+          last_stamp_at: progressMap[p.id]?.last_stamp_at || null,
+        }));
+      }
+    } catch {}
+
     // ── Create session token ─────────────────────────────────────────
     const token = await createSessionToken(customer.id, companyId);
 
@@ -432,6 +462,7 @@ Deno.serve(async (req) => {
         })),
       } : null,
       gift_cards: giftCards,
+      stamp_cards: stampCardsVerify,
     });
   }
 
@@ -487,6 +518,40 @@ Deno.serve(async (req) => {
       }
     } catch {}
 
+    // Fetch stamp card programs + customer progress
+    let stampCards: any[] = [];
+    try {
+      const { data: programs } = await platformAdmin
+        .from('stamp_card_programs')
+        .select('id, name, description, icon, stamps_required, reward_type, reward_description, active')
+        .eq('company_id', session.companyId)
+        .eq('active', true)
+        .order('created_at');
+      if (programs && programs.length > 0) {
+        const progIds = programs.map((p: any) => p.id);
+        const { data: progress } = await platformAdmin
+          .from('customer_stamp_cards')
+          .select('program_id, stamps_collected, completed_count, last_stamp_at')
+          .eq('customer_id', session.customerId)
+          .eq('company_id', session.companyId)
+          .in('program_id', progIds);
+        const progressMap: Record<string, any> = {};
+        (progress || []).forEach((p: any) => { progressMap[p.program_id] = p; });
+        stampCards = programs.map((p: any) => ({
+          id: p.id,
+          name: p.name,
+          description: p.description,
+          icon: p.icon || '☕',
+          stamps_required: p.stamps_required,
+          reward_type: p.reward_type,
+          reward_description: p.reward_description,
+          stamps_collected: progressMap[p.id]?.stamps_collected || 0,
+          completed_count: progressMap[p.id]?.completed_count || 0,
+          last_stamp_at: progressMap[p.id]?.last_stamp_at || null,
+        }));
+      }
+    } catch {}
+
     return json({
       customer: cust ? {
         id: cust.id, name: cust.name, email: cust.email, phone: cust.phone,
@@ -494,6 +559,7 @@ Deno.serve(async (req) => {
       } : null,
       loyalty: loyaltyData,
       gift_cards: giftCards,
+      stamp_cards: stampCards,
     });
   }
 

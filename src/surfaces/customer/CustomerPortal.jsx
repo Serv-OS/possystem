@@ -72,9 +72,10 @@ export default function CustomerPortal({ location }) {
   const [customer, setCustomer] = useState(null);
   const [loyalty, setLoyalty] = useState(null);
   const [giftCards, setGiftCards] = useState([]);
+  const [stampCards, setStampCards] = useState([]);
 
   // Dashboard tab
-  const [tab, setTab] = useState('home'); // home | rewards | history | cards | profile
+  const [tab, setTab] = useState('home'); // home | rewards | history | stamps | cards | profile
 
   // Try to resume session on mount
   useEffect(() => {
@@ -96,6 +97,7 @@ export default function CustomerPortal({ location }) {
       if (data.customer) setCustomer(data.customer);
       if (data.loyalty) setLoyalty(data.loyalty);
       if (data.gift_cards) setGiftCards(data.gift_cards);
+      if (data.stamp_cards) setStampCards(data.stamp_cards);
       setScreen('dashboard');
     } catch (e) {
       // Token expired — back to login
@@ -149,6 +151,7 @@ export default function CustomerPortal({ location }) {
         setCustomer(data.customer);
         setLoyalty(data.loyalty);
         setGiftCards(data.gift_cards || []);
+        setStampCards(data.stamp_cards || []);
 
         // If this verification came from the registration flow,
         // save the pre-collected profile data now
@@ -196,6 +199,7 @@ export default function CustomerPortal({ location }) {
     setCustomer(null);
     setLoyalty(null);
     setGiftCards([]);
+    setStampCards([]);
     setPhone('');
     setOtpCode('');
     setRegData(null);
@@ -298,7 +302,7 @@ export default function CustomerPortal({ location }) {
         {screen === 'dashboard' && (
           <Dashboard
             t={t} location={location} customer={customer} loyalty={loyalty}
-            giftCards={giftCards} tab={tab} setTab={setTab}
+            giftCards={giftCards} stampCards={stampCards} tab={tab} setTab={setTab}
             onRefresh={() => refreshData(token)} onLogout={logout}
             token={token}
           />
@@ -808,10 +812,12 @@ function OtpScreen({ t, phone, otpCode, setOtpCode, loading, error, onVerify, on
 // ═══════════════════════════════════════════════════════════════════════════
 // DASHBOARD
 // ═══════════════════════════════════════════════════════════════════════════
-function Dashboard({ t, location, customer, loyalty, giftCards, tab, setTab, onRefresh, onLogout, token }) {
+function Dashboard({ t, location, customer, loyalty, giftCards, stampCards, tab, setTab, onRefresh, onLogout, token }) {
+  const hasStamps = stampCards && stampCards.length > 0;
   const tabs = [
     { id: 'home', label: 'Home', icon: '🏠' },
     { id: 'rewards', label: 'Rewards', icon: '🎁' },
+    ...(hasStamps ? [{ id: 'stamps', label: 'Stamps', icon: '☕' }] : []),
     { id: 'history', label: 'History', icon: '📋' },
     { id: 'cards', label: 'Gift Cards', icon: '💳' },
     { id: 'profile', label: 'Profile', icon: '👤' },
@@ -845,8 +851,9 @@ function Dashboard({ t, location, customer, loyalty, giftCards, tab, setTab, onR
         ))}
       </div>
 
-      {tab === 'home' && <HomeTab t={t} loyalty={loyalty} customer={customer} giftCards={giftCards} setTab={setTab} />}
+      {tab === 'home' && <HomeTab t={t} loyalty={loyalty} customer={customer} giftCards={giftCards} stampCards={stampCards} setTab={setTab} />}
       {tab === 'rewards' && <RewardsTab t={t} loyalty={loyalty} />}
+      {tab === 'stamps' && <StampCardsTab t={t} stampCards={stampCards} />}
       {tab === 'history' && <HistoryTab t={t} loyalty={loyalty} />}
       {tab === 'cards' && <GiftCardsTab t={t} giftCards={giftCards} />}
       {tab === 'profile' && <ProfileTab t={t} customer={customer} loyalty={loyalty} token={token} location={location} onRefresh={onRefresh} onLogout={onLogout} />}
@@ -893,10 +900,11 @@ function PointsHero({ t, loyalty, customer }) {
 }
 
 // ── Home Tab ─────────────────────────────────────────────────────────────
-function HomeTab({ t, loyalty, customer, giftCards, setTab }) {
+function HomeTab({ t, loyalty, customer, giftCards, stampCards, setTab }) {
   const rewardsAvail = loyalty?.rewards_available?.length || 0;
   const giftActive = giftCards?.length || 0;
   const totalBalance = giftCards.reduce((s, c) => s + (c.balance || 0), 0);
+  const activeStamps = (stampCards || []).filter(sc => sc.stamps_collected > 0);
 
   return (
     <>
@@ -907,6 +915,28 @@ function HomeTab({ t, loyalty, customer, giftCards, setTab }) {
         <StatCard t={t} label="Rewards ready" value={rewardsAvail} icon="🎁" onClick={() => setTab('rewards')} />
         <StatCard t={t} label="Gift cards" value={giftActive} icon="💳" onClick={() => setTab('cards')} />
       </div>
+
+      {/* Stamp card progress preview */}
+      {activeStamps.length > 0 && (
+        <Card t={t} style={{ marginBottom: 14 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <div style={{ fontSize: 14, fontWeight: 700 }}>Stamp cards</div>
+            <button onClick={() => setTab('stamps')} style={{ background:'none', border:'none', color: t.accent, fontSize: 12, fontWeight: 600, cursor:'pointer', padding: 0 }}>
+              View all →
+            </button>
+          </div>
+          {activeStamps.slice(0, 2).map(sc => (
+            <div key={sc.id} style={{ padding: '8px 0', borderTop: `1px solid ${t.border}` }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                <span style={{ fontSize: 18 }}>{sc.icon}</span>
+                <span style={{ fontSize: 13, fontWeight: 600 }}>{sc.name}</span>
+                <span style={{ marginLeft: 'auto', fontSize: 12, color: t.textMuted }}>{sc.stamps_collected}/{sc.stamps_required}</span>
+              </div>
+              <StampProgressBar t={t} collected={sc.stamps_collected} required={sc.stamps_required} />
+            </div>
+          ))}
+        </Card>
+      )}
 
       {/* Available rewards preview */}
       {rewardsAvail > 0 && (
@@ -1089,6 +1119,113 @@ function HistoryTab({ t, loyalty }) {
         );
       })}
     </Card>
+  );
+}
+
+// ── Stamp Progress Bar ──────────────────────────────────────────────────
+function StampProgressBar({ t, collected, required }) {
+  const pct = Math.min((collected / required) * 100, 100);
+  return (
+    <div style={{ height: 6, borderRadius: 3, background: t.border, overflow: 'hidden' }}>
+      <div style={{ height: '100%', borderRadius: 3, background: t.accent, width: `${pct}%`, transition: 'width .3s' }} />
+    </div>
+  );
+}
+
+// ── Stamp Cards Tab ─────────────────────────────────────────────────────
+function StampCardsTab({ t, stampCards }) {
+  if (!stampCards || stampCards.length === 0) {
+    return (
+      <Card t={t}>
+        <div style={{ textAlign: 'center', padding: '20px 0' }}>
+          <div style={{ fontSize: 36, marginBottom: 10 }}>☕</div>
+          <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>No stamp cards</div>
+          <div style={{ fontSize: 13, color: t.textMuted, lineHeight: 1.5 }}>
+            No stamp card programs are available right now. Check back soon!
+          </div>
+        </div>
+      </Card>
+    );
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      {stampCards.map(sc => (
+        <StampCardVisual key={sc.id} t={t} card={sc} />
+      ))}
+    </div>
+  );
+}
+
+function StampCardVisual({ t, card }) {
+  const { icon, name, description, stamps_required, stamps_collected, reward_description, completed_count } = card;
+  const stamps = [];
+  for (let i = 0; i < stamps_required; i++) {
+    stamps.push(i < stamps_collected);
+  }
+  const cols = Math.min(stamps_required + 1, 6);
+
+  return (
+    <div style={{
+      background: `linear-gradient(135deg, ${t.accent}18, ${t.accent}08)`,
+      borderRadius: t.radius, padding: 18, border: `1px solid ${t.accent}30`,
+    }}>
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+        <span style={{ fontSize: 26 }}>{icon}</span>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 15, fontWeight: 800 }}>{name}</div>
+          {description && <div style={{ fontSize: 12, color: t.textMuted, marginTop: 2 }}>{description}</div>}
+        </div>
+      </div>
+
+      {/* Stamp grid */}
+      <div style={{
+        display: 'grid', gridTemplateColumns: `repeat(${cols}, 1fr)`, gap: 6, marginBottom: 12,
+      }}>
+        {stamps.map((filled, i) => (
+          <div key={i} style={{
+            aspectRatio: '1', borderRadius: t.radius - 4, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            background: filled ? `${t.accent}22` : `${t.textMuted}10`,
+            border: filled ? `2px solid ${t.accent}` : `2px dashed ${t.textMuted}30`,
+            fontSize: filled ? 16 : 11, fontWeight: 700,
+            color: filled ? t.accent : `${t.textMuted}60`,
+          }}>
+            {filled ? icon : i + 1}
+          </div>
+        ))}
+        {/* Reward slot */}
+        <div style={{
+          aspectRatio: '1', borderRadius: t.radius - 4, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          background: `${t.accent}10`, border: `2px solid ${t.accent}50`,
+          flexDirection: 'column',
+        }}>
+          <span style={{ fontSize: 16 }}>🎁</span>
+        </div>
+      </div>
+
+      {/* Progress text */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div style={{ fontSize: 12, color: t.textMuted }}>
+          {stamps_collected}/{stamps_required} stamps · {stamps_required - stamps_collected} to go
+        </div>
+        {completed_count > 0 && (
+          <div style={{ fontSize: 11, fontWeight: 700, color: t.accent, padding: '2px 8px', borderRadius: 12, background: `${t.accent}15` }}>
+            {completed_count}× completed
+          </div>
+        )}
+      </div>
+
+      {/* Reward info */}
+      <div style={{
+        marginTop: 10, padding: '8px 12px', borderRadius: t.radius - 4,
+        background: `${t.accent}08`, border: `1px dashed ${t.accent}30`,
+        display: 'flex', alignItems: 'center', gap: 6,
+      }}>
+        <span style={{ fontSize: 14 }}>🎁</span>
+        <span style={{ fontSize: 12, fontWeight: 600 }}>Reward: {reward_description || 'Free item'}</span>
+      </div>
+    </div>
   );
 }
 

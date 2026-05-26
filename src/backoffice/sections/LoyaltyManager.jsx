@@ -218,6 +218,7 @@ export default function LoyaltyManager() {
       <div style={{ display: 'flex', gap: 4, marginBottom: 20, borderBottom: '2px solid var(--bdr)', paddingBottom: 0, flexWrap: 'wrap' }}>
         {[
           { id: 'rewards', label: 'Rewards' },
+          { id: 'stamp_cards', label: 'Stamp Cards' },
           { id: 'settings', label: 'Points settings' },
           { id: 'members', label: 'Members' },
           { id: 'tiers', label: 'Tiers' },
@@ -241,6 +242,7 @@ export default function LoyaltyManager() {
       </div>
 
       {tab === 'rewards' && <RewardsPanel rewards={rewards} onReload={loadConfig} />}
+      {tab === 'stamp_cards' && <StampCardsPanel />}
       {tab === 'settings' && <SettingsPanel config={config} onUpdate={setConfig} />}
       {tab === 'members' && <MembersPanel config={config} />}
       {tab === 'tiers' && <TiersPanel tiers={tiers} onReload={loadConfig} />}
@@ -1209,6 +1211,435 @@ function TiersPanel({ tiers, onReload }) {
 }
 
 // ── Customer portal link ─────────────────────────────────────────────────
+// ── Stamp Cards Panel ──────────────────────────────────────────────────
+const STAMP_ICONS = ['☕','🍕','🍔','🥗','🍺','🍷','🧁','🍩','🥪','🌮','🍣','🎂','⭐','❤️','🔥','🎯'];
+
+function StampCardsPanel() {
+  const [programs, setPrograms] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState(null);   // null = list view, 'new' = create, program object = edit
+  const [companyId, setCompanyId] = useState(null);
+  const [categories, setCategories] = useState([]);
+
+  // Load programs + categories
+  useEffect(() => {
+    (async () => {
+      try {
+        const locId = getActiveLocationSync() || await getLocationId();
+        // Resolve company_id
+        if (platformSupabase && locId) {
+          const { data: loc } = await platformSupabase
+            .from('locations')
+            .select('company_id')
+            .or(`ops_location_id.eq.${locId},id.eq.${locId}`)
+            .limit(1).maybeSingle();
+          if (loc?.company_id) {
+            setCompanyId(loc.company_id);
+            // Fetch stamp card programs
+            const { data: progs } = await platformSupabase
+              .from('stamp_card_programs')
+              .select('*')
+              .eq('company_id', loc.company_id)
+              .order('created_at', { ascending: false });
+            setPrograms(progs || []);
+          }
+        }
+        // Fetch menu categories for qualifier picker
+        if (supabase && locId) {
+          const { data: cats } = await supabase
+            .from('menu_categories')
+            .select('id, label, parent_id')
+            .eq('location_id', locId)
+            .order('sort_order');
+          setCategories(cats || []);
+        }
+      } catch (e) {
+        console.error('[StampCards] load:', e);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  const reload = async () => {
+    if (!platformSupabase || !companyId) return;
+    const { data } = await platformSupabase
+      .from('stamp_card_programs')
+      .select('*')
+      .eq('company_id', companyId)
+      .order('created_at', { ascending: false });
+    setPrograms(data || []);
+  };
+
+  if (loading) return <div style={{ padding: 20, color: 'var(--t4)', fontSize: 13 }}>Loading stamp cards...</div>;
+
+  if (editing) {
+    return (
+      <StampCardForm
+        program={editing === 'new' ? null : editing}
+        companyId={companyId}
+        categories={categories}
+        onClose={() => setEditing(null)}
+        onSaved={() => { setEditing(null); reload(); }}
+      />
+    );
+  }
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+        <div>
+          <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--t1)' }}>Stamp Card Programs</div>
+          <div style={{ fontSize: 12, color: 'var(--t4)', marginTop: 2 }}>
+            Create "buy X get 1 free" cards to reward repeat purchases
+          </div>
+        </div>
+        <button
+          onClick={() => setEditing('new')}
+          style={{ ...S.btn, ...S.btnPrim, display: 'flex', alignItems: 'center', gap: 6 }}
+        >
+          + New stamp card
+        </button>
+      </div>
+
+      {programs.length === 0 ? (
+        <div style={{ ...S.card, textAlign: 'center', padding: 40 }}>
+          <div style={{ fontSize: 40, marginBottom: 12 }}>☕</div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--t2)', marginBottom: 6 }}>No stamp cards yet</div>
+          <div style={{ fontSize: 12, color: 'var(--t4)', maxWidth: 320, margin: '0 auto', lineHeight: 1.5 }}>
+            Create your first stamp card to reward loyal customers. For example: "Buy 9 coffees, get 1 free!"
+          </div>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {programs.map(p => (
+            <StampCardRow key={p.id} program={p} onEdit={() => setEditing(p)} onToggle={async () => {
+              await platformSupabase.from('stamp_card_programs').update({ active: !p.active, updated_at: new Date().toISOString() }).eq('id', p.id);
+              reload();
+            }} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StampCardRow({ program: p, onEdit, onToggle }) {
+  const catCount = (p.qualifying_category_ids || []).length;
+  return (
+    <div style={{ ...S.card, display: 'flex', alignItems: 'center', gap: 14, padding: 16, marginBottom: 0 }}>
+      <div style={{ width: 48, height: 48, borderRadius: 12, background: p.active ? 'var(--acc-d)' : 'var(--bg3)',
+        border: `1px solid ${p.active ? 'var(--acc-b)' : 'var(--bdr)'}`, display: 'flex', alignItems: 'center',
+        justifyContent: 'center', fontSize: 24, flexShrink: 0 }}>
+        {p.icon || '☕'}
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--t1)' }}>{p.name}</div>
+        <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>
+          Collect {p.stamps_required} stamps → {p.reward_description || 'Free item'}
+        </div>
+        {catCount > 0 && (
+          <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 2 }}>
+            {catCount} qualifying {catCount === 1 ? 'category' : 'categories'}
+          </div>
+        )}
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+        <span style={{
+          padding: '3px 10px', borderRadius: 20, fontSize: 11, fontWeight: 700,
+          background: p.active ? 'var(--grn-d)' : 'var(--bg3)',
+          color: p.active ? 'var(--grn)' : 'var(--t4)',
+          border: `1px solid ${p.active ? 'var(--grn-b, var(--grn))' : 'var(--bdr)'}`,
+        }}>
+          {p.active ? 'Active' : 'Paused'}
+        </span>
+        <button onClick={onToggle} style={{ ...S.btn, ...S.btnGhost, padding: '4px 10px', fontSize: 11 }}>
+          {p.active ? 'Pause' : 'Activate'}
+        </button>
+        <button onClick={onEdit} style={{ ...S.btn, ...S.btnGhost, padding: '4px 10px', fontSize: 11 }}>
+          Edit
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function StampCardForm({ program, companyId, categories, onClose, onSaved }) {
+  const isNew = !program;
+  const [name, setName] = useState(program?.name || '');
+  const [description, setDescription] = useState(program?.description || '');
+  const [icon, setIcon] = useState(program?.icon || '☕');
+  const [stampsRequired, setStampsRequired] = useState(program?.stamps_required || 10);
+  const [rewardType, setRewardType] = useState(program?.reward_type || 'free_item');
+  const [rewardDescription, setRewardDescription] = useState(program?.reward_description || '');
+  const [selectedCatIds, setSelectedCatIds] = useState(program?.qualifying_category_ids || []);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [showIconPicker, setShowIconPicker] = useState(false);
+
+  const toggleCat = (catId) => {
+    setSelectedCatIds(prev =>
+      prev.includes(catId) ? prev.filter(id => id !== catId) : [...prev, catId]
+    );
+  };
+
+  const save = async () => {
+    if (!name.trim()) { setError('Name is required'); return; }
+    if (stampsRequired < 2 || stampsRequired > 50) { setError('Stamps required must be between 2 and 50'); return; }
+    if (!companyId) { setError('Company not resolved'); return; }
+    setSaving(true);
+    setError('');
+    try {
+      const row = {
+        company_id: companyId,
+        name: name.trim(),
+        description: description.trim() || null,
+        icon,
+        stamps_required: Number(stampsRequired),
+        reward_type: rewardType,
+        reward_description: rewardDescription.trim() || null,
+        qualifying_category_ids: selectedCatIds,
+        updated_at: new Date().toISOString(),
+      };
+      if (isNew) {
+        const { error: e } = await platformSupabase.from('stamp_card_programs').insert(row);
+        if (e) throw e;
+      } else {
+        const { error: e } = await platformSupabase.from('stamp_card_programs').update(row).eq('id', program.id);
+        if (e) throw e;
+      }
+      onSaved();
+    } catch (e) {
+      setError(e?.message || 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const deleteProgram = async () => {
+    if (!program?.id) return;
+    if (!confirm('Delete this stamp card program? Customer progress will be lost.')) return;
+    try {
+      await platformSupabase.from('customer_stamp_cards').delete().eq('program_id', program.id);
+      await platformSupabase.from('stamp_card_programs').delete().eq('id', program.id);
+      onSaved();
+    } catch (e) {
+      setError(e?.message || 'Delete failed');
+    }
+  };
+
+  // Separate top-level and subcategories
+  const topCats = categories.filter(c => !c.parent_id);
+  const subCats = categories.filter(c => c.parent_id);
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20 }}>
+        <button onClick={onClose} style={{ ...S.btn, ...S.btnGhost, padding: '6px 12px', fontSize: 12 }}>← Back</button>
+        <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--t1)' }}>
+          {isNew ? 'Create Stamp Card' : `Edit: ${program.name}`}
+        </div>
+      </div>
+
+      {error && <div style={S.errorBox}>{error}</div>}
+
+      <div style={S.card}>
+        {/* Icon + Name row */}
+        <div style={{ display: 'flex', gap: 12, marginBottom: 16 }}>
+          <div style={{ position: 'relative' }}>
+            <label style={S.label}>Icon</label>
+            <button
+              onClick={() => setShowIconPicker(!showIconPicker)}
+              style={{
+                width: 52, height: 52, borderRadius: 12, border: '2px solid var(--bdr2)',
+                background: 'var(--bg2)', fontSize: 28, cursor: 'pointer', display: 'flex',
+                alignItems: 'center', justifyContent: 'center',
+              }}
+            >
+              {icon}
+            </button>
+            {showIconPicker && (
+              <div style={{
+                position: 'absolute', top: '100%', left: 0, zIndex: 10, marginTop: 4,
+                padding: 8, background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 10,
+                boxShadow: 'var(--sh2)', display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 4,
+              }}>
+                {STAMP_ICONS.map(ic => (
+                  <button key={ic} onClick={() => { setIcon(ic); setShowIconPicker(false); }}
+                    style={{
+                      width: 36, height: 36, borderRadius: 8, border: ic === icon ? '2px solid var(--acc)' : '1px solid var(--bdr)',
+                      background: ic === icon ? 'var(--acc-d)' : 'var(--bg2)', fontSize: 20, cursor: 'pointer',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    }}
+                  >
+                    {ic}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          <div style={{ flex: 1 }}>
+            <label style={S.label}>Card name</label>
+            <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Coffee Loyalty Card" style={S.input} />
+          </div>
+        </div>
+
+        {/* Description */}
+        <div style={{ marginBottom: 16 }}>
+          <label style={S.label}>Description (optional)</label>
+          <input value={description} onChange={e => setDescription(e.target.value)} placeholder="e.g. Buy 9 coffees, get your 10th free!" style={S.input} />
+        </div>
+
+        {/* Stamps required + Reward row */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 16 }}>
+          <div>
+            <label style={S.label}>Stamps to collect</label>
+            <input type="number" min={2} max={50} value={stampsRequired}
+              onChange={e => setStampsRequired(e.target.value)}
+              style={S.input} />
+            <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 4 }}>
+              Customer collects {stampsRequired} stamps, then gets the reward
+            </div>
+          </div>
+          <div>
+            <label style={S.label}>Reward type</label>
+            <select value={rewardType} onChange={e => setRewardType(e.target.value)}
+              style={{ ...S.input, cursor: 'pointer' }}>
+              <option value="free_item">Free item</option>
+              <option value="discount_percent">% Discount</option>
+              <option value="discount_fixed">£ Discount</option>
+              <option value="bonus_points">Bonus points</option>
+            </select>
+          </div>
+        </div>
+
+        {/* Reward description */}
+        <div style={{ marginBottom: 16 }}>
+          <label style={S.label}>Reward description</label>
+          <input value={rewardDescription} onChange={e => setRewardDescription(e.target.value)}
+            placeholder={rewardType === 'free_item' ? 'e.g. 1 free coffee' : rewardType === 'discount_percent' ? 'e.g. 20% off next order' : rewardType === 'bonus_points' ? 'e.g. 500 bonus points' : 'e.g. £5 off next order'}
+            style={S.input} />
+        </div>
+
+        {/* Qualifying categories */}
+        <div style={{ marginBottom: 16 }}>
+          <label style={S.label}>Qualifying categories</label>
+          <div style={{ fontSize: 12, color: 'var(--t4)', marginBottom: 8, lineHeight: 1.4 }}>
+            Select which menu categories earn stamps. If none are selected, <b>all items</b> qualify.
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {topCats.map(cat => {
+              const isSelected = selectedCatIds.includes(cat.id);
+              const children = subCats.filter(sc => sc.parent_id === cat.id);
+              return (
+                <div key={cat.id} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <button
+                    onClick={() => toggleCat(cat.id)}
+                    style={{
+                      padding: '5px 12px', borderRadius: 20, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                      border: `1px solid ${isSelected ? 'var(--acc)' : 'var(--bdr2)'}`,
+                      background: isSelected ? 'var(--acc-d)' : 'var(--bg2)',
+                      color: isSelected ? 'var(--acc)' : 'var(--t3)',
+                    }}
+                  >
+                    {cat.label}
+                  </button>
+                  {children.map(sc => {
+                    const subSel = selectedCatIds.includes(sc.id);
+                    return (
+                      <button key={sc.id}
+                        onClick={() => toggleCat(sc.id)}
+                        style={{
+                          padding: '3px 10px', borderRadius: 16, fontSize: 11, fontWeight: 600, cursor: 'pointer',
+                          marginLeft: 12,
+                          border: `1px solid ${subSel ? 'var(--acc)' : 'var(--bdr)'}`,
+                          background: subSel ? 'var(--acc-d)' : 'transparent',
+                          color: subSel ? 'var(--acc)' : 'var(--t4)',
+                        }}
+                      >
+                        {sc.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              );
+            })}
+          </div>
+          {selectedCatIds.length > 0 && (
+            <button onClick={() => setSelectedCatIds([])} style={{ ...S.btn, fontSize: 11, color: 'var(--t4)', background: 'transparent', padding: '4px 0', marginTop: 6 }}>
+              Clear selection (all items qualify)
+            </button>
+          )}
+        </div>
+
+        {/* Preview */}
+        <div style={{ marginBottom: 20 }}>
+          <label style={S.label}>Preview</label>
+          <StampCardPreview icon={icon} name={name || 'Coffee Card'} stampsRequired={Number(stampsRequired) || 10}
+            stampsCollected={Math.floor((Number(stampsRequired) || 10) * 0.6)}
+            reward={rewardDescription || 'Free item'} />
+        </div>
+
+        {/* Action buttons */}
+        <div style={{ display: 'flex', gap: 10 }}>
+          <button onClick={save} disabled={saving} style={{ ...S.btn, ...S.btnPrim, flex: 1 }}>
+            {saving ? 'Saving...' : isNew ? 'Create stamp card' : 'Save changes'}
+          </button>
+          {!isNew && (
+            <button onClick={deleteProgram} style={{ ...S.btn, ...S.btnDan }}>Delete</button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StampCardPreview({ icon, name, stampsRequired, stampsCollected, reward }) {
+  const stamps = [];
+  for (let i = 0; i < stampsRequired; i++) {
+    stamps.push(i < stampsCollected);
+  }
+  // Add the reward slot
+  const cols = Math.min(stampsRequired + 1, 6);
+  return (
+    <div style={{
+      background: 'linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)',
+      borderRadius: 14, padding: 18, maxWidth: 380,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+        <span style={{ fontSize: 22 }}>{icon}</span>
+        <div style={{ fontSize: 14, fontWeight: 800, color: '#fff' }}>{name}</div>
+      </div>
+      <div style={{
+        display: 'grid', gridTemplateColumns: `repeat(${cols}, 1fr)`, gap: 6,
+      }}>
+        {stamps.map((filled, i) => (
+          <div key={i} style={{
+            aspectRatio: '1', borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            background: filled ? 'rgba(232,116,60,0.2)' : 'rgba(255,255,255,0.06)',
+            border: filled ? '2px solid #E8743C' : '2px dashed rgba(255,255,255,0.15)',
+            fontSize: filled ? 16 : 11,
+            color: filled ? '#E8743C' : 'rgba(255,255,255,0.25)',
+          }}>
+            {filled ? icon : i + 1}
+          </div>
+        ))}
+        {/* Reward slot */}
+        <div style={{
+          aspectRatio: '1', borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          background: 'rgba(232,116,60,0.1)', border: '2px solid rgba(232,116,60,0.4)',
+          fontSize: 14, flexDirection: 'column', gap: 2,
+        }}>
+          <span style={{ fontSize: 16 }}>🎁</span>
+        </div>
+      </div>
+      <div style={{ textAlign: 'center', marginTop: 10, fontSize: 11, color: 'rgba(255,255,255,0.5)' }}>
+        {stampsCollected}/{stampsRequired} stamps collected · Reward: {reward}
+      </div>
+    </div>
+  );
+}
+
 function PortalLink({ slug, enabled }) {
   const [copied, setCopied] = useState(false);
   const [copiedReg, setCopiedReg] = useState(false);

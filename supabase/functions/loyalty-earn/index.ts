@@ -197,6 +197,102 @@ Deno.serve(async (req) => {
     });
   }
 
+  // ── Stamp cards — award stamps for qualifying items ─────────────────────
+  let stampsAwarded: { program_id: string; program_name: string; stamps: number; new_total: number; completed: boolean }[] = [];
+  try {
+    // Fetch active stamp card programs for this company
+    const { data: programs } = await platformAdmin
+      .from('stamp_card_programs')
+      .select('id, name, icon, stamps_required, qualifying_category_ids, qualifying_item_ids')
+      .eq('company_id', companyId)
+      .eq('active', true);
+
+    if (programs && programs.length > 0 && Array.isArray(items) && items.length > 0) {
+      for (const prog of programs) {
+        const qualCats: string[] = prog.qualifying_category_ids || [];
+        const qualItems: string[] = prog.qualifying_item_ids || [];
+        const allQualify = qualCats.length === 0 && qualItems.length === 0;
+
+        // Count qualifying items in the order
+        let qualifyingCount = 0;
+        for (const item of items as any[]) {
+          if (item.isComp || item.isGiftCard) continue;
+          const qty = Number(item.qty) || 1;
+          if (allQualify) {
+            qualifyingCount += qty;
+          } else if (qualItems.length > 0 && item.id && qualItems.includes(item.id)) {
+            qualifyingCount += qty;
+          } else if (qualCats.length > 0 && item.cat && qualCats.includes(item.cat)) {
+            qualifyingCount += qty;
+          }
+        }
+
+        if (qualifyingCount <= 0) continue;
+
+        // Get or create customer stamp card
+        let { data: card } = await platformAdmin
+          .from('customer_stamp_cards')
+          .select('id, stamps_collected, completed_count')
+          .eq('customer_id', customer_id)
+          .eq('program_id', prog.id)
+          .eq('company_id', companyId)
+          .maybeSingle();
+
+        if (!card) {
+          const { data: newCard } = await platformAdmin
+            .from('customer_stamp_cards')
+            .insert({ customer_id, program_id: prog.id, company_id: companyId, stamps_collected: 0, completed_count: 0 })
+            .select('id, stamps_collected, completed_count')
+            .single();
+          card = newCard;
+        }
+        if (!card) continue;
+
+        let newStamps = (card.stamps_collected || 0) + qualifyingCount;
+        let completions = card.completed_count || 0;
+        let completedThisOrder = false;
+
+        // Handle completions (may complete multiple times if large order)
+        while (newStamps >= prog.stamps_required) {
+          newStamps -= prog.stamps_required;
+          completions += 1;
+          completedThisOrder = true;
+        }
+
+        // Update the stamp card
+        await platformAdmin
+          .from('customer_stamp_cards')
+          .update({
+            stamps_collected: newStamps,
+            completed_count: completions,
+            last_stamp_at: new Date().toISOString(),
+          })
+          .eq('id', card.id);
+
+        // Audit trail on ops DB
+        await opsAdmin.from('stamp_transactions').insert({
+          customer_id,
+          program_id: prog.id,
+          location_id,
+          stamps: qualifyingCount,
+          trigger_item_name: (items as any[]).filter(i => !i.isComp && !i.isGiftCard).map(i => i.name).join(', ').slice(0, 200),
+          order_ref: String(closed_check_id),
+          type: 'earn',
+        });
+
+        stampsAwarded.push({
+          program_id: prog.id,
+          program_name: prog.name,
+          stamps: qualifyingCount,
+          new_total: newStamps,
+          completed: completedThisOrder,
+        });
+      }
+    }
+  } catch (e) {
+    console.warn('[loyalty-earn] stamp card processing failed (non-fatal):', e);
+  }
+
   return json({
     status: 'ok',
     points_earned: pointsEarned,
@@ -206,5 +302,6 @@ Deno.serve(async (req) => {
     is_new_member: isNew,
     qualifying_amount_minor: qualifyingMinor,
     multiplier: tierMultiplier,
+    stamps_awarded: stampsAwarded.length > 0 ? stampsAwarded : undefined,
   });
 });

@@ -76,6 +76,22 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.230', date: '26 May 2026', label: 'Stamp cards — "Buy X get 1 free" digital loyalty cards',
+    changes: [
+      'New Stamp Cards tab in Loyalty Manager: create, edit, pause/activate, and delete stamp card programs.',
+      'Each program has configurable icon, name, stamps required (2-50), reward type (free item, % discount, £ discount, bonus points), and qualifying categories.',
+      'Category picker lets operators restrict which menu categories earn stamps, or leave blank for all items to qualify.',
+      'Live card preview in the editor shows exactly how the stamp card will look to customers.',
+      'Stamp awarding integrated into loyalty-earn: when a loyalty member completes an order, qualifying items automatically earn stamps on all active programs.',
+      'Smart completion handling: when a card fills up the reward is triggered and the card resets — supports multiple completions per order for large orders.',
+      'POS toast notifications for stamp awards: shows stamps earned per card, and a celebration toast when a card is completed.',
+      'Customer portal: new Stamps tab shows all active stamp cards with visual grid (filled stamps, empty slots, reward slot).',
+      'Home tab on portal shows stamp card progress preview with progress bars.',
+      'Stamp transaction audit trail stored on ops DB for accountability.',
+      'New schema: stamp_card_programs + customer_stamp_cards (platform DB), stamp_transactions (ops DB).',
+    ],
+  },
+  {
     version: '5.5.229', date: '25 May 2026', label: 'Welcome notifications — branded SMS + email on first customer sign-up',
     changes: [
       'New send-welcome edge function: sends branded SMS + email when a customer is first created anywhere in the system.',

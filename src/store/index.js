@@ -2303,6 +2303,19 @@ export const useStore = create((set, get) => ({
                 );
               }, 1500);
             }
+            // Stamp card notifications
+            if (j.stamps_awarded && j.stamps_awarded.length > 0) {
+              j.stamps_awarded.forEach((sa, idx) => {
+                setTimeout(() => {
+                  get().showToast?.(
+                    sa.completed
+                      ? `☕ ${sa.program_name} COMPLETE! Reward earned 🎁`
+                      : `☕ +${sa.stamps} stamp${sa.stamps > 1 ? 's' : ''} on ${sa.program_name} (${sa.new_total} collected)`,
+                    sa.completed ? 'success' : 'info'
+                  );
+                }, 2500 + idx * 1200);
+              });
+            }
             // Stamp loyalty summary on the closed check in local state for receipt/refund use
             if (j.points_earned > 0 || j.is_new_member) {
               const loyaltySummary = {
