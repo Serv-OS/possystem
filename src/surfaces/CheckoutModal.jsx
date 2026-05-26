@@ -790,7 +790,7 @@ function GiftCardEntry({ totalMinor, giftAlreadyApplied, onApplied, onBack, tabl
 // GiftCardEntry above.
 const FUNCTIONS_URL_LOYALTY = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 
-function LoyaltyRewardsEntry({ customer, loyaltyData, total, onApplied, onBack }) {
+function LoyaltyRewardsEntry({ customer, loyaltyData, items = [], total, onApplied, onBack }) {
   const compact = useCompact();
   const [redeeming, setRedeeming] = useState(null); // reward id being redeemed
   const [error, setError] = useState('');
@@ -825,8 +825,19 @@ function LoyaltyRewardsEntry({ customer, loyaltyData, total, onApplied, onBack }
         discountMinor = Math.round(total * 100 * (rv.percent || 0) / 100);
       } else if (j.reward?.type === 'free_delivery' || reward.type === 'free_delivery') {
         discountMinor = 0; // handled separately
+      } else if (j.reward?.type === 'free_item' || reward.type === 'free_item') {
+        // v5.5.247: free item — find the cheapest eligible item in the order
+        const eligibleIds = new Set((rv.eligible_items || []).map(ei => ei.id));
+        if (eligibleIds.size > 0) {
+          // Find cheapest matching item in the current order
+          const matching = (items || []).filter(i => !i.voided && eligibleIds.has(i.itemId));
+          if (matching.length > 0) {
+            const cheapest = matching.reduce((a, b) => (a.price < b.price ? a : b));
+            discountMinor = Math.round(cheapest.price * 100);
+          }
+        }
       } else {
-        // custom / free_item — show on receipt but no automatic discount
+        // custom — show on receipt but no automatic discount
         discountMinor = 0;
       }
       // Don't discount more than the total
@@ -1370,6 +1381,7 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
             <LoyaltyRewardsEntry
               customer={customer}
               loyaltyData={loyaltyData}
+              items={items}
               total={total}
               onApplied={(result) => {
                 setLoyaltyApplied(result);

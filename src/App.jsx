@@ -76,6 +76,16 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.247', date: '26 May 2026', label: 'Free item rewards — eligible items picker + auto-apply at checkout',
+    changes: [
+      'Back office: New ItemMultiPicker component for selecting eligible menu items on free_item rewards and stamp cards. Operators choose exactly which items a customer can get for free.',
+      'Rewards (loyalty points): reward_value.eligible_items stores the list. Stamp cards: reward_config.eligible_items column added to stamp_card_programs.',
+      'POS checkout: free_item rewards now auto-apply the cheapest eligible item in the order as a discount (instead of £0). Matches items by menu_items.id.',
+      'Kiosk: Added free_item discount branch — was previously missing entirely. Uses same cheapest-eligible-match logic.',
+      'Online checkout: Fixed reward field naming mismatch (reward_type vs discount_type) and added eligible_items matching for free_item rewards.',
+    ],
+  },
+  {
     version: '5.5.246', date: '26 May 2026', label: 'Fix getLocationId() — check device pairing before auth call',
     changes: [
       'ROOT CAUSE FIX: getLocationId() now checks rpos-device localStorage BEFORE calling supabase.auth.getUser(). Previously the auth call (a network request) ran before the POS device pairing check (instant localStorage read). On Android POS devices without an auth session, auth.getUser() would fail/hang, and the function never reached the device pairing fallback — returning null.',

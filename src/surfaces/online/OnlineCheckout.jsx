@@ -397,22 +397,36 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       const j = await res.json();
       if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
       // Calculate discount value in minor units
+      // v5.5.247: normalise field names (DB uses reward_type/reward_value, some
+      // legacy code used discount_type/discount_value)
+      const rType = reward.reward_type || reward.discount_type || '';
+      const rValue = reward.reward_value || {};
       let discountMinor = 0;
-      if (reward.discount_type === 'fixed') {
-        discountMinor = Math.round((reward.discount_value || 0) * 100);
-      } else if (reward.discount_type === 'percentage') {
-        discountMinor = Math.round(subtotalMinor * (reward.discount_value || 0) / 100);
-      } else if (reward.discount_type === 'free_item') {
-        // Free item: discount = price of the cheapest qualifying item
-        const cheapest = [...cart].sort((a, b) => a.price - b.price)[0];
-        discountMinor = cheapest ? Math.round(cheapest.price * 100) : 0;
+      if (rType === 'discount_fixed' || rType === 'fixed') {
+        discountMinor = rValue.amount_minor || Math.round((reward.discount_value || 0) * 100);
+      } else if (rType === 'discount_percent' || rType === 'percentage') {
+        discountMinor = Math.round(subtotalMinor * (rValue.percent || reward.discount_value || 0) / 100);
+      } else if (rType === 'free_item') {
+        // v5.5.247: free item — find cheapest eligible item in cart
+        const eligibleIds = new Set((rValue.eligible_items || []).map(ei => ei.id));
+        if (eligibleIds.size > 0) {
+          const matching = cart.filter(l => eligibleIds.has(l.itemId));
+          if (matching.length > 0) {
+            const cheapest = matching.reduce((a, b) => (a.price < b.price ? a : b));
+            discountMinor = Math.round(cheapest.price * 100);
+          }
+        } else {
+          // No eligible items configured — fallback to cheapest in cart
+          const cheapest = [...cart].sort((a, b) => a.price - b.price)[0];
+          discountMinor = cheapest ? Math.round(cheapest.price * 100) : 0;
+        }
       }
       discountMinor = Math.min(discountMinor, subtotalMinor - giftAppliedMinor); // can't exceed remaining
       setRewardApplied({
         reward_id: reward.id,
         reward_name: reward.name,
         points_deducted: j.points_deducted || reward.points_cost || 0,
-        discount_type: reward.discount_type,
+        discount_type: reward.reward_type || reward.discount_type,
         discount_value: discountMinor,
         idempotency_key: idempotencyKey,
         redemption_id: j.redemption_id || j.id,
@@ -884,9 +898,9 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
                             )}
                             <div style={{ fontSize: 12, color: theme.accent, fontWeight: 600, marginTop: 4 }}>
                               {reward.points_cost} points
-                              {reward.discount_type === 'fixed' && ` · £${(reward.discount_value || 0).toFixed(2)} off`}
-                              {reward.discount_type === 'percentage' && ` · ${reward.discount_value || 0}% off`}
-                              {reward.discount_type === 'free_item' && ' · Free item'}
+                              {(reward.reward_type === 'discount_fixed' || reward.discount_type === 'fixed') && ` · £${((reward.reward_value?.amount_minor || 0) / 100).toFixed(2)} off`}
+                              {(reward.reward_type === 'discount_percent' || reward.discount_type === 'percentage') && ` · ${reward.reward_value?.percent || reward.discount_value || 0}% off`}
+                              {(reward.reward_type === 'free_item' || reward.discount_type === 'free_item') && ' · Free item'}
                             </div>
                           </div>
                           <button

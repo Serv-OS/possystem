@@ -2233,6 +2233,16 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
         discountMinor = rv.amount_minor || 0;
       } else if (j.reward?.type === 'discount_percent' || reward.type === 'discount_percent') {
         discountMinor = Math.round((subtotal || 0) * 100 * (rv.percent || 0) / 100);
+      } else if (j.reward?.type === 'free_item' || reward.type === 'free_item') {
+        // v5.5.247: free item — find cheapest eligible item in cart
+        const eligibleIds = new Set((rv.eligible_items || []).map(ei => ei.id));
+        if (eligibleIds.size > 0) {
+          const matching = cart.filter(l => eligibleIds.has(l.item?.id));
+          if (matching.length > 0) {
+            const cheapest = matching.reduce((a, b) => (a.linePrice < b.linePrice ? a : b));
+            discountMinor = Math.round((cheapest.linePrice || 0) * 100);
+          }
+        }
       }
       // Don't discount more than the subtotal
       discountMinor = Math.min(discountMinor, Math.round((subtotal || 0) * 100));

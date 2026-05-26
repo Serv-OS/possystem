@@ -110,6 +110,7 @@ export default function LoyaltyManager() {
   const [enabling, setEnabling] = useState(false);
   const [enableError, setEnableError] = useState('');
   const [slug, setSlug] = useState(null);
+  const [menuItems, setMenuItems] = useState([]); // ops DB menu items for item picker
 
   // Load config on mount
   const loadConfig = useCallback(async () => {
@@ -133,6 +134,20 @@ export default function LoyaltyManager() {
           .eq('ops_location_id', locId)
           .maybeSingle();
         if (loc?.online_slug) setSlug(loc.online_slug);
+      }
+    } catch {}
+    // Load menu items for the item picker (free item rewards)
+    try {
+      const locId = getActiveLocationSync() || await getLocationId();
+      if (locId && supabase) {
+        const { data: items } = await supabase
+          .from('menu_items')
+          .select('id, name, price, archived, parent_id')
+          .eq('location_id', locId)
+          .eq('archived', false)
+          .order('name');
+        // Only top-level items (not size variants)
+        setMenuItems((items || []).filter(i => !i.parent_id));
       }
     } catch {}
   }, []);
@@ -240,8 +255,8 @@ export default function LoyaltyManager() {
         ))}
       </div>
 
-      {tab === 'rewards' && <RewardsPanel rewards={rewards} onReload={loadConfig} />}
-      {tab === 'stamp_cards' && <StampCardsPanel />}
+      {tab === 'rewards' && <RewardsPanel rewards={rewards} onReload={loadConfig} menuItems={menuItems} />}
+      {tab === 'stamp_cards' && <StampCardsPanel menuItems={menuItems} />}
       {tab === 'settings' && <SettingsPanel config={config} onUpdate={setConfig} />}
       {tab === 'members' && <MembersPanel config={config} />}
       {tab === 'tiers' && <TiersPanel tiers={tiers} onReload={loadConfig} />}
@@ -260,9 +275,119 @@ function ConfigStat({ label, value }) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// ItemMultiPicker — searchable multi-select for choosing eligible items
+// ═══════════════════════════════════════════════════════════════════════
+function ItemMultiPicker({ items = [], selected = [], onChange }) {
+  const [search, setSearch] = useState('');
+  const selectedIds = useMemo(() => new Set(selected.map(s => s.id)), [selected]);
+
+  const filtered = useMemo(() => {
+    if (!search.trim()) return items;
+    const q = search.toLowerCase();
+    return items.filter(i => i.name?.toLowerCase().includes(q));
+  }, [items, search]);
+
+  const toggle = (item) => {
+    if (selectedIds.has(item.id)) {
+      onChange(selected.filter(s => s.id !== item.id));
+    } else {
+      onChange([...selected, { id: item.id, name: item.name }]);
+    }
+  };
+
+  const removeItem = (id) => onChange(selected.filter(s => s.id !== id));
+
+  if (items.length === 0) {
+    return (
+      <div style={{ padding: 12, background: 'var(--bg2)', borderRadius: 8, border: '1px solid var(--bdr)', fontSize: 12, color: 'var(--t4)' }}>
+        No menu items found. Add items to your menu first.
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {/* Selected chips */}
+      {selected.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+          {selected.map(s => (
+            <span key={s.id} style={{
+              display: 'inline-flex', alignItems: 'center', gap: 4,
+              padding: '3px 10px', borderRadius: 14, fontSize: 11, fontWeight: 600,
+              background: 'var(--acc-d, rgba(232,116,60,0.15))', color: 'var(--acc)',
+              border: '1px solid var(--acc)',
+            }}>
+              {s.name}
+              <span
+                onClick={() => removeItem(s.id)}
+                style={{ cursor: 'pointer', fontWeight: 800, marginLeft: 2, fontSize: 13, lineHeight: 1 }}
+              >×</span>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Search */}
+      <input
+        value={search}
+        onChange={e => setSearch(e.target.value)}
+        placeholder="Search items..."
+        style={{ ...S.input, marginBottom: 6 }}
+      />
+
+      {/* Items list (scrollable) */}
+      <div style={{
+        maxHeight: 200, overflowY: 'auto', border: '1px solid var(--bdr)',
+        borderRadius: 8, background: 'var(--bg2)',
+      }}>
+        {filtered.length === 0 && (
+          <div style={{ padding: 12, fontSize: 12, color: 'var(--t4)', textAlign: 'center' }}>
+            No items match "{search}"
+          </div>
+        )}
+        {filtered.map(item => {
+          const isSelected = selectedIds.has(item.id);
+          return (
+            <div
+              key={item.id}
+              onClick={() => toggle(item)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 10,
+                padding: '7px 12px', cursor: 'pointer',
+                background: isSelected ? 'var(--acc-d, rgba(232,116,60,0.08))' : 'transparent',
+                borderBottom: '1px solid var(--bdr)',
+                fontSize: 12, color: 'var(--t1)',
+              }}
+            >
+              <div style={{
+                width: 18, height: 18, borderRadius: 4,
+                border: `2px solid ${isSelected ? 'var(--acc)' : 'var(--bdr2)'}`,
+                background: isSelected ? 'var(--acc)' : 'transparent',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                flexShrink: 0, fontSize: 11, color: '#fff', fontWeight: 800,
+              }}>
+                {isSelected ? '✓' : ''}
+              </div>
+              <div style={{ flex: 1, fontWeight: 600 }}>{item.name}</div>
+              <div style={{ fontSize: 11, color: 'var(--t4)', fontWeight: 600 }}>
+                £{((item.price || 0) / 100).toFixed(2)}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 4 }}>
+        {selected.length} item{selected.length !== 1 ? 's' : ''} selected
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // Rewards Panel — CRUD for the reward catalog
 // ═══════════════════════════════════════════════════════════════════════
-function RewardsPanel({ rewards, onReload }) {
+function RewardsPanel({ rewards, onReload, menuItems = [] }) {
   const [creating, setCreating] = useState(false);
   const [editId, setEditId] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -430,12 +555,14 @@ function RewardsPanel({ rewards, onReload }) {
           )}
           {form.reward_type === 'free_item' && (
             <div style={{ marginBottom: 14 }}>
-              <label style={S.label}>Item description (shown to staff)</label>
-              <input
-                style={S.input}
-                value={form.reward_value.item_description || ''}
-                onChange={e => setForm(f => ({ ...f, reward_value: { ...f.reward_value, item_description: e.target.value } }))}
-                placeholder="e.g. Any hot drink up to £4"
+              <label style={S.label}>Eligible free items</label>
+              <div style={{ fontSize: 11, color: 'var(--t4)', marginBottom: 6 }}>
+                Select which items a customer can get for free. At checkout, the cheapest matching item in their order is made free.
+              </div>
+              <ItemMultiPicker
+                items={menuItems}
+                selected={form.reward_value.eligible_items || []}
+                onChange={items => setForm(f => ({ ...f, reward_value: { ...f.reward_value, eligible_items: items } }))}
               />
             </div>
           )}
@@ -1200,7 +1327,7 @@ function TiersPanel({ tiers, onReload }) {
 // ── Stamp Cards Panel ──────────────────────────────────────────────────
 const STAMP_ICONS = ['☕','🍕','🍔','🥗','🍺','🍷','🧁','🍩','🥪','🌮','🍣','🎂','⭐','❤️','🔥','🎯'];
 
-function StampCardsPanel() {
+function StampCardsPanel({ menuItems = [] }) {
   const [programs, setPrograms] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(null);   // null = list view, 'new' = create, program object = edit
@@ -1265,6 +1392,7 @@ function StampCardsPanel() {
         program={editing === 'new' ? null : editing}
         companyId={companyId}
         categories={categories}
+        menuItems={menuItems}
         onClose={() => setEditing(null)}
         onSaved={() => { setEditing(null); reload(); }}
       />
@@ -1350,7 +1478,7 @@ function StampCardRow({ program: p, onEdit, onToggle }) {
   );
 }
 
-function StampCardForm({ program, companyId, categories, onClose, onSaved }) {
+function StampCardForm({ program, companyId, categories, menuItems = [], onClose, onSaved }) {
   const isNew = !program;
   const [name, setName] = useState(program?.name || '');
   const [description, setDescription] = useState(program?.description || '');
@@ -1358,6 +1486,7 @@ function StampCardForm({ program, companyId, categories, onClose, onSaved }) {
   const [stampsRequired, setStampsRequired] = useState(program?.stamps_required || 10);
   const [rewardType, setRewardType] = useState(program?.reward_type || 'free_item');
   const [rewardDescription, setRewardDescription] = useState(program?.reward_description || '');
+  const [rewardConfig, setRewardConfig] = useState(program?.reward_config || {});
   const [selectedCatIds, setSelectedCatIds] = useState(program?.qualifying_category_ids || []);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -1384,6 +1513,7 @@ function StampCardForm({ program, companyId, categories, onClose, onSaved }) {
         stamps_required: Number(stampsRequired),
         reward_type: rewardType,
         reward_description: rewardDescription.trim() || null,
+        reward_config: rewardType === 'free_item' ? { eligible_items: rewardConfig.eligible_items || [] } : {},
         qualifying_category_ids: selectedCatIds,
         updated_at: new Date().toISOString(),
       };
@@ -1510,6 +1640,21 @@ function StampCardForm({ program, companyId, categories, onClose, onSaved }) {
             placeholder={rewardType === 'free_item' ? 'e.g. 1 free coffee' : rewardType === 'discount_percent' ? 'e.g. 20% off next order' : rewardType === 'bonus_points' ? 'e.g. 500 bonus points' : 'e.g. £5 off next order'}
             style={S.input} />
         </div>
+
+        {/* Eligible free items (only for free_item reward type) */}
+        {rewardType === 'free_item' && (
+          <div style={{ marginBottom: 16 }}>
+            <label style={S.label}>Eligible free items</label>
+            <div style={{ fontSize: 11, color: 'var(--t4)', marginBottom: 6 }}>
+              Select which items a customer can get for free when they complete this card. At checkout, the cheapest matching item in their order is made free.
+            </div>
+            <ItemMultiPicker
+              items={menuItems}
+              selected={rewardConfig.eligible_items || []}
+              onChange={items => setRewardConfig(rc => ({ ...rc, eligible_items: items }))}
+            />
+          </div>
+        )}
 
         {/* Qualifying categories */}
         <div style={{ marginBottom: 16 }}>

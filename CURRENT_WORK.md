@@ -1,61 +1,57 @@
-# RPOS session handoff — 26 May (v5.5.238)
+# RPOS session handoff — 26 May (v5.5.243)
 
-> Location isolation hardening complete. Four-layer defence against cross-location data bleed.
-
----
-
-## What shipped: v5.5.235 → v5.5.238
-
-### v5.5.235 — Fix multi-location menu bleed (root cause)
-- SyncBridge was reading `rpos-device.locationId` directly, bypassing `rpos-bo-location` override
-- Fixed: now uses `getActiveLocationSync()` with correct priority chain
-
-### v5.5.236 — Cross-user location bleed on sign-out/sign-in
-- `rpos-bo-location` survived logout — second user inherited first user's location
-- Fixed: both sign-out buttons clear override; sign-in validates against accessible locations
-
-### v5.5.237 — HOTFIX: MPOS menu + table loading
-- v5.5.235 used async `getLocationId()` in SyncBridge boot — hangs on POS/MPOS without auth session
-- Fixed: switched to synchronous `getActiveLocationSync()` (localStorage-only)
-
-### v5.5.238 — Location isolation hardening
-- **Auth state SIGNED_OUT handler**: clears `rpos-bo-location` + `_resolvedLocationId` on session expiry
-- **Sidebar sign-out reload**: `.then(() => window.location.reload())` flushes all in-memory state
-- **Runtime store guard**: `_dataLocationId` stamp on Zustand store; SyncBridge pre-load purge if location changed; post-load validation filters cross-location items
-- **RLS tightening**: dropped permissive "allow all" policies on menu tables, floor_tables, config_pushes; replaced with `_auth_write`
-- **INVARIANTS.md**: documented location isolation rules, resolution priority chain, and all guard layers
+> v5.5.243 deployed — online loyalty features: rewards step, phone detection, wallet buttons.
 
 ---
 
-## Location isolation architecture (v5.5.238)
+## What shipped today: v5.5.240 → v5.5.243
 
-```
-Layer 1: Tenant Fence (App.jsx boot)
-  enforceTenantFence() purges localStorage when location changes
+### v5.5.240 — Fix "No location assigned" on login
+- Made profile query fallback unconditional; auto-select first location as safety net
 
-Layer 2: Auth Event Handler (BackOfficeApp.jsx)
-  onAuthStateChange(SIGNED_OUT) clears rpos-bo-location + cache
-  Sign-in validates override against fetchAccessibleLocations()
+### v5.5.241 — Fix login — remove fragile PostgREST joins
+- Profile query no longer uses PostgREST embedded resources
+- Org/location names fetched separately with graceful fallback
+- Added bo_access column to user_profiles table
 
-Layer 3: Runtime Store Guard (SyncBridge.jsx)
-  _dataLocationId stamp → pre-load purge → post-load validation
-  Any menuItems with wrong location_id are filtered out
+### v5.5.242 — Fix stock sync — bypass async location resolver
+- Stock writes now pass getActiveLocationSync() directly (was using async getLocationId())
+- Proper error logging via .then(res => { if (res?.error) ... })
 
-Layer 4: Database RLS
-  _auth_write policies on menu_items, menu_categories, menus,
-  menu_category_links, floor_tables, config_pushes
-```
-
----
-
-## Key rule for future development
-
-**NEVER use async `getLocationId()` in SyncBridge's boot path.** It calls `supabase.auth.getUser()` — a network round-trip that hangs on POS/MPOS devices without auth sessions. Use `getActiveLocationSync()` instead (synchronous, localStorage-only, same priority chain).
+### v5.5.243 — Online loyalty: rewards step, phone detection, wallet buttons
+- **OnlineCheckout.jsx**: New 4-step flow (details → gift → rewards → pay). Rewards step only shows if loyalty signed in. Members can browse & redeem rewards for discounts.
+- **Phone detection**: Debounced lookup on phone input (600ms). If member detected, shows "You're a member! Sign in" banner with Sign in / Dismiss buttons.
+- **Wallet buttons**: Apple Wallet + Google Wallet buttons in LoyaltyModal "done" step. WalletButton component calls wallet-pass edge function.
+- **Reward in closed_checks**: loyalty_reward field tracked for reporting; payment_method shows split breakdown.
+- **LoyaltyManager.jsx**: Wallet discoverability info in PortalLink section.
 
 ---
 
-## Next steps
+## Loyalty system status (6 issues)
 
-- [ ] **Loyalty Phase 1 remaining**: BO config UI, POS checkout display, redemption UI
-- [ ] **Wallet passes**: Apple Pay / Google Pay on online ordering (deferred post-launch)
-- [ ] **Loyalty Phase 2**: stamp cards, customer portal, wallet passes, email marketing
+1. **POS not finding current customer** — CORS fix deployed (v5.5.242). Needs user verification.
+2. **No way to redeem rewards on POS** — CheckoutModal already has this feature. Likely blocked by same CORS issue. Needs verification.
+3. **Online ordering: no way to redeem rewards** — ✅ DONE (v5.5.243)
+4. **Online ordering: phone should detect loyalty member** — ✅ DONE (v5.5.243)
+5. **Apple Wallet: can't find it** — ✅ DONE (v5.5.243, wallet buttons in loyalty sign-in modal)
+6. **"Failed to fetch" when updating a reward** — ✅ FIXED (CORS headers, deployed v5.5.242)
+
+---
+
+## Still pending
+
+- **Verify POS issues #1 and #2** — user needs to test on Sunmi POS
+- **Stock tracking verification** — v5.5.242 deployed, user needs to test on Sunmi
+- **"Admin page bleeding into office page"** — reported but not yet investigated
+- **Apple Pay / wallets on online ordering** — deferred post-launch item
+
+---
+
+## Key architecture notes
+
+- Two Supabase projects: Ops (tbetcegmszzotrwdtqhi) + Platform (yhzjgyrkyjabvhblqxzu)
+- Edge functions deployed with: `SUPABASE_ACCESS_TOKEN=sbp_... npx supabase functions deploy <name> --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt`
+- CORS: All loyalty edge functions share cors headers from `_shared/loyalty-utils.ts` (includes Access-Control-Allow-Methods)
+- Online ordering auth: signInAnonymously() creates anonymous sessions that edge fns accept
+- `getActiveLocationSync()` — always use this on POS, never async `getLocationId()`
+- Vercel deploys from `develop` branch
