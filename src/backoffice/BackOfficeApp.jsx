@@ -52,6 +52,7 @@ const NAV = [
   { id:'staff',      label:'Staff & access',  icon:'👥',  group:'Configuration' },
   { id:'printing',   label:'Production printing',   icon:'🖨',  group:'Configuration' },
   { id:'reports',    label:'Reports',           icon:'📊',  group:'Analytics' },
+  { id: 'transactions', label: 'Transactions', icon: '💳', group: 'Analytics' },
   { id:'shift',      label:'Shift',             icon:'⏱', group:'Analytics' },
   { id:'eod',        label:'Close day',        icon:'🔒',  group:'Analytics' },
   { id:'pettycash',  label:'Petty cash',        icon:'\u{1F4B0}', group:'Analytics' },
@@ -64,7 +65,6 @@ const NAV = [
   { id: 'receipt', label: 'Receipt', icon: '🧾', group: 'Configuration' },
   { id: 'challenge21', label: 'Challenge ID', icon: '\u{1F4AA}', group: 'Configuration' },
   { id: 'giftcards', label: 'Gift Cards', icon: '\u{1F381}', group: 'Analytics' },
-  { id: 'transactions', label: 'Transactions', icon: '💳', group: 'Analytics' },
   { id: 'loyalty', label: 'Loyalty', icon: '\u{2B50}', group: 'Analytics' },
   { id: 'messages', label: 'Messages', icon: '\u{1F4AC}', group: 'Configuration' },
 ];
