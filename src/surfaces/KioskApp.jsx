@@ -2190,13 +2190,13 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, verifiedL
       await fetch(`${OPS_URL}/functions/v1/stripe-cancel-reader-action`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-        body: JSON.stringify({ reader_id: readerId, ...(piId ? { payment_intent_id: piId } : {}) }),
+        body: JSON.stringify({ reader_id: readerId, location_id: locationId, ...(piId ? { payment_intent_id: piId } : {}) }),
       });
       console.log('[kiosk] cancelled reader action:', readerId);
     } catch (e) {
       console.warn('[kiosk] cancel reader action failed:', e?.message || e);
     }
-  }, []);
+  }, [locationId]);
 
   // Cleanup: cancel reader + stop polling on unmount
   useEffect(() => () => {
@@ -2695,7 +2695,10 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
     onSkip('', '');
   };
 
-  const canSubmit = name.trim().length > 0 && !submitting;
+  // Guest flow requires phone (for order-ready alerts + loyalty pre-registration)
+  const canSubmit = name.trim().length > 0
+    && (otpStep !== 'guest' || phone.replace(/\s+/g, '').length >= 10)
+    && !submitting;
 
   // Loyalty greeting — renders when we have a known customer match.
   const showWelcome = !!(customerLookup && customerLookup.knownCustomer);
@@ -2908,7 +2911,7 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
           {showWelcome
             ? 'Your loyalty details are shown below'
             : otpStep === 'guest'
-              ? 'Enter your name so we can call you when your order is ready'
+              ? 'Enter your details so we can let you know when your order is ready'
               : otpStep === 'code' || otpStep === 'verifying'
                 ? `We sent a 6-digit code to your mobile ending ${phone.slice(-4)}`
                 : "Enter your number and we'll text you a verification code"}
@@ -3334,6 +3337,44 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
             style={detailsInputStyle()}
           />
         </div>
+
+        {/* Phone number — required for guest (order-ready alerts + loyalty pre-reg) */}
+        {otpStep === 'guest' && (
+        <div style={{ marginBottom: 'clamp(14px, 1.8vw, 18px)' }}>
+          <div style={detailsLabelStyle(brandColor)}>Your mobile number</div>
+          <div style={{
+            display: 'flex', alignItems: 'stretch', background: 'var(--kSurfaceRaised)',
+            border: '1px solid var(--kBorder2)', borderRadius: 14, overflow: 'hidden',
+          }}>
+            <div style={{
+              padding: 'clamp(14px, 1.8vw, 18px) clamp(14px, 1.6vw, 20px)',
+              borderRight: '1px solid var(--kBorder2)',
+              fontSize: 'clamp(15px, 1.8vw, 18px)', fontWeight: 600, color: 'var(--kFg)',
+              fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0,
+            }}>
+              GB +44 <span style={{ color: 'var(--kFgFaint)', fontSize: 12 }}>{'▾'}</span>
+            </div>
+            <input
+              value={phone}
+              onChange={e => setPhone(e.target.value.replace(/[^0-9 +]/g, ''))}
+              placeholder={t('details.mobile.placeholder')}
+              type="tel" inputMode="tel"
+              style={{
+                flex: 1, padding: 'clamp(14px, 1.8vw, 18px) clamp(14px, 1.6vw, 20px)',
+                background: 'transparent', border: 0, outline: 'none',
+                fontSize: 'clamp(15px, 1.8vw, 18px)', fontFamily: 'ui-monospace, monospace',
+                color: 'var(--kFg)', letterSpacing: '0.02em', minWidth: 0,
+              }}
+            />
+          </div>
+          <div style={{
+            fontSize: 'clamp(11px, 1.2vw, 13px)', color: 'var(--kFgMuted)',
+            marginTop: 6, fontWeight: 500, lineHeight: 1.3,
+          }}>
+            {"We'll text you when your order is ready"}
+          </div>
+        </div>
+        )}
 
         {/* Optional divider */}
         <div style={{

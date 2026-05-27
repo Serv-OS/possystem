@@ -44,8 +44,15 @@ Deno.serve(async (req) => {
   const { payment_intent_id, reader_id, location_id, currency = 'gbp' } = body ?? {};
   if (!location_id) return json({ error: 'location_id required' }, 400);
 
+  // Resolve platform location — location_id may be an ops ID or a platform ID.
+  // Same mapping as stripe-process-payment-on-reader: try both.
+  const { data: platformLoc } = await platformAdmin.from('locations')
+    .select('id').or(`ops_location_id.eq.${location_id},id.eq.${location_id}`)
+    .maybeSingle();
+  const platLocId = platformLoc?.id || location_id;
+
   const { data: msa } = await platformAdmin.from('merchant_stripe_accounts')
-    .select('stripe_account_id').eq('location_id', location_id).maybeSingle();
+    .select('stripe_account_id').eq('location_id', platLocId).maybeSingle();
   if (!msa?.stripe_account_id) return json({ error: 'Merchant Stripe account not linked' }, 400);
 
   const errors: string[] = [];

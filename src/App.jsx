@@ -76,6 +76,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.272', date: '27 May 2026', label: 'Loyalty SMS invite + guest phone + skip_tipping fix',
+    changes: [
+      'LOYALTY PRE-REGISTER: attributeOrderToCustomer now fires send-welcome for every customer (kiosk, POS, any surface). Atomic dedup via welcome_sent_at ensures SMS only sends once. New customers get a branded SMS invite with portal signup link to complete their profile and join loyalty. Covers the gap where kiosk guest checkout and POS captured phone numbers but never sent the invite.',
+      'GUEST PHONE: Added phone number field (with GB +44 prefix) to the kiosk guest checkout form. Appears between name and the "Optional" divider. Helper text says "We\'ll text you when your order is ready". Phone is required for guest flow (order-ready SMS alerts + loyalty pre-registration).',
+      'SKIP TIPPING FIX: Omitting process_config from processPaymentIntent fell back to Terminal Configuration defaults (tipping enabled globally). Now explicitly passes process_config.skip_tipping=true when tipping should be suppressed.',
+      'CANCEL READER FIX: cancelReaderAction was missing location_id in the request body — the edge function returned 400 immediately, so the reader action was never actually cancelled and the display stayed stuck on the previous payment. Now passes location_id. Also fixed the edge function to resolve ops→platform location mapping (same as process function).',
+    ],
+  },
+  {
     version: '5.5.271', date: '27 May 2026', label: 'Kiosk: guest details capture + cancel reader on timeout',
     changes: [
       'GUEST DETAILS: "No thanks, just order" now goes to a "Your details" form (name + optional email/phone) instead of skipping straight to payment. Captures customer info for pre-registration into loyalty. Subtitle explains "Enter your name so we can call you when your order is ready".',

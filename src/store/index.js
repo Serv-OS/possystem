@@ -2345,6 +2345,39 @@ export const useStore = create((set, get) => ({
         if (stampErr) console.warn('[attributeOrderToCustomer] closed_checks customer_id stamp failed:', stampErr.message);
       }
 
+      // v5.5.272: Send welcome SMS invite for new customers (pre-register for loyalty).
+      // Fire-and-forget — send-welcome has atomic dedup via welcome_sent_at so calling
+      // it for existing customers is a harmless no-op. Covers kiosk guest checkout,
+      // POS customer capture, and any other surface using attributeOrderToCustomer.
+      // (Online ordering already fires this from customerLookup.js; OTP-verified
+      // customers get it from loyalty-otp verify. The dedup prevents double sends.)
+      (async () => {
+        try {
+          let companyId = null;
+          if (platformSupabase) {
+            const { data: pLoc } = await platformSupabase
+              .from('locations')
+              .select('company_id')
+              .or(`ops_location_id.eq.${locId},id.eq.${locId}`)
+              .limit(1).maybeSingle();
+            companyId = pLoc?.company_id;
+          }
+          if (companyId) {
+            fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-welcome`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                customer_id: customerId,
+                company_id: companyId,
+                location_id: locId,
+              }),
+            }).catch(() => {});
+          }
+        } catch (e) {
+          console.warn('[attributeOrderToCustomer] welcome send failed (non-fatal):', e?.message);
+        }
+      })();
+
       // v5.5.218: Loyalty points earn — fire-and-forget after customer is resolved.
       // Same async IIFE pattern as gift card reversal: local mutation already happened
       // so UX stays snappy. If the edge function is unreachable the points aren't

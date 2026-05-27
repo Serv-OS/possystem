@@ -176,15 +176,22 @@ Deno.serve(async (req) => {
   // in BO + the Terminal Configuration assigned to the reader, the reader
   // skips the tip step because Stripe needs amount_eligible to compute the
   // % options against. Use the base bill amount as the eligible amount.
+  // v5.5.272: When tipping is disabled (e.g. kiosk skip_tipping), we must
+  // explicitly pass process_config.skip_tipping = true. Just omitting
+  // process_config causes Stripe to fall back to the Terminal Configuration
+  // assigned to the reader, which has tipping enabled globally — so the
+  // reader still shows the tip prompt. skip_tipping overrides that.
   let action: Stripe.Terminal.Reader;
   try {
-    const processConfig: { tipping?: { amount_eligible: number } } = {};
+    const processParams: Record<string, unknown> = { payment_intent: pi.id };
     if (tippingEnabled) {
-      processConfig.tipping = { amount_eligible: amount_minor };
+      processParams.process_config = { tipping: { amount_eligible: amount_minor } };
+    } else {
+      processParams.process_config = { skip_tipping: true };
     }
     action = await stripe.terminal.readers.processPaymentIntent(
       reader.stripe_reader_id,
-      { payment_intent: pi.id, process_config: processConfig },
+      processParams as any,
       { stripeAccount: msa.stripe_account_id },
     );
   } catch (e) {
