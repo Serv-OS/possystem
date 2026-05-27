@@ -21,6 +21,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { supabase, platformSupabase, getLocationId, ensureAuthToken } from '../lib/supabase';
 import { useStore } from '../store';
+import { decrementStockRPC } from '../lib/db';
 import KioskProductModal from './KioskProductModal';
 import { t, setLang, useKioskLang, LANGUAGES, getLanguageMeta } from '../lib/i18n';
 import { displayName } from '../lib/itemDisplay';
@@ -681,6 +682,30 @@ export default function KioskApp({ kioskId, onUnpair }) {
       if (e3) console.warn('[kiosk] order_queue insert failed:', e3);
       // 4. Heartbeat
       await supabase.from('devices').update({ last_seen: new Date().toISOString() }).eq('id', kioskId);
+      // 5. v5.5.287: Decrement stock for each item + modifier in the order.
+      // Previously kiosk/online orders never decremented stock_levels, so POS
+      // and back office showed stale counts after kiosk sales.
+      try {
+        const currentCounts = useStore.getState().dailyCounts || {};
+        for (const line of cart) {
+          const itemId = line.item?.id;
+          if (itemId && currentCounts[itemId]) {
+            decrementStockRPC(itemId, line.qty || 1, locationId)
+              .catch(e => console.warn('[kiosk] stock decrement failed:', itemId, e?.message));
+          }
+          // Modifier sub-items (e.g. "Bueno Donut" inside a "Box of 3")
+          if (line.modsArray) {
+            for (const mod of line.modsArray) {
+              if (mod.itemId && currentCounts[mod.itemId]) {
+                decrementStockRPC(mod.itemId, (mod.qty || 1) * (line.qty || 1), locationId)
+                  .catch(e => console.warn('[kiosk] mod stock decrement failed:', mod.itemId, e?.message));
+              }
+            }
+          }
+        }
+      } catch (stockErr) {
+        console.warn('[kiosk] stock decrement batch failed:', stockErr?.message);
+      }
       setOrderNumber(num);
       setScreen('done');
       // Auto-reset to attract after 30s on done screen

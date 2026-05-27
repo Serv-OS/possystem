@@ -103,6 +103,14 @@ const CHANGELOG = [
     ],
   },
   {
+    version: '5.5.287', date: '27 May 2026', label: 'Kiosk + online orders now decrement stock',
+    changes: [
+      'FIX — STOCK NOT DECREMENTING: Kiosk and online ordering now call decrement_stock RPC after placing an order. Previously only POS orders decremented stock_levels — kiosk/online orders left stock counts unchanged, allowing overselling.',
+      'Covers both main items and modifier sub-items (e.g. "Bueno Donut" inside a "Box of 3"). Only items with active stock tracking (in dailyCounts) are decremented.',
+      'Online checkout: stock decrement added to both gift-card-only and Stripe payment paths.',
+    ],
+  },
+  {
     version: '5.5.286', date: '27 May 2026', label: 'Fix gift card "Card not found" on kiosk',
     changes: [
       'FIX — GIFT CARD "CARD NOT FOUND": gift-redeem edge function now tries card_id as fallback when HMAC code lookup fails. Previously, if code was present but HMAC didn\'t match (e.g. secret rotation), the card_id path was never tried. Now the function tries: (1) HMAC code lookup, (2) card_id direct lookup, (3) code_plain direct match — ensuring cards are always found.',

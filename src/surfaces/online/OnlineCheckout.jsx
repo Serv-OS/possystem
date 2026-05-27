@@ -18,12 +18,38 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { supabase, platformSupabase } from '../../lib/supabase';
+import { decrementStockRPC } from '../../lib/db';
 import { getStripeForAccount, createPaymentIntent } from '../../lib/stripeClient';
 import { attributeOnlineOrder } from '../../lib/customerLookup';
 import { getDayWindows } from '../../lib/openingHours';
 import { calculateOrderTax } from '../../lib/tax';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
+
+// v5.5.287: Decrement stock for each item in an online order.
+// Fire-and-forget — stock decrement failures never block order confirmation.
+function decrementOnlineStock(cart, locationId) {
+  try {
+    for (const line of cart) {
+      const itemId = line.itemId;
+      if (itemId) {
+        decrementStockRPC(itemId, line.qty || 1, locationId)
+          .catch(e => console.warn('[online] stock decrement failed:', itemId, e?.message));
+      }
+      // Modifier sub-items with linked itemId (e.g. "Bueno Donut" inside a "Box of 3")
+      if (line.mods) {
+        for (const mod of line.mods) {
+          if (mod.itemId) {
+            decrementStockRPC(mod.itemId, (mod.qty || 1) * (line.qty || 1), locationId)
+              .catch(e => console.warn('[online] mod stock decrement failed:', mod.itemId, e?.message));
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[online] stock decrement batch failed:', e?.message);
+  }
+}
 
 export default function OnlineCheckout({ cart, theme, location, orderType, loyalty, taxRates = [], onClose, onPlaced, onOpenLoyalty, onLoyaltyVerified }) {
   const opsLocationId = location.ops_location_id || location.id; // ops DB
@@ -622,6 +648,9 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         orderRecord: { ref, total: subtotal, items, type: orderType },
       }).catch(e => console.warn('[OnlineCheckout] attribute failed:', e?.message || e));
 
+      // v5.5.287: Decrement stock for each item in the order
+      decrementOnlineStock(cart, opsLocationId);
+
       onPlaced?.({ ref, collectionAt, total: subtotal, paymentIntent: null });
     } catch (e) {
       console.error('[OnlineCheckout] gift-only order failed:', e);
@@ -730,6 +759,9 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         locationId: opsLocationId,
         orderRecord: { ref, total: subtotal, items, type: orderType },
       }).catch(e => console.warn('[OnlineCheckout] attribute failed:', e?.message || e));
+
+      // v5.5.287: Decrement stock for each item in the order
+      decrementOnlineStock(cart, opsLocationId);
 
       onPlaced?.({ ref, collectionAt, total: subtotal, paymentIntent });
     } catch (e) {
