@@ -62,9 +62,10 @@ Deno.serve(async (req) => {
     currency?: string;
     line_items?: Array<{ description: string; amount: number; quantity: number }>;
     closed_check_id?: string;
+    skip_tipping?: boolean; // v5.5.269: kiosk collects tip in its own UI, skip reader prompt
   };
   try { body = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
-  const { pos_device_id, amount_minor, currency, line_items, closed_check_id } = body ?? {};
+  const { pos_device_id, amount_minor, currency, line_items, closed_check_id, skip_tipping } = body ?? {};
   if (!pos_device_id || !amount_minor || !currency) {
     return json({ error: 'pos_device_id, amount_minor, currency required' }, 400);
   }
@@ -117,7 +118,8 @@ Deno.serve(async (req) => {
   const { data: tipSettings } = await platformAdmin.from('location_reader_settings')
     .select('tipping_enabled, tip_percentages, allow_custom_tip')
     .eq('location_id', platformLoc.id).maybeSingle();
-  const tippingEnabled = tipSettings?.tipping_enabled !== false;     // default true
+  // v5.5.269: skip_tipping overrides location settings — kiosk already collected tip in its UI
+  const tippingEnabled = skip_tipping ? false : (tipSettings?.tipping_enabled !== false);
 
   // 4. Create PaymentIntent on the connected account
   // payment_method_options.card_present.request_extended_authorization can be left default

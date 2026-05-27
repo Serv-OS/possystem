@@ -2247,6 +2247,7 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, verifiedL
           amount_minor: amountMinor,
           currency: 'gbp',
           line_items: lineItems,
+          skip_tipping: true, // kiosk collects tip in its own UI — don't prompt again on reader
         }),
       });
       const j = await res.json();
