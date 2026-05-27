@@ -76,6 +76,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.253', date: '27 May 2026', label: 'Fix: item picker shows variants with correct prices',
+    changes: [
+      'Loyalty free-item picker now shows size variants (e.g. "Latte — Large") instead of 0-price master items. Master items that have variants are excluded since they are just containers.',
+      'Standalone items (no variants) still show at their own price.',
+      'Variant names display as "Parent — Variant" with the variant\'s actual price.',
+    ],
+  },
+  {
     version: '5.5.252', date: '27 May 2026', label: 'Fix: loyalty free-item picker loads menu items',
     changes: [
       'Fixed "No menu items found" in the back office loyalty rewards and stamp cards item picker. The query was selecting a nonexistent \'price\' column (menu_items uses \'pricing\' jsonb), causing a silent PostgREST error.',

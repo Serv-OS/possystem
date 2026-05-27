@@ -138,6 +138,9 @@ export default function LoyaltyManager() {
     } catch {}
     // Load menu items for the item picker (free item rewards)
     // NB: menu_items has 'pricing' jsonb, NOT a 'price' column.
+    // Variants (sizes) are the real sellable products — master items are just
+    // containers with price 0. Show variants as "Parent — Variant" and
+    // standalone items (no children) at their own price.
     try {
       const locId = getActiveLocationSync() || await getLocationId();
       if (locId && supabase) {
@@ -148,11 +151,25 @@ export default function LoyaltyManager() {
           .eq('archived', false)
           .order('name');
         if (itemsErr) console.error('[LoyaltyManager] menu items load:', itemsErr.message);
-        // Only top-level items (not size variants); extract base price from pricing jsonb
-        setMenuItems((items || []).filter(i => !i.parent_id).map(i => ({
-          ...i,
+        const all = items || [];
+        // Build parent name lookup + set of IDs that have children
+        const parentNames = {};
+        const hasChildren = new Set();
+        for (const i of all) {
+          parentNames[i.id] = i.name;
+          if (i.parent_id) hasChildren.add(i.parent_id);
+        }
+        // Include: variants (parent_id set) + standalone items (no children)
+        // Exclude: master items that have variants (they're 0-price containers)
+        const picked = all.filter(i =>
+          i.parent_id || !hasChildren.has(i.id)
+        ).map(i => ({
+          id: i.id,
+          name: i.parent_id ? `${parentNames[i.parent_id] || 'Item'} — ${i.name}` : i.name,
           price: i.pricing?.base ?? 0,
-        })));
+        }));
+        picked.sort((a, b) => a.name.localeCompare(b.name));
+        setMenuItems(picked);
       }
     } catch (e) { console.error('[LoyaltyManager] menu items error:', e); }
   }, []);
