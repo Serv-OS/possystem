@@ -429,6 +429,7 @@ export const insertClosedCheck = async (check, locationId = null) => {
     table_label:  check.tableLabel || null,
     gift_card:    check.giftCard || null,   // v5.5.217: gift card reversal on refund
     loyalty:      check.loyalty  || null,   // v5.5.218: loyalty points summary (earn/redeem)
+    source:       check.source   || null,   // v5.5.276: pos / kiosk / online / qr — null = 'pos' default
   };
 
   // Use DataSafe triple-write: localStorage → Supabase (queued if offline)

@@ -76,6 +76,13 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.277', date: '27 May 2026', label: 'Fix source field passthrough for closed checks',
+    changes: [
+      'SOURCE PASSTHROUGH: insertClosedCheck in db.js now passes check.source through to the closed_checks row. Previously the source field was only written by surfaces that do direct inserts (kiosk, online, QR) but omitted from the shared insertClosedCheck path.',
+      'DATASAFE RECONCILE: reconcilePendingChecks now includes source, staff_id, tax_amount, drawer_id, shift_id, gift_card, and loyalty in the replay row. Previously these fields were lost when a pending check was retried after offline recovery.',
+    ],
+  },
+  {
     version: '5.5.276', date: '27 May 2026', label: 'Email receipt from Transactions report',
     changes: [
       'EMAIL RECEIPT: Each transaction in the expanded row now has an "Email receipt" button. Opens inline email form. Pre-fills the customer email address when the customer record has one on file. Calls the existing send-receipt edge function which builds a branded HTML receipt and dispatches via the configured email provider (Resend/Postmark). Shows success/error feedback inline and auto-closes on success.',

@@ -102,6 +102,7 @@ export async function reconcilePendingChecks() {
         location_id:  locationId,
         ref:          check.ref,
         server:       check.server,
+        staff_id:     check.staffId || null,
         covers:       check.covers,
         order_type:   check.orderType,
         customer:     check.customer || null,
@@ -110,13 +111,19 @@ export async function reconcilePendingChecks() {
         subtotal:     check.subtotal,
         service:      check.service || 0,
         tip:          check.tip || 0,
+        tax_amount:   check.taxAmount != null ? check.taxAmount : null,
         total:        check.total,
         method:       check.method,
+        drawer_id:    check.drawerId || null,
+        shift_id:     check.shiftId || null,
         closed_at:    check.closedAt ? new Date(check.closedAt).toISOString() : new Date().toISOString(),
         status:       check.status || 'paid',
         refunds:      check.refunds || [],
         table_id:     check.tableId || null,
         table_label:  check.tableLabel || null,
+        gift_card:    check.giftCard || null,
+        loyalty:      check.loyalty || null,
+        source:       check.source || null,
       };
       const { error } = await supabase.from('closed_checks').insert(row);
       if (!error) {
