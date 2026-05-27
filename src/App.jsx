@@ -76,12 +76,12 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
-    version: '5.5.270', date: '27 May 2026', label: 'Kiosk: server-side card reader + skip double-tip',
+    version: '5.5.271', date: '27 May 2026', label: 'Kiosk: guest details capture + cancel reader on timeout',
     changes: [
-      'CARD READER FIX: Kiosk payment now uses the same server-side stripe-process-payment-on-reader edge function as POS. Sends kioskId as pos_device_id so the edge function resolves the assigned network reader and pushes payment to it.',
-      'SKIP DOUBLE TIP: Kiosk sends skip_tipping:true to the edge function. The edge function now accepts this flag and omits process_config.tipping from the reader call, so the reader skips the tip prompt. Kiosk already collects tip in its own screen — no more double-prompt.',
-      'POLLING: Kiosk polls stripe-poll-reader-action every 1.5s (5-min timeout). Shows connecting/tap/paying status.',
-      'EDGE FN DEPLOYED: stripe-process-payment-on-reader updated with skip_tipping support.',
+      'GUEST DETAILS: "No thanks, just order" now goes to a "Your details" form (name + optional email/phone) instead of skipping straight to payment. Captures customer info for pre-registration into loyalty. Subtitle explains "Enter your name so we can call you when your order is ready".',
+      'CANCEL ON TIMEOUT: When the 5-minute card payment timeout fires, the kiosk now calls stripe-cancel-reader-action to clear the pending payment from the physical reader. Also cancels on Back button press and component unmount.',
+      'SKIP DOUBLE TIP: Kiosk sends skip_tipping:true — reader skips tip prompt since kiosk already collected it.',
+      'CARD READER: Server-side stripe-process-payment-on-reader flow with kioskId as pos_device_id.',
     ],
   },
   {

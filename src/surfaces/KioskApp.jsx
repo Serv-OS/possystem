@@ -2170,13 +2170,39 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, verifiedL
   const [giftApplying, setGiftApplying] = useState(false);
   const [giftError, setGiftError] = useState('');
   const pollAbortRef = useRef(false);
+  const activeReaderRef = useRef(null); // track reader ID for cancel on timeout/unmount
+  const activePiRef = useRef(null);     // track PI ID for cancel
 
   // Available gift cards from verified loyalty data
   const availableGiftCards = verifiedLoyalty?.giftCards?.filter(gc => (gc.balance || 0) > 0) || [];
   const hasGiftCards = availableGiftCards.length > 0 && !giftCardPayment;
 
-  // Cleanup polling on unmount
-  useEffect(() => () => { pollAbortRef.current = true; }, []);
+  // Cancel active reader action (timeout, unmount, or back navigation)
+  const cancelReaderAction = useCallback(async () => {
+    const readerId = activeReaderRef.current;
+    const piId = activePiRef.current;
+    if (!readerId) return;
+    activeReaderRef.current = null;
+    activePiRef.current = null;
+    try {
+      const token = await ensureAuthToken();
+      if (!token) return;
+      await fetch(`${OPS_URL}/functions/v1/stripe-cancel-reader-action`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({ reader_id: readerId, ...(piId ? { payment_intent_id: piId } : {}) }),
+      });
+      console.log('[kiosk] cancelled reader action:', readerId);
+    } catch (e) {
+      console.warn('[kiosk] cancel reader action failed:', e?.message || e);
+    }
+  }, []);
+
+  // Cleanup: cancel reader + stop polling on unmount
+  useEffect(() => () => {
+    pollAbortRef.current = true;
+    cancelReaderAction();
+  }, []);
 
   // v5.5.265: Apply gift card to this order
   const applyGiftCard = async (gc) => {
@@ -2256,7 +2282,9 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, verifiedL
         throw new Error(j.error || `HTTP ${res.status}`);
       }
 
-      // Payment pushed to reader — start polling
+      // Payment pushed to reader — track for cancel and start polling
+      activeReaderRef.current = j.reader_id;
+      activePiRef.current = j.payment_intent_id;
       setCardState('collecting');
       setCardStatusMsg('Tap or insert your card on the reader');
       pollPaymentIntent(j.payment_intent_id, j.reader_id);
@@ -2290,6 +2318,9 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, verifiedL
           setCardStatusMsg('Customer is paying on reader');
         }
         if (j.is_terminal_state) {
+          // Clear refs — payment is done, no cancel needed
+          activeReaderRef.current = null;
+          activePiRef.current = null;
           if (j.is_success) {
             setCardState('success');
             setCardStatusMsg('Payment approved');
@@ -2305,6 +2336,8 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, verifiedL
       }
     }
     if (!pollAbortRef.current) {
+      // Timed out — cancel the pending action on the reader so it doesn't stay stuck
+      cancelReaderAction();
       setCardState('error');
       setCardError('Timed out - customer did not complete payment within 5 minutes');
     }
@@ -2322,7 +2355,7 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, verifiedL
 
   return (
     <div style={fullScreen()}>
-      <ScreenHeader title={fullyPaid ? 'Order fully covered!' : 'Tap or insert your card'} subtitle={fullyPaid ? 'No card payment needed' : 'Use the card reader on the side of the kiosk'} onBack={onBack} brandColor={brandColor} />
+      <ScreenHeader title={fullyPaid ? 'Order fully covered!' : 'Tap or insert your card'} subtitle={fullyPaid ? 'No card payment needed' : 'Use the card reader on the side of the kiosk'} onBack={() => { pollAbortRef.current = true; cancelReaderAction(); onBack(); }} brandColor={brandColor} />
       <div style={{ flex: 1, padding: '4vh 5vw', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 'clamp(16px, 2.5vh, 28px)' }}>
 
         {/* Discounts summary */}
@@ -2783,9 +2816,9 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
               }}>›</div>
             </button>
 
-            {/* Tile 2: No thanks, just order */}
+            {/* Tile 2: No thanks, just order — still captures name for pre-registration */}
             <button
-              onClick={skip}
+              onClick={() => setOtpStep('guest')}
               style={{
                 width: '100%',
                 padding: 'clamp(22px, 3vw, 34px) clamp(20px, 2.6vw, 28px)',
@@ -2843,7 +2876,7 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
           marginBottom: 'clamp(6px, 0.8vw, 10px)',
         }}>
           <div style={{ fontSize: 'clamp(28px, 3.6vw, 38px)', marginBottom: 6 }}>
-            {showWelcome ? '👋' : otpStep === 'code' || otpStep === 'verifying' ? '📱' : '📲'}
+            {showWelcome ? '👋' : otpStep === 'guest' ? '📝' : otpStep === 'code' || otpStep === 'verifying' ? '📱' : '📲'}
           </div>
           <div style={{
             fontSize: 'clamp(22px, 3vw, 30px)',
@@ -2853,9 +2886,11 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
           }}>
             {showWelcome
               ? `${t('details.welcome')}${customerLookup?.name ? ', ' + customerLookup.name : ''}!`
-              : otpStep === 'code' || otpStep === 'verifying'
-                ? 'Enter verification code'
-                : 'Sign in with your mobile'}
+              : otpStep === 'guest'
+                ? 'Your details'
+                : otpStep === 'code' || otpStep === 'verifying'
+                  ? 'Enter verification code'
+                  : 'Sign in with your mobile'}
           </div>
         </div>
         )}
@@ -2872,9 +2907,11 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
         }}>
           {showWelcome
             ? 'Your loyalty details are shown below'
-            : otpStep === 'code' || otpStep === 'verifying'
-              ? `We sent a 6-digit code to your mobile ending ${phone.slice(-4)}`
-              : "Enter your number and we'll text you a verification code"}
+            : otpStep === 'guest'
+              ? 'Enter your name so we can call you when your order is ready'
+              : otpStep === 'code' || otpStep === 'verifying'
+                ? `We sent a 6-digit code to your mobile ending ${phone.slice(-4)}`
+                : "Enter your number and we'll text you a verification code"}
         </div>
         )}
 
