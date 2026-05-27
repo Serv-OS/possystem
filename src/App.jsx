@@ -76,6 +76,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.282', date: '27 May 2026', label: 'Kiosk: fix gift card "code required" + guest gift card entry',
+    changes: [
+      'FIX — GIFT CARD "CODE REQUIRED": gift-redeem edge function now accepts card_id as alternative to code. Previously, if code_plain was null in the DB for a gift card, the kiosk sent code=null and got "code required" error. Now the kiosk sends both code and card_id; the edge function uses whichever is available.',
+      'GUEST GIFT CARD: Added manual gift card code entry on the kiosk payment screen. A "Have a gift card?" button opens an inline code input. Works for guests (no OTP/login required) and for cards not linked to a customer account. Supports full or partial payment — remaining balance goes to the card reader.',
+      'When linked gift cards are shown (logged-in customers), an "Enter a different gift card code" link lets them use an unlinked card instead.',
+    ],
+  },
+  {
     version: '5.5.281', date: '27 May 2026', label: 'Customer search: raise phone threshold to 6 digits for scale',
     changes: [
       'SCALE: Customer phone search on POS now waits for 6 digits before hitting Supabase (was 3). With 3 digits, a query like "079" could return hundreds of matches across the org, creating unnecessary DB load and slow responses. Name/email search stays at 3 chars since those are more selective. The phone fallback search also raised from 3→6 digits.',

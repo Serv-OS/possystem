@@ -35,7 +35,7 @@ Deno.serve(async (req) => {
   try { body = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
 
   const {
-    code, amount, order_id, location_id, channel, idempotency_key, staff_id,
+    code, card_id, amount, order_id, location_id, channel, idempotency_key, staff_id,
   } = body as any;
 
   // v5.5.207: resolve company via location_id (reliable) with user fallback
@@ -43,7 +43,10 @@ Deno.serve(async (req) => {
   if (companyResult instanceof Response) return companyResult;
   const companyId = companyResult;
 
-  if (!code) return json({ error: 'code required' }, 400);
+  // v5.5.281: accept either code OR card_id. card_id path is used when the
+  // kiosk/online surface already knows the card from loyalty-balance (which
+  // returns the card_id) but code_plain might be null.
+  if (!code && !card_id) return json({ error: 'code or card_id required' }, 400);
   if (!amount) return json({ error: 'amount required' }, 400);
   if (!idempotency_key) return json({ error: 'idempotency_key required' }, 400);
   if (!channel) return json({ error: 'channel required' }, 400);
@@ -53,8 +56,6 @@ Deno.serve(async (req) => {
     return json({ error: 'amount must be positive (minor currency units)' }, 400);
   }
 
-  // Resolve code to card via HMAC lookup
-  const normalized = normalizeCode(code as string);
   const { data: config } = await platformAdmin
     .from('gift_brand_config')
     .select('hmac_secret, currency')
@@ -62,13 +63,29 @@ Deno.serve(async (req) => {
     .maybeSingle();
   if (!config) return json({ error: 'Gift cards not configured for this org' }, 404);
 
-  const lookup = await hmacLookup(normalized, config.hmac_secret);
-  const { data: card } = await platformAdmin
-    .from('gift_cards')
-    .select('*')
-    .eq('code_lookup', lookup)
-    .eq('company_id', companyId)
-    .maybeSingle();
+  // v5.5.281: Two lookup paths — by code (HMAC) or by card_id (direct)
+  let card: any = null;
+  if (code) {
+    // Resolve code to card via HMAC lookup
+    const normalized = normalizeCode(code as string);
+    const lookup = await hmacLookup(normalized, config.hmac_secret);
+    const { data: found } = await platformAdmin
+      .from('gift_cards')
+      .select('*')
+      .eq('code_lookup', lookup)
+      .eq('company_id', companyId)
+      .maybeSingle();
+    card = found;
+  } else if (card_id) {
+    // Direct lookup by card_id — used by kiosk/online when code_plain is unavailable
+    const { data: found } = await platformAdmin
+      .from('gift_cards')
+      .select('*')
+      .eq('id', card_id)
+      .eq('company_id', companyId)
+      .maybeSingle();
+    card = found;
+  }
 
   if (!card) return json({ error: 'Card not found' }, 404);
 

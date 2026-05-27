@@ -2183,6 +2183,11 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, verifiedL
   const availableGiftCards = verifiedLoyalty?.giftCards?.filter(gc => (gc.balance || 0) > 0) || [];
   const hasGiftCards = availableGiftCards.length > 0 && !giftCardPayment;
 
+  // v5.5.281: Manual gift card code entry — for guests or cards not linked to an account
+  const [manualGCCode, setManualGCCode] = useState('');
+  const [manualGCOpen, setManualGCOpen] = useState(false);
+  const showManualGC = !giftCardPayment && cardState === 'idle';
+
   // Cancel active reader action (timeout, unmount, or back navigation)
   const cancelReaderAction = useCallback(async () => {
     const readerId = activeReaderRef.current;
@@ -2220,11 +2225,14 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, verifiedL
       const amountDueMinor = Math.round(total * 100);
       const applyAmount = Math.min(gc.balance, amountDueMinor);
       const idempKey = `kiosk-gc-${gc.id}-${Date.now()}`;
+      // v5.5.281: send both code and card_id — gift-redeem accepts either.
+      // code_plain may be null for some cards; card_id always available.
       const res = await fetch(`${OPS_URL}/functions/v1/gift-redeem`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
         body: JSON.stringify({
-          code: gc.code,
+          code: gc.code || undefined,
+          card_id: gc.id,
           amount: applyAmount,
           order_id: null,
           location_id: locationId,
@@ -2240,6 +2248,46 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, verifiedL
         applied: j.applied || applyAmount,
         remaining_balance: j.remaining_balance ?? (gc.balance - applyAmount),
       });
+    } catch (e) {
+      setGiftError(e?.message || 'Could not apply gift card');
+    } finally {
+      setGiftApplying(false);
+    }
+  };
+
+  // v5.5.281: Redeem a gift card by manually entered code (guest checkout)
+  const redeemManualGiftCard = async () => {
+    const code = manualGCCode.trim();
+    if (!code) return;
+    setGiftApplying(true);
+    setGiftError('');
+    try {
+      const token = await ensureAuthToken();
+      if (!token) throw new Error('Auth unavailable');
+      const amountDueMinor = Math.round(total * 100);
+      const idempKey = `kiosk-gc-manual-${code}-${Date.now()}`;
+      const res = await fetch(`${OPS_URL}/functions/v1/gift-redeem`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          code,
+          amount: amountDueMinor,
+          order_id: null,
+          location_id: locationId,
+          channel: 'kiosk',
+          idempotency_key: idempKey,
+        }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+      onGiftCardApply({
+        card_id: j.card_id,
+        code,
+        applied: j.applied || amountDueMinor,
+        remaining_balance: j.remaining_balance ?? 0,
+      });
+      setManualGCCode('');
+      setManualGCOpen(false);
     } catch (e) {
       setGiftError(e?.message || 'Could not apply gift card');
     } finally {
@@ -2349,9 +2397,9 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, verifiedL
     }
   };
 
-  // Auto-start card payment if no gift cards to show and total > 0
+  // Auto-start card payment if no gift cards to show, no manual entry open, and total > 0
   useEffect(() => {
-    if (cardState === 'idle' && total > 0 && !hasGiftCards) {
+    if (cardState === 'idle' && total > 0 && !hasGiftCards && !manualGCOpen) {
       startCardPayment();
     }
   }, []);
@@ -2425,6 +2473,112 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, verifiedL
             }}>
               Skip — pay full amount by card →
             </button>
+          </div>
+        )}
+
+        {/* v5.5.281: Manual gift card entry — works for guests and unlinked cards */}
+        {showManualGC && !hasGiftCards && cardState === 'idle' && (
+          <div style={{ width: '100%', maxWidth: 440, marginBottom: 12 }}>
+            {!manualGCOpen ? (
+              <button onClick={() => { setManualGCOpen(true); setGiftError(''); }} style={{
+                width: '100%', padding: 'clamp(12px, 1.6vw, 16px)', borderRadius: 14,
+                border: '1.5px dashed ' + brandColor + '44', background: 'transparent',
+                cursor: 'pointer', fontFamily: 'inherit', fontSize: 14, fontWeight: 600,
+                color: brandColor, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+              }}>
+                🎁 Have a gift card?
+              </button>
+            ) : (
+              <div style={{ padding: 16, borderRadius: 14, background: 'var(--kSurfaceRaised)', border: '1.5px solid ' + brandColor + '33' }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--kFg)', marginBottom: 10 }}>Enter gift card code</div>
+                {giftError && (
+                  <div style={{ padding: 8, borderRadius: 8, marginBottom: 8, fontSize: 13, color: '#e55', background: '#e5555515', border: '1px solid #e5555533', fontWeight: 600 }}>{giftError}</div>
+                )}
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <input
+                    type="text"
+                    value={manualGCCode}
+                    onChange={e => setManualGCCode(e.target.value.toUpperCase())}
+                    placeholder="e.g. ABCD-1234-EFGH"
+                    autoFocus
+                    style={{
+                      flex: 1, padding: '12px 14px', borderRadius: 10, fontSize: 16, fontWeight: 600,
+                      fontFamily: 'var(--font-mono, monospace)', letterSpacing: '.05em', textTransform: 'uppercase',
+                      border: '1.5px solid var(--kBorder)', background: 'var(--kSurface)', color: 'var(--kFg)',
+                      outline: 'none',
+                    }}
+                    onKeyDown={e => { if (e.key === 'Enter' && manualGCCode.trim()) redeemManualGiftCard(); }}
+                  />
+                  <button onClick={redeemManualGiftCard} disabled={giftApplying || !manualGCCode.trim()}
+                    style={{
+                      padding: '12px 20px', borderRadius: 10, border: 'none',
+                      background: manualGCCode.trim() ? brandColor : brandColor + '44',
+                      color: '#fff', fontWeight: 800, fontSize: 14, cursor: giftApplying ? 'wait' : 'pointer',
+                      fontFamily: 'inherit', opacity: giftApplying ? 0.6 : 1,
+                    }}>
+                    {giftApplying ? '...' : 'Apply'}
+                  </button>
+                </div>
+                <button onClick={() => { setManualGCOpen(false); setGiftError(''); startCardPayment(); }}
+                  style={{
+                    width: '100%', padding: 10, marginTop: 10, borderRadius: 10,
+                    border: 'none', background: 'transparent', cursor: 'pointer',
+                    fontFamily: 'inherit', fontSize: 13, fontWeight: 600, color: 'var(--kFgMuted)',
+                  }}>
+                  Skip — pay by card →
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Also show "Have a gift card?" on the linked cards screen */}
+        {showManualGC && hasGiftCards && cardState === 'idle' && !manualGCOpen && (
+          <div style={{ width: '100%', maxWidth: 440, marginTop: -4, marginBottom: 8 }}>
+            <button onClick={() => { setManualGCOpen(true); setGiftError(''); }} style={{
+              width: '100%', padding: 10, borderRadius: 10, border: 'none',
+              background: 'transparent', cursor: 'pointer', fontFamily: 'inherit',
+              fontSize: 13, fontWeight: 600, color: brandColor, textDecoration: 'underline',
+            }}>
+              Enter a different gift card code
+            </button>
+          </div>
+        )}
+
+        {/* Manual gift card entry inline when linked cards are showing */}
+        {showManualGC && hasGiftCards && manualGCOpen && cardState === 'idle' && (
+          <div style={{ width: '100%', maxWidth: 440, marginBottom: 12 }}>
+            <div style={{ padding: 16, borderRadius: 14, background: 'var(--kSurfaceRaised)', border: '1.5px solid ' + brandColor + '33' }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--kFg)', marginBottom: 10 }}>Enter gift card code</div>
+              {giftError && (
+                <div style={{ padding: 8, borderRadius: 8, marginBottom: 8, fontSize: 13, color: '#e55', background: '#e5555515', border: '1px solid #e5555533', fontWeight: 600 }}>{giftError}</div>
+              )}
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input type="text" value={manualGCCode} onChange={e => setManualGCCode(e.target.value.toUpperCase())}
+                  placeholder="e.g. ABCD-1234-EFGH" autoFocus
+                  style={{
+                    flex: 1, padding: '12px 14px', borderRadius: 10, fontSize: 16, fontWeight: 600,
+                    fontFamily: 'var(--font-mono, monospace)', letterSpacing: '.05em', textTransform: 'uppercase',
+                    border: '1.5px solid var(--kBorder)', background: 'var(--kSurface)', color: 'var(--kFg)', outline: 'none',
+                  }}
+                  onKeyDown={e => { if (e.key === 'Enter' && manualGCCode.trim()) redeemManualGiftCard(); }}
+                />
+                <button onClick={redeemManualGiftCard} disabled={giftApplying || !manualGCCode.trim()}
+                  style={{
+                    padding: '12px 20px', borderRadius: 10, border: 'none',
+                    background: manualGCCode.trim() ? brandColor : brandColor + '44',
+                    color: '#fff', fontWeight: 800, fontSize: 14, cursor: giftApplying ? 'wait' : 'pointer',
+                    fontFamily: 'inherit', opacity: giftApplying ? 0.6 : 1,
+                  }}>
+                  {giftApplying ? '...' : 'Apply'}
+                </button>
+              </div>
+              <button onClick={() => setManualGCOpen(false)} style={{
+                width: '100%', padding: 8, marginTop: 8, borderRadius: 8, border: 'none',
+                background: 'transparent', cursor: 'pointer', fontFamily: 'inherit',
+                fontSize: 12, fontWeight: 600, color: 'var(--kFgMuted)',
+              }}>Cancel</button>
+            </div>
           </div>
         )}
 
