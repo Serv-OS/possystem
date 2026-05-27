@@ -76,6 +76,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.285', date: '27 May 2026', label: 'Online ordering: enforce POS stock limits on kiosk/online',
+    changes: [
+      'STOCK LIMITS ON KIOSK/ONLINE: The product modal qty selector is now capped at the remaining stock from the POS daily counts. If only 2 Bruno filled donuts are in stock and 0 are in the cart, the customer can only add up to 2. Shows "Only X left" when stock is low and "Sold out" when depleted.',
+      'MODIFIER OPTION STOCK: Modifier options that link to a menu item (via itemId) are now stock-aware. If an option\'s linked item is 86\'d or sold out, the option is grayed out and unselectable. Low-stock options show "Only X left" inline.',
+      'CART QTY CAP: The cart screen\'s +/- stepper respects stock limits — the + button is disabled when the item is at its stock cap. updateCartQty also enforces the cap server-side in case the UI is bypassed.',
+      'CART USAGE TRACKING: New cartItemUsage memo counts total usage of each itemId across the cart, including both direct items and modifier options with itemId. This is passed to the product modal so stock limits account for what\'s already in the customer\'s cart.',
+    ],
+  },
+  {
     version: '5.5.284', date: '27 May 2026', label: 'Table sync: reconciler full-compare + expanded meaningful check',
     changes: [
       'RECONCILER FIX: SessionReconciler previously only updated existing tables when Supabase had MORE items (item count comparison). Now does a full session comparison — any difference (voids, mods, discounts, price edits, notes) is caught. Supabase version is applied to non-active tables since it was written by the device that made the change.',

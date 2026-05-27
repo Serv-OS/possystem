@@ -217,11 +217,16 @@ function summarizeForDisplay(groups, selections, nestedSelections, subGroupsCach
 // MAIN COMPONENT
 // ============================================================
 
-export default function KioskProductModal({ item, allItems = [], brandColor, brandAccent, basePrice, addLabel, onAdd, onCancel }) {
+export default function KioskProductModal({ item, allItems = [], brandColor, brandAccent, basePrice, addLabel, onAdd, onCancel, dailyCounts = {}, cartItemUsage = {} }) {
   // Subscribe to language changes so t() strings re-render if the customer
   // switches language while the modal is open.
   useKioskLang();
   const allInstructionDefs = useStore(s => s.instructionGroupDefs) || [];
+
+  // v5.5.285: Stock enforcement — cap qty selector and modifier selections
+  // to the remaining stock minus what's already in the customer's cart.
+  // cartItemUsage is { [itemId]: totalQtyInCart } computed by KioskApp.
+  const eightySixIds = useStore(s => s.eightySixIds || []);
 
   // (v5.5.27/28 sub-item lookup + diagnostic moved below state declarations to avoid TDZ.)
 
@@ -235,6 +240,29 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
   const [qty, setQty] = useState(1);
   const [showError, setShowError] = useState(false);
   const [instructions, setInstructions] = useState('');
+
+  // v5.5.285: Calculate max qty for the main item based on stock
+  const itemStock = dailyCounts[item?.id] || null;
+  const itemInCart = cartItemUsage[item?.id] || 0;
+  // If stock is tracked, cap at remaining minus what's already in cart
+  const maxQty = itemStock ? Math.max(0, itemStock.remaining - itemInCart) : Infinity;
+  // Helper: get remaining stock for a modifier option by its itemId
+  const getOptionStock = (optItemId) => {
+    if (!optItemId) return Infinity;
+    const stock = dailyCounts[optItemId];
+    if (!stock) return Infinity;
+    const inCart = cartItemUsage[optItemId] || 0;
+    // Also count current selections in THIS modal that use this itemId
+    let inModal = 0;
+    for (const g of groups) {
+      const picked = selections[g.id] || [];
+      for (const pid of picked) {
+        const opt = (g.options || []).find(o => o.id === pid);
+        if (opt && (opt.itemId || opt.item_id) === optItemId) inModal++;
+      }
+    }
+    return Math.max(0, stock.remaining - inCart - (inModal * qty));
+  };
 
   // ============================================================
   // v5.5.30: Resolve effective image/description/allergens for a modifier
@@ -460,6 +488,27 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
     setShowError(false);
     setSelections(prev => {
       const current = prev[group.id] || [];
+      // v5.5.285: Check stock for this option's linked item
+      const opt = (group.options || []).find(o => o.id === optId);
+      const optItemId = opt?.itemId || opt?.item_id;
+      if (optItemId) {
+        const stock = dailyCounts[optItemId];
+        if (stock) {
+          const inCart = cartItemUsage[optItemId] || 0;
+          // Count how many times this option is already selected (across all groups)
+          let inModal = 0;
+          for (const g of groups) {
+            const gpicked = (g.id === group.id ? current : (selections[g.id] || []));
+            for (const pid of gpicked) {
+              const o = (g.options || []).find(x => x.id === pid);
+              if (o && (o.itemId || o.item_id) === optItemId) inModal++;
+            }
+          }
+          if (inModal >= stock.remaining - inCart) return prev; // at stock limit
+        }
+        // Also check 86'd
+        if (eightySixIds.includes(optItemId)) return prev;
+      }
       let next;
       if (group._isSingle) {
         // Toggle off if same option already picked, otherwise replace
@@ -748,10 +797,18 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
                   // v5.5.27: pull effective display fields (own option > matched sold-alone subitem).
                   const effective = resolveOpt(opt);
 
+                  // v5.5.285: Stock enforcement for modifier options
+                  const optItemId = opt.itemId || opt.item_id;
+                  const optStockRemaining = getOptionStock(optItemId);
+                  const optIs86 = optItemId && eightySixIds.includes(optItemId);
+                  const optSoldOut = optIs86 || optStockRemaining <= 0;
+                  const optAtStockCap = !optSoldOut && optStockRemaining < Infinity && optStockRemaining <= 0;
+                  const blocked = optSoldOut || (atCap && !isSelected);
+
                   return (
                     <div key={opt.id} style={{ display: 'flex', flexDirection: 'column' }}>
                       <div
-                        onClick={(!isSelected && atCap) ? undefined : () => incOption(g, opt.id)}
+                        onClick={blocked ? undefined : () => incOption(g, opt.id)}
                         style={{
                           background: 'var(--kSurfaceRaised)',
                           border: '1.5px solid ' + (isSelected ? brandColor : (isInvalid ? 'var(--kError-border)' : 'var(--kBorder1)')),
@@ -761,8 +818,8 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
                           overflow: 'hidden',
                           display: 'flex',
                           flexDirection: 'column',
-                          cursor: (atCap && !isSelected) ? 'not-allowed' : 'pointer',
-                          opacity: (atCap && !isSelected) ? 0.4 : 1,
+                          cursor: blocked ? 'not-allowed' : 'pointer',
+                          opacity: blocked ? 0.4 : 1,
                           position: 'relative',
                         }}
                       >
@@ -867,6 +924,13 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
                                 WebkitBoxOrient: 'vertical',
                                 overflow: 'hidden',
                               }}>{effective.allergens.join(', ')}</span>
+                            )}
+                            {/* v5.5.285: Stock badge for modifier options */}
+                            {optSoldOut && (
+                              <span style={{ fontSize: 'clamp(10px, 1.2vw, 13px)', color: 'var(--kError-fg, #e53e3e)', fontWeight: 700 }}>Sold out</span>
+                            )}
+                            {!optSoldOut && optItemId && optStockRemaining < Infinity && optStockRemaining <= 3 && (
+                              <span style={{ fontSize: 'clamp(10px, 1.2vw, 13px)', color: '#e67e22', fontWeight: 700 }}>Only {optStockRemaining} left</span>
                             )}
                             {sub && !isSelected && (
                               <span style={{ fontSize: 'clamp(11px, 1.2vw, 13px)', color: brandColor, fontWeight: 700 }}>{sub.name} ›</span>
@@ -1087,8 +1151,21 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
             textAlign: 'center',
             fontVariantNumeric: 'tabular-nums',
           }}>{qty}</div>
-          <button onClick={() => setQty(q => q + 1)} style={qtyBtn(brandColor)}>+</button>
+          <button
+            onClick={() => setQty(q => Math.min(q + 1, maxQty))}
+            disabled={qty >= maxQty}
+            style={{
+              ...qtyBtn(brandColor),
+              ...(qty >= maxQty ? { opacity: 0.3, cursor: 'not-allowed' } : {}),
+            }}
+          >+</button>
         </div>
+        {/* v5.5.285: Stock limit indicator */}
+        {maxQty < Infinity && maxQty <= 5 && (
+          <div style={{ fontSize: 'clamp(11px, 1.3vw, 13px)', color: maxQty === 0 ? 'var(--kError-fg, #e53e3e)' : '#e67e22', fontWeight: 700, flexShrink: 0 }}>
+            {maxQty === 0 ? 'Sold out' : `Only ${maxQty} left`}
+          </div>
+        )}
 
         {/* Add CTA — primary brand fill */}
         <button onClick={tryAdd} style={{

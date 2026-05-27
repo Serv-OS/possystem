@@ -414,6 +414,28 @@ export default function KioskApp({ kioskId, onUnpair }) {
   const total = useMemo(() => subtotal + tip, [subtotal, tip]);
   const cartItemCount = useMemo(() => cart.reduce((a, l) => a + l.qty, 0), [cart]);
 
+  // v5.5.285: Count total usage of each item (by itemId) across the cart,
+  // including both direct item orders and modifier option picks.
+  // Used to enforce stock limits in KioskProductModal and ScreenCart.
+  const cartItemUsage = useMemo(() => {
+    const usage = {};
+    for (const line of cart) {
+      // Direct item
+      if (line.item?.id) {
+        usage[line.item.id] = (usage[line.item.id] || 0) + line.qty;
+      }
+      // Modifier options with itemId
+      if (line.modsArray) {
+        for (const mod of line.modsArray) {
+          if (mod.itemId) {
+            usage[mod.itemId] = (usage[mod.itemId] || 0) + line.qty;
+          }
+        }
+      }
+    }
+    return usage;
+  }, [cart]);
+
   // ─── Idle timer ───
   const lastActivityRef = useRef(Date.now());
   const [idleWarning, setIdleWarning] = useState(false);
@@ -468,6 +490,14 @@ export default function KioskApp({ kioskId, onUnpair }) {
 
   // ─── Cart actions ───
   const addToCart = useCallback((item, qty = 1, selectedMods = {}, summaryOverride = null, priceEachOverride = null, modsArrayOverride = null, instructions = '') => {
+    // v5.5.285: Stock enforcement — cap qty at remaining stock
+    const stock = dailyCounts[item?.id];
+    if (stock) {
+      const inCart = cartItemUsage[item?.id] || 0;
+      const maxAdd = Math.max(0, stock.remaining - inCart);
+      if (maxAdd <= 0) return; // fully sold out
+      qty = Math.min(qty, maxAdd);
+    }
     const linePrice = priceEachOverride ?? resolvePrice(item, orderType, activeMenuId);
     const modSummary = summaryOverride ?? Object.entries(selectedMods)
       .filter(([, v]) => v)
@@ -500,15 +530,24 @@ export default function KioskApp({ kioskId, onUnpair }) {
       }];
     });
     resetIdle();
-  }, [orderType, activeMenuId, resetIdle]);
+  }, [orderType, activeMenuId, resetIdle, dailyCounts, cartItemUsage]);
 
   const updateCartQty = useCallback((key, delta) => {
     setCart(prev => prev
-      .map(l => l.key === key ? { ...l, qty: Math.max(0, l.qty + delta), lineTotal: Math.max(0, l.qty + delta) * l.linePrice } : l)
+      .map(l => {
+        if (l.key !== key) return l;
+        let newQty = Math.max(0, l.qty + delta);
+        // v5.5.285: Stock cap on increment
+        if (delta > 0 && l.item?.id) {
+          const stock = dailyCounts[l.item.id];
+          if (stock) newQty = Math.min(newQty, stock.remaining);
+        }
+        return { ...l, qty: newQty, lineTotal: newQty * l.linePrice };
+      })
       .filter(l => l.qty > 0)
     );
     resetIdle();
-  }, [resetIdle]);
+  }, [resetIdle, dailyCounts]);
 
   // ─── Order submission ───
   // v5.5.219: Loyalty credit reduces the total paid by card
@@ -688,6 +727,8 @@ export default function KioskApp({ kioskId, onUnpair }) {
           brandAccent={brandAccent}
           addLabel={labelAddToOrder}
           basePrice={resolvePrice(selectedItem, orderType, activeMenuId)}
+          dailyCounts={dailyCounts}
+          cartItemUsage={cartItemUsage}
           onAdd={({ qty, selections, summary, priceEach, mods, instructions }) => {
             addToCart(selectedItem, qty, selections, summary, priceEach, mods, instructions);
             setScreen('menu');
@@ -695,7 +736,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
           onCancel={() => setScreen('menu')}
         />
       )}
-      {screen === 'cart' && <ScreenCart brandColor={brandColor} cart={cart} subtotal={subtotal} cartItemCount={cartItemCount} orderType={orderType} onUpdate={updateCartQty} onAddMore={() => setScreen('menu')} onContinue={() => setScreen('tip')} onShowAllergenPicker={() => setShowAllergenPicker(true)} onBack={() => setScreen('menu')} onCancel={resetSession} />}
+      {screen === 'cart' && <ScreenCart brandColor={brandColor} cart={cart} subtotal={subtotal} cartItemCount={cartItemCount} orderType={orderType} onUpdate={updateCartQty} onAddMore={() => setScreen('menu')} onContinue={() => setScreen('tip')} onShowAllergenPicker={() => setShowAllergenPicker(true)} onBack={() => setScreen('menu')} onCancel={resetSession} dailyCounts={dailyCounts} />}
       {screen === 'tip' && <ScreenTip brandColor={brandColor} subtotal={subtotal} tipPresets={tipPresets} tip={tip} onSetTip={setTip} onContinue={() => { if (loyaltyEnabled) setScreen('loyalty'); else setScreen('pay'); }} onBack={() => setScreen('cart')} onCancel={resetSession} />}
       {/* v5.5.219: loyalty/customer-details BEFORE pay so reward discount adjusts amount due */}
       {screen === 'loyalty' && <ScreenLoyalty brandColor={brandColor} customerName={customerName} customerPhone={customerPhone} customerEmail={customerEmail} marketingOptIn={customerMarketingOptIn} locationId={locationId} companyId={companyId} subtotal={subtotal} loyaltyRedemption={loyaltyRedemption} onLoyaltyRedeem={setLoyaltyRedemption} verifiedLoyalty={verifiedLoyalty} onVerifiedLoyalty={setVerifiedLoyalty} onName={setCustomerName} onPhone={setCustomerPhone} onEmail={setCustomerEmail} onMarketingOptIn={setCustomerMarketingOptIn} onContinue={() => { const ret = loyaltyReturnScreen; setLoyaltyReturnScreen(null); setScreen(ret || 'pay'); }} onSkip={() => { const ret = loyaltyReturnScreen; setLoyaltyReturnScreen(null); setScreen(ret || 'pay'); }} submitting={submitting} placeOrderLabel={labelPlaceOrder} earlySignIn={!!loyaltyReturnScreen} onCancel={resetSession} />}
@@ -1762,7 +1803,7 @@ function iconBtnLg() {
 // Footer: "Items total" card + brand-color totals pill with item-count
 // badge + circular back button on the left.
 // ============================================================
-function ScreenCart({ brandColor, cart, subtotal, cartItemCount, orderType, onUpdate, onAddMore, onContinue, onShowAllergenPicker, onBack, onCancel }) {
+function ScreenCart({ brandColor, cart, subtotal, cartItemCount, orderType, onUpdate, onAddMore, onContinue, onShowAllergenPicker, onBack, onCancel, dailyCounts = {} }) {
   const isPickup = orderType === 'takeaway';
   const titleKey = isPickup ? 'cart.title.pickup' : 'cart.title.dineIn';
   return (
@@ -1814,16 +1855,22 @@ function ScreenCart({ brandColor, cart, subtotal, cartItemCount, orderType, onUp
           </div>
         ) : (
           <>
-            {cart.map(l => (
-              <CartLineCard
-                key={l.key}
-                line={l}
-                brandColor={brandColor}
-                onInc={() => onUpdate(l.key, +1)}
-                onDec={() => onUpdate(l.key, -1)}
-                onRemove={() => onUpdate(l.key, -l.qty)}
-              />
-            ))}
+            {cart.map(l => {
+              // v5.5.285: Stock cap for cart qty increment
+              const stock = dailyCounts[l.item?.id] || null;
+              const atStockLimit = stock && l.qty >= stock.remaining;
+              return (
+                <CartLineCard
+                  key={l.key}
+                  line={l}
+                  brandColor={brandColor}
+                  onInc={atStockLimit ? undefined : () => onUpdate(l.key, +1)}
+                  onDec={() => onUpdate(l.key, -1)}
+                  onRemove={() => onUpdate(l.key, -l.qty)}
+                  atStockLimit={atStockLimit}
+                />
+              );
+            })}
             <button
               onClick={onAddMore}
               style={{
@@ -1957,7 +2004,7 @@ function ScreenCart({ brandColor, cart, subtotal, cartItemCount, orderType, onUp
 }
 
 // ----- CartLineCard (extracted) -----
-function CartLineCard({ line, brandColor, onInc, onDec, onRemove }) {
+function CartLineCard({ line, brandColor, onInc, onDec, onRemove, atStockLimit }) {
   const img = line.item?.image;
   return (
     <div style={{
@@ -2051,7 +2098,8 @@ function CartLineCard({ line, brandColor, onInc, onDec, onRemove }) {
             }}>{line.qty}</div>
             <button
               onClick={onInc}
-              style={cartStepBtn(brandColor, true, true)}
+              disabled={atStockLimit}
+              style={cartStepBtn(brandColor, !atStockLimit, true)}
             >+</button>
           </div>
 
