@@ -76,10 +76,11 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
-    version: '5.5.262', date: '27 May 2026', label: 'Fix: kiosk menu now loads correctly',
+    version: '5.5.263', date: '27 May 2026', label: 'Fix: kiosk menu loads + dailyCounts crash',
     changes: [
       'Kiosks use their own pairing mechanism (rpos-kiosk-id) instead of the POS device pairing (rpos-device). getLocationId() couldn\'t resolve the location because it only checks rpos-device — so locationId was null and the menu query never ran.',
       'KioskApp now resolves locationId from the device row\'s location_id column (which is always set during kiosk creation in the BO), with getLocationId() as fallback.',
+      'Fixed crash: dailyCounts was referenced inside ScreenMenu but never passed as a prop — caused "dailyCounts is not defined" ReferenceError on the menu screen.',
     ],
   },
   {
