@@ -2398,10 +2398,10 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
   const [email, setEmail] = useState(customerEmail || '');
   const [optIn, setOptIn] = useState(!!marketingOptIn);
 
-  // ── v5.5.265: OTP-verified loyalty flow ─────────────────
-  // Replaces passive phone lookup. Customer must verify via SMS code
-  // before any loyalty data is shown. Security-first approach.
-  const [otpStep, setOtpStep] = useState('phone'); // phone | sending | code | verifying | verified
+  // ── v5.5.266: OTP-verified loyalty flow ─────────────────
+  // Customer chooses: sign in for rewards OR continue as guest.
+  // Sign-in requires OTP verification via SMS before showing loyalty data.
+  const [otpStep, setOtpStep] = useState('choice'); // choice | phone | sending | code | verifying | verified
   const [otpCode, setOtpCode] = useState('');
   const [otpError, setOtpError] = useState('');
   // customerLookup populated ONLY after OTP verification
@@ -2423,7 +2423,7 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
 
   // If already verified from a previous visit to this screen, skip to verified
   useEffect(() => {
-    if (verifiedLoyalty && otpStep === 'phone') setOtpStep('verified');
+    if (verifiedLoyalty && (otpStep === 'choice' || otpStep === 'phone')) setOtpStep('verified');
   }, [verifiedLoyalty]);
 
   // Send OTP code
@@ -2630,14 +2630,14 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
           }}
         >×</button>
 
-        {/* v5.5.265: OTP-verified loyalty title + flow */}
+        {/* v5.5.266: Title — adapts to current step */}
         <div style={{
           textAlign: 'center',
           marginTop: 'clamp(20px, 3vw, 32px)',
           marginBottom: 'clamp(6px, 0.8vw, 10px)',
         }}>
           <div style={{ fontSize: 'clamp(28px, 3.6vw, 38px)', marginBottom: 6 }}>
-            {showWelcome ? '👋' : otpStep === 'code' || otpStep === 'verifying' ? '📱' : '⭐'}
+            {showWelcome ? '👋' : otpStep === 'code' || otpStep === 'verifying' ? '📱' : otpStep === 'choice' ? '⭐' : '📲'}
           </div>
           <div style={{
             fontSize: 'clamp(22px, 3vw, 30px)',
@@ -2649,7 +2649,9 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
               ? `${t('details.welcome')}${customerLookup?.name ? ', ' + customerLookup.name : ''}!`
               : otpStep === 'code' || otpStep === 'verifying'
                 ? 'Enter verification code'
-                : 'Earn rewards & stamps'}
+                : otpStep === 'choice'
+                  ? 'Loyalty rewards'
+                  : 'Sign in with your mobile'}
           </div>
         </div>
 
@@ -2666,8 +2668,46 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
             ? 'Your loyalty details are shown below'
             : otpStep === 'code' || otpStep === 'verifying'
               ? `We sent a 6-digit code to your mobile ending ${phone.slice(-4)}`
-              : 'Enter your mobile and verify with a text code to see your rewards'}
+              : otpStep === 'choice'
+                ? 'Sign in to earn points, redeem rewards and use gift cards'
+                : 'Enter your number and we’ll text you a verification code'}
         </div>
+
+        {/* ─── v5.5.266: Choice screen — sign in OR continue as guest ─── */}
+        {otpStep === 'choice' && !showWelcome && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 'clamp(14px, 1.8vw, 18px)' }}>
+            <button
+              onClick={() => setOtpStep('phone')}
+              style={{
+                width: '100%', padding: 'clamp(18px, 2.4vw, 26px)',
+                borderRadius: 16, border: '2px solid ' + brandColor,
+                background: brandColor, color: '#fff',
+                fontSize: 'clamp(16px, 2vw, 20px)', fontWeight: 800,
+                cursor: 'pointer', fontFamily: 'inherit',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
+                boxShadow: '0 4px 16px rgba(0,0,0,0.10)',
+              }}
+            >
+              <span style={{ fontSize: 'clamp(20px, 2.4vw, 26px)' }}>📲</span>
+              Sign in for rewards
+            </button>
+            <button
+              onClick={skip}
+              style={{
+                width: '100%', padding: 'clamp(16px, 2vw, 22px)',
+                borderRadius: 16,
+                border: '1.5px solid var(--kBorder2)',
+                background: 'var(--kSurfaceRaised)', color: 'var(--kFg)',
+                fontSize: 'clamp(15px, 1.8vw, 18px)', fontWeight: 700,
+                cursor: 'pointer', fontFamily: 'inherit',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
+              }}
+            >
+              Continue without signing in
+              <span style={{ fontSize: 14, color: 'var(--kFgMuted)' }}>›</span>
+            </button>
+          </div>
+        )}
 
         {/* ─── OTP Error ─── */}
         {otpError && (
@@ -3076,6 +3116,8 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
           </div>
         )}
 
+        {/* Name / email / continue — only show after committing to sign-in (not in choice state) */}
+        {otpStep !== 'choice' && (<>
         {/* Your name */}
         <div style={{ marginBottom: 'clamp(14px, 1.8vw, 18px)' }}>
           <div style={detailsLabelStyle(brandColor)}>{t('details.name.label')}</div>
@@ -3186,6 +3228,7 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
             fontWeight: 500,
           }}>{t('details.optIn')}</span>
         </div>
+        </>)}
       </div>
     </div>
   );

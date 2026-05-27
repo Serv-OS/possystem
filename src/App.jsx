@@ -76,10 +76,12 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
-    version: '5.5.266', date: '27 May 2026', label: 'Kiosk: OTP auto-fill fix, new customer handling',
+    version: '5.5.267', date: '27 May 2026', label: 'Kiosk: loyalty choice screen — sign in or continue as guest',
     changes: [
-      'FIX: Name, email and phone now auto-fill in parent KioskApp immediately after OTP verification — previously only set local ScreenLoyalty state without lifting to parent.',
-      'NEW CUSTOMER HANDLING: Unknown phone numbers are handled gracefully — the edge function auto-creates a customer record and auto-enrolls in loyalty on first OTP verify. Kiosk UI shows welcome screen with 0 points and lets them enter their name.',
+      'UX OVERHAUL: Kiosk loyalty screen now starts with a clear choice — "Sign in for rewards" or "Continue without signing in". No longer assumes every customer wants to register.',
+      'Sign-in button leads to OTP phone verification flow. Continue-as-guest skips straight to payment.',
+      'Name, email fields and Continue button only appear after choosing to sign in — not on the initial choice screen.',
+      'FIX: Name, email and phone now auto-fill in parent KioskApp immediately after OTP verification.',
     ],
   },
   {
