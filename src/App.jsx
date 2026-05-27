@@ -76,6 +76,13 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.278', date: '27 May 2026', label: 'Fix cross-location report bleed + rename Multi-Location Reports',
+    changes: [
+      'LOCATION SCOPING FIX: BOReports live-merge of store checks now filters by the active location ID. Previously, storeChecks from other locations (persisted in localStorage or Zustand from a previous session) could bleed into reports for the current location. The DB queries were already correctly scoped — only the in-memory merge was unfiltered.',
+      'MULTI-LOCATION RENAME: Renamed "Location reports" category in the Reports catalog to "Multi-location reports" with updated description. All other reports are strictly single-location; only this category intentionally spans multiple sites.',
+    ],
+  },
+  {
     version: '5.5.277', date: '27 May 2026', label: 'Fix source field passthrough for closed checks',
     changes: [
       'SOURCE PASSTHROUGH: insertClosedCheck in db.js now passes check.source through to the closed_checks row. Previously the source field was only written by surfaces that do direct inserts (kiosk, online, QR) but omitted from the shared insertClosedCheck path.',
