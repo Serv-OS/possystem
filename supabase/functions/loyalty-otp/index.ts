@@ -107,11 +107,18 @@ Deno.serve(async (req) => {
   const rawPhone = body.phone as string;
   const companyId = body.company_id as string;
 
-  if (!companyId) return json({ error: 'company_id required' }, 400);
-  if (!rawPhone) return json({ error: 'phone required' }, 400);
+  // v5.5.258: Token-based actions (refresh, update_profile) don't need
+  // phone/company_id — the token carries both. Skip validation for them
+  // so the 24h session persistence actually works (previously, refreshData
+  // sent phone:'_' which normalisePhone rejected as invalid, bouncing
+  // every page refresh back to OTP login).
+  const tokenOnlyAction = action === 'refresh' || action === 'update_profile';
 
-  const phone = normalisePhone(rawPhone);
-  if (!phone) return json({ error: 'Invalid phone number' }, 400);
+  if (!tokenOnlyAction && !companyId) return json({ error: 'company_id required' }, 400);
+  if (!tokenOnlyAction && !rawPhone) return json({ error: 'phone required' }, 400);
+
+  const phone = tokenOnlyAction ? null : normalisePhone(rawPhone);
+  if (!tokenOnlyAction && !phone) return json({ error: 'Invalid phone number' }, 400);
 
   // ── ACTION: SEND OTP ────────────────────────────────────────────────
   if (action === 'send') {

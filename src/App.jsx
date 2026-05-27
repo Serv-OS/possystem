@@ -76,6 +76,13 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.258', date: '27 May 2026', label: 'Fix: customer portal 24h session persistence now works',
+    changes: [
+      'Fixed the "keep logged in for 24 hours" feature on the customer loyalty portal. Page refresh was always forcing a new OTP code because the edge function validated phone number before routing to the refresh action — the dummy phone value sent by refreshData was rejected as invalid.',
+      'Token-based actions (refresh, update_profile) now skip phone/company_id validation since the HMAC token already carries both. Session resumes instantly on page reload within the 24h window.',
+    ],
+  },
+  {
     version: '5.5.257', date: '27 May 2026', label: 'Loyalty: stamp cards on profiles + advanced loyalty reports',
     changes: [
       'Stamp card progress now visible on loyalty member rows (LoyaltyManager) — click a member to see their active stamp cards with progress bars and stamp counts.',

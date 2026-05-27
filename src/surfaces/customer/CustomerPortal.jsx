@@ -146,8 +146,6 @@ export default function CustomerPortal({ location }) {
       const data = await callPortal({
         action: 'refresh',
         token: tkn || token,
-        phone: '_',
-        company_id: location.company_id,
       });
       if (data.customer) setCustomer(data.customer);
       if (data.loyalty) setLoyalty(data.loyalty);
