@@ -76,6 +76,12 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.273', date: '27 May 2026', label: 'Kiosk: cancel order button on all screens',
+    changes: [
+      'CANCEL ORDER: Persistent "Cancel order" button fixed to top-right corner on every kiosk screen except attract and done. Tapping it calls resetSession — clears cart, customer details, tip, loyalty, and returns to the attract screen. Gives customers a clear escape route at any point during checkout.',
+    ],
+  },
+  {
     version: '5.5.272', date: '27 May 2026', label: 'Loyalty SMS invite + guest phone + skip_tipping fix',
     changes: [
       'LOYALTY PRE-REGISTER: attributeOrderToCustomer now fires send-welcome for every customer (kiosk, POS, any surface). Atomic dedup via welcome_sent_at ensures SMS only sends once. New customers get a branded SMS invite with portal signup link to complete their profile and join loyalty. Covers the gap where kiosk guest checkout and POS captured phone numbers but never sent the invite.',

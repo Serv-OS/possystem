@@ -672,6 +672,34 @@ export default function KioskApp({ kioskId, onUnpair }) {
   // ─── Render ───
   return (
     <div onPointerDown={resetIdle} data-kiosk-theme={isLight ? "light" : "dark"} style={kioskShell(brandColor, effectiveBg, brandAccent)}>
+      {/* v5.5.273: Persistent "Cancel order" button — visible on every screen except attract/done/item */}
+      {!['attract', 'done', 'item'].includes(screen) && (
+        <button
+          onClick={resetSession}
+          style={{
+            position: 'fixed',
+            top: 'clamp(12px, 1.6vw, 18px)',
+            right: 'clamp(12px, 1.6vw, 18px)',
+            zIndex: 150,
+            background: 'var(--kSurfaceRaised)',
+            border: '1px solid var(--kBorder2)',
+            borderRadius: 'clamp(10px, 1.4vw, 14px)',
+            padding: 'clamp(8px, 1vw, 12px) clamp(14px, 1.8vw, 20px)',
+            fontSize: 'clamp(12px, 1.4vw, 15px)',
+            fontWeight: 700,
+            color: 'var(--kFgMuted)',
+            cursor: 'pointer',
+            fontFamily: 'inherit',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            boxShadow: '0 2px 8px rgba(0,0,0,0.08)',
+          }}
+        >
+          <span style={{ fontSize: 'clamp(14px, 1.6vw, 18px)', lineHeight: 1 }}>{'✕'}</span>
+          Cancel order
+        </button>
+      )}
       {screen === 'attract' && <ScreenAttract brandName={brandName} brandColor={brandColor} brandAccent={brandAccent} brandLogoUrl={brandLogoUrl} attractVideoUrl={attractVideoUrl} avgWaitMinutes={avgWaitMinutes} banner={bannerFor('attract')} ctaLabel={labelTapToOrder} onStart={() => { resetIdle(); setScreen('orderType'); }} />}
       {screen === 'orderType' && <ScreenOrderType brandColor={brandColor} brandLogoUrl={brandLogoUrl} brandName={brandName} tableMode={tableMode} lang={lang} onOpenLanguagePicker={() => setShowLangPicker(true)} loyaltyEnabled={loyaltyEnabled} customerName={customerName} onLoyaltySignIn={() => { setLoyaltyReturnScreen('orderType'); setScreen('loyalty'); }} onPick={(t) => {
         setOrderType(t);
