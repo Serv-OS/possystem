@@ -76,6 +76,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.274', date: '27 May 2026', label: 'Back office: Transactions & Refunds report',
+    changes: [
+      'TRANSACTIONS REPORT: New back office section under Analytics showing all closed checks across all POS devices. Summary stats cards (count, revenue, tips, service charge, total refunded). Date range pills (today, yesterday, 7 days, 30 days, custom). Search by order reference, customer name, or server. Filter by status (paid/refunded/voided), payment method, and source (POS/kiosk/online).',
+      'EXPANDABLE ROWS: Click any transaction to see full line items with quantities, modifiers, and prices. Discounts, tips, service charge, and total breakdown. Full refund history with timestamps, amounts, reasons, and manager name.',
+      'REFUNDS: Refund button opens modal with full-refund or item-level toggle. Item-level lets you pick specific items and quantities to refund. Reason field and confirmation checkbox required. Calls store.refundCheck() which persists to DB and triggers loyalty-refund and gift-card-reverse-redeem.',
+    ],
+  },
+  {
     version: '5.5.273', date: '27 May 2026', label: 'Kiosk: inline cancel order on all screens',
     changes: [
       'CANCEL ORDER: Inline "✕ Cancel order" button rendered inside each screen header (not a floating overlay). Appears on: order type, table number, menu, cart, tip, loyalty, and payment screens. On the payment screen, cancelling also clears the reader action. Each screen passes onCancel through its own header layout so the button sits naturally alongside existing controls (back arrow, allergen filter, etc).',
