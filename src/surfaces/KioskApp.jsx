@@ -19,12 +19,28 @@
 */
 
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { supabase, getLocationId, ensureAuthToken } from '../lib/supabase';
+import { supabase, platformSupabase, getLocationId, ensureAuthToken } from '../lib/supabase';
 import { useStore } from '../store';
 import KioskProductModal from './KioskProductModal';
 import { t, setLang, useKioskLang, LANGUAGES, getLanguageMeta } from '../lib/i18n';
 import { displayName } from '../lib/itemDisplay';
 import { fetchCustomerByPhone } from '../lib/customerLookup';
+import { resolvePlatformLocationId, getAssignedNetworkReader } from '../lib/networkReader';
+import { collectPayment, initStripeTerminal, getReaderStatus } from '../lib/stripe';
+
+// ── OTP portal caller (mirrors CustomerPortal.callPortal) ───────────────────
+const OPS_URL = import.meta.env.VITE_SUPABASE_URL;
+const OPS_ANON = import.meta.env.VITE_SUPABASE_ANON_KEY;
+async function callLoyaltyOtp(body) {
+  const res = await fetch(`${OPS_URL}/functions/v1/loyalty-otp`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OPS_ANON}`, 'apikey': OPS_ANON },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+  return data;
+}
 
 // ============================================================
 // HOOKS
@@ -188,6 +204,20 @@ export default function KioskApp({ kioskId, onUnpair }) {
   }, [device?.location_id]);
   const { items, categories, menus, links, activeMenuId, loading: menuLoading, error: menuError } = useKioskMenu(profile, locationId);
 
+  // v5.5.265: Resolve companyId for OTP + gift card flows
+  const [companyId, setCompanyId] = useState(null);
+  useEffect(() => {
+    if (!locationId || !platformSupabase) return;
+    platformSupabase
+      .from('locations')
+      .select('company_id')
+      .or(`ops_location_id.eq.${locationId},id.eq.${locationId}`)
+      .limit(1)
+      .maybeSingle()
+      .then(({ data }) => { if (data?.company_id) setCompanyId(data.company_id); })
+      .catch(() => {});
+  }, [locationId]);
+
   // ─── Cart + flow state ───
   const [screen, setScreen] = useState('attract');
   const [orderType, setOrderType] = useState(null); // 'dineIn' | 'takeaway'
@@ -293,6 +323,12 @@ export default function KioskApp({ kioskId, onUnpair }) {
   // v5.5.219: Loyalty reward redemption at kiosk checkout
   const [loyaltyRedemption, setLoyaltyRedemption] = useState(null);
   // loyaltyRedemption: { reward_id, reward_name, points_deducted, discount_type, discount_value, idempotency_key, balance_after }
+  // v5.5.265: Gift card payment applied at checkout
+  const [giftCardPayment, setGiftCardPayment] = useState(null);
+  // giftCardPayment: { card_id, code, applied (minor), remaining_balance }
+  // v5.5.265: Verified customer loyalty data (from OTP flow)
+  const [verifiedLoyalty, setVerifiedLoyalty] = useState(null);
+  // verifiedLoyalty: { customer, loyalty, stampCards, giftCards }
   // Track where to return after early loyalty sign-in (from orderType screen)
   const [loyaltyReturnScreen, setLoyaltyReturnScreen] = useState(null);
   const [selectedItem, setSelectedItem] = useState(null);
@@ -420,6 +456,8 @@ export default function KioskApp({ kioskId, onUnpair }) {
     setSelectedItem(null);
     setSelectedCategoryId(null);
     setLoyaltyRedemption(null);
+    setGiftCardPayment(null);
+    setVerifiedLoyalty(null);
     setAllergenFilter(new Set());
     setShowAllergenPicker(false);
     setOrderNumber(null);
@@ -476,7 +514,8 @@ export default function KioskApp({ kioskId, onUnpair }) {
   // ─── Order submission ───
   // v5.5.219: Loyalty credit reduces the total paid by card
   const loyaltyCredit = loyaltyRedemption?.discount_value ? loyaltyRedemption.discount_value / 100 : 0;
-  const grandTotal = Math.max(0, total - loyaltyCredit);
+  const giftCardCredit = giftCardPayment?.applied ? giftCardPayment.applied / 100 : 0;
+  const grandTotal = Math.max(0, total - loyaltyCredit - giftCardCredit);
 
   // On 'simulate paid' → write closed_checks + kds_tickets row, set orderNumber, advance.
   const submitOrder = useCallback(async (nameOverride, phoneOverride) => {
@@ -514,8 +553,8 @@ export default function KioskApp({ kioskId, onUnpair }) {
         total: grandTotal,
         order_type: orderTypeOut,
         status: 'paid',
-        payment_method: loyaltyCredit > 0 ? 'split' : 'card-external',
-        method: loyaltyCredit > 0 ? 'split' : 'card',
+        payment_method: (loyaltyCredit > 0 || giftCardCredit > 0) ? 'split' : 'card-external',
+        method: (loyaltyCredit > 0 || giftCardCredit > 0) ? 'split' : 'card',
         closed_at: new Date().toISOString(),
         source: 'kiosk',
         kiosk_id: kioskId,
@@ -530,6 +569,11 @@ export default function KioskApp({ kioskId, onUnpair }) {
           points_deducted: loyaltyRedemption.points_deducted,
           discount_value: loyaltyRedemption.discount_value,
           idempotency_key: loyaltyRedemption.idempotency_key,
+        } : null,
+        gift_card: giftCardPayment ? {
+          card_id: giftCardPayment.card_id,
+          applied: giftCardPayment.applied,
+          remaining_balance: giftCardPayment.remaining_balance,
         } : null,
       });
       if (e1) throw e1;
@@ -551,7 +595,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
             tip: tip,
             subtotal: subtotal,
             items: itemsPayload,
-            method: loyaltyCredit > 0 ? 'split' : 'card',
+            method: (loyaltyCredit > 0 || giftCardCredit > 0) ? 'split' : 'card',
             order_type: orderTypeOut,
             location_id: locationId,
             closedAt: Date.now(),
@@ -594,7 +638,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
         is_asap: true,
         source: 'kiosk',
         paid: true,
-        payment_method: loyaltyCredit > 0 ? 'split' : 'card-external',
+        payment_method: (loyaltyCredit > 0 || giftCardCredit > 0) ? 'split' : 'card-external',
       });
       if (e3) console.warn('[kiosk] order_queue insert failed:', e3);
       // 4. Heartbeat
@@ -609,7 +653,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
     } finally {
       setSubmitting(false);
     }
-  }, [submitting, kioskId, locationId, cart, subtotal, total, grandTotal, loyaltyCredit, loyaltyRedemption, tip, orderType, customerName, customerPhone, customerEmail, customerMarketingOptIn, tableNumber, resetSession]);
+  }, [submitting, kioskId, locationId, cart, subtotal, total, grandTotal, loyaltyCredit, giftCardCredit, loyaltyRedemption, giftCardPayment, tip, orderType, customerName, customerPhone, customerEmail, customerMarketingOptIn, tableNumber, resetSession]);
 
   // ─── Loading + error gates ───
   if (profLoading || menuLoading) {
@@ -655,8 +699,8 @@ export default function KioskApp({ kioskId, onUnpair }) {
       {screen === 'cart' && <ScreenCart brandColor={brandColor} cart={cart} subtotal={subtotal} cartItemCount={cartItemCount} orderType={orderType} onUpdate={updateCartQty} onAddMore={() => setScreen('menu')} onContinue={() => setScreen('tip')} onShowAllergenPicker={() => setShowAllergenPicker(true)} onBack={() => setScreen('menu')} />}
       {screen === 'tip' && <ScreenTip brandColor={brandColor} subtotal={subtotal} tipPresets={tipPresets} tip={tip} onSetTip={setTip} onContinue={() => { if (loyaltyEnabled) setScreen('loyalty'); else setScreen('pay'); }} onBack={() => setScreen('cart')} />}
       {/* v5.5.219: loyalty/customer-details BEFORE pay so reward discount adjusts amount due */}
-      {screen === 'loyalty' && <ScreenLoyalty brandColor={brandColor} customerName={customerName} customerPhone={customerPhone} customerEmail={customerEmail} marketingOptIn={customerMarketingOptIn} locationId={locationId} subtotal={subtotal} loyaltyRedemption={loyaltyRedemption} onLoyaltyRedeem={setLoyaltyRedemption} onName={setCustomerName} onPhone={setCustomerPhone} onEmail={setCustomerEmail} onMarketingOptIn={setCustomerMarketingOptIn} onContinue={() => { const ret = loyaltyReturnScreen; setLoyaltyReturnScreen(null); setScreen(ret || 'pay'); }} onSkip={() => { const ret = loyaltyReturnScreen; setLoyaltyReturnScreen(null); setScreen(ret || 'pay'); }} submitting={submitting} placeOrderLabel={labelPlaceOrder} earlySignIn={!!loyaltyReturnScreen} />}
-      {screen === 'pay' && <ScreenPay brandColor={brandColor} total={grandTotal} submitting={submitting} error={submitError} onSimulatePaid={() => submitOrder(customerName, customerPhone)} onBack={() => { if (loyaltyEnabled) setScreen('loyalty'); else setScreen('tip'); }} />}
+      {screen === 'loyalty' && <ScreenLoyalty brandColor={brandColor} customerName={customerName} customerPhone={customerPhone} customerEmail={customerEmail} marketingOptIn={customerMarketingOptIn} locationId={locationId} companyId={companyId} subtotal={subtotal} loyaltyRedemption={loyaltyRedemption} onLoyaltyRedeem={setLoyaltyRedemption} verifiedLoyalty={verifiedLoyalty} onVerifiedLoyalty={setVerifiedLoyalty} onName={setCustomerName} onPhone={setCustomerPhone} onEmail={setCustomerEmail} onMarketingOptIn={setCustomerMarketingOptIn} onContinue={() => { const ret = loyaltyReturnScreen; setLoyaltyReturnScreen(null); setScreen(ret || 'pay'); }} onSkip={() => { const ret = loyaltyReturnScreen; setLoyaltyReturnScreen(null); setScreen(ret || 'pay'); }} submitting={submitting} placeOrderLabel={labelPlaceOrder} earlySignIn={!!loyaltyReturnScreen} />}
+      {screen === 'pay' && <ScreenPay brandColor={brandColor} total={grandTotal} loyaltyCredit={loyaltyCredit} giftCardCredit={giftCardCredit} verifiedLoyalty={verifiedLoyalty} giftCardPayment={giftCardPayment} onGiftCardApply={setGiftCardPayment} locationId={locationId} cart={cart} submitting={submitting} error={submitError} onPaid={() => submitOrder(customerName, customerPhone)} onBack={() => { if (loyaltyEnabled) setScreen('loyalty'); else setScreen('tip'); }} loyaltyRedemption={loyaltyRedemption} />}
       {screen === 'done' && <ScreenDone brandColor={brandColor} customerName={customerName} customerPhone={customerPhone} orderNumber={orderNumber} orderType={orderType} tableNumber={tableNumber} avgWaitMinutes={avgWaitMinutes} banner={bannerFor('done')} onDone={resetSession} />}
 
       {/* v5.4.0: Allergen picker overlay */}
@@ -2120,29 +2164,212 @@ function ScreenTip({ brandColor, subtotal, tipPresets, tip, onSetTip, onContinue
 // ============================================================
 // SCREEN: PAY
 // ============================================================
-function ScreenPay({ brandColor, total, submitting, error, onSimulatePaid, onBack }) {
+function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, verifiedLoyalty, giftCardPayment, onGiftCardApply, locationId, cart, submitting, error, onPaid, onBack, loyaltyRedemption }) {
+  const [cardState, setCardState] = useState('idle'); // idle | processing | success | error | declined
+  const [cardError, setCardError] = useState(null);
+  const [giftApplying, setGiftApplying] = useState(false);
+  const [giftError, setGiftError] = useState('');
+
+  // Available gift cards from verified loyalty data
+  const availableGiftCards = verifiedLoyalty?.giftCards?.filter(gc => (gc.balance || 0) > 0) || [];
+  const hasGiftCards = availableGiftCards.length > 0 && !giftCardPayment;
+
+  // v5.5.265: Apply gift card to this order
+  const applyGiftCard = async (gc) => {
+    setGiftApplying(true);
+    setGiftError('');
+    try {
+      const token = await ensureAuthToken();
+      if (!token) throw new Error('Auth unavailable');
+      const amountDueMinor = Math.round(total * 100);
+      const applyAmount = Math.min(gc.balance, amountDueMinor);
+      const idempKey = `kiosk-gc-${gc.id}-${Date.now()}`;
+      const res = await fetch(`${OPS_URL}/functions/v1/gift-redeem`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          code: gc.code,
+          amount: applyAmount,
+          order_id: null,
+          location_id: locationId,
+          channel: 'kiosk',
+          idempotency_key: idempKey,
+        }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+      onGiftCardApply({
+        card_id: j.card_id || gc.id,
+        code: gc.code,
+        applied: j.applied || applyAmount,
+        remaining_balance: j.remaining_balance ?? (gc.balance - applyAmount),
+      });
+    } catch (e) {
+      setGiftError(e?.message || 'Could not apply gift card');
+    } finally {
+      setGiftApplying(false);
+    }
+  };
+
+  // v5.5.265: Card terminal payment flow
+  const startCardPayment = async () => {
+    if (total <= 0) {
+      // Fully covered by loyalty/gift card — no card payment needed
+      onPaid();
+      return;
+    }
+    setCardState('processing');
+    setCardError(null);
+    try {
+      const amountPence = Math.round(total * 100);
+      const result = await collectPayment(amountPence, {
+        source: 'kiosk',
+        items: cart.map(l => l.name).join(', ').slice(0, 200),
+      });
+      if (result.ok) {
+        setCardState('success');
+        setTimeout(() => onPaid(), 800);
+      } else {
+        setCardState(result.declined ? 'declined' : 'error');
+        setCardError(result.error || 'Payment failed');
+      }
+    } catch (e) {
+      setCardState('error');
+      setCardError(e?.message || 'Payment error');
+    }
+  };
+
+  // Auto-start card payment if no gift cards to show and total > 0
+  useEffect(() => {
+    if (cardState === 'idle' && total > 0 && !hasGiftCards) {
+      startCardPayment();
+    }
+  }, []);
+
+  const cardDueAmount = total;
+  const fullyPaid = total <= 0;
+
   return (
     <div style={fullScreen()}>
-      <ScreenHeader title="Tap or insert your card" subtitle="Use the card reader on the side of the kiosk" onBack={onBack} brandColor={brandColor} />
-      <div style={{ flex: 1, padding: '6vh 5vw', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '4vh' }}>
+      <ScreenHeader title={fullyPaid ? 'Order fully covered!' : 'Tap or insert your card'} subtitle={fullyPaid ? 'No card payment needed' : 'Use the card reader on the side of the kiosk'} onBack={onBack} brandColor={brandColor} />
+      <div style={{ flex: 1, padding: '4vh 5vw', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 'clamp(16px, 2.5vh, 28px)' }}>
+
+        {/* Discounts summary */}
+        {(loyaltyCredit > 0 || giftCardCredit > 0) && (
+          <div style={{ width: '100%', maxWidth: 440, display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {loyaltyCredit > 0 && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 14px', borderRadius: 10, background: '#22c55e15', border: '1px solid #22c55e33' }}>
+                <span style={{ fontSize: 14, fontWeight: 700, color: '#22c55e' }}>✓ {loyaltyRedemption?.reward_name || 'Loyalty reward'}</span>
+                <span style={{ fontSize: 14, fontWeight: 800, color: '#22c55e' }}>-£{loyaltyCredit.toFixed(2)}</span>
+              </div>
+            )}
+            {giftCardCredit > 0 && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 14px', borderRadius: 10, background: brandColor + '15', border: '1px solid ' + brandColor + '33' }}>
+                <span style={{ fontSize: 14, fontWeight: 700, color: brandColor }}>✓ Gift card applied</span>
+                <span style={{ fontSize: 14, fontWeight: 800, color: brandColor }}>-£{giftCardCredit.toFixed(2)}</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Amount due */}
         <div style={{ textAlign: 'center' }}>
-          <div style={{ fontSize: 14, color: 'var(--kFgMuted)', marginBottom: 8, letterSpacing: '0.06em', textTransform: 'uppercase' }}>Amount due</div>
-          <div style={{ fontSize: 'clamp(60px, 12vw, 110px)', fontWeight: 900, letterSpacing: '-0.04em', fontVariantNumeric: 'tabular-nums', color: 'var(--kFg)' }}>£{total.toFixed(2)}</div>
+          <div style={{ fontSize: 14, color: 'var(--kFgMuted)', marginBottom: 8, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+            {fullyPaid ? 'Amount covered' : 'Amount due'}
+          </div>
+          <div style={{ fontSize: 'clamp(52px, 10vw, 90px)', fontWeight: 900, letterSpacing: '-0.04em', fontVariantNumeric: 'tabular-nums', color: fullyPaid ? '#22c55e' : 'var(--kFg)' }}>
+            £{cardDueAmount.toFixed(2)}
+          </div>
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14 }}>
-          <div style={{ fontSize: 'clamp(48px, 8vw, 72px)', color: brandColor, animation: 'kioskPoint 1.5s infinite' }}>→</div>
-          <div style={{ fontSize: 18, fontWeight: 600, color: 'var(--kFgMuted)' }}>Card reader on the side</div>
-        </div>
+
+        {/* Gift card offer — show before card payment starts */}
+        {hasGiftCards && cardState === 'idle' && (
+          <div style={{ width: '100%', maxWidth: 440 }}>
+            <div style={{ fontSize: 'clamp(12px, 1.4vw, 14px)', fontWeight: 700, color: brandColor, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 8 }}>
+              Apply gift card
+            </div>
+            {giftError && (
+              <div style={{ padding: 8, borderRadius: 8, marginBottom: 8, fontSize: 13, color: '#e55', background: '#e5555515', border: '1px solid #e5555533', fontWeight: 600 }}>{giftError}</div>
+            )}
+            {availableGiftCards.map(gc => (
+              <button key={gc.id} onClick={() => applyGiftCard(gc)} disabled={giftApplying}
+                style={{
+                  width: '100%', padding: 'clamp(12px, 1.6vw, 16px)', borderRadius: 14, marginBottom: 8,
+                  border: '1.5px solid ' + brandColor + '44', background: 'var(--kSurfaceRaised)',
+                  cursor: giftApplying ? 'wait' : 'pointer', fontFamily: 'inherit',
+                  display: 'flex', alignItems: 'center', gap: 12, opacity: giftApplying ? 0.6 : 1,
+                }}>
+                <span style={{ fontSize: 22 }}>💳</span>
+                <div style={{ flex: 1, textAlign: 'left' }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--kFg)' }}>Gift Card {gc.last4 ? `···${gc.last4}` : ''}</div>
+                  <div style={{ fontSize: 12, color: 'var(--kFgMuted)' }}>Balance: £{((gc.balance || 0) / 100).toFixed(2)}</div>
+                </div>
+                <span style={{ fontSize: 14, fontWeight: 800, color: brandColor }}>{giftApplying ? '...' : 'Apply'}</span>
+              </button>
+            ))}
+            <button onClick={startCardPayment} style={{
+              width: '100%', padding: 'clamp(12px, 1.6vw, 16px)', borderRadius: 14,
+              border: 'none', background: brandColor, color: '#fff',
+              cursor: 'pointer', fontFamily: 'inherit', fontSize: 16, fontWeight: 800,
+              marginTop: 8,
+            }}>
+              Skip — pay full amount by card →
+            </button>
+          </div>
+        )}
+
+        {/* Card payment in progress */}
+        {cardState === 'processing' && (
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14 }}>
+            <div style={{ fontSize: 'clamp(48px, 8vw, 72px)', color: brandColor, animation: 'kioskPoint 1.5s infinite' }}>→</div>
+            <div style={{ fontSize: 18, fontWeight: 600, color: 'var(--kFgMuted)' }}>Tap or insert your card</div>
+          </div>
+        )}
         <style>{'@keyframes kioskPoint { 0%, 100% { transform: translateX(0); } 50% { transform: translateX(8px); } }'}</style>
-        {error && (
+
+        {/* Card payment success */}
+        {cardState === 'success' && (
+          <div style={{ textAlign: 'center' }}>
+            <div style={{ fontSize: 64, marginBottom: 12 }}>✅</div>
+            <div style={{ fontSize: 22, fontWeight: 800, color: '#22c55e' }}>Payment approved</div>
+          </div>
+        )}
+
+        {/* Card declined / error */}
+        {(cardState === 'error' || cardState === 'declined') && (
+          <div style={{ textAlign: 'center', maxWidth: 400 }}>
+            <div style={{ fontSize: 48, marginBottom: 12 }}>{cardState === 'declined' ? '❌' : '⚠️'}</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--kFg)', marginBottom: 8 }}>
+              {cardState === 'declined' ? 'Card declined' : 'Payment error'}
+            </div>
+            <div style={{ fontSize: 14, color: 'var(--kFgMuted)', marginBottom: 20 }}>{cardError}</div>
+            <button onClick={() => { setCardState('idle'); setTimeout(startCardPayment, 100); }} style={{ ...primaryCta(brandColor), padding: '14px 32px' }}>
+              Try again
+            </button>
+          </div>
+        )}
+
+        {/* Fully paid by loyalty/gift card — no card needed */}
+        {fullyPaid && (
+          <div style={{ textAlign: 'center' }}>
+            <div style={{ fontSize: 64, marginBottom: 12 }}>🎉</div>
+            <div style={{ fontSize: 20, fontWeight: 800, color: '#22c55e', marginBottom: 8 }}>Fully covered!</div>
+            <div style={{ fontSize: 14, color: 'var(--kFgMuted)' }}>No card payment needed</div>
+          </div>
+        )}
+
+        {(error) && (
           <div style={{ background: 'var(--kError-bg)', border: '1px solid var(--kError-border)', color: 'var(--kError-fg)', padding: '12px 16px', borderRadius: 10, fontSize: 13, maxWidth: 400, textAlign: 'center' }}>{error}</div>
         )}
       </div>
+
+      {/* Bottom CTA */}
       <div style={{ padding: '14px 22px 22px', flexShrink: 0 }}>
-        <button disabled={submitting} onClick={onSimulatePaid} style={{ ...primaryCta(brandColor), width: '100%', opacity: submitting ? 0.5 : 1 }}>
-          {submitting ? 'Submitting…' : '✅ Simulate paid (demo) →'}
-        </button>
-        <div style={{ textAlign: 'center', marginTop: 10, fontSize: 11, color: 'var(--kFgFaint)' }}>Real card reader integration in v5.2</div>
+        {fullyPaid && (
+          <button disabled={submitting} onClick={onPaid} style={{ ...primaryCta(brandColor), width: '100%', opacity: submitting ? 0.5 : 1 }}>
+            {submitting ? 'Placing order…' : 'Place order →'}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -2164,53 +2391,104 @@ function ScreenPay({ brandColor, total, submitting, error, onSimulatePaid, onBac
 // and lists redeemable rewards. Customer taps a reward → loyalty-redeem is
 // called → discount applied as a credit deduction on the order total.
 // ============================================================
-function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail, marketingOptIn, locationId, subtotal, loyaltyRedemption, onLoyaltyRedeem, onName, onPhone, onEmail, onMarketingOptIn, onContinue, onSkip, submitting, placeOrderLabel, earlySignIn }) {
+function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail, marketingOptIn, locationId, companyId, subtotal, loyaltyRedemption, onLoyaltyRedeem, verifiedLoyalty, onVerifiedLoyalty, onName, onPhone, onEmail, onMarketingOptIn, onContinue, onSkip, submitting, placeOrderLabel, earlySignIn }) {
   // Local field state mirrors props on mount; we lift back to parent on submit.
   const [name, setName] = useState(customerName || '');
   const [phone, setPhone] = useState(customerPhone || '');
   const [email, setEmail] = useState(customerEmail || '');
   const [optIn, setOptIn] = useState(!!marketingOptIn);
 
-  // ── Loyalty hook: phone-keyed customer lookup ─────────────────
-  // null = not looked up yet; { knownCustomer:true, ... } = match;
-  // false = looked up, no match.
-  const [customerLookup, setCustomerLookup] = useState(null);
-  const [lookingUp, setLookingUp] = useState(false);
+  // ── v5.5.265: OTP-verified loyalty flow ─────────────────
+  // Replaces passive phone lookup. Customer must verify via SMS code
+  // before any loyalty data is shown. Security-first approach.
+  const [otpStep, setOtpStep] = useState('phone'); // phone | sending | code | verifying | verified
+  const [otpCode, setOtpCode] = useState('');
+  const [otpError, setOtpError] = useState('');
+  // customerLookup populated ONLY after OTP verification
+  const [customerLookup, setCustomerLookup] = useState(verifiedLoyalty ? {
+    knownCustomer: true,
+    ...(verifiedLoyalty.customer || {}),
+    credit: verifiedLoyalty.loyalty?.points_balance || 0,
+    tier: verifiedLoyalty.loyalty?.tier || null,
+    rewards: (verifiedLoyalty.loyalty?.rewards_available || []).map(r => ({
+      id: r.id, label: r.name, description: r.description || '', icon: r.icon || 'gift',
+      pointsCost: r.points_cost, type: r.reward_type, value: r.reward_value,
+    })),
+    stampCards: verifiedLoyalty.stampCards || [],
+    giftCards: verifiedLoyalty.giftCards || [],
+  } : null);
   // v5.5.219: Reward redemption state
-  const [redeeming, setRedeeming] = useState(null); // reward id being redeemed
+  const [redeeming, setRedeeming] = useState(null);
   const [redeemError, setRedeemError] = useState('');
 
-  // Debounce phone changes — only query after the user pauses typing.
-  // 600ms feels right for a customer-facing input.
+  // If already verified from a previous visit to this screen, skip to verified
   useEffect(() => {
-    let cancelled = false;
-    const phoneClean = phone.replace(/[^\d+]/g, '');
-    // Need at least 10 digits before we bother querying (UK mobile is 11
-    // including the leading 0, or 12 with +44 prefix). Reset state below
-    // that threshold so we don't hold stale results from a previous query.
-    if (phoneClean.length < 10) {
-      setCustomerLookup(null);
-      setLookingUp(false);
-      return undefined;
+    if (verifiedLoyalty && otpStep === 'phone') setOtpStep('verified');
+  }, [verifiedLoyalty]);
+
+  // Send OTP code
+  const sendOtp = async () => {
+    const clean = phone.replace(/\s+/g, '');
+    if (clean.length < 10) { setOtpError('Please enter a valid phone number'); return; }
+    if (!companyId) { setOtpError('Loyalty not configured'); return; }
+    setOtpStep('sending');
+    setOtpError('');
+    try {
+      await callLoyaltyOtp({ action: 'send', phone: clean, company_id: companyId });
+      setOtpStep('code');
+    } catch (e) {
+      setOtpError(e.message);
+      setOtpStep('phone');
     }
-    setLookingUp(true);
-    const timer = setTimeout(async () => {
-      const result = await fetchCustomerByPhone(phone, locationId);
-      if (cancelled) return;
-      setLookingUp(false);
-      if (result) {
-        setCustomerLookup(result);
-        // Auto-fill name/email if the customer hasn't already typed something.
-        // If they typed a different name, respect their input — don't overwrite.
-        setName(prev => prev.trim() ? prev : result.name);
-        setEmail(prev => prev.trim() ? prev : (result.email || ''));
-        if (result.marketingOptIn) setOptIn(true);
-      } else {
-        setCustomerLookup(false);
+  };
+
+  // Verify OTP code
+  const verifyOtp = async () => {
+    if (otpCode.length !== 6) { setOtpError('Enter the 6-digit code'); return; }
+    setOtpStep('verifying');
+    setOtpError('');
+    try {
+      const data = await callLoyaltyOtp({
+        action: 'verify',
+        phone: phone.replace(/\s+/g, ''),
+        company_id: companyId,
+        code: otpCode,
+      });
+      if (data.verified) {
+        const lookup = {
+          knownCustomer: true,
+          customerId: data.customer?.id,
+          name: data.customer?.name || '',
+          email: data.customer?.email || null,
+          marketingOptIn: data.customer?.marketing_opt_in || false,
+          credit: data.loyalty?.points_balance || 0,
+          tier: data.loyalty?.tier || null,
+          rewards: (data.loyalty?.rewards_available || []).map(r => ({
+            id: r.id, label: r.name, description: r.description || '', icon: r.icon || 'gift',
+            pointsCost: r.points_cost, type: r.reward_type, value: r.reward_value,
+          })),
+          stampCards: data.stamp_cards || [],
+          giftCards: data.gift_cards || [],
+        };
+        setCustomerLookup(lookup);
+        // Auto-fill fields
+        if (data.customer?.name) setName(prev => prev.trim() ? prev : data.customer.name);
+        if (data.customer?.email) setEmail(prev => prev.trim() ? prev : data.customer.email);
+        if (data.customer?.marketing_opt_in) setOptIn(true);
+        // Persist verified data for payment screen (gift cards etc.)
+        onVerifiedLoyalty({
+          customer: data.customer,
+          loyalty: data.loyalty,
+          stampCards: data.stamp_cards || [],
+          giftCards: data.gift_cards || [],
+        });
+        setOtpStep('verified');
       }
-    }, 600);
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, [phone, locationId]);
+    } catch (e) {
+      setOtpError(e.message);
+      setOtpStep('code');
+    }
+  };
 
   // v5.5.219: Redeem a loyalty reward
   const redeemReward = async (reward) => {
@@ -2340,14 +2618,14 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
           }}
         >×</button>
 
-        {/* v5.5.264: Loyalty-aware title + subtitle */}
+        {/* v5.5.265: OTP-verified loyalty title + flow */}
         <div style={{
           textAlign: 'center',
           marginTop: 'clamp(20px, 3vw, 32px)',
           marginBottom: 'clamp(6px, 0.8vw, 10px)',
         }}>
           <div style={{ fontSize: 'clamp(28px, 3.6vw, 38px)', marginBottom: 6 }}>
-            {showWelcome ? '👋' : '⭐'}
+            {showWelcome ? '👋' : otpStep === 'code' || otpStep === 'verifying' ? '📱' : '⭐'}
           </div>
           <div style={{
             fontSize: 'clamp(22px, 3vw, 30px)',
@@ -2355,7 +2633,11 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
             letterSpacing: '-0.01em',
             color: brandColor,
           }}>
-            {showWelcome ? `${t('details.welcome')}${customerLookup?.name ? ', ' + customerLookup.name : ''}!` : 'Earn rewards & stamps'}
+            {showWelcome
+              ? `${t('details.welcome')}${customerLookup?.name ? ', ' + customerLookup.name : ''}!`
+              : otpStep === 'code' || otpStep === 'verifying'
+                ? 'Enter verification code'
+                : 'Earn rewards & stamps'}
           </div>
         </div>
 
@@ -2370,79 +2652,111 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
         }}>
           {showWelcome
             ? 'Your loyalty details are shown below'
-            : 'Enter your mobile number to collect points, stamps and unlock rewards'}
+            : otpStep === 'code' || otpStep === 'verifying'
+              ? `We sent a 6-digit code to your mobile ending ${phone.slice(-4)}`
+              : 'Enter your mobile and verify with a text code to see your rewards'}
         </div>
 
-        {/* ─── Phone field FIRST (loyalty identifier) ─── */}
-        <div style={{ marginBottom: 'clamp(14px, 1.8vw, 18px)' }}>
-          <div style={detailsLabelStyle(brandColor)}>{t('details.mobile.label')}</div>
+        {/* ─── OTP Error ─── */}
+        {otpError && (
           <div style={{
-            display: 'flex',
-            alignItems: 'stretch',
-            background: 'var(--kSurfaceRaised)',
-            border: showWelcome
-              ? '2px solid ' + brandColor
-              : customerLookup === false
-                ? '2px solid var(--kBorder2)'
-                : '1px solid var(--kBorder2)',
-            borderRadius: 14,
-            overflow: 'hidden',
-            transition: 'border-color 0.2s',
-          }}>
+            padding: '10px 14px', borderRadius: 10, marginBottom: 14,
+            fontSize: 'clamp(12px, 1.4vw, 14px)', color: '#e55',
+            background: '#e5555512', border: '1px solid #e5555530', fontWeight: 600,
+          }}>{otpError}</div>
+        )}
+
+        {/* ─── Phone entry + Send code (step 1) ─── */}
+        {(otpStep === 'phone' || otpStep === 'sending') && !showWelcome && (
+          <div style={{ marginBottom: 'clamp(14px, 1.8vw, 18px)' }}>
+            <div style={detailsLabelStyle(brandColor)}>{t('details.mobile.label')}</div>
             <div style={{
-              padding: 'clamp(14px, 1.8vw, 18px) clamp(14px, 1.6vw, 20px)',
-              borderRight: '1px solid var(--kBorder2)',
-              fontSize: 'clamp(15px, 1.8vw, 18px)',
-              fontWeight: 600,
-              color: 'var(--kFg)',
-              fontFamily: 'inherit',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 6,
-              flexShrink: 0,
+              display: 'flex', alignItems: 'stretch', background: 'var(--kSurfaceRaised)',
+              border: '1px solid var(--kBorder2)', borderRadius: 14, overflow: 'hidden',
             }}>
-              GB +44 <span style={{ color: 'var(--kFgFaint)', fontSize: 12 }}>▾</span>
-            </div>
-            <input
-              value={phone}
-              onChange={e => setPhone(e.target.value.replace(/[^0-9 +]/g, ''))}
-              placeholder={t('details.mobile.placeholder')}
-              type="tel"
-              inputMode="tel"
-              autoFocus
-              style={{
-                flex: 1,
+              <div style={{
                 padding: 'clamp(14px, 1.8vw, 18px) clamp(14px, 1.6vw, 20px)',
-                background: 'transparent',
-                border: 0,
-                outline: 'none',
-                fontSize: 'clamp(15px, 1.8vw, 18px)',
-                fontFamily: 'ui-monospace, monospace',
-                color: 'var(--kFg)',
-                letterSpacing: '0.02em',
-                minWidth: 0,
+                borderRight: '1px solid var(--kBorder2)',
+                fontSize: 'clamp(15px, 1.8vw, 18px)', fontWeight: 600, color: 'var(--kFg)',
+                fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0,
+              }}>
+                GB +44 <span style={{ color: 'var(--kFgFaint)', fontSize: 12 }}>▾</span>
+              </div>
+              <input
+                value={phone}
+                onChange={e => setPhone(e.target.value.replace(/[^0-9 +]/g, ''))}
+                placeholder={t('details.mobile.placeholder')}
+                type="tel" inputMode="tel" autoFocus
+                style={{
+                  flex: 1, padding: 'clamp(14px, 1.8vw, 18px) clamp(14px, 1.6vw, 20px)',
+                  background: 'transparent', border: 0, outline: 'none',
+                  fontSize: 'clamp(15px, 1.8vw, 18px)', fontFamily: 'ui-monospace, monospace',
+                  color: 'var(--kFg)', letterSpacing: '0.02em', minWidth: 0,
+                }}
+              />
+            </div>
+            <button
+              onClick={sendOtp}
+              disabled={otpStep === 'sending' || phone.replace(/\s+/g, '').length < 10}
+              style={{
+                width: '100%', marginTop: 12, padding: 'clamp(14px, 1.8vw, 18px)',
+                borderRadius: 14, border: 'none',
+                background: phone.replace(/\s+/g, '').length >= 10 ? brandColor : 'var(--kSurface2)',
+                color: phone.replace(/\s+/g, '').length >= 10 ? '#fff' : 'var(--kFgFaint)',
+                fontSize: 'clamp(15px, 1.8vw, 18px)', fontWeight: 800,
+                cursor: phone.replace(/\s+/g, '').length >= 10 ? 'pointer' : 'not-allowed',
+                fontFamily: 'inherit', opacity: otpStep === 'sending' ? 0.6 : 1,
+              }}
+            >
+              {otpStep === 'sending' ? 'Sending code…' : 'Send verification code'}
+            </button>
+          </div>
+        )}
+
+        {/* ─── OTP code entry (step 2) ─── */}
+        {(otpStep === 'code' || otpStep === 'verifying') && !showWelcome && (
+          <div style={{ marginBottom: 'clamp(14px, 1.8vw, 18px)' }}>
+            <div style={detailsLabelStyle(brandColor)}>Verification code</div>
+            <input
+              value={otpCode}
+              onChange={e => setOtpCode(e.target.value.replace(/[^0-9]/g, '').slice(0, 6))}
+              placeholder="000000"
+              type="tel" inputMode="numeric" autoFocus
+              maxLength={6}
+              style={{
+                ...detailsInputStyle(),
+                textAlign: 'center', fontSize: 'clamp(24px, 3vw, 32px)',
+                fontFamily: 'ui-monospace, monospace', letterSpacing: '0.3em',
               }}
             />
+            <button
+              onClick={verifyOtp}
+              disabled={otpStep === 'verifying' || otpCode.length !== 6}
+              style={{
+                width: '100%', marginTop: 12, padding: 'clamp(14px, 1.8vw, 18px)',
+                borderRadius: 14, border: 'none',
+                background: otpCode.length === 6 ? brandColor : 'var(--kSurface2)',
+                color: otpCode.length === 6 ? '#fff' : 'var(--kFgFaint)',
+                fontSize: 'clamp(15px, 1.8vw, 18px)', fontWeight: 800,
+                cursor: otpCode.length === 6 ? 'pointer' : 'not-allowed',
+                fontFamily: 'inherit', opacity: otpStep === 'verifying' ? 0.6 : 1,
+              }}
+            >
+              {otpStep === 'verifying' ? 'Verifying…' : 'Verify'}
+            </button>
+            <button
+              onClick={() => { setOtpStep('phone'); setOtpCode(''); setOtpError(''); }}
+              style={{
+                width: '100%', marginTop: 8, padding: '10px',
+                borderRadius: 14, border: '1px solid var(--kBorder2)',
+                background: 'transparent', color: 'var(--kFgMuted)',
+                fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+              }}
+            >
+              Change number
+            </button>
           </div>
-          {/* Lookup status */}
-          {lookingUp && (
-            <div style={{ marginTop: 6, fontSize: 12, color: 'var(--kFgMuted)', fontWeight: 600 }}>
-              {t('details.lookupChecking')}
-            </div>
-          )}
-          {/* New customer prompt — phone entered but no match */}
-          {customerLookup === false && (
-            <div style={{
-              marginTop: 8, padding: '8px 12px', borderRadius: 10,
-              background: brandColor + '10', border: '1px solid ' + brandColor + '25',
-              fontSize: 'clamp(12px, 1.3vw, 14px)', fontWeight: 600, color: brandColor,
-              display: 'flex', alignItems: 'center', gap: 8,
-            }}>
-              <span style={{ fontSize: 16 }}>🎉</span>
-              Not a member yet? Enter your name below and start earning with this order!
-            </div>
-          )}
-        </div>
+        )}
 
         {/* Welcome-back / loyalty block */}
         {showWelcome && (

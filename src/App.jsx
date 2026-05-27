@@ -76,6 +76,17 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.265', date: '27 May 2026', label: 'Kiosk: OTP auth, card terminals, gift card checkout',
+    changes: [
+      'SECURITY FIX: Kiosk loyalty now requires OTP verification via SMS before showing any customer data. Phone → Send code → Enter 6-digit code → Verified. No more passive phone lookups exposing customer data.',
+      'CARD TERMINALS: Wired Stripe Terminal into kiosk ScreenPay. Card payment auto-starts via collectPayment() — supports tap/insert/swipe. Shows processing/success/declined/error states with retry.',
+      'GIFT CARD CHECKOUT: Verified customers with gift cards can apply them at the payment screen. Calls gift-redeem edge function. Handles partial payment (gift card + remaining on card) and full coverage (no card needed).',
+      'LOYALTY IN CHECKOUT: Loyalty reward discounts + gift card credits now display on the payment screen as applied discounts. Orders fully covered by rewards/gift cards skip card payment entirely.',
+      'FIX: orderType.loyaltySignIn translation key added to all 6 languages — button no longer shows raw key.',
+      'companyId resolved from locationId for OTP calls. verifiedLoyalty state persists across screen transitions so gift cards are available at payment.',
+    ],
+  },
+  {
     version: '5.5.264', date: '27 May 2026', label: 'Kiosk loyalty UX overhaul + stamp cards + gift cards',
     changes: [
       'LOYALTY-FIRST UX: Redesigned ScreenLoyalty from a generic "enter your name" form into a loyalty-first experience. Title now reads "Earn rewards & stamps" with subtitle prompting phone entry. Phone field moved to top (auto-focused) as the primary loyalty identifier.',
