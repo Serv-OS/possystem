@@ -136,13 +136,28 @@ export async function forceSyncFromSupabase() {
     const store = useStore.getState();
     const patch = {};
 
-    // Reconcile sessions — Supabase is authoritative
+    // Reconcile sessions — merge Supabase with local, preserving newer local data
     if (sessionsRes.data) {
       const sessionMap = {};
       sessionsRes.data.forEach(r => { if (r.table_id && r.session) sessionMap[r.table_id] = r.session; });
 
       patch.tables = store.tables.map(t => {
-        const session = sessionMap[t.id] || null;
+        const remote = sessionMap[t.id] || null;
+        const local = t.session || null;
+        // v5.5.283: Don't destroy local sessions that are newer or have unflushed data.
+        // Previous behavior treated Supabase as fully authoritative, which wiped
+        // local sessions that hadn't been synced yet.
+        if (!remote && local?.items?.length > 0) {
+          // Local has an active order but Supabase row is missing — keep local.
+          // It will be flushed to Supabase on the next scheduleFlush() cycle.
+          return t;
+        }
+        if (remote && local) {
+          const remoteSeated = remote.seatedAt || 0;
+          const localSeated = local.seatedAt || 0;
+          if (localSeated > remoteSeated) return t; // local is newer
+        }
+        const session = remote;
         const status = session?.items?.length > 0 ? 'occupied' : session ? 'seated' : 'available';
         return { ...t, session, status };
       });

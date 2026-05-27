@@ -16,6 +16,8 @@ let _locationId = null;
 let _debounceTimer = null;
 let _realtimeChannel = null;
 let _lastSent = {}; // table_id → JSON string, avoid redundant writes
+let _clearedAt = {}; // table_id → timestamp when first noticed as available (grace period)
+let _graceTimer = null;
 
 // ── Write ─────────────────────────────────────────────────────────────────────
 export async function flushSessions() {
@@ -40,6 +42,7 @@ export async function flushSessions() {
 
   // Upsert each occupied table
   for (const t of occupied) {
+    delete _clearedAt[t.id]; // v5.5.283: clear grace period if table re-occupied
     const payload = JSON.stringify(t.session);
     if (_lastSent[t.id] === payload) { skipped++; continue; } // no change
     _lastSent[t.id] = payload;
@@ -120,6 +123,17 @@ export async function flushSessions() {
 
   for (const tid of availableIds) {
     if (_lastSent[tid] !== 'cleared') {
+      // v5.5.283: Grace period — don't delete within 3s of first noticing
+      // the table is available. This prevents cascading data loss where a
+      // momentary session clear (from a realtime event race) becomes permanent.
+      if (!_clearedAt[tid]) _clearedAt[tid] = Date.now();
+      if (Date.now() - _clearedAt[tid] < 3000) {
+        if (!_graceTimer) {
+          _graceTimer = setTimeout(() => { _graceTimer = null; flushSessions(); }, 3500);
+        }
+        continue;
+      }
+      delete _clearedAt[tid];
       _lastSent[tid] = 'cleared';
       // Remove from localStorage backup too
       try {
@@ -213,6 +227,17 @@ export async function subscribeToSessions() {
         if (idx === -1) return;
         // Only clear if we didn't originate this (avoid clearing our own active order)
         if (_lastSent[tid] === 'cleared') return;
+        // v5.5.283: same guards as realtime.js DELETE handler — never clear
+        // the active table or sessions newer than the deleted row
+        const curState = useStore.getState();
+        if (tid === curState.activeTableId) return;
+        const localTable = tables[idx];
+        if (localTable?.session) {
+          const localSeated = localTable.session.seatedAt || 0;
+          const deletedSeated = payload.old?.session?.seatedAt || 0;
+          if (deletedSeated && localSeated > deletedSeated) return;
+          if (!deletedSeated && localTable.session.items?.length > 0) return;
+        }
         tables[idx] = { ...tables[idx], session: null, status: 'available' };
         useStore.setState({ tables });
       } else {
@@ -234,7 +259,10 @@ export async function subscribeToSessions() {
 
 export function teardown() {
   clearTimeout(_debounceTimer);
+  clearTimeout(_graceTimer);
   if (_realtimeChannel) { supabase.removeChannel(_realtimeChannel); _realtimeChannel = null; }
   _lastSent = {};
+  _clearedAt = {};
+  _graceTimer = null;
   _locationId = null;
 }

@@ -223,6 +223,20 @@ export function startRealtime(store, locationId = LOCATION_ID) {
       if (row?.location_id && row.location_id !== locationId) return;
       const tid = row?.table_id;
       if (!tid) return;
+      const state = store.getState();
+      // v5.5.283 Guard 1: never clear the table this device is actively editing
+      if (tid === state.activeTableId) return;
+      // v5.5.283 Guard 2: if local session is newer than what was deleted, keep it.
+      // Protects re-seated tables from stale DELETE events.
+      const localTable = (state.tables || []).find(t => t.id === tid);
+      if (localTable?.session) {
+        const localSeated = localTable.session.seatedAt || 0;
+        const deletedSeated = row?.session?.seatedAt || 0;
+        if (deletedSeated && localSeated > deletedSeated) return;
+        // Fallback when REPLICA IDENTITY doesn't include session:
+        // preserve sessions that have items (active orders)
+        if (!deletedSeated && localTable.session.items?.length > 0) return;
+      }
       store.setState(s => ({
         tables: s.tables.map(t =>
           t.id === tid
@@ -263,20 +277,31 @@ export function startRealtime(store, locationId = LOCATION_ID) {
         // Also clear the table from the floor — this is belt-and-suspenders
         // in case the active_sessions DELETE event was missed
         if (normalised.tableId) {
-          const tables = store.getState().tables || [];
-          const table = tables.find(t => t.id === normalised.tableId);
-          if (table?.session) {
-            update.tables = tables.map(t =>
-              t.id === normalised.tableId
-                ? { ...t, session: null, status: 'available' }
-                : t
-            );
-            // Clear from session backup too
-            try {
-              const backup = JSON.parse(localStorage.getItem('rpos-session-backup') || '{}');
-              delete backup[normalised.tableId];
-              localStorage.setItem('rpos-session-backup', JSON.stringify(backup));
-            } catch {}
+          const curState = store.getState();
+          // v5.5.283: don't clear the table this device is actively editing
+          if (normalised.tableId !== curState.activeTableId) {
+            const tables = curState.tables || [];
+            const table = tables.find(t => t.id === normalised.tableId);
+            if (table?.session) {
+              // v5.5.283: staleness check — only clear if this session belongs
+              // to the check that was just closed. If re-seated after close, keep it.
+              const sessionSeated = table.session.seatedAt || 0;
+              const checkClosed = normalised.closedAt || 0;
+              const isStale = !sessionSeated || !checkClosed || sessionSeated <= checkClosed;
+              if (isStale) {
+                update.tables = tables.map(t =>
+                  t.id === normalised.tableId
+                    ? { ...t, session: null, status: 'available' }
+                    : t
+                );
+                // Clear from session backup too
+                try {
+                  const backup = JSON.parse(localStorage.getItem('rpos-session-backup') || '{}');
+                  delete backup[normalised.tableId];
+                  localStorage.setItem('rpos-session-backup', JSON.stringify(backup));
+                } catch {}
+              }
+            }
           }
         }
         store.setState(update);

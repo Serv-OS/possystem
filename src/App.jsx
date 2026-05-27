@@ -76,6 +76,17 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.283', date: '27 May 2026', label: 'Fix table sync data loss — sessions no longer disappear across devices',
+    changes: [
+      'CRITICAL FIX — TABLE SESSION DATA LOSS: Fixed 4 bugs causing open table sessions to disappear across devices. Root cause was a cascade: a Realtime DELETE event would unconditionally clear a session on device B → flushSessions would see the table as "available" and permanently delete the Supabase row → all devices lose the session.',
+      'BUG #2 FIX (realtime.js): Active sessions DELETE handler now has the same guards as INSERT/UPDATE — skips the actively-edited table, and compares seatedAt timestamps to preserve newer sessions. Previously it cleared unconditionally.',
+      'BUG #3 FIX (realtime.js): Closed checks INSERT handler now compares session seatedAt vs check closedAt before clearing a table. If a table was re-seated after a check was closed, the new session is preserved instead of being wiped.',
+      'BUG #4 FIX (SessionSync.js): flushSessions now has a 3-second grace period before deleting active_sessions rows. This prevents a momentary session clear from cascading into a permanent Supabase delete. Tables re-occupied within the window are never deleted.',
+      'BUG #5 FIX (MasterSync.js): forceSyncFromSupabase no longer blindly overwrites local sessions. Local sessions with items are preserved when the Supabase row is missing (unflushed). Newer local sessions always win over older remote ones.',
+      'SessionSync.js DELETE handler also gained the same activeTableId + timestamp guards as the realtime.js handler — both subscription paths are now hardened.',
+    ],
+  },
+  {
     version: '5.5.282', date: '27 May 2026', label: 'Kiosk: fix gift card "code required" + guest gift card entry',
     changes: [
       'FIX — GIFT CARD "CODE REQUIRED": gift-redeem edge function now accepts card_id as alternative to code. Previously, if code_plain was null in the DB for a gift card, the kiosk sent code=null and got "code required" error. Now the kiosk sends both code and card_id; the edge function uses whichever is available.',
