@@ -30,7 +30,9 @@ const sbUpsertMenu = async (menu) => {
 };
 const sbDeleteMenu = async (id) => {
   if (isMock) return;
-  await supabase.from('menus').delete().eq('id', id);
+  const locationId = getActiveLocationSync() || await getLocationId();
+  // v5.5.279: location_id guard — never delete across tenants
+  await supabase.from('menus').delete().eq('id', id).eq('location_id', locationId);
 };
 const sbUpsertCategory = async (cat) => {
   if (isMock) return;
@@ -54,7 +56,9 @@ const sbUpsertCategory = async (cat) => {
 };
 const sbDeleteCategory = async (id) => {
   if (isMock) return;
-  await supabase.from('menu_categories').delete().eq('id', id);
+  const locationId = getActiveLocationSync() || await getLocationId();
+  // v5.5.279: location_id guard — never delete across tenants
+  await supabase.from('menu_categories').delete().eq('id', id).eq('location_id', locationId);
 };
 const sbUpsertMenuItem = async (item) => {
   if (isMock) return;
@@ -826,9 +830,12 @@ export const useStore = create((set, get) => ({
       };
     });
     if (!isMock) {
+      // v5.5.279: location_id guard on archive operations
+      const locId = getActiveLocationSync();
       supabase.from('menu_items')
         .update({ archived: true, parent_id: null, updated_at: new Date().toISOString() })
         .eq('id', id)
+        .eq('location_id', locId)
         .then(({ error }) => { if (error) console.error('[Store] archiveMenuItem failed:', error.message); });
       // Archive children in DB too
       const children = useStore.getState().menuItems.filter(i => i.parentId === id);
@@ -837,6 +844,7 @@ export const useStore = create((set, get) => ({
         supabase.from('menu_items')
           .update({ archived: true, parent_id: null, updated_at: new Date().toISOString() })
           .in('id', childIds)
+          .eq('location_id', locId)
           .then(({ error }) => { if (error) console.error('[Store] archiveMenuItem children failed:', error.message); });
       }
     }
@@ -2076,7 +2084,9 @@ export const useStore = create((set, get) => ({
       // v5.5.248: fallback — if org_id lookup failed or query returned nothing,
       // try a direct phone match using normalised phone. Ensures POS devices
       // with anonymous auth can still find customers by phone number.
-      if (enriched.length === 0 && safe.length >= 3) {
+      // v5.5.279: MUST scope fallback by org_id — the previous version queried
+      // the entire customers table, leaking PII across organisations.
+      if (enriched.length === 0 && safe.length >= 3 && orgId) {
         const phoneN = get()._normalisePhone(safe);
         const phoneFilters = [safe];
         if (phoneN && phoneN !== safe) phoneFilters.push(phoneN);
@@ -2084,6 +2094,7 @@ export const useStore = create((set, get) => ({
         const { data: fallback } = await supabase
           .from('customers')
           .select('id, name, phone, phone_raw, email, marketing_opt_in, notes, allergens')
+          .eq('org_id', orgId)
           .is('deleted_at', null)
           .or(orFilter)
           .limit(8);
@@ -2480,9 +2491,12 @@ export const useStore = create((set, get) => ({
                 ),
               }));
               // Best-effort persist loyalty jsonb to Supabase
+              // v5.5.279: location_id guard on closed_checks update
+              const loyLocId = getActiveLocationSync();
               supabase.from('closed_checks')
                 .update({ loyalty: loyaltySummary })
                 .eq('id', orderRecord.id)
+                .eq('location_id', loyLocId)
                 .then(({ error: le }) => { if (le) console.warn('[loyalty-earn] closed_check update:', le.message); });
             }
           } else {
@@ -2867,7 +2881,9 @@ export const useStore = create((set, get) => ({
         if ('openedAt' in patch)      row.opened_at = patch.openedAt;
         if ('openedByStaffId' in patch) row.opened_by_staff_id = patch.openedByStaffId;
         row.updated_at = new Date().toISOString();
-        await supabase.from('cash_drawers').update(row).eq('id', id);
+        // v5.5.279: location_id guard on cash drawer updates
+        const locId = getActiveLocationSync() || await getLocationId();
+        await supabase.from('cash_drawers').update(row).eq('id', id).eq('location_id', locId);
       } catch (err) {
         console.warn('[updateCashDrawer] failed:', err?.message || err);
       }
@@ -2878,7 +2894,9 @@ export const useStore = create((set, get) => ({
     set(s => ({ cashDrawers: (s.cashDrawers||[]).filter(d => d.id !== id) }));
     if (!isMock && supabase) {
       try {
-        await supabase.from('cash_drawers').delete().eq('id', id);
+        // v5.5.279: location_id guard — never delete across tenants
+        const locId = getActiveLocationSync() || await getLocationId();
+        await supabase.from('cash_drawers').delete().eq('id', id).eq('location_id', locId);
       } catch (err) {
         console.warn('[deleteCashDrawer] failed:', err?.message || err);
       }
@@ -3069,6 +3087,8 @@ export const useStore = create((set, get) => ({
       const staff = get().staff;
 
       // 1. Update the session row to closed
+      // v5.5.279: location_id guard via drawer_id's parent location
+      const drawerLocId = getActiveLocationSync() || await getLocationId();
       const { error: updErr } = await supabase
         .from('drawer_sessions')
         .update({
@@ -3081,7 +3101,8 @@ export const useStore = create((set, get) => ({
           status: 'closed',
           notes: [sess.notes, notes].filter(Boolean).join(' · ') || null,
         })
-        .eq('id', sess.id);
+        .eq('id', sess.id)
+        .eq('location_id', drawerLocId);
       if (updErr) throw updErr;
 
       // 2. Log variance as an adjustment movement (always — even £0.00 for audit)
@@ -3291,7 +3312,9 @@ export const useStore = create((set, get) => ({
         notes: notes || null,
         z_report: zReport || null,
       };
-      const { error } = await supabase.from('shifts').update(patch).eq('id', current.id);
+      // v5.5.279: location_id guard on shift close
+      const shiftLocId = getActiveLocationSync() || await getLocationId();
+      const { error } = await supabase.from('shifts').update(patch).eq('id', current.id).eq('location_id', shiftLocId);
       if (error) throw error;
       set({ currentShift: null });
       await get().loadShiftHistory?.();
@@ -3604,11 +3627,15 @@ export const useStore = create((set, get) => ({
     }
 
     const ref = getNextOrderRefLocal();
+    // v5.5.279: stamp locationId on in-memory record so the cross-location
+    // merge filter in BOReports can exclude checks from other locations.
+    const recLocId = getActiveLocationSync();
     const record = {
       id: `chk-${Date.now()}`,
       ref,
       tableId,
       tableLabel: table.label,
+      locationId: recLocId,
       server:     session.server || staff?.name || 'Staff',
       staffId:    staff?.id || null,                          // v4.6.19
       covers:     session.covers || 1,
@@ -3661,6 +3688,7 @@ export const useStore = create((set, get) => ({
       closedAt: Date.now(),
       status: 'paid',
       refunds: [],
+      locationId: getActiveLocationSync(),  // v5.5.279: stamp locationId for cross-location filter
       staffId: record.staffId || staff?.id || null,   // v4.6.19
       ...record,
     };
@@ -3707,6 +3735,7 @@ export const useStore = create((set, get) => ({
       ref: existingRef || getNextOrderRefLocal(),
       tableId: null,
       tableLabel: null,
+      locationId: getActiveLocationSync(),  // v5.5.279: stamp locationId for cross-location filter
       server: staff?.name || 'Staff',
       staffId: staff?.id || null,                                              // v4.6.19
       covers: 1,
@@ -4175,10 +4204,15 @@ export const useStore = create((set, get) => ({
       // doesn't produce duplicate KDS tickets if it fires twice locally.
       const COL_MISSING = (err) => err?.message?.includes('kitchen_routed_at')
         && err?.message?.includes('schema cache');
+      // v5.5.279: CRITICAL — add location_id guard. `ref` is a short sequential
+      // number (#1042) that WILL collide across locations; without this guard,
+      // routing at Location A could claim Location B's order_queue row.
+      const locId = getActiveLocationSync() || await getLocationId();
       const r = await supabase
         .from('order_queue')
         .update({ kitchen_routed_at: new Date().toISOString() })
         .eq('ref', order.ref)
+        .eq('location_id', locId)
         .is('kitchen_routed_at', null)
         .select('ref');
       if (r.error && COL_MISSING(r.error)) {
@@ -4378,9 +4412,11 @@ export const useStore = create((set, get) => ({
       // case nothing was routed, the order genuinely is still just queued.
       if (Object.keys(byCentre).length > 0) {
         try {
+          // v5.5.279: location_id guard — refs collide across locations
           await supabase.from('order_queue')
             .update({ status: 'prep' })
             .eq('ref', order.ref)
+            .eq('location_id', locId)
             .eq('status', 'received');
         } catch (e) {
           console.warn('[routeKioskOrderPrints] status→prep update failed:', e?.message);
@@ -4418,10 +4454,13 @@ export const useStore = create((set, get) => ({
     try {
       if (!supabase) throw new Error('No Supabase connection');
       // Reset the job to pending so the agent / native path picks it up again
+      // v5.5.279: location_id guard on print job reprint
+      const locId = getActiveLocationSync() || await getLocationId();
       const { error } = await supabase
         .from('print_jobs')
         .update({ status: 'pending', error: null, attempts: 0 })
-        .eq('id', supabaseRow.id);
+        .eq('id', supabaseRow.id)
+        .eq('location_id', locId);
       if (error) throw error;
       get().showToast('Job requeued for printing', 'info');
       return { ok: true };

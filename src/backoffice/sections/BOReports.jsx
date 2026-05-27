@@ -114,13 +114,15 @@ export default function BOReports() {
   // range fetch. Without this, a sale completed while the report is open never
   // appears unless the user changes the period chip. Dedup by id; rangeChecks
   // shape wins on conflict (it's the canonical Supabase row).
-  // v5.5.278: Filter live store checks by activeLocId to prevent cross-location
-  // bleed when a user switches locations in the same session.
+  // v5.5.279: Filter live store checks by activeLocId to prevent cross-location
+  // bleed. When activeLocId is set, ONLY include storeChecks that explicitly
+  // match — checks without a locationId are excluded (they're legacy or from
+  // another location that didn't stamp them).
   const allChecks = useMemo(() => {
     const base = rangeChecks || [];
     const live = (storeChecks || []).filter(c =>
       c.closedAt && new Date(c.closedAt) >= range.from && new Date(c.closedAt) <= range.to &&
-      (!activeLocId || !c.locationId || c.locationId === activeLocId)
+      (!activeLocId || c.locationId === activeLocId)
     );
     if (!live.length) return base;
     const ids = new Set(base.map(c => c.id));

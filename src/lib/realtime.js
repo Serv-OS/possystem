@@ -67,6 +67,9 @@ export function startRealtime(store, locationId = LOCATION_ID) {
       schema: 'public',
       table: 'eighty_six',
     }, ({ old: row }) => {
+      // v5.5.279: location guard — Supabase Realtime doesn't support
+      // row-level filters on DELETE, so we must check client-side.
+      if (row?.location_id && row.location_id !== locationId) return;
       store.setState(s => ({
         eightySixIds: s.eightySixIds.filter(id => id !== row.item_id),
       }));

@@ -347,11 +347,16 @@ export default function SyncBridge({ onSyncPulse }) {
             const checksRes = await fetchClosedChecks(locationId, 500);
             if (checksRes.data?.length) {
               // Merge with any localStorage checks not yet written to Supabase
+              // v5.5.279: location filter on localStorage checks — prevents cross-location
+              // bleed when a browser was previously used for a different location.
               const supabaseIds = new Set(checksRes.data.map(c => c.id));
               const lsChecks = (() => {
                 try {
                   const s = JSON.parse(localStorage.getItem('rpos-shared-state') || '{}');
-                  return (s.closedChecks || []).filter(c => !supabaseIds.has(c.id));
+                  return (s.closedChecks || []).filter(c =>
+                    !supabaseIds.has(c.id) &&
+                    (!c.locationId || c.locationId === locationId)
+                  );
                 } catch { return []; }
               })();
               patch.closedChecks = [...checksRes.data, ...lsChecks]

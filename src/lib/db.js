@@ -8,7 +8,7 @@
  * All queries are scoped to a location_id for multi-tenancy.
  */
 
-import { supabase, isMock, getLocationId } from './supabase';
+import { supabase, isMock, getLocationId, getActiveLocationSync } from './supabase';
 import { getTodayStartFallback } from './locationTime';
 
 // ── Order number generation (v5.5.8) ─────────────────────────────────────────
@@ -190,7 +190,9 @@ export const upsertMenuItem = async (item, locationId = null) => {
 
 export const archiveMenuItem = async (id) => {
   if (isMock) return { data: null, error: null };
-  return supabase.from('menu_items').update({ archived: true, updated_at: new Date().toISOString() }).eq('id', id);
+  // v5.5.279: location_id guard — never archive across tenants
+  const locationId = getActiveLocationSync() || await getLocationId();
+  return supabase.from('menu_items').update({ archived: true, updated_at: new Date().toISOString() }).eq('id', id).eq('location_id', locationId);
 };
 
 // ── Floor plan ────────────────────────────────────────────────────────────────
@@ -350,7 +352,9 @@ export const insertKDSTicket = async (ticket, locationId = null) => {
 
 export const bumpKDSTicket = async (id) => {
   if (isMock) return { data: null, error: null };
-  return supabase.from('kds_tickets').update({ status: 'bumped', bumped_at: new Date().toISOString() }).eq('id', id);
+  // v5.5.279: location_id guard on KDS ticket bump
+  const locationId = getActiveLocationSync() || await getLocationId();
+  return supabase.from('kds_tickets').update({ status: 'bumped', bumped_at: new Date().toISOString() }).eq('id', id).eq('location_id', locationId);
 };
 
 // v4.6.20 — historical fetch for the KDS performance report. Returns both
@@ -449,10 +453,13 @@ export const insertClosedCheck = async (check, locationId = null) => {
 export const updateClosedCheckRefunds = async (checkId, refunds, status) => {
   if (isMock || !checkId) return { ok: false };
   try {
+    // v5.5.279: location_id guard on refund updates
+    const locationId = getActiveLocationSync() || await getLocationId();
     const { error } = await supabase
       .from('closed_checks')
       .update({ refunds: refunds || [], status: status || 'paid' })
-      .eq('id', checkId);
+      .eq('id', checkId)
+      .eq('location_id', locationId);
     if (error) {
       console.warn('[DB] updateClosedCheckRefunds failed:', error.message);
       return { ok: false, error };
@@ -479,6 +486,7 @@ export const fetchClosedChecks = async (locationId = null, limit = 500, sinceDat
     result.data = result.data.map(c => ({
       id: c.id, ref: c.ref, server: c.server, covers: c.covers,
       staffId: c.staff_id,
+      locationId: c.location_id,  // v5.5.279: MUST map for cross-location merge filter
       orderType: c.order_type, customer: c.customer,
       items: c.items || [], discounts: c.discounts || [],
       subtotal: c.subtotal, service: c.service, tip: c.tip, total: c.total,
@@ -510,6 +518,7 @@ export const fetchClosedChecksRange = async (locationId = null, fromDate, toDate
     result.data = result.data.map(c => ({
       id: c.id, ref: c.ref, server: c.server, covers: c.covers,
       staffId: c.staff_id,
+      locationId: c.location_id,  // v5.5.279: MUST map for cross-location merge filter
       orderType: c.order_type, customer: c.customer,
       items: c.items || [], discounts: c.discounts || [],
       subtotal: c.subtotal, service: c.service, tip: c.tip, total: c.total,
@@ -572,7 +581,9 @@ export const fetchStaff = async (locationId = null) => {
 // ── Devices ───────────────────────────────────────────────────────────────────
 export const updateDeviceHeartbeat = async (deviceId) => {
   if (isMock) return { data: null, error: null };
-  return supabase.from('devices').update({ status: 'online', last_seen: new Date().toISOString() }).eq('id', deviceId);
+  // v5.5.279: location_id guard on device heartbeat
+  const locationId = getActiveLocationSync() || await getLocationId();
+  return supabase.from('devices').update({ status: 'online', last_seen: new Date().toISOString() }).eq('id', deviceId).eq('location_id', locationId);
 };
 
 export const fetchDevices = async (locationId = null) => {
@@ -1190,7 +1201,9 @@ export const upsertDiscount = async (discount, locationId = null) => {
 
 export const deleteDiscount = async (id) => {
   if (isMock) return { data: null, error: null };
-  return supabase.from('discounts').delete().eq('id', id);
+  // v5.5.279: location_id guard — never delete across tenants
+  const locationId = getActiveLocationSync() || await getLocationId();
+  return supabase.from('discounts').delete().eq('id', id).eq('location_id', locationId);
 };
 
 // ── Auto-discount rules ──────────────────────────────────────────────────────
@@ -1248,7 +1261,9 @@ export const upsertDiscountRule = async (rule, locationId = null) => {
 
 export const deleteDiscountRule = async (id) => {
   if (isMock) return { data: null, error: null };
-  return supabase.from('discount_rules').delete().eq('id', id);
+  // v5.5.279: location_id guard — never delete across tenants
+  const locationId = getActiveLocationSync() || await getLocationId();
+  return supabase.from('discount_rules').delete().eq('id', id).eq('location_id', locationId);
 };
 
 // ── Stock levels (v5.5.239) ──────────────────────────────────────────────────

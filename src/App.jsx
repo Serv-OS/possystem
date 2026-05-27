@@ -76,6 +76,17 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.279', date: '27 May 2026', label: 'Pre-launch security audit: location_id guards on all mutations',
+    changes: [
+      'TENANT ISOLATION HARDENING: Added location_id guard to 18 delete/update/archive operations across store/index.js and db.js that previously filtered by row ID only. Includes: sbDeleteMenu, sbDeleteCategory, archiveMenuItem (parent + children), deleteCashDrawer, updateCashDrawer, closeShift, closeDrawerSession, reprintJob, updateDeviceHeartbeat, bumpKDSTicket, updateClosedCheckRefunds, deleteDiscount, deleteDiscountRule, and closed_checks loyalty update.',
+      'CRITICAL FIX — order_queue ref collision: routeKioskOrderPrints now scopes both the kitchen_routed_at claim and the status→prep update by location_id. Order refs (#1042 etc.) are short sequential numbers that WILL collide across locations; without this guard, routing at Location A could claim Location B\'s order.',
+      'CRITICAL FIX — customer search PII leak: The phone-number fallback in searchCustomersLive previously queried the entire customers table without org_id scope, exposing names, phones, emails and allergens across organisations. Now requires org_id and skips the fallback if unavailable.',
+      'FIX — eighty_six DELETE realtime: Added client-side location_id check on the DELETE subscription (Supabase Realtime doesn\'t support row-level filters on DELETE). Previously, un-86ing an item at one location could un-86 the same item_id at another.',
+      'FIX — SyncBridge closedChecks localStorage merge: localStorage checks are now filtered by locationId before merging with Supabase results, preventing cross-location revenue bleed when a browser was previously used for a different location.',
+      'FIX — REPORT BLEED ROOT CAUSE: Both fetchClosedChecks and fetchClosedChecksRange were missing locationId from the camelCase mapping, so every check loaded from DB had locationId=undefined. The BOReports live-merge filter (!c.locationId) then passed ALL storeChecks regardless of location. Fixed: (1) added locationId: c.location_id to both fetch mappers, (2) stamp locationId on all 3 recordClosedCheck paths (dine-in, walk-in, bar-tab), (3) tightened the merge filter to require explicit match when activeLocId is set.',
+    ],
+  },
+  {
     version: '5.5.278', date: '27 May 2026', label: 'Fix cross-location report bleed + rename Multi-Location Reports',
     changes: [
       'LOCATION SCOPING FIX: BOReports live-merge of store checks now filters by the active location ID. Previously, storeChecks from other locations (persisted in localStorage or Zustand from a previous session) could bleed into reports for the current location. The DB queries were already correctly scoped — only the in-memory merge was unfiltered.',
