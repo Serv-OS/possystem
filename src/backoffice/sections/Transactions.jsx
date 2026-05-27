@@ -120,8 +120,8 @@ export default function Transactions() {
         const r = RANGES.find(r => r.id === rangeId);
         range = r?.fn ? r.fn() : todayRange();
       }
-      const data = await fetchClosedChecksRange(locId, range.start.toISOString(), range.end.toISOString(), 5000);
-      setChecks(data || []);
+      const result = await fetchClosedChecksRange(locId, range.start, range.end, 5000);
+      setChecks(result?.data || []);
     } catch (e) {
       console.warn('[Transactions] fetch failed:', e?.message);
     }
