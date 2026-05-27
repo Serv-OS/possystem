@@ -76,6 +76,12 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.280', date: '27 May 2026', label: 'Fix Overview dashboard cross-location bleed',
+    changes: [
+      'OVERVIEW FIX: The BOOverview dashboard KPIs (Revenue today, Covers today) were reading closedChecks from the Zustand store without any location filter — showing revenue from ALL locations. Now filters by orgCtx.locationId so each location only sees its own stats.',
+    ],
+  },
+  {
     version: '5.5.279', date: '27 May 2026', label: 'Pre-launch security audit: location_id guards on all mutations',
     changes: [
       'TENANT ISOLATION HARDENING: Added location_id guard to 18 delete/update/archive operations across store/index.js and db.js that previously filtered by row ID only. Includes: sbDeleteMenu, sbDeleteCategory, archiveMenuItem (parent + children), deleteCashDrawer, updateCashDrawer, closeShift, closeDrawerSession, reprintJob, updateDeviceHeartbeat, bumpKDSTicket, updateClosedCheckRefunds, deleteDiscount, deleteDiscountRule, and closed_checks loyalty update.',

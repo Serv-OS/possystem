@@ -668,8 +668,13 @@ function BOOverview({ setSection, orgCtx }) {
   const activeSessions = Object.fromEntries(tables.filter(t => t.session).map(t => [t.id, t.session]));
 
   // Today = since midnight local time
+  // v5.5.279: scope by locationId — previously showed revenue from ALL locations
+  const locId = orgCtx?.locationId || null;
   const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
-  const todayChecks = closedChecks.filter(c => c.closedAt && new Date(c.closedAt) >= todayStart);
+  const todayChecks = closedChecks.filter(c =>
+    c.closedAt && new Date(c.closedAt) >= todayStart &&
+    (!locId || c.locationId === locId)
+  );
 
   // Open orders = active sessions with items (not yet paid)
   const openOrdersValue = Object.values(activeSessions || {})
