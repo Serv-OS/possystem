@@ -103,6 +103,13 @@ const CHANGELOG = [
     ],
   },
   {
+    version: '5.5.286', date: '27 May 2026', label: 'Fix gift card "Card not found" on kiosk',
+    changes: [
+      'FIX — GIFT CARD "CARD NOT FOUND": gift-redeem edge function now tries card_id as fallback when HMAC code lookup fails. Previously, if code was present but HMAC didn\'t match (e.g. secret rotation), the card_id path was never tried. Now the function tries: (1) HMAC code lookup, (2) card_id direct lookup, (3) code_plain direct match — ensuring cards are always found.',
+      'Added diagnostic console.warn/error logging to gift-redeem for each lookup miss, making future gift card issues easier to debug from Supabase function logs.',
+    ],
+  },
+  {
     version: '5.5.282', date: '27 May 2026', label: 'Kiosk: fix gift card "code required" + guest gift card entry',
     changes: [
       'FIX — GIFT CARD "CODE REQUIRED": gift-redeem edge function now accepts card_id as alternative to code. Previously, if code_plain was null in the DB for a gift card, the kiosk sent code=null and got "code required" error. Now the kiosk sends both code and card_id; the edge function uses whichever is available.',

@@ -63,10 +63,15 @@ Deno.serve(async (req) => {
     .maybeSingle();
   if (!config) return json({ error: 'Gift cards not configured for this org' }, 404);
 
-  // v5.5.281: Two lookup paths — by code (HMAC) or by card_id (direct)
+  // v5.5.286: Two lookup paths — code (HMAC) with card_id fallback.
+  // Previously the branches were mutually exclusive: if code was present but
+  // its HMAC didn't match (e.g. secret rotation, import mismatch), card_id
+  // was never tried, causing "Card not found" on kiosk. Now card_id is always
+  // tried as a fallback when the code-based HMAC lookup fails.
   let card: any = null;
+
+  // 1. Try code-based HMAC lookup first (works for manual entry + linked cards)
   if (code) {
-    // Resolve code to card via HMAC lookup
     const normalized = normalizeCode(code as string);
     const lookup = await hmacLookup(normalized, config.hmac_secret);
     const { data: found } = await platformAdmin
@@ -76,8 +81,13 @@ Deno.serve(async (req) => {
       .eq('company_id', companyId)
       .maybeSingle();
     card = found;
-  } else if (card_id) {
-    // Direct lookup by card_id — used by kiosk/online when code_plain is unavailable
+    if (!card) {
+      console.warn('[gift-redeem] HMAC lookup miss for code; trying card_id fallback');
+    }
+  }
+
+  // 2. Fallback: direct card_id lookup (reliable — used by kiosk linked cards)
+  if (!card && card_id) {
     const { data: found } = await platformAdmin
       .from('gift_cards')
       .select('*')
@@ -85,9 +95,32 @@ Deno.serve(async (req) => {
       .eq('company_id', companyId)
       .maybeSingle();
     card = found;
+    if (!card) {
+      console.warn('[gift-redeem] card_id lookup miss:', { card_id, companyId });
+    }
   }
 
-  if (!card) return json({ error: 'Card not found' }, 404);
+  // 3. Last resort: match code_plain directly (handles HMAC secret rotation)
+  if (!card && code) {
+    const normalized = normalizeCode(code as string);
+    const { data: found } = await platformAdmin
+      .from('gift_cards')
+      .select('*')
+      .eq('code_plain', normalized)
+      .eq('company_id', companyId)
+      .maybeSingle();
+    card = found;
+    if (found) {
+      console.warn('[gift-redeem] Matched via code_plain fallback — HMAC may be stale');
+    }
+  }
+
+  if (!card) {
+    console.error('[gift-redeem] Card not found', {
+      hasCode: !!code, hasCardId: !!card_id, companyId,
+    });
+    return json({ error: 'Card not found' }, 404);
+  }
 
   // ── Idempotency check ─────────────────────────────────────────────────
   const { data: existingTx } = await platformAdmin
