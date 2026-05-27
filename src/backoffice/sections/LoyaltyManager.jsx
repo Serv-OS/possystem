@@ -138,9 +138,8 @@ export default function LoyaltyManager() {
     } catch {}
     // Load menu items for the item picker (free item rewards)
     // NB: menu_items has 'pricing' jsonb, NOT a 'price' column.
-    // Variants (sizes) are the real sellable products — master items are just
-    // containers with price 0. Show variants as "Parent — Variant" and
-    // standalone items (no children) at their own price.
+    // Keep full master/variant structure so the two-step picker can
+    // show products first, then drill into variants.
     try {
       const locId = getActiveLocationSync() || await getLocationId();
       if (locId && supabase) {
@@ -151,25 +150,7 @@ export default function LoyaltyManager() {
           .eq('archived', false)
           .order('name');
         if (itemsErr) console.error('[LoyaltyManager] menu items load:', itemsErr.message);
-        const all = items || [];
-        // Build parent name lookup + set of IDs that have children
-        const parentNames = {};
-        const hasChildren = new Set();
-        for (const i of all) {
-          parentNames[i.id] = i.name;
-          if (i.parent_id) hasChildren.add(i.parent_id);
-        }
-        // Include: variants (parent_id set) + standalone items (no children)
-        // Exclude: master items that have variants (they're 0-price containers)
-        const picked = all.filter(i =>
-          i.parent_id || !hasChildren.has(i.id)
-        ).map(i => ({
-          id: i.id,
-          name: i.parent_id ? `${parentNames[i.parent_id] || 'Item'} — ${i.name}` : i.name,
-          price: i.pricing?.base ?? 0,
-        }));
-        picked.sort((a, b) => a.name.localeCompare(b.name));
-        setMenuItems(picked);
+        setMenuItems((items || []).map(i => ({ ...i, price: i.pricing?.base ?? 0 })));
       }
     } catch (e) { console.error('[LoyaltyManager] menu items error:', e); }
   }, []);
@@ -297,23 +278,69 @@ function ConfigStat({ label, value }) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// ItemMultiPicker — searchable multi-select for choosing eligible items
+// ItemMultiPicker — two-step product → variant picker
+// Step 1: searchable list of products (masters + standalone items)
+// Step 2: when a master is tapped, drill into its variants to pick sizes
+// Standalone items (no variants) are toggled directly from step 1.
 // ═══════════════════════════════════════════════════════════════════════
 function ItemMultiPicker({ items = [], selected = [], onChange }) {
   const [search, setSearch] = useState('');
+  const [drillId, setDrillId] = useState(null); // parent id being drilled into
+
   const selectedIds = useMemo(() => new Set(selected.map(s => s.id)), [selected]);
 
-  const filtered = useMemo(() => {
-    if (!search.trim()) return items;
-    const q = search.toLowerCase();
-    return items.filter(i => i.name?.toLowerCase().includes(q));
-  }, [items, search]);
+  // Derive structure: top-level products + variant map
+  const { products, variantMap, parentNames } = useMemo(() => {
+    const childrenOf = {};   // parentId → [variant, ...]
+    const names = {};        // id → name
+    const hasChildren = new Set();
+    for (const i of items) {
+      names[i.id] = i.name;
+      if (i.parent_id) {
+        hasChildren.add(i.parent_id);
+        if (!childrenOf[i.parent_id]) childrenOf[i.parent_id] = [];
+        childrenOf[i.parent_id].push(i);
+      }
+    }
+    // Sort variants by name within each parent
+    for (const pid of Object.keys(childrenOf)) {
+      childrenOf[pid].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    }
+    // Products = master items (have children) + standalone items (no parent, no children)
+    const prods = items
+      .filter(i => !i.parent_id) // top-level only
+      .map(i => ({
+        ...i,
+        hasVariants: hasChildren.has(i.id),
+        variantCount: (childrenOf[i.id] || []).length,
+      }));
+    prods.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    return { products: prods, variantMap: childrenOf, parentNames: names };
+  }, [items]);
 
-  const toggle = (item) => {
+  // How many variants of a given parent are selected
+  const selectedVariantCount = useCallback((parentId) => {
+    const variants = variantMap[parentId] || [];
+    return variants.filter(v => selectedIds.has(v.id)).length;
+  }, [variantMap, selectedIds]);
+
+  // Search filter — matches product names AND variant names (shows the parent if a variant matches)
+  const filtered = useMemo(() => {
+    if (!search.trim()) return products;
+    const q = search.toLowerCase();
+    return products.filter(p => {
+      if (p.name?.toLowerCase().includes(q)) return true;
+      // Also match if any variant name matches
+      const variants = variantMap[p.id] || [];
+      return variants.some(v => v.name?.toLowerCase().includes(q));
+    });
+  }, [products, search, variantMap]);
+
+  const toggle = (item, displayName) => {
     if (selectedIds.has(item.id)) {
       onChange(selected.filter(s => s.id !== item.id));
     } else {
-      onChange([...selected, { id: item.id, name: item.name }]);
+      onChange([...selected, { id: item.id, name: displayName || item.name }]);
     }
   };
 
@@ -327,72 +354,139 @@ function ItemMultiPicker({ items = [], selected = [], onChange }) {
     );
   }
 
+  // ── Drill-in view: picking variants for a specific master product ──
+  const drillParent = drillId ? products.find(p => p.id === drillId) : null;
+  const drillVariants = drillId ? (variantMap[drillId] || []) : [];
+
+  if (drillParent) {
+    return (
+      <div>
+        {/* Selected chips */}
+        <SelectedChips selected={selected} onRemove={removeItem} />
+
+        {/* Back header */}
+        <div
+          onClick={() => setDrillId(null)}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px',
+            background: 'var(--bg2)', borderRadius: '8px 8px 0 0', border: '1px solid var(--bdr)',
+            borderBottom: 'none', cursor: 'pointer', fontSize: 12, color: 'var(--acc)', fontWeight: 700,
+          }}
+        >
+          <span style={{ fontSize: 14 }}>←</span>
+          <span>{drillParent.name}</span>
+          <span style={{ color: 'var(--t4)', fontWeight: 400, marginLeft: 'auto', fontSize: 11 }}>
+            Pick sizes
+          </span>
+        </div>
+
+        {/* Variant list */}
+        <div style={{
+          maxHeight: 220, overflowY: 'auto', border: '1px solid var(--bdr)',
+          borderRadius: '0 0 8px 8px', background: 'var(--bg2)',
+        }}>
+          {drillVariants.map(v => {
+            const isSelected = selectedIds.has(v.id);
+            const displayName = `${drillParent.name} — ${v.name}`;
+            return (
+              <div
+                key={v.id}
+                onClick={() => toggle(v, displayName)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 10,
+                  padding: '8px 12px', cursor: 'pointer',
+                  background: isSelected ? 'var(--acc-d, rgba(232,116,60,0.08))' : 'transparent',
+                  borderBottom: '1px solid var(--bdr)', fontSize: 12, color: 'var(--t1)',
+                }}
+              >
+                <Checkbox checked={isSelected} />
+                <div style={{ flex: 1, fontWeight: 600 }}>{v.name}</div>
+                <div style={{ fontSize: 11, color: 'var(--t4)', fontWeight: 600 }}>
+                  £{((v.price || 0) / 100).toFixed(2)}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 4 }}>
+          {selected.length} item{selected.length !== 1 ? 's' : ''} selected total
+        </div>
+      </div>
+    );
+  }
+
+  // ── Step 1: product list ───────────────────────────────────────────
   return (
     <div>
       {/* Selected chips */}
-      {selected.length > 0 && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
-          {selected.map(s => (
-            <span key={s.id} style={{
-              display: 'inline-flex', alignItems: 'center', gap: 4,
-              padding: '3px 10px', borderRadius: 14, fontSize: 11, fontWeight: 600,
-              background: 'var(--acc-d, rgba(232,116,60,0.15))', color: 'var(--acc)',
-              border: '1px solid var(--acc)',
-            }}>
-              {s.name}
-              <span
-                onClick={() => removeItem(s.id)}
-                style={{ cursor: 'pointer', fontWeight: 800, marginLeft: 2, fontSize: 13, lineHeight: 1 }}
-              >×</span>
-            </span>
-          ))}
-        </div>
-      )}
+      <SelectedChips selected={selected} onRemove={removeItem} />
 
       {/* Search */}
       <input
         value={search}
         onChange={e => setSearch(e.target.value)}
-        placeholder="Search items..."
+        placeholder="Search products..."
         style={{ ...S.input, marginBottom: 6 }}
       />
 
-      {/* Items list (scrollable) */}
+      {/* Products list */}
       <div style={{
-        maxHeight: 200, overflowY: 'auto', border: '1px solid var(--bdr)',
+        maxHeight: 240, overflowY: 'auto', border: '1px solid var(--bdr)',
         borderRadius: 8, background: 'var(--bg2)',
       }}>
         {filtered.length === 0 && (
           <div style={{ padding: 12, fontSize: 12, color: 'var(--t4)', textAlign: 'center' }}>
-            No items match "{search}"
+            No products match "{search}"
           </div>
         )}
-        {filtered.map(item => {
-          const isSelected = selectedIds.has(item.id);
+        {filtered.map(product => {
+          if (product.hasVariants) {
+            // Master item — tap to drill into variants
+            const selCount = selectedVariantCount(product.id);
+            return (
+              <div
+                key={product.id}
+                onClick={() => { setDrillId(product.id); setSearch(''); }}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 10,
+                  padding: '8px 12px', cursor: 'pointer',
+                  background: selCount > 0 ? 'var(--acc-d, rgba(232,116,60,0.06))' : 'transparent',
+                  borderBottom: '1px solid var(--bdr)', fontSize: 12, color: 'var(--t1)',
+                }}
+              >
+                <div style={{ flex: 1, fontWeight: 600 }}>{product.name}</div>
+                {selCount > 0 && (
+                  <span style={{
+                    padding: '1px 7px', borderRadius: 10, fontSize: 10, fontWeight: 700,
+                    background: 'var(--acc)', color: '#0b0c10',
+                  }}>
+                    {selCount} selected
+                  </span>
+                )}
+                <span style={{ fontSize: 11, color: 'var(--t4)' }}>
+                  {product.variantCount} size{product.variantCount !== 1 ? 's' : ''} →
+                </span>
+              </div>
+            );
+          }
+          // Standalone item — toggle directly
+          const isSelected = selectedIds.has(product.id);
           return (
             <div
-              key={item.id}
-              onClick={() => toggle(item)}
+              key={product.id}
+              onClick={() => toggle(product, product.name)}
               style={{
                 display: 'flex', alignItems: 'center', gap: 10,
-                padding: '7px 12px', cursor: 'pointer',
+                padding: '8px 12px', cursor: 'pointer',
                 background: isSelected ? 'var(--acc-d, rgba(232,116,60,0.08))' : 'transparent',
-                borderBottom: '1px solid var(--bdr)',
-                fontSize: 12, color: 'var(--t1)',
+                borderBottom: '1px solid var(--bdr)', fontSize: 12, color: 'var(--t1)',
               }}
             >
-              <div style={{
-                width: 18, height: 18, borderRadius: 4,
-                border: `2px solid ${isSelected ? 'var(--acc)' : 'var(--bdr2)'}`,
-                background: isSelected ? 'var(--acc)' : 'transparent',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                flexShrink: 0, fontSize: 11, color: '#fff', fontWeight: 800,
-              }}>
-                {isSelected ? '✓' : ''}
-              </div>
-              <div style={{ flex: 1, fontWeight: 600 }}>{item.name}</div>
+              <Checkbox checked={isSelected} />
+              <div style={{ flex: 1, fontWeight: 600 }}>{product.name}</div>
               <div style={{ fontSize: 11, color: 'var(--t4)', fontWeight: 600 }}>
-                £{((item.price || 0) / 100).toFixed(2)}
+                £{((product.price || 0) / 100).toFixed(2)}
               </div>
             </div>
           );
@@ -402,6 +496,44 @@ function ItemMultiPicker({ items = [], selected = [], onChange }) {
       <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 4 }}>
         {selected.length} item{selected.length !== 1 ? 's' : ''} selected
       </div>
+    </div>
+  );
+}
+
+// ── Shared sub-components for ItemMultiPicker ────────────────────────
+
+function Checkbox({ checked }) {
+  return (
+    <div style={{
+      width: 18, height: 18, borderRadius: 4, flexShrink: 0,
+      border: `2px solid ${checked ? 'var(--acc)' : 'var(--bdr2)'}`,
+      background: checked ? 'var(--acc)' : 'transparent',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      fontSize: 11, color: '#fff', fontWeight: 800,
+    }}>
+      {checked ? '✓' : ''}
+    </div>
+  );
+}
+
+function SelectedChips({ selected, onRemove }) {
+  if (!selected.length) return null;
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+      {selected.map(s => (
+        <span key={s.id} style={{
+          display: 'inline-flex', alignItems: 'center', gap: 4,
+          padding: '3px 10px', borderRadius: 14, fontSize: 11, fontWeight: 600,
+          background: 'var(--acc-d, rgba(232,116,60,0.15))', color: 'var(--acc)',
+          border: '1px solid var(--acc)',
+        }}>
+          {s.name}
+          <span
+            onClick={() => onRemove(s.id)}
+            style={{ cursor: 'pointer', fontWeight: 800, marginLeft: 2, fontSize: 13, lineHeight: 1 }}
+          >×</span>
+        </span>
+      ))}
     </div>
   );
 }

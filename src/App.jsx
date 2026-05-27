@@ -76,11 +76,12 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
-    version: '5.5.253', date: '27 May 2026', label: 'Fix: item picker shows variants with correct prices',
+    version: '5.5.254', date: '27 May 2026', label: 'Two-step item picker for loyalty rewards',
     changes: [
-      'Loyalty free-item picker now shows size variants (e.g. "Latte — Large") instead of 0-price master items. Master items that have variants are excluded since they are just containers.',
-      'Standalone items (no variants) still show at their own price.',
-      'Variant names display as "Parent — Variant" with the variant\'s actual price.',
+      'Rebuilt the free-item picker as a two-step flow: first pick the product, then drill into its sizes/variants. Standalone items toggle directly from the product list.',
+      'Search matches both product names and variant names — if a variant matches, its parent product appears in results.',
+      'Master products show "N sizes →" with a badge showing how many variants are already selected.',
+      'Selected items show as removable chips at the top, with variant names displayed as "Product — Size".',
     ],
   },
   {
