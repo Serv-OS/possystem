@@ -76,6 +76,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.259', date: '27 May 2026', label: 'Fix: stamp cards now award stamps for variant items',
+    changes: [
+      'Variant items (sizes like Small/Medium/Large) had stale category IDs in the database — e.g. Latte Small was tagged as "Sandwiches" instead of inheriting "Coffee" from its parent Latte master product.',
+      'The loyalty-earn payload builder now ALWAYS uses the parent product\'s category for variants, regardless of what the variant\'s own cat field says. This ensures stamp card qualifying-category matching works correctly.',
+      'The addItem function also now resolves the parent\'s category at order time, so KDS routing, course assignment, and other category-dependent logic all use the correct category for variants.',
+    ],
+  },
+  {
     version: '5.5.258', date: '27 May 2026', label: 'Fix: customer portal 24h session persistence now works',
     changes: [
       'Fixed the "keep logged in for 24 hours" feature on the customer loyalty portal. Page refresh was always forcing a new OTP code because the edge function validated phone number before routing to the refresh action — the dummy phone value sent by refreshData was rejected as invalid.',

@@ -1147,7 +1147,15 @@ export const useStore = create((set, get) => ({
       price, qty, mods: mods||[], notes: opts.notes||'',
       pizzaConfig, allergens: item.allergens||[],
       centreId: item.centreId,
-      cat: item.cat || null,
+      cat: (() => {
+        // v5.5.259: Variants use the parent's category. Variant rows in the DB
+        // can have a stale/wrong cat from creation or reassignment bugs.
+        if (item.parentId) {
+          const parent = (useStore.getState().menuItems || []).find(m => m.id === item.parentId);
+          if (parent?.cat) return parent.cat;
+        }
+        return item.cat || null;
+      })(),
       parentId: item.parentId || null,
       taxRateId: item.taxRateId || item.tax_rate_id || null,
       taxOverrides: item.taxOverrides || item.tax_overrides || {},
@@ -2303,18 +2311,25 @@ export const useStore = create((set, get) => ({
             channel: orderRecord.orderType || orderRecord.source || 'pos',
             items: (orderRecord.items || []).map(i => {
               let cat = i.cat || i.category || null;
-              // Variant fallback: inherit parent's category
-              if (!cat && i.parentId) {
+              // v5.5.259: Variants ALWAYS use parent's category. Variant
+              // rows in the DB can have a stale/wrong cat (e.g. Sandwiches
+              // instead of Coffee) from category reassignment or creation
+              // bugs. The parent's cat is the source of truth for what
+              // "type" of product this is.
+              if (i.parentId) {
                 const parent = menuById.get(i.parentId);
-                cat = parent?.cat || parent?.cats?.[0] || null;
+                const parentCat = parent?.cat || parent?.cats?.[0] || null;
+                if (parentCat) cat = parentCat;
               }
               // Double fallback: look up the original menu item's cat
               if (!cat) {
                 const mi = menuById.get(i.itemId || i.id);
-                cat = mi?.cat || mi?.cats?.[0] || null;
-                if (!cat && mi?.parentId) {
+                if (mi?.parentId) {
+                  // Variant via menu lookup — use parent's cat
                   const parent = menuById.get(mi.parentId);
                   cat = parent?.cat || parent?.cats?.[0] || null;
+                } else {
+                  cat = mi?.cat || mi?.cats?.[0] || null;
                 }
               }
               return {
