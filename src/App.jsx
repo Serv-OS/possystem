@@ -76,6 +76,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.257', date: '27 May 2026', label: 'Loyalty: stamp cards on profiles + advanced loyalty reports',
+    changes: [
+      'Stamp card progress now visible on loyalty member rows (LoyaltyManager) — click a member to see their active stamp cards with progress bars and stamp counts.',
+      'Customer profiles (Customers section) now show stamp card progress alongside points and tier details.',
+      'New Loyalty Reports category in the reports catalog with 4 sub-reports: Overview (KPIs, tier distribution, stamp summaries), Member Leaderboard (top 50 by spend/points/visits), Stamp Cards (per-program stats and completions), and Transactions (filterable points/stamp activity log).',
+    ],
+  },
+  {
     version: '5.5.256', date: '27 May 2026', label: 'Fix: stamp cards now match variant items to qualifying categories',
     changes: [
       'Stamp card qualifying-category matching was failing for size variants (e.g. "Latte — Large") because variants don\'t have their own category — they inherit from the parent product. The loyalty-earn payload now resolves the parent\'s category for variants.',

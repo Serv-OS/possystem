@@ -58,6 +58,16 @@ export const CATEGORIES = [
     ],
   },
   {
+    id: 'loyalty', label: 'Loyalty reports', icon: '💎',
+    description: 'Member engagement, stamp cards, points circulation and reward redemptions.',
+    reports: [
+      { id:'loyalty_overview',      label:'Loyalty overview',   desc:'KPIs, tier distribution, stamp card summaries and period activity', badge:'new' },
+      { id:'loyalty_members',       label:'Member leaderboard', desc:'Top 50 members ranked by spend, points or visits', badge:'new' },
+      { id:'loyalty_stamps',        label:'Stamp cards',        desc:'Per-program active cards, completions and top stampers', badge:'new' },
+      { id:'loyalty_transactions',  label:'Transactions',       desc:'Filterable log of all points earned, redeemed and stamp activity', badge:'new' },
+    ],
+  },
+  {
     id: 'location', label: 'Location reports', icon: '📍',
     description: 'Consolidated data and compare views across multiple sites.',
     reports: [

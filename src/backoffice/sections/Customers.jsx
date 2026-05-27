@@ -65,6 +65,8 @@ export default function Customers() {
   const [insightsTab, setInsightsTab] = useState('vips'); // vips | multi | crossSell | dormant
   const [loyaltyMap, setLoyaltyMap] = useState({});    // v5.5.223: customer_id → loyalty record
   const [tierMap, setTierMap] = useState({});           // v5.5.223: tier_id → tier record
+  const [stampDataMap, setStampDataMap] = useState({}); // v5.5.257: customer_id → { programs, cards }
+  const [stampPrograms, setStampPrograms] = useState([]); // v5.5.257: all active stamp programs
 
   // Load all customers + their per-location stats (for the org)
   useEffect(() => {
@@ -157,6 +159,30 @@ export default function Customers() {
                 (tRows || []).forEach(t => { tMap[t.id] = t; });
                 setTierMap(tMap);
               }
+
+              // v5.5.257: Fetch stamp card programs + per-customer cards
+              try {
+                const { data: progs } = await platformSupabase
+                  .from('stamp_card_programs')
+                  .select('id, name, icon, stamps_required, reward_description, active')
+                  .eq('company_id', platLoc.company_id)
+                  .eq('active', true);
+                setStampPrograms(progs || []);
+
+                if (progs?.length && ids.length) {
+                  const { data: stampCards } = await platformSupabase
+                    .from('customer_stamp_cards')
+                    .select('id, customer_id, program_id, stamps_collected, completed_count, last_stamp_at')
+                    .eq('company_id', platLoc.company_id)
+                    .in('customer_id', ids);
+                  const scMap = {};
+                  (stampCards || []).forEach(sc => {
+                    if (!scMap[sc.customer_id]) scMap[sc.customer_id] = [];
+                    scMap[sc.customer_id].push(sc);
+                  });
+                  setStampDataMap(scMap);
+                }
+              } catch (e) { console.warn('[Customers] stamp cards fetch:', e?.message); }
             }
           } catch (loyaltyErr) {
             console.warn('[Customers] loyalty fetch failed:', loyaltyErr?.message);
@@ -352,7 +378,7 @@ export default function Customers() {
       </div>
 
       {/* Right: detail panel */}
-      {selected && <DetailPanel customer={selected} loyalty={loyaltyMap[selected.id]} tier={loyaltyMap[selected.id]?.tier_id ? tierMap[loyaltyMap[selected.id].tier_id] : null} onClose={() => setSelectedId(null)} onChanged={(updated) => {
+      {selected && <DetailPanel customer={selected} loyalty={loyaltyMap[selected.id]} tier={loyaltyMap[selected.id]?.tier_id ? tierMap[loyaltyMap[selected.id].tier_id] : null} stampCards={stampDataMap[selected.id] || []} stampPrograms={stampPrograms} onClose={() => setSelectedId(null)} onChanged={(updated) => {
         setCustomers(cs => cs.map(c => c.id === updated.id ? { ...c, ...updated } : c));
       }} onDeleted={() => {
         setCustomers(cs => cs.filter(c => c.id !== selected.id));
@@ -386,7 +412,7 @@ function SortHeader({ col, sortBy, sortDir, onClick, align = 'left', children })
   );
 }
 
-function DetailPanel({ customer, loyalty, tier, onClose, onChanged, onDeleted }) {
+function DetailPanel({ customer, loyalty, tier, stampCards = [], stampPrograms = [], onClose, onChanged, onDeleted }) {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(false);
@@ -557,6 +583,42 @@ function DetailPanel({ customer, loyalty, tier, onClose, onChanged, onDeleted })
             <Row label="Enrolled" value={fmtDate(loyalty.enrolled_at)}/>
             {loyalty.last_earn_at && <Row label="Last earned" value={fmtRel(loyalty.last_earn_at)}/>}
             {tier && <Row label="Tier" value={tier.name}/>}
+          </div>
+        </div>
+      )}
+
+      {/* v5.5.257: Stamp cards */}
+      {stampPrograms.length > 0 && (
+        <div style={{ padding:'14px 22px', borderBottom:'1px solid var(--bdr)' }}>
+          <div style={{ fontSize:10, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:8 }}>Stamp cards</div>
+          <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+            {stampPrograms.map(prog => {
+              const card = stampCards.find(sc => sc.program_id === prog.id);
+              const collected = card?.stamps_collected || 0;
+              const completed = card?.completed_count || 0;
+              const pct = Math.min(100, Math.round((collected / prog.stamps_required) * 100));
+              return (
+                <div key={prog.id} style={{ padding:'10px 12px', background:'var(--bg2)', borderRadius:8, border:'1px solid var(--bdr)' }}>
+                  <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:6 }}>
+                    <span style={{ fontSize:18 }}>{prog.icon || '☕'}</span>
+                    <span style={{ fontSize:12, fontWeight:700, color:'var(--t1)', flex:1 }}>{prog.name}</span>
+                    {completed > 0 && (
+                      <span style={{ fontSize:10, fontWeight:700, color:'var(--grn,#4caf50)', padding:'1px 6px', borderRadius:4, background:'rgba(76,175,80,0.12)' }}>
+                        {completed}× completed
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ height:6, borderRadius:3, background:'var(--bg3)', overflow:'hidden', marginBottom:4 }}>
+                    <div style={{ width:`${pct}%`, height:'100%', borderRadius:3, background:'var(--acc)' }}/>
+                  </div>
+                  <div style={{ display:'flex', justifyContent:'space-between', fontSize:11, color:'var(--t3)' }}>
+                    <span style={{ fontWeight:600 }}>{collected}/{prog.stamps_required} stamps</span>
+                    {card?.last_stamp_at && <span>Last: {new Date(card.last_stamp_at).toLocaleDateString('en-GB', { day:'2-digit', month:'short' })}</span>}
+                  </div>
+                  {prog.reward_description && <div style={{ fontSize:10, color:'var(--t4)', marginTop:2 }}>Reward: {prog.reward_description}</div>}
+                </div>
+              );
+            })}
           </div>
         </div>
       )}

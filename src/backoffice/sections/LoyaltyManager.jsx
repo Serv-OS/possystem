@@ -961,6 +961,9 @@ function MembersPanel({ config }) {
   const [sortDir, setSortDir] = useState('desc');
   const [adjustMember, setAdjustMember] = useState(null); // member obj for the adjust modal
   const [companyId, setCompanyId] = useState(null);
+  const [stampPrograms, setStampPrograms] = useState([]);  // v5.5.257: stamp card programs
+  const [stampCardsMap, setStampCardsMap] = useState({});   // customer_id -> [card, ...]
+  const [expandedMember, setExpandedMember] = useState(null); // customer_id for expanded row
 
   // Load all members: customer_loyalty (platform) + customers (ops)
   useEffect(() => {
@@ -1006,6 +1009,29 @@ function MembersPanel({ config }) {
             .in('id', tierIds);
           (tRows || []).forEach(t => { tierMap[t.id] = t; });
         }
+
+        // v5.5.257: Fetch stamp card programs + per-customer stamp cards
+        try {
+          const { data: progs } = await platformSupabase
+            .from('stamp_card_programs')
+            .select('id, name, icon, stamps_required, reward_description, active')
+            .eq('company_id', loc.company_id);
+          setStampPrograms(progs || []);
+
+          if (progs?.length && custIds.length) {
+            const { data: stampCards } = await platformSupabase
+              .from('customer_stamp_cards')
+              .select('id, customer_id, program_id, stamps_collected, completed_count, last_stamp_at')
+              .eq('company_id', loc.company_id)
+              .in('customer_id', custIds);
+            const scMap = {};
+            (stampCards || []).forEach(sc => {
+              if (!scMap[sc.customer_id]) scMap[sc.customer_id] = [];
+              scMap[sc.customer_id].push(sc);
+            });
+            setStampCardsMap(scMap);
+          }
+        } catch (e) { console.warn('[MembersPanel] stamp cards fetch:', e?.message); }
 
         // Merge
         const merged = loyaltyRows.map(l => {
@@ -1116,36 +1142,104 @@ function MembersPanel({ config }) {
             <span></span>
           </div>
           {/* Rows */}
-          {filtered.map(m => (
-            <div key={m.customer_id} style={{
-              display: 'grid', gridTemplateColumns: '2fr 1.2fr 1fr 0.8fr 0.8fr 0.8fr 0.7fr auto',
-              gap: 6, padding: '10px 16px', fontSize: 12, alignItems: 'center',
-              borderBottom: '1px solid var(--bdr)',
-            }}>
-              <div style={{ minWidth: 0 }}>
-                <div style={{ fontWeight: 700, color: 'var(--t1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {m.name || 'Unnamed'}
-                  {m.tier && (
-                    <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 4, background: `${m.tier.color || 'var(--acc)'}20`, color: m.tier.color || 'var(--acc)' }}>
-                      {m.tier.icon || '⭐'} {m.tier.name}
-                    </span>
+          {filtered.map(m => {
+            const isExpanded = expandedMember === m.customer_id;
+            const memberStamps = stampCardsMap[m.customer_id] || [];
+            const hasStamps = memberStamps.length > 0 || stampPrograms.length > 0;
+            return (
+            <div key={m.customer_id}>
+              <div
+                onClick={() => hasStamps && setExpandedMember(isExpanded ? null : m.customer_id)}
+                style={{
+                  display: 'grid', gridTemplateColumns: '2fr 1.2fr 1fr 0.8fr 0.8fr 0.8fr 0.7fr auto',
+                  gap: 6, padding: '10px 16px', fontSize: 12, alignItems: 'center',
+                  borderBottom: isExpanded ? 'none' : '1px solid var(--bdr)',
+                  cursor: hasStamps ? 'pointer' : 'default',
+                  background: isExpanded ? 'var(--bg2)' : 'transparent',
+                }}
+              >
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 700, color: 'var(--t1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {m.name || 'Unnamed'}
+                    {m.tier && (
+                      <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 4, background: `${m.tier.color || 'var(--acc)'}20`, color: m.tier.color || 'var(--acc)' }}>
+                        {m.tier.icon || '⭐'} {m.tier.name}
+                      </span>
+                    )}
+                    {memberStamps.length > 0 && (
+                      <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 4, background: 'rgba(232,116,60,0.12)', color: 'var(--acc)' }}>
+                        {memberStamps.reduce((s, sc) => s + (sc.stamps_collected || 0), 0)} stamps
+                      </span>
+                    )}
+                  </div>
+                  {m.email && <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.email}</div>}
+                </div>
+                <div style={{ color: 'var(--t2)', fontFamily: 'var(--font-mono)', fontSize: 11 }}>{m.phone || '—'}</div>
+                <div style={{ color: 'var(--t4)', fontFamily: 'var(--font-mono)', fontSize: 11 }}>{m.member_code || '—'}</div>
+                <div style={{ textAlign: 'right', color: 'var(--acc)', fontWeight: 700, fontFamily: 'var(--font-mono)' }}>{(m.points_balance || 0).toLocaleString()}</div>
+                <div style={{ textAlign: 'right', color: 'var(--t1)', fontFamily: 'var(--font-mono)' }}>{m.visit_count || 0}</div>
+                <div style={{ textAlign: 'right', color: 'var(--t2)', fontFamily: 'var(--font-mono)' }}>£{((m.lifetime_spend_minor || 0) / 100).toFixed(2)}</div>
+                <div style={{ textAlign: 'right', color: 'var(--t3)', fontSize: 11 }}>{m.enrolled_at ? new Date(m.enrolled_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) : '—'}</div>
+                <button onClick={(e) => { e.stopPropagation(); setAdjustMember(m); }} style={{
+                  padding: '4px 10px', fontSize: 10, fontWeight: 700, borderRadius: 6,
+                  border: '1px solid var(--bdr)', background: 'var(--bg3)', color: 'var(--t2)',
+                  cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap',
+                }}>± Points</button>
+              </div>
+              {/* v5.5.257: Expanded stamp card detail */}
+              {isExpanded && (
+                <div style={{ padding: '10px 16px 14px', background: 'var(--bg2)', borderBottom: '1px solid var(--bdr)' }}>
+                  <div style={{ fontSize: 10, fontWeight: 800, color: 'var(--t4)', textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 8 }}>Stamp cards</div>
+                  {stampPrograms.length === 0 ? (
+                    <div style={{ fontSize: 12, color: 'var(--t4)' }}>No stamp card programs configured.</div>
+                  ) : (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+                      {stampPrograms.filter(p => p.active).map(prog => {
+                        const card = memberStamps.find(sc => sc.program_id === prog.id);
+                        const collected = card?.stamps_collected || 0;
+                        const completed = card?.completed_count || 0;
+                        const pct = Math.min(100, Math.round((collected / prog.stamps_required) * 100));
+                        return (
+                          <div key={prog.id} style={{
+                            padding: '10px 14px', background: 'var(--bg1)', borderRadius: 10,
+                            border: '1px solid var(--bdr)', minWidth: 200, flex: '0 0 auto',
+                          }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                              <span style={{ fontSize: 18 }}>{prog.icon || '☕'}</span>
+                              <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--t1)' }}>{prog.name}</span>
+                            </div>
+                            {/* Progress bar */}
+                            <div style={{ height: 6, borderRadius: 3, background: 'var(--bg3)', overflow: 'hidden', marginBottom: 4 }}>
+                              <div style={{ width: `${pct}%`, height: '100%', borderRadius: 3, background: 'var(--acc)', transition: 'width 0.3s' }} />
+                            </div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11 }}>
+                              <span style={{ color: 'var(--t2)', fontWeight: 600 }}>{collected}/{prog.stamps_required} stamps</span>
+                              {completed > 0 && (
+                                <span style={{ color: 'var(--grn, #4caf50)', fontWeight: 700 }}>
+                                  {completed}× completed
+                                </span>
+                              )}
+                            </div>
+                            {prog.reward_description && (
+                              <div style={{ fontSize: 10, color: 'var(--t4)', marginTop: 2 }}>
+                                Reward: {prog.reward_description}
+                              </div>
+                            )}
+                            {card?.last_stamp_at && (
+                              <div style={{ fontSize: 10, color: 'var(--t4)', marginTop: 2 }}>
+                                Last stamp: {new Date(card.last_stamp_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
                   )}
                 </div>
-                {m.email && <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.email}</div>}
-              </div>
-              <div style={{ color: 'var(--t2)', fontFamily: 'var(--font-mono)', fontSize: 11 }}>{m.phone || '—'}</div>
-              <div style={{ color: 'var(--t4)', fontFamily: 'var(--font-mono)', fontSize: 11 }}>{m.member_code || '—'}</div>
-              <div style={{ textAlign: 'right', color: 'var(--acc)', fontWeight: 700, fontFamily: 'var(--font-mono)' }}>{(m.points_balance || 0).toLocaleString()}</div>
-              <div style={{ textAlign: 'right', color: 'var(--t1)', fontFamily: 'var(--font-mono)' }}>{m.visit_count || 0}</div>
-              <div style={{ textAlign: 'right', color: 'var(--t2)', fontFamily: 'var(--font-mono)' }}>£{((m.lifetime_spend_minor || 0) / 100).toFixed(2)}</div>
-              <div style={{ textAlign: 'right', color: 'var(--t3)', fontSize: 11 }}>{m.enrolled_at ? new Date(m.enrolled_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) : '—'}</div>
-              <button onClick={() => setAdjustMember(m)} style={{
-                padding: '4px 10px', fontSize: 10, fontWeight: 700, borderRadius: 6,
-                border: '1px solid var(--bdr)', background: 'var(--bg3)', color: 'var(--t2)',
-                cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap',
-              }}>± Points</button>
+              )}
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
