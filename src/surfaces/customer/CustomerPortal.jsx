@@ -7,7 +7,7 @@
 //   3. Dashboard: points balance, tier, rewards, transactions, gift cards, profile
 //
 // Auth: HMAC session tokens (no Supabase auth for customers). Token stored in
-// sessionStorage, auto-clears on tab close. 24h expiry.
+// localStorage with a 24h TTL so the customer stays signed in across tabs/visits.
 
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { buildGiftTheme, fetchGiftBranding, formatAmount } from '../gift/giftHelpers';
@@ -30,19 +30,27 @@ async function callPortal(body) {
   return data;
 }
 
-// ─── Session storage helpers ──────────────────────────────────────────────
+// ─── Session storage helpers (localStorage + 24h TTL) ────────────────────
 const SESSION_KEY = 'rpos-loyalty-session';
+const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 function storeSession(token, companyId) {
-  try { sessionStorage.setItem(SESSION_KEY, JSON.stringify({ token, companyId })); } catch {}
+  try { localStorage.setItem(SESSION_KEY, JSON.stringify({ token, companyId, at: Date.now() })); } catch {}
 }
 function loadSession() {
   try {
-    const raw = sessionStorage.getItem(SESSION_KEY);
-    return raw ? JSON.parse(raw) : null;
+    const raw = localStorage.getItem(SESSION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    // Expire after 24h
+    if (parsed.at && (Date.now() - parsed.at) > SESSION_TTL_MS) {
+      localStorage.removeItem(SESSION_KEY);
+      return null;
+    }
+    return parsed;
   } catch { return null; }
 }
 function clearSession() {
-  try { sessionStorage.removeItem(SESSION_KEY); } catch {}
+  try { localStorage.removeItem(SESSION_KEY); } catch {}
 }
 
 export default function CustomerPortal({ location }) {

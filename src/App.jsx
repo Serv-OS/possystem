@@ -76,6 +76,13 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.251', date: '27 May 2026', label: 'Customer portal — 24h session persistence',
+    changes: [
+      'Loyalty portal (/account) now uses localStorage instead of sessionStorage, so the customer stays signed in for 24 hours across tab closes and browser restarts.',
+      'Session includes a timestamp — automatically expires and clears after 24h, requiring a fresh OTP sign-in.',
+    ],
+  },
+  {
     version: '5.5.250', date: '26 May 2026', label: 'Online checkout — inline loyalty OTP sign-in',
     changes: [
       'When the loyalty gate prompt appears at checkout, clicking "Sign in with text code" now sends an OTP and shows a 6-digit code entry — all inline, without leaving the checkout. Customer details (name, phone, email) are preserved throughout.',
