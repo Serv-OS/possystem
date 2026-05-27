@@ -76,9 +76,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.275', date: '27 May 2026', label: 'Transactions report moved into Reports catalog',
+    changes: [
+      'TRANSACTIONS IN REPORTS: Moved Transactions & Refunds from standalone sidebar section into the Reports catalog under Order Reports. Now uses the shared BOReports period picker, server/orderType/source filters, and data pipeline instead of fetching its own data. Keeps its own text search, status/method drill-down filters, expandable rows, and refund modal.',
+    ],
+  },
+  {
     version: '5.5.274', date: '27 May 2026', label: 'Back office: Transactions & Refunds report',
     changes: [
-      'TRANSACTIONS REPORT: New back office section under Analytics showing all closed checks across all POS devices. Summary stats cards (count, revenue, tips, service charge, total refunded). Date range pills (today, yesterday, 7 days, 30 days, custom). Search by order reference, customer name, or server. Filter by status (paid/refunded/voided), payment method, and source (POS/kiosk/online).',
+      'TRANSACTIONS REPORT: Transactions & refunds report with summary stats (count, revenue, tips, service charge, total refunded). Search by order reference, customer name, or server. Filter by status (paid/refunded/voided), payment method, and source (POS/kiosk/online).',
       'EXPANDABLE ROWS: Click any transaction to see full line items with quantities, modifiers, and prices. Discounts, tips, service charge, and total breakdown. Full refund history with timestamps, amounts, reasons, and manager name.',
       'REFUNDS: Refund button opens modal with full-refund or item-level toggle. Item-level lets you pick specific items and quantities to refund. Reason field and confirmation checkbox required. Calls store.refundCheck() which persists to DB and triggers loyalty-refund and gift-card-reverse-redeem.',
     ],

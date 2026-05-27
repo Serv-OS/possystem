@@ -35,7 +35,6 @@ import DiscountManager from './sections/DiscountManager';
 import GiftCards from './sections/GiftCards';
 import MessageTemplates from './sections/MessageTemplates';
 import LoyaltyManager from './sections/LoyaltyManager';
-import Transactions from './sections/Transactions';
 
 const NAV = [
   { id:'overview',   label:'Overview',        icon:'◈',  group:'Dashboard' },
@@ -52,7 +51,6 @@ const NAV = [
   { id:'staff',      label:'Staff & access',  icon:'👥',  group:'Configuration' },
   { id:'printing',   label:'Production printing',   icon:'🖨',  group:'Configuration' },
   { id:'reports',    label:'Reports',           icon:'📊',  group:'Analytics' },
-  { id: 'transactions', label: 'Transactions', icon: '💳', group: 'Analytics' },
   { id:'shift',      label:'Shift',             icon:'⏱', group:'Analytics' },
   { id:'eod',        label:'Close day',        icon:'🔒',  group:'Analytics' },
   { id:'pettycash',  label:'Petty cash',        icon:'\u{1F4B0}', group:'Analytics' },
@@ -511,7 +509,6 @@ export default function BackOfficeApp() {
           {section === 'discounts'  && <DiscountManager />}
           {section === 'challenge21' && <Challenge21 />}
           {section === 'giftcards' && <GiftCards />}
-          {section === 'transactions' && <Transactions />}
           {section === 'loyalty' && <LoyaltyManager />}
           {section === 'messages' && <MessageTemplates />}
         </div>

@@ -1,21 +1,16 @@
-// Transactions — Back Office section for viewing all closed checks
-// with search, filters, and item-level or full refund capability.
+// Transactions — Report sub-view inside BOReports (Order reports category).
+// Shows all closed checks with search, expandable item details, and refund capability.
 //
 // v5.5.274: Initial build
-//   - Fetches closed_checks for configurable date range
-//   - Search by order ref, customer name, server
-//   - Filter by status (paid/refunded/voided), payment method, source
-//   - Expandable row shows line items, discounts, refund history
-//   - Refund: full check or select specific items with quantities
-//   - Calls store.refundCheck() which persists + triggers loyalty/gift reversal
+// v5.5.275: Moved from standalone sidebar section into Reports catalog.
+//           Now receives `checks` + `fmt` from parent BOReports (which handles
+//           period selection and server/orderType/source filters). This component
+//           adds its own text search, status/method filters, and refund modal.
 
-import { useState, useMemo, useEffect, useCallback, Fragment } from 'react';
+import { useState, useMemo, Fragment } from 'react';
 import { useStore } from '../../store';
-import { getLocationId } from '../../lib/supabase';
-import { fetchClosedChecksRange } from '../../lib/db';
 
 // ── Formatting helpers ──────────────────────────────────────────────
-const fmt = n => `£${(n || 0).toFixed(2)}`;
 const fmtDate = ts => {
   if (!ts) return '—';
   const d = new Date(typeof ts === 'number' ? ts : ts);
@@ -49,51 +44,14 @@ function StatusBadge({ status }) {
 // ── Source label ─────────────────────────────────────────────────────
 const SOURCE_LABELS = { pos: 'POS', kiosk: 'Kiosk', online: 'Online', qr: 'QR' };
 
-// ── Date range helpers ──────────────────────────────────────────────
-function todayRange() {
-  const now = new Date();
-  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const end = new Date(start); end.setDate(end.getDate() + 1);
-  return { start, end, label: 'Today' };
-}
-function yesterdayRange() {
-  const now = new Date();
-  const end = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const start = new Date(end); start.setDate(start.getDate() - 1);
-  return { start, end, label: 'Yesterday' };
-}
-function last7Range() {
-  const now = new Date();
-  const end = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
-  const start = new Date(end); start.setDate(start.getDate() - 7);
-  return { start, end, label: 'Last 7 days' };
-}
-function last30Range() {
-  const now = new Date();
-  const end = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
-  const start = new Date(end); start.setDate(start.getDate() - 30);
-  return { start, end, label: 'Last 30 days' };
-}
-const RANGES = [
-  { id: 'today', fn: todayRange },
-  { id: 'yesterday', fn: yesterdayRange },
-  { id: 'week', fn: last7Range },
-  { id: 'month', fn: last30Range },
-  { id: 'custom', fn: null },
-];
-
 // ═════════════════════════════════════════════════════════════════════
 // MAIN COMPONENT
 // ═════════════════════════════════════════════════════════════════════
-export default function Transactions() {
-  const { closedChecks: storeChecks, refundCheck, staff } = useStore();
+export default function Transactions({ checks: parentChecks = [], fmt: parentFmt }) {
+  const { refundCheck, staff } = useStore();
+  const fmt = parentFmt || (n => `£${(n || 0).toFixed(2)}`);
 
   // ── State ──
-  const [checks, setChecks] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [rangeId, setRangeId] = useState('today');
-  const [customFrom, setCustomFrom] = useState('');
-  const [customTo, setCustomTo] = useState('');
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [methodFilter, setMethodFilter] = useState('all');
@@ -101,44 +59,15 @@ export default function Transactions() {
   const [expandedId, setExpandedId] = useState(null);
 
   // Refund modal state
-  const [refundTarget, setRefundTarget] = useState(null); // check being refunded
-  const [refundMode, setRefundMode] = useState('full');    // 'full' | 'items'
-  const [refundSelections, setRefundSelections] = useState({}); // { uid: qty }
+  const [refundTarget, setRefundTarget] = useState(null);
+  const [refundMode, setRefundMode] = useState('full');
+  const [refundSelections, setRefundSelections] = useState({});
   const [refundReason, setRefundReason] = useState('');
   const [refundConfirm, setRefundConfirm] = useState(false);
 
-  // ── Fetch checks ──
-  const fetchChecks = useCallback(async () => {
-    setLoading(true);
-    try {
-      const locId = await getLocationId();
-      if (!locId) { setLoading(false); return; }
-      let range;
-      if (rangeId === 'custom' && customFrom && customTo) {
-        range = { start: new Date(customFrom), end: new Date(customTo + 'T23:59:59') };
-      } else {
-        const r = RANGES.find(r => r.id === rangeId);
-        range = r?.fn ? r.fn() : todayRange();
-      }
-      const result = await fetchClosedChecksRange(locId, range.start, range.end, 5000);
-      setChecks(result?.data || []);
-    } catch (e) {
-      console.warn('[Transactions] fetch failed:', e?.message);
-    }
-    setLoading(false);
-  }, [rangeId, customFrom, customTo]);
-
-  useEffect(() => { fetchChecks(); }, [fetchChecks]);
-
-  // Merge live store checks (for real-time refund updates)
-  const allChecks = useMemo(() => {
-    const storeMap = new Map(storeChecks.map(c => [c.id, c]));
-    return checks.map(c => storeMap.get(c.id) || c);
-  }, [checks, storeChecks]);
-
   // ── Filtering + search ──
   const filtered = useMemo(() => {
-    let list = allChecks;
+    let list = parentChecks;
     if (statusFilter !== 'all') list = list.filter(c => c.status === statusFilter);
     if (methodFilter !== 'all') list = list.filter(c => c.method === methodFilter);
     if (sourceFilter !== 'all') list = list.filter(c => (c.source || 'pos') === sourceFilter);
@@ -152,11 +81,11 @@ export default function Transactions() {
       );
     }
     return list;
-  }, [allChecks, statusFilter, methodFilter, sourceFilter, search]);
+  }, [parentChecks, statusFilter, methodFilter, sourceFilter, search]);
 
   // Unique values for filter dropdowns
-  const methods = useMemo(() => [...new Set(allChecks.map(c => c.method).filter(Boolean))].sort(), [allChecks]);
-  const sources = useMemo(() => [...new Set(allChecks.map(c => c.source || 'pos'))].sort(), [allChecks]);
+  const methods = useMemo(() => [...new Set(parentChecks.map(c => c.method).filter(Boolean))].sort(), [parentChecks]);
+  const sources = useMemo(() => [...new Set(parentChecks.map(c => c.source || 'pos'))].sort(), [parentChecks]);
 
   // ── Summary stats ──
   const stats = useMemo(() => {
@@ -194,7 +123,6 @@ export default function Transactions() {
       const alreadyRefunded = (refundTarget.refunds || []).reduce((s, r) => s + (r.amount || 0), 0);
       return Math.max(0, (refundTarget.subtotal || 0) - alreadyRefunded);
     }
-    // Item-level
     const items = refundTarget.items || [];
     return Object.entries(refundSelections).reduce((s, [uid, qty]) => {
       const item = items.find(i => i.uid === uid || i.id === uid);
@@ -227,80 +155,47 @@ export default function Transactions() {
       amount: refundAmount,
     });
 
-    // Refresh after a short delay for store to update
     setRefundTarget(null);
-    setTimeout(() => fetchChecks(), 500);
   };
 
   // ── Styles ──
-  const card = { background: 'var(--bg2, #fff)', borderRadius: 12, border: '1px solid var(--border, #e5e7eb)', overflow: 'hidden' };
+  const card = { background: 'var(--bg1, #fff)', borderRadius: 12, border: '1px solid var(--bdr, #e5e7eb)', overflow: 'hidden' };
   const statCard = { ...card, padding: '16px 20px', flex: 1, minWidth: 140 };
-  const thStyle = { padding: '10px 12px', textAlign: 'left', fontSize: 12, fontWeight: 700, color: 'var(--t3, #6b7280)', textTransform: 'uppercase', letterSpacing: '0.04em', borderBottom: '1px solid var(--border, #e5e7eb)', whiteSpace: 'nowrap' };
-  const tdStyle = { padding: '12px 12px', fontSize: 14, borderBottom: '1px solid var(--border, #e5e7eb)', verticalAlign: 'middle' };
-  const inputStyle = { padding: '8px 12px', border: '1px solid var(--border, #e5e7eb)', borderRadius: 8, fontSize: 14, background: 'var(--bg, #fff)', color: 'var(--t1, #111)', fontFamily: 'inherit', outline: 'none' };
+  const thStyle = { padding: '10px 12px', textAlign: 'left', fontSize: 12, fontWeight: 700, color: 'var(--t3, #6b7280)', textTransform: 'uppercase', letterSpacing: '0.04em', borderBottom: '1px solid var(--bdr, #e5e7eb)', whiteSpace: 'nowrap' };
+  const tdStyle = { padding: '12px 12px', fontSize: 14, borderBottom: '1px solid var(--bdr, #e5e7eb)', verticalAlign: 'middle' };
+  const inputStyle = { padding: '8px 12px', border: '1px solid var(--bdr, #e5e7eb)', borderRadius: 8, fontSize: 13, background: 'var(--bg, #fff)', color: 'var(--t1, #111)', fontFamily: 'inherit', outline: 'none' };
   const selectStyle = { ...inputStyle, cursor: 'pointer' };
   const btnPrimary = { padding: '8px 16px', borderRadius: 8, border: 'none', background: 'var(--acc, #E8743C)', color: '#fff', fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' };
-  const btnOutline = { padding: '8px 16px', borderRadius: 8, border: '1px solid var(--border, #e5e7eb)', background: 'transparent', color: 'var(--t1, #111)', fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' };
+  const btnOutline = { padding: '8px 16px', borderRadius: 8, border: '1px solid var(--bdr, #e5e7eb)', background: 'transparent', color: 'var(--t1, #111)', fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' };
 
   return (
-    <div style={{ padding: 24, maxWidth: 1400, margin: '0 auto' }}>
-      {/* Header */}
-      <div style={{ marginBottom: 24 }}>
-        <h1 style={{ fontSize: 28, fontWeight: 800, margin: 0, letterSpacing: '-0.02em' }}>Transactions</h1>
-        <p style={{ color: 'var(--t3, #6b7280)', fontSize: 14, margin: '4px 0 0' }}>
-          All closed checks across POS, kiosk, and online ordering
-        </p>
-      </div>
-
+    <div>
       {/* Summary stats */}
       <div style={{ display: 'flex', gap: 12, marginBottom: 20, flexWrap: 'wrap' }}>
         <div style={statCard}>
-          <div style={{ fontSize: 12, color: 'var(--t3, #6b7280)', fontWeight: 600, marginBottom: 4 }}>Transactions</div>
+          <div style={{ fontSize: 11, color: 'var(--t4)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 4 }}>Transactions</div>
           <div style={{ fontSize: 22, fontWeight: 800 }}>{stats.count}</div>
         </div>
         <div style={statCard}>
-          <div style={{ fontSize: 12, color: 'var(--t3, #6b7280)', fontWeight: 600, marginBottom: 4 }}>Total revenue</div>
+          <div style={{ fontSize: 11, color: 'var(--t4)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 4 }}>Revenue</div>
           <div style={{ fontSize: 22, fontWeight: 800 }}>{fmt(stats.total)}</div>
         </div>
         <div style={statCard}>
-          <div style={{ fontSize: 12, color: 'var(--t3, #6b7280)', fontWeight: 600, marginBottom: 4 }}>Tips</div>
+          <div style={{ fontSize: 11, color: 'var(--t4)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 4 }}>Tips</div>
           <div style={{ fontSize: 22, fontWeight: 800 }}>{fmt(stats.tips)}</div>
         </div>
         <div style={statCard}>
-          <div style={{ fontSize: 12, color: 'var(--t3, #6b7280)', fontWeight: 600, marginBottom: 4 }}>Service charge</div>
+          <div style={{ fontSize: 11, color: 'var(--t4)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 4 }}>Service</div>
           <div style={{ fontSize: 22, fontWeight: 800 }}>{fmt(stats.service)}</div>
         </div>
         <div style={statCard}>
-          <div style={{ fontSize: 12, color: 'var(--t3, #6b7280)', fontWeight: 600, marginBottom: 4 }}>Refunded</div>
+          <div style={{ fontSize: 11, color: 'var(--t4)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 4 }}>Refunded</div>
           <div style={{ fontSize: 22, fontWeight: 800, color: stats.refunds > 0 ? '#dc2626' : undefined }}>{fmt(stats.refunds)}</div>
         </div>
       </div>
 
-      {/* Filters bar */}
-      <div style={{ ...card, padding: '14px 16px', marginBottom: 16, display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
-        {/* Date range pills */}
-        <div style={{ display: 'flex', gap: 4, marginRight: 8 }}>
-          {RANGES.map(r => (
-            <button
-              key={r.id}
-              onClick={() => setRangeId(r.id)}
-              style={{
-                padding: '6px 14px', borderRadius: 6, border: '1px solid var(--border, #e5e7eb)',
-                background: rangeId === r.id ? 'var(--acc, #E8743C)' : 'transparent',
-                color: rangeId === r.id ? '#fff' : 'var(--t2, #374151)',
-                fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
-                whiteSpace: 'nowrap',
-              }}
-            >{r.id === 'today' ? 'Today' : r.id === 'yesterday' ? 'Yesterday' : r.id === 'week' ? '7 days' : r.id === 'month' ? '30 days' : 'Custom'}</button>
-          ))}
-        </div>
-        {rangeId === 'custom' && (
-          <>
-            <input type="date" value={customFrom} onChange={e => setCustomFrom(e.target.value)} style={inputStyle} />
-            <span style={{ color: 'var(--t3)', fontSize: 13 }}>to</span>
-            <input type="date" value={customTo} onChange={e => setCustomTo(e.target.value)} style={inputStyle} />
-          </>
-        )}
+      {/* Search + filters */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
         <div style={{ flex: 1, minWidth: 200 }}>
           <input
             value={search}
@@ -316,24 +211,25 @@ export default function Transactions() {
           <option value="refunded">Refunded</option>
           <option value="voided">Voided</option>
         </select>
-        <select value={methodFilter} onChange={e => setMethodFilter(e.target.value)} style={selectStyle}>
-          <option value="all">All methods</option>
-          {methods.map(m => <option key={m} value={m}>{m.charAt(0).toUpperCase() + m.slice(1)}</option>)}
-        </select>
-        <select value={sourceFilter} onChange={e => setSourceFilter(e.target.value)} style={selectStyle}>
-          <option value="all">All sources</option>
-          {sources.map(s => <option key={s} value={s}>{SOURCE_LABELS[s] || s}</option>)}
-        </select>
-        <button onClick={fetchChecks} style={btnOutline} title="Refresh">
-          {loading ? 'Loading...' : 'Refresh'}
-        </button>
+        {methods.length > 1 && (
+          <select value={methodFilter} onChange={e => setMethodFilter(e.target.value)} style={selectStyle}>
+            <option value="all">All methods</option>
+            {methods.map(m => <option key={m} value={m}>{m.charAt(0).toUpperCase() + m.slice(1)}</option>)}
+          </select>
+        )}
+        {sources.length > 1 && (
+          <select value={sourceFilter} onChange={e => setSourceFilter(e.target.value)} style={selectStyle}>
+            <option value="all">All sources</option>
+            {sources.map(s => <option key={s} value={s}>{SOURCE_LABELS[s] || s}</option>)}
+          </select>
+        )}
       </div>
 
       {/* Transactions table */}
       <div style={{ ...card, overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 900 }}>
           <thead>
-            <tr style={{ background: 'var(--bg2, #f9fafb)' }}>
+            <tr style={{ background: 'var(--bg3, #f9fafb)' }}>
               <th style={thStyle}>Order #</th>
               <th style={thStyle}>Date / Time</th>
               <th style={thStyle}>Server</th>
@@ -351,8 +247,8 @@ export default function Transactions() {
           <tbody>
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={12} style={{ ...tdStyle, textAlign: 'center', padding: 40, color: 'var(--t3, #9ca3af)' }}>
-                  {loading ? 'Loading transactions...' : 'No transactions found'}
+                <td colSpan={12} style={{ ...tdStyle, textAlign: 'center', padding: 40, color: 'var(--t4, #9ca3af)' }}>
+                  No transactions found for this period
                 </td>
               </tr>
             )}
@@ -365,29 +261,29 @@ export default function Transactions() {
                 <Fragment key={c.id}>
                   <tr
                     onClick={() => setExpandedId(isExpanded ? null : c.id)}
-                    style={{ cursor: 'pointer', background: isExpanded ? 'var(--bg2, #f9fafb)' : 'transparent' }}
+                    style={{ cursor: 'pointer', background: isExpanded ? 'var(--bg3, #f9fafb)' : 'transparent' }}
                   >
-                    <td style={{ ...tdStyle, fontWeight: 700, fontFamily: 'ui-monospace, monospace' }}>{c.ref || c.id?.slice(0, 8)}</td>
+                    <td style={{ ...tdStyle, fontWeight: 700, fontFamily: 'var(--font-mono, ui-monospace, monospace)' }}>{c.ref || c.id?.slice(0, 8)}</td>
                     <td style={tdStyle}>{fmtDateTime(c.closedAt)}</td>
                     <td style={tdStyle}>{c.server || '—'}</td>
                     <td style={tdStyle}>{custName || '—'}</td>
                     <td style={tdStyle}>
                       <span style={{
                         fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 4,
-                        background: 'var(--bg2, #f3f4f6)', color: 'var(--t2, #374151)',
+                        background: 'var(--bg3, #f3f4f6)', color: 'var(--t2, #374151)',
                       }}>{SOURCE_LABELS[c.source || 'pos'] || 'POS'}</span>
                     </td>
                     <td style={tdStyle}>{(c.method || '').charAt(0).toUpperCase() + (c.method || '').slice(1)}</td>
-                    <td style={{ ...tdStyle, textAlign: 'right', fontFamily: 'ui-monospace, monospace' }}>{fmt(c.subtotal)}</td>
-                    <td style={{ ...tdStyle, textAlign: 'right', fontFamily: 'ui-monospace, monospace', color: c.service ? 'var(--t1)' : 'var(--t3, #ccc)' }}>{fmt(c.service)}</td>
-                    <td style={{ ...tdStyle, textAlign: 'right', fontFamily: 'ui-monospace, monospace', color: c.tip ? 'var(--t1)' : 'var(--t3, #ccc)' }}>{fmt(c.tip)}</td>
-                    <td style={{ ...tdStyle, textAlign: 'right', fontWeight: 700, fontFamily: 'ui-monospace, monospace' }}>{fmt(c.total)}</td>
+                    <td style={{ ...tdStyle, textAlign: 'right', fontFamily: 'var(--font-mono, ui-monospace, monospace)' }}>{fmt(c.subtotal)}</td>
+                    <td style={{ ...tdStyle, textAlign: 'right', fontFamily: 'var(--font-mono, ui-monospace, monospace)', color: c.service ? 'var(--t1)' : 'var(--t4, #ccc)' }}>{fmt(c.service)}</td>
+                    <td style={{ ...tdStyle, textAlign: 'right', fontFamily: 'var(--font-mono, ui-monospace, monospace)', color: c.tip ? 'var(--t1)' : 'var(--t4, #ccc)' }}>{fmt(c.tip)}</td>
+                    <td style={{ ...tdStyle, textAlign: 'right', fontWeight: 700, fontFamily: 'var(--font-mono, ui-monospace, monospace)' }}>{fmt(c.total)}</td>
                     <td style={tdStyle}><StatusBadge status={c.status} /></td>
                     <td style={{ ...tdStyle, textAlign: 'center', fontSize: 16 }}>{isExpanded ? '▲' : '▼'}</td>
                   </tr>
                   {isExpanded && (
                     <tr>
-                      <td colSpan={12} style={{ padding: 0, background: 'var(--bg2, #f9fafb)', borderBottom: '1px solid var(--border, #e5e7eb)' }}>
+                      <td colSpan={12} style={{ padding: 0, background: 'var(--bg3, #f9fafb)', borderBottom: '1px solid var(--bdr, #e5e7eb)' }}>
                         <div style={{ padding: '16px 20px', display: 'flex', gap: 24, flexWrap: 'wrap' }}>
                           {/* Left: Line items */}
                           <div style={{ flex: 2, minWidth: 300 }}>
@@ -406,11 +302,11 @@ export default function Transactions() {
                                   <tr key={item.uid || item.id || idx}>
                                     <td style={{ padding: '6px 8px', fontSize: 13 }}>
                                       {item.name}
-                                      {item.mods && <span style={{ color: 'var(--t3)', fontSize: 11, display: 'block' }}>{typeof item.mods === 'string' ? item.mods : Array.isArray(item.mods) ? item.mods.join(', ') : ''}</span>}
+                                      {item.mods && <span style={{ color: 'var(--t4)', fontSize: 11, display: 'block' }}>{typeof item.mods === 'string' ? item.mods : Array.isArray(item.mods) ? item.mods.join(', ') : ''}</span>}
                                     </td>
                                     <td style={{ padding: '6px 8px', fontSize: 13, textAlign: 'center' }}>{item.qty || 1}</td>
-                                    <td style={{ padding: '6px 8px', fontSize: 13, textAlign: 'right', fontFamily: 'ui-monospace, monospace' }}>{fmt(item.price)}</td>
-                                    <td style={{ padding: '6px 8px', fontSize: 13, textAlign: 'right', fontFamily: 'ui-monospace, monospace' }}>{fmt((item.price || 0) * (item.qty || 1))}</td>
+                                    <td style={{ padding: '6px 8px', fontSize: 13, textAlign: 'right', fontFamily: 'var(--font-mono, ui-monospace, monospace)' }}>{fmt(item.price)}</td>
+                                    <td style={{ padding: '6px 8px', fontSize: 13, textAlign: 'right', fontFamily: 'var(--font-mono, ui-monospace, monospace)' }}>{fmt((item.price || 0) * (item.qty || 1))}</td>
                                   </tr>
                                 ))}
                               </tbody>
@@ -419,7 +315,7 @@ export default function Transactions() {
                             {/* Discounts */}
                             {(c.discounts || []).length > 0 && (
                               <div style={{ marginTop: 12 }}>
-                                <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--t3)', marginBottom: 4 }}>Discounts</div>
+                                <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--t4)', marginBottom: 4 }}>Discounts</div>
                                 {c.discounts.map((d, i) => (
                                   <div key={i} style={{ fontSize: 13, color: '#16a34a', padding: '2px 0' }}>
                                     {d.name || d.label || 'Discount'}: -{fmt(d.amount || d.value || 0)}
@@ -429,31 +325,31 @@ export default function Transactions() {
                             )}
 
                             {/* Totals breakdown */}
-                            <div style={{ marginTop: 12, borderTop: '1px solid var(--border, #e5e7eb)', paddingTop: 10 }}>
+                            <div style={{ marginTop: 12, borderTop: '1px solid var(--bdr, #e5e7eb)', paddingTop: 10 }}>
                               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 3 }}>
-                                <span>Subtotal</span><span style={{ fontFamily: 'ui-monospace, monospace' }}>{fmt(c.subtotal)}</span>
+                                <span>Subtotal</span><span style={{ fontFamily: 'var(--font-mono, ui-monospace, monospace)' }}>{fmt(c.subtotal)}</span>
                               </div>
                               {c.service > 0 && (
                                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 3, color: 'var(--t2)' }}>
-                                  <span>Service charge</span><span style={{ fontFamily: 'ui-monospace, monospace' }}>{fmt(c.service)}</span>
+                                  <span>Service charge</span><span style={{ fontFamily: 'var(--font-mono, ui-monospace, monospace)' }}>{fmt(c.service)}</span>
                                 </div>
                               )}
                               {c.tip > 0 && (
                                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 3, color: 'var(--t2)' }}>
-                                  <span>Tip</span><span style={{ fontFamily: 'ui-monospace, monospace' }}>{fmt(c.tip)}</span>
+                                  <span>Tip</span><span style={{ fontFamily: 'var(--font-mono, ui-monospace, monospace)' }}>{fmt(c.tip)}</span>
                                 </div>
                               )}
                               {(c.taxAmount || 0) > 0 && (
                                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 3, color: 'var(--t2)' }}>
-                                  <span>Tax</span><span style={{ fontFamily: 'ui-monospace, monospace' }}>{fmt(c.taxAmount)}</span>
+                                  <span>Tax</span><span style={{ fontFamily: 'var(--font-mono, ui-monospace, monospace)' }}>{fmt(c.taxAmount)}</span>
                                 </div>
                               )}
                               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, fontWeight: 800, marginTop: 4 }}>
-                                <span>Total</span><span style={{ fontFamily: 'ui-monospace, monospace' }}>{fmt(c.total)}</span>
+                                <span>Total</span><span style={{ fontFamily: 'var(--font-mono, ui-monospace, monospace)' }}>{fmt(c.total)}</span>
                               </div>
                               {totalRefunded > 0 && (
                                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#dc2626', fontWeight: 700, marginTop: 4 }}>
-                                  <span>Refunded</span><span style={{ fontFamily: 'ui-monospace, monospace' }}>-{fmt(totalRefunded)}</span>
+                                  <span>Refunded</span><span style={{ fontFamily: 'var(--font-mono, ui-monospace, monospace)' }}>-{fmt(totalRefunded)}</span>
                                 </div>
                               )}
                             </div>
@@ -491,7 +387,7 @@ export default function Transactions() {
                               {c.orderType && <div><strong>Order type:</strong> {c.orderType}</div>}
                               {c.covers > 0 && <div><strong>Covers:</strong> {c.covers}</div>}
                               {c.staffId && <div><strong>Staff ID:</strong> {c.staffId}</div>}
-                              <div><strong>Check ID:</strong> <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11 }}>{c.id}</span></div>
+                              <div><strong>Check ID:</strong> <span style={{ fontFamily: 'var(--font-mono, ui-monospace, monospace)', fontSize: 11 }}>{c.id}</span></div>
                             </div>
 
                             {/* Refund button */}
@@ -516,8 +412,8 @@ export default function Transactions() {
       </div>
 
       {/* Results count */}
-      <div style={{ marginTop: 10, fontSize: 13, color: 'var(--t3, #9ca3af)' }}>
-        Showing {filtered.length} of {allChecks.length} transactions
+      <div style={{ marginTop: 10, fontSize: 12, color: 'var(--t4, #9ca3af)' }}>
+        Showing {filtered.length} of {parentChecks.length} transactions
       </div>
 
       {/* ═══ Refund Modal ═══ */}
@@ -584,8 +480,8 @@ export default function Transactions() {
                       style={{
                         display: 'flex', alignItems: 'center', gap: 12,
                         padding: '10px 12px', borderRadius: 8, marginBottom: 4,
-                        background: selectedQty > 0 ? '#fef2f2' : 'var(--bg2, #f9fafb)',
-                        border: `1px solid ${selectedQty > 0 ? '#fca5a5' : 'var(--border, #e5e7eb)'}`,
+                        background: selectedQty > 0 ? '#fef2f2' : 'var(--bg3, #f9fafb)',
+                        border: `1px solid ${selectedQty > 0 ? '#fca5a5' : 'var(--bdr, #e5e7eb)'}`,
                         cursor: 'pointer',
                       }}
                     >
@@ -598,10 +494,10 @@ export default function Transactions() {
                       }}>{selectedQty > 0 ? selectedQty : ''}</div>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: 14, fontWeight: 600 }}>{item.name}</div>
-                        {item.mods && <div style={{ fontSize: 11, color: 'var(--t3)' }}>{typeof item.mods === 'string' ? item.mods : Array.isArray(item.mods) ? item.mods.join(', ') : ''}</div>}
+                        {item.mods && <div style={{ fontSize: 11, color: 'var(--t4)' }}>{typeof item.mods === 'string' ? item.mods : Array.isArray(item.mods) ? item.mods.join(', ') : ''}</div>}
                       </div>
-                      <div style={{ fontSize: 13, color: 'var(--t3)', flexShrink: 0 }}>x{maxQty}</div>
-                      <div style={{ fontSize: 14, fontWeight: 700, fontFamily: 'ui-monospace, monospace', flexShrink: 0 }}>{fmt(item.price)}</div>
+                      <div style={{ fontSize: 13, color: 'var(--t4)', flexShrink: 0 }}>x{maxQty}</div>
+                      <div style={{ fontSize: 14, fontWeight: 700, fontFamily: 'var(--font-mono, ui-monospace, monospace)', flexShrink: 0 }}>{fmt(item.price)}</div>
                     </div>
                   );
                 })}
@@ -622,12 +518,12 @@ export default function Transactions() {
             {/* Refund amount + confirm */}
             <div style={{
               padding: '16px', borderRadius: 10, marginBottom: 16,
-              background: refundAmount > 0 ? '#fef2f2' : 'var(--bg2, #f9fafb)',
-              border: `1px solid ${refundAmount > 0 ? '#fca5a5' : 'var(--border, #e5e7eb)'}`,
+              background: refundAmount > 0 ? '#fef2f2' : 'var(--bg3, #f9fafb)',
+              border: `1px solid ${refundAmount > 0 ? '#fca5a5' : 'var(--bdr, #e5e7eb)'}`,
             }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <span style={{ fontSize: 14, fontWeight: 700 }}>Refund amount</span>
-                <span style={{ fontSize: 22, fontWeight: 800, color: refundAmount > 0 ? '#dc2626' : 'var(--t3)', fontFamily: 'ui-monospace, monospace' }}>
+                <span style={{ fontSize: 22, fontWeight: 800, color: refundAmount > 0 ? '#dc2626' : 'var(--t4)', fontFamily: 'var(--font-mono, ui-monospace, monospace)' }}>
                   {fmt(refundAmount)}
                 </span>
               </div>

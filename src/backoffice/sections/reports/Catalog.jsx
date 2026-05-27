@@ -46,6 +46,7 @@ export const CATEGORIES = [
     id: 'orders', label: 'Order reports', icon: '📦',
     description: 'Live floor and order activity, per-table performance.',
     reports: [
+      { id:'transactions', label:'Transactions & refunds', desc:'All closed checks with search, item details, and full or item-level refunds', badge:'new' },
       { id:'open',   label:'Open orders', desc:'Tables still on the floor, not yet paid' },
       { id:'tables', label:'Tables',      desc:'Revenue, turns, covers and avg check by table', badge:'new' },
     ],
