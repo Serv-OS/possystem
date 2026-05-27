@@ -76,9 +76,10 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
-    version: '5.5.273', date: '27 May 2026', label: 'Kiosk: cancel order button on all screens',
+    version: '5.5.273', date: '27 May 2026', label: 'Kiosk: inline cancel order on all screens',
     changes: [
-      'CANCEL ORDER: Persistent "Cancel order" button fixed to top-right corner on every kiosk screen except attract and done. Tapping it calls resetSession — clears cart, customer details, tip, loyalty, and returns to the attract screen. Gives customers a clear escape route at any point during checkout.',
+      'CANCEL ORDER: Inline "✕ Cancel order" button rendered inside each screen header (not a floating overlay). Appears on: order type, table number, menu, cart, tip, loyalty, and payment screens. On the payment screen, cancelling also clears the reader action. Each screen passes onCancel through its own header layout so the button sits naturally alongside existing controls (back arrow, allergen filter, etc).',
+      'CANCEL BUTTON COMPONENT: New CancelOrderBtn helper renders a subtle bordered button with consistent styling across all screens.',
     ],
   },
   {

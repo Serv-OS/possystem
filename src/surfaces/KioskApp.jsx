@@ -672,42 +672,14 @@ export default function KioskApp({ kioskId, onUnpair }) {
   // ─── Render ───
   return (
     <div onPointerDown={resetIdle} data-kiosk-theme={isLight ? "light" : "dark"} style={kioskShell(brandColor, effectiveBg, brandAccent)}>
-      {/* v5.5.273: Persistent "Cancel order" button — visible on every screen except attract/done/item */}
-      {!['attract', 'done', 'item'].includes(screen) && (
-        <button
-          onClick={resetSession}
-          style={{
-            position: 'fixed',
-            top: 'clamp(12px, 1.6vw, 18px)',
-            right: 'clamp(12px, 1.6vw, 18px)',
-            zIndex: 150,
-            background: 'var(--kSurfaceRaised)',
-            border: '1px solid var(--kBorder2)',
-            borderRadius: 'clamp(10px, 1.4vw, 14px)',
-            padding: 'clamp(8px, 1vw, 12px) clamp(14px, 1.8vw, 20px)',
-            fontSize: 'clamp(12px, 1.4vw, 15px)',
-            fontWeight: 700,
-            color: 'var(--kFgMuted)',
-            cursor: 'pointer',
-            fontFamily: 'inherit',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 6,
-            boxShadow: '0 2px 8px rgba(0,0,0,0.08)',
-          }}
-        >
-          <span style={{ fontSize: 'clamp(14px, 1.6vw, 18px)', lineHeight: 1 }}>{'✕'}</span>
-          Cancel order
-        </button>
-      )}
       {screen === 'attract' && <ScreenAttract brandName={brandName} brandColor={brandColor} brandAccent={brandAccent} brandLogoUrl={brandLogoUrl} attractVideoUrl={attractVideoUrl} avgWaitMinutes={avgWaitMinutes} banner={bannerFor('attract')} ctaLabel={labelTapToOrder} onStart={() => { resetIdle(); setScreen('orderType'); }} />}
       {screen === 'orderType' && <ScreenOrderType brandColor={brandColor} brandLogoUrl={brandLogoUrl} brandName={brandName} tableMode={tableMode} lang={lang} onOpenLanguagePicker={() => setShowLangPicker(true)} loyaltyEnabled={loyaltyEnabled} customerName={customerName} onLoyaltySignIn={() => { setLoyaltyReturnScreen('orderType'); setScreen('loyalty'); }} onPick={(t) => {
         setOrderType(t);
         if (t === 'dineIn' && (tableMode === 'enter' || tableMode === 'either')) setScreen('tableNumber');
         else setScreen('menu');
-      }} onBack={() => setScreen('attract')} />}
-      {screen === 'tableNumber' && <ScreenTableNumber brandColor={brandColor} value={tableNumber} onChange={setTableNumber} onContinue={() => setScreen('menu')} onBack={() => setScreen('orderType')} />}
-      {screen === 'menu' && <ScreenMenu brandColor={brandColor} brandAccent={brandAccent} categories={visibleCategories} items={visibleItems} selectedCategoryId={selectedCategoryId} onSelectCategory={setSelectedCategoryId} onSelectItem={(item) => { setSelectedItem(item); setScreen('item'); }} cartItemCount={cartItemCount} subtotal={subtotal} onCart={() => setScreen('cart')} orderType={orderType} activeMenuId={activeMenuId} banner={bannerFor('menu')} allergenFilter={allergenFilter} onShowAllergenPicker={() => setShowAllergenPicker(true)} eightySixIds={eightySixIds} dailyCounts={dailyCounts} onBack={() => setScreen('orderType')} />}
+      }} onBack={() => setScreen('attract')} onCancel={resetSession} />}
+      {screen === 'tableNumber' && <ScreenTableNumber brandColor={brandColor} value={tableNumber} onChange={setTableNumber} onContinue={() => setScreen('menu')} onBack={() => setScreen('orderType')} onCancel={resetSession} />}
+      {screen === 'menu' && <ScreenMenu brandColor={brandColor} brandAccent={brandAccent} categories={visibleCategories} items={visibleItems} selectedCategoryId={selectedCategoryId} onSelectCategory={setSelectedCategoryId} onSelectItem={(item) => { setSelectedItem(item); setScreen('item'); }} cartItemCount={cartItemCount} subtotal={subtotal} onCart={() => setScreen('cart')} orderType={orderType} activeMenuId={activeMenuId} banner={bannerFor('menu')} allergenFilter={allergenFilter} onShowAllergenPicker={() => setShowAllergenPicker(true)} eightySixIds={eightySixIds} dailyCounts={dailyCounts} onBack={() => setScreen('orderType')} onCancel={resetSession} />}
       {screen === 'item' && selectedItem && (
         <KioskProductModal
           item={selectedItem}
@@ -723,11 +695,11 @@ export default function KioskApp({ kioskId, onUnpair }) {
           onCancel={() => setScreen('menu')}
         />
       )}
-      {screen === 'cart' && <ScreenCart brandColor={brandColor} cart={cart} subtotal={subtotal} cartItemCount={cartItemCount} orderType={orderType} onUpdate={updateCartQty} onAddMore={() => setScreen('menu')} onContinue={() => setScreen('tip')} onShowAllergenPicker={() => setShowAllergenPicker(true)} onBack={() => setScreen('menu')} />}
-      {screen === 'tip' && <ScreenTip brandColor={brandColor} subtotal={subtotal} tipPresets={tipPresets} tip={tip} onSetTip={setTip} onContinue={() => { if (loyaltyEnabled) setScreen('loyalty'); else setScreen('pay'); }} onBack={() => setScreen('cart')} />}
+      {screen === 'cart' && <ScreenCart brandColor={brandColor} cart={cart} subtotal={subtotal} cartItemCount={cartItemCount} orderType={orderType} onUpdate={updateCartQty} onAddMore={() => setScreen('menu')} onContinue={() => setScreen('tip')} onShowAllergenPicker={() => setShowAllergenPicker(true)} onBack={() => setScreen('menu')} onCancel={resetSession} />}
+      {screen === 'tip' && <ScreenTip brandColor={brandColor} subtotal={subtotal} tipPresets={tipPresets} tip={tip} onSetTip={setTip} onContinue={() => { if (loyaltyEnabled) setScreen('loyalty'); else setScreen('pay'); }} onBack={() => setScreen('cart')} onCancel={resetSession} />}
       {/* v5.5.219: loyalty/customer-details BEFORE pay so reward discount adjusts amount due */}
-      {screen === 'loyalty' && <ScreenLoyalty brandColor={brandColor} customerName={customerName} customerPhone={customerPhone} customerEmail={customerEmail} marketingOptIn={customerMarketingOptIn} locationId={locationId} companyId={companyId} subtotal={subtotal} loyaltyRedemption={loyaltyRedemption} onLoyaltyRedeem={setLoyaltyRedemption} verifiedLoyalty={verifiedLoyalty} onVerifiedLoyalty={setVerifiedLoyalty} onName={setCustomerName} onPhone={setCustomerPhone} onEmail={setCustomerEmail} onMarketingOptIn={setCustomerMarketingOptIn} onContinue={() => { const ret = loyaltyReturnScreen; setLoyaltyReturnScreen(null); setScreen(ret || 'pay'); }} onSkip={() => { const ret = loyaltyReturnScreen; setLoyaltyReturnScreen(null); setScreen(ret || 'pay'); }} submitting={submitting} placeOrderLabel={labelPlaceOrder} earlySignIn={!!loyaltyReturnScreen} />}
-      {screen === 'pay' && <ScreenPay brandColor={brandColor} total={grandTotal} loyaltyCredit={loyaltyCredit} giftCardCredit={giftCardCredit} verifiedLoyalty={verifiedLoyalty} giftCardPayment={giftCardPayment} onGiftCardApply={setGiftCardPayment} locationId={locationId} kioskId={kioskId} cart={cart} submitting={submitting} error={submitError} onPaid={() => submitOrder(customerName, customerPhone)} onBack={() => { if (loyaltyEnabled) setScreen('loyalty'); else setScreen('tip'); }} loyaltyRedemption={loyaltyRedemption} />}
+      {screen === 'loyalty' && <ScreenLoyalty brandColor={brandColor} customerName={customerName} customerPhone={customerPhone} customerEmail={customerEmail} marketingOptIn={customerMarketingOptIn} locationId={locationId} companyId={companyId} subtotal={subtotal} loyaltyRedemption={loyaltyRedemption} onLoyaltyRedeem={setLoyaltyRedemption} verifiedLoyalty={verifiedLoyalty} onVerifiedLoyalty={setVerifiedLoyalty} onName={setCustomerName} onPhone={setCustomerPhone} onEmail={setCustomerEmail} onMarketingOptIn={setCustomerMarketingOptIn} onContinue={() => { const ret = loyaltyReturnScreen; setLoyaltyReturnScreen(null); setScreen(ret || 'pay'); }} onSkip={() => { const ret = loyaltyReturnScreen; setLoyaltyReturnScreen(null); setScreen(ret || 'pay'); }} submitting={submitting} placeOrderLabel={labelPlaceOrder} earlySignIn={!!loyaltyReturnScreen} onCancel={resetSession} />}
+      {screen === 'pay' && <ScreenPay brandColor={brandColor} total={grandTotal} loyaltyCredit={loyaltyCredit} giftCardCredit={giftCardCredit} verifiedLoyalty={verifiedLoyalty} giftCardPayment={giftCardPayment} onGiftCardApply={setGiftCardPayment} locationId={locationId} kioskId={kioskId} cart={cart} submitting={submitting} error={submitError} onPaid={() => submitOrder(customerName, customerPhone)} onBack={() => { if (loyaltyEnabled) setScreen('loyalty'); else setScreen('tip'); }} loyaltyRedemption={loyaltyRedemption} onCancel={resetSession} />}
       {screen === 'done' && <ScreenDone brandColor={brandColor} customerName={customerName} customerPhone={customerPhone} orderNumber={orderNumber} orderType={orderType} tableNumber={tableNumber} avgWaitMinutes={avgWaitMinutes} banner={bannerFor('done')} onDone={resetSession} />}
 
       {/* v5.4.0: Allergen picker overlay */}
@@ -855,7 +827,7 @@ function shade(hex, percent) {
 // Light surface, brand logo at top, outline cards with line-art
 // SVG icons in brand color, language picker pill at the bottom.
 // ============================================================
-function ScreenOrderType({ brandColor, brandLogoUrl, brandName, tableMode, lang, onOpenLanguagePicker, onPick, onBack, loyaltyEnabled, customerName, onLoyaltySignIn }) {
+function ScreenOrderType({ brandColor, brandLogoUrl, brandName, tableMode, lang, onOpenLanguagePicker, onPick, onBack, onCancel, loyaltyEnabled, customerName, onLoyaltySignIn }) {
   const dineInAvailable = tableMode !== 'none';
   const langMeta = getLanguageMeta(lang);
   // Force re-render of t() strings when lang changes (parent already
@@ -863,9 +835,10 @@ function ScreenOrderType({ brandColor, brandLogoUrl, brandName, tableMode, lang,
   const title = t('orderType.title');
   return (
     <div style={fullScreen()}>
-      {/* Subtle back button, top-left corner */}
-      <div style={{ padding: '20px 22px 0', flexShrink: 0 }}>
-        <button onClick={onBack} aria-label={t('common.back')} style={iconBtn()}>←</button>
+      {/* Top bar: back left, cancel right */}
+      <div style={{ padding: '20px 22px 0', flexShrink: 0, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <button onClick={onBack} aria-label={t('common.back')} style={iconBtn()}>{'←'}</button>
+        <CancelOrderBtn onClick={onCancel} />
       </div>
 
       {/* Logo */}
@@ -1184,7 +1157,7 @@ function ScreenLanguagePicker({ brandColor, currentLang, onPick, onClose }) {
 // centered on the full viewport. Back button is absolute-positioned
 // so it doesn't displace the centered content column.
 // ============================================================
-function ScreenTableNumber({ brandColor, value, onChange, onContinue, onBack }) {
+function ScreenTableNumber({ brandColor, value, onChange, onContinue, onBack, onCancel }) {
   const [val, setVal] = useState(value || '');
   const press = (k) => setVal(v => k === '⌫' ? v.slice(0, -1) : (v.length < 4 ? v + k : v));
   const submit = () => { if (val.trim()) { onChange(val.trim()); onContinue(); } };
@@ -1196,7 +1169,10 @@ function ScreenTableNumber({ brandColor, value, onChange, onContinue, onBack }) 
         onClick={onBack}
         aria-label={t('common.back')}
         style={{ ...iconBtn(), position: 'absolute', top: 20, left: 22, zIndex: 5 }}
-      >←</button>
+      >{'←'}</button>
+      <div style={{ position: 'absolute', top: 20, right: 22, zIndex: 5 }}>
+        <CancelOrderBtn onClick={onCancel} />
+      </div>
 
       {/* Centered content column. justify-content:center vertically centers
           inside fullScreen (which is position:absolute inset:0). margin auto
@@ -1319,13 +1295,13 @@ function ScreenTableNumber({ brandColor, value, onChange, onContinue, onBack }) 
 //   - TOP BAR simplified to back button + allergen icon button
 // All customer-facing strings translated via t().
 // ============================================================
-function ScreenMenu({ brandColor, brandAccent, categories, items, selectedCategoryId, onSelectCategory, onSelectItem, cartItemCount, subtotal, onCart, orderType, activeMenuId, banner, allergenFilter, onShowAllergenPicker, eightySixIds = [], dailyCounts = {}, onBack }) {
+function ScreenMenu({ brandColor, brandAccent, categories, items, selectedCategoryId, onSelectCategory, onSelectItem, cartItemCount, subtotal, onCart, orderType, activeMenuId, banner, allergenFilter, onShowAllergenPicker, eightySixIds = [], dailyCounts = {}, onBack, onCancel }) {
   const hasCart = cartItemCount > 0;
   const hasAllergenFilter = allergenFilter && allergenFilter.size > 0;
   const itemWord = cartItemCount === 1 ? t('menu.itemSingular') : t('menu.itemPlural');
   return (
     <div style={fullScreen()}>
-      {/* TOP BAR — back left, prominent allergen filter banner right (v5.5.26) */}
+      {/* TOP BAR — back left, allergen filter center, cancel right */}
       <div style={{
         padding: 'clamp(14px, 2vw, 20px) clamp(16px, 2.4vw, 24px)',
         display: 'flex',
@@ -1334,7 +1310,7 @@ function ScreenMenu({ brandColor, brandAccent, categories, items, selectedCatego
         flexShrink: 0,
         borderBottom: '1px solid var(--kBorder1)',
       }}>
-        <button onClick={onBack} aria-label={t('common.back')} style={iconBtnLg()}>←</button>
+        <button onClick={onBack} aria-label={t('common.back')} style={iconBtnLg()}>{'←'}</button>
 
         {/* Allergen filter — prominent banner-button. Stretches to fill the
             top bar so it can't be missed. Amber when inactive, brand-active
@@ -1422,6 +1398,7 @@ function ScreenMenu({ brandColor, brandAccent, categories, items, selectedCatego
             <span>{hasAllergenFilter ? t('menu.allergens.editFilter') + ' ›' : '›'}</span>
           </span>
         </button>
+        <CancelOrderBtn onClick={onCancel} />
       </div>
 
       {/* BODY — sidebar + items grid */}
@@ -1785,12 +1762,12 @@ function iconBtnLg() {
 // Footer: "Items total" card + brand-color totals pill with item-count
 // badge + circular back button on the left.
 // ============================================================
-function ScreenCart({ brandColor, cart, subtotal, cartItemCount, orderType, onUpdate, onAddMore, onContinue, onShowAllergenPicker, onBack }) {
+function ScreenCart({ brandColor, cart, subtotal, cartItemCount, orderType, onUpdate, onAddMore, onContinue, onShowAllergenPicker, onBack, onCancel }) {
   const isPickup = orderType === 'takeaway';
   const titleKey = isPickup ? 'cart.title.pickup' : 'cart.title.dineIn';
   return (
     <div style={fullScreen()}>
-      {/* Header — title left, View Allergens outlined button right */}
+      {/* Header — title left, View Allergens + Cancel right */}
       <div style={{
         padding: 'clamp(20px, 2.6vw, 28px) clamp(20px, 2.6vw, 28px) clamp(14px, 1.8vw, 18px)',
         display: 'flex',
@@ -1822,6 +1799,7 @@ function ScreenCart({ brandColor, cart, subtotal, cartItemCount, orderType, onUp
             flexShrink: 0,
           }}
         >{t('cart.viewAllergens')}</button>
+        <CancelOrderBtn onClick={onCancel} />
       </div>
 
       {/* Cart line list */}
@@ -2131,7 +2109,7 @@ function cartStepBtn(brandColor, enabled, isPlus) {
 // ============================================================
 // SCREEN: TIP
 // ============================================================
-function ScreenTip({ brandColor, subtotal, tipPresets, tip, onSetTip, onContinue, onBack }) {
+function ScreenTip({ brandColor, subtotal, tipPresets, tip, onSetTip, onContinue, onBack, onCancel }) {
   const [customMode, setCustomMode] = useState(false);
   const [customStr, setCustomStr] = useState(tip > 0 ? tip.toFixed(2) : '');
   const pickPercent = (pct) => { onSetTip(+(subtotal * pct / 100).toFixed(2)); setCustomMode(false); };
@@ -2144,7 +2122,7 @@ function ScreenTip({ brandColor, subtotal, tipPresets, tip, onSetTip, onContinue
   const isPctActive = (pct) => Math.abs(tip - subtotal * pct / 100) < 0.01;
   return (
     <div style={fullScreen()}>
-      <ScreenHeader title="Add a tip?" subtitle="Tips go directly to the team. Thank you!" onBack={onBack} brandColor={brandColor} />
+      <ScreenHeader title="Add a tip?" subtitle="Tips go directly to the team. Thank you!" onBack={onBack} onCancel={onCancel} brandColor={brandColor} />
       <div style={{ flex: 1, padding: '4vh 5vw', display: 'flex', flexDirection: 'column', gap: '2vh' }}>
         {tipPresets.map(pct => (
           <button key={pct} onClick={() => pickPercent(pct)} style={{
@@ -2191,7 +2169,7 @@ function ScreenTip({ brandColor, subtotal, tipPresets, tip, onSetTip, onContinue
 // ============================================================
 // SCREEN: PAY
 // ============================================================
-function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, verifiedLoyalty, giftCardPayment, onGiftCardApply, locationId, kioskId, cart, submitting, error, onPaid, onBack, loyaltyRedemption }) {
+function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, verifiedLoyalty, giftCardPayment, onGiftCardApply, locationId, kioskId, cart, submitting, error, onPaid, onBack, loyaltyRedemption, onCancel }) {
   const [cardState, setCardState] = useState('idle'); // idle | processing | collecting | success | error | declined
   const [cardError, setCardError] = useState(null);
   const [cardStatusMsg, setCardStatusMsg] = useState('');
@@ -2383,7 +2361,7 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, verifiedL
 
   return (
     <div style={fullScreen()}>
-      <ScreenHeader title={fullyPaid ? 'Order fully covered!' : 'Tap or insert your card'} subtitle={fullyPaid ? 'No card payment needed' : 'Use the card reader on the side of the kiosk'} onBack={() => { pollAbortRef.current = true; cancelReaderAction(); onBack(); }} brandColor={brandColor} />
+      <ScreenHeader title={fullyPaid ? 'Order fully covered!' : 'Tap or insert your card'} subtitle={fullyPaid ? 'No card payment needed' : 'Use the card reader on the side of the kiosk'} onBack={() => { pollAbortRef.current = true; cancelReaderAction(); onBack(); }} onCancel={() => { pollAbortRef.current = true; cancelReaderAction(); onCancel(); }} brandColor={brandColor} />
       <div style={{ flex: 1, padding: '4vh 5vw', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 'clamp(16px, 2.5vh, 28px)' }}>
 
         {/* Discounts summary */}
@@ -2532,7 +2510,7 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, verifiedL
 // and lists redeemable rewards. Customer taps a reward → loyalty-redeem is
 // called → discount applied as a credit deduction on the order total.
 // ============================================================
-function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail, marketingOptIn, locationId, companyId, subtotal, loyaltyRedemption, onLoyaltyRedeem, verifiedLoyalty, onVerifiedLoyalty, onName, onPhone, onEmail, onMarketingOptIn, onContinue, onSkip, submitting, placeOrderLabel, earlySignIn }) {
+function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail, marketingOptIn, locationId, companyId, subtotal, loyaltyRedemption, onLoyaltyRedeem, verifiedLoyalty, onVerifiedLoyalty, onName, onPhone, onEmail, onMarketingOptIn, onContinue, onSkip, submitting, placeOrderLabel, earlySignIn, onCancel }) {
   // Local field state mirrors props on mount; we lift back to parent on submit.
   const [name, setName] = useState(customerName || '');
   const [phone, setPhone] = useState(customerPhone || '');
@@ -2737,7 +2715,11 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
   const loyaltyCredit = loyaltyRedemption?.discount_value ? loyaltyRedemption.discount_value / 100 : 0;
 
   return (
-    <div style={{ ...fullScreen(), display: 'grid', placeItems: 'center', padding: '4vh 4vw' }}>
+    <div style={{ ...fullScreen(), display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '4vh 4vw' }}>
+      {/* Cancel order — above the modal card */}
+      <div style={{ width: '100%', maxWidth: 720, display: 'flex', justifyContent: 'flex-end', marginBottom: 'clamp(8px, 1vw, 12px)', flexShrink: 0 }}>
+        <CancelOrderBtn onClick={onCancel} />
+      </div>
       {/* Modal-style card */}
       <div style={{
         background: 'var(--kSurfaceRaised)',
@@ -2746,7 +2728,7 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
         padding: 'clamp(20px, 3vw, 36px) clamp(20px, 3vw, 36px) clamp(24px, 3.4vw, 40px)',
         width: '100%',
         maxWidth: 720,
-        maxHeight: '92vh',
+        maxHeight: '85vh',
         overflowY: 'auto',
         position: 'relative',
         boxShadow: '0 8px 28px rgba(0,0,0,0.06)',
@@ -3572,11 +3554,37 @@ function ScreenDone({ brandColor, customerName, customerPhone, orderNumber, orde
 // ============================================================
 // SHARED SCREEN HEADER
 // ============================================================
-function ScreenHeader({ title, subtitle, onBack, brandColor }) {
+function ScreenHeader({ title, subtitle, onBack, onCancel, brandColor }) {
   return (
     <div style={{ padding: '24px 22px 16px', flexShrink: 0 }}>
-      {onBack && <button onClick={onBack} style={iconBtn()}>←</button>}
-      <div style={{ marginTop: onBack ? 16 : 0 }}>
+      {/* Top row: back arrow (left) + cancel (right) */}
+      {(onBack || onCancel) && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+          {onBack ? <button onClick={onBack} style={iconBtn()}>{'←'}</button> : <div />}
+          {onCancel && (
+            <button
+              onClick={onCancel}
+              style={{
+                background: 'none',
+                border: '1px solid var(--kBorder2)',
+                borderRadius: 'clamp(8px, 1vw, 12px)',
+                padding: 'clamp(6px, 0.8vw, 10px) clamp(12px, 1.4vw, 16px)',
+                fontSize: 'clamp(12px, 1.3vw, 14px)',
+                fontWeight: 600,
+                color: 'var(--kFgMuted)',
+                cursor: 'pointer',
+                fontFamily: 'inherit',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 5,
+              }}
+            >
+              {'✕'} Cancel order
+            </button>
+          )}
+        </div>
+      )}
+      <div>
         <div style={{ fontSize: 'clamp(28px, 4.8vw, 42px)', fontWeight: 800, letterSpacing: '-0.02em', lineHeight: 1.1, marginBottom: 6 }}>{title}</div>
         {subtitle && <div style={{ fontSize: 'clamp(13px, 1.8vw, 16px)', color: 'var(--kFgMuted)' }}>{subtitle}</div>}
       </div>
@@ -3651,6 +3659,20 @@ function AllergenPickerOverlay({ brandColor, allergens, selected, onChange, onCl
 // ============================================================
 function fullScreen() { return { position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column' }; }
 function iconBtn() { return { width: 44, height: 44, borderRadius: 14, background: 'var(--kSurface2)', display: 'grid', placeItems: 'center', fontSize: 20, color: 'var(--kFg)', border: 0, cursor: 'pointer', fontFamily: 'inherit' }; }
+// v5.5.273: Inline cancel-order button for kiosk headers
+function CancelOrderBtn({ onClick }) {
+  if (!onClick) return null;
+  return (
+    <button onClick={onClick} style={{
+      background: 'none', border: '1px solid var(--kBorder2)',
+      borderRadius: 'clamp(8px, 1vw, 12px)',
+      padding: 'clamp(6px, 0.8vw, 10px) clamp(12px, 1.4vw, 16px)',
+      fontSize: 'clamp(12px, 1.3vw, 14px)', fontWeight: 600,
+      color: 'var(--kFgMuted)', cursor: 'pointer', fontFamily: 'inherit',
+      display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0,
+    }}>{'✕'} Cancel order</button>
+  );
+}
 function bigCard(brandColor) {
   return {
     background: 'var(--kSurface1)',
