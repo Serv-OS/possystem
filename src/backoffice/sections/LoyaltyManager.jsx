@@ -402,7 +402,7 @@ function ItemMultiPicker({ items = [], selected = [], onChange }) {
                 <Checkbox checked={isSelected} />
                 <div style={{ flex: 1, fontWeight: 600 }}>{v.name}</div>
                 <div style={{ fontSize: 11, color: 'var(--t4)', fontWeight: 600 }}>
-                  £{((v.price || 0) / 100).toFixed(2)}
+                  £{(Number(v.price) || 0).toFixed(2)}
                 </div>
               </div>
             );
@@ -486,7 +486,7 @@ function ItemMultiPicker({ items = [], selected = [], onChange }) {
               <Checkbox checked={isSelected} />
               <div style={{ flex: 1, fontWeight: 600 }}>{product.name}</div>
               <div style={{ fontSize: 11, color: 'var(--t4)', fontWeight: 600 }}>
-                £{((product.price || 0) / 100).toFixed(2)}
+                £{(Number(product.price) || 0).toFixed(2)}
               </div>
             </div>
           );

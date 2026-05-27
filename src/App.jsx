@@ -76,12 +76,11 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
-    version: '5.5.254', date: '27 May 2026', label: 'Two-step item picker for loyalty rewards',
+    version: '5.5.255', date: '27 May 2026', label: 'Fix item picker prices + two-step flow',
     changes: [
-      'Rebuilt the free-item picker as a two-step flow: first pick the product, then drill into its sizes/variants. Standalone items toggle directly from the product list.',
-      'Search matches both product names and variant names — if a variant matches, its parent product appears in results.',
-      'Master products show "N sizes →" with a badge showing how many variants are already selected.',
-      'Selected items show as removable chips at the top, with variant names displayed as "Product — Size".',
+      'Fixed item prices displaying incorrectly (e.g. £0.05 instead of £5.00) — pricing.base stores pounds, not pence, so removed the erroneous /100 division.',
+      'Two-step item picker: pick the product first, then drill into sizes/variants. Standalone items toggle directly.',
+      'Search matches both product names and variant names. Master products show "N sizes →" with selected count badge.',
     ],
   },
   {
