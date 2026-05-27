@@ -665,6 +665,28 @@ export const useStore = create((set, get) => ({
         upsertMenuItem(fullItem);
       }
 
+      // v5.5.260: VARIANT CATEGORY CASCADE — when the parent's cat changes,
+      // push the same cat to every child variant. Variants must always share
+      // their parent's category for reports, stamp cards, KDS routing, etc.
+      if ('cat' in patch && fullItem && !fullItem.parentId) {
+        const newCat = fullItem.cat;
+        const childIds = [];
+        items = items.map(i => {
+          if (i.parentId === id && i.cat !== newCat) {
+            childIds.push(i.id);
+            return { ...i, cat: newCat };
+          }
+          return i;
+        });
+        // Persist each updated child to Supabase
+        if (childIds.length > 0) {
+          childIds.forEach(cid => {
+            const child = items.find(i => i.id === cid);
+            if (child) upsertMenuItem(child);
+          });
+        }
+      }
+
       // RENAME CASCADE — if the display name changed, walk modifier_groups
       // and update any option that references this menu_item, so the picker
       // labels (and the cart-line mod entries built from them) reflect the

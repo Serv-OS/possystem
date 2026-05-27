@@ -76,6 +76,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.260', date: '27 May 2026', label: 'Fix: variant category cascade — moving a product updates all its sizes',
+    changes: [
+      'ROOT CAUSE FIX: When a parent item was moved to a different category (e.g. Latte from Sandwiches → Coffee), only the parent\'s category updated — all its size variants kept the old category. This broke product mix reports, stamp card matching, KDS routing, and any category-dependent logic.',
+      'updateMenuItem now cascades category changes to all child variants automatically. Moving a parent to a new category updates every variant in both the store and the database.',
+      'Cleaned 11 mismatched variants in the live database (Latte, Americano, Asahi, Stella, Heineken variants all had wrong categories).',
+    ],
+  },
+  {
     version: '5.5.259', date: '27 May 2026', label: 'Fix: stamp cards now award stamps for variant items',
     changes: [
       'Variant items (sizes like Small/Medium/Large) had stale category IDs in the database — e.g. Latte Small was tagged as "Sandwiches" instead of inheriting "Coffee" from its parent Latte master product.',
