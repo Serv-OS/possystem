@@ -76,6 +76,13 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.266', date: '27 May 2026', label: 'Kiosk: OTP auto-fill fix, new customer handling',
+    changes: [
+      'FIX: Name, email and phone now auto-fill in parent KioskApp immediately after OTP verification — previously only set local ScreenLoyalty state without lifting to parent.',
+      'NEW CUSTOMER HANDLING: Unknown phone numbers are handled gracefully — the edge function auto-creates a customer record and auto-enrolls in loyalty on first OTP verify. Kiosk UI shows welcome screen with 0 points and lets them enter their name.',
+    ],
+  },
+  {
     version: '5.5.265', date: '27 May 2026', label: 'Kiosk: OTP auth, card terminals, gift card checkout',
     changes: [
       'SECURITY FIX: Kiosk loyalty now requires OTP verification via SMS before showing any customer data. Phone → Send code → Enter 6-digit code → Verified. No more passive phone lookups exposing customer data.',

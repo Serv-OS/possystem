@@ -2471,10 +2471,22 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
           giftCards: data.gift_cards || [],
         };
         setCustomerLookup(lookup);
-        // Auto-fill fields
-        if (data.customer?.name) setName(prev => prev.trim() ? prev : data.customer.name);
-        if (data.customer?.email) setEmail(prev => prev.trim() ? prev : data.customer.email);
-        if (data.customer?.marketing_opt_in) setOptIn(true);
+        // Auto-fill fields from verified customer data
+        const cleanPhone = phone.replace(/\s+/g, '');
+        if (data.customer?.name) {
+          setName(prev => prev.trim() ? prev : data.customer.name);
+          if (!customerName?.trim()) onName(data.customer.name);
+        }
+        if (data.customer?.email) {
+          setEmail(prev => prev.trim() ? prev : data.customer.email);
+          if (!customerEmail?.trim()) onEmail(data.customer.email);
+        }
+        // Always lift the verified phone to parent
+        onPhone(cleanPhone);
+        if (data.customer?.marketing_opt_in) {
+          setOptIn(true);
+          onMarketingOptIn(true);
+        }
         // Persist verified data for payment screen (gift cards etc.)
         onVerifiedLoyalty({
           customer: data.customer,
