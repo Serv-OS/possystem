@@ -76,6 +76,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.288', date: '27 May 2026', label: 'Fix 86 state inconsistency across kiosk browsers',
+    changes: [
+      'FIX — 86 STATE OUT OF SYNC: Same item could show "out of stock" on one kiosk browser but available on another. Root cause: the eighty_six table Realtime subscription is a single WebSocket channel — if one browser misses an INSERT event, its 86 list is stale.',
+      'REDUNDANT 86 CHECK: The kiosk menu grid now checks three independent signals: (1) eightySixIds from eighty_six table subscription, (2) parent item 86 status, (3) stock_levels remaining ≤ 0 from the separate stock subscription channel. Any one hitting triggers "Sold Out".',
+      'AUTO-86 FROM STOCK: When the stock_levels Realtime subscription receives an update with remaining ≤ 0, the item is automatically added to eightySixIds. This means stock exhaustion blocks ordering even if the eighty_six table INSERT hasn\'t arrived yet.',
+      'PERIODIC RE-FETCH: A 30-second interval re-fetches the eighty_six table and merges any missing IDs into the local list. Catches missed WebSocket events from sleep/wake, network reconnects, or dropped connections.',
+    ],
+  },
+  {
     version: '5.5.285', date: '27 May 2026', label: 'Online ordering: enforce POS stock limits on kiosk/online',
     changes: [
       'STOCK LIMITS ON KIOSK/ONLINE: The product modal qty selector is now capped at the remaining stock from the POS daily counts. If only 2 Bruno filled donuts are in stock and 0 are in the cart, the customer can only add up to 2. Shows "Only X left" when stock is low and "Sold out" when depleted.',

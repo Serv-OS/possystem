@@ -304,10 +304,50 @@ export default function KioskApp({ kioskId, onUnpair }) {
           useStore.setState(s => ({
             dailyCounts: { ...s.dailyCounts, [itemId]: { par: payload.new.par, remaining: payload.new.remaining } },
           }));
+          // v5.5.288: Auto-86 when stock hits zero via realtime update.
+          // This is the SECOND independent signal (alongside the eighty_six
+          // table subscription) so even if one WebSocket misses an event,
+          // the item still becomes unavailable.
+          if (payload.new.remaining <= 0) {
+            useStore.setState(s => ({
+              eightySixIds: s.eightySixIds.includes(itemId)
+                ? s.eightySixIds
+                : [...s.eightySixIds, itemId],
+            }));
+          }
         }
       }).subscribe();
+
+    // v5.5.288: Periodic re-fetch of 86 list for resilience against
+    // missed WebSocket events (e.g. device wakes from sleep, network
+    // reconnect). Runs every 30 seconds — lightweight single-column query.
+    const refreshInterval = setInterval(async () => {
+      if (!alive) return;
+      try {
+        const { data } = await supabase
+          .from('eighty_six')
+          .select('item_id')
+          .eq('location_id', locationId);
+        if (!alive || !data) return;
+        const ids = data.map(r => r.item_id).filter(Boolean);
+        useStore.setState(s => {
+          // Merge: add any missing IDs from DB, but don't remove local-only
+          // ones (they came from stock_levels auto-86 which is also valid).
+          const current = s.eightySixIds || [];
+          const merged = [...new Set([...current, ...ids])];
+          // Only update if something changed to avoid re-renders
+          return merged.length !== current.length
+            ? { eightySixIds: merged }
+            : {};
+        });
+      } catch (e) {
+        console.warn('[KioskApp] 86 periodic refresh:', e?.message);
+      }
+    }, 30_000);
+
     return () => {
       alive = false;
+      clearInterval(refreshInterval);
       if (chan && supabase) supabase.removeChannel(chan);
     };
   }, [locationId]);
@@ -1548,10 +1588,14 @@ function ScreenMenu({ brandColor, brandAccent, categories, items, selectedCatego
             {items.length === 0 ? (
               <div style={{ gridColumn: '1 / -1', padding: 60, textAlign: 'center', color: 'var(--kFgMuted)', fontSize: 'clamp(14px, 1.7vw, 17px)' }}>{t('menu.empty')}</div>
             ) : items.map(it => {
-              // v5.5.141: 86 awareness — operator 86 OR auto-86 from daily
-              // count exhaustion. Greys out the card and blocks selection.
+              // v5.5.141/287: 86 awareness — operator 86, auto-86 from daily
+              // count exhaustion, OR stock_levels remaining at zero. The third
+              // check is a redundant safety net: if the eighty_six realtime
+              // subscription misses an INSERT event on one browser, the stock
+              // levels subscription (separate channel) still blocks the item.
               const is86 = eightySixIds.includes(it.id)
-                || (it.parent_id && eightySixIds.includes(it.parent_id));
+                || (it.parent_id && eightySixIds.includes(it.parent_id))
+                || (dailyCounts[it.id] && dailyCounts[it.id].remaining <= 0);
               const stock = dailyCounts[it.id] || null;
               return (
                 <MenuItemCard
