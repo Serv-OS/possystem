@@ -76,6 +76,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.252', date: '27 May 2026', label: 'Fix: loyalty free-item picker loads menu items',
+    changes: [
+      'Fixed "No menu items found" in the back office loyalty rewards and stamp cards item picker. The query was selecting a nonexistent \'price\' column (menu_items uses \'pricing\' jsonb), causing a silent PostgREST error.',
+      'Item picker now correctly loads all active menu items and extracts the base price from the pricing jsonb column.',
+      'Added error logging to the menu items query catch block so future failures are visible in the console.',
+    ],
+  },
+  {
     version: '5.5.251', date: '27 May 2026', label: 'Customer portal — 24h session persistence',
     changes: [
       'Loyalty portal (/account) now uses localStorage instead of sessionStorage, so the customer stays signed in for 24 hours across tab closes and browser restarts.',

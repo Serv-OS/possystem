@@ -137,19 +137,24 @@ export default function LoyaltyManager() {
       }
     } catch {}
     // Load menu items for the item picker (free item rewards)
+    // NB: menu_items has 'pricing' jsonb, NOT a 'price' column.
     try {
       const locId = getActiveLocationSync() || await getLocationId();
       if (locId && supabase) {
-        const { data: items } = await supabase
+        const { data: items, error: itemsErr } = await supabase
           .from('menu_items')
-          .select('id, name, price, archived, parent_id')
+          .select('id, name, pricing, archived, parent_id')
           .eq('location_id', locId)
           .eq('archived', false)
           .order('name');
-        // Only top-level items (not size variants)
-        setMenuItems((items || []).filter(i => !i.parent_id));
+        if (itemsErr) console.error('[LoyaltyManager] menu items load:', itemsErr.message);
+        // Only top-level items (not size variants); extract base price from pricing jsonb
+        setMenuItems((items || []).filter(i => !i.parent_id).map(i => ({
+          ...i,
+          price: i.pricing?.base ?? 0,
+        })));
       }
-    } catch {}
+    } catch (e) { console.error('[LoyaltyManager] menu items error:', e); }
   }, []);
 
   useEffect(() => { loadConfig(); }, [loadConfig]);
