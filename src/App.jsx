@@ -76,10 +76,11 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
-    version: '5.5.260', date: '27 May 2026', label: 'Fix: variant category cascade — moving a product updates all its sizes',
+    version: '5.5.261', date: '27 May 2026', label: 'Comprehensive variant inheritance cascade',
     changes: [
-      'ROOT CAUSE FIX: When a parent item was moved to a different category (e.g. Latte from Sandwiches → Coffee), only the parent\'s category updated — all its size variants kept the old category. This broke product mix reports, stamp card matching, KDS routing, and any category-dependent logic.',
-      'updateMenuItem now cascades category changes to all child variants automatically. Moving a parent to a new category updates every variant in both the store and the database.',
+      'VARIANT INHERITANCE ENGINE: updateMenuItem now cascades 5 critical fields to all child variants automatically: category (cat/cats), allergens, tax rate, and KDS centre. Moving a parent product, editing its allergens, or changing its tax rate updates every size variant in both the store and database.',
+      'ARCHIVE CASCADE: archiving a parent product now archives all its size variants too, preventing orphaned ghost items in reports and menus.',
+      'These cascades ensure data integrity across the entire system — product mix reports, stamp cards, KDS routing, allergen compliance, and tax calculations all stay correct when products are reorganised.',
       'Cleaned 11 mismatched variants in the live database (Latte, Americano, Asahi, Stella, Heineken variants all had wrong categories).',
     ],
   },

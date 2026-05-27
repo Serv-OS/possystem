@@ -665,18 +665,28 @@ export const useStore = create((set, get) => ({
         upsertMenuItem(fullItem);
       }
 
-      // v5.5.260: VARIANT CATEGORY CASCADE — when the parent's cat changes,
-      // push the same cat to every child variant. Variants must always share
-      // their parent's category for reports, stamp cards, KDS routing, etc.
-      if ('cat' in patch && fullItem && !fullItem.parentId) {
-        const newCat = fullItem.cat;
+      // v5.5.261: VARIANT INHERITANCE CASCADE — when certain parent fields
+      // change, push them to every child variant. Variants are just sizes of
+      // the same product — they must share category, allergens, tax rate, KDS
+      // centre, and secondary categories with their parent. Without this,
+      // moving a product to a new category (or editing allergens, tax, etc.)
+      // leaves variants with stale data, breaking reports, stamp cards, KDS
+      // routing, compliance, and more.
+      const CASCADE_FIELDS = ['cat', 'cats', 'allergens', 'taxRateId', 'centreId'];
+      const hasCascade = CASCADE_FIELDS.some(f => f in patch);
+      if (hasCascade && fullItem && !fullItem.parentId) {
+        const cascadePatch = {};
+        CASCADE_FIELDS.forEach(f => { if (f in patch) cascadePatch[f] = fullItem[f]; });
         const childIds = [];
         items = items.map(i => {
-          if (i.parentId === id && i.cat !== newCat) {
-            childIds.push(i.id);
-            return { ...i, cat: newCat };
-          }
-          return i;
+          if (i.parentId !== id) return i;
+          // Only update children that actually differ
+          const needsUpdate = Object.keys(cascadePatch).some(f =>
+            JSON.stringify(i[f]) !== JSON.stringify(cascadePatch[f])
+          );
+          if (!needsUpdate) return i;
+          childIds.push(i.id);
+          return { ...i, ...cascadePatch };
         });
         // Persist each updated child to Supabase
         if (childIds.length > 0) {
@@ -799,14 +809,36 @@ export const useStore = create((set, get) => ({
     set(s => ({ menuItems: [...s.menuItems, dupe] }));
   },
   archiveMenuItem: id => {
-    set(s => ({
-      menuItems: s.menuItems.map(item => item.id === id ? { ...item, archived: true } : item)
-    }));
+    // v5.5.261: CASCADE — archiving a parent also archives all its variants.
+    // Orphaned variants with no parent would break the menu display and create
+    // ghost items that appear in reports but not on the POS.
+    set(s => {
+      const target = s.menuItems.find(i => i.id === id);
+      const childIds = target && !target.parentId
+        ? s.menuItems.filter(i => i.parentId === id && !i.archived).map(i => i.id)
+        : [];
+      return {
+        menuItems: s.menuItems.map(item => {
+          if (item.id === id) return { ...item, archived: true };
+          if (childIds.includes(item.id)) return { ...item, archived: true };
+          return item;
+        }),
+      };
+    });
     if (!isMock) {
       supabase.from('menu_items')
         .update({ archived: true, parent_id: null, updated_at: new Date().toISOString() })
         .eq('id', id)
         .then(({ error }) => { if (error) console.error('[Store] archiveMenuItem failed:', error.message); });
+      // Archive children in DB too
+      const children = useStore.getState().menuItems.filter(i => i.parentId === id);
+      if (children.length > 0) {
+        const childIds = children.map(c => c.id);
+        supabase.from('menu_items')
+          .update({ archived: true, parent_id: null, updated_at: new Date().toISOString() })
+          .in('id', childIds)
+          .then(({ error }) => { if (error) console.error('[Store] archiveMenuItem children failed:', error.message); });
+      }
     }
   },
 
