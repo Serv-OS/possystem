@@ -25,8 +25,7 @@ import KioskProductModal from './KioskProductModal';
 import { t, setLang, useKioskLang, LANGUAGES, getLanguageMeta } from '../lib/i18n';
 import { displayName } from '../lib/itemDisplay';
 import { fetchCustomerByPhone } from '../lib/customerLookup';
-import { resolvePlatformLocationId, getAssignedNetworkReader } from '../lib/networkReader';
-import { collectPayment, initStripeTerminal, getReaderStatus } from '../lib/stripe';
+// networkReader import removed — kiosk payment now uses server-side edge function directly
 
 // ── OTP portal caller (mirrors CustomerPortal.callPortal) ───────────────────
 const OPS_URL = import.meta.env.VITE_SUPABASE_URL;
@@ -700,7 +699,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
       {screen === 'tip' && <ScreenTip brandColor={brandColor} subtotal={subtotal} tipPresets={tipPresets} tip={tip} onSetTip={setTip} onContinue={() => { if (loyaltyEnabled) setScreen('loyalty'); else setScreen('pay'); }} onBack={() => setScreen('cart')} />}
       {/* v5.5.219: loyalty/customer-details BEFORE pay so reward discount adjusts amount due */}
       {screen === 'loyalty' && <ScreenLoyalty brandColor={brandColor} customerName={customerName} customerPhone={customerPhone} customerEmail={customerEmail} marketingOptIn={customerMarketingOptIn} locationId={locationId} companyId={companyId} subtotal={subtotal} loyaltyRedemption={loyaltyRedemption} onLoyaltyRedeem={setLoyaltyRedemption} verifiedLoyalty={verifiedLoyalty} onVerifiedLoyalty={setVerifiedLoyalty} onName={setCustomerName} onPhone={setCustomerPhone} onEmail={setCustomerEmail} onMarketingOptIn={setCustomerMarketingOptIn} onContinue={() => { const ret = loyaltyReturnScreen; setLoyaltyReturnScreen(null); setScreen(ret || 'pay'); }} onSkip={() => { const ret = loyaltyReturnScreen; setLoyaltyReturnScreen(null); setScreen(ret || 'pay'); }} submitting={submitting} placeOrderLabel={labelPlaceOrder} earlySignIn={!!loyaltyReturnScreen} />}
-      {screen === 'pay' && <ScreenPay brandColor={brandColor} total={grandTotal} loyaltyCredit={loyaltyCredit} giftCardCredit={giftCardCredit} verifiedLoyalty={verifiedLoyalty} giftCardPayment={giftCardPayment} onGiftCardApply={setGiftCardPayment} locationId={locationId} cart={cart} submitting={submitting} error={submitError} onPaid={() => submitOrder(customerName, customerPhone)} onBack={() => { if (loyaltyEnabled) setScreen('loyalty'); else setScreen('tip'); }} loyaltyRedemption={loyaltyRedemption} />}
+      {screen === 'pay' && <ScreenPay brandColor={brandColor} total={grandTotal} loyaltyCredit={loyaltyCredit} giftCardCredit={giftCardCredit} verifiedLoyalty={verifiedLoyalty} giftCardPayment={giftCardPayment} onGiftCardApply={setGiftCardPayment} locationId={locationId} kioskId={kioskId} cart={cart} submitting={submitting} error={submitError} onPaid={() => submitOrder(customerName, customerPhone)} onBack={() => { if (loyaltyEnabled) setScreen('loyalty'); else setScreen('tip'); }} loyaltyRedemption={loyaltyRedemption} />}
       {screen === 'done' && <ScreenDone brandColor={brandColor} customerName={customerName} customerPhone={customerPhone} orderNumber={orderNumber} orderType={orderType} tableNumber={tableNumber} avgWaitMinutes={avgWaitMinutes} banner={bannerFor('done')} onDone={resetSession} />}
 
       {/* v5.4.0: Allergen picker overlay */}
@@ -2164,15 +2163,20 @@ function ScreenTip({ brandColor, subtotal, tipPresets, tip, onSetTip, onContinue
 // ============================================================
 // SCREEN: PAY
 // ============================================================
-function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, verifiedLoyalty, giftCardPayment, onGiftCardApply, locationId, cart, submitting, error, onPaid, onBack, loyaltyRedemption }) {
-  const [cardState, setCardState] = useState('idle'); // idle | processing | success | error | declined
+function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, verifiedLoyalty, giftCardPayment, onGiftCardApply, locationId, kioskId, cart, submitting, error, onPaid, onBack, loyaltyRedemption }) {
+  const [cardState, setCardState] = useState('idle'); // idle | processing | collecting | success | error | declined
   const [cardError, setCardError] = useState(null);
+  const [cardStatusMsg, setCardStatusMsg] = useState('');
   const [giftApplying, setGiftApplying] = useState(false);
   const [giftError, setGiftError] = useState('');
+  const pollAbortRef = useRef(false);
 
   // Available gift cards from verified loyalty data
   const availableGiftCards = verifiedLoyalty?.giftCards?.filter(gc => (gc.balance || 0) > 0) || [];
   const hasGiftCards = availableGiftCards.length > 0 && !giftCardPayment;
+
+  // Cleanup polling on unmount
+  useEffect(() => () => { pollAbortRef.current = true; }, []);
 
   // v5.5.265: Apply gift card to this order
   const applyGiftCard = async (gc) => {
@@ -2211,31 +2215,97 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, verifiedL
     }
   };
 
-  // v5.5.265: Card terminal payment flow
+  // v5.5.268: Server-side card payment via stripe-process-payment-on-reader
+  // Same REST flow as POS CheckoutModal — edge fn resolves device → reader → Stripe
   const startCardPayment = async () => {
     if (total <= 0) {
-      // Fully covered by loyalty/gift card — no card payment needed
       onPaid();
       return;
     }
     setCardState('processing');
     setCardError(null);
+    setCardStatusMsg('Connecting to card reader...');
+    pollAbortRef.current = false;
+
     try {
-      const amountPence = Math.round(total * 100);
-      const result = await collectPayment(amountPence, {
-        source: 'kiosk',
-        items: cart.map(l => l.name).join(', ').slice(0, 200),
+      if (!kioskId) throw new Error('Kiosk device ID missing — re-pair this kiosk.');
+      const token = await ensureAuthToken();
+      if (!token) throw new Error('Could not obtain auth token');
+
+      const amountMinor = Math.round(total * 100);
+      const lineItems = cart.map(l => ({
+        description: (l.name || 'Item').slice(0, 50),
+        amount: Math.round((l.linePrice || 0) * 100),
+        quantity: l.qty || 1,
+      }));
+
+      const res = await fetch(`${OPS_URL}/functions/v1/stripe-process-payment-on-reader`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          pos_device_id: kioskId,
+          amount_minor: amountMinor,
+          currency: 'gbp',
+          line_items: lineItems,
+        }),
       });
-      if (result.ok) {
-        setCardState('success');
-        setTimeout(() => onPaid(), 800);
-      } else {
-        setCardState(result.declined ? 'declined' : 'error');
-        setCardError(result.error || 'Payment failed');
+      const j = await res.json();
+      console.log('[kiosk] stripe-process-payment-on-reader response:', j);
+      if (!res.ok || j.error) {
+        throw new Error(j.error || `HTTP ${res.status}`);
       }
+
+      // Payment pushed to reader — start polling
+      setCardState('collecting');
+      setCardStatusMsg('Tap or insert your card on the reader');
+      pollPaymentIntent(j.payment_intent_id, j.reader_id);
     } catch (e) {
+      console.warn('[kiosk] card payment start failed:', e?.message || e);
       setCardState('error');
       setCardError(e?.message || 'Payment error');
+    }
+  };
+
+  // Poll Stripe until payment completes or times out
+  const pollPaymentIntent = async (piId, readerId) => {
+    const start = Date.now();
+    const POLL_INTERVAL = 1500;
+    const TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+    while (!pollAbortRef.current && Date.now() - start < TIMEOUT_MS) {
+      await new Promise(r => setTimeout(r, POLL_INTERVAL));
+      if (pollAbortRef.current) return;
+      try {
+        const pollToken = await ensureAuthToken();
+        const res = await fetch(`${OPS_URL}/functions/v1/stripe-poll-reader-action`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${pollToken}` },
+          body: JSON.stringify({ payment_intent_id: piId, reader_id: readerId }),
+        });
+        const j = await res.json();
+        if (!res.ok) { console.warn('[kiosk] poll error:', j.error); continue; }
+        // Update status based on reader action stage
+        const ra = j.reader_action;
+        if (ra?.type === 'process_payment_intent' && ra?.status === 'in_progress') {
+          setCardStatusMsg('Customer is paying on reader');
+        }
+        if (j.is_terminal_state) {
+          if (j.is_success) {
+            setCardState('success');
+            setCardStatusMsg('Payment approved');
+            setTimeout(() => onPaid(), 800);
+          } else {
+            setCardState(j.last_payment_error ? 'declined' : 'error');
+            setCardError(j.last_payment_error || ra?.failure_message || `Payment ${j.payment_intent_status}`);
+          }
+          return;
+        }
+      } catch (e) {
+        console.warn('[kiosk] poll iter failed:', e?.message || e);
+      }
+    }
+    if (!pollAbortRef.current) {
+      setCardState('error');
+      setCardError('Timed out - customer did not complete payment within 5 minutes');
     }
   };
 
@@ -2318,11 +2388,20 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, verifiedL
           </div>
         )}
 
-        {/* Card payment in progress */}
+        {/* Card payment — connecting to reader */}
         {cardState === 'processing' && (
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14 }}>
+            <div style={{ fontSize: 'clamp(48px, 8vw, 72px)', color: brandColor, animation: 'kioskPulse 1.5s infinite' }}>💳</div>
+            <div style={{ fontSize: 18, fontWeight: 600, color: 'var(--kFgMuted)' }}>{cardStatusMsg || 'Connecting to card reader...'}</div>
+          </div>
+        )}
+        <style>{'@keyframes kioskPulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.6; transform: scale(0.95); } }'}</style>
+
+        {/* Card payment — waiting for customer to tap */}
+        {cardState === 'collecting' && (
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14 }}>
             <div style={{ fontSize: 'clamp(48px, 8vw, 72px)', color: brandColor, animation: 'kioskPoint 1.5s infinite' }}>→</div>
-            <div style={{ fontSize: 18, fontWeight: 600, color: 'var(--kFgMuted)' }}>Tap or insert your card</div>
+            <div style={{ fontSize: 18, fontWeight: 600, color: 'var(--kFgMuted)' }}>{cardStatusMsg || 'Tap or insert your card'}</div>
           </div>
         )}
         <style>{'@keyframes kioskPoint { 0%, 100% { transform: translateX(0); } 50% { transform: translateX(8px); } }'}</style>

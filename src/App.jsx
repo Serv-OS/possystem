@@ -76,12 +76,12 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
-    version: '5.5.268', date: '27 May 2026', label: 'Kiosk: loyalty choice screen redesign',
+    version: '5.5.269', date: '27 May 2026', label: 'Kiosk: real card reader via server-side Stripe flow',
     changes: [
-      'UX OVERHAUL: Loyalty screen starts with "Do you collect rewards?" and two big visual tiles: "Yes, sign me in" (brand-colored) and "No thanks, just order" (neutral). Dead simple to understand or skip.',
-      'Sign-in tile leads to OTP phone flow. "No thanks" skips to payment. Both tiles equally prominent — no hidden skip button.',
-      'Name/email fields only appear after committing to sign-in. X close button hidden on choice screen.',
-      'FIX: Name, email and phone now auto-fill in parent KioskApp immediately after OTP verification.',
+      'CARD READER FIX: Kiosk payment now uses the same server-side stripe-process-payment-on-reader edge function as POS. Sends kioskId as pos_device_id so the edge function resolves the assigned network reader and pushes payment to it. Previously used client-side collectPayment() which had no reader discovery.',
+      'POLLING: After payment is pushed to reader, kiosk polls stripe-poll-reader-action every 1.5s (5-min timeout). Shows connecting/tap/paying status. Handles success, decline, error, timeout.',
+      'UX: Loyalty choice screen with "Do you collect rewards?" and two big tiles. Name/email only after sign-in.',
+      'FIX: Name, email and phone auto-fill after OTP verification.',
     ],
   },
   {
