@@ -2291,19 +2291,41 @@ export const useStore = create((set, get) => ({
         try {
           const token = await ensureAuthToken();
           if (!token) { console.warn('[attributeOrderToCustomer] loyalty earn skipped — no auth token'); return; }
+          // v5.5.256: resolve parent category for variants so stamp cards can
+          // match qualifying categories. Variants (sizes) don't have their own
+          // cat field — they inherit from their master product.
+          const allMenuItems = get().menuItems || [];
+          const menuById = new Map(allMenuItems.map(m => [m.id, m]));
           const earnBody = {
             customer_id: customerId,
             location_id: locId,
             closed_check_id: orderRecord.ref || orderRecord.id,
             channel: orderRecord.orderType || orderRecord.source || 'pos',
-            items: (orderRecord.items || []).map(i => ({
-              name: i.name, qty: i.qty || 1, price: i.price || 0,
-              cat: i.cat || i.category || null,
-              id: i.itemId || i.id || null,
-              isComp: !!i.isComp,
-              staffDiscount: !!i.isStaffDiscount,
-              isGiftCard: !!i.isGiftCard,
-            })),
+            items: (orderRecord.items || []).map(i => {
+              let cat = i.cat || i.category || null;
+              // Variant fallback: inherit parent's category
+              if (!cat && i.parentId) {
+                const parent = menuById.get(i.parentId);
+                cat = parent?.cat || parent?.cats?.[0] || null;
+              }
+              // Double fallback: look up the original menu item's cat
+              if (!cat) {
+                const mi = menuById.get(i.itemId || i.id);
+                cat = mi?.cat || mi?.cats?.[0] || null;
+                if (!cat && mi?.parentId) {
+                  const parent = menuById.get(mi.parentId);
+                  cat = parent?.cat || parent?.cats?.[0] || null;
+                }
+              }
+              return {
+                name: i.name, qty: i.qty || 1, price: i.price || 0,
+                cat,
+                id: i.itemId || i.id || null,
+                isComp: !!i.isComp,
+                staffDiscount: !!i.isStaffDiscount,
+                isGiftCard: !!i.isGiftCard,
+              };
+            }),
             subtotal: Number(orderRecord.total) || 0,
             staff_id: orderRecord.staffId || null,
           };

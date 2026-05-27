@@ -76,11 +76,10 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
-    version: '5.5.255', date: '27 May 2026', label: 'Fix item picker prices + two-step flow',
+    version: '5.5.256', date: '27 May 2026', label: 'Fix: stamp cards now match variant items to qualifying categories',
     changes: [
-      'Fixed item prices displaying incorrectly (e.g. £0.05 instead of £5.00) — pricing.base stores pounds, not pence, so removed the erroneous /100 division.',
-      'Two-step item picker: pick the product first, then drill into sizes/variants. Standalone items toggle directly.',
-      'Search matches both product names and variant names. Master products show "N sizes →" with selected count badge.',
+      'Stamp card qualifying-category matching was failing for size variants (e.g. "Latte — Large") because variants don\'t have their own category — they inherit from the parent product. The loyalty-earn payload now resolves the parent\'s category for variants.',
+      'Three-tier fallback: item.cat → parent item cat → menu item lookup with parent chain. Ensures all items get a category for stamp card matching.',
     ],
   },
   {
