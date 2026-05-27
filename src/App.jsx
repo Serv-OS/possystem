@@ -76,6 +76,13 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.284', date: '27 May 2026', label: 'Table sync: reconciler full-compare + expanded meaningful check',
+    changes: [
+      'RECONCILER FIX: SessionReconciler previously only updated existing tables when Supabase had MORE items (item count comparison). Now does a full session comparison — any difference (voids, mods, discounts, price edits, notes) is caught. Supabase version is applied to non-active tables since it was written by the device that made the change.',
+      'MEANINGFUL CHECK EXPANDED: The SyncBridge flush trigger now detects subtotal changes, void count changes, fired course changes, and note/orderNote changes. Previously only caught item count changes and sent-to-kitchen status — voids, discounts, and modifications that didn\'t change item count were silently dropped.',
+    ],
+  },
+  {
     version: '5.5.283', date: '27 May 2026', label: 'Fix table sync data loss — sessions no longer disappear across devices',
     changes: [
       'CRITICAL FIX — TABLE SESSION DATA LOSS: Fixed 4 bugs causing open table sessions to disappear across devices. Root cause was a cascade: a Realtime DELETE event would unconditionally clear a session on device B → flushSessions would see the table as "available" and permanently delete the Supabase row → all devices lose the session.',

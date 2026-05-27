@@ -568,6 +568,21 @@ export default function SyncBridge({ onSyncPulse }) {
         const tSent = (t.session?.items || []).filter(i => i.status === 'sent').length;
         const pSent = (p.session?.items || []).filter(i => i.status === 'sent').length;
         if (tSent !== pSent) return true;
+        // v5.5.283: catch voids, discounts, price edits, and other modifications
+        // that don't change item count. Subtotal is the cheapest single check that
+        // catches virtually all real-world edits without triggering on keystrokes.
+        if (t.session?.subtotal !== p.session?.subtotal) return true;
+        // Void count changed (item voided without removing from array)
+        const tVoid = (t.session?.items || []).filter(x => x.voided).length;
+        const pVoid = (p.session?.items || []).filter(x => x.voided).length;
+        if (tVoid !== pVoid) return true;
+        // Fired courses changed
+        const tFired = (t.session?.firedCourses || []).length;
+        const pFired = (p.session?.firedCourses || []).length;
+        if (tFired !== pFired) return true;
+        // Notes changed
+        if (t.session?.note !== p.session?.note) return true;
+        if (t.session?.orderNote !== p.session?.orderNote) return true;
         return false;
       });
       if (meaningful) {

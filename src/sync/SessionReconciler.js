@@ -33,10 +33,15 @@ export async function startSessionReconciler() {
       const store = useStore.getState();
       const tables = store.tables || [];
 
-      // Build map of what Supabase says is open
+      // Build map of what Supabase says is open (session + updated_at)
       const supabaseOpen = new Map();
       data.forEach(row => {
-        if (row.table_id && row.session) supabaseOpen.set(row.table_id, row.session);
+        if (row.table_id && row.session) {
+          supabaseOpen.set(row.table_id, {
+            session: row.session,
+            updatedAt: row.updated_at ? new Date(row.updated_at).getTime() : 0,
+          });
+        }
       });
 
       let changed = false;
@@ -63,20 +68,21 @@ export async function startSessionReconciler() {
         if (!inStore && inSupabase) {
           // Table is open in Supabase but NOT in store — another device opened it
           changed = true;
-          return { ...t, session: supabaseOpen.get(t.id), status: 'occupied' };
+          const entry = supabaseOpen.get(t.id);
+          return { ...t, session: entry.session, status: 'occupied' };
         }
 
         if (inStore && inSupabase && !isActive) {
-          // Table is open on BOTH — check if Supabase has newer/more items
-          const supabaseSession = supabaseOpen.get(t.id);
-          const supabaseItemCount = (supabaseSession?.items || []).length;
-          const localItemCount = (t.session?.items || []).length;
-          const supabaseUpdated = new Date(supabaseSession?.updatedAt || supabaseSession?.sentAt || 0).getTime();
-          const localSeated = t.session?.seatedAt || 0;
-
-          // Apply if Supabase has more items, or has items that are sent (kitchen confirmed)
-          // Only overwrite non-active tables to avoid clobbering the operator's current work
-          if (supabaseItemCount > localItemCount) {
+          // v5.5.283: Full session comparison — not just item count.
+          // Previous code only synced when Supabase had MORE items, missing
+          // voids, modifications, discount changes, and all non-count diffs.
+          // Now: if sessions differ at all, take the Supabase version (written
+          // by whichever device made the last change via flushSessions).
+          const entry = supabaseOpen.get(t.id);
+          const supabaseSession = entry.session;
+          const localJSON = JSON.stringify(t.session);
+          const supabaseJSON = JSON.stringify(supabaseSession);
+          if (localJSON !== supabaseJSON) {
             changed = true;
             return { ...t, session: supabaseSession, status: 'occupied' };
           }
