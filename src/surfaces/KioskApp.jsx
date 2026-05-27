@@ -176,7 +176,16 @@ export default function KioskApp({ kioskId, onUnpair }) {
   // Profile + menu data
   const { device, profile, loading: profLoading, error: profError } = useKioskProfile(kioskId);
   const [locationId, setLocationId] = useState(null);
-  useEffect(() => { getLocationId().then(setLocationId).catch(() => {}); }, []);
+  useEffect(() => {
+    // v5.5.262: Kiosks don't have rpos-device in localStorage (they use
+    // rpos-kiosk-id), so getLocationId() returns null. Resolve from the
+    // device row's location_id instead, with getLocationId() as fallback.
+    if (device?.location_id) {
+      setLocationId(device.location_id);
+    } else {
+      getLocationId().then(id => { if (id) setLocationId(id); }).catch(() => {});
+    }
+  }, [device?.location_id]);
   const { items, categories, menus, links, activeMenuId, loading: menuLoading, error: menuError } = useKioskMenu(profile, locationId);
 
   // ─── Cart + flow state ───

@@ -76,6 +76,13 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.262', date: '27 May 2026', label: 'Fix: kiosk menu now loads correctly',
+    changes: [
+      'Kiosks use their own pairing mechanism (rpos-kiosk-id) instead of the POS device pairing (rpos-device). getLocationId() couldn\'t resolve the location because it only checks rpos-device — so locationId was null and the menu query never ran.',
+      'KioskApp now resolves locationId from the device row\'s location_id column (which is always set during kiosk creation in the BO), with getLocationId() as fallback.',
+    ],
+  },
+  {
     version: '5.5.261', date: '27 May 2026', label: 'Comprehensive variant inheritance cascade',
     changes: [
       'VARIANT INHERITANCE ENGINE: updateMenuItem now cascades 5 critical fields to all child variants automatically: category (cat/cats), allergens, tax rate, and KDS centre. Moving a parent product, editing its allergens, or changing its tax rate updates every size variant in both the store and database.',
