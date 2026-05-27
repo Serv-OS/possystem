@@ -76,6 +76,17 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.264', date: '27 May 2026', label: 'Kiosk loyalty UX overhaul + stamp cards + gift cards',
+    changes: [
+      'LOYALTY-FIRST UX: Redesigned ScreenLoyalty from a generic "enter your name" form into a loyalty-first experience. Title now reads "Earn rewards & stamps" with subtitle prompting phone entry. Phone field moved to top (auto-focused) as the primary loyalty identifier.',
+      'KNOWN CUSTOMER GREETING: When phone matches a member, title changes to "Welcome back, Name!" with loyalty summary block (points, tier, rewards, stamp cards, gift cards).',
+      'NEW CUSTOMER NUDGE: If phone lookup finds no match, shows friendly prompt: "Not a member yet? Enter your name below and start earning with this order!"',
+      'STAMP CARDS ON KIOSK: Active stamp card programs displayed with visual stamp grid (filled/empty dots), progress bar, completion count, and reward description.',
+      'GIFT CARDS ON KIOSK: Gift cards linked to the customer now show with card number, balance in GBP, and expiry date.',
+      'Extended loyalty-balance edge function to return stamp_cards[] and gift_cards[]. fetchCustomerByPhone passes this data through.',
+    ],
+  },
+  {
     version: '5.5.263', date: '27 May 2026', label: 'Fix: kiosk menu loads + dailyCounts crash',
     changes: [
       'Kiosks use their own pairing mechanism (rpos-kiosk-id) instead of the POS device pairing (rpos-device). getLocationId() couldn\'t resolve the location because it only checks rpos-device — so locationId was null and the menu query never ran.',

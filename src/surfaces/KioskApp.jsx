@@ -2340,27 +2340,109 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
           }}
         >×</button>
 
-        {/* Title */}
+        {/* v5.5.264: Loyalty-aware title + subtitle */}
         <div style={{
           textAlign: 'center',
-          fontSize: 'clamp(22px, 3vw, 30px)',
-          fontWeight: 800,
-          letterSpacing: '-0.01em',
-          color: brandColor,
           marginTop: 'clamp(20px, 3vw, 32px)',
-          marginBottom: 'clamp(12px, 1.6vw, 18px)',
-        }}>{t('details.title')}</div>
+          marginBottom: 'clamp(6px, 0.8vw, 10px)',
+        }}>
+          <div style={{ fontSize: 'clamp(28px, 3.6vw, 38px)', marginBottom: 6 }}>
+            {showWelcome ? '👋' : '⭐'}
+          </div>
+          <div style={{
+            fontSize: 'clamp(22px, 3vw, 30px)',
+            fontWeight: 800,
+            letterSpacing: '-0.01em',
+            color: brandColor,
+          }}>
+            {showWelcome ? `${t('details.welcome')}${customerLookup?.name ? ', ' + customerLookup.name : ''}!` : 'Earn rewards & stamps'}
+          </div>
+        </div>
 
-        {/* Subtitle */}
         <div style={{
           textAlign: 'center',
-          fontSize: 'clamp(15px, 1.8vw, 19px)',
-          color: 'var(--kFg)',
-          fontWeight: 700,
+          fontSize: 'clamp(14px, 1.6vw, 17px)',
+          color: 'var(--kFgMuted)',
+          fontWeight: 600,
           lineHeight: 1.4,
-          marginBottom: 'clamp(20px, 3vw, 32px)',
+          marginBottom: 'clamp(16px, 2vw, 24px)',
           padding: '0 clamp(0px, 2vw, 16px)',
-        }}>{t('details.subtitle')}</div>
+        }}>
+          {showWelcome
+            ? 'Your loyalty details are shown below'
+            : 'Enter your mobile number to collect points, stamps and unlock rewards'}
+        </div>
+
+        {/* ─── Phone field FIRST (loyalty identifier) ─── */}
+        <div style={{ marginBottom: 'clamp(14px, 1.8vw, 18px)' }}>
+          <div style={detailsLabelStyle(brandColor)}>{t('details.mobile.label')}</div>
+          <div style={{
+            display: 'flex',
+            alignItems: 'stretch',
+            background: 'var(--kSurfaceRaised)',
+            border: showWelcome
+              ? '2px solid ' + brandColor
+              : customerLookup === false
+                ? '2px solid var(--kBorder2)'
+                : '1px solid var(--kBorder2)',
+            borderRadius: 14,
+            overflow: 'hidden',
+            transition: 'border-color 0.2s',
+          }}>
+            <div style={{
+              padding: 'clamp(14px, 1.8vw, 18px) clamp(14px, 1.6vw, 20px)',
+              borderRight: '1px solid var(--kBorder2)',
+              fontSize: 'clamp(15px, 1.8vw, 18px)',
+              fontWeight: 600,
+              color: 'var(--kFg)',
+              fontFamily: 'inherit',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              flexShrink: 0,
+            }}>
+              GB +44 <span style={{ color: 'var(--kFgFaint)', fontSize: 12 }}>▾</span>
+            </div>
+            <input
+              value={phone}
+              onChange={e => setPhone(e.target.value.replace(/[^0-9 +]/g, ''))}
+              placeholder={t('details.mobile.placeholder')}
+              type="tel"
+              inputMode="tel"
+              autoFocus
+              style={{
+                flex: 1,
+                padding: 'clamp(14px, 1.8vw, 18px) clamp(14px, 1.6vw, 20px)',
+                background: 'transparent',
+                border: 0,
+                outline: 'none',
+                fontSize: 'clamp(15px, 1.8vw, 18px)',
+                fontFamily: 'ui-monospace, monospace',
+                color: 'var(--kFg)',
+                letterSpacing: '0.02em',
+                minWidth: 0,
+              }}
+            />
+          </div>
+          {/* Lookup status */}
+          {lookingUp && (
+            <div style={{ marginTop: 6, fontSize: 12, color: 'var(--kFgMuted)', fontWeight: 600 }}>
+              {t('details.lookupChecking')}
+            </div>
+          )}
+          {/* New customer prompt — phone entered but no match */}
+          {customerLookup === false && (
+            <div style={{
+              marginTop: 8, padding: '8px 12px', borderRadius: 10,
+              background: brandColor + '10', border: '1px solid ' + brandColor + '25',
+              fontSize: 'clamp(12px, 1.3vw, 14px)', fontWeight: 600, color: brandColor,
+              display: 'flex', alignItems: 'center', gap: 8,
+            }}>
+              <span style={{ fontSize: 16 }}>🎉</span>
+              Not a member yet? Enter your name below and start earning with this order!
+            </div>
+          )}
+        </div>
 
         {/* Welcome-back / loyalty block */}
         {showWelcome && (
@@ -2371,30 +2453,24 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
             padding: 'clamp(14px, 1.8vw, 20px)',
             marginBottom: 'clamp(20px, 2.6vw, 28px)',
           }}>
+            {/* Points balance — always show for members */}
             <div style={{
-              fontSize: 'clamp(15px, 1.8vw, 19px)',
-              fontWeight: 800,
-              color: brandColor,
-              letterSpacing: '-0.01em',
+              fontSize: 'clamp(13px, 1.5vw, 16px)',
+              fontWeight: 700,
+              color: 'var(--kFg)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              flexWrap: 'wrap',
             }}>
-              {t('details.welcome')}{customerLookup.name ? ', ' + customerLookup.name : ''}!
+              <span style={{ fontSize: 'clamp(18px, 2.2vw, 24px)' }}>⭐</span>
+              <span>{customerLookup.credit || 0} loyalty points</span>
+              {customerLookup.tier && (
+                <span style={{ color: customerLookup.tier.color || brandColor, fontWeight: 800 }}>
+                  {customerLookup.tier.icon || ''} {customerLookup.tier.name}
+                </span>
+              )}
             </div>
-            {/* Points balance */}
-            {hasCredit && (
-              <div style={{
-                marginTop: 8,
-                fontSize: 'clamp(13px, 1.5vw, 16px)',
-                fontWeight: 700,
-                color: 'var(--kFg)',
-              }}>
-                {customerLookup.credit} loyalty points
-                {customerLookup.tier && (
-                  <span style={{ marginLeft: 8, color: customerLookup.tier.color || brandColor, fontWeight: 800 }}>
-                    {customerLookup.tier.icon || ''} {customerLookup.tier.name}
-                  </span>
-                )}
-              </div>
-            )}
 
             {/* v5.5.219: Redeemable rewards — customer can tap to redeem */}
             {hasRewards && !loyaltyRedemption && (
@@ -2508,72 +2584,181 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
                 </div>
               </div>
             )}
+
+            {/* v5.5.264: Stamp card progress */}
+            {customerLookup.stampCards && customerLookup.stampCards.length > 0 && (
+              <div style={{ marginTop: 14 }}>
+                <div style={{
+                  fontSize: 'clamp(11px, 1.3vw, 13px)',
+                  fontWeight: 700,
+                  color: brandColor,
+                  textTransform: 'uppercase',
+                  letterSpacing: '.06em',
+                  marginBottom: 8,
+                }}>Stamp cards</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {customerLookup.stampCards.map(sc => {
+                    const pct = Math.min(100, Math.round((sc.stamps_collected / sc.stamps_required) * 100));
+                    return (
+                      <div key={sc.id} style={{
+                        padding: 'clamp(10px, 1.4vw, 14px)',
+                        borderRadius: 12,
+                        background: 'var(--kSurfaceRaised)',
+                        border: '1.5px solid ' + brandColor + '33',
+                      }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                          <span style={{ fontSize: 'clamp(16px, 2vw, 22px)' }}>{sc.icon || '☕'}</span>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontSize: 'clamp(13px, 1.5vw, 16px)', fontWeight: 700, color: 'var(--kFg)' }}>{sc.name}</div>
+                            <div style={{ fontSize: 'clamp(11px, 1.2vw, 13px)', color: 'var(--kFgMuted)', marginTop: 1 }}>
+                              {sc.stamps_collected}/{sc.stamps_required} stamps
+                              {sc.stamps_required - sc.stamps_collected > 0 && ` · ${sc.stamps_required - sc.stamps_collected} to go`}
+                            </div>
+                          </div>
+                          {sc.completed_count > 0 && (
+                            <span style={{
+                              fontSize: 'clamp(10px, 1.1vw, 12px)',
+                              fontWeight: 700,
+                              color: brandColor,
+                              padding: '2px 8px',
+                              borderRadius: 12,
+                              background: brandColor + '15',
+                            }}>{sc.completed_count}x done</span>
+                          )}
+                        </div>
+                        {/* Progress bar */}
+                        <div style={{
+                          height: 'clamp(6px, 0.8vw, 8px)',
+                          borderRadius: 99,
+                          background: brandColor + '18',
+                          overflow: 'hidden',
+                        }}>
+                          <div style={{
+                            height: '100%',
+                            width: pct + '%',
+                            borderRadius: 99,
+                            background: brandColor,
+                            transition: 'width 0.3s ease',
+                          }} />
+                        </div>
+                        {/* Stamp grid (visual dots) */}
+                        <div style={{
+                          display: 'flex', gap: 'clamp(3px, 0.4vw, 5px)', marginTop: 8,
+                          flexWrap: 'wrap',
+                        }}>
+                          {Array.from({ length: sc.stamps_required }).map((_, i) => (
+                            <div key={i} style={{
+                              width: 'clamp(20px, 2.6vw, 28px)',
+                              height: 'clamp(20px, 2.6vw, 28px)',
+                              borderRadius: '50%',
+                              display: 'flex', alignItems: 'center', justifyContent: 'center',
+                              background: i < sc.stamps_collected ? brandColor + '22' : 'var(--kSurface2, #1a1a1e)',
+                              border: i < sc.stamps_collected
+                                ? '2px solid ' + brandColor
+                                : '2px dashed var(--kBorder1, #333)',
+                              fontSize: 'clamp(10px, 1.2vw, 14px)',
+                              color: i < sc.stamps_collected ? brandColor : 'var(--kFgFaint, #555)',
+                              fontWeight: 700,
+                            }}>
+                              {i < sc.stamps_collected ? (sc.icon || '☕') : (i + 1)}
+                            </div>
+                          ))}
+                          {/* Reward slot */}
+                          <div style={{
+                            width: 'clamp(20px, 2.6vw, 28px)',
+                            height: 'clamp(20px, 2.6vw, 28px)',
+                            borderRadius: '50%',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            background: brandColor + '10',
+                            border: '2px solid ' + brandColor + '50',
+                            fontSize: 'clamp(10px, 1.2vw, 14px)',
+                          }}>🎁</div>
+                        </div>
+                        {/* Reward description */}
+                        {sc.reward_description && (
+                          <div style={{
+                            marginTop: 8,
+                            padding: '6px 10px',
+                            borderRadius: 8,
+                            background: brandColor + '08',
+                            border: '1px dashed ' + brandColor + '30',
+                            fontSize: 'clamp(11px, 1.2vw, 13px)',
+                            fontWeight: 600,
+                            color: 'var(--kFgMuted)',
+                            display: 'flex', alignItems: 'center', gap: 6,
+                          }}>
+                            <span>🎁</span> Reward: {sc.reward_description}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* v5.5.264: Gift card balances */}
+            {customerLookup.giftCards && customerLookup.giftCards.length > 0 && (
+              <div style={{ marginTop: 14 }}>
+                <div style={{
+                  fontSize: 'clamp(11px, 1.3vw, 13px)',
+                  fontWeight: 700,
+                  color: brandColor,
+                  textTransform: 'uppercase',
+                  letterSpacing: '.06em',
+                  marginBottom: 8,
+                }}>Gift cards</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {customerLookup.giftCards.map(gc => (
+                    <div key={gc.id} style={{
+                      padding: 'clamp(10px, 1.4vw, 14px) clamp(12px, 1.6vw, 16px)',
+                      borderRadius: 12,
+                      background: 'var(--kSurfaceRaised)',
+                      border: '1.5px solid ' + brandColor + '33',
+                      display: 'flex', alignItems: 'center', gap: 10,
+                    }}>
+                      <div style={{
+                        width: 'clamp(32px, 3.6vw, 40px)',
+                        height: 'clamp(32px, 3.6vw, 40px)',
+                        borderRadius: 8,
+                        background: brandColor + '22',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        fontSize: 'clamp(14px, 1.6vw, 18px)',
+                        flexShrink: 0,
+                      }}>💳</div>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 'clamp(13px, 1.5vw, 16px)', fontWeight: 700, color: 'var(--kFg)' }}>
+                          Gift Card {gc.last4 ? `···${gc.last4}` : ''}
+                        </div>
+                        <div style={{ fontSize: 'clamp(11px, 1.2vw, 13px)', color: 'var(--kFgMuted)', marginTop: 1 }}>
+                          {gc.expires_at ? `Expires ${new Date(gc.expires_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}` : 'No expiry'}
+                        </div>
+                      </div>
+                      <div style={{
+                        fontSize: 'clamp(15px, 1.8vw, 19px)',
+                        fontWeight: 800,
+                        color: brandColor,
+                        flexShrink: 0,
+                      }}>
+                        {String.fromCodePoint(0x00A3)}{((gc.balance || 0) / 100).toFixed(2)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
         {/* Your name */}
-        <div style={{ marginBottom: 'clamp(16px, 2.2vw, 22px)' }}>
+        <div style={{ marginBottom: 'clamp(14px, 1.8vw, 18px)' }}>
           <div style={detailsLabelStyle(brandColor)}>{t('details.name.label')}</div>
           <input
             value={name}
             onChange={e => setName(e.target.value)}
             placeholder={t('details.name.placeholder')}
-            autoFocus
             style={detailsInputStyle()}
           />
-        </div>
-
-        {/* Your mobile — country prefix + number */}
-        <div style={{ marginBottom: 'clamp(16px, 2vw, 20px)' }}>
-          <div style={detailsLabelStyle(brandColor)}>{t('details.mobile.label')}</div>
-          <div style={{
-            display: 'flex',
-            alignItems: 'stretch',
-            background: 'var(--kSurfaceRaised)',
-            border: '1px solid var(--kBorder2)',
-            borderRadius: 14,
-            overflow: 'hidden',
-          }}>
-            <div style={{
-              padding: 'clamp(14px, 1.8vw, 18px) clamp(14px, 1.6vw, 20px)',
-              borderRight: '1px solid var(--kBorder2)',
-              fontSize: 'clamp(15px, 1.8vw, 18px)',
-              fontWeight: 600,
-              color: 'var(--kFg)',
-              fontFamily: 'inherit',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 6,
-              flexShrink: 0,
-            }}>
-              GB +44 <span style={{ color: 'var(--kFgFaint)', fontSize: 12 }}>▾</span>
-            </div>
-            <input
-              value={phone}
-              onChange={e => setPhone(e.target.value.replace(/[^0-9 +]/g, ''))}
-              placeholder={t('details.mobile.placeholder')}
-              type="tel"
-              inputMode="tel"
-              style={{
-                flex: 1,
-                padding: 'clamp(14px, 1.8vw, 18px) clamp(14px, 1.6vw, 20px)',
-                background: 'transparent',
-                border: 0,
-                outline: 'none',
-                fontSize: 'clamp(15px, 1.8vw, 18px)',
-                fontFamily: 'ui-monospace, monospace',
-                color: 'var(--kFg)',
-                letterSpacing: '0.02em',
-                minWidth: 0,
-              }}
-            />
-          </div>
-          {/* Lookup status chip — only shows while a query is in flight */}
-          {lookingUp && (
-            <div style={{ marginTop: 6, fontSize: 12, color: 'var(--kFgMuted)', fontWeight: 600 }}>
-              {t('details.lookupChecking')}
-            </div>
-          )}
         </div>
 
         {/* Optional divider */}
@@ -2581,7 +2766,7 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
           display: 'flex',
           alignItems: 'center',
           gap: 12,
-          margin: 'clamp(18px, 2.4vw, 26px) 0',
+          margin: 'clamp(14px, 1.8vw, 20px) 0',
         }}>
           <div style={{ flex: 1, height: 1, background: brandColor, opacity: 0.4 }} />
           <span style={{
@@ -2594,7 +2779,7 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
         </div>
 
         {/* Your email */}
-        <div style={{ marginBottom: 'clamp(20px, 2.6vw, 28px)' }}>
+        <div style={{ marginBottom: 'clamp(18px, 2.4vw, 24px)' }}>
           <div style={detailsLabelStyle(brandColor)}>{t('details.email.label')}</div>
           <input
             value={email}

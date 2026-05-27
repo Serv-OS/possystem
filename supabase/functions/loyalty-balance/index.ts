@@ -144,6 +144,69 @@ Deno.serve(async (req) => {
     .order('created_at', { ascending: false })
     .limit(10);
 
+  // ── v5.5.264: Stamp card programs + customer progress ────────────────
+  let stampCards: any[] = [];
+  try {
+    const { data: programs } = await platformAdmin
+      .from('stamp_card_programs')
+      .select('id, name, description, icon, stamps_required, reward_type, reward_description, active')
+      .eq('company_id', companyId)
+      .eq('active', true)
+      .order('created_at');
+    if (programs && programs.length > 0) {
+      const progIds = programs.map((p: any) => p.id);
+      const { data: progress } = await platformAdmin
+        .from('customer_stamp_cards')
+        .select('program_id, stamps_collected, completed_count, last_stamp_at')
+        .eq('customer_id', membership.customer_id)
+        .eq('company_id', companyId)
+        .in('program_id', progIds);
+      const progressMap: Record<string, any> = {};
+      (progress || []).forEach((p: any) => { progressMap[p.program_id] = p; });
+      stampCards = programs.map((p: any) => ({
+        id: p.id, name: p.name, description: p.description, icon: p.icon || '☕',
+        stamps_required: p.stamps_required, reward_type: p.reward_type,
+        reward_description: p.reward_description,
+        stamps_collected: progressMap[p.id]?.stamps_collected || 0,
+        completed_count: progressMap[p.id]?.completed_count || 0,
+        last_stamp_at: progressMap[p.id]?.last_stamp_at || null,
+      }));
+    }
+  } catch {}
+
+  // ── v5.5.264: Gift cards linked to this customer ─────────────────────
+  let giftCards: any[] = [];
+  try {
+    // Resolve customer phone/email/name from ops DB for gift card lookup
+    const { data: custRow } = await opsAdmin
+      .from('customers')
+      .select('phone, email, name')
+      .eq('id', membership.customer_id)
+      .maybeSingle();
+    if (custRow) {
+      const conditions: string[] = [];
+      if (custRow.phone) conditions.push(`recipient_phone.eq.${custRow.phone}`);
+      if (custRow.email) conditions.push(`recipient_email.eq.${custRow.email}`);
+      if (custRow.name) conditions.push(`recipient_name.eq.${custRow.name}`);
+      if (conditions.length > 0) {
+        const { data: cards } = await platformAdmin
+          .from('gift_cards')
+          .select('id, code_last4, code_plain, balance_minor, status, expires_at, initial_amount_minor')
+          .eq('company_id', companyId)
+          .eq('status', 'active')
+          .or(conditions.join(','));
+        giftCards = (cards || []).map((c: any) => ({
+          id: c.id,
+          last4: c.code_last4,
+          code: c.code_plain || null,
+          balance: c.balance_minor,
+          initial: c.initial_amount_minor,
+          expires_at: c.expires_at,
+        }));
+      }
+    }
+  } catch {}
+
   return json({
     enrolled: true,
     member_code: membership.member_code,
@@ -169,6 +232,9 @@ Deno.serve(async (req) => {
     })),
     enrolled_at: membership.enrolled_at,
     last_earn_at: membership.last_earn_at,
+    // v5.5.264: stamp cards and gift cards for kiosk/online surfaces
+    stamp_cards: stampCards,
+    gift_cards: giftCards,
     // v5.5.218: referral_code and birthday redacted from public endpoint.
     // These are returned by the authenticated loyalty-member-lookup instead.
   });

@@ -146,6 +146,9 @@ export async function fetchCustomerByPhone(rawPhone, locationId) {
       pointsEarnedTotal: loyaltyData?.points_earned_total || 0,
       enrolledAt: loyaltyData?.enrolled_at || null,
       allRewards: loyaltyData?.all_rewards || [],
+      // v5.5.264: stamp cards and gift cards from loyalty-balance
+      stampCards: loyaltyData?.stamp_cards || [],
+      giftCards: loyaltyData?.gift_cards || [],
     };
   } catch (e) {
     console.warn('[customerLookup] unexpected error:', e?.message || e);
