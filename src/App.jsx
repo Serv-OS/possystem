@@ -76,11 +76,11 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
-    version: '5.5.267', date: '27 May 2026', label: 'Kiosk: loyalty choice screen — sign in or continue as guest',
+    version: '5.5.268', date: '27 May 2026', label: 'Kiosk: loyalty choice screen redesign',
     changes: [
-      'UX OVERHAUL: Kiosk loyalty screen now starts with a clear choice — "Sign in for rewards" or "Continue without signing in". No longer assumes every customer wants to register.',
-      'Sign-in button leads to OTP phone verification flow. Continue-as-guest skips straight to payment.',
-      'Name, email fields and Continue button only appear after choosing to sign in — not on the initial choice screen.',
+      'UX OVERHAUL: Loyalty screen starts with "Do you collect rewards?" and two big visual tiles: "Yes, sign me in" (brand-colored) and "No thanks, just order" (neutral). Dead simple to understand or skip.',
+      'Sign-in tile leads to OTP phone flow. "No thanks" skips to payment. Both tiles equally prominent — no hidden skip button.',
+      'Name/email fields only appear after committing to sign-in. X close button hidden on choice screen.',
       'FIX: Name, email and phone now auto-fill in parent KioskApp immediately after OTP verification.',
     ],
   },

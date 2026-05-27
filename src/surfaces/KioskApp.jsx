@@ -2607,7 +2607,8 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
         position: 'relative',
         boxShadow: '0 8px 28px rgba(0,0,0,0.06)',
       }}>
-        {/* X close (top-right) */}
+        {/* X close (top-right) — hidden on choice screen since "No thanks" is the skip */}
+        {otpStep !== 'choice' && (
         <button
           onClick={skip}
           aria-label="Skip"
@@ -2629,15 +2630,140 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
             boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
           }}
         >×</button>
+        )}
 
-        {/* v5.5.266: Title — adapts to current step */}
+        {/* ─── v5.5.267: Choice screen — two big tiles ─── */}
+        {otpStep === 'choice' && !showWelcome && (<>
+          {/* Question */}
+          <div style={{
+            textAlign: 'center',
+            marginTop: 'clamp(24px, 3.4vw, 40px)',
+            marginBottom: 'clamp(24px, 3vw, 36px)',
+          }}>
+            <div style={{ fontSize: 'clamp(36px, 4.4vw, 52px)', marginBottom: 10 }}>⭐</div>
+            <div style={{
+              fontSize: 'clamp(24px, 3.2vw, 34px)',
+              fontWeight: 800,
+              letterSpacing: '-0.01em',
+              color: 'var(--kFg)',
+            }}>
+              Do you collect rewards?
+            </div>
+          </div>
+
+          {/* Two tiles */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 'clamp(14px, 1.8vw, 20px)', marginBottom: 'clamp(14px, 1.8vw, 18px)' }}>
+            {/* Tile 1: Yes, sign me in */}
+            <button
+              onClick={() => setOtpStep('phone')}
+              style={{
+                width: '100%',
+                padding: 'clamp(22px, 3vw, 34px) clamp(20px, 2.6vw, 28px)',
+                borderRadius: 20,
+                border: '2.5px solid ' + brandColor,
+                background: brandColor + '12',
+                cursor: 'pointer',
+                fontFamily: 'inherit',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 'clamp(14px, 1.8vw, 20px)',
+                textAlign: 'left',
+                transition: 'transform 0.1s, box-shadow 0.1s',
+              }}
+            >
+              <div style={{
+                width: 'clamp(52px, 6vw, 68px)',
+                height: 'clamp(52px, 6vw, 68px)',
+                borderRadius: 16,
+                background: brandColor,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 'clamp(24px, 3vw, 32px)',
+                flexShrink: 0,
+                boxShadow: '0 4px 12px ' + brandColor + '44',
+              }}>📲</div>
+              <div style={{ flex: 1 }}>
+                <div style={{
+                  fontSize: 'clamp(18px, 2.4vw, 24px)',
+                  fontWeight: 800,
+                  color: 'var(--kFg)',
+                  marginBottom: 4,
+                }}>Yes, sign me in</div>
+                <div style={{
+                  fontSize: 'clamp(13px, 1.5vw, 16px)',
+                  fontWeight: 600,
+                  color: 'var(--kFgMuted)',
+                  lineHeight: 1.3,
+                }}>Earn points, redeem rewards & use gift cards</div>
+              </div>
+              <div style={{
+                fontSize: 'clamp(20px, 2.6vw, 28px)',
+                color: brandColor,
+                fontWeight: 800,
+                flexShrink: 0,
+              }}>›</div>
+            </button>
+
+            {/* Tile 2: No thanks, just order */}
+            <button
+              onClick={skip}
+              style={{
+                width: '100%',
+                padding: 'clamp(22px, 3vw, 34px) clamp(20px, 2.6vw, 28px)',
+                borderRadius: 20,
+                border: '1.5px solid var(--kBorder2)',
+                background: 'var(--kSurface2, #1a1a1e)',
+                cursor: 'pointer',
+                fontFamily: 'inherit',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 'clamp(14px, 1.8vw, 20px)',
+                textAlign: 'left',
+                transition: 'transform 0.1s',
+              }}
+            >
+              <div style={{
+                width: 'clamp(52px, 6vw, 68px)',
+                height: 'clamp(52px, 6vw, 68px)',
+                borderRadius: 16,
+                background: 'var(--kSurfaceRaised, #252528)',
+                border: '1.5px solid var(--kBorder1)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 'clamp(24px, 3vw, 32px)',
+                flexShrink: 0,
+              }}>🍽️</div>
+              <div style={{ flex: 1 }}>
+                <div style={{
+                  fontSize: 'clamp(18px, 2.4vw, 24px)',
+                  fontWeight: 800,
+                  color: 'var(--kFg)',
+                  marginBottom: 4,
+                }}>No thanks, just order</div>
+                <div style={{
+                  fontSize: 'clamp(13px, 1.5vw, 16px)',
+                  fontWeight: 600,
+                  color: 'var(--kFgMuted)',
+                  lineHeight: 1.3,
+                }}>Skip straight to payment</div>
+              </div>
+              <div style={{
+                fontSize: 'clamp(20px, 2.6vw, 28px)',
+                color: 'var(--kFgMuted)',
+                fontWeight: 800,
+                flexShrink: 0,
+              }}>›</div>
+            </button>
+          </div>
+        </>)}
+
+        {/* ─── Title for non-choice steps (OTP flow + verified) ─── */}
+        {otpStep !== 'choice' && (
         <div style={{
           textAlign: 'center',
           marginTop: 'clamp(20px, 3vw, 32px)',
           marginBottom: 'clamp(6px, 0.8vw, 10px)',
         }}>
           <div style={{ fontSize: 'clamp(28px, 3.6vw, 38px)', marginBottom: 6 }}>
-            {showWelcome ? '👋' : otpStep === 'code' || otpStep === 'verifying' ? '📱' : otpStep === 'choice' ? '⭐' : '📲'}
+            {showWelcome ? '👋' : otpStep === 'code' || otpStep === 'verifying' ? '📱' : '📲'}
           </div>
           <div style={{
             fontSize: 'clamp(22px, 3vw, 30px)',
@@ -2649,12 +2775,12 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
               ? `${t('details.welcome')}${customerLookup?.name ? ', ' + customerLookup.name : ''}!`
               : otpStep === 'code' || otpStep === 'verifying'
                 ? 'Enter verification code'
-                : otpStep === 'choice'
-                  ? 'Loyalty rewards'
-                  : 'Sign in with your mobile'}
+                : 'Sign in with your mobile'}
           </div>
         </div>
+        )}
 
+        {otpStep !== 'choice' && (
         <div style={{
           textAlign: 'center',
           fontSize: 'clamp(14px, 1.6vw, 17px)',
@@ -2668,45 +2794,8 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
             ? 'Your loyalty details are shown below'
             : otpStep === 'code' || otpStep === 'verifying'
               ? `We sent a 6-digit code to your mobile ending ${phone.slice(-4)}`
-              : otpStep === 'choice'
-                ? 'Sign in to earn points, redeem rewards and use gift cards'
-                : 'Enter your number and we’ll text you a verification code'}
+              : "Enter your number and we'll text you a verification code"}
         </div>
-
-        {/* ─── v5.5.266: Choice screen — sign in OR continue as guest ─── */}
-        {otpStep === 'choice' && !showWelcome && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 'clamp(14px, 1.8vw, 18px)' }}>
-            <button
-              onClick={() => setOtpStep('phone')}
-              style={{
-                width: '100%', padding: 'clamp(18px, 2.4vw, 26px)',
-                borderRadius: 16, border: '2px solid ' + brandColor,
-                background: brandColor, color: '#fff',
-                fontSize: 'clamp(16px, 2vw, 20px)', fontWeight: 800,
-                cursor: 'pointer', fontFamily: 'inherit',
-                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
-                boxShadow: '0 4px 16px rgba(0,0,0,0.10)',
-              }}
-            >
-              <span style={{ fontSize: 'clamp(20px, 2.4vw, 26px)' }}>📲</span>
-              Sign in for rewards
-            </button>
-            <button
-              onClick={skip}
-              style={{
-                width: '100%', padding: 'clamp(16px, 2vw, 22px)',
-                borderRadius: 16,
-                border: '1.5px solid var(--kBorder2)',
-                background: 'var(--kSurfaceRaised)', color: 'var(--kFg)',
-                fontSize: 'clamp(15px, 1.8vw, 18px)', fontWeight: 700,
-                cursor: 'pointer', fontFamily: 'inherit',
-                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
-              }}
-            >
-              Continue without signing in
-              <span style={{ fontSize: 14, color: 'var(--kFgMuted)' }}>›</span>
-            </button>
-          </div>
         )}
 
         {/* ─── OTP Error ─── */}
