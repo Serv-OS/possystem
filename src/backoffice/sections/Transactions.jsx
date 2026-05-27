@@ -6,9 +6,14 @@
 //           Now receives `checks` + `fmt` from parent BOReports (which handles
 //           period selection and server/orderType/source filters). This component
 //           adds its own text search, status/method filters, and refund modal.
+// v5.5.276: Email receipt — send receipt from expanded row, pre-fills customer
+//           email when available.
 
-import { useState, useMemo, Fragment } from 'react';
+import { useState, useMemo, useEffect, Fragment } from 'react';
 import { useStore } from '../../store';
+import { sendEmailReceipt } from '../../lib/sendReceipt';
+import { getLocationId } from '../../lib/supabase';
+import { loadLocationBranding } from '../../lib/receiptBranding';
 
 // ── Formatting helpers ──────────────────────────────────────────────
 const fmtDate = ts => {
@@ -64,6 +69,55 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
   const [refundSelections, setRefundSelections] = useState({});
   const [refundReason, setRefundReason] = useState('');
   const [refundConfirm, setRefundConfirm] = useState(false);
+
+  // Email receipt state
+  const [emailCheckId, setEmailCheckId] = useState(null);   // which check's email form is open
+  const [emailAddr, setEmailAddr] = useState('');
+  const [emailBusy, setEmailBusy] = useState(false);
+  const [emailResult, setEmailResult] = useState(null);      // { ok, error? }
+  const [locationLabel, setLocationLabel] = useState('');
+  const [locId, setLocId] = useState(null);
+
+  // Resolve location context once for email receipts
+  useEffect(() => {
+    (async () => {
+      try {
+        const id = await getLocationId();
+        setLocId(id);
+        const branding = await loadLocationBranding(id);
+        setLocationLabel(branding?.header?.business_name || '');
+      } catch {}
+    })();
+  }, []);
+
+  // When opening email form for a check, pre-fill customer email
+  const openEmailForm = (check) => {
+    const custEmail = typeof check.customer === 'object' ? check.customer?.email || '' : '';
+    setEmailCheckId(check.id);
+    setEmailAddr(custEmail);
+    setEmailResult(null);
+  };
+
+  const sendReceipt = async (check) => {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailAddr.trim())) {
+      setEmailResult({ ok: false, error: 'Please enter a valid email address' });
+      return;
+    }
+    setEmailBusy(true);
+    setEmailResult(null);
+    const result = await sendEmailReceipt({
+      to: emailAddr.trim(),
+      locationId: locId,
+      check,
+      locationLabel: locationLabel || 'Restaurant',
+    });
+    setEmailBusy(false);
+    setEmailResult(result);
+    if (result.ok) {
+      // Auto-close after 2s on success
+      setTimeout(() => { setEmailCheckId(null); setEmailResult(null); }, 2000);
+    }
+  };
 
   // ── Filtering + search ──
   const filtered = useMemo(() => {
@@ -388,6 +442,56 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
                               {c.covers > 0 && <div><strong>Covers:</strong> {c.covers}</div>}
                               {c.staffId && <div><strong>Staff ID:</strong> {c.staffId}</div>}
                               <div><strong>Check ID:</strong> <span style={{ fontFamily: 'var(--font-mono, ui-monospace, monospace)', fontSize: 11 }}>{c.id}</span></div>
+                            </div>
+
+                            {/* Email receipt */}
+                            <div style={{ marginBottom: 12 }}>
+                              {emailCheckId === c.id ? (
+                                <div style={{
+                                  padding: '12px 14px', borderRadius: 10,
+                                  background: 'var(--bg1, #fff)', border: '1px solid var(--bdr, #e5e7eb)',
+                                }}>
+                                  <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8, color: 'var(--t2)' }}>Email receipt</div>
+                                  <input
+                                    value={emailAddr}
+                                    onChange={e => { setEmailAddr(e.target.value); setEmailResult(null); }}
+                                    placeholder="customer@email.com"
+                                    type="email"
+                                    onClick={e => e.stopPropagation()}
+                                    style={{ ...inputStyle, width: '100%', boxSizing: 'border-box', marginBottom: 8 }}
+                                  />
+                                  {emailResult && (
+                                    <div style={{
+                                      fontSize: 12, marginBottom: 8, fontWeight: 600,
+                                      color: emailResult.ok ? '#16a34a' : '#dc2626',
+                                    }}>
+                                      {emailResult.ok ? 'Receipt sent!' : emailResult.error || 'Failed to send'}
+                                    </div>
+                                  )}
+                                  <div style={{ display: 'flex', gap: 8 }}>
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); setEmailCheckId(null); setEmailResult(null); }}
+                                      style={{ ...btnOutline, flex: 1, fontSize: 12, padding: '6px 12px' }}
+                                    >Cancel</button>
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); sendReceipt(c); }}
+                                      disabled={emailBusy || !emailAddr.trim()}
+                                      style={{
+                                        ...btnPrimary, flex: 1, fontSize: 12, padding: '6px 12px',
+                                        opacity: (emailBusy || !emailAddr.trim()) ? 0.5 : 1,
+                                        cursor: (emailBusy || !emailAddr.trim()) ? 'not-allowed' : 'pointer',
+                                      }}
+                                    >{emailBusy ? 'Sending...' : 'Send'}</button>
+                                  </div>
+                                </div>
+                              ) : (
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); openEmailForm(c); }}
+                                  style={{ ...btnOutline, width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}
+                                >
+                                  {'✉'} Email receipt
+                                </button>
+                              )}
                             </div>
 
                             {/* Refund button */}

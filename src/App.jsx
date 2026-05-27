@@ -76,6 +76,12 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.276', date: '27 May 2026', label: 'Email receipt from Transactions report',
+    changes: [
+      'EMAIL RECEIPT: Each transaction in the expanded row now has an "Email receipt" button. Opens inline email form. Pre-fills the customer email address when the customer record has one on file. Calls the existing send-receipt edge function which builds a branded HTML receipt and dispatches via the configured email provider (Resend/Postmark). Shows success/error feedback inline and auto-closes on success.',
+    ],
+  },
+  {
     version: '5.5.275', date: '27 May 2026', label: 'Transactions report moved into Reports catalog',
     changes: [
       'TRANSACTIONS IN REPORTS: Moved Transactions & Refunds from standalone sidebar section into the Reports catalog under Order Reports. Now uses the shared BOReports period picker, server/orderType/source filters, and data pipeline instead of fetching its own data. Keeps its own text search, status/method drill-down filters, expandable rows, and refund modal.',
