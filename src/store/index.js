@@ -2053,8 +2053,10 @@ export const useStore = create((set, get) => ({
   },
 
   // Live Supabase search. CustomerModal calls this with debounce.
+  // v5.5.280: raised minimum from 2→3 chars for Supabase queries to reduce
+  // load at scale. Phone queries additionally gated to 6+ digits in CustomerModal.
   searchCustomersLive: async (q) => {
-    if (!q || q.length < 2) return [];
+    if (!q || q.length < 3) return [];
     if (isMock || !supabase) return get().searchCustomers(q);
     try {
       const locId = getActiveLocationSync() || await getLocationId();
@@ -2086,7 +2088,8 @@ export const useStore = create((set, get) => ({
       // with anonymous auth can still find customers by phone number.
       // v5.5.279: MUST scope fallback by org_id — the previous version queried
       // the entire customers table, leaking PII across organisations.
-      if (enriched.length === 0 && safe.length >= 3 && orgId) {
+      // v5.5.280: raised phone fallback threshold from 3→6 digits to reduce result set at scale
+      if (enriched.length === 0 && safe.length >= 6 && orgId) {
         const phoneN = get()._normalisePhone(safe);
         const phoneFilters = [safe];
         if (phoneN && phoneN !== safe) phoneFilters.push(phoneN);

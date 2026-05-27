@@ -76,6 +76,13 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.281', date: '27 May 2026', label: 'Customer search: raise phone threshold to 6 digits for scale',
+    changes: [
+      'SCALE: Customer phone search on POS now waits for 6 digits before hitting Supabase (was 3). With 3 digits, a query like "079" could return hundreds of matches across the org, creating unnecessary DB load and slow responses. Name/email search stays at 3 chars since those are more selective. The phone fallback search also raised from 3→6 digits.',
+      'searchCustomersLive minimum raised from 2→3 chars as a general floor for Supabase queries.',
+    ],
+  },
+  {
     version: '5.5.280', date: '27 May 2026', label: 'Fix Overview dashboard cross-location bleed',
     changes: [
       'OVERVIEW FIX: The BOOverview dashboard KPIs (Revenue today, Covers today) were reading closedChecks from the Zustand store without any location filter — showing revenue from ALL locations. Now filters by orgCtx.locationId so each location only sees its own stats.',

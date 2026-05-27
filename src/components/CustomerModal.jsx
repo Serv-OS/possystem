@@ -27,8 +27,11 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
   const isCollection = orderType === 'collection';
 
   // Live phone/name search
+  // v5.5.280: phone search starts at 6 digits (was 3) to reduce DB load at scale.
+  // Name/email search stays at 3 chars since those are ilike prefix matches.
   useEffect(() => {
-    const q = phone.length >= 3 ? phone : name.length >= 3 ? name : '';
+    const phoneDigits = phone.replace(/[^\d+]/g, '');
+    const q = phoneDigits.length >= 6 ? phone : name.length >= 3 ? name : '';
     if (!q) { setResults([]); setSearched(false); return; }
     // Show local cache immediately for snappy UI
     setResults(searchCustomers(q));
