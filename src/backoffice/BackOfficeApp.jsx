@@ -84,8 +84,13 @@ export default function BackOfficeApp() {
     // we treat it as one, the BO renders with no login prompt and no location
     // ("blank back office"). Reject anonymous users so BOLogin shows instead.
     const realUser = (u) => (u && !u.is_anonymous && u.email ? u : null);
+    // v5.5.307: if a stray anonymous session is in storage (created by a prior
+    // ensureAuthToken call before this build), sign it out so it can't linger
+    // and so getLocationId/data paths don't run against a userless session.
+    const cleanAnon = (u) => { if (u && u.is_anonymous) { supabase.auth.signOut().catch(() => {}); return true; } return false; };
     supabase.auth.getSession().then(({ data }) => {
-      setAuthUser(realUser(data?.session?.user));
+      const u = data?.session?.user;
+      if (!cleanAnon(u)) setAuthUser(realUser(u));
       setAuthChecked(true);
     });
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
@@ -97,7 +102,12 @@ export default function BackOfficeApp() {
         localStorage.removeItem('rpos-bo-location');
         clearResolvedLocationId();
       }
-      setAuthUser(realUser(session?.user));
+      // Ignore anonymous sessions entirely (and don't re-sign-out on the
+      // SIGNED_IN(anon) event — ensureAuthToken no longer creates them in
+      // office mode, so this only guards legacy/edge cases).
+      const u = session?.user;
+      if (u && u.is_anonymous) { setAuthUser(null); return; }
+      setAuthUser(realUser(u));
     });
     return () => subscription.unsubscribe();
   }, []);

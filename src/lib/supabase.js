@@ -87,6 +87,17 @@ export const ensureAuthToken = async () => {
   const { data: existing } = await supabase.auth.getSession();
   const token = existing?.session?.access_token;
   if (token) return token;
+  // v5.5.307: NEVER create an anonymous session in back-office / admin mode.
+  // The Supabase client shares storageKey 'rpos-auth', so an anonymous session
+  // created here would be picked up by BackOfficeApp.getSession() and mistaken
+  // for a (userless) login — "blank back office, logged in with no user".
+  // The back office only calls edge functions when a real user is signed in,
+  // so returning null here is safe — it just means "not authenticated yet".
+  try {
+    const u = new URL(window.location.href);
+    const mode = u.searchParams.get('mode') || localStorage.getItem('rpos-device-mode') || '';
+    if (mode === 'office' || mode === 'admin') return null;
+  } catch { /* fall through to anon for non-browser contexts */ }
   // No session (POS device, expired, etc.) — anonymous sign-in
   const { data, error } = await supabase.auth.signInAnonymously();
   if (error) throw new Error('Could not start auth session: ' + error.message);
