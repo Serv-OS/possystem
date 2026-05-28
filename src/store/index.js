@@ -2408,7 +2408,14 @@ export const useStore = create((set, get) => ({
           const earnBody = {
             customer_id: customerId,
             location_id: locId,
-            closed_check_id: orderRecord.ref || orderRecord.id,
+            // v5.5.311: use the globally-unique closed-check id (chk-<ts>, the
+            // closed_checks PK) NOT the display ref. Refs cycle R1–R99 per
+            // location and repeat across locations, so an `earn:<ref>`
+            // idempotency key collided — a 2nd customer 99 orders later (or in
+            // another tenant) was told "already processed" and earned 0 points,
+            // or hit the global UNIQUE constraint and silently dropped the
+            // ledger row. The chk id is unique, so the key never collides.
+            closed_check_id: orderRecord.id || orderRecord.ref,
             channel: orderRecord.orderType || orderRecord.source || 'pos',
             items: (orderRecord.items || []).map(i => {
               let cat = i.cat || i.category || null;
@@ -3834,7 +3841,13 @@ export const useStore = create((set, get) => ({
     // the local refund mutation already happened so UX stays responsive.
     // The edge function is idempotent (refund:{original_key}) — safe to retry.
     const check = get().closedChecks.find(c => c.id === checkId);
-    if (check?.giftCard?.card_id && check.giftCard.idempotency_key) {
+    // v5.5.311: gift-reverse-redeem restores the FULL original gift redemption.
+    // Only run it on a FULL refund — on a partial refund it would credit the
+    // whole gift balance back regardless of the (smaller) refund amount, badly
+    // over-refunding. Partial refunds of gift-paid checks need a dedicated
+    // amount-aware flow (flagged for follow-up); for now they don't auto-reverse
+    // the gift card.
+    if (check?.giftCard?.card_id && check.giftCard.idempotency_key && isFullRefund) {
       (async () => {
         try {
           const token = await ensureAuthToken();
@@ -3886,7 +3899,10 @@ export const useStore = create((set, get) => ({
               body: JSON.stringify({
                 customer_id: customerId,
                 location_id: getActiveLocationSync(),
-                closed_check_id: check.ref || check.id,
+                // v5.5.311: must match the unique id used at earn time (chk-<ts>)
+                // so loyalty-refund finds the right earn rows. Was check.ref
+                // which cycles R1–R99 and could reverse the WRONG order's points.
+                closed_check_id: check.id || check.ref,
                 reason: reason || 'refund',
                 staff_id: manager?.id || null,
               }),
@@ -3939,7 +3955,19 @@ export const useStore = create((set, get) => ({
         }
       })();
     }
-    get().showToast(`Refund of £${amount?.toFixed(2)} processed via ${tenderMethod}`, 'success');
+    // v5.5.311: be honest about card refunds. If the original payment included
+    // a card but we have NO PaymentIntent to refund against (bar tabs and split
+    // payments don't yet store one, and legacy checks predate the column), the
+    // Stripe refund block above is skipped — so DON'T claim it was "processed
+    // via card". Tell staff to issue the card refund manually instead, so money
+    // actually gets returned.
+    const cardRefundExpected = check?.method?.includes('card');
+    const cardRefundIssued = !!(check?.stripePaymentIntentId) && cardRefundExpected;
+    if (cardRefundExpected && !cardRefundIssued) {
+      get().showToast(`Refund of £${amount?.toFixed(2)} recorded — issue the card refund manually (no linked card payment found)`, 'warning');
+    } else {
+      get().showToast(`Refund of £${amount?.toFixed(2)} processed via ${tenderMethod}`, 'success');
+    }
   },
 
   // ── Void log ──────────────────────────────
