@@ -155,6 +155,23 @@ function AdminPanel({ authUser }) {
   const ok = t => setMsg({ type:'ok', text:t });
   const err = t => setMsg({ type:'err', text:t });
 
+  // v5.5.310: provision the Platform DB mirror (company + location) for an ops
+  // location id. Idempotent server-side. Logs but doesn't block on failure —
+  // the ops location is already created; provisioning can be retried.
+  const provisionLocation = async (opsLocationId) => {
+    try {
+      const auth = JSON.parse(localStorage.getItem('rpos-auth') || 'null');
+      const resp = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/provision-location`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${auth?.access_token}` },
+        body: JSON.stringify({ ops_location_id: opsLocationId }),
+      });
+      const pr = await resp.json().catch(() => ({}));
+      if (!resp.ok) console.warn('[provisionLocation] failed:', pr?.error);
+      return resp.ok;
+    } catch (pe) { console.warn('[provisionLocation] threw:', pe?.message); return false; }
+  };
+
   // ── Rename org ──────────────────────────────────────────────────────────────
   const saveRenameOrg = async () => {
     if (!editingOrg?.name?.trim()) return;
@@ -273,6 +290,11 @@ function AdminPanel({ authUser }) {
     }});
     const loc = Array.isArray(data) ? data[0] : data;
     if (e || !loc) { setWorking(false); return err(e?.message || 'Failed'); }
+    // v5.5.310: mirror the new location into the Platform DB so loyalty, gift
+    // cards, online ordering, QR, Challenge 21, message templates and location
+    // settings can resolve its company. Without this the location errors with
+    // "No platform row found for ops location ...".
+    await provisionLocation(loc.id);
     const maxDevices = parseInt(form.maxDevices) || 3;
     await sbFetch('subscriptions', { method:'POST', body:{ org_id:selectedOrg.id, location_id:loc.id, plan:'free', gmv_this_month:0, billing_period_start:new Date().toISOString().slice(0,10) } });
     await sbFetch('location_features', { method:'POST', body:{ location_id:loc.id, feature:'max_devices', enabled:true, price_per_month:maxDevices } });

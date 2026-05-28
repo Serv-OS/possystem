@@ -101,6 +101,21 @@ export default function CompanyAdmin() {
     }).select().single();
     if (err) { setWorking(false); return setError(err.message); }
 
+    // v5.5.310: mirror the new location into the Platform DB (company + location)
+    // so loyalty, gift cards, online ordering, QR, Challenge 21, message
+    // templates and location settings can resolve its company. Without this the
+    // location errors with "No platform row found for ops location ...".
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const resp = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/provision-location`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session?.access_token}` },
+        body: JSON.stringify({ ops_location_id: loc.id }),
+      });
+      const pr = await resp.json().catch(() => ({}));
+      if (!resp.ok) console.warn('[CompanyAdmin] provision-location failed:', pr?.error);
+    } catch (pe) { console.warn('[CompanyAdmin] provision-location threw:', pe?.message); }
+
     // If the current user has no location/org assigned yet, assign them to this
     // new location + its org. v5.5.305: also backfill org_id (was previously
     // only setting location_id, leaving the user with "no company assigned")
