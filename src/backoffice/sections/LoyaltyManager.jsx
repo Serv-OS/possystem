@@ -1437,12 +1437,39 @@ function AdjustPointsModal({ member, companyId, onClose, onSaved }) {
 // ═══════════════════════════════════════════════════════════════════════
 function TiersPanel({ tiers, onReload }) {
   const [creating, setCreating] = useState(false);
+  const [editingId, setEditingId] = useState(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
 
   const blank = { name: '', color: '#E8743C', icon: '⭐', min_points: '', points_multiplier: '1.0', sort_order: 0 };
   const [form, setForm] = useState(blank);
+
+  const resolveCompanyId = async () => {
+    if (!platformSupabase) throw new Error('Platform DB not available');
+    const locId = getActiveLocationSync();
+    const { data: loc } = await platformSupabase.from('locations')
+      .select('company_id')
+      .or(`ops_location_id.eq.${locId},id.eq.${locId}`)
+      .limit(1).maybeSingle();
+    if (!loc?.company_id) throw new Error('Could not resolve company');
+    return loc.company_id;
+  };
+
+  const startEdit = (t) => {
+    setEditingId(t.id);
+    setCreating(false);
+    setForm({
+      name: t.name || '',
+      color: t.color || '#E8743C',
+      icon: t.icon || '⭐',
+      min_points: String(t.min_points_earned || t.min_points || ''),
+      points_multiplier: String(t.points_multiplier || '1.0'),
+      sort_order: t.sort_order || 0,
+    });
+    setError('');
+    setSuccess('');
+  };
 
   const save = async () => {
     if (!form.name || !form.min_points) {
@@ -1452,34 +1479,31 @@ function TiersPanel({ tiers, onReload }) {
     setSaving(true);
     setError('');
     try {
-      // Tiers don't have a dedicated edge function yet — use platform admin
-      // For now, create via the loyalty-config endpoint or directly
-      // TODO: Add tier CRUD to loyalty-config or create loyalty-tiers endpoint
-      if (!platformSupabase) throw new Error('Platform DB not available');
-
-      // Resolve company_id
-      const locId = getActiveLocationSync();
-      const { data: loc } = await platformSupabase.from('locations')
-        .select('company_id')
-        .or(`ops_location_id.eq.${locId},id.eq.${locId}`)
-        .limit(1).maybeSingle();
-      if (!loc?.company_id) throw new Error('Could not resolve company');
-
-      await platformSupabase.from('loyalty_tiers').insert({
-        company_id: loc.company_id,
+      const tierData = {
         name: form.name,
         color: form.color,
         icon: form.icon,
         min_points_earned: Number(form.min_points),
         points_multiplier: Number(form.points_multiplier) || 1.0,
         sort_order: Number(form.sort_order) || 0,
-      });
-      setSuccess('Tier created');
-      setCreating(false);
+      };
+
+      if (editingId) {
+        // Update existing tier
+        await platformSupabase.from('loyalty_tiers').update(tierData).eq('id', editingId);
+        setSuccess('Tier updated');
+        setEditingId(null);
+      } else {
+        // Create new tier
+        const companyId = await resolveCompanyId();
+        await platformSupabase.from('loyalty_tiers').insert({ ...tierData, company_id: companyId });
+        setSuccess('Tier created');
+        setCreating(false);
+      }
       setForm(blank);
       onReload();
     } catch (e) {
-      setError(e?.message || 'Failed to create tier');
+      setError(e?.message || 'Failed to save tier');
     } finally {
       setSaving(false);
     }
@@ -1502,9 +1526,9 @@ function TiersPanel({ tiers, onReload }) {
         )}
       </div>
 
-      {creating && (
-        <div style={{ ...S.card, border: '2px solid var(--acc)', marginBottom: 18 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)', marginBottom: 14 }}>New tier</div>
+      {(creating || editingId) && (
+        <div style={{ ...S.card, border: `2px solid ${editingId ? 'var(--blu,#3b82f6)' : 'var(--acc)'}`, marginBottom: 18 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)', marginBottom: 14 }}>{editingId ? 'Edit tier' : 'New tier'}</div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 14, marginBottom: 14 }}>
             <div>
               <label style={S.label}>Name</label>
@@ -1525,9 +1549,9 @@ function TiersPanel({ tiers, onReload }) {
           </div>
           <div style={{ display: 'flex', gap: 10 }}>
             <button onClick={save} disabled={saving} style={{ ...S.btn, ...S.btnPrim }}>
-              {saving ? 'Saving...' : 'Create tier'}
+              {saving ? 'Saving...' : editingId ? 'Save changes' : 'Create tier'}
             </button>
-            <button onClick={() => { setCreating(false); setForm(blank); }} style={{ ...S.btn, ...S.btnGhost }}>Cancel</button>
+            <button onClick={() => { setCreating(false); setEditingId(null); setForm(blank); }} style={{ ...S.btn, ...S.btnGhost }}>Cancel</button>
           </div>
         </div>
       )}
@@ -1553,18 +1577,21 @@ function TiersPanel({ tiers, onReload }) {
               Requires {t.min_points_earned || t.min_points || 0} lifetime points · {t.points_multiplier}x earning rate
             </div>
           </div>
-          <button
-            onClick={async () => {
-              if (!confirm(`Delete tier "${t.name}"?`)) return;
-              try {
-                await platformSupabase.from('loyalty_tiers').delete().eq('id', t.id);
-                onReload();
-              } catch {}
-            }}
-            style={{ ...S.btn, ...S.btnDan, padding: '4px 10px', fontSize: 11 }}
-          >
-            Delete
-          </button>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button onClick={() => startEdit(t)} style={{ ...S.btn, ...S.btnGhost, padding: '4px 10px', fontSize: 11 }}>Edit</button>
+            <button
+              onClick={async () => {
+                if (!confirm(`Delete tier "${t.name}"?`)) return;
+                try {
+                  await platformSupabase.from('loyalty_tiers').delete().eq('id', t.id);
+                  onReload();
+                } catch {}
+              }}
+              style={{ ...S.btn, ...S.btnDan, padding: '4px 10px', fontSize: 11 }}
+            >
+              Delete
+            </button>
+          </div>
         </div>
       ))}
     </div>
