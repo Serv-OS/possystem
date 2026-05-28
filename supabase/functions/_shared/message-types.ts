@@ -44,7 +44,7 @@ const TAG_PARTY_SIZE: MergeTag = { tag: 'party_size', label: 'Party Size', examp
 const TAG_CONFIRMATION_NUMBER: MergeTag = { tag: 'confirmation_number', label: 'Confirmation #', example: 'RES-4821' };
 const TAG_PAYMENT_METHOD: MergeTag = { tag: 'payment_method', label: 'Payment Method', example: 'Visa ****6411' };
 const TAG_SERVER_NAME: MergeTag = { tag: 'server_name', label: 'Server Name', example: 'Alex' };
-const TAG_ORDER_ITEMS: MergeTag = { tag: 'order_items', label: 'Order Items', example: '2x Margherita, 1x Caesar Salad, 3x House Lager' };
+const TAG_ORDER_ITEMS: MergeTag = { tag: 'order_items', label: 'Order Items', example: '2x Margherita Pizza  £24.00\n  £12.00 each\n  + Extra cheese\n1x Caesar Salad  £8.50\n1x House Lager  £5.50\n\nSubtotal: £38.00\nService charge: £4.75\n\nStandard VAT (20%): Net £31.67 — VAT £6.33' };
 const TAG_SENDER_NAME: MergeTag = { tag: 'sender_name', label: 'Sender Name', example: 'James' };
 const TAG_RECIPIENT_NAME: MergeTag = { tag: 'recipient_name', label: 'Recipient Name', example: 'Emma' };
 const TAG_RECIPIENT_EMAIL: MergeTag = { tag: 'recipient_email', label: 'Recipient Email', example: 'emma@example.com' };
@@ -211,18 +211,18 @@ We look forward to seeing you!`,
   {
     type: 'receipt',
     label: 'Digital Receipt',
-    description: 'Email receipt sent after payment',
+    description: 'VAT-compliant email receipt sent after payment. The receipt body (items, prices, VAT breakdown) is auto-generated — customise the greeting and subject line here.',
     category: 'Receipts',
     channels: ['email'],
     mergeTags: [TAG_CUSTOMER_NAME, TAG_VENUE_NAME, TAG_ORDER_NUMBER, TAG_ORDER_TOTAL, TAG_ORDER_ITEMS, TAG_DATE, TAG_PAYMENT_METHOD, TAG_SERVER_NAME],
     defaults: {
       email: {
-        subject: `Your receipt from {{venue_name}}`,
+        subject: `Your receipt from {{venue_name}} — #{{order_number}}`,
         body: `Hi {{customer_name}},
 
-Thank you for visiting {{venue_name}}.
+Thank you for visiting {{venue_name}}. Here is your receipt.
 
-Order: #{{order_number}}
+Order #{{order_number}}
 Date: {{date}}
 Served by: {{server_name}}
 
