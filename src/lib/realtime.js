@@ -129,6 +129,14 @@ export function startRealtime(store, locationId = LOCATION_ID) {
     }, ({ new: push }) => {
       if (push.snapshot) {
         store.getState().setConfigUpdate(push.snapshot);
+        // v5.5.304: Auto-apply on KDS, kiosk, and other non-POS surfaces.
+        // POS uses ConfigSyncBanner for manual apply so staff can acknowledge.
+        // KDS/kiosk have no banner — updates must apply immediately or they
+        // never see new menu items / production centre changes.
+        const mode = store.getState().appMode;
+        if (mode === 'kds' || mode === 'kiosk' || mode === 'orders' || mode === 'mpos') {
+          store.getState().applyConfigUpdate();
+        }
       }
     })
     .subscribe();
