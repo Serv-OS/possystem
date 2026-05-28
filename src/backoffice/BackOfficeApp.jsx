@@ -663,13 +663,28 @@ function PushToPOSButton() {
   );
 }
 function BOOverview({ setSection, orgCtx }) {
-  const { closedChecks, tables, devices, staff: currentStaff } = useStore();
-  // activeSessions derived from tables
-  const activeSessions = Object.fromEntries(tables.filter(t => t.session).map(t => [t.id, t.session]));
+  const { closedChecks, tables, staff: currentStaff } = useStore();
+
+  // v5.5.296: Fetch live data directly from Supabase instead of relying on the
+  // store's devices/sessions (which are only populated on POS, not back office).
+  const locId = orgCtx?.locationId || null;
+  const [liveDevices, setLiveDevices] = useState([]);
+  const [liveSessions, setLiveSessions] = useState([]);
+
+  useEffect(() => {
+    if (!locId || isMock || !supabase) return;
+    // Fetch registered devices for this location
+    supabase.from('devices').select('id, name, status, type')
+      .eq('location_id', locId)
+      .then(({ data }) => { if (data) setLiveDevices(data); });
+    // Fetch active table sessions (open orders on tables right now)
+    supabase.from('active_sessions').select('table_id, session')
+      .eq('location_id', locId)
+      .then(({ data }) => { if (data) setLiveSessions(data); });
+  }, [locId]);
 
   // Today = since midnight local time
   // v5.5.279: scope by locationId — previously showed revenue from ALL locations
-  const locId = orgCtx?.locationId || null;
   const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
   const todayChecks = closedChecks.filter(c =>
     c.closedAt && new Date(c.closedAt) >= todayStart &&
@@ -677,21 +692,22 @@ function BOOverview({ setSection, orgCtx }) {
   );
 
   // Open orders = active sessions with items (not yet paid)
-  const openOrdersValue = Object.values(activeSessions || {})
-    .filter(s => s?.items?.length > 0)
-    .reduce((sum, s) => sum + s.items.reduce((t, i) => t + (i.price || 0) * (i.qty || 1), 0), 0);
-  const openOrdersCount = Object.values(activeSessions || {}).filter(s => s?.items?.length > 0).length;
+  const activeSessions = liveSessions.filter(s => s.session?.items?.length > 0);
+  const openOrdersValue = activeSessions
+    .reduce((sum, s) => sum + s.session.items.reduce((t, i) => t + (i.price || 0) * (i.qty || 1), 0), 0);
+  const openOrdersCount = activeSessions.length;
 
   const revenue     = todayChecks.reduce((s, c) => s + c.total, 0);
   const covers      = todayChecks.reduce((s, c) => s + (c.covers || 1), 0);
-  const onlineDevs  = devices.filter(d => d.status === 'online').length;
-  const activeTbls  = tables.filter(t => (t.status === 'open' || t.status === 'occupied') && !t.parentId).length;
+  const onlineDevs  = liveDevices.filter(d => d.status === 'active').length;
+  const totalTables = tables.filter(t => !t.parentId).length;
+  const activeTbls  = liveSessions.length;
 
   const stats = [
     { label:"Revenue today",   value:`£${revenue.toFixed(2)}`, color:'var(--acc)', sub:`${todayChecks.length} closed checks` },
     { label:'Covers today',    value:covers,                    color:'var(--blu)', sub:`£${covers > 0 ? (revenue / covers).toFixed(2) : '0.00'}/head` },
-    { label:'Tables active',   value:activeTbls,                color:'var(--grn)', sub:`of ${tables.filter(t => !t.parentId).length} tables` },
-    { label:'Terminals online',value:`${onlineDevs}/${devices.length}`, color: onlineDevs === devices.length ? 'var(--grn)' : 'var(--acc)', sub:'this site' },
+    { label:'Tables active',   value:activeTbls,                color:'var(--grn)', sub:`of ${totalTables} tables` },
+    { label:'Terminals online',value:`${onlineDevs}/${liveDevices.length}`, color: onlineDevs === liveDevices.length && liveDevices.length > 0 ? 'var(--grn)' : 'var(--acc)', sub:'this site' },
   ];
 
   const quickActions = [
