@@ -569,6 +569,9 @@ function DetailPanel({ customer, loyalty, tier, stampCards = [], stampPrograms =
         <Stat label="Gift cards" value={giftCards.length} color={giftCards.length > 0 ? 'var(--grn,#4caf50)' : 'var(--t4)'}/>
       </div>
 
+      {/* Scrollable detail area */}
+      <div style={{ flex:1, overflowY:'auto' }}>
+
       {/* v5.5.223: Loyalty details (when enrolled) */}
       {loyalty && (
         <div style={{ padding:'14px 22px', borderBottom:'1px solid var(--bdr)' }}>
@@ -720,7 +723,7 @@ function DetailPanel({ customer, loyalty, tier, stampCards = [], stampPrograms =
       )}
 
       {/* Order history */}
-      <div style={{ flex:1, overflowY:'auto' }}>
+      <div>
         <div style={{ padding:'14px 22px 8px' }}>
           <div style={{ fontSize:10, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em' }}>Order history</div>
         </div>
@@ -752,6 +755,7 @@ function DetailPanel({ customer, loyalty, tier, stampCards = [], stampPrograms =
           </div>
         )}
       </div>
+      </div>{/* end scrollable area */}
 
       {/* Footer — soft-delete */}
       <div style={{ padding:'12px 22px', borderTop:'1px solid var(--bdr)', display:'flex', justifyContent:'flex-end' }}>
