@@ -150,70 +150,47 @@ Deno.serve(async (req) => {
   }
   if (card.status === 'redeemed') return json({ error: 'Card has zero balance' }, 400);
 
-  // ── Balance check ─────────────────────────────────────────────────────
-  if (amountMinor > card.balance_minor) {
+  // ── Atomic debit (v5.5.314) ───────────────────────────────────────────
+  // Idempotency check + balance check + decrement + ledger insert all happen
+  // inside ONE transaction (redeem_gift_card_atomic). The conditional UPDATE's
+  // row lock serializes concurrent redemptions of the same card, so two
+  // terminals can no longer both pass a stale balance check and overspend it.
+  const { data: rpcRes, error: rpcErr } = await platformAdmin.rpc('redeem_gift_card_atomic', {
+    p_card_id: card.id,
+    p_company_id: companyId,
+    p_amount_minor: amountMinor,
+    p_idempotency_key: idempotency_key,
+    p_location_id: location_id || null,
+    p_order_id: order_id || null,
+    p_channel: channel,
+    p_staff_id: staff_id || null,
+  });
+
+  if (rpcErr) {
+    console.error('[gift-redeem] atomic redeem failed:', rpcErr.message);
+    return json({ error: `Redeem failed: ${rpcErr.message}` }, 500);
+  }
+
+  const result = rpcRes || {};
+  if (result.status === 'insufficient') {
+    return json({ error: 'Insufficient balance', balance: card.balance_minor, requested: amountMinor }, 400);
+  }
+  if (result.status === 'already_applied') {
     return json({
-      error: 'Insufficient balance',
-      balance: card.balance_minor,
-      requested: amountMinor,
-    }, 400);
-  }
-
-  // ── Debit ─────────────────────────────────────────────────────────────
-  const newBalance = card.balance_minor - amountMinor;
-  const newStatus = newBalance === 0 ? 'redeemed' : 'active';
-
-  const { error: txErr } = await platformAdmin
-    .from('gift_card_transactions')
-    .insert({
       card_id: card.id,
-      company_id: companyId,
-      type: 'redeem',
-      amount_minor: -amountMinor,
-      balance_after_minor: newBalance,
-      location_id: location_id || null,
-      order_id: order_id || null,
-      channel,
-      idempotency_key,
-      staff_id: staff_id || null,
+      applied: result.applied ?? amountMinor,
+      remaining_balance: result.balance_after_minor,
+      status: 'already_applied',
+      currency: config.currency,
+      idempotent: true,
     });
-
-  if (txErr) {
-    if (txErr.code === '23505') {
-      const { data: raceTx } = await platformAdmin
-        .from('gift_card_transactions')
-        .select('*')
-        .eq('card_id', card.id)
-        .eq('idempotency_key', idempotency_key)
-        .maybeSingle();
-      if (raceTx) {
-        return json({
-          card_id: card.id,
-          applied: Math.abs(raceTx.amount_minor),
-          remaining_balance: raceTx.balance_after_minor,
-          status: 'already_applied',
-          currency: config.currency,
-          idempotent: true,
-        });
-      }
-    }
-    return json({ error: `Ledger write failed: ${txErr.message}` }, 500);
   }
-
-  const { error: updErr } = await platformAdmin
-    .from('gift_cards')
-    .update({ balance_minor: newBalance, status: newStatus })
-    .eq('id', card.id);
-
-  if (updErr) {
-    console.error('[gift-redeem] Balance update failed:', updErr.message);
-  }
-
+  // status === 'ok'
   return json({
     card_id: card.id,
-    applied: amountMinor,
-    remaining_balance: newBalance,
-    status: newStatus,
+    applied: result.applied ?? amountMinor,
+    remaining_balance: result.balance_after_minor,
+    status: result.new_status || 'active',
     currency: config.currency,
   });
 });
