@@ -1,6 +1,210 @@
 import { useState, useMemo, useRef, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
-import { getActiveLocationSync } from '../lib/supabase';
+import { getActiveLocationSync, ensureAuthToken } from '../lib/supabase';
+import {
+  resolvePlatformLocationId,
+  getAssignedNetworkReader,
+} from '../lib/networkReader';
+
+// ─── v5.5.291: Card terminal for split portions ─────────────────────────────
+// Sends the portion amount to the Stripe Terminal reader — same REST flow as
+// CheckoutModal's CardTerminal but scoped to a single split portion.
+function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
+  const [state, setState] = useState('resolving'); // resolving | starting | collecting | success | error | cancelling | simulated
+  const [statusMsg, setStatusMsg] = useState('Connecting to reader…');
+  const [errorMsg, setErrorMsg] = useState(null);
+  const [readerLabel, setReaderLabel] = useState('');
+  const pollAbortRef = useRef(false);
+  const piIdRef = useRef(null);
+  const readerIdRef = useRef(null);
+  const platformLocRef = useRef(null);
+  const startedRef = useRef(false);
+
+  // Resolve reader on mount, then start payment
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const opsLocationId = getActiveLocationSync();
+        if (!opsLocationId) { setState('error'); setErrorMsg('Location not resolved'); return; }
+        const platformId = await resolvePlatformLocationId(opsLocationId);
+        if (cancelled) return;
+        platformLocRef.current = platformId;
+        const assigned = await getAssignedNetworkReader();
+        if (cancelled) return;
+        if (!assigned) {
+          // No reader — fall back to simulated approval
+          setState('simulated');
+          return;
+        }
+        setReaderLabel(assigned.label || assigned.stripe_reader_id);
+        readerIdRef.current = assigned.stripe_reader_id;
+        if (!startedRef.current) {
+          startedRef.current = true;
+          runPayment(assigned, platformId);
+        }
+      } catch (e) {
+        if (!cancelled) { setState('error'); setErrorMsg(e?.message || 'Reader setup failed'); }
+      }
+    })();
+    return () => {
+      cancelled = true;
+      pollAbortRef.current = true;
+      // Best-effort cancel on unmount
+      if (piIdRef.current && readerIdRef.current && platformLocRef.current) {
+        cancelReader().catch(() => {});
+      }
+    };
+  }, []);
+
+  const runPayment = async (reader, platformId) => {
+    setState('starting');
+    setStatusMsg('Pushing to reader…');
+    setErrorMsg(null);
+    try {
+      const opsDeviceId = (() => {
+        try { const raw = localStorage.getItem('rpos-device'); return raw ? (JSON.parse(raw)?.id || '') : ''; }
+        catch { return ''; }
+      })();
+      if (!opsDeviceId) throw new Error('POS device id missing — pair this device first.');
+
+      const token = await ensureAuthToken();
+      if (!token) throw new Error('Could not obtain auth token');
+
+      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-process-payment-on-reader`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          pos_device_id: opsDeviceId,
+          amount_minor: Math.round(amount * 100),
+          currency: 'gbp',
+          line_items: [{ description: portionLabel || 'Split portion', amount: Math.round(amount * 100), quantity: 1 }],
+          skip_tipping: true, // tips handled at table level, not per split
+        }),
+      });
+      const j = await res.json();
+      console.log('[SplitCardTerminal] process-payment response:', j);
+      if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
+
+      piIdRef.current = j.payment_intent_id;
+      setState('collecting');
+      setStatusMsg('Tap or insert card on reader');
+      pollAbortRef.current = false;
+      pollPayment(j.payment_intent_id, j.reader_id, platformId);
+    } catch (e) {
+      setState('error');
+      setErrorMsg(e?.message || 'Payment failed');
+    }
+  };
+
+  const pollPayment = async (piId, readerId, locId) => {
+    const start = Date.now();
+    const TIMEOUT = 5 * 60 * 1000;
+    while (!pollAbortRef.current && Date.now() - start < TIMEOUT) {
+      await new Promise(r => setTimeout(r, 1500));
+      if (pollAbortRef.current) return;
+      try {
+        const token = await ensureAuthToken();
+        const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-poll-reader-action`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+          body: JSON.stringify({ payment_intent_id: piId, reader_id: readerId, location_id: locId }),
+        });
+        const j = await res.json();
+        if (!res.ok) { console.warn('[SplitCardTerminal] poll error:', j.error); continue; }
+        if (j.reader_action?.status === 'in_progress') setStatusMsg('Customer is paying…');
+        if (j.is_terminal_state) {
+          if (j.is_success) {
+            setState('success');
+            setStatusMsg('Payment approved');
+            setTimeout(() => onComplete('card'), 800);
+          } else {
+            setState('error');
+            setErrorMsg(j.last_payment_error || j.reader_action?.failure_message || 'Payment failed');
+          }
+          return;
+        }
+      } catch (e) { console.warn('[SplitCardTerminal] poll failed:', e?.message); }
+    }
+    if (!pollAbortRef.current) { setState('error'); setErrorMsg('Timed out — 5 minutes'); }
+  };
+
+  const cancelReader = async () => {
+    pollAbortRef.current = true;
+    setState('cancelling');
+    try {
+      const token = await ensureAuthToken();
+      await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-cancel-reader-action`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({ payment_intent_id: piIdRef.current, reader_id: readerIdRef.current, location_id: platformLocRef.current }),
+      });
+    } catch (e) { console.warn('[SplitCardTerminal] cancel failed:', e?.message); }
+    onBack();
+  };
+
+  // ─── Render ─────────────────────────────────────────────────
+  if (state === 'simulated') {
+    // No reader assigned — simulated approval (same as POS fallback)
+    return (
+      <div style={{ textAlign: 'center', padding: '16px 0' }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 8 }}>No card reader assigned</div>
+        <div style={{ fontSize: 32, fontWeight: 800, color: 'var(--t1)', fontFamily: 'DM Mono,monospace', marginBottom: 16 }}>£{amount.toFixed(2)}</div>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
+          <button className="btn btn-ghost" style={{ height: 42 }} onClick={onBack}>← Back</button>
+          <button className="btn btn-grn" style={{ height: 42, padding: '0 24px' }} onClick={() => onComplete('card')}>Simulate approved</button>
+        </div>
+      </div>
+    );
+  }
+
+  if (state === 'success') {
+    return (
+      <div style={{ textAlign: 'center', padding: '20px 0' }}>
+        <div style={{ fontSize: 48, marginBottom: 8 }}>✅</div>
+        <div style={{ fontSize: 20, fontWeight: 800, color: 'var(--grn)' }}>£{amount.toFixed(2)} paid</div>
+        <div style={{ fontSize: 13, color: 'var(--t3)', marginTop: 4 }}>{portionLabel}</div>
+      </div>
+    );
+  }
+
+  if (state === 'error') {
+    return (
+      <div style={{ textAlign: 'center', padding: '16px 0' }}>
+        <div style={{ fontSize: 48, marginBottom: 8 }}>⚠️</div>
+        <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--red)', marginBottom: 6 }}>Payment failed</div>
+        <div style={{ fontSize: 13, color: 'var(--t2)', marginBottom: 16, maxWidth: 340, margin: '0 auto 16px' }}>{errorMsg}</div>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
+          <button className="btn btn-ghost" style={{ height: 42 }} onClick={onBack}>← Back</button>
+          <button className="btn btn-grn" style={{ height: 42, padding: '0 22px' }}
+            onClick={() => { startedRef.current = false; pollAbortRef.current = false; setState('resolving'); setErrorMsg(null); }}>
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // resolving | starting | collecting | cancelling
+  return (
+    <div style={{ textAlign: 'center', padding: '16px 0' }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 8 }}>
+        {portionLabel} — Card payment
+      </div>
+      <div style={{ padding: '16px 14px', borderRadius: 14, background: 'var(--bg3)', border: '1px solid var(--bdr)', marginBottom: 14 }}>
+        <div style={{ fontSize: 36, marginBottom: 6 }}>📲</div>
+        <div style={{ fontSize: 24, fontWeight: 800, color: 'var(--t1)', marginBottom: 4, fontFamily: 'DM Mono,monospace' }}>
+          £{amount.toFixed(2)}
+        </div>
+        {readerLabel && <div style={{ fontSize: 12, color: 'var(--t3)', marginBottom: 4 }}>on {readerLabel}</div>}
+        <div style={{ fontSize: 13, color: 'var(--t3)' }}>{statusMsg}</div>
+      </div>
+      <button className="btn btn-ghost" style={{ width: '100%', height: 42 }} disabled={state === 'cancelling'} onClick={cancelReader}>
+        {state === 'cancelling' ? 'Cancelling…' : '✕ Cancel payment'}
+      </button>
+    </div>
+  );
+}
 
 // ─── Cash tender for a split portion ─────────────────────────────────────────
 function SplitCashTender({ amount, onComplete, onBack }) {
@@ -203,7 +407,7 @@ function SplitGiftCardTender({ amount, onComplete, onBack, portionId }) {
 
 // ─── Portion tender screen ────────────────────────────────────────────────────
 function PortionTender({ portion, portionNum, total, canTakeCash = true, onComplete, onBack }) {
-  const [screen, setScreen] = useState('method'); // method | cash | gift_card
+  const [screen, setScreen] = useState('method'); // method | cash | gift_card | card
 
   return (
     <div>
@@ -214,7 +418,7 @@ function PortionTender({ portion, portionNum, total, canTakeCash = true, onCompl
             <div style={{ fontSize:36, fontWeight:800, color:'var(--acc)', fontFamily:'DM Mono,monospace' }}>£{portion.total.toFixed(2)}</div>
           </div>
           <div style={{ display:'flex', gap:10, marginBottom:10 }}>
-            <button onClick={()=>onComplete('card')} style={{ flex:1, padding:'18px 12px', borderRadius:14, cursor:'pointer', fontFamily:'inherit', background:'linear-gradient(135deg,#1a2744,#0f1a35)', border:'1px solid rgba(100,140,255,.3)', display:'flex', flexDirection:'column', alignItems:'center', gap:6 }}>
+            <button onClick={()=>setScreen('card')} style={{ flex:1, padding:'18px 12px', borderRadius:14, cursor:'pointer', fontFamily:'inherit', background:'linear-gradient(135deg,#1a2744,#0f1a35)', border:'1px solid rgba(100,140,255,.3)', display:'flex', flexDirection:'column', alignItems:'center', gap:6 }}>
               <span style={{ fontSize:28 }}>💳</span>
               <span style={{ fontSize:14, fontWeight:800, color:'#e8f0ff' }}>Card</span>
               <span style={{ fontSize:10, color:'rgba(200,210,255,.5)' }}>Tap or chip</span>
@@ -249,6 +453,14 @@ function PortionTender({ portion, portionNum, total, canTakeCash = true, onCompl
           amount={portion.total}
           portionId={portion.id}
           onComplete={(tendered, change) => onComplete('gift_card', tendered, change)}
+          onBack={() => setScreen('method')}
+        />
+      )}
+      {screen === 'card' && (
+        <SplitCardTerminal
+          amount={portion.total}
+          portionLabel={`Portion ${portionNum} — ${portion.label}`}
+          onComplete={(method) => onComplete(method)}
           onBack={() => setScreen('method')}
         />
       )}

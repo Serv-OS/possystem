@@ -76,6 +76,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.291', date: '28 May 2026', label: 'Split check card payments via Stripe Terminal',
+    changes: [
+      'Card payments on split portions now route through Stripe Terminal reader instead of immediately cashing off',
+      'New SplitCardTerminal component with full reader flow: push → poll → cancel, plus simulated fallback',
+      'Split check card button shows reader status, tap/insert prompt, cancel option, and retry on failure',
+    ],
+  },
+  {
     version: '5.5.290', date: '27 May 2026', label: 'Gift card partial payment on kiosk',
     changes: [
       'FIX — INSUFFICIENT GIFT CARD BALANCE: When a manually entered gift card doesn\'t have enough balance for the full order, the kiosk now automatically applies whatever balance IS available and lets the customer pay the remainder by card. Previously showed "Insufficient balance" error.',
