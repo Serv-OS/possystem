@@ -1015,7 +1015,7 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
   const hasTax = taxBreakdown?.breakdown?.length > 0;
   const hasExclusive = taxBreakdown?.hasExclusiveTax;
 
-  const complete = (method, tip=tipAmt, tendered=null) => {
+  const complete = (method, tip=tipAmt, tendered=null, stripePaymentIntentId=null) => {
     const hasGift = !!giftApplied;
     const hasLoyalty = !!loyaltyApplied;
     let finalMethod = method;
@@ -1030,6 +1030,7 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
       printReceipt,
       giftCard: giftApplied || undefined,
       loyaltyRedemption: loyaltyApplied || undefined,
+      stripePaymentIntentId,
     });
   };
 
@@ -1363,7 +1364,7 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
                 const receivedMinor = pi?.amountReceived ?? null;
                 const receivedGbp   = receivedMinor != null ? receivedMinor / 100 : null;
                 const realTip = receivedGbp != null ? Math.max(0, +(receivedGbp - total).toFixed(2)) : 0;
-                complete('card', realTip);
+                complete('card', realTip, null, pi?.paymentIntentId || null);
               }}
               onBack={()=>setScreen('review')}
             />

@@ -3652,6 +3652,7 @@ export const useStore = create((set, get) => ({
       taxAmount:  taxBreakdown?.totalTax != null ? taxBreakdown.totalTax : null,  // v4.6.19
       method:     paymentInfo.method || 'card',
       giftCard:   paymentInfo.giftCard || null,                  // v5.5.217: gift card reversal on refund
+      stripePaymentIntentId: paymentInfo.stripePaymentIntentId || null,  // v5.5.301: for card refunds
       closedAt:   Date.now(),
       status:     'paid',
       refunds:    [],
@@ -3753,6 +3754,7 @@ export const useStore = create((set, get) => ({
       taxAmount: taxBreakdown?.totalTax != null ? taxBreakdown.totalTax : null, // v4.6.19
       method: paymentInfo.method || 'card',
       giftCard: paymentInfo.giftCard || null,                                        // v5.5.217
+      stripePaymentIntentId: paymentInfo.stripePaymentIntentId || null,              // v5.5.301
       drawerId: get().myDrawer?.()?.id || null,                                   // v4.6.37
       shiftId:  get().currentShift?.id || null,                                   // v4.6.37
       closedAt: Date.now(),
@@ -3895,6 +3897,41 @@ export const useStore = create((set, get) => ({
           }
         } catch (e) {
           console.warn('[refundCheck] loyalty reversal failed:', e?.message || e);
+        }
+      })();
+    }
+    // v5.5.301: Stripe card refund — return funds to original payment method.
+    // Only fire when the original payment was by card AND we have a PI ID.
+    if (check?.stripePaymentIntentId && check.method?.includes('card')) {
+      (async () => {
+        try {
+          const token = await ensureAuthToken();
+          if (!token) { console.warn('[refundCheck] stripe refund skipped — no auth token'); return; }
+          const refundAmountMinor = Math.round((amount || 0) * 100);
+          if (refundAmountMinor <= 0) { console.warn('[refundCheck] stripe refund skipped — zero amount'); return; }
+          const res = await fetch(
+            `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-refund`,
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+              body: JSON.stringify({
+                payment_intent_id: check.stripePaymentIntentId,
+                amount_minor: refundAmountMinor,
+                location_id: getActiveLocationSync(),
+                reason: 'requested_by_customer',
+                closed_check_id: check.ref || check.id,
+                staff_id: manager?.id || null,
+              }),
+            }
+          );
+          const j = await res.json().catch(() => ({}));
+          if (res.ok) {
+            console.info('[refundCheck] stripe refund created:', j.refund_id, 'amount:', j.amount);
+          } else {
+            console.warn('[refundCheck] stripe refund HTTP error:', res.status, j.error || '');
+          }
+        } catch (e) {
+          console.warn('[refundCheck] stripe refund failed:', e?.message || e);
         }
       })();
     }
