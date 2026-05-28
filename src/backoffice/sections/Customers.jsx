@@ -531,9 +531,9 @@ function DetailPanel({ customer, loyalty, tier, stampCards = [], stampPrograms =
   };
 
   return (
-    <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden' }}>
+    <div style={{ flex:1, overflowY:'auto' }}>
       {/* Header */}
-      <div style={{ padding:'18px 22px 14px', borderBottom:'1px solid var(--bdr)', display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:12 }}>
+      <div style={{ padding:'18px 22px 14px', borderBottom:'1px solid var(--bdr)', display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:12, position:'sticky', top:0, background:'var(--bg1)', zIndex:2 }}>
         <div style={{ minWidth:0, flex:1 }}>
           <div style={{ fontSize:18, fontWeight:800, color:'var(--t1)', overflow:'hidden', textOverflow:'ellipsis' }}>{customer.name}</div>
           <div style={{ fontSize:12, color:'var(--t3)', marginTop:4 }}>
@@ -568,9 +568,6 @@ function DetailPanel({ customer, loyalty, tier, stampCards = [], stampPrograms =
         <Stat label="Points" value={loyalty ? (loyalty.points_balance || 0) : '—'} color={loyalty ? 'var(--acc)' : 'var(--t4)'}/>
         <Stat label="Gift cards" value={giftCards.length} color={giftCards.length > 0 ? 'var(--grn,#4caf50)' : 'var(--t4)'}/>
       </div>
-
-      {/* Scrollable detail area */}
-      <div style={{ flex:1, overflowY:'auto' }}>
 
       {/* v5.5.223: Loyalty details (when enrolled) */}
       {loyalty && (
@@ -755,7 +752,6 @@ function DetailPanel({ customer, loyalty, tier, stampCards = [], stampPrograms =
           </div>
         )}
       </div>
-      </div>{/* end scrollable area */}
 
       {/* Footer — soft-delete */}
       <div style={{ padding:'12px 22px', borderTop:'1px solid var(--bdr)', display:'flex', justifyContent:'flex-end' }}>
