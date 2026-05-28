@@ -1,11 +1,49 @@
 // src/lib/sendReceipt.js — client-side helper that calls the send-receipt
 // edge function. Builds a full VAT-compliant HTML receipt from a closed check
 // with line items, service charge, discounts, and tax breakdown by rate.
+//
+// v5.5.299: Wired to the Message Templates system. The Digital Receipt template
+// controls the subject line and greeting text; the receipt body (items, totals,
+// VAT breakdown) is always auto-generated to ensure legal compliance.
 
 import { supabase, ensureAuthToken } from './supabase';
 import { loadLocationBranding } from './receiptBranding';
 
 const money = (n) => `£${(Number(n) || 0).toFixed(2)}`;
+const FUNC_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/message-templates`;
+
+/**
+ * Resolve the receipt template for a location. Returns { subject, body, enabled }.
+ * Uses the message-templates edge function 'list' action to get the saved or
+ * default template, then substitutes merge tags client-side.
+ */
+async function resolveReceiptTemplate(locationId, mergeData, token) {
+  try {
+    const res = await fetch(FUNC_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ action: 'list', location_id: locationId }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const receiptType = (data.types || []).find(t => t.type === 'receipt');
+    const tpl = receiptType?.templates?.email;
+    if (!tpl) return null;
+
+    // Substitute merge tags in the template text
+    const sub = (str) => str?.replace(/\{\{(\w+)\}\}/g, (_, key) => mergeData[key] ?? `{{${key}}}`);
+    return {
+      subject: tpl.subject ? sub(tpl.subject) : null,
+      body: tpl.body_text ? sub(tpl.body_text) : null,
+      enabled: tpl.enabled !== false,
+    };
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Send an email receipt for a closed check. Returns { ok, id?, error? }.
@@ -24,12 +62,43 @@ export async function sendEmailReceipt({ to, locationId, check, locationLabel, b
     try { branding = await loadLocationBranding(locationId); } catch {}
   }
 
-  const html = buildReceiptHtml({ check, locationLabel, branding });
-  const text = buildReceiptText({ check, locationLabel, branding });
   const businessName = branding?.header?.business_name || locationLabel || 'Restaurant';
+
+  // Get auth token
+  let token;
+  try { token = await ensureAuthToken(); } catch { token = null; }
+
+  // Date/time for merge data
+  const dt = check.closedAt ? new Date(typeof check.closedAt === 'number' ? check.closedAt : check.closedAt) : new Date();
+  const dateStr = dt.toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' });
+  const timeStr = dt.toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit' });
+  const items = (check.items || []).filter(i => !i.voided);
+
+  // Build merge data for template resolution
+  const mergeData = {
+    customer_name: typeof check.customer === 'object' ? (check.customer?.name || 'Customer') : 'Customer',
+    venue_name: businessName,
+    order_number: check.ref || '',
+    order_total: money(check.total || 0),
+    order_items: items.map(i => `${i.qty||1}x ${i.name}`).join(', '),
+    date: `${dateStr} ${timeStr}`,
+    payment_method: check.method || 'Card',
+    server_name: check.server || '',
+  };
+
+  // Resolve the template (subject + greeting text from Message Templates)
+  const template = await resolveReceiptTemplate(locationId, mergeData, token);
+
+  // Use template subject if available, otherwise build default
+  const subject = template?.subject || `Your receipt from ${businessName} — ${check.ref || ''}`.trim();
+
+  // Use template body as greeting text above the receipt
+  const greetingText = template?.body || null;
+
+  const html = buildReceiptHtml({ check, locationLabel, branding, greetingText });
+  const text = buildReceiptText({ check, locationLabel, branding });
+
   try {
-    let token;
-    try { token = await ensureAuthToken(); } catch { token = null; }
     const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-receipt`, {
       method:'POST',
       headers:{
@@ -40,7 +109,7 @@ export async function sendEmailReceipt({ to, locationId, check, locationLabel, b
         location_id: locationId,
         check_id: check.id,
         to,
-        subject: `Your receipt from ${businessName} — ${check.ref || ''}`.trim(),
+        subject,
         html, text,
       }),
     });
@@ -54,7 +123,8 @@ export async function sendEmailReceipt({ to, locationId, check, locationLabel, b
 
 // ── Receipt rendering ────────────────────────────────────────────────────────
 // Full VAT tax-compliant receipt matching printed receipt format.
-function buildReceiptHtml({ check, locationLabel, branding }) {
+// The greetingText (from the message template) is shown above the receipt.
+function buildReceiptHtml({ check, locationLabel, branding, greetingText }) {
   const h = branding?.header || {};
   const f = branding?.footer || {};
 
@@ -91,6 +161,13 @@ function buildReceiptHtml({ check, locationLabel, branding }) {
     dividerDash: 'border-top:1px dashed #e2e8f0;',
   };
 
+  // Convert template greeting text to HTML paragraphs (if provided)
+  const greetingHtml = greetingText
+    ? greetingText.split('\n\n').map(para =>
+        `<p style="margin:0 0 12px;font-size:13px;color:#334155;line-height:1.6;">${escapeHtml(para).replace(/\n/g, '<br>')}</p>`
+      ).join('')
+    : '';
+
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Receipt — ${escapeHtml(businessName)}</title></head>
 <body style="margin:0;padding:24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Helvetica,Arial,sans-serif;background:#f5f5f5;color:#0f172a;font-size:13px;line-height:1.5;">
@@ -104,6 +181,9 @@ function buildReceiptHtml({ check, locationLabel, branding }) {
       ${phone ? `<div style="font-size:12px;${S.muted}margin-top:2px;">${escapeHtml(phone)}</div>` : ''}
       ${taxId ? `<div style="font-size:11px;${S.dim}margin-top:4px;${S.mono}">${escapeHtml(taxId)}</div>` : ''}
     </div>
+
+    <!-- Greeting text from message template -->
+    ${greetingHtml ? `<div style="${S.divider}padding:14px 0 2px;">${greetingHtml}</div>` : ''}
 
     <!-- Order info -->
     <div style="${S.divider}padding:12px 0;font-size:12px;${S.muted}">
