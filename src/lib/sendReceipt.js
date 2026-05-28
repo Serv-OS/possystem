@@ -1,8 +1,9 @@
 // src/lib/sendReceipt.js — client-side helper that calls the send-receipt
-// edge function. Builds the receipt HTML from a check + items + totals so we
-// have a single rendering source of truth across MPOS / desktop / kiosk.
+// edge function. Builds a full VAT-compliant HTML receipt from a closed check
+// with line items, service charge, discounts, and tax breakdown by rate.
 
 import { supabase, ensureAuthToken } from './supabase';
+import { loadLocationBranding } from './receiptBranding';
 
 const money = (n) => `£${(Number(n) || 0).toFixed(2)}`;
 
@@ -12,12 +13,20 @@ const money = (n) => `£${(Number(n) || 0).toFixed(2)}`;
  *   - to: customer email
  *   - locationId: ops location id
  *   - check: closed_checks record (or compatible)
- *   - locationLabel: display name for the location
+ *   - locationLabel: display name for the location (fallback)
+ *   - branding: optional receipt_branding object (loaded automatically if missing)
  */
-export async function sendEmailReceipt({ to, locationId, check, locationLabel }) {
+export async function sendEmailReceipt({ to, locationId, check, locationLabel, branding }) {
   if (!to || !locationId || !check) return { ok:false, error:'missing args' };
-  const html = buildReceiptHtml({ check, locationLabel });
-  const text = buildReceiptText({ check, locationLabel });
+
+  // Load receipt branding if not provided
+  if (!branding && locationId) {
+    try { branding = await loadLocationBranding(locationId); } catch {}
+  }
+
+  const html = buildReceiptHtml({ check, locationLabel, branding });
+  const text = buildReceiptText({ check, locationLabel, branding });
+  const businessName = branding?.header?.business_name || locationLabel || 'Restaurant';
   try {
     let token;
     try { token = await ensureAuthToken(); } catch { token = null; }
@@ -31,7 +40,7 @@ export async function sendEmailReceipt({ to, locationId, check, locationLabel })
         location_id: locationId,
         check_id: check.id,
         to,
-        subject: `Receipt from ${locationLabel || 'us'} · ${check.ref || ''}`.trim(),
+        subject: `Your receipt from ${businessName} — ${check.ref || ''}`.trim(),
         html, text,
       }),
     });
@@ -44,75 +53,237 @@ export async function sendEmailReceipt({ to, locationId, check, locationLabel })
 }
 
 // ── Receipt rendering ────────────────────────────────────────────────────────
-// Same data shape as the print path so the email and the paper docket match.
-function buildReceiptHtml({ check, locationLabel }) {
+// Full VAT tax-compliant receipt matching printed receipt format.
+function buildReceiptHtml({ check, locationLabel, branding }) {
+  const h = branding?.header || {};
+  const f = branding?.footer || {};
+
+  const businessName = h.business_name || locationLabel || 'Restaurant';
+  const addressLines = (h.address_lines || []).filter(Boolean);
+  const phone = h.phone || '';
+  const taxId = h.tax_id || '';
+  const footerMsg = f.message || '';
+
+  // Date / time
+  const dt = check.closedAt ? new Date(typeof check.closedAt === 'number' ? check.closedAt : check.closedAt) : new Date();
+  const dateStr = dt.toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' });
+  const timeStr = dt.toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit' });
+
+  // Items
   const items = (check.items || []).filter(i => !i.voided);
-  const subtotal = items.reduce((s, i) => s + (i.price || 0) * (i.qty || 0), 0);
-  const tip = Number(check.tip) || 0;
-  const tax = Number(check.taxAmount) || 0;
-  const total = Number(check.total) || subtotal + tip + tax;
+
+  // Totals
+  const subtotal   = items.reduce((s, i) => s + (i.price || 0) * (i.qty || 1), 0);
+  const service    = Number(check.service) || 0;
+  const tip        = Number(check.tip) || 0;
+  const discount   = Number(check.discountAmount) || 0;
+  const taxAmount  = Number(check.taxAmount) || 0;
+  const total      = Number(check.total) || 0;
+  const taxBk      = check.taxBreakdown;
+
+  // CSS styles
+  const S = {
+    row: 'display:flex;justify-content:space-between;gap:12px;',
+    mono: "font-family:'JetBrains Mono','SF Mono',Menlo,Consolas,monospace;",
+    muted: 'color:#64748b;',
+    dim: 'color:#94a3b8;',
+    divider: 'border-top:1px solid #e2e8f0;',
+    dividerDash: 'border-top:1px dashed #e2e8f0;',
+  };
+
   return `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Receipt</title></head>
-<body style="margin:0;padding:24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Helvetica,Arial,sans-serif;background:#f5f5f5;color:#0f172a;">
-  <div style="max-width:480px;margin:0 auto;background:#fff;border-radius:14px;padding:24px 28px;box-shadow:0 1px 4px rgba(0,0,0,.06);">
-    <div style="text-align:center;margin-bottom:18px;">
-      <div style="font-size:13px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.06em;">${escapeHtml(locationLabel || '')}</div>
-      <div style="font-size:18px;font-weight:800;margin-top:6px;">Thank you</div>
-      ${check.ref ? `<div style="font-size:12px;color:#64748b;font-family:'JetBrains Mono',monospace;margin-top:4px;">Ref ${escapeHtml(check.ref)}</div>` : ''}
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Receipt — ${escapeHtml(businessName)}</title></head>
+<body style="margin:0;padding:24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Helvetica,Arial,sans-serif;background:#f5f5f5;color:#0f172a;font-size:13px;line-height:1.5;">
+  <div style="max-width:480px;margin:0 auto;background:#fff;border-radius:14px;padding:28px 28px 24px;box-shadow:0 1px 4px rgba(0,0,0,.06);">
+
+    <!-- Header: business details -->
+    <div style="text-align:center;margin-bottom:16px;">
+      ${h.logo_url ? `<img src="${escapeHtml(h.logo_url)}" alt="${escapeHtml(businessName)}" style="max-width:140px;max-height:80px;margin-bottom:10px;" />` : ''}
+      <div style="font-size:18px;font-weight:800;letter-spacing:-.01em;">${escapeHtml(businessName)}</div>
+      ${addressLines.length ? `<div style="font-size:12px;${S.muted}margin-top:4px;">${addressLines.map(l => escapeHtml(l)).join('<br/>')}</div>` : ''}
+      ${phone ? `<div style="font-size:12px;${S.muted}margin-top:2px;">${escapeHtml(phone)}</div>` : ''}
+      ${taxId ? `<div style="font-size:11px;${S.dim}margin-top:4px;${S.mono}">${escapeHtml(taxId)}</div>` : ''}
     </div>
 
-    <div style="border-top:1px solid #e2e8f0;padding-top:14px;margin-bottom:14px;">
-      ${items.map(it => `
-        <div style="display:flex;justify-content:space-between;gap:12px;margin-bottom:8px;">
-          <div style="flex:1;font-size:13px;">
-            <strong>${it.qty} × ${escapeHtml(it.name || '')}</strong>
-            ${(it.mods || []).length ? `<div style="font-size:11px;color:#64748b;margin-top:2px;">+ ${(it.mods || []).map(m => escapeHtml(m?.name || m?.label || m)).filter(Boolean).join(' · ')}</div>` : ''}
-            ${it.notes ? `<div style="font-size:11px;color:#94a3b8;margin-top:2px;">${escapeHtml(it.notes)}</div>` : ''}
-          </div>
-          <div style="font-size:13px;font-family:'JetBrains Mono',monospace;text-align:right;">${money((it.price || 0) * (it.qty || 0))}</div>
-        </div>
-      `).join('')}
+    <!-- Order info -->
+    <div style="${S.divider}padding:12px 0;font-size:12px;${S.muted}">
+      <div style="${S.row}"><span>Date</span><span>${dateStr} ${timeStr}</span></div>
+      ${check.ref ? `<div style="${S.row}margin-top:2px;"><span>Order</span><span style="${S.mono}font-weight:700;color:#0f172a;">#${escapeHtml(check.ref)}</span></div>` : ''}
+      ${check.server ? `<div style="${S.row}margin-top:2px;"><span>Server</span><span>${escapeHtml(check.server)}</span></div>` : ''}
+      ${check.tableLabel ? `<div style="${S.row}margin-top:2px;"><span>Table</span><span>${escapeHtml(check.tableLabel)}</span></div>` : ''}
+      ${check.covers > 1 ? `<div style="${S.row}margin-top:2px;"><span>Covers</span><span>${check.covers}</span></div>` : ''}
     </div>
 
-    <div style="border-top:1px solid #e2e8f0;padding-top:12px;font-size:13px;">
-      <div style="display:flex;justify-content:space-between;margin-bottom:4px;"><span>Subtotal</span><span style="font-family:'JetBrains Mono',monospace;">${money(subtotal)}</span></div>
-      ${tax ? `<div style="display:flex;justify-content:space-between;margin-bottom:4px;color:#64748b;"><span>Tax</span><span style="font-family:'JetBrains Mono',monospace;">${money(tax)}</span></div>` : ''}
-      ${tip ? `<div style="display:flex;justify-content:space-between;margin-bottom:4px;color:#64748b;"><span>Tip</span><span style="font-family:'JetBrains Mono',monospace;">${money(tip)}</span></div>` : ''}
-      <div style="display:flex;justify-content:space-between;margin-top:8px;padding-top:8px;border-top:1px solid #e2e8f0;font-weight:800;font-size:16px;">
-        <span>Total</span><span style="font-family:'JetBrains Mono',monospace;">${money(total)}</span>
+    <!-- Line items -->
+    <div style="${S.divider}padding-top:14px;margin-bottom:4px;">
+      <div style="${S.row}margin-bottom:8px;font-size:10px;font-weight:800;${S.muted}text-transform:uppercase;letter-spacing:.06em;">
+        <span>Item</span><span>Amount</span>
       </div>
-      ${check.method ? `<div style="margin-top:6px;font-size:11px;color:#94a3b8;text-align:right;">Paid by ${escapeHtml(check.method)}</div>` : ''}
+      ${items.map(it => {
+        const lineTotal = (it.price || 0) * (it.qty || 1);
+        return `
+        <div style="margin-bottom:10px;">
+          <div style="${S.row}">
+            <div style="flex:1;">
+              <div style="font-weight:600;">${it.qty > 1 ? `${it.qty} × ` : ''}${escapeHtml(it.name || '')}</div>
+              ${it.qty > 1 ? `<div style="font-size:11px;${S.dim}margin-top:1px;">${money(it.price)} each</div>` : ''}
+              ${(it.mods || []).length ? `<div style="font-size:11px;${S.muted}margin-top:2px;">+ ${(it.mods || []).map(m => escapeHtml(m?.name || m?.label || m)).filter(Boolean).join(' · ')}</div>` : ''}
+              ${it.notes ? `<div style="font-size:11px;${S.dim}margin-top:2px;font-style:italic;">${escapeHtml(it.notes)}</div>` : ''}
+            </div>
+            <div style="${S.mono}font-weight:600;white-space:nowrap;">${money(lineTotal)}</div>
+          </div>
+        </div>`;
+      }).join('')}
     </div>
 
-    <div style="margin-top:24px;padding-top:14px;border-top:1px solid #e2e8f0;text-align:center;font-size:11px;color:#94a3b8;">
-      Powered by Serv OS
+    <!-- Totals -->
+    <div style="${S.divider}padding-top:12px;font-size:13px;">
+      <div style="${S.row}margin-bottom:4px;"><span>Subtotal</span><span style="${S.mono}">${money(subtotal)}</span></div>
+      ${service > 0 ? `<div style="${S.row}margin-bottom:4px;${S.muted}"><span>Service charge</span><span style="${S.mono}">${money(service)}</span></div>` : ''}
+      ${discount > 0 ? `<div style="${S.row}margin-bottom:4px;color:#dc2626;"><span>Discount</span><span style="${S.mono}">-${money(discount)}</span></div>` : ''}
+      ${tip > 0 ? `<div style="${S.row}margin-bottom:4px;${S.muted}"><span>Gratuity</span><span style="${S.mono}">${money(tip)}</span></div>` : ''}
+
+      <!-- Total -->
+      <div style="${S.divider}margin-top:8px;padding-top:10px;${S.row}font-weight:800;font-size:18px;">
+        <span>Total</span><span style="${S.mono}">${money(total)}</span>
+      </div>
+
+      <!-- VAT breakdown -->
+      ${taxBk?.breakdown?.length ? `
+      <div style="${S.dividerDash}margin-top:10px;padding-top:8px;font-size:11px;${S.muted}">
+        <div style="${S.row}margin-bottom:4px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;font-size:10px;">
+          <span>Tax summary</span>
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:4px;font-weight:700;font-size:10px;text-transform:uppercase;letter-spacing:.04em;">
+          <span style="flex:1;">Rate</span>
+          <span style="width:70px;text-align:right;">Net</span>
+          <span style="width:70px;text-align:right;">VAT</span>
+          <span style="width:70px;text-align:right;">Gross</span>
+        </div>
+        ${taxBk.breakdown.map(br => {
+          const pct = (br.rate.rate * 100).toFixed(1).replace('.0','');
+          return `
+          <div style="display:flex;gap:8px;margin-bottom:2px;font-size:12px;">
+            <span style="flex:1;">${escapeHtml(br.rate.name)} (${pct}%)</span>
+            <span style="width:70px;text-align:right;${S.mono}">${money(br.net)}</span>
+            <span style="width:70px;text-align:right;${S.mono}">${money(br.tax)}</span>
+            <span style="width:70px;text-align:right;${S.mono}">${money(br.gross)}</span>
+          </div>`;
+        }).join('')}
+        <div style="display:flex;gap:8px;margin-top:4px;padding-top:4px;${S.dividerDash}font-size:12px;font-weight:700;">
+          <span style="flex:1;">Total</span>
+          <span style="width:70px;text-align:right;${S.mono}">${money(taxBk.subtotal)}</span>
+          <span style="width:70px;text-align:right;${S.mono}">${money(taxBk.totalTax)}</span>
+          <span style="width:70px;text-align:right;${S.mono}">${money(taxBk.total)}</span>
+        </div>
+      </div>` : taxAmount ? `
+      <div style="${S.dividerDash}margin-top:10px;padding-top:8px;font-size:11px;${S.muted}">
+        <div style="${S.row}"><span>Includes VAT of</span><span style="${S.mono}">${money(taxAmount)}</span></div>
+      </div>` : ''}
+
+      <!-- Payment -->
+      ${check.method ? `
+      <div style="${S.divider}margin-top:10px;padding-top:10px;font-size:12px;">
+        <div style="${S.row}"><span style="${S.muted}">Payment method</span><span style="font-weight:700;text-transform:capitalize;">${escapeHtml(check.method)}</span></div>
+        <div style="${S.row}margin-top:2px;"><span style="${S.muted}">Status</span><span style="font-weight:700;color:#16a34a;">Paid</span></div>
+      </div>` : ''}
+    </div>
+
+    <!-- Footer -->
+    <div style="margin-top:20px;padding-top:14px;${S.divider}text-align:center;">
+      ${footerMsg ? `<div style="font-size:12px;${S.muted}margin-bottom:8px;">${escapeHtml(footerMsg)}</div>` : ''}
+      <div style="font-size:10px;${S.dim}">
+        ${dateStr} ${timeStr}${check.ref ? ` · Ref ${escapeHtml(check.ref)}` : ''}
+      </div>
+      <div style="font-size:10px;${S.dim}margin-top:8px;">Powered by Serv OS</div>
     </div>
   </div>
 </body></html>`;
 }
 
-function buildReceiptText({ check, locationLabel }) {
+function buildReceiptText({ check, locationLabel, branding }) {
+  const h = branding?.header || {};
+  const f = branding?.footer || {};
+
+  const businessName = h.business_name || locationLabel || 'Restaurant';
+  const addressLines = (h.address_lines || []).filter(Boolean);
+  const phone = h.phone || '';
+  const taxId = h.tax_id || '';
+  const footerMsg = f.message || '';
+
+  const dt = check.closedAt ? new Date(typeof check.closedAt === 'number' ? check.closedAt : check.closedAt) : new Date();
+  const dateStr = dt.toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' });
+  const timeStr = dt.toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit' });
+
   const items = (check.items || []).filter(i => !i.voided);
-  const subtotal = items.reduce((s, i) => s + (i.price || 0) * (i.qty || 0), 0);
-  const tip = Number(check.tip) || 0;
-  const tax = Number(check.taxAmount) || 0;
-  const total = Number(check.total) || subtotal + tip + tax;
+  const subtotal = items.reduce((s, i) => s + (i.price || 0) * (i.qty || 1), 0);
+  const service  = Number(check.service) || 0;
+  const tip      = Number(check.tip) || 0;
+  const discount = Number(check.discountAmount) || 0;
+  const taxAmount = Number(check.taxAmount) || 0;
+  const total    = Number(check.total) || 0;
+  const taxBk    = check.taxBreakdown;
+
+  const pad = (l, r, w = 44) => {
+    const gap = Math.max(1, w - l.length - r.length);
+    return l + ' '.repeat(gap) + r;
+  };
+
   const lines = [];
-  lines.push(`${locationLabel || 'Receipt'}`);
-  if (check.ref) lines.push(`Ref ${check.ref}`);
+  lines.push(businessName);
+  addressLines.forEach(l => lines.push(l));
+  if (phone) lines.push(phone);
+  if (taxId) lines.push(taxId);
   lines.push('');
+  lines.push('='.repeat(44));
+  lines.push(pad('Date:', `${dateStr} ${timeStr}`));
+  if (check.ref) lines.push(pad('Order:', `#${check.ref}`));
+  if (check.server) lines.push(pad('Server:', check.server));
+  if (check.tableLabel) lines.push(pad('Table:', check.tableLabel));
+  if (check.covers > 1) lines.push(pad('Covers:', String(check.covers)));
+  lines.push('-'.repeat(44));
+  lines.push('');
+
   items.forEach(it => {
-    lines.push(`${it.qty} x ${it.name}  ${money((it.price || 0) * (it.qty || 0))}`);
-    if ((it.mods || []).length) lines.push(`   + ${(it.mods || []).map(m => m?.name || m?.label || m).filter(Boolean).join(' · ')}`);
-    if (it.notes) lines.push(`   ${it.notes}`);
+    const lineTotal = (it.price || 0) * (it.qty || 1);
+    const nameStr = it.qty > 1 ? `${it.qty} x ${it.name}` : it.name;
+    lines.push(pad(nameStr, money(lineTotal)));
+    if (it.qty > 1) lines.push(`     ${money(it.price)} each`);
+    if ((it.mods || []).length) lines.push(`  + ${(it.mods || []).map(m => m?.name || m?.label || m).filter(Boolean).join(' · ')}`);
+    if (it.notes) lines.push(`  ${it.notes}`);
   });
+
   lines.push('');
-  lines.push(`Subtotal  ${money(subtotal)}`);
-  if (tax) lines.push(`Tax       ${money(tax)}`);
-  if (tip) lines.push(`Tip       ${money(tip)}`);
-  lines.push(`Total     ${money(total)}`);
-  if (check.method) lines.push(`Paid by ${check.method}`);
+  lines.push('-'.repeat(44));
+  lines.push(pad('Subtotal', money(subtotal)));
+  if (service > 0) lines.push(pad('Service charge', money(service)));
+  if (discount > 0) lines.push(pad('Discount', `-${money(discount)}`));
+  if (tip > 0) lines.push(pad('Gratuity', money(tip)));
+  lines.push('='.repeat(44));
+  lines.push(pad('TOTAL', money(total)));
+  lines.push('='.repeat(44));
+
+  if (taxBk?.breakdown?.length) {
+    lines.push('');
+    lines.push('TAX SUMMARY');
+    lines.push('-'.repeat(44));
+    taxBk.breakdown.forEach(br => {
+      const pct = (br.rate.rate * 100).toFixed(1).replace('.0', '');
+      lines.push(`${br.rate.name} (${pct}%)`);
+      lines.push(`  Net: ${money(br.net)}  VAT: ${money(br.tax)}  Gross: ${money(br.gross)}`);
+    });
+    lines.push('-'.repeat(44));
+    lines.push(`Total Net: ${money(taxBk.subtotal)}  VAT: ${money(taxBk.totalTax)}  Gross: ${money(taxBk.total)}`);
+  } else if (taxAmount) {
+    lines.push('');
+    lines.push(pad('Includes VAT of', money(taxAmount)));
+  }
+
   lines.push('');
+  if (check.method) lines.push(pad('Paid by', check.method));
+  lines.push('');
+  if (footerMsg) lines.push(footerMsg);
+  lines.push(`${dateStr} ${timeStr}${check.ref ? ` · Ref ${check.ref}` : ''}`);
   lines.push('Powered by Serv OS');
   return lines.join('\n');
 }
