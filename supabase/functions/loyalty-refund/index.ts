@@ -106,7 +106,7 @@ Deno.serve(async (req) => {
   // ── Get membership ─────────────────────────────────────────────────────
   const { data: membership } = await platformAdmin
     .from('customer_loyalty')
-    .select('id, points_balance, points_earned_total, points_redeemed_total')
+    .select('id, points_balance, points_earned_total, points_redeemed_total, visit_count, lifetime_spend_minor, tier_id')
     .eq('customer_id', customer_id)
     .eq('company_id', companyId)
     .maybeSingle();
@@ -147,6 +147,70 @@ Deno.serve(async (req) => {
       .from('customer_loyalty')
       .update(updates)
       .eq('id', membership.id);
+  }
+
+  // ── v5.5.315 (H4): release reward inventory for reversed redemptions ─────
+  // loyalty-redeem increments loyalty_rewards.total_redeemed (which gates
+  // limited-availability rewards). A refund must give that stock back, else a
+  // limited reward reports "sold out" earlier than it should after refunds.
+  try {
+    for (const tx of originalTxs) {
+      if (tx.type === 'redeem' && tx.reward_id) {
+        const { data: rw } = await platformAdmin
+          .from('loyalty_rewards')
+          .select('id, total_redeemed')
+          .eq('id', tx.reward_id)
+          .maybeSingle();
+        if (rw) {
+          await platformAdmin
+            .from('loyalty_rewards')
+            .update({ total_redeemed: Math.max(0, (rw.total_redeemed || 0) - 1) })
+            .eq('id', rw.id);
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[loyalty-refund] reward total_redeemed reversal failed (non-fatal):', e);
+  }
+
+  // ── v5.5.315 (H2): re-evaluate tier after the clawback ──────────────────
+  // The refund reduced points_earned_total; the customer may no longer qualify
+  // for their tier. Demote (or adjust) to the highest tier they still qualify
+  // for, so they don't keep an over-privileged earning multiplier. Mirrors the
+  // deterministic ranking in loyalty-earn.
+  try {
+    const newEarnedTotal = Math.max(0, (membership.points_earned_total || 0) + Math.min(0, effectiveReversal));
+    const stats = {
+      points_earned_total: newEarnedTotal,
+      visit_count: membership.visit_count || 0,
+      lifetime_spend_minor: membership.lifetime_spend_minor || 0,
+    };
+    const { data: allTiers } = await platformAdmin
+      .from('loyalty_tiers')
+      .select('id, min_points_earned, min_visits, min_spend_minor')
+      .eq('company_id', companyId);
+    if (allTiers && allTiers.length > 0) {
+      const qualifiedTier = allTiers
+        .filter(t =>
+          stats.points_earned_total >= (t.min_points_earned || 0) &&
+          stats.visit_count >= (t.min_visits || 0) &&
+          stats.lifetime_spend_minor >= (t.min_spend_minor || 0)
+        )
+        .sort((a, b) =>
+          (b.min_points_earned || 0) - (a.min_points_earned || 0) ||
+          (b.min_spend_minor || 0) - (a.min_spend_minor || 0) ||
+          (b.min_visits || 0) - (a.min_visits || 0)
+        )[0] || null;
+      const newTierId = qualifiedTier?.id || null;
+      if (newTierId !== membership.tier_id) {
+        await platformAdmin
+          .from('customer_loyalty')
+          .update({ tier_id: newTierId, tier_qualified_at: newTierId ? new Date().toISOString() : null })
+          .eq('id', membership.id);
+      }
+    }
+  } catch (e) {
+    console.warn('[loyalty-refund] tier re-evaluation failed (non-fatal):', e);
   }
 
   // ── Write refund transaction ───────────────────────────────────────────

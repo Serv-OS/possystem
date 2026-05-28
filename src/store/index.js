@@ -2392,6 +2392,21 @@ export const useStore = create((set, get) => ({
         }
       })();
 
+      // v5.5.315: link any reward redemption to this check so a future refund
+      // restores the spent points. The redeem ran in CheckoutModal BEFORE the
+      // check existed, so its loyalty_transactions row has closed_check_id=NULL
+      // — loyalty-refund (which reverses by closed_check_id) would never find it.
+      // Back-patch it to the same unique check id the earn uses. Best-effort: if
+      // it no-ops, behaviour is unchanged from before (redeem just won't reverse).
+      const redeemKey = orderRecord.loyaltyRedemption?.idempotency_key;
+      if (redeemKey && supabase) {
+        supabase.from('loyalty_transactions')
+          .update({ closed_check_id: orderRecord.id })
+          .eq('idempotency_key', redeemKey)
+          .is('closed_check_id', null)
+          .then(({ error }) => { if (error) console.warn('[attributeOrderToCustomer] redeem link failed:', error.message); });
+      }
+
       // v5.5.218: Loyalty points earn — fire-and-forget after customer is resolved.
       // Same async IIFE pattern as gift card reversal: local mutation already happened
       // so UX stays snappy. If the edge function is unreachable the points aren't
@@ -3664,6 +3679,7 @@ export const useStore = create((set, get) => ({
       method:     paymentInfo.method || 'card',
       giftCard:   paymentInfo.giftCard || null,                  // v5.5.217: gift card reversal on refund
       stripePaymentIntentId: paymentInfo.stripePaymentIntentId || null,  // v5.5.301: for card refunds
+      loyaltyRedemption: paymentInfo.loyaltyRedemption || null,  // v5.5.315: link redeem→check for refund restore
       closedAt:   Date.now(),
       status:     'paid',
       refunds:    [],
@@ -3766,6 +3782,7 @@ export const useStore = create((set, get) => ({
       method: paymentInfo.method || 'card',
       giftCard: paymentInfo.giftCard || null,                                        // v5.5.217
       stripePaymentIntentId: paymentInfo.stripePaymentIntentId || null,              // v5.5.301
+      loyaltyRedemption: paymentInfo.loyaltyRedemption || null,                      // v5.5.315
       drawerId: get().myDrawer?.()?.id || null,                                   // v4.6.37
       shiftId:  get().currentShift?.id || null,                                   // v4.6.37
       closedAt: Date.now(),
