@@ -39,13 +39,24 @@ Deno.serve(async (req) => {
 
     if (createErr) return new Response(JSON.stringify({ error: createErr.message }), { status: 400, headers: corsHeaders });
 
-    // Update their profile with org/location
+    // Update their profile with org/location. v5.5.305: also write email —
+    // the handle_new_user trigger now copies it, but set it explicitly here
+    // too so the profile is fully populated regardless of trigger state.
     await supabaseAdmin.from('user_profiles').update({
+      email,
       org_id: orgId,
       location_id: locationId || null,
       role: role || 'owner',
       full_name: fullName || email,
     }).eq('id', newUser.user.id);
+
+    // v5.5.305: also create a user_locations row so the user appears in the
+    // location's access list and resolves via the junction table on login.
+    if (locationId) {
+      await supabaseAdmin.from('user_locations')
+        .upsert({ user_id: newUser.user.id, location_id: locationId, role: role || 'owner' },
+                { onConflict: 'user_id,location_id' });
+    }
 
     return new Response(JSON.stringify({ success: true, userId: newUser.user.id, email }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
