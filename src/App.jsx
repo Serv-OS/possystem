@@ -76,6 +76,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.292', date: '28 May 2026', label: 'PIN-only login + unique PINs per location',
+    changes: [
+      'POS/MPOS login is now PIN-only — just enter your 4-digit PIN, no need to select your name first',
+      'System auto-identifies which staff member owns the PIN and logs them in',
+      'Staff without PINs can still log in via a collapsible fallback link',
+      'Back Office enforces PIN uniqueness per location — duplicate PINs are blocked with a clear error',
+    ],
+  },
+  {
     version: '5.5.291', date: '28 May 2026', label: 'Split check card payments via Stripe Terminal',
     changes: [
       'Card payments on split portions now route through Stripe Terminal reader instead of immediately cashing off',

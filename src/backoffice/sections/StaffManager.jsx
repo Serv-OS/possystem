@@ -121,7 +121,18 @@ export default function StaffManager() {
   const [showAdd, setShowAdd] = useState(false);
   const [showPin, setShowPin] = useState(null);
   const [pinInput, setPinInput] = useState('');
+  const [pinError, setPinError] = useState(''); // v5.5.292: duplicate PIN warning
   const [newForm, setNewForm] = useState({ name:'', role:'Server', color:'#3b82f6', pin:'', permissions:[] });
+
+  // v5.5.292: Check if a PIN is already used by another active staff member at this location
+  const isPinTaken = (pin, excludeId) => {
+    if (!pin || pin.length !== 4) return false;
+    return staffMembers.some(s => s.active !== false && s.id !== excludeId && s.pin === pin);
+  };
+  const getPinOwner = (pin, excludeId) => {
+    if (!pin || pin.length !== 4) return null;
+    return staffMembers.find(s => s.active !== false && s.id !== excludeId && s.pin === pin);
+  };
 
   const sel = staffMembers.find(s => s.id === selId);
 
@@ -158,6 +169,11 @@ export default function StaffManager() {
 
   const addMember = () => {
     if (!newForm.name.trim()) return;
+    // v5.5.292: Block duplicate PINs
+    if (newForm.pin && newForm.pin.length === 4 && isPinTaken(newForm.pin, null)) {
+      showToast(`PIN already used by ${getPinOwner(newForm.pin, null)?.name || 'another staff member'}`, 'error');
+      return;
+    }
     const perms = newForm.permissions.length ? newForm.permissions : ROLE_DEFAULTS[newForm.role] || [];
     const member = { ...newForm, name:newForm.name.trim(), permissions:perms, initials:initials(newForm.name) };
     addStaffMember(member);
@@ -520,7 +536,10 @@ export default function StaffManager() {
               </div>
               <div>
                 <label style={{ fontSize:10, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:5, display:'block' }}>PIN (4 digits)</label>
-                <input style={inp} type="password" maxLength={4} inputMode="numeric" value={newForm.pin} onChange={e=>setNewForm(f=>({...f,pin:e.target.value.replace(/\D/g,'').slice(0,4)}))} placeholder="0000"/>
+                <input style={{...inp, borderColor:newForm.pin.length===4&&isPinTaken(newForm.pin,null)?'var(--red)':undefined}} type="password" maxLength={4} inputMode="numeric" value={newForm.pin} onChange={e=>setNewForm(f=>({...f,pin:e.target.value.replace(/\D/g,'').slice(0,4)}))} placeholder="0000"/>
+                {newForm.pin.length===4 && isPinTaken(newForm.pin, null) && (
+                  <div style={{ fontSize:10, color:'var(--red)', fontWeight:600, marginTop:3 }}>PIN already used by {getPinOwner(newForm.pin, null)?.name || 'another staff member'}</div>
+                )}
               </div>
               <div>
                 <label style={{ fontSize:10, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:5, display:'block' }}>Colour</label>
@@ -533,7 +552,7 @@ export default function StaffManager() {
             </div>
             <div style={{ display:'flex', gap:8, marginTop:16 }}>
               <button onClick={()=>setShowAdd(false)} style={{ flex:1, padding:'9px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr2)', color:'var(--t2)', fontSize:13 }}>Cancel</button>
-              <button onClick={addMember} disabled={!newForm.name.trim()} style={{ flex:2, padding:'9px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:14, fontWeight:800, opacity:newForm.name.trim()?1:.4 }}>Add staff member</button>
+              <button onClick={addMember} disabled={!newForm.name.trim()||(newForm.pin.length===4&&isPinTaken(newForm.pin,null))} style={{ flex:2, padding:'9px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:14, fontWeight:800, opacity:(newForm.name.trim()&&!(newForm.pin.length===4&&isPinTaken(newForm.pin,null)))?1:.4 }}>Add staff member</button>
             </div>
           </div>
         </div>
@@ -583,26 +602,32 @@ export default function StaffManager() {
         <div className="modal-back" onClick={e=>e.target===e.currentTarget&&setShowPin(null)}>
           <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr2)', borderRadius:18, width:'100%', maxWidth:320, padding:22, boxShadow:'var(--sh3)' }}>
             <div style={{ fontSize:15, fontWeight:800, color:'var(--t1)', marginBottom:6 }}>Set PIN</div>
-            <div style={{ fontSize:11, color:'var(--t3)', marginBottom:14 }}>Enter a 4-digit PIN for {staffMembers.find(s=>s.id===showPin)?.name}.</div>
+            <div style={{ fontSize:11, color:'var(--t3)', marginBottom:14 }}>Enter a 4-digit PIN for {staffMembers.find(s=>s.id===showPin)?.name}. Each staff member must have a unique PIN.</div>
             <div style={{ display:'flex', gap:8, justifyContent:'center', marginBottom:16 }}>
               {Array(4).fill(null).map((_,i)=>(
-                <div key={i} style={{ width:44, height:54, borderRadius:10, border:`2px solid ${i<pinInput.length?'var(--acc)':'var(--bdr2)'}`, background:i<pinInput.length?'var(--acc-d)':'var(--bg3)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:22, fontWeight:800, color:'var(--acc)' }}>
+                <div key={i} style={{ width:44, height:54, borderRadius:10, border:`2px solid ${i<pinInput.length?(isPinTaken(pinInput,showPin)?'var(--red)':'var(--acc)'):'var(--bdr2)'}`, background:i<pinInput.length?(isPinTaken(pinInput,showPin)?'var(--red-d)':'var(--acc-d)'):'var(--bg3)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:22, fontWeight:800, color:isPinTaken(pinInput,showPin)?'var(--red)':'var(--acc)' }}>
                   {i<pinInput.length?'●':''}
                 </div>
               ))}
             </div>
+            {/* Duplicate PIN warning */}
+            {pinInput.length===4 && isPinTaken(pinInput,showPin) && (
+              <div style={{ padding:'6px 12px', background:'var(--red-d)', border:'1px solid var(--red-b)', borderRadius:8, marginBottom:10, fontSize:11, color:'var(--red)', fontWeight:600, textAlign:'center' }}>
+                This PIN is already used by {getPinOwner(pinInput,showPin)?.name || 'another staff member'}
+              </div>
+            )}
             {/* Numpad */}
             <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:8, marginBottom:12 }}>
               {[1,2,3,4,5,6,7,8,9,'',0,'⌫'].map((k,i)=>(
                 <button key={i} onClick={()=>{
-                  if (k==='⌫') setPinInput(p=>p.slice(0,-1));
+                  if (k==='⌫') { setPinInput(p=>p.slice(0,-1)); setPinError(''); }
                   else if (k!=='' && pinInput.length<4) setPinInput(p=>p+k);
                 }} style={{ height:48, borderRadius:11, cursor:k===''?'default':'pointer', fontFamily:'inherit', background:k===''?'transparent':'var(--bg3)', border:k===''?'none':'1px solid var(--bdr2)', color:k==='⌫'?'var(--red)':'var(--t1)', fontSize:18, fontWeight:700, opacity:k===''?.3:1 }}>{k}</button>
               ))}
             </div>
             <div style={{ display:'flex', gap:8 }}>
-              <button onClick={()=>{setShowPin(null);setPinInput('');}} style={{ flex:1, padding:'9px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr2)', color:'var(--t2)', fontSize:13 }}>Cancel</button>
-              <button onClick={()=>{ if(pinInput.length===4){ save(showPin,{pin:pinInput}); showToast('PIN updated','success'); setShowPin(null); setPinInput(''); } }} disabled={pinInput.length!==4} style={{ flex:2, padding:'9px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:14, fontWeight:800, opacity:pinInput.length===4?1:.4 }}>Save PIN</button>
+              <button onClick={()=>{setShowPin(null);setPinInput('');setPinError('');}} style={{ flex:1, padding:'9px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr2)', color:'var(--t2)', fontSize:13 }}>Cancel</button>
+              <button onClick={()=>{ if(pinInput.length===4 && !isPinTaken(pinInput,showPin)){ save(showPin,{pin:pinInput}); showToast('PIN updated','success'); setShowPin(null); setPinInput(''); setPinError(''); } }} disabled={pinInput.length!==4||isPinTaken(pinInput,showPin)} style={{ flex:2, padding:'9px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:isPinTaken(pinInput,showPin)?'var(--red)':'var(--acc)', border:'none', color:'#0b0c10', fontSize:14, fontWeight:800, opacity:(pinInput.length===4&&!isPinTaken(pinInput,showPin))?1:.4 }}>Save PIN</button>
             </div>
           </div>
         </div>
