@@ -1470,7 +1470,7 @@ function TiersPanel({ tiers, onReload }) {
         name: form.name,
         color: form.color,
         icon: form.icon,
-        min_points: Number(form.min_points),
+        min_points_earned: Number(form.min_points),
         points_multiplier: Number(form.points_multiplier) || 1.0,
         sort_order: Number(form.sort_order) || 0,
       });
@@ -1550,7 +1550,7 @@ function TiersPanel({ tiers, onReload }) {
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 14, fontWeight: 700, color: t.color || 'var(--t1)' }}>{t.name}</div>
             <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 2 }}>
-              Requires {t.min_points} lifetime points · {t.points_multiplier}x earning rate
+              Requires {t.min_points_earned || t.min_points || 0} lifetime points · {t.points_multiplier}x earning rate
             </div>
           </div>
           <button

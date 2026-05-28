@@ -292,12 +292,60 @@ Deno.serve(async (req) => {
     console.warn('[loyalty-earn] stamp card processing failed (non-fatal):', e);
   }
 
+  // ── Tier evaluation — auto-upgrade to highest qualifying tier ───────────
+  let newTierName = tierName;
+  try {
+    const updatedStats = {
+      points_earned_total: (membership.points_earned_total || 0) + pointsEarned,
+      visit_count: (membership.visit_count || 0) + 1,
+      lifetime_spend_minor: (membership.lifetime_spend_minor || 0) + qualifyingMinor,
+    };
+
+    const { data: allTiers } = await platformAdmin
+      .from('loyalty_tiers')
+      .select('id, name, min_points_earned, min_visits, min_spend_minor, points_multiplier, sort_order')
+      .eq('company_id', companyId)
+      .order('sort_order', { ascending: false }); // highest tier first
+
+    if (allTiers && allTiers.length > 0) {
+      // Find the highest tier the customer qualifies for
+      const qualifiedTier = allTiers.find(t =>
+        updatedStats.points_earned_total >= (t.min_points_earned || 0) &&
+        updatedStats.visit_count >= (t.min_visits || 0) &&
+        updatedStats.lifetime_spend_minor >= (t.min_spend_minor || 0)
+      );
+
+      const newTierId = qualifiedTier?.id || null;
+
+      // Upgrade or assign tier if it changed
+      if (newTierId !== membership.tier_id) {
+        await platformAdmin
+          .from('customer_loyalty')
+          .update({
+            tier_id: newTierId,
+            tier_qualified_at: newTierId ? new Date().toISOString() : null,
+          })
+          .eq('id', membership.id);
+
+        if (qualifiedTier) {
+          newTierName = qualifiedTier.name;
+          console.log(`[loyalty-earn] Tier ${membership.tier_id ? 'upgraded' : 'assigned'}: ${qualifiedTier.name} for customer ${customer_id}`);
+        } else {
+          newTierName = null;
+          console.log(`[loyalty-earn] Tier removed for customer ${customer_id} — no longer qualifies`);
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[loyalty-earn] tier evaluation failed (non-fatal):', e);
+  }
+
   return json({
     status: 'ok',
     points_earned: pointsEarned,
     balance: newBalance,
     member_code: membership.member_code,
-    tier: tierName,
+    tier: newTierName,
     is_new_member: isNew,
     qualifying_amount_minor: qualifyingMinor,
     multiplier: tierMultiplier,
