@@ -52,7 +52,10 @@ export default function CompanyAdminApp() {
 
   useEffect(() => {
     const auth = JSON.parse(localStorage.getItem('rpos-auth') || 'null');
-    if (auth?.user && auth?.expires_at && Date.now() < auth.expires_at * 1000) {
+    // v5.5.306: ignore anonymous sessions (created by ensureAuthToken for
+    // payments / edge functions). They share the 'rpos-auth' storage key but
+    // are NOT a real admin login — treat them as logged-out so BOLogin shows.
+    if (auth?.user && !auth.user.is_anonymous && auth.user.email && auth?.expires_at && Date.now() < auth.expires_at * 1000) {
       setAuthUser(auth.user);
       // Verify role from DB — don't trust localStorage alone
       sbFetch(`user_profiles?id=eq.${auth.user.id}&select=role`)

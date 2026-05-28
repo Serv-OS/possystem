@@ -78,8 +78,14 @@ export default function BackOfficeApp() {
   // Check Supabase session on mount
   useEffect(() => {
     if (isMock) return;
+    // v5.5.306: the Supabase client shares storageKey 'rpos-auth' with the
+    // anonymous sign-in used by ensureAuthToken() (payments / edge functions /
+    // POS device token). An anonymous session is NOT a back-office login — if
+    // we treat it as one, the BO renders with no login prompt and no location
+    // ("blank back office"). Reject anonymous users so BOLogin shows instead.
+    const realUser = (u) => (u && !u.is_anonymous && u.email ? u : null);
     supabase.auth.getSession().then(({ data }) => {
-      setAuthUser(data?.session?.user || null);
+      setAuthUser(realUser(data?.session?.user));
       setAuthChecked(true);
     });
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
@@ -91,7 +97,7 @@ export default function BackOfficeApp() {
         localStorage.removeItem('rpos-bo-location');
         clearResolvedLocationId();
       }
-      setAuthUser(session?.user || null);
+      setAuthUser(realUser(session?.user));
     });
     return () => subscription.unsubscribe();
   }, []);
