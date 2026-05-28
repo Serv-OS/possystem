@@ -655,46 +655,43 @@ export const fetchAccessibleLocations = async () => {
   const userId = userData?.user?.id;
   if (!userId) return { data: [], error: new Error('No authenticated user') };
 
-  // Try the junction table first (v4.6.22+)
+  // v5.5.308: UNION the junction rows (user_locations) with the user's primary
+  // location (user_profiles.location_id). Previously this returned ONLY the
+  // junction rows when non-empty — so a user whose primary location wasn't in
+  // user_locations would have the BO header show their primary while the
+  // location switcher listed a different set (the junction). De-duped by id.
+  const byId = new Map();
+
   const junction = await supabase
     .from('user_locations')
     .select('role, location_id, locations(id, name, timezone)')
     .eq('user_id', userId);
-
-  if (!junction.error && junction.data?.length) {
-    return {
-      data: junction.data
-        .filter(r => r.locations)
-        .map(r => ({
-          id: r.locations.id,
-          name: r.locations.name,
-          timezone: r.locations.timezone,
-          role: r.role,
-        })),
-      error: null,
-    };
+  if (!junction.error) {
+    for (const r of (junction.data || [])) {
+      if (r.locations) byId.set(r.locations.id, {
+        id: r.locations.id, name: r.locations.name, timezone: r.locations.timezone, role: r.role,
+      });
+    }
   }
 
-  // Fallback for pre-v4.6.22 schemas OR users not yet seeded: read single
-  // location from user_profiles.
+  // Always include the user's primary location from user_profiles, even if it
+  // isn't in the junction table (legacy single-location setups, or a primary
+  // pointed at a location with no matching user_locations row).
   const profile = await supabase
     .from('user_profiles')
     .select('location_id, locations(id, name, timezone)')
     .eq('id', userId)
     .single();
-
-  if (profile.data?.locations) {
-    return {
-      data: [{
-        id: profile.data.locations.id,
-        name: profile.data.locations.name,
-        timezone: profile.data.locations.timezone,
-        role: 'manager',
-      }],
-      error: null,
-    };
+  if (profile.data?.locations && !byId.has(profile.data.locations.id)) {
+    byId.set(profile.data.locations.id, {
+      id: profile.data.locations.id,
+      name: profile.data.locations.name,
+      timezone: profile.data.locations.timezone,
+      role: 'manager',
+    });
   }
-  return { data: [], error: null };
+
+  return { data: Array.from(byId.values()), error: null };
 };
 
 // Fetch closed checks across multiple locations in parallel. Each row is tagged

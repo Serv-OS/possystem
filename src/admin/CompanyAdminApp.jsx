@@ -303,9 +303,23 @@ function AdminPanel({ authUser }) {
   };
 
   const toggleUserLocation = async (userId, locationId, hasAccess) => {
+    const u = allUsers.find(u => u.id === userId) || users.find(u => u.id === userId);
     if (hasAccess) {
       const { error } = await sbFetch(`user_locations?user_id=eq.${userId}&location_id=eq.${locationId}`, { method:'DELETE', prefer:'' });
       if (error) return err('Failed to remove: ' + error.message);
+      // v5.5.308: a user can "have access" to a location via TWO sources:
+      //   (1) a user_locations junction row, and
+      //   (2) user_profiles.location_id (their primary).
+      // The delete above only removes (1). If this location is also their
+      // primary, the user still shows as having access and the untick appears
+      // to do nothing. So when removing access to the primary, reassign the
+      // primary to a remaining accessible location (or null if none left).
+      if (u?.location_id === locationId) {
+        const remaining = (u.user_locations || [])
+          .map(ul => ul.location_id)
+          .filter(id => id && id !== locationId);
+        await sbFetch(`user_profiles?id=eq.${userId}`, { method:'PATCH', body:{ location_id: remaining[0] || null }, prefer:'' });
+      }
     } else {
       const { error } = await sbFetch('user_locations', { method:'POST', body:{ user_id:userId, location_id:locationId } });
       if (error) return err('Failed to add: ' + error.message);
@@ -313,7 +327,6 @@ function AdminPanel({ authUser }) {
       // If they already have a primary location (most users do), don't change
       // it — that would silently relocate them away from their original org.
       // Cross-org access is correctly handled by the user_locations row alone.
-      const u = allUsers.find(u => u.id === userId) || users.find(u => u.id === userId);
       if (!u?.location_id) await sbFetch(`user_profiles?id=eq.${userId}`, { method:'PATCH', body:{ location_id:locationId }, prefer:'' });
     }
     // Refresh both lists so the picker reflects the change immediately.
