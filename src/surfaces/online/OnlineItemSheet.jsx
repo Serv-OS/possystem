@@ -46,6 +46,35 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
     || (effectiveItem.parent_id && eightySixIds.includes(effectiveItem.parent_id))
     || (item.id !== effectiveItem.id && eightySixIds.includes(item.id));
 
+  // v5.5.313: resolve a modifier option to its menu item id (by explicit link
+  // or name-match against sold-alone sub-items) — ported from the kiosk. Needed
+  // so an 86'd item can't be ordered online via a modifier group, and so the
+  // modifier's stock actually decrements (decrementOnlineStock keys on itemId).
+  const subitemByName = useMemo(() => {
+    const map = new Map();
+    for (const it of (allItems || [])) {
+      if (!it || it.archived) continue;
+      if (it.type !== 'subitem') continue;
+      const soldAlone = it.soldAlone ?? it.sold_alone;
+      if (!soldAlone) continue;
+      for (const raw of [it.name, it.menuName, it.menu_name, it.receiptName, it.receipt_name, it.kitchenName, it.kitchen_name]) {
+        if (!raw) continue;
+        const key = String(raw).trim().toLowerCase();
+        if (key && !map.has(key)) map.set(key, it);
+      }
+    }
+    return map;
+  }, [allItems]);
+  const resolveOptItemId = (opt) => {
+    if (opt?.itemId || opt?.item_id) return opt.itemId || opt.item_id;
+    const key = String(opt?.name || opt?.label || '').trim().toLowerCase();
+    return (key ? subitemByName.get(key)?.id : null) || null;
+  };
+  const optIs86 = (opt) => {
+    const id = resolveOptItemId(opt);
+    return !!id && eightySixIds.includes(id);
+  };
+
   // assigned_modifier_groups + assigned_instruction_groups can be EITHER
   // an array of bare ids ['mgd-123', ...] OR an array of objects with
   // overrides like [{groupId: 'mgd-123', min: 0, max: 1}]. The operator
@@ -186,8 +215,28 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
     return errs;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modGroups, selections, qtyPicks]);
+  // v5.5.313: block Add when any SELECTED modifier option resolves to an 86'd
+  // item (prevents ordering a sold-out item through a modifier group online).
+  const has86Selection = useMemo(() => {
+    const sel = [];
+    Object.values(selections).forEach(val => {
+      (Array.isArray(val) ? val : (val ? [val] : [])).forEach(o => sel.push(o));
+    });
+    Object.values(subPicks).forEach(o => o && sel.push(o));
+    Object.entries(qtyPicks).forEach(([gid, picks]) => {
+      const grp = (allModGroups || modGroups).find(g => g.id === gid);
+      Object.entries(picks || {}).forEach(([optId, count]) => {
+        if (!count) return;
+        const opt = grp?.options?.find(o => (o.id || o.name) === optId);
+        if (opt) sel.push(opt);
+      });
+    });
+    return sel.some(optIs86);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selections, subPicks, qtyPicks, eightySixIds, subitemByName, modGroups, allModGroups]);
+
   // v5.5.141: block Add when the resolved item (variant or base) is 86'd.
-  const canAdd = validationErrors.length === 0 && !effectiveIs86;
+  const canAdd = validationErrors.length === 0 && !effectiveIs86 && !has86Selection;
 
   const handleAdd = () => {
     if (!canAdd) { setErrors(validationErrors); return; }
@@ -198,6 +247,7 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
       arr.forEach(o => {
         flatMods.push({
           id: o?.id || null,
+          itemId: resolveOptItemId(o),  // v5.5.313: enable online stock decrement + 86
           name: o?.name || o?.label || '',
           label: o?.name || o?.label || '',
           groupLabel: grp?.name || '',
@@ -210,6 +260,7 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
         if (subPick && subGroup) {
           flatMods.push({
             id: subPick?.id || null,
+            itemId: resolveOptItemId(subPick),  // v5.5.313
             name: subPick?.name || subPick?.label || '',
             label: subPick?.name || subPick?.label || '',
             groupLabel: subGroup.name || '',
@@ -230,6 +281,7 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
         for (let i = 0; i < count; i++) {
           flatMods.push({
             id: opt.id || null,
+            itemId: resolveOptItemId(opt),  // v5.5.313
             name: opt.name || opt.label || '',
             label: opt.name || opt.label || '',
             groupLabel: grp?.name || '',
@@ -532,7 +584,7 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
             fontFamily: 'inherit',
             display: 'flex', justifyContent: 'space-between', alignItems: 'center',
           }}>
-            <span>{effectiveIs86 ? 'Out of stock' : `Add ${qty} to basket`}</span>
+            <span>{effectiveIs86 ? 'Out of stock' : has86Selection ? 'Option out of stock' : `Add ${qty} to basket`}</span>
             <span>£{lineTotal.toFixed(2)}</span>
           </button>
         </div>
