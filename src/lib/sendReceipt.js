@@ -74,13 +74,44 @@ export async function sendEmailReceipt({ to, locationId, check, locationLabel, b
   const timeStr = dt.toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit' });
   const items = (check.items || []).filter(i => !i.voided);
 
+  // Build full item breakdown for {{order_items}} merge tag
+  const subtotal = items.reduce((s, i) => s + (i.price || 0) * (i.qty || 1), 0);
+  const service  = Number(check.service) || 0;
+  const discount = Number(check.discountAmount) || 0;
+  const tip      = Number(check.tip) || 0;
+  const taxBk    = check.taxBreakdown;
+
+  const itemLines = [];
+  items.forEach(it => {
+    const lineTotal = (it.price || 0) * (it.qty || 1);
+    itemLines.push(`${it.qty > 1 ? `${it.qty}x ` : ''}${it.name}  ${money(lineTotal)}`);
+    if (it.qty > 1) itemLines.push(`  ${money(it.price)} each`);
+    const mods = (it.mods || []).map(m => m?.name || m?.label || m).filter(Boolean);
+    if (mods.length) itemLines.push(`  + ${mods.join(' · ')}`);
+    if (it.notes) itemLines.push(`  Note: ${it.notes}`);
+  });
+  itemLines.push('');
+  itemLines.push(`Subtotal: ${money(subtotal)}`);
+  if (service > 0) itemLines.push(`Service charge: ${money(service)}`);
+  if (discount > 0) itemLines.push(`Discount: -${money(discount)}`);
+  if (tip > 0) itemLines.push(`Gratuity: ${money(tip)}`);
+  if (taxBk?.breakdown?.length) {
+    itemLines.push('');
+    taxBk.breakdown.forEach(br => {
+      const pct = (br.rate.rate * 100).toFixed(1).replace('.0', '');
+      itemLines.push(`${br.rate.name} (${pct}%): Net ${money(br.net)} — VAT ${money(br.tax)}`);
+    });
+  } else if (Number(check.taxAmount)) {
+    itemLines.push(`Includes VAT of ${money(check.taxAmount)}`);
+  }
+
   // Build merge data for template resolution
   const mergeData = {
     customer_name: typeof check.customer === 'object' ? (check.customer?.name || 'Customer') : 'Customer',
     venue_name: businessName,
     order_number: check.ref || '',
     order_total: money(check.total || 0),
-    order_items: items.map(i => `${i.qty||1}x ${i.name}`).join(', '),
+    order_items: itemLines.join('\n'),
     date: `${dateStr} ${timeStr}`,
     payment_method: check.method || 'Card',
     server_name: check.server || '',
