@@ -416,6 +416,15 @@ export default function POSSurface() {
 
   const handleItemTap = (item) => {
     if (eightySixIds.includes(item.id)) { showToast(`${item.name} is 86'd`,'error'); return; }
+    // v5.5.311: also block when this item's tracked stock is exhausted, even if
+    // it isn't (yet) in eightySixIds. Guards the cross-device oversell window
+    // where another terminal sold the last unit (dailyCounts arrives via
+    // realtime ahead of / alongside the auto-86).
+    const _dc = useStore.getState().dailyCounts || {};
+    const _stock = _dc[item.id];
+    if (_stock && typeof _stock.remaining === 'number' && _stock.remaining <= 0) {
+      showToast(`${item.name} is out of stock`,'error'); return;
+    }
     // v5.5.189: block item if ALL options in any required modifier group are 86'd.
     // The combo/modifiable item can't be fulfilled if no choices remain.
     const _modGroupDefs = useStore.getState().modifierGroupDefs || [];

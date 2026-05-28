@@ -14,6 +14,28 @@ import { playOrderChime } from './orderChime';
 
 let channels = [];
 
+// v5.5.311: apply a stock_levels row to the store, keeping dailyCounts AND
+// eightySixIds in sync. Previously the POS only updated dailyCounts on a remote
+// stock change, but its order grid blocks solely on eightySixIds — so when
+// another terminal sold the last unit, this device still let it be ordered
+// (oversell). Now a remote remaining<=0 auto-86s the item everywhere, and
+// remaining>0 clears a stock-driven 86. (Mirrors the kiosk handler.)
+function applyStockRow(s, row) {
+  const dailyCounts = { ...s.dailyCounts, [row.item_id]: { par: row.par, remaining: row.remaining } };
+  // ADD-only: auto-86 when a remote terminal drives stock to zero. We do NOT
+  // remove on remaining>0 here — eightySixIds also holds MANUAL operator 86s,
+  // and clearing those on a stock change would wrongly un-86 them. A stock-86
+  // is cleared when the operator sets a new daily count (toggle86DB) or via the
+  // eighty_six DELETE channel. Add-only is fail-safe (worst case an item stays
+  // greyed until refetch/reload — never an oversell).
+  if (Number(row.remaining) > 0) {
+    return { dailyCounts };
+  }
+  const ids = new Set(s.eightySixIds || []);
+  ids.add(row.item_id);
+  return { dailyCounts, eightySixIds: Array.from(ids) };
+}
+
 export function startRealtime(store, locationId = LOCATION_ID) {
   if (isMock || !supabase) {
     console.info('[Realtime] Mock mode — using BroadcastChannel only');
@@ -86,9 +108,7 @@ export function startRealtime(store, locationId = LOCATION_ID) {
       filter: `location_id=eq.${locationId}`,
     }, ({ new: row }) => {
       if (!row?.item_id) return;
-      store.setState(s => ({
-        dailyCounts: { ...s.dailyCounts, [row.item_id]: { par: row.par, remaining: row.remaining } },
-      }));
+      store.setState(s => applyStockRow(s, row));
     })
     .on('postgres_changes', {
       event: 'UPDATE',
@@ -97,9 +117,7 @@ export function startRealtime(store, locationId = LOCATION_ID) {
       filter: `location_id=eq.${locationId}`,
     }, ({ new: row }) => {
       if (!row?.item_id) return;
-      store.setState(s => ({
-        dailyCounts: { ...s.dailyCounts, [row.item_id]: { par: row.par, remaining: row.remaining } },
-      }));
+      store.setState(s => applyStockRow(s, row));
     })
     .on('postgres_changes', {
       event: 'DELETE',
@@ -129,14 +147,26 @@ export function startRealtime(store, locationId = LOCATION_ID) {
     }, ({ new: push }) => {
       if (push.snapshot) {
         store.getState().setConfigUpdate(push.snapshot);
-        // v5.5.304: Auto-apply on KDS, kiosk, and other non-POS surfaces.
-        // POS uses ConfigSyncBanner for manual apply so staff can acknowledge.
-        // KDS/kiosk have no banner — updates must apply immediately or they
-        // never see new menu items / production centre changes.
-        const mode = store.getState().appMode;
-        if (mode === 'kds' || mode === 'kiosk' || mode === 'orders' || mode === 'mpos') {
-          store.getState().applyConfigUpdate();
-        }
+        // v5.5.311: Auto-apply on UNATTENDED surfaces (KDS / kiosk / orders /
+        // MPOS) — nobody is there to click the ConfigSyncBanner, so without
+        // this they never pick up new menu items / production-centre changes
+        // until a hard refresh. The attended POS counter keeps the manual
+        // banner so a cashier mid-sale isn't disrupted.
+        //
+        // NOTE: the previous v5.5.304 gate read store.appMode, which is NEVER
+        // set to these values (it defaults 'pos' and is only ever set to
+        // 'backoffice') — so the auto-apply was dead code. We now read the
+        // device's persisted surface/mode from localStorage, which is reliable.
+        try {
+          let surface = '';
+          try { surface = JSON.parse(localStorage.getItem('rpos-device-config') || '{}')?.defaultSurface || ''; } catch { /* none */ }
+          let devMode = '';
+          try { devMode = localStorage.getItem('rpos-device-mode') || ''; } catch { /* none */ }
+          const unattended = ['kds', 'kiosk', 'orders', 'mpos'];
+          if (unattended.includes(surface) || devMode === 'kiosk' || devMode === 'mpos') {
+            store.getState().applyConfigUpdate();
+          }
+        } catch { /* leave for manual banner */ }
       }
     })
     .subscribe();

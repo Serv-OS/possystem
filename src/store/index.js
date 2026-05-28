@@ -3632,7 +3632,11 @@ export const useStore = create((set, get) => ({
     const ref = getNextOrderRefLocal();
     // v5.5.279: stamp locationId on in-memory record so the cross-location
     // merge filter in BOReports can exclude checks from other locations.
-    const recLocId = getActiveLocationSync();
+    // v5.5.311: fall back to the durable rpos-active-location tag if the sync
+    // resolver returns null — a null locationId on the cached check passes the
+    // "exclude other locations" filter for EVERY location → report bleed.
+    let recLocId = getActiveLocationSync();
+    if (!recLocId) { try { recLocId = localStorage.getItem('rpos-active-location') || null; } catch {} }
     const record = {
       id: `chk-${Date.now()}`,
       ref,
@@ -3692,7 +3696,7 @@ export const useStore = create((set, get) => ({
       closedAt: Date.now(),
       status: 'paid',
       refunds: [],
-      locationId: getActiveLocationSync(),  // v5.5.279: stamp locationId for cross-location filter
+      locationId: getActiveLocationSync() || (() => { try { return localStorage.getItem('rpos-active-location') || null; } catch { return null; } })(),  // v5.5.279/311: stamp locationId (durable-tag fallback) for cross-location filter
       staffId: record.staffId || staff?.id || null,   // v4.6.19
       ...record,
     };
@@ -3739,7 +3743,7 @@ export const useStore = create((set, get) => ({
       ref: existingRef || getNextOrderRefLocal(),
       tableId: null,
       tableLabel: null,
-      locationId: getActiveLocationSync(),  // v5.5.279: stamp locationId for cross-location filter
+      locationId: getActiveLocationSync() || (() => { try { return localStorage.getItem('rpos-active-location') || null; } catch { return null; } })(),  // v5.5.279/311: stamp locationId (durable-tag fallback) for cross-location filter
       server: staff?.name || 'Staff',
       staffId: staff?.id || null,                                              // v4.6.19
       covers: 1,

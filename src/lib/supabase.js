@@ -23,6 +23,21 @@ export const platformSupabase = (PLATFORM_URL && PLATFORM_ANON)
 // Dynamic location ID — resolved from user_profiles in Ops DB
 let _resolvedLocationId = null;
 
+// v5.5.311: Is this browser running the back-office or admin surface?
+// The 'rpos-bo-location' override and the anonymous-session block are
+// back-office-only concepts — they must NEVER influence POS/MPOS/KDS/kiosk
+// resolution (a paired terminal sharing a browser with the BO was resolving to
+// the BO's location → cross-tenant reads/writes). Mode comes from the URL
+// (?mode=) or the persisted rpos-device-mode. Accept all BO spellings.
+export function isBackOfficeMode() {
+  try {
+    let mode = '';
+    try { mode = new URL(window.location.href).searchParams.get('mode') || ''; } catch { /* no window */ }
+    if (!mode) { try { mode = localStorage.getItem('rpos-device-mode') || ''; } catch { /* none */ } }
+    return mode === 'office' || mode === 'backoffice' || mode === 'admin';
+  } catch { return false; }
+}
+
 export const getLocationId = async () => {
   if (isMock) return 'loc-demo';
   if (_resolvedLocationId) return _resolvedLocationId;
@@ -32,11 +47,16 @@ export const getLocationId = async () => {
   // This matches getActiveLocationSync() priority and prevents hangs on POS
   // devices where supabase.auth.getUser() fails without an auth session.
 
-  // Back office explicit location override
-  try {
-    const boLoc = JSON.parse(localStorage.getItem('rpos-bo-location') || 'null');
-    if (boLoc) { _resolvedLocationId = boLoc; return boLoc; }
-  } catch {}
+  // Back office explicit location override — ONLY in back-office/admin mode.
+  // v5.5.311: previously read unconditionally, so a POS/MPOS/KDS terminal
+  // sharing a browser with the BO resolved to the BO's location → cross-tenant
+  // reads/writes. POS modes must use the paired device location below.
+  if (isBackOfficeMode()) {
+    try {
+      const boLoc = JSON.parse(localStorage.getItem('rpos-bo-location') || 'null');
+      if (boLoc) { _resolvedLocationId = boLoc; return boLoc; }
+    } catch {}
+  }
 
   // POS: paired device locationId (moved BEFORE auth — localStorage is instant,
   // auth.getUser() is a network call that hangs on Android POS without a session)
@@ -93,11 +113,11 @@ export const ensureAuthToken = async () => {
   // for a (userless) login — "blank back office, logged in with no user".
   // The back office only calls edge functions when a real user is signed in,
   // so returning null here is safe — it just means "not authenticated yet".
-  try {
-    const u = new URL(window.location.href);
-    const mode = u.searchParams.get('mode') || localStorage.getItem('rpos-device-mode') || '';
-    if (mode === 'office' || mode === 'admin') return null;
-  } catch { /* fall through to anon for non-browser contexts */ }
+  // v5.5.311: use isBackOfficeMode() which also matches the 'backoffice'
+  // spelling (the previous check only matched 'office', so a BO device whose
+  // persisted mode is 'backoffice' and URL lacks ?mode= could still mint an
+  // anon session → blank back office).
+  if (isBackOfficeMode()) return null;
   // No session (POS device, expired, etc.) — anonymous sign-in
   const { data, error } = await supabase.auth.signInAnonymously();
   if (error) throw new Error('Could not start auth session: ' + error.message);
@@ -172,10 +192,14 @@ const TENANT_FENCE_KEEP = new Set([
  *   3. null                (no location yet — pre-pairing or unauthenticated)
  */
 export function getActiveLocationSync() {
-  try {
-    const bo = JSON.parse(localStorage.getItem('rpos-bo-location') || 'null');
-    if (bo) return bo;
-  } catch { /* fall through */ }
+  // v5.5.311: honour the BO override only in back-office/admin mode (see
+  // getLocationId). POS/MPOS/KDS/kiosk must resolve via the paired device.
+  if (isBackOfficeMode()) {
+    try {
+      const bo = JSON.parse(localStorage.getItem('rpos-bo-location') || 'null');
+      if (bo) return bo;
+    } catch { /* fall through */ }
+  }
   try {
     const dev = JSON.parse(localStorage.getItem('rpos-device') || 'null');
     if (dev?.locationId) return dev.locationId;
