@@ -304,16 +304,26 @@ Deno.serve(async (req) => {
     const { data: allTiers } = await platformAdmin
       .from('loyalty_tiers')
       .select('id, name, min_points_earned, min_visits, min_spend_minor, points_multiplier, sort_order')
-      .eq('company_id', companyId)
-      .order('sort_order', { ascending: false }); // highest tier first
+      .eq('company_id', companyId);
 
     if (allTiers && allTiers.length > 0) {
-      // Find the highest tier the customer qualifies for
-      const qualifiedTier = allTiers.find(t =>
-        updatedStats.points_earned_total >= (t.min_points_earned || 0) &&
-        updatedStats.visit_count >= (t.min_visits || 0) &&
-        updatedStats.lifetime_spend_minor >= (t.min_spend_minor || 0)
-      );
+      // v5.5.312: pick the highest tier the customer qualifies for, ranked by
+      // the actual qualification thresholds — NOT by sort_order. The tier
+      // editor has no sort_order input, so every tier is created with
+      // sort_order=0; ordering by it gave an arbitrary "highest" tier. Rank by
+      // min_points_earned, then min_spend_minor, then min_visits (all desc) so
+      // the most demanding qualifying tier always wins, deterministically.
+      const qualifiedTier = allTiers
+        .filter(t =>
+          updatedStats.points_earned_total >= (t.min_points_earned || 0) &&
+          updatedStats.visit_count >= (t.min_visits || 0) &&
+          updatedStats.lifetime_spend_minor >= (t.min_spend_minor || 0)
+        )
+        .sort((a, b) =>
+          (b.min_points_earned || 0) - (a.min_points_earned || 0) ||
+          (b.min_spend_minor || 0) - (a.min_spend_minor || 0) ||
+          (b.min_visits || 0) - (a.min_visits || 0)
+        )[0] || null;
 
       const newTierId = qualifiedTier?.id || null;
 
