@@ -76,6 +76,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.290', date: '27 May 2026', label: 'Gift card partial payment on kiosk',
+    changes: [
+      'FIX — INSUFFICIENT GIFT CARD BALANCE: When a manually entered gift card doesn\'t have enough balance for the full order, the kiosk now automatically applies whatever balance IS available and lets the customer pay the remainder by card. Previously showed "Insufficient balance" error.',
+      'AUTO-START CARD READER: After a partial gift card is applied (linked or manual), the card reader automatically starts for the remaining balance. No extra tap needed — the customer sees the reduced amount due and taps their card.',
+      'Linked gift cards (from loyalty OTP) already handled partial balances correctly via Math.min. Only the manual code entry path was affected.',
+    ],
+  },
+  {
     version: '5.5.289', date: '27 May 2026', label: 'Block 86\'d items in modifier groups on kiosk',
     changes: [
       'FIX — 86\'D ITEMS STILL ORDERABLE VIA MODIFIER GROUPS: An item marked out of stock on POS/back office could still be ordered through a modifier group on the kiosk. Root cause: modifier options without an explicit itemId link weren\'t checked against the 86 list or stock levels.',

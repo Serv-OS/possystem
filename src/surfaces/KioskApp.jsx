@@ -2373,6 +2373,9 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, verifiedL
   };
 
   // v5.5.281: Redeem a gift card by manually entered code (guest checkout)
+  // v5.5.290: If the card has insufficient balance for the full order,
+  // automatically apply whatever balance IS available and let the customer
+  // pay the remainder by card — no error shown, just partial credit.
   const redeemManualGiftCard = async () => {
     const code = manualGCCode.trim();
     if (!code) return;
@@ -2395,8 +2398,31 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, verifiedL
           idempotency_key: idempKey,
         }),
       });
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+      let j = await res.json().catch(() => ({}));
+
+      // v5.5.290: Insufficient balance → retry with the available balance.
+      // The edge function returns { error, balance, requested } on 400.
+      if (!res.ok && j.error === 'Insufficient balance' && j.balance > 0) {
+        const partialAmount = j.balance; // what the card actually has
+        const retryKey = `kiosk-gc-manual-${code}-partial-${Date.now()}`;
+        const res2 = await fetch(`${OPS_URL}/functions/v1/gift-redeem`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+          body: JSON.stringify({
+            code,
+            amount: partialAmount,
+            order_id: null,
+            location_id: locationId,
+            channel: 'kiosk',
+            idempotency_key: retryKey,
+          }),
+        });
+        j = await res2.json().catch(() => ({}));
+        if (!res2.ok) throw new Error(j.error || `HTTP ${res2.status}`);
+      } else if (!res.ok) {
+        throw new Error(j.error || `HTTP ${res.status}`);
+      }
+
       onGiftCardApply({
         card_id: j.card_id,
         code,
@@ -2520,6 +2546,15 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, verifiedL
       startCardPayment();
     }
   }, []);
+
+  // v5.5.290: Auto-start card reader after a partial gift card is applied.
+  // giftCardPayment changes from null → object, total drops but stays > 0.
+  // The mount effect above won't re-fire, so this handles the transition.
+  useEffect(() => {
+    if (giftCardPayment && cardState === 'idle' && total > 0) {
+      startCardPayment();
+    }
+  }, [giftCardPayment]);
 
   const cardDueAmount = total;
   const fullyPaid = total <= 0;
