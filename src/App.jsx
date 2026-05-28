@@ -76,6 +76,15 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.289', date: '27 May 2026', label: 'Block 86\'d items in modifier groups on kiosk',
+    changes: [
+      'FIX — 86\'D ITEMS STILL ORDERABLE VIA MODIFIER GROUPS: An item marked out of stock on POS/back office could still be ordered through a modifier group on the kiosk. Root cause: modifier options without an explicit itemId link weren\'t checked against the 86 list or stock levels.',
+      'NAME-BASED ITEM RESOLUTION: New resolveOptItemId helper falls back to matching the modifier option name against sold-alone sub-items (via subitemByName map) when opt.itemId isn\'t explicitly set. Options are now blocked with "Sold out" label and greyed out.',
+      'STOCK DECREMENT FOR NAME-MATCHED MODS: The mods array built for cart submission now enriches options lacking itemId with the name-matched item\'s ID, so stock decrement works for these options post-order.',
+      'DOUBLE-CHECK IN incOption: The click handler also uses resolveOptItemId + dailyCounts remaining check, preventing both 86\'d and zero-stock items from being added via modifier selection.',
+    ],
+  },
+  {
     version: '5.5.288', date: '27 May 2026', label: 'Fix 86 state inconsistency across kiosk browsers',
     changes: [
       'FIX — 86 STATE OUT OF SYNC: Same item could show "out of stock" on one kiosk browser but available on another. Root cause: the eighty_six table Realtime subscription is a single WebSocket channel — if one browser misses an INSERT event, its 86 list is stale.',

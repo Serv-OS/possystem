@@ -323,6 +323,18 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
     };
   };
 
+  // v5.5.289: Resolve the effective itemId for a modifier option.
+  // Options that were linked via the back-office UI have opt.itemId.
+  // Options without it can still be matched to a menu item by name
+  // (via subitemByName) — this is critical for 86/stock enforcement:
+  // without it, an 86'd item is still orderable through its modifier group.
+  const resolveOptItemId = (opt) => {
+    if (opt?.itemId || opt?.item_id) return opt.itemId || opt.item_id;
+    const key = String(opt?.name || '').trim().toLowerCase();
+    const match = key ? subitemByName.get(key) : null;
+    return match?.id || null;
+  };
+
   // Load top-level groups + variants, then pre-fetch any sub-groups referenced by option.subGroupId
   useEffect(() => {
     let alive = true;
@@ -488,10 +500,15 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
     setShowError(false);
     setSelections(prev => {
       const current = prev[group.id] || [];
-      // v5.5.285: Check stock for this option's linked item
+      // v5.5.289: Check stock for this option's linked item.
+      // resolveOptItemId falls back to name-matching so options without
+      // an explicit itemId are still blocked when their item is 86'd.
       const opt = (group.options || []).find(o => o.id === optId);
-      const optItemId = opt?.itemId || opt?.item_id;
+      const optItemId = resolveOptItemId(opt);
       if (optItemId) {
+        // Check 86'd (explicit + stock-based)
+        if (eightySixIds.includes(optItemId)) return prev;
+        if (dailyCounts[optItemId] && dailyCounts[optItemId].remaining <= 0) return prev;
         const stock = dailyCounts[optItemId];
         if (stock) {
           const inCart = cartItemUsage[optItemId] || 0;
@@ -501,13 +518,11 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
             const gpicked = (g.id === group.id ? current : (selections[g.id] || []));
             for (const pid of gpicked) {
               const o = (g.options || []).find(x => x.id === pid);
-              if (o && (o.itemId || o.item_id) === optItemId) inModal++;
+              if (o && resolveOptItemId(o) === optItemId) inModal++;
             }
           }
           if (inModal >= stock.remaining - inCart) return prev; // at stock limit
         }
-        // Also check 86'd
-        if (eightySixIds.includes(optItemId)) return prev;
       }
       let next;
       if (group._isSingle) {
@@ -573,6 +588,16 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
       return;
     }
     const mods = buildModsArray(groups, selections, nestedSelections, subGroupsCache);
+    // v5.5.289: Enrich mods that lack itemId via name-matching.
+    // Without this, stock decrement in KioskApp/OnlineCheckout skips
+    // modifier options whose item link is only implicit (name match).
+    for (const m of mods) {
+      if (!m.itemId && m.label) {
+        const key = String(m.label).trim().toLowerCase();
+        const match = subitemByName.get(key);
+        if (match?.id) m.itemId = match.id;
+      }
+    }
     const summary = summarizeForDisplay(groups, selections, nestedSelections, subGroupsCache);
     onAdd({
       qty,
@@ -797,10 +822,13 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
                   // v5.5.27: pull effective display fields (own option > matched sold-alone subitem).
                   const effective = resolveOpt(opt);
 
-                  // v5.5.285: Stock enforcement for modifier options
-                  const optItemId = opt.itemId || opt.item_id;
+                  // v5.5.289: Stock enforcement for modifier options.
+                  // resolveOptItemId falls back to name-matching against
+                  // sold-alone sub-items when opt.itemId isn't explicitly set.
+                  const optItemId = resolveOptItemId(opt);
                   const optStockRemaining = getOptionStock(optItemId);
-                  const optIs86 = optItemId && eightySixIds.includes(optItemId);
+                  const optIs86 = optItemId && (eightySixIds.includes(optItemId)
+                    || (dailyCounts[optItemId] && dailyCounts[optItemId].remaining <= 0));
                   const optSoldOut = optIs86 || optStockRemaining <= 0;
                   const optAtStockCap = !optSoldOut && optStockRemaining < Infinity && optStockRemaining <= 0;
                   const blocked = optSoldOut || (atCap && !isSelected);
