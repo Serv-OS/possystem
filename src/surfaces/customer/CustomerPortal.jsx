@@ -270,7 +270,7 @@ export default function CustomerPortal({ location }) {
       padding: '40px 20px 60px',
     }}>
       {/* Header */}
-      <div style={{ textAlign: 'center', marginBottom: 28 }}>
+      <div style={{ textAlign: 'center', marginBottom: 28, flexShrink: 0 }}>
         {t.logo && (
           <img src={t.logo} alt={t.companyName || location.name} style={{
             width: 100, height: 100, borderRadius: 20, objectFit: 'cover',
@@ -295,7 +295,7 @@ export default function CustomerPortal({ location }) {
         )}
       </div>
 
-      <div style={{ width: '100%', maxWidth: 440 }}>
+      <div style={{ width: '100%', maxWidth: 440, flexShrink: 0 }}>
         {screen === 'login' && (
           <LoginScreen
             t={t} phone={phone} setPhone={setPhone}
@@ -364,7 +364,7 @@ export default function CustomerPortal({ location }) {
       </div>
 
       {/* Footer */}
-      <div style={{ fontSize: 11, color: t.textDim, marginTop: 40, textAlign: 'center' }}>
+      <div style={{ fontSize: 11, color: t.textDim, marginTop: 40, textAlign: 'center', flexShrink: 0 }}>
         Powered by Serv OS
       </div>
     </div>
