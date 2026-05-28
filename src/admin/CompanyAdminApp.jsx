@@ -111,7 +111,10 @@ function AdminPanel({ authUser }) {
     // user_profiles must allow super_admin to read all rows — otherwise
     // this returns only the calling user's own row and the picker is empty.
     try {
-      const { data } = await sbFetch(`user_profiles?select=id,email,full_name,org_id,role,location_id,user_locations(location_id)&order=email.asc`);
+      // v5.5.309: exclude anonymous users (kiosk/online sessions). They have a
+      // user_profiles row with a null email — filtering email=not.is.null keeps
+      // the picker to real people you'd actually grant location access to.
+      const { data } = await sbFetch(`user_profiles?select=id,email,full_name,org_id,role,location_id,user_locations(location_id)&email=not.is.null&order=email.asc`);
       setAllUsers(Array.isArray(data) ? data : []);
     } catch { setAllUsers([]); }
   };
@@ -531,7 +534,10 @@ function AdminPanel({ authUser }) {
                                   />
                                   {(() => {
                                     const q = userSearch.trim().toLowerCase();
-                                    const allShown = allUsers.length > 0 ? allUsers : users;
+                                    // v5.5.309: defensively drop anonymous/emailless
+                                    // profiles (kiosk/online sessions) so the picker
+                                    // only lists real users.
+                                    const allShown = (allUsers.length > 0 ? allUsers : users).filter(u => u.email);
                                     const filtered = q
                                       ? allShown.filter(u =>
                                           (u.email || '').toLowerCase().includes(q) ||
