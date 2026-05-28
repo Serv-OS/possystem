@@ -41,6 +41,7 @@ const CATEGORY_ICONS = {
   'Gift Cards': '🎁',
   Tables: '🍽️',
   Receipts: '🧾',
+  Loyalty: '⭐',
 };
 
 // ── Component ───────────────────────────────────────────────────────────────

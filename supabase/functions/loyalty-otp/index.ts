@@ -18,6 +18,7 @@
 // no Supabase auth needed. The portal sends this token on subsequent requests.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { resolveAndRender } from '../_shared/template-resolver.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -169,6 +170,13 @@ Deno.serve(async (req) => {
       locationId = loc?.ops_location_id || null;
     } catch {}
 
+    // v5.5.293: Resolve OTP message from custom template or default
+    const rendered = await resolveAndRender(companyId, 'loyalty_otp', 'sms', {
+      venue_name: companyName,
+      otp_code: code,
+    });
+    const otpMessage = rendered?.body || `Your ${companyName} verification code is: ${code}. Valid for 5 minutes.`;
+
     // Send SMS via send-sms edge function
     try {
       const smsRes = await fetch(`${OPS_URL}/functions/v1/send-sms`, {
@@ -179,7 +187,7 @@ Deno.serve(async (req) => {
         },
         body: JSON.stringify({
           to: phone,
-          message: `Your ${companyName} verification code is: ${code}. Valid for 5 minutes.`,
+          message: otpMessage,
           location_id: locationId || companyId, // fallback to companyId if no ops location found
           type: 'otp',
           reference_id: companyId,

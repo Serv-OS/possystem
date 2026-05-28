@@ -14,6 +14,9 @@
 //   1. SMS with welcome message + portal signup link
 //   2. Email (if customer has email) with branded HTML welcome
 //
+// v5.5.293: Now uses resolveAndRender() for customisable templates.
+// Operators can edit these messages in Back Office → Messages → Loyalty.
+//
 // Deduplication: checks customers.welcome_sent_at — only sends once.
 //
 // Required secrets:
@@ -25,6 +28,8 @@
 //   RECEIPT_EMAIL_FROM (defaults to 'hello@posup.co.uk')
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { resolveAndRender } from '../_shared/template-resolver.ts';
+import { wrapInEmailHtml } from '../_shared/template-resolver.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -42,9 +47,6 @@ const RESEND_KEY = Deno.env.get('RESEND_API_KEY') ?? '';
 const POSTMARK_KEY = Deno.env.get('POSTMARK_API_TOKEN') ?? '';
 
 const opsAdmin = createClient(SUPABASE_URL, SERVICE_ROLE);
-const platformAdmin = PLATFORM_URL && PLATFORM_KEY
-  ? createClient(PLATFORM_URL, PLATFORM_KEY)
-  : null;
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -109,43 +111,6 @@ async function sendEmail(to: string, subject: string, html: string): Promise<boo
   }
 }
 
-// ── Welcome email HTML ───────────────────────────────────────────────
-function buildWelcomeEmail(venueName: string, portalUrl: string, customerName?: string): string {
-  const greeting = customerName ? `Hi ${customerName},` : 'Welcome!';
-  return `<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
-<body style="margin:0;padding:0;background:#f4f4f6;font-family:system-ui,-apple-system,sans-serif;">
-<table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f6;padding:40px 20px;">
-<tr><td align="center">
-<table width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;background:#fff;border-radius:16px;overflow:hidden;">
-  <tr><td style="background:#0e0e10;padding:32px 24px;text-align:center;">
-    <div style="font-size:40px;margin-bottom:12px;">&#11088;</div>
-    <div style="color:#fff;font-size:22px;font-weight:800;">Welcome to ${venueName}!</div>
-    <div style="color:#aaa;font-size:14px;margin-top:6px;">Your loyalty account is ready</div>
-  </td></tr>
-  <tr><td style="padding:28px 24px;">
-    <div style="font-size:16px;color:#333;line-height:1.6;">
-      ${greeting}<br><br>
-      Thanks for joining the <b>${venueName}</b> loyalty programme! You can now earn points every time you order, unlock exclusive rewards, and track your gift cards — all in one place.
-    </div>
-    <div style="text-align:center;margin:28px 0;">
-      <a href="${portalUrl}" style="display:inline-block;padding:14px 32px;background:#E8743C;color:#fff;border-radius:99px;font-weight:800;font-size:15px;text-decoration:none;">View your loyalty account</a>
-    </div>
-    <div style="font-size:13px;color:#888;line-height:1.6;text-align:center;">
-      Earn points on every order &bull; Redeem rewards &bull; Birthday treats &bull; Gift card balance
-    </div>
-  </td></tr>
-  <tr><td style="padding:16px 24px;border-top:1px solid #eee;text-align:center;">
-    <div style="font-size:11px;color:#aaa;">Powered by serv-os.app</div>
-  </td></tr>
-</table>
-</td></tr>
-</table>
-</body>
-</html>`;
-}
-
 // ═════════════════════════════════════════════════════════════════════
 // MAIN HANDLER
 // ═════════════════════════════════════════════════════════════════════
@@ -193,16 +158,24 @@ Deno.serve(async (req) => {
     ? `https://${slug}.${CUSTOMER_DOMAIN}/account/register`
     : '';
 
+  // ── 3. Build merge tag data ────────────────────────────────────────
+  const firstName = customer.name ? customer.name.split(' ')[0] : '';
+  const mergeData: Record<string, string> = {
+    customer_name: firstName || 'there',
+    venue_name: venueName,
+    portal_url: portalUrl,
+  };
+
   let smsSent = false;
   let emailSent = false;
 
-  // ── 4. Send SMS ────────────────────────────────────────────────────
+  // ── 4. Send SMS (uses custom template if operator edited it) ───────
   if (customer.phone) {
     const e164 = toE164(customer.phone);
-    const firstName = customer.name ? customer.name.split(' ')[0] : '';
-    const greeting = firstName ? `Hi ${firstName}! ` : '';
-    const link = portalUrl ? `\n\nView your account: ${portalUrl}` : '';
-    const smsMsg = `${greeting}Welcome to ${venueName}! You're now earning loyalty points on every order. Earn rewards, track gift cards, and more.${link}`;
+
+    // Resolve template: custom → default from message-types registry
+    const rendered = await resolveAndRender(company_id, 'loyalty_welcome', 'sms', mergeData);
+    const smsMsg = rendered?.body || `Hi ${firstName || 'there'}! Welcome to ${venueName}! You're now earning loyalty points on every order.`;
 
     smsSent = await sendSms(e164, smsMsg);
 
@@ -219,25 +192,33 @@ Deno.serve(async (req) => {
     } catch {}
   }
 
-  // ── 5. Send email ──────────────────────────────────────────────────
+  // ── 5. Send email (uses custom template if operator edited it) ─────
   if (customer.email) {
-    const html = buildWelcomeEmail(
-      venueName,
-      portalUrl,
-      customer.name?.split(' ')[0] || undefined,
-    );
-    emailSent = await sendEmail(
-      customer.email,
-      `Welcome to ${venueName}!`,
-      html,
-    );
+    const rendered = await resolveAndRender(company_id, 'loyalty_welcome', 'email', mergeData);
+
+    let subject: string;
+    let html: string;
+
+    if (rendered) {
+      subject = rendered.subject || `Welcome to ${venueName}!`;
+      html = wrapInEmailHtml(rendered.body, { venueName });
+    } else {
+      // Hardcoded fallback — should never hit if message-types.ts is up to date
+      subject = `Welcome to ${venueName}!`;
+      html = wrapInEmailHtml(
+        `Hi ${firstName || 'there'},\n\nThanks for joining the ${venueName} loyalty programme! Earn points on every order, unlock rewards, and track gift cards.\n\n${portalUrl ? `View your account: ${portalUrl}` : ''}`,
+        { venueName },
+      );
+    }
+
+    emailSent = await sendEmail(customer.email, subject, html);
 
     // Audit log
     try {
       await opsAdmin.from('receipt_emails').insert({
         location_id,
         to_email: customer.email,
-        subject: `Welcome to ${venueName}!`,
+        subject,
         status: emailSent ? 'sent' : 'failed',
         provider: EMAIL_PROVIDER,
       });

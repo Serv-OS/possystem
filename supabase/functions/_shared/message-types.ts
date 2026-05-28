@@ -55,6 +55,8 @@ const TAG_EXPIRY_DATE: MergeTag = { tag: 'expiry_date', label: 'Expiry Date', ex
 const TAG_BALANCE_URL: MergeTag = { tag: 'balance_url', label: 'Balance Check URL', example: 'https://venue.app.serv-os.app/gift/balance' };
 const TAG_MESSAGE: MergeTag = { tag: 'message', label: 'Personal Message', example: 'Happy Birthday! Enjoy a meal on us.' };
 const TAG_COLLECTION_POINT: MergeTag = { tag: 'collection_point', label: 'Collection Point', example: 'the counter' };
+const TAG_PORTAL_URL: MergeTag = { tag: 'portal_url', label: 'Loyalty Portal URL', example: 'https://venue.serv-os.app/account' };
+const TAG_OTP_CODE: MergeTag = { tag: 'otp_code', label: 'Verification Code', example: '482917' };
 
 // ── Message type definitions ────────────────────────────────────────────────
 
@@ -233,6 +235,44 @@ Thank you for your visit!`,
       },
     },
   },
+
+  // ── Loyalty ────────────────────────────────────────────────────────────
+  {
+    type: 'loyalty_welcome',
+    label: 'Loyalty Welcome',
+    description: 'Sent when a customer first joins your loyalty programme (first OTP login or first online order)',
+    category: 'Loyalty',
+    channels: ['sms', 'email'],
+    mergeTags: [TAG_CUSTOMER_NAME, TAG_VENUE_NAME, TAG_PORTAL_URL],
+    defaults: {
+      sms: {
+        body: `Hi {{customer_name}}! Welcome to {{venue_name}}! You're now earning loyalty points on every order. Earn rewards, track gift cards, and more.\n\nView your account: {{portal_url}}`,
+      },
+      email: {
+        subject: `Welcome to {{venue_name}}!`,
+        body: `Hi {{customer_name}},
+
+Thanks for joining the {{venue_name}} loyalty programme! You can now earn points every time you order, unlock exclusive rewards, and track your gift cards — all in one place.
+
+View your loyalty account: {{portal_url}}
+
+Earn points on every order · Redeem rewards · Birthday treats · Gift card balance`,
+      },
+    },
+  },
+  {
+    type: 'loyalty_otp',
+    label: 'Verification Code',
+    description: 'One-time verification code sent when a customer logs in via phone number',
+    category: 'Loyalty',
+    channels: ['sms'],
+    mergeTags: [TAG_VENUE_NAME, TAG_OTP_CODE],
+    defaults: {
+      sms: {
+        body: `Your {{venue_name}} verification code is: {{otp_code}}. Valid for 5 minutes.`,
+      },
+    },
+  },
 ];
 
 // ── Lookup helpers ──────────────────────────────────────────────────────────
@@ -255,4 +295,4 @@ export function buildSampleData(tags: MergeTag[]): Record<string, string> {
 }
 
 /** Categories in display order */
-export const CATEGORIES = ['Orders', 'Gift Cards', 'Tables', 'Receipts'];
+export const CATEGORIES = ['Orders', 'Gift Cards', 'Tables', 'Receipts', 'Loyalty'];

@@ -76,6 +76,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.293', date: '28 May 2026', label: 'Editable loyalty messages',
+    changes: [
+      'Loyalty Welcome SMS/email and OTP verification code messages are now editable in Back Office → Messages → Loyalty',
+      'New merge tags: {{customer_name}}, {{venue_name}}, {{portal_url}}, {{otp_code}} for loyalty templates',
+      'send-welcome and loyalty-otp edge functions now use resolveAndRender() for custom template support',
+    ],
+  },
+  {
     version: '5.5.292', date: '28 May 2026', label: 'PIN-only login + unique PINs per location',
     changes: [
       'POS/MPOS login is now PIN-only — just enter your 4-digit PIN, no need to select your name first',
