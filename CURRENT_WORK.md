@@ -1,66 +1,68 @@
-# RPOS session handoff — 27 May (v5.5.290)
+# RPOS session handoff — 29 May (v5.5.327)
 
-> v5.5.290 deployed — gift card partial payment, 86 sync fixes, modifier group stock enforcement.
+> Launch-readiness audit + 4 backlog features shipped. ~2 weeks (now days) from first customer (UK / GBP).
+> Edge functions now deploy via **Supabase CLI + PAT** (no longer the dashboard).
 
 ---
 
-## What shipped today: v5.5.286 → v5.5.290
+## What shipped this session: v5.5.290 → v5.5.327
 
-### v5.5.286 — Fix gift card "Card not found" on kiosk
-- **Root cause:** Deployed edge function was old version without `card_id` support. Even v5.5.282 had mutually exclusive `if (code) / else if (card_id)` branches.
-- **Fix:** Three-tier fallback in `gift-redeem` edge function: HMAC code lookup → card_id direct → code_plain fallback. Deployed via Supabase dashboard.
-- **Diagnostic logging:** Each lookup miss logs `console.warn` for debugging.
+### Launch-readiness audit (→ v5.5.322)
+Deep audit + fixes ahead of first customer. Highlights:
+- **Auth / sign-out** — killed the "blank back office / logged-in-with-no-user" bug class. `ensureAuthToken()` no longer mints anonymous sessions in office mode; back office + super-admin portal reject anon sessions and clear the location cache on sign-out.
+- **Cross-DB provisioning** — new-org / new-location now works end-to-end. `provision-location` mirrors Ops → Platform; `create-user` made idempotent (re-invite repairs instead of half-populating).
+- **Company resolution fail-closed** — `resolveCompanyForLocation` returns 409 `location_not_provisioned` instead of silently resolving a multi-company user to the wrong tenant.
+- **Loyalty** — tier auto-evaluation, redeem→check back-patch so refunds restore points, registration-bonus ledger fixed (no double-count).
+- **Gift cards** — atomic `redeem_gift_card_atomic` RPC (idempotent, race-free).
+- **VAT receipts** — full per-item + per-rate breakdown on the emailed digital receipt.
+- **Stock / KDS / tables** — add-only auto-86, KDS picks up new production-centre items without refresh, tables never lost across config push / refresh / wake.
 
-### v5.5.287 — Kiosk + online orders now decrement stock
-- **Root cause:** Kiosk `submitOrder` and `OnlineCheckout` never called `decrementStockRPC`. Only POS decremented via store's `addItem → decrementDailyCount`.
-- **Fix:** Added `decrementStockRPC` calls for each cart item + modifier sub-items in both `KioskApp.jsx` (after heartbeat, before order number) and `OnlineCheckout.jsx` (both gift-card-only and Stripe payment paths).
-- Only items with active stock tracking (in `dailyCounts`) are decremented.
-
-### v5.5.288 — Fix 86 state inconsistency across kiosk browsers
-- **Root cause:** Same kiosk open in 2 browsers — one showed item out of stock, the other didn't. The `eighty_six` Realtime subscription is a single WebSocket channel; if one browser misses an INSERT, its 86 list is stale.
-- **Fix 1:** Redundant `is86` check: menu grid now checks `dailyCounts[id].remaining <= 0` alongside `eightySixIds`.
-- **Fix 2:** Stock subscription auto-86: when `stock_levels` Realtime handler sees `remaining <= 0`, item is added to `eightySixIds`.
-- **Fix 3:** 30-second periodic re-fetch of `eighty_six` table merges missed WebSocket events.
-
-### v5.5.289 — Block 86'd items in modifier groups on kiosk
-- **Root cause:** Item 86'd on POS/back office was blocked on kiosk menu grid but still selectable as a modifier option. Options without explicit `itemId` link weren't checked.
-- **Fix:** New `resolveOptItemId` helper falls back to name-matching against sold-alone sub-items. Both render and click handler use it.
-- **Bonus:** Mods array enriched with resolved `itemId` so stock decrement works for name-matched modifier options too.
-
-### v5.5.290 — Gift card partial payment on kiosk
-- **Root cause:** Manual gift card entry with insufficient balance showed "Insufficient balance" error — dead end for customer.
-- **Fix:** `redeemManualGiftCard` auto-retries with available balance when edge function returns `{ error: 'Insufficient balance', balance: X }`.
-- **Auto-start card reader:** New `useEffect` watches `giftCardPayment` — after partial gift card applied, card reader starts automatically for remaining balance.
+### Backlog features
+- **v5.5.323 — Card refunds for split payments & bar tabs.** New `closed_checks.payment_intents` jsonb holds every card leg; `refundCheck` refunds each back to its own card. Per-leg idempotency on `stripe-refund`. Single-card path unchanged.
+- **v5.5.324 — Bar-tab card pre-authorisation (real holds).** The toggle was cosmetic; now it places a real Stripe Terminal manual-capture hold at tab open (`TabPreAuthTerminal`), captures at close (`/api/stripe-capture`), and releases on void / pay-another-way (`stripe-cancel-reader-action`). `stripe-process-payment-on-reader` gained optional `capture_method`. Defaults OFF; badge shows only when a real hold exists.
+- **v5.5.325 — Loyalty OTP brute-force lockout.** Per-code attempt cap (5) via new `loyalty_otp_codes.attempts`; locks the code after 5 wrong tries (the 45s send cooldown bounds new codes).
+- **v5.5.326 — Multi-currency (GBP / USD / EUR).** New `lib/currency.js` (`money()`, `currencySymbol()`, `stripeCurrency()`); per-location `currency`; ~675 inline `£` displays swept to `money()`; all client Stripe calls send `stripeCurrency()`; `stripe-create-payment-intent` accepts EUR. Byte-for-byte for GBP.
+- **v5.5.327 — Currency at location creation.** `provision-location` now copies `currency` Ops → Platform on create (was lost → USD location resolved as GBP). Create-location dropdowns (admin + back office) limited to GBP/USD/EUR from the `CURRENCIES` source (removed unsupported AED).
 
 ---
 
 ## System status
 
-### Verified working
-- ✅ Gift card redemption on kiosk (linked cards + manual code entry)
-- ✅ Gift card partial payment (applies available balance, remainder to card)
-- ✅ Stock decrementing on kiosk and online orders
-- ✅ 86 state consistent across multiple kiosk browsers
-- ✅ 86'd items blocked in modifier groups
-- ✅ Loyalty OTP on kiosk (earn points, redeem rewards)
-- ✅ Online ordering with gift cards and loyalty
-- ✅ POS checkout with split payments, gift cards, loyalty
-- ✅ Table session sync across devices (hardened in v5.5.283)
+### Verified working (build-clean + smoke-tested; reader/live paths need hardware test)
+- ✅ Split & bar-tab refunds return to original card(s)
+- ✅ Bar-tab pre-auth hold → capture/release (needs a real reader to test end-to-end)
+- ✅ Loyalty OTP lockout after 5 wrong attempts
+- ✅ Multi-currency display + Stripe currency across POS / kiosk / online / QR / receipts / reports
+- ✅ Currency chosen at location creation now actually applies
+- ✅ New-org / new-location provisioning across all features
+- ✅ Auth / sign-out (no blank back office)
 
-### Still pending
-- **Apple Pay / wallets on online ordering** — deferred post-launch item
-- **Edge function deploy via CLI** — needs `SUPABASE_ACCESS_TOKEN` configured
-- **Verify POS loyalty issues** — CORS fix deployed (v5.5.242), needs verification on Sunmi
-- **"Admin page bleeding into office page"** — reported but not investigated
+### Needs live/hardware verification
+- Bar-tab pre-auth on a real Stripe Terminal reader (hold → capture → refund; release on void)
+- A USD location end-to-end (set currency → POS shows $ → card charged in USD)
+- Voids/refunds to original method on the Sunmi in production
+
+---
+
+## Remaining backlog (deferred — see memory `project_post_launch_tasks.md`)
+- **Consolidate `resolveCompanyForLocation`** — one shared copy instead of two (tech debt; redeploys ~18 fns).
+- **Code-split bundles** — chunk-size warning; perf polish.
+- **Apple Pay / wallets on online ordering** — needs per-venue domain verification.
+- **Multi-currency tail** — see "Known limits" below.
+- **`send-sms` source not in git** — deployed fn has no committed source (chip raised).
+
+### Multi-currency known limits
+- Cash-drawer **denomination labels** (£50 note, 50p, …) stay GBP — country-specific note/coin *sets*, not just symbols.
+- **Platform billing tiers** (£99 / £149) stay GBP intentionally (platform charges venues in GBP).
+- Currency is **per-location** (confirmed choice), not org-level — locations under one org can differ.
 
 ---
 
 ## Key architecture notes
-
-- Two Supabase projects: Ops (`tbetcegmszzotrwdtqhi`) + Platform (`yhzjgyrkyjabvhblqxzu`)
-- Edge functions deployed via Supabase dashboard Code editor (CLI needs `SUPABASE_ACCESS_TOKEN`)
-- Kiosk/online use anonymous auth (`signInAnonymously()`); company resolved via `resolveCompanyForLocation()`
-- Deploy: `git push origin develop` → Vercel auto-deploys
-- `getActiveLocationSync()` — always use on POS boot, never async `getLocationId()`
-- Stock decrement: POS via store action, kiosk/online via direct `decrementStockRPC()` after order
-- 86 sync: three independent signals (Realtime, stock auto-86, 30s re-fetch)
+- Two Supabase projects: Ops (`tbetcegmszzotrwdtqhi`) + Platform (`yhzjgyrkyjabvhblqxzu`).
+- **Edge deploy:** `SUPABASE_ACCESS_TOKEN=… npx --yes supabase functions deploy <name> --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt` (CLI bundles `_shared`). PAT stashed at `/tmp/sbenv` this session.
+- **Currency:** lives on BOTH `locations.currency` columns (Ops = creation seed, Platform = authoritative for the app). Created in Ops → `provision-location` copies to Platform; Location Settings edits Platform. App reads Platform via `locationTime.getLocationConfig` (POS/kiosk) and `CustomerBoot`/`lookupLocationBySlug` (online/QR/gift/portal), persisted to `localStorage['rpos-active-currency']` so `money()` resolves synchronously.
+- **Money formatting:** never hardcode `£`/`'gbp'` — use `money()` / `currencySymbol()` / `stripeCurrency()` from `lib/currency.js`.
+- **Closed-check payments:** `payment_intents` jsonb is the source of truth for auto-refundable card legs; `stripe_payment_intent_id` kept for back-compat.
+- Deploy frontend: `git push origin develop` → Vercel auto-deploys.
+- `getActiveLocationSync()` on POS boot, never async `getLocationId()`.

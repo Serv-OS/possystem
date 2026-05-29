@@ -16,6 +16,8 @@ If a proposed change would violate any rule here, **stop and ask** before procee
 - `gift_card_transactions.idempotency_key` has a unique constraint — prevents double-debit on retries.
 - `stock_levels` uses `(location_id, item_id)` as key. `remaining` must never go below 0 — the `decrement_stock` RPC enforces this.
 - `eighty_six` uses `(location_id, item_id)` — one row per 86'd item per location. INSERT = out of stock, DELETE = back in stock.
+- `locations.currency` exists on BOTH Ops and Platform DBs (GBP/USD/EUR, default GBP). **Platform is authoritative** for the running app; Ops is only the creation seed. `provision-location` copies Ops→Platform on INSERT only. Supported set is exactly the keys of `CURRENCIES` in `lib/currency.js`.
+- `closed_checks.payment_intents` (jsonb `[{id, amountMinor}]`) is the source of truth for auto-refundable card legs (split portions, bar-tab holds). `stripe_payment_intent_id` is kept for back-compat / single-card.
 
 ---
 
@@ -26,6 +28,7 @@ If a proposed change would violate any rule here, **stop and ask** before procee
 - **Category field sync:** When adding a field to `menu_categories`, update ALL of: (a) `sbUpsertCategory` in `store/index.js`, (b) `upsertMenuCategory` in `lib/db.js`, (c) the `catsRes.data.map()` in `SyncBridge.jsx`.
 - **Stock decrement after order only:** Kiosk/online stock decrement must happen AFTER successful order submission (heartbeat confirmed), never before. POS decrements optimistically on `addItem`.
 - **Gift card redeem before order close:** Gift card redemption (edge function call) must succeed before the order is written to `closed_checks`. If redemption fails, the order should not proceed with gift card credit.
+- **Money formatting (multi-currency):** Never hardcode `£` or `'gbp'` for a money value. Use `money()` / `currencySymbol()` / `stripeCurrency()` from `lib/currency.js` so displays + Stripe charges follow the location's currency. (Genuine GBP-only chrome — cash denomination labels, platform billing tiers — is the documented exception.)
 
 ---
 

@@ -151,3 +151,29 @@ Short ADR entries for non-obvious choices in the codebase.
 **Decision:** Deploy edge functions via the Supabase dashboard Code editor. The code is maintained in `supabase/functions/` in git and copy-pasted to the dashboard for deployment.
 
 **Consequences:** Slightly manual deployment process. Code in git may drift from deployed version if someone forgets to deploy. The Monaco editor in the dashboard can be automated via `window.monaco.editor.getEditors()[0].setValue(code)`.
+
+**SUPERSEDED by ADR-016.**
+
+---
+
+## ADR-016: Edge Function Deploy via Supabase CLI + PAT (supersedes ADR-015)
+
+**Context:** Dashboard / Management-API deploys ship a single file body and do NOT bundle `_shared/` imports — silently breaking functions that import shared utils. Dashboard tokens also expire mid-session.
+
+**Decision:** Deploy with the Supabase CLI authenticated by a Personal Access Token:
+`SUPABASE_ACCESS_TOKEN=… npx --yes supabase functions deploy <name> --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt`. The CLI bundles `_shared/` correctly. The user supplies the PAT on request.
+
+**Consequences:** Reliable deploys that include shared deps. Smoke-test each deploy with an unauth `curl` (expect 401/405, not 500 — proves imports resolve). `supabase/.temp` is gitignored. NOTE: some deployed functions' source isn't committed (e.g. `send-sms`) — reconcile before treating git as the source of truth.
+
+---
+
+## ADR-017: Multi-Currency — Per-Location, `money()` Helper, Two-Column Model
+
+**Context:** Currency was hardcoded `£` / `'gbp'` across ~675 sites. Needed GBP/USD/EUR to demonstrate multi-market capability without destabilising the GBP launch customer.
+
+**Decision:**
+- Currency is set **per location** (not org-level — a single org may span markets). Chosen at location creation and editable in Location Settings; options are exactly GBP/USD/EUR, rendered from the single `CURRENCIES` map in `lib/currency.js`.
+- All money formatting goes through `money()` / `currencySymbol()` / `stripeCurrency()`. `money(n)` returns exactly the old `£${n.toFixed(2)}` for GBP, so the codebase-wide sweep is a **no-op for GBP** and only changes symbol/code for USD/EUR.
+- Currency lives on BOTH `locations.currency` columns: **Ops = creation seed**, **Platform = authoritative** for the running app. `provision-location` copies Ops→Platform on INSERT only (never on re-provision, so it can't clobber a Location Settings edit). The app reads the Platform value (`locationTime.getLocationConfig` for POS/kiosk, `CustomerBoot`/`lookupLocationBySlug` for online/QR/gift/portal) and caches it in `localStorage['rpos-active-currency']` for synchronous `money()` resolution.
+
+**Consequences:** Adding a currency means updating only `CURRENCIES` (+ allowing it in `stripe-create-payment-intent`). Known limits left for later: cash-drawer denomination *sets* and platform billing tiers stay GBP. `money()` reads localStorage per call (cheap); a brand-new non-GBP device may flash GBP once before the value persists.
