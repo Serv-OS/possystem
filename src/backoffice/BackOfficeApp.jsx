@@ -77,6 +77,7 @@ export default function BackOfficeApp() {
   useEffect(() => { try { document.documentElement.setAttribute('data-theme', theme || 'dark'); } catch {} }, [theme]);
   const [authUser, setAuthUser] = useState(null);
   const [authChecked, setAuthChecked] = useState(isMock);
+  const [recovering, setRecovering] = useState(false); // v5.5.343: password-reset link landing
   const [section, setSection] = useState('overview');
   const [orgCtx, setOrgCtx] = useState(null); // { orgName, locationName, locationId, orgId, role }
   const [showLocationSwitcher, setShowLocationSwitcher] = useState(false);
@@ -100,6 +101,9 @@ export default function BackOfficeApp() {
       setAuthChecked(true);
     });
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      // v5.5.343: user clicked a password-reset link → show the set-new-password
+      // form (BOLogin recovery) instead of logging them straight into the BO.
+      if (event === 'PASSWORD_RECOVERY') { setRecovering(true); return; }
       // v5.5.238: clear location overrides on sign-out so a second user logging
       // into the same browser never inherits the previous user's location.
       // This is the safety net — sign-out buttons also clear, but this catches
@@ -312,6 +316,9 @@ export default function BackOfficeApp() {
       <div style={{ color:'var(--t3)', fontSize:13 }}>Loading…</div>
     </div>
   );
+
+  // v5.5.343: password-reset landing — set-new-password form, then back to login.
+  if (recovering) return <BOLogin recovery onResetDone={() => { setRecovering(false); window.location.replace(window.location.pathname + '?mode=office'); }} />;
 
   // Show login screen if not authenticated
   if (!authUser && !isMock) return <BOLogin onLogin={setAuthUser} />;

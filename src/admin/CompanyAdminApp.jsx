@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { VERSION } from '../lib/version';
+import { supabase } from '../lib/supabase';
 import BOLogin from '../backoffice/BOLogin';
 import AdminBillingManager from './sections/AdminBillingManager';
 import AdminStripeTest from './sections/AdminStripeTest';
@@ -51,6 +52,17 @@ export default function CompanyAdminApp() {
   const [authUser, setAuthUser] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [isSuperAdmin, setIsSuperAdmin] = useState(false);
+  const [recovering, setRecovering] = useState(false); // v5.5.343: password-reset link landing
+
+  // v5.5.343: when an admin clicks a password-reset link, show the set-new-
+  // password form instead of logging them in.
+  useEffect(() => {
+    if (!supabase) return;
+    const { data } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'PASSWORD_RECOVERY') setRecovering(true);
+    });
+    return () => data?.subscription?.unsubscribe?.();
+  }, []);
 
   useEffect(() => {
     const auth = JSON.parse(localStorage.getItem('rpos-auth') || 'null');
@@ -72,6 +84,7 @@ export default function CompanyAdminApp() {
     }
   }, []);
 
+  if (recovering) return <BOLogin recovery onResetDone={() => { setRecovering(false); window.location.reload(); }} />;
   if (!authChecked) return <div style={{ minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center', background:'var(--bg)', color:'var(--t3)', fontSize:13 }}>Loading…</div>;
   if (!authUser) return <BOLogin onLogin={(u) => { setAuthUser(u); window.location.reload(); }} />;
   if (!isSuperAdmin) return (

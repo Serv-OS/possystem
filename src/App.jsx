@@ -78,6 +78,14 @@ import { ServOSIcon } from './components/ServOSBrand';
 
 const CHANGELOG = [
   {
+    version: '5.5.343', date: '29 May 2026', label: 'Forgot password for back office + admin login',
+    changes: [
+      'Login screen now has a "Forgot password?" link — sends a reset email via Supabase (resetPasswordForEmail)',
+      'Clicking the email link returns to the app and shows a "Set a new password" form (handles PASSWORD_RECOVERY in both back office and admin portal)',
+      'Neutral confirmation message (no account-existence leak); 8-char minimum + confirm on the new password',
+    ],
+  },
+  {
     version: '5.5.342', date: '29 May 2026', label: 'MPOS cart tax — show VAT + print it on the bill',
     changes: [
       'MPOS cart review now shows the VAT line (incl. VAT for inclusive rates, + tax for exclusive) — it previously showed only a bare subtotal',
