@@ -331,6 +331,7 @@ export default function SyncBridge({ onSyncPulse }) {
             color: cat.color ?? '#3b82f6',
             defaultCourse: cat.default_course ?? cat.defaultCourse ?? 1,
             spacerSlots: cat.spacer_slots ?? cat.spacerSlots ?? [],
+            isSpecial: cat.is_special ?? cat.isSpecial ?? false,  // v5.5.316: map so POS/bar/inventory hide special cats
           }));
           if (menusRes.data?.length) patch.menus = menusRes.data;
           if (modGroupsRes.data?.length) patch.modifierGroupDefs = modGroupsRes.data.map(g => ({

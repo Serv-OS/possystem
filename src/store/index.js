@@ -50,6 +50,7 @@ const sbUpsertCategory = async (cat) => {
     sort_order: cat.sortOrder || 0,
     default_course: cat.defaultCourse ?? 1,
     spacer_slots: cat.spacerSlots ?? [],
+    is_special: cat.isSpecial ?? cat.is_special ?? false,  // v5.5.316: persist so kiosk/online hide special cats
     updated_at: new Date().toISOString(),
   });
   if (error) console.error('[Supabase] menu_categories upsert error:', error);

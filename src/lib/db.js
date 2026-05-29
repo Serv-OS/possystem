@@ -107,14 +107,26 @@ export const upsertMenuCategory = async (cat, locationId = null) => {
   if (isMock) return { data: null, error: null };
   if (!locationId || locationId === 'loc-demo') locationId = await getLocationId();
   if (!locationId || locationId === 'loc-demo') return { data: null, error: new Error('No location') };
+  // v5.5.316: build a CLEAN snake_case row. Previously this spread `...cat`
+  // (the camelCase store shape) alongside snake_case keys, so the payload
+  // carried unknown columns (menuId, parentId, sortOrder, defaultCourse,
+  // spacerSlots, accountingGroup, isSpecial) and PostgREST rejected the whole
+  // upsert (PGRST204) — silently, since the only caller .catch()es it. The push
+  // therefore never wrote categories to menu_categories, so kiosk/online (which
+  // query that table directly) saw stale categories. Mirror sbUpsertCategory.
   const result = await supabase.from('menu_categories').upsert({
-    ...cat,
+    id: cat.id,
     location_id: locationId,
-    parent_id: cat.parentId ?? cat.parent_id ?? null,
     menu_id: cat.menuId ?? cat.menu_id ?? null,
+    parent_id: cat.parentId ?? cat.parent_id ?? null,
+    label: cat.label ?? cat.name ?? 'Category',
+    icon: cat.icon ?? '🍽',
+    color: cat.color ?? '#3b82f6',
+    accounting_group: cat.accountingGroup ?? cat.accounting_group ?? '',
     sort_order: cat.sortOrder ?? cat.sort_order ?? 0,
     default_course: cat.defaultCourse ?? cat.default_course ?? 1,
     spacer_slots: cat.spacerSlots ?? cat.spacer_slots ?? [],
+    is_special: cat.isSpecial ?? cat.is_special ?? false,
     updated_at: new Date().toISOString(),
   });
   if (result.error) console.error('[DB] menu_categories upsert failed:', result.error.message);
