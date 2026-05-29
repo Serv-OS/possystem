@@ -698,7 +698,7 @@ export const useStore = create((set, get) => ({
       // moving a product to a new category (or editing allergens, tax, etc.)
       // leaves variants with stale data, breaking reports, stamp cards, KDS
       // routing, compliance, and more.
-      const CASCADE_FIELDS = ['cat', 'cats', 'allergens', 'taxRateId', 'centreId'];
+      const CASCADE_FIELDS = ['cat', 'cats', 'allergens', 'taxRateId', 'taxOverrides', 'centreId'];
       const hasCascade = CASCADE_FIELDS.some(f => f in patch);
       if (hasCascade && fullItem && !fullItem.parentId) {
         const cascadePatch = {};
@@ -1241,8 +1241,22 @@ export const useStore = create((set, get) => ({
         return item.cat || null;
       })(),
       parentId: item.parentId || null,
-      taxRateId: item.taxRateId || item.tax_rate_id || null,
-      taxOverrides: item.taxOverrides || item.tax_overrides || {},
+      // v5.5.338: variants inherit the parent's tax settings (default rate +
+      // per-order-type overrides). Variant rows store empty tax_overrides, so
+      // without this a sized item's takeaway/zero-rate override is lost and it's
+      // taxed at the default rate. Mirrors the category inheritance above.
+      ...(() => {
+        let txRate = item.taxRateId || item.tax_rate_id || null;
+        let txOv = item.taxOverrides || item.tax_overrides || {};
+        if (item.parentId && (!txOv || Object.keys(txOv).length === 0)) {
+          const parent = (useStore.getState().menuItems || []).find(m => m.id === item.parentId);
+          if (parent) {
+            txOv = parent.taxOverrides || parent.tax_overrides || txOv;
+            if (!txRate) txRate = parent.taxRateId || parent.tax_rate_id || null;
+          }
+        }
+        return { taxRateId: txRate, taxOverrides: txOv };
+      })(),
       seat: 'shared',
       course: (() => {
         const cats = useStore.getState().menuCategories || [];

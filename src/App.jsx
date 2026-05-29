@@ -78,6 +78,14 @@ import { ServOSIcon } from './components/ServOSBrand';
 
 const CHANGELOG = [
   {
+    version: '5.5.338', date: '29 May 2026', label: 'Fix size variants ignoring per-order-type tax overrides',
+    changes: [
+      'Sized items (e.g. a drink with Regular/Large) weren\'t inheriting the parent\'s per-order-type tax overrides — so a takeaway zero-rated item was still taxed at 20% VAT on the variant',
+      'Variant order lines now inherit the parent\'s tax rate + overrides (the same way they already inherit category)',
+      'Editing a parent\'s tax now cascades taxOverrides to its variants; backfilled existing variants so online/kiosk/reports pick up the corrected data',
+    ],
+  },
+  {
     version: '5.5.337', date: '29 May 2026', label: 'Fix gift card "Card not found" on POS (lookup code_plain fallback)',
     changes: [
       'The POS looks a gift card up (gift-lookup) before redeeming. gift-lookup matched by HMAC only — no code_plain fallback — so cards with a legacy/stale code_lookup (some online-issued cards) failed with "Card not found" before redeem (which has the fallback) could ever run',
