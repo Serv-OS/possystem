@@ -16,7 +16,7 @@ import { useStore } from '../../store';
 import { Sx, money } from './MShellStyles';
 
 export default function MItemDetail({ item, onClose, onAdded }) {
-  const { addItem, modifierGroupDefs = [], instructionGroupDefs = [] } = useStore();
+  const { addItem, modifierGroupDefs = [], instructionGroupDefs = [], eightySixIds = [], menuItems = [] } = useStore();
   const [qty, setQty] = useState(1);
   const [notes, setNotes] = useState('');
   // selectedMods shape: { [groupId]: [{ id, name, price, qty, groupLabel, subPicks: [...] }] }
@@ -46,6 +46,33 @@ export default function MItemDetail({ item, onClose, onAdded }) {
       };
     }).filter(Boolean);
   }, [item, modifierGroupDefs]);
+
+  // v5.5.341: 86 check for modifier options (mirrors kiosk/online). An option is
+  // out of stock if its linked item — or a sold-alone sub-item with the same
+  // name — is 86'd. Without this, 86'd items (e.g. Bueno) stayed selectable in
+  // modifier groups (Box of 3).
+  const subitemByName = useMemo(() => {
+    const map = new Map();
+    for (const it of (menuItems || [])) {
+      if (!it || it.archived || it.type !== 'subitem') continue;
+      if (!(it.soldAlone ?? it.sold_alone)) continue;
+      for (const raw of [it.name, it.menuName, it.menu_name, it.receiptName, it.receipt_name, it.kitchenName, it.kitchen_name]) {
+        if (!raw) continue;
+        const key = String(raw).trim().toLowerCase();
+        if (key && !map.has(key)) map.set(key, it);
+      }
+    }
+    return map;
+  }, [menuItems]);
+  const resolveOptItemId = (opt) => {
+    if (opt?.itemId || opt?.item_id) return opt.itemId || opt.item_id;
+    const key = String(opt?.name || opt?.label || '').trim().toLowerCase();
+    return (key ? subitemByName.get(key)?.id : null) || null;
+  };
+  const optIs86 = (opt) => {
+    const id = resolveOptItemId(opt);
+    return !!id && eightySixIds.includes(id);
+  };
 
   // Instruction groups (presets like "Cooking preference: Rare/Medium/…")
   const instructionGroups = useMemo(() => {
@@ -279,15 +306,18 @@ export default function MItemDetail({ item, onClose, onAdded }) {
                     ? modifierGroupDefs.find(g => g.id === opt.subGroupId)
                     : null;
                   const isMultiSelect = group.max > 1;
+                  const is86 = optIs86(opt);
+                  const blocked = is86 || (atMax && !isSelected && isMultiSelect);
 
                   return (
                     <div key={opt.id} style={{ display:'flex', flexDirection:'column' }}>
-                      <button onClick={() => addPick(group, opt)} disabled={atMax && !isSelected && isMultiSelect} style={{
+                      <button onClick={() => { if (!blocked) addPick(group, opt); }} disabled={blocked} style={{
                         width:'100%', padding:'12px 14px', borderRadius:11, fontFamily:'inherit',
-                        cursor: (atMax && !isSelected && isMultiSelect) ? 'not-allowed' : 'pointer',
+                        cursor: blocked ? 'not-allowed' : 'pointer',
                         border:`1.5px solid ${isSelected ? 'var(--acc)' : 'var(--bdr)'}`,
                         background: isSelected ? 'var(--acc-d)' : 'var(--bg2)',
-                        color:'var(--t1)', opacity: (atMax && !isSelected && isMultiSelect) ? .5 : 1,
+                        color:'var(--t1)', opacity: blocked ? .5 : 1,
+                        filter: is86 ? 'grayscale(0.6)' : undefined,
                         display:'flex', alignItems:'center', gap:10, textAlign:'left', minHeight:48,
                       }}>
                         {/* Indicator: radio for single-select, qty badge for multi */}
@@ -312,9 +342,10 @@ export default function MItemDetail({ item, onClose, onAdded }) {
                             {isSelected && <span style={{ color:'#0b0c10', fontSize:14, fontWeight:800, lineHeight:1 }}>✓</span>}
                           </div>
                         )}
-                        <span style={{ flex:1, fontSize:13, fontWeight:600 }}>
+                        <span style={{ flex:1, fontSize:13, fontWeight:600, textDecoration: is86 ? 'line-through' : 'none' }}>
                           {opt.name}
-                          {isMultiSelect && optQty > 1 && <span style={{ color:'var(--acc)', marginLeft:8, fontWeight:800 }}>× {optQty}</span>}
+                          {is86 && <span style={{ color:'var(--red)', marginLeft:8, fontWeight:800, fontSize:11 }}>Sold out</span>}
+                          {!is86 && isMultiSelect && optQty > 1 && <span style={{ color:'var(--acc)', marginLeft:8, fontWeight:800 }}>× {optQty}</span>}
                         </span>
                         {opt.price > 0 && (
                           <span style={{ fontSize:12, color:'var(--t3)', fontFamily:'var(--font-mono)', flexShrink:0 }}>+{money(opt.price)}</span>

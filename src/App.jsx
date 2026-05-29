@@ -78,6 +78,16 @@ import { ServOSIcon } from './components/ServOSBrand';
 
 const CHANGELOG = [
   {
+    version: '5.5.341', date: '29 May 2026', label: 'MPOS fixes — customer search, takeaway details, tax, 86 on modifiers',
+    changes: [
+      'MPOS customer step now has search — find a returning customer by name/phone and tap to prefill (same lookup as the counter POS)',
+      'Takeaway now requires customer name + phone on MPOS (matches the counter); it was previously skippable',
+      'Fixed MPOS tax: VAT-inclusive prices no longer double-count (was subtotal + tax); the printed receipt now includes the VAT breakdown (was omitted)',
+      'Walk-in / MPOS closed checks now store the full tax breakdown for receipts + reports',
+      '86\'d items are now blocked + shown "Sold out" inside modifier groups on MPOS (e.g. Bueno in Box of 3) — mirrors the kiosk',
+    ],
+  },
+  {
     version: '5.5.340', date: '29 May 2026', label: 'Overview "Today\'s snapshot" dashboard',
     changes: [
       'Back office Overview now shows today\'s snapshot: Sales by order source (POS / Mobile POS / Kiosk / Online / QR / Delivery), Sales by user, Top sellers, Payment mix, Sales by order type, and Discounts & tips',

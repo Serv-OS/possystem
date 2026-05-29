@@ -39,12 +39,17 @@ export default function MTender({ onBack, onConfirm }) {
     catch { return { totalTax: 0 }; }
   }, [order.items, taxRates, orderType]);
   const tax = Number(taxResult?.totalTax) || 0;
+  // v5.5.341: VAT-inclusive (UK) prices already CONTAIN the tax, so the bill is
+  // just the gross subtotal — adding tax on top double-counted it. Only add when
+  // the rate is exclusive (US sales tax).
+  const exclusive = !!taxResult?.hasExclusiveTax;
+  const preTip = exclusive ? subtotal + tax : subtotal;
 
   // Tip in £ amount (computed from selected preset OR custom override).
   const [tipPct, setTipPct] = useState(12.5);
   const [customTip, setCustomTip] = useState(null); // null | number
-  const tipAmount = customTip != null ? customTip : ((subtotal + tax) * tipPct) / 100;
-  const grand = subtotal + tax + tipAmount;
+  const tipAmount = customTip != null ? customTip : (preTip * tipPct) / 100;
+  const grand = preTip + tipAmount;
 
   const paymentMode = deviceConfig?.paymentMode || 'tap_to_pay';
   const subtitle =
@@ -73,12 +78,14 @@ export default function MTender({ onBack, onConfirm }) {
       <div style={Sx.scroller}>
         {/* Total panel — large, customer-readable */}
         <div style={{ padding:'24px 16px 12px', textAlign:'center' }}>
-          <div style={{ fontSize:11, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.07em', fontWeight:700 }}>Subtotal</div>
+          <div style={{ fontSize:11, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.07em', fontWeight:700 }}>Order total</div>
           <div style={{ fontSize:32, fontWeight:800, color:'var(--t2)', fontFamily:'var(--font-mono)', letterSpacing:'-.02em', marginTop:2 }}>
-            {money(subtotal + tax)}
+            {money(preTip)}
           </div>
           {tax > 0 && (
-            <div style={{ fontSize:11, color:'var(--t4)', marginTop:2 }}>{money(subtotal)} + {money(tax)} tax</div>
+            <div style={{ fontSize:11, color:'var(--t4)', marginTop:2 }}>
+              {exclusive ? `${money(subtotal)} + ${money(tax)} tax` : `incl. VAT ${money(tax)}`}
+            </div>
           )}
         </div>
 
@@ -90,7 +97,7 @@ export default function MTender({ onBack, onConfirm }) {
           <div style={{ display:'grid', gridTemplateColumns:'repeat(2, 1fr)', gap:10, marginBottom:10 }}>
             {TIP_PRESETS.map(p => {
               const active = customTip == null && tipPct === p;
-              const amt = ((subtotal + tax) * p) / 100;
+              const amt = (preTip * p) / 100;
               return (
                 <button key={p} onClick={() => onPickPreset(p)} style={{
                   padding:'18px 8px', borderRadius:14,

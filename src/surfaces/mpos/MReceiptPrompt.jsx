@@ -8,10 +8,11 @@ import { useState } from 'react';
 import { useStore } from '../../store';
 import { sendEmailReceipt } from '../../lib/sendReceipt';
 import { getActiveLocationSync } from '../../lib/supabase';
+import { calculateOrderTax } from '../../lib/tax';
 import { Sx } from './MShellStyles';
 
 export default function MReceiptPrompt({ check, onDone }) {
-  const { customer, walkInOrder, locationConfig, printCustomerReceipt } = useStore();
+  const { customer, walkInOrder, locationConfig, printCustomerReceipt, taxRates = [] } = useStore();
   const [mode, setMode] = useState(null); // null | 'email' | 'print'
   const [email, setEmail] = useState(customer?.email || walkInOrder?.customer?.email || '');
   const [busy, setBusy] = useState(false);
@@ -45,11 +46,16 @@ export default function MReceiptPrompt({ check, onDone }) {
     try {
       // Reuses the existing receipt-print path. The job lands in print_jobs and
       // the master POS at the location dispatches it.
+      // v5.5.341: include the VAT breakdown so the printed receipt shows the
+      // tax lines (was omitted — receipts printed with no VAT). Prefer the
+      // breakdown stored on the check; recompute from items as a fallback.
+      const taxBreakdown = check.taxBreakdown
+        || (() => { try { return calculateOrderTax(check.items || [], taxRates, check.orderType || 'takeaway'); } catch { return null; } })();
       await printCustomerReceipt?.({
         location: locationConfig,
         check,
         items: check.items,
-        totals: { subtotal: check.subtotal, tip: check.tip, total: check.total },
+        totals: { subtotal: check.subtotal, tip: check.tip, total: check.total, taxBreakdown },
       });
       finish('printed');
     } catch (e) {

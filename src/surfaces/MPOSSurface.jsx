@@ -107,12 +107,12 @@ function MPOSRouter() {
       setFlow({ screen: 'pickTable' });
       return;
     }
-    // Reset prior walk-in state. For collection / delivery we route through the
-    // customer-capture screen first (they need a name / phone / address /
-    // collection time before going to the menu). Takeaway skips capture by
-    // default — the server can hit "Skip" to go straight to the menu.
+    // Reset prior walk-in state. Takeaway / collection / delivery all route
+    // through the customer-capture screen first — like the counter POS, they
+    // need at least a name + phone before the menu (kitchen ticket, queue row,
+    // receipt). v5.5.341: takeaway was previously skipping capture.
     useStore.setState({ walkInOrder: null, customer: null, activeTableId: null });
-    if (type === 'collection' || type === 'delivery') {
+    if (type === 'collection' || type === 'delivery' || type === 'takeaway') {
       setFlow({ screen: 'customerCapture' });
     } else {
       setFlow({ screen: 'menu', context: { source: 'walkin' } });

@@ -3819,6 +3819,7 @@ export const useStore = create((set, get) => ({
       tip: paymentInfo.tip || 0,
       total: paymentInfo.grand || subtotal,
       taxAmount: taxBreakdown?.totalTax != null ? taxBreakdown.totalTax : null, // v4.6.19
+      taxBreakdown,                                                                  // v5.5.341: store full breakdown so receipts/reports show VAT lines (walk-in/MPOS)
       method: paymentInfo.method || 'card',
       giftCard: paymentInfo.giftCard || null,                                        // v5.5.217
       stripePaymentIntentId: paymentInfo.stripePaymentIntentId || null,              // v5.5.301
