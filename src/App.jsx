@@ -78,6 +78,13 @@ import { ServOSIcon } from './components/ServOSBrand';
 
 const CHANGELOG = [
   {
+    version: '5.5.337', date: '29 May 2026', label: 'Fix gift card "Card not found" on POS (lookup code_plain fallback)',
+    changes: [
+      'The POS looks a gift card up (gift-lookup) before redeeming. gift-lookup matched by HMAC only — no code_plain fallback — so cards with a legacy/stale code_lookup (some online-issued cards) failed with "Card not found" before redeem (which has the fallback) could ever run',
+      'Added the code_plain fallback to gift-lookup (direct-code + smart-search paths) and gift-balance-public, matching gift-redeem. Still company-scoped; the argon2 verify still gates the public balance check',
+    ],
+  },
+  {
     version: '5.5.336', date: '29 May 2026', label: 'Tip pool — QR tips auto-pooled too',
     changes: [
       'QR table-order tips now auto-flow into the pool alongside kiosk and online — they\'re customer-self-ordered with no single server who earned them',

@@ -62,6 +62,21 @@ Deno.serve(async (req) => {
       .maybeSingle();
     card = data;
 
+    // v5.5.337: fallback to code_plain when the HMAC lookup misses. Some
+    // online-issued cards stored a differently-computed (32-char) code_lookup,
+    // so HMAC can't find them — but code_plain is exact. gift-redeem already
+    // has this fallback; gift-lookup didn't, so the POS (which looks up BEFORE
+    // it redeems) failed with "Card not found" before redeem could recover.
+    if (!card) {
+      const { data: byPlain } = await platformAdmin
+        .from('gift_cards')
+        .select('*')
+        .eq('code_plain', normalized)
+        .eq('company_id', companyId)
+        .maybeSingle();
+      card = byPlain;
+    }
+
   } else if (code_last4 && email) {
     // ── Legacy: last4 + email ─────────────────────────────────────────
     const { data } = await platformAdmin
@@ -94,6 +109,16 @@ Deno.serve(async (req) => {
           .eq('company_id', companyId)
           .maybeSingle();
         card = data;
+        if (!card) {
+          // v5.5.337: same code_plain fallback as the direct-code path above.
+          const { data: byPlain } = await platformAdmin
+            .from('gift_cards')
+            .select('*')
+            .eq('code_plain', cleaned)
+            .eq('company_id', companyId)
+            .maybeSingle();
+          card = byPlain;
+        }
       }
     }
 

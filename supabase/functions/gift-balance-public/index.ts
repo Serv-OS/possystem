@@ -63,12 +63,25 @@ Deno.serve(async (req) => {
   const lookup = await hmacLookup(code, config.hmac_secret);
 
   // Find card by lookup index
-  const { data: card } = await platformAdmin
+  let { data: card } = await platformAdmin
     .from('gift_cards')
     .select('id, code_hash, code_last4, balance_minor, status, expires_at')
     .eq('company_id', companyId)
     .eq('code_lookup', lookup)
     .maybeSingle();
+
+  // v5.5.337: fallback to code_plain when the HMAC lookup misses (some online
+  // cards stored a legacy 32-char code_lookup). The argon2 verify below still
+  // gates access, so this only widens the search, not the security check.
+  if (!card) {
+    const { data: byPlain } = await platformAdmin
+      .from('gift_cards')
+      .select('id, code_hash, code_last4, balance_minor, status, expires_at')
+      .eq('company_id', companyId)
+      .eq('code_plain', code)
+      .maybeSingle();
+    card = byPlain;
+  }
 
   if (!card) return json({ error: 'Card not found. Check the code and try again.' }, 404);
 
