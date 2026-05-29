@@ -598,6 +598,14 @@ export default function BarSurface() {
                 total: payInfo?.grand || subtotal,
                 method: payInfo?.method || 'card',
                 giftCard: payInfo?.giftCard || null,
+                // v5.5.323: carry the card PaymentIntent through so a bar-tab
+                // refund returns funds to the original card automatically
+                // (previously bar tabs stored no PI → manual-refund warning).
+                stripePaymentIntentId: payInfo?.stripePaymentIntentId || null,
+                paymentIntents: payInfo?.paymentIntents
+                  || (payInfo?.stripePaymentIntentId
+                      ? [{ id: payInfo.stripePaymentIntentId, amountMinor: Math.round((payInfo?.grand || subtotal || 0) * 100) }]
+                      : null),
               });
               closeTab(activeTab.id);
               setActiveTab(null);

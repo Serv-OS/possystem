@@ -117,7 +117,9 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
           if (j.is_success) {
             setState('success');
             setStatusMsg('Payment approved');
-            setTimeout(() => onComplete('card'), 800);
+            // v5.5.323: carry the PaymentIntent id up so this split portion's
+            // card refund can be auto-processed back to the customer's card.
+            setTimeout(() => onComplete('card', piIdRef.current), 800);
           } else {
             setState('error');
             setErrorMsg(j.last_payment_error || j.reader_action?.failure_message || 'Payment failed');
@@ -152,7 +154,7 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
         <div style={{ fontSize: 32, fontWeight: 800, color: 'var(--t1)', fontFamily: 'DM Mono,monospace', marginBottom: 16 }}>£{amount.toFixed(2)}</div>
         <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
           <button className="btn btn-ghost" style={{ height: 42 }} onClick={onBack}>← Back</button>
-          <button className="btn btn-grn" style={{ height: 42, padding: '0 24px' }} onClick={() => onComplete('card')}>Simulate approved</button>
+          <button className="btn btn-grn" style={{ height: 42, padding: '0 24px' }} onClick={() => onComplete('card', null)}>Simulate approved</button>
         </div>
       </div>
     );
@@ -460,7 +462,7 @@ function PortionTender({ portion, portionNum, total, canTakeCash = true, onCompl
         <SplitCardTerminal
           amount={portion.total}
           portionLabel={`Portion ${portionNum} — ${portion.label}`}
-          onComplete={(method) => onComplete(method)}
+          onComplete={(method, piId) => onComplete(method, null, null, piId)}
           onBack={() => setScreen('method')}
         />
       )}
@@ -583,8 +585,10 @@ export default function SplitModal({ items, total, covers, canTakeCash = true, o
   };
 
   // ─ Handle tender completion ─────────────────────────────────────────────────
-  const handlePortionPaid = (idx, method, tendered, change) => {
-    setPortions(p => p.map((portion, i) => i===idx ? { ...portion, paid:true, method, tendered, change } : portion));
+  // v5.5.323: capture the card PaymentIntent id (if this portion was paid by
+  // card) so the closed check can auto-refund each card leg to its own card.
+  const handlePortionPaid = (idx, method, tendered, change, paymentIntentId = null) => {
+    setPortions(p => p.map((portion, i) => i===idx ? { ...portion, paid:true, method, tendered, change, paymentIntentId: paymentIntentId || null } : portion));
     setTenderingIdx(null);
   };
 
@@ -876,7 +880,7 @@ export default function SplitModal({ items, total, covers, canTakeCash = true, o
               portionNum={tenderingIdx+1}
               total={total}
               canTakeCash={canTakeCash}
-              onComplete={(method, tendered, change) => handlePortionPaid(tenderingIdx, method, tendered, change)}
+              onComplete={(method, tendered, change, piId) => handlePortionPaid(tenderingIdx, method, tendered, change, piId)}
               onBack={() => setTenderingIdx(null)}
             />
           )}

@@ -5,6 +5,26 @@ import { resolveServiceCharge } from '../lib/serviceCharge';
 import { upsertMenuItem, upsertFloorTable, deleteFloorTable, insertKDSTicket, insertClosedCheck, toggle86DB, getNextOrderRefLocal, updateClosedCheckRefunds, upsertStockLevel, deleteStockLevel, decrementStockRPC, restoreStockRPC } from '../lib/db';
 import { printService } from '../lib/printer';
 
+// ── Payment-intent normaliser ────────────────────────────────────────────────
+// v5.5.323: a check can have MULTIPLE card PaymentIntents — one per card portion
+// of a split. Collapse whatever the checkout flow handed us into a single array
+// [{ id, amountMinor }] stored on the closed check, so refundCheck can refund
+// every card leg back to its own card. Falls back to the legacy single-id field
+// (single-card POS flow) so that path is byte-for-byte unchanged.
+function derivePaymentIntents(paymentInfo = {}) {
+  const list = Array.isArray(paymentInfo.paymentIntents) ? paymentInfo.paymentIntents : null;
+  if (list && list.length) {
+    const clean = list
+      .filter(p => p && p.id)
+      .map(p => ({ id: p.id, amountMinor: Number.isFinite(p.amountMinor) ? p.amountMinor : null }));
+    return clean.length ? clean : null;
+  }
+  if (paymentInfo.stripePaymentIntentId) {
+    return [{ id: paymentInfo.stripePaymentIntentId, amountMinor: Math.round((paymentInfo.grand || 0) * 100) || null }];
+  }
+  return null;
+}
+
 // ── Supabase helpers ─────────────────────────────────────────────────────────
 const sbUpsertMenu = async (menu) => {
   if (isMock) return;
@@ -3680,6 +3700,7 @@ export const useStore = create((set, get) => ({
       method:     paymentInfo.method || 'card',
       giftCard:   paymentInfo.giftCard || null,                  // v5.5.217: gift card reversal on refund
       stripePaymentIntentId: paymentInfo.stripePaymentIntentId || null,  // v5.5.301: for card refunds
+      paymentIntents: derivePaymentIntents(paymentInfo),  // v5.5.323: all card legs (split portions) for multi-card refund
       loyaltyRedemption: paymentInfo.loyaltyRedemption || null,  // v5.5.315: link redeem→check for refund restore
       closedAt:   Date.now(),
       status:     'paid',
@@ -3783,6 +3804,7 @@ export const useStore = create((set, get) => ({
       method: paymentInfo.method || 'card',
       giftCard: paymentInfo.giftCard || null,                                        // v5.5.217
       stripePaymentIntentId: paymentInfo.stripePaymentIntentId || null,              // v5.5.301
+      paymentIntents: derivePaymentIntents(paymentInfo),                             // v5.5.323: multi-card refund
       loyaltyRedemption: paymentInfo.loyaltyRedemption || null,                      // v5.5.315
       drawerId: get().myDrawer?.()?.id || null,                                   // v4.6.37
       shiftId:  get().currentShift?.id || null,                                   // v4.6.37
@@ -3938,50 +3960,79 @@ export const useStore = create((set, get) => ({
         }
       })();
     }
-    // v5.5.301: Stripe card refund — return funds to original payment method.
-    // Only fire when the original payment was by card AND we have a PI ID.
-    if (check?.stripePaymentIntentId && check.method?.includes('card')) {
+    // v5.5.301/323: Stripe card refund — return funds to the original card(s).
+    // A check can carry MULTIPLE card PaymentIntents (one per card portion of a
+    // split). Normalise the legacy single id + the paymentIntents[] array into
+    // one list, then refund across all legs. For a single-card check this is a
+    // 1-element list → byte-for-byte the original single-refund behaviour.
+    const cardPIs = (() => {
+      const arr = (Array.isArray(check?.paymentIntents) && check.paymentIntents.length)
+        ? check.paymentIntents
+        : (check?.stripePaymentIntentId
+            ? [{ id: check.stripePaymentIntentId, amountMinor: Math.round((check.total || 0) * 100) }]
+            : []);
+      return arr.filter(p => p && p.id);
+    })();
+    const refundAmountMinor = Math.round((amount || 0) * 100);
+    if (cardPIs.length && refundAmountMinor > 0) {
       (async () => {
-        try {
-          const token = await ensureAuthToken();
-          if (!token) { console.warn('[refundCheck] stripe refund skipped — no auth token'); return; }
-          const refundAmountMinor = Math.round((amount || 0) * 100);
-          if (refundAmountMinor <= 0) { console.warn('[refundCheck] stripe refund skipped — zero amount'); return; }
-          const res = await fetch(
-            `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-refund`,
-            {
-              method: 'POST',
-              headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-              body: JSON.stringify({
-                payment_intent_id: check.stripePaymentIntentId,
-                amount_minor: refundAmountMinor,
-                location_id: getActiveLocationSync(),
-                reason: 'requested_by_customer',
-                closed_check_id: check.ref || check.id,
-                staff_id: manager?.id || null,
-              }),
+        const token = await ensureAuthToken();
+        if (!token) { console.warn('[refundCheck] stripe refund skipped — no auth token'); return; }
+        // Allocate the refund across the card legs in order: each leg gets up to
+        // its captured amount, earlier legs first, until the refund is exhausted.
+        // A full refund tops every card leg out; a partial fills from the front.
+        // Each leg keeps its own idempotency key so a retry after a partial
+        // failure never double-refunds a leg that already went through.
+        let remainMinor = refundAmountMinor;
+        for (const pi of cardPIs) {
+          if (remainMinor <= 0) break;
+          // Single leg: refund the full requested amount and let Stripe enforce
+          // the real captured cap (identical to the pre-v5.5.323 single-card
+          // path — no regression). Multiple legs: cap each at its own captured
+          // amount so one card isn't over-refunded with another card's share.
+          const legCap = (cardPIs.length > 1 && Number.isFinite(pi.amountMinor) && pi.amountMinor > 0)
+            ? pi.amountMinor
+            : remainMinor;
+          const legRefund = Math.min(remainMinor, legCap);
+          if (legRefund <= 0) continue;
+          try {
+            const res = await fetch(
+              `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-refund`,
+              {
+                method: 'POST',
+                headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+                body: JSON.stringify({
+                  payment_intent_id: pi.id,
+                  amount_minor: legRefund,
+                  location_id: getActiveLocationSync(),
+                  reason: 'requested_by_customer',
+                  closed_check_id: check.ref || check.id,
+                  idempotency_key: `refund:${check.id || check.ref}:${pi.id}`,  // v5.5.323: per-leg, retry-safe
+                  staff_id: manager?.id || null,
+                }),
+              }
+            );
+            const j = await res.json().catch(() => ({}));
+            if (res.ok) {
+              console.info('[refundCheck] stripe refund created:', j.refund_id, 'PI:', pi.id, 'amount:', j.amount);
+              remainMinor -= legRefund;
+            } else {
+              console.warn('[refundCheck] stripe refund HTTP error:', res.status, j.error || '', 'PI:', pi.id);
             }
-          );
-          const j = await res.json().catch(() => ({}));
-          if (res.ok) {
-            console.info('[refundCheck] stripe refund created:', j.refund_id, 'amount:', j.amount);
-          } else {
-            console.warn('[refundCheck] stripe refund HTTP error:', res.status, j.error || '');
+          } catch (e) {
+            console.warn('[refundCheck] stripe refund failed:', e?.message || e, 'PI:', pi.id);
           }
-        } catch (e) {
-          console.warn('[refundCheck] stripe refund failed:', e?.message || e);
         }
       })();
     }
-    // v5.5.311: be honest about card refunds. If the original payment included
-    // a card but we have NO PaymentIntent to refund against (bar tabs and split
-    // payments don't yet store one, and legacy checks predate the column), the
-    // Stripe refund block above is skipped — so DON'T claim it was "processed
-    // via card". Tell staff to issue the card refund manually instead, so money
-    // actually gets returned.
-    const cardRefundExpected = check?.method?.includes('card');
-    const cardRefundIssued = !!(check?.stripePaymentIntentId) && cardRefundExpected;
-    if (cardRefundExpected && !cardRefundIssued) {
+    // v5.5.311/323: be honest about card refunds. If the customer paid (partly)
+    // by card but we have NO PaymentIntent to refund against (legacy checks that
+    // predate the column, or a simulated/no-reader payment), don't claim it was
+    // processed — tell staff to refund the card manually so money is actually
+    // returned. With ≥1 captured PI the loop above auto-refunded the card legs.
+    // (Splits store their card legs in paymentIntents[], so cardPIs covers them.)
+    const cardInMethod = check?.method?.includes('card');  // single-card / gift+card
+    if (cardInMethod && cardPIs.length === 0) {
       get().showToast(`Refund of £${amount?.toFixed(2)} recorded — issue the card refund manually (no linked card payment found)`, 'warning');
     } else {
       get().showToast(`Refund of £${amount?.toFixed(2)} processed via ${tenderMethod}`, 'success');

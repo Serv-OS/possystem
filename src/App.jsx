@@ -76,6 +76,16 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.323', date: '29 May 2026', label: 'Card refunds for split payments & bar tabs',
+    changes: [
+      'Refunds now return funds to the original card for SPLIT payments and BAR TABS, not just single-card checks',
+      'A split with multiple card portions refunds each portion back to its own card',
+      'Closed checks store every card PaymentIntent (new payment_intents column); refund allocates across all card legs',
+      'Per-leg idempotency on stripe-refund so a retried split refund never double-refunds a leg that already went through',
+      'Honest warning still shown only when a card was used but no PaymentIntent exists (legacy/simulated) — no more false "manual refund" prompts for split/tab card payments',
+    ],
+  },
+  {
     version: '5.5.293', date: '28 May 2026', label: 'Editable loyalty messages',
     changes: [
       'Loyalty Welcome SMS/email and OTP verification code messages are now editable in Back Office → Messages → Loyalty',

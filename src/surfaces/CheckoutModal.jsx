@@ -1421,7 +1421,15 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
           total={total}
           covers={covers}
           canTakeCash={_canTakeCash}
-          onComplete={(portions)=>{ setShowSplit(false); onComplete({ method:'split', tip:0, grand:total, portions, printReceipt }); }}
+          onComplete={(portions)=>{
+            setShowSplit(false);
+            // v5.5.323: collect every card portion's PaymentIntent so each card
+            // leg of the split can be auto-refunded back to its own card later.
+            const paymentIntents = (portions||[])
+              .filter(p => p?.method === 'card' && p.paymentIntentId)
+              .map(p => ({ id: p.paymentIntentId, amountMinor: Math.round((p.total||0)*100) }));
+            onComplete({ method:'split', tip:0, grand:total, portions, paymentIntents, stripePaymentIntentId: paymentIntents[0]?.id || null, printReceipt });
+          }}
           onClose={()=>setShowSplit(false)}
         />
       )}

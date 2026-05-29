@@ -447,6 +447,7 @@ export const insertClosedCheck = async (check, locationId = null) => {
     loyalty:      check.loyalty  || null,   // v5.5.218: loyalty points summary (earn/redeem)
     source:       check.source   || null,   // v5.5.276: pos / kiosk / online / qr — null = 'pos' default
     stripe_payment_intent_id: check.stripePaymentIntentId || null,  // v5.5.301: for card refunds
+    payment_intents: check.paymentIntents || null,  // v5.5.323: ALL card PIs (split portions + bar tabs) for multi-card refund
   };
 
   // Use DataSafe triple-write: localStorage → Supabase (queued if offline)
@@ -510,6 +511,7 @@ export const fetchClosedChecks = async (locationId = null, limit = 500, sinceDat
       tableId: c.table_id, tableLabel: c.table_label,
       giftCard: c.gift_card || null,
       stripePaymentIntentId: c.stripe_payment_intent_id || null,
+      paymentIntents: c.payment_intents || null,  // v5.5.323: multi-card refund source
       loyalty: c.loyalty || null,
       source: c.source || 'pos', // v5.5.140: surface source for report filters (online / kiosk / qr / pos)
     }));
@@ -544,6 +546,7 @@ export const fetchClosedChecksRange = async (locationId = null, fromDate, toDate
       tableId: c.table_id, tableLabel: c.table_label,
       giftCard: c.gift_card || null,
       stripePaymentIntentId: c.stripe_payment_intent_id || null,
+      paymentIntents: c.payment_intents || null,  // v5.5.323: multi-card refund source
       loyalty: c.loyalty || null,
       source: c.source || 'pos', // v5.5.140: surface source for report filters (online / kiosk / qr / pos)
     }));

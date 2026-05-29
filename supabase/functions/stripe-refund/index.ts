@@ -56,10 +56,11 @@ Deno.serve(async (req) => {
     reason?: string;
     closed_check_id?: string;
     staff_id?: string;
+    idempotency_key?: string;
   };
   try { body = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
 
-  const { payment_intent_id, amount_minor, location_id, reason, closed_check_id, staff_id } = body;
+  const { payment_intent_id, amount_minor, location_id, reason, closed_check_id, staff_id, idempotency_key } = body;
 
   if (!payment_intent_id) return json({ error: 'payment_intent_id required' }, 400);
   if (!amount_minor || amount_minor <= 0) return json({ error: 'amount_minor must be positive' }, 400);
@@ -93,7 +94,14 @@ Deno.serve(async (req) => {
           source: 'pos_refund',
         },
       },
-      { stripeAccount: msa.stripe_account_id },
+      {
+        stripeAccount: msa.stripe_account_id,
+        // v5.5.323: per-leg idempotency. A split refund issues one refund per
+        // card PaymentIntent; if the loop is retried after a partial failure,
+        // legs that already succeeded return the SAME refund instead of being
+        // double-refunded. Stripe scopes idempotency keys per account/endpoint.
+        ...(idempotency_key ? { idempotencyKey: idempotency_key } : {}),
+      },
     );
 
     console.log(`[stripe-refund] Created refund ${refund.id} for PI ${payment_intent_id} — ${refund.amount} ${refund.currency} — status: ${refund.status}`);
