@@ -23,11 +23,11 @@ import { currencySymbol } from '../../../lib/currency';
 // Groups by server NAME (since that's the field that's always present on historical
 // rows). Also captures the first staffId seen for that server so pool role lookup
 // can prefer FK match (v4.6.19) and fall back to name match for legacy rows.
-// v5.5.335: kiosk + online orders aren't taken by a human server, so their tips
-// must NOT be parked under a phantom "server" who then keeps/excludes them. They
-// go into a "house" bucket that always feeds the pool (contributes 100%, never
-// receives). (QR is deliberately NOT here — it's dine-in table service.)
-const HOUSE_SOURCES = new Set(['kiosk', 'online']);
+// v5.5.335/336: kiosk, online + QR orders are customer-self-ordered — there's no
+// single server who earned the tip — so their tips must NOT be parked under a
+// phantom "server" who then keeps/excludes them. They go into a "house" bucket
+// that always feeds the pool (contributes 100%, never receives).
+const HOUSE_SOURCES = new Set(['kiosk', 'online', 'qr']);
 
 function serverTips(checks) {
   const map = {};
@@ -154,7 +154,7 @@ export default function Tips({ checks, fmt, fmtN }) {
     // v5.5.335: kiosk/online tips have no server — a House row always feeds the
     // pool (contributes 100%, never receives) so those tips reach real staff.
     if (house.tips > 0) {
-      rows.push({ server: 'Kiosk & online', role: 'House', hoursMs: 0, gross: house.tips, contribution: 0, received: 0, net: house.tips, inPool: false, isHouse: true });
+      rows.push({ server: 'Kiosk, online & QR', role: 'House', hoursMs: 0, gross: house.tips, contribution: 0, received: 0, net: house.tips, inPool: false, isHouse: true });
     }
 
     if (mode === 'tipout' || mode === 'shared') {
@@ -315,7 +315,7 @@ export default function Tips({ checks, fmt, fmtN }) {
 
         {mode !== 'none' && (
           <div style={{ marginTop:10, padding:'9px 12px', background:'var(--bg3)', border:'1px dashed var(--bdr)', borderRadius:8, fontSize:11, color:'var(--t4)', lineHeight:1.7 }}>
-            ⓘ Pool math is a preview — export CSV to hand to payroll. Roles come from Staff manager; unrecognised names show "Unknown" and are treated as non-participants. Kiosk &amp; online tips have no server, so they always flow 100% into the pool.
+            ⓘ Pool math is a preview — export CSV to hand to payroll. Roles come from Staff manager; unrecognised names show "Unknown" and are treated as non-participants. Kiosk, online &amp; QR tips have no single server, so they always flow 100% into the pool.
           </div>
         )}
       </div>
@@ -359,7 +359,7 @@ export default function Tips({ checks, fmt, fmtN }) {
           const cashPct = house.tips ? (house.tipsCash / house.tips) * 100 : 0;
           return (
             <div style={{ display:'grid', gridTemplateColumns:'1.3fr 90px 90px 90px 70px 1fr', padding:'10px 14px', borderTop:'1px solid var(--bdr)', fontSize:12, alignItems:'center', gap:8, background:'var(--bg2)' }}>
-              <span style={{ color:'var(--t2)', fontWeight:600 }}>Kiosk &amp; online <span style={{ fontSize:10, color:'var(--t4)', fontWeight:600 }}>· auto-pooled</span></span>
+              <span style={{ color:'var(--t2)', fontWeight:600 }}>Kiosk, online &amp; QR <span style={{ fontSize:10, color:'var(--t4)', fontWeight:600 }}>· auto-pooled</span></span>
               <span style={{ textAlign:'right', color:'#3b82f6', fontFamily:'var(--font-mono)' }}>{fmt(house.tipsCard)}</span>
               <span style={{ textAlign:'right', color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{fmt(house.tipsCash)}</span>
               <span style={{ textAlign:'right', color:'var(--t1)', fontFamily:'var(--font-mono)', fontWeight:700 }}>{fmt(house.tips)}</span>

@@ -78,6 +78,13 @@ import { ServOSIcon } from './components/ServOSBrand';
 
 const CHANGELOG = [
   {
+    version: '5.5.336', date: '29 May 2026', label: 'Tip pool — QR tips auto-pooled too',
+    changes: [
+      'QR table-order tips now auto-flow into the pool alongside kiosk and online — they\'re customer-self-ordered with no single server who earned them',
+      'The auto-pooled line now reads "Kiosk, online & QR"',
+    ],
+  },
+  {
     version: '5.5.335', date: '29 May 2026', label: 'Tip pool — kiosk/online tips auto-flow into the pool',
     changes: [
       'Kiosk and online tips have no server who earned them, so they now go 100% into the tip pool instead of sitting under a phantom "Unknown" server',
