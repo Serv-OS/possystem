@@ -78,6 +78,13 @@ import { ServOSIcon } from './components/ServOSBrand';
 
 const CHANGELOG = [
   {
+    version: '5.5.333', date: '29 May 2026', label: 'Remove POS top-bar Covers/Sales/Avg stats',
+    changes: [
+      'Removed the Covers / Sales / Avg figures from the POS top bar — they weren\'t reliably populated and read as broken zeros',
+      'The "Current shift" status light stays; live shift figures are in Reports',
+    ],
+  },
+  {
     version: '5.5.332', date: '29 May 2026', label: 'Capture split-payment tips for reporting',
     changes: [
       'Reader-collected tips on split card portions are now recorded on the closed check — they were charged but saved as tip:0, so they were missing from tip reports and overstated the Stripe-vs-books gap',
@@ -5703,12 +5710,6 @@ function ShiftBar({ version, onWhatsNew, theme, onToggleTheme, syncPulse }) {
   const activeOrders = (orderQueue?.filter(o => !['collected','paid'].includes(o.status)).length || 0)
     + (tables?.filter(t => t.status !== 'available').length || 0)
     + (tabs?.filter(t => t.status !== 'closed').length || 0);
-  // v5.5.330: live seated covers (open tables + open tabs) so the Covers stat
-  // reflects guests currently in, on top of settled covers from closed checks.
-  // Previously Covers counted only settled checks → showed 0 mid-shift while
-  // tables were clearly seated, which read as "not wired in".
-  const seatedCovers = (tables?.filter(t => t.status !== 'available') || []).reduce((s, t) => s + (t.session?.covers || 0), 0)
-    + (tabs?.filter(t => t.status !== 'closed').length || 0);
   const urlParam = deviceConfig?.param;
 
   // Printer status — poll bridge every 30s
@@ -5766,12 +5767,8 @@ function ShiftBar({ version, onWhatsNew, theme, onToggleTheme, syncPulse }) {
             <div style={{ width:6, height:6, borderRadius:'50%', background:'var(--acc)', boxShadow:'0 0 8px var(--acc)', animation:'pulse .6s ease-out', opacity:1 }}/>
           )}
         </div>
-        {[{label:'Covers',val:shift.covers + seatedCovers},{label:'Sales',val:`${currencySymbol()}${shift.sales.toLocaleString()}`},{label:'Avg',val:`${money(shift.avgCheck)}`}].map(s=>(
-          <div key={s.label} style={{ marginRight:20, display:'flex', alignItems:'baseline', gap:5 }}>
-            <span style={{ fontSize:10, color:'var(--t4)', fontWeight:700, textTransform:'uppercase', letterSpacing:'.06em' }}>{s.label}</span>
-            <span style={{ fontSize:13, fontWeight:700, color:'var(--t2)', fontFamily:typeof s.val==='string'&&s.val.includes('£')?'var(--font-mono)':'inherit' }}>{s.val}</span>
-          </div>
-        ))}
+        {/* v5.5.333: Covers/Sales/Avg removed — weren't reliably populated. Live
+            figures live in Reports; the shift indicator stays as a status light. */}
       </div>
       <div style={{ display:'flex', alignItems:'center', gap:10, padding:'0 14px', flexShrink:0 }}>
         <div style={{ fontSize:11, color:'var(--t4)', fontFamily:'var(--font-mono)' }}>
