@@ -37,7 +37,33 @@ Deno.serve(async (req) => {
       user_metadata: { full_name: fullName || email, role: role || 'owner' },
     });
 
-    if (createErr) return new Response(JSON.stringify({ error: createErr.message }), { status: 400, headers: corsHeaders });
+    // v5.5.320: make this idempotent. If the email already exists, don't error
+    // out and leave a half-populated profile — find the existing auth user and
+    // STILL apply the org/location/role/email profile update + user_locations
+    // link below. A re-invite (typo retry, double-click, re-provision) then
+    // repairs the user instead of failing.
+    let userId = newUser?.user?.id || null;
+    let alreadyExisted = false;
+    if (createErr) {
+      const dup = /already.*registered|already.*exists|duplicate/i.test(createErr.message || '');
+      if (!dup) {
+        return new Response(JSON.stringify({ error: createErr.message }), { status: 400, headers: corsHeaders });
+      }
+      // Look up the existing auth user by email (paginate defensively).
+      try {
+        let page = 1;
+        while (page <= 20 && !userId) {
+          const { data: list } = await supabaseAdmin.auth.admin.listUsers({ page, perPage: 200 });
+          const match = (list?.users || []).find((u: any) => (u.email || '').toLowerCase() === String(email).toLowerCase());
+          if (match) { userId = match.id; alreadyExisted = true; break; }
+          if (!list || (list.users || []).length < 200) break;
+          page++;
+        }
+      } catch (e) { /* fall through to error below if still unresolved */ }
+      if (!userId) {
+        return new Response(JSON.stringify({ error: createErr.message }), { status: 400, headers: corsHeaders });
+      }
+    }
 
     // Update their profile with org/location. v5.5.305: also write email —
     // the handle_new_user trigger now copies it, but set it explicitly here
@@ -48,17 +74,17 @@ Deno.serve(async (req) => {
       location_id: locationId || null,
       role: role || 'owner',
       full_name: fullName || email,
-    }).eq('id', newUser.user.id);
+    }).eq('id', userId);
 
     // v5.5.305: also create a user_locations row so the user appears in the
     // location's access list and resolves via the junction table on login.
     if (locationId) {
       await supabaseAdmin.from('user_locations')
-        .upsert({ user_id: newUser.user.id, location_id: locationId, role: role || 'owner' },
+        .upsert({ user_id: userId, location_id: locationId, role: role || 'owner' },
                 { onConflict: 'user_id,location_id' });
     }
 
-    return new Response(JSON.stringify({ success: true, userId: newUser.user.id, email }), {
+    return new Response(JSON.stringify({ success: true, userId, email, alreadyExisted }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   } catch (err) {
