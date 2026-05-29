@@ -1,3 +1,4 @@
+import { money } from './/currency';
 /**
  * Tax calculation engine — handles UK VAT (inclusive) and US sales tax (exclusive)
  *
@@ -105,7 +106,7 @@ export function formatRateLabel(rate) {
 /**
  * Format tax amount for display
  */
-export const fmtTax = n => `£${Math.abs(n || 0).toFixed(2)}`;
+export const fmtTax = n => `${money(Math.abs(n || 0))}`;
 
 /**
  * Seed rates for a new UK location

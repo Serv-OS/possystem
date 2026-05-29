@@ -7,6 +7,7 @@ import { useStore } from '../../../store';
 import { supabase, isMock, getLocationId } from '../../../lib/supabase';
 import { StatTile, EmptyState, ExportBtn } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
+import { money } from '../../../lib/currency';  // v5.5.326: multi-currency
 
 const TYPE_META = {
   float_in:           { label: 'Opening float',    sign: +1, color: 'var(--acc)' },
@@ -20,8 +21,8 @@ const TYPE_META = {
   drawer_open:        { label: 'No-sale open',     sign:  0, color: 'var(--t4)' },
 };
 
-const fmt = (n) => '£' + (n || 0).toFixed(2);
-const fmtS = (n) => (n >= 0 ? '+' : '−') + '£' + Math.abs(n || 0).toFixed(2);
+const fmt = (n) => money(n);
+const fmtS = (n) => (n >= 0 ? '+' : '−') + money(Math.abs(n || 0));
 const fmtTime = (ts) => new Date(ts).toLocaleString('en-GB', {
   day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit',
 });

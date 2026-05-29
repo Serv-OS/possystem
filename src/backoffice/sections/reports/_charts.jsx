@@ -2,6 +2,7 @@
 // Used by SalesSummary, Exceptions, Payments, Daypart and anything downstream.
 
 import { Fragment } from 'react';
+import { currencySymbol } from '../../../lib/currency';
 
 // Period-over-period delta chip. Inverted=true when a decrease is the good outcome
 // (e.g. void rate, discount leakage) — the chip flips red/green accordingly.
@@ -123,7 +124,7 @@ export function HourBar({ values, maxLabel, nowHour, currency = true }) {
         return (
           <div key={h} style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', gap:3 }}>
             <div style={{ fontSize:9, color:'var(--t4)', fontFamily:'var(--font-mono)' }}>
-              {val > 0 ? (maxLabel ? maxLabel(val) : (currency ? `£${Math.round(val)}` : Math.round(val))) : ''}
+              {val > 0 ? (maxLabel ? maxLabel(val) : (currency ? `${currencySymbol()}${Math.round(val)}` : Math.round(val))) : ''}
             </div>
             <div style={{
               width:'100%',

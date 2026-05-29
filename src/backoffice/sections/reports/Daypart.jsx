@@ -11,6 +11,7 @@ import { useMemo } from 'react';
 import { StatTile, ExportBtn, EmptyState, Heatmap, HourBar } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
 import { classifyShift } from './_filters';
+import { currencySymbol } from '../../../lib/currency';
 
 const DOW_LABELS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
 
@@ -133,7 +134,7 @@ export default function Daypart({ checks, fmt, locationConfig }) {
 
       <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:12, padding:'16px' }}>
         <div style={{ fontSize:11, fontWeight:700, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:16 }}>Revenue by hour (all days combined)</div>
-        <HourBar values={byHour} maxLabel={v => `£${Math.round(v)}`} nowHour={nowHour}/>
+        <HourBar values={byHour} maxLabel={v => `${currencySymbol()}${Math.round(v)}`} nowHour={nowHour}/>
       </div>
     </div>
   );

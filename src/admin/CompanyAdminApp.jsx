@@ -3,6 +3,7 @@ import { VERSION } from '../lib/version';
 import BOLogin from '../backoffice/BOLogin';
 import AdminBillingManager from './sections/AdminBillingManager';
 import AdminStripeTest from './sections/AdminStripeTest';
+import { money } from '../lib/currency';
 
 const S = {
   shell: { display:'flex', height:'100vh', fontFamily:'inherit', background:'var(--bg)', color:'var(--t1)' },
@@ -531,7 +532,7 @@ function AdminPanel({ authUser }) {
                                   <div style={{ display:'flex', gap:8, alignItems:'center' }}>
                                     <span style={{ ...S.badge, background:'var(--acc-d)', color:'#a5b4fc' }}>{plan}</span>
                                     <span style={{ fontSize:12, color:'var(--t3)' }}>{maxDev} devices</span>
-                                    <span style={{ fontSize:12, color:'var(--t3)' }}>£{parseFloat(gmv).toFixed(2)} GMV</span>
+                                    <span style={{ fontSize:12, color:'var(--t3)' }}>{money(parseFloat(gmv))} GMV</span>
                                   </div>
                                   <div style={{ marginLeft:'auto', display:'flex', gap:8 }}>
                                     <button onClick={() => setEditingLoc({ id:loc.id, name:loc.name })} style={{ ...S.btn, ...S.btnGhost, padding:'4px 10px', fontSize:11 }}>✏️ Rename</button>

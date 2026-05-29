@@ -20,6 +20,7 @@
 //   useEffect(() => { pushReaderDisplay({ lineItems, totalMinor }); }, [cart]);
 
 import { supabase, isMock, ensureAuthToken } from './supabase';
+import { money } from './/currency';
 
 // ── Per-reader customer display toggle ──────────────────────────────────────
 // Cached in localStorage so every pushReaderDisplay call is a sync read (no DB).
@@ -112,7 +113,7 @@ export function pushReaderDisplay({ lineItems = [], totalMinor = 0, currency = '
         _lastSentKey = key;
         try {
           const j = await res.json();
-          console.log('[readerDisplay] push ok', j?.skipped || j?.cleared || `${j?.items || 0} items, £${((j?.total || 0) / 100).toFixed(2)}`);
+          console.log('[readerDisplay] push ok', j?.skipped || j?.cleared || `${j?.items || 0} items, ${money(((j?.total || 0) / 100))}`);
         } catch {}
       } else {
         const txt = await res.text().catch(() => '');

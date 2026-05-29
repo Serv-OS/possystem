@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useStore } from '../store';
 import { ALLERGENS, PIZZA_TOPPINGS, PIZZA_BASES, PIZZA_CRUSTS, PIZZA_SIZES } from '../data/seed';
+import { money, currencySymbol } from '../lib/currency';
 
 // ── Main product modal dispatcher ─────────────────────────────────────────────
 export default function ProductModal({ item, activeAllergens = [], onConfirm, onCancel }) {
@@ -70,7 +71,7 @@ function ModalShell({ item, price, children, onAdd, canAdd, onCancel, addLabel =
               disabled={!canAdd}
               onClick={canAdd ? onAdd : undefined}
             >
-              {addLabel} · <strong>£{price.toFixed(2)}</strong>
+              {addLabel} · <strong>{money(price)}</strong>
             </button>
           </div>
         </div>
@@ -130,7 +131,7 @@ function ModalShellWrapper({ item, price, children, onAdd, canAdd, onCancel, add
               disabled={!canAdd}
               onClick={canAdd ? onAdd : undefined}
             >
-              {addLabel || 'Add to order'} · <strong>£{price.toFixed(2)}</strong>
+              {addLabel || 'Add to order'} · <strong>{money(price)}</strong>
             </button>
           </div>
         </div>
@@ -276,7 +277,7 @@ function VariantsModal({ item, activeAllergens, onConfirm, onCancel }) {
                   </div>
                   <span style={{ fontSize:15, fontWeight:isSel?700:500, color:isSel?'var(--acc)':'var(--t1)' }}>{v.label}</span>
                 </div>
-                <span style={{ fontSize:16, fontWeight:800, color:isSel?'var(--acc)':'var(--t2)', fontFamily:'var(--font-mono)' }}>£{v.price.toFixed(2)}</span>
+                <span style={{ fontSize:16, fontWeight:800, color:isSel?'var(--acc)':'var(--t2)', fontFamily:'var(--font-mono)' }}>{money(v.price)}</span>
               </button>
             );
           })}
@@ -341,7 +342,7 @@ function VariantsModal({ item, activeAllergens, onConfirm, onCancel }) {
                           </div>
                           <span style={{ fontSize:13, fontWeight:isSel?700:400, color:isSel?'var(--acc)':'var(--t1)' }}>{opt.label||opt.name}</span>
                         </div>
-                        <span style={{ fontSize:12, color:isSel?'var(--acc)':'var(--t3)' }}>{opt.price>0?`+£${opt.price.toFixed(2)}`:isSel?'✓':''}</span>
+                        <span style={{ fontSize:12, color:isSel?'var(--acc)':'var(--t3)' }}>{opt.price>0?`+${money(opt.price)}`:isSel?'✓':''}</span>
                       </button>
                     );
                   } else {
@@ -351,7 +352,7 @@ function VariantsModal({ item, activeAllergens, onConfirm, onCancel }) {
                     return (
                       <div key={opt.id} style={{ display:'flex', alignItems:'center', gap:8, padding:'9px 12px', borderRadius:9, border:`1.5px solid ${qtyOpt>0?'var(--acc)':'var(--bdr)'}`, background:qtyOpt>0?'var(--acc-d)':'var(--bg3)' }}>
                         <span style={{ flex:1, fontSize:13, fontWeight:qtyOpt>0?700:400, color:qtyOpt>0?'var(--acc)':'var(--t1)' }}>{opt.label||opt.name}</span>
-                        <span style={{ fontSize:12, color:qtyOpt>0?'var(--acc)':'var(--t3)', marginRight:6 }}>{opt.price>0?`+£${opt.price.toFixed(2)}`:'free'}</span>
+                        <span style={{ fontSize:12, color:qtyOpt>0?'var(--acc)':'var(--t3)', marginRight:6 }}>{opt.price>0?`+${money(opt.price)}`:'free'}</span>
                         {qtyOpt>0&&<button onClick={()=>removeMulti(group.id,instances[instances.length-1]._uid)} style={{ width:26,height:26,borderRadius:6,border:'1.5px solid var(--acc-b)',background:'var(--bg1)',color:'var(--acc)',cursor:'pointer',fontSize:14,display:'flex',alignItems:'center',justifyContent:'center' }}>−</button>}
                         {qtyOpt>0&&<span style={{ fontSize:12, fontWeight:800, color:'var(--acc)', minWidth:14, textAlign:'center' }}>{qtyOpt}</span>}
                         <button onClick={()=>!atMax&&addMulti(group.id,opt)} disabled={atMax} style={{ width:26,height:26,borderRadius:6,border:`1.5px solid ${atMax?'var(--bdr)':'var(--acc)'}`,background:atMax?'var(--bg2)':'var(--acc)',color:atMax?'var(--t4)':'#0b0c10',cursor:atMax?'not-allowed':'pointer',fontSize:14,display:'flex',alignItems:'center',justifyContent:'center',opacity:atMax?.4:1 }}>+</button>
@@ -558,7 +559,7 @@ function ModifiersModal({ item, activeAllergens, onConfirm, onCancel }) {
                         <span style={{ fontSize:14, fontWeight:500, color:isSelected?'var(--acc)':'var(--t1)' }}>{opt.label||opt.name}</span>
                       </div>
                       <span style={{ fontSize:13, fontWeight:600, color:isSelected?'var(--acc)':'var(--t3)' }}>
-                        {opt.price > 0 ? `+£${opt.price.toFixed(2)}` : isSelected ? '✓' : ''}
+                        {opt.price > 0 ? `+${money(opt.price)}` : isSelected ? '✓' : ''}
                       </span>
                     </button>
                   );
@@ -571,7 +572,7 @@ function ModifiersModal({ item, activeAllergens, onConfirm, onCancel }) {
                     <div key={opt.id} style={{ display:'flex', alignItems:'center', gap:8, padding:'10px 14px', borderRadius:10, border:`1.5px solid ${qty>0?'var(--acc)':'var(--bdr)'}`, background:qty>0?'var(--acc-d)':'var(--bg3)', transition:'all .12s' }}>
                       <span style={{ fontSize:14, fontWeight:500, color:qty>0?'var(--acc)':'var(--t1)', flex:1 }}>{opt.label||opt.name}</span>
                       <span style={{ fontSize:13, color:qty>0?'var(--acc)':'var(--t3)', marginRight:8 }}>
-                        {opt.price > 0 ? `+£${opt.price.toFixed(2)}` : 'free'}
+                        {opt.price > 0 ? `+${money(opt.price)}` : 'free'}
                       </span>
                       <div style={{ display:'flex', alignItems:'center', gap:6 }}>
                         {qty > 0 && (
@@ -730,7 +731,7 @@ function PizzaModal({ item, activeAllergens, onConfirm, onCancel }) {
                     background:size.id===s.id?'var(--acc-d)':'var(--bg3)', transition:'all .12s', fontFamily:'inherit',
                   }}>
                     <div style={{ fontSize:12, fontWeight:500, color:size.id===s.id?'var(--acc)':'var(--t1)' }}>{s.name}</div>
-                    <div style={{ fontSize:11, color:'var(--t3)' }}>£{s.basePrice}</div>
+                    <div style={{ fontSize:11, color:'var(--t3)' }}>{currencySymbol()}{s.basePrice}</div>
                   </button>
                 ))}
               </div>
@@ -761,7 +762,7 @@ function PizzaModal({ item, activeAllergens, onConfirm, onCancel }) {
                     border:`1.5px solid ${crust.id===c.id?'var(--acc)':'var(--bdr)'}`,
                     background:crust.id===c.id?'var(--acc-d)':'var(--bg3)',
                     color:crust.id===c.id?'var(--acc)':'var(--t2)', fontFamily:'inherit',
-                  }}>{c.name}{c.extra?` +£${c.extra}`:''}</button>
+                  }}>{c.name}{c.extra?` +${currencySymbol()}${c.extra}`:''}</button>
                 ))}
               </div>
             </div>
@@ -822,7 +823,7 @@ function PizzaModal({ item, activeAllergens, onConfirm, onCancel }) {
                   }}>
                     <div style={{ width:9, height:9, borderRadius:'50%', background:top.color, margin:'0 auto 4px' }}/>
                     <div style={{ fontSize:10, fontWeight:500, color:active?col:'var(--t2)', lineHeight:1.2 }}>{top.name}</div>
-                    {top.price>0&&<div style={{ fontSize:9, color:'var(--t3)' }}>+£{top.price}</div>}
+                    {top.price>0&&<div style={{ fontSize:9, color:'var(--t3)' }}>+{currencySymbol()}{top.price}</div>}
                     {active&&st!=='both'&&st!=='whole'&&<div style={{ fontSize:9, fontWeight:700, color:col, textTransform:'uppercase' }}>{st}</div>}
                     {st==='both'&&<div style={{ fontSize:9, fontWeight:700, color:col }}>both</div>}
                   </button>
@@ -862,10 +863,10 @@ function PizzaModal({ item, activeAllergens, onConfirm, onCancel }) {
             )}
 
             <div style={{ borderTop:'1px solid var(--bdr)', paddingTop:10, marginTop:'auto' }}>
-              <div style={{ display:'flex', justifyContent:'space-between', fontSize:11, color:'var(--t3)', marginBottom:2 }}><span>Base</span><span>£{size.basePrice.toFixed(2)}</span></div>
-              {crust.extra>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:11, color:'var(--t3)', marginBottom:2 }}><span>Crust</span><span>+£{crust.extra.toFixed(2)}</span></div>}
-              {toppingCost>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:11, color:'var(--t3)', marginBottom:2 }}><span>Toppings</span><span>+£{toppingCost.toFixed(2)}</span></div>}
-              <div style={{ display:'flex', justifyContent:'space-between', fontSize:16, fontWeight:700, marginTop:6, color:'var(--acc)' }}><span>Total</span><span>£{total.toFixed(2)}</span></div>
+              <div style={{ display:'flex', justifyContent:'space-between', fontSize:11, color:'var(--t3)', marginBottom:2 }}><span>Base</span><span>{money(size.basePrice)}</span></div>
+              {crust.extra>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:11, color:'var(--t3)', marginBottom:2 }}><span>Crust</span><span>+{money(crust.extra)}</span></div>}
+              {toppingCost>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:11, color:'var(--t3)', marginBottom:2 }}><span>Toppings</span><span>+{money(toppingCost)}</span></div>}
+              <div style={{ display:'flex', justifyContent:'space-between', fontSize:16, fontWeight:700, marginTop:6, color:'var(--acc)' }}><span>Total</span><span>{money(total)}</span></div>
             </div>
           </div>
         </div>
@@ -875,7 +876,7 @@ function PizzaModal({ item, activeAllergens, onConfirm, onCancel }) {
           <div style={{ display:'flex', gap:8 }}>
             <button className="btn btn-ghost" onClick={onCancel} style={{ minWidth:80 }}>Cancel</button>
             <button className="btn btn-acc" onClick={handleAdd} style={{ flex:1, height:46, fontSize:15, borderRadius:12 }}>
-              Add pizza · <strong>£{total.toFixed(2)}</strong>
+              Add pizza · <strong>{money(total)}</strong>
             </button>
           </div>
         </div>

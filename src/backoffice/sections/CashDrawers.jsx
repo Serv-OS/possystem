@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { useStore } from '../../store';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
 import DrawerCashModal from '../../components/DrawerCashModal';
+import { money } from '../../lib/currency';
 
 /**
  * Cash Drawers registry (v4.6.35).
@@ -165,7 +166,7 @@ export default function CashDrawers() {
                   {d.deviceId ? ` · 📟 ${d.deviceId.slice(0, 12)}` : ' · unassigned'}
                 </div>
                 {Number(d.currentFloat) !== 0 && (
-                  <div style={{ fontSize:11, color:'var(--t4)', marginTop:3, fontFamily:'var(--font-mono)' }}>Float: £{Number(d.currentFloat || 0).toFixed(2)}</div>
+                  <div style={{ fontSize:11, color:'var(--t4)', marginTop:3, fontFamily:'var(--font-mono)' }}>Float: {money(Number(d.currentFloat || 0))}</div>
                 )}
                 {/* v4.6.40: inline cash in/out actions */}
                 <div style={{ display:'flex', gap:6, marginTop:8 }}>
@@ -262,7 +263,7 @@ export default function CashDrawers() {
                   </div>
                   <div>
                     <div style={{ color:'var(--t4)' }}>Float</div>
-                    <div style={{ color:'var(--t1)', fontWeight:700, marginTop:2, fontFamily:'var(--font-mono)' }}>£{Number(sel.currentFloat || 0).toFixed(2)}</div>
+                    <div style={{ color:'var(--t1)', fontWeight:700, marginTop:2, fontFamily:'var(--font-mono)' }}>{money(Number(sel.currentFloat || 0))}</div>
                   </div>
                   {sel.openedAt && (
                     <div style={{ gridColumn:'1 / -1' }}>

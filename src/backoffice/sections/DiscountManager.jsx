@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
 import { useStore } from '../../store';
+import { money, currencySymbol } from '../../lib/currency';
 
 /* ── Style constants (match TaxManager / LocationSettings pattern) ────────── */
 const S = {
@@ -224,12 +225,12 @@ function RuleForm({ rule, categories, onSave, onCancel }) {
       const names = categories.filter(c => g.categoryIds.includes(c.id)).map(c => c.label).join(', ') || 'any';
       return `${g.qty} from ${names}`;
     });
-    summary = `${groupParts.join(' + ')} = £${form.rewardValue || '?'}`;
+    summary = `${groupParts.join(' + ')} = ${currencySymbol()}${form.rewardValue || '?'}`;
   } else {
     const triggerCatNames = categories.filter(c => form.triggerCategoryIds.includes(c.id)).map(c => c.label).join(', ') || 'any category';
     const rewardLabel = form.rewardType === 'free' ? 'free'
       : form.rewardType === 'percent' ? `${form.rewardValue || '?'}% off`
-      : `£${form.rewardValue || '?'} off`;
+      : `${currencySymbol()}${form.rewardValue || '?'} off`;
     summary = `Buy ${form.triggerQty} from ${triggerCatNames}, get ${form.rewardQty} ${rewardLabel}`;
   }
 
@@ -601,7 +602,7 @@ export default function DiscountManager() {
                       color: disc.type === 'percent' ? 'var(--acc)' : 'var(--grn)',
                       border: `1px solid ${disc.type === 'percent' ? 'var(--acc-b)' : 'var(--grn-b)'}`,
                     }}>
-                      {disc.type === 'percent' ? `${disc.value}%` : `£${disc.value.toFixed(2)}`}
+                      {disc.type === 'percent' ? `${disc.value}%` : `${money(disc.value)}`}
                     </span>
                     <span style={{ ...S.badge, background:'var(--bg3)', color:'var(--t3)', border:'1px solid var(--bdr)' }}>
                       {disc.scope === 'global' ? 'All items' : `${disc.categoryIds.length} categories`}
@@ -670,14 +671,14 @@ export default function DiscountManager() {
                             const names = categories.filter(c => (g.categoryIds || g.category_ids || []).includes(c.id)).map(c => c.label).join(', ') || 'any';
                             return <span key={i}>{i > 0 && ' + '}<strong>{g.qty ?? 1} × {names}</strong></span>;
                           })}
-                          {' = '}<strong>£{Number(rule.rewardValue || 0).toFixed(2)}</strong>
+                          {' = '}<strong>{money(Number(rule.rewardValue || 0))}</strong>
                         </>
                       ) : (
                         <>
                           Buy {rule.triggerQty} from{' '}
                           <strong>{categories.filter(c => rule.triggerCategoryIds.includes(c.id)).map(c => c.label).join(', ') || 'any'}</strong>
                           {' → '}get {rule.rewardQty}{' '}
-                          {rule.rewardType === 'free' ? 'free' : rule.rewardType === 'percent' ? `${rule.rewardValue}% off` : `£${rule.rewardValue} off`}
+                          {rule.rewardType === 'free' ? 'free' : rule.rewardType === 'percent' ? `${rule.rewardValue}% off` : `${currencySymbol()}${rule.rewardValue} off`}
                         </>
                       )}
                     </div>

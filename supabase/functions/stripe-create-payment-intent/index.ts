@@ -31,7 +31,7 @@ const platformAdmin = createClient(
 interface Body {
   location_id?: string;
   amount_minor?: number;
-  currency?: 'gbp' | 'usd';
+  currency?: 'gbp' | 'usd' | 'eur';
   channel?: 'card_present' | 'online';
   payment_method_types?: string[];
   capture_method?: 'automatic' | 'manual';
@@ -66,7 +66,7 @@ Deno.serve(async (req) => {
 
   if (!location_id) return json({ error: 'location_id required' }, 400);
   if (!amount_minor || amount_minor <= 0) return json({ error: 'amount_minor must be > 0' }, 400);
-  if (currency !== 'gbp' && currency !== 'usd') return json({ error: 'currency must be gbp or usd' }, 400);
+  if (!['gbp', 'usd', 'eur'].includes(currency as string)) return json({ error: 'currency must be gbp, usd or eur' }, 400);
   if (!payment_method_types?.length) return json({ error: 'payment_method_types required' }, 400);
   if (channel !== 'card_present' && channel !== 'online') {
     return json({ error: "channel must be 'card_present' or 'online'" }, 400);

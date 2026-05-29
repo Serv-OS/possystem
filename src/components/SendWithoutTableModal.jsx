@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useStore } from '../store';
 import { sortTables } from '../lib/sortTables';
+import { money, currencySymbol } from '../lib/currency';
 
 const STATUS = {
   available: { color:'#22c55e', bg:'rgba(34,197,94,.12)',  border:'rgba(34,197,94,.35)' },
@@ -17,7 +18,7 @@ function MergeOrSplitModal({ table, items, onMerge, onSplit, onBack }) {
       <div style={{ marginBottom:16, padding:'12px 14px', background:'var(--bg3)', borderRadius:12, border:'1px solid var(--bdr)' }}>
         <div style={{ fontSize:12, fontWeight:700, color:'var(--t2)', marginBottom:8 }}>{table.label} already has an order</div>
         <div style={{ fontSize:11, color:'var(--t3)' }}>
-          {existingItems.length} item{existingItems.length!==1?'s':''} · £{(table.session?.subtotal||0).toFixed(2)} · {table.session?.covers} covers · {table.session?.server}
+          {existingItems.length} item{existingItems.length!==1?'s':''} · {money((table.session?.subtotal||0))} · {table.session?.covers} covers · {table.session?.server}
         </div>
         {existingItems.slice(0,3).map(i=>(
           <div key={i.uid} style={{ fontSize:11, color:'var(--t4)', marginTop:3 }}>
@@ -248,7 +249,7 @@ export default function SendWithoutTableModal({ items, onClose, onNameOrder, onS
                             {table.session?.covers} cvr · {table.session?.server?.split(' ')[0]}
                           </div>
                           <div style={{ fontSize:10, color:'var(--t3)' }}>
-                            £{(table.session?.subtotal||0).toFixed(0)} · {table.session?.items?.filter(i=>!i.voided).length} items
+                            {currencySymbol()}{(table.session?.subtotal||0).toFixed(0)} · {table.session?.items?.filter(i=>!i.voided).length} items
                           </div>
                         </button>
                       );

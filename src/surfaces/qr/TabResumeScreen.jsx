@@ -18,6 +18,7 @@
 import { useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { clearStashedTab } from '../../lib/qrTabStorage';
+import { money } from '../../lib/currency';
 
 export default function TabResumeScreen({
   slug, tableId, tableLabel,
@@ -32,7 +33,7 @@ export default function TabResumeScreen({
 
   const handleClose = async () => {
     if (closing) return;
-    if (!confirm(`Close your tab and charge £${runningTotal.toFixed(2)} to your card?`)) return;
+    if (!confirm(`Close your tab and charge ${money(runningTotal)} to your card?`)) return;
     setClosing(true); setError('');
     try {
       // Capture the pre-auth on the connected account. Same endpoint the
@@ -76,13 +77,13 @@ export default function TabResumeScreen({
           if (!ovRes.ok || !ov.ok) {
             // Customer-facing: don't block the close — surface a soft note.
             console.warn('[TabResume] overage failed:', ov?.error);
-            setError(`We charged £${(data.amount / 100).toFixed(2)} to your card. The remaining £${(shortfallMinor / 100).toFixed(2)} could not be captured automatically — please ask staff to settle the balance.`);
+            setError(`We charged ${money((data.amount / 100))} to your card. The remaining ${money((shortfallMinor / 100))} could not be captured automatically — please ask staff to settle the balance.`);
           }
         } catch (e) {
           console.warn('[TabResume] overage failed:', e?.message);
         }
       } else if (shortfallMinor > 0 && !paymentMethodId) {
-        setError(`We charged £${(data.amount / 100).toFixed(2)} (the held amount). The remaining £${(shortfallMinor / 100).toFixed(2)} needs to be settled with staff — your tab was opened before saved-card support was added.`);
+        setError(`We charged ${money((data.amount / 100))} (the held amount). The remaining ${money((shortfallMinor / 100))} needs to be settled with staff — your tab was opened before saved-card support was added.`);
       }
 
       // Mark every round on this tab as collected so they leave the
@@ -156,7 +157,7 @@ export default function TabResumeScreen({
             Running total
           </div>
           <div style={{ fontSize: 38, fontWeight: 900, letterSpacing: '-0.02em', marginBottom: 14 }}>
-            £{runningTotal.toFixed(2)}
+            {money(runningTotal)}
           </div>
           {(rounds || []).length > 0 && (
             <>
@@ -169,7 +170,7 @@ export default function TabResumeScreen({
                     {(r.items || []).reduce((s, it) => s + (it.qty || 1), 0)} item{((r.items || []).length === 1) ? '' : 's'}
                     {r.items?.[0] && <> · {r.items[0].name}{r.items.length > 1 ? ` +${r.items.length - 1} more` : ''}</>}
                   </span>
-                  <span style={{ fontWeight: 700 }}>£{Number(r.total || 0).toFixed(2)}</span>
+                  <span style={{ fontWeight: 700 }}>{money(Number(r.total || 0))}</span>
                 </div>
               ))}
             </>
@@ -196,7 +197,7 @@ export default function TabResumeScreen({
             display: 'flex', justifyContent: 'space-between', alignItems: 'center',
           }}>
             <span>{closing ? 'Charging your card…' : '🔒 Close & pay'}</span>
-            <span>£{runningTotal.toFixed(2)}</span>
+            <span>{money(runningTotal)}</span>
           </button>
           {onAbandon && (
             <button onClick={onAbandon} disabled={closing} style={{
@@ -208,7 +209,7 @@ export default function TabResumeScreen({
         </div>
 
         <div style={{ marginTop: 30, fontSize: 11, color: muted, lineHeight: 1.5 }}>
-          🔒 We held £{Number(tab.pre_auth_amount || 0).toFixed(2)} on your card when you opened this tab. Closing it captures the actual bill — anything held but unspent is released.
+          🔒 We held {money(Number(tab.pre_auth_amount || 0))} on your card when you opened this tab. Closing it captures the actual bill — anything held but unspent is released.
         </div>
       </div>
     </div>

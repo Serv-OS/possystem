@@ -8,8 +8,7 @@
 
 import { supabase, ensureAuthToken } from './supabase';
 import { loadLocationBranding } from './receiptBranding';
-
-const money = (n) => `£${(Number(n) || 0).toFixed(2)}`;
+import { money } from './currency';  // v5.5.326: shared multi-currency formatter
 const FUNC_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/message-templates`;
 
 /**

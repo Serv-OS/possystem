@@ -43,7 +43,7 @@ export const Sx = {
   emptyBlock: { textAlign:'center', padding:'48px 16px', color:'var(--t4)' },
 };
 
-export const money = (n) => `£${(Number(n) || 0).toFixed(2)}`;
+export { money } from '../../lib/currency';  // v5.5.326: shared multi-currency formatter
 
 export function elapsed(date) {
   if (!date) return '';

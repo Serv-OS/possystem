@@ -13,6 +13,7 @@
 
 import { supabase, getLocationId } from './supabase';
 import { loadLocationBranding, mergeBrandingIntoLocation, invalidateBrandingCache } from './receiptBranding';
+import { money } from './/currency';
 
 // ─── ESC/POS builder ──────────────────────────────────────────────────────────
 const ESC = 0x1b, GS = 0x1d, LF = 0x0a;
@@ -797,7 +798,7 @@ class PrintService {
       return this._submitJob(printer, 'receipt', bytes, {
         idempotencyKey: opts.idempotencyKey || (check?.ref ? `receipt-${check.ref}-${Date.now()}` : undefined),
         metadata: { ref: check?.ref, total: totals?.grand, tableLabel: check?.tableLabel, orderType: check?.orderType, server: check?.server },
-        label: `Receipt ${check?.ref || ''} — £${(totals?.grand || 0).toFixed(2)}`.trim(),
+        label: `Receipt ${check?.ref || ''} — ${money((totals?.grand || 0))}`.trim(),
       });
     }
     // Fallback: browser print

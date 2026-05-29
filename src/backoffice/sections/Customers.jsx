@@ -11,6 +11,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../store';
 import { supabase, platformSupabase, isMock, getLocationId, getActiveLocationSync } from '../../lib/supabase';
+import { money } from '../../lib/currency';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 
@@ -28,7 +29,7 @@ async function callGift(endpoint, body) {
   return j;
 }
 
-const fmtMoney = (n) => '£' + (Number(n) || 0).toFixed(2);
+const fmtMoney = (n) => money(n);
 
 const fmtRel = (iso) => {
   if (!iso) return '—';
@@ -1001,7 +1002,7 @@ function Leaderboard({ rows, showLocations, compact }) {
           </div>
           {!compact && <div style={{ color:'var(--t3)', fontFamily:'var(--font-mono)', fontSize:11 }}>{c.phone_raw || c.phone || '—'}</div>}
           <div style={{ textAlign:'right', color:'var(--t1)', fontWeight:700, fontFamily:'var(--font-mono)' }}>{c.totalVisits || 0}</div>
-          <div style={{ textAlign:'right', color:'var(--acc)', fontWeight:800, fontFamily:'var(--font-mono)' }}>£{(Number(c.totalSpend) || 0).toFixed(2)}</div>
+          <div style={{ textAlign:'right', color:'var(--acc)', fontWeight:800, fontFamily:'var(--font-mono)' }}>{money((Number(c.totalSpend) || 0))}</div>
           <div style={{ textAlign:'right', color:'var(--t3)', fontSize:11 }}>{c.lastVisit ? fmtRel(c.lastVisit) : '—'}</div>
         </div>
       ))}

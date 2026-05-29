@@ -22,6 +22,7 @@ import { attributeOnlineOrder } from '../../lib/customerLookup';
 import { calculateOrderTax } from '../../lib/tax';
 import { stashTab } from '../../lib/qrTabStorage';
 import { syncQrTableSession } from '../../lib/qrTableSession';
+import { money, currencySymbol, stripeCurrency } from '../../lib/currency';
 
 export default function QrCheckout({ cart, theme, location, tableId, tableLabel, loyalty, taxRates = [], existingTab = null, onClose, onPlaced }) {
   // v5.5.155: when existingTab is set the customer is in "Add more"
@@ -226,7 +227,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
         amountMinor: isOpenTab
           ? Math.round(tabPreAuthAmount * 100)
           : Math.round(total * 100),
-        currency: 'gbp',
+        currency: stripeCurrency(),
         channel: 'online', // applies online_markup_percent on the connected account
         captureMethod: isOpenTab ? 'manual' : 'automatic',
         // v5.5.160: open-tab needs the card saved off_session so we can
@@ -460,7 +461,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
             <div>
               <div style={{ fontSize: 22, fontWeight: 900, letterSpacing: '-0.02em' }}>Add to your tab</div>
               <div style={{ fontSize: 12, color: muted, marginTop: 2 }}>
-                Table {existingTab?.table_label || tableLabel || tableId} · already on the tab: £{Number(existingTab?.runningTotal || 0).toFixed(2)}
+                Table {existingTab?.table_label || tableLabel || tableId} · already on the tab: {money(Number(existingTab?.runningTotal || 0))}
               </div>
             </div>
             <button onClick={onClose} style={{
@@ -480,17 +481,17 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
                 return (
                   <div key={line.uid} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13 }}>
                     <span style={{ flex: 1, minWidth: 0 }}>{line.qty || 1} × {line.name}</span>
-                    <span style={{ fontWeight: 700 }}>£{(unit * (line.qty || 1)).toFixed(2)}</span>
+                    <span style={{ fontWeight: 700 }}>{money((unit * (line.qty || 1)))}</span>
                   </div>
                 );
               })}
               <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0 0', borderTop: `1px solid ${cardBdr}`, marginTop: 6 }}>
                 <span style={{ fontSize: 14, fontWeight: 800 }}>This round</span>
-                <span style={{ fontSize: 18, fontWeight: 900 }}>£{subtotal.toFixed(2)}</span>
+                <span style={{ fontSize: 18, fontWeight: 900 }}>{money(subtotal)}</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0 0', fontSize: 12, color: muted }}>
                 <span>Tab total after this round</span>
-                <span style={{ fontWeight: 700 }}>£{(Number(existingTab?.runningTotal || 0) + subtotal).toFixed(2)}</span>
+                <span style={{ fontWeight: 700 }}>{money((Number(existingTab?.runningTotal || 0) + subtotal))}</span>
               </div>
             </div>
             <div style={{ marginTop: 14, fontSize: 11, color: muted, lineHeight: 1.5 }}>
@@ -516,7 +517,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
                 display: 'flex', justifyContent: 'space-between', alignItems: 'center',
               }}>
               <span>{working ? 'Sending…' : '🍽 Send to kitchen'}</span>
-              <span>£{subtotal.toFixed(2)}</span>
+              <span>{money(subtotal)}</span>
             </button>
           </div>
         </div>
@@ -546,7 +547,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
               {step === 'pay' ? 'Payment' : 'Checkout'}
             </div>
             <div style={{ fontSize: 12, color: muted, marginTop: 2 }}>
-              Table {tableLabel || tableId || '?'} · {cart.length} item{cart.length === 1 ? '' : 's'} · £{total.toFixed(2)}
+              Table {tableLabel || tableId || '?'} · {cart.length} item{cart.length === 1 ? '' : 's'} · {money(total)}
             </div>
           </div>
           <button onClick={step === 'pay' ? () => { setStep('details'); setPi(null); setError(''); } : onClose}
@@ -595,7 +596,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
                   title="💳 Pay now" sub="Pay this round and we'll bring it over."/>
                 <PayChoiceCard active={payChoice === 'open_tab'} onClick={() => setPayChoice('open_tab')}
                   theme={theme} cardBdr={cardBdr} inputBg={inputBg}
-                  title="📋 Open tab" sub={`Hold £${tabPreAuthAmount} on your card; staff close the tab when you're done.`}/>
+                  title="📋 Open tab" sub={`Hold ${currencySymbol()}${tabPreAuthAmount} on your card; staff close the tab when you're done.`}/>
               </div>
             </>
           )}
@@ -620,7 +621,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
               return (
                 <div key={line.uid} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13 }}>
                   <span style={{ flex: 1, minWidth: 0 }}>{line.qty || 1} × {line.name}</span>
-                  <span style={{ fontWeight: 700 }}>£{(unit * (line.qty || 1)).toFixed(2)}</span>
+                  <span style={{ fontWeight: 700 }}>{money((unit * (line.qty || 1)))}</span>
                 </div>
               );
             })}
@@ -637,7 +638,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
             {tipAmount > 0 && <SummaryLine label="Tip" value={tipAmount} muted={muted}/>}
             <div style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 0 0', borderTop: `1px solid ${cardBdr}`, marginTop: 8 }}>
               <span style={{ fontSize: 14, fontWeight: 800 }}>Total</span>
-              <span style={{ fontSize: 18, fontWeight: 900 }}>£{total.toFixed(2)}</span>
+              <span style={{ fontSize: 18, fontWeight: 900 }}>{money(total)}</span>
             </div>
           </div>
         </div>
@@ -674,11 +675,11 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
                 display: 'flex', justifyContent: 'space-between', alignItems: 'center',
               }}>
               <span>{working ? 'Starting payment…' : (isOpenTab ? 'Continue — open a tab' : 'Continue to payment')}</span>
-              <span>£{(isOpenTab ? tabPreAuthAmount : total).toFixed(2)}{isOpenTab ? ' hold' : ''}</span>
+              <span>{money((isOpenTab ? tabPreAuthAmount : total))}{isOpenTab ? ' hold' : ''}</span>
             </button>
             <div style={{ fontSize: 10, color: muted, textAlign: 'center', marginTop: 8 }}>
               {isOpenTab
-                ? `🔒 We'll hold £${tabPreAuthAmount} on your card. Final bill is taken when staff close the tab.`
+                ? `🔒 We'll hold ${currencySymbol()}${tabPreAuthAmount} on your card. Final bill is taken when staff close the tab.`
                 : '🔒 Card next, processed securely by Stripe.'}
             </div>
           </div>
@@ -739,7 +740,7 @@ function PayStep({ pi, subtotal, serviceCharge, tipAmount, total, tableLabel, th
             return (
               <div key={line.uid} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 13 }}>
                 <span style={{ flex: 1, minWidth: 0 }}>{line.qty || 1} × {line.name}</span>
-                <span style={{ fontWeight: 700 }}>£{(unit * (line.qty || 1)).toFixed(2)}</span>
+                <span style={{ fontWeight: 700 }}>{money((unit * (line.qty || 1)))}</span>
               </div>
             );
           })}
@@ -753,7 +754,7 @@ function PayStep({ pi, subtotal, serviceCharge, tipAmount, total, tableLabel, th
           {tipAmount > 0 && <SummaryLine label="Tip" value={tipAmount} muted={muted}/>}
           <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0 0', borderTop: `1px solid ${cardBdr}`, marginTop: 6 }}>
             <span style={{ fontSize: 14, fontWeight: 800 }}>Total</span>
-            <span style={{ fontSize: 18, fontWeight: 900 }}>£{total.toFixed(2)}</span>
+            <span style={{ fontSize: 18, fontWeight: 900 }}>{money(total)}</span>
           </div>
         </div>
       </div>
@@ -773,11 +774,11 @@ function PayStep({ pi, subtotal, serviceCharge, tipAmount, total, tableLabel, th
           <span>{busy
             ? (isOpenTab ? 'Authorising…' : 'Processing payment…')
             : (isOpenTab ? 'Authorise & open tab' : 'Pay & send to kitchen')}</span>
-          <span>£{(isOpenTab ? tabPreAuthAmount : total).toFixed(2)}{isOpenTab ? ' hold' : ''}</span>
+          <span>{money((isOpenTab ? tabPreAuthAmount : total))}{isOpenTab ? ' hold' : ''}</span>
         </button>
         <div style={{ fontSize: 10, color: muted, textAlign: 'center', marginTop: 8 }}>
           {isOpenTab
-            ? `🔒 £${tabPreAuthAmount} card hold. Actual bill taken when staff close the tab.`
+            ? `🔒 ${currencySymbol()}${tabPreAuthAmount} card hold. Actual bill taken when staff close the tab.`
             : '🔒 Your order goes to the kitchen the moment payment clears.'}
         </div>
       </div>
@@ -841,7 +842,7 @@ function SummaryLine({ label, value, muted }) {
   return (
     <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 12, color: muted }}>
       <span>{label}</span>
-      <span>£{value.toFixed(2)}</span>
+      <span>{money(value)}</span>
     </div>
   );
 }

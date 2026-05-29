@@ -10,6 +10,7 @@ import { useMemo } from 'react';
 import { StatTile, ExportBtn, EmptyState, CompareChip } from './_charts';
 import { pctDelta } from './_filters';
 import { toCsv, downloadCsv } from './_csv';
+import { currencySymbol } from '../../../lib/currency';
 
 const TYPE_STYLE = {
   'dine-in':    { label:'Dine-in',    color:'#e8a020', icon:'🪑' },
@@ -193,7 +194,7 @@ function StackedBarChart({ series, xKeys, xLabels, types, fmt }) {
           <g key={f}>
             <line x1={padL} y1={y} x2={padL + chartW} y2={y} stroke="var(--bdr)" strokeDasharray="2 3"/>
             <text x={padL - 4} y={y + 3} fontSize="9" fill="var(--t4)" textAnchor="end" fontFamily="var(--font-mono)">
-              £{Math.round(max * f)}
+              {currencySymbol()}{Math.round(max * f)}
             </text>
           </g>
         );

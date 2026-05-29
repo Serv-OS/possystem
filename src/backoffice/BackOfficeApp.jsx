@@ -35,6 +35,7 @@ import DiscountManager from './sections/DiscountManager';
 import GiftCards from './sections/GiftCards';
 import MessageTemplates from './sections/MessageTemplates';
 import LoyaltyManager from './sections/LoyaltyManager';
+import { money, currencySymbol } from '../lib/currency';
 
 const NAV = [
   { id:'overview',   label:'Overview',        icon:'◈',  group:'Dashboard' },
@@ -720,8 +721,8 @@ function BOOverview({ setSection, orgCtx }) {
   const activeTbls  = liveSessions.length;
 
   const stats = [
-    { label:"Revenue today",   value:`£${revenue.toFixed(2)}`, color:'var(--acc)', sub:`${todayChecks.length} closed checks` },
-    { label:'Covers today',    value:covers,                    color:'var(--blu)', sub:`£${covers > 0 ? (revenue / covers).toFixed(2) : '0.00'}/head` },
+    { label:"Revenue today",   value:`${money(revenue)}`, color:'var(--acc)', sub:`${todayChecks.length} closed checks` },
+    { label:'Covers today',    value:covers,                    color:'var(--blu)', sub:`${currencySymbol()}${covers > 0 ? (revenue / covers).toFixed(2) : '0.00'}/head` },
     { label:'Tables active',   value:activeTbls,                color:'var(--grn)', sub:`of ${totalTables} tables` },
     { label:'Terminals online',value:`${onlineDevs}/${liveDevices.length}`, color: onlineDevs === liveDevices.length && liveDevices.length > 0 ? 'var(--grn)' : 'var(--acc)', sub:'this site' },
   ];

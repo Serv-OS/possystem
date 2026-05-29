@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
 import { useStore } from '../../store';
+import { money } from '../../lib/currency';  // v5.5.326: multi-currency
 
 /**
  * Petty Cash ledger (v4.6.31).
@@ -20,7 +21,7 @@ const TYPE_META = {
 
 const MANUAL_TYPES = ['float', 'drop', 'expense', 'adjustment'];
 
-const fmtMoney = (n) => (n < 0 ? '−' : '') + '£' + Math.abs(Number(n) || 0).toFixed(2);
+const fmtMoney = (n) => (n < 0 ? '−' : '') + money(Math.abs(Number(n) || 0));
 
 const fmtTime = (ts) => new Date(ts).toLocaleString('en-GB', {
   day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit',

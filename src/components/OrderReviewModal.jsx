@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { ALLERGENS } from '../data/seed';
+import { money } from '../lib/currency';
 
 export default function OrderReviewModal({ items, subtotal, service, total, checkDiscount, orderType, tableLabel, server, covers, customer, onClose, onCheckout, onPrint }) {
   const [mode, setMode] = useState('compact');  // compact | detailed
@@ -80,7 +81,7 @@ export default function OrderReviewModal({ items, subtotal, service, total, chec
                   <span style={{ fontSize:13, fontWeight:500, color:'var(--t1)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{item.name}</span>
                   {item.status==='sent'&&<span style={{ fontSize:9, color:'var(--grn)', fontWeight:700, flexShrink:0 }}>✓</span>}
                 </div>
-                <span style={{ fontSize:13, fontWeight:700, color:'var(--t2)', fontFamily:'var(--font-mono)', flexShrink:0, marginLeft:12 }}>£{(price*item.qty).toFixed(2)}</span>
+                <span style={{ fontSize:13, fontWeight:700, color:'var(--t2)', fontFamily:'var(--font-mono)', flexShrink:0, marginLeft:12 }}>{money((price*item.qty))}</span>
               </div>
             );
           })}
@@ -107,7 +108,7 @@ export default function OrderReviewModal({ items, subtotal, service, total, chec
                     {item.mods?.filter(m=>m.label).map((m,i)=>(
                       <div key={i} style={{ fontSize:11, color:'var(--t4)', marginTop:1 }}>
                         {m.groupLabel?`${m.groupLabel}: ${m.label}`:m.label}
-                        {m.price>0&&<span style={{ color:'var(--acc)', marginLeft:6, fontFamily:'var(--font-mono)' }}>+£{m.price.toFixed(2)}</span>}
+                        {m.price>0&&<span style={{ color:'var(--acc)', marginLeft:6, fontFamily:'var(--font-mono)' }}>+{money(m.price)}</span>}
                       </div>
                     ))}
                     {item.notes&&<div style={{ fontSize:11, color:'var(--orn)', marginTop:2, fontStyle:'italic' }}>📝 {item.notes}</div>}
@@ -123,9 +124,9 @@ export default function OrderReviewModal({ items, subtotal, service, total, chec
                     </div>
                   </div>
                   <div style={{ textAlign:'right', flexShrink:0 }}>
-                    <div style={{ fontSize:14, fontWeight:700, color:'var(--t1)', fontFamily:'var(--font-mono)' }}>£{(price*item.qty).toFixed(2)}</div>
-                    {disc&&<div style={{ fontSize:10, color:'var(--t4)', textDecoration:'line-through', fontFamily:'var(--font-mono)' }}>£{(item.price*item.qty).toFixed(2)}</div>}
-                    {item.qty>1&&!disc&&<div style={{ fontSize:10, color:'var(--t4)', fontFamily:'var(--font-mono)' }}>£{item.price.toFixed(2)} ea</div>}
+                    <div style={{ fontSize:14, fontWeight:700, color:'var(--t1)', fontFamily:'var(--font-mono)' }}>{money((price*item.qty))}</div>
+                    {disc&&<div style={{ fontSize:10, color:'var(--t4)', textDecoration:'line-through', fontFamily:'var(--font-mono)' }}>{money((item.price*item.qty))}</div>}
+                    {item.qty>1&&!disc&&<div style={{ fontSize:10, color:'var(--t4)', fontFamily:'var(--font-mono)' }}>{money(item.price)} ea</div>}
                   </div>
                 </div>
               </div>
@@ -136,20 +137,20 @@ export default function OrderReviewModal({ items, subtotal, service, total, chec
         {/* Totals */}
         <div style={{ padding:'12px 18px 8px', borderTop:'1px solid var(--bdr)', flexShrink:0, background:'var(--bg2)' }}>
           <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--t3)', marginBottom:3 }}>
-            <span>Subtotal</span><span style={{ fontFamily:'var(--font-mono)' }}>£{subtotal.toFixed(2)}</span>
+            <span>Subtotal</span><span style={{ fontFamily:'var(--font-mono)' }}>{money(subtotal)}</span>
           </div>
           {checkDiscount>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--grn)', marginBottom:3 }}>
-            <span>Discount</span><span style={{ fontFamily:'var(--font-mono)' }}>−£{checkDiscount.toFixed(2)}</span>
+            <span>Discount</span><span style={{ fontFamily:'var(--font-mono)' }}>−{money(checkDiscount)}</span>
           </div>}
           {service>0
             ?<div style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--t3)', marginBottom:3 }}>
-               <span>Service (12.5%)</span><span style={{ fontFamily:'var(--font-mono)' }}>£{service.toFixed(2)}</span>
+               <span>Service (12.5%)</span><span style={{ fontFamily:'var(--font-mono)' }}>{money(service)}</span>
              </div>
             :<div style={{ fontSize:11, color:'var(--grn)', fontWeight:600, marginBottom:3 }}>✓ No service charge</div>
           }
           <div style={{ display:'flex', justifyContent:'space-between', fontSize:20, fontWeight:800, borderTop:'1px solid var(--bdr)', paddingTop:8, marginTop:4 }}>
             <span>Total</span>
-            <span style={{ color:'var(--acc)', fontFamily:'var(--font-mono)' }}>£{total.toFixed(2)}</span>
+            <span style={{ color:'var(--acc)', fontFamily:'var(--font-mono)' }}>{money(total)}</span>
           </div>
         </div>
 
@@ -158,7 +159,7 @@ export default function OrderReviewModal({ items, subtotal, service, total, chec
           {onPrint && <button className="btn btn-ghost btn-sm" style={{ flexShrink:0 }} onClick={onPrint}>🖨 Print</button>}
           <button className="btn btn-ghost" style={{ flex:1 }} onClick={onClose}>Close</button>
           <button className="btn btn-acc" style={{ flex:2, height:44, fontSize:14, fontWeight:800 }} onClick={onCheckout}>
-            Checkout · £{total.toFixed(2)} →
+            Checkout · {money(total)} →
           </button>
         </div>
       </div>

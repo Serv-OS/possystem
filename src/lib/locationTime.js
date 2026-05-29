@@ -9,6 +9,7 @@
  */
 
 import { platformSupabase, getLocationId } from './supabase';
+import { setActiveCurrency } from './currency';
 
 // v5.5.11: per-location cache. The previous module-level cache returned the
 // SAME config for every caller regardless of which location they were at.
@@ -45,7 +46,7 @@ export async function getLocationConfig(explicitLocationId = null) {
   // through the same cached config.
   if (platformSupabase) {
     try {
-      const select = 'timezone, business_day_start, shifts, collection_lead_minutes, opening_hours';
+      const select = 'timezone, business_day_start, shifts, collection_lead_minutes, opening_hours, currency';
       // First try the right join key.
       const r1 = await platformSupabase.from('locations').select(select).eq('ops_location_id', locationId).maybeSingle();
       let row = r1.data;
@@ -57,12 +58,18 @@ export async function getLocationConfig(explicitLocationId = null) {
         row = r2.data;
       }
       if (row) {
+        // v5.5.326: resolve the location's currency at boot so money() formats
+        // in the right symbol/code everywhere. Persisted to localStorage so it
+        // survives reloads and resolves from the first render (no £→$ flash on
+        // a configured device).
+        setActiveCurrency(row.currency || 'GBP');
         const cfg = {
           timezone: row.timezone || 'Europe/London',
           businessDayStart: row.business_day_start || '06:00',
           shifts: row.shifts || [],
           opening_hours: row.opening_hours || null,
           collectionLeadMinutes: typeof row.collection_lead_minutes === 'number' ? row.collection_lead_minutes : 30,
+          currency: row.currency || 'GBP',
         };
         _locationConfigCache.set(locationId, cfg);
         return cfg;

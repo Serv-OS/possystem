@@ -5,6 +5,7 @@
  */
 
 import { supabase, getLocationId } from './supabase';
+import { money } from './/currency';
 
 // Tools that require user confirmation before executing
 export const WRITE_TOOLS = new Set(['add_menu_item', 'update_item_price', 'eighty_six_item', 'add_to_order', 'remove_from_order', 'apply_order_discount']);
@@ -44,12 +45,12 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
         result: {
           period: 'today',
           checks: norm.length,
-          revenue: `£${revenue.toFixed(2)}`,
+          revenue: `${money(revenue)}`,
           covers,
-          average_check: `£${avg.toFixed(2)}`,
-          tips: `£${tips.toFixed(2)}`,
-          card: `£${card.toFixed(2)}`,
-          cash: `£${cash.toFixed(2)}`,
+          average_check: `${money(avg)}`,
+          tips: `${money(tips)}`,
+          card: `${money(card)}`,
+          cash: `${money(cash)}`,
         },
       };
     }
@@ -76,7 +77,7 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
       const top = Object.entries(itemMap)
         .sort((a, b) => b[1].qty - a[1].qty)
         .slice(0, limit)
-        .map(([name, data]) => ({ name, qty: data.qty, revenue: `£${data.revenue.toFixed(2)}` }));
+        .map(([name, data]) => ({ name, qty: data.qty, revenue: `${money(data.revenue)}` }));
       return { result: { period: 'today', items: top } };
     }
 
@@ -139,7 +140,7 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
             covers: s.covers || 0,
             server: s.server || 'unassigned',
             items: (s.items || []).filter(i => !i.voided).length,
-            subtotal: `£${subtotal.toFixed(2)}`,
+            subtotal: `${money(subtotal)}`,
             seated_mins: seatedMins,
             seated_for: seatedMins != null ? `${Math.floor(seatedMins / 60) > 0 ? Math.floor(seatedMins / 60) + 'h ' : ''}${seatedMins % 60}m` : 'unknown',
           };
@@ -171,11 +172,11 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
       }));
       const results = Object.entries(matches)
         .sort((a, b) => b[1].qty - a[1].qty)
-        .map(([name, d]) => ({ name, qty_sold: d.qty, revenue: `£${d.revenue.toFixed(2)}` }));
+        .map(([name, d]) => ({ name, qty_sold: d.qty, revenue: `${money(d.revenue)}` }));
       const totalQty = results.reduce((s, r) => s + r.qty_sold, 0);
       const totalRev = results.reduce((s, r) => s + parseFloat(r.revenue.slice(1)), 0);
       if (!results.length) return { result: { found: false, query, message: `No sales found for "${toolInput.query}" today` } };
-      return { result: { query: toolInput.query, found: true, total_sold: totalQty, total_revenue: `£${totalRev.toFixed(2)}`, breakdown: results } };
+      return { result: { query: toolInput.query, found: true, total_sold: totalQty, total_revenue: `${money(totalRev)}`, breakdown: results } };
     }
 
     case 'get_hourly_breakdown': {
@@ -202,7 +203,7 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
       });
       const hours = Object.entries(hourMap)
         .sort((a, b) => a[0].localeCompare(b[0]))
-        .map(([hour, d]) => ({ hour, checks: d.checks, covers: d.covers, revenue: `£${d.revenue.toFixed(2)}` }));
+        .map(([hour, d]) => ({ hour, checks: d.checks, covers: d.covers, revenue: `${money(d.revenue)}` }));
       const peak = hours.length ? hours.reduce((a, b) => parseFloat(b.revenue.slice(1)) > parseFloat(a.revenue.slice(1)) ? b : a) : null;
       return { result: { hours, peak_hour: peak?.hour || 'n/a', peak_revenue: peak?.revenue || '£0.00' } };
     }
@@ -228,12 +229,12 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
       });
       const breakdown = Object.entries(byMethod).map(([method, d]) => ({
         method, checks: d.count,
-        revenue: `£${d.total.toFixed(2)}`,
-        tips: d.tips > 0 ? `£${d.tips.toFixed(2)}` : null,
-        avg_check: `£${(d.total / d.count).toFixed(2)}`,
+        revenue: `${money(d.total)}`,
+        tips: d.tips > 0 ? `${money(d.tips)}` : null,
+        avg_check: `${money((d.total / d.count))}`,
       }));
       const totalTips = checks.reduce((s, c) => s + (c.tip || 0), 0);
-      return { result: { breakdown, total_tips: `£${totalTips.toFixed(2)}` } };
+      return { result: { breakdown, total_tips: `${money(totalTips)}` } };
     }
 
     case 'get_server_performance': {
@@ -259,8 +260,8 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
         .sort((a, b) => b[1].revenue - a[1].revenue)
         .map(([name, d]) => ({
           server: name, checks: d.checks, covers: d.covers,
-          revenue: `£${d.revenue.toFixed(2)}`,
-          avg_check: `£${(d.revenue / d.checks).toFixed(2)}`,
+          revenue: `${money(d.revenue)}`,
+          avg_check: `${money((d.revenue / d.checks))}`,
         }));
       return { result: { servers } };
     }
@@ -322,11 +323,11 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
       return {
         result: {
           closed_checks: checks.length,
-          revenue: `£${revenue.toFixed(2)}`,
+          revenue: `${money(revenue)}`,
           covers_done: covers,
-          avg_check: checks.length ? `£${(revenue/checks.length).toFixed(2)}` : '£0.00',
+          avg_check: checks.length ? `${money((revenue/checks.length))}` : '£0.00',
           open_tables: occupied,
-          revenue_on_floor: `£${onFloor.toFixed(2)}`,
+          revenue_on_floor: `${money(onFloor)}`,
           top_item_today: topItem ? `${topItem[0]} (${topItem[1]} sold)` : 'none',
         },
       };
@@ -348,7 +349,7 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
             });
             return {
               name: i.name,
-              price: `£${(i.price || 0).toFixed(2)}`,
+              price: `${money((i.price || 0))}`,
               category: cat?.label || cat?.name || 'Unknown',
               description: i.description || null,
               allergens: i.allergens?.length ? i.allergens.join(', ') : 'None declared',
@@ -378,7 +379,7 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
             return {
               id:       i.id,
               name:     i.name,
-              price:    `£${(i.price || 0).toFixed(2)}`,
+              price:    `${money((i.price || 0))}`,
               category: cat?.name || cat?.label || 'Unknown',
             };
           }),
@@ -397,10 +398,10 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
         .limit(limit);
       const orders = (data || []).map(o => ({
         id:     o.id?.slice(0, 8),
-        total:  `£${(o.total || 0).toFixed(2)}`,
+        total:  `${money((o.total || 0))}`,
         covers: o.covers,
         method: o.method,
-        tip:    o.tip ? `£${o.tip.toFixed(2)}` : null,
+        tip:    o.tip ? `${money(o.tip)}` : null,
         time:   o.closed_at ? new Date(o.closed_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : '?',
       }));
       return { result: { orders } };
@@ -417,13 +418,13 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
           message: `Proposed new item — awaiting your confirmation`,
           item: {
             name:     toolInput.name,
-            price:    `£${Number(toolInput.price).toFixed(2)}`,
+            price:    `${money(Number(toolInput.price))}`,
             category: cat?.name || toolInput.category_id,
           },
         },
         pendingAction: {
           type:    'add_menu_item',
-          label:   `Add "${toolInput.name}" at £${Number(toolInput.price).toFixed(2)} to ${cat?.name || 'menu'}`,
+          label:   `Add "${toolInput.name}" at ${money(Number(toolInput.price))} to ${cat?.name || 'menu'}`,
           payload: toolInput,
         },
       };
@@ -432,7 +433,7 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
     case 'update_item_price': {
       const { menuItems = [] } = storeState;
       const item = menuItems.find(i => i.id === toolInput.item_id);
-      const oldPrice = item ? `£${(item.price || 0).toFixed(2)}` : 'unknown';
+      const oldPrice = item ? `${money((item.price || 0))}` : 'unknown';
       return {
         result: {
           preview: true,
@@ -440,12 +441,12 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
           change: {
             item:      toolInput.item_name || item?.name || toolInput.item_id,
             old_price: oldPrice,
-            new_price: `£${Number(toolInput.new_price).toFixed(2)}`,
+            new_price: `${money(Number(toolInput.new_price))}`,
           },
         },
         pendingAction: {
           type:    'update_item_price',
-          label:   `Change ${item?.name || toolInput.item_id} from ${oldPrice} to £${Number(toolInput.new_price).toFixed(2)}`,
+          label:   `Change ${item?.name || toolInput.item_id} from ${oldPrice} to ${money(Number(toolInput.new_price))}`,
           payload: toolInput,
         },
       };
@@ -481,8 +482,8 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
           table: activeTable?.label || (activeTableId ? activeTableId : 'Walk-in'),
           covers: session?.covers || 0,
           item_count: items.length,
-          items: items.map(i => ({ uid: i.uid, name: i.name, qty: i.qty, price: `£${(i.price||0).toFixed(2)}`, notes: i.notes || null })),
-          subtotal: `£${subtotal.toFixed(2)}`,
+          items: items.map(i => ({ uid: i.uid, name: i.name, qty: i.qty, price: `${money((i.price||0))}`, notes: i.notes || null })),
+          subtotal: `${money(subtotal)}`,
         },
       };
     }
@@ -530,13 +531,13 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
         result: {
           preview: true,
           message: 'Proposed order addition — awaiting confirmation',
-          item: { name: item.name, price: `£${item.price.toFixed(2)}`, qty, notes: toolInput.notes || null },
+          item: { name: item.name, price: `${money(item.price)}`, qty, notes: toolInput.notes || null },
           table: activeTable?.label || activeTableId,
-          total: `£${(item.price * qty).toFixed(2)}`,
+          total: `${money((item.price * qty))}`,
         },
         pendingAction: {
           type:  'add_to_order',
-          label: `Add ${qty}× ${item.name} (£${item.price.toFixed(2)}) to ${activeTable?.label || 'current order'}${toolInput.notes ? ` — note: "${toolInput.notes}"` : ''}`,
+          label: `Add ${qty}× ${item.name} (${money(item.price)}) to ${activeTable?.label || 'current order'}${toolInput.notes ? ` — note: "${toolInput.notes}"` : ''}`,
           payload: { item, qty, notes: toolInput.notes || '' },
         },
       };
@@ -550,7 +551,7 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
       }
       const display = toolInput.type === 'percent'
         ? `${toolInput.value}% off`
-        : `£${Number(toolInput.value).toFixed(2)} off`;
+        : `${money(Number(toolInput.value))} off`;
       return {
         result: {
           preview: true,
@@ -593,14 +594,14 @@ export async function executeConfirmedAction(action, storeActions = {}) {
         archived:   false,
       };
       await addMenuItem(newItem);
-      return { ok: true, message: `"${payload.name}" added to the menu at £${Number(payload.price).toFixed(2)}` };
+      return { ok: true, message: `"${payload.name}" added to the menu at ${money(Number(payload.price))}` };
     }
 
     case 'update_item_price': {
       const { updateMenuItem } = storeActions;
       if (!updateMenuItem) return { ok: false, error: 'Not available' };
       await updateMenuItem(payload.item_id, { price: Number(payload.new_price) });
-      return { ok: true, message: `Price updated to £${Number(payload.new_price).toFixed(2)}` };
+      return { ok: true, message: `Price updated to ${money(Number(payload.new_price))}` };
     }
 
     case 'eighty_six_item': {
@@ -628,7 +629,7 @@ export async function executeConfirmedAction(action, storeActions = {}) {
       const { applyDiscount } = storeActions;
       if (!applyDiscount) return { ok: false, error: 'Discount not available' };
       applyDiscount({ type: payload.type, value: payload.value, reason: payload.reason, tableId: payload.tableId });
-      const display = payload.type === 'percent' ? `${payload.value}%` : `£${Number(payload.value).toFixed(2)}`;
+      const display = payload.type === 'percent' ? `${payload.value}%` : `${money(Number(payload.value))}`;
       return { ok: true, message: `${display} discount applied — ${payload.reason}` };
     }
 

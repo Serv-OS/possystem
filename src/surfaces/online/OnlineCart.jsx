@@ -3,6 +3,7 @@
 // breakdown for legal compliance on customer-facing surfaces.
 
 import { calculateOrderTax } from '../../lib/tax';
+import { money } from '../../lib/currency';
 
 export default function OnlineCart({ cart, theme, orderType, taxRates = [], onClose, onRemove, onUpdateQty, onCheckout }) {
   const subtotal = cart.reduce((s, l) => {
@@ -75,7 +76,7 @@ export default function OnlineCart({ cart, theme, orderType, taxRates = [], onCl
                   {(line.mods || []).length > 0 && (
                     <div style={{ fontSize: 12, color: muted, lineHeight: 1.55, marginBottom: 8 }}>
                       {(line.mods || []).map((m, i) => (
-                        <div key={i}>· {m.name || m.label}{m.price > 0 ? ` (+£${Number(m.price).toFixed(2)})` : ''}</div>
+                        <div key={i}>· {m.name || m.label}{m.price > 0 ? ` (+${money(Number(m.price))})` : ''}</div>
                       ))}
                     </div>
                   )}
@@ -94,7 +95,7 @@ export default function OnlineCart({ cart, theme, orderType, taxRates = [], onCl
                   </div>
                 </div>
                 <div style={{ fontSize: 14, fontWeight: 800, alignSelf: 'flex-start' }}>
-                  £{lineTotal.toFixed(2)}
+                  {money(lineTotal)}
                 </div>
               </div>
             );
@@ -104,7 +105,7 @@ export default function OnlineCart({ cart, theme, orderType, taxRates = [], onCl
         {/* Totals */}
         {cart.length > 0 && (
           <div style={{ padding: '16px 22px 0', flexShrink: 0 }}>
-            <Row label="Subtotal" value={`£${subtotal.toFixed(2)}`} muted={muted}/>
+            <Row label="Subtotal" value={`${money(subtotal)}`} muted={muted}/>
             {/* v5.5.154: dine-in (QR) gets neither a delivery fee nor a
                 collection line — it's eat-in at the table, no fulfilment
                 cost. Only show the row for online order types. */}
@@ -119,7 +120,7 @@ export default function OnlineCart({ cart, theme, orderType, taxRates = [], onCl
             {taxBreakdown.totalTax > 0 && taxBreakdown.breakdown.map((b, i) => (
               <Row key={i}
                 label={`incl. ${b.rate.name || `VAT ${(Number(b.rate.rate) * 100).toFixed(0)}%`}`}
-                value={`£${b.tax.toFixed(2)}`}
+                value={`${money(b.tax)}`}
                 muted={muted}/>
             ))}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline',
@@ -127,7 +128,7 @@ export default function OnlineCart({ cart, theme, orderType, taxRates = [], onCl
             }}>
               <div style={{ fontSize: 15, fontWeight: 800 }}>Total</div>
               <div style={{ fontSize: 22, fontWeight: 900, letterSpacing: '-0.02em' }}>
-                £{subtotal.toFixed(2)}
+                {money(subtotal)}
               </div>
             </div>
           </div>
@@ -150,7 +151,7 @@ export default function OnlineCart({ cart, theme, orderType, taxRates = [], onCl
             border: 'none', fontSize: 15, fontWeight: 800, cursor: cart.length ? 'pointer' : 'not-allowed',
             fontFamily: 'inherit',
           }}>
-            Checkout · £{subtotal.toFixed(2)}
+            Checkout · {money(subtotal)}
           </button>
         </div>
       </div>

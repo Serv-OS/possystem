@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useStore } from '../store';
+import { money } from '../lib/currency';
 
 const VOID_REASONS = [
   'Customer changed mind',
@@ -68,7 +69,7 @@ export default function VoidModal({ type, items, totalValue, onConfirm, onCancel
             </div>
             <div style={{ fontSize:12, color:'var(--t3)', marginTop:2 }}>
               {isCheck
-                ? `${items.length} item${items.length!==1?'s':''} · £${totalValue.toFixed(2)} total`
+                ? `${items.length} item${items.length!==1?'s':''} · ${money(totalValue)} total`
                 : items.map(i => `${i.qty}× ${i.name}`).join(', ')}
             </div>
           </div>

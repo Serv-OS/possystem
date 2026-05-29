@@ -14,6 +14,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { supabase, platformSupabase, getActiveLocationSync } from '../../lib/supabase';
 import { resolvePlatformLocationId } from '../../lib/networkReader';
+import { stripeCurrency } from '../../lib/currency';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 
@@ -279,7 +280,7 @@ function ReaderRow({ reader, devices, onUnregister, onReassign, platformLocation
         body: JSON.stringify({
           reader_id: reader.stripe_reader_id,
           location_id: platformLocationId,
-          currency: 'gbp',
+          currency: stripeCurrency(),
           // No payment_intent_id — server skips the PI.cancel step
         }),
       });

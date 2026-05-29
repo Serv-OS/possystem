@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useStore } from '../store';
+import { money, currencySymbol } from '../lib/currency';
 
 const FALLBACK_PRESETS = [
   { id:'staff50',  label:'Staff meal',       type:'percent', value:50,  requiresManager:false },
@@ -64,7 +65,7 @@ export default function DiscountModal({ items, subtotal, onConfirm, onCancel }) 
 
     const amount  = calcAmount(base);
     const label   = selected==='custom'
-      ? `Custom ${customType==='percent'?customVal+'%':'£'+parseFloat(customVal).toFixed(2)}`
+      ? `Custom ${customType==='percent'?customVal+'%':money(parseFloat(customVal))}`
       : preset.label;
     const type    = selected==='custom' ? customType : preset.type;
     const value   = selected==='custom' ? parseFloat(customVal)||0 : preset.value;
@@ -118,7 +119,7 @@ export default function DiscountModal({ items, subtotal, onConfirm, onCancel }) 
                   <button key={p.id} onClick={()=>setSelected(p.id)} style={{padding:'10px 6px',borderRadius:10,cursor:'pointer',textAlign:'center',fontFamily:'inherit',border:`1.5px solid ${selected===p.id?'var(--acc)':'var(--bdr)'}`,background:selected===p.id?'var(--acc-d)':'var(--bg3)',position:'relative'}}>
                     {p.requiresManager&&<div style={{position:'absolute',top:4,right:4,width:6,height:6,borderRadius:'50%',background:'var(--acc)'}}/>}
                     <div style={{fontSize:11,fontWeight:700,color:selected===p.id?'var(--acc)':'var(--t1)',lineHeight:1.3}}>{p.label}</div>
-                    <div style={{fontSize:14,fontWeight:800,color:selected===p.id?'var(--acc)':'var(--t2)',marginTop:3,fontFamily:'DM Mono,monospace'}}>{p.type==='amount'?`£${p.value}`:`${p.value}%`}</div>
+                    <div style={{fontSize:14,fontWeight:800,color:selected===p.id?'var(--acc)':'var(--t2)',marginTop:3,fontFamily:'DM Mono,monospace'}}>{p.type==='amount'?`${currencySymbol()}${p.value}`:`${p.value}%`}</div>
                   </button>
                 ))}
               </div>
@@ -158,7 +159,7 @@ export default function DiscountModal({ items, subtotal, onConfirm, onCancel }) 
                   <div style={{fontSize:11,color:'var(--t3)',marginTop:1}}>Apply to all {visibleItems.length} items</div>
                 </div>
                 <div style={{fontSize:15,fontWeight:800,color:scope==='check'?'var(--acc)':'var(--t2)',fontFamily:'DM Mono,monospace'}}>
-                  −£{calcAmount(subtotal).toFixed(2)}
+                  −{money(calcAmount(subtotal))}
                 </div>
               </button>
 
@@ -182,8 +183,8 @@ export default function DiscountModal({ items, subtotal, onConfirm, onCancel }) 
                           {item.mods?.length>0&&<div style={{fontSize:10,color:'var(--t3)'}}>{item.mods.map(m=>m.label).join(', ')}</div>}
                         </div>
                         <div style={{textAlign:'right',flexShrink:0}}>
-                          <div style={{fontSize:12,fontWeight:700,color:on?'var(--acc)':'var(--t2)',fontFamily:'DM Mono,monospace'}}>£{base.toFixed(2)}</div>
-                          {on&&<div style={{fontSize:10,color:'var(--grn)'}}>−£{calcAmount(base).toFixed(2)}</div>}
+                          <div style={{fontSize:12,fontWeight:700,color:on?'var(--acc)':'var(--t2)',fontFamily:'DM Mono,monospace'}}>{money(base)}</div>
+                          {on&&<div style={{fontSize:10,color:'var(--grn)'}}>−{money(calcAmount(base))}</div>}
                         </div>
                       </div>
                     );
@@ -196,7 +197,7 @@ export default function DiscountModal({ items, subtotal, onConfirm, onCancel }) 
                 <button className="btn btn-acc" style={{flex:2,height:44}}
                   disabled={scope==='items'&&itemSel.length===0}
                   onClick={handleApply}>
-                  Apply {selected&&`— −£${calcAmount(scope==='check'?subtotal:items.filter(i=>itemSel.includes(i.uid)).reduce((s,i)=>s+i.price*i.qty,0)).toFixed(2)}`}
+                  Apply {selected&&`— −${money(calcAmount(scope==='check'?subtotal:items.filter(i=>itemSel.includes(i.uid)).reduce((s,i)=>s+i.price*i.qty,0)))}`}
                 </button>
               </div>
             </>

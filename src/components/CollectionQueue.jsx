@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useStore } from '../store';
+import { money } from '../lib/currency';
 
 const STATUS_FLOW = ['received', 'prep', 'ready', 'collected'];
 const STATUS_META = {
@@ -154,7 +155,7 @@ export default function CollectionQueue({ onClose }) {
                   </div>
                   <div style={{ textAlign: 'right' }}>
                     <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--acc)', fontFamily: 'DM Mono, monospace' }}>
-                      £{order.total.toFixed(2)}
+                      {money(order.total)}
                     </div>
                     <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 1 }}>
                       {order.type === 'collection' ? 'Collection' : 'Takeaway'}

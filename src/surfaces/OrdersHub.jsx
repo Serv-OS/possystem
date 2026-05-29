@@ -13,6 +13,7 @@ import { useState, useMemo, useEffect } from 'react';
 import { useStore } from '../store';
 import { supabase } from '../lib/supabase';
 import { syncQrTableSession } from '../lib/qrTableSession';
+import { money, currencySymbol } from '../lib/currency';
 
 // ── Channel definitions ────────────────────────────────────────────────────────
 const FILTER_TABS = [
@@ -50,7 +51,7 @@ function elapsed(date) {
   return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
 }
 
-const money = n => `£${(n || 0).toFixed(2)}`;
+// v5.5.326: money() now imported from lib/currency (multi-currency); sweep adds the import
 
 // ── Root ──────────────────────────────────────────────────────────────────────
 export default function OrdersHub() {
@@ -259,7 +260,7 @@ export default function OrdersHub() {
         surchargeReason = `${Math.round(ageMin)} min open · `
           + (tab.tabSurchargePct ? `${tab.tabSurchargePct}%` : '')
           + (tab.tabSurchargePct && tab.tabSurchargeFixed ? ' + ' : '')
-          + (tab.tabSurchargeFixed ? `£${tab.tabSurchargeFixed.toFixed(2)}` : '');
+          + (tab.tabSurchargeFixed ? `${money(tab.tabSurchargeFixed)}` : '');
       }
     }
     const finalTotal = +(tab.total + surcharge).toFixed(2);
@@ -273,17 +274,17 @@ export default function OrdersHub() {
     const paymentMethodId = tab.firstRow?.customer?.payment_method_id || null;
     if (willOverage && !paymentMethodId) {
       if (!confirm(
-        `Bill is £${finalTotal.toFixed(2)} but only £${tab.preAuthAmount.toFixed(2)} was pre-authorised, and this tab was opened BEFORE v5.5.160 (no saved card on file).\n\n`
-        + `Only £${tab.preAuthAmount.toFixed(2)} can be captured. The £${(finalTotal - tab.preAuthAmount).toFixed(2)} shortfall must be collected via terminal or cash.\n\nProceed?`
+        `Bill is ${money(finalTotal)} but only ${money(tab.preAuthAmount)} was pre-authorised, and this tab was opened BEFORE v5.5.160 (no saved card on file).\n\n`
+        + `Only ${money(tab.preAuthAmount)} can be captured. The ${money((finalTotal - tab.preAuthAmount))} shortfall must be collected via terminal or cash.\n\nProceed?`
       )) return;
     } else if (!confirm(
       (willOverage
-        ? `Close Table ${tab.tableLabel}? Capture £${tab.preAuthAmount.toFixed(2)} pre-auth + charge £${(finalTotal - tab.preAuthAmount).toFixed(2)} overage on saved card = £${finalTotal.toFixed(2)} total.`
+        ? `Close Table ${tab.tableLabel}? Capture ${money(tab.preAuthAmount)} pre-auth + charge ${money((finalTotal - tab.preAuthAmount))} overage on saved card = ${money(finalTotal)} total.`
         : surcharge > 0
-          ? `Close Table ${tab.tableLabel}? Bill £${tab.total.toFixed(2)} + surcharge £${surcharge.toFixed(2)} (${surchargeReason}) = £${finalTotal.toFixed(2)} captured.`
-          : `Close Table ${tab.tableLabel} (${tab.rows.length} round${tab.rows.length === 1 ? '' : 's'}) and charge £${finalTotal.toFixed(2)}?`)
+          ? `Close Table ${tab.tableLabel}? Bill ${money(tab.total)} + surcharge ${money(surcharge)} (${surchargeReason}) = ${money(finalTotal)} captured.`
+          : `Close Table ${tab.tableLabel} (${tab.rows.length} round${tab.rows.length === 1 ? '' : 's'}) and charge ${money(finalTotal)}?`)
       + (tab.preAuthAmount > finalTotal
-        ? `\n\nNOTE: customer's card was HELD for £${tab.preAuthAmount.toFixed(2)} when the tab opened. Stripe captures £${finalTotal.toFixed(2)} now; the remaining £${(tab.preAuthAmount - finalTotal).toFixed(2)} hold is released by their bank in 1–7 days. Customer's bank statement may briefly show both — this is normal.`
+        ? `\n\nNOTE: customer's card was HELD for ${money(tab.preAuthAmount)} when the tab opened. Stripe captures ${money(finalTotal)} now; the remaining ${money((tab.preAuthAmount - finalTotal))} hold is released by their bank in 1–7 days. Customer's bank statement may briefly show both — this is normal.`
         : '')
     )) return;
 
@@ -310,7 +311,7 @@ export default function OrdersHub() {
       const shortfallMinor = Number(data.shortfall || 0);
       if (shortfallMinor > 0) {
         if (!paymentMethodId) {
-          overageError = `Could not auto-charge £${(shortfallMinor / 100).toFixed(2)} overage — no saved card on this tab.`;
+          overageError = `Could not auto-charge ${money((shortfallMinor / 100))} overage — no saved card on this tab.`;
         } else {
           try {
             const ovRes = await fetch('/api/stripe-charge-overage', {
@@ -410,19 +411,19 @@ export default function OrdersHub() {
 
       if (overageError) {
         showToast(
-          `Table ${tab.tableLabel}: captured £${capturedFromAuth.toFixed(2)} from pre-auth, but overage £${(finalTotal - capturedFromAuth).toFixed(2)} could not be charged: ${overageError}. Collect via terminal/cash.`,
+          `Table ${tab.tableLabel}: captured ${money(capturedFromAuth)} from pre-auth, but overage ${money((finalTotal - capturedFromAuth))} could not be charged: ${overageError}. Collect via terminal/cash.`,
           'error', 12000
         );
       } else if (overageCaptured > 0) {
         showToast(
-          `Table ${tab.tableLabel}: £${capturedFromAuth.toFixed(2)} captured + £${overageCaptured.toFixed(2)} overage on saved card = £${totalCollected.toFixed(2)} total ✓`,
+          `Table ${tab.tableLabel}: ${money(capturedFromAuth)} captured + ${money(overageCaptured)} overage on saved card = ${money(totalCollected)} total ✓`,
           'success'
         );
       } else {
         showToast(
           surcharge > 0
-            ? `Table ${tab.tableLabel} captured £${capturedFromAuth.toFixed(2)} (incl £${surcharge.toFixed(2)} surcharge)`
-            : `Table ${tab.tableLabel} captured £${capturedFromAuth.toFixed(2)}`,
+            ? `Table ${tab.tableLabel} captured ${money(capturedFromAuth)} (incl ${money(surcharge)} surcharge)`
+            : `Table ${tab.tableLabel} captured ${money(capturedFromAuth)}`,
           'success'
         );
       }
@@ -474,7 +475,7 @@ export default function OrdersHub() {
         surchargeReason = `Tab open ${Math.round(ageMin)} min · `
           + (pct > 0 ? `${pct}%` : '')
           + (pct > 0 && fixed > 0 ? ' + ' : '')
-          + (fixed > 0 ? `£${fixed.toFixed(2)}` : '');
+          + (fixed > 0 ? `${money(fixed)}` : '');
       }
     }
     const finalTotal = +(Number(o.total || 0) + surcharge).toFixed(2);
@@ -485,14 +486,14 @@ export default function OrdersHub() {
     const preAuth = Number(o.customer?.pre_auth_amount || 0);
     if (preAuth > 0 && finalTotal > preAuth) {
       if (!confirm(
-        `WARNING: bill is £${finalTotal.toFixed(2)} but only £${preAuth.toFixed(2)} was pre-authorised.\n\n`
-        + `Stripe will only capture £${preAuth.toFixed(2)}. The £${(finalTotal - preAuth).toFixed(2)} shortfall must be collected separately.\n\n`
+        `WARNING: bill is ${money(finalTotal)} but only ${money(preAuth)} was pre-authorised.\n\n`
+        + `Stripe will only capture ${money(preAuth)}. The ${money((finalTotal - preAuth))} shortfall must be collected separately.\n\n`
         + `Proceed?`
       )) return;
     } else if (!confirm(
       surcharge > 0
-        ? `Close this tab? Bill £${Number(o.total || 0).toFixed(2)} + surcharge £${surcharge.toFixed(2)} (${surchargeReason}) = £${finalTotal.toFixed(2)} charged.`
-        : `Close this tab and charge £${finalTotal.toFixed(2)} to the customer's card?`
+        ? `Close this tab? Bill ${money(Number(o.total || 0))} + surcharge ${money(surcharge)} (${surchargeReason}) = ${money(finalTotal)} charged.`
+        : `Close this tab and charge ${money(finalTotal)} to the customer's card?`
     )) return;
 
     setClosingTabRef(o.ref);
@@ -539,8 +540,8 @@ export default function OrdersHub() {
       updateQueueStatus(o.ref, 'collected');
       showToast(
         surcharge > 0
-          ? `${o.ref} captured £${captureAmount.toFixed(2)} (incl £${surcharge.toFixed(2)} surcharge)`
-          : `${o.ref} captured £${captureAmount.toFixed(2)}`,
+          ? `${o.ref} captured ${money(captureAmount)} (incl ${money(surcharge)} surcharge)`
+          : `${o.ref} captured ${money(captureAmount)}`,
         'success'
       );
       setTimeout(() => removeFromQueue(o.ref), 8000);
@@ -746,7 +747,7 @@ function QrTabCard({ tab, onForceClose, onAdvance, closingTab }) {
         {tab.isOpenTab ? (
           <span style={{ fontSize:10, fontWeight:800, padding:'3px 8px', borderRadius:12,
             background:'#fde68a', color:'#78350f', border:'1px solid #f59e0b', whiteSpace:'nowrap',
-          }}>£{tab.preAuthAmount.toFixed(0)} HELD</span>
+          }}>{currencySymbol()}{tab.preAuthAmount.toFixed(0)} HELD</span>
         ) : (
           <span style={{ fontSize:10, fontWeight:800, padding:'3px 8px', borderRadius:12,
             background:'#bbf7d0', color:'#14532d', border:'1px solid #22c55e', whiteSpace:'nowrap',
@@ -768,7 +769,7 @@ function QrTabCard({ tab, onForceClose, onAdvance, closingTab }) {
         )}
       </div>
       <div style={{ padding:'10px 14px', borderTop:'1px solid var(--bdr)', background:'var(--bg2)', display:'flex', alignItems:'center', gap:8 }}>
-        <span style={{ fontSize:18, fontWeight:900, color:'var(--acc)', fontFamily:'var(--font-mono)' }}>£{tab.total.toFixed(2)}</span>
+        <span style={{ fontSize:18, fontWeight:900, color:'var(--acc)', fontFamily:'var(--font-mono)' }}>{money(tab.total)}</span>
         <span style={{ fontSize:10, color:'var(--t4)' }}>{tab.isOpenTab ? 'running total' : 'paid'}</span>
         {tab.isOpenTab ? (
           <button onClick={onForceClose} disabled={!!closingTab} style={{
@@ -913,7 +914,7 @@ function OrderCard({ order, onAdvance, onOpen, onForceClose, closingTab }) {
         {isOpenTab && (
           <span style={{ fontSize:9, fontWeight:800, padding:'2px 7px', borderRadius:8,
             background:'#fde68a', color:'#78350f', border:'1px solid #f59e0b', letterSpacing:'.04em',
-          }}>TAB · £{order.customer?.pre_auth_amount ?? '?'} HELD</span>
+          }}>TAB · {currencySymbol()}{order.customer?.pre_auth_amount ?? '?'} HELD</span>
         )}
         <div style={{ marginLeft:'auto', display:'flex', gap:5 }}>
           <button onClick={onOpen} style={{ padding:'4px 10px', borderRadius:7, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr2)', color:'var(--t2)', fontSize:11, fontWeight:600 }}>

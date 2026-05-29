@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { getActiveLocationSync, ensureAuthToken } from '../lib/supabase';
 import { resolvePlatformLocationId, getAssignedNetworkReader } from '../lib/networkReader';
+import { money, stripeCurrency } from '../lib/currency';
 
 // ─── v5.5.324: Bar-tab card pre-authorisation ──────────────────────────────
 // Places a manual-capture HOLD on the customer's card via the Stripe Terminal
@@ -28,7 +29,7 @@ export default function TabPreAuthTerminal({ amountMinor, guestName, onAuthorize
   const platformLocRef = useRef(null);
   const startedRef = useRef(false);
 
-  const pounds = (m) => `£${((m || 0) / 100).toFixed(2)}`;
+  const pounds = (m) => `${money(((m || 0) / 100))}`;
 
   useEffect(() => {
     let cancelled = false;
@@ -71,7 +72,7 @@ export default function TabPreAuthTerminal({ amountMinor, guestName, onAuthorize
         body: JSON.stringify({
           pos_device_id: opsDeviceId,
           amount_minor: amountMinor,
-          currency: 'gbp',
+          currency: stripeCurrency(),
           capture_method: 'manual', // ← pre-auth hold, captured at tab close
           line_items: [{ description: `Tab hold — ${guestName || 'Guest'}`, amount: amountMinor, quantity: 1 }],
           skip_tipping: true,

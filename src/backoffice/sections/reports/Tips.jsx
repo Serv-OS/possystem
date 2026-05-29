@@ -17,6 +17,7 @@ import { useMemo, useState } from 'react';
 import { useStore } from '../../../store';
 import { StatTile, ExportBtn, EmptyState, HourBar, BarRow } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
+import { currencySymbol } from '../../../lib/currency';
 
 // Aggregate checks to per-server tip stats + hours derivation.
 // Groups by server NAME (since that's the field that's always present on historical
@@ -276,7 +277,7 @@ export default function Tips({ checks, fmt, fmtN }) {
       {/* Tips by hour */}
       <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:12, padding:'16px', marginBottom:14 }}>
         <div style={{ fontSize:11, fontWeight:700, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:14 }}>Tips by hour</div>
-        <HourBar values={headline.byHour} maxLabel={v => `£${Math.round(v)}`} nowHour={nowHour}/>
+        <HourBar values={headline.byHour} maxLabel={v => `${currencySymbol()}${Math.round(v)}`} nowHour={nowHour}/>
       </div>
 
       {/* Per-server tips table */}

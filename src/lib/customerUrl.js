@@ -130,7 +130,7 @@ export async function lookupLocationBySlug(slug, platformSupabase) {
       // v5.5.109 — all platform-DB columns, not ops. (Reminder: receipt_branding
       // lives on OPS — fetched by OnlineSurface as a fallback only when
       // online_branding is empty.)
-      .select('id, ops_location_id, name, timezone, online_slug, online_enabled, qr_enabled, opening_hours, online_branding, online_menu_id, online_collection_lead_min, online_delivery_enabled, company_id')
+      .select('id, ops_location_id, name, timezone, currency, online_slug, online_enabled, qr_enabled, opening_hours, online_branding, online_menu_id, online_collection_lead_min, online_delivery_enabled, company_id')
       .eq('online_slug', slug)
       .maybeSingle();
     if (!data) {

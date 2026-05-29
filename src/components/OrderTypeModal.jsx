@@ -10,6 +10,7 @@
 import { useState, useRef } from 'react';
 import { useStore } from '../store';
 import { sortTables } from '../lib/sortTables';
+import { money } from '../lib/currency';
 
 const TYPES = [
   {
@@ -156,7 +157,7 @@ export default function OrderTypeModal({ items, onClose, onComplete }) {
               {step === 'tab_pick'   && 'Bar tab'}
             </div>
             <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 2 }}>
-              {itemCount} item{itemCount !== 1 ? 's' : ''} · £{subtotal.toFixed(2)}
+              {itemCount} item{itemCount !== 1 ? 's' : ''} · {money(subtotal)}
             </div>
           </div>
           <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--t4)', cursor: 'pointer', fontSize: 22, lineHeight: 1 }}>×</button>
@@ -288,7 +289,7 @@ export default function OrderTypeModal({ items, onClose, onComplete }) {
                         <div style={{ marginBottom: 8 }}>
                           <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)' }}>{t.label}</div>
                           <div style={{ fontSize: 10, color: 'var(--t4)', marginTop: 2 }}>
-                            {t.session?.items?.filter(i => !i.voided).length || 0} items · £{(t.session?.subtotal || 0).toFixed(2)} · {t.session?.server || 'no server'}
+                            {t.session?.items?.filter(i => !i.voided).length || 0} items · {money((t.session?.subtotal || 0))} · {t.session?.server || 'no server'}
                           </div>
                         </div>
                         <div style={{ display: 'flex', gap: 6 }}>
@@ -348,7 +349,7 @@ export default function OrderTypeModal({ items, onClose, onComplete }) {
                         <div style={{ flex: 1 }}>
                           <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)' }}>{tab.name || tab.id}</div>
                           <div style={{ fontSize: 10, color: 'var(--t4)' }}>
-                            £{(tab.total || 0).toFixed(2)} · {tab.rounds?.length || 0} round{tab.rounds?.length !== 1 ? 's' : ''}
+                            {money((tab.total || 0))} · {tab.rounds?.length || 0} round{tab.rounds?.length !== 1 ? 's' : ''}
                           </div>
                         </div>
                         <span style={{ color: 'var(--t3)', fontSize: 16 }}>›</span>

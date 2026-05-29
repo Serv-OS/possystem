@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
 import { useStore } from '../store';
 import { ALLERGENS } from '../data/seed';
+import { money } from '../lib/currency';
 
 // ══════════════════════════════════════════════════════════════════════════════
 // InlineItemFlow — replaces ProductModal for POS
@@ -247,7 +248,7 @@ export default function InlineItemFlow({ item, menuItems, activeAllergens = [], 
           </div>
           {step === 'modifiers' && (
             <div style={{ fontFamily:'var(--font-mono)', fontSize:16, fontWeight:800, color:'var(--acc)', flexShrink:0 }}>
-              £{total.toFixed(2)}
+              {money(total)}
             </div>
           )}
         </div>
@@ -353,7 +354,7 @@ export default function InlineItemFlow({ item, menuItems, activeAllergens = [], 
             style={{ width:'100%', height:52, fontSize:16, fontWeight:800, borderRadius:14,
               background: canAdd ? 'var(--acc)' : 'var(--red)',
               opacity: 1, cursor: 'pointer' }}>
-            {canAdd ? `Add to order · £${total.toFixed(2)}` : `Choose required options first`}
+            {canAdd ? `Add to order · ${money(total)}` : `Choose required options first`}
           </button>
         </div>
       )}
@@ -385,7 +386,7 @@ function VariantStep({ item, variantChildren, onPick }) {
                 {v.menuName || v.name}
               </div>
               <div style={{ fontSize:18, fontWeight:900, color:'var(--acc)', fontFamily:'var(--font-mono)', marginTop:'auto' }}>
-                £{price.toFixed(2)}
+                {money(price)}
               </div>
               {v.allergens?.length > 0 && (
                 <div style={{ fontSize:10, color:'var(--t4)', marginTop:4 }}>
@@ -506,7 +507,7 @@ function ModifierStep({ modGroups, instGroups, allModDefs, menuItems, eightySixI
                           )}
                         </div>
                         {(opt.price || 0) > 0 && (
-                          <div style={{ fontSize:11, color:'var(--t3)', fontFamily:'var(--font-mono)' }}>+£{opt.price.toFixed(2)} each</div>
+                          <div style={{ fontSize:11, color:'var(--t3)', fontFamily:'var(--font-mono)' }}>+{money(opt.price)} each</div>
                         )}
                       </div>
                       {/* Qty controls */}
@@ -602,7 +603,7 @@ function ModifierStep({ modGroups, instGroups, allModDefs, menuItems, eightySixI
                         </div>
                         {(opt.price || 0) > 0 && (
                           <span style={{ fontSize:12, fontWeight:700, color: isSel ? 'var(--acc)' : 'var(--t3)', fontFamily:'var(--font-mono)', flexShrink:0 }}>
-                            +£{opt.price.toFixed(2)}
+                            +{money(opt.price)}
                           </span>
                         )}
                       </button>
@@ -708,7 +709,7 @@ function SubModifierGroup({ group, selections, onToggleSingle, onAddMulti, onRem
               background:isSel?'var(--acc-d)':'var(--bg2)',
               color:isSel?'var(--acc)':'var(--t1)', fontWeight:isSel?700:400 }}>
               {opt.name||opt.label}
-              {(opt.price||0) > 0 && <span style={{ color:'var(--t4)', marginLeft:4 }}>+£{opt.price.toFixed(2)}</span>}
+              {(opt.price||0) > 0 && <span style={{ color:'var(--t4)', marginLeft:4 }}>+{money(opt.price)}</span>}
             </button>
           );
         })}

@@ -28,6 +28,7 @@ import { upsertMenuItem, uploadProductImage, deleteProductImage, saveQuickScreen
 // v4.7.8: per-menu pricing tier UI (item-level)
 import PerMenuPricingTiers from './PerMenuPricingTiers';
 import MenuImportModal from '../components/MenuImportModal';
+import { money } from '../../lib/currency';
 
 // ── Clone item helper ─────────────────────────────────────────────────────────
 async function cloneItem(item, menuItems, addMenuItem, updateMenuItem, markBOChange, showToast, setSelItemId) {
@@ -760,7 +761,7 @@ function MenuTab() {
                     <div key={item.id} style={{ display:'flex',alignItems:'center',gap:10,padding:'6px 12px',borderBottom:'1px solid var(--acc-b)' }}>
                       <div style={{ flex:1,minWidth:0 }}>
                         <span style={{ fontSize:12,fontWeight:600,color:'var(--t1)' }}>{item.menuName||item.name}</span>
-                        <span style={{ fontSize:10,color:'var(--t4)',marginLeft:8 }}>£{(item.pricing?.base??item.price??0).toFixed(2)}</span>
+                        <span style={{ fontSize:10,color:'var(--t4)',marginLeft:8 }}>{money((item.pricing?.base??item.price??0))}</span>
                       </div>
                       <span style={{ fontSize:10,fontWeight:600,padding:'2px 7px',borderRadius:6,background:'var(--grn-d)',color:'var(--grn)',border:'1px solid var(--grn-b)' }}>✓ In menu</span>
                       <button onClick={()=>removeFromCat(item)} style={{ padding:'3px 8px',borderRadius:6,cursor:'pointer',fontFamily:'inherit',background:'var(--red-d)',border:'1px solid var(--red-b)',color:'var(--red)',fontSize:10,fontWeight:600 }}>Remove</button>
@@ -779,7 +780,7 @@ function MenuTab() {
                         <div style={{ flex:1,minWidth:0 }}>
                           <span style={{ fontSize:12,fontWeight:600,color:'var(--t1)' }}>{item.menuName||item.name}</span>
                           {itemCat&&<span style={{ fontSize:9,color:'var(--t4)',marginLeft:7 }}>{itemCat.icon} {itemCat.label}</span>}
-                          <span style={{ fontSize:10,color:'var(--t4)',marginLeft:8 }}>£{(item.pricing?.base??item.price??0).toFixed(2)}</span>
+                          <span style={{ fontSize:10,color:'var(--t4)',marginLeft:8 }}>{money((item.pricing?.base??item.price??0))}</span>
                         </div>
                         <button onClick={()=>addToCat(item)} style={{ padding:'4px 10px',borderRadius:7,cursor:'pointer',fontFamily:'inherit',background:'var(--acc)',border:'none',color:'#0b0c10',fontSize:11,fontWeight:700,flexShrink:0 }}>+ Add</button>
                       </div>
@@ -872,9 +873,9 @@ function MenuTab() {
                           {item.description && <div style={{ fontSize:10, color:'var(--t4)', marginBottom:4, lineHeight:1.3, overflow:'hidden', display:'-webkit-box', WebkitLineClamp:2, WebkitBoxOrient:'vertical' }}>{item.description}</div>}
                           <div style={{ display:'flex', alignItems:'center', gap:4, flexWrap:'wrap' }}>
                             {isParent ? (
-                              <span style={{ fontSize:11, fontWeight:700, color:catColor }}>from £{Math.min(...children.map(c=>c.pricing?.base??c.price??0)).toFixed(2)}</span>
+                              <span style={{ fontSize:11, fontWeight:700, color:catColor }}>from {money(Math.min(...children.map(c=>c.pricing?.base??c.price??0)))}</span>
                             ) : (
-                              <span style={{ fontSize:13, fontWeight:800, color:catColor, fontFamily:'var(--font-mono)' }}>{p.base>0?`£${p.base.toFixed(2)}`:'free'}</span>
+                              <span style={{ fontSize:13, fontWeight:800, color:catColor, fontFamily:'var(--font-mono)' }}>{p.base>0?`${money(p.base)}`:'free'}</span>
                             )}
                             {isParent && <span style={{ fontSize:8, padding:'1px 5px', borderRadius:8, background:catColor+'22', color:catColor, fontWeight:700 }}>sizes</span>}
                             {(item.assignedModifierGroups||[]).length>0 && <span style={{ fontSize:8, color:'var(--acc)', padding:'1px 4px', borderRadius:6, background:'var(--acc-d)', fontWeight:700 }}>⊕ options</span>}
@@ -908,7 +909,7 @@ function MenuTab() {
                                     border:`1.5px solid ${isSelChild?'var(--acc)':catColor+'44'}`, background:isSelChild?'var(--acc-d)':catColor+'11',
                                     minWidth:90, flex:'1 1 90px', maxWidth:140 }}>
                                   <div style={{ fontSize:12, fontWeight:700, color:isSelChild?'var(--acc)':'var(--t1)', marginBottom:4 }}>{child.menuName||child.name}</div>
-                                  <div style={{ fontSize:13, fontWeight:800, color:catColor, fontFamily:'var(--font-mono)' }}>£{cp.toFixed(2)}</div>
+                                  <div style={{ fontSize:13, fontWeight:800, color:catColor, fontFamily:'var(--font-mono)' }}>{money(cp)}</div>
                                   {(child.allergens||[]).length>0 && <div style={{ fontSize:9, color:'var(--red)', marginTop:3 }}>⚠ {child.allergens.length}</div>}
                                 </button>
                               );
@@ -1080,7 +1081,7 @@ function ListItemView({ items, menuItems, selItemId, setSelItemId, catColor, add
               </div>
               <span style={{ fontSize:10, fontWeight:600, color:typeColor(item.type||'simple') }}>{typeLabel(item.type||'simple')}</span>
               <span style={{ fontSize:12, fontWeight:700, color:catColor, fontFamily:'var(--font-mono)' }}>
-                {hasVars && variants.length>0 ? `from £${fromP.toFixed(2)}` : `£${price.toFixed(2)}`}
+                {hasVars && variants.length>0 ? `from ${money(fromP)}` : `${money(price)}`}
               </span>
               <span style={{ fontSize:11, color:modCount>0?'var(--acc)':'var(--t4)', fontWeight:modCount>0?700:400 }}>{modCount>0?`⊕ ${modCount}`:''}</span>
               <span style={{ fontSize:10, color:allergCount>0?'var(--red)':'var(--t4)' }}>{allergCount>0?allergCount:''}</span>
@@ -1352,7 +1353,7 @@ function ItemsLibrary() {
                       </div>
                     </div>
                     <span style={{ fontSize:12, fontWeight:700, color:'var(--acc)', fontFamily:'var(--font-mono)', flexShrink:0 }}>
-                      {price>0?`£${price.toFixed(2)}`:'Free'}
+                      {price>0?`${money(price)}`:'Free'}
                     </span>
                   </div>
                 );
@@ -1397,7 +1398,7 @@ function ItemsLibrary() {
                   </div>
                   <span style={{ fontSize:10, fontWeight:600, color:typeColor(item.type||'simple') }}>{typeLabel(item.type||'simple')}</span>
                   <span style={{ fontSize:12, fontWeight:700, color, fontFamily:'var(--font-mono)' }}>
-                    {hasVars&&variants.length>0 ? `from £${fromP.toFixed(2)}` : `£${price.toFixed(2)}`}
+                    {hasVars&&variants.length>0 ? `from ${money(fromP)}` : `${money(price)}`}
                   </span>
                   <span style={{ fontSize:11, color:modCount>0?'var(--acc)':'var(--t4)', fontWeight:modCount>0?700:400 }}>{modCount>0?`⊕ ${modCount}`:''}</span>
                   <span style={{ fontSize:10, color:allergyN>0?'var(--red)':'var(--t4)' }}>{allergyN>0?allergyN:''}</span>
@@ -1446,7 +1447,7 @@ function ItemsLibrary() {
                             <span style={{ fontSize:12, fontWeight:600, color:vSel?'var(--acc)':'var(--t2)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{v.menuName||v.name}</span>
                           </div>
                           <span style={{ fontSize:9, color:'var(--t4)' }}>size</span>
-                          <span style={{ fontSize:12, fontWeight:700, color, fontFamily:'var(--font-mono)' }}>£{(vp.base||0).toFixed(2)}</span>
+                          <span style={{ fontSize:12, fontWeight:700, color, fontFamily:'var(--font-mono)' }}>{money((vp.base||0))}</span>
                           <span/>
                           <span style={{ fontSize:10, color:vAll>0?'var(--red)':'var(--t4)' }}>{vAll>0?vAll:''}</span>
                         </div>
@@ -1936,7 +1937,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                   <div style={{ paddingLeft:30 }}>
                     {(def.options||[]).map(opt => (
                       <span key={opt.id} style={{ display:'inline-block', marginRight:6, marginBottom:4, padding:'3px 9px', borderRadius:12, fontSize:11, background:'var(--bg3)', border:'1px solid var(--bdr)', color:'var(--t2)' }}>
-                        {opt.name}{opt.price>0&&<span style={{ color:'var(--t4)', marginLeft:3 }}>+£{opt.price.toFixed(2)}</span>}
+                        {opt.name}{opt.price>0&&<span style={{ color:'var(--t4)', marginLeft:3 }}>+{money(opt.price)}</span>}
                         {opt.subGroupId && <span style={{ color:'var(--acc)', marginLeft:3, fontSize:9 }}>↳</span>}
                       </span>
                     ))}
@@ -2061,7 +2062,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                       <div key={v.id} style={{ display:'flex', alignItems:'center', gap:8, padding:'6px 10px', borderRadius:8, border:'1.5px solid var(--bdr)', background:'var(--bg3)' }}>
                         <div style={{ width:14,height:14,borderRadius:'50%',border:'2px solid var(--bdr2)',flexShrink:0 }}/>
                         <span style={{ fontSize:12, fontWeight:500, color:'var(--t1)', flex:1 }}>{v.menuName||v.name||'—'}</span>
-                        <span style={{ fontSize:13, fontWeight:800, color:'var(--acc)', fontFamily:'var(--font-mono)' }}>£{(vp.base||0).toFixed(2)}</span>
+                        <span style={{ fontSize:13, fontWeight:800, color:'var(--acc)', fontFamily:'var(--font-mono)' }}>{money((vp.base||0))}</span>
                       </div>
                     );
                   })}
@@ -2370,7 +2371,7 @@ function PizzaBuilder({ item, onUpdate, markBOChange }) {
             return (
               <button key={c.id} onClick={()=>toggleCrust(c.id)} style={{ display:'flex', alignItems:'center', gap:5, padding:'6px 12px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', fontSize:12, fontWeight:avail?700:400, border:`1.5px solid ${avail?'var(--acc)':'var(--bdr)'}`, background:avail?'var(--acc-d)':'var(--bg3)', color:avail?'var(--acc)':'var(--t3)' }}>
                 {avail?'✓ ':''}{c.name}
-                {(c.extra||0)>0&&<span style={{ fontSize:10, color:'var(--t4)', fontFamily:'var(--font-mono)' }}>+£{c.extra.toFixed(2)}</span>}
+                {(c.extra||0)>0&&<span style={{ fontSize:10, color:'var(--t4)', fontFamily:'var(--font-mono)' }}>+{money(c.extra)}</span>}
               </button>
             );
           })}
@@ -2390,7 +2391,7 @@ function PizzaBuilder({ item, onUpdate, markBOChange }) {
               <button key={t.id} onClick={()=>toggleTop(t.id)} style={{ display:'flex', alignItems:'center', gap:7, padding:'7px 10px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', textAlign:'left', border:`1.5px solid ${on?t.color||'var(--acc)':'var(--bdr)'}`, background:on?(t.color||'var(--acc)')+'18':'var(--bg3)', transition:'all .1s' }}>
                 <div style={{ width:12,height:12,borderRadius:'50%',background:t.color||'var(--acc)',flexShrink:0,boxShadow:on?`0 0 6px ${t.color}88`:'none' }}/>
                 <span style={{ fontSize:11, fontWeight:on?700:400, color:on?t.color||'var(--acc)':'var(--t1)', flex:1 }}>{t.name}</span>
-                {t.price>0&&<span style={{ fontSize:10, color:'var(--t4)', fontFamily:'var(--font-mono)' }}>+£{t.price.toFixed(2)}</span>}
+                {t.price>0&&<span style={{ fontSize:10, color:'var(--t4)', fontFamily:'var(--font-mono)' }}>+{money(t.price)}</span>}
               </button>
             );
           })}
@@ -2666,7 +2667,7 @@ function ModifiersTab() {
                         onMouseLeave={e=>e.currentTarget.style.borderColor='var(--bdr)'}>
                           <span style={{ fontWeight:600 }}>{name}</span>
                           <span style={{ color:'var(--acc)', fontFamily:'var(--font-mono)', fontSize:11, flexShrink:0 }}>
-                            {price > 0 ? `£${price.toFixed(2)}` : 'Free'}
+                            {price > 0 ? `${money(price)}` : 'Free'}
                           </span>
                         </button>
                       );
@@ -3019,7 +3020,7 @@ function QuickScreenManager() {
                         textShadow:item.image?'0 1px 4px rgba(0,0,0,1)':'none' }}>{item.menuName||item.name}</div>
                       <div style={{ fontSize:12, fontWeight:800, fontFamily:'var(--font-mono)', marginTop:'auto',
                         color:item.image?'#fff':color, textShadow:item.image?'0 1px 6px rgba(0,0,0,1)':'none' }}>
-                        {kids.length>0?`from £${fromP.toFixed(2)}`:`£${price.toFixed(2)}`}
+                        {kids.length>0?`from ${money(fromP)}`:`${money(price)}`}
                       </div>
                     </div>
                   </>) : (
@@ -3077,7 +3078,7 @@ function QuickScreenManager() {
                 <div style={{ width:3,height:32,borderRadius:2,background:color,flexShrink:0 }}/>
                 <div style={{ flex:1,minWidth:0 }}>
                   <div style={{ fontSize:11,fontWeight:700,color:'var(--t1)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' }}>{item.menuName||item.name}</div>
-                  <div style={{ fontSize:9,color:'var(--t4)' }}>{cat?.icon} {cat?.label} · £{price.toFixed(2)}</div>
+                  <div style={{ fontSize:9,color:'var(--t4)' }}>{cat?.icon} {cat?.label} · {money(price)}</div>
                 </div>
                 {inScreen
                   ? <span style={{ fontSize:9,fontWeight:700,color:'var(--grn)',flexShrink:0 }}>✓</span>

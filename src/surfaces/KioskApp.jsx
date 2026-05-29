@@ -26,6 +26,7 @@ import KioskProductModal from './KioskProductModal';
 import { t, setLang, useKioskLang, LANGUAGES, getLanguageMeta } from '../lib/i18n';
 import { displayName } from '../lib/itemDisplay';
 import { fetchCustomerByPhone } from '../lib/customerLookup';
+import { money, stripeCurrency } from '../lib/currency';
 // networkReader import removed — kiosk payment now uses server-side edge function directly
 
 // ── OTP portal caller (mirrors CustomerPortal.callPortal) ───────────────────
@@ -1652,7 +1653,7 @@ function ScreenMenu({ brandColor, brandAccent, categories, items, selectedCatego
               overflow: 'hidden',
               textOverflow: 'ellipsis',
             }}>
-              {cartItemCount} {itemWord} • £{subtotal.toFixed(2)}
+              {cartItemCount} {itemWord} • {money(subtotal)}
             </div>
           </div>
           <button
@@ -1790,7 +1791,7 @@ function MenuItemCard({ item, price, brandColor, allergenFilter, onSelect, is86 
             fontVariantNumeric: 'tabular-nums',
             letterSpacing: '-0.01em',
             whiteSpace: 'nowrap',
-          }}>£{Number(price).toFixed(2)}</div>
+          }}>{money(Number(price))}</div>
         </div>
 
         {/* Description */}
@@ -1988,7 +1989,7 @@ function ScreenCart({ brandColor, cart, subtotal, cartItemCount, orderType, onUp
             color: 'var(--kFg)',
             fontVariantNumeric: 'tabular-nums',
             letterSpacing: '-0.01em',
-          }}>£{subtotal.toFixed(2)}</span>
+          }}>{money(subtotal)}</span>
         </div>
 
         {/* Totals row — circular back button + brand-fill pill with count badge */}
@@ -2064,7 +2065,7 @@ function ScreenCart({ brandColor, cart, subtotal, cartItemCount, orderType, onUp
               fontWeight: 800,
               fontVariantNumeric: 'tabular-nums',
               letterSpacing: '-0.01em',
-            }}>£{subtotal.toFixed(2)}</span>
+            }}>{money(subtotal)}</span>
           </button>
         </div>
       </div>
@@ -2124,7 +2125,7 @@ function CartLineCard({ line, brandColor, onInc, onDec, onRemove, atStockLimit }
             fontVariantNumeric: 'tabular-nums',
             letterSpacing: '-0.01em',
             whiteSpace: 'nowrap',
-          }}>£{line.lineTotal.toFixed(2)}</div>
+          }}>{money(line.lineTotal)}</div>
         </div>
 
         {/* Modifier summary */}
@@ -2250,7 +2251,7 @@ function ScreenTip({ brandColor, subtotal, tipPresets, tip, onSetTip, onContinue
             <div style={{ fontSize: 'clamp(28px, 5vw, 44px)', fontWeight: 900, color: brandColor, minWidth: '4ch' }}>{pct}%</div>
             <div style={{ flex: 1, textAlign: 'left' }}>
               <div style={{ fontSize: 'clamp(13px, 1.7vw, 16px)', color: 'var(--kFgMuted)' }}>Tip amount</div>
-              <div style={{ fontSize: 'clamp(20px, 2.8vw, 26px)', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>£{(subtotal * pct / 100).toFixed(2)}</div>
+              <div style={{ fontSize: 'clamp(20px, 2.8vw, 26px)', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{money((subtotal * pct / 100))}</div>
             </div>
           </button>
         ))}
@@ -2276,7 +2277,7 @@ function ScreenTip({ brandColor, subtotal, tipPresets, tip, onSetTip, onContinue
       </div>
       <div style={{ padding: '14px 22px 22px', flexShrink: 0 }}>
         <button onClick={onContinue} style={{ ...primaryCta(brandColor), width: '100%' }}>
-          Continue · £{(subtotal + tip).toFixed(2)} →
+          Continue · {money((subtotal + tip))} →
         </button>
       </div>
     </div>
@@ -2468,7 +2469,7 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, verifiedL
         body: JSON.stringify({
           pos_device_id: kioskId,
           amount_minor: amountMinor,
-          currency: 'gbp',
+          currency: stripeCurrency(),
           line_items: lineItems,
           skip_tipping: true, // kiosk collects tip in its own UI — don't prompt again on reader
         }),
@@ -2570,13 +2571,13 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, verifiedL
             {loyaltyCredit > 0 && (
               <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 14px', borderRadius: 10, background: '#22c55e15', border: '1px solid #22c55e33' }}>
                 <span style={{ fontSize: 14, fontWeight: 700, color: '#22c55e' }}>✓ {loyaltyRedemption?.reward_name || 'Loyalty reward'}</span>
-                <span style={{ fontSize: 14, fontWeight: 800, color: '#22c55e' }}>-£{loyaltyCredit.toFixed(2)}</span>
+                <span style={{ fontSize: 14, fontWeight: 800, color: '#22c55e' }}>-{money(loyaltyCredit)}</span>
               </div>
             )}
             {giftCardCredit > 0 && (
               <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 14px', borderRadius: 10, background: brandColor + '15', border: '1px solid ' + brandColor + '33' }}>
                 <span style={{ fontSize: 14, fontWeight: 700, color: brandColor }}>✓ Gift card applied</span>
-                <span style={{ fontSize: 14, fontWeight: 800, color: brandColor }}>-£{giftCardCredit.toFixed(2)}</span>
+                <span style={{ fontSize: 14, fontWeight: 800, color: brandColor }}>-{money(giftCardCredit)}</span>
               </div>
             )}
           </div>
@@ -2588,7 +2589,7 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, verifiedL
             {fullyPaid ? 'Amount covered' : 'Amount due'}
           </div>
           <div style={{ fontSize: 'clamp(52px, 10vw, 90px)', fontWeight: 900, letterSpacing: '-0.04em', fontVariantNumeric: 'tabular-nums', color: fullyPaid ? '#22c55e' : 'var(--kFg)' }}>
-            £{cardDueAmount.toFixed(2)}
+            {money(cardDueAmount)}
           </div>
         </div>
 
@@ -2612,7 +2613,7 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, verifiedL
                 <span style={{ fontSize: 22 }}>💳</span>
                 <div style={{ flex: 1, textAlign: 'left' }}>
                   <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--kFg)' }}>Gift Card {gc.last4 ? `···${gc.last4}` : ''}</div>
-                  <div style={{ fontSize: 12, color: 'var(--kFgMuted)' }}>Balance: £{((gc.balance || 0) / 100).toFixed(2)}</div>
+                  <div style={{ fontSize: 12, color: 'var(--kFgMuted)' }}>Balance: {money(((gc.balance || 0) / 100))}</div>
                 </div>
                 <span style={{ fontSize: 14, fontWeight: 800, color: brandColor }}>{giftApplying ? '...' : 'Apply'}</span>
               </button>

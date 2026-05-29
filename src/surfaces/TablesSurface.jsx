@@ -5,6 +5,7 @@ import { useStore } from '../store';
 import { resolveServiceCharge } from '../lib/serviceCharge';
 import CheckSelectorModal from '../components/CheckSelectorModal';
 import CustomerModal from '../components/CustomerModal';
+import { money, currencySymbol } from '../lib/currency';
 
 const STATUS = {
   available: { color:'#22c55e', bg:'rgba(34,197,94,.12)',  border:'rgba(34,197,94,.35)', label:'Available' },
@@ -353,7 +354,7 @@ function TableNode({ table, onClick }) {
           )}
           {session.subtotal > 0 && (
             <div style={{ fontSize:10, fontWeight:700, color:sm.color, marginTop:2, fontFamily:'DM Mono,monospace' }}>
-              £{session.subtotal.toFixed(0)}
+              {currencySymbol()}{session.subtotal.toFixed(0)}
             </div>
           )}
         </>
@@ -657,7 +658,7 @@ export default function TablesSurface() {
                       {/* Check total */}
                       <div style={{ marginLeft:'auto', textAlign:'right', flexShrink:0 }}>
                         <div style={{ fontSize:20, fontWeight:800, color:'var(--acc)', fontFamily:'DM Mono,monospace' }}>
-                          £{combinedTotal.toFixed(2)}
+                          {money(combinedTotal)}
                         </div>
                         <div style={{ fontSize:11, color:'var(--t3)' }}>
                           {hasChildren ? `${allChecks.length} checks` : `${session.items?.filter(i=>!i.voided).length||0} items`}
@@ -689,7 +690,7 @@ export default function TablesSurface() {
                             {child.session?.server} · {childItems} items
                           </div>
                           <div style={{ fontSize:16, fontWeight:800, color:'var(--acc)', fontFamily:'DM Mono,monospace' }}>
-                            £{childSub.toFixed(2)}
+                            {money(childSub)}
                           </div>
                           <div style={{ color:'var(--t4)', fontSize:16 }}>›</div>
                         </div>
@@ -816,12 +817,12 @@ export default function TablesSurface() {
                             <>
                               <div style={{ display:'flex', justifyContent:'space-between', fontSize:14, fontWeight:700 }}>
                                 <span style={{ color:'var(--t2)' }}>Running total</span>
-                                <span style={{ color:'var(--acc)', fontFamily:'DM Mono,monospace' }}>£{sub.toFixed(2)}</span>
+                                <span style={{ color:'var(--acc)', fontFamily:'DM Mono,monospace' }}>{money(sub)}</span>
                               </div>
                               {scAmt > 0 && (
                                 <div style={{ display:'flex', justifyContent:'space-between', fontSize:11, color:'var(--t3)', marginTop:3 }}>
                                   <span>inc. service ({deviceConfig?.serviceCharge?.rate ?? 12.5}%)</span>
-                                  <span style={{ fontFamily:'DM Mono,monospace' }}>£{totalWithSC.toFixed(2)}</span>
+                                  <span style={{ fontFamily:'DM Mono,monospace' }}>{money(totalWithSC)}</span>
                                 </div>
                               )}
                             </>
@@ -900,7 +901,7 @@ export default function TablesSurface() {
                       {item.name}
                       {item.status==='sent'&&<span style={{ marginLeft:5, fontSize:9, color:'var(--grn)', fontWeight:700 }}>sent</span>}
                     </div>
-                    <span style={{ color:'var(--t3)', fontFamily:'DM Mono,monospace', flexShrink:0 }}>£{(item.price*item.qty).toFixed(2)}</span>
+                    <span style={{ color:'var(--t3)', fontFamily:'DM Mono,monospace', flexShrink:0 }}>{money((item.price*item.qty))}</span>
                   </div>
                 ))}
               </div>

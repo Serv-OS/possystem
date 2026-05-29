@@ -23,6 +23,7 @@ import { getStripeForAccount, createPaymentIntent } from '../../lib/stripeClient
 import { attributeOnlineOrder } from '../../lib/customerLookup';
 import { getDayWindows } from '../../lib/openingHours';
 import { calculateOrderTax } from '../../lib/tax';
+import { money, stripeCurrency } from '../../lib/currency';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 
@@ -456,7 +457,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       authToken: token,
       locationId: platformLocationId,
       amountMinor,
-      currency: 'gbp',
+      currency: stripeCurrency(),
       channel: 'online',
       description: desc,
       paymentMethodTypes: ['card'],
@@ -793,9 +794,9 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
               {step === 'pay' ? 'Payment' : step === 'rewards' ? 'Rewards' : step === 'gift' ? 'Gift Card' : 'Checkout'}
             </div>
             <div style={{ fontSize: 12, color: muted, marginTop: 2 }}>
-              {isDelivery ? 'Delivery' : 'Collection'} · {cart.length} item{cart.length === 1 ? '' : 's'} · £{subtotal.toFixed(2)}
-              {giftApplied ? ` · Gift card -£${(giftApplied.applied / 100).toFixed(2)}` : ''}
-              {rewardApplied ? ` · Reward -£${(rewardApplied.discount_value / 100).toFixed(2)}` : ''}
+              {isDelivery ? 'Delivery' : 'Collection'} · {cart.length} item{cart.length === 1 ? '' : 's'} · {money(subtotal)}
+              {giftApplied ? ` · Gift card -${money((giftApplied.applied / 100))}` : ''}
+              {rewardApplied ? ` · Reward -${money((rewardApplied.discount_value / 100))}` : ''}
             </div>
           </div>
           <button onClick={
@@ -881,15 +882,15 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
                     <div>
                       <div style={{ fontSize: 12, color: muted, fontWeight: 600 }}>Gift card ····{giftCard.code_last4}</div>
                       <div style={{ fontSize: 20, fontWeight: 800, marginTop: 2 }}>
-                        £{(giftCard.balance / 100).toFixed(2)} <span style={{ fontSize: 12, fontWeight: 500, color: muted }}>balance</span>
+                        {money((giftCard.balance / 100))} <span style={{ fontSize: 12, fontWeight: 500, color: muted }}>balance</span>
                       </div>
                     </div>
                     <div style={{ fontSize: 28 }}>💳</div>
                   </div>
                   <div style={{ fontSize: 12, color: muted, marginBottom: 10 }}>
                     {giftCard.balance >= subtotalMinor
-                      ? `This card will cover the full order (£${subtotal.toFixed(2)}). No card payment needed.`
-                      : `This card will pay £${(giftCard.balance / 100).toFixed(2)} of your £${subtotal.toFixed(2)} order. You'll pay the remaining £${((subtotalMinor - giftCard.balance) / 100).toFixed(2)} by card.`
+                      ? `This card will cover the full order (${money(subtotal)}). No card payment needed.`
+                      : `This card will pay ${money((giftCard.balance / 100))} of your ${money(subtotal)} order. You'll pay the remaining ${money(((subtotalMinor - giftCard.balance) / 100))} by card.`
                     }
                   </div>
                   <button
@@ -903,7 +904,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
                       fontFamily: 'inherit', opacity: giftLoading ? 0.6 : 1,
                     }}
                   >
-                    {giftLoading ? 'Applying…' : `Apply £${(Math.min(giftCard.balance, subtotalMinor) / 100).toFixed(2)} from gift card`}
+                    {giftLoading ? 'Applying…' : `Apply ${money((Math.min(giftCard.balance, subtotalMinor) / 100))} from gift card`}
                   </button>
                 </div>
               )}
@@ -921,11 +922,11 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
                 <span style={{ fontSize: 14, fontWeight: 700 }}>Gift card applied</span>
               </div>
               <div style={{ fontSize: 13, color: muted }}>
-                £{(giftApplied.applied / 100).toFixed(2)} deducted from card ····{giftApplied.code_last4}
+                {money((giftApplied.applied / 100))} deducted from card ····{giftApplied.code_last4}
               </div>
               {!giftCoversAll && (
                 <div style={{ fontSize: 13, color: muted, marginTop: 4 }}>
-                  Remaining to pay by card: <strong style={{ color: theme.fg }}>£{(remainingMinor / 100).toFixed(2)}</strong>
+                  Remaining to pay by card: <strong style={{ color: theme.fg }}>{money((remainingMinor / 100))}</strong>
                 </div>
               )}
               {giftCoversAll && (
@@ -944,19 +945,19 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
               return (
                 <div key={line.uid} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13 }}>
                   <span style={{ flex: 1, minWidth: 0 }}>{line.qty || 1} × {line.name}</span>
-                  <span style={{ fontWeight: 700 }}>£{(unit * (line.qty || 1)).toFixed(2)}</span>
+                  <span style={{ fontWeight: 700 }}>{money((unit * (line.qty || 1)))}</span>
                 </div>
               );
             })}
             {giftApplied && (
               <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13, color: theme.accent }}>
                 <span>💳 Gift card</span>
-                <span style={{ fontWeight: 700 }}>-£{(giftApplied.applied / 100).toFixed(2)}</span>
+                <span style={{ fontWeight: 700 }}>-{money((giftApplied.applied / 100))}</span>
               </div>
             )}
             <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0 0', borderTop: `1px solid ${cardBdr}`, marginTop: 8 }}>
               <span style={{ fontSize: 14, fontWeight: 800 }}>{giftApplied ? 'Remaining' : 'Total'}</span>
-              <span style={{ fontSize: 18, fontWeight: 900 }}>£{(remainingMinor / 100).toFixed(2)}</span>
+              <span style={{ fontSize: 18, fontWeight: 900 }}>{money((remainingMinor / 100))}</span>
             </div>
           </div>
         </div>
@@ -981,7 +982,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
                 <span style={{ fontSize: 14, fontWeight: 700 }}>Reward applied</span>
               </div>
               <div style={{ fontSize: 13, color: muted }}>
-                {rewardApplied.reward_name} — £{(rewardApplied.discount_value / 100).toFixed(2)} off
+                {rewardApplied.reward_name} — {money((rewardApplied.discount_value / 100))} off
               </div>
               <button onClick={removeReward} className="op-btn" style={{
                 marginTop: 10, padding: '8px 16px', borderRadius: 8,
@@ -1028,7 +1029,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
                             )}
                             <div style={{ fontSize: 12, color: theme.accent, fontWeight: 600, marginTop: 4 }}>
                               {reward.points_cost} points
-                              {(reward.reward_type === 'discount_fixed' || reward.discount_type === 'fixed') && ` · £${((reward.reward_value?.amount_minor || 0) / 100).toFixed(2)} off`}
+                              {(reward.reward_type === 'discount_fixed' || reward.discount_type === 'fixed') && ` · ${money(((reward.reward_value?.amount_minor || 0) / 100))} off`}
                               {(reward.reward_type === 'discount_percent' || reward.discount_type === 'percentage') && ` · ${reward.reward_value?.percent || reward.discount_value || 0}% off`}
                               {(reward.reward_type === 'free_item' || reward.discount_type === 'free_item') && ' · Free item'}
                             </div>
@@ -1066,25 +1067,25 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
               return (
                 <div key={line.uid} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13 }}>
                   <span style={{ flex: 1, minWidth: 0 }}>{line.qty || 1} × {line.name}</span>
-                  <span style={{ fontWeight: 700 }}>£{(unit * (line.qty || 1)).toFixed(2)}</span>
+                  <span style={{ fontWeight: 700 }}>{money((unit * (line.qty || 1)))}</span>
                 </div>
               );
             })}
             {giftApplied && (
               <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13, color: theme.accent }}>
                 <span>💳 Gift card</span>
-                <span style={{ fontWeight: 700 }}>-£{(giftApplied.applied / 100).toFixed(2)}</span>
+                <span style={{ fontWeight: 700 }}>-{money((giftApplied.applied / 100))}</span>
               </div>
             )}
             {rewardApplied && (
               <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13, color: theme.accent }}>
                 <span>🎁 {rewardApplied.reward_name}</span>
-                <span style={{ fontWeight: 700 }}>-£{(rewardApplied.discount_value / 100).toFixed(2)}</span>
+                <span style={{ fontWeight: 700 }}>-{money((rewardApplied.discount_value / 100))}</span>
               </div>
             )}
             <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0 0', borderTop: `1px solid ${cardBdr}`, marginTop: 8 }}>
               <span style={{ fontSize: 14, fontWeight: 800 }}>{(giftApplied || rewardApplied) ? 'Remaining' : 'Total'}</span>
-              <span style={{ fontSize: 18, fontWeight: 900 }}>£{(remainingMinor / 100).toFixed(2)}</span>
+              <span style={{ fontSize: 18, fontWeight: 900 }}>{money((remainingMinor / 100))}</span>
             </div>
           </div>
         </div>
@@ -1162,19 +1163,19 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
               return (
                 <div key={line.uid} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13 }}>
                   <span style={{ flex: 1, minWidth: 0 }}>{line.qty || 1} × {line.name}</span>
-                  <span style={{ fontWeight: 700 }}>£{(unit * (line.qty || 1)).toFixed(2)}</span>
+                  <span style={{ fontWeight: 700 }}>{money((unit * (line.qty || 1)))}</span>
                 </div>
               );
             })}
             {taxBreakdown.totalTax > 0 && taxBreakdown.breakdown.map((b, i) => (
               <div key={`vat-${i}`} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 12, color: muted }}>
                 <span>incl. {b.rate.name || `VAT ${(Number(b.rate.rate) * 100).toFixed(0)}%`}</span>
-                <span>£{b.tax.toFixed(2)}</span>
+                <span>{money(b.tax)}</span>
               </div>
             ))}
             <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0 0', borderTop: `1px solid ${cardBdr}`, marginTop: 8 }}>
               <span style={{ fontSize: 14, fontWeight: 800 }}>Total</span>
-              <span style={{ fontSize: 18, fontWeight: 900 }}>£{subtotal.toFixed(2)}</span>
+              <span style={{ fontSize: 18, fontWeight: 900 }}>{money(subtotal)}</span>
             </div>
           </div>
         </div>
@@ -1197,7 +1198,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
               display: 'flex', justifyContent: 'space-between', alignItems: 'center',
             }}>
               <span>Continue to payment</span>
-              <span>£{subtotal.toFixed(2)}</span>
+              <span>{money(subtotal)}</span>
             </button>
           </div>
         )}
@@ -1219,7 +1220,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
                 display: 'flex', justifyContent: 'space-between', alignItems: 'center',
               }}>
                 <span>{working ? 'Processing…' : giftCoversAll ? 'Place order' : hasLoyalty ? 'Continue to rewards' : 'Continue to card payment'}</span>
-                <span>£{(remainingMinor / 100).toFixed(2)}</span>
+                <span>{money((remainingMinor / 100))}</span>
               </button>
             ) : (
               <button onClick={skipGiftCard} disabled={working} className="op-btn-primary" style={{
@@ -1230,7 +1231,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
                 display: 'flex', justifyContent: 'space-between', alignItems: 'center',
               }}>
                 <span>{working ? 'Starting payment…' : hasLoyalty ? 'Skip to rewards' : 'Pay by card'}</span>
-                <span>£{subtotal.toFixed(2)}</span>
+                <span>{money(subtotal)}</span>
               </button>
             )}
             {!giftApplied && !hasLoyalty && (
@@ -1257,7 +1258,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
               display: 'flex', justifyContent: 'space-between', alignItems: 'center',
             }}>
               <span>{working ? 'Processing…' : fullyPaid ? 'Place order' : rewardApplied ? 'Continue to card payment' : 'Skip rewards'}</span>
-              <span>£{(remainingMinor / 100).toFixed(2)}</span>
+              <span>{money((remainingMinor / 100))}</span>
             </button>
             {!rewardApplied && !fullyPaid && (
               <div style={{ fontSize: 10, color: muted, textAlign: 'center', marginTop: 8 }}>
@@ -1478,25 +1479,25 @@ function PayStep({ pi, subtotal, theme, cardBdr, inputBg, muted, cart, giftAppli
             return (
               <div key={line.uid} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 13 }}>
                 <span style={{ flex: 1, minWidth: 0 }}>{line.qty || 1} × {line.name}</span>
-                <span style={{ fontWeight: 700 }}>£{(unit * (line.qty || 1)).toFixed(2)}</span>
+                <span style={{ fontWeight: 700 }}>{money((unit * (line.qty || 1)))}</span>
               </div>
             );
           })}
           {giftApplied && (
             <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 13, color: theme.accent }}>
               <span>💳 Gift card</span>
-              <span style={{ fontWeight: 700 }}>-£{(giftApplied.applied / 100).toFixed(2)}</span>
+              <span style={{ fontWeight: 700 }}>-{money((giftApplied.applied / 100))}</span>
             </div>
           )}
           {rewardApplied && (
             <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 13, color: theme.accent }}>
               <span>🎁 {rewardApplied.reward_name}</span>
-              <span style={{ fontWeight: 700 }}>-£{(rewardApplied.discount_value / 100).toFixed(2)}</span>
+              <span style={{ fontWeight: 700 }}>-{money((rewardApplied.discount_value / 100))}</span>
             </div>
           )}
           <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0 0', borderTop: `1px solid ${cardBdr}`, marginTop: 6 }}>
             <span style={{ fontSize: 14, fontWeight: 800 }}>{(giftApplied || rewardApplied) ? 'Card payment' : 'Total'}</span>
-            <span style={{ fontSize: 18, fontWeight: 900 }}>£{subtotal.toFixed(2)}</span>
+            <span style={{ fontSize: 18, fontWeight: 900 }}>{money(subtotal)}</span>
           </div>
         </div>
       </div>
@@ -1515,7 +1516,7 @@ function PayStep({ pi, subtotal, theme, cardBdr, inputBg, muted, cart, giftAppli
           display: 'flex', justifyContent: 'space-between', alignItems: 'center',
         }}>
           <span>{busy ? 'Processing payment…' : 'Pay & place order'}</span>
-          <span>£{subtotal.toFixed(2)}</span>
+          <span>{money(subtotal)}</span>
         </button>
         <div style={{ fontSize: 10, color: muted, textAlign: 'center', marginTop: 8 }}>
           🔒 Your order is only sent to the kitchen once payment clears.

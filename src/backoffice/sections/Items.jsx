@@ -27,6 +27,7 @@ import { useStore } from '../../store';
 import { ALLERGENS } from '../../data/seed';
 import { supabase, getLocationId } from '../../lib/supabase';
 import { upsertMenuItem, uploadProductImage, deleteProductImage } from '../../lib/db';
+import { money } from '../../lib/currency';
 
 // ───────────────────────────────────────────────────────────────────
 // Constants
@@ -405,7 +406,7 @@ function ListPane({ items, selectedId, onSelect, search, onSearchChange, scopeFi
                 </div>
               </div>
               <div style={{ fontFamily: 'ui-monospace, monospace', color: 'var(--t2)', fontSize: 12, fontWeight: 500, flexShrink: 0 }}>
-                £{Number(it.pricing?.base ?? it.price ?? 0).toFixed(2)}
+                {money(Number(it.pricing?.base ?? it.price ?? 0))}
               </div>
             </button>
           );

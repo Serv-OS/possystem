@@ -22,6 +22,7 @@ import OnlineItemSheet from './OnlineItemSheet';
 import OrderTracker from './OrderTracker';
 import QrCheckout from '../qr/QrCheckout';
 import TabResumeScreen from '../qr/TabResumeScreen';
+import { money } from '../../lib/currency';
 
 const FALLBACK_ACCENT = '#e8a020';
 const FALLBACK_BG     = '#ffffff';
@@ -693,7 +694,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
             display: 'flex', justifyContent: 'space-between', alignItems: 'center',
           }}>
             <span>{cartCount} item{cartCount === 1 ? '' : 's'} · View basket</span>
-            <span>£{cartTotal.toFixed(2)}</span>
+            <span>{money(cartTotal)}</span>
           </button>
         </div>
       )}
@@ -1391,10 +1392,10 @@ function ItemCard({ item, theme, cardBg, cardBdr, muted, onPick, variantInfo, is
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
           <div style={{ fontSize: 14, fontWeight: 800 }}>
             {isVariantParent && displayPrice > 0
-              ? <><span style={{ fontSize: 11, opacity: 0.7, marginRight: 4 }}>from</span>£{displayPrice.toFixed(2)}</>
+              ? <><span style={{ fontSize: 11, opacity: 0.7, marginRight: 4 }}>from</span>{money(displayPrice)}</>
               : isVariantParent
                 ? <span style={{ fontSize: 12, opacity: 0.7 }}>Various sizes</span>
-                : <>£{displayPrice.toFixed(2)}</>}
+                : <>{money(displayPrice)}</>}
           </div>
           {isVariantParent && (
             <span style={{
@@ -1501,7 +1502,7 @@ function ConfirmTableScreen({ theme, cardBdr, muted, locationName, presetLabel, 
                         display:'flex', justifyContent:'space-between', alignItems:'center',
                       }}>
                       <span>Table {t.table_label} · {t.rounds.length} round{t.rounds.length===1?'':'s'}</span>
-                      <span>£{t.total.toFixed(2)}</span>
+                      <span>{money(t.total)}</span>
                     </button>
                   ))}
                 </div>

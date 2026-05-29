@@ -1,5 +1,6 @@
 import { useEffect, useMemo } from 'react';
 import { useStore } from '../../store';
+import { money } from '../../lib/currency';
 
 /**
  * Shift section (v4.6.37).
@@ -117,9 +118,9 @@ export default function Shift() {
           {currentTotals && (
             <div style={{ display:'grid', gridTemplateColumns:'repeat(4, 1fr)', gap:10, marginBottom:14 }}>
               {[
-                ['Revenue',  '£' + currentTotals.revenue.toFixed(2), 'var(--acc)'],
-                ['Cash',     '£' + currentTotals.cash.toFixed(2),    'var(--grn)'],
-                ['Card',     '£' + currentTotals.card.toFixed(2),    '#3b82f6'],
+                ['Revenue',  money(currentTotals.revenue), 'var(--acc)'],
+                ['Cash',     money(currentTotals.cash),    'var(--grn)'],
+                ['Card',     money(currentTotals.card),    '#3b82f6'],
                 ['Checks',   String(currentTotals.checks),            'var(--t1)'],
               ].map(([label, value, color]) => (
                 <div key={label} style={{ background:'var(--bg2)', borderRadius:10, padding:'10px 12px' }}>
@@ -146,7 +147,7 @@ export default function Shift() {
                   <div key={d.id} style={{ background:bg, border:`1px solid ${color}`, borderRadius:8, padding:'8px 10px' }}>
                     <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)' }}>{d.name}</div>
                     <div style={{ fontSize:10, fontWeight:700, color, textTransform:'uppercase', letterSpacing:'.07em', marginTop:2 }}>{status}</div>
-                    <div style={{ fontSize:11, color:'var(--t3)', marginTop:3, fontFamily:'var(--font-mono)' }}>£{Number(d.currentFloat || 0).toFixed(2)}</div>
+                    <div style={{ fontSize:11, color:'var(--t3)', marginTop:3, fontFamily:'var(--font-mono)' }}>{money(Number(d.currentFloat || 0))}</div>
                   </div>
                 );
               })}

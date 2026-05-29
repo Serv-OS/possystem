@@ -36,8 +36,9 @@ import LocationCompare from './reports/LocationCompare';
 import CashDrawer    from './reports/CashDrawer';
 import LoyaltyReport from './reports/LoyaltyReport';
 import Transactions  from './Transactions';
+import { money } from '../../lib/currency';
 
-const fmt  = n => `£${(n || 0).toFixed(2)}`;
+const fmt  = n => `${money((n || 0))}`;
 const fmtN = n => (n || 0).toLocaleString();
 
 export default function BOReports() {

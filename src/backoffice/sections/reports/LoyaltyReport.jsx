@@ -7,6 +7,7 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import { supabase, platformSupabase, getLocationId, getActiveLocationSync } from '../../../lib/supabase';
+import { money } from '../../../lib/currency';
 
 const S = {
   tile: { padding: '14px 16px', background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 12 },
@@ -17,7 +18,7 @@ const S = {
   hdr: { fontSize: 14, fontWeight: 800, color: 'var(--t1)', marginBottom: 10, letterSpacing: '-.01em' },
 };
 
-const fmt = n => `£${(n || 0).toFixed(2)}`;
+const fmt = n => `${money((n || 0))}`;
 
 export default function LoyaltyReport({ rangeFrom, rangeTo, initialTab }) {
   const [loading, setLoading] = useState(true);

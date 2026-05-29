@@ -5,6 +5,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabase';
+import { money } from '../../lib/currency';
 
 export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs = [], eightySixIds = [], onClose, onAdd }) {
   const [qty, setQty]               = useState(1);
@@ -585,7 +586,7 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
             display: 'flex', justifyContent: 'space-between', alignItems: 'center',
           }}>
             <span>{effectiveIs86 ? 'Out of stock' : has86Selection ? 'Option out of stock' : `Add ${qty} to basket`}</span>
-            <span>£{lineTotal.toFixed(2)}</span>
+            <span>{money(lineTotal)}</span>
           </button>
         </div>
       </div>
@@ -621,9 +622,9 @@ function OptionRow({ label, priceDelta, absolutePrice, checked, onClick, mode, t
   let priceLabel = null;
   let priceColor = theme.fg;
   if (typeof absolutePrice === 'number') {
-    priceLabel = `£${absolutePrice.toFixed(2)}`;
+    priceLabel = `${money(absolutePrice)}`;
   } else if (typeof priceDelta === 'number' && priceDelta !== 0) {
-    priceLabel = priceDelta > 0 ? `+£${priceDelta.toFixed(2)}` : `−£${Math.abs(priceDelta).toFixed(2)}`;
+    priceLabel = priceDelta > 0 ? `+${money(priceDelta)}` : `−${money(Math.abs(priceDelta))}`;
     if (priceDelta < 0) priceColor = '#22c55e';
   }
   return (
@@ -680,7 +681,7 @@ function VariantRow({ variant, active, price, onClick, theme, cardBdr, inputBg, 
       <div style={{ flex: 1, minWidth: 0, padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 4 }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
           <span style={{ fontSize: 14, fontWeight: 700, flex: 1, minWidth: 0 }}>{variant.menu_name || variant.name}</span>
-          <span style={{ fontSize: 14, fontWeight: 800 }}>£{price.toFixed(2)}</span>
+          <span style={{ fontSize: 14, fontWeight: 800 }}>{money(price)}</span>
         </div>
         {variant.description && (
           <div style={{ fontSize: 12, opacity: 0.7, lineHeight: 1.45,
@@ -724,7 +725,7 @@ function QtyOptionRow({ option, count, canAdd, onInc, onDec, theme, cardBdr, inp
     }}>
       <span style={{ flex: 1, fontSize: 14, fontWeight: 600 }}>{option.name || option.label}</span>
       {px > 0 && (
-        <span style={{ fontSize: 12, fontWeight: 700, opacity: 0.7 }}>+£{px.toFixed(2)}</span>
+        <span style={{ fontSize: 12, fontWeight: 700, opacity: 0.7 }}>+{money(px)}</span>
       )}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <button onClick={onDec} disabled={count === 0} style={{

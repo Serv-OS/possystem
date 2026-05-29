@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
 import { useStore } from '../store';
+import { money } from '../lib/currency';  // v5.5.326: multi-currency
 
 /**
  * DrawerCashModal (v4.6.40)
@@ -28,8 +29,8 @@ const DENOMS = [
   { label: '1p coins',   value: 0.01  },
 ];
 
-const fmt = (n) => '£' + (n || 0).toFixed(2);
-const fmtS = (n) => (n >= 0 ? '+' : '−') + '£' + Math.abs(n || 0).toFixed(2);
+const fmt = (n) => money(n);
+const fmtS = (n) => (n >= 0 ? '+' : '−') + money(Math.abs(n || 0));
 
 export default function DrawerCashModal({
   mode,              // 'in' | 'out'

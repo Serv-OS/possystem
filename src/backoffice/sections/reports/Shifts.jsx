@@ -14,6 +14,7 @@ import { useMemo, useState } from 'react';
 import { StatTile, ExportBtn, EmptyState } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
 import { classifyShift } from './_filters';
+import { money } from '../../../lib/currency';
 
 // Group checks into business days. Business day starts at 00:00 local by default;
 // locationConfig.businessDayStart could override but that's not piped down yet.
@@ -120,7 +121,7 @@ function DayBasedShifts({ checks, fmt, fmtN }) {
       tips: r.tips.toFixed(2),
       cash: r.cash.toFixed(2),
       discounts: r.discounts.toFixed(2),
-      voids: `${r.voidCount} (£${r.voidValue.toFixed(2)})`,
+      voids: `${r.voidCount} (${money(r.voidValue)})`,
     }));
     const csv = toCsv(rows, [
       { label:'Date',      key:'date' },

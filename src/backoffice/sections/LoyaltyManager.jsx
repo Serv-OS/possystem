@@ -9,6 +9,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase, platformSupabase, getLocationId, getActiveLocationSync } from '../../lib/supabase';
 import { customerUrl } from '../../lib/env';
+import { money } from '../../lib/currency';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 
@@ -402,7 +403,7 @@ function ItemMultiPicker({ items = [], selected = [], onChange }) {
                 <Checkbox checked={isSelected} />
                 <div style={{ flex: 1, fontWeight: 600 }}>{v.name}</div>
                 <div style={{ fontSize: 11, color: 'var(--t4)', fontWeight: 600 }}>
-                  £{(Number(v.price) || 0).toFixed(2)}
+                  {money((Number(v.price) || 0))}
                 </div>
               </div>
             );
@@ -486,7 +487,7 @@ function ItemMultiPicker({ items = [], selected = [], onChange }) {
               <Checkbox checked={isSelected} />
               <div style={{ flex: 1, fontWeight: 600 }}>{product.name}</div>
               <div style={{ fontSize: 11, color: 'var(--t4)', fontWeight: 600 }}>
-                £{(Number(product.price) || 0).toFixed(2)}
+                {money((Number(product.price) || 0))}
               </div>
             </div>
           );
@@ -751,7 +752,7 @@ function RewardsPanel({ rewards, onReload, menuItems = [] }) {
             {r.description && <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>{r.description}</div>}
             <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 4 }}>
               {REWARD_TYPES.find(t => t.value === r.reward_type)?.label || r.reward_type}
-              {r.reward_value?.amount_minor && ` — £${(r.reward_value.amount_minor / 100).toFixed(2)}`}
+              {r.reward_value?.amount_minor && ` — ${money((r.reward_value.amount_minor / 100))}`}
               {r.reward_value?.percent && ` — ${r.reward_value.percent}%`}
               {r.total_redeemed > 0 && ` · ${r.total_redeemed} redeemed`}
             </div>
@@ -1178,7 +1179,7 @@ function MembersPanel({ config }) {
                 <div style={{ color: 'var(--t4)', fontFamily: 'var(--font-mono)', fontSize: 11 }}>{m.member_code || '—'}</div>
                 <div style={{ textAlign: 'right', color: 'var(--acc)', fontWeight: 700, fontFamily: 'var(--font-mono)' }}>{(m.points_balance || 0).toLocaleString()}</div>
                 <div style={{ textAlign: 'right', color: 'var(--t1)', fontFamily: 'var(--font-mono)' }}>{m.visit_count || 0}</div>
-                <div style={{ textAlign: 'right', color: 'var(--t2)', fontFamily: 'var(--font-mono)' }}>£{((m.lifetime_spend_minor || 0) / 100).toFixed(2)}</div>
+                <div style={{ textAlign: 'right', color: 'var(--t2)', fontFamily: 'var(--font-mono)' }}>{money(((m.lifetime_spend_minor || 0) / 100))}</div>
                 <div style={{ textAlign: 'right', color: 'var(--t3)', fontSize: 11 }}>{m.enrolled_at ? new Date(m.enrolled_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) : '—'}</div>
                 <button onClick={(e) => { e.stopPropagation(); setAdjustMember(m); }} style={{
                   padding: '4px 10px', fontSize: 10, fontWeight: 700, borderRadius: 6,

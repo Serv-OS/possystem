@@ -6,6 +6,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabase';
+import { money } from '../../lib/currency';
 
 const STEPS = [
   { key: 'received', label: 'Received',  icon: '📥', desc: 'We\'ve got your order.' },
@@ -167,13 +168,13 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose }) {
               return (
                 <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 13 }}>
                   <span style={{ flex: 1, minWidth: 0 }}>{qty} × {line.name}</span>
-                  <span style={{ fontWeight: 700 }}>£{(unit * qty).toFixed(2)}</span>
+                  <span style={{ fontWeight: 700 }}>{money((unit * qty))}</span>
                 </div>
               );
             })}
             <div style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 0 0', borderTop: `1px solid ${cardBdr}`, marginTop: 10 }}>
               <span style={{ fontSize: 14, fontWeight: 800 }}>Total paid</span>
-              <span style={{ fontSize: 16, fontWeight: 900 }}>£{Number(order.total || 0).toFixed(2)}</span>
+              <span style={{ fontSize: 16, fontWeight: 900 }}>{money(Number(order.total || 0))}</span>
             </div>
             {order.collection_time && (
               <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 10, background: `${theme.accent}15`, border: `1px solid ${cardBdr}`, fontSize: 12 }}>

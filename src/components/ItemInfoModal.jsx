@@ -2,6 +2,7 @@ import { useState, useRef } from 'react';
 import { useStore } from '../store';
 import { ALLERGENS, CAT_META } from '../data/seed';
 import { ITEM_RECIPES } from '../data/seed';
+import { money } from '../lib/currency';
 
 // ── Set daily count numpad ────────────────────────────────────────────────────
 function CountSetter({ itemId, current, onClose }) {
@@ -139,7 +140,7 @@ export default function ItemInfoModal({ item, is86, onToggle86, onClose, onAddTo
             </div>
             <div style={{ textAlign:'right', flexShrink:0 }}>
               <div style={{ fontSize:22, fontWeight:800, color:m.color||'var(--acc)', fontFamily:'var(--font-mono)' }}>
-                {item.type==='variants'?`from £${fromPrice.toFixed(2)}`:`£${fromPrice.toFixed(2)}`}
+                {item.type==='variants'?`from ${money(fromPrice)}`:`${money(fromPrice)}`}
               </div>
             </div>
           </div>
@@ -215,7 +216,7 @@ export default function ItemInfoModal({ item, is86, onToggle86, onClose, onAddTo
                   {item.variants.map(v => (
                     <div key={v.id} style={{ display:'flex', justifyContent:'space-between', padding:'8px 12px', background:'var(--bg3)', borderRadius:8, marginBottom:4, border:'1px solid var(--bdr)' }}>
                       <span style={{ fontSize:13, color:'var(--t2)', fontWeight:500 }}>{v.label}</span>
-                      <span style={{ fontSize:13, fontWeight:800, color:'var(--acc)', fontFamily:'var(--font-mono)' }}>£{v.price.toFixed(2)}</span>
+                      <span style={{ fontSize:13, fontWeight:800, color:'var(--acc)', fontFamily:'var(--font-mono)' }}>{money(v.price)}</span>
                     </div>
                   ))}
                 </div>
@@ -233,7 +234,7 @@ export default function ItemInfoModal({ item, is86, onToggle86, onClose, onAddTo
                       <div style={{ display:'flex', gap:4, flexWrap:'wrap' }}>
                         {grp.options.map(opt => (
                           <span key={opt.id} style={{ fontSize:11, padding:'3px 8px', borderRadius:6, background:'var(--bg4)', color:'var(--t3)', border:'1px solid var(--bdr)' }}>
-                            {opt.label}{opt.price>0?` +£${opt.price.toFixed(2)}`:''}
+                            {opt.label}{opt.price>0?` +${money(opt.price)}`:''}
                           </span>
                         ))}
                       </div>

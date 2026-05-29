@@ -36,6 +36,7 @@ import { supabase } from '../lib/supabase';
 import { useStore } from '../store';
 import { t, useKioskLang } from '../lib/i18n';
 import { displayName } from '../lib/itemDisplay';
+import { money } from '../lib/currency';
 
 // ============================================================
 // VALIDATION HELPERS (pure)
@@ -709,7 +710,7 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
           letterSpacing: '-0.01em',
           marginBottom: 'clamp(20px, 2.6vw, 28px)',
           fontVariantNumeric: 'tabular-nums',
-        }}>£{Number(basePrice ?? 0).toFixed(2)}</div>
+        }}>{money(Number(basePrice ?? 0))}</div>
 
         {/* Allergens — icon + label, then comma list. Brand-color text matches reference. */}
         {Array.isArray(item?.allergens) && item.allergens.length > 0 && (
@@ -1217,7 +1218,7 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
           <span style={{ flex: 1, textAlign: 'center' }}>
             {isValid ? (addLabel || t('product.addToOrder')) : (validation || (addLabel || t('product.addToOrder')))}
           </span>
-          {isValid && <span style={{ fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>£{totalPrice.toFixed(2)}</span>}
+          {isValid && <span style={{ fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>{money(totalPrice)}</span>}
         </button>
       </div>
     </div>

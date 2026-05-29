@@ -73,8 +73,20 @@ import ConfigSyncBanner from './components/ConfigSyncBanner';
 import OrdersHub from './surfaces/OrdersHub';
 import useSupabaseInit from './lib/useSupabaseInit';
 import { VERSION } from './lib/version';
+import { money, currencySymbol } from './lib/currency';
 
 const CHANGELOG = [
+  {
+    version: '5.5.326', date: '29 May 2026', label: 'Multi-currency (GBP / USD / EUR)',
+    changes: [
+      'Each location now has a Currency setting (Back Office → Location Settings) — GBP, USD or EUR',
+      'All money displays across POS, kiosk, online ordering, QR, receipts, reports and back office now show the location\'s currency symbol — a US venue shows $ everywhere',
+      'Card charges, pre-auth holds and refunds are processed in the location\'s currency (Stripe)',
+      'New shared money() / currencySymbol() / stripeCurrency() helpers; behaviour is identical to before for GBP venues',
+      'Currency resolves at boot on every surface (POS/kiosk via location config, online/QR/gift/portal via the storefront loader) and persists per device',
+      'Known limit: cash-drawer denomination labels (£50 note, etc.) and platform billing tiers stay GBP for now',
+    ],
+  },
   {
     version: '5.5.325', date: '29 May 2026', label: 'Loyalty OTP brute-force lockout',
     changes: [
@@ -5700,7 +5712,7 @@ function ShiftBar({ version, onWhatsNew, theme, onToggleTheme, syncPulse }) {
             <div style={{ width:6, height:6, borderRadius:'50%', background:'var(--acc)', boxShadow:'0 0 8px var(--acc)', animation:'pulse .6s ease-out', opacity:1 }}/>
           )}
         </div>
-        {[{label:'Covers',val:shift.covers},{label:'Sales',val:`£${shift.sales.toLocaleString()}`},{label:'Avg',val:`£${shift.avgCheck.toFixed(2)}`}].map(s=>(
+        {[{label:'Covers',val:shift.covers},{label:'Sales',val:`${currencySymbol()}${shift.sales.toLocaleString()}`},{label:'Avg',val:`${money(shift.avgCheck)}`}].map(s=>(
           <div key={s.label} style={{ marginRight:20, display:'flex', alignItems:'baseline', gap:5 }}>
             <span style={{ fontSize:10, color:'var(--t4)', fontWeight:700, textTransform:'uppercase', letterSpacing:'.06em' }}>{s.label}</span>
             <span style={{ fontSize:13, fontWeight:700, color:'var(--t2)', fontFamily:typeof s.val==='string'&&s.val.includes('£')?'var(--font-mono)':'inherit' }}>{s.val}</span>
@@ -5983,7 +5995,7 @@ function OrderAlert({ alert, onDismiss }) {
           </div>
           <div style={{ fontSize: 12, fontWeight: 700, opacity: 0.92, marginTop: 2 }}>
             {alert.ref ? <>Ref <span style={{ fontFamily: 'monospace' }}>{alert.ref}</span></> : null}
-            {total > 0 && <> · £{total.toFixed(2)}</>}
+            {total > 0 && <> · {money(total)}</>}
           </div>
         </div>
         <button data-no-swipe onClick={onDismiss} style={{

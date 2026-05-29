@@ -14,6 +14,7 @@ import { useStore } from '../../store';
 import { resolvePlatformLocationId, getAssignedNetworkReader } from '../../lib/networkReader';
 import { getActiveLocationSync, supabase, ensureAuthToken } from '../../lib/supabase';
 import { Sx, money } from './MShellStyles';
+import { stripeCurrency } from '../../lib/currency';
 
 export default function MCardFlow({ payment, onCancel, onApproved }) {
   const { deviceConfig, walkInOrder, activeTableId, tables } = useStore();
@@ -89,7 +90,7 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
       body: JSON.stringify({
         pos_device_id: opsDeviceId,
         amount_minor: Math.round(grand * 100),
-        currency:'gbp',
+        currency: stripeCurrency(),
         line_items: lineItems,
       }),
     });

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { ALLERGENS, MENU_ITEMS, STEAK_MODS } from '../data/seed';
+import { money, currencySymbol } from '../lib/currency';
 
 // ── Allergen warning modal ────────────────────────────────────────────────────
 export function AllergenModal({ item, activeAllergens, onConfirm, onCancel }) {
@@ -43,7 +44,7 @@ export function AllergenModal({ item, activeAllergens, onConfirm, onCancel }) {
           <div style={{ background:'var(--c-raised)', borderRadius:10, padding:'10px 14px', marginBottom:16 }}>
             <div style={{ fontSize:11, color:'var(--c-text3)', marginBottom:6 }}>Safe alternatives</div>
             {safeAlts.map(i => (
-              <div key={i.id} style={{ fontSize:13, color:'var(--c-text2)', marginBottom:3 }}>• {i.name} — £{i.price.toFixed(2)}</div>
+              <div key={i.id} style={{ fontSize:13, color:'var(--c-text2)', marginBottom:3 }}>• {i.name} — {money(i.price)}</div>
             ))}
           </div>
         )}
@@ -76,7 +77,7 @@ export function ModifierModal({ item, onConfirm, onCancel }) {
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:20 }}>
           <div style={{ fontSize:17, fontWeight:600 }}>{item.name}</div>
           <div style={{ fontSize:16, fontWeight:700, color:'var(--c-acc)' }}>
-            £{(item.price + extraCost).toFixed(2)}
+            {money((item.price + extraCost))}
           </div>
         </div>
 
@@ -98,7 +99,7 @@ export function ModifierModal({ item, onConfirm, onCancel }) {
                     fontSize:13, fontWeight:500, transition:'all .12s', fontFamily:'inherit',
                   }}>
                     {opt.label}
-                    {opt.price > 0 && <span style={{ fontSize:11, opacity:.7 }}> +£{opt.price}</span>}
+                    {opt.price > 0 && <span style={{ fontSize:11, opacity:.7 }}> +{currencySymbol()}{opt.price}</span>}
                   </button>
                 );
               })}

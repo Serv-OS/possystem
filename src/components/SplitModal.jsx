@@ -5,6 +5,7 @@ import {
   resolvePlatformLocationId,
   getAssignedNetworkReader,
 } from '../lib/networkReader';
+import { money, currencySymbol, stripeCurrency } from '../lib/currency';
 
 // ─── v5.5.291: Card terminal for split portions ─────────────────────────────
 // Sends the portion amount to the Stripe Terminal reader — same REST flow as
@@ -77,7 +78,7 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
         body: JSON.stringify({
           pos_device_id: opsDeviceId,
           amount_minor: Math.round(amount * 100),
-          currency: 'gbp',
+          currency: stripeCurrency(),
           line_items: [{ description: portionLabel || 'Split portion', amount: Math.round(amount * 100), quantity: 1 }],
           skip_tipping: true, // tips handled at table level, not per split
         }),
@@ -151,7 +152,7 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
     return (
       <div style={{ textAlign: 'center', padding: '16px 0' }}>
         <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 8 }}>No card reader assigned</div>
-        <div style={{ fontSize: 32, fontWeight: 800, color: 'var(--t1)', fontFamily: 'DM Mono,monospace', marginBottom: 16 }}>£{amount.toFixed(2)}</div>
+        <div style={{ fontSize: 32, fontWeight: 800, color: 'var(--t1)', fontFamily: 'DM Mono,monospace', marginBottom: 16 }}>{money(amount)}</div>
         <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
           <button className="btn btn-ghost" style={{ height: 42 }} onClick={onBack}>← Back</button>
           <button className="btn btn-grn" style={{ height: 42, padding: '0 24px' }} onClick={() => onComplete('card', null)}>Simulate approved</button>
@@ -164,7 +165,7 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
     return (
       <div style={{ textAlign: 'center', padding: '20px 0' }}>
         <div style={{ fontSize: 48, marginBottom: 8 }}>✅</div>
-        <div style={{ fontSize: 20, fontWeight: 800, color: 'var(--grn)' }}>£{amount.toFixed(2)} paid</div>
+        <div style={{ fontSize: 20, fontWeight: 800, color: 'var(--grn)' }}>{money(amount)} paid</div>
         <div style={{ fontSize: 13, color: 'var(--t3)', marginTop: 4 }}>{portionLabel}</div>
       </div>
     );
@@ -196,7 +197,7 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
       <div style={{ padding: '16px 14px', borderRadius: 14, background: 'var(--bg3)', border: '1px solid var(--bdr)', marginBottom: 14 }}>
         <div style={{ fontSize: 36, marginBottom: 6 }}>📲</div>
         <div style={{ fontSize: 24, fontWeight: 800, color: 'var(--t1)', marginBottom: 4, fontFamily: 'DM Mono,monospace' }}>
-          £{amount.toFixed(2)}
+          {money(amount)}
         </div>
         {readerLabel && <div style={{ fontSize: 12, color: 'var(--t3)', marginBottom: 4 }}>on {readerLabel}</div>}
         <div style={{ fontSize: 13, color: 'var(--t3)' }}>{statusMsg}</div>
@@ -232,7 +233,7 @@ function SplitCashTender({ amount, onComplete, onBack }) {
     <div>
       <div style={{ textAlign:'center', marginBottom:14 }}>
         <div style={{ fontSize:11, color:'var(--t3)', fontWeight:600, textTransform:'uppercase', letterSpacing:'.06em', marginBottom:3 }}>Amount due</div>
-        <div style={{ fontSize:34, fontWeight:800, color:'var(--t1)', fontFamily:'DM Mono,monospace' }}>£{amount.toFixed(2)}</div>
+        <div style={{ fontSize:34, fontWeight:800, color:'var(--t1)', fontFamily:'DM Mono,monospace' }}>{money(amount)}</div>
       </div>
 
       <div style={{ height:60, borderRadius:12, marginBottom:12, display:'flex', alignItems:'center', justifyContent:'space-between', padding:'0 16px',
@@ -243,16 +244,16 @@ function SplitCashTender({ amount, onComplete, onBack }) {
           <div style={{ fontSize:10, fontWeight:700, textTransform:'uppercase', letterSpacing:'.06em', color:isValid?'var(--grn)':entered?'var(--red)':'var(--t3)' }}>
             {isValid?'Change due':entered?'Short by':'Cash tendered'}
           </div>
-          {entered&&<div style={{ fontSize:10, color:'var(--t4)', marginTop:1 }}>£{tendered.toFixed(2)} tendered</div>}
+          {entered&&<div style={{ fontSize:10, color:'var(--t4)', marginTop:1 }}>{money(tendered)} tendered</div>}
         </div>
         <div style={{ fontSize:26, fontWeight:800, fontFamily:'DM Mono,monospace', color:isValid?'var(--grn)':entered?'var(--red)':'var(--t4)' }}>
-          {isValid?`£${change.toFixed(2)}`:entered?`£${(amount-tendered).toFixed(2)}`:'—'}
+          {isValid?`${money(change)}`:entered?`${money((amount-tendered))}`:'—'}
         </div>
       </div>
 
       <div style={{ display:'flex', gap:5, marginBottom:10, flexWrap:'wrap' }}>
         {quickAmounts.map(a=>(
-          <button key={a} onClick={()=>setEntered(String(a))} style={{ flex:1, minWidth:44, padding:'6px 4px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', background:entered===String(a)?'var(--acc-d)':'var(--bg3)', border:`1px solid ${entered===String(a)?'var(--acc)':'var(--bdr2)'}`, color:entered===String(a)?'var(--acc)':'var(--t2)', fontSize:11, fontWeight:700 }}>£{a}</button>
+          <button key={a} onClick={()=>setEntered(String(a))} style={{ flex:1, minWidth:44, padding:'6px 4px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', background:entered===String(a)?'var(--acc-d)':'var(--bg3)', border:`1px solid ${entered===String(a)?'var(--acc)':'var(--bdr2)'}`, color:entered===String(a)?'var(--acc)':'var(--t2)', fontSize:11, fontWeight:700 }}>{currencySymbol()}{a}</button>
         ))}
         <button onClick={()=>setEntered(amount.toFixed(2))} style={{ flex:1, minWidth:44, padding:'6px 4px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', background:entered===amount.toFixed(2)?'var(--acc-d)':'var(--bg3)', border:`1px solid ${entered===amount.toFixed(2)?'var(--acc)':'var(--bdr2)'}`, color:entered===amount.toFixed(2)?'var(--acc)':'var(--t2)', fontSize:11, fontWeight:700 }}>Exact</button>
       </div>
@@ -266,7 +267,7 @@ function SplitCashTender({ amount, onComplete, onBack }) {
       <div style={{ display:'flex', gap:8 }}>
         <button className="btn btn-ghost" style={{ flex:1 }} onClick={onBack}>← Back</button>
         <button className="btn btn-grn" style={{ flex:2, height:42 }} disabled={!isValid} onClick={()=>onComplete(tendered, change)}>
-          {isValid?`Paid · change £${change.toFixed(2)}`:'Enter amount'}
+          {isValid?`Paid · change ${money(change)}`:'Enter amount'}
         </button>
       </div>
     </div>
@@ -356,7 +357,7 @@ function SplitGiftCardTender({ amount, onComplete, onBack, portionId }) {
     <div>
       <div style={{ textAlign:'center', marginBottom:14 }}>
         <div style={{ fontSize:11, color:'var(--t3)', fontWeight:600, textTransform:'uppercase', letterSpacing:'.06em', marginBottom:3 }}>Amount due</div>
-        <div style={{ fontSize:34, fontWeight:800, color:'var(--t1)', fontFamily:'DM Mono,monospace' }}>£{amount.toFixed(2)}</div>
+        <div style={{ fontSize:34, fontWeight:800, color:'var(--t1)', fontFamily:'DM Mono,monospace' }}>{money(amount)}</div>
       </div>
 
       {!cardInfo ? (
@@ -387,18 +388,18 @@ function SplitGiftCardTender({ amount, onComplete, onBack, portionId }) {
           <div style={{ background:'var(--grn-d)', borderRadius:10, border:'1px solid var(--grn-b)', padding:'12px 14px', marginBottom:12 }}>
             <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:4 }}>
               <span style={{ fontSize:12, fontWeight:700, color:'var(--grn)' }}>Card found — ...{cardInfo.code_last4}</span>
-              <span style={{ fontSize:14, fontWeight:800, color:'var(--grn)', fontFamily:'DM Mono,monospace' }}>£{(cardInfo.balance / 100).toFixed(2)}</span>
+              <span style={{ fontSize:14, fontWeight:800, color:'var(--grn)', fontFamily:'DM Mono,monospace' }}>{money((cardInfo.balance / 100))}</span>
             </div>
             <div style={{ fontSize:11, color:'var(--grn)' }}>
-              Will apply £{(canCover / 100).toFixed(2)} to this portion
-              {canCover < amountMinor && ` (£${((amountMinor - canCover) / 100).toFixed(2)} remaining — pay by other method)`}
+              Will apply {money((canCover / 100))} to this portion
+              {canCover < amountMinor && ` (${money(((amountMinor - canCover) / 100))} remaining — pay by other method)`}
             </div>
           </div>
           {error && <div style={{ padding:8, background:'var(--red-d)', borderRadius:8, border:'1px solid var(--red-b)', color:'var(--red)', fontSize:12, marginBottom:10 }}>{error}</div>}
           <div style={{ display:'flex', gap:8 }}>
             <button className="btn btn-ghost" style={{ flex:1 }} onClick={() => { setCardInfo(null); setCode(''); setError(null); }}>← Different card</button>
             <button className="btn btn-grn" style={{ flex:2, height:42 }} disabled={loading} onClick={handleRedeem}>
-              {loading ? 'Processing...' : `Apply £${(canCover / 100).toFixed(2)} from gift card`}
+              {loading ? 'Processing...' : `Apply ${money((canCover / 100))} from gift card`}
             </button>
           </div>
         </>
@@ -417,7 +418,7 @@ function PortionTender({ portion, portionNum, total, canTakeCash = true, onCompl
         <>
           <div style={{ textAlign:'center', marginBottom:20 }}>
             <div style={{ fontSize:12, color:'var(--t3)', marginBottom:4 }}>Portion {portionNum} — {portion.label}</div>
-            <div style={{ fontSize:36, fontWeight:800, color:'var(--acc)', fontFamily:'DM Mono,monospace' }}>£{portion.total.toFixed(2)}</div>
+            <div style={{ fontSize:36, fontWeight:800, color:'var(--acc)', fontFamily:'DM Mono,monospace' }}>{money(portion.total)}</div>
           </div>
           <div style={{ display:'flex', gap:10, marginBottom:10 }}>
             <button onClick={()=>setScreen('card')} style={{ flex:1, padding:'18px 12px', borderRadius:14, cursor:'pointer', fontFamily:'inherit', background:'linear-gradient(135deg,#1a2744,#0f1a35)', border:'1px solid rgba(100,140,255,.3)', display:'flex', flexDirection:'column', alignItems:'center', gap:6 }}>
@@ -611,8 +612,8 @@ export default function SplitModal({ items, total, covers, canTakeCash = true, o
           <div>
             <div style={{ fontSize:17, fontWeight:700, color:'var(--t1)' }}>Split check</div>
             <div style={{ fontSize:12, color:'var(--t3)', marginTop:2 }}>
-              {mode==='tender' ? `${paidCount} of ${portions.length} paid · £${remaining.toFixed(2)} remaining`
-               : `Total £${total.toFixed(2)}`}
+              {mode==='tender' ? `${paidCount} of ${portions.length} paid · ${money(remaining)} remaining`
+               : `Total ${money(total)}`}
             </div>
           </div>
           <div style={{ display:'flex', gap:6 }}>
@@ -634,7 +635,7 @@ export default function SplitModal({ items, total, covers, canTakeCash = true, o
           {/* ══ MODE PICKER ══════════════════════════════════════════ */}
           {!mode && (
             <>
-              <div style={{ fontSize:13, color:'var(--t3)', marginBottom:16 }}>How would you like to split £{total.toFixed(2)}?</div>
+              <div style={{ fontSize:13, color:'var(--t3)', marginBottom:16 }}>How would you like to split {money(total)}?</div>
               <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
 
                 {/* Even split */}
@@ -681,7 +682,7 @@ export default function SplitModal({ items, total, covers, canTakeCash = true, o
           {/* ══ EVEN SPLIT ══════════════════════════════════════════ */}
           {mode==='even' && (
             <>
-              <div style={{ fontSize:13, color:'var(--t3)', marginBottom:14 }}>Split £{total.toFixed(2)} between:</div>
+              <div style={{ fontSize:13, color:'var(--t3)', marginBottom:14 }}>Split {money(total)} between:</div>
               <div style={{ display:'flex', gap:6, marginBottom:20, flexWrap:'wrap' }}>
                 {[2,3,4,5,6,7,8,9,10].map(n=>(
                   <button key={n} onClick={()=>setNumWays(n)} style={{ width:52, height:52, borderRadius:10, cursor:'pointer', textAlign:'center', fontFamily:'inherit', border:`1.5px solid ${numWays===n?'var(--acc)':'var(--bdr)'}`, background:numWays===n?'var(--acc-d)':'var(--bg3)', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center' }}>
@@ -690,10 +691,10 @@ export default function SplitModal({ items, total, covers, canTakeCash = true, o
                 ))}
               </div>
               <div style={{ background:'var(--bg3)', borderRadius:14, padding:'14px 18px', marginBottom:20 }}>
-                <div style={{ display:'flex', justifyContent:'space-between', fontSize:13, color:'var(--t3)', marginBottom:4 }}><span>Total</span><span style={{ fontFamily:'DM Mono,monospace' }}>£{total.toFixed(2)}</span></div>
+                <div style={{ display:'flex', justifyContent:'space-between', fontSize:13, color:'var(--t3)', marginBottom:4 }}><span>Total</span><span style={{ fontFamily:'DM Mono,monospace' }}>{money(total)}</span></div>
                 <div style={{ display:'flex', justifyContent:'space-between' }}>
                   <span style={{ fontSize:14, fontWeight:500 }}>Each guest pays</span>
-                  <span style={{ fontSize:28, fontWeight:800, color:'var(--acc)', fontFamily:'DM Mono,monospace' }}>£{(total/numWays).toFixed(2)}</span>
+                  <span style={{ fontSize:28, fontWeight:800, color:'var(--acc)', fontFamily:'DM Mono,monospace' }}>{money((total/numWays))}</span>
                 </div>
               </div>
               <button className="btn btn-acc btn-full" style={{ height:46 }} onClick={confirmSplit}>Split into {numWays} checks →</button>
@@ -717,7 +718,7 @@ export default function SplitModal({ items, total, covers, canTakeCash = true, o
                             {p.items.length>3?` +${p.items.length-3} more`:''}
                           </div>
                         </div>
-                        <span style={{ fontSize:18, fontWeight:800, color:'var(--acc)', fontFamily:'DM Mono,monospace' }}>£{p.total.toFixed(2)}</span>
+                        <span style={{ fontSize:18, fontWeight:800, color:'var(--acc)', fontFamily:'DM Mono,monospace' }}>{money(p.total)}</span>
                       </div>
                     ))}
                     <button className="btn btn-acc btn-full" style={{ height:46, marginTop:10 }} onClick={confirmSplit}>Confirm split →</button>
@@ -747,7 +748,7 @@ export default function SplitModal({ items, total, covers, canTakeCash = true, o
                     <div key={item.uid} style={{ display:'flex', gap:6, marginBottom:6 }}>
                       <div style={{ flex:1, fontSize:12, color:'var(--t2)', padding:'6px 8px', background:'var(--bg3)', borderRadius:6 }}>
                         {item.qty>1?`${item.qty}× `:''}{item.name}
-                        <span style={{ color:'var(--t3)', marginLeft:8, fontFamily:'DM Mono,monospace' }}>£{(item.price*item.qty).toFixed(2)}</span>
+                        <span style={{ color:'var(--t3)', marginLeft:8, fontFamily:'DM Mono,monospace' }}>{money((item.price*item.qty))}</span>
                       </div>
                       {itemPortionList.map((check,ci) => (
                         <button key={ci} onClick={()=>moveItemToCheck(item, true, ci)} style={{ padding:'4px 10px', borderRadius:6, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr2)', color:'var(--t3)', fontSize:11, fontWeight:600 }}>{ci+1}</button>
@@ -763,14 +764,14 @@ export default function SplitModal({ items, total, covers, canTakeCash = true, o
                   <div key={ci} style={{ flex:1, background:'var(--bg3)', border:'1px solid var(--bdr)', borderRadius:12, overflow:'hidden' }}>
                     <div style={{ padding:'8px 10px', borderBottom:'1px solid var(--bdr)', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
                       <span style={{ fontSize:11, fontWeight:700, color:'var(--t2)' }}>Check {ci+1}</span>
-                      <span style={{ fontSize:12, fontWeight:700, color:'var(--acc)', fontFamily:'DM Mono,monospace' }}>£{check.total.toFixed(2)}</span>
+                      <span style={{ fontSize:12, fontWeight:700, color:'var(--acc)', fontFamily:'DM Mono,monospace' }}>{money(check.total)}</span>
                     </div>
                     <div style={{ padding:'8px 8px', minHeight:60 }}>
                       {check.items.length === 0 && <div style={{ fontSize:11, color:'var(--t4)', textAlign:'center', padding:'12px 0' }}>Empty</div>}
                       {check.items.map(item => (
                         <div key={item.uid} onClick={()=>moveItemToPool(item)} style={{ fontSize:11, color:'var(--t2)', padding:'5px 8px', background:'var(--bg2)', borderRadius:6, marginBottom:4, cursor:'pointer', display:'flex', justifyContent:'space-between' }}>
                           <span>{item.qty>1?`${item.qty}× `:''}{item.name.split(' ').slice(0,2).join(' ')}</span>
-                          <span style={{ color:'var(--t3)', fontFamily:'DM Mono,monospace' }}>£{(item.price*item.qty).toFixed(2)}</span>
+                          <span style={{ color:'var(--t3)', fontFamily:'DM Mono,monospace' }}>{money((item.price*item.qty))}</span>
                         </div>
                       ))}
                     </div>
@@ -789,7 +790,7 @@ export default function SplitModal({ items, total, covers, canTakeCash = true, o
           {/* ══ CUSTOM AMOUNTS ══════════════════════════════════════ */}
           {mode==='amount' && (
             <>
-              <div style={{ fontSize:13, color:'var(--t3)', marginBottom:14 }}>Total to cover: £{total.toFixed(2)}</div>
+              <div style={{ fontSize:13, color:'var(--t3)', marginBottom:14 }}>Total to cover: {money(total)}</div>
               {customAmounts.map((amt, i) => {
                 const covered = customAmounts.slice(0,i).reduce((s,a)=>s+(parseFloat(a)||0),0);
                 return (
@@ -809,8 +810,8 @@ export default function SplitModal({ items, total, covers, canTakeCash = true, o
                 const diff = total - covered;
                 return (
                   <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, padding:'8px 12px', borderRadius:8, marginBottom:14, background:Math.abs(diff)<0.01?'var(--grn-d)':diff>0?'var(--red-d)':'var(--bg3)', border:`1px solid ${Math.abs(diff)<0.01?'var(--grn-b)':diff>0?'var(--red-b)':'var(--bdr)'}` }}>
-                    <span style={{ color:Math.abs(diff)<0.01?'var(--grn)':diff>0?'var(--red)':'var(--t3)' }}>{Math.abs(diff)<0.01?'Fully covered':diff>0?`Short by £${diff.toFixed(2)}`:`Over by £${Math.abs(diff).toFixed(2)}`}</span>
-                    <span style={{ color:'var(--t2)', fontFamily:'DM Mono,monospace' }}>£{covered.toFixed(2)} / £{total.toFixed(2)}</span>
+                    <span style={{ color:Math.abs(diff)<0.01?'var(--grn)':diff>0?'var(--red)':'var(--t3)' }}>{Math.abs(diff)<0.01?'Fully covered':diff>0?`Short by ${money(diff)}`:`Over by ${money(Math.abs(diff))}`}</span>
+                    <span style={{ color:'var(--t2)', fontFamily:'DM Mono,monospace' }}>{money(covered)} / {money(total)}</span>
                   </div>
                 );
               })()}
@@ -854,19 +855,19 @@ export default function SplitModal({ items, total, covers, canTakeCash = true, o
                         <div>
                           <div style={{ fontSize:14, fontWeight:600, color:p.paid?'var(--grn)':'var(--t1)' }}>{p.label}</div>
                           {p.paid && <div style={{ fontSize:11, color:'var(--grn)', marginTop:1 }}>
-                            {p.method==='card'?'💳 Card':p.method==='cash'?`💵 Cash · change £${(p.change||0).toFixed(2)}`:p.method==='gift_card'?'🎁 Gift Card':'Paid'}
+                            {p.method==='card'?'💳 Card':p.method==='cash'?`💵 Cash · change ${money((p.change||0))}`:p.method==='gift_card'?'🎁 Gift Card':'Paid'}
                           </div>}
                         </div>
                       </div>
                       <div style={{ textAlign:'right' }}>
-                        <div style={{ fontSize:18, fontWeight:800, color:p.paid?'var(--grn)':'var(--acc)', fontFamily:'DM Mono,monospace' }}>£{p.total.toFixed(2)}</div>
+                        <div style={{ fontSize:18, fontWeight:800, color:p.paid?'var(--grn)':'var(--acc)', fontFamily:'DM Mono,monospace' }}>{money(p.total)}</div>
                         {!p.paid && <div style={{ fontSize:10, color:'var(--t4)', marginTop:1 }}>tap to pay →</div>}
                       </div>
                     </div>
                   ))}
                   <div style={{ marginTop:16, display:'flex', justifyContent:'space-between', padding:'10px 16px', background:'var(--bg3)', borderRadius:10, fontSize:13, color:'var(--t3)' }}>
                     <span>Remaining</span>
-                    <span style={{ fontFamily:'DM Mono,monospace', fontWeight:700, color:'var(--t1)' }}>£{remaining.toFixed(2)}</span>
+                    <span style={{ fontFamily:'DM Mono,monospace', fontWeight:700, color:'var(--t1)' }}>{money(remaining)}</span>
                   </div>
                 </>
               )}

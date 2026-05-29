@@ -1,5 +1,6 @@
 import { useState, useMemo, useRef, useCallback } from 'react';
 import { useStore } from '../../store';
+import { money } from '../../lib/currency';
 
 // ══════════════════════════════════════════════════════════════════════════════
 // MENU VISUALIZER
@@ -267,7 +268,7 @@ export default function MenuVisualizer() {
                               <div style={{ flex:1, minWidth:0 }}>
                                 <div style={{ fontSize:12, fontWeight:700, color:isSel?'var(--acc)':is86?'var(--red)':'var(--t1)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', lineHeight:1.3 }}>{item.menuName||item.name}</div>
                                 <div style={{ fontSize:12, fontWeight:800, color:isSel?'var(--acc)':color, fontFamily:'var(--font-mono)', marginTop:2 }}>
-                                  {kids.length>0?`from £${fromP.toFixed(2)}`:`£${price.toFixed(2)}`}
+                                  {kids.length>0?`from ${money(fromP)}`:`${money(price)}`}
                                 </div>
                               </div>
                               <div style={{ display:'flex', flexDirection:'column', alignItems:'flex-end', gap:4, flexShrink:0 }}>
@@ -412,7 +413,7 @@ function ItemQuickEdit({ item, onClose, menuItems, menuCategories, modifierGroup
         <div style={{ display:'flex', alignItems:'flex-start', gap:8, marginBottom:10 }}>
           <div style={{ flex:1, minWidth:0 }}>
             <div style={{ fontSize:14, fontWeight:800, color:'var(--t1)', lineHeight:1.3, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{item.menuName||item.name}</div>
-            <div style={{ fontSize:10, color:'var(--t4)', marginTop:2 }}>{item.type} · £{(p.base||0).toFixed(2)}{isParent?` · ${variants.length} sizes`:''}</div>
+            <div style={{ fontSize:10, color:'var(--t4)', marginTop:2 }}>{item.type} · {money((p.base||0))}{isParent?` · ${variants.length} sizes`:''}</div>
           </div>
           <button onClick={()=>toggle86(item.id)} style={{ fontSize:9,padding:'2px 7px',borderRadius:8,cursor:'pointer',fontFamily:'inherit',border:`1px solid ${is86?'var(--grn-b)':'var(--red-b)'}`,background:is86?'var(--grn-d)':'var(--red-d)',color:is86?'var(--grn)':'var(--red)',fontWeight:700,flexShrink:0 }}>{is86?'Un-86':'86'}</button>
           <button onClick={onClose} style={{ background:'none',border:'none',color:'var(--t4)',cursor:'pointer',fontSize:18,lineHeight:1 }}>×</button>

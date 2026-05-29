@@ -10,6 +10,7 @@ import {
 } from '../lib/networkReader';
 import { getActiveLocationSync, supabase, ensureAuthToken } from '../lib/supabase';
 import { fetchCustomerByPhone } from '../lib/customerLookup';
+import { money, currencySymbol, stripeCurrency } from '../lib/currency';
 // (readerDisplay imports removed — cancel now lets the natural cart-change effect refresh the reader after onBack)
 
 // ─── Tip picker ───────────────────────────────────────────────────────────────
@@ -25,7 +26,7 @@ function TipPicker({ total, onSelect }) {
     <div>
       <div style={{ textAlign:'center', marginBottom:20 }}>
         <div style={{ fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:8 }}>Add gratuity to</div>
-        <div style={{ fontSize:32, fontWeight:800, color:'var(--t1)', fontFamily:'var(--font-mono)' }}>£{total.toFixed(2)}</div>
+        <div style={{ fontSize:32, fontWeight:800, color:'var(--t1)', fontFamily:'var(--font-mono)' }}>{money(total)}</div>
       </div>
 
       {/* Preset grid — £ amount as hero */}
@@ -44,7 +45,7 @@ function TipPicker({ total, onSelect }) {
                 <div style={{ fontSize:15, fontWeight:800, color:isOn?'var(--acc)':'var(--t3)', lineHeight:1 }}>None</div>
               ) : (
                 <>
-                  <div style={{ fontSize:15, fontWeight:800, color:isOn?'var(--acc)':'var(--t1)', fontFamily:'var(--font-mono)', lineHeight:1 }}>£{amt.toFixed(2)}</div>
+                  <div style={{ fontSize:15, fontWeight:800, color:isOn?'var(--acc)':'var(--t1)', fontFamily:'var(--font-mono)', lineHeight:1 }}>{money(amt)}</div>
                   <div style={{ fontSize:10, color:isOn?'var(--acc)':'var(--t4)', marginTop:3, fontWeight:700 }}>{p}%</div>
                 </>
               )}
@@ -69,15 +70,15 @@ function TipPicker({ total, onSelect }) {
           <div style={{ fontSize:13, color:'var(--t2)' }}>Bill + tip</div>
         </div>
         <div style={{ textAlign:'right' }}>
-          <div style={{ fontSize:16, fontWeight:800, color:'var(--acc)', fontFamily:'var(--font-mono)' }}>+£{tipAmt.toFixed(2)}</div>
-          <div style={{ fontSize:20, fontWeight:800, color:'var(--t1)', fontFamily:'var(--font-mono)' }}>£{(total+tipAmt).toFixed(2)}</div>
+          <div style={{ fontSize:16, fontWeight:800, color:'var(--acc)', fontFamily:'var(--font-mono)' }}>+{money(tipAmt)}</div>
+          <div style={{ fontSize:20, fontWeight:800, color:'var(--t1)', fontFamily:'var(--font-mono)' }}>{money((total+tipAmt))}</div>
         </div>
       </div>
 
       <div style={{ display:'flex', gap:8 }}>
         <button className="btn btn-ghost" style={{ flex:1, height:46 }} onClick={()=>onSelect(0)}>Skip</button>
         <button className="btn btn-acc" style={{ flex:2, height:46, fontSize:14 }} onClick={()=>onSelect(tipAmt)}>
-          Confirm tip · £{(total+tipAmt).toFixed(2)} →
+          Confirm tip · {money((total+tipAmt))} →
         </button>
       </div>
     </div>
@@ -203,7 +204,7 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
           // prompts the customer for the tip and Stripe adjusts the PI
           // amount on confirm. amountReceived post-capture = base + tip.
           amount_minor: Math.round(grand * 100),
-          currency: 'gbp',                                              // TODO: read from location.currency
+          currency: stripeCurrency(),                                              // TODO: read from location.currency
           line_items: lineItems,
         }),
       });
@@ -376,7 +377,7 @@ function RestCardWaiting({ grand, readerLabel, statusMsg, state, onCancel }) {
       <div style={{ padding:'18px 16px', borderRadius:14, background:'var(--bg2)', border:'1px solid var(--bdr)', marginBottom:14 }}>
         <div style={{ fontSize:36, marginBottom:6 }}>📲</div>
         <div style={{ fontSize:18, fontWeight:800, color:'var(--t1)', marginBottom:4 }}>
-          £{Number(grand).toFixed(2)} on {readerLabel}
+          {money(Number(grand))} on {readerLabel}
         </div>
         <div style={{ fontSize:13, color:'var(--t3)' }}>{statusMsg}</div>
         <div style={{ marginTop:10, fontSize:11, color:'var(--t4)', lineHeight:1.5 }}>
@@ -400,7 +401,7 @@ function ApprovedView({ grand }) {
         fontSize:48, color:'var(--grn)', margin:'0 auto 14px',
       }}>✓</div>
       <div style={{ fontSize:22, fontWeight:800, color:'var(--grn)', marginBottom:4 }}>Approved</div>
-      <div style={{ fontSize:14, color:'var(--t2)' }}>£{Number(grand).toFixed(2)} charged</div>
+      <div style={{ fontSize:14, color:'var(--t2)' }}>{money(Number(grand))} charged</div>
     </div>
   );
 }
@@ -426,7 +427,7 @@ function SimulatedCardWaiting({ grand, onSimulate, onBack }) {
         </div>
       </div>
       <div style={{ fontSize:38, fontWeight:800, color:'var(--t1)', fontFamily:'var(--font-mono)', letterSpacing:'-.02em', marginBottom:6 }}>
-        £{grand.toFixed(2)}
+        {money(grand)}
       </div>
       <div style={{ fontSize:15, color:'var(--t2)', fontWeight:600, marginBottom:4 }}>Present card to reader</div>
       <div style={{ fontSize:12, color:'var(--t4)', marginBottom:8 }}>(Simulator — pair an M2 in BO to take real payments)</div>
@@ -482,7 +483,7 @@ function CashTransaction({ grand, onComplete, onBack }) {
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:10 }}>
           <div>
             <div style={{ fontSize:11, fontWeight:700, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:3 }}>Amount due</div>
-            <div style={{ fontSize:compact?22:30, fontWeight:800, color:'var(--t1)', fontFamily:'var(--font-mono)', letterSpacing:'-.01em' }}>£{grand.toFixed(2)}</div>
+            <div style={{ fontSize:compact?22:30, fontWeight:800, color:'var(--t1)', fontFamily:'var(--font-mono)', letterSpacing:'-.01em' }}>{money(grand)}</div>
           </div>
           <div style={{ textAlign:'right' }}>
             <div style={{ fontSize:11, fontWeight:700, textTransform:'uppercase', letterSpacing:'.08em', marginBottom:3,
@@ -491,7 +492,7 @@ function CashTransaction({ grand, onComplete, onBack }) {
             </div>
             <div style={{ fontSize:compact?22:30, fontWeight:800, fontFamily:'var(--font-mono)', letterSpacing:'-.01em',
               color:isValid?'var(--grn)':entered?'var(--red)':'var(--t4)' }}>
-              {isValid?`£${change.toFixed(2)}`:entered?`£${(grand-tendered).toFixed(2)}`:'—'}
+              {isValid?`${money(change)}`:entered?`${money((grand-tendered))}`:'—'}
             </div>
           </div>
         </div>
@@ -506,7 +507,7 @@ function CashTransaction({ grand, onComplete, onBack }) {
             {entered ? 'Tendered' : 'Enter amount or tap quick cash'}
           </div>
           <div style={{ fontSize:22, fontWeight:800, fontFamily:'var(--font-mono)', color:isValid?'var(--grn)':entered?'var(--acc)':'var(--t4)' }}>
-            {entered ? `£${tendered.toFixed(2)}` : '£—'}
+            {entered ? `${money(tendered)}` : '£—'}
           </div>
         </div>
       </div>
@@ -520,7 +521,7 @@ function CashTransaction({ grand, onComplete, onBack }) {
             border:`1.5px solid ${entered===String(a)?'var(--acc)':'var(--bdr)'}`,
             color:entered===String(a)?'var(--acc)':'var(--t2)',
             fontSize:12, fontWeight:800, transition:'all .1s',
-          }}>£{a}</button>
+          }}>{currencySymbol()}{a}</button>
         ))}
         <button onClick={()=>setEntered(grand.toFixed(2))} style={{
           flex:1.2, padding:'7px 2px', borderRadius:9, cursor:'pointer', fontFamily:'inherit',
@@ -554,7 +555,7 @@ function CashTransaction({ grand, onComplete, onBack }) {
         <button className="btn btn-grn" style={{ flex:2, height:compact?40:50, fontSize:compact?13:15, fontWeight:800 }}
           disabled={!isValid}
           onClick={()=>onComplete(tendered)}>
-          {isValid ? `Complete · £${change.toFixed(2)} change` : 'Enter cash amount'}
+          {isValid ? `Complete · ${money(change)} change` : 'Enter cash amount'}
         </button>
       </div>
     </div>
@@ -1135,7 +1136,7 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
                         {item.mods?.filter(m=>m.label).map((m,i)=>(
                           <div key={i} style={{ fontSize:11, color:'var(--t3)', marginTop:1 }}>
                             {m.label}
-                            {m.price>0&&<span style={{ color:'var(--acc)', marginLeft:6, fontFamily:'var(--font-mono)' }}>+£{m.price.toFixed(2)}</span>}
+                            {m.price>0&&<span style={{ color:'var(--acc)', marginLeft:6, fontFamily:'var(--font-mono)' }}>+{money(m.price)}</span>}
                           </div>
                         ))}
                         {!namesOnly && item.notes && <div style={{ fontSize:11, color:'var(--orn)', marginTop:2 }}>📝 {item.notes}</div>}
@@ -1147,8 +1148,8 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
                         )}
                       </div>
                       <div style={{ textAlign:'right', flexShrink:0 }}>
-                        <div style={{ fontSize:namesOnly?11:compact?12:14, fontWeight:namesOnly?500:700, color:namesOnly?'var(--t3)':'var(--t1)', fontFamily:'var(--font-mono)' }}>£{(price*item.qty).toFixed(2)}</div>
-                        {!namesOnly && disc && <div style={{ fontSize:11, color:'var(--t4)', textDecoration:'line-through', fontFamily:'var(--font-mono)' }}>£{(item.price*item.qty).toFixed(2)}</div>}
+                        <div style={{ fontSize:namesOnly?11:compact?12:14, fontWeight:namesOnly?500:700, color:namesOnly?'var(--t3)':'var(--t1)', fontFamily:'var(--font-mono)' }}>{money((price*item.qty))}</div>
+                        {!namesOnly && disc && <div style={{ fontSize:11, color:'var(--t4)', textDecoration:'line-through', fontFamily:'var(--font-mono)' }}>{money((item.price*item.qty))}</div>}
                       </div>
                     </div>
                   );
@@ -1200,33 +1201,33 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
                   <>
                     <div style={{ display:'flex', justifyContent:'space-between', fontSize:13, color:'var(--t3)', marginBottom:4 }}>
                       <span>Subtotal (ex. tax)</span>
-                      <span style={{ fontFamily:'var(--font-mono)' }}>£{taxBreakdown.subtotal.toFixed(2)}</span>
+                      <span style={{ fontFamily:'var(--font-mono)' }}>{money(taxBreakdown.subtotal)}</span>
                     </div>
                     {taxBreakdown.breakdown.map(b => {
                       const pct = (b.rate.rate*100).toFixed(3).replace(/\.?0+$/,'');
                       return <div key={b.rate.id} style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--t3)', marginBottom:4 }}>
                         <span>{b.rate.name} ({pct}%)</span>
-                        <span style={{ fontFamily:'var(--font-mono)' }}>£{b.tax.toFixed(2)}</span>
+                        <span style={{ fontFamily:'var(--font-mono)' }}>{money(b.tax)}</span>
                       </div>;
                     })}
                   </>
                 ) : (
                   <div style={{ display:'flex', justifyContent:'space-between', fontSize:13, color:'var(--t3)', marginBottom: hasTax ? 2 : 5 }}>
                     <span>Subtotal{hasTax ? ' (incl. VAT)' : ''}</span>
-                    <span style={{ fontFamily:'var(--font-mono)' }}>£{subtotal.toFixed(2)}</span>
+                    <span style={{ fontFamily:'var(--font-mono)' }}>{money(subtotal)}</span>
                   </div>
                 )}
                 {hasTax && !hasExclusive && taxBreakdown.breakdown.map(b => {
                   const pct = (b.rate.rate*100).toFixed(1).replace('.0','');
                   return <div key={b.rate.id} style={{ display:'flex', justifyContent:'space-between', fontSize:11, color:'var(--t4)', marginBottom:4 }}>
                     <span>  of which {b.rate.name} ({pct}%)</span>
-                    <span style={{ fontFamily:'var(--font-mono)' }}>£{b.tax.toFixed(2)}</span>
+                    <span style={{ fontFamily:'var(--font-mono)' }}>{money(b.tax)}</span>
                   </div>;
                 })}
                 {service > 0 ? (
                   <div style={{ display:'flex', justifyContent:'space-between', fontSize:13, color:'var(--t3)', marginBottom:5 }}>
                     <span>Service charge</span>
-                    <span style={{ fontFamily:'var(--font-mono)' }}>£{service.toFixed(2)}</span>
+                    <span style={{ fontFamily:'var(--font-mono)' }}>{money(service)}</span>
                   </div>
                 ) : orderType === 'dine-in' ? (
                   <div style={{ fontSize:12, color:'var(--t4)', marginBottom:5 }}>

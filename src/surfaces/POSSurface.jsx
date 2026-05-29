@@ -24,6 +24,7 @@ import OrderTypeModal from '../components/OrderTypeModal';
 import AllergenCheckoutModal from '../components/AllergenCheckoutModal';
 import TableActionsModal from '../components/TableActionsModal';
 import Challenge21Modal from '../components/Challenge21Modal';
+import { money, stripeCurrency } from '../lib/currency';
 
 const COURSE_COLORS = {
   0:{label:'Immediate',color:'#22d3ee',bg:'rgba(34,211,238,.1)'},
@@ -330,7 +331,7 @@ export default function POSSurface() {
       }
     } else {
       console.log('[POSSurface] cart →', lineItems.length, 'lines, £', (totalMinor / 100).toFixed(2));
-      pushReaderDisplay({ lineItems, totalMinor, currency: 'gbp' });
+      pushReaderDisplay({ lineItems, totalMinor, currency: stripeCurrency() });
     }
   }, [items, total]);
 
@@ -683,7 +684,7 @@ export default function POSSurface() {
                     <div style={{ fontSize:16, fontWeight:800, color:'var(--t1)' }}>{_mDrw.name}</div>
                     <div style={{ fontSize:11, color:'var(--t3)', marginTop:2, textTransform:'uppercase', letterSpacing:'.07em', fontWeight:700 }}>
                       <span style={{ color: _mStatus === 'open' ? 'var(--grn)' : _mStatus === 'counting' ? 'var(--amb,#e8a020)' : 'var(--t4)' }}>{_mStatus}</span>
-                      {' · '}Float <span style={{ color:'var(--t1)', fontFamily:'var(--font-mono)' }}>£{_float.toFixed(2)}</span>
+                      {' · '}Float <span style={{ color:'var(--t1)', fontFamily:'var(--font-mono)' }}>{money(_float)}</span>
                     </div>
                   </div>
                   <button onClick={() => setShowDrawerMenu(false)} style={{ background:'transparent', border:'none', fontSize:24, color:'var(--t4)', cursor:'pointer', padding:4 }}>×</button>
@@ -742,7 +743,7 @@ export default function POSSurface() {
                         <span style={{ color:'var(--t4)', fontFamily:'var(--font-mono)' }}>{tStr}</span>
                         <span style={{ color:'var(--t2)' }}>{_TYPE_LABEL[e.type] || e.type}{e.reason ? <span style={{ color:'var(--t4)' }}> &middot; {e.reason}</span> : null}</span>
                         <span style={{ color: sign > 0 ? 'var(--grn)' : sign < 0 ? 'var(--red)' : 'var(--t4)', fontFamily:'var(--font-mono)', fontWeight:700 }}>
-                          {sign === 0 ? '—' : (sign > 0 ? '+' : '\u2212') + '£' + amt.toFixed(2)}
+                          {sign === 0 ? '—' : (sign > 0 ? '+' : '\u2212') + money(amt)}
                         </span>
                       </div>
                     );
@@ -788,7 +789,7 @@ export default function POSSurface() {
                   setCashActionAmount(''); setCashActionReason('');
                 }}
                   style={{ flex:2, padding:'11px', borderRadius:10, background: _valid ? _btnColor : 'var(--bg4)', border:'none', color: _valid ? '#fff' : 'var(--t4)', fontFamily:'inherit', fontWeight:800, fontSize:14, cursor: _valid ? 'pointer' : 'not-allowed' }}>
-                  {_valid ? `Confirm £${_amt.toFixed(2)}` : 'Enter amount & reason'}
+                  {_valid ? `Confirm ${money(_amt)}` : 'Enter amount & reason'}
                 </button>
               </div>
             </div>
@@ -1000,10 +1001,10 @@ export default function POSSurface() {
               <div style={{padding:'10px 12px 6px'}}>
                 <div style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'var(--t3)',marginBottom:3}}>
                   <span>{itemCount} item{itemCount!==1?'s':''}</span>
-                  <span style={{fontFamily:'var(--font-mono)'}}>£{subtotal.toFixed(2)}</span>
+                  <span style={{fontFamily:'var(--font-mono)'}}>{money(subtotal)}</span>
                 </div>
                 {checkDiscount>0&&<div style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'var(--grn)',marginBottom:3}}>
-                  <span>Discount</span><span style={{fontFamily:'var(--font-mono)'}}>−£{checkDiscount.toFixed(2)}</span>
+                  <span>Discount</span><span style={{fontFamily:'var(--font-mono)'}}>−{money(checkDiscount)}</span>
                 </div>}
                 {/* Service charge — only dine-in, from device profile, tap to remove/restore */}
                 {serviceChargeApplicable && (
@@ -1022,7 +1023,7 @@ export default function POSSurface() {
                       onMouseEnter={e=>{e.currentTarget.style.background='var(--bg3)';e.currentTarget.style.padding='2px 4px';}}
                       onMouseLeave={e=>{e.currentTarget.style.background='';e.currentTarget.style.padding='2px 0';}}>
                       <span>{(() => { const sc = deviceConfig?.serviceCharge; const pct = sc?.rate ?? 12.5; return sc?.applyTo==='minCovers' ? `Service (${pct}%, ${sc.minCovers}+ cvr)` : `Service (${pct}%)`; })()} <span style={{fontSize:10,color:'var(--t4)',marginLeft:4}}>tap to remove</span></span>
-                      <span style={{fontFamily:'var(--font-mono)'}}>£{service.toFixed(2)}</span>
+                      <span style={{fontFamily:'var(--font-mono)'}}>{money(service)}</span>
                     </div>
                   ) : null
                 )}
@@ -1038,7 +1039,7 @@ export default function POSSurface() {
                       return (
                         <div key={b.rate.id} style={{display:'flex',justifyContent:'space-between',fontSize:11,color:'var(--t4)',marginBottom:2}}>
                           <span>{label}</span>
-                          <span style={{fontFamily:'var(--font-mono)'}}>£{b.tax.toFixed(2)}</span>
+                          <span style={{fontFamily:'var(--font-mono)'}}>{money(b.tax)}</span>
                         </div>
                       );
                     });
@@ -1046,7 +1047,7 @@ export default function POSSurface() {
                 })()}
                 <div style={{display:'flex',justifyContent:'space-between',fontSize:22,fontWeight:800,marginTop:8,paddingTop:8,borderTop:'1px solid var(--bdr)'}}>
                   <span>Total</span>
-                  <span style={{color:'var(--acc)',fontFamily:'var(--font-mono)',letterSpacing:'-.01em'}}>£{total.toFixed(2)}</span>
+                  <span style={{color:'var(--acc)',fontFamily:'var(--font-mono)',letterSpacing:'-.01em'}}>{money(total)}</span>
                 </div>
               </div>
 
@@ -1059,7 +1060,7 @@ export default function POSSurface() {
                       <div key={d.id} style={{display:'flex',alignItems:'center',justifyContent:'space-between',fontSize:11,color:'var(--grn)',marginBottom:2}}>
                         <span>🏷 {d.label}</span>
                         <div style={{display:'flex',alignItems:'center',gap:8}}>
-                          <span style={{fontFamily:'var(--font-mono)'}}>−£{d.amount.toFixed(2)}</span>
+                          <span style={{fontFamily:'var(--font-mono)'}}>−{money(d.amount)}</span>
                           <button onClick={()=>activeTableId?removeCheckDiscount(activeTableId,d.id):removeWalkInDiscount(d.id)} style={{fontSize:11,color:'var(--t4)',background:'none',border:'none',cursor:'pointer',fontFamily:'inherit'}}>✕</button>
                         </div>
                       </div>
@@ -1120,7 +1121,7 @@ export default function POSSurface() {
               if (hasAllergens) setShowAllergenGate(true);
               else setShowCheckout(true);
             }}>
-              {items.length>0?`Pay £${total.toFixed(2)}`:'Pay'}
+              {items.length>0?`Pay ${money(total)}`:'Pay'}
             </button>
           </div>
         </div>
@@ -1377,7 +1378,7 @@ export default function POSSurface() {
                             fontFamily:'var(--font-mono)',letterSpacing:'-.01em',
                             textShadow:hasImg?'0 1px 6px rgba(0,0,0,1)':'none',
                           }}>
-                            {item.type==='variants'?`from £${fromPrice.toFixed(2)}`:`£${fromPrice.toFixed(2)}`}
+                            {item.type==='variants'?`from ${money(fromPrice)}`:`${money(fromPrice)}`}
                           </div>
                           <div style={{display:'flex',gap:3,alignItems:'center',flexShrink:0}}>
                             {item.type!=='simple'&&<span style={{fontSize:9,fontWeight:700,padding:'2px 5px',borderRadius:5,
@@ -1670,7 +1671,7 @@ function OrderItem({
           {isVoided&&<span style={{color:'var(--red)',marginLeft:4,fontSize:9}}>VOID</span>}
         </span>
         <span style={{fontSize:11,fontWeight:700,color:'var(--t2)',fontFamily:'var(--font-mono)',flexShrink:0}}>
-          £{price.toFixed(2)}
+          {money(price)}
         </span>
       </div>
     );
@@ -1708,7 +1709,7 @@ function OrderItem({
             {item.mods?.filter(m => !m._instruction).map((m,i)=>(
               <div key={i} style={{fontSize:11,color:'var(--t3)',marginTop:1,display:'flex',justifyContent:'space-between'}}>
                 <span>{m.label}</span>
-                {m.price>0&&<span style={{color:'var(--acc)',fontFamily:'var(--font-mono)'}}>+£{m.price.toFixed(2)}</span>}
+                {m.price>0&&<span style={{color:'var(--acc)',fontFamily:'var(--font-mono)'}}>+{money(m.price)}</span>}
               </div>
             ))}
             {item.mods?.filter(m => m._instruction).map((m,i)=>(
@@ -1724,7 +1725,7 @@ function OrderItem({
             {item.discount && !isVoided && (
               <div style={{display:'flex',alignItems:'center',gap:5,marginTop:3}}>
                 <span style={{fontSize:11,color:'var(--grn)',fontWeight:600}}>🏷 {item.discount.label}</span>
-                <span style={{fontSize:11,color:'var(--grn)',fontFamily:'var(--font-mono)'}}>−£{(item.price*item.qty - lineTotal).toFixed(2)}</span>
+                <span style={{fontSize:11,color:'var(--grn)',fontFamily:'var(--font-mono)'}}>−{money((item.price*item.qty - lineTotal))}</span>
                 <button onClick={onRemoveDiscount} style={{fontSize:11,color:'var(--t4)',background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',lineHeight:1}}>✕</button>
               </div>
             )}
@@ -1773,10 +1774,10 @@ function OrderItem({
           {/* Price column */}
           <div style={{textAlign:'right',flexShrink:0}}>
             <div style={{fontSize:15,fontWeight:800,color:isVoided?'var(--red)':item.discount?'var(--grn)':'var(--t1)',fontFamily:'var(--font-mono)',textDecoration:isVoided?'line-through':'none'}}>
-              £{lineTotal.toFixed(2)}
+              {money(lineTotal)}
             </div>
-            {item.discount&&!isVoided&&<div style={{fontSize:10,color:'var(--t4)',textDecoration:'line-through',fontFamily:'var(--font-mono)'}}>£{(item.price*item.qty).toFixed(2)}</div>}
-            {item.qty>1&&!item.discount&&!isVoided&&<div style={{fontSize:10,color:'var(--t4)',fontFamily:'var(--font-mono)'}}>£{item.price.toFixed(2)} ea</div>}
+            {item.discount&&!isVoided&&<div style={{fontSize:10,color:'var(--t4)',textDecoration:'line-through',fontFamily:'var(--font-mono)'}}>{money((item.price*item.qty))}</div>}
+            {item.qty>1&&!item.discount&&!isVoided&&<div style={{fontSize:10,color:'var(--t4)',fontFamily:'var(--font-mono)'}}>{money(item.price)} ea</div>}
           </div>
         </div>
 
@@ -1934,7 +1935,7 @@ function OrdersHub({ orderQueue, updateQueueStatus, removeFromQueue, showToast }
                   <div style={{fontSize:11,color:'var(--t3)',marginTop:1}}>{order.customer?.phone}</div>
                 </div>
                 <div style={{textAlign:'right'}}>
-                  <div style={{fontSize:13,fontWeight:700,color:'var(--acc)',fontFamily:'DM Mono,monospace'}}>£{(order.total||0).toFixed(2)}</div>
+                  <div style={{fontSize:13,fontWeight:700,color:'var(--acc)',fontFamily:'DM Mono,monospace'}}>{money((order.total||0))}</div>
                   <div style={{fontSize:10,color:'var(--t3)',textTransform:'capitalize'}}>{order.type}</div>
                 </div>
               </div>
@@ -2038,7 +2039,7 @@ function OrdersHub({ orderQueue, updateQueueStatus, removeFromQueue, showToast }
             <div style={{ fontSize:16, fontWeight:800, color:'var(--t1)', marginBottom:4 }}>{_myDrw.name}</div>
             <div style={{ fontSize:12, color:'var(--t3)', marginBottom:16 }}>
               Status: <b style={{color: _myDrw.status === 'open' ? 'var(--grn)' : 'var(--t3)'}}>{_myDrw.status || 'idle'}</b>
-              {' · '}Float: <b style={{color:'var(--t1)', fontFamily:'var(--font-mono)'}}>£{Number(_myDrw.currentFloat || 0).toFixed(2)}</b>
+              {' · '}Float: <b style={{color:'var(--t1)', fontFamily:'var(--font-mono)'}}>{money(Number(_myDrw.currentFloat || 0))}</b>
             </div>
             <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
               {/* v4.6.48: status-aware actions */}

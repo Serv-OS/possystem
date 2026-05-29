@@ -12,6 +12,7 @@
 
 import { useEffect, useState } from 'react';
 import { platformSupabase } from '../lib/supabase';
+import { setActiveCurrency } from '../lib/currency';
 import { lookupLocationBySlug } from '../lib/customerUrl';
 import { CUSTOMER_ROOT } from '../lib/env';
 import { isOpenNow, nextOpensAt, formatHoursPreview } from '../lib/openingHours';
@@ -31,6 +32,9 @@ export default function CustomerBoot({ slug, mode, tableId }) {
         const loc = await lookupLocationBySlug(slug, platformSupabase);
         if (cancelled) return;
         if (!loc) { setState({ loading: false, location: null, error: 'not_found' }); return; }
+        // v5.5.326: resolve this venue's currency so online/QR/gift/portal money
+        // displays + Stripe charges use the right symbol/code (not the GBP default).
+        setActiveCurrency(loc.currency || 'GBP');
         setState({ loading: false, location: loc, error: null });
       } catch (e) {
         if (!cancelled) setState({ loading: false, location: null, error: e?.message || 'load_failed' });

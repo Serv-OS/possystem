@@ -4,6 +4,7 @@ import { ALLERGENS, INITIAL_TABLES, MENU_ITEMS, PRINTERS, PRODUCTION_CENTRES, ST
 import { VERSION } from '../lib/version';
 import { supabase, isMock } from '../lib/supabase';
 import AIChat from '../components/AIChat';
+import { money, currencySymbol } from '../lib/currency';
 // ══════════════════════════════════════════════════════════════════════════════
 // Payment Screen
 // ══════════════════════════════════════════════════════════════════════════════
@@ -52,32 +53,32 @@ export function PaymentScreen({ subtotal, service, total, items, taxBreakdown, o
           <div style={{ fontSize:12, color:'var(--t3)', marginBottom:6 }}>{items.length} item{items.length!==1?'s':''}</div>
           {items.map(i => (
             <div key={i.uid} style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--t2)', marginBottom:2 }}>
-              <span>{i.qty}× {i.name}</span><span>£{(i.price*i.qty).toFixed(2)}</span>
+              <span>{i.qty}× {i.name}</span><span>{money((i.price*i.qty))}</span>
             </div>
           ))}
           <div className="divider"/>
           {hasTax && hasExclusive ? (
             // US exclusive: show net subtotal, then tax, then total
             <>
-              <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--t3)' }}><span>Subtotal (ex. tax)</span><span>£{taxBreakdown.subtotal.toFixed(2)}</span></div>
+              <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--t3)' }}><span>Subtotal (ex. tax)</span><span>{money(taxBreakdown.subtotal)}</span></div>
               {taxBreakdown.breakdown.map(b => {
                 const pct = (b.rate.rate*100).toFixed(3).replace(/\.?0+$/,'');
-                return <div key={b.rate.id} style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--t3)', marginTop:2 }}><span>{b.rate.name} ({pct}%)</span><span>£{b.tax.toFixed(2)}</span></div>;
+                return <div key={b.rate.id} style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--t3)', marginTop:2 }}><span>{b.rate.name} ({pct}%)</span><span>{money(b.tax)}</span></div>;
               })}
             </>
           ) : hasTax ? (
             // UK inclusive: show gross subtotal, then VAT breakdown
             <>
-              <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--t3)' }}><span>Subtotal (incl. VAT)</span><span>£{subtotal.toFixed(2)}</span></div>
+              <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--t3)' }}><span>Subtotal (incl. VAT)</span><span>{money(subtotal)}</span></div>
               {taxBreakdown.breakdown.map(b => {
                 const pct = (b.rate.rate*100).toFixed(1).replace('.0','');
-                return <div key={b.rate.id} style={{ display:'flex', justifyContent:'space-between', fontSize:11, color:'var(--t4)', marginTop:1 }}><span>  of which {b.rate.name} ({pct}%)</span><span>£{b.tax.toFixed(2)}</span></div>;
+                return <div key={b.rate.id} style={{ display:'flex', justifyContent:'space-between', fontSize:11, color:'var(--t4)', marginTop:1 }}><span>  of which {b.rate.name} ({pct}%)</span><span>{money(b.tax)}</span></div>;
               })}
             </>
           ) : (
-            <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--t3)' }}><span>Subtotal</span><span>£{subtotal.toFixed(2)}</span></div>
+            <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--t3)' }}><span>Subtotal</span><span>{money(subtotal)}</span></div>
           )}
-          <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--t3)', marginTop:2 }}><span>Service 12.5%</span><span>£{service.toFixed(2)}</span></div>
+          <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--t3)', marginTop:2 }}><span>Service 12.5%</span><span>{money(service)}</span></div>
         </div>
 
         {/* Tip step */}
@@ -93,7 +94,7 @@ export function PaymentScreen({ subtotal, service, total, items, taxBreakdown, o
                   transition:'all .12s', fontFamily:'inherit',
                 }}>
                   <div style={{ fontSize:13, fontWeight:600, color:tipPct===p&&customTip===''?'var(--acc)':'var(--t1)' }}>{p}%</div>
-                  <div style={{ fontSize:10, color:'var(--t3)', marginTop:2 }}>£{(subtotal*p/100).toFixed(2)}</div>
+                  <div style={{ fontSize:10, color:'var(--t3)', marginTop:2 }}>{money((subtotal*p/100))}</div>
                 </button>
               ))}
             </div>
@@ -106,9 +107,9 @@ export function PaymentScreen({ subtotal, service, total, items, taxBreakdown, o
               </div>
             </div>
             <div style={{ background:'var(--bg3)', borderRadius:10, padding:'12px 14px', marginBottom:18 }}>
-              <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--t3)', marginBottom:4 }}><span>Bill</span><span>£{total.toFixed(2)}</span></div>
-              <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--t3)', marginBottom:4 }}><span>Tip</span><span>£{tipAmt.toFixed(2)}</span></div>
-              <div style={{ display:'flex', justifyContent:'space-between', fontSize:18, fontWeight:700, marginTop:8, paddingTop:8, borderTop:'1px solid var(--bdr)' }}><span>Grand total</span><span style={{color:'var(--acc)'}}>£{grand.toFixed(2)}</span></div>
+              <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--t3)', marginBottom:4 }}><span>Bill</span><span>{money(total)}</span></div>
+              <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--t3)', marginBottom:4 }}><span>Tip</span><span>{money(tipAmt)}</span></div>
+              <div style={{ display:'flex', justifyContent:'space-between', fontSize:18, fontWeight:700, marginTop:8, paddingTop:8, borderTop:'1px solid var(--bdr)' }}><span>Grand total</span><span style={{color:'var(--acc)'}}>{money(grand)}</span></div>
             </div>
             <div style={{ display:'flex', gap:8 }}>
               <button className="btn btn-ghost" style={{flex:1}} onClick={() => setStep('split')}>Split check</button>
@@ -120,8 +121,8 @@ export function PaymentScreen({ subtotal, service, total, items, taxBreakdown, o
         {/* Method step */}
         {step === 'method' && (
           <>
-            <div style={{ fontSize:17, fontWeight:700, marginBottom:4 }}>£{grand.toFixed(2)} due</div>
-            <div style={{ fontSize:12, color:'var(--t3)', marginBottom:20 }}>Includes £{tipAmt.toFixed(2)} tip</div>
+            <div style={{ fontSize:17, fontWeight:700, marginBottom:4 }}>{money(grand)} due</div>
+            <div style={{ fontSize:12, color:'var(--t3)', marginBottom:20 }}>Includes {money(tipAmt)} tip</div>
             {[
               { id:'card', icon:'💳', label:'Card payment', sub:'Stripe Terminal · tap, chip or swipe' },
               { id:'cash', icon:'💵', label:'Cash payment', sub:'Enter tendered amount and calculate change' },
@@ -145,7 +146,7 @@ export function PaymentScreen({ subtotal, service, total, items, taxBreakdown, o
         {step === 'card' && (
           <div style={{ textAlign:'center', padding:'32px 0' }}>
             <div style={{ fontSize:56, marginBottom:20 }}>💳</div>
-            <div style={{ fontSize:24, fontWeight:700, marginBottom:8 }}>£{grand.toFixed(2)}</div>
+            <div style={{ fontSize:24, fontWeight:700, marginBottom:8 }}>{money(grand)}</div>
             <div style={{ fontSize:13, color:'var(--t3)', marginBottom:32 }}>Present card to Stripe Reader S700</div>
             <div style={{
               display:'inline-flex', alignItems:'center', gap:8, padding:'10px 20px',
@@ -163,7 +164,7 @@ export function PaymentScreen({ subtotal, service, total, items, taxBreakdown, o
         {/* Cash */}
         {step === 'cash' && (
           <>
-            <div style={{ fontSize:16, fontWeight:600, marginBottom:20 }}>Cash · £{grand.toFixed(2)} due</div>
+            <div style={{ fontSize:16, fontWeight:600, marginBottom:20 }}>Cash · {money(grand)} due</div>
             <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:12 }}>
               <span style={{ fontSize:22, color:'var(--t3)' }}>£</span>
               <input className="input" type="number" placeholder="0.00" value={cash}
@@ -171,7 +172,7 @@ export function PaymentScreen({ subtotal, service, total, items, taxBreakdown, o
             </div>
             <div style={{ display:'flex', gap:6, flexWrap:'wrap', marginBottom:18 }}>
               {[5,10,20,50,Math.ceil(grand)].map(a=>(
-                <button key={a} className="btn btn-ghost btn-sm" onClick={()=>setCash(String(a))}>£{a}</button>
+                <button key={a} className="btn btn-ghost btn-sm" onClick={()=>setCash(String(a))}>{currencySymbol()}{a}</button>
               ))}
             </div>
             {cash && parseFloat(cash) >= grand && (
@@ -181,7 +182,7 @@ export function PaymentScreen({ subtotal, service, total, items, taxBreakdown, o
                 display:'flex', justifyContent:'space-between', alignItems:'center',
               }}>
                 <span style={{ fontSize:14, color:'var(--grn)' }}>Change due</span>
-                <span style={{ fontSize:26, fontWeight:700, color:'var(--grn)' }}>£{change.toFixed(2)}</span>
+                <span style={{ fontSize:26, fontWeight:700, color:'var(--grn)' }}>{money(change)}</span>
               </div>
             )}
             <button className="btn btn-grn btn-full btn-lg"
@@ -211,11 +212,11 @@ export function PaymentScreen({ subtotal, service, total, items, taxBreakdown, o
             </div>
             <div style={{ background:'var(--bg3)', borderRadius:12, padding:'14px 18px', marginBottom:18 }}>
               <div style={{ display:'flex', justifyContent:'space-between', marginBottom:6 }}>
-                <span style={{fontSize:13,color:'var(--t3)'}}>Total</span><span>£{total.toFixed(2)}</span>
+                <span style={{fontSize:13,color:'var(--t3)'}}>Total</span><span>{money(total)}</span>
               </div>
               <div style={{ display:'flex', justifyContent:'space-between' }}>
                 <span style={{fontSize:15,fontWeight:500}}>Each person pays</span>
-                <span style={{fontSize:24,fontWeight:700,color:'var(--acc)'}}>£{(total/splits).toFixed(2)}</span>
+                <span style={{fontSize:24,fontWeight:700,color:'var(--acc)'}}>{money((total/splits))}</span>
               </div>
             </div>
             <button className="btn btn-grn btn-full btn-lg" onClick={onComplete}>Mark all paid ✓</button>
@@ -329,7 +330,7 @@ export function TablesSurface() {
                 </span>
               </div>
               <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:8, marginBottom:14 }}>
-                {[['Covers',sel.covers],['Seated',fmt(sel.seated)],['Check',sel.orderTotal!=null?`£${sel.orderTotal.toFixed(2)}`:'—'],['Server',sel.server||'—']].map(([k,v])=>(
+                {[['Covers',sel.covers],['Seated',fmt(sel.seated)],['Check',sel.orderTotal!=null?`${money(sel.orderTotal)}`:'—'],['Server',sel.server||'—']].map(([k,v])=>(
                   <div key={k} style={{ background:'var(--bg4)', borderRadius:8, padding:'9px 10px' }}>
                     <div style={{ fontSize:10, color:'var(--t3)', marginBottom:3 }}>{k}</div>
                     <div style={{ fontSize:15, fontWeight:600 }}>{v}</div>
@@ -858,7 +859,7 @@ function MiniBar({ label, value, max, color }) {
     <div style={{ marginBottom:10 }}>
       <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, marginBottom:4 }}>
         <span style={{ color:'var(--t2)', fontWeight:500, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', flex:1 }}>{label}</span>
-        <span style={{ color:'var(--acc)', fontWeight:700, fontFamily:'var(--font-mono)', flexShrink:0, marginLeft:10 }}>£{value.toFixed(2)}</span>
+        <span style={{ color:'var(--acc)', fontWeight:700, fontFamily:'var(--font-mono)', flexShrink:0, marginLeft:10 }}>{money(value)}</span>
       </div>
       <div style={{ height:6, background:'var(--bg4)', borderRadius:3, overflow:'hidden' }}>
         <div style={{ height:'100%', width:`${pct}%`, background:color||'var(--acc)', borderRadius:3, transition:'width .4s' }}/>
@@ -966,10 +967,10 @@ function BOReports({ closedChecks, shift, staff }) {
 
       {/* KPI row */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:10, marginBottom:20 }}>
-        <Stat label="Net revenue"   value={`£${netRevenue.toFixed(2)}`}  color="var(--acc)" mono/>
-        <Stat label="Checks"        value={filtered.length}               sub={`Avg £${avgCheck.toFixed(2)}`}/>
-        <Stat label="Covers"        value={totalCovers}                   sub={totalCovers>0?`£${(netRevenue/totalCovers).toFixed(2)} per head`:''}/>
-        <Stat label="Tips"          value={`£${totalTips.toFixed(2)}`}    color="var(--grn)" mono sub={refunded>0?`−£${refunded.toFixed(2)} refunded`:''}/>
+        <Stat label="Net revenue"   value={`${money(netRevenue)}`}  color="var(--acc)" mono/>
+        <Stat label="Checks"        value={filtered.length}               sub={`Avg ${money(avgCheck)}`}/>
+        <Stat label="Covers"        value={totalCovers}                   sub={totalCovers>0?`${money((netRevenue/totalCovers))} per head`:''}/>
+        <Stat label="Tips"          value={`${money(totalTips)}`}    color="var(--grn)" mono sub={refunded>0?`−${money(refunded)} refunded`:''}/>
       </div>
 
       {/* Payment method split */}
@@ -983,7 +984,7 @@ function BOReports({ closedChecks, shift, staff }) {
           ].map(m=>(
             <div key={m.label} style={{ flex:1, padding:'10px 14px', background:'var(--bg3)', borderRadius:10, border:'1px solid var(--bdr)' }}>
               <div style={{ fontSize:12, color:'var(--t3)', marginBottom:5 }}>{m.label}</div>
-              <div style={{ fontSize:18, fontWeight:800, color:m.color, fontFamily:'var(--font-mono)' }}>£{m.val.toFixed(2)}</div>
+              <div style={{ fontSize:18, fontWeight:800, color:m.color, fontFamily:'var(--font-mono)' }}>{money(m.val)}</div>
               <div style={{ fontSize:11, color:'var(--t3)', marginTop:2 }}>{m.pct}% of sales</div>
             </div>
           ))}
@@ -1026,15 +1027,15 @@ function BOReports({ closedChecks, shift, staff }) {
               <div style={{ fontSize:11, color:'var(--t3)', marginBottom:8 }}>{filtered.filter(c=>c.refunds.length>0).length} checks with refunds</div>
               <div style={{ display:'flex', justifyContent:'space-between', padding:'8px 0', borderBottom:'1px solid var(--bdr)', fontSize:13 }}>
                 <span style={{color:'var(--t2)'}}>Gross revenue</span>
-                <span style={{fontFamily:'var(--font-mono)',fontWeight:700}}>£{revenue.toFixed(2)}</span>
+                <span style={{fontFamily:'var(--font-mono)',fontWeight:700}}>{money(revenue)}</span>
               </div>
               <div style={{ display:'flex', justifyContent:'space-between', padding:'8px 0', borderBottom:'1px solid var(--bdr)', fontSize:13 }}>
                 <span style={{color:'var(--red)'}}>Total refunded</span>
-                <span style={{fontFamily:'var(--font-mono)',fontWeight:700,color:'var(--red)'}}>−£{refunded.toFixed(2)}</span>
+                <span style={{fontFamily:'var(--font-mono)',fontWeight:700,color:'var(--red)'}}>−{money(refunded)}</span>
               </div>
               <div style={{ display:'flex', justifyContent:'space-between', padding:'8px 0', fontSize:14, fontWeight:800 }}>
                 <span>Net revenue</span>
-                <span style={{fontFamily:'var(--font-mono)',color:'var(--acc)'}}>£{netRevenue.toFixed(2)}</span>
+                <span style={{fontFamily:'var(--font-mono)',color:'var(--acc)'}}>{money(netRevenue)}</span>
               </div>
             </div>
           </div>
@@ -1055,7 +1056,7 @@ function BOReports({ closedChecks, shift, staff }) {
                 </div>
                 <div style={{ display:'flex', gap:14, flexShrink:0 }}>
                   <span style={{color:'var(--t3)'}}>×{item.qty}</span>
-                  <span style={{color:'var(--acc)',fontWeight:700,fontFamily:'var(--font-mono)'}}>£{item.revenue.toFixed(2)}</span>
+                  <span style={{color:'var(--acc)',fontWeight:700,fontFamily:'var(--font-mono)'}}>{money(item.revenue)}</span>
                 </div>
               </div>
               <div style={{ height:5, background:'var(--bg4)', borderRadius:3, overflow:'hidden' }}>
@@ -1079,8 +1080,8 @@ function BOReports({ closedChecks, shift, staff }) {
                   <div style={{ fontSize:11, color:'var(--t3)', marginTop:2 }}>{srv.checks} checks · {srv.covers} covers</div>
                 </div>
                 <div style={{ textAlign:'right' }}>
-                  <div style={{ fontSize:16, fontWeight:800, color:'var(--acc)', fontFamily:'var(--font-mono)' }}>£{srv.revenue.toFixed(2)}</div>
-                  <div style={{ fontSize:11, color:'var(--t3)' }}>avg £{srv.checks>0?(srv.revenue/srv.checks).toFixed(2):'0'} · tips £{srv.tips.toFixed(2)}</div>
+                  <div style={{ fontSize:16, fontWeight:800, color:'var(--acc)', fontFamily:'var(--font-mono)' }}>{money(srv.revenue)}</div>
+                  <div style={{ fontSize:11, color:'var(--t3)' }}>avg {currencySymbol()}{srv.checks>0?(srv.revenue/srv.checks).toFixed(2):'0'} · tips {money(srv.tips)}</div>
                 </div>
               </div>
               <div style={{ height:5, background:'var(--bg4)', borderRadius:3, overflow:'hidden' }}>
@@ -1101,7 +1102,7 @@ function BOReports({ closedChecks, shift, staff }) {
               const label = h<12?`${h}am`:h===12?'12pm':h===0?'12am':`${h-12}pm`;
               return (
                 <div key={h} style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', gap:4, height:'100%', justifyContent:'flex-end' }}>
-                  <div style={{ fontSize:9, color:'var(--t4)', fontFamily:'var(--font-mono)', marginBottom:2 }}>{v>0?`£${v.toFixed(0)}`:''}</div>
+                  <div style={{ fontSize:9, color:'var(--t4)', fontFamily:'var(--font-mono)', marginBottom:2 }}>{v>0?`${currencySymbol()}${v.toFixed(0)}`:''}</div>
                   <div style={{ width:'100%', background:pct>0?'var(--acc)':'var(--bg4)', borderRadius:'4px 4px 0 0', height:`${Math.max(pct,v>0?4:2)}%`, transition:'height .4s', minHeight:v>0?4:2 }}/>
                   <div style={{ fontSize:9, color:'var(--t4)', whiteSpace:'nowrap' }}>{label}</div>
                 </div>
@@ -1110,7 +1111,7 @@ function BOReports({ closedChecks, shift, staff }) {
           </div>
           <div style={{ marginTop:14, display:'flex', justifyContent:'space-between', fontSize:11, color:'var(--t3)', borderTop:'1px solid var(--bdr)', paddingTop:10 }}>
             <span>Peak hour: {hours.reduce((p,h)=>h.v>p.v?h:p,hours[0])?.h}:00</span>
-            <span>Total: £{revenue.toFixed(2)}</span>
+            <span>Total: {money(revenue)}</span>
           </div>
         </div>
       )}
@@ -1154,7 +1155,7 @@ function BOMenu({ showToast }) {
           <div style={{ flex:1 }}>
             <div style={{ fontSize:13, fontWeight:500 }}>{item.name}</div>
             <div style={{ fontSize:11, color:'var(--t3)', marginTop:2 }}>
-              £{item.price.toFixed(2)} · {item.allergens?.length?`⚠ ${item.allergens.length} allergens`:'No allergens'}
+              {money(item.price)} · {item.allergens?.length?`⚠ ${item.allergens.length} allergens`:'No allergens'}
             </div>
           </div>
           <div style={{ display:'flex', gap:6 }}>
@@ -1202,7 +1203,7 @@ function BOShift({ shift, showToast }) {
             <div><div style={{fontSize:15,fontWeight:600,color:'var(--grn)'}}>{shift.name}</div><div style={{fontSize:12,color:'var(--grn)',opacity:.8}}>Open since {shift.opened}</div></div>
           </div>
           <div style={{ display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:8, marginBottom:16 }}>
-            {[['Gross sales',`£${shift.sales.toLocaleString()}`],['Covers',shift.covers],['Avg check',`£${shift.avgCheck.toFixed(2)}`],['Cash',`£${shift.cashSales.toFixed(2)}`],['Card',`£${shift.cardSales.toFixed(2)}`],['Tips',`£${shift.tips.toFixed(2)}`],['Voids',`${shift.voids} · £${shift.voidValue.toFixed(2)}`],['Open tables','4']].map(([k,v])=>(
+            {[['Gross sales',`${currencySymbol()}${shift.sales.toLocaleString()}`],['Covers',shift.covers],['Avg check',`${money(shift.avgCheck)}`],['Cash',`${money(shift.cashSales)}`],['Card',`${money(shift.cardSales)}`],['Tips',`${money(shift.tips)}`],['Voids',`${shift.voids} · ${money(shift.voidValue)}`],['Open tables','4']].map(([k,v])=>(
               <div key={k} style={{ background:'var(--bg3)', border:'1px solid var(--bdr)', borderRadius:8, padding:'10px 12px' }}>
                 <div style={{ fontSize:11, color:'var(--t3)', marginBottom:3 }}>{k}</div>
                 <div style={{ fontSize:16, fontWeight:600 }}>{v}</div>
@@ -1217,21 +1218,21 @@ function BOShift({ shift, showToast }) {
           <div style={{ marginBottom:16 }}>
             {Object.entries(denoms).map(([d,count])=>(
               <div key={d} style={{ display:'grid', gridTemplateColumns:'70px 1fr 80px', gap:10, alignItems:'center', marginBottom:8 }}>
-                <div style={{fontSize:14,fontWeight:500}}>£{d}</div>
+                <div style={{fontSize:14,fontWeight:500}}>{currencySymbol()}{d}</div>
                 <input type="number" min="0" value={count}
                   onChange={e=>setDenoms(p=>({...p,[d]:parseInt(e.target.value)||0}))}
                   style={{background:'var(--bg3)',border:'1px solid var(--bdr2)',borderRadius:6,padding:'6px 10px',color:'var(--t1)',fontSize:13,textAlign:'center',fontFamily:'monospace',outline:'none'}}/>
-                <div style={{fontSize:13,color:'var(--acc)',textAlign:'right',fontWeight:600}}>£{(parseFloat(d)*count).toFixed(2)}</div>
+                <div style={{fontSize:13,color:'var(--acc)',textAlign:'right',fontWeight:600}}>{money((parseFloat(d)*count))}</div>
               </div>
             ))}
           </div>
           <div style={{ background:'var(--bg3)', borderRadius:12, padding:14, marginBottom:16 }}>
-            <div style={{ display:'flex', justifyContent:'space-between', marginBottom:5 }}><span style={{fontSize:13,color:'var(--t3)'}}>Counted</span><span style={{fontWeight:600}}>£{counted.toFixed(2)}</span></div>
-            <div style={{ display:'flex', justifyContent:'space-between', marginBottom:5 }}><span style={{fontSize:13,color:'var(--t3)'}}>Expected</span><span>£{expected.toFixed(2)}</span></div>
+            <div style={{ display:'flex', justifyContent:'space-between', marginBottom:5 }}><span style={{fontSize:13,color:'var(--t3)'}}>Counted</span><span style={{fontWeight:600}}>{money(counted)}</span></div>
+            <div style={{ display:'flex', justifyContent:'space-between', marginBottom:5 }}><span style={{fontSize:13,color:'var(--t3)'}}>Expected</span><span>{money(expected)}</span></div>
             <div style={{ display:'flex', justifyContent:'space-between', paddingTop:8, borderTop:'1px solid var(--bdr)' }}>
               <span style={{fontSize:14,fontWeight:500}}>Variance</span>
               <span style={{fontSize:18,fontWeight:700,color:Math.abs(variance)<0.01?'var(--grn)':variance<0?'var(--red)':'var(--acc)'}}>
-                {variance>=0?'+':''}£{variance.toFixed(2)}
+                {variance>=0?'+':''}{money(variance)}
               </span>
             </div>
           </div>

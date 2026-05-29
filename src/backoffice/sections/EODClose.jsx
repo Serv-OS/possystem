@@ -14,6 +14,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../store';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
+import { money } from '../../lib/currency';  // v5.5.326: multi-currency
 
 const DENOMS_ORDER = [50, 20, 10, 5, 2, 1, 0.5, 0.2, 0.1, 0.05, 0.02, 0.01];
 const DENOM_LABEL = {
@@ -22,8 +23,8 @@ const DENOM_LABEL = {
   0.5: '50p', 0.2: '20p', 0.1: '10p', 0.05: '5p', 0.02: '2p', 0.01: '1p',
 };
 
-const fmt  = (n) => '£' + (Number(n) || 0).toFixed(2);
-const fmtS = (n) => (n >= 0 ? '+' : '−') + '£' + Math.abs(Number(n) || 0).toFixed(2);
+const fmt  = (n) => money(n);
+const fmtS = (n) => (n >= 0 ? '+' : '−') + money(Math.abs(Number(n) || 0));
 const fmtTime = (ts) => ts ? new Date(ts).toLocaleString('en-GB', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' }) : '—';
 const fmtDur = (a, b) => {
   if (!a) return '—';

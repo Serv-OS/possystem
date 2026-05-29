@@ -99,6 +99,7 @@ const sbUpsertMenuItem = async (item) => {
   });
 };
 import { INITIAL_KDS, SHIFT, MENU_ITEMS, CATEGORIES, STAFF as STAFF_SEED, QUICK_IDS } from '../data/seed';
+import { money } from '../lib/currency';
 
 // ─── ID helpers ──────────────────────────────────────────────────────────────
 let _itemUid = 1;
@@ -3047,7 +3048,7 @@ export const useStore = create((set, get) => ({
         staffName: staff?.name || 'Unknown',
       });
       set({ currentDrawerSession: data });
-      get().showToast?.(`Drawer opened with ${typeof Intl !== 'undefined' ? new Intl.NumberFormat('en-GB',{style:'currency',currency:'GBP'}).format(Number(openingFloat)||0) : '£'+Number(openingFloat||0).toFixed(2)}`, 'success');
+      get().showToast?.(`Drawer opened with ${money(Number(openingFloat) || 0)}`, 'success');
       return data;
     } catch (err) {
       console.warn('[cashInDrawer] failed:', err?.message || err);
@@ -3162,7 +3163,7 @@ export const useStore = create((set, get) => ({
           drawerId,
           sessionId: sess.id,
           reason: variance > 0 ? 'Cash-up variance (drawer over)' : 'Cash-up variance (drawer short)',
-          note: `Declared £${declared.toFixed(2)} vs expected £${expected.toFixed(2)}`,
+          note: `Declared ${money(declared)} vs expected ${money(expected)}`,
           staffId: staff?.id || null,
           staffName: staff?.name || 'Unknown',
         });
@@ -3178,7 +3179,7 @@ export const useStore = create((set, get) => ({
       set({ currentDrawerSession: null });
 
       get().showToast?.(
-        Math.abs(variance) < 0.01 ? 'Drawer closed — balanced' : `Drawer closed — variance £${Math.abs(variance).toFixed(2)} ${variance > 0 ? 'over' : 'short'}`,
+        Math.abs(variance) < 0.01 ? 'Drawer closed — balanced' : `Drawer closed — variance ${money(Math.abs(variance))} ${variance > 0 ? 'over' : 'short'}`,
         Math.abs(variance) < 0.01 ? 'success' : 'warning',
       );
 
@@ -4036,9 +4037,9 @@ export const useStore = create((set, get) => ({
     // (Splits store their card legs in paymentIntents[], so cardPIs covers them.)
     const cardInMethod = check?.method?.includes('card');  // single-card / gift+card
     if (cardInMethod && cardPIs.length === 0) {
-      get().showToast(`Refund of £${amount?.toFixed(2)} recorded — issue the card refund manually (no linked card payment found)`, 'warning');
+      get().showToast(`Refund of ${money(amount)} recorded — issue the card refund manually (no linked card payment found)`, 'warning');
     } else {
-      get().showToast(`Refund of £${amount?.toFixed(2)} processed via ${tenderMethod}`, 'success');
+      get().showToast(`Refund of ${money(amount)} processed via ${tenderMethod}`, 'success');
     }
   },
 

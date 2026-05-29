@@ -4,6 +4,7 @@ import { clearLocationConfigCache } from '../../lib/locationTime';
 import { defaultOpeningHours, emptyOpeningHours, isOpenNow, formatHoursPreview } from '../../lib/openingHours';
 import { isValidSlug, suggestSlug } from '../../lib/customerUrl';
 import { CUSTOMER_ROOT } from '../../lib/env';
+import { CURRENCIES, money, setActiveCurrency } from '../../lib/currency';
 
 const TIMEZONES = [
   { value:'Europe/London',      label:'Europe/London (UK)' },
@@ -86,6 +87,7 @@ export default function LocationSettings() {
   const [error, setError]       = useState('');
 
   const [timezone, setTimezone]     = useState('Europe/London');
+  const [currency, setCurrency]     = useState('GBP');   // v5.5.326: per-location currency
   const [bizDayStart, setBizDayStart] = useState('06:00');
   const [collectionLeadMin, setCollectionLeadMin] = useState(30);
   const [shifts, setShifts]         = useState([]);
@@ -113,7 +115,7 @@ export default function LocationSettings() {
     (async () => {
       try {
         const locId = await getLocationId().catch(() => null);
-        const select = 'id, name, timezone, business_day_start, shifts, collection_lead_minutes, opening_hours, online_slug, online_enabled, qr_enabled, ops_location_id';
+        const select = 'id, name, timezone, currency, business_day_start, shifts, collection_lead_minutes, opening_hours, online_slug, online_enabled, qr_enabled, ops_location_id';
         let row = null;
         let lastErr = null;
         if (locId) {
@@ -134,6 +136,7 @@ export default function LocationSettings() {
         if (row) {
           setLocation(row);
           setTimezone(row.timezone || 'Europe/London');
+          setCurrency(row.currency || 'GBP');
           setBizDayStart(row.business_day_start || '06:00');
           setShifts(Array.isArray(row.shifts) ? row.shifts : []);
           setCollectionLeadMin(typeof row.collection_lead_minutes === 'number' ? row.collection_lead_minutes : 30);
@@ -212,6 +215,7 @@ export default function LocationSettings() {
       .from('locations')
       .update({
         timezone,
+        currency,
         business_day_start:      bizDayStart,
         shifts:                  cleanShifts,
         collection_lead_minutes: collectionLeadMin,
@@ -263,6 +267,7 @@ export default function LocationSettings() {
     setOnlineEnabled(!!data.online_enabled);
     setQrEnabled(!!data.qr_enabled);
     clearLocationConfigCache(); // force refresh on next read
+    setActiveCurrency(currency); // v5.5.326: reflect the new currency immediately in this session
     setSaved(true);
     setTimeout(() => setSaved(false), 3000);
   };
@@ -297,6 +302,22 @@ export default function LocationSettings() {
           Current time in {timezone}: <strong style={{ color:'var(--t2)' }}>
             {new Date().toLocaleTimeString('en-GB', { timeZone: timezone, hour:'2-digit', minute:'2-digit' })}
           </strong>
+        </div>
+      </div>
+
+      {/* v5.5.326: Currency */}
+      <div style={S.card}>
+        <div style={S.h2}>💱 Currency</div>
+        <div style={S.desc}>
+          The currency this location trades in. Drives the symbol shown across POS, kiosk,
+          online ordering and receipts, and the currency cards are charged in.
+        </div>
+        <label style={S.label}>Location currency</label>
+        <select style={{ ...S.select, maxWidth:280 }} value={currency} onChange={e => setCurrency(e.target.value)}>
+          {Object.values(CURRENCIES).map(c => <option key={c.code} value={c.code}>{c.label}</option>)}
+        </select>
+        <div style={{ fontSize:11, color:'var(--t4)', marginTop:6 }}>
+          Example: <strong style={{ color:'var(--t2)' }}>{money(12.5, currency)}</strong> · {money(1234.56, currency)}
         </div>
       </div>
 

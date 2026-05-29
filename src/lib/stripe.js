@@ -1,3 +1,4 @@
+import { stripeCurrency } from './/currency';
 /**
  * stripe.js — Stripe Terminal integration scaffold
  *
@@ -113,7 +114,7 @@ export async function collectPayment(amountPence, metadata = {}) {
       ok: true,
       paymentIntentId: `pi_mock_${Date.now()}`,
       amount: amountPence,
-      currency: 'gbp',
+      currency: stripeCurrency(),
       card: { last4, brand:'visa', expMonth:12, expYear:2027 },
       receiptUrl: null,
       mock: true,
@@ -127,7 +128,7 @@ export async function collectPayment(amountPence, metadata = {}) {
     const intentRes = await fetch('/api/stripe/payment-intent', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ amount: amountPence, currency: 'gbp', metadata }),
+      body: JSON.stringify({ amount: amountPence, currency: stripeCurrency(), metadata }),
     });
     const { clientSecret, error: intentError } = await intentRes.json();
     if (intentError) return { ok: false, error: intentError };

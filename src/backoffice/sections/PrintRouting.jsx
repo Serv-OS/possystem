@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useStore } from '../../store';
 import { isMock, supabase, getLocationId } from '../../lib/supabase';
+import { money } from '../../lib/currency';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const uid = () => `pc-${Date.now()}-${Math.random().toString(36).slice(2,6)}`;
@@ -174,7 +175,7 @@ function CategoryRouter({ centreId, routing, setRouting, menuCategories, menuIte
                       <span style={{ flex:1, fontSize:13, color: isExcluded ? 'var(--t4)' : 'var(--t1)', textDecoration: isExcluded ? 'line-through' : 'none' }}>
                         {name}
                       </span>
-                      <span style={{ fontSize:12, color:'var(--t3)', fontFamily:'monospace' }}>£{price.toFixed(2)}</span>
+                      <span style={{ fontSize:12, color:'var(--t3)', fontFamily:'monospace' }}>{money(price)}</span>
                     </div>
                   );
                 })}

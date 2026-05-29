@@ -14,6 +14,7 @@ import { useStore } from '../../store';
 import { sendEmailReceipt } from '../../lib/sendReceipt';
 import { getLocationId } from '../../lib/supabase';
 import { loadLocationBranding } from '../../lib/receiptBranding';
+import { money } from '../../lib/currency';
 
 // ── Formatting helpers ──────────────────────────────────────────────
 const fmtDate = ts => {
@@ -54,7 +55,7 @@ const SOURCE_LABELS = { pos: 'POS', kiosk: 'Kiosk', online: 'Online', qr: 'QR' }
 // ═════════════════════════════════════════════════════════════════════
 export default function Transactions({ checks: parentChecks = [], fmt: parentFmt }) {
   const { refundCheck, staff } = useStore();
-  const fmt = parentFmt || (n => `£${(n || 0).toFixed(2)}`);
+  const fmt = parentFmt || (n => `${money((n || 0))}`);
 
   // ── State ──
   const [search, setSearch] = useState('');

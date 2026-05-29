@@ -5,6 +5,7 @@
 import { useStore } from '../../store';
 import { VERSION } from '../../lib/version';
 import { Sx } from './MShellStyles';
+import { currencySymbol } from '../../lib/currency';
 
 export default function MMe({ onOpenHistory }) {
   const { staff, logout, deviceConfig, closedChecks = [] } = useStore();
@@ -43,8 +44,8 @@ export default function MMe({ onOpenHistory }) {
         {/* Today's stats */}
         <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:8 }}>
           <Stat label="Orders" value={myCount}/>
-          <Stat label="Sales" value={`£${myTotal.toFixed(0)}`}/>
-          <Stat label="Tips" value={`£${myTips.toFixed(0)}`}/>
+          <Stat label="Sales" value={`${currencySymbol()}${myTotal.toFixed(0)}`}/>
+          <Stat label="Tips" value={`${currencySymbol()}${myTips.toFixed(0)}`}/>
         </div>
       </div>
 

@@ -11,6 +11,7 @@
 import { supabase, ensureAuthToken } from './supabase';
 import { resolvePlatformLocationId, getAssignedNetworkReader } from './networkReader';
 import { getLocationId } from './supabase';
+import { stripeCurrency } from './/currency';
 
 export async function forceCancelReader() {
   // 1. Resolve location + assigned reader
@@ -40,7 +41,7 @@ export async function forceCancelReader() {
         body: JSON.stringify({
           reader_id: reader.stripe_reader_id,
           location_id: platformLocationId,
-          currency: 'gbp',
+          currency: stripeCurrency(),
         }),
       }
     );

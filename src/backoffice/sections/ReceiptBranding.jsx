@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useStore } from '../../store';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
 import { invalidateBrandingCache } from '../../lib/receiptBranding';
+import { money } from '../../lib/currency';
 
 const ASSET_BUCKET = 'receipt-assets';
 const MAX_UPLOAD_BYTES = 2 * 1024 * 1024; // 2 MB
@@ -557,16 +558,16 @@ function ReceiptPreview({ branding }) {
             <Row
               key={`i${i}`}
               left={`${it.qty > 1 ? it.qty + 'x ' : ''}${it.name}`}
-              right={`£${(it.qty * it.price).toFixed(2)}`}
+              right={`${money((it.qty * it.price))}`}
             />
           ))}
 
           <div style={{ borderTop: '1px dashed #000', margin: '10px 0' }}/>
 
-          <Row left="Subtotal" right={`£${subtotal.toFixed(2)}`}/>
-          <Row left="Service (12.5%)" right={`£${service.toFixed(2)}`}/>
+          <Row left="Subtotal" right={`${money(subtotal)}`}/>
+          <Row left="Service (12.5%)" right={`${money(service)}`}/>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 800, fontSize: 14, marginTop: 4 }}>
-            <span>TOTAL</span><span>£{total.toFixed(2)}</span>
+            <span>TOTAL</span><span>{money(total)}</span>
           </div>
 
           <div style={{ borderTop: '1px dashed #000', margin: '10px 0' }}/>

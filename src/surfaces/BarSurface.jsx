@@ -7,6 +7,7 @@ import CheckoutModal from './CheckoutModal';
 import TabPreAuthTerminal from '../components/TabPreAuthTerminal';
 import { getNextOrderRefLocal } from '../lib/db';
 import { getActiveLocationSync, ensureAuthToken } from '../lib/supabase';
+import { money, currencySymbol } from '../lib/currency';
 
 const CAT_META = {
   quick:    { icon:'⚡', color:'#e8a020' },
@@ -130,7 +131,7 @@ function OpenTabModal({ onConfirm, onCancel }) {
                       border:`1px solid ${preAmt===a?'var(--acc)':'var(--bdr)'}`,
                       background:preAmt===a?'var(--acc-d)':'transparent',
                       color:preAmt===a?'var(--acc)':'var(--t3)', fontSize:12, fontWeight:600,
-                    }}>£{a}</button>
+                    }}>{currencySymbol()}{a}</button>
                   ))}
                 </div>
               </div>
@@ -361,9 +362,9 @@ export default function BarSurface() {
       setHoldClose(null); setHoldCloseState('idle');
       const shortfallMinor = totalMinor - capturedMinor;
       if (shortfallMinor > 0) {
-        showToast(`Charged £${(capturedMinor/100).toFixed(2)} to held card — £${(shortfallMinor/100).toFixed(2)} still to collect (hold didn't cover the bill)`, 'warning');
+        showToast(`Charged ${money((capturedMinor/100))} to held card — ${money((shortfallMinor/100))} still to collect (hold didn't cover the bill)`, 'warning');
       } else {
-        showToast(`${tab.name}'s tab charged £${(capturedMinor/100).toFixed(2)} to held card`, 'success');
+        showToast(`${tab.name}'s tab charged ${money((capturedMinor/100))} to held card`, 'success');
       }
     } catch (e) {
       setHoldCloseErr(e?.message || 'Capture failed'); setHoldCloseState('error');
@@ -439,7 +440,7 @@ export default function BarSurface() {
                 </div>
                 <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginTop:8 }}>
                   <span style={{ fontSize:11,fontWeight:700,padding:'2px 7px',borderRadius:20,background:sm.bg,color:sm.color }}>{sm.label}</span>
-                  <span style={{ fontSize:15,fontWeight:800,color:'var(--acc)',fontFamily:'DM Mono,monospace' }}>£{(tab.total||0).toFixed(2)}</span>
+                  <span style={{ fontSize:15,fontWeight:800,color:'var(--acc)',fontFamily:'DM Mono,monospace' }}>{money((tab.total||0))}</span>
                 </div>
               </div>
             );
@@ -478,12 +479,12 @@ export default function BarSurface() {
                     {/* v5.5.324: badge only when a REAL hold exists on the card,
                         not merely the "pre-auth" intent toggle (which previously
                         showed a hold that was never actually placed). */}
-                    {activeTab.preAuthPaymentIntentId&&<span style={{fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:20,background:'var(--blu-d)',color:'var(--blu)',border:'1px solid var(--blu-b)'}}>💳 Held £{(((activeTab.preAuthHeldMinor!=null?activeTab.preAuthHeldMinor/100:activeTab.preAuthAmount))||0).toFixed(0)}</span>}
+                    {activeTab.preAuthPaymentIntentId&&<span style={{fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:20,background:'var(--blu-d)',color:'var(--blu)',border:'1px solid var(--blu-b)'}}>💳 Held {currencySymbol()}{(((activeTab.preAuthHeldMinor!=null?activeTab.preAuthHeldMinor/100:activeTab.preAuthAmount))||0).toFixed(0)}</span>}
                     {activeTab.tableId&&<span style={{fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:20,background:'var(--bg3)',color:'var(--t2)'}}>Table linked</span>}
                   </div>
                 </div>
                 <div style={{ marginLeft:'auto',textAlign:'right',flexShrink:0 }}>
-                  <div style={{ fontSize:20,fontWeight:800,color:'var(--acc)',fontFamily:'DM Mono,monospace' }}>£{(activeTab.total||0).toFixed(2)}</div>
+                  <div style={{ fontSize:20,fontWeight:800,color:'var(--acc)',fontFamily:'DM Mono,monospace' }}>{money((activeTab.total||0))}</div>
                   <div style={{ fontSize:11,color:'var(--t3)' }}>{activeTab.rounds.reduce((s,r)=>s+r.items.reduce((s2,i)=>s2+i.qty,0),0)} items · {activeTab.rounds.length} rounds</div>
                 </div>
               </div>
@@ -520,7 +521,7 @@ export default function BarSurface() {
                     <span style={{ fontSize:11,fontWeight:700,color:'var(--acc)',textTransform:'uppercase',letterSpacing:'.06em' }}>
                       🔥 Round {activeTab.rounds.length+1} — building
                     </span>
-                    <span style={{ fontSize:13,fontWeight:700,color:'var(--acc)',fontFamily:'DM Mono,monospace' }}>£{roundTotal.toFixed(2)}</span>
+                    <span style={{ fontSize:13,fontWeight:700,color:'var(--acc)',fontFamily:'DM Mono,monospace' }}>{money(roundTotal)}</span>
                   </div>
                   <div style={{ padding:'8px 12px' }}>
                     {roundItems.map(item=>(
@@ -545,7 +546,7 @@ export default function BarSurface() {
                         Round {rNum} · {new Date(round.sentAt).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})}
                       </div>
                       <div style={{ display:'flex',alignItems:'center',gap:8 }}>
-                        <span style={{ fontSize:13,fontWeight:700,color:'var(--t2)',fontFamily:'DM Mono,monospace' }}>£{(round.subtotal||0).toFixed(2)}</span>
+                        <span style={{ fontSize:13,fontWeight:700,color:'var(--t2)',fontFamily:'DM Mono,monospace' }}>{money((round.subtotal||0))}</span>
                         <button onClick={()=>setVoidConfirm({ tabId:activeTab.id, roundId:round.id, rNum })} style={{ fontSize:10,color:'var(--red)',background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',padding:0 }}>Void</button>
                       </div>
                     </div>
@@ -557,7 +558,7 @@ export default function BarSurface() {
                             {item.mods?.length>0&&<span style={{ color:'var(--t3)',marginLeft:5 }}>({item.mods.map(m=>m.label).join(', ')})</span>}
                             {item.notes&&<span style={{ color:'#f97316',marginLeft:5,fontStyle:'italic' }}>· {item.notes}</span>}
                           </div>
-                          <span style={{ color:'var(--t3)',fontFamily:'DM Mono,monospace' }}>£{((item.price||0)*(item.qty||1)).toFixed(2)}</span>
+                          <span style={{ color:'var(--t3)',fontFamily:'DM Mono,monospace' }}>{money(((item.price||0)*(item.qty||1)))}</span>
                         </div>
                       ))}
                       {round.note&&<div style={{ fontSize:11,color:'#f97316',marginTop:4,fontStyle:'italic' }}>📝 {round.note}</div>}
@@ -571,21 +572,21 @@ export default function BarSurface() {
             <div style={{ padding:'10px 12px', borderTop:'1px solid var(--bdr)', background:'var(--bg2)', flexShrink:0 }}>
               <div style={{ display:'flex',justifyContent:'space-between',fontSize:12,color:'var(--t3)',marginBottom:2 }}>
                 <span>{activeTab.rounds.length} rounds · {activeTab.rounds.reduce((s,r)=>s+r.items.reduce((s2,i)=>s2+i.qty,0),0)} items</span>
-                <span style={{ fontFamily:'DM Mono,monospace' }}>{activeTab.rounds.length>0?`Avg round £${((activeTab.total||0)/(activeTab.rounds.length||1)).toFixed(2)}`:'No rounds yet'}</span>
+                <span style={{ fontFamily:'DM Mono,monospace' }}>{activeTab.rounds.length>0?`Avg round ${money(((activeTab.total||0)/(activeTab.rounds.length||1)))}`:'No rounds yet'}</span>
               </div>
               <div style={{ display:'flex',justifyContent:'space-between',fontSize:19,fontWeight:800,marginBottom:10,paddingTop:8,borderTop:'1px solid var(--bdr3)' }}>
                 <span>Total</span>
-                <span style={{ color:'var(--acc)',fontFamily:'DM Mono,monospace' }}>£{((activeTab.total||0)+roundTotal).toFixed(2)}</span>
+                <span style={{ color:'var(--acc)',fontFamily:'DM Mono,monospace' }}>{money(((activeTab.total||0)+roundTotal))}</span>
               </div>
               <div style={{ display:'flex',gap:6 }}>
                 {roundItems.length>0 && (
                   <button onClick={fireRound} style={{ flex:2,height:38,borderRadius:10,cursor:'pointer',fontFamily:'inherit',background:'var(--acc)',border:'none',color:'#0e0f14',fontSize:13,fontWeight:700 }}>
-                    🔥 Send round {activeTab.rounds.length+1} · £{roundTotal.toFixed(2)}
+                    🔥 Send round {activeTab.rounds.length+1} · {money(roundTotal)}
                   </button>
                 )}
                 {activeTab.status!=='closed' && activeTab.total > 0 && (
                   <button onClick={()=>handleCloseTab(activeTab)} style={{ flex:roundItems.length>0?1:2,height:38,borderRadius:10,cursor:'pointer',fontFamily:'inherit',background:'var(--red-d)',border:'1px solid var(--red-b)',color:'var(--red)',fontSize:13,fontWeight:700 }}>
-                    {roundItems.length>0 ? 'Pay' : `Close tab · £${(activeTab.total||0).toFixed(2)}`}
+                    {roundItems.length>0 ? 'Pay' : `Close tab · ${money((activeTab.total||0))}`}
                   </button>
                 )}
                 <button onClick={()=>setActiveTab(null)} style={{ width:38,height:38,borderRadius:10,cursor:'pointer',fontFamily:'inherit',background:'var(--bg3)',border:'1px solid var(--bdr2)',color:'var(--t3)',fontSize:18 }}>←</button>
@@ -652,7 +653,7 @@ export default function BarSurface() {
                     <div style={{ fontSize:12,fontWeight:700,color:'var(--t1)',lineHeight:1.3,marginBottom:3,flex:1 }}>{item.menuName||item.menu_name||item.name||'Item'}</div>
                     {item.description&&<div style={{ fontSize:10,color:'var(--t3)',lineHeight:1.3,marginBottom:4,display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',overflow:'hidden' }}>{item.description}</div>}
                     <div style={{ fontSize:14,fontWeight:800,color:m.color,fontFamily:'DM Mono,monospace',marginTop:'auto' }}>
-                      {item.type==='variants'?`from £${(fromPrice||0).toFixed(2)}`:`£${(fromPrice||0).toFixed(2)}`}
+                      {item.type==='variants'?`from ${money((fromPrice||0))}`:`${money((fromPrice||0))}`}
                     </div>
                     {item.type!=='simple'&&<div style={{ fontSize:9,color:'var(--t3)',marginTop:2 }}>{item.type==='variants'?'▼ sizes':item.type==='modifiers'?'⊕ options':'🍕 build'}</div>}
                   </div>
@@ -725,7 +726,7 @@ export default function BarSurface() {
         const heldMinor = tab.preAuthHeldMinor != null ? tab.preAuthHeldMinor : Math.round((tab.preAuthAmount || 0) * 100);
         const captureMinor = Math.min(totalMinor, heldMinor || totalMinor);
         const shortfall = totalMinor - captureMinor;
-        const gbp = (m) => `£${(m / 100).toFixed(2)}`;
+        const gbp = (m) => `${money((m / 100))}`;
         const row = (label, value, bold) => (
           <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'3px 0', fontSize:13, color: bold ? 'var(--t1)' : 'var(--t3)', fontWeight: bold ? 800 : 500 }}>
             <span>{label}</span><span style={{ fontFamily:'DM Mono,monospace' }}>{value}</span>
@@ -798,7 +799,7 @@ function RoundItem({ item, onQty, onRemove }) {
             <input value={note} onChange={e=>setNote(e.target.value)} onBlur={()=>{item.notes=note;setEditNote(false);}} onKeyDown={e=>e.key==='Enter'&&(item.notes=note,setEditNote(false))} placeholder="Item note..." autoFocus style={{ marginTop:3,width:'100%',background:'var(--bg4)',border:'1px solid var(--acc-b)',borderRadius:5,padding:'3px 7px',color:'var(--t1)',fontSize:11,fontFamily:'inherit',outline:'none' }}/>
           )}
         </div>
-        <div style={{ fontSize:12,fontWeight:700,color:'var(--acc)',fontFamily:'DM Mono,monospace',whiteSpace:'nowrap' }}>£{((item.price||0)*(item.qty||1)).toFixed(2)}</div>
+        <div style={{ fontSize:12,fontWeight:700,color:'var(--acc)',fontFamily:'DM Mono,monospace',whiteSpace:'nowrap' }}>{money(((item.price||0)*(item.qty||1)))}</div>
       </div>
       <div style={{ display:'flex',alignItems:'center',gap:8,marginTop:4 }}>
         <div style={{ display:'flex',alignItems:'center',gap:1,background:'var(--bg4)',border:'1px solid var(--bdr)',borderRadius:6,overflow:'hidden' }}>
@@ -867,7 +868,7 @@ function QuickItemBuilder({ item, menuItems=[], modifierGroupDefs=[], onConfirm,
           {variantChildren.map(v=>(
             <button key={v.id} onClick={()=>setSelectedVariant(v)} style={{ display:'flex',alignItems:'center',justifyContent:'space-between',width:'100%',padding:'10px 14px',borderRadius:10,cursor:'pointer',fontFamily:'inherit',marginBottom:6,border:`1.5px solid ${selectedVariant?.id===v.id?'var(--acc)':'var(--bdr)'}`,background:selectedVariant?.id===v.id?'var(--acc-d)':'var(--bg3)',color:selectedVariant?.id===v.id?'var(--acc)':'var(--t1)',textAlign:'left' }}>
               <span style={{ fontSize:13,fontWeight:500 }}>{v.menuName||v.name}</span>
-              <span style={{ fontSize:14,fontWeight:700,fontFamily:'DM Mono,monospace' }}>£{(v.pricing?.base??v.price??0).toFixed(2)}</span>
+              <span style={{ fontSize:14,fontWeight:700,fontFamily:'DM Mono,monospace' }}>{money((v.pricing?.base??v.price??0))}</span>
             </button>
           ))}
         </div>
@@ -886,7 +887,7 @@ function QuickItemBuilder({ item, menuItems=[], modifierGroupDefs=[], onConfirm,
             return(
               <button key={opt.id} onClick={toggle} style={{ display:'flex',alignItems:'center',justifyContent:'space-between',width:'100%',padding:'9px 12px',borderRadius:9,cursor:'pointer',fontFamily:'inherit',marginBottom:5,border:`1.5px solid ${isSel?'var(--acc)':'var(--bdr)'}`,background:isSel?'var(--acc-d)':'var(--bg3)' }}>
                 <span style={{ fontSize:13,fontWeight:500,color:isSel?'var(--acc)':'var(--t1)' }}>{opt.name||opt.label}</span>
-                {(opt.price||0)>0&&<span style={{ fontSize:12,fontWeight:600,color:isSel?'var(--acc)':'var(--t3)' }}>+£{opt.price.toFixed(2)}</span>}
+                {(opt.price||0)>0&&<span style={{ fontSize:12,fontWeight:600,color:isSel?'var(--acc)':'var(--t3)' }}>+{money(opt.price)}</span>}
               </button>
             );
           })}
@@ -908,7 +909,7 @@ function QuickItemBuilder({ item, menuItems=[], modifierGroupDefs=[], onConfirm,
       </div>
 
       <button onClick={()=>onConfirm(buildMods(),{displayName,qty,linePrice:total,notes:note})} disabled={!canConfirm} className="btn btn-acc btn-full btn-lg" style={{ opacity:canConfirm?1:.4 }}>
-        Add to round · £{total.toFixed(2)}
+        Add to round · {money(total)}
       </button>
     </div>
   );

@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react';
 import { useStore } from '../store';
 import { printService } from '../lib/printer';
+import { money } from '../lib/currency';
 
 const REFUND_REASONS = [
   'Wrong item served','Quality issue','Customer complaint',
@@ -152,7 +153,7 @@ function RefundModal({check, onConfirm, onCancel}){
                   <div style={{fontSize:13,fontWeight:700,color:isFullRefund?'var(--acc)':'var(--t1)'}}>Entire check</div>
                   <div style={{fontSize:11,color:'var(--t3)',marginTop:1}}>Refund all remaining items</div>
                 </div>
-                <span style={{fontSize:14,fontWeight:800,color:isFullRefund?'var(--acc)':'var(--t2)',fontFamily:'DM Mono,monospace'}}>−£{check.subtotal.toFixed(2)}</span>
+                <span style={{fontSize:14,fontWeight:800,color:isFullRefund?'var(--acc)':'var(--t2)',fontFamily:'DM Mono,monospace'}}>−{money(check.subtotal)}</span>
               </div>
               <div style={{fontSize:11,fontWeight:700,color:'var(--t2)',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:8}}>Or select items</div>
               {check.items.map(item=>{
@@ -180,7 +181,7 @@ function RefundModal({check, onConfirm, onCancel}){
                         {item.mods?.length>0&&<div style={{fontSize:10,color:'var(--t3)'}}>{item.mods.map(m=>m.label).join(', ')}</div>}
                       </div>
                       <div style={{textAlign:'right',flexShrink:0}}>
-                        <div style={{fontSize:12,fontWeight:700,color:isOn?'var(--acc)':'var(--t3)',fontFamily:'DM Mono,monospace'}}>£{item.price.toFixed(2)}</div>
+                        <div style={{fontSize:12,fontWeight:700,color:isOn?'var(--acc)':'var(--t3)',fontFamily:'DM Mono,monospace'}}>{money(item.price)}</div>
                         {alreadyRefunded>0&&<div style={{fontSize:10,color:'var(--red)'}}>{alreadyRefunded} refunded</div>}
                       </div>
                     </div>
@@ -200,7 +201,7 @@ function RefundModal({check, onConfirm, onCancel}){
               })}
               {refundTotal>0&&<div style={{display:'flex',justifyContent:'space-between',fontSize:16,fontWeight:800,borderTop:'1px solid var(--bdr)',paddingTop:12,marginTop:12}}>
                 <span style={{color:'var(--t2)'}}>Refund total</span>
-                <span style={{color:'var(--red)',fontFamily:'DM Mono,monospace'}}>−£{refundTotal.toFixed(2)}</span>
+                <span style={{color:'var(--red)',fontFamily:'DM Mono,monospace'}}>−{money(refundTotal)}</span>
               </div>}
               <div style={{display:'flex',gap:8,marginTop:16}}>
                 <button className="btn btn-ghost" style={{flex:1}} onClick={onCancel}>Cancel</button>
@@ -214,7 +215,7 @@ function RefundModal({check, onConfirm, onCancel}){
             <>
               <div style={{padding:'10px 14px',borderRadius:10,background:'var(--bg3)',border:'1px solid var(--bdr)',marginBottom:16,display:'flex',justifyContent:'space-between',alignItems:'center'}}>
                 <span style={{fontSize:12,color:'var(--t3)'}}>{selectedItems.length} item{selectedItems.length!==1?'s':''} · manager PIN required</span>
-                <span style={{fontSize:14,fontWeight:800,color:'var(--red)',fontFamily:'DM Mono,monospace'}}>−£{refundTotal.toFixed(2)}</span>
+                <span style={{fontSize:14,fontWeight:800,color:'var(--red)',fontFamily:'DM Mono,monospace'}}>−{money(refundTotal)}</span>
               </div>
               <div style={{display:'flex',justifyContent:'center',gap:12,marginBottom:pinErr?8:20}}>
                 {[0,1,2,3].map(i=><div key={i} style={{width:14,height:14,borderRadius:'50%',background:i<pin.length?'var(--acc)':'var(--bg4)',border:`2px solid ${i<pin.length?'var(--acc)':'var(--bdr2)'}`,transition:'all .15s'}}/>)}
@@ -257,7 +258,7 @@ function RefundModal({check, onConfirm, onCancel}){
           {step==='tender'&&(
             <>
               <div style={{textAlign:'center',marginBottom:20}}>
-                <div style={{fontSize:28,fontWeight:800,color:'var(--red)',fontFamily:'DM Mono,monospace',marginBottom:4}}>−£{refundTotal.toFixed(2)}</div>
+                <div style={{fontSize:28,fontWeight:800,color:'var(--red)',fontFamily:'DM Mono,monospace',marginBottom:4}}>−{money(refundTotal)}</div>
                 <div style={{fontSize:12,color:'var(--t3)'}}>How should this refund be tendered?</div>
               </div>
               {/* Original method note */}
@@ -290,19 +291,19 @@ function RefundModal({check, onConfirm, onCancel}){
             <>
               <div style={{textAlign:'center',padding:'20px 0 24px'}}>
                 <div style={{fontSize:48,marginBottom:12}}>💵</div>
-                <div style={{fontSize:28,fontWeight:800,color:'var(--red)',fontFamily:'DM Mono,monospace',marginBottom:6}}>£{refundTotal.toFixed(2)}</div>
+                <div style={{fontSize:28,fontWeight:800,color:'var(--red)',fontFamily:'DM Mono,monospace',marginBottom:6}}>{money(refundTotal)}</div>
                 <div style={{fontSize:14,color:'var(--t2)',marginBottom:20}}>Hand this amount back to the guest from the cash drawer</div>
                 <div style={{display:'flex',flexDirection:'column',gap:6,background:'var(--bg3)',border:'1px solid var(--bdr)',borderRadius:12,padding:'12px 16px',textAlign:'left',marginBottom:20}}>
                   <div style={{fontSize:12,color:'var(--t3)',fontWeight:600}}>Summary</div>
                   {selectedItems.map((i,idx)=>(
                     <div key={idx} style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'var(--t2)'}}>
                       <span>{i.refundQty}× {i.name}</span>
-                      <span style={{fontFamily:'DM Mono,monospace'}}>£{(i.price*i.refundQty).toFixed(2)}</span>
+                      <span style={{fontFamily:'DM Mono,monospace'}}>{money((i.price*i.refundQty))}</span>
                     </div>
                   ))}
                   <div style={{borderTop:'1px solid var(--bdr)',paddingTop:6,marginTop:4,display:'flex',justifyContent:'space-between',fontWeight:700,fontSize:13}}>
                     <span>Cash to return</span>
-                    <span style={{color:'var(--red)',fontFamily:'DM Mono,monospace'}}>£{refundTotal.toFixed(2)}</span>
+                    <span style={{color:'var(--red)',fontFamily:'DM Mono,monospace'}}>{money(refundTotal)}</span>
                   </div>
                 </div>
                 <div style={{display:'flex',gap:8}}>
@@ -318,7 +319,7 @@ function RefundModal({check, onConfirm, onCancel}){
             <>
               <div style={{textAlign:'center',padding:'20px 0 24px'}}>
                 <div style={{fontSize:48,marginBottom:12}}>💳</div>
-                <div style={{fontSize:28,fontWeight:800,color:'var(--red)',fontFamily:'DM Mono,monospace',marginBottom:6}}>−£{refundTotal.toFixed(2)}</div>
+                <div style={{fontSize:28,fontWeight:800,color:'var(--red)',fontFamily:'DM Mono,monospace',marginBottom:6}}>−{money(refundTotal)}</div>
                 <div style={{fontSize:14,color:'var(--t2)',marginBottom:8}}>Refund to original card via Stripe Terminal</div>
                 <div style={{fontSize:12,color:'var(--t3)',marginBottom:20}}>Customer does not need to re-present their card. Funds appear in 1–3 business days.</div>
                 <div style={{display:'inline-flex',alignItems:'center',gap:8,padding:'10px 20px',background:'var(--acc-d)',border:'1px solid var(--acc-b)',borderRadius:20,fontSize:13,color:'var(--acc)',marginBottom:24}}>
@@ -373,7 +374,7 @@ export default function CheckHistory(){
   const handleRefund=(opts)=>{
     refundCheck(selectedCheck.id,opts);
     setShowRefund(false);
-    showToast(`Refund of £${opts.amount.toFixed(2)} processed — ${opts.tenderMethod}`,'success');
+    showToast(`Refund of ${money(opts.amount)} processed — ${opts.tenderMethod}`,'success');
   };
 
   const handleReprint = async () => {
@@ -444,11 +445,11 @@ export default function CheckHistory(){
           </div>
           <div style={{display:'flex',justifyContent:'space-between',fontSize:11,color:'var(--t3)'}}>
             <span>{totals.count} check{totals.count!==1?'s':''}</span>
-            <span style={{fontFamily:'DM Mono,monospace',color:'var(--t2)'}}>£{totals.revenue.toFixed(2)}</span>
+            <span style={{fontFamily:'DM Mono,monospace',color:'var(--t2)'}}>{money(totals.revenue)}</span>
           </div>
           {totals.refunds>0&&<div style={{display:'flex',justifyContent:'space-between',fontSize:11,color:'var(--red)',marginTop:2}}>
             <span>↩ Refunded</span>
-            <span style={{fontFamily:'DM Mono,monospace'}}>−£{totals.refunds.toFixed(2)}</span>
+            <span style={{fontFamily:'DM Mono,monospace'}}>−{money(totals.refunds)}</span>
           </div>}
         </div>
 
@@ -473,16 +474,16 @@ export default function CheckHistory(){
                     <span style={{fontSize:12,fontWeight:800,color:'var(--t1)',fontFamily:'DM Mono,monospace'}}>{chk.ref}</span>
                     <span style={{fontSize:10,fontWeight:700,padding:'1px 6px',borderRadius:20,background:sm.bg,color:sm.color,border:`1px solid ${sm.border}`}}>{sm.label}</span>
                   </div>
-                  <span style={{fontSize:13,fontWeight:700,color:'var(--acc)',fontFamily:'DM Mono,monospace'}}>£{chk.total.toFixed(2)}</span>
+                  <span style={{fontSize:13,fontWeight:700,color:'var(--acc)',fontFamily:'DM Mono,monospace'}}>{money(chk.total)}</span>
                 </div>
                 <div style={{display:'flex',justifyContent:'space-between',fontSize:11,color:'var(--t3)',marginBottom:totalRefunded>0?3:0}}>
                   <span>{chk.tableLabel||chk.customer?.name||chk.orderType} · {chk.server}</span>
                   <span>{fmtTime(chk.closedAt)}</span>
                 </div>
-                {totalRefunded>0&&<div style={{fontSize:11,color:'var(--red)',fontFamily:'DM Mono,monospace'}}>↩ −£{totalRefunded.toFixed(2)} refunded</div>}
+                {totalRefunded>0&&<div style={{fontSize:11,color:'var(--red)',fontFamily:'DM Mono,monospace'}}>↩ −{money(totalRefunded)} refunded</div>}
                 <div style={{display:'flex',alignItems:'center',gap:5,marginTop:3}}>
                   <span style={{fontSize:11}}>{METHOD_ICON[chk.method]||'💳'}</span>
-                  <span style={{fontSize:10,color:'var(--t4)'}}>{chk.items.length} items{chk.covers>1?` · ${chk.covers} cvr`:''}{chk.tip>0?` · tip £${chk.tip.toFixed(2)}`:''}</span>
+                  <span style={{fontSize:10,color:'var(--t4)'}}>{chk.items.length} items{chk.covers>1?` · ${chk.covers} cvr`:''}{chk.tip>0?` · tip ${money(chk.tip)}`:''}</span>
                 </div>
               </div>
             );
@@ -519,9 +520,9 @@ export default function CheckHistory(){
                       </div>
                     </div>
                     <div style={{textAlign:'right',flexShrink:0}}>
-                      <div style={{fontSize:22,fontWeight:800,color:'var(--acc)',fontFamily:'DM Mono,monospace'}}>£{selectedCheck.total.toFixed(2)}</div>
-                      {totalRefunded>0&&<div style={{fontSize:12,color:'var(--red)',fontFamily:'DM Mono,monospace'}}>↩ −£{totalRefunded.toFixed(2)}</div>}
-                      {totalRefunded>0&&<div style={{fontSize:11,color:'var(--t3)'}}>net £{(selectedCheck.total-totalRefunded).toFixed(2)}</div>}
+                      <div style={{fontSize:22,fontWeight:800,color:'var(--acc)',fontFamily:'DM Mono,monospace'}}>{money(selectedCheck.total)}</div>
+                      {totalRefunded>0&&<div style={{fontSize:12,color:'var(--red)',fontFamily:'DM Mono,monospace'}}>↩ −{money(totalRefunded)}</div>}
+                      {totalRefunded>0&&<div style={{fontSize:11,color:'var(--t3)'}}>net {money((selectedCheck.total-totalRefunded))}</div>}
                     </div>
                   </div>
                 );
@@ -549,18 +550,18 @@ export default function CheckHistory(){
                       {item.mods?.length>0&&<div style={{fontSize:11,color:'var(--t3)'}}>{item.mods.map(m=>m.label).join(', ')}</div>}
                       {item.notes&&<div style={{fontSize:11,color:'#f97316',fontStyle:'italic'}}>{item.notes}</div>}
                     </div>
-                    <span style={{fontSize:13,fontWeight:600,color:'var(--t2)',fontFamily:'DM Mono,monospace',flexShrink:0}}>£{(item.price*item.qty).toFixed(2)}</span>
+                    <span style={{fontSize:13,fontWeight:600,color:'var(--t2)',fontFamily:'DM Mono,monospace',flexShrink:0}}>{money((item.price*item.qty))}</span>
                   </div>
                 );
               })}
 
               {/* Totals */}
               <div style={{padding:'10px 0',marginBottom:12}}>
-                <div style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'var(--t3)',marginBottom:3}}><span>Subtotal</span><span style={{fontFamily:'DM Mono,monospace'}}>£{selectedCheck.subtotal.toFixed(2)}</span></div>
-                {selectedCheck.service>0&&<div style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'var(--t3)',marginBottom:3}}><span>Service (12.5%)</span><span style={{fontFamily:'DM Mono,monospace'}}>£{selectedCheck.service.toFixed(2)}</span></div>}
-                {selectedCheck.tip>0&&<div style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'var(--t3)',marginBottom:3}}><span>Tip</span><span style={{fontFamily:'DM Mono,monospace'}}>£{selectedCheck.tip.toFixed(2)}</span></div>}
+                <div style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'var(--t3)',marginBottom:3}}><span>Subtotal</span><span style={{fontFamily:'DM Mono,monospace'}}>{money(selectedCheck.subtotal)}</span></div>
+                {selectedCheck.service>0&&<div style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'var(--t3)',marginBottom:3}}><span>Service (12.5%)</span><span style={{fontFamily:'DM Mono,monospace'}}>{money(selectedCheck.service)}</span></div>}
+                {selectedCheck.tip>0&&<div style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'var(--t3)',marginBottom:3}}><span>Tip</span><span style={{fontFamily:'DM Mono,monospace'}}>{money(selectedCheck.tip)}</span></div>}
                 <div style={{display:'flex',justifyContent:'space-between',fontSize:16,fontWeight:700,borderTop:'1px solid var(--bdr3)',paddingTop:8,marginTop:4}}>
-                  <span>Total paid</span><span style={{color:'var(--acc)',fontFamily:'DM Mono,monospace'}}>£{selectedCheck.total.toFixed(2)}</span>
+                  <span>Total paid</span><span style={{color:'var(--acc)',fontFamily:'DM Mono,monospace'}}>{money(selectedCheck.total)}</span>
                 </div>
               </div>
 
@@ -572,7 +573,7 @@ export default function CheckHistory(){
                     <div key={i} style={{marginBottom:i<selectedCheck.refunds.length-1?12:0,paddingBottom:i<selectedCheck.refunds.length-1?12:0,borderBottom:i<selectedCheck.refunds.length-1?'1px solid var(--red-b)':'none'}}>
                       <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:4}}>
                         <div>
-                          <div style={{fontSize:13,fontWeight:700,color:'var(--red)',fontFamily:'DM Mono,monospace'}}>−£{r.amount.toFixed(2)}</div>
+                          <div style={{fontSize:13,fontWeight:700,color:'var(--red)',fontFamily:'DM Mono,monospace'}}>−{money(r.amount)}</div>
                           <div style={{fontSize:11,color:'var(--t3)',marginTop:1}}>{fmtTime(r.timestamp)} · {r.manager}</div>
                         </div>
                         <div style={{textAlign:'right'}}>
@@ -588,11 +589,11 @@ export default function CheckHistory(){
                   {/* Net summary */}
                   <div style={{borderTop:'1px solid var(--red-b)',paddingTop:8,marginTop:10,display:'flex',justifyContent:'space-between',fontSize:12,fontWeight:700}}>
                     <span style={{color:'var(--red)'}}>Total refunded</span>
-                    <span style={{color:'var(--red)',fontFamily:'DM Mono,monospace'}}>−£{selectedCheck.refunds.reduce((s,r)=>s+r.amount,0).toFixed(2)}</span>
+                    <span style={{color:'var(--red)',fontFamily:'DM Mono,monospace'}}>−{money(selectedCheck.refunds.reduce((s,r)=>s+r.amount,0))}</span>
                   </div>
                   <div style={{display:'flex',justifyContent:'space-between',fontSize:12,fontWeight:700,marginTop:3}}>
                     <span style={{color:'var(--t2)'}}>Net revenue</span>
-                    <span style={{color:'var(--acc)',fontFamily:'DM Mono,monospace'}}>£{(selectedCheck.total-selectedCheck.refunds.reduce((s,r)=>s+r.amount,0)).toFixed(2)}</span>
+                    <span style={{color:'var(--acc)',fontFamily:'DM Mono,monospace'}}>{money((selectedCheck.total-selectedCheck.refunds.reduce((s,r)=>s+r.amount,0)))}</span>
                   </div>
                 </div>
               )}
