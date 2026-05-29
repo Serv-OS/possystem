@@ -77,6 +77,15 @@ import { money, currencySymbol } from './lib/currency';
 
 const CHANGELOG = [
   {
+    version: '5.5.328', date: '29 May 2026', label: 'Back-office light/dark toggle + Serv OS logo in brand spots',
+    changes: [
+      'Back office now has a Light / Dark mode toggle in the sidebar (reuses the existing theme system; the saved choice is applied on back-office boot)',
+      'Back-office top-left now shows the real Serv OS logo mark instead of a generic org-initial box',
+      'Company Admin sidebar now shows the Serv OS logo + wordmark instead of an "S" badge + plain text',
+      'POS PIN screen, login, device setup, mode selector and pairing already used the logo — unchanged',
+    ],
+  },
+  {
     version: '5.5.327', date: '29 May 2026', label: 'Currency at location creation — carried through to platform',
     changes: [
       'The currency chosen when creating a location now actually takes effect: provision-location copies it to the platform mirror the app reads (previously a USD location still resolved as GBP until you re-saved it in Location Settings)',

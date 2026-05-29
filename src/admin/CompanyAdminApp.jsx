@@ -4,6 +4,7 @@ import BOLogin from '../backoffice/BOLogin';
 import AdminBillingManager from './sections/AdminBillingManager';
 import AdminStripeTest from './sections/AdminStripeTest';
 import { money, CURRENCIES } from '../lib/currency';
+import { ServOSIcon, ServOSWordmark } from '../components/ServOSBrand';
 
 const S = {
   shell: { display:'flex', height:'100vh', fontFamily:'inherit', background:'var(--bg)', color:'var(--t1)' },
@@ -381,8 +382,9 @@ function AdminPanel({ authUser }) {
       {/* ── Sidebar ── */}
       <div style={S.sidebar}>
         <div style={S.brand}>
-          <div style={S.brandBadge}>S</div>
-          <div style={{ fontSize:14, fontWeight:800, color:'var(--t1)' }}>Serv OS</div>
+          {/* v5.5.328: real Serv OS logo + wordmark (was an "S" badge + plain text) */}
+          <ServOSIcon size={34} style={{ marginBottom:8 }} />
+          <div style={{ marginBottom:2 }}><ServOSWordmark fontSize={15} /></div>
           <div style={{ fontSize:11, color:'var(--acc)', fontWeight:700, letterSpacing:'.06em', textTransform:'uppercase' }}>Company Admin</div>
         </div>
         {[

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useStore } from '../store';
+import { ServOSIcon } from '../components/ServOSBrand';
 import { broadcastConfigPush } from '../sync/SyncBridge';
 import { supabase, isMock, getLocationId, setResolvedLocationId, clearResolvedLocationId } from '../lib/supabase';
 import BOLogin from './BOLogin';
@@ -69,7 +70,11 @@ const NAV = [
 ];
 
 export default function BackOfficeApp() {
-  const { setAppMode, staff, closedChecks, tables, devices } = useStore();
+  const { setAppMode, staff, closedChecks, tables, devices, theme, setTheme } = useStore();
+  // v5.5.328: apply the saved light/dark theme on back-office boot. The store's
+  // setTheme sets data-theme when toggled, but on a fresh BO load nothing has
+  // applied it yet, so without this the BO always starts dark.
+  useEffect(() => { try { document.documentElement.setAttribute('data-theme', theme || 'dark'); } catch {} }, [theme]);
   const [authUser, setAuthUser] = useState(null);
   const [authChecked, setAuthChecked] = useState(isMock);
   const [section, setSection] = useState('overview');
@@ -350,12 +355,8 @@ export default function BackOfficeApp() {
         {/* Brand */}
         <div style={{ padding:'16px 16px 14px', borderBottom:'1px solid var(--bdr)' }}>
           <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-            <div style={{
-              width:34, height:34, borderRadius:9,
-              background:'var(--acc)', display:'flex',
-              alignItems:'center', justifyContent:'center',
-              fontSize:16, fontWeight:800, color:'#0b0c10', flexShrink:0,
-            }}>{orgCtx?.orgName?.[0] || 'R'}</div>
+            {/* v5.5.328: real Serv OS logo mark (was a generic org-initial box) */}
+            <ServOSIcon size={34} style={{ flexShrink:0 }} />
             <div>
               <div style={{ fontSize:13, fontWeight:800, color:'var(--t1)', letterSpacing:'-.01em' }}>
                 {orgCtx?.orgName || 'Serv OS'}
@@ -417,6 +418,18 @@ export default function BackOfficeApp() {
               <div style={{ fontSize:10, color:'var(--t4)' }}>{staff?.role || 'Admin'}</div>
             </div>
           </div>
+          {/* v5.5.328: light / dark theme toggle (reuses the store theme + [data-theme] CSS) */}
+          <button onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} style={{
+            width:'100%', padding:'9px 10px', borderRadius:9,
+            cursor:'pointer', textAlign:'left', fontSize:12,
+            fontWeight:600, border:'1px solid var(--bdr)',
+            fontFamily:'inherit', background:'transparent',
+            color:'var(--t3)', display:'flex', alignItems:'center', gap:8,
+            transition:'all .1s', marginBottom:6,
+          }}>
+            <span style={{ fontSize:16 }}>{theme === 'dark' ? '☀️' : '🌙'}</span>
+            {theme === 'dark' ? 'Light mode' : 'Dark mode'}
+          </button>
           <button onClick={() => { localStorage.removeItem('rpos-device'); localStorage.removeItem('rpos-device-config'); localStorage.setItem('rpos-device-mode','pos'); window.location.href = '?mode=pos'; }} style={{
             width:'100%', padding:'9px 10px', borderRadius:9,
             cursor:'pointer', textAlign:'left', fontSize:12,
