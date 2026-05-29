@@ -631,7 +631,10 @@ export default function POSSurface() {
       // just appended. Fall back to a short timestamp if for any reason the
       // store didn't record one (shouldn't happen, but print should never fail here).
       const closedChecks = useStore.getState().closedChecks;
-      const freshRef = closedChecks[closedChecks.length - 1]?.ref
+      // v5.5.316: newest check is at index 0 (records are prepended with
+      // [record, ...]). Was reading length-1 (the OLDEST check), so the printed/
+      // emailed receipt carried the wrong order ref whenever >1 check existed.
+      const freshRef = closedChecks[0]?.ref
         || ('#' + Date.now().toString().slice(-4));
       receiptSnapshot.check.ref = freshRef;
       console.info('[PayComplete] dispatching auto-print with ref=', freshRef);

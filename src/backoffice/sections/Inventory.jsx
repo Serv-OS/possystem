@@ -12,8 +12,9 @@ const STATUS_LEVELS = [
 
 function getStatus(count) {
   if (!count) return STATUS_LEVELS[0];
-  const ratio = count.remaining / count.par;
   if (count.remaining <= 0) return STATUS_LEVELS[3];
+  // v5.5.316: guard par=0 → ratio would be Infinity/NaN and break the status bar
+  const ratio = count.par > 0 ? count.remaining / count.par : 1;
   if (ratio <= 0.15) return STATUS_LEVELS[2];
   if (ratio <= 0.4)  return STATUS_LEVELS[1];
   return STATUS_LEVELS[0];
