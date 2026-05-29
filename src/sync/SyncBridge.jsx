@@ -584,6 +584,13 @@ export default function SyncBridge({ onSyncPulse }) {
         // Notes changed
         if (t.session?.note !== p.session?.note) return true;
         if (t.session?.orderNote !== p.session?.orderNote) return true;
+        // v5.5.317: per-item note / seat / course edits and service-charge waive
+        // don't change count/subtotal/sent, so without this they only propagated
+        // via the 10s reconciler poll (stale on other terminals, wrong course/
+        // seat/note on a kitchen ticket fired from another device in that window).
+        if (t.session?.serviceChargeWaived !== p.session?.serviceChargeWaived) return true;
+        const itemSig = (s) => (s?.items || []).map(i => `${i.uid||i.id}:${i.notes||''}:${i.seat ?? ''}:${i.course ?? ''}`).join('|');
+        if (itemSig(t.session) !== itemSig(p.session)) return true;
         return false;
       });
       if (meaningful) {
