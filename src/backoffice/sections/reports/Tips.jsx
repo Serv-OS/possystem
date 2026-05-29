@@ -60,9 +60,9 @@ function formatHours(ms) {
 }
 
 const POOL_MODES = [
-  { id:'none',   label:'No pooling',  blurb:'Show raw tips per server.' },
-  { id:'tipout', label:'Server tip-out', blurb:'Servers contribute a % of tips to support.' },
-  { id:'shared', label:'Shared pool',  blurb:'All tips pooled, split by hours worked.' },
+  { id:'none',   label:'No pooling',  blurb:'Everyone keeps the tips they collected.' },
+  { id:'tipout', label:'Tip-out',     blurb:'Tipped staff give a % of their tips to a support pool.' },
+  { id:'shared', label:'Shared pool', blurb:'Pooled roles combine all their tips and split by hours worked.' },
 ];
 
 export default function Tips({ checks, fmt, fmtN }) {
@@ -96,13 +96,19 @@ export default function Tips({ checks, fmt, fmtN }) {
 
   // -------- Pool state --------
   const [mode, setMode]            = useState('none');
-  const [tipoutPct, setTipoutPct]  = useState(3.0);  // % of server tips contributed
+  const [tipoutPct, setTipoutPct]  = useState(3.0);  // % of tips contributed (tip-out mode)
   const [byHours, setByHours]      = useState(true); // distribute pool by hours (vs equally)
-  const [serverRoles, setServerRoles] = useState(() => new Set(['Server','Bartender']));
-  const [supportRoles, setSupportRoles] = useState(() => new Set(['Kitchen','Cashier']));
+  // Tip-out: contributingRoles give a %, receivingRoles get the pool.
+  // Shared:  contributingRoles ARE the pool (contribute 100% + share it back by hours).
+  // A role in NEITHER set (e.g. Manager by default) is excluded and keeps the
+  // tips it personally collected — never draws from the pool. Managers are
+  // off by default but can be ticked (US FLSA: managers/supervisors generally
+  // can't receive pooled tips).
+  const [contributingRoles, setContributingRoles] = useState(() => new Set(['Server','Bartender']));
+  const [receivingRoles, setReceivingRoles]       = useState(() => new Set(['Kitchen','Cashier']));
 
   const toggleRole = (which, role) => {
-    const setter = which === 'server' ? setServerRoles : setSupportRoles;
+    const setter = which === 'contrib' ? setContributingRoles : setReceivingRoles;
     setter(prev => {
       const next = new Set(prev);
       if (next.has(role)) next.delete(role); else next.add(role);
@@ -110,9 +116,13 @@ export default function Tips({ checks, fmt, fmtN }) {
     });
   };
 
-  // Pool calculation
+  // Pool calculation.
+  // Unified model for both modes: contributors put a fraction of their tips into
+  // a pool (tip-out = tipoutPct%, shared = 100%), then it's paid out to the
+  // receiving set by hours (or equally). Anyone in NEITHER set is excluded and
+  // keeps their own tips (net = gross) — that's how a manager keeps tips they
+  // personally collected without ever drawing from the pool.
   const distribution = useMemo(() => {
-    // Default: each person keeps their own tips
     const rows = servers.map(r => ({
       server: r.server,
       role: (r.staffId && roleById[r.staffId]) || roleByName[r.server] || 'Unknown',
@@ -121,46 +131,40 @@ export default function Tips({ checks, fmt, fmtN }) {
       contribution: 0,
       received: 0,
       net: r.tips,
+      inPool: false,
     }));
 
-    if (mode === 'tipout') {
-      // Servers contribute tipoutPct% of their tips to a pool, pool goes to support staff
-      const pool = rows.reduce((s, r) => {
-        if (serverRoles.has(r.role)) {
-          const contrib = r.gross * (tipoutPct / 100);
-          r.contribution = contrib;
-          r.net -= contrib;
-          return s + contrib;
+    if (mode === 'tipout' || mode === 'shared') {
+      const rate = mode === 'shared' ? 1 : Math.max(0, tipoutPct / 100);
+      const contributes = r => contributingRoles.has(r.role);
+      // Shared pays back to the pooled roles themselves; tip-out pays the support set.
+      const receives = r => (mode === 'shared' ? contributingRoles : receivingRoles).has(r.role);
+
+      let pool = 0;
+      rows.forEach(r => {
+        if (contributes(r)) {
+          r.contribution = +(r.gross * rate).toFixed(2);
+          r.net = +(r.net - r.contribution).toFixed(2);
+          r.inPool = true;
+          pool += r.contribution;
         }
-        return s;
-      }, 0);
-      const recipients = rows.filter(r => supportRoles.has(r.role));
+      });
+      pool = +pool.toFixed(2);
+
+      const recipients = rows.filter(receives);
+      recipients.forEach(r => { r.inPool = true; });
       if (recipients.length > 0 && pool > 0) {
-        if (byHours) {
-          const totalHours = recipients.reduce((s, r) => s + r.hoursMs, 0);
-          if (totalHours > 0) recipients.forEach(r => { r.received = pool * (r.hoursMs / totalHours); r.net += r.received; });
-          else recipients.forEach(r => { r.received = pool / recipients.length; r.net += r.received; });
-        } else {
-          recipients.forEach(r => { r.received = pool / recipients.length; r.net += r.received; });
-        }
-      }
-    } else if (mode === 'shared') {
-      // All tips pool together, distribute by hours (all rows, not just recipients)
-      const pool = rows.reduce((s, r) => { r.contribution = r.gross; return s + r.gross; }, 0);
-      const totalHours = rows.reduce((s, r) => s + r.hoursMs, 0);
-      if (pool > 0) {
-        if (byHours && totalHours > 0) {
-          rows.forEach(r => { r.received = pool * (r.hoursMs / totalHours); r.net = r.received - r.contribution + r.gross - r.contribution + r.received; });
-          // simpler: gross goes to pool, they receive distribution. net = received.
-          rows.forEach(r => { r.net = r.received; });
-        } else {
-          rows.forEach(r => { r.received = pool / rows.length; r.net = r.received; });
-        }
+        const totalHours = recipients.reduce((s, r) => s + r.hoursMs, 0);
+        const useHours = byHours && totalHours > 0;
+        recipients.forEach(r => {
+          r.received = useHours ? +(pool * (r.hoursMs / totalHours)).toFixed(2) : +(pool / recipients.length).toFixed(2);
+          r.net = +(r.net + r.received).toFixed(2);
+        });
       }
     }
 
-    return { rows, pool: rows.reduce((s, r) => s + r.contribution, 0) };
-  }, [servers, roleById, roleByName, mode, tipoutPct, byHours, serverRoles, supportRoles]);
+    return { rows, pool: +rows.reduce((s, r) => s + r.contribution, 0).toFixed(2) };
+  }, [servers, roleById, roleByName, mode, tipoutPct, byHours, contributingRoles, receivingRoles]);
 
   const onExport = () => {
     const csv = toCsv(distribution.rows, [
@@ -222,20 +226,31 @@ export default function Tips({ checks, fmt, fmtN }) {
                 <input type="range" min="0" max="15" step="0.5" value={tipoutPct} onChange={e => setTipoutPct(parseFloat(e.target.value))} style={{ flex:1 }}/>
                 <span style={{ fontSize:13, fontFamily:'var(--font-mono)', fontWeight:700, color:'var(--acc)', minWidth:46, textAlign:'right' }}>{tipoutPct.toFixed(1)}%</span>
               </div>
-              <div style={{ fontSize:10, color:'var(--t4)', marginTop:4 }}>of tipping staff's tips goes to the pool</div>
+              <div style={{ fontSize:10, color:'var(--t4)', marginTop:4 }}>of each tipped-out person's tips goes to the pool</div>
             </div>
-            <RoleCheckboxes label="Contributing roles" selected={serverRoles} roles={allRoles} onToggle={r => toggleRole('server', r)}/>
-            <RoleCheckboxes label="Receiving roles"    selected={supportRoles} roles={allRoles} onToggle={r => toggleRole('support', r)}/>
+            <RoleCheckboxes label="Who tips out" selected={contributingRoles} roles={allRoles} onToggle={r => toggleRole('contrib', r)}/>
+            <RoleCheckboxes label="Who receives" selected={receivingRoles} roles={allRoles} onToggle={r => toggleRole('receive', r)}/>
+          </div>
+        )}
+
+        {mode === 'shared' && (
+          <div style={{ marginBottom:12 }}>
+            <RoleCheckboxes label="Roles in the pool — contribute all tips, share back by hours" selected={contributingRoles} roles={allRoles} onToggle={r => toggleRole('contrib', r)}/>
           </div>
         )}
 
         {(mode === 'tipout' || mode === 'shared') && (
-          <div style={{ marginBottom:10 }}>
-            <label style={{ display:'inline-flex', alignItems:'center', gap:8, fontSize:12, color:'var(--t2)', cursor:'pointer' }}>
-              <input type="checkbox" checked={byHours} onChange={e => setByHours(e.target.checked)}/>
-              Distribute pool by hours worked {byHours ? '(weighted)' : '(equally)'}
-            </label>
-          </div>
+          <>
+            <div style={{ marginBottom:8 }}>
+              <label style={{ display:'inline-flex', alignItems:'center', gap:8, fontSize:12, color:'var(--t2)', cursor:'pointer' }}>
+                <input type="checkbox" checked={byHours} onChange={e => setByHours(e.target.checked)}/>
+                Distribute pool by hours worked {byHours ? '(weighted)' : '(split equally)'}
+              </label>
+            </div>
+            <div style={{ marginBottom:10, fontSize:11, color:'var(--t4)', lineHeight:1.6 }}>
+              ⚖️ Managers are excluded by default — under US tip law (FLSA) managers and supervisors generally can't receive pooled tips. Only tick a manager role for a genuinely tip-eligible working supervisor. Anyone left out of the pool keeps the tips they personally collected.
+            </div>
+          </>
         )}
 
         {/* Distribution table */}
@@ -249,17 +264,19 @@ export default function Tips({ checks, fmt, fmtN }) {
             <span style={{ textAlign:'right' }}>Received</span>
             <span style={{ textAlign:'right' }}>Net payout</span>
           </div>
-          {distribution.rows.map((r, i) => (
-            <div key={r.server} style={{ display:'grid', gridTemplateColumns:'1.3fr 90px 70px 90px 90px 90px 100px', padding:'9px 12px', borderBottom: i === distribution.rows.length - 1 ? 'none' : '1px solid var(--bdr)', fontSize:12, alignItems:'center', gap:8 }}>
+          {distribution.rows.map((r, i) => {
+            const excluded = mode !== 'none' && !r.inPool;
+            return (
+            <div key={r.server} style={{ display:'grid', gridTemplateColumns:'1.3fr 90px 70px 90px 90px 90px 100px', padding:'9px 12px', borderBottom: i === distribution.rows.length - 1 ? 'none' : '1px solid var(--bdr)', fontSize:12, alignItems:'center', gap:8, opacity: excluded ? 0.5 : 1 }}>
               <span style={{ color:'var(--t1)', fontWeight:600 }}>{r.server}</span>
-              <span style={{ color:'var(--t3)', fontSize:11 }}>{r.role}</span>
+              <span style={{ color:'var(--t3)', fontSize:11 }}>{r.role}{excluded ? ' · not in pool' : ''}</span>
               <span style={{ textAlign:'right', color:'var(--t3)', fontFamily:'var(--font-mono)' }}>{formatHours(r.hoursMs)}</span>
               <span style={{ textAlign:'right', color:'var(--t2)', fontFamily:'var(--font-mono)' }}>{fmt(r.gross)}</span>
               <span style={{ textAlign:'right', color: r.contribution > 0 ? 'var(--red)' : 'var(--t4)', fontFamily:'var(--font-mono)' }}>{r.contribution > 0 ? `−${fmt(r.contribution)}` : '—'}</span>
               <span style={{ textAlign:'right', color: r.received > 0 ? 'var(--grn)' : 'var(--t4)', fontFamily:'var(--font-mono)' }}>{r.received > 0 ? `+${fmt(r.received)}` : '—'}</span>
               <span style={{ textAlign:'right', color:'var(--acc)', fontFamily:'var(--font-mono)', fontWeight:700 }}>{fmt(r.net)}</span>
             </div>
-          ))}
+          );})}
           {mode !== 'none' && (
             <div style={{ padding:'8px 12px', background:'var(--bg3)', fontSize:11, color:'var(--t4)', textAlign:'right' }}>
               Pool total: <strong style={{ color:'var(--t2)', fontFamily:'var(--font-mono)' }}>{fmt(distribution.pool)}</strong>

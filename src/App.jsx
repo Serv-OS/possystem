@@ -78,6 +78,15 @@ import { ServOSIcon } from './components/ServOSBrand';
 
 const CHANGELOG = [
   {
+    version: '5.5.334', date: '29 May 2026', label: 'Tip pool — roles apply in all modes + manager exclusion',
+    changes: [
+      'Fixed: the Shared pool ignored the role selection and paid out to everyone (managers always got a share with no way to exclude them). Roles now drive both Tip-out and Shared modes',
+      'Excluded staff (e.g. managers) keep the tips they personally collected and never draw from the pool — shown dimmed as "not in pool"',
+      'Managers excluded by default with a US FLSA note; can still be ticked for a genuine tip-eligible working supervisor',
+      'Clearer mode descriptions and role controls (Who tips out / Who receives / Roles in the pool); removed confusing dead distribution math',
+    ],
+  },
+  {
     version: '5.5.333', date: '29 May 2026', label: 'Remove POS top-bar Covers/Sales/Avg stats',
     changes: [
       'Removed the Covers / Sales / Avg figures from the POS top bar — they weren\'t reliably populated and read as broken zeros',
