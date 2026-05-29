@@ -126,7 +126,12 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
             setStatusMsg('Payment approved');
             // v5.5.323: carry the PaymentIntent id up so this split portion's
             // card refund can be auto-processed back to the customer's card.
-            setTimeout(() => onComplete('card', piIdRef.current), 800);
+            // v5.5.332: also derive the reader-collected tip (amount_received
+            // minus the portion base) so split tips reach the closed check for
+            // reports + reconciliation — same as the main checkout flow.
+            const receivedMinor = Number.isFinite(j.amount_received) ? j.amount_received : null;
+            const tip = receivedMinor != null ? Math.max(0, +((receivedMinor / 100) - amount).toFixed(2)) : 0;
+            setTimeout(() => onComplete('card', piIdRef.current, tip), 800);
           } else {
             setState('error');
             setErrorMsg(j.last_payment_error || j.reader_action?.failure_message || 'Payment failed');
@@ -469,7 +474,7 @@ function PortionTender({ portion, portionNum, total, canTakeCash = true, onCompl
         <SplitCardTerminal
           amount={portion.total}
           portionLabel={`Portion ${portionNum} — ${portion.label}`}
-          onComplete={(method, piId) => onComplete(method, null, null, piId)}
+          onComplete={(method, piId, tip) => onComplete(method, null, null, piId, tip)}
           onBack={() => setScreen('method')}
         />
       )}
@@ -594,8 +599,8 @@ export default function SplitModal({ items, total, covers, canTakeCash = true, o
   // ─ Handle tender completion ─────────────────────────────────────────────────
   // v5.5.323: capture the card PaymentIntent id (if this portion was paid by
   // card) so the closed check can auto-refund each card leg to its own card.
-  const handlePortionPaid = (idx, method, tendered, change, paymentIntentId = null) => {
-    setPortions(p => p.map((portion, i) => i===idx ? { ...portion, paid:true, method, tendered, change, paymentIntentId: paymentIntentId || null } : portion));
+  const handlePortionPaid = (idx, method, tendered, change, paymentIntentId = null, tip = 0) => {
+    setPortions(p => p.map((portion, i) => i===idx ? { ...portion, paid:true, method, tendered, change, paymentIntentId: paymentIntentId || null, tip: tip || 0 } : portion));
     setTenderingIdx(null);
   };
 
@@ -887,7 +892,7 @@ export default function SplitModal({ items, total, covers, canTakeCash = true, o
               portionNum={tenderingIdx+1}
               total={total}
               canTakeCash={canTakeCash}
-              onComplete={(method, tendered, change, piId) => handlePortionPaid(tenderingIdx, method, tendered, change, piId)}
+              onComplete={(method, tendered, change, piId, tip) => handlePortionPaid(tenderingIdx, method, tendered, change, piId, tip)}
               onBack={() => setTenderingIdx(null)}
             />
           )}

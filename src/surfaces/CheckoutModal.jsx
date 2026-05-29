@@ -1424,12 +1424,18 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
           canTakeCash={_canTakeCash}
           onComplete={(portions)=>{
             setShowSplit(false);
-            // v5.5.323: collect every card portion's PaymentIntent so each card
-            // leg of the split can be auto-refunded back to its own card later.
+            // v5.5.323/332: collect every card portion's PaymentIntent so each
+            // card leg can be auto-refunded to its own card. The captured amount
+            // per leg is base + reader tip, so the refundable amountMinor must
+            // include the tip.
             const paymentIntents = (portions||[])
               .filter(p => p?.method === 'card' && p.paymentIntentId)
-              .map(p => ({ id: p.paymentIntentId, amountMinor: Math.round((p.total||0)*100) }));
-            onComplete({ method:'split', tip:0, grand:total, portions, paymentIntents, stripePaymentIntentId: paymentIntents[0]?.id || null, printReceipt });
+              .map(p => ({ id: p.paymentIntentId, amountMinor: Math.round(((p.total||0)+(p.tip||0))*100) }));
+            // v5.5.332: sum the reader-collected tips across portions so the
+            // closed check records the real tip (reports + reconciliation),
+            // matching the main checkout flow. grand = base bill + total tips.
+            const tipTotal = +((portions||[]).reduce((s,p)=>s+(Number(p.tip)||0),0)).toFixed(2);
+            onComplete({ method:'split', tip:tipTotal, grand:total+tipTotal, portions, paymentIntents, stripePaymentIntentId: paymentIntents[0]?.id || null, printReceipt });
           }}
           onClose={()=>setShowSplit(false)}
         />

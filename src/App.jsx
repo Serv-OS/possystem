@@ -78,6 +78,14 @@ import { ServOSIcon } from './components/ServOSBrand';
 
 const CHANGELOG = [
   {
+    version: '5.5.332', date: '29 May 2026', label: 'Capture split-payment tips for reporting',
+    changes: [
+      'Reader-collected tips on split card portions are now recorded on the closed check — they were charged but saved as tip:0, so they were missing from tip reports and overstated the Stripe-vs-books gap',
+      'Each portion derives its tip from the reader (amount_received − portion), summed into the check total + tip — same mechanism as the main checkout',
+      'Each card leg\'s refundable amount now includes its tip, so refunds return the full charged amount',
+    ],
+  },
+  {
     version: '5.5.331', date: '29 May 2026', label: 'Tip prompt on split card payments',
     changes: [
       'Split-check card payments now show the tip prompt on the reader — each portion follows the location tipping settings, same as a normal card payment',
