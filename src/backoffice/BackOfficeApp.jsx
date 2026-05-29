@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useStore } from '../store';
 import { ServOSIcon } from '../components/ServOSBrand';
 import { broadcastConfigPush } from '../sync/SyncBridge';
@@ -692,6 +692,52 @@ function PushToPOSButton() {
     </button>
   );
 }
+// ── Overview snapshot helpers (v5.5.340) ────────────────────────────────────
+const SOURCE_META = [
+  { key:'pos',      label:'POS / Counter',   color:'#3b82f6' },
+  { key:'mpos',     label:'Mobile POS',      color:'#22d3ee' },
+  { key:'kiosk',    label:'Kiosk',           color:'#a855f7' },
+  { key:'online',   label:'Online ordering', color:'#22c55e' },
+  { key:'qr',       label:'QR table',        color:'#e8a020' },
+  { key:'delivery', label:'Delivery apps',   color:'#ef4444', soon:true },
+];
+const ORDER_TYPE_LABEL = { 'dine-in':'Dine-in', takeaway:'Takeaway', collection:'Collection', delivery:'Delivery', 'bar-tab':'Bar tab', counter:'Counter' };
+function payBucket(method) {
+  const m = (method || '').toLowerCase();
+  if (m.includes('split'))   return 'Split';
+  if (m.includes('gift'))    return 'Gift card';
+  if (m.includes('cash'))    return 'Cash';
+  if (m.includes('loyalty')) return 'Loyalty';
+  if (m.includes('card'))    return 'Card';
+  return method ? method[0].toUpperCase() + method.slice(1) : 'Other';
+}
+
+// Compact horizontal-bar list card for the overview snapshots.
+function SnapCard({ title, rows, onClick, empty }) {
+  const max = Math.max(1, ...rows.map(r => r.value || 0));
+  return (
+    <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:14, padding:'16px 18px' }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginBottom:14 }}>
+        <div style={{ fontSize:11, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.07em' }}>{title}</div>
+        {onClick && <button onClick={onClick} style={{ fontSize:11, color:'var(--acc)', background:'none', border:'none', cursor:'pointer', fontFamily:'inherit', fontWeight:700 }}>Reports →</button>}
+      </div>
+      {rows.length === 0 ? (
+        <div style={{ fontSize:12, color:'var(--t4)', padding:'6px 0' }}>{empty || 'Nothing yet today'}</div>
+      ) : rows.map((r, i) => (
+        <div key={r.label + i} style={{ marginBottom: i === rows.length - 1 ? 0 : 10, opacity: r.soon ? 0.45 : 1 }}>
+          <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, marginBottom:4, gap:8 }}>
+            <span style={{ color:'var(--t2)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{r.label}</span>
+            <span style={{ color:'var(--t1)', fontWeight:700, fontFamily:'var(--font-mono)', flexShrink:0 }}>{r.display}</span>
+          </div>
+          <div style={{ height:6, borderRadius:3, background:'var(--bg3)', overflow:'hidden' }}>
+            <div style={{ height:'100%', width:`${Math.round(((r.value || 0) / max) * 100)}%`, background:r.color || 'var(--acc)', borderRadius:3 }}/>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function BOOverview({ setSection, orgCtx }) {
   const { closedChecks, tables, staff: currentStaff } = useStore();
 
@@ -739,6 +785,31 @@ function BOOverview({ setSection, orgCtx }) {
     { label:'Tables active',   value:activeTbls,                color:'var(--grn)', sub:`of ${totalTables} tables` },
     { label:'Terminals online',value:`${onlineDevs}/${liveDevices.length}`, color: onlineDevs === liveDevices.length && liveDevices.length > 0 ? 'var(--grn)' : 'var(--acc)', sub:'this site' },
   ];
+
+  // v5.5.340: today's snapshot aggregates for the overview dashboard.
+  const snap = useMemo(() => {
+    const sources = {}, users = {}, products = {}, methods = {}, types = {};
+    let discTotal = 0, discCount = 0, tips = 0, refunds = 0;
+    todayChecks.forEach(c => {
+      sources[(c.source || 'pos').toLowerCase()] = (sources[(c.source || 'pos').toLowerCase()] || 0) + (c.total || 0);
+      const u = c.server || 'Unknown';
+      users[u] = (users[u] || 0) + (c.total || 0);
+      const m = payBucket(c.method);
+      methods[m] = (methods[m] || 0) + (c.total || 0);
+      const t = c.orderType || 'dine-in';
+      types[t] = (types[t] || 0) + (c.total || 0);
+      tips += c.tip || 0;
+      (c.discounts || []).forEach(d => { discTotal += (d.amount || d.value || 0); discCount += 1; });
+      (c.refunds || []).forEach(r => { refunds += (r.amount || 0); });
+      (c.items || []).forEach(it => {
+        const n = it.name || 'Item';
+        if (!products[n]) products[n] = { qty: 0, rev: 0 };
+        products[n].qty += it.qty || 1;
+        products[n].rev += (it.price || 0) * (it.qty || 1);
+      });
+    });
+    return { sources, users, products, methods, types, discTotal, discCount, tips, refunds };
+  }, [todayChecks]);
 
   const quickActions = [
     { icon:'🍽', label:'Edit menu',        sub:'Update items, prices, allergens',  target:'menu' },
@@ -807,6 +878,40 @@ function BOOverview({ setSection, orgCtx }) {
             </div>
           </button>
         ))}
+      </div>
+
+      {/* ── Today's snapshot (v5.5.340) ── */}
+      <div style={{ fontSize:13, fontWeight:700, color:'var(--t2)', marginBottom:12 }}>Today's snapshot</div>
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:12, marginBottom:28 }}>
+        <SnapCard title="Sales by order source" onClick={() => setSection('reports')}
+          rows={SOURCE_META.map(s => { const v = snap.sources[s.key] || 0; return { label:s.label, value: s.soon ? 0 : v, color:s.color, soon:s.soon, display: s.soon ? 'Not connected' : money(v) }; })}/>
+        <SnapCard title="Sales by user" onClick={() => setSection('reports')} empty="No sales yet today"
+          rows={Object.entries(snap.users).sort((a,b)=>b[1]-a[1]).slice(0,6).map(([name,total]) => ({ label:name, value:total, display:money(total) }))}/>
+        <SnapCard title="Top sellers" onClick={() => setSection('reports')} empty="No items sold yet today"
+          rows={Object.entries(snap.products).map(([name,v])=>({ name, ...v })).sort((a,b)=>b.qty-a.qty).slice(0,6).map(p => ({ label:p.name, value:p.qty, color:'var(--grn)', display:`${p.qty} · ${money(p.rev)}` }))}/>
+        <SnapCard title="Payment mix" onClick={() => setSection('reports')} empty="No payments yet today"
+          rows={Object.entries(snap.methods).sort((a,b)=>b[1]-a[1]).map(([m,total]) => ({ label:m, value:total, color:'var(--blu)', display:money(total) }))}/>
+        <SnapCard title="Sales by order type" onClick={() => setSection('reports')} empty="No sales yet today"
+          rows={Object.entries(snap.types).sort((a,b)=>b[1]-a[1]).map(([t,total]) => ({ label: ORDER_TYPE_LABEL[t] || t, value:total, color:'#e8a020', display:money(total) }))}/>
+        <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:14, padding:'16px 18px' }}>
+          <div style={{ fontSize:11, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.07em', marginBottom:14 }}>Discounts &amp; tips today</div>
+          <div style={{ display:'flex', gap:16 }}>
+            <div style={{ flex:1 }}>
+              <div style={{ fontSize:22, fontWeight:800, color:'var(--red)', fontFamily:'var(--font-mono)' }}>{money(snap.discTotal)}</div>
+              <div style={{ fontSize:11, color:'var(--t3)', marginTop:3 }}>{snap.discCount} discount{snap.discCount===1?'':'s'} applied</div>
+            </div>
+            <div style={{ flex:1 }}>
+              <div style={{ fontSize:22, fontWeight:800, color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{money(snap.tips)}</div>
+              <div style={{ fontSize:11, color:'var(--t3)', marginTop:3 }}>tips collected</div>
+            </div>
+            {snap.refunds > 0 && (
+              <div style={{ flex:1 }}>
+                <div style={{ fontSize:22, fontWeight:800, color:'var(--t2)', fontFamily:'var(--font-mono)' }}>{money(snap.refunds)}</div>
+                <div style={{ fontSize:11, color:'var(--t3)', marginTop:3 }}>refunded</div>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
 
     </div>

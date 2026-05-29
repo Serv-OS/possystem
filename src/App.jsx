@@ -78,6 +78,14 @@ import { ServOSIcon } from './components/ServOSBrand';
 
 const CHANGELOG = [
   {
+    version: '5.5.340', date: '29 May 2026', label: 'Overview "Today\'s snapshot" dashboard',
+    changes: [
+      'Back office Overview now shows today\'s snapshot: Sales by order source (POS / Mobile POS / Kiosk / Online / QR / Delivery), Sales by user, Top sellers, Payment mix, Sales by order type, and Discounts & tips',
+      'Delivery-apps source shown as "Not connected" placeholder until that integration lands',
+      'Each card links through to the full Reports section',
+    ],
+  },
+  {
     version: '5.5.339', date: '29 May 2026', label: 'Remove "Open terminals for testing" dev panel',
     changes: [
       'Removed the dev/testing "Open terminals for testing" block (Counter/Bar/Handheld/Kiosk/KDS quick-open links) from the back office — it was a Phase-2 testing scaffold, not for production',
