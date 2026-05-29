@@ -182,6 +182,12 @@ Deno.serve(async (req) => {
   });
 
   // ── Registration bonus transaction (if new member with bonus) ──────────
+  // v5.5.321: the bonus was already credited into points_balance at enrollment
+  // (ensureMembership), so newBalance already INCLUDES it. The previous
+  // balance_after = newBalance + bonus double-counted it — the ledger then
+  // overshot the real balance by `bonus` and couldn't be reconstructed. The
+  // welcome credit happened at enrollment (before this earn), so its honest
+  // balance_after is just the bonus itself.
   if (isNew && (config.registration_bonus || 0) > 0) {
     await opsAdmin.from('loyalty_transactions').insert({
       customer_id,
@@ -189,11 +195,11 @@ Deno.serve(async (req) => {
       location_id,
       type: 'bonus',
       points: config.registration_bonus,
-      balance_after: newBalance + config.registration_bonus,
+      balance_after: config.registration_bonus,
       source: 'welcome',
       channel,
       idempotency_key: `welcome:${customer_id}:${companyId}`,
-      note: 'Welcome bonus on first purchase',
+      note: 'Welcome bonus',
     });
   }
 
