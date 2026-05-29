@@ -78,6 +78,13 @@ import { ServOSIcon } from './components/ServOSBrand';
 
 const CHANGELOG = [
   {
+    version: '5.5.331', date: '29 May 2026', label: 'Tip prompt on split card payments',
+    changes: [
+      'Split-check card payments now show the tip prompt on the reader — each portion follows the location tipping settings, same as a normal card payment',
+      'Was hardcoded to skip tipping ("handled at table level"), but split tips were never actually collected, so split card payers were never asked to tip',
+    ],
+  },
+  {
     version: '5.5.330', date: '29 May 2026', label: 'POS top-bar: live covers + Serv OS logo',
     changes: [
       'Shift Covers now includes guests currently seated (open tables + tabs), not just settled checks — the bar no longer reads 0 covers while tables are clearly in use',

@@ -80,7 +80,13 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
           amount_minor: Math.round(amount * 100),
           currency: stripeCurrency(),
           line_items: [{ description: portionLabel || 'Split portion', amount: Math.round(amount * 100), quantity: 1 }],
-          skip_tipping: true, // tips handled at table level, not per split
+          // v5.5.331: DON'T skip the reader tip prompt on split portions. It was
+          // hardcoded skip_tipping:true ("handled at table level") but split tips
+          // were never actually collected at table level (the split records
+          // tip:0), so split card payers were never asked to tip. Omitting the
+          // flag makes each portion follow the location's tipping settings —
+          // same as the main checkout — so the reader prompts per portion.
+          skip_tipping: false,
         }),
       });
       const j = await res.json();
