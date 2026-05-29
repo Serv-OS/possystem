@@ -12,6 +12,7 @@
 
 import { useMemo, useState } from 'react';
 import { useStore } from '../../store';
+import { calculateOrderTax } from '../../lib/tax';
 import { Sx, money, STATUS_PILL } from './MShellStyles';
 import MItemActions from './MItemActions';
 import MOrderActions from './MOrderActions';
@@ -20,7 +21,7 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
   const {
     activeTableId, tables, walkInOrder,
     removeItem, updateItemQty, orderType, setOrderNote,
-    printCustomerReceipt, locationConfig, showToast, staff,
+    printCustomerReceipt, locationConfig, showToast, staff, taxRates = [],
   } = useStore();
   // Print-bill UX is optimistic: tap → haptic + immediate "Sending…" toast →
   // button re-enables after ~800ms (debounce, prevents accidental double-tap)
@@ -54,6 +55,8 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
           const base = (i.price || 0) * (i.qty || 0);
           return s + (i.discount?.value ? base * (1 - i.discount.value / 100) : base);
         }, 0);
+        // v5.5.342: compute VAT so the printed bill shows the tax breakdown.
+        const billTax = (() => { try { return calculateOrderTax(liveItems, taxRates, orderType); } catch { return null; } })();
         const checkShape = {
           id: `bill-${Date.now()}`,
           ref: activeTableId
@@ -64,6 +67,8 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
           subtotal: sub,
           tip: 0,
           total: sub,
+          taxAmount: billTax?.totalTax ?? null,
+          taxBreakdown: billTax,
           status: 'open',
           method: 'pending',
         };
@@ -75,7 +80,7 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
         const printPromise = Promise.resolve(printCustomerReceipt?.({
           location: locationConfig, check: checkShape,
           items: liveItems,
-          totals: { subtotal: sub, service: 0, tip: 0, grand: sub },
+          totals: { subtotal: sub, service: 0, tip: 0, grand: sub, taxBreakdown: billTax },
         }));
         const result = await Promise.race([printPromise, timeout]);
         if (result?.__timedOut) {
@@ -123,6 +128,11 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
 
   const items = sourceData.items.filter(i => !i.voided);
   const subtotal = items.reduce((s, i) => s + (i.price || 0) * (i.qty || 0), 0);
+  // v5.5.342: surface VAT on the cart (was missing). Inclusive VAT is extracted
+  // from the price (shown "incl. VAT"); exclusive is added.
+  const taxResult = useMemo(() => { try { return calculateOrderTax(items, taxRates, orderType); } catch { return null; } }, [items, taxRates, orderType]);
+  const tax = Number(taxResult?.totalTax) || 0;
+  const taxExclusive = !!taxResult?.hasExclusiveTax;
   const cartCount = items.reduce((s, i) => s + (i.qty || 0), 0);
   const sentCount = items.filter(i => i.status === 'sent').length;
   const pendingCount = items.length - sentCount;
@@ -202,10 +212,16 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
 
         {items.length > 0 && (
           <div style={{ padding:'12px 16px 24px' }}>
-            <div style={{ display:'flex', justifyContent:'space-between', padding:'10px 0', borderTop:'1px solid var(--bdr)' }}>
-              <span style={{ fontSize:13, color:'var(--t3)', fontWeight:700 }}>Subtotal</span>
-              <span style={{ fontSize:18, fontWeight:800, color:'var(--t1)', fontFamily:'var(--font-mono)' }}>{money(subtotal)}</span>
+            <div style={{ display:'flex', justifyContent:'space-between', padding:'10px 0 4px', borderTop:'1px solid var(--bdr)' }}>
+              <span style={{ fontSize:13, color:'var(--t3)', fontWeight:700 }}>{taxExclusive ? 'Subtotal' : 'Total'}</span>
+              <span style={{ fontSize:18, fontWeight:800, color:'var(--t1)', fontFamily:'var(--font-mono)' }}>{money(taxExclusive ? subtotal + tax : subtotal)}</span>
             </div>
+            {tax > 0 && (
+              <div style={{ display:'flex', justifyContent:'space-between', paddingBottom:6, fontSize:11, color:'var(--t4)' }}>
+                <span>{taxExclusive ? `Tax` : `incl. VAT`}</span>
+                <span style={{ fontFamily:'var(--font-mono)' }}>{taxExclusive ? `+${money(tax)}` : money(tax)}</span>
+              </div>
+            )}
             {sentCount > 0 && (
               <div style={{ marginTop:6, fontSize:11, color:'var(--t4)', textAlign:'center' }}>
                 {sentCount} item{sentCount === 1 ? '' : 's'} already sent · only pending items can be edited

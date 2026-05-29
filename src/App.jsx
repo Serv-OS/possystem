@@ -78,6 +78,13 @@ import { ServOSIcon } from './components/ServOSBrand';
 
 const CHANGELOG = [
   {
+    version: '5.5.342', date: '29 May 2026', label: 'MPOS cart tax — show VAT + print it on the bill',
+    changes: [
+      'MPOS cart review now shows the VAT line (incl. VAT for inclusive rates, + tax for exclusive) — it previously showed only a bare subtotal',
+      'The "Print bill" button now includes the VAT breakdown on the printed bill (was omitting it). Same fix as the post-payment receipt in v5.5.341',
+    ],
+  },
+  {
     version: '5.5.341', date: '29 May 2026', label: 'MPOS fixes — customer search, takeaway details, tax, 86 on modifiers',
     changes: [
       'MPOS customer step now has search — find a returning customer by name/phone and tap to prefill (same lookup as the counter POS)',
