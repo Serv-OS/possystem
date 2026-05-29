@@ -78,6 +78,12 @@ import { ServOSIcon } from './components/ServOSBrand';
 
 const CHANGELOG = [
   {
+    version: '5.5.339', date: '29 May 2026', label: 'Remove "Open terminals for testing" dev panel',
+    changes: [
+      'Removed the dev/testing "Open terminals for testing" block (Counter/Bar/Handheld/Kiosk/KDS quick-open links) from the back office — it was a Phase-2 testing scaffold, not for production',
+    ],
+  },
+  {
     version: '5.5.338', date: '29 May 2026', label: 'Fix size variants ignoring per-order-type tax overrides',
     changes: [
       'Sized items (e.g. a drink with Regular/Large) weren\'t inheriting the parent\'s per-order-type tax overrides — so a takeaway zero-rated item was still taxed at 20% VAT on the variant',

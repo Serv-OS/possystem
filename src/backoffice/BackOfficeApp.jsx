@@ -809,42 +809,6 @@ function BOOverview({ setSection, orgCtx }) {
         ))}
       </div>
 
-      {/* Terminal simulator */}
-      <div style={{ fontSize:13, fontWeight:700, color:'var(--t2)', marginBottom:12 }}>Open terminals for testing</div>
-      <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:14, padding:'18px 20px', marginBottom:20 }}>
-        <div style={{ fontSize:12, color:'var(--t3)', marginBottom:16, lineHeight:1.5 }}>
-          Each URL below opens an independent POS terminal in a new tab — different profile, separate session storage. Open multiple at once to test how the bar terminal differs from the counter.
-        </div>
-        <div style={{ display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:8 }}>
-          {[
-            { param:'counter',  label:'Counter 1',    profile:'Main counter',    icon:'🖥', color:'#3b82f6', desc:'Full features, all order types' },
-            { param:'counter2', label:'Counter 2',    profile:'Main counter',    icon:'🖥', color:'#3b82f6', desc:'Second counter terminal' },
-            { param:'bar',      label:'Bar',          profile:'Bar terminal',    icon:'🍸', color:'#e8a020', desc:'Bar tabs default, dine-in only' },
-            { param:'handheld', label:'Handheld 1',   profile:'Server handheld', icon:'📱', color:'#22c55e', desc:'POS default, dine-in only' },
-            { param:'kiosk',    label:'Kiosk 1',      profile:'Kiosk',           icon:'⬜', color:'#a855f7', desc:'Self-service, no staff features' },
-            { param:'kds',      label:'KDS',          profile:'Kitchen display',  icon:'📋', color:'#ef4444', desc:'Kitchen display only' },
-          ].map(t => {
-            const url = `${window.location.origin}${window.location.pathname}?t=${t.param}`;
-            return (
-              <div key={t.param} style={{ display:'flex', alignItems:'center', gap:12, padding:'10px 12px', background:'var(--bg3)', borderRadius:10, border:'1px solid var(--bdr)' }}>
-                <span style={{ fontSize:20, flexShrink:0 }}>{t.icon}</span>
-                <div style={{ flex:1, minWidth:0 }}>
-                  <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)' }}>{t.label}</div>
-                  <div style={{ fontSize:10, color:'var(--t4)', marginTop:1 }}>{t.desc}</div>
-                </div>
-                <a href={url} target="_blank" rel="noopener" style={{
-                  padding:'5px 12px', borderRadius:8, textDecoration:'none',
-                  background:`${t.color}22`, border:`1px solid ${t.color}44`,
-                  color:t.color, fontSize:11, fontWeight:700, flexShrink:0, cursor:'pointer',
-                }}>Open ↗</a>
-              </div>
-            );
-          })}
-        </div>
-        <div style={{ marginTop:12, fontSize:11, color:'var(--t4)', padding:'8px 12px', background:'var(--bg3)', borderRadius:8 }}>
-          💡 Each tab has independent state — ordering on the bar tab doesn't affect the counter tab until Supabase sync is enabled in Phase 2
-        </div>
-      </div>
     </div>
   );
 }
