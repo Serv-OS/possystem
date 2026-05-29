@@ -78,6 +78,14 @@ import { ServOSIcon } from './components/ServOSBrand';
 
 const CHANGELOG = [
   {
+    version: '5.5.335', date: '29 May 2026', label: 'Tip pool — kiosk/online tips auto-flow into the pool',
+    changes: [
+      'Kiosk and online tips have no server who earned them, so they now go 100% into the tip pool instead of sitting under a phantom "Unknown" server',
+      'Shown as a "Kiosk & online · auto-pooled" line that contributes to the pool and receives nothing',
+      'Headline tip totals now include kiosk/online tips so the figures reconcile (QR is treated as normal table service, not auto-pooled)',
+    ],
+  },
+  {
     version: '5.5.334', date: '29 May 2026', label: 'Tip pool — roles apply in all modes + manager exclusion',
     changes: [
       'Fixed: the Shared pool ignored the role selection and paid out to everyone (managers always got a share with no way to exclude them). Roles now drive both Tip-out and Shared modes',

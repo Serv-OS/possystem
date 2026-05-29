@@ -23,14 +23,29 @@ import { currencySymbol } from '../../../lib/currency';
 // Groups by server NAME (since that's the field that's always present on historical
 // rows). Also captures the first staffId seen for that server so pool role lookup
 // can prefer FK match (v4.6.19) and fall back to name match for legacy rows.
+// v5.5.335: kiosk + online orders aren't taken by a human server, so their tips
+// must NOT be parked under a phantom "server" who then keeps/excludes them. They
+// go into a "house" bucket that always feeds the pool (contributes 100%, never
+// receives). (QR is deliberately NOT here — it's dine-in table service.)
+const HOUSE_SOURCES = new Set(['kiosk', 'online']);
+
 function serverTips(checks) {
   const map = {};
+  const house = { tipsCash: 0, tipsCard: 0, tipCount: 0, revenue: 0, checkCount: 0 };
   checks.filter(c => c.status !== 'voided').forEach(c => {
+    const tip = c.tip || 0;
+    const isCash = (c.method || '').toLowerCase() === 'cash';
+    // Unattended source → house bucket, not a server row.
+    if (HOUSE_SOURCES.has((c.source || 'pos').toLowerCase())) {
+      if (isCash) house.tipsCash += tip; else house.tipsCard += tip;
+      if (tip > 0) house.tipCount += 1;
+      house.revenue += c.total || 0;
+      house.checkCount += 1;
+      return;
+    }
     const s = c.server || c.staff || 'Unknown';
     if (!map[s]) map[s] = { server: s, staffId: c.staffId || null, tipsCash: 0, tipsCard: 0, tipCount: 0, revenue: 0, checkCount: 0, byDay: {} };
     if (!map[s].staffId && c.staffId) map[s].staffId = c.staffId;
-    const tip = c.tip || 0;
-    const isCash = (c.method || '').toLowerCase() === 'cash';
     if (isCash) map[s].tipsCash += tip;
     else        map[s].tipsCard += tip;
     if (tip > 0) map[s].tipCount += 1;
@@ -44,12 +59,13 @@ function serverTips(checks) {
       if (c.closedAt > map[s].byDay[key].last)  map[s].byDay[key].last  = c.closedAt;
     }
   });
-  return Object.values(map).map(r => ({
+  const servers = Object.values(map).map(r => ({
     ...r,
     tips: r.tipsCash + r.tipsCard,
     hoursMs: Object.values(r.byDay).reduce((s, d) => s + Math.max(0, d.last - d.first), 0),
     byDay: undefined,
   })).sort((a, b) => b.tips - a.tips);
+  return { servers, house: { ...house, tips: house.tipsCash + house.tipsCard } };
 }
 
 function formatHours(ms) {
@@ -68,7 +84,7 @@ const POOL_MODES = [
 export default function Tips({ checks, fmt, fmtN }) {
   const { staffMembers = [] } = useStore();
 
-  const servers = useMemo(() => serverTips(checks), [checks]);
+  const { servers, house } = useMemo(() => serverTips(checks), [checks]);
 
   // Role lookup: prefer staff_id FK match (v4.6.19), fall back to name match
   // for legacy checks closed before the schema hardening.
@@ -83,16 +99,17 @@ export default function Tips({ checks, fmt, fmtN }) {
 
   // Totals + hourly distribution
   const headline = useMemo(() => {
-    const cashTips = servers.reduce((s, r) => s + r.tipsCash, 0);
-    const cardTips = servers.reduce((s, r) => s + r.tipsCard, 0);
-    const revenue  = servers.reduce((s, r) => s + r.revenue, 0);
+    // v5.5.335: include house (kiosk/online) tips in the headline totals.
+    const cashTips = servers.reduce((s, r) => s + r.tipsCash, 0) + house.tipsCash;
+    const cardTips = servers.reduce((s, r) => s + r.tipsCard, 0) + house.tipsCard;
+    const revenue  = servers.reduce((s, r) => s + r.revenue, 0) + house.revenue;
     const byHour = Array(24).fill(0);
     checks.filter(c => c.status !== 'voided' && c.closedAt).forEach(c => {
       const h = new Date(c.closedAt).getHours();
       byHour[h] += c.tip || 0;
     });
     return { cashTips, cardTips, total: cashTips + cardTips, revenue, byHour };
-  }, [servers, checks]);
+  }, [servers, house, checks]);
 
   // -------- Pool state --------
   const [mode, setMode]            = useState('none');
@@ -132,7 +149,13 @@ export default function Tips({ checks, fmt, fmtN }) {
       received: 0,
       net: r.tips,
       inPool: false,
+      isHouse: false,
     }));
+    // v5.5.335: kiosk/online tips have no server — a House row always feeds the
+    // pool (contributes 100%, never receives) so those tips reach real staff.
+    if (house.tips > 0) {
+      rows.push({ server: 'Kiosk & online', role: 'House', hoursMs: 0, gross: house.tips, contribution: 0, received: 0, net: house.tips, inPool: false, isHouse: true });
+    }
 
     if (mode === 'tipout' || mode === 'shared') {
       const rate = mode === 'shared' ? 1 : Math.max(0, tipoutPct / 100);
@@ -142,7 +165,13 @@ export default function Tips({ checks, fmt, fmtN }) {
 
       let pool = 0;
       rows.forEach(r => {
-        if (contributes(r)) {
+        if (r.isHouse) {
+          // Unattended tips always go 100% into the pool — nobody earned them.
+          r.contribution = r.gross;
+          r.net = 0;
+          r.inPool = true;
+          pool += r.contribution;
+        } else if (contributes(r)) {
           r.contribution = +(r.gross * rate).toFixed(2);
           r.net = +(r.net - r.contribution).toFixed(2);
           r.inPool = true;
@@ -151,7 +180,7 @@ export default function Tips({ checks, fmt, fmtN }) {
       });
       pool = +pool.toFixed(2);
 
-      const recipients = rows.filter(receives);
+      const recipients = rows.filter(r => !r.isHouse && receives(r));
       recipients.forEach(r => { r.inPool = true; });
       if (recipients.length > 0 && pool > 0) {
         const totalHours = recipients.reduce((s, r) => s + r.hoursMs, 0);
@@ -164,7 +193,7 @@ export default function Tips({ checks, fmt, fmtN }) {
     }
 
     return { rows, pool: +rows.reduce((s, r) => s + r.contribution, 0).toFixed(2) };
-  }, [servers, roleById, roleByName, mode, tipoutPct, byHours, contributingRoles, receivingRoles]);
+  }, [servers, house, roleById, roleByName, mode, tipoutPct, byHours, contributingRoles, receivingRoles]);
 
   const onExport = () => {
     const csv = toCsv(distribution.rows, [
@@ -183,7 +212,7 @@ export default function Tips({ checks, fmt, fmtN }) {
   const peakHour = headline.byHour.indexOf(Math.max(...headline.byHour));
   const nowHour  = new Date().getHours();
 
-  if (servers.length === 0) return <EmptyState icon="🙏" message="No tips captured in this period."/>;
+  if (servers.length === 0 && house.tips === 0) return <EmptyState icon="🙏" message="No tips captured in this period."/>;
 
   const allRoles = ['Manager','Server','Bartender','Cashier','Kitchen'];
 
@@ -286,7 +315,7 @@ export default function Tips({ checks, fmt, fmtN }) {
 
         {mode !== 'none' && (
           <div style={{ marginTop:10, padding:'9px 12px', background:'var(--bg3)', border:'1px dashed var(--bdr)', borderRadius:8, fontSize:11, color:'var(--t4)', lineHeight:1.7 }}>
-            ⓘ Pool math is a preview — export CSV to hand to payroll. Roles come from Staff manager; unrecognised names show "Unknown" role and are treated as non-participants.
+            ⓘ Pool math is a preview — export CSV to hand to payroll. Roles come from Staff manager; unrecognised names show "Unknown" and are treated as non-participants. Kiosk &amp; online tips have no server, so they always flow 100% into the pool.
           </div>
         )}
       </div>
@@ -325,6 +354,23 @@ export default function Tips({ checks, fmt, fmtN }) {
             </div>
           );
         })}
+        {/* v5.5.335: unattended (kiosk/online) tips — shown so totals reconcile */}
+        {house.tips > 0 && (() => {
+          const cashPct = house.tips ? (house.tipsCash / house.tips) * 100 : 0;
+          return (
+            <div style={{ display:'grid', gridTemplateColumns:'1.3fr 90px 90px 90px 70px 1fr', padding:'10px 14px', borderTop:'1px solid var(--bdr)', fontSize:12, alignItems:'center', gap:8, background:'var(--bg2)' }}>
+              <span style={{ color:'var(--t2)', fontWeight:600 }}>Kiosk &amp; online <span style={{ fontSize:10, color:'var(--t4)', fontWeight:600 }}>· auto-pooled</span></span>
+              <span style={{ textAlign:'right', color:'#3b82f6', fontFamily:'var(--font-mono)' }}>{fmt(house.tipsCard)}</span>
+              <span style={{ textAlign:'right', color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{fmt(house.tipsCash)}</span>
+              <span style={{ textAlign:'right', color:'var(--t1)', fontFamily:'var(--font-mono)', fontWeight:700 }}>{fmt(house.tips)}</span>
+              <span style={{ textAlign:'right', color:'var(--t4)', fontFamily:'var(--font-mono)' }}>—</span>
+              <div style={{ display:'flex', height:8, borderRadius:4, overflow:'hidden', background:'var(--bg3)' }}>
+                <div style={{ width:`${100 - cashPct}%`, background:'#3b82f6' }}/>
+                <div style={{ width:`${cashPct}%`, background:'var(--grn)' }}/>
+              </div>
+            </div>
+          );
+        })()}
       </div>
     </div>
   );
