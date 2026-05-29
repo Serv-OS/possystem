@@ -46,6 +46,10 @@ const OPS_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const OPS_SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const OTP_SECRET = Deno.env.get('OTP_HMAC_SECRET') ?? Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? 'fallback-secret';
 const OTP_EXPIRY_MS = 5 * 60 * 1000; // 5 minutes
+// v5.5.325: max wrong verify attempts per code before it locks. With the 45s
+// send cooldown this bounds an attacker to ~MAX guesses per code — a 6-digit
+// code is otherwise brute-forceable within its 5-minute window.
+const MAX_VERIFY_ATTEMPTS = 5;
 
 // ── HMAC session token ──────────────────────────────────────────────────
 async function createSessionToken(customerId: string, companyId: string): Promise<string> {
@@ -228,25 +232,48 @@ Deno.serve(async (req) => {
     const code = String(body.code || '').trim();
     if (!code || code.length !== 6) return json({ error: 'Invalid code' }, 400);
 
-    // Look up the code
+    // v5.5.325: fetch the active (unused, unexpired) codes for this phone — NOT
+    // filtered by the submitted code — so we can enforce a per-code attempt cap.
+    // Without it, the 6-digit code is brute-forceable inside its 5-min window.
     const now = new Date().toISOString();
-    const { data: otpRow } = await platformAdmin
+    const { data: activeCodes } = await platformAdmin
       .from('loyalty_otp_codes')
-      .select('id, code, expires_at, used')
+      .select('id, code, attempts')
       .eq('phone', phone)
       .eq('company_id', companyId)
-      .eq('code', code)
       .eq('used', false)
       .gte('expires_at', now)
       .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+      .limit(5);
 
-    if (!otpRow) {
+    if (!activeCodes || activeCodes.length === 0) {
       return json({ error: 'Invalid or expired code' }, 401);
     }
 
-    // Mark as used
+    // Lock check is on the most-recent code (the one the customer should be
+    // using). Once it hits the cap they must request a new code (itself rate-
+    // limited by the 45s send cooldown) — so guesses are bounded per window.
+    const latest = activeCodes[0];
+    if ((latest.attempts || 0) >= MAX_VERIFY_ATTEMPTS) {
+      return json({ error: 'Too many incorrect attempts. Request a new code.', code: 'otp_locked' }, 429);
+    }
+
+    // Match against ANY active code (handles a late-arriving older SMS).
+    const otpRow = activeCodes.find((c: any) => c.code === code);
+    if (!otpRow) {
+      // Wrong code → burn one attempt against the most-recent code.
+      const newAttempts = (latest.attempts || 0) + 1;
+      await platformAdmin.from('loyalty_otp_codes')
+        .update({ attempts: newAttempts })
+        .eq('id', latest.id);
+      if (newAttempts >= MAX_VERIFY_ATTEMPTS) {
+        return json({ error: 'Too many incorrect attempts. Request a new code.', code: 'otp_locked' }, 429);
+      }
+      const remaining = MAX_VERIFY_ATTEMPTS - newAttempts;
+      return json({ error: `Invalid or expired code. ${remaining} attempt${remaining === 1 ? '' : 's'} left.` }, 401);
+    }
+
+    // Correct code — consume it.
     await platformAdmin.from('loyalty_otp_codes')
       .update({ used: true })
       .eq('id', otpRow.id);

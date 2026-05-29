@@ -76,6 +76,14 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.325', date: '29 May 2026', label: 'Loyalty OTP brute-force lockout',
+    changes: [
+      'Loyalty phone OTP now locks a code after 5 wrong attempts — the 6-digit code was previously guessable within its 5-minute window with unlimited tries',
+      'Locked codes return a clear "request a new code" message; new codes are still rate-limited by the existing 45s send cooldown',
+      'Wrong-entry responses now show how many attempts remain; a late-arriving older code still verifies',
+    ],
+  },
+  {
     version: '5.5.324', date: '29 May 2026', label: 'Bar-tab card pre-authorisation (real holds)',
     changes: [
       'The bar-tab "Card pre-authorisation" toggle now places a REAL hold on the card via the Stripe Terminal reader at tab open — previously it was cosmetic (flag + badge only, no actual hold)',
