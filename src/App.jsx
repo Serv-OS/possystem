@@ -74,8 +74,17 @@ import OrdersHub from './surfaces/OrdersHub';
 import useSupabaseInit from './lib/useSupabaseInit';
 import { VERSION } from './lib/version';
 import { money, currencySymbol } from './lib/currency';
+import { ServOSIcon } from './components/ServOSBrand';
 
 const CHANGELOG = [
+  {
+    version: '5.5.330', date: '29 May 2026', label: 'POS top-bar: live covers + Serv OS logo',
+    changes: [
+      'Shift Covers now includes guests currently seated (open tables + tabs), not just settled checks — the bar no longer reads 0 covers while tables are clearly in use',
+      'Sales and Avg remain real settled takings for the shift (computed live from today\'s closed checks)',
+      'POS top-left now shows the real Serv OS logo mark instead of the generic "R" badge',
+    ],
+  },
   {
     version: '5.5.329', date: '29 May 2026', label: 'Fix Serv OS wordmark font (Instrument Serif)',
     changes: [
@@ -5679,6 +5688,12 @@ function ShiftBar({ version, onWhatsNew, theme, onToggleTheme, syncPulse }) {
   const activeOrders = (orderQueue?.filter(o => !['collected','paid'].includes(o.status)).length || 0)
     + (tables?.filter(t => t.status !== 'available').length || 0)
     + (tabs?.filter(t => t.status !== 'closed').length || 0);
+  // v5.5.330: live seated covers (open tables + open tabs) so the Covers stat
+  // reflects guests currently in, on top of settled covers from closed checks.
+  // Previously Covers counted only settled checks → showed 0 mid-shift while
+  // tables were clearly seated, which read as "not wired in".
+  const seatedCovers = (tables?.filter(t => t.status !== 'available') || []).reduce((s, t) => s + (t.session?.covers || 0), 0)
+    + (tabs?.filter(t => t.status !== 'closed').length || 0);
   const urlParam = deviceConfig?.param;
 
   // Printer status — poll bridge every 30s
@@ -5712,9 +5727,9 @@ function ShiftBar({ version, onWhatsNew, theme, onToggleTheme, syncPulse }) {
 
   return (
     <div style={{ height:42, display:'flex', alignItems:'center', background:'var(--bg1)', borderBottom:'1px solid var(--bdr)', flexShrink:0 }}>
-      {/* Logo */}
+      {/* Logo — v5.5.330: real Serv OS mark (was a generic "R" badge) */}
       <div style={{ width:'var(--nav)', height:'100%', display:'flex', alignItems:'center', justifyContent:'center', borderRight:'1px solid var(--bdr)', flexShrink:0 }}>
-        <div style={{ width:30, height:30, background:'var(--acc)', borderRadius:9, display:'flex', alignItems:'center', justifyContent:'center', fontSize:16, fontWeight:900, color:'#0b0c10', fontFamily:'var(--font-mono)' }}>R</div>
+        <ServOSIcon size={30} />
       </div>
 
       {/* Terminal identity — LEFT, always visible */}
@@ -5736,7 +5751,7 @@ function ShiftBar({ version, onWhatsNew, theme, onToggleTheme, syncPulse }) {
             <div style={{ width:6, height:6, borderRadius:'50%', background:'var(--acc)', boxShadow:'0 0 8px var(--acc)', animation:'pulse .6s ease-out', opacity:1 }}/>
           )}
         </div>
-        {[{label:'Covers',val:shift.covers},{label:'Sales',val:`${currencySymbol()}${shift.sales.toLocaleString()}`},{label:'Avg',val:`${money(shift.avgCheck)}`}].map(s=>(
+        {[{label:'Covers',val:shift.covers + seatedCovers},{label:'Sales',val:`${currencySymbol()}${shift.sales.toLocaleString()}`},{label:'Avg',val:`${money(shift.avgCheck)}`}].map(s=>(
           <div key={s.label} style={{ marginRight:20, display:'flex', alignItems:'baseline', gap:5 }}>
             <span style={{ fontSize:10, color:'var(--t4)', fontWeight:700, textTransform:'uppercase', letterSpacing:'.06em' }}>{s.label}</span>
             <span style={{ fontSize:13, fontWeight:700, color:'var(--t2)', fontFamily:typeof s.val==='string'&&s.val.includes('£')?'var(--font-mono)':'inherit' }}>{s.val}</span>
