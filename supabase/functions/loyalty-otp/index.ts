@@ -123,6 +123,23 @@ Deno.serve(async (req) => {
 
   // ── ACTION: SEND OTP ────────────────────────────────────────────────
   if (action === 'send') {
+    // v5.5.318: send cooldown — without it, anyone could trigger unlimited SMS
+    // to a victim's number (cost + abuse). Reject if a code was sent to this
+    // phone+company within the last 45s.
+    try {
+      const { data: recent } = await platformAdmin
+        .from('loyalty_otp_codes')
+        .select('created_at')
+        .eq('phone', phone)
+        .eq('company_id', companyId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (recent?.created_at && (Date.now() - new Date(recent.created_at).getTime()) < 45_000) {
+        return json({ error: 'A code was just sent. Please wait a moment before requesting another.' }, 429);
+      }
+    } catch { /* if the check fails, fall through and send (fail-open for availability) */ }
+
     // Generate 6-digit code
     const code = String(Math.floor(100000 + Math.random() * 900000));
     const expiresAt = new Date(Date.now() + OTP_EXPIRY_MS).toISOString();
