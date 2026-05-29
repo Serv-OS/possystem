@@ -4,7 +4,9 @@ import { MENU_ITEMS, ALLERGENS } from '../data/seed';
 import ProductModal, { AllergenModal } from '../components/ProductModal';
 import InlineItemFlow from '../components/InlineItemFlow';
 import CheckoutModal from './CheckoutModal';
+import TabPreAuthTerminal from '../components/TabPreAuthTerminal';
 import { getNextOrderRefLocal } from '../lib/db';
+import { getActiveLocationSync, ensureAuthToken } from '../lib/supabase';
 
 const CAT_META = {
   quick:    { icon:'⚡', color:'#e8a020' },
@@ -38,7 +40,10 @@ function OpenTabModal({ onConfirm, onCancel }) {
   const [name, setName]           = useState('');
   const [seatId, setSeatId]       = useState('');
   const [linked, setLinked]       = useState('');   // table id
-  const [preAuth, setPreAuth]     = useState(true);
+  // v5.5.324: pre-auth now places a REAL card hold on the reader at open, so it
+  // defaults OFF — staff opt in per tab. (It was on-by-default while cosmetic;
+  // leaving it on would force a card tap on every tab open.)
+  const [preAuth, setPreAuth]     = useState(false);
   const [preAmt, setPreAmt]       = useState('50');
   const [note, setNote]           = useState('');
   // v4.6.26: derive bar seats from floor plan. Each seat is { id, label, busy }.
@@ -251,20 +256,130 @@ export default function BarSurface() {
     showToast(`Round ${activeTab.rounds.length+1} sent to bar`,'success');
   };
 
-  const handleOpenTab = (opts) => {
-    const tab = openTab(opts);
+  // v5.5.324: tab opts awaiting a card pre-auth hold (reader collection step).
+  const [pendingTabOpts, setPendingTabOpts] = useState(null);
+
+  const doOpenTab = (opts) => {
+    openTab(opts);
     setShowOpenModal(false);
+    setPendingTabOpts(null);
     showToast(`${opts.name} tab opened`,'success');
   };
 
+  const handleOpenTab = (opts) => {
+    // v5.5.324: when pre-auth is on, collect a real card hold on the reader
+    // BEFORE opening the tab. TabPreAuthTerminal handles the reader and the
+    // no-reader fallback (open without a hold). Pre-auth off → open instantly.
+    if (opts.preAuth) {
+      setShowOpenModal(false);
+      setPendingTabOpts(opts);
+    } else {
+      doOpenTab(opts);
+    }
+  };
+
   const [showTabCheckout, setShowTabCheckout] = useState(false);
+  // v5.5.324: closing a tab that has a real card hold uses a CAPTURE flow (not
+  // the fresh-tender checkout). These drive the held-card close modal.
+  const [holdClose, setHoldClose] = useState(null);          // { tab } | null
+  const [holdCloseState, setHoldCloseState] = useState('idle'); // idle | capturing | error
+  const [holdCloseErr, setHoldCloseErr] = useState(null);
+
+  // Build + record a bar-tab closed check. Shared by the fresh-tender checkout
+  // AND the held-card capture so the row shape is identical either way.
+  const recordTabClosedCheck = (tab, payInfo) => {
+    const allItems = tab.rounds.flatMap(r => r.items.filter(i => !i.voided));
+    const subtotal = tab.total || 0;
+    recordWalkInClosedCheck({
+      ref: 'TAB-' + getNextOrderRefLocal().slice(1),  // 'TAB-' + numeric portion of R<n>
+      server: staff?.name || 'Staff',
+      covers: 1,
+      orderType: 'bar-tab',
+      customer: { name: tab.name },
+      items: allItems,
+      discounts: [],
+      subtotal,
+      service: 0,
+      tip: payInfo?.tip || 0,
+      total: payInfo?.grand != null ? payInfo.grand : subtotal,
+      method: payInfo?.method || 'card',
+      giftCard: payInfo?.giftCard || null,
+      // v5.5.323: carry the card PaymentIntent so a refund returns funds to the
+      // original card automatically (bar tabs previously stored none).
+      stripePaymentIntentId: payInfo?.stripePaymentIntentId || null,
+      paymentIntents: payInfo?.paymentIntents
+        || (payInfo?.stripePaymentIntentId
+            ? [{ id: payInfo.stripePaymentIntentId, amountMinor: Math.round((payInfo?.grand || subtotal || 0) * 100) }]
+            : null),
+    });
+    closeTab(tab.id);
+    setActiveTab(null);
+  };
+
+  // v5.5.324: release a card hold (cancel the manual-capture PI) — used when a
+  // held tab is voided or the customer chooses to pay another way.
+  const releaseHold = async (tab) => {
+    if (!tab?.preAuthPaymentIntentId) return;
+    try {
+      const token = await ensureAuthToken();
+      await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-cancel-reader-action`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({ payment_intent_id: tab.preAuthPaymentIntentId, location_id: getActiveLocationSync() }),
+      });
+    } catch (e) { console.warn('[bar-tab] release hold failed:', e?.message); }
+  };
+
+  // v5.5.324: capture the held card for (up to) the running total, then close.
+  const captureHeldTab = async (tab) => {
+    const totalMinor = Math.round((tab.total || 0) * 100);
+    const heldMinor = tab.preAuthHeldMinor != null ? tab.preAuthHeldMinor : Math.round((tab.preAuthAmount || 0) * 100);
+    const captureMinor = Math.min(totalMinor, heldMinor || totalMinor);
+    if (captureMinor <= 0) { setHoldCloseErr('Nothing to charge'); setHoldCloseState('error'); return; }
+    setHoldCloseState('capturing'); setHoldCloseErr(null);
+    try {
+      // /api/stripe-capture is the same Vercel endpoint the QR tab flow uses;
+      // it clamps to the actual amount_capturable on the connected account.
+      const res = await fetch('/api/stripe-capture', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          paymentIntentId: tab.preAuthPaymentIntentId,
+          stripeAccount: tab.preAuthStripeAccount,
+          amountToCapture: captureMinor,
+        }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
+      const capturedMinor = Number.isFinite(j.amount) ? j.amount : captureMinor;
+      recordTabClosedCheck(tab, {
+        method: 'card',
+        grand: tab.total || 0,
+        stripePaymentIntentId: tab.preAuthPaymentIntentId,
+        paymentIntents: [{ id: tab.preAuthPaymentIntentId, amountMinor: capturedMinor }],
+      });
+      setHoldClose(null); setHoldCloseState('idle');
+      const shortfallMinor = totalMinor - capturedMinor;
+      if (shortfallMinor > 0) {
+        showToast(`Charged £${(capturedMinor/100).toFixed(2)} to held card — £${(shortfallMinor/100).toFixed(2)} still to collect (hold didn't cover the bill)`, 'warning');
+      } else {
+        showToast(`${tab.name}'s tab charged £${(capturedMinor/100).toFixed(2)} to held card`, 'success');
+      }
+    } catch (e) {
+      setHoldCloseErr(e?.message || 'Capture failed'); setHoldCloseState('error');
+    }
+  };
 
   const handleCloseTab = (tab) => {
     if (tab.total === 0) {
+      // Zero bill — release any hold so the customer isn't left holding it.
+      if (tab.preAuthPaymentIntentId) releaseHold(tab);
       closeTab(tab.id);
       showToast(`${tab.name}'s tab closed`, 'info');
       return;
     }
+    // Real card hold present → capture flow. Otherwise the fresh-tender checkout.
+    if (tab.preAuthPaymentIntentId) { setHoldClose({ tab }); setHoldCloseState('idle'); setHoldCloseErr(null); return; }
     setShowTabCheckout(true);
   };
 
@@ -360,7 +475,10 @@ export default function BarSurface() {
                   </div>
                   <div style={{ display:'flex',gap:6,marginTop:6,flexWrap:'wrap' }}>
                     {(() => {const sm=STATUS_META[activeTab.status]; return <span style={{fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:20,background:sm.bg,color:sm.color}}>{sm.label}</span>;})()}
-                    {activeTab.preAuth&&<span style={{fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:20,background:'var(--blu-d)',color:'var(--blu)',border:'1px solid var(--blu-b)'}}>💳 Pre-auth £{activeTab.preAuthAmount}</span>}
+                    {/* v5.5.324: badge only when a REAL hold exists on the card,
+                        not merely the "pre-auth" intent toggle (which previously
+                        showed a hold that was never actually placed). */}
+                    {activeTab.preAuthPaymentIntentId&&<span style={{fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:20,background:'var(--blu-d)',color:'var(--blu)',border:'1px solid var(--blu-b)'}}>💳 Held £{(((activeTab.preAuthHeldMinor!=null?activeTab.preAuthHeldMinor/100:activeTab.preAuthAmount))||0).toFixed(0)}</span>}
                     {activeTab.tableId&&<span style={{fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:20,background:'var(--bg3)',color:'var(--t2)'}}>Table linked</span>}
                   </div>
                 </div>
@@ -547,6 +665,16 @@ export default function BarSurface() {
 
       {/* Modals */}
       {showOpenModal&&<OpenTabModal onConfirm={handleOpenTab} onCancel={()=>setShowOpenModal(false)}/>}
+      {/* v5.5.324: card pre-auth hold collected on the reader before the tab opens */}
+      {pendingTabOpts&&(
+        <TabPreAuthTerminal
+          amountMinor={Math.round((pendingTabOpts.preAuthAmount||50)*100)}
+          guestName={pendingTabOpts.name}
+          onAuthorized={({ paymentIntentId, stripeAccount, heldMinor })=>doOpenTab({ ...pendingTabOpts, preAuthPaymentIntentId:paymentIntentId, preAuthStripeAccount:stripeAccount, preAuthHeldMinor:heldMinor })}
+          onSkip={()=>doOpenTab(pendingTabOpts)}
+          onCancel={()=>setPendingTabOpts(null)}
+        />
+      )}
       {pendingItem&&<AllergenModal item={pendingItem} activeAllergens={allergens} onConfirm={()=>{const i=pendingItem;clearPendingItem();openItemFlow(i);}} onCancel={clearPendingItem}/>}
       {modalItem&&(
         <div className="modal-back">
@@ -581,37 +709,54 @@ export default function BarSurface() {
             onClose={() => setShowTabCheckout(false)}
             onComplete={(payInfo) => {
               setShowTabCheckout(false);
-              // Record the tab payment to closed checks (for reports + history)
-              const allItems = activeTab.rounds.flatMap(r => r.items.filter(i => !i.voided));
-              const subtotal = activeTab.total || 0;
-              recordWalkInClosedCheck({
-                ref: 'TAB-' + getNextOrderRefLocal().slice(1),  // 'TAB-' + numeric portion of R<n>
-                server: staff?.name || 'Staff',
-                covers: 1,
-                orderType: 'bar-tab',
-                customer: { name: activeTab.name },
-                items: allItems,
-                discounts: [],
-                subtotal,
-                service: 0,
-                tip: payInfo?.tip || 0,
-                total: payInfo?.grand || subtotal,
-                method: payInfo?.method || 'card',
-                giftCard: payInfo?.giftCard || null,
-                // v5.5.323: carry the card PaymentIntent through so a bar-tab
-                // refund returns funds to the original card automatically
-                // (previously bar tabs stored no PI → manual-refund warning).
-                stripePaymentIntentId: payInfo?.stripePaymentIntentId || null,
-                paymentIntents: payInfo?.paymentIntents
-                  || (payInfo?.stripePaymentIntentId
-                      ? [{ id: payInfo.stripePaymentIntentId, amountMinor: Math.round((payInfo?.grand || subtotal || 0) * 100) }]
-                      : null),
-              });
-              closeTab(activeTab.id);
-              setActiveTab(null);
+              // v5.5.324: shared builder records the row identically to the
+              // held-card capture path (incl. the card PI for auto-refunds).
+              recordTabClosedCheck(activeTab, payInfo);
               showToast(`${activeTab.name}'s tab paid and closed`, 'success');
             }}
           />
+        );
+      })()}
+
+      {/* v5.5.324: held-card close — capture the pre-auth instead of re-tendering */}
+      {holdClose?.tab && (() => {
+        const tab = holdClose.tab;
+        const totalMinor = Math.round((tab.total || 0) * 100);
+        const heldMinor = tab.preAuthHeldMinor != null ? tab.preAuthHeldMinor : Math.round((tab.preAuthAmount || 0) * 100);
+        const captureMinor = Math.min(totalMinor, heldMinor || totalMinor);
+        const shortfall = totalMinor - captureMinor;
+        const gbp = (m) => `£${(m / 100).toFixed(2)}`;
+        const row = (label, value, bold) => (
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'3px 0', fontSize:13, color: bold ? 'var(--t1)' : 'var(--t3)', fontWeight: bold ? 800 : 500 }}>
+            <span>{label}</span><span style={{ fontFamily:'DM Mono,monospace' }}>{value}</span>
+          </div>
+        );
+        const busy = holdCloseState === 'capturing';
+        return (
+          <div className="modal-back" onClick={e => !busy && e.target === e.currentTarget && (setHoldClose(null), setHoldCloseState('idle'))}>
+            <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr2)', borderRadius:20, width:'100%', maxWidth:380, padding:24, boxShadow:'var(--sh3)' }}>
+              <div style={{ fontSize:16, fontWeight:800, color:'var(--t1)', marginBottom:4 }}>Close {tab.name}'s tab</div>
+              <div style={{ fontSize:12, color:'var(--t3)', marginBottom:16 }}>Card was held when the tab opened — capture the bill to that card.</div>
+              <div style={{ background:'var(--bg3)', borderRadius:12, padding:'10px 14px', marginBottom:16 }}>
+                {row('Bill total', gbp(totalMinor))}
+                {row('Held on card', gbp(heldMinor))}
+                {row('Will charge now', gbp(captureMinor), true)}
+                {shortfall > 0 && <div style={{ fontSize:11, color:'#e8a020', marginTop:8, lineHeight:1.4 }}>⚠ Bill is {gbp(shortfall)} over the hold — Stripe can only capture the held amount. Collect the {gbp(shortfall)} difference separately after closing.</div>}
+              </div>
+              {holdCloseState === 'error' && <div style={{ fontSize:12, color:'var(--red)', marginBottom:12 }}>{holdCloseErr}</div>}
+              <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+                <button className="btn btn-acc btn-full" disabled={busy} onClick={() => captureHeldTab(tab)}>
+                  {busy ? 'Charging…' : `🔒 Charge ${gbp(captureMinor)} to held card`}
+                </button>
+                <button className="btn btn-ghost btn-full" disabled={busy} onClick={async () => { await releaseHold(tab); setHoldClose(null); setHoldCloseState('idle'); setShowTabCheckout(true); }}>
+                  Pay another way (release hold)
+                </button>
+                <button className="btn btn-ghost btn-full" disabled={busy} onClick={() => { setHoldClose(null); setHoldCloseState('idle'); }}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
         );
       })()}
 

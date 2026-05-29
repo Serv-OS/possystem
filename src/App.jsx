@@ -76,6 +76,18 @@ import { VERSION } from './lib/version';
 
 const CHANGELOG = [
   {
+    version: '5.5.324', date: '29 May 2026', label: 'Bar-tab card pre-authorisation (real holds)',
+    changes: [
+      'The bar-tab "Card pre-authorisation" toggle now places a REAL hold on the card via the Stripe Terminal reader at tab open — previously it was cosmetic (flag + badge only, no actual hold)',
+      'Closing a held tab CAPTURES the hold (one tap) instead of re-collecting payment; "Pay another way" releases the hold and falls back to normal checkout',
+      'Voiding/zero-ing a held tab releases the hold so the customer is never left with a stranded authorisation',
+      'Captured hold is recorded as the card payment on the closed check, so refunds return to the original card automatically (v5.5.323)',
+      'Pre-auth toggle now defaults OFF (opt-in per tab) since it now taps a card; the "held" badge only shows when a real hold exists',
+      'If the bill exceeds the hold, the held amount is captured and staff are warned to collect the difference (card-present holds cannot be re-charged off-session)',
+      'No reader assigned → opens without a hold (unchanged behaviour). Edge fn stripe-process-payment-on-reader gained an optional capture_method=manual; all existing automatic card payments are unchanged',
+    ],
+  },
+  {
     version: '5.5.323', date: '29 May 2026', label: 'Card refunds for split payments & bar tabs',
     changes: [
       'Refunds now return funds to the original card for SPLIT payments and BAR TABS, not just single-card checks',

@@ -63,9 +63,15 @@ Deno.serve(async (req) => {
     line_items?: Array<{ description: string; amount: number; quantity: number }>;
     closed_check_id?: string;
     skip_tipping?: boolean; // v5.5.269: kiosk collects tip in its own UI, skip reader prompt
+    capture_method?: 'automatic' | 'manual'; // v5.5.324: 'manual' = pre-auth hold (bar tabs)
   };
   try { body = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
-  const { pos_device_id, amount_minor, currency, line_items, closed_check_id, skip_tipping } = body ?? {};
+  const { pos_device_id, amount_minor, currency, line_items, closed_check_id, skip_tipping, capture_method } = body ?? {};
+  // v5.5.324: bar-tab pre-authorisation. 'manual' creates a hold (auth) that is
+  // captured later when the tab closes. Anything else (incl. undefined) stays
+  // 'automatic' so every existing card payment is byte-for-byte unchanged.
+  const captureMethod: 'automatic' | 'manual' = capture_method === 'manual' ? 'manual' : 'automatic';
+  const isPreAuth = captureMethod === 'manual';
   if (!pos_device_id || !amount_minor || !currency) {
     return json({ error: 'pos_device_id, amount_minor, currency required' }, 400);
   }
@@ -119,7 +125,8 @@ Deno.serve(async (req) => {
     .select('tipping_enabled, tip_percentages, allow_custom_tip')
     .eq('location_id', platformLoc.id).maybeSingle();
   // v5.5.269: skip_tipping overrides location settings — kiosk already collected tip in its UI
-  const tippingEnabled = skip_tipping ? false : (tipSettings?.tipping_enabled !== false);
+  // v5.5.324: a pre-auth hold never prompts for a tip (the tip is taken at close).
+  const tippingEnabled = (skip_tipping || isPreAuth) ? false : (tipSettings?.tipping_enabled !== false);
 
   // 4. Create PaymentIntent on the connected account
   // payment_method_options.card_present.request_extended_authorization can be left default
@@ -127,7 +134,7 @@ Deno.serve(async (req) => {
     amount: amount_minor,
     currency: currency.toLowerCase(),
     payment_method_types: ['card_present'],
-    capture_method: 'automatic',
+    capture_method: captureMethod,  // v5.5.324: 'manual' for bar-tab pre-auth holds
     application_fee_amount,
     metadata: {
       location_id: platformLoc.id,
@@ -216,5 +223,7 @@ Deno.serve(async (req) => {
     reader_id: reader.stripe_reader_id,
     reader_label: reader.label,
     reader_action_status: action.action?.status ?? 'in_progress',
+    capture_method: captureMethod,           // v5.5.324: echo back so the client knows it's a hold
+    stripe_account_id: msa.stripe_account_id, // v5.5.324: needed to capture/cancel the hold at close
   });
 });
