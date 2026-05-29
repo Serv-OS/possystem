@@ -183,9 +183,22 @@ export async function resolveCompanyForLocation(
       .eq('id', locationId)
       .maybeSingle();
     if (locById?.company_id) return locById.company_id;
+
+    // v5.5.320: a location_id WAS provided but no platform row matched. FAIL
+    // CLOSED — do NOT fall through to the user_company_roles fallback below.
+    // That fallback returns the FIRST user_company_roles row, which for a
+    // multi-company user (owner/super_admin) is an ARBITRARY company → it could
+    // read/write another tenant's gift cards & loyalty. Every real location is
+    // mirrored to the Platform DB by provision-location; an unmatched location
+    // is a provisioning gap and must error loudly, never silently mis-resolve.
+    return json({
+      error: 'Location not provisioned in the platform database. Re-provision it (Company Admin → the location).',
+      code: 'location_not_provisioned',
+    }, 409);
   }
 
-  // 2. Fallback: try user_company_roles (may not work due to cross-DB UUIDs)
+  // 2. No location_id supplied — fall back to user_company_roles. This path is
+  // for callers that genuinely have no location context (single-company users).
   const result = await resolveCompanyId(userId);
   if (typeof result === 'string') return result;
 
