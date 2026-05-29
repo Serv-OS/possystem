@@ -77,6 +77,14 @@ import { money, currencySymbol } from './lib/currency';
 
 const CHANGELOG = [
   {
+    version: '5.5.329', date: '29 May 2026', label: 'Fix Serv OS wordmark font (Instrument Serif)',
+    changes: [
+      'The brand wordmark now renders in Instrument Serif as intended — it was falling back to bold Inter because the font was never loaded AND the component was hardcoded to inherit',
+      'Loaded Instrument Serif (regular + italic) in index.html; wordmark uses it at weight 400 with the "OS" in ember italic per the brand spec',
+      'Fixes the wordmark everywhere it appears: PIN screen, login, device setup, mode selector, pairing, back office and company admin',
+    ],
+  },
+  {
     version: '5.5.328', date: '29 May 2026', label: 'Back-office light/dark toggle + Serv OS logo in brand spots',
     changes: [
       'Back office now has a Light / Dark mode toggle in the sidebar (reuses the existing theme system; the saved choice is applied on back-office boot)',

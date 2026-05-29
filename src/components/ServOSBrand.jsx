@@ -35,15 +35,19 @@ export function ServOSIcon({ size = 44, variant = 'ember', style = {} }) {
 export function ServOSWordmark({ fontSize = 22, color, style = {} }) {
   return (
     <span style={{
-      fontFamily: 'inherit',
+      // v5.5.329: actually use the brand font. Was 'inherit' (rendered in Inter),
+      // and Instrument Serif wasn't even loaded — that's why the wordmark looked
+      // wrong. Instrument Serif ships weight 400 only, so don't ask for bold
+      // (faux-bold a serif looks off).
+      fontFamily: "'Instrument Serif', Georgia, 'Times New Roman', serif",
       fontSize,
-      fontWeight: 800,
+      fontWeight: 400,
       lineHeight: 0.95,
-      letterSpacing: '-0.02em',
+      letterSpacing: '-0.01em',
       color: color || 'var(--t1)',
       ...style,
     }}>
-      Serv<span style={{ color: '#E8743C' }}>OS</span>
+      Serv<span style={{ color: '#E8743C', fontStyle: 'italic' }}>OS</span>
     </span>
   );
 }
