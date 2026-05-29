@@ -3,7 +3,7 @@ import { VERSION } from '../lib/version';
 import BOLogin from '../backoffice/BOLogin';
 import AdminBillingManager from './sections/AdminBillingManager';
 import AdminStripeTest from './sections/AdminStripeTest';
-import { money } from '../lib/currency';
+import { money, CURRENCIES } from '../lib/currency';
 
 const S = {
   shell: { display:'flex', height:'100vh', fontFamily:'inherit', background:'var(--bg)', color:'var(--t1)' },
@@ -637,10 +637,7 @@ function AdminPanel({ authUser }) {
                   </div>
                   <div><label style={S.label}>Currency</label>
                     <select style={S.input} value={form.locCurrency||'GBP'} onChange={e=>f('locCurrency',e.target.value)}>
-                      <option value="GBP">GBP £</option>
-                      <option value="EUR">EUR €</option>
-                      <option value="USD">USD $</option>
-                      <option value="AED">AED</option>
+                      {Object.values(CURRENCIES).map(c => <option key={c.code} value={c.code}>{c.code} {c.symbol}</option>)}
                     </select>
                   </div>
                   <div><label style={S.label}>Max POS devices</label><input style={S.input} type="number" min="1" max="20" placeholder="3" value={form.maxDevices||''} onChange={e=>f('maxDevices',e.target.value)} /></div>

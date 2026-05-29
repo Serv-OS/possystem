@@ -54,7 +54,7 @@ Deno.serve(async (req) => {
   // 1. Read the Ops location + its org
   const { data: opsLoc, error: locErr } = await opsAdmin
     .from('locations')
-    .select('id, name, address, timezone, org_id')
+    .select('id, name, address, timezone, currency, org_id')
     .eq('id', opsLocationId)
     .maybeSingle();
   if (locErr) return json({ error: `Ops location read failed: ${locErr.message}` }, 500);
@@ -125,6 +125,11 @@ Deno.serve(async (req) => {
         name: opsLoc.name || 'Location',
         address: opsLoc.address || null,
         timezone: opsLoc.timezone || 'Europe/London',
+        // v5.5.327: carry the currency chosen at creation through to the platform
+        // mirror (which the app reads for money formatting + Stripe). Only on
+        // INSERT — once provisioned, Location Settings owns the platform value,
+        // so a re-provision must not clobber an edited currency.
+        currency: opsLoc.currency || 'GBP',
         ops_location_id: opsLocationId,
       })
       .select('id')

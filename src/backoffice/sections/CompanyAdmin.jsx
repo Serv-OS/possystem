@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabase';
+import { CURRENCIES } from '../../lib/currency';
 
 const S = {
   page: { padding: '32px 40px', maxWidth: 860 },
@@ -326,10 +327,7 @@ export default function CompanyAdmin() {
             <div>
               <label style={S.label}>Currency</label>
               <select style={S.input} value={form.locCurrency || 'GBP'} onChange={e => f('locCurrency', e.target.value)}>
-                <option value="GBP">GBP — British Pound £</option>
-                <option value="EUR">EUR — Euro €</option>
-                <option value="USD">USD — US Dollar $</option>
-                <option value="AED">AED — UAE Dirham</option>
+                {Object.values(CURRENCIES).map(c => <option key={c.code} value={c.code}>{c.code} — {c.label}</option>)}
               </select>
             </div>
           </div>

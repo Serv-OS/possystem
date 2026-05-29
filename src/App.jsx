@@ -77,6 +77,13 @@ import { money, currencySymbol } from './lib/currency';
 
 const CHANGELOG = [
   {
+    version: '5.5.327', date: '29 May 2026', label: 'Currency at location creation — carried through to platform',
+    changes: [
+      'The currency chosen when creating a location now actually takes effect: provision-location copies it to the platform mirror the app reads (previously a USD location still resolved as GBP until you re-saved it in Location Settings)',
+      'Location-create currency dropdowns (admin portal + back office) now offer exactly GBP, USD and EUR — the unsupported AED option is removed, and both lists are driven from the single CURRENCIES source',
+    ],
+  },
+  {
     version: '5.5.326', date: '29 May 2026', label: 'Multi-currency (GBP / USD / EUR)',
     changes: [
       'Each location now has a Currency setting (Back Office → Location Settings) — GBP, USD or EUR',
