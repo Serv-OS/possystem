@@ -19,6 +19,7 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
   // Quantity-mode picks. For groups where selection_type='quantity', pick
   // counts per option are tracked here. Key: groupId, value: { optionId: qty }.
   const [qtyPicks, setQtyPicks]     = useState({});
+  const [notes, setNotes]           = useState(''); // free-text per-item special request
   const [instSelections, setInstSelections] = useState({}); // { instGroupId: optionLabel }
   const [loading, setLoading]       = useState(false);
   const [errors, setErrors]         = useState([]);
@@ -114,7 +115,7 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
     setInstGroups(resolvedInst);
 
     if (!supabase || modGroupIds.length === 0) {
-      setModGroups([]); setAllModGroups([]); setSelections({}); setInstSelections({}); setSubPicks({}); setQtyPicks({});
+      setModGroups([]); setAllModGroups([]); setSelections({}); setInstSelections({}); setSubPicks({}); setQtyPicks({}); setNotes('');
       return;
     }
     setLoading(true);
@@ -311,7 +312,7 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
         ? `${item.menu_name || item.name} — ${selectedVariant.menu_name || selectedVariant.name}`
         : (effectiveItem.menu_name || effectiveItem.name),
     };
-    onAdd(finalItem, flatMods, qty);
+    onAdd(finalItem, flatMods, qty, notes.trim());
   };
 
   const muted    = theme.isLight ? '#6b6b70' : '#a0a0a8';
@@ -441,7 +442,7 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
                       const canAdd = totalPicked < max;
                       return (
                         <QtyOptionRow key={optKey}
-                          option={opt} count={count} canAdd={canAdd}
+                          option={opt} count={count} canAdd={canAdd} is86={optIs86(opt)}
                           onInc={() => { setErrors([]); setQtyPicks(s => ({ ...s, [g.id]: { ...(s[g.id] || {}), [optKey]: count + 1 } })); }}
                           onDec={() => { setErrors([]); setQtyPicks(s => ({ ...s, [g.id]: { ...(s[g.id] || {}), [optKey]: Math.max(0, count - 1) } })); }}
                           theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
@@ -492,6 +493,7 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
                           checked={checked}
                           onClick={onClick}
                           mode={isSingle ? 'single' : 'multi'}
+                          is86={optIs86(opt)}
                           theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
                         {subGroup && (
                           <div style={{
@@ -511,6 +513,7 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
                                     checked={sChecked}
                                     onClick={() => setSubPicks(s => ({ ...s, [subKey]: sChecked ? null : sopt }))}
                                     mode="single"
+                                    is86={optIs86(sopt)}
                                     theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
                                 </div>
                               );
@@ -552,6 +555,23 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
               </Section>
             );
           })}
+
+          {/* Add a note — free-text special request for this line; prints on the kitchen ticket */}
+          <Section title="Add a note" meta="Optional">
+            <textarea
+              value={notes}
+              onChange={e => setNotes(e.target.value)}
+              placeholder="Any special requests? e.g. no onions, allergy info…"
+              rows={2}
+              maxLength={200}
+              style={{
+                width: '100%', boxSizing: 'border-box', resize: 'vertical',
+                padding: '12px 14px', borderRadius: 12, border: `1px solid ${cardBdr}`,
+                background: inputBg, color: theme.fg, fontSize: 14, fontFamily: 'inherit',
+                lineHeight: 1.5, outline: 'none',
+              }}
+            />
+          </Section>
 
           {/* Quantity */}
           <div style={{
@@ -615,7 +635,7 @@ function Section({ title, meta, required, erroring, children }) {
   );
 }
 
-function OptionRow({ label, priceDelta, absolutePrice, checked, onClick, mode, theme, cardBdr, inputBg }) {
+function OptionRow({ label, priceDelta, absolutePrice, checked, onClick, mode, theme, cardBdr, inputBg, is86 = false }) {
   // Two pricing modes:
   //   • absolutePrice (used for variants): "£2.50" — variants ARE their own price
   //   • priceDelta (used for modifiers):   "+£0.50" / "−£0.50" — modifies base
@@ -628,21 +648,23 @@ function OptionRow({ label, priceDelta, absolutePrice, checked, onClick, mode, t
     if (priceDelta < 0) priceColor = '#22c55e';
   }
   return (
-    <button onClick={onClick} className="op-btn" style={{
+    <button onClick={is86 ? undefined : onClick} disabled={is86} className={is86 ? undefined : 'op-btn'} style={{
       width: '100%', display: 'flex', alignItems: 'center', gap: 12,
       padding: '12px 14px', borderRadius: 12,
       background: checked ? `${theme.accent}28` : inputBg,
       border: `${checked ? 3 : 1.5}px solid ${checked ? theme.accent : cardBdr}`,
       boxShadow: checked ? `0 4px 14px ${theme.accent}40` : 'none',
-      color: theme.fg, fontFamily: 'inherit', cursor: 'pointer', textAlign: 'left',
+      color: theme.fg, fontFamily: 'inherit',
+      cursor: is86 ? 'not-allowed' : 'pointer', textAlign: 'left',
+      opacity: is86 ? 0.55 : 1, filter: is86 ? 'grayscale(0.6)' : undefined,
       transition: 'all .12s ease',
       fontWeight: checked ? 800 : 600,
     }}>
       <Indicator checked={checked} mode={mode} accent={theme.accent} cardBdr={cardBdr}/>
-      <span style={{ flex: 1, fontSize: 14, fontWeight: 600 }}>{label}</span>
-      {priceLabel && (
-        <span style={{ fontSize: 13, fontWeight: 700, color: priceColor }}>{priceLabel}</span>
-      )}
+      <span style={{ flex: 1, fontSize: 14, fontWeight: 600, textDecoration: is86 ? 'line-through' : 'none' }}>{label}</span>
+      {is86
+        ? <span style={{ fontSize: 11, fontWeight: 800, color: '#dc2626' }}>Sold out</span>
+        : (priceLabel && <span style={{ fontSize: 13, fontWeight: 700, color: priceColor }}>{priceLabel}</span>)}
     </button>
   );
 }
@@ -712,7 +734,7 @@ function VariantRow({ variant, active, price, onClick, theme, cardBdr, inputBg, 
 }
 
 // Quantity-mode option row — +/- stepper, current count.
-function QtyOptionRow({ option, count, canAdd, onInc, onDec, theme, cardBdr, inputBg }) {
+function QtyOptionRow({ option, count, canAdd, onInc, onDec, theme, cardBdr, inputBg, is86 = false }) {
   const px = Number(option.price) || 0;
   return (
     <div style={{
@@ -722,11 +744,14 @@ function QtyOptionRow({ option, count, canAdd, onInc, onDec, theme, cardBdr, inp
       border: `${count > 0 ? 3 : 1.5}px solid ${count > 0 ? theme.accent : cardBdr}`,
       boxShadow: count > 0 ? `0 4px 14px ${theme.accent}40` : 'none',
       color: theme.fg, fontFamily: 'inherit',
+      opacity: is86 ? 0.55 : 1, filter: is86 ? 'grayscale(0.6)' : undefined,
     }}>
-      <span style={{ flex: 1, fontSize: 14, fontWeight: 600 }}>{option.name || option.label}</span>
-      {px > 0 && (
-        <span style={{ fontSize: 12, fontWeight: 700, opacity: 0.7 }}>+{money(px)}</span>
-      )}
+      <span style={{ flex: 1, fontSize: 14, fontWeight: 600, textDecoration: is86 ? 'line-through' : 'none' }}>{option.name || option.label}</span>
+      {is86
+        ? <span style={{ fontSize: 11, fontWeight: 800, color: '#dc2626' }}>Sold out</span>
+        : (px > 0 && (
+          <span style={{ fontSize: 12, fontWeight: 700, opacity: 0.7 }}>+{money(px)}</span>
+        ))}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <button onClick={onDec} disabled={count === 0} style={{
           width: 30, height: 30, borderRadius: '50%', border: 'none',
@@ -737,11 +762,11 @@ function QtyOptionRow({ option, count, canAdd, onInc, onDec, theme, cardBdr, inp
           fontFamily: 'inherit',
         }}>−</button>
         <span style={{ minWidth: 16, textAlign: 'center', fontSize: 14, fontWeight: 800 }}>{count}</span>
-        <button onClick={onInc} disabled={!canAdd} style={{
+        <button onClick={onInc} disabled={!canAdd || is86} style={{
           width: 30, height: 30, borderRadius: '50%', border: 'none',
-          background: canAdd ? theme.accent : `${theme.fg}10`,
-          color: canAdd ? '#0b0c10' : `${theme.fg}40`,
-          fontSize: 18, fontWeight: 800, cursor: canAdd ? 'pointer' : 'not-allowed',
+          background: (canAdd && !is86) ? theme.accent : `${theme.fg}10`,
+          color: (canAdd && !is86) ? '#0b0c10' : `${theme.fg}40`,
+          fontSize: 18, fontWeight: 800, cursor: (canAdd && !is86) ? 'pointer' : 'not-allowed',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           fontFamily: 'inherit',
         }}>+</button>

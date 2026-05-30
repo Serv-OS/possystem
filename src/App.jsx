@@ -78,6 +78,15 @@ import { ServOSIcon } from './components/ServOSBrand';
 
 const CHANGELOG = [
   {
+    version: '5.5.344', date: '30 May 2026', label: 'Online ordering — per-item notes + 86 on modifier options',
+    changes: [
+      'Customers can add a free-text note ("Add a note") to each item on the online store before adding it to the basket — e.g. "no onions", allergy info',
+      'The note shows on the basket + order summary, is saved with the order, and prints on the kitchen ticket (uses the standard item.notes field)',
+      'Previously only an order-level note at checkout existed; there was no per-item note online',
+      '86\'d items inside modifier groups are now greyed out, struck through, marked "Sold out" and non-selectable (e.g. a sold-out donut in a "Box of three") — previously only the final basket button was blocked, so the option still looked selectable',
+    ],
+  },
+  {
     version: '5.5.343', date: '29 May 2026', label: 'Forgot password for back office + admin login',
     changes: [
       'Login screen now has a "Forgot password?" link — sends a reset email via Supabase (resetPasswordForEmail)',

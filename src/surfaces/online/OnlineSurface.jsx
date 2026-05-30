@@ -361,7 +361,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
     return s + unit * (l.qty || 1);
   }, 0);
 
-  const addToCart = (item, mods, qty) => {
+  const addToCart = (item, mods, qty, notes = '') => {
     const price = Number(item.pricing?.base ?? item.price ?? 0);
     // v5.5.128: snapshot category info on the cart line so production
     // routing on the operator side can bucket the item to the right
@@ -380,7 +380,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
       // works without re-fetching menu_items for each line.
       taxRateId: item.tax_rate_id || item.taxRateId || null,
       taxOverrides: item.tax_overrides || item.taxOverrides || {},
-      price, qty, mods,
+      price, qty, mods, notes: notes || '',
     }]);
     setOpenItem(null);
   };
@@ -705,7 +705,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           instGroupDefs={instGroupDefs}
           eightySixIds={eightySixIds}
           onClose={() => setOpenItem(null)}
-          onAdd={(item, mods, qty) => addToCart(item, mods, qty)}
+          onAdd={(item, mods, qty, notes) => addToCart(item, mods, qty, notes)}
         />
       )}
 

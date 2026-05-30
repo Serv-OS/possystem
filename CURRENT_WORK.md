@@ -5,6 +5,21 @@
 
 ---
 
+## Auth email → Resend SMTP (config only, no version bump — 29 May)
+
+Supabase **Auth** emails (password reset for back-office + admin) now send through **Resend**, branded as Serv OS from our domain. Both surfaces (`BackOfficeApp` + `CompanyAdminApp`) auth against the **Ops** project via the shared `supabase` client, so SMTP was set on Ops only.
+
+- **Where:** Ops project (`tbetcegmszzotrwdtqhi`) → Auth config (`PATCH /v1/projects/.../config/auth`).
+- **Settings:** `smtp_host=smtp.resend.com`, `smtp_port=465`, `smtp_user=resend`, `smtp_admin_email=noreply@serv-os.app`, `smtp_sender_name="Serv OS"`. Pass = a dedicated Resend key named **"Supabase Auth SMTP"** (Sending access). `serv-os.app` is verified in Resend.
+- **Template:** branded recovery HTML set as `mailer_templates_recovery_content` (ember header, "Serv**OS**" wordmark, button, footer).
+- **Verified end-to-end 29 May:** triggered `/auth/v1/recover` → Resend log shows *"Reset your Serv OS password"* from `"Serv OS" <noreply@serv-os.app>` → **Delivered** to Gmail, branded body rendered.
+- **Not yet branded:** invite / confirmation / magic-link templates still use Supabase defaults (optional follow-up). Platform project (`yhzjgyrkyjabvhblqxzu`) has no custom SMTP — only matters if any flow ever auths against Platform directly (today nothing does).
+- **Logo in email:** branded recovery template uses `receipt-assets/brand/servos-logo.png` (transparent ServOS lockup, uploaded to Ops Storage). Swap that object to rebrand; no template edit needed.
+- **Deliverability fix (29 May):** reset mail was going to **spam**. Root cause: Resend's SPF/DKIM were **missing from Vercel DNS** (lost when DNS moved to Vercel nameservers; Resend's "Verified" badge was stale from the old host). Domain DMARC is `p=quarantine`, so failing both SPF+DKIM alignment → spam. **Fixed** by adding 3 records to **Vercel DNS** (serv-os.app): TXT `resend._domainkey` (DKIM key), TXT `send` = `v=spf1 include:amazonses.com ~all`, MX `send` = `feedback-smtp.us-east-1.amazonses.com` pri 10. dig-verified live on `ns1.vercel-dns.com`. DMARC kept at `p=quarantine` (now passes via DKIM alignment). SOA negative-TTL 600s.
+- **Remaining deliverability polish (Resend insights, optional):** (1) reset link is a `supabase.co` URL → needs a Supabase custom auth domain (e.g. `auth.serv-os.app`) to match sender; (2) logo image is on `supabase.co` → could move to `app.serv-os.app`; (3) `noreply@` sender → a real monitored address scores better. All minor vs the auth fix.
+
+---
+
 ## What shipped this session: v5.5.290 → v5.5.327
 
 ### Launch-readiness audit (→ v5.5.322)

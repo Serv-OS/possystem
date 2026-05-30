@@ -204,7 +204,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     // to manually open + click save-and-send before anything fires.
     const items = cart.map(l => ({
       itemId: l.itemId, name: l.name, price: l.price,
-      qty: l.qty || 1, mods: l.mods || [],
+      qty: l.qty || 1, mods: l.mods || [], notes: l.notes || '',
       cat: l.cat || null,
       cats: l.cats || null,
       parentId: l.parentId || null,
@@ -944,7 +944,10 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
               const unit = line.price + (line.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0);
               return (
                 <div key={line.uid} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13 }}>
-                  <span style={{ flex: 1, minWidth: 0 }}>{line.qty || 1} × {line.name}</span>
+                  <span style={{ flex: 1, minWidth: 0 }}>
+                    {line.qty || 1} × {line.name}
+                    {line.notes ? <span style={{ display: 'block', fontSize: 12, color: `${theme.fg}99`, fontStyle: 'italic', marginTop: 2 }}>📝 {line.notes}</span> : null}
+                  </span>
                   <span style={{ fontWeight: 700 }}>{money((unit * (line.qty || 1)))}</span>
                 </div>
               );
@@ -1066,7 +1069,10 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
               const unit = line.price + (line.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0);
               return (
                 <div key={line.uid} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13 }}>
-                  <span style={{ flex: 1, minWidth: 0 }}>{line.qty || 1} × {line.name}</span>
+                  <span style={{ flex: 1, minWidth: 0 }}>
+                    {line.qty || 1} × {line.name}
+                    {line.notes ? <span style={{ display: 'block', fontSize: 12, color: `${theme.fg}99`, fontStyle: 'italic', marginTop: 2 }}>📝 {line.notes}</span> : null}
+                  </span>
                   <span style={{ fontWeight: 700 }}>{money((unit * (line.qty || 1)))}</span>
                 </div>
               );
@@ -1162,7 +1168,10 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
               const unit = line.price + (line.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0);
               return (
                 <div key={line.uid} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13 }}>
-                  <span style={{ flex: 1, minWidth: 0 }}>{line.qty || 1} × {line.name}</span>
+                  <span style={{ flex: 1, minWidth: 0 }}>
+                    {line.qty || 1} × {line.name}
+                    {line.notes ? <span style={{ display: 'block', fontSize: 12, color: `${theme.fg}99`, fontStyle: 'italic', marginTop: 2 }}>📝 {line.notes}</span> : null}
+                  </span>
                   <span style={{ fontWeight: 700 }}>{money((unit * (line.qty || 1)))}</span>
                 </div>
               );

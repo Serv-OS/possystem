@@ -80,6 +80,9 @@ export default function OnlineCart({ cart, theme, orderType, taxRates = [], onCl
                       ))}
                     </div>
                   )}
+                  {line.notes ? (
+                    <div style={{ fontSize: 12, color: muted, fontStyle: 'italic', marginBottom: 8 }}>📝 {line.notes}</div>
+                  ) : null}
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                     <button onClick={() => onUpdateQty(line.uid, (line.qty || 1) - 1)}
                       style={{ ...qtyBtn, background: inputBg, color: theme.fg, opacity: line.qty <= 1 ? .4 : 1 }}>−</button>
