@@ -45,7 +45,7 @@ Codebase: ~97,000 lines across 246 source files
 | Deploy | Vercel (frontend on `develop` branch) + Supabase Edge Functions |
 | Print | Node.js print agents (`print-agent.js`, `print-bridge.js`) — ESC/POS thermal |
 | SMS | Twilio via `send-sms` edge function (OTP, receipts, marketing) |
-| Mobile | Android wrapper in `android/` for Sunmi hardware |
+| Mobile | Android WebView wrapper in `android/` for Sunmi hardware; sideloaded + **self-updating** via Supabase Storage (see `android/RELEASING.md`) |
 | PWA | `public/manifest.json` + `public/sw.js` |
 | AI | Claude API via Vercel serverless (`api/ai.js`) |
 

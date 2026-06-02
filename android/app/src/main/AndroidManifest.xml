@@ -14,6 +14,9 @@
          now run pure REST against a WiFi reader. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
 
+    <!-- v1.3: in-app self-update (sideloaded APK, no Play Store) — install downloaded APKs -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
+
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
@@ -33,5 +36,16 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+
+        <!-- v1.3: shares the downloaded APK with the system installer via a content:// URI -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths"/>
+        </provider>
     </application>
 </manifest>

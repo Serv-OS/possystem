@@ -5,6 +5,20 @@
 
 ---
 
+## Android self-update (sideloaded APK → auto-update — 30 May)
+
+The Sunmi WebView app now updates itself (no Play Store). On launch + every ~3h it
+reads `app-releases/latest.json` from Supabase Storage; if `versionCode` is higher
+than installed, it downloads `app.apk` and shows the one-tap system installer.
+
+- New: `android/app/src/main/java/co/posup/rpos/UpdateChecker.java`, `res/xml/file_paths.xml`.
+- Edited: `AndroidManifest.xml` (REQUEST_INSTALL_PACKAGES + FileProvider), `MainActivity.java` (hook), `app/build.gradle` (versionCode 3→4, versionName 1.2→1.3).
+- Supabase: public bucket `app-releases` created; `latest.json` seeded (versionCode 4). Project file cap = 50MB (APK is far smaller).
+- **Pending (user, manual):** build signed v4 APK (same keystore!), upload as `app.apk`, and manually install v4 once on every device — from v4 onward it's automatic. Full process in `android/RELEASING.md`.
+- Could not compile here (no Android SDK/JDK in this env) — code reviewed by hand; user builds in their pipeline.
+
+---
+
 ## Auth email → Resend SMTP (config only, no version bump — 29 May)
 
 Supabase **Auth** emails (password reset for back-office + admin) now send through **Resend**, branded as Serv OS from our domain. Both surfaces (`BackOfficeApp` + `CompanyAdminApp`) auth against the **Ops** project via the shared `supabase` client, so SMTP was set on Ops only.

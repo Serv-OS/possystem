@@ -11,6 +11,7 @@ public class MainActivity extends Activity {
     private static final String POS_URL = "https://possystem-liard.vercel.app/?mode=pos";
     private WebView webView;
     private PrinterBridge printerBridge;
+    private UpdateChecker updateChecker;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -82,6 +83,11 @@ public class MainActivity extends Activity {
         });
 
         webView.loadUrl(POS_URL);
+
+        // v1.3: self-update for the sideloaded APK. Check shortly after boot so the
+        // POS UI loads first; UpdateChecker throttles itself and is a no-op when current.
+        updateChecker = new UpdateChecker(this);
+        webView.postDelayed(() -> updateChecker.check(false), 8000);
     }
 
     @Override
@@ -96,6 +102,8 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         webView.onResume();
+        // Catch updates on long-running devices too (throttled to every few hours).
+        if (updateChecker != null) updateChecker.check(false);
         // Re-apply immersive mode on resume (system UI may have re-appeared)
         getWindow().getDecorView().setSystemUiVisibility(
             View.SYSTEM_UI_FLAG_FULLSCREEN |
@@ -114,6 +122,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        if (updateChecker != null) updateChecker.destroy();
         if (printerBridge != null) printerBridge.destroy();
         if (webView != null) webView.destroy();
     }
