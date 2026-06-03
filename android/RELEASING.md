@@ -1,5 +1,14 @@
 # Releasing the Android app (auto-update)
 
+> **STATUS (May 2026):** the signed + auto-publish flow described below is the **target**
+> (roadmap in `AUTO_UPDATE_PLAN.md`). It is **not built yet.** Today the CI
+> (`.github/workflows/build-apk.yml`) builds a **debug** APK and uploads it as a
+> downloadable artifact — so the *current* process is: trigger that workflow → download
+> the APK artifact → upload it to the bucket as `app.apk` → bump `latest.json`. ⚠️ Because
+> debug builds use an inconsistent signing key, in-place auto-update is **not reliable**
+> until the fixed-key signing in `AUTO_UPDATE_PLAN.md` is set up (devices may need a
+> manual reinstall between debug builds).
+
 The Android app (`co.posup.rpos`) is **sideloaded** (no Play Store), so it updates
 itself. On launch — and every few hours while running — it reads a version file
 from Supabase Storage and, if a newer build is listed, downloads the APK and shows
