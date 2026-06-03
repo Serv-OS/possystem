@@ -1,16 +1,44 @@
-# React + Vite
+# Serv OS (RPOS)
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Multi-tenant, multi-device SaaS **point-of-sale for hospitality**.
 
-Currently, two official plugins are available:
+- **Live:** https://possystem-liard.vercel.app
+- **Repo:** `Serv-OS/possystem`
+- **Current build:** see `src/lib/version.js`
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Surfaces
+POS · Back Office · KDS · Bar · Tables · Kiosk · MPOS · Orders Hub · Online Ordering · Customer Portal · Gift Cards · QR Order · AI Assistant
+(each is a mode of the same app, e.g. `?mode=pos`, `?mode=kiosk`, `/online/:slug`)
 
-## React Compiler
+## Stack
+React 19 + Vite (no TypeScript) · Zustand · Supabase (Postgres / Realtime / Storage / Edge Functions) · Stripe (Terminal in-person + Checkout online) · Vercel (frontend) · Android WebView wrapper for Sunmi hardware.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Develop
+```bash
+npm install
+npm run dev      # mock mode — no Supabase needed
+npm run build    # verify clean before pushing
+```
+Real keys live in Vercel env vars; local `.env.local` runs in mock mode.
 
-## Expanding the ESLint configuration
+## Deploy
+```bash
+# Frontend → push to develop, Vercel auto-deploys
+git add … && git commit -m "vX.Y.Z — …" && git push origin develop
+```
+**Every web deploy:** bump `src/lib/version.js` AND add a top-of-`CHANGELOG` entry in `src/App.jsx`.
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+Edge functions deploy via the Supabase CLI + a personal access token (see `CLAUDE.md`).
+The Android app is built by GitHub Actions and self-updates (see `android/RELEASING.md`).
+
+## Read these first
+| File | What |
+|---|---|
+| `CLAUDE.md` | Architecture, folder map, conventions, hard-won gotchas |
+| `DECISIONS.md` | Architecture decision records (ADRs) |
+| `INVARIANTS.md` | Rules that must never be broken |
+| `CURRENT_WORK.md` | Latest session handoff + what's next |
+| `android/RELEASING.md` · `android/AUTO_UPDATE_PLAN.md` | Android build + self-update |
+
+---
+Internal project — not for redistribution.

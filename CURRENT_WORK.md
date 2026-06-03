@@ -1,97 +1,65 @@
-# RPOS session handoff — 29 May (v5.5.327)
+# Serv OS / RPOS — session handoff
 
-> Launch-readiness audit + 4 backlog features shipped. ~2 weeks (now days) from first customer (UK / GBP).
-> Edge functions now deploy via **Supabase CLI + PAT** (no longer the dashboard).
-
----
-
-## Android self-update (sideloaded APK → auto-update — 30 May)
-
-The Sunmi WebView app now updates itself (no Play Store). On launch + every ~3h it
-reads `app-releases/latest.json` from Supabase Storage; if `versionCode` is higher
-than installed, it downloads `app.apk` and shows the one-tap system installer.
-
-- New: `android/app/src/main/java/co/posup/rpos/UpdateChecker.java`, `res/xml/file_paths.xml`.
-- Edited: `AndroidManifest.xml` (REQUEST_INSTALL_PACKAGES + FileProvider), `MainActivity.java` (hook), `app/build.gradle` (versionCode 3→4, versionName 1.2→1.3).
-- Supabase: public bucket `app-releases` created; `latest.json` seeded (versionCode 4). Project file cap = 50MB (APK is far smaller).
-- **Pending (user, manual):** build signed v4 APK (same keystore!), upload as `app.apk`, and manually install v4 once on every device — from v4 onward it's automatic. Full process in `android/RELEASING.md`.
-- Could not compile here (no Android SDK/JDK in this env) — code reviewed by hand; user builds in their pipeline.
+> **Current build: v5.5.344** · live: https://possystem-liard.vercel.app · repo: **Serv-OS/possystem** (renamed from pwar2804aio).
+> First customer imminent (UK / GBP). Pillars: don't break working functionality; resolve real `locationId` before any DB write; CSS vars not hardcoded colours; bump `version.js` + CHANGELOG every web deploy.
 
 ---
 
-## Auth email → Resend SMTP (config only, no version bump — 29 May)
+## This session (v5.5.328 → v5.5.344 + infra)
 
-Supabase **Auth** emails (password reset for back-office + admin) now send through **Resend**, branded as Serv OS from our domain. Both surfaces (`BackOfficeApp` + `CompanyAdminApp`) auth against the **Ops** project via the shared `supabase` client, so SMTP was set on Ops only.
+**Branding / UI**
+- 328–329 — Back-office light/dark toggle + Serv OS logo in brand spots; wordmark in Instrument Serif.
+- 330 / 333 — POS top bar: added logo + "current shift"; removed the non-working Covers/Sales/Avg stats.
 
-- **Where:** Ops project (`tbetcegmszzotrwdtqhi`) → Auth config (`PATCH /v1/projects/.../config/auth`).
-- **Settings:** `smtp_host=smtp.resend.com`, `smtp_port=465`, `smtp_user=resend`, `smtp_admin_email=noreply@serv-os.app`, `smtp_sender_name="Serv OS"`. Pass = a dedicated Resend key named **"Supabase Auth SMTP"** (Sending access). `serv-os.app` is verified in Resend.
-- **Template:** branded recovery HTML set as `mailer_templates_recovery_content` (ember header, "Serv**OS**" wordmark, button, footer).
-- **Verified end-to-end 29 May:** triggered `/auth/v1/recover` → Resend log shows *"Reset your Serv OS password"* from `"Serv OS" <noreply@serv-os.app>` → **Delivered** to Gmail, branded body rendered.
-- **Not yet branded:** invite / confirmation / magic-link templates still use Supabase defaults (optional follow-up). Platform project (`yhzjgyrkyjabvhblqxzu`) has no custom SMTP — only matters if any flow ever auths against Platform directly (today nothing does).
-- **Logo in email:** branded recovery template uses `receipt-assets/brand/servos-logo.png` (transparent ServOS lockup, uploaded to Ops Storage). Swap that object to rebrand; no template edit needed.
-- **Deliverability fix (29 May):** reset mail was going to **spam**. Root cause: Resend's SPF/DKIM were **missing from Vercel DNS** (lost when DNS moved to Vercel nameservers; Resend's "Verified" badge was stale from the old host). Domain DMARC is `p=quarantine`, so failing both SPF+DKIM alignment → spam. **Fixed** by adding 3 records to **Vercel DNS** (serv-os.app): TXT `resend._domainkey` (DKIM key), TXT `send` = `v=spf1 include:amazonses.com ~all`, MX `send` = `feedback-smtp.us-east-1.amazonses.com` pri 10. dig-verified live on `ns1.vercel-dns.com`. DMARC kept at `p=quarantine` (now passes via DKIM alignment). SOA negative-TTL 600s.
-- **Remaining deliverability polish (Resend insights, optional):** (1) reset link is a `supabase.co` URL → needs a Supabase custom auth domain (e.g. `auth.serv-os.app`) to match sender; (2) logo image is on `supabase.co` → could move to `app.serv-os.app`; (3) `noreply@` sender → a real monitored address scores better. All minor vs the auth fix.
+**Tips**
+- 331–332 — Tip prompt on split-card payments + capture split tips for reporting.
+- 334–336 — Tip pool reworked: role-aware in all modes, manager excluded by default; kiosk / online / QR tips auto-flow into the house pool.
 
----
+**Fixes**
+- 337 — Gift card "Card not found" on POS → `code_plain` fallback in gift-lookup.
+- 338 — Size variants now inherit the parent's per-order-type tax overrides (takeaway 0% etc.).
+- 339 — Removed "Open terminals for testing" dev panel.
 
-## What shipped this session: v5.5.290 → v5.5.327
+**Reports / MPOS / Admin / Online**
+- 340 — Overview "Today's snapshot" dashboard (sales by source / user / product, discounts).
+- 341–342 — MPOS: customer search, takeaway requires details, tax breakdown + prints on the bill, 86 on modifier options.
+- 343 — Forgot-password for back-office + admin login (both share `BOLogin` on the Ops `supabase` client).
+- 344 — Online ordering: **per-item notes** on the product screen; **86'd items blocked/greyed** in modifier groups (e.g. "Box of three"). Order note stays at checkout.
 
-### Launch-readiness audit (→ v5.5.322)
-Deep audit + fixes ahead of first customer. Highlights:
-- **Auth / sign-out** — killed the "blank back office / logged-in-with-no-user" bug class. `ensureAuthToken()` no longer mints anonymous sessions in office mode; back office + super-admin portal reject anon sessions and clear the location cache on sign-out.
-- **Cross-DB provisioning** — new-org / new-location now works end-to-end. `provision-location` mirrors Ops → Platform; `create-user` made idempotent (re-invite repairs instead of half-populating).
-- **Company resolution fail-closed** — `resolveCompanyForLocation` returns 409 `location_not_provisioned` instead of silently resolving a multi-company user to the wrong tenant.
-- **Loyalty** — tier auto-evaluation, redeem→check back-patch so refunds restore points, registration-bonus ledger fixed (no double-count).
-- **Gift cards** — atomic `redeem_gift_card_atomic` RPC (idempotent, race-free).
-- **VAT receipts** — full per-item + per-rate breakdown on the emailed digital receipt.
-- **Stock / KDS / tables** — add-only auto-86, KDS picks up new production-centre items without refresh, tables never lost across config push / refresh / wake.
-
-### Backlog features
-- **v5.5.323 — Card refunds for split payments & bar tabs.** New `closed_checks.payment_intents` jsonb holds every card leg; `refundCheck` refunds each back to its own card. Per-leg idempotency on `stripe-refund`. Single-card path unchanged.
-- **v5.5.324 — Bar-tab card pre-authorisation (real holds).** The toggle was cosmetic; now it places a real Stripe Terminal manual-capture hold at tab open (`TabPreAuthTerminal`), captures at close (`/api/stripe-capture`), and releases on void / pay-another-way (`stripe-cancel-reader-action`). `stripe-process-payment-on-reader` gained optional `capture_method`. Defaults OFF; badge shows only when a real hold exists.
-- **v5.5.325 — Loyalty OTP brute-force lockout.** Per-code attempt cap (5) via new `loyalty_otp_codes.attempts`; locks the code after 5 wrong tries (the 45s send cooldown bounds new codes).
-- **v5.5.326 — Multi-currency (GBP / USD / EUR).** New `lib/currency.js` (`money()`, `currencySymbol()`, `stripeCurrency()`); per-location `currency`; ~675 inline `£` displays swept to `money()`; all client Stripe calls send `stripeCurrency()`; `stripe-create-payment-intent` accepts EUR. Byte-for-byte for GBP.
-- **v5.5.327 — Currency at location creation.** `provision-location` now copies `currency` Ops → Platform on create (was lost → USD location resolved as GBP). Create-location dropdowns (admin + back office) limited to GBP/USD/EUR from the `CURRENCIES` source (removed unsupported AED).
+**Infrastructure (no app version bump)**
+- **Email → Resend.** Supabase Auth SMTP wired to Resend; reset emails send from `noreply@serv-os.app` ("Serv OS"), branded template (logo = `receipt-assets/brand/servos-logo.png`), verified delivered. **Deliverability fixed:** added Resend DKIM + SPF + MX to **Vercel DNS** (they were lost when DNS moved to Vercel; DMARC `p=quarantine` was spam-foldering). dig-verified live.
+- **Android self-update (v1.3).** In-app updater shipped (`UpdateChecker.java` + manifest/FileProvider + MainActivity hook); Supabase public bucket `app-releases` + `latest.json`. On launch / every ~3h → checks → downloads → one-tap install. ⚠️ Not production-real until signed CI (see Next #1).
+- **GitHub renamed → Serv-OS.** Repo now `Serv-OS/possystem`; local remote repointed, refs updated, pushes verified. Auth now via **macOS keychain** (old leaked token revoked + replaced with a repo-scoped token; remote URL clean → no token in Dropbox-synced config). Vercel + Supabase logins are GitHub-OAuth, unaffected by the rename.
 
 ---
 
-## System status
+## Next stages (tomorrow)
 
-### Verified working (build-clean + smoke-tested; reader/live paths need hardware test)
-- ✅ Split & bar-tab refunds return to original card(s)
-- ✅ Bar-tab pre-auth hold → capture/release (needs a real reader to test end-to-end)
-- ✅ Loyalty OTP lockout after 5 wrong attempts
-- ✅ Multi-currency display + Stripe currency across POS / kiosk / online / QR / receipts / reports
-- ✅ Currency chosen at location creation now actually applies
-- ✅ New-org / new-location provisioning across all features
-- ✅ Auth / sign-out (no blank back office)
-
-### Needs live/hardware verification
-- Bar-tab pre-auth on a real Stripe Terminal reader (hold → capture → refund; release on void)
-- A USD location end-to-end (set currency → POS shows $ → card charged in USD)
-- Voids/refunds to original method on the Sunmi in production
+1. **Android pipeline (biggest).** Make auto-update production-real: one fixed signing key + CI auto-publish to Supabase, then multi-app flavors (Kiosk / MPOS / KDS; Menu Board needs a web surface first). Full plan in **`android/AUTO_UPDATE_PLAN.md`**. Also: get v1.3 (the updater build) onto the tills via one manual install.
+2. **Email polish (optional).** Confirm reset mail now inboxes (give DNS a few hours + mark older ones "Not spam"); consider a Supabase **custom auth domain** `auth.serv-os.app` so the reset *link* matches the sender; brand the invite / confirmation / magic-link templates too.
+3. **Menu Board.** Build the `?mode=menuboard` web surface (digital menu display) — prerequisite for packaging that Android app.
+4. **Account housekeeping.** Finish the GitHub email/password change if not done (Vercel/Supabase ride on GitHub SSO — nothing to change there); glance at Vercel to confirm a deploy fired after the rename.
+5. **Deferred backlog** (memory `project_post_launch_tasks.md`): consolidate `resolveCompanyForLocation` (2 copies), code-split bundles, commit `send-sms` source to git, multi-currency tail (cash denominations), bar-tab pre-auth refinements, Apple Pay / wallets on online.
+6. **Live/hardware verification:** bar-tab pre-auth on a real Stripe reader (hold → capture → refund), a USD location end-to-end, voids/refunds on the Sunmi.
 
 ---
 
-## Remaining backlog (deferred — see memory `project_post_launch_tasks.md`)
-- **Consolidate `resolveCompanyForLocation`** — one shared copy instead of two (tech debt; redeploys ~18 fns).
-- **Code-split bundles** — chunk-size warning; perf polish.
-- **Apple Pay / wallets on online ordering** — needs per-venue domain verification.
-- **Multi-currency tail** — see "Known limits" below.
-- **`send-sms` source not in git** — deployed fn has no committed source (chip raised).
+## Key architecture / infra notes
+- **Two Supabase projects:** Ops `tbetcegmszzotrwdtqhi` (POS data, edge fns, back-office + admin auth) + Platform `yhzjgyrkyjabvhblqxzu` (companies / users / gift / loyalty).
+- **Edge deploy:** `SUPABASE_ACCESS_TOKEN=… npx --yes supabase functions deploy <fn> --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt` (PAT was at `/tmp/sbenv` this session — not persistent across sessions).
+- **Frontend deploy:** `git push origin develop` → Vercel auto-deploys. Bump `src/lib/version.js` + top-of-CHANGELOG in `src/App.jsx` every web deploy.
+- **GitHub:** `Serv-OS/possystem`; pushes authenticate via macOS keychain (osxkeychain), repo-scoped token.
+- **Currency:** per-location `locations.currency` on BOTH projects; never hardcode `£`/`'gbp'` — use `lib/currency.js` (`money()`, `currencySymbol()`, `stripeCurrency()`). Active currency cached in `localStorage['rpos-active-currency']`.
+- **Email:** Resend SMTP on Ops Auth (from `noreply@serv-os.app`); `serv-os.app` verified in Resend; DKIM/SPF/MX live in Vercel DNS; DMARC `p=quarantine` (passes via DKIM).
+- **Android:** `co.posup.rpos` WebView wrapper; self-updates via `app-releases` bucket; build = GitHub Actions `.github/workflows/build-apk.yml` (currently **debug → artifact**). See `android/RELEASING.md` + `android/AUTO_UPDATE_PLAN.md`.
+- **Closed-check `payment_intents` jsonb** = source of truth for auto-refundable card legs.
 
 ### Multi-currency known limits
-- Cash-drawer **denomination labels** (£50 note, 50p, …) stay GBP — country-specific note/coin *sets*, not just symbols.
-- **Platform billing tiers** (£99 / £149) stay GBP intentionally (platform charges venues in GBP).
-- Currency is **per-location** (confirmed choice), not org-level — locations under one org can differ.
+- Cash-drawer denomination labels stay GBP (country-specific note/coin sets, not just symbols).
+- Platform billing tiers stay GBP (platform charges venues in GBP).
+- Currency is per-location (confirmed), not org-level.
 
 ---
 
-## Key architecture notes
-- Two Supabase projects: Ops (`tbetcegmszzotrwdtqhi`) + Platform (`yhzjgyrkyjabvhblqxzu`).
-- **Edge deploy:** `SUPABASE_ACCESS_TOKEN=… npx --yes supabase functions deploy <name> --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt` (CLI bundles `_shared`). PAT stashed at `/tmp/sbenv` this session.
-- **Currency:** lives on BOTH `locations.currency` columns (Ops = creation seed, Platform = authoritative for the app). Created in Ops → `provision-location` copies to Platform; Location Settings edits Platform. App reads Platform via `locationTime.getLocationConfig` (POS/kiosk) and `CustomerBoot`/`lookupLocationBySlug` (online/QR/gift/portal), persisted to `localStorage['rpos-active-currency']` so `money()` resolves synchronously.
-- **Money formatting:** never hardcode `£`/`'gbp'` — use `money()` / `currencySymbol()` / `stripeCurrency()` from `lib/currency.js`.
-- **Closed-check payments:** `payment_intents` jsonb is the source of truth for auto-refundable card legs; `stripe_payment_intent_id` kept for back-compat.
-- Deploy frontend: `git push origin develop` → Vercel auto-deploys.
-- `getActiveLocationSync()` on POS boot, never async `getLocationId()`.
+## Prior session (context)
+v5.5.290 → 327: launch-readiness audit (auth/sign-out, cross-DB provisioning, company-resolution fail-closed, loyalty, atomic gift redeem, VAT receipts, stock/KDS/tables) + backlog (split/bar-tab card refunds, bar-tab pre-auth holds, OTP lockout, multi-currency GBP/USD/EUR). See git history / CHANGELOG for detail.
