@@ -6,6 +6,7 @@ import { useStore } from '../store';
 import { fetchMenuCategoryLinks } from '../lib/db';
 import { supabase } from '../lib/supabase';
 import { pushReaderDisplay, clearReaderDisplay, cacheReaderDisplaySetting } from '../lib/readerDisplay';
+import { publishDisplay, getCustomerDisplayMode, displayUsesReader, displayUsesScreen } from '../lib/customerDisplay';
 import { getAssignedNetworkReader } from '../lib/networkReader';
 import { CATEGORIES, MENU_ITEMS as SEED_MENU_ITEMS, ALLERGENS, QUICK_IDS, getDaypart, CAT_META } from '../data/seed';
 import { calculateOrderTax } from '../lib/tax';
@@ -24,7 +25,7 @@ import OrderTypeModal from '../components/OrderTypeModal';
 import AllergenCheckoutModal from '../components/AllergenCheckoutModal';
 import TableActionsModal from '../components/TableActionsModal';
 import Challenge21Modal from '../components/Challenge21Modal';
-import { money, stripeCurrency } from '../lib/currency';
+import { money, stripeCurrency, getActiveCurrencyCode } from '../lib/currency';
 
 const COURSE_COLORS = {
   0:{label:'Immediate',color:'#22d3ee',bg:'rgba(34,211,238,.1)'},
@@ -318,20 +319,35 @@ export default function POSSurface() {
         quantity: Math.max(1, Number(i.qty) || 1),
       };
     });
+    // Richer items for the dedicated customer-display screen (vs the reader's flat lines).
+    const displayItems = nonVoided.map(i => {
+      const unitMods = (i.mods || []).reduce((s, m) => s + (Number(m.price) || 0), 0);
+      const unit = (Number(i.price) || 0) + unitMods - (Number(i.discountAmount) || 0);
+      const qty = Math.max(1, Number(i.qty) || 1);
+      return {
+        uid: i.uid,
+        name: i.menuName || i.name || 'Item',
+        qty,
+        lineTotal: Math.max(0, unit * qty),
+        mods: (i.mods || []).map(m => ({ label: m.label })),
+        notes: i.notes || '',
+      };
+    });
     const totalMinor = Math.round(((total || 0)) * 100);
+    const mode = getCustomerDisplayMode();
     const prevCount = _prevItemCountRef.current;
     _prevItemCountRef.current = lineItems.length;
 
     if (lineItems.length === 0) {
-      // Only reset the reader if we previously HAD a cart — avoids stomping
-      // the idle screen on every fresh POS load with no active check.
+      // Only reset displays if we previously HAD a cart — avoids stomping the
+      // idle screen on every fresh POS load with no active check.
       if (prevCount > 0) {
-        console.log('[POSSurface] cart emptied → clearing reader display');
-        clearReaderDisplay();
+        if (displayUsesReader(mode)) clearReaderDisplay();
+        if (displayUsesScreen(mode)) publishDisplay({ items: [], total: 0, state: 'idle', currency: getActiveCurrencyCode() });
       }
     } else {
-      console.log('[POSSurface] cart →', lineItems.length, 'lines, £', (totalMinor / 100).toFixed(2));
-      pushReaderDisplay({ lineItems, totalMinor, currency: stripeCurrency() });
+      if (displayUsesReader(mode)) pushReaderDisplay({ lineItems, totalMinor, currency: stripeCurrency() });
+      if (displayUsesScreen(mode)) publishDisplay({ items: displayItems, total: total || 0, state: 'active', currency: getActiveCurrencyCode() });
     }
   }, [items, total]);
 

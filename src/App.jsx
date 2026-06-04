@@ -65,6 +65,7 @@ import PairingScreen from './surfaces/PairingScreen';
 import ModeSelector from './surfaces/ModeSelector';
 import CompanyAdminApp from './admin/CompanyAdminApp';
 import KioskSurface from './surfaces/KioskSurface';
+import CustomerDisplaySurface from './surfaces/CustomerDisplaySurface';
 import DeviceSetup from './surfaces/DeviceSetup';
 import StatusDrawer from './components/StatusDrawer';
 import SyncBridge from './sync/SyncBridge';
@@ -77,6 +78,16 @@ import { money, currencySymbol } from './lib/currency';
 import { ServOSIcon } from './components/ServOSBrand';
 
 const CHANGELOG = [
+  {
+    version: '5.5.345', date: '3 Jun 2026', label: 'Customer-facing display — dedicated second screen (e.g. Sunmi D3 Pro rear)',
+    changes: [
+      'New ?mode=customer-display surface: idle branding / ad carousel → live order mirror → payment status (paying / approved / declined), for a dedicated customer-facing screen.',
+      'The POS broadcasts its live cart + checkout state over Supabase Realtime (display:<deviceId>); the screen mirrors it — counter/walk-in orders included, not just table sessions.',
+      'Hardware-matched destination: defaults to "auto" — drives BOTH the WisePOS E reader screen (existing) and the dedicated screen, so a till just works with whatever hardware it has. Reader path unchanged.',
+      'Per-terminal Off / Reader / Screen setting (device_profiles.customer_display_mode) + back-office toggle to follow.',
+      'Payments unchanged (WisePOS E); the screen reflects status. Note: the Sunmi D3 Pro NFC is not Stripe Tap-to-Pay certified — see CUSTOMER_DISPLAY_PLAN.md.',
+    ],
+  },
   {
     version: '5.5.344', date: '30 May 2026', label: 'Online ordering — per-item notes + 86 on modifier options',
     changes: [
@@ -5374,6 +5385,12 @@ export default function App() {
 
   // Kiosk — standalone customer-facing self-ordering surface
   if (deviceMode === 'kiosk') return <KioskSurface />;
+
+  // Customer-facing display — dedicated second screen (e.g. Sunmi D3 Pro rear).
+  // Read-only mirror of a till (idle ads → live cart → payment status). Resolves
+  // its target via ?till=<deviceId> or this device's own pairing; self-contained
+  // (no SyncBridge — it only subscribes to the display broadcast).
+  if (deviceMode === 'customer-display') return <CustomerDisplaySurface />;
 
   // Back office mode — go to email login (no pairing needed)
   if (deviceMode === 'backoffice' || deviceMode === 'office') return <><SyncBridge onSyncPulse={handleSyncPulse}/><BackOfficeApp /></>;

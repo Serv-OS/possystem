@@ -10,7 +10,8 @@ import {
 } from '../lib/networkReader';
 import { getActiveLocationSync, supabase, ensureAuthToken } from '../lib/supabase';
 import { fetchCustomerByPhone } from '../lib/customerLookup';
-import { money, currencySymbol, stripeCurrency } from '../lib/currency';
+import { money, currencySymbol, stripeCurrency, getActiveCurrencyCode } from '../lib/currency';
+import { publishDisplay, displayUsesScreen } from '../lib/customerDisplay';
 // (readerDisplay imports removed — cancel now lets the natural cart-change effect refresh the reader after onBack)
 
 // ─── Tip picker ───────────────────────────────────────────────────────────────
@@ -155,6 +156,37 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
       callCancelReaderAction({ paymentIntentId, readerId: networkReader?.stripe_reader_id, locationId: platformLocId })
         .catch(() => {});
     }
+  }, []);
+
+  // ─── Mirror payment status to the dedicated customer display ──────────────
+  // paying → approved/declined. (The WisePOS E shows this natively; this is for
+  // a separate screen running ?mode=customer-display.)
+  const payRef = useRef({});
+  payRef.current = { restState, state, grand, tipAmt, items };
+  useEffect(() => {
+    if (!displayUsesScreen()) return;
+    let st = 'paying';
+    if (restState === 'success' || state === 'approved') st = 'approved';
+    else if (restState === 'error') st = 'declined';
+    publishDisplay({ state: st, total: grand, currency: getActiveCurrencyCode() });
+  }, [restState, state, grand]);
+  // On leaving the card screen WITHOUT completing (back/cancel), put the cart
+  // back on the display. On success the parent clears the cart (→ broadcasts idle).
+  useEffect(() => () => {
+    if (!displayUsesScreen()) return;
+    const { restState: rs, state: ss, items: its } = payRef.current;
+    if (rs === 'success' || ss === 'approved') return;
+    const di = (its || []).filter(it => it && it.price != null).map(it => {
+      const unitMods = (it.mods || []).reduce((s, m) => s + (Number(m.price) || 0), 0);
+      const qty = Math.max(1, Number(it.qty) || 1);
+      return { uid: it.uid, name: it.menuName || it.name || 'Item', qty,
+        lineTotal: Math.max(0, ((Number(it.price) || 0) + unitMods) * qty),
+        mods: (it.mods || []).map(m => ({ label: m.label })), notes: it.notes || '' };
+    });
+    const cartTotal = di.reduce((s, it) => s + (Number(it.lineTotal) || 0), 0);
+    publishDisplay(di.length
+      ? { state: 'active', items: di, total: cartTotal, currency: getActiveCurrencyCode() }
+      : { state: 'idle', items: [], total: 0 });
   }, []);
 
   // ─── REST flow runner ──────────────────────────────────────────────────
