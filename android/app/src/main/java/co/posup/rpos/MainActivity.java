@@ -18,6 +18,7 @@ public class MainActivity extends Activity {
     private DisplayManager displayManager;
     private CustomerDisplayPresentation customerPresentation;
     private DisplayManager.DisplayListener displayListener;
+    private boolean displayDiagShown = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -112,17 +113,43 @@ public class MainActivity extends Activity {
         displayManager.registerDisplayListener(displayListener, null);
     }
 
+    /** Find the customer-facing screen: prefer the PRESENTATION category, else any non-default display. */
+    private Display findSecondaryDisplay() {
+        Display[] pres = displayManager.getDisplays(DisplayManager.DISPLAY_CATEGORY_PRESENTATION);
+        if (pres != null && pres.length > 0) return pres[0];
+        Display[] all = displayManager.getDisplays();
+        if (all != null) {
+            for (Display d : all) {
+                if (d.getDisplayId() != Display.DEFAULT_DISPLAY) return d;
+            }
+        }
+        return null;
+    }
+
     private void showCustomerPresentation() {
         if (displayManager == null) return;
         if (customerPresentation != null && customerPresentation.isShowing()) return;
-        Display[] displays = displayManager.getDisplays(DisplayManager.DISPLAY_CATEGORY_PRESENTATION);
-        if (displays == null || displays.length == 0) return; // no second screen attached
-        try {
-            customerPresentation = new CustomerDisplayPresentation(this, displays[0]);
-            customerPresentation.show();
-        } catch (Exception e) {
-            customerPresentation = null; // e.g. InvalidDisplayException if it vanished
+        Display target = findSecondaryDisplay();
+        if (target == null) {
+            if (!displayDiagShown) {
+                displayDiagShown = true;
+                Display[] all = displayManager.getDisplays();
+                toast("Customer display: NO 2nd screen found (" + (all == null ? 0 : all.length) + " display(s) total)");
+            }
+            return;
         }
+        try {
+            customerPresentation = new CustomerDisplayPresentation(this, target);
+            customerPresentation.show();
+            toast("Customer display: showing on screen #" + target.getDisplayId());
+        } catch (Exception e) {
+            customerPresentation = null;
+            toast("Customer display error: " + e.getMessage());
+        }
+    }
+
+    private void toast(String m) {
+        try { android.widget.Toast.makeText(this, m, android.widget.Toast.LENGTH_LONG).show(); } catch (Exception ignored) {}
     }
 
     private void dismissCustomerPresentation() {
