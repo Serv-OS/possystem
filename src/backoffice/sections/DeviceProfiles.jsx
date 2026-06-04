@@ -17,6 +17,14 @@ const MPOS_PAYMENT_MODES = [
   { id:'pay_at_counter_only', label:'Pay at counter only',       desc:'Server takes orders only — cash/card all routed to the counter POS.' },
 ];
 
+// Customer-facing display destination (per terminal — matches the hardware it has)
+const CUSTOMER_DISPLAY_MODES = [
+  { id:'auto',   label:'Auto (recommended)', desc:'Use a dedicated screen if present, otherwise the card reader.' },
+  { id:'screen', label:'Dedicated screen',   desc:'Customer-facing second screen, e.g. Sunmi D3 Pro rear / external monitor.' },
+  { id:'reader', label:'Card reader screen', desc:'Show the order on the WisePOS E reader screen.' },
+  { id:'off',    label:'Off',                desc:'No customer-facing display.' },
+];
+
 const ORDER_TYPES = [
   { id:'dine-in',    label:'Dine in',    icon:'🍽' },
   { id:'takeaway',   label:'Takeaway',   icon:'🥡' },
@@ -102,6 +110,7 @@ export default function DeviceProfiles() {
         // v5.5.60 MPOS-only fields
         runnerMode: p.runner_mode === true,
         paymentMode: p.payment_mode || 'tap_to_pay',
+        customerDisplayMode: p.customer_display_mode || 'auto',
         assignedReaderId: p.assigned_reader_id || null,
       }));
       setProfiles(mapped);
@@ -129,6 +138,7 @@ export default function DeviceProfiles() {
     // v5.5.60 MPOS-only fields
     runner_mode: p.runnerMode === true,
     payment_mode: p.paymentMode || 'tap_to_pay',
+    customer_display_mode: p.customerDisplayMode || 'auto',
     assigned_reader_id: p.assignedReaderId || null,
   });
 
@@ -343,7 +353,7 @@ function ProfileEditor({ profile, onSave, onDelete, onClose }) {
     assignedSection:null, hiddenFeatures:[],
     tableServiceEnabled:true, quickScreenEnabled:true, receiptPrinterId:'pr1', menuId:null,
     autoPrintReceiptOnClose:true,
-    runnerMode:false, paymentMode:'tap_to_pay', assignedReaderId:null,
+    runnerMode:false, paymentMode:'tap_to_pay', assignedReaderId:null, customerDisplayMode:'auto',
   });
 
   const upd = (key, val) => setForm(f => ({ ...f, [key]: val }));
@@ -456,6 +466,26 @@ function ProfileEditor({ profile, onSave, onDelete, onClose }) {
                   }}>
                     <div style={{ fontSize:18, marginBottom:2 }}>{t.icon}</div>
                     <div style={{ fontSize:11, fontWeight:700 }}>{t.label}</div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Customer-facing display */}
+          <div style={{ marginBottom:18 }}>
+            <label style={{ display:'block', fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.07em', marginBottom:8 }}>Customer-facing display</label>
+            <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+              {CUSTOMER_DISPLAY_MODES.map(m => {
+                const on = (form.customerDisplayMode || 'auto') === m.id;
+                return (
+                  <button key={m.id} onClick={() => upd('customerDisplayMode', m.id)} style={{
+                    textAlign:'left', padding:'10px 12px', borderRadius:10, cursor:'pointer', fontFamily:'inherit',
+                    background: on ? 'var(--bg2)' : 'transparent',
+                    border:`1.5px solid ${on ? 'var(--acc)' : 'var(--bdr2)'}`,
+                  }}>
+                    <div style={{ fontSize:13, fontWeight:700, color: on ? 'var(--acc)' : 'var(--t1)' }}>{m.label}</div>
+                    <div style={{ fontSize:11, color:'var(--t4)', marginTop:2 }}>{m.desc}</div>
                   </button>
                 );
               })}

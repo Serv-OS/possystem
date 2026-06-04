@@ -79,6 +79,13 @@ import { ServOSIcon } from './components/ServOSBrand';
 
 const CHANGELOG = [
   {
+    version: '5.5.346', date: '3 Jun 2026', label: 'Customer display — per-terminal hardware setting (Off / Reader / Screen / Auto)',
+    changes: [
+      'BO → Device Profiles: new "Customer-facing display" selector — Auto (recommended), Dedicated screen, Card reader screen, or Off — so each till matches its hardware.',
+      'Stored on device_profiles.customer_display_mode; the POS caches it on boot and routes the live cart + payment status to the chosen destination(s). Auto drives both the reader and a dedicated screen.',
+    ],
+  },
+  {
     version: '5.5.345', date: '3 Jun 2026', label: 'Customer-facing display — dedicated second screen (e.g. Sunmi D3 Pro rear)',
     changes: [
       'New ?mode=customer-display surface: idle branding / ad carousel → live order mirror → payment status (paying / approved / declined), for a dedicated customer-facing screen.',

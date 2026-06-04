@@ -6,7 +6,7 @@ import { useStore } from '../store';
 import { fetchMenuCategoryLinks } from '../lib/db';
 import { supabase } from '../lib/supabase';
 import { pushReaderDisplay, clearReaderDisplay, cacheReaderDisplaySetting } from '../lib/readerDisplay';
-import { publishDisplay, getCustomerDisplayMode, displayUsesReader, displayUsesScreen } from '../lib/customerDisplay';
+import { publishDisplay, getCustomerDisplayMode, displayUsesReader, displayUsesScreen, cacheCustomerDisplayMode } from '../lib/customerDisplay';
 import { getAssignedNetworkReader } from '../lib/networkReader';
 import { CATEGORIES, MENU_ITEMS as SEED_MENU_ITEMS, ALLERGENS, QUICK_IDS, getDaypart, CAT_META } from '../data/seed';
 import { calculateOrderTax } from '../lib/tax';
@@ -295,6 +295,15 @@ export default function POSSurface() {
         const reader = await getAssignedNetworkReader();
         if (cancelled) return;
         cacheReaderDisplaySetting(reader?.customer_display_enabled);
+      } catch {}
+      // v5.5.346: cache this terminal's customer-display destination (off|reader|screen|auto).
+      try {
+        const dev = JSON.parse(localStorage.getItem('rpos-device') || 'null');
+        if (dev?.profileId && supabase) {
+          const { data } = await supabase
+            .from('device_profiles').select('customer_display_mode').eq('id', dev.profileId).maybeSingle();
+          if (!cancelled) cacheCustomerDisplayMode(data?.customer_display_mode || 'auto');
+        }
       } catch {}
     })();
     return () => { cancelled = true; };
