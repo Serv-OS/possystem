@@ -4,6 +4,9 @@ import android.app.Activity;
 import android.os.Bundle;
 import android.view.View;
 import android.view.WindowManager;
+import android.content.Context;
+import android.hardware.display.DisplayManager;
+import android.view.Display;
 import android.webkit.*;
 import co.posup.rpos.printer.PrinterBridge;
 
@@ -12,6 +15,9 @@ public class MainActivity extends Activity {
     private WebView webView;
     private PrinterBridge printerBridge;
     private UpdateChecker updateChecker;
+    private DisplayManager displayManager;
+    private CustomerDisplayPresentation customerPresentation;
+    private DisplayManager.DisplayListener displayListener;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -88,6 +94,42 @@ public class MainActivity extends Activity {
         // POS UI loads first; UpdateChecker throttles itself and is a no-op when current.
         updateChecker = new UpdateChecker(this);
         webView.postDelayed(() -> updateChecker.check(false), 8000);
+
+        // v1.4: mirror the customer-facing display onto the Sunmi rear/second screen.
+        setupCustomerDisplay();
+    }
+
+    // ── Customer-facing second screen (Sunmi rear display) ──────────────────
+    private void setupCustomerDisplay() {
+        displayManager = (DisplayManager) getSystemService(Context.DISPLAY_SERVICE);
+        if (displayManager == null) return;
+        showCustomerPresentation();
+        displayListener = new DisplayManager.DisplayListener() {
+            @Override public void onDisplayAdded(int displayId)   { showCustomerPresentation(); }
+            @Override public void onDisplayRemoved(int displayId) { dismissCustomerPresentation(); }
+            @Override public void onDisplayChanged(int displayId) {}
+        };
+        displayManager.registerDisplayListener(displayListener, null);
+    }
+
+    private void showCustomerPresentation() {
+        if (displayManager == null) return;
+        if (customerPresentation != null && customerPresentation.isShowing()) return;
+        Display[] displays = displayManager.getDisplays(DisplayManager.DISPLAY_CATEGORY_PRESENTATION);
+        if (displays == null || displays.length == 0) return; // no second screen attached
+        try {
+            customerPresentation = new CustomerDisplayPresentation(this, displays[0]);
+            customerPresentation.show();
+        } catch (Exception e) {
+            customerPresentation = null; // e.g. InvalidDisplayException if it vanished
+        }
+    }
+
+    private void dismissCustomerPresentation() {
+        if (customerPresentation != null) {
+            try { customerPresentation.destroyWeb(); customerPresentation.dismiss(); } catch (Exception ignored) {}
+            customerPresentation = null;
+        }
     }
 
     @Override
@@ -104,6 +146,8 @@ public class MainActivity extends Activity {
         webView.onResume();
         // Catch updates on long-running devices too (throttled to every few hours).
         if (updateChecker != null) updateChecker.check(false);
+        // Re-attach the customer display if it was dismissed / the screen reconnected.
+        showCustomerPresentation();
         // Re-apply immersive mode on resume (system UI may have re-appeared)
         getWindow().getDecorView().setSystemUiVisibility(
             View.SYSTEM_UI_FLAG_FULLSCREEN |
@@ -122,6 +166,10 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        if (displayManager != null && displayListener != null) {
+            try { displayManager.unregisterDisplayListener(displayListener); } catch (Exception ignored) {}
+        }
+        dismissCustomerPresentation();
         if (updateChecker != null) updateChecker.destroy();
         if (printerBridge != null) printerBridge.destroy();
         if (webView != null) webView.destroy();
