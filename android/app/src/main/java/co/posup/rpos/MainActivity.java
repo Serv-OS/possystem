@@ -105,6 +105,7 @@ public class MainActivity extends Activity {
         displayManager = (DisplayManager) getSystemService(Context.DISPLAY_SERVICE);
         if (displayManager == null) return;
         showCustomerPresentation();
+        webView.postDelayed(this::showDisplayDiagnostic, 2500); // v1.6 diagnostic
         displayListener = new DisplayManager.DisplayListener() {
             @Override public void onDisplayAdded(int displayId)   { showCustomerPresentation(); }
             @Override public void onDisplayRemoved(int displayId) { dismissCustomerPresentation(); }
@@ -150,6 +151,31 @@ public class MainActivity extends Activity {
 
     private void toast(String m) {
         try { android.widget.Toast.makeText(this, m, android.widget.Toast.LENGTH_LONG).show(); } catch (Exception ignored) {}
+    }
+
+    /** v1.6: unmissable diagnostic — lists every display the device exposes. */
+    private void showDisplayDiagnostic() {
+        try {
+            StringBuilder sb = new StringBuilder();
+            sb.append("Device: ").append(android.os.Build.MODEL).append("\n\n");
+            Display[] all = displayManager.getDisplays();
+            sb.append("Total displays: ").append(all == null ? 0 : all.length).append("\n");
+            if (all != null) {
+                for (Display d : all) {
+                    sb.append("  #").append(d.getDisplayId()).append("  ").append(d.getName())
+                      .append(d.getDisplayId() == Display.DEFAULT_DISPLAY ? "  [MAIN]" : "  [2nd]").append("\n");
+                }
+            }
+            Display[] pres = displayManager.getDisplays(DisplayManager.DISPLAY_CATEGORY_PRESENTATION);
+            sb.append("\nPresentation-capable: ").append(pres == null ? 0 : pres.length).append("\n");
+            sb.append("Our display showing: ")
+              .append(customerPresentation != null && customerPresentation.isShowing() ? "YES" : "no");
+            new android.app.AlertDialog.Builder(this)
+                .setTitle("Serv OS · display check (v1.6)")
+                .setMessage(sb.toString())
+                .setPositiveButton("OK", null)
+                .show();
+        } catch (Exception ignored) {}
     }
 
     private void dismissCustomerPresentation() {
