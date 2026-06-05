@@ -1936,7 +1936,7 @@ export const useStore = create((set, get) => ({
 
   // ── Walk-in order (non-table) ──────────────
   walkInOrder: null,
-  clearWalkIn: () => set({ walkInOrder:null, customer:null, orderType:'dine-in' }),
+  clearWalkIn: () => set({ walkInOrder:null, customer:null, orderType:'dine-in', pendingLoyaltyReward:null }),
 
   // activeSessions — map of tableId → session for all tables that have a session
   // Used by Reports, AI assistant, and back office dashboard
@@ -2042,7 +2042,11 @@ export const useStore = create((set, get) => ({
   }),
   customer: null,
   setCustomer: c => set({ customer:c }),
-  clearCustomer: () => set({ customer:null }),
+  clearCustomer: () => set({ customer:null, pendingLoyaltyReward:null }),
+  // v5.5.349: a loyalty reward the customer chose on the customer display, staged
+  // until checkout (points are only deducted when CheckoutModal applies it).
+  pendingLoyaltyReward: null,
+  setPendingLoyaltyReward: r => set({ pendingLoyaltyReward: r }),
 
   // v4.4.9: write a customer record onto a specific table's session. Used by
   // TablesSurface (Add/Edit Guest from detail panel + ReservationModal) so that

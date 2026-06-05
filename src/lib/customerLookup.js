@@ -192,11 +192,18 @@ export async function captureLoyaltyByPhone(rawPhone, locationId, orgId) {
     if (existing?.id) {
       let points = 0;
       let name = existing.name || '';
+      let rewards = [];
+      let customerId = existing.id;
       try {
         const d = await fetchCustomerByPhone(rawPhone, locationId);
-        if (d?.knownCustomer) { points = d.credit || 0; name = d.name || name; }
-      } catch { /* points best-effort */ }
-      return { ok: true, known: true, name, points, customerId: existing.id };
+        if (d?.knownCustomer) {
+          points = d.credit || 0;
+          name = d.name || name;
+          rewards = Array.isArray(d.rewards) ? d.rewards : [];
+          customerId = d.customerId || customerId;
+        }
+      } catch { /* points/rewards best-effort */ }
+      return { ok: true, known: true, name, points, rewards, customerId };
     }
 
     // New number → create the customer, then SMS them the loyalty signup form.

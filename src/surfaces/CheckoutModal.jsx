@@ -10,6 +10,7 @@ import {
 } from '../lib/networkReader';
 import { getActiveLocationSync, supabase, ensureAuthToken } from '../lib/supabase';
 import { fetchCustomerByPhone } from '../lib/customerLookup';
+import { redeemLoyaltyReward } from '../lib/loyaltyRedeem';
 import { money, currencySymbol, stripeCurrency, getActiveCurrencyCode } from '../lib/currency';
 import { publishDisplay, displayUsesScreen } from '../lib/customerDisplay';
 // (readerDisplay imports removed — cancel now lets the natural cart-change effect refresh the reader after onBack)
@@ -994,7 +995,7 @@ function LoyaltyRewardsEntry({ customer, loyaltyData, items = [], total, onAppli
 // ─── Main checkout modal ──────────────────────────────────────────────────────
 export default function CheckoutModal({ items, subtotal, service, total, orderType, covers, tableId, tabName, customer, onClose, onComplete }) {
   const compact = useCompact();
-  const { taxRates, deviceConfig, myDrawer } = useStore();
+  const { taxRates, deviceConfig, myDrawer, pendingLoyaltyReward, setPendingLoyaltyReward } = useStore();
   // v4.6.50: resolve the drawer bound to this POS terminal. If the POS has
   // no drawer configured at all, cash payments shouldn't be offered —
   // nowhere to put the cash. Drawer status (open/idle) is not gated here.
@@ -1032,6 +1033,20 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
     }).catch(() => {}).finally(() => { if (alive) setLoyaltyLoading(false); });
     return () => { alive = false; };
   }, [customer?.phone]);
+
+  // v5.5.349: auto-apply the reward the customer chose on the customer display.
+  // Guarded — only when loyalty loaded + nothing applied yet; failure is silent
+  // (staff can still apply manually), so it can never block checkout.
+  useEffect(() => {
+    if (!pendingLoyaltyReward || !loyaltyData || loyaltyApplied) return;
+    let alive = true;
+    redeemLoyaltyReward(pendingLoyaltyReward, {
+      customerId: loyaltyData.customerId || customer?.customerId, items, total,
+    })
+      .then(r => { if (alive) { setLoyaltyApplied(r); setPendingLoyaltyReward?.(null); } })
+      .catch(() => { /* leave for manual apply */ });
+    return () => { alive = false; };
+  }, [pendingLoyaltyReward, loyaltyData, loyaltyApplied]);
 
   const isBarTab = orderType==='bar-tab';
   const skipTip  = isBarTab || orderType==='takeaway' || orderType==='collection';

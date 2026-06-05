@@ -79,6 +79,13 @@ import { ServOSIcon } from './components/ServOSBrand';
 
 const CHANGELOG = [
   {
+    version: '5.5.349', date: '4 Jun 2026', label: 'Customer display — show & redeem loyalty rewards from the screen',
+    changes: [
+      'Once a customer is identified on the display, their available rewards load on screen; the customer taps one to use it.',
+      'The chosen reward is staged and auto-applies at checkout (points are deducted only then, not on tap) — reuses the existing redeem via a shared loyaltyRedeem helper; guarded so it can never block checkout.',
+    ],
+  },
+  {
     version: '5.5.348', date: '4 Jun 2026', label: 'Customer display — loyalty phone capture (earn rewards at the counter)',
     changes: [
       'When loyalty is enabled, the customer display shows a phone-number keypad on the left while ringing up ("Enter your mobile to earn rewards"); the order stays on the right. Idle still shows the slideshow.',

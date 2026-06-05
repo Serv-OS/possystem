@@ -14,7 +14,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { supabase, ensureAuthToken } from '../lib/supabase';
 import { money, setActiveCurrency } from '../lib/currency';
-import { subscribeDisplay, getDisplayTargetId, publishCustomerPhone, isLoyaltyEnabled } from '../lib/customerDisplay';
+import { subscribeDisplay, getDisplayTargetId, publishCustomerPhone, publishRedeemReward, isLoyaltyEnabled } from '../lib/customerDisplay';
 import { ServOSIcon } from '../components/ServOSBrand';
 
 const IDLE_AFTER_MS = 45000;
@@ -74,7 +74,8 @@ export default function CustomerDisplaySurface() {
             setPhoneInput('');
             setLoyaltyResult(r || {});
             if (resultTimer.current) clearTimeout(resultTimer.current);
-            resultTimer.current = setTimeout(() => setLoyaltyResult(null), 9000);
+            const ms = (r?.known && (r.rewards || []).length) ? 25000 : 9000; // longer while rewards are tappable
+            resultTimer.current = setTimeout(() => setLoyaltyResult(null), ms);
           });
       }
     })();
@@ -166,7 +167,7 @@ export default function CustomerDisplaySurface() {
   // ── Active sale — SPLIT: loyalty keypad left, order right ──────────────────
   if (state === 'active' && items.length > 0) {
     let left;
-    if (loyaltyResult) left = <LoyaltyResultPanel result={loyaltyResult} brand={brand} venueName={venueName} />;
+    if (loyaltyResult) left = <LoyaltyResultPanel result={loyaltyResult} brand={brand} venueName={venueName} onRedeem={(r) => publishRedeemReward(r)} />;
     else if (submitting) left = <Centered><div style={{ fontSize: 24, opacity: 0.7 }}>Checking…</div></Centered>;
     else if (loyaltyEnabled) left = <PhoneKeypad value={phoneInput} brand={brand}
       onKey={d => setPhoneInput(p => (p + d).slice(0, 15))}
@@ -245,18 +246,48 @@ function PhoneKeypad({ value, brand, onKey, onBackspace, onSubmit }) {
   );
 }
 
-function LoyaltyResultPanel({ result, brand, venueName }) {
+function LoyaltyResultPanel({ result, brand, venueName, onRedeem }) {
   if (result?.error) {
     return <Centered><div style={{ fontSize: 44 }}>⚠️</div><div style={{ fontSize: 24, fontWeight: 700, marginTop: 10 }}>Sorry — please try again</div></Centered>;
   }
-  if (result?.known) {
+  if (result?.rewardSelected) {
     return (
       <Centered>
-        <div style={{ fontSize: 64 }}>🎉</div>
-        <div style={{ fontSize: 30, fontWeight: 800, marginTop: 8 }}>Welcome back{result.name ? `, ${result.name}` : ''}!</div>
-        {result.points != null && <div style={{ fontSize: 24, color: brand, fontWeight: 800, marginTop: 8 }}>{result.points} points</div>}
-        <div style={{ fontSize: 16, opacity: 0.6, marginTop: 10 }}>You're earning points on this order</div>
+        <div style={{ fontSize: 64 }}>✅</div>
+        <div style={{ fontSize: 26, fontWeight: 800, marginTop: 8 }}>{result.rewardSelected}</div>
+        <div style={{ fontSize: 16, opacity: 0.7, marginTop: 10 }}>Added — applied at the till</div>
       </Centered>
+    );
+  }
+  if (result?.known) {
+    const rewards = Array.isArray(result.rewards) ? result.rewards : [];
+    return (
+      <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', padding: '26px 20px', overflowY: 'auto' }}>
+        <div style={{ textAlign: 'center', flexShrink: 0 }}>
+          <div style={{ fontSize: 40 }}>🎉</div>
+          <div style={{ fontSize: 26, fontWeight: 800, marginTop: 4 }}>Welcome back{result.name ? `, ${result.name}` : ''}!</div>
+          {result.points != null && <div style={{ fontSize: 20, color: brand, fontWeight: 800, marginTop: 4 }}>{result.points} points</div>}
+        </div>
+        {rewards.length > 0 ? (
+          <>
+            <div style={{ fontSize: 15, opacity: 0.6, textAlign: 'center', margin: '16px 0 10px' }}>Tap a reward to use it</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {rewards.map(r => (
+                <button key={r.id} onClick={() => onRedeem && onRedeem(r)} style={{
+                  textAlign: 'left', padding: '14px 16px', borderRadius: 14, cursor: 'pointer', fontFamily: 'inherit',
+                  background: 'rgba(255,255,255,.06)', border: `1.5px solid ${brand}66`, color: '#fff',
+                }}>
+                  <div style={{ fontSize: 18, fontWeight: 700 }}>{r.label}</div>
+                  {r.description && <div style={{ fontSize: 13, opacity: 0.6, marginTop: 2 }}>{r.description}</div>}
+                  {r.pointsCost != null && <div style={{ fontSize: 13, color: brand, fontWeight: 700, marginTop: 4 }}>{r.pointsCost} pts</div>}
+                </button>
+              ))}
+            </div>
+          </>
+        ) : (
+          <div style={{ fontSize: 16, opacity: 0.6, textAlign: 'center', marginTop: 16 }}>You're earning points on this order</div>
+        )}
+      </div>
     );
   }
   return (

@@ -32,7 +32,7 @@ export function getDisplayTargetId() {
 function channelName(deviceId) { return `display:${deviceId}`; }
 
 // ── POS side: one channel — sends 'display'/'loyalty', receives 'customer-phone'
-const _pub = { channel: null, deviceId: null, joined: false, latest: null, onPhone: null };
+const _pub = { channel: null, deviceId: null, joined: false, latest: null, onPhone: null, onRedeem: null };
 
 function _send(event, payload) { try { _pub.channel?.send({ type: 'broadcast', event, payload }); } catch { /* offline */ } }
 
@@ -44,6 +44,9 @@ function _ensurePub(deviceId) {
   _pub.joined = false;
   _pub.channel.on('broadcast', { event: 'customer-phone' }, (m) => {
     try { if (_pub.onPhone) _pub.onPhone(m.payload?.phone); } catch { /* noop */ }
+  });
+  _pub.channel.on('broadcast', { event: 'redeem-reward' }, (m) => {
+    try { if (_pub.onRedeem) _pub.onRedeem(m.payload?.reward); } catch { /* noop */ }
   });
   _pub.channel.subscribe((status) => {
     if (status === 'SUBSCRIBED') { _pub.joined = true; if (_pub.latest) _send('display', _pub.latest); }
@@ -101,6 +104,22 @@ export function subscribeDisplay(deviceId, onState, onLoyalty) {
 export function publishCustomerPhone(phone) {
   if (!phone || !_sub.channel) return;
   try { _sub.channel.send({ type: 'broadcast', event: 'customer-phone', payload: { phone } }); } catch { /* noop */ }
+}
+
+/** Display: the customer tapped a reward to use it. */
+export function publishRedeemReward(reward) {
+  if (!reward || !_sub.channel) return;
+  try { _sub.channel.send({ type: 'broadcast', event: 'redeem-reward', payload: { reward } }); } catch { /* noop */ }
+}
+
+/** POS: register a handler for when the customer taps a reward on the display. */
+export function onRedeemReward(cb) {
+  if (isMock || !supabase) return () => {};
+  const deviceId = getOwnDeviceId();
+  if (!deviceId) return () => {};
+  _ensurePub(deviceId);
+  _pub.onRedeem = cb;
+  return () => { _pub.onRedeem = null; };
 }
 
 // ── Loyalty enabled? (gates the phone-capture keypad on the display) ─────────

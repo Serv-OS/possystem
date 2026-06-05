@@ -6,7 +6,7 @@ import { useStore } from '../store';
 import { fetchMenuCategoryLinks } from '../lib/db';
 import { supabase } from '../lib/supabase';
 import { pushReaderDisplay, clearReaderDisplay, cacheReaderDisplaySetting } from '../lib/readerDisplay';
-import { publishDisplay, getCustomerDisplayMode, displayUsesReader, displayUsesScreen, cacheCustomerDisplayMode, onCustomerPhone, publishLoyalty } from '../lib/customerDisplay';
+import { publishDisplay, getCustomerDisplayMode, displayUsesReader, displayUsesScreen, cacheCustomerDisplayMode, onCustomerPhone, publishLoyalty, onRedeemReward } from '../lib/customerDisplay';
 import { captureLoyaltyByPhone } from '../lib/customerLookup';
 import { getAssignedNetworkReader } from '../lib/networkReader';
 import { CATEGORIES, MENU_ITEMS as SEED_MENU_ITEMS, ALLERGENS, QUICK_IDS, getDaypart, CAT_META } from '../data/seed';
@@ -365,7 +365,7 @@ export default function POSSurface() {
   // loyalty. Look up / enrol by phone, attach to the order, reply to the display.
   useEffect(() => {
     if (!displayUsesScreen()) return;
-    const unsub = onCustomerPhone(async (phone) => {
+    const unsubPhone = onCustomerPhone(async (phone) => {
       if (!phone) return;
       try {
         const dev = JSON.parse(localStorage.getItem('rpos-device') || 'null');
@@ -373,13 +373,21 @@ export default function POSSurface() {
         if (res?.ok) {
           const cur = useStore.getState().customer || {};
           setCustomer({ ...cur, phone, name: res.name || cur.name });
-          publishLoyalty({ known: res.known, name: res.name, points: res.points, smsSent: res.smsSent });
+          publishLoyalty({ known: res.known, name: res.name, points: res.points, rewards: res.rewards || [], customerId: res.customerId, smsSent: res.smsSent });
         } else {
           publishLoyalty({ error: true });
         }
       } catch { publishLoyalty({ error: true }); }
     });
-    return unsub;
+    // Customer tapped a reward on the display → stage it (applied at checkout).
+    const unsubRedeem = onRedeemReward((reward) => {
+      if (!reward) return;
+      try {
+        useStore.getState().setPendingLoyaltyReward(reward);
+        publishLoyalty({ rewardSelected: reward.label || reward.reward_name || reward.name || 'Reward' });
+      } catch { /* noop */ }
+    });
+    return () => { unsubPhone(); unsubRedeem(); };
   }, []);
 
   const firedCourses = session?.firedCourses || [];
