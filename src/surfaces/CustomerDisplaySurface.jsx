@@ -1,19 +1,20 @@
 // src/surfaces/CustomerDisplaySurface.jsx
 //
 // Dedicated customer-facing display (Sunmi D3 Pro rear screen / external monitor).
-// Mirrors a till. Layouts:
 //   • idle      → full-screen ad slideshow (customer_display_images) / branding
-//   • active    → SPLIT: slideshow on the left, live order (items + mods + total) on the right
+//   • active    → SPLIT: LEFT = loyalty phone-capture keypad (if loyalty enabled),
+//                 RIGHT = live order (items + mods + total)
 //   • paying    → "follow the card reader" + amount
 //   • approved/declined → full-screen ✓ / ✕
 //
-// Read-only; the POS broadcasts state over `display:<deviceId>` (lib/customerDisplay.js).
-// Reached via ?mode=customer-display. Mirrors ?till=<deviceId> or this device's pairing.
+// Two-way over `display:<deviceId>` (lib/customerDisplay.js): POS broadcasts cart +
+// payment + loyalty result; the display broadcasts the customer's phone number.
+// No OTP (counter-side). New numbers get the enrolment SMS from the POS side.
 
 import { useEffect, useRef, useState } from 'react';
 import { supabase, ensureAuthToken } from '../lib/supabase';
 import { money, setActiveCurrency } from '../lib/currency';
-import { subscribeDisplay, getDisplayTargetId } from '../lib/customerDisplay';
+import { subscribeDisplay, getDisplayTargetId, publishCustomerPhone, isLoyaltyEnabled } from '../lib/customerDisplay';
 import { ServOSIcon } from '../components/ServOSBrand';
 
 const IDLE_AFTER_MS = 45000;
@@ -23,15 +24,22 @@ export default function CustomerDisplaySurface() {
   const [payload, setPayload] = useState(null);
   const [profile, setProfile] = useState(null);
   const [slideIdx, setSlideIdx] = useState(0);
+  const [loyaltyEnabled, setLoyaltyEnabled] = useState(false);
+  const [phoneInput, setPhoneInput] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [loyaltyResult, setLoyaltyResult] = useState(null);
   const idleTimer = useRef(null);
   const terminalUntil = useRef(0);
+  const resultTimer = useRef(null);
+  const submitTimer = useRef(null);
   const targetId = getDisplayTargetId();
 
-  // Boot: auth (realtime) → load branding/images → subscribe.
+  // Boot: auth → loyalty-enabled? + branding → subscribe (cart/state + loyalty result).
   useEffect(() => {
     let unsub = () => {};
     (async () => {
       try { await ensureAuthToken(); } catch { /* anon realtime ok */ }
+      try { setLoyaltyEnabled(await isLoyaltyEnabled()); } catch { /* default off */ }
       try {
         const dev = JSON.parse(localStorage.getItem('rpos-device') || 'null');
         if (dev?.profileId && supabase) {
@@ -45,22 +53,35 @@ export default function CustomerDisplaySurface() {
       } catch { /* branding optional */ }
 
       if (targetId) {
-        unsub = subscribeDisplay(targetId, (p) => {
-          if (p?.currency) { try { setActiveCurrency(p.currency); } catch { /* noop */ } }
-          const st = p?.state || 'idle';
-          if (st === 'idle' && Date.now() < terminalUntil.current) return;  // hold ✓/✕ past cart-clear
-          if (st === 'approved' || st === 'declined') terminalUntil.current = Date.now() + 6000;
-          else if (st === 'active' || st === 'paying') terminalUntil.current = 0;
-          setPayload(p);
-          if (idleTimer.current) clearTimeout(idleTimer.current);
-          if (st !== 'idle') {
-            const ms = (st === 'approved' || st === 'declined') ? 6500 : IDLE_AFTER_MS;
-            idleTimer.current = setTimeout(() => setPayload({ state: 'idle', items: [], total: 0 }), ms);
-          }
-        });
+        unsub = subscribeDisplay(targetId,
+          (p) => {  // cart / state
+            if (p?.currency) { try { setActiveCurrency(p.currency); } catch { /* noop */ } }
+            const st = p?.state || 'idle';
+            if (st === 'idle' && Date.now() < terminalUntil.current) return;
+            if (st === 'approved' || st === 'declined') terminalUntil.current = Date.now() + 6000;
+            else if (st === 'active' || st === 'paying') terminalUntil.current = 0;
+            if (st === 'idle') { setPhoneInput(''); setSubmitting(false); setLoyaltyResult(null); }
+            setPayload(p);
+            if (idleTimer.current) clearTimeout(idleTimer.current);
+            if (st !== 'idle') {
+              const ms = (st === 'approved' || st === 'declined') ? 6500 : IDLE_AFTER_MS;
+              idleTimer.current = setTimeout(() => setPayload({ state: 'idle', items: [], total: 0 }), ms);
+            }
+          },
+          (r) => {  // loyalty lookup result
+            setSubmitting(false);
+            if (submitTimer.current) clearTimeout(submitTimer.current);
+            setPhoneInput('');
+            setLoyaltyResult(r || {});
+            if (resultTimer.current) clearTimeout(resultTimer.current);
+            resultTimer.current = setTimeout(() => setLoyaltyResult(null), 9000);
+          });
       }
     })();
-    return () => { unsub(); if (idleTimer.current) clearTimeout(idleTimer.current); };
+    return () => {
+      unsub();
+      [idleTimer, resultTimer, submitTimer].forEach(t => t.current && clearTimeout(t.current));
+    };
   }, [targetId]);
 
   // Slideshow images: dedicated set, else fall back to kiosk banners.
@@ -94,8 +115,15 @@ export default function CustomerDisplaySurface() {
     fontFamily: "-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif",
     display: 'flex', flexDirection: 'column', overflow: 'hidden', userSelect: 'none',
   };
-
   const slides = <Slides images={slideImages} idx={slideIdx} bg={bg} logo={logo} venueName={venueName} />;
+
+  const submitPhone = () => {
+    if ((phoneInput || '').replace(/\D/g, '').length < 7) return;
+    publishCustomerPhone(phoneInput);
+    setSubmitting(true);
+    if (submitTimer.current) clearTimeout(submitTimer.current);
+    submitTimer.current = setTimeout(() => setSubmitting(false), 8000); // fallback if POS silent
+  };
 
   // ── No target configured ─────────────────────────────────────────────────
   if (!targetId) {
@@ -115,10 +143,7 @@ export default function CustomerDisplaySurface() {
     const ok = state === 'approved';
     return (
       <div style={{ ...root, alignItems: 'center', justifyContent: 'center', textAlign: 'center', background: ok ? '#0b1f12' : '#27110f' }}>
-        <div style={{
-          width: 160, height: 160, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
-          background: ok ? '#16a34a' : '#dc2626', fontSize: 96, lineHeight: 1, boxShadow: '0 10px 40px rgba(0,0,0,.4)',
-        }}>{ok ? '✓' : '✕'}</div>
+        <div style={{ width: 160, height: 160, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: ok ? '#16a34a' : '#dc2626', fontSize: 96, lineHeight: 1, boxShadow: '0 10px 40px rgba(0,0,0,.4)' }}>{ok ? '✓' : '✕'}</div>
         <div style={{ marginTop: 32, fontSize: 40, fontWeight: 800 }}>{ok ? 'Payment approved' : 'Payment declined'}</div>
         {total > 0 && <div style={{ marginTop: 8, fontSize: 28, opacity: 0.85, fontVariantNumeric: 'tabular-nums' }}>{money(total)}</div>}
         {ok && <div style={{ marginTop: 28, fontSize: 22, opacity: 0.7 }}>Thank you{venueName ? ` — ${venueName}` : ''}!</div>}
@@ -138,11 +163,19 @@ export default function CustomerDisplaySurface() {
     );
   }
 
-  // ── Active sale — SPLIT: slideshow left, order right ──────────────────────
+  // ── Active sale — SPLIT: loyalty keypad left, order right ──────────────────
   if (state === 'active' && items.length > 0) {
+    let left;
+    if (loyaltyResult) left = <LoyaltyResultPanel result={loyaltyResult} brand={brand} venueName={venueName} />;
+    else if (submitting) left = <Centered><div style={{ fontSize: 24, opacity: 0.7 }}>Checking…</div></Centered>;
+    else if (loyaltyEnabled) left = <PhoneKeypad value={phoneInput} brand={brand}
+      onKey={d => setPhoneInput(p => (p + d).slice(0, 15))}
+      onBackspace={() => setPhoneInput(p => p.slice(0, -1))}
+      onSubmit={submitPhone} />;
+    else left = slides;
     return (
       <div style={{ ...root, flexDirection: 'row' }}>
-        <div style={{ position: 'relative', width: '40%', minWidth: 280 }}>{slides}</div>
+        <div style={{ position: 'relative', width: '42%', minWidth: 300 }}>{left}</div>
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', borderLeft: `3px solid ${brand}` }}>
           <div style={{ padding: '18px 28px', display: 'flex', alignItems: 'center', gap: 12, borderBottom: '1px solid rgba(255,255,255,.08)' }}>
             {logo ? <img src={logo} alt="" style={{ height: 34 }} /> : <ServOSIcon size={34} />}
@@ -159,9 +192,7 @@ export default function CustomerDisplaySurface() {
                   <div style={{ minWidth: 40, fontSize: 22, fontWeight: 800, color: brand, fontVariantNumeric: 'tabular-nums' }}>{qty}×</div>
                   <div style={{ flex: 1 }}>
                     <div style={{ fontSize: 22, fontWeight: 600 }}>{it.name || it.displayName || 'Item'}</div>
-                    {mods.length > 0 && (
-                      <div style={{ marginTop: 3, fontSize: 15, opacity: 0.55 }}>{mods.map(m => m.label || m).filter(Boolean).join(' · ')}</div>
-                    )}
+                    {mods.length > 0 && <div style={{ marginTop: 3, fontSize: 15, opacity: 0.55 }}>{mods.map(m => m.label || m).filter(Boolean).join(' · ')}</div>}
                     {it.notes && <div style={{ marginTop: 2, fontSize: 14, fontStyle: 'italic', opacity: 0.5 }}>“{it.notes}”</div>}
                   </div>
                   <div style={{ fontSize: 22, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{money(line)}</div>
@@ -182,6 +213,61 @@ export default function CustomerDisplaySurface() {
   return <div style={root}>{slides}</div>;
 }
 
+function Centered({ children }) {
+  return <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', padding: 24 }}>{children}</div>;
+}
+
+function PhoneKeypad({ value, brand, onKey, onBackspace, onSubmit }) {
+  const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '', '0', '⌫'];
+  const ready = (value || '').replace(/\D/g, '').length >= 7;
+  return (
+    <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+      <div style={{ fontSize: 30, fontWeight: 800, textAlign: 'center' }}>Earn rewards 🎁</div>
+      <div style={{ fontSize: 16, opacity: 0.6, textAlign: 'center', marginTop: 6, marginBottom: 18 }}>Enter your mobile to collect points</div>
+      <div style={{ fontSize: 32, fontWeight: 800, letterSpacing: '2px', minHeight: 42, marginBottom: 16, fontVariantNumeric: 'tabular-nums' }}>
+        {value || <span style={{ opacity: 0.3 }}>0000000000</span>}
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 80px)', gap: 10 }}>
+        {keys.map((k, i) => k === '' ? <div key={i} /> : (
+          <button key={i} onClick={() => (k === '⌫' ? onBackspace() : onKey(k))} style={{
+            height: 66, borderRadius: 14, border: '1px solid rgba(255,255,255,.15)', background: 'rgba(255,255,255,.06)',
+            color: '#fff', fontSize: 26, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit',
+          }}>{k}</button>
+        ))}
+      </div>
+      <button onClick={onSubmit} disabled={!ready} style={{
+        marginTop: 18, width: 260, height: 60, borderRadius: 14, border: 'none',
+        background: ready ? brand : 'rgba(255,255,255,.12)', color: ready ? '#0b0c10' : 'rgba(255,255,255,.4)',
+        fontSize: 21, fontWeight: 800, cursor: ready ? 'pointer' : 'not-allowed', fontFamily: 'inherit',
+      }}>Collect points</button>
+      <div style={{ marginTop: 12, fontSize: 12, opacity: 0.4, textAlign: 'center', maxWidth: 280 }}>New? We'll text you a link to finish joining.</div>
+    </div>
+  );
+}
+
+function LoyaltyResultPanel({ result, brand, venueName }) {
+  if (result?.error) {
+    return <Centered><div style={{ fontSize: 44 }}>⚠️</div><div style={{ fontSize: 24, fontWeight: 700, marginTop: 10 }}>Sorry — please try again</div></Centered>;
+  }
+  if (result?.known) {
+    return (
+      <Centered>
+        <div style={{ fontSize: 64 }}>🎉</div>
+        <div style={{ fontSize: 30, fontWeight: 800, marginTop: 8 }}>Welcome back{result.name ? `, ${result.name}` : ''}!</div>
+        {result.points != null && <div style={{ fontSize: 24, color: brand, fontWeight: 800, marginTop: 8 }}>{result.points} points</div>}
+        <div style={{ fontSize: 16, opacity: 0.6, marginTop: 10 }}>You're earning points on this order</div>
+      </Centered>
+    );
+  }
+  return (
+    <Centered>
+      <div style={{ fontSize: 64 }}>📱</div>
+      <div style={{ fontSize: 28, fontWeight: 800, marginTop: 8 }}>You're in!</div>
+      <div style={{ fontSize: 16, opacity: 0.7, marginTop: 10, maxWidth: 300 }}>We've texted you a link to finish setting up your {venueName} rewards. Earning points on this order.</div>
+    </Centered>
+  );
+}
+
 // Crossfading image slideshow with a branded fallback when no images are set.
 function Slides({ images, idx, bg, logo, venueName }) {
   if (!images || images.length === 0) {
@@ -199,8 +285,7 @@ function Slides({ images, idx, bg, logo, venueName }) {
   return (
     <div style={{ position: 'absolute', inset: 0, background: bg }}>
       {images.map((src, i) => (
-        <img key={src + i} src={src} alt=""
-          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', opacity: i === cur ? 1 : 0, transition: 'opacity .8s ease' }} />
+        <img key={src + i} src={src} alt="" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', opacity: i === cur ? 1 : 0, transition: 'opacity .8s ease' }} />
       ))}
     </div>
   );

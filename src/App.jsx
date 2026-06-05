@@ -79,6 +79,14 @@ import { ServOSIcon } from './components/ServOSBrand';
 
 const CHANGELOG = [
   {
+    version: '5.5.348', date: '4 Jun 2026', label: 'Customer display — loyalty phone capture (earn rewards at the counter)',
+    changes: [
+      'When loyalty is enabled, the customer display shows a phone-number keypad on the left while ringing up ("Enter your mobile to earn rewards"); the order stays on the right. Idle still shows the slideshow.',
+      'Customer types their number → it attaches to the order for points. Existing members see "Welcome back, [name] · [points]"; new numbers are created and texted the loyalty signup link (no OTP — counter-side).',
+      'Two-way over the existing display channel; reuses the loyalty lookup, the customer record, and the send-welcome SMS.',
+    ],
+  },
+  {
     version: '5.5.347', date: '4 Jun 2026', label: 'Customer display — idle slideshow + split layout (ads left, order right)',
     changes: [
       'The customer-facing display now runs a full-screen image slideshow when idle, and a split layout while ringing up — promo image on the left, the live order (items, modifiers, notes, total) on the right.',

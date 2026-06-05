@@ -1,25 +1,16 @@
 // src/lib/customerDisplay.js
 //
 // Customer-facing DEDICATED display (Sunmi D3 Pro rear screen / external monitor).
-// Live cart + payment status over a Supabase Realtime *broadcast* channel.
+// Two-way over ONE Supabase Realtime *broadcast* channel per till (`display:<deviceId>`):
+//   POS  → display : 'display' (live cart + state), 'loyalty' (lookup result)
+//   display → POS  : 'customer-phone' (customer typed their number for rewards)
 //
-// This is the sibling of readerDisplay.js — same "customer display" subsystem, a
-// different destination. readerDisplay.js pushes to the WisePOS E's own screen;
-// this pushes to a separate screen running the ?mode=customer-display surface.
-// Which destination a terminal uses is chosen by device_profiles.customer_display_mode
-// (off | reader | screen | auto).
-//
-// Channel: `display:<deviceId>` where deviceId is the POS terminal's ops device id
-// (localStorage 'rpos-device'.id). Broadcast is ephemeral (no DB row) + low-latency,
-// and works whether the display is the same physical device (D3 Pro main+rear) or a
-// separate screen bound to a till via ?till=<deviceId>.
+// Sibling of readerDisplay.js (which targets the WisePOS E screen). Destination is
+// chosen per terminal via device_profiles.customer_display_mode (off|reader|screen|auto).
 
 import { supabase, isMock } from './supabase';
 
 // ── Destination mode (per terminal) ─────────────────────────────────────────
-// device_profiles.customer_display_mode, cached in localStorage so cart-change
-// checks are synchronous. 'auto' (default) = drive both reader + screen and let
-// whichever hardware is present render it; 'reader' / 'screen' / 'off' are explicit.
 const MODE_KEY = 'rpos-customer-display-mode';
 export function cacheCustomerDisplayMode(mode) {
   try { localStorage.setItem(MODE_KEY, mode || 'auto'); } catch { /* noop */ }
@@ -33,71 +24,100 @@ export const displayUsesReader = (m = getCustomerDisplayMode()) => m === 'reader
 export function getOwnDeviceId() {
   try { return JSON.parse(localStorage.getItem('rpos-device') || 'null')?.id || null; } catch { return null; }
 }
-
-/** Which till the display mirrors: explicit ?till=<deviceId> override, else this device. */
+/** Which till the display mirrors: ?till=<deviceId> override, else this device. */
 export function getDisplayTargetId() {
-  try {
-    const t = new URLSearchParams(window.location.search).get('till');
-    if (t) return t;
-  } catch { /* no window */ }
+  try { const t = new URLSearchParams(window.location.search).get('till'); if (t) return t; } catch { /* no window */ }
   return getOwnDeviceId();
 }
-
 function channelName(deviceId) { return `display:${deviceId}`; }
 
-// ── Publisher (POS side) ────────────────────────────────────────────────────
-// Keep one channel; remember the latest payload and (re)send it on (re)subscribe
-// so a display that opens mid-sale catches up on the next publish/heartbeat.
-const _pub = { channel: null, deviceId: null, joined: false, latest: null };
+// ── POS side: one channel — sends 'display'/'loyalty', receives 'customer-phone'
+const _pub = { channel: null, deviceId: null, joined: false, latest: null, onPhone: null };
 
-function _doSend(payload) {
-  try { _pub.channel?.send({ type: 'broadcast', event: 'display', payload }); } catch { /* offline */ }
-}
+function _send(event, payload) { try { _pub.channel?.send({ type: 'broadcast', event, payload }); } catch { /* offline */ } }
 
 function _ensurePub(deviceId) {
   if (_pub.channel && _pub.deviceId === deviceId) return;
   if (_pub.channel) { try { supabase.removeChannel(_pub.channel); } catch { /* noop */ } }
-  _pub.channel = supabase.channel(channelName(deviceId), { config: { broadcast: { ack: false } } });
+  _pub.channel = supabase.channel(channelName(deviceId), { config: { broadcast: { self: false, ack: false } } });
   _pub.deviceId = deviceId;
   _pub.joined = false;
+  _pub.channel.on('broadcast', { event: 'customer-phone' }, (m) => {
+    try { if (_pub.onPhone) _pub.onPhone(m.payload?.phone); } catch { /* noop */ }
+  });
   _pub.channel.subscribe((status) => {
-    if (status === 'SUBSCRIBED') {
-      _pub.joined = true;
-      if (_pub.latest) _doSend(_pub.latest); // flush latest to anyone listening
-    }
+    if (status === 'SUBSCRIBED') { _pub.joined = true; if (_pub.latest) _send('display', _pub.latest); }
   });
 }
 
-/**
- * Publish the current display state. Call on cart change + payment-state change.
- * @param {{items?:Array, total?:number, currency?:string, state?:string, meta?:object}} payload
- *   state: 'idle' | 'active' | 'paying' | 'approved' | 'declined'
- */
+/** Publish the current display state (cart + state). */
 export function publishDisplay(payload = {}) {
   if (isMock || !supabase) return;
   const deviceId = getOwnDeviceId();
   if (!deviceId) return;
   _pub.latest = payload;
   _ensurePub(deviceId);
-  if (_pub.joined) _doSend(payload);
+  if (_pub.joined) _send('display', payload);
 }
 
-/** Reset the display to its idle / attract state. */
-export function clearDisplay() {
-  publishDisplay({ items: [], total: 0, state: 'idle' });
+/** Reset the display to idle. */
+export function clearDisplay() { publishDisplay({ items: [], total: 0, state: 'idle' }); }
+
+/** Push a loyalty lookup result to the display ({ known, name, points, smsSent }). */
+export function publishLoyalty(result) {
+  if (isMock || !supabase) return;
+  const deviceId = getOwnDeviceId();
+  if (!deviceId) return;
+  _ensurePub(deviceId);
+  if (_pub.joined) _send('loyalty', result);
+  else setTimeout(() => _send('loyalty', result), 800);
 }
 
-// ── Subscriber (display side) ───────────────────────────────────────────────
-/**
- * Subscribe to a till's display broadcast. Returns an unsubscribe fn.
- * @param {string} deviceId  the POS terminal's ops device id to mirror
- * @param {(payload:object)=>void} onState
- */
-export function subscribeDisplay(deviceId, onState) {
+/** POS: register a handler for when the customer types their phone on the display. */
+export function onCustomerPhone(cb) {
+  if (isMock || !supabase) return () => {};
+  const deviceId = getOwnDeviceId();
+  if (!deviceId) return () => {};
+  _ensurePub(deviceId);
+  _pub.onPhone = cb;
+  return () => { _pub.onPhone = null; };
+}
+
+// ── Display side: one channel — receives 'display'/'loyalty', sends 'customer-phone'
+const _sub = { channel: null };
+
+/** Subscribe to a till's broadcast. onState(cart/state), onLoyalty(result). */
+export function subscribeDisplay(deviceId, onState, onLoyalty) {
   if (!supabase || !deviceId) return () => {};
-  const ch = supabase
-    .channel(channelName(deviceId), { config: { broadcast: { self: false } } })
-    .on('broadcast', { event: 'display' }, (msg) => { try { onState(msg.payload || {}); } catch { /* noop */ } })
-    .subscribe();
-  return () => { try { supabase.removeChannel(ch); } catch { /* noop */ } };
+  const ch = supabase.channel(channelName(deviceId), { config: { broadcast: { self: false } } });
+  ch.on('broadcast', { event: 'display' }, (m) => { try { onState(m.payload || {}); } catch { /* noop */ } });
+  ch.on('broadcast', { event: 'loyalty' }, (m) => { try { onLoyalty && onLoyalty(m.payload || {}); } catch { /* noop */ } });
+  ch.subscribe();
+  _sub.channel = ch;
+  return () => { try { supabase.removeChannel(ch); } catch { /* noop */ } _sub.channel = null; };
+}
+
+/** Display: the customer entered their phone number for rewards. */
+export function publishCustomerPhone(phone) {
+  if (!phone || !_sub.channel) return;
+  try { _sub.channel.send({ type: 'broadcast', event: 'customer-phone', payload: { phone } }); } catch { /* noop */ }
+}
+
+// ── Loyalty enabled? (gates the phone-capture keypad on the display) ─────────
+export async function isLoyaltyEnabled() {
+  try {
+    if (isMock || !supabase) return false;
+    const dev = JSON.parse(localStorage.getItem('rpos-device') || 'null');
+    const locationId = dev?.locationId;
+    if (!locationId) return false;
+    const { data: s } = await supabase.auth.getSession();
+    const token = s?.session?.access_token;
+    if (!token) return false;
+    const res = await fetch(
+      `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/loyalty-config?location_id=${encodeURIComponent(locationId)}`,
+      { headers: { authorization: `Bearer ${token}` } });
+    if (!res.ok) return false;
+    const j = await res.json();
+    return !!j?.enabled;
+  } catch { return false; }
 }

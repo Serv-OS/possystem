@@ -172,6 +172,64 @@ export async function fetchCustomerByPhone(rawPhone, locationId) {
  * the customer's confirmation flow. Returns customerId on success, null
  * on any failure (errors are logged for diagnostics).
  */
+/**
+ * Counter-side loyalty capture from the customer display: look the phone up;
+ * if new, create the customer + fire the welcome/enrolment SMS (portal signup link).
+ * Returns { ok, known, name, points, smsSent, customerId }.
+ */
+export async function captureLoyaltyByPhone(rawPhone, locationId, orgId) {
+  const phoneN = normalisePhone(rawPhone);
+  if (!phoneN || !supabase || !orgId) return { ok: false };
+  try {
+    const { data: existing } = await supabase
+      .from('customers')
+      .select('id, name')
+      .eq('org_id', orgId)
+      .eq('phone', phoneN)
+      .is('deleted_at', null)
+      .maybeSingle();
+
+    if (existing?.id) {
+      let points = 0;
+      let name = existing.name || '';
+      try {
+        const d = await fetchCustomerByPhone(rawPhone, locationId);
+        if (d?.knownCustomer) { points = d.credit || 0; name = d.name || name; }
+      } catch { /* points best-effort */ }
+      return { ok: true, known: true, name, points, customerId: existing.id };
+    }
+
+    // New number → create the customer, then SMS them the loyalty signup form.
+    const { data: ins, error } = await supabase
+      .from('customers')
+      .insert({ org_id: orgId, phone: phoneN, phone_raw: rawPhone, marketing_opt_in: true })
+      .select('id').maybeSingle();
+    if (error || !ins?.id) return { ok: false };
+
+    try {
+      let companyId = null;
+      if (platformSupabase) {
+        const { data: pLoc } = await platformSupabase
+          .from('locations').select('company_id')
+          .or(`ops_location_id.eq.${locationId},id.eq.${locationId}`)
+          .limit(1).maybeSingle();
+        companyId = pLoc?.company_id;
+      }
+      if (companyId) {
+        fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-welcome`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ customer_id: ins.id, company_id: companyId, location_id: locationId }),
+        }).catch(() => {});
+      }
+    } catch { /* welcome SMS best-effort */ }
+
+    return { ok: true, known: false, smsSent: true, customerId: ins.id };
+  } catch (e) {
+    console.warn('[captureLoyaltyByPhone]', e?.message || e);
+    return { ok: false };
+  }
+}
+
 export async function attributeOnlineOrder({
   phone, name, email, marketingOptIn = false,
   locationId,                    // ops_location_id (locations.id in ops DB)

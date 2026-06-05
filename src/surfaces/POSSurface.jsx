@@ -6,7 +6,8 @@ import { useStore } from '../store';
 import { fetchMenuCategoryLinks } from '../lib/db';
 import { supabase } from '../lib/supabase';
 import { pushReaderDisplay, clearReaderDisplay, cacheReaderDisplaySetting } from '../lib/readerDisplay';
-import { publishDisplay, getCustomerDisplayMode, displayUsesReader, displayUsesScreen, cacheCustomerDisplayMode } from '../lib/customerDisplay';
+import { publishDisplay, getCustomerDisplayMode, displayUsesReader, displayUsesScreen, cacheCustomerDisplayMode, onCustomerPhone, publishLoyalty } from '../lib/customerDisplay';
+import { captureLoyaltyByPhone } from '../lib/customerLookup';
 import { getAssignedNetworkReader } from '../lib/networkReader';
 import { CATEGORIES, MENU_ITEMS as SEED_MENU_ITEMS, ALLERGENS, QUICK_IDS, getDaypart, CAT_META } from '../data/seed';
 import { calculateOrderTax } from '../lib/tax';
@@ -359,6 +360,27 @@ export default function POSSurface() {
       if (displayUsesScreen(mode)) publishDisplay({ items: displayItems, total: total || 0, state: 'active', currency: getActiveCurrencyCode() });
     }
   }, [items, total]);
+
+  // v5.5.348: customer typed their phone on the dedicated display → capture for
+  // loyalty. Look up / enrol by phone, attach to the order, reply to the display.
+  useEffect(() => {
+    if (!displayUsesScreen()) return;
+    const unsub = onCustomerPhone(async (phone) => {
+      if (!phone) return;
+      try {
+        const dev = JSON.parse(localStorage.getItem('rpos-device') || 'null');
+        const res = await captureLoyaltyByPhone(phone, dev?.locationId, dev?.orgId);
+        if (res?.ok) {
+          const cur = useStore.getState().customer || {};
+          setCustomer({ ...cur, phone, name: res.name || cur.name });
+          publishLoyalty({ known: res.known, name: res.name, points: res.points, smsSent: res.smsSent });
+        } else {
+          publishLoyalty({ error: true });
+        }
+      } catch { publishLoyalty({ error: true }); }
+    });
+    return unsub;
+  }, []);
 
   const firedCourses = session?.firedCourses || [];
   // v4.5.1: course management is gated per device profile. Hides per-course header (Fire button)
