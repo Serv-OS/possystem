@@ -79,6 +79,13 @@ import { ServOSIcon } from './components/ServOSBrand';
 
 const CHANGELOG = [
   {
+    version: '5.5.347', date: '4 Jun 2026', label: 'Customer display — idle slideshow + split layout (ads left, order right)',
+    changes: [
+      'The customer-facing display now runs a full-screen image slideshow when idle, and a split layout while ringing up — promo image on the left, the live order (items, modifiers, notes, total) on the right.',
+      'Slideshow images are set per terminal in BO → Device Profiles → "Customer display — slideshow images" (uploaded to the kiosk-assets bucket; new device_profiles.customer_display_images). Falls back to venue branding when none are set.',
+    ],
+  },
+  {
     version: '5.5.346', date: '3 Jun 2026', label: 'Customer display — per-terminal hardware setting (Off / Reader / Screen / Auto)',
     changes: [
       'BO → Device Profiles: new "Customer-facing display" selector — Auto (recommended), Dedicated screen, Card reader screen, or Off — so each till matches its hardware.',

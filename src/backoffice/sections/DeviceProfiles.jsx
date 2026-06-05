@@ -111,6 +111,7 @@ export default function DeviceProfiles() {
         runnerMode: p.runner_mode === true,
         paymentMode: p.payment_mode || 'tap_to_pay',
         customerDisplayMode: p.customer_display_mode || 'auto',
+        customerDisplayImages: Array.isArray(p.customer_display_images) ? p.customer_display_images : [],
         assignedReaderId: p.assigned_reader_id || null,
       }));
       setProfiles(mapped);
@@ -139,6 +140,7 @@ export default function DeviceProfiles() {
     runner_mode: p.runnerMode === true,
     payment_mode: p.paymentMode || 'tap_to_pay',
     customer_display_mode: p.customerDisplayMode || 'auto',
+    customer_display_images: p.customerDisplayImages || [],
     assigned_reader_id: p.assignedReaderId || null,
   });
 
@@ -357,6 +359,25 @@ function ProfileEditor({ profile, onSave, onDelete, onClose }) {
   });
 
   const upd = (key, val) => setForm(f => ({ ...f, [key]: val }));
+
+  // Customer-display slideshow image upload (kiosk-assets public bucket).
+  const [uploadingImg, setUploadingImg] = useState(false);
+  const uploadDisplayImage = async (file) => {
+    if (!file || isMock || !supabase) return;
+    setUploadingImg(true);
+    try {
+      const safe = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const path = `customer-display/${Date.now()}-${safe}`;
+      const { error } = await supabase.storage.from('kiosk-assets').upload(path, file, { cacheControl: '3600', upsert: true, contentType: file.type });
+      if (error) throw error;
+      const { data } = supabase.storage.from('kiosk-assets').getPublicUrl(path);
+      if (data?.publicUrl) setForm(f => ({ ...f, customerDisplayImages: [ ...(f.customerDisplayImages || []), data.publicUrl ] }));
+    } catch (e) {
+      alert('Image upload failed: ' + (e.message || e) + '\n(Check the kiosk-assets storage bucket exists and is public.)');
+    } finally {
+      setUploadingImg(false);
+    }
+  };
   const toggleOrderType = id => { const arr = form.enabledOrderTypes || []; upd('enabledOrderTypes', arr.includes(id) ? arr.filter(x => x !== id) : [...arr, id]); };
   const toggleFeature = id => { const arr = form.hiddenFeatures || []; upd('hiddenFeatures', arr.includes(id) ? arr.filter(x => x !== id) : [...arr, id]); };
 
@@ -490,6 +511,29 @@ function ProfileEditor({ profile, onSave, onDelete, onClose }) {
                 );
               })}
             </div>
+          </div>
+
+          {/* Customer display — idle slideshow images */}
+          <div style={{ marginBottom:18 }}>
+            <label style={{ display:'block', fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.07em', marginBottom:8 }}>Customer display — slideshow images</label>
+            <div style={{ display:'flex', flexWrap:'wrap', gap:8, marginBottom:8 }}>
+              {(form.customerDisplayImages || []).map((url, i) => (
+                <div key={i} style={{ position:'relative', width:88, height:58, borderRadius:8, overflow:'hidden', border:'1px solid var(--bdr2)' }}>
+                  <img src={url} alt="" style={{ width:'100%', height:'100%', objectFit:'cover' }}/>
+                  <button onClick={() => upd('customerDisplayImages', (form.customerDisplayImages || []).filter((_, j) => j !== i))}
+                    style={{ position:'absolute', top:2, right:2, width:18, height:18, borderRadius:'50%', border:'none', background:'rgba(0,0,0,.7)', color:'#fff', cursor:'pointer', fontSize:11, lineHeight:'18px', padding:0 }}>✕</button>
+                </div>
+              ))}
+              {(form.customerDisplayImages || []).length === 0 && (
+                <div style={{ fontSize:12, color:'var(--t4)', alignSelf:'center' }}>No images — falls back to venue branding.</div>
+              )}
+            </div>
+            <label style={{ display:'inline-block', padding:'8px 12px', borderRadius:8, border:'1px dashed var(--bdr2)', cursor:'pointer', fontSize:12, color:'var(--t2)', fontWeight:600 }}>
+              {uploadingImg ? 'Uploading…' : '+ Add image'}
+              <input type="file" accept="image/*" style={{ display:'none' }} disabled={uploadingImg}
+                onChange={e => { const f = e.target.files?.[0]; if (f) uploadDisplayImage(f); e.target.value = ''; }}/>
+            </label>
+            <div style={{ fontSize:11, color:'var(--t4)', marginTop:6 }}>Cycled as a slideshow when idle, and shown on the left half while an order is rung up.</div>
           </div>
 
           {/* Section */}
