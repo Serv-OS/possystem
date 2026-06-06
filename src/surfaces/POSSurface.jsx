@@ -1210,22 +1210,25 @@ export default function POSSurface() {
             const hasSubcats = subIds.length > 0;
             return (
               <button key={c.id} onClick={() => { setCat(c.id); setSearch(''); }} className="cat-btn" style={{
-                marginBottom:3,
-                background:isActive?`${color}28`:`${color}12`,
-                borderColor:isActive?`${color}80`:`${color}35`,
+                marginBottom:3, gap:10,
+                background:isActive?`${color}1f`:'transparent',
+                borderColor:isActive?`${color}66`:'transparent',
+                boxShadow:isActive?'var(--glass-hi)':'none',
               }}>
-                <div style={{width:3,height:32,borderRadius:3,background:color,flexShrink:0,transition:'all .14s'}}/>
+                {/* v5.5.358 ServOS: colour-tinted icon chip (reference .cat .ci) replaces the thin stripe */}
+                <div style={{width:compact?30:34,height:compact?30:34,borderRadius:9,flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',background:`${color}24`,border:`1px solid ${color}40`,color:color}}>
+                  {emojiToIcon(c.icon)
+                    ? <Icon name={emojiToIcon(c.icon)} size={compact?15:17} />
+                    : <span style={{fontSize:compact?14:16,lineHeight:1}}>{c.icon||'•'}</span>}
+                </div>
                 <div style={{flex:1,minWidth:0}}>
-                  <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:1}}>
-                    {emojiToIcon(c.icon)
-                      ? <Icon name={emojiToIcon(c.icon)} size={compact?16:19} style={{flexShrink:0, color:isActive?color:'var(--t2)'}} />
-                      : <span style={{fontSize:compact?15:20,lineHeight:1,flexShrink:0}}>{c.icon||'•'}</span>}
-                    <span style={{fontSize:12,fontWeight:700,color:isActive?color:'var(--t2)',letterSpacing:.01,overflow:'hidden',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',lineHeight:1.2,wordBreak:'break-word'}}>{c.label}</span>
+                  <div style={{display:'flex',alignItems:'center',gap:6}}>
+                    <span style={{fontSize:13,fontWeight:600,color:isActive?color:'var(--t1)',letterSpacing:'-.01em',overflow:'hidden',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',lineHeight:1.2,wordBreak:'break-word'}}>{c.label}</span>
                     {hasSubcats && <span style={{fontSize:8,color:'var(--t4)',flexShrink:0}}>▾</span>}
                   </div>
-                  <div style={{fontSize:9,color:'var(--t4)',paddingLeft:26}}>{count} items</div>
+                  <div style={{fontSize:9,fontFamily:'var(--font-mono)',color:'var(--t4)',marginTop:2,letterSpacing:'.06em'}}>{count} items</div>
                 </div>
-                {isActive && <div style={{width:5,height:5,borderRadius:'50%',background:color,flexShrink:0,boxShadow:`0 0 6px ${color}`}}/>}
+                {isActive && <div style={{width:6,height:6,borderRadius:'50%',background:color,flexShrink:0,boxShadow:`0 0 6px ${color}`}}/>}
               </button>
             );
           })}

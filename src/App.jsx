@@ -80,6 +80,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.358', date: '6 Jun 2026', label: 'ServOS visual system — POS top bar rebuilt + category icon chips',
+    changes: [
+      'Top bar rebuilt to the reference: taller, glass logo tile, larger venue name, a shift pill with a glowing dot, a sun/moon segmented theme toggle, the Orders badge as green glass with a mono count chip, and the What’s new link in Ultraviolet.',
+      'Category rows now use colour-tinted icon chips (was a thin stripe) with larger names + mono counts, matching the reference wayfinding.',
+      'Verified locally: Space Grotesk type, the scene gradient, and frosted-white glass panels (rgba 255,255,255,.72 in light) all render to the reference values.',
+    ],
+  },
+  {
     version: '5.5.357', date: '6 Jun 2026', label: 'ServOS visual system — POS order-type segmented bar + SVG icons',
     changes: [
       'Order-type bar (Dine in / Takeaway / Collect) rebuilt as the ServOS recessed segmented track — active tab raised in glass with a Signal-green line icon, instead of the flat emoji buttons.',
@@ -5941,74 +5949,64 @@ function ShiftBar({ version, onWhatsNew, theme, onToggleTheme, syncPulse }) {
   }, [printers.length]);
 
   return (
-    <div style={{ height:42, display:'flex', alignItems:'center', background:'var(--glass-bg)', backdropFilter:'blur(22px) saturate(150%)', WebkitBackdropFilter:'blur(22px) saturate(150%)', borderBottom:'1px solid var(--glass-border)', flexShrink:0 }}>
-      {/* Logo — real ServOS mark in a glass tile (ServOS reference look) */}
-      <div style={{ width:'var(--nav)', height:'100%', display:'flex', alignItems:'center', justifyContent:'center', borderRight:'1px solid var(--glass-border)', flexShrink:0 }}>
-        <div style={{ width:34, height:34, borderRadius:10, display:'flex', alignItems:'center', justifyContent:'center', background:'var(--glass-bg)', border:'1px solid var(--glass-border)', boxShadow:'var(--glass-hi)' }}>
-          <ServOSIcon size={20} />
+    <div style={{ height:58, display:'flex', alignItems:'center', gap:14, background:'var(--glass-bg)', backdropFilter:'blur(22px) saturate(150%)', WebkitBackdropFilter:'blur(22px) saturate(150%)', borderBottom:'1px solid var(--glass-border)', flexShrink:0, padding:'0 16px' }}>
+      {/* Logo tile */}
+      <div style={{ width:40, height:40, borderRadius:11, display:'flex', alignItems:'center', justifyContent:'center', background:'var(--glass-bg)', border:'1px solid var(--glass-border)', boxShadow:'var(--glass-hi)', flexShrink:0 }}>
+        <ServOSIcon size={20} />
+      </div>
+
+      {/* Terminal identity */}
+      <div style={{ display:'flex', flexDirection:'column', gap:1, flexShrink:0 }}>
+        <div style={{ fontSize:15, fontWeight:600, color:'var(--t1)', letterSpacing:'-.01em', lineHeight:1.1 }}>{terminalName}</div>
+        <div style={{ fontFamily:'var(--font-mono)', fontSize:9.5, fontWeight:500, color: profileName ? 'var(--t2)' : 'var(--t4)', letterSpacing:'.22em', textTransform:'uppercase', whiteSpace:'nowrap' }}>
+          {profileName || 'No profile'}{urlParam && <span style={{ marginLeft:5, padding:'0 4px', background:'var(--inset)', borderRadius:3, color:'var(--t4)', fontSize:8 }}>?t={urlParam}</span>}
         </div>
       </div>
 
-      {/* Terminal identity — LEFT, always visible */}
-      <div style={{ padding:'0 16px 0 14px', borderRight:'1px solid var(--bdr)', display:'flex', flexDirection:'column', justifyContent:'center', height:'100%', flexShrink:0 }}>
-        <div style={{ fontSize:13, fontWeight:800, color:'var(--t1)', letterSpacing:'-.01em', lineHeight:1 }}>{terminalName}</div>
-        <div style={{ fontSize:9, fontWeight:700, color: profileName ? 'var(--acc)' : 'var(--t4)', marginTop:2, letterSpacing:'.04em', textTransform:'uppercase' }}>
-          {profileName || 'No profile'}
-          {urlParam && <span style={{ marginLeft:4, padding:'0 4px', background:'var(--bg3)', borderRadius:3, color:'var(--t4)', fontFamily:'var(--font-mono)', fontSize:8 }}>?t={urlParam}</span>}
-        </div>
+      <div style={{ width:1, height:30, background:'var(--glass-border)', flexShrink:0 }}/>
+
+      {/* Shift pill */}
+      <div style={{ display:'inline-flex', alignItems:'center', gap:7, padding:'7px 12px', borderRadius:999, background:'var(--inset)', border:'1px solid var(--inset-border)', flexShrink:0 }}>
+        <span style={{ width:8, height:8, borderRadius:'50%', background:'var(--grn)', boxShadow:'0 0 9px var(--grn)' }}/>
+        <span style={{ fontFamily:'var(--font-mono)', fontSize:10.5, fontWeight:600, letterSpacing:'.1em', textTransform:'uppercase', color:'var(--t1)', whiteSpace:'nowrap' }}>{shift.name || 'Current shift'}</span>
+        {syncPulse && <div style={{ width:6, height:6, borderRadius:'50%', background:'var(--acc)', boxShadow:'0 0 8px var(--acc)', animation:'pulse .6s ease-out' }}/>}
       </div>
 
-      {/* Shift stats */}
-      <div style={{ display:'flex', alignItems:'center', padding:'0 16px', flex:1, gap:0, overflow:'hidden' }}>
-        <div style={{ display:'flex', alignItems:'center', gap:6, marginRight:20 }}>
-          <div style={{ width:6, height:6, borderRadius:'50%', background:'var(--grn)', boxShadow:'0 0 6px var(--grn)' }}/>
-          <span style={{ fontSize:12, fontWeight:700, color:'var(--t1)' }}>{shift.name}</span>
-          {/* Sync pulse — flashes amber when data syncs from another terminal */}
-          {syncPulse && (
-            <div style={{ width:6, height:6, borderRadius:'50%', background:'var(--acc)', boxShadow:'0 0 8px var(--acc)', animation:'pulse .6s ease-out', opacity:1 }}/>
-          )}
-        </div>
-        {/* v5.5.333: Covers/Sales/Avg removed — weren't reliably populated. Live
-            figures live in Reports; the shift indicator stays as a status light. */}
+      <div style={{ flex:1 }}/>
+
+      {/* clock */}
+      <div style={{ fontFamily:'var(--font-mono)', fontSize:11, letterSpacing:'.04em', color:'var(--t3)', whiteSpace:'nowrap', flexShrink:0 }}>
+        {new Date().toLocaleString('en-GB',{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}
       </div>
-      <div style={{ display:'flex', alignItems:'center', gap:10, padding:'0 14px', flexShrink:0 }}>
-        <div style={{ fontSize:11, color:'var(--t4)', fontFamily:'var(--font-mono)' }}>
-          {new Date().toLocaleString('en-GB',{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}
-        </div>
-        <button onClick={onToggleTheme} style={{
-          display:'flex', alignItems:'center', justifyContent:'center',
-          width:32, height:28, borderRadius:9, cursor:'pointer',
-          background:'var(--bg3)', border:'1px solid var(--bdr)', fontFamily:'inherit',
-          fontSize:15, color:'var(--t3)', transition:'all .14s',
-        }}
-        onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--bdr3)';e.currentTarget.style.color='var(--t1)';}}
-        onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--bdr)';e.currentTarget.style.color='var(--t3)';}}>
-          {theme==='dark' ? '☀️' : '🌙'}
+
+      {/* theme segmented (sun | moon) */}
+      <div style={{ display:'inline-flex', padding:3, borderRadius:11, background:'var(--inset)', border:'1px solid var(--inset-border)', flexShrink:0 }}>
+        <button onClick={()=>{ if(theme!=='light') onToggleTheme(); }} title="Light" style={{ width:30, height:26, border:'none', borderRadius:8, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', background: theme==='light'?'var(--glass-bg)':'transparent', boxShadow: theme==='light'?'var(--glass-hi)':'none', color: theme==='light'?'var(--signal-glow,#46E08C)':'var(--t3)', fontFamily:'inherit' }}>
+          <Icon name="sun" size={15} />
         </button>
-        <button onClick={() => setSurface('orders')} style={{
-          display:'flex', alignItems:'center', gap:6, padding:'4px 11px', borderRadius:20, cursor:'pointer',
-          background: activeOrders > 0 ? 'var(--acc-d)' : 'var(--bg3)',
-          border:`1px solid ${activeOrders > 0 ? 'var(--acc-b)' : 'var(--bdr)'}`,
-          fontFamily:'inherit', fontSize:11, fontWeight:700,
-          color: activeOrders > 0 ? 'var(--acc)' : 'var(--t3)',
-          position:'relative', transition:'all .14s',
-        }}>
-          <span>📋 Orders</span>
-          {activeOrders > 0 && (
-            <span style={{ background:'var(--acc)', color:'#0b0c10', borderRadius:10, padding:'0 5px', fontSize:10, fontWeight:800 }}>
-              {activeOrders}
-            </span>
-          )}
-        </button>
-        {/* Printer status moved to Status drawer (sidebar button) */}
-        <button onClick={onWhatsNew} style={{ display:'flex', alignItems:'center', gap:5, padding:'4px 10px', borderRadius:20, cursor:'pointer', background:'var(--bg3)', border:'1px solid var(--bdr)', fontFamily:'inherit', fontSize:11, fontWeight:700, color:'var(--t3)', transition:'all .14s' }}
-          onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--acc-b)';e.currentTarget.style.color='var(--acc)';}}
-          onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--bdr)';e.currentTarget.style.color='var(--t3)';}}>
-          <span style={{ fontFamily:'var(--font-mono)', fontSize:10 }}>v{version}</span>
-          <span style={{ color:'var(--bdr3)' }}>·</span>
-          <span>What's new</span>
+        <button onClick={()=>{ if(theme!=='dark') onToggleTheme(); }} title="Dark" style={{ width:30, height:26, border:'none', borderRadius:8, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', background: theme==='dark'?'var(--glass-bg)':'transparent', boxShadow: theme==='dark'?'var(--glass-hi)':'none', color: theme==='dark'?'var(--signal-glow,#46E08C)':'var(--t3)', fontFamily:'inherit' }}>
+          <Icon name="moon" size={15} />
         </button>
       </div>
+
+      {/* Orders badge */}
+      <button onClick={() => setSurface('orders')} style={{
+        display:'flex', alignItems:'center', gap:8, padding:'7px 12px', borderRadius:11, cursor:'pointer',
+        background: activeOrders>0 ? 'linear-gradient(180deg, rgba(47,217,132,0.18), rgba(21,194,106,0.08))' : 'var(--inset)',
+        border:`1px solid ${activeOrders>0 ? 'rgba(21,194,106,0.45)' : 'var(--inset-border)'}`,
+        fontFamily:'inherit', fontSize:13, fontWeight:600, color:'var(--t1)', flexShrink:0,
+      }}>
+        <Icon name="orders" size={16} style={{ color: activeOrders>0?'var(--acc)':'var(--t3)' }} />
+        <span>Orders</span>
+        {activeOrders>0 && <span style={{ fontFamily:'var(--font-mono)', fontSize:11, background:'var(--signal,#15C26A)', color:'#06130C', padding:'2px 7px', borderRadius:999, fontWeight:700 }}>{activeOrders}</span>}
+      </button>
+
+      {/* version + What's new */}
+      <button onClick={onWhatsNew} style={{ display:'flex', alignItems:'center', gap:6, background:'none', border:'none', cursor:'pointer', fontFamily:'var(--font-mono)', fontSize:10, letterSpacing:'.04em', color:'var(--t4)', flexShrink:0, whiteSpace:'nowrap' }}>
+        <span>v{version}</span>
+        <span style={{ color:'var(--bdr3)' }}>·</span>
+        <span style={{ color:'var(--uv-glow, #A48BFF)', fontWeight:600 }}>What's new</span>
+      </button>
     </div>
   );
 }
