@@ -79,6 +79,13 @@ import { ServOSIcon } from './components/ServOSBrand';
 
 const CHANGELOG = [
   {
+    version: '5.5.351', date: '6 Jun 2026', label: 'ServOS visual system — shared components (buttons · inputs · modals · cards)',
+    changes: [
+      'Scoped glass restyle of the shared component classes (buttons, inputs, modals, toasts, product cards, category/nav rows, badges) so most staff screens inherit the ServOS look at once.',
+      'Primary buttons become the Signal-green gradient; inputs/cards/modals pick up the glass material. Still scoped to staff surfaces — online/QR unaffected. Visual-only.',
+    ],
+  },
+  {
     version: '5.5.350', date: '6 Jun 2026', label: 'ServOS visual system — foundation (tokens · fonts · scene) on POS + Back Office',
     changes: [
       'New scoped “liquid glass” design layer: ServOS brand tokens, Space Grotesk / JetBrains Mono / Syne fonts, and the colourful scene background — applied to staff surfaces (POS family + Back Office) via a data-skin="servos" flag on <html>.',

@@ -575,3 +575,85 @@ button { font-family: inherit; }
 @media (prefers-reduced-motion: reduce){
   [data-skin="servos"] *{ transition:none !important; animation:none !important; }
 }
+
+/* ============================================================
+   SERVOS — shared component library (v5.5.351)
+   ============================================================
+   Scoped restyle of the shared global classes (.btn, .input,
+   .modal-box, .toast, .prod-card, .cat-btn, .nav-btn, .badge,
+   .divider). All under [data-skin="servos"], so the unscoped
+   originals — used by online/QR — are completely unaffected.
+   Presentational only: colour/border/radius/shadow, no layout
+   geometry (padding/size/display) changes.
+*/
+
+/* ---- Buttons ---- */
+[data-skin="servos"] .btn{ border-radius:13px; }
+[data-skin="servos"] .btn-lg{ border-radius:14px; }
+[data-skin="servos"] .btn-sm{ border-radius:11px; }
+[data-skin="servos"] .btn-xs{ border-radius:9px; }
+
+/* primary = Signal-green gradient + dark text + green glow (the ServOS "Pay") */
+[data-skin="servos"] .btn-acc{
+  background:linear-gradient(180deg,#2FD984,#15C26A);
+  color:#06130C; border-color:transparent;
+  box-shadow:0 8px 22px rgba(21,194,106,0.30), inset 0 1px 0 rgba(255,255,255,0.5);
+}
+[data-skin="servos"] .btn-acc:hover:not(:disabled){
+  filter:brightness(1.05); background:linear-gradient(180deg,#2FD984,#15C26A);
+  box-shadow:0 10px 26px rgba(21,194,106,0.40), inset 0 1px 0 rgba(255,255,255,0.5);
+}
+
+/* secondary = glass */
+[data-skin="servos"] .btn-ghost{
+  background:var(--glass-bg); border-color:var(--glass-border); color:var(--t1);
+  box-shadow:var(--glass-hi);
+}
+[data-skin="servos"] .btn-ghost:hover:not(:disabled){ border-color:var(--bdr3); color:var(--t1); }
+
+[data-skin="servos"] .btn-grn{ background:var(--grn-d); border-color:var(--grn-b); color:var(--grn); }
+[data-skin="servos"] .btn-grn:hover:not(:disabled){ background:var(--grn); color:#06130C; }
+[data-skin="servos"] .btn-red{ background:var(--red-d); border-color:var(--red-b); color:var(--red); }
+[data-skin="servos"] .btn-red:hover:not(:disabled){ background:var(--red); color:#fff; }
+
+/* ---- Inputs ---- */
+[data-skin="servos"] .input{
+  background:var(--inset); border:1px solid var(--inset-border); border-radius:13px; color:var(--t1);
+}
+[data-skin="servos"] .input:focus{ border-color:var(--acc-b); background:var(--inset); box-shadow:0 0 0 3px var(--acc-d); }
+[data-skin="servos"] .input::placeholder{ color:var(--t3); }
+
+/* ---- Modals ---- (solid base + glass sheen + glass framing for readability) */
+[data-skin="servos"] .modal-box{
+  background-color:var(--bg2); background-image:var(--glass-bg);
+  border:1px solid var(--glass-border);
+  box-shadow:var(--glass-shadow), var(--glass-hi), var(--glass-lo);
+  border-radius:22px;
+}
+
+/* ---- Toast ---- */
+[data-skin="servos"] .toast{
+  background-color:var(--bg2); background-image:var(--glass-bg);
+  border:1px solid var(--glass-border); color:var(--t1);
+  box-shadow:var(--glass-shadow), var(--glass-hi);
+}
+
+/* ---- Product card (neutral glass tile; per-category hue applied in the POS pass) ---- */
+[data-skin="servos"] .prod-card{
+  background:var(--tile-bg); border:1px solid var(--tile-border); border-radius:16px;
+  box-shadow:var(--glass-hi);
+}
+[data-skin="servos"] .prod-card:hover:not(.prod-card--disabled){
+  transform:translateY(-2px); box-shadow:var(--sh2), var(--glass-hi); border-color:var(--bdr2);
+}
+
+/* ---- Category nav row ---- */
+[data-skin="servos"] .cat-btn:hover{ background:var(--inset); }
+[data-skin="servos"] .cat-btn--active{ background:var(--inset); border-color:var(--bdr2); box-shadow:var(--glass-hi); }
+
+/* ---- Sidebar nav button ---- */
+[data-skin="servos"] .nav-btn--active{ background:var(--acc-d); border-color:var(--acc-b); }
+
+/* ---- Misc ---- */
+[data-skin="servos"] .badge{ font-family:var(--font-mono); }
+[data-skin="servos"] .divider{ background:var(--hair); }
