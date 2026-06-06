@@ -80,6 +80,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.357', date: '6 Jun 2026', label: 'ServOS visual system — POS order-type segmented bar + SVG icons',
+    changes: [
+      'Order-type bar (Dine in / Takeaway / Collect) rebuilt as the ServOS recessed segmented track — active tab raised in glass with a Signal-green line icon, instead of the flat emoji buttons.',
+      'Customer-details button now uses the line icon too.',
+    ],
+  },
+  {
     version: '5.5.356', date: '6 Jun 2026', label: 'ServOS visual system — POS floating glass panels (match the reference layout)',
     changes: [
       'POS rail, order panel, category column and menu area are now separate rounded glass panels floating over the scene with gaps between them — matching the ServOS reference layout — instead of edge-to-edge bordered columns.',

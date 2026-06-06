@@ -943,12 +943,17 @@ export default function POSSurface() {
                   </div>
                 );
               })()}
-              <div style={{display:'flex',gap:4,marginBottom:orderType==='dine-in'?0:8}}>
-                {visibleOrderTypes.map(([t,ic,l])=>(
-                  <button key={t} onClick={()=>handleTypeChange(t)} style={{flex:1,padding:'7px 3px',borderRadius:9,cursor:'pointer',fontFamily:'inherit',border:`1.5px solid ${orderType===t?'var(--acc-b)':'var(--bdr)'}`,background:orderType===t?'var(--acc-d)':'transparent',color:orderType===t?'var(--acc)':'var(--t3)',fontSize:10,fontWeight:800,display:'flex',flexDirection:'column',alignItems:'center',gap:1,letterSpacing:.01,transition:'all .14s'}}>
-                    <span style={{fontSize:16}}>{ic}</span><span>{l}</span>
+              {/* v5.5.357 ServOS: recessed segmented track (reference .seg) — active tab raised in glass + signal-green icon */}
+              <div style={{display:'flex',gap:4,padding:4,borderRadius:13,background:'var(--inset)',border:'1px solid var(--inset-border)',marginBottom:orderType==='dine-in'?0:8}}>
+                {visibleOrderTypes.map(([t,ic,l])=>{
+                  const on=orderType===t;
+                  const iconName=t==='dine-in'?'dinein':t==='takeaway'?'takeaway':t==='collection'?'collect':t==='delivery'?'delivery':'dinein';
+                  return (
+                  <button key={t} onClick={()=>handleTypeChange(t)} style={{flex:1,padding:'9px 4px',borderRadius:9,cursor:'pointer',fontFamily:'inherit',border:'none',background:on?'var(--glass-bg)':'transparent',boxShadow:on?'var(--glass-hi)':'none',color:on?'var(--t1)':'var(--t3)',fontSize:12,fontWeight:600,display:'flex',alignItems:'center',justifyContent:'center',gap:6,letterSpacing:.01,transition:'all .14s'}}>
+                    <Icon name={iconName} size={15} stroke={1.8} style={{color:on?'var(--acc)':'var(--t3)'}} />{l}
                   </button>
-                ))}
+                  );
+                })}
               </div>
               {/* Named order: show customer name even on dine-in type */}
               {customer&&(
@@ -965,7 +970,7 @@ export default function POSSurface() {
                 <button onClick={()=>{setShowCustomerModal(true);setPendingOrderType(orderType);}} style={{width:'100%',padding:'9px 12px',borderRadius:10,cursor:'pointer',fontFamily:'inherit',background:'var(--bg3)',border:'1.5px dashed var(--bdr2)',color:'var(--t3)',fontSize:13,fontWeight:600,display:'flex',alignItems:'center',gap:8,justifyContent:'center',marginTop:8,transition:'all .14s'}}
                   onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--acc-b)';e.currentTarget.style.color='var(--acc)';}}
                   onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--bdr2)';e.currentTarget.style.color='var(--t3)';}}>
-                  <span>👤</span> Add customer details
+                  <Icon name="user" size={15} /> Add customer details
                 </button>
               )}
             </>
