@@ -469,7 +469,7 @@ button { font-family: inherit; }
   --glass-border:rgba(255,255,255,0.12);
   --glass-hi:inset 0 1px 0 rgba(255,255,255,0.30);
   --glass-lo:inset 0 -1px 0 rgba(0,0,0,0.22);
-  --glass-shadow:0 8px 28px rgba(0,0,0,0.30);
+  --glass-shadow:0 1px 2px rgba(0,0,0,0.18), 0 14px 36px rgba(0,0,0,0.28);
   --sheen:linear-gradient(150deg, rgba(255,255,255,0.16), transparent 42%);
   --tile-bg:linear-gradient(160deg, rgba(255,255,255,0.055), rgba(255,255,255,0.018));
   --tile-border:rgba(255,255,255,0.09);
@@ -502,7 +502,7 @@ button { font-family: inherit; }
   --glass-border:rgba(255,255,255,0.85);
   --glass-hi:inset 0 1px 0 rgba(255,255,255,0.95);
   --glass-lo:inset 0 -1px 0 rgba(20,40,28,0.06);
-  --glass-shadow:0 8px 26px rgba(20,40,28,0.10);
+  --glass-shadow:0 1px 2px rgba(20,40,28,0.04), 0 14px 34px rgba(20,40,28,0.07);
   --sheen:linear-gradient(150deg, rgba(255,255,255,0.55), transparent 46%);
   --tile-bg:linear-gradient(160deg, rgba(255,255,255,0.62), rgba(255,255,255,0.32));
   --tile-border:rgba(15,18,17,0.07);

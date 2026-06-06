@@ -80,6 +80,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.361', date: '6 Jun 2026', label: 'ServOS visual system — softer layered shadows on floating panels',
+    changes: [
+      'Replaced the single hard drop-shadow on the floating panels with a layered soft shadow (faint contact + wide ambient) so they read as gently floating instead of having a harsh shadow behind them.',
+    ],
+  },
+  {
     version: '5.5.360', date: '6 Jun 2026', label: 'ServOS visual system — POS now renders the full reference-size layout (was forced compact)',
     changes: [
       'Fixed the responsive threshold that forced almost every screen into the cramped “compact” layout — it triggered under 1600px wide OR 950px tall, i.e. on most laptops/monitors and even the reference’s own 1480×920 size. Now normal screens (≥1280×760) get the full ServOS reference-size design with the larger text + spacing; only genuinely small screens stay compact so they still fit.',
