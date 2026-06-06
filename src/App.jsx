@@ -80,6 +80,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.360', date: '6 Jun 2026', label: 'ServOS visual system — POS now renders the full reference-size layout (was forced compact)',
+    changes: [
+      'Fixed the responsive threshold that forced almost every screen into the cramped “compact” layout — it triggered under 1600px wide OR 950px tall, i.e. on most laptops/monitors and even the reference’s own 1480×920 size. Now normal screens (≥1280×760) get the full ServOS reference-size design with the larger text + spacing; only genuinely small screens stay compact so they still fit.',
+    ],
+  },
+  {
     version: '5.5.359', date: '6 Jun 2026', label: 'ServOS visual system — POS line icons everywhere + softer floating shadow',
     changes: [
       'Replaced the remaining emoji across the POS with ServOS line icons: drawer, Review/Discount/Print, course Fire, empty-order + empty-state glyphs, cart notes/discount/allergen, edit pencil, and the AI-picks sparkle.',
