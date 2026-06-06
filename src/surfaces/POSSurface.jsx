@@ -902,7 +902,7 @@ export default function POSSurface() {
                   {activeTable.parentId && (
                     <span style={{fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:20,background:'var(--acc)',color:'#0b0c10'}}>Check 2</span>
                   )}
-                  <span style={{fontSize:10,color:'var(--t4)'}}>✎</span>
+                  <Icon name="edit" size={11} style={{color:'var(--t4)'}} />
                 </div>
                 <div style={{fontSize:11,color:'var(--t3)',marginTop:1}}>
                   {session?.covers} covers · {session?.server}
@@ -912,7 +912,7 @@ export default function POSSurface() {
               {/* v4.6.36: drawer pulse shortcut — shows the bound drawer's name */}
               {Array.isArray(staff?.permissions) && staff.permissions.includes('openDrawer') && (() => {
                 const _drw = typeof myDrawer === 'function' ? myDrawer() : null;
-                const _label = _drw ? `🔓 ${_drw.name}` : '🔓 Drawer';
+                const _label = _drw ? _drw.name : 'Drawer';
                 const _title = _drw ? `Open ${_drw.name} cash drawer` : 'No drawer bound to this device (Back Office > Devices > Cash drawers)';
                 return (
                   <button
@@ -930,7 +930,7 @@ export default function POSSurface() {
               {/* v4.6.36: drawer pulse shortcut — shows the bound drawer's name */}
               {Array.isArray(staff?.permissions) && staff.permissions.includes('openDrawer') && (() => {
                 const _drw = typeof myDrawer === 'function' ? myDrawer() : null;
-                const _label = _drw ? `🔓 ${_drw.name}` : '🔓 Drawer';
+                const _label = _drw ? _drw.name : 'Drawer';
                 const _title = _drw ? `Open ${_drw.name} cash drawer` : 'No drawer bound to this device (Back Office > Devices > Cash drawers)';
                 return (
                   <div style={{display:'flex',justifyContent:'flex-end',marginBottom:6}}>
@@ -1006,7 +1006,7 @@ export default function POSSurface() {
           {/* Empty state */}
           {items.length===0&&(
             <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:compact?'16px 12px':'52px 20px',textAlign:'center'}}>
-              <div style={{width:compact?36:56,height:compact?36:56,borderRadius:compact?10:16,background:'var(--bg3)',border:'1px solid var(--bdr)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:compact?18:26,marginBottom:compact?8:14,opacity:.6}}>🧾</div>
+              <div style={{width:compact?36:56,height:compact?36:56,borderRadius:compact?10:16,background:'var(--bg3)',border:'1px solid var(--bdr)',display:'flex',alignItems:'center',justifyContent:'center',marginBottom:compact?8:14,opacity:.6,color:'var(--t3)'}}><Icon name="receipt" size={compact?20:28} /></div>
               <div style={{fontSize:14,fontWeight:700,color:'var(--t3)',marginBottom:4}}>Order is empty</div>
               <div style={{fontSize:12,color:'var(--t4)'}}>Tap items from the menu →</div>
             </div>
@@ -1023,7 +1023,7 @@ export default function POSSurface() {
                     <div style={{height:1,flex:1,background:'var(--bdr)'}}/>
                     <div style={{display:'flex',alignItems:'center',gap:5}}>
                       <span style={{fontSize:10,fontWeight:800,padding:'2px 8px',borderRadius:20,background:isFired?'var(--grn-d)':cc.bg,border:`1px solid ${isFired?'var(--grn-b)':cc.color+'44'}`,color:isFired?'var(--grn)':cc.color,letterSpacing:.03}}>{isFired?'✓ ':''}{cc.label}</span>
-                      {canFire&&<button onClick={()=>fireCourse(courseNum)} style={{fontSize:10,fontWeight:800,padding:'2px 10px',borderRadius:20,background:'var(--acc)',color:'#0b0c10',border:'none',cursor:'pointer',fontFamily:'inherit'}}>🔥 Fire</button>}
+                      {canFire&&<button onClick={()=>fireCourse(courseNum)} style={{fontSize:10,fontWeight:800,padding:'2px 10px',borderRadius:20,background:'var(--acc)',color:'#0b0c10',border:'none',cursor:'pointer',fontFamily:'inherit',display:'inline-flex',alignItems:'center',gap:4}}><Icon name="fire" size={11}/>Fire</button>}
                     </div>
                     <div style={{height:1,flex:1,background:'var(--bdr)'}}/>
                   </div>
@@ -1120,7 +1120,7 @@ export default function POSSurface() {
                   <div style={{padding:'0 12px 4px'}}>
                     {checkDiscounts.map(d=>(
                       <div key={d.id} style={{display:'flex',alignItems:'center',justifyContent:'space-between',fontSize:11,color:'var(--grn)',marginBottom:2}}>
-                        <span>🏷 {d.label}</span>
+                        <span style={{display:'inline-flex',alignItems:'center',gap:5}}><Icon name="tag" size={12}/>{d.label}</span>
                         <div style={{display:'flex',alignItems:'center',gap:8}}>
                           <span style={{fontFamily:'var(--font-mono)'}}>−{money(d.amount)}</span>
                           <button onClick={()=>activeTableId?removeCheckDiscount(activeTableId,d.id):removeWalkInDiscount(d.id)} style={{fontSize:11,color:'var(--t4)',background:'none',border:'none',cursor:'pointer',fontFamily:'inherit'}}>✕</button>
@@ -1135,15 +1135,15 @@ export default function POSSurface() {
               {!hideCourses && hasSent&&nextToFire&&(
                 <div style={{margin:'4px 10px 0',padding:'8px 12px',background:'rgba(232,160,32,.1)',border:'1px solid rgba(232,160,32,.25)',borderRadius:10,display:'flex',alignItems:'center',justifyContent:'space-between'}}>
                   <span style={{fontSize:12,color:'var(--acc)',fontWeight:700}}>{COURSE_COLORS[nextToFire]?.label} ready to fire</span>
-                  <button onClick={()=>fireCourse(nextToFire)} style={{fontSize:12,fontWeight:800,padding:'4px 12px',borderRadius:8,background:'var(--acc)',color:'#0b0c10',border:'none',cursor:'pointer',fontFamily:'inherit'}}>🔥 Fire</button>
+                  <button onClick={()=>fireCourse(nextToFire)} style={{fontSize:12,fontWeight:800,padding:'4px 12px',borderRadius:8,background:'var(--acc)',color:'#0b0c10',border:'none',cursor:'pointer',fontFamily:'inherit',display:'inline-flex',alignItems:'center',gap:5}}><Icon name="fire" size={12}/>Fire</button>
                 </div>
               )}
 
               {/* Action row */}
               <div style={{padding:'6px 10px 4px',display:'flex',gap:4,flexWrap:'wrap'}}>
-                <button onClick={()=>setShowReview(true)} style={{flex:1,height:32,borderRadius:9,cursor:'pointer',fontFamily:'inherit',background:'var(--bg3)',border:'1px solid var(--bdr)',color:'var(--t3)',fontSize:11,fontWeight:700,minWidth:60}}>📋 Review</button>
-                <button onClick={()=>setShowDiscount(true)} style={{flex:1,height:32,borderRadius:9,cursor:'pointer',fontFamily:'inherit',background:'var(--bg3)',border:'1px solid var(--bdr)',color:'var(--t3)',fontSize:11,fontWeight:700,minWidth:60}}>🏷 Discount</button>
-                <button onClick={()=>setShowReceipt(true)} style={{flex:1,height:32,borderRadius:9,cursor:'pointer',fontFamily:'inherit',background:'var(--bg3)',border:'1px solid var(--bdr)',color:'var(--t3)',fontSize:11,fontWeight:700,minWidth:60}}>🖨 Print</button>
+                <button onClick={()=>setShowReview(true)} style={{flex:1,height:32,borderRadius:9,cursor:'pointer',fontFamily:'inherit',background:'var(--bg3)',border:'1px solid var(--bdr)',color:'var(--t3)',fontSize:11,fontWeight:700,minWidth:60,display:'inline-flex',alignItems:'center',justifyContent:'center',gap:5}}><Icon name="orders" size={13}/>Review</button>
+                <button onClick={()=>setShowDiscount(true)} style={{flex:1,height:32,borderRadius:9,cursor:'pointer',fontFamily:'inherit',background:'var(--bg3)',border:'1px solid var(--bdr)',color:'var(--t3)',fontSize:11,fontWeight:700,minWidth:60,display:'inline-flex',alignItems:'center',justifyContent:'center',gap:5}}><Icon name="tag" size={13}/>Discount</button>
+                <button onClick={()=>setShowReceipt(true)} style={{flex:1,height:32,borderRadius:9,cursor:'pointer',fontFamily:'inherit',background:'var(--bg3)',border:'1px solid var(--bdr)',color:'var(--t3)',fontSize:11,fontWeight:700,minWidth:60,display:'inline-flex',alignItems:'center',justifyContent:'center',gap:5}}><Icon name="print" size={13}/>Print</button>
                 {hasSent&&<button onClick={()=>setShowReprint(true)} style={{flex:1,height:32,borderRadius:9,cursor:'pointer',fontFamily:'inherit',background:'var(--bg3)',border:'1px solid var(--bdr)',color:'var(--t3)',fontSize:11,fontWeight:700,minWidth:60}}>↻ Reprint</button>}
                 {activeTableId&&hasSent&&<button onClick={()=>setVoidTarget({type:'check',items:items.filter(i=>!i.voided)})} style={{flex:1,height:32,borderRadius:9,cursor:'pointer',fontFamily:'inherit',background:'var(--red-d)',border:'1px solid var(--red-b)',color:'var(--red)',fontSize:11,fontWeight:700,minWidth:60}}>⊘ Void</button>}
               </div>
@@ -1317,7 +1317,7 @@ export default function POSSurface() {
                     <div style={{fontSize:14,fontWeight:700,color:'var(--t1)'}}>Quick picks</div>
                     <div style={{fontSize:11,color:'var(--t3)',marginTop:1}}>AI-curated · {daypart}</div>
                   </div>
-                  <span style={{fontSize:11,fontWeight:700,padding:'3px 10px',borderRadius:20,background:'var(--acc-d)',border:'1px solid var(--acc-b)',color:'var(--acc)'}}>✦ Live</span>
+                  <span style={{fontSize:11,fontWeight:700,padding:'3px 10px',borderRadius:20,background:'var(--acc-d)',border:'1px solid var(--acc-b)',color:'var(--acc)',display:'inline-flex',alignItems:'center',gap:4}}><Icon name="sparkle" size={11}/>Live</span>
                 </div>
               )}
               {search&&displayItems.length>0&&(
@@ -1478,13 +1478,13 @@ export default function POSSurface() {
                 <div style={{textAlign:'center',padding:'80px 0',color:'var(--t3)'}}>
                   {cat === 'quick' && (!quickScreenIds || quickScreenIds.length === 0) ? (
                     <>
-                      <div style={{fontSize:40,marginBottom:12,opacity:.4}}>⚡</div>
+                      <div style={{marginBottom:12,opacity:.4,display:'flex',justifyContent:'center',color:'var(--t3)'}}><Icon name="bolt" size={40}/></div>
                       <div style={{fontSize:15,fontWeight:700,color:'var(--t2)',marginBottom:6}}>Quick screen not configured</div>
                       <div style={{fontSize:12,color:'var(--t4)',marginBottom:4}}>Go to Back Office → Menu Manager → Quick Screen to add items</div>
                     </>
                   ) : (
                     <>
-                      <div style={{fontSize:40,marginBottom:12,opacity:.4}}>🔍</div>
+                      <div style={{marginBottom:12,opacity:.4,display:'flex',justifyContent:'center',color:'var(--t3)'}}><Icon name="search" size={40}/></div>
                       <div style={{fontSize:15,fontWeight:700,color:'var(--t2)',marginBottom:6}}>No items found</div>
                       <button onClick={()=>setSearch('')} style={{fontSize:13,color:'var(--acc)',background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',fontWeight:600}}>Clear search →</button>
                     </>
@@ -1795,13 +1795,13 @@ function OrderItem({
               </div>
             ))}
             {item.notes && (
-              <div style={{fontSize:11,color:'var(--t3)',marginTop:1,fontStyle:'italic'}}>📝 {item.notes}</div>
+              <div style={{fontSize:11,color:'var(--t3)',marginTop:1,fontStyle:'italic'}}><Icon name="note" size={11} style={{display:'inline-block',verticalAlign:'-2px',marginRight:4}}/>{item.notes}</div>
             )}
 
             {/* Item discount */}
             {item.discount && !isVoided && (
               <div style={{display:'flex',alignItems:'center',gap:5,marginTop:3}}>
-                <span style={{fontSize:11,color:'var(--grn)',fontWeight:600}}>🏷 {item.discount.label}</span>
+                <span style={{fontSize:11,color:'var(--grn)',fontWeight:600,display:'inline-flex',alignItems:'center',gap:4}}><Icon name="tag" size={11}/>{item.discount.label}</span>
                 <span style={{fontSize:11,color:'var(--grn)',fontFamily:'var(--font-mono)'}}>−{money((item.price*item.qty - lineTotal))}</span>
                 <button onClick={onRemoveDiscount} style={{fontSize:11,color:'var(--t4)',background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',lineHeight:1}}>✕</button>
               </div>
@@ -1821,13 +1821,13 @@ function OrderItem({
               </div>
             ) : (
               <div onClick={()=>{setNoteVal(item.notes||'');setEditNote(true);}} style={{marginTop:5,padding:'4px 8px',borderRadius:7,cursor:'pointer',border:`1px dashed ${item.notes?'rgba(249,115,22,.4)':'var(--bdr)'}`,fontSize:11,display:'flex',alignItems:'center',gap:5,color:item.notes?'#f97316':'var(--t4)',transition:'all .12s'}}>
-                <span style={{fontSize:12}}>📝</span>
+                <Icon name="note" size={12} />
                 <span style={{fontStyle:item.notes?'italic':'normal'}}>{item.notes||'Add note…'}</span>
               </div>
             ))}
 
             {item.allergens?.length>0&&!isVoided&&(
-              <div style={{fontSize:10,color:'var(--red)',marginTop:3,fontWeight:600}}>⚠ {item.allergens.map(a=>ALLERGENS.find(x=>x.id===a)?.label).filter(Boolean).join(' · ')}</div>
+              <div style={{fontSize:10,color:'var(--red)',marginTop:3,fontWeight:600,display:'flex',alignItems:'center',gap:4}}><Icon name="warn" size={11}/>{item.allergens.map(a=>ALLERGENS.find(x=>x.id===a)?.label).filter(Boolean).join(' · ')}</div>
             )}
 
             {/* Tags row */}

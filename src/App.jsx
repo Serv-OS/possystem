@@ -80,6 +80,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.359', date: '6 Jun 2026', label: 'ServOS visual system — POS line icons everywhere + softer floating shadow',
+    changes: [
+      'Replaced the remaining emoji across the POS with ServOS line icons: drawer, Review/Discount/Print, course Fire, empty-order + empty-state glyphs, cart notes/discount/allergen, edit pencil, and the AI-picks sparkle.',
+      'Softened the floating-panel drop shadow (less offset + lower opacity) so panels read as gently floating instead of a hard shadow behind them.',
+    ],
+  },
+  {
     version: '5.5.358', date: '6 Jun 2026', label: 'ServOS visual system — POS top bar rebuilt + category icon chips',
     changes: [
       'Top bar rebuilt to the reference: taller, glass logo tile, larger venue name, a shift pill with a glowing dot, a sun/moon segmented theme toggle, the Orders badge as green glass with a mono count chip, and the What’s new link in Ultraviolet.',
