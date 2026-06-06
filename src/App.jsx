@@ -80,6 +80,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.356', date: '6 Jun 2026', label: 'ServOS visual system — POS floating glass panels (match the reference layout)',
+    changes: [
+      'POS rail, order panel, category column and menu area are now separate rounded glass panels floating over the scene with gaps between them — matching the ServOS reference layout — instead of edge-to-edge bordered columns.',
+    ],
+  },
+  {
     version: '5.5.355', date: '6 Jun 2026', label: 'ServOS visual system — POS icon set (emoji → line icons) + glass rail/top bar',
     changes: [
       'New ServOS line-icon set (monoline, stroke-based) replaces emoji across the POS chrome: left rail nav (Bar/Floor/POS/Orders/AI/Status/Office), search, allergen, menu-tile glyphs and category-row icons. Custom operator emoji are still honoured as a fallback.',
@@ -5848,7 +5854,9 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
       
       <ShiftBar version={VERSION} onWhatsNew={()=>setShowWhatsNew(true)} theme={theme} onToggleTheme={()=>setTheme(theme==='dark'?'light':'dark')} syncPulse={syncPulse}/>
       <ConfigSyncBanner />
-      <div style={{ display:'flex', flex:1, overflow:'hidden' }}>
+      {/* v5.5.356 ServOS: floating panels — padding + gap so the rail and
+          surface panels sit as separate rounded glass cards over the scene */}
+      <div style={{ display:'flex', flex:1, overflow:'hidden', gap:12, padding:12 }}>
         <Sidebar surface={surface} setSurface={setSurface} />
         <div style={{ display:'flex', flex:1, overflow:'hidden', minWidth:0 }}>
           {surface==='tables'     && <TablesSurface />}
@@ -6080,7 +6088,7 @@ function Sidebar({ surface, setSurface }) {
 
   return (
     <>
-    <nav style={{ width:'var(--nav)', background:'var(--glass-bg)', backdropFilter:'blur(22px) saturate(150%)', WebkitBackdropFilter:'blur(22px) saturate(150%)', borderRight:'1px solid var(--glass-border)', boxShadow:'var(--glass-hi)', display:'flex', flexDirection:'column', alignItems:'center', padding:'10px 0', gap:4, flexShrink:0 }}>
+    <nav style={{ width:'var(--nav)', background:'var(--glass-bg)', backdropFilter:'blur(22px) saturate(150%)', WebkitBackdropFilter:'blur(22px) saturate(150%)', border:'1px solid var(--glass-border)', borderRadius:20, boxShadow:'var(--glass-shadow), var(--glass-hi), var(--glass-lo)', display:'flex', flexDirection:'column', alignItems:'center', padding:'10px 0', gap:4, flexShrink:0 }}>
       {visibleNav.map(n=>{
         const active=surface===n.id;
         return(<button key={n.id} onClick={()=>setSurface(n.id)} style={{ width:46, height:46, borderRadius:12, cursor:'pointer', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:3, background:active?'var(--acc-d)':'transparent', border:`1px solid ${active?'var(--acc-b)':'transparent'}`, boxShadow:active?'var(--glass-hi)':'none', color:active?'var(--acc)':'var(--t3)', transition:'all .15s', fontFamily:'inherit', position:'relative' }}>

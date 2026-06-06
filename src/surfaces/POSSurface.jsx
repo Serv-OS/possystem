@@ -706,7 +706,7 @@ export default function POSSurface() {
   const seatList = useMemo(()=>{ const a=['shared']; for(let i=1;i<=covers;i++)a.push(i); return a; },[covers]);
 
   return (
-    <div style={{display:'flex',flex:1,overflow:'hidden',minWidth:0}}>
+    <div style={{display:'flex',flex:1,overflow:'hidden',minWidth:0,gap:12}}>
 
       {/* v5.5.163: Challenge 21 prompt — fires when the alcohol-sale counter hits the threshold */}
       <Challenge21PromptHost/>
@@ -887,7 +887,7 @@ export default function POSSurface() {
 
       {/* ══ ORDER PANEL ════════════════════════════════════════ */}
       {/* v5.5.352 ServOS: glass material on the order panel (was solid var(--bg1)) */}
-      <div style={{width:compact?300:420,minWidth:compact?260:360,maxWidth:compact?350:500,flexShrink:0,display:'flex',flexDirection:'column',background:'var(--glass-bg)',backdropFilter:'blur(22px) saturate(150%)',WebkitBackdropFilter:'blur(22px) saturate(150%)',borderRight:'1px solid var(--glass-border)',boxShadow:'var(--glass-hi)',overflow:'hidden'}}>
+      <div style={{width:compact?300:420,minWidth:compact?260:360,maxWidth:compact?350:500,flexShrink:0,display:'flex',flexDirection:'column',background:'var(--glass-bg)',backdropFilter:'blur(22px) saturate(150%)',WebkitBackdropFilter:'blur(22px) saturate(150%)',border:'1px solid var(--glass-border)',borderRadius:22,boxShadow:'var(--glass-shadow), var(--glass-hi), var(--glass-lo)',overflow:'hidden'}}>
 
         {/* Context header */}
         <div style={{padding:'10px 12px 8px',borderBottom:'1px solid var(--bdr)',flexShrink:0}}>
@@ -1186,7 +1186,7 @@ export default function POSSurface() {
 
       {/* ══ CATEGORY NAV ══════════════════════════════════════════ */}
       {/* v5.5.352 ServOS: glass material on the category column */}
-      <div style={{width:'var(--cat)',flexShrink:0,background:'var(--glass-bg)',backdropFilter:'blur(22px) saturate(150%)',WebkitBackdropFilter:'blur(22px) saturate(150%)',borderRight:'1px solid var(--glass-border)',boxShadow:'var(--glass-hi)',display:'flex',flexDirection:'column',overflow:'hidden'}}>
+      <div style={{width:'var(--cat)',flexShrink:0,background:'var(--glass-bg)',backdropFilter:'blur(22px) saturate(150%)',WebkitBackdropFilter:'blur(22px) saturate(150%)',border:'1px solid var(--glass-border)',borderRadius:22,boxShadow:'var(--glass-shadow), var(--glass-hi), var(--glass-lo)',display:'flex',flexDirection:'column',overflow:'hidden'}}>
         <div style={{padding:'12px 10px 8px',borderBottom:'1px solid var(--bdr)',flexShrink:0}}>
           <div style={{fontSize:9,fontWeight:800,color:'var(--t4)',textTransform:'uppercase',letterSpacing:'.12em',paddingLeft:2}}>Menu</div>
         </div>
@@ -1244,10 +1244,10 @@ export default function POSSurface() {
       </div>
 
       {/* ══ PRODUCT GRID / ORDERS HUB ═════════════════════════════ */}
-      <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden',minWidth:0}}>
+      <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden',minWidth:0,background:'var(--glass-bg)',backdropFilter:'blur(22px) saturate(150%)',WebkitBackdropFilter:'blur(22px) saturate(150%)',border:'1px solid var(--glass-border)',borderRadius:22,boxShadow:'var(--glass-shadow), var(--glass-hi), var(--glass-lo)'}}>
 
         {/* Tab bar */}
-        <div style={{padding:'0 14px',borderBottom:'1px solid var(--bdr)',background:'var(--bg1)',flexShrink:0,display:'flex',alignItems:'center',gap:0}}>
+        <div style={{padding:'0 14px',borderBottom:'1px solid var(--glass-border)',background:'transparent',flexShrink:0,display:'flex',alignItems:'center',gap:0}}>
           {[['menu','Menu'],['history','History']].map(([t,l])=>{
             const isActive = rightTab===t;
             const badge = t==='orders' ? orderQueue.filter(o=>o.status!=='collected').length : 0;
