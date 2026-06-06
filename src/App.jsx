@@ -80,6 +80,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.367', date: '6 Jun 2026', label: 'ServOS visual system — Back Office reskin + 10-section sidebar nav reorg',
+    changes: [
+      'Sidebar rebuilt as the ServOS 10-section collapsible IA (Overview · Menu · Floor plan · Inventory · Team · Customers · Channels · Hardware · Reports · Settings) — single-open accordion, monoline section icons, every existing link keeps its exact route (regroup, not re-wire). Glass sidebar + line-icon footer.',
+      'Overview reskinned: glass KPI cards with coloured accent strips, colour-coded quick-action cards with line icons, and a glass top bar with a POS/Office/Admin segmented control. Other BO screens inherit the ServOS palette, fonts and glass components from the shared layer.',
+    ],
+  },
+  {
     version: '5.5.366', date: '6 Jun 2026', label: 'ServOS visual system — more line icons (filter pills + extra food/drink emoji)',
     changes: [
       'Subcategory filter pills (e.g. Coffee / Tea) now render the ServOS line-icon set instead of raw emoji.',

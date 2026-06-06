@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useStore } from '../store';
 import { ServOSIcon } from '../components/ServOSBrand';
+import { Icon } from '../components/ServOSIcons';
 import { broadcastConfigPush } from '../sync/SyncBridge';
 import { supabase, isMock, getLocationId, setResolvedLocationId, clearResolvedLocationId } from '../lib/supabase';
 import BOLogin from './BOLogin';
@@ -69,6 +70,23 @@ const NAV = [
   { id: 'messages', label: 'Messages', icon: '\u{1F4AC}', group: 'Configuration' },
 ];
 
+// v5.5.367 ServOS: intent-based 10-section sidebar IA. Every child keeps the
+// existing section id (route) from NAV above — this regroups, never re-wires.
+// `single` = the header navigates straight to that route; `children` = a
+// collapsible accordion of existing routes.
+const NAV_IA = [
+  { label:'Overview',   icon:'home',      single:'overview' },
+  { label:'Menu',       icon:'list',      children:[['menu','Items & modifiers'],['discounts','Discounts'],['tax','Tax & VAT'],['challenge21','Challenge ID']] },
+  { label:'Floor plan', icon:'floor',     single:'floorplan' },
+  { label:'Inventory',  icon:'inventory', single:'inventory' },
+  { label:'Team',       icon:'team',      single:'staff' },
+  { label:'Customers',  icon:'customers', children:[['customers','Customers'],['loyalty','Loyalty'],['giftcards','Gift cards'],['messages','Messages']] },
+  { label:'Channels',   icon:'channels',  children:[['online','Online ordering'],['kiosks','Kiosks']] },
+  { label:'Hardware',   icon:'hardware',  children:[['devices','Terminals'],['profiles','Device profiles'],['printers','Printers'],['printing','Production printing'],['cardreaders','Card readers'],['cashdrawers','Cash drawers'],['network','Network & sync']] },
+  { label:'Reports',    icon:'reports',   children:[['reports','Sales reports'],['shift','Shifts'],['eod','Close day'],['pettycash','Petty cash']] },
+  { label:'Settings',   icon:'settings',  children:[['location','Location settings'],['receipt','Receipt'],['ai','AI assistant']] },
+];
+
 export default function BackOfficeApp() {
   const { setAppMode, staff, closedChecks, tables, devices, theme, setTheme } = useStore();
   // v5.5.328: apply the saved light/dark theme on back-office boot. The store's
@@ -86,6 +104,13 @@ export default function BackOfficeApp() {
   const [section, setSection] = useState('overview');
   const [orgCtx, setOrgCtx] = useState(null); // { orgName, locationName, locationId, orgId, role }
   const [showLocationSwitcher, setShowLocationSwitcher] = useState(false);
+  // v5.5.367 ServOS: which nav accordion is open (single-open); auto-opens the
+  // section that contains the current route.
+  const [openNav, setOpenNav] = useState(null);
+  useEffect(() => {
+    const k = NAV_IA.find(s => s.single === section || (s.children||[]).some(c => c[0] === section))?.label;
+    if (k) setOpenNav(k);
+  }, [section]);
 
   // Check Supabase session on mount
   useEffect(() => {
@@ -356,12 +381,14 @@ export default function BackOfficeApp() {
 
   return (
     <div style={{
-      display:'flex', height:'100vh', background:'var(--bg)', color:'var(--t1)',
+      display:'flex', height:'100vh', background:'transparent', color:'var(--t1)',
       fontFamily:'inherit', overflow:'hidden',
     }}>
-      {/* ── Sidebar ─────────────────────────────────────── */}
+      {/* ── Sidebar (glass) ─────────────────────────────── */}
       <div style={{
-        width:228, background:'var(--bg1)', borderRight:'1px solid var(--bdr)',
+        width:236, background:'var(--glass-bg)',
+        backdropFilter:'blur(22px) saturate(150%)', WebkitBackdropFilter:'blur(22px) saturate(150%)',
+        borderRight:'1px solid var(--glass-border)',
         display:'flex', flexDirection:'column', flexShrink:0,
       }}>
         {/* Brand */}
@@ -380,36 +407,63 @@ export default function BackOfficeApp() {
           </div>
         </div>
 
-        {/* Nav groups */}
-        <div style={{ flex:1, overflowY:'auto', padding:'12px 8px' }}>
-          {groups.map(group => (
-            <div key={group} style={{ marginBottom:20 }}>
-              <div style={{
-                fontSize:9, fontWeight:800, color:'var(--t4)',
-                textTransform:'uppercase', letterSpacing:'.1em',
-                padding:'0 10px', marginBottom:4,
-              }}>{group}</div>
-              {NAV.filter(n => n.group === group).map(n => {
-                const active = section === n.id;
-                return (
-                  <button key={n.id} onClick={() => setSection(n.id)} style={{
-                    width:'100%', padding:'8px 10px', borderRadius:9,
-                    cursor:'pointer', textAlign:'left', fontSize:13,
-                    fontWeight: active ? 700 : 400, border:'none',
-                    fontFamily:'inherit',
-                    background: active ? 'var(--acc-d)' : 'transparent',
-                    color: active ? 'var(--acc)' : 'var(--t2)',
-                    marginBottom:1, display:'flex', alignItems:'center', gap:9,
-                    borderLeft:`2px solid ${active ? 'var(--acc)' : 'transparent'}`,
-                    transition:'all .1s',
-                  }}>
-                    <span style={{ fontSize:14, width:18, textAlign:'center' }}>{n.icon}</span>
-                    {n.label}
-                  </button>
-                );
-              })}
-            </div>
-          ))}
+        {/* Nav — ServOS 10-section collapsible IA */}
+        <div style={{ flex:1, overflowY:'auto', padding:'10px 8px', display:'flex', flexDirection:'column', gap:2 }}>
+          {NAV_IA.map(sec => {
+            if (sec.single) {
+              const active = section === sec.single;
+              return (
+                <button key={sec.label} onClick={() => setSection(sec.single)} style={{
+                  display:'flex', alignItems:'center', gap:11, padding:'10px 11px', borderRadius:11,
+                  cursor:'pointer', fontFamily:'inherit', textAlign:'left', width:'100%',
+                  border:`1px solid ${active?'var(--acc-b)':'transparent'}`,
+                  background: active ? 'var(--acc-d)' : 'transparent',
+                  boxShadow: active ? 'var(--glass-hi)' : 'none',
+                  color: active ? 'var(--acc)' : 'var(--t1)', transition:'all .12s',
+                }}>
+                  <Icon name={sec.icon} size={19} style={{ color: active?'var(--acc)':'var(--t3)' }} />
+                  <span style={{ flex:1, fontSize:13.5, fontWeight: active?600:500 }}>{sec.label}</span>
+                </button>
+              );
+            }
+            const open = openNav === sec.label;
+            const hasActive = sec.children.some(c => c[0] === section);
+            return (
+              <div key={sec.label}>
+                <button onClick={() => setOpenNav(open ? null : sec.label)} style={{
+                  display:'flex', alignItems:'center', gap:11, padding:'10px 11px', borderRadius:11,
+                  cursor:'pointer', fontFamily:'inherit', textAlign:'left', width:'100%',
+                  border:`1px solid ${hasActive?'var(--acc-b)':'transparent'}`,
+                  background: hasActive ? 'var(--acc-d)' : 'transparent',
+                  boxShadow: hasActive ? 'var(--glass-hi)' : 'none',
+                  color: hasActive ? 'var(--acc)' : 'var(--t1)', transition:'all .12s',
+                }}>
+                  <Icon name={sec.icon} size={19} style={{ color: hasActive?'var(--acc)':'var(--t3)' }} />
+                  <span style={{ flex:1, fontSize:13.5, fontWeight: hasActive?600:500 }}>{sec.label}</span>
+                  <Icon name="chevron" size={13} style={{ color:'var(--t4)', transform: open?'rotate(90deg)':'none', transition:'transform .2s' }} />
+                </button>
+                <div style={{ maxHeight: open ? 460 : 0, overflow:'hidden', transition:'max-height .26s ease' }}>
+                  <div style={{ marginLeft:21, borderLeft:'1px solid var(--hair, var(--bdr))', display:'flex', flexDirection:'column', gap:1, padding:'3px 0 6px 13px' }}>
+                    {sec.children.map(([id, label]) => {
+                      const active = section === id;
+                      return (
+                        <button key={id} onClick={() => setSection(id)} style={{
+                          display:'flex', alignItems:'center', gap:9, padding:'8px 11px', borderRadius:9,
+                          cursor:'pointer', fontFamily:'inherit', textAlign:'left', width:'100%', border:'none',
+                          background: active ? 'var(--acc-d)' : 'transparent',
+                          color: active ? 'var(--acc)' : 'var(--t3)', fontSize:12.8, fontWeight: active?600:400,
+                          transition:'all .1s',
+                        }}>
+                          <span style={{ width:5, height:5, borderRadius:'50%', background:'currentColor', opacity: active?1:0.4, flexShrink:0 }} />
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
         </div>
 
         {/* Footer */}
@@ -439,7 +493,7 @@ export default function BackOfficeApp() {
             color:'var(--t3)', display:'flex', alignItems:'center', gap:8,
             transition:'all .1s', marginBottom:6,
           }}>
-            <span style={{ fontSize:16 }}>{theme === 'dark' ? '☀️' : '🌙'}</span>
+            <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={16} />
             {theme === 'dark' ? 'Light mode' : 'Dark mode'}
           </button>
           <button onClick={() => { localStorage.removeItem('rpos-device'); localStorage.removeItem('rpos-device-config'); localStorage.setItem('rpos-device-mode','pos'); window.location.href = '?mode=pos'; }} style={{
@@ -450,7 +504,7 @@ export default function BackOfficeApp() {
             color:'var(--t2)', display:'flex', alignItems:'center', gap:8,
             transition:'all .1s', marginBottom:6,
           }}>
-            <span style={{ fontSize:16 }}>←</span> Back to POS
+            <Icon name="back" size={15} /> Back to POS
           </button>
           {!isMock && (
             <button onClick={() => setShowLocationSwitcher(true)} style={{
@@ -462,7 +516,7 @@ export default function BackOfficeApp() {
               marginBottom:6, transition:'all .1s',
             }}
               title={orgCtx?.locationName ? `Currently at ${orgCtx.locationName}` : 'Switch location'}>
-              <span>📍</span>
+              <Icon name="pin" size={14} />
               <span style={{ flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
                 {orgCtx?.locationName || 'Switch location'}
               </span>
@@ -477,7 +531,7 @@ export default function BackOfficeApp() {
               fontFamily:'inherit', background:'transparent',
               color:'var(--t4)', display:'flex', alignItems:'center', gap:8,
             }}>
-              <span>⎋</span> Sign out
+              <Icon name="signout" size={14} /> Sign out
             </button>
           )}
           {!isMock && (
@@ -490,20 +544,20 @@ export default function BackOfficeApp() {
       <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden' }}>
         {/* Top bar */}
         <div style={{
-          height:52, borderBottom:'1px solid var(--bdr)',
-          background:'var(--bg1)', display:'flex',
-          alignItems:'center', justifyContent:'space-between',
+          height:56, borderBottom:'1px solid var(--glass-border)',
+          background:'var(--glass-bg)', backdropFilter:'blur(22px) saturate(150%)', WebkitBackdropFilter:'blur(22px) saturate(150%)',
+          display:'flex', alignItems:'center', justifyContent:'space-between',
           padding:'0 24px', flexShrink:0,
         }}>
-          <div style={{ fontSize:16, fontWeight:800, color:'var(--t1)' }}>
+          <div style={{ fontSize:16, fontWeight:600, color:'var(--t1)', letterSpacing:'-.015em' }}>
             {NAV.find(n => n.id === section)?.label}
           </div>
           <div style={{ display:'flex', alignItems:'center', gap:12 }}>
-            {/* Quick nav — switch between modes */}
-            <div style={{ display:'flex', gap:4 }}>
-              <a href="?mode=pos" onClick={() => { localStorage.removeItem('rpos-device'); localStorage.removeItem('rpos-device-config'); }} style={{ padding:'5px 12px', borderRadius:7, border:'1px solid var(--bdr)', background:'var(--bg3)', color:'var(--t2)', fontSize:12, fontWeight:700, cursor:'pointer', fontFamily:'inherit', textDecoration:'none', display:'flex', alignItems:'center', gap:5 }}>🖥 POS</a>
-              <a href="?mode=office" style={{ padding:'5px 12px', borderRadius:7, border:'1px solid var(--acc-b)', background:'var(--acc-d)', color:'var(--acc)', fontSize:12, fontWeight:700, cursor:'pointer', fontFamily:'inherit', textDecoration:'none' }}>🏢 Office</a>
-              <a href="?mode=admin" style={{ padding:'5px 12px', borderRadius:7, border:'1px solid var(--bdr)', background:'var(--bg3)', color:'var(--t3)', fontSize:12, fontWeight:700, cursor:'pointer', fontFamily:'inherit', textDecoration:'none' }}>🔐 Admin</a>
+            {/* Quick nav — POS / Office / Admin segmented (Office active) */}
+            <div style={{ display:'inline-flex', gap:2, padding:3, borderRadius:11, background:'var(--inset)', border:'1px solid var(--inset-border)' }}>
+              <a href="?mode=pos" onClick={() => { localStorage.removeItem('rpos-device'); localStorage.removeItem('rpos-device-config'); }} style={{ padding:'6px 12px', borderRadius:8, color:'var(--t3)', fontSize:12, fontWeight:600, cursor:'pointer', fontFamily:'inherit', textDecoration:'none', display:'inline-flex', alignItems:'center', gap:6 }}><Icon name="pos" size={14}/>POS</a>
+              <a href="?mode=office" style={{ padding:'6px 12px', borderRadius:8, background:'var(--glass-bg)', boxShadow:'var(--glass-hi)', color:'var(--t1)', fontSize:12, fontWeight:600, cursor:'pointer', fontFamily:'inherit', textDecoration:'none', display:'inline-flex', alignItems:'center', gap:6 }}><Icon name="office" size={14}/>Office</a>
+              <a href="?mode=admin" style={{ padding:'6px 12px', borderRadius:8, color:'var(--t3)', fontSize:12, fontWeight:600, cursor:'pointer', fontFamily:'inherit', textDecoration:'none', display:'inline-flex', alignItems:'center', gap:6 }}><Icon name="settings" size={14}/>Admin</a>
             </div>
             {/* Push to POS button */}
             <PushToPOSButton />
@@ -824,13 +878,13 @@ function BOOverview({ setSection, orgCtx }) {
   }, [todayChecks]);
 
   const quickActions = [
-    { icon:'🍽', label:'Edit menu',        sub:'Update items, prices, allergens',  target:'menu' },
-    { icon:'⬚',  label:'Floor plan',       sub:'Move tables, add sections',       target:'floorplan' },
-    { icon:'📋', label:'Device profiles',  sub:'Configure terminal behaviour',    target:'profiles' },
-    { icon:'📱', label:'Add terminal',       sub:'Pair a new Sunmi device',                    target:'devices' },
-    { icon:'🖨', label:'Manage printers',    sub:'Add NT311 and other ESC/POS printers',       target:'printers' },
-    { icon:'👥', label:'Manage staff',       sub:'Add servers, change PINs',                   target:'staff' },
-    { icon:'🗺', label:'Production printing', sub:'Route orders to kitchen & receipt printers', target:'printing' },
+    { icon:'list',     h:145, label:'Edit menu',        sub:'Update items, prices, allergens',  target:'menu' },
+    { icon:'floor',    h:200, label:'Floor plan',       sub:'Move tables, add sections',       target:'floorplan' },
+    { icon:'hardware', h:265, label:'Device profiles',  sub:'Configure terminal behaviour',    target:'profiles' },
+    { icon:'pos',      h:210, label:'Add terminal',       sub:'Pair a new Sunmi device',                    target:'devices' },
+    { icon:'print',    h:38,  label:'Manage printers',    sub:'Add NT311 and other ESC/POS printers',       target:'printers' },
+    { icon:'team',     h:300, label:'Manage staff',       sub:'Add servers, change PINs',                   target:'staff' },
+    { icon:'print',    h:330, label:'Production printing', sub:'Route orders to kitchen & receipt printers', target:'printing' },
   ];
 
   return (
@@ -861,10 +915,13 @@ function BOOverview({ setSection, orgCtx }) {
       <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:12, marginBottom:28 }}>
         {stats.map(s => (
           <div key={s.label} style={{
-            background:'var(--bg1)', border:'1px solid var(--bdr)',
-            borderRadius:14, padding:'18px 20px',
+            position:'relative', overflow:'hidden',
+            background:'var(--glass-bg)', backdropFilter:'blur(22px) saturate(150%)', WebkitBackdropFilter:'blur(22px) saturate(150%)',
+            border:'1px solid var(--glass-border)', boxShadow:'var(--glass-shadow), var(--glass-hi)',
+            borderRadius:16, padding:'18px 20px',
           }}>
-            <div style={{ fontSize:10, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.07em', marginBottom:10 }}>{s.label}</div>
+            <div style={{ position:'absolute', left:0, top:0, bottom:0, width:3, background:s.color }} />
+            <div style={{ fontSize:10, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.1em', marginBottom:10, fontFamily:'var(--font-mono)' }}>{s.label}</div>
             <div style={{ fontSize:28, fontWeight:800, color:s.color, fontFamily:'var(--font-mono)', letterSpacing:'-.02em' }}>{s.value}</div>
             <div style={{ fontSize:11, color:'var(--t3)', marginTop:5 }}>{s.sub}</div>
           </div>
@@ -876,17 +933,23 @@ function BOOverview({ setSection, orgCtx }) {
       <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10, marginBottom:28 }}>
         {quickActions.map(a => (
           <button key={a.label} onClick={() => setSection(a.target)} style={{
-            background:'var(--bg1)', border:'1px solid var(--bdr)',
-            borderRadius:14, padding:'16px 18px', cursor:'pointer',
-            textAlign:'left', fontFamily:'inherit', transition:'all .14s',
-            display:'flex', alignItems:'flex-start', gap:12,
+            background:'var(--glass-bg)', backdropFilter:'blur(22px) saturate(150%)', WebkitBackdropFilter:'blur(22px) saturate(150%)',
+            border:'1px solid var(--glass-border)', boxShadow:'var(--glass-shadow), var(--glass-hi)',
+            borderRadius:15, padding:'15px 17px', cursor:'pointer',
+            textAlign:'left', fontFamily:'inherit', transition:'transform .14s, box-shadow .14s',
+            display:'flex', alignItems:'center', gap:14,
           }}
-          onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--acc-b)'; e.currentTarget.style.background = 'var(--acc-d)'; }}
-          onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--bdr)'; e.currentTarget.style.background = 'var(--bg1)'; }}>
-            <span style={{ fontSize:22, flexShrink:0 }}>{a.icon}</span>
+          onMouseEnter={e => { e.currentTarget.style.transform='translateY(-2px)'; }}
+          onMouseLeave={e => { e.currentTarget.style.transform='translateY(0)'; }}>
+            <span style={{ width:42, height:42, borderRadius:12, flexShrink:0, display:'flex', alignItems:'center', justifyContent:'center',
+              color:`oklch(var(--cat-l) var(--cat-c) ${a.h})`,
+              background:`color-mix(in oklch, oklch(var(--cat-l) var(--cat-c) ${a.h}) 14%, transparent)`,
+              border:`1px solid color-mix(in oklch, oklch(var(--cat-l) var(--cat-c) ${a.h}) 24%, transparent)` }}>
+              <Icon name={a.icon} size={20} />
+            </span>
             <div>
-              <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)', marginBottom:3 }}>{a.label}</div>
-              <div style={{ fontSize:11, color:'var(--t3)' }}>{a.sub}</div>
+              <div style={{ fontSize:13.5, fontWeight:600, color:'var(--t1)', marginBottom:3 }}>{a.label}</div>
+              <div style={{ fontSize:11.5, color:'var(--t3)' }}>{a.sub}</div>
             </div>
           </button>
         ))}

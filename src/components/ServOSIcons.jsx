@@ -22,6 +22,20 @@ const PATHS = {
   collect:   '<rect x="3" y="7" width="18" height="13" rx="2"/><path d="M3 12h18M8 7V5a4 4 0 0 1 8 0v2"/>',
   delivery:  '<path d="M3 13h11V6H3zM14 9h4l3 3v4h-7"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="18" r="2"/>',
 
+  // ── Back-office section icons ──
+  home:      '<rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9h18M9 21V9"/>',
+  list:      '<path d="M4 5h16M4 12h16M4 19h10"/><circle cx="19" cy="19" r="1.6"/>',
+  inventory: '<path d="M3 7l9-4 9 4v10l-9 4-9-4z"/><path d="M3 7l9 4 9-4M12 11v10"/>',
+  team:      '<circle cx="9" cy="8" r="3"/><path d="M3 20a6 6 0 0 1 12 0"/><path d="M16 6a3 3 0 0 1 0 6M21 20a6 6 0 0 0-4-5.6"/>',
+  customers: '<circle cx="12" cy="8" r="3.2"/><path d="M5 20a7 7 0 0 1 14 0"/>',
+  channels:  '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.6 2.6 2.6 15.4 0 18M12 3c-2.6 2.6-2.6 15.4 0 18"/>',
+  hardware:  '<rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 2v2M15 2v2M9 20v2M15 20v2M2 9h2M2 15h2M20 9h2M20 15h2"/>',
+  reports:   '<path d="M3 3v18h18"/><rect x="7" y="11" width="3" height="6"/><rect x="12" y="7" width="3" height="10"/><rect x="17" y="13" width="3" height="4"/>',
+  settings:  '<circle cx="12" cy="12" r="3"/><path d="M19.4 13.5a1.7 1.7 0 0 0 .3 1.9l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-2.86 1.18V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-2.86-1.18l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15H4.5a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.18-2.86l-.06-.06A2 2 0 1 1 8.55 5.2l.06.06A1.7 1.7 0 0 0 11.5 4.6V4.5a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 2.86 1.18l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 11.5V11"/>',
+  signout:   '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>',
+  back:      '<path d="M19 12H5M11 6l-6 6 6 6"/>',
+  pin:       '<path d="M12 21s-7-4.5-7-10a7 7 0 0 1 14 0c0 5.5-7 10-7 10z"/><circle cx="12" cy="11" r="2.5"/>',
+
   // ── UI / chrome ──
   search:    '<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>',
   warn:      '<path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h0"/>',
