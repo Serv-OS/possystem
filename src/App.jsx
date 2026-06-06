@@ -80,6 +80,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.363', date: '6 Jun 2026', label: 'ServOS visual system — fix clipped (square) panel shadow + wider category column',
+    changes: [
+      'Root cause of the “square shadow / wrong on the bottom”: the panels are rounded, but the previous drop-shadow was too large (≈50px) for the 12px gap to the screen edge, so its bottom got clipped into a hard square. Replaced with a small soft shadow that fits, removed the dark inset line on panel bottoms, and added breathing room so the rounded corners + shadow render fully top and bottom.',
+      'Widened the category column (170→208px) so names like “Sandwiches” no longer wrap or break mid-word.',
+    ],
+  },
+  {
     version: '5.5.362', date: '6 Jun 2026', label: 'ServOS visual system — POS background colour glow + cleaner frosted panels',
     changes: [
       'Brought up the soft brand-colour scene behind the POS so panels float over a colour wash instead of sterile flat white; made the light-mode panels a touch more opaque so they read as clean frosted cards.',
@@ -5896,7 +5903,7 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
       <ConfigSyncBanner />
       {/* v5.5.356 ServOS: floating panels — padding + gap so the rail and
           surface panels sit as separate rounded glass cards over the scene */}
-      <div style={{ display:'flex', flex:1, overflow:'hidden', gap:12, padding:12 }}>
+      <div style={{ display:'flex', flex:1, overflow:'hidden', gap:14, padding:16 }}>
         <Sidebar surface={surface} setSurface={setSurface} />
         <div style={{ display:'flex', flex:1, overflow:'hidden', minWidth:0 }}>
           {surface==='tables'     && <TablesSurface />}
