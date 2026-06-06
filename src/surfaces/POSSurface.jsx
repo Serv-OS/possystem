@@ -885,7 +885,8 @@ export default function POSSurface() {
       })()}
 
       {/* ══ ORDER PANEL ════════════════════════════════════════ */}
-      <div style={{width:compact?300:420,minWidth:compact?260:360,maxWidth:compact?350:500,flexShrink:0,display:'flex',flexDirection:'column',background:'var(--bg1)',borderRight:'1px solid var(--bdr)',overflow:'hidden'}}>
+      {/* v5.5.352 ServOS: glass material on the order panel (was solid var(--bg1)) */}
+      <div style={{width:compact?300:420,minWidth:compact?260:360,maxWidth:compact?350:500,flexShrink:0,display:'flex',flexDirection:'column',background:'var(--glass-bg)',backdropFilter:'blur(22px) saturate(150%)',WebkitBackdropFilter:'blur(22px) saturate(150%)',borderRight:'1px solid var(--glass-border)',boxShadow:'var(--glass-hi)',overflow:'hidden'}}>
 
         {/* Context header */}
         <div style={{padding:'10px 12px 8px',borderBottom:'1px solid var(--bdr)',flexShrink:0}}>
@@ -1183,7 +1184,8 @@ export default function POSSurface() {
       </div>
 
       {/* ══ CATEGORY NAV ══════════════════════════════════════════ */}
-      <div style={{width:'var(--cat)',flexShrink:0,background:'var(--bg1)',borderRight:'1px solid var(--bdr)',display:'flex',flexDirection:'column',overflow:'hidden'}}>
+      {/* v5.5.352 ServOS: glass material on the category column */}
+      <div style={{width:'var(--cat)',flexShrink:0,background:'var(--glass-bg)',backdropFilter:'blur(22px) saturate(150%)',WebkitBackdropFilter:'blur(22px) saturate(150%)',borderRight:'1px solid var(--glass-border)',boxShadow:'var(--glass-hi)',display:'flex',flexDirection:'column',overflow:'hidden'}}>
         <div style={{padding:'12px 10px 8px',borderBottom:'1px solid var(--bdr)',flexShrink:0}}>
           <div style={{fontSize:9,fontWeight:800,color:'var(--t4)',textTransform:'uppercase',letterSpacing:'.12em',paddingLeft:2}}>Menu</div>
         </div>

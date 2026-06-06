@@ -79,6 +79,12 @@ import { ServOSIcon } from './components/ServOSBrand';
 
 const CHANGELOG = [
   {
+    version: '5.5.352', date: '6 Jun 2026', label: 'ServOS visual system — POS panels get the glass material',
+    changes: [
+      'POS order panel and category column now use the frosted “liquid glass” material (translucent + blur + specular edge) over the scene, instead of flat fills. Layout and behaviour unchanged.',
+    ],
+  },
+  {
     version: '5.5.351', date: '6 Jun 2026', label: 'ServOS visual system — shared components (buttons · inputs · modals · cards)',
     changes: [
       'Scoped glass restyle of the shared component classes (buttons, inputs, modals, toasts, product cards, category/nav rows, badges) so most staff screens inherit the ServOS look at once.',
