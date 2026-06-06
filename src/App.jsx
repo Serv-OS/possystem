@@ -80,6 +80,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.366', date: '6 Jun 2026', label: 'ServOS visual system — more line icons (filter pills + extra food/drink emoji)',
+    changes: [
+      'Subcategory filter pills (e.g. Coffee / Tea) now render the ServOS line-icon set instead of raw emoji.',
+      'Expanded the emoji→line-icon map (🥩 🥓 🔥 🌶 🍦 🥃 etc.) so menu-tile glyphs like Lamb Shank, Short Rib and Half Bird show clean line icons; any custom unmapped emoji still fall back to the emoji.',
+    ],
+  },
+  {
     version: '5.5.365', date: '6 Jun 2026', label: 'ServOS visual system — fix the square panel shadow (clipping wrappers)',
     changes: [
       'Root cause found: the order/category/menu panels’ rounded shadows were clipped square by two intermediate wrapper divs with overflow:hidden and no padding. (The left rail was always fine because it’s a direct child of the padded body.) Set those wrappers to overflow:visible so the shadows reach the body’s 16px padding and render fully rounded — matching the rail. Verified in the live DOM.',

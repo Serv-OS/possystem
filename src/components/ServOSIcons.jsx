@@ -100,6 +100,10 @@ const EMOJI_ICON = {
   '🥪':'sandwich', '🌭':'sandwich', '🥖':'sandwich',
   '🥤':'soda', '🧃':'soda',
   '🍽':'utensils', '🍽️':'utensils', '🍴':'utensils', '🥗':'utensils', '🍝':'utensils', '🍔':'utensils', '🍲':'utensils', '🥘':'utensils',
+  '🥩':'utensils', '🥓':'utensils', '🍳':'utensils', '🦐':'utensils', '🐟':'utensils', '🍱':'utensils', '🍜':'utensils', '🌮':'utensils', '🌯':'utensils', '🧀':'utensils', '🥙':'utensils', '🫕':'utensils',
+  '🔥':'fire', '🌶':'fire', '🌶️':'fire', '⭐':'sparkle', '✨':'sparkle', '🌟':'sparkle',
+  '🥧':'cake', '🍦':'cake', '🍨':'cake', '🍪':'donut', '🥐':'sandwich', '🥯':'sandwich',
+  '🫖':'cup', '🥃':'cocktail', '🍶':'bottle', '🥛':'soda', '🧉':'cup',
 };
 /** Returns a ServOS icon name for a known category emoji, else null. */
 export function emojiToIcon(emoji) { return (emoji && EMOJI_ICON[emoji]) || null; }
