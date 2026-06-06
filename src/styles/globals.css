@@ -604,12 +604,12 @@ button { font-family: inherit; }
   box-shadow:0 10px 26px rgba(21,194,106,0.40), inset 0 1px 0 rgba(255,255,255,0.5);
 }
 
-/* secondary = glass */
+/* secondary = glass (recessed fill + clear edge so it reads against glass panels) */
 [data-skin="servos"] .btn-ghost{
-  background:var(--glass-bg); border-color:var(--glass-border); color:var(--t1);
+  background:var(--inset); border-color:var(--bdr2); color:var(--t1);
   box-shadow:var(--glass-hi);
 }
-[data-skin="servos"] .btn-ghost:hover:not(:disabled){ border-color:var(--bdr3); color:var(--t1); }
+[data-skin="servos"] .btn-ghost:hover:not(:disabled){ background:var(--bg4); border-color:var(--bdr3); color:var(--t1); }
 
 [data-skin="servos"] .btn-grn{ background:var(--grn-d); border-color:var(--grn-b); color:var(--grn); }
 [data-skin="servos"] .btn-grn:hover:not(:disabled){ background:var(--grn); color:#06130C; }

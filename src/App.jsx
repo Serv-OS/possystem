@@ -79,6 +79,13 @@ import { ServOSIcon } from './components/ServOSBrand';
 
 const CHANGELOG = [
   {
+    version: '5.5.354', date: '6 Jun 2026', label: 'ServOS visual system — real brand mark + visible Send button',
+    changes: [
+      'Logo replaced across POS top bar, PIN, pairing, device setup, login, Back Office and company admin: now the real ServOS mark (Syne “S” + Signal-green dot, Space Grotesk wordmark), theme-aware — no more old Ember mark. Rendered in the brand fonts so it displays correctly (the supplied logo SVGs are text-based and fall back to the wrong font when used as images).',
+      'Secondary/ghost buttons (e.g. the order panel’s Send) now have a recessed fill + a clearer border so they read against the glass panels.',
+    ],
+  },
+  {
     version: '5.5.353', date: '6 Jun 2026', label: 'ServOS visual system — POS menu tiles colour-coded by category',
     changes: [
       'POS menu tiles now carry a subtle category-colour tinted glass background (reading each category’s existing colour), matching the ServOS wayfinding look. Image tiles and 86’d items unchanged. Visual-only.',

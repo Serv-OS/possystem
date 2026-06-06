@@ -1,66 +1,62 @@
 // src/components/ServOSBrand.jsx
-// Shared ServOS brand mark, icon, and wordmark components.
-// Follows brand guidelines v1.0 — Ember (#E8743C), Instrument Serif wordmark.
+// Shared ServOS brand mark — the new "liquid glass" brand.
+//
+// The official logo SVGs (in /public/brand) are TEXT-based: they reference the
+// Syne / Space Grotesk fonts by name with no embedded outlines, so rendering
+// them through <img> falls back to a default font and looks wrong. We therefore
+// render the mark inline in those exact brand fonts (loaded in index.html) —
+// identical letterforms to the artwork, theme-aware (currentColor → --t1),
+// and crisp at any size. This mirrors how the ServOS reference HTML renders it.
+//   • Icon / monogram : Syne 800 "S" + Signal-green dot
+//   • Wordmark        : Space Grotesk 600 "Serv" + green "OS" + green dot
+const GREEN = '#15C26A';
+const GREEN_GLOW = '#46E08C';
 
-/**
- * ServOS icon mark — the stylised S/OS path in an ember rounded-square.
- * @param {object} props
- * @param {number} [props.size=44] — pixel width/height
- * @param {string} [props.variant='ember'] — 'ember' | 'paper' | 'outline'
- */
-export function ServOSIcon({ size = 44, variant = 'ember', style = {} }) {
-  const fill = variant === 'paper' ? '#F4EDDF'
-    : variant === 'outline' ? 'none'
-    : '#E8743C';
-  const stroke = variant === 'outline' ? '#0E0D0A' : undefined;
+function Dot({ glow = false }) {
   return (
-    <svg viewBox="0 0 80 80" width={size} height={size} style={style}>
-      <rect x="4" y="4" width="72" height="72" rx="14" fill={fill}
-        {...(stroke ? { stroke, strokeWidth: 3 } : {})} />
-      <path
-        d="M22 25 Q22 20 27 20 L53 20 Q58 20 58 25 L58 36 Q58 40 54 40 L26 40 Q22 40 22 44 L22 55 Q22 60 27 60 L53 60 Q58 60 58 55"
-        fill="none" stroke="#0E0D0A" strokeWidth="6" strokeLinecap="square"
-      />
-    </svg>
+    <span style={{
+      display: 'inline-block', width: '0.17em', height: '0.17em', borderRadius: '50%',
+      background: GREEN, marginLeft: '0.06em', verticalAlign: 'baseline',
+      ...(glow ? { boxShadow: `0 0 8px ${GREEN_GLOW}` } : {}),
+    }} />
   );
 }
 
 /**
- * ServOS wordmark — "Serv" in current color + "OS" in ember italic.
- * Uses Instrument Serif (loaded via Google Fonts in index.html).
- * @param {object} props
- * @param {number} [props.fontSize=22] — base font size
- * @param {string} [props.color] — color for "Serv" (defaults to --t1)
+ * ServOS icon / monogram — the Syne "S" + green dot. For compact spaces & tiles.
+ * @param {number} [props.size=44] cap height in px
  */
-export function ServOSWordmark({ fontSize = 22, color, style = {} }) {
+export function ServOSIcon({ size = 44, style = {} }) {
   return (
-    <span style={{
-      // v5.5.329: actually use the brand font. Was 'inherit' (rendered in Inter),
-      // and Instrument Serif wasn't even loaded — that's why the wordmark looked
-      // wrong. Instrument Serif ships weight 400 only, so don't ask for bold
-      // (faux-bold a serif looks off).
-      fontFamily: "'Instrument Serif', Georgia, 'Times New Roman', serif",
-      fontSize,
-      fontWeight: 400,
-      lineHeight: 0.95,
-      letterSpacing: '-0.01em',
-      color: color || 'var(--t1)',
-      ...style,
+    <span role="img" aria-label="ServOS" style={{
+      display: 'inline-flex', alignItems: 'baseline', whiteSpace: 'nowrap',
+      fontFamily: "'Syne', sans-serif", fontWeight: 800, fontSize: size,
+      lineHeight: 0.78, letterSpacing: '-0.02em', color: 'var(--t1)', ...style,
     }}>
-      Serv<span style={{ color: '#E8743C', fontStyle: 'italic' }}>OS</span>
+      S<Dot glow />
     </span>
   );
 }
 
 /**
- * Full ServOS lockup — icon + wordmark side by side.
- * @param {object} props
- * @param {number} [props.iconSize=44] — icon pixel size
- * @param {number} [props.fontSize=22] — wordmark font size
- * @param {string} [props.color] — wordmark "Serv" color
- * @param {number} [props.gap=12] — gap between icon and wordmark
+ * ServOS wordmark — Space Grotesk "Serv" + green "OS" + green dot.
+ * `color` overrides the "Serv" colour (defaults to themed --t1).
+ * @param {number} [props.fontSize=22]
  */
-export function ServOSLockup({ iconSize = 44, fontSize = 22, color, gap = 12, style = {} }) {
+export function ServOSWordmark({ fontSize = 22, color, style = {} }) {
+  return (
+    <span role="img" aria-label="ServOS" style={{
+      display: 'inline-flex', alignItems: 'baseline', whiteSpace: 'nowrap',
+      fontFamily: "'Space Grotesk', sans-serif", fontWeight: 600, fontSize,
+      letterSpacing: '-0.03em', color: color || 'var(--t1)', ...style,
+    }}>
+      Serv<span style={{ color: 'var(--signal-glow, #46E08C)' }}>OS</span><Dot />
+    </span>
+  );
+}
+
+/** Full lockup — icon + wordmark side by side. */
+export function ServOSLockup({ iconSize = 32, fontSize = 22, color, gap = 12, style = {} }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap, ...style }}>
       <ServOSIcon size={iconSize} />
