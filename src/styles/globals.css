@@ -435,3 +435,143 @@ button { font-family: inherit; }
   padding: clamp(16px, 2.5vw, 28px) clamp(20px, 4vw, 48px) !important;
   box-sizing: border-box !important;
 }
+
+/* ============================================================
+   SERVOS — "liquid glass" visual system (v5.5.350)
+   ============================================================
+   A SCOPED skin for STAFF surfaces only (POS family + Back Office),
+   activated by `data-skin="servos"` on <html> (set by those surfaces'
+   mount effects). Because the flag lives on <html>, portaled modals
+   (rendered to <body>) inherit it too. Customer-facing surfaces
+   (online / QR / loyalty portal / gift / kiosk / customer-display)
+   NEVER set the flag, so every rule below is inert for them — they
+   render exactly as before.
+
+   Two jobs:
+     1) Remap the legacy POS/BO tokens (--bg/--t1/--acc/…) to the
+        ServOS palette so existing markup reskins for free.
+     2) Add the brand tokens + glass material + scene utilities the
+        per-surface component passes build on.
+   Values mirror ServOS POS.html / ServOS Back Office.html.
+   Source of truth: "Claude Code — ServOS UI / Back Office Prompt.md".
+   VISUAL ONLY — no behaviour, routing, data, or logic changes.
+*/
+[data-skin="servos"]{
+  /* ---- brand ---- */
+  --signal:#15C26A; --signal-glow:#46E08C; --signal-deep:#0E9E55;
+  --uv:#7C5CFF; --uv-glow:#A48BFF; --uv-deep:#5B3FE0;
+  --amber:#F5A623; --coral:#FF5A4A;
+  --ink:#0F1211; --coal:#161A18; --graphite:#232826;
+  --ash:#8C938C; --mist:#E9ECEA; --paper:#F5F7F4; --white:#fff;
+
+  /* ---- glass material (dark default) ---- */
+  --glass-bg:linear-gradient(160deg, rgba(255,255,255,0.085), rgba(255,255,255,0.025));
+  --glass-border:rgba(255,255,255,0.12);
+  --glass-hi:inset 0 1px 0 rgba(255,255,255,0.30);
+  --glass-lo:inset 0 -1px 0 rgba(0,0,0,0.22);
+  --glass-shadow:0 18px 50px rgba(0,0,0,0.42);
+  --sheen:linear-gradient(150deg, rgba(255,255,255,0.16), transparent 42%);
+  --tile-bg:linear-gradient(160deg, rgba(255,255,255,0.055), rgba(255,255,255,0.018));
+  --tile-border:rgba(255,255,255,0.09);
+  --inset:rgba(255,255,255,0.05);
+  --inset-border:rgba(255,255,255,0.10);
+  --hair:rgba(255,255,255,0.09);
+
+  /* ---- colour-coding scale (shared L & C; only --h varies per item) ---- */
+  --cat-l:0.82; --cat-c:0.135;
+
+  /* ---- legacy token remap → ServOS (dark) ---- */
+  --bg:#0F1211; --bg1:#161A18; --bg2:#1b201d; --bg3:#232826; --bg4:#2b322e; --bg5:#363d38;
+  --t1:#E9ECEA; --t2:#8C938C; --t3:#6B746D; --t4:#525a53;
+  --acc:#15C26A; --acc2:#2FD984; --acc-d:rgba(21,194,106,0.14); --acc-b:rgba(21,194,106,0.34);
+  --grn:#15C26A; --grn-d:rgba(21,194,106,0.13); --grn-b:rgba(21,194,106,0.30);
+  --red:#FF5A4A; --red-d:rgba(255,90,74,0.12); --red-b:rgba(255,90,74,0.32);
+  --blu:#7C5CFF; --blu-d:rgba(124,92,255,0.13); --blu-b:rgba(124,92,255,0.30);
+  --orn:#F5A623; --pur:#7C5CFF;
+  --bdr:rgba(255,255,255,0.10); --bdr2:rgba(255,255,255,0.14); --bdr3:rgba(255,255,255,0.22);
+  --sh:0 2px 10px rgba(0,0,0,0.45); --sh2:0 12px 30px rgba(0,0,0,0.50); --sh3:0 18px 50px rgba(0,0,0,0.62);
+  --sh-acc:0 0 20px rgba(21,194,106,0.25);
+
+  --font-mono:'JetBrains Mono','SF Mono',Menlo,Consolas,monospace;
+  font-family:'Space Grotesk', system-ui, -apple-system, sans-serif;
+}
+
+/* ---- ServOS LIGHT (binds to the existing [data-theme="light"] toggle) ---- */
+[data-skin="servos"][data-theme="light"]{
+  --glass-bg:linear-gradient(160deg, rgba(255,255,255,0.72), rgba(255,255,255,0.46));
+  --glass-border:rgba(255,255,255,0.85);
+  --glass-hi:inset 0 1px 0 rgba(255,255,255,0.95);
+  --glass-lo:inset 0 -1px 0 rgba(20,40,28,0.06);
+  --glass-shadow:0 18px 44px rgba(20,40,28,0.16);
+  --sheen:linear-gradient(150deg, rgba(255,255,255,0.55), transparent 46%);
+  --tile-bg:linear-gradient(160deg, rgba(255,255,255,0.62), rgba(255,255,255,0.32));
+  --tile-border:rgba(15,18,17,0.07);
+  --inset:rgba(15,18,17,0.04);
+  --inset-border:rgba(15,18,17,0.08);
+  --hair:rgba(15,18,17,0.08);
+  --cat-l:0.54; --cat-c:0.145;
+
+  --bg:#F5F7F4; --bg1:#ffffff; --bg2:#fafcf9; --bg3:#eef1ec; --bg4:#e4e8e2; --bg5:#d6dbd4;
+  --t1:#0F1211; --t2:#5E665E; --t3:#8C938C; --t4:#a7ada6;
+  --acc:#0E9E55; --acc2:#15C26A; --acc-d:rgba(21,194,106,0.12); --acc-b:rgba(21,194,106,0.40);
+  --grn:#0E9E55; --grn-d:rgba(21,194,106,0.12); --grn-b:rgba(21,194,106,0.34);
+  --red:#E5483A; --red-d:rgba(255,90,74,0.10); --red-b:rgba(255,90,74,0.34);
+  --blu:#5B3FE0; --blu-d:rgba(124,92,255,0.10); --blu-b:rgba(124,92,255,0.34);
+  --orn:#B9791A; --pur:#5B3FE0;
+  --bdr:rgba(15,18,17,0.10); --bdr2:rgba(15,18,17,0.16); --bdr3:rgba(15,18,17,0.24);
+  --sh:0 2px 10px rgba(20,40,28,0.10); --sh2:0 12px 30px rgba(20,40,28,0.14); --sh3:0 18px 48px rgba(20,40,28,0.20);
+  --sh-acc:0 0 20px rgba(21,194,106,0.18);
+}
+
+/* ---- Scene behind the glass (staff #root) ---- */
+[data-skin="servos"] #root{
+  background:
+    radial-gradient(58% 48% at 82% -4%, rgba(21,194,106,0.22), transparent 58%),
+    radial-gradient(42% 40% at 6% 16%, rgba(38,210,200,0.15), transparent 60%),
+    radial-gradient(48% 46% at 96% 92%, rgba(120,92,255,0.16), transparent 60%),
+    radial-gradient(40% 38% at 24% 104%, rgba(245,166,35,0.09), transparent 60%),
+    var(--bg);
+}
+[data-skin="servos"][data-theme="light"] #root{
+  background:
+    radial-gradient(58% 50% at 82% -6%, rgba(21,194,106,0.18), transparent 58%),
+    radial-gradient(42% 42% at 4% 14%, rgba(38,210,200,0.14), transparent 60%),
+    radial-gradient(46% 46% at 98% 94%, rgba(120,92,255,0.12), transparent 62%),
+    radial-gradient(40% 40% at 26% 106%, rgba(245,166,35,0.10), transparent 60%),
+    var(--bg);
+}
+
+/* ---- Glass material utilities (used by the per-surface passes) ---- */
+[data-skin="servos"] .sv-glass{
+  position:relative;
+  background:var(--glass-bg);
+  -webkit-backdrop-filter:blur(22px) saturate(150%);
+  backdrop-filter:blur(22px) saturate(150%);
+  border:1px solid var(--glass-border);
+  box-shadow:var(--glass-shadow), var(--glass-hi), var(--glass-lo);
+  border-radius:22px;            /* 22 panels · 16 cards · 13–14 controls · 999 pills */
+}
+[data-skin="servos"] .sv-glass::before{
+  content:""; position:absolute; inset:0; border-radius:inherit; pointer-events:none;
+  background:var(--sheen); mix-blend-mode:screen; opacity:.8;
+}
+[data-skin="servos"][data-theme="light"] .sv-glass::before{ mix-blend-mode:normal; opacity:.6; }
+[data-skin="servos"] .sv-glass > *{ position:relative; z-index:1; }
+
+/* lighter "tile" treatment (inner cards — never stack full glass >2 deep) */
+[data-skin="servos"] .sv-tile{
+  --col:oklch(var(--cat-l) var(--cat-c) var(--h,200));
+  background:linear-gradient(160deg, color-mix(in oklch, var(--col) 13%, transparent), color-mix(in oklch, var(--col) 3%, transparent));
+  border:1px solid color-mix(in oklch, var(--col) 20%, transparent);
+  box-shadow:var(--glass-hi), inset 3px 0 0 color-mix(in oklch, var(--col) 60%, transparent);
+}
+
+/* radii helpers */
+[data-skin="servos"] .sv-r-panel{ border-radius:22px; }
+[data-skin="servos"] .sv-r-card{ border-radius:16px; }
+[data-skin="servos"] .sv-r-ctrl{ border-radius:13px; }
+[data-skin="servos"] .sv-pill{ border-radius:999px; }
+
+@media (prefers-reduced-motion: reduce){
+  [data-skin="servos"] *{ transition:none !important; animation:none !important; }
+}

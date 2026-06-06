@@ -75,6 +75,11 @@ export default function BackOfficeApp() {
   // setTheme sets data-theme when toggled, but on a fresh BO load nothing has
   // applied it yet, so without this the BO always starts dark.
   useEffect(() => { try { document.documentElement.setAttribute('data-theme', theme || 'dark'); } catch {} }, [theme]);
+  // v5.5.350: ServOS skin flag — back office is a staff surface (on <html> so
+  // portaled modals inherit it). TODO(servos): the companion spec wants BO to
+  // DEFAULT to light; today POS + BO share one store `theme`, so changing the
+  // default would alter behaviour — left bound to the existing toggle for now.
+  useEffect(() => { document.documentElement.setAttribute('data-skin','servos'); return () => document.documentElement.removeAttribute('data-skin'); }, []);
   const [authUser, setAuthUser] = useState(null);
   const [authChecked, setAuthChecked] = useState(isMock);
   const [recovering, setRecovering] = useState(false); // v5.5.343: password-reset link landing

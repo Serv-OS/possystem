@@ -62,6 +62,12 @@ export default function MPOSSurface() {
   // drawers, etc. — all of which MPOS uses.
   useSupabaseInit();
 
+  // v5.5.350: ServOS skin flag (staff surface) — on <html> so portaled UI inherits it.
+  useEffect(() => {
+    document.documentElement.setAttribute('data-skin', 'servos');
+    return () => document.documentElement.removeAttribute('data-skin');
+  }, []);
+
   // PWA + viewport — same as 1A
   useEffect(() => {
     const manifestLink = document.querySelector('link[rel="manifest"]');

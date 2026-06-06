@@ -79,6 +79,14 @@ import { ServOSIcon } from './components/ServOSBrand';
 
 const CHANGELOG = [
   {
+    version: '5.5.350', date: '6 Jun 2026', label: 'ServOS visual system — foundation (tokens · fonts · scene) on POS + Back Office',
+    changes: [
+      'New scoped “liquid glass” design layer: ServOS brand tokens, Space Grotesk / JetBrains Mono / Syne fonts, and the colourful scene background — applied to staff surfaces (POS family + Back Office) via a data-skin="servos" flag on <html>.',
+      'Legacy POS/BO colour tokens remapped to the ServOS palette (Signal green primary, Ultraviolet accent, warm neutrals) so existing screens adopt the new look; glass + tile utility classes added for the per-surface passes to come.',
+      'Scoped so customer-facing surfaces (online, QR, loyalty portal, gift, kiosk) render exactly as before. Visual-only — no behaviour, routing, or data changes.',
+    ],
+  },
+  {
     version: '5.5.349', date: '4 Jun 2026', label: 'Customer display — show & redeem loyalty rewards from the screen',
     changes: [
       'Once a customer is identified on the display, their available rewards load on screen; the customer taps one to use it.',
@@ -5447,6 +5455,14 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
   const orderAlert = useStore(s => s.orderAlert);
   const dismissOrderAlert = useStore(s => s.dismissOrderAlert);
   // No "dismissed" state — master offline is a hard block
+
+  // v5.5.350: ServOS skin flag — the POS family is a staff surface. Set on
+  // <html> so portaled modals inherit it; removed on unmount so customer
+  // surfaces (which never set it) keep their existing look. Presentational only.
+  useEffect(() => {
+    document.documentElement.setAttribute('data-skin', 'servos');
+    return () => document.documentElement.removeAttribute('data-skin');
+  }, []);
 
   // Start master/child sync after device is validated
   useEffect(() => {
