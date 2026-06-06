@@ -79,6 +79,12 @@ import { ServOSIcon } from './components/ServOSBrand';
 
 const CHANGELOG = [
   {
+    version: '5.5.353', date: '6 Jun 2026', label: 'ServOS visual system — POS menu tiles colour-coded by category',
+    changes: [
+      'POS menu tiles now carry a subtle category-colour tinted glass background (reading each category’s existing colour), matching the ServOS wayfinding look. Image tiles and 86’d items unchanged. Visual-only.',
+    ],
+  },
+  {
     version: '5.5.352', date: '6 Jun 2026', label: 'ServOS visual system — POS panels get the glass material',
     changes: [
       'POS order panel and category column now use the frosted “liquid glass” material (translucent + blur + specular edge) over the scene, instead of flat fills. Layout and behaviour unchanged.',

@@ -1380,7 +1380,11 @@ export default function POSSurface() {
                           backgroundImage: `url(${item.image})`,
                           backgroundSize: 'cover',
                           backgroundPosition: 'center',
-                        } : {}),
+                        } : (is86 ? {} : {
+                          // v5.5.353 ServOS: category-colour tinted tile (left stripe already uses catColor)
+                          backgroundImage: `linear-gradient(160deg, ${catColor}1c, ${catColor}06)`,
+                          borderColor: `${catColor}33`,
+                        })),
                       }}>
                       {/* Full overlay when image is showing — dark at bottom for text, subtle at top */}
                       {hasImg && (
