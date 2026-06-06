@@ -706,7 +706,7 @@ export default function POSSurface() {
   const seatList = useMemo(()=>{ const a=['shared']; for(let i=1;i<=covers;i++)a.push(i); return a; },[covers]);
 
   return (
-    <div style={{display:'flex',flex:1,overflow:'hidden',minWidth:0,gap:12}}>
+    <div style={{display:'flex',flex:1,overflow:'visible',minWidth:0,gap:12}}>
 
       {/* v5.5.163: Challenge 21 prompt — fires when the alcohol-sale counter hits the threshold */}
       <Challenge21PromptHost/>

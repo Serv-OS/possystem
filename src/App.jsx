@@ -80,6 +80,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.365', date: '6 Jun 2026', label: 'ServOS visual system — fix the square panel shadow (clipping wrappers)',
+    changes: [
+      'Root cause found: the order/category/menu panels’ rounded shadows were clipped square by two intermediate wrapper divs with overflow:hidden and no padding. (The left rail was always fine because it’s a direct child of the padded body.) Set those wrappers to overflow:visible so the shadows reach the body’s 16px padding and render fully rounded — matching the rail. Verified in the live DOM.',
+    ],
+  },
+  {
     version: '5.5.364', date: '6 Jun 2026', label: 'ServOS visual system — revert category column width (Sunmi); keep the shadow fix',
     changes: [
       'Reverted the category column back to its original width (it was fine on the Sunmi).',
@@ -5912,7 +5918,9 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
           surface panels sit as separate rounded glass cards over the scene */}
       <div style={{ display:'flex', flex:1, overflow:'hidden', gap:14, padding:16 }}>
         <Sidebar surface={surface} setSurface={setSurface} />
-        <div style={{ display:'flex', flex:1, overflow:'hidden', minWidth:0 }}>
+        {/* v5.5.365 ServOS: overflow visible so the floating panels' shadows aren't
+            clipped square by this wrapper — they reach the body's padding instead */}
+        <div style={{ display:'flex', flex:1, overflow:'visible', minWidth:0 }}>
           {surface==='tables'     && <TablesSurface />}
           {surface==='pos'        && <POSSurface />}
           {surface==='bar'        && <BarSurface />}
