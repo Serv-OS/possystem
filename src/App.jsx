@@ -80,6 +80,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.364', date: '6 Jun 2026', label: 'ServOS visual system — revert category column width (Sunmi); keep the shadow fix',
+    changes: [
+      'Reverted the category column back to its original width (it was fine on the Sunmi).',
+      'Retained the v5.5.363 floating-panel shadow fix: small soft shadow that fits the gap, so it renders rounded top and bottom with no clipped square edge.',
+    ],
+  },
+  {
     version: '5.5.363', date: '6 Jun 2026', label: 'ServOS visual system — fix clipped (square) panel shadow + wider category column',
     changes: [
       'Root cause of the “square shadow / wrong on the bottom”: the panels are rounded, but the previous drop-shadow was too large (≈50px) for the 12px gap to the screen edge, so its bottom got clipped into a hard square. Replaced with a small soft shadow that fits, removed the dark inset line on panel bottoms, and added breathing room so the rounded corners + shadow render fully top and bottom.',
