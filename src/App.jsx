@@ -76,8 +76,16 @@ import useSupabaseInit from './lib/useSupabaseInit';
 import { VERSION } from './lib/version';
 import { money, currencySymbol } from './lib/currency';
 import { ServOSIcon } from './components/ServOSBrand';
+import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
+  {
+    version: '5.5.355', date: '6 Jun 2026', label: 'ServOS visual system — POS icon set (emoji → line icons) + glass rail/top bar',
+    changes: [
+      'New ServOS line-icon set (monoline, stroke-based) replaces emoji across the POS chrome: left rail nav (Bar/Floor/POS/Orders/AI/Status/Office), search, allergen, menu-tile glyphs and category-row icons. Custom operator emoji are still honoured as a fallback.',
+      'POS left rail + top bar rebuilt with the glass material; the logo now sits in a glass tile (ServOS reference look).',
+    ],
+  },
   {
     version: '5.5.354', date: '6 Jun 2026', label: 'ServOS visual system — real brand mark + visible Send button',
     changes: [
@@ -5859,11 +5867,12 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
 }
 
 const NAV = [
-  { id:'bar',     label:'Bar',    icon:'🍸' },
-  { id:'tables',  label:'Floor',  icon:'⬚' },
-  { id:'pos',     label:'POS',    icon:'⊞' },
-  { id:'orders',  label:'Orders', icon:'📋' },
-  { id:'ai',      label:'AI',     icon:'✦' },
+  { id:'bar',     label:'Bar',    icon:'bar' },
+  { id:'tables',  label:'Floor',  icon:'floor' },
+  { id:'pos',     label:'POS',    icon:'pos' },
+  { id:'orders',  label:'Orders', icon:'orders' },
+  { id:'ai',      label:'AI',     icon:'ai' },
+  // icon = ServOS line-icon name (see components/ServOSIcons.jsx); was emoji.
   // KDS is NOT in the nav — KDS devices are separate terminals that boot straight to KDS surface
 ];
 
@@ -5917,10 +5926,12 @@ function ShiftBar({ version, onWhatsNew, theme, onToggleTheme, syncPulse }) {
   }, [printers.length]);
 
   return (
-    <div style={{ height:42, display:'flex', alignItems:'center', background:'var(--bg1)', borderBottom:'1px solid var(--bdr)', flexShrink:0 }}>
-      {/* Logo — v5.5.330: real Serv OS mark (was a generic "R" badge) */}
-      <div style={{ width:'var(--nav)', height:'100%', display:'flex', alignItems:'center', justifyContent:'center', borderRight:'1px solid var(--bdr)', flexShrink:0 }}>
-        <ServOSIcon size={30} />
+    <div style={{ height:42, display:'flex', alignItems:'center', background:'var(--glass-bg)', backdropFilter:'blur(22px) saturate(150%)', WebkitBackdropFilter:'blur(22px) saturate(150%)', borderBottom:'1px solid var(--glass-border)', flexShrink:0 }}>
+      {/* Logo — real ServOS mark in a glass tile (ServOS reference look) */}
+      <div style={{ width:'var(--nav)', height:'100%', display:'flex', alignItems:'center', justifyContent:'center', borderRight:'1px solid var(--glass-border)', flexShrink:0 }}>
+        <div style={{ width:34, height:34, borderRadius:10, display:'flex', alignItems:'center', justifyContent:'center', background:'var(--glass-bg)', border:'1px solid var(--glass-border)', boxShadow:'var(--glass-hi)' }}>
+          <ServOSIcon size={20} />
+        </div>
       </div>
 
       {/* Terminal identity — LEFT, always visible */}
@@ -6069,11 +6080,11 @@ function Sidebar({ surface, setSurface }) {
 
   return (
     <>
-    <nav style={{ width:'var(--nav)', background:'var(--bg1)', borderRight:'1px solid var(--bdr)', display:'flex', flexDirection:'column', alignItems:'center', padding:'10px 0', gap:2, flexShrink:0 }}>
+    <nav style={{ width:'var(--nav)', background:'var(--glass-bg)', backdropFilter:'blur(22px) saturate(150%)', WebkitBackdropFilter:'blur(22px) saturate(150%)', borderRight:'1px solid var(--glass-border)', boxShadow:'var(--glass-hi)', display:'flex', flexDirection:'column', alignItems:'center', padding:'10px 0', gap:4, flexShrink:0 }}>
       {visibleNav.map(n=>{
         const active=surface===n.id;
-        return(<button key={n.id} onClick={()=>setSurface(n.id)} style={{ width:46, height:46, borderRadius:10, cursor:'pointer', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:2, background:active?'var(--acc-d)':'transparent', border:`1px solid ${active?'var(--acc-b)':'transparent'}`, color:active?'var(--acc)':'var(--t3)', transition:'all .15s', fontFamily:'inherit', position:'relative' }}>
-          <span style={{ fontSize:18, lineHeight:1 }}>{n.icon}</span>
+        return(<button key={n.id} onClick={()=>setSurface(n.id)} style={{ width:46, height:46, borderRadius:12, cursor:'pointer', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:3, background:active?'var(--acc-d)':'transparent', border:`1px solid ${active?'var(--acc-b)':'transparent'}`, boxShadow:active?'var(--glass-hi)':'none', color:active?'var(--acc)':'var(--t3)', transition:'all .15s', fontFamily:'inherit', position:'relative' }}>
+          <Icon name={n.icon} size={21} stroke={active?2:1.7} />
           <span style={{ fontSize:9, fontWeight:700, letterSpacing:'.04em', color:active?'var(--acc)':'var(--t3)' }}>{n.label}</span>
         </button>);
       })}
@@ -6091,7 +6102,7 @@ function Sidebar({ surface, setSurface }) {
       }}
       onMouseEnter={e=>{e.currentTarget.style.background='var(--bg3)';}}
       onMouseLeave={e=>{e.currentTarget.style.background='transparent';}}>
-        <span style={{ fontSize:17, lineHeight:1 }}>⊙</span>
+        <Icon name="status" size={20} />
         <span style={{ fontSize:9, fontWeight:700, letterSpacing:'.04em' }}>Status</span>
         {!allOk && hasPrinters && <div style={{ position:'absolute', top:6, right:8, width:7, height:7, borderRadius:'50%', background:'var(--acc)', boxShadow:'0 0 6px var(--acc)' }}/>}
         {!deviceConfig && <div style={{ position:'absolute', top:6, right:8, width:7, height:7, borderRadius:'50%', background:'var(--red)', boxShadow:'0 0 6px var(--red)' }}/>}
@@ -6106,7 +6117,7 @@ function Sidebar({ surface, setSurface }) {
       }}
       onMouseEnter={e=>{e.currentTarget.style.background='var(--bg3)';e.currentTarget.style.color='var(--t1)';}}
       onMouseLeave={e=>{e.currentTarget.style.background='transparent';e.currentTarget.style.color='var(--t3)';}}>
-        <span style={{ fontSize:17, lineHeight:1 }}>⚙</span>
+        <Icon name="office" size={20} />
         <span style={{ fontSize:9, fontWeight:700, letterSpacing:'.04em' }}>Office</span>
       </button>
 

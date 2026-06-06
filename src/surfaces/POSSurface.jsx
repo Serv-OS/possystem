@@ -27,6 +27,7 @@ import AllergenCheckoutModal from '../components/AllergenCheckoutModal';
 import TableActionsModal from '../components/TableActionsModal';
 import Challenge21Modal from '../components/Challenge21Modal';
 import { money, stripeCurrency, getActiveCurrencyCode } from '../lib/currency';
+import { Icon, emojiToIcon } from '../components/ServOSIcons';
 
 const COURSE_COLORS = {
   0:{label:'Immediate',color:'#22d3ee',bg:'rgba(34,211,238,.1)'},
@@ -1211,7 +1212,9 @@ export default function POSSurface() {
                 <div style={{width:3,height:32,borderRadius:3,background:color,flexShrink:0,transition:'all .14s'}}/>
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:1}}>
-                    <span style={{fontSize:compact?15:20,lineHeight:1,flexShrink:0}}>{c.icon||'•'}</span>
+                    {emojiToIcon(c.icon)
+                      ? <Icon name={emojiToIcon(c.icon)} size={compact?16:19} style={{flexShrink:0, color:isActive?color:'var(--t2)'}} />
+                      : <span style={{fontSize:compact?15:20,lineHeight:1,flexShrink:0}}>{c.icon||'•'}</span>}
                     <span style={{fontSize:12,fontWeight:700,color:isActive?color:'var(--t2)',letterSpacing:.01,overflow:'hidden',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',lineHeight:1.2,wordBreak:'break-word'}}>{c.label}</span>
                     {hasSubcats && <span style={{fontSize:8,color:'var(--t4)',flexShrink:0}}>▾</span>}
                   </div>
@@ -1231,7 +1234,7 @@ export default function POSSurface() {
             color:allergens.length>0?'var(--red)':'var(--t3)',fontSize:11,fontWeight:700,
             transition:'all .14s',
           }}>
-            <span style={{fontSize:14}}>⚠</span>
+            <Icon name="warn" size={15} />
             <span style={{flex:1,textAlign:'left'}}>
               {allergens.length>0?`${allergens.length} filter${allergens.length>1?'s':''} active`:'Allergen filter'}
             </span>
@@ -1267,7 +1270,7 @@ export default function POSSurface() {
           <div style={{marginLeft:'auto',display:'flex',gap:6,alignItems:'center',padding:'6px 0'}}>
             {rightTab==='menu'&&(
               <div style={{position:'relative',maxWidth:200}}>
-                <span style={{position:'absolute',left:11,top:'50%',transform:'translateY(-50%)',color:'var(--t3)',fontSize:13}}>🔍</span>
+                <Icon name="search" size={14} style={{position:'absolute',left:11,top:'50%',transform:'translateY(-50%)',color:'var(--t3)'}} />
                 <input className="input" placeholder="Search…" value={search} onChange={e=>setSearch(e.target.value)} style={{paddingLeft:32,height:32,fontSize:12,width:180}}/>
                 {search&&<button onClick={()=>setSearch('')} style={{position:'absolute',right:9,top:'50%',transform:'translateY(-50%)',background:'none',border:'none',color:'var(--t3)',cursor:'pointer',fontSize:15,lineHeight:1}}>×</button>}
               </div>
@@ -1403,7 +1406,12 @@ export default function POSSurface() {
                       <div style={{padding:compact?'6px 6px 5px 8px':'12px 12px 11px 16px',flex:1,display:'flex',flexDirection:'column',position:'relative',zIndex:1}}>
                         {/* Top row: emoji/icon + badges — hide emoji when image fills the space */}
                         <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',marginBottom:8}}>
-                          {!hasImg && <span style={{fontSize:24,lineHeight:1}}>{is86?'🚫':flagged?'⚠️':catIcon}</span>}
+                          {!hasImg && (
+                      is86 ? <span style={{fontSize:24,lineHeight:1}}>🚫</span>
+                      : flagged ? <Icon name="warn" size={23} style={{color:'var(--red)'}} />
+                      : emojiToIcon(catIcon) ? <Icon name={emojiToIcon(catIcon)} size={23} stroke={1.8} style={{color:catColor}} />
+                      : <span style={{fontSize:24,lineHeight:1}}>{catIcon}</span>
+                    )}
                           {hasImg && <span/>}
                           <div style={{display:'flex',gap:3,flexDirection:'column',alignItems:'flex-end'}}>
                             {count&&!is86&&(
