@@ -498,8 +498,8 @@ button { font-family: inherit; }
 
 /* ---- ServOS LIGHT (binds to the existing [data-theme="light"] toggle) ---- */
 [data-skin="servos"][data-theme="light"]{
-  --glass-bg:linear-gradient(160deg, rgba(255,255,255,0.72), rgba(255,255,255,0.46));
-  --glass-border:rgba(255,255,255,0.85);
+  --glass-bg:linear-gradient(160deg, rgba(255,255,255,0.82), rgba(255,255,255,0.64));
+  --glass-border:rgba(255,255,255,0.9);
   --glass-hi:inset 0 1px 0 rgba(255,255,255,0.95);
   --glass-lo:inset 0 -1px 0 rgba(20,40,28,0.06);
   --glass-shadow:0 1px 2px rgba(20,40,28,0.04), 0 14px 34px rgba(20,40,28,0.07);
@@ -534,10 +534,10 @@ button { font-family: inherit; }
 }
 [data-skin="servos"][data-theme="light"] #root{
   background:
-    radial-gradient(58% 50% at 82% -6%, rgba(21,194,106,0.18), transparent 58%),
-    radial-gradient(42% 42% at 4% 14%, rgba(38,210,200,0.14), transparent 60%),
-    radial-gradient(46% 46% at 98% 94%, rgba(120,92,255,0.12), transparent 62%),
-    radial-gradient(40% 40% at 26% 106%, rgba(245,166,35,0.10), transparent 60%),
+    radial-gradient(60% 55% at 88% -10%, rgba(21,194,106,0.24), transparent 60%),
+    radial-gradient(52% 52% at -6% 8%, rgba(38,210,200,0.20), transparent 62%),
+    radial-gradient(56% 56% at 106% 102%, rgba(120,92,255,0.22), transparent 62%),
+    radial-gradient(50% 50% at 12% 112%, rgba(245,166,35,0.16), transparent 62%),
     var(--bg);
 }
 

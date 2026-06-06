@@ -80,6 +80,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.362', date: '6 Jun 2026', label: 'ServOS visual system — POS background colour glow + cleaner frosted panels',
+    changes: [
+      'Brought up the soft brand-colour scene behind the POS so panels float over a colour wash instead of sterile flat white; made the light-mode panels a touch more opaque so they read as clean frosted cards.',
+    ],
+  },
+  {
     version: '5.5.361', date: '6 Jun 2026', label: 'ServOS visual system — softer layered shadows on floating panels',
     changes: [
       'Replaced the single hard drop-shadow on the floating panels with a layered soft shadow (faint contact + wide ambient) so they read as gently floating instead of having a harsh shadow behind them.',
