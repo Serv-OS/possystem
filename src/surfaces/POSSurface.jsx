@@ -6,7 +6,7 @@ import { useStore } from '../store';
 import { fetchMenuCategoryLinks } from '../lib/db';
 import { supabase } from '../lib/supabase';
 import { pushReaderDisplay, clearReaderDisplay, cacheReaderDisplaySetting } from '../lib/readerDisplay';
-import { publishDisplay, getCustomerDisplayMode, displayUsesReader, displayUsesScreen, cacheCustomerDisplayMode, onCustomerPhone, publishLoyalty, onRedeemReward } from '../lib/customerDisplay';
+import { publishDisplay, getCustomerDisplayMode, displayUsesReader, displayUsesScreen, cacheCustomerDisplayMode, onCustomerPhone, publishLoyalty, onRedeemReward, isLoyaltyEnabled } from '../lib/customerDisplay';
 import { captureLoyaltyByPhone } from '../lib/customerLookup';
 import { getAssignedNetworkReader } from '../lib/networkReader';
 import { CATEGORIES, MENU_ITEMS as SEED_MENU_ITEMS, ALLERGENS, QUICK_IDS, getDaypart, CAT_META } from '../data/seed';
@@ -319,6 +319,7 @@ export default function POSSurface() {
   // going from a non-empty cart back to empty (post-transaction). On a
   // fresh POS mount with no cart the reader keeps its prior state.
   const _prevItemCountRef = useRef(0);
+  const _loyaltyEnabledRef = useRef(false); // v5.5.369: broadcast to the customer display so its keypad shows reliably
   useEffect(() => {
     const nonVoided = (items || []).filter(i => !i.voided);
     const lineItems = nonVoided.map(i => {
@@ -358,7 +359,7 @@ export default function POSSurface() {
       }
     } else {
       if (displayUsesReader(mode)) pushReaderDisplay({ lineItems, totalMinor, currency: stripeCurrency() });
-      if (displayUsesScreen(mode)) publishDisplay({ items: displayItems, total: total || 0, state: 'active', currency: getActiveCurrencyCode() });
+      if (displayUsesScreen(mode)) publishDisplay({ items: displayItems, total: total || 0, state: 'active', currency: getActiveCurrencyCode(), loyaltyEnabled: _loyaltyEnabledRef.current });
     }
   }, [items, total]);
 
@@ -366,6 +367,9 @@ export default function POSSurface() {
   // loyalty. Look up / enrol by phone, attach to the order, reply to the display.
   useEffect(() => {
     if (!displayUsesScreen()) return;
+    // POS resolves loyalty-enabled (it has reliable auth + locationId) and
+    // broadcasts it so the rear screen's keypad gate is dependable.
+    isLoyaltyEnabled().then(v => { _loyaltyEnabledRef.current = !!v; }).catch(() => {});
     const unsubPhone = onCustomerPhone(async (phone) => {
       if (!phone) return;
       try {

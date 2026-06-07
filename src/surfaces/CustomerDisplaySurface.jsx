@@ -85,6 +85,7 @@ export default function CustomerDisplaySurface() {
         unsub = subscribeDisplay(targetId,
           (p) => {  // cart / state
             if (p?.theme) setTheme(p.theme); // follow the POS light/dark
+            if (typeof p?.loyaltyEnabled === 'boolean') setLoyaltyEnabled(p.loyaltyEnabled); // authoritative from POS
             if (p?.currency) { try { setActiveCurrency(p.currency); } catch { /* noop */ } }
             const st = p?.state || 'idle';
             if (st === 'idle' && Date.now() < terminalUntil.current) return;

@@ -80,6 +80,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.369', date: '6 Jun 2026', label: 'Customer display — reliable loyalty keypad (POS broadcasts loyalty-enabled)',
+    changes: [
+      'The loyalty phone-capture keypad now appears reliably. It was gated on a loyalty-enabled check the rear screen ran itself, which could fail without a Supabase session / locationId on that screen. Now the POS resolves loyalty-enabled (it has the auth + location) and broadcasts it in the display feed; the rear screen trusts that. Keypad shows on an active order when loyalty is enabled for the location.',
+    ],
+  },
+  {
     version: '5.5.368', date: '6 Jun 2026', label: 'Customer display — follows the POS light/dark theme',
     changes: [
       'The customer-facing display (rear screen) now matches the till’s light/dark mode. The POS broadcasts its current theme in the display feed (with a same-device localStorage fallback + live storage-event sync), and every screen — idle slideshow, loyalty phone keypad, live order, and payment status — themes accordingly instead of being hardcoded dark.',
