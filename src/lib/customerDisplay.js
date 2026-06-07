@@ -53,14 +53,18 @@ function _ensurePub(deviceId) {
   });
 }
 
-/** Publish the current display state (cart + state). */
+/** Publish the current display state (cart + state). Carries the POS light/dark
+ *  theme so the rear screen matches the till (works cross-device too). */
 export function publishDisplay(payload = {}) {
   if (isMock || !supabase) return;
   const deviceId = getOwnDeviceId();
   if (!deviceId) return;
-  _pub.latest = payload;
+  let theme = 'dark';
+  try { theme = localStorage.getItem('rpos-theme') || 'dark'; } catch { /* default */ }
+  const full = { ...payload, theme };
+  _pub.latest = full;
   _ensurePub(deviceId);
-  if (_pub.joined) _send('display', payload);
+  if (_pub.joined) _send('display', full);
 }
 
 /** Reset the display to idle. */

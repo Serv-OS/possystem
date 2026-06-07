@@ -10,6 +10,9 @@
 // Two-way over `display:<deviceId>` (lib/customerDisplay.js): POS broadcasts cart +
 // payment + loyalty result; the display broadcasts the customer's phone number.
 // No OTP (counter-side). New numbers get the enrolment SMS from the POS side.
+//
+// v5.5.368: theme-aware — follows the POS light/dark (broadcast in the display
+// payload as `theme`, with a localStorage('rpos-theme') fallback for same-device).
 
 import { useEffect, useRef, useState } from 'react';
 import { supabase, ensureAuthToken } from '../lib/supabase';
@@ -20,6 +23,24 @@ import { ServOSIcon } from '../components/ServOSBrand';
 const IDLE_AFTER_MS = 45000;
 const SLIDE_MS = 7000;
 
+// Theme palette for the customer display (mirrors the ServOS POS light/dark).
+function palette(theme) {
+  const dark = theme !== 'light';
+  return {
+    dark,
+    bg:       dark ? '#0F1211' : '#F4F6F2',
+    text:     dark ? '#E9ECEA' : '#16191C',
+    dim:      dark ? 'rgba(233,236,234,.62)' : 'rgba(22,25,28,.6)',
+    faint:    dark ? 'rgba(233,236,234,.4)'  : 'rgba(22,25,28,.42)',
+    surface:  dark ? 'rgba(255,255,255,.06)' : 'rgba(22,25,28,.05)',
+    sBorder:  dark ? 'rgba(255,255,255,.15)' : 'rgba(22,25,28,.14)',
+    hair:     dark ? 'rgba(255,255,255,.08)' : 'rgba(22,25,28,.08)',
+    footBg:   dark ? 'rgba(0,0,0,.25)' : 'rgba(22,25,28,.04)',
+    okBg:     dark ? '#0b1f12' : '#E7F6EC',
+    badBg:    dark ? '#27110f' : '#FBEAE7',
+  };
+}
+
 export default function CustomerDisplaySurface() {
   const [payload, setPayload] = useState(null);
   const [profile, setProfile] = useState(null);
@@ -28,11 +49,19 @@ export default function CustomerDisplaySurface() {
   const [phoneInput, setPhoneInput] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [loyaltyResult, setLoyaltyResult] = useState(null);
+  const [theme, setTheme] = useState(() => { try { return localStorage.getItem('rpos-theme') || 'dark'; } catch { return 'dark'; } });
   const idleTimer = useRef(null);
   const terminalUntil = useRef(0);
   const resultTimer = useRef(null);
   const submitTimer = useRef(null);
   const targetId = getDisplayTargetId();
+
+  // Same-device live theme sync (POS toggles → localStorage 'storage' event).
+  useEffect(() => {
+    const onStorage = (e) => { if (e.key === 'rpos-theme' && e.newValue) setTheme(e.newValue); };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
 
   // Boot: auth → loyalty-enabled? + branding → subscribe (cart/state + loyalty result).
   useEffect(() => {
@@ -55,6 +84,7 @@ export default function CustomerDisplaySurface() {
       if (targetId) {
         unsub = subscribeDisplay(targetId,
           (p) => {  // cart / state
+            if (p?.theme) setTheme(p.theme); // follow the POS light/dark
             if (p?.currency) { try { setActiveCurrency(p.currency); } catch { /* noop */ } }
             const st = p?.state || 'idle';
             if (st === 'idle' && Date.now() < terminalUntil.current) return;
@@ -100,8 +130,8 @@ export default function CustomerDisplaySurface() {
     return () => clearInterval(t);
   }, [slideImages.length]);
 
-  const brand = profile?.kiosk_brand_color || '#E8743C';
-  const bg = profile?.kiosk_brand_bg_color || '#0E0D0A';
+  const C = palette(theme);
+  const brand = profile?.kiosk_brand_color || (C.dark ? '#46E08C' : '#0E9E55');
   const logo = profile?.kiosk_brand_logo_url || '';
   const venueName = profile?.kiosk_brand_name
     || (() => { try { return JSON.parse(localStorage.getItem('rpos-device') || 'null')?.locationName; } catch { return null; } })()
@@ -112,11 +142,12 @@ export default function CustomerDisplaySurface() {
   const total = Number(payload?.total || 0);
 
   const root = {
-    position: 'fixed', inset: 0, background: bg, color: '#fff',
-    fontFamily: "-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif",
+    position: 'fixed', inset: 0, background: C.bg, color: C.text,
+    fontFamily: "'Space Grotesk',-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif",
     display: 'flex', flexDirection: 'column', overflow: 'hidden', userSelect: 'none',
+    transition: 'background .4s ease, color .4s ease',
   };
-  const slides = <Slides images={slideImages} idx={slideIdx} bg={bg} logo={logo} venueName={venueName} />;
+  const slides = <Slides images={slideImages} idx={slideIdx} C={C} brand={brand} logo={logo} venueName={venueName} />;
 
   const submitPhone = () => {
     if ((phoneInput || '').replace(/\D/g, '').length < 7) return;
@@ -132,7 +163,7 @@ export default function CustomerDisplaySurface() {
       <div style={{ ...root, alignItems: 'center', justifyContent: 'center', textAlign: 'center', padding: 40 }}>
         <ServOSIcon size={72} />
         <div style={{ marginTop: 20, fontSize: 22, fontWeight: 700 }}>Customer display</div>
-        <div style={{ marginTop: 10, fontSize: 15, opacity: 0.6, maxWidth: 520, lineHeight: 1.5 }}>
+        <div style={{ marginTop: 10, fontSize: 15, color: C.dim, maxWidth: 520, lineHeight: 1.5 }}>
           Pair this device, or open with <code style={{ color: brand }}>?till=&lt;till id&gt;</code> to mirror a specific till.
         </div>
       </div>
@@ -143,11 +174,11 @@ export default function CustomerDisplaySurface() {
   if (state === 'approved' || state === 'declined') {
     const ok = state === 'approved';
     return (
-      <div style={{ ...root, alignItems: 'center', justifyContent: 'center', textAlign: 'center', background: ok ? '#0b1f12' : '#27110f' }}>
-        <div style={{ width: 160, height: 160, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: ok ? '#16a34a' : '#dc2626', fontSize: 96, lineHeight: 1, boxShadow: '0 10px 40px rgba(0,0,0,.4)' }}>{ok ? '✓' : '✕'}</div>
+      <div style={{ ...root, alignItems: 'center', justifyContent: 'center', textAlign: 'center', background: ok ? C.okBg : C.badBg }}>
+        <div style={{ width: 160, height: 160, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: ok ? '#16a34a' : '#dc2626', color: '#fff', fontSize: 96, lineHeight: 1, boxShadow: '0 10px 40px rgba(0,0,0,.25)' }}>{ok ? '✓' : '✕'}</div>
         <div style={{ marginTop: 32, fontSize: 40, fontWeight: 800 }}>{ok ? 'Payment approved' : 'Payment declined'}</div>
-        {total > 0 && <div style={{ marginTop: 8, fontSize: 28, opacity: 0.85, fontVariantNumeric: 'tabular-nums' }}>{money(total)}</div>}
-        {ok && <div style={{ marginTop: 28, fontSize: 22, opacity: 0.7 }}>Thank you{venueName ? ` — ${venueName}` : ''}!</div>}
+        {total > 0 && <div style={{ marginTop: 8, fontSize: 28, color: C.dim, fontVariantNumeric: 'tabular-nums' }}>{money(total)}</div>}
+        {ok && <div style={{ marginTop: 28, fontSize: 22, color: C.dim }}>Thank you{venueName ? ` — ${venueName}` : ''}!</div>}
       </div>
     );
   }
@@ -159,7 +190,7 @@ export default function CustomerDisplaySurface() {
         <div style={{ fontSize: 88, marginBottom: 8 }}>💳</div>
         <div style={{ fontSize: 40, fontWeight: 800 }}>Please follow the card reader</div>
         <div style={{ marginTop: 20, fontSize: 64, fontWeight: 900, color: brand, fontVariantNumeric: 'tabular-nums' }}>{money(total)}</div>
-        <div style={{ marginTop: 18, fontSize: 20, opacity: 0.6 }}>Tap, insert or swipe your card</div>
+        <div style={{ marginTop: 18, fontSize: 20, color: C.dim }}>Tap, insert or swipe your card</div>
       </div>
     );
   }
@@ -167,9 +198,9 @@ export default function CustomerDisplaySurface() {
   // ── Active sale — SPLIT: loyalty keypad left, order right ──────────────────
   if (state === 'active' && items.length > 0) {
     let left;
-    if (loyaltyResult) left = <LoyaltyResultPanel result={loyaltyResult} brand={brand} venueName={venueName} onRedeem={(r) => publishRedeemReward(r)} />;
-    else if (submitting) left = <Centered><div style={{ fontSize: 24, opacity: 0.7 }}>Checking…</div></Centered>;
-    else if (loyaltyEnabled) left = <PhoneKeypad value={phoneInput} brand={brand}
+    if (loyaltyResult) left = <LoyaltyResultPanel result={loyaltyResult} brand={brand} venueName={venueName} C={C} onRedeem={(r) => publishRedeemReward(r)} />;
+    else if (submitting) left = <Centered><div style={{ fontSize: 24, color: C.dim }}>Checking…</div></Centered>;
+    else if (loyaltyEnabled) left = <PhoneKeypad value={phoneInput} brand={brand} C={C}
       onKey={d => setPhoneInput(p => (p + d).slice(0, 15))}
       onBackspace={() => setPhoneInput(p => p.slice(0, -1))}
       onSubmit={submitPhone} />;
@@ -178,10 +209,10 @@ export default function CustomerDisplaySurface() {
       <div style={{ ...root, flexDirection: 'row' }}>
         <div style={{ position: 'relative', width: '42%', minWidth: 300 }}>{left}</div>
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', borderLeft: `3px solid ${brand}` }}>
-          <div style={{ padding: '18px 28px', display: 'flex', alignItems: 'center', gap: 12, borderBottom: '1px solid rgba(255,255,255,.08)' }}>
+          <div style={{ padding: '18px 28px', display: 'flex', alignItems: 'center', gap: 12, borderBottom: `1px solid ${C.hair}` }}>
             {logo ? <img src={logo} alt="" style={{ height: 34 }} /> : <ServOSIcon size={34} />}
             <div style={{ fontSize: 20, fontWeight: 700 }}>{venueName}</div>
-            <div style={{ marginLeft: 'auto', fontSize: 13, opacity: 0.5, textTransform: 'uppercase', letterSpacing: '.08em' }}>Your order</div>
+            <div style={{ marginLeft: 'auto', fontSize: 13, color: C.faint, textTransform: 'uppercase', letterSpacing: '.08em' }}>Your order</div>
           </div>
           <div style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}>
             {items.map((it, i) => {
@@ -189,20 +220,20 @@ export default function CustomerDisplaySurface() {
               const line = Number(it.lineTotal != null ? it.lineTotal : (Number(it.price || 0) * qty));
               const mods = Array.isArray(it.mods) ? it.mods : [];
               return (
-                <div key={it.uid || i} style={{ display: 'flex', alignItems: 'flex-start', gap: 14, padding: '12px 28px', borderBottom: '1px solid rgba(255,255,255,.05)' }}>
+                <div key={it.uid || i} style={{ display: 'flex', alignItems: 'flex-start', gap: 14, padding: '12px 28px', borderBottom: `1px solid ${C.hair}` }}>
                   <div style={{ minWidth: 40, fontSize: 22, fontWeight: 800, color: brand, fontVariantNumeric: 'tabular-nums' }}>{qty}×</div>
                   <div style={{ flex: 1 }}>
                     <div style={{ fontSize: 22, fontWeight: 600 }}>{it.name || it.displayName || 'Item'}</div>
-                    {mods.length > 0 && <div style={{ marginTop: 3, fontSize: 15, opacity: 0.55 }}>{mods.map(m => m.label || m).filter(Boolean).join(' · ')}</div>}
-                    {it.notes && <div style={{ marginTop: 2, fontSize: 14, fontStyle: 'italic', opacity: 0.5 }}>“{it.notes}”</div>}
+                    {mods.length > 0 && <div style={{ marginTop: 3, fontSize: 15, color: C.dim }}>{mods.map(m => m.label || m).filter(Boolean).join(' · ')}</div>}
+                    {it.notes && <div style={{ marginTop: 2, fontSize: 14, fontStyle: 'italic', color: C.faint }}>“{it.notes}”</div>}
                   </div>
                   <div style={{ fontSize: 22, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{money(line)}</div>
                 </div>
               );
             })}
           </div>
-          <div style={{ padding: '20px 28px', display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', borderTop: `3px solid ${brand}`, background: 'rgba(0,0,0,.25)' }}>
-            <div style={{ fontSize: 24, fontWeight: 700, opacity: 0.8 }}>Total</div>
+          <div style={{ padding: '20px 28px', display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', borderTop: `3px solid ${brand}`, background: C.footBg }}>
+            <div style={{ fontSize: 24, fontWeight: 700, color: C.dim }}>Total</div>
             <div style={{ fontSize: 52, fontWeight: 900, color: brand, fontVariantNumeric: 'tabular-nums' }}>{money(total)}</div>
           </div>
         </div>
@@ -218,35 +249,35 @@ function Centered({ children }) {
   return <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', padding: 24 }}>{children}</div>;
 }
 
-function PhoneKeypad({ value, brand, onKey, onBackspace, onSubmit }) {
+function PhoneKeypad({ value, brand, C, onKey, onBackspace, onSubmit }) {
   const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '', '0', '⌫'];
   const ready = (value || '').replace(/\D/g, '').length >= 7;
   return (
     <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
       <div style={{ fontSize: 30, fontWeight: 800, textAlign: 'center' }}>Earn rewards 🎁</div>
-      <div style={{ fontSize: 16, opacity: 0.6, textAlign: 'center', marginTop: 6, marginBottom: 18 }}>Enter your mobile to collect points</div>
+      <div style={{ fontSize: 16, color: C.dim, textAlign: 'center', marginTop: 6, marginBottom: 18 }}>Enter your mobile to collect points</div>
       <div style={{ fontSize: 32, fontWeight: 800, letterSpacing: '2px', minHeight: 42, marginBottom: 16, fontVariantNumeric: 'tabular-nums' }}>
-        {value || <span style={{ opacity: 0.3 }}>0000000000</span>}
+        {value || <span style={{ color: C.faint }}>0000000000</span>}
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 80px)', gap: 10 }}>
         {keys.map((k, i) => k === '' ? <div key={i} /> : (
           <button key={i} onClick={() => (k === '⌫' ? onBackspace() : onKey(k))} style={{
-            height: 66, borderRadius: 14, border: '1px solid rgba(255,255,255,.15)', background: 'rgba(255,255,255,.06)',
-            color: '#fff', fontSize: 26, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit',
+            height: 66, borderRadius: 14, border: `1px solid ${C.sBorder}`, background: C.surface,
+            color: C.text, fontSize: 26, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit',
           }}>{k}</button>
         ))}
       </div>
       <button onClick={onSubmit} disabled={!ready} style={{
         marginTop: 18, width: 260, height: 60, borderRadius: 14, border: 'none',
-        background: ready ? brand : 'rgba(255,255,255,.12)', color: ready ? '#0b0c10' : 'rgba(255,255,255,.4)',
+        background: ready ? brand : C.surface, color: ready ? '#0b0c10' : C.faint,
         fontSize: 21, fontWeight: 800, cursor: ready ? 'pointer' : 'not-allowed', fontFamily: 'inherit',
       }}>Collect points</button>
-      <div style={{ marginTop: 12, fontSize: 12, opacity: 0.4, textAlign: 'center', maxWidth: 280 }}>New? We'll text you a link to finish joining.</div>
+      <div style={{ marginTop: 12, fontSize: 12, color: C.faint, textAlign: 'center', maxWidth: 280 }}>New? We'll text you a link to finish joining.</div>
     </div>
   );
 }
 
-function LoyaltyResultPanel({ result, brand, venueName, onRedeem }) {
+function LoyaltyResultPanel({ result, brand, venueName, C, onRedeem }) {
   if (result?.error) {
     return <Centered><div style={{ fontSize: 44 }}>⚠️</div><div style={{ fontSize: 24, fontWeight: 700, marginTop: 10 }}>Sorry — please try again</div></Centered>;
   }
@@ -255,7 +286,7 @@ function LoyaltyResultPanel({ result, brand, venueName, onRedeem }) {
       <Centered>
         <div style={{ fontSize: 64 }}>✅</div>
         <div style={{ fontSize: 26, fontWeight: 800, marginTop: 8 }}>{result.rewardSelected}</div>
-        <div style={{ fontSize: 16, opacity: 0.7, marginTop: 10 }}>Added — applied at the till</div>
+        <div style={{ fontSize: 16, color: C.dim, marginTop: 10 }}>Added — applied at the till</div>
       </Centered>
     );
   }
@@ -270,22 +301,22 @@ function LoyaltyResultPanel({ result, brand, venueName, onRedeem }) {
         </div>
         {rewards.length > 0 ? (
           <>
-            <div style={{ fontSize: 15, opacity: 0.6, textAlign: 'center', margin: '16px 0 10px' }}>Tap a reward to use it</div>
+            <div style={{ fontSize: 15, color: C.dim, textAlign: 'center', margin: '16px 0 10px' }}>Tap a reward to use it</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               {rewards.map(r => (
                 <button key={r.id} onClick={() => onRedeem && onRedeem(r)} style={{
                   textAlign: 'left', padding: '14px 16px', borderRadius: 14, cursor: 'pointer', fontFamily: 'inherit',
-                  background: 'rgba(255,255,255,.06)', border: `1.5px solid ${brand}66`, color: '#fff',
+                  background: C.surface, border: `1.5px solid ${brand}66`, color: C.text,
                 }}>
                   <div style={{ fontSize: 18, fontWeight: 700 }}>{r.label}</div>
-                  {r.description && <div style={{ fontSize: 13, opacity: 0.6, marginTop: 2 }}>{r.description}</div>}
+                  {r.description && <div style={{ fontSize: 13, color: C.dim, marginTop: 2 }}>{r.description}</div>}
                   {r.pointsCost != null && <div style={{ fontSize: 13, color: brand, fontWeight: 700, marginTop: 4 }}>{r.pointsCost} pts</div>}
                 </button>
               ))}
             </div>
           </>
         ) : (
-          <div style={{ fontSize: 16, opacity: 0.6, textAlign: 'center', marginTop: 16 }}>You're earning points on this order</div>
+          <div style={{ fontSize: 16, color: C.dim, textAlign: 'center', marginTop: 16 }}>You're earning points on this order</div>
         )}
       </div>
     );
@@ -294,27 +325,27 @@ function LoyaltyResultPanel({ result, brand, venueName, onRedeem }) {
     <Centered>
       <div style={{ fontSize: 64 }}>📱</div>
       <div style={{ fontSize: 28, fontWeight: 800, marginTop: 8 }}>You're in!</div>
-      <div style={{ fontSize: 16, opacity: 0.7, marginTop: 10, maxWidth: 300 }}>We've texted you a link to finish setting up your {venueName} rewards. Earning points on this order.</div>
+      <div style={{ fontSize: 16, color: C.dim, marginTop: 10, maxWidth: 300 }}>We've texted you a link to finish setting up your {venueName} rewards. Earning points on this order.</div>
     </Centered>
   );
 }
 
 // Crossfading image slideshow with a branded fallback when no images are set.
-function Slides({ images, idx, bg, logo, venueName }) {
+function Slides({ images, idx, C, brand, logo, venueName }) {
   if (!images || images.length === 0) {
     return (
-      <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: bg }}>
+      <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: C.bg }}>
         <div style={{ textAlign: 'center', padding: 24 }}>
           {logo ? <img src={logo} alt="" style={{ maxHeight: 120, marginBottom: 20 }} /> : <ServOSIcon size={96} style={{ marginBottom: 16 }} />}
-          <div style={{ fontSize: 44, fontWeight: 800, color: '#fff' }}>{venueName}</div>
-          <div style={{ marginTop: 12, fontSize: 20, opacity: 0.55, color: '#fff' }}>Welcome</div>
+          <div style={{ fontSize: 44, fontWeight: 800, color: C.text }}>{venueName}</div>
+          <div style={{ marginTop: 12, fontSize: 20, color: C.dim }}>Welcome</div>
         </div>
       </div>
     );
   }
   const cur = idx % images.length;
   return (
-    <div style={{ position: 'absolute', inset: 0, background: bg }}>
+    <div style={{ position: 'absolute', inset: 0, background: C.bg }}>
       {images.map((src, i) => (
         <img key={src + i} src={src} alt="" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', opacity: i === cur ? 1 : 0, transition: 'opacity .8s ease' }} />
       ))}

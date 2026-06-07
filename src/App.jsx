@@ -80,6 +80,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.368', date: '6 Jun 2026', label: 'Customer display — follows the POS light/dark theme',
+    changes: [
+      'The customer-facing display (rear screen) now matches the till’s light/dark mode. The POS broadcasts its current theme in the display feed (with a same-device localStorage fallback + live storage-event sync), and every screen — idle slideshow, loyalty phone keypad, live order, and payment status — themes accordingly instead of being hardcoded dark.',
+    ],
+  },
+  {
     version: '5.5.367', date: '6 Jun 2026', label: 'ServOS visual system — Back Office reskin + 10-section sidebar nav reorg',
     changes: [
       'Sidebar rebuilt as the ServOS 10-section collapsible IA (Overview · Menu · Floor plan · Inventory · Team · Customers · Channels · Hardware · Reports · Settings) — single-open accordion, monoline section icons, every existing link keeps its exact route (regroup, not re-wire). Glass sidebar + line-icon footer.',
