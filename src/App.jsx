@@ -21,6 +21,7 @@ import BarSurface from './surfaces/BarSurface';
 import TablesSurface from './surfaces/TablesSurface';
 import { KDSSurface } from './surfaces/OtherSurfaces';
 import MPOSSurface from './surfaces/MPOSSurface';
+import StaffApp from './surfaces/StaffApp';
 import CustomerBoot from './surfaces/CustomerBoot';
 import { parseCustomerUrl as parseCustomerUrlForBoot } from './lib/customerUrl';
 import AIChat from './components/AIChat';
@@ -79,6 +80,14 @@ import { ServOSIcon } from './components/ServOSBrand';
 import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
+  {
+    version: '5.5.371', date: '6 Jun 2026', label: 'Staff Management module — foundation + rota spine (new ?mode=staff)',
+    changes: [
+      'New workforce / staff-management module at ?mode=staff (built per the Master Build Spec). ServOS-styled shell: glass sidebar with the venue switcher + Schedule / Team / Pay / Comms nav, the demo group (The Anchor + Lumière, Bean & Bar, Pulse), seed roster, and the labour engine — effective rate (override → age band → base → salaried equivalent) → wage by day → live labour % vs target.',
+      'Rota built (the spine): View A (by staff, grouped by section) with the live labour footer — forecast sales → wage cost → labour %, red over the 28% target — and View B (section coverage vs minimums with gap chips). Dashboard shows engine-computed headline stats. The remaining modules (timesheets, time off, pay & rates, tronc, onboarding, compliance, announcements, settings) are navigable placeholders, shipping next per the build order.',
+      'Dev: mock mode now respects ?mode= so every surface (staff, office, kiosk…) is testable locally; production routing is unchanged.',
+    ],
+  },
   {
     version: '5.5.370', date: '6 Jun 2026', label: 'Customer display — FIX loyalty keypad never appeared (wrong config field)',
     changes: [
@@ -5532,7 +5541,7 @@ export default function App() {
   // Priority: URL ?mode=X param > localStorage > first-visit selector
   // This lets users bookmark /app?mode=pos, /app?mode=office, /app?mode=admin
   const storedMode = localStorage.getItem('rpos-device-mode');
-  const deviceMode = isMock ? 'pos' : (urlMode || storedMode || null);
+  const deviceMode = isMock ? (urlMode || 'pos') : (urlMode || storedMode || null);
 
   // If URL param set, save to localStorage so it persists
   if (urlMode && urlMode !== storedMode) {
@@ -5560,6 +5569,8 @@ export default function App() {
   // its target via ?till=<deviceId> or this device's own pairing; self-contained
   // (no SyncBridge — it only subscribes to the display broadcast).
   if (deviceMode === 'customer-display') return <CustomerDisplaySurface />;
+  // Staff management module (workforce) — self-contained seed-first build.
+  if (deviceMode === 'staff') return <StaffApp />;
 
   // Back office mode — go to email login (no pairing needed)
   if (deviceMode === 'backoffice' || deviceMode === 'office') return <><SyncBridge onSyncPulse={handleSyncPulse}/><BackOfficeApp /></>;
