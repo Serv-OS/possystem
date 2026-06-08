@@ -581,7 +581,7 @@ export default function BackOfficeApp() {
             via !important so we don't have to edit 20 files individually. */}
         <div className="bo-page-shell">
           {section === 'overview'   && <BOOverview setSection={setSection} orgCtx={orgCtx} />}
-          {section?.startsWith('wf-') && <Workforce section={section} />}
+          {section?.startsWith('wf-') && <Workforce section={section} orgCtx={orgCtx} />}
           {section === 'menu'       && <MenuManager />}
           {section === 'floorplan'  && <FloorPlanBuilder />}
           {section === 'inventory'  && <Inventory />}

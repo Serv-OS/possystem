@@ -80,6 +80,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.373', date: '6 Jun 2026', label: 'Workforce — demo data removed; real Staff add + “Set as POS user” → Team',
+    changes: [
+      'Removed the placeholder roster / timesheets / tronc / compliance so the module can be built and tested for real. Workforce → Staff is now a real add/edit list (persisted); rota, timesheets, tronc and compliance show clean empty states until populated. Roles, sections and venues remain editable config defaults.',
+      'Add a staff member, then “Set as POS user” (pick a POS role + 4-digit PIN) creates a real till login on the Team page — written to staff_members (Supabase) and shown in Staff & access. Verified end-to-end. The rota builds from real staff, grouped by section, with the live labour footer.',
+    ],
+  },
+  {
     version: '5.5.372', date: '6 Jun 2026', label: 'Workforce moved into the Back Office — new sidebar section (not a separate app)',
     changes: [
       'The staff-management module now lives as a “Workforce” section in the Back Office sidebar (the 10-section IA), using the Back Office / ServOS UI — you no longer click into a separate ?mode=staff app (that standalone surface was removed).',
