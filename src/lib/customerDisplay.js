@@ -141,6 +141,9 @@ export async function isLoyaltyEnabled() {
       { headers: { authorization: `Bearer ${token}` } });
     if (!res.ok) return false;
     const j = await res.json();
-    return !!j?.enabled;
+    // loyalty-config GET returns { config: { enabled, ... }, rewards, tiers } —
+    // the flag lives at j.config.enabled, not the top level (j.enabled was always
+    // undefined → keypad never showed). Fall back to j.enabled just in case.
+    return !!(j?.config?.enabled ?? j?.enabled);
   } catch { return false; }
 }

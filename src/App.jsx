@@ -80,6 +80,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.370', date: '6 Jun 2026', label: 'Customer display — FIX loyalty keypad never appeared (wrong config field)',
+    changes: [
+      'Root cause of the missing keypad: isLoyaltyEnabled() read `j.enabled`, but the loyalty-config service returns the flag at `j.config.enabled` — so it was always undefined → false, on every device. Fixed to read the correct field. With loyalty enabled for the location, the phone-capture keypad now shows on an active order (POS-broadcast + display fallback both fixed).',
+    ],
+  },
+  {
     version: '5.5.369', date: '6 Jun 2026', label: 'Customer display — reliable loyalty keypad (POS broadcasts loyalty-enabled)',
     changes: [
       'The loyalty phone-capture keypad now appears reliably. It was gated on a loyalty-enabled check the rear screen ran itself, which could fail without a Supabase session / locationId on that screen. Now the POS resolves loyalty-enabled (it has the auth + location) and broadcasts it in the display feed; the rear screen trusts that. Keypad shows on an active order when loyalty is enabled for the location.',
