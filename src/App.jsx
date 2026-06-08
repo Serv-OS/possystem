@@ -21,7 +21,6 @@ import BarSurface from './surfaces/BarSurface';
 import TablesSurface from './surfaces/TablesSurface';
 import { KDSSurface } from './surfaces/OtherSurfaces';
 import MPOSSurface from './surfaces/MPOSSurface';
-import StaffApp from './surfaces/StaffApp';
 import CustomerBoot from './surfaces/CustomerBoot';
 import { parseCustomerUrl as parseCustomerUrlForBoot } from './lib/customerUrl';
 import AIChat from './components/AIChat';
@@ -80,6 +79,13 @@ import { ServOSIcon } from './components/ServOSBrand';
 import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
+  {
+    version: '5.5.372', date: '6 Jun 2026', label: 'Workforce moved into the Back Office — new sidebar section (not a separate app)',
+    changes: [
+      'The staff-management module now lives as a “Workforce” section in the Back Office sidebar (the 10-section IA), using the Back Office / ServOS UI — you no longer click into a separate ?mode=staff app (that standalone surface was removed).',
+      'Workforce accordion: Dashboard · Rota · Timesheets · Time off & availability · Staff · Onboarding · Compliance · Pay & rates · Tronc/tips · Announcements · Workforce settings. Built + verified inside the BO: Rota (View A/B + live labour footer + publish-SMS modal), Timesheets (variance / missing clock-out / approve / payroll export), Pay rate card, Tronc (full-pool split reconciling to 100%), Compliance vault (status tiles + per-person docs), and the Staff list. The remaining screens are navigable placeholders, shipping next.',
+    ],
+  },
   {
     version: '5.5.371', date: '6 Jun 2026', label: 'Staff Management module — foundation + rota spine (new ?mode=staff)',
     changes: [
@@ -5569,8 +5575,6 @@ export default function App() {
   // its target via ?till=<deviceId> or this device's own pairing; self-contained
   // (no SyncBridge — it only subscribes to the display broadcast).
   if (deviceMode === 'customer-display') return <CustomerDisplaySurface />;
-  // Staff management module (workforce) — self-contained seed-first build.
-  if (deviceMode === 'staff') return <StaffApp />;
 
   // Back office mode — go to email login (no pairing needed)
   if (deviceMode === 'backoffice' || deviceMode === 'office') return <><SyncBridge onSyncPulse={handleSyncPulse}/><BackOfficeApp /></>;

@@ -37,6 +37,7 @@ import DiscountManager from './sections/DiscountManager';
 import GiftCards from './sections/GiftCards';
 import MessageTemplates from './sections/MessageTemplates';
 import LoyaltyManager from './sections/LoyaltyManager';
+import Workforce from './sections/Workforce';
 import { money, currencySymbol } from '../lib/currency';
 
 const NAV = [
@@ -79,7 +80,8 @@ const NAV_IA = [
   { label:'Menu',       icon:'list',      children:[['menu','Items & modifiers'],['discounts','Discounts'],['tax','Tax & VAT'],['challenge21','Challenge ID']] },
   { label:'Floor plan', icon:'floor',     single:'floorplan' },
   { label:'Inventory',  icon:'inventory', single:'inventory' },
-  { label:'Team',       icon:'team',      single:'staff' },
+  { label:'Team',       icon:'user',      single:'staff' },
+  { label:'Workforce',  icon:'team',      children:[['wf-dashboard','Dashboard'],['wf-rota','Rota'],['wf-timesheets','Timesheets'],['wf-timeoff','Time off & availability'],['wf-staff','Staff'],['wf-onboarding','Onboarding'],['wf-compliance','Compliance'],['wf-pay','Pay & rates'],['wf-tronc','Tronc / tips'],['wf-announce','Announcements'],['wf-settings','Workforce settings']] },
   { label:'Customers',  icon:'customers', children:[['customers','Customers'],['loyalty','Loyalty'],['giftcards','Gift cards'],['messages','Messages']] },
   { label:'Channels',   icon:'channels',  children:[['online','Online ordering'],['kiosks','Kiosks']] },
   { label:'Hardware',   icon:'hardware',  children:[['devices','Terminals'],['profiles','Device profiles'],['printers','Printers'],['printing','Production printing'],['cardreaders','Card readers'],['cashdrawers','Cash drawers'],['network','Network & sync']] },
@@ -550,7 +552,7 @@ export default function BackOfficeApp() {
           padding:'0 24px', flexShrink:0,
         }}>
           <div style={{ fontSize:16, fontWeight:600, color:'var(--t1)', letterSpacing:'-.015em' }}>
-            {NAV.find(n => n.id === section)?.label}
+            {NAV.find(n => n.id === section)?.label || (section?.startsWith('wf-') ? 'Workforce' : '')}
           </div>
           <div style={{ display:'flex', alignItems:'center', gap:12 }}>
             {/* Quick nav — POS / Office / Admin segmented (Office active) */}
@@ -579,6 +581,7 @@ export default function BackOfficeApp() {
             via !important so we don't have to edit 20 files individually. */}
         <div className="bo-page-shell">
           {section === 'overview'   && <BOOverview setSection={setSection} orgCtx={orgCtx} />}
+          {section?.startsWith('wf-') && <Workforce section={section} />}
           {section === 'menu'       && <MenuManager />}
           {section === 'floorplan'  && <FloorPlanBuilder />}
           {section === 'inventory'  && <Inventory />}

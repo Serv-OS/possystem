@@ -44,4 +44,23 @@ export function wageByDay(groups = GROUPS, roles = ROLES) {
 /** labour % = wage ÷ sales. */
 export function labourPct(wage, sales) { return sales > 0 ? wage / sales : 0; }
 
+// ── Tronc engine (UK Tipping Act, spec §3) ──────────────────────────────────
+// units = hours × role points; pointValue = pool / Σunits; payout = units × pointValue.
+// Distributes the full pool; lines reconcile to 100% / pool.
+export function troncRun(pool, rows) {
+  const totalUnits = rows.reduce((a, r) => a + r.pts * r.hrs, 0);
+  const pointValue = totalUnits > 0 ? pool / totalUnits : 0;
+  const lines = rows.map(r => {
+    const units = r.pts * r.hrs;
+    return { ...r, units, sharePct: totalUnits > 0 ? units / totalUnits : 0, payout: units * pointValue };
+  });
+  return { totalUnits, pointValue, lines };
+}
+
+// Timesheet variance vs scheduled (spec: flag beyond ±10 min ≈ ±0.17h).
+export function tsVariance(actual, scheduled) {
+  const v = actual - scheduled;
+  return { v, cls: v > 0.05 ? 'over' : (v < -0.05 ? 'under' : 'exact') };
+}
+
 export { FORECAST, LABOUR_TARGET };
