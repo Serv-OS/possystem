@@ -80,6 +80,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.375', date: '9 Jun 2026', label: 'Workforce — Staff now persists to the database (per location)',
+    changes: [
+      'Workforce → Staff is now backed by the wf_staff table (was interim localStorage). Adding a person writes a real HR record scoped to the current location; the list reloads from the database on every visit and survives refresh, config push and wake-from-sleep.',
+      '“Set as POS user” now also links the HR record to its till login (wf_staff.pos_user_id ↔ staff_members), and removing a person is a soft-delete (marked leaver) so pay and compliance history is never destroyed. Local dev (mock) keeps a localStorage fallback so the flow is still testable without a backend.',
+    ],
+  },
+  {
     version: '5.5.374', date: '9 Jun 2026', label: 'Workforce — per-location (venue switcher removed); hardened wf_* schema live',
     changes: [
       'Removed the Workforce venue switcher. Workforce now follows the location selected in the Back Office (bottom-left), so every screen — rota, staff, timesheets, pay, tronc, compliance — is scoped to the one location you’re in. Multi-site rollups will live in Reports.',

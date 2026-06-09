@@ -14,13 +14,13 @@ import { supabase } from '../../lib/supabase';
 import { Icon } from '../../components/ServOSIcons';
 import { DAYS, TODAY, SECTIONS, ROLES, SECTION_REQ, FORECAST, PAYROWS } from '../../staff/seed';
 import { hoursOf, effectiveRate, wageByDay, labourPct, LABOUR_TARGET, troncRun, tsVariance } from '../../staff/labour';
+import { loadStaff, saveStaff, softDeleteStaff, markPosUser } from '../../staff/wfData';
 
 const money = (n, dp = 0) => '£' + Number(n || 0).toLocaleString('en-GB', { minimumFractionDigits: dp, maximumFractionDigits: dp });
 const HUE = { mgmt: 250, bar: 200, floor: 150, kitchen: 38, door: 285 };
 const groupColor = grp => `oklch(var(--cat-l) var(--cat-c) ${HUE[grp] ?? 250})`;
 const GRP_SECTION = { bar: 'Bar', floor: 'Floor', kitchen: 'Kitchen', door: 'Door', mgmt: 'Management' };
 const initials = n => (n || '').split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2) || '?';
-const LS_KEY = 'rpos-wf-staff';
 
 const SUBS = {
   'wf-dashboard': ['Dashboard', 'Today across the group'],
@@ -38,16 +38,24 @@ const SUBS = {
 
 export default function Workforce({ section, orgCtx }) {
   const { addStaffMember, showToast } = useStore();
-  const [staff, setStaff] = useState(() => { try { return JSON.parse(localStorage.getItem(LS_KEY) || '[]'); } catch { return []; } });
+  const [staff, setStaff] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [addOpen, setAddOpen] = useState(false);
   const [posFor, setPosFor] = useState(null); // staff being promoted to a POS user
 
-  useEffect(() => { try { localStorage.setItem(LS_KEY, JSON.stringify(staff)); } catch { /* interim persistence */ } }, [staff]);
-
   // Workforce is scoped to the location selected in the Back Office (bottom-left
   // switcher). Multi-site rollups live in Reports, not here.
+  const locationId = orgCtx?.locationId || null;
   const locName = orgCtx?.locationName || 'This location';
   const key = (section || 'wf-dashboard').replace('wf-', '');
+
+  // Load this location's staff (wf_staff, RLS-fenced) on mount + on location change.
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    loadStaff(locationId).then(rows => { if (alive) { setStaff(rows); setLoading(false); } });
+    return () => { alive = false; };
+  }, [locationId]);
   const [title, sub] = SUBS[section] || ['Workforce', ''];
 
   // Rota roster: real staff grouped by their role's section.
@@ -57,7 +65,24 @@ export default function Workforce({ section, orgCtx }) {
     return Object.keys(by).map(grp => ({ name: GRP_SECTION[grp] || grp, staff: by[grp] }));
   }, [staff]);
 
-  const addStaff = (data) => { setStaff(st => [...st, { ...data, id: `wf-${Date.now()}`, days: {} }]); setAddOpen(false); };
+  // Add an HR record: optimistic, then persist to wf_staff; roll back on failure.
+  const addStaff = async (data) => {
+    setAddOpen(false);
+    const tmpId = `tmp-${Date.now()}`;
+    setStaff(st => [...st, { ...data, id: tmpId, days: {} }]);
+    try {
+      const saved = await saveStaff(data, locationId, orgCtx?.orgId);
+      setStaff(st => st.map(x => x.id === tmpId ? { ...saved, days: {} } : x));
+    } catch (e) {
+      setStaff(st => st.filter(x => x.id !== tmpId));
+      showToast?.(`Couldn't save ${data.name}: ${e.message || 'error'}`, 'error');
+    }
+  };
+
+  const removeStaff = async (id) => {
+    setStaff(st => st.filter(x => x.id !== id)); // soft-delete (leaver) — history preserved
+    try { await softDeleteStaff(id); } catch (e) { console.warn('[wf] remove:', e?.message || e); }
+  };
 
   const setAsPosUser = async (s, { pin, role }) => {
     const id = `s-${Date.now()}`;
@@ -67,6 +92,7 @@ export default function Workforce({ section, orgCtx }) {
       if (supabase && orgCtx?.locationId) {
         await supabase.from('staff_members').upsert({ id, location_id: orgCtx.locationId, org_id: orgCtx.orgId || null, name: s.name, role, pin, color: '#3b82f6', initials: initials(s.name), permissions: [], active: true });
       }
+      await markPosUser(s.id, id); // link the HR record (wf_staff) → POS user (staff_members)
     } catch (e) { console.warn('[workforce] POS user persist failed:', e?.message || e); }
     setStaff(st => st.map(x => x.id === s.id ? { ...x, posUserId: id, posRole: role } : x));
     setPosFor(null);
@@ -87,7 +113,9 @@ export default function Workforce({ section, orgCtx }) {
 
       {key === 'dashboard' && <WfDashboard groups={groups} staffCount={staff.length} />}
       {key === 'rota' && <WfRota groups={groups} />}
-      {key === 'staff' && <WfStaff staff={staff} onAdd={() => setAddOpen(true)} onSetPos={setPosFor} onRemove={id => setStaff(st => st.filter(x => x.id !== id))} />}
+      {key === 'staff' && (loading
+        ? <Card style={{ textAlign: 'center', padding: 44, color: 'var(--t3)' }}>Loading staff…</Card>
+        : <WfStaff staff={staff} onAdd={() => setAddOpen(true)} onSetPos={setPosFor} onRemove={removeStaff} />)}
       {key === 'timesheets' && <EmptyState icon="status" title="No timesheets yet" body="Timesheets appear when staff clock in/out against scheduled shifts. Build the rota and publish it first." />}
       {key === 'pay' && <WfPay />}
       {key === 'tronc' && <EmptyState icon="tag" title="No tronc run yet" body="The tip pool (card tips + service charge) comes from the POS. Once staff and hours exist, the weekly run splits the pool by hours × role points." />}
