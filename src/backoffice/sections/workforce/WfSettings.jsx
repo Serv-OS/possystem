@@ -236,6 +236,8 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
         </div>
       </Card>
 
+      <WfTemplatesCard ctx={ctx} roles={roles} showToast={showToast} />
+
       {editing && (
         <SectionModal
           section={editing}
@@ -243,6 +245,115 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
           onSave={saveSection}
         />
       )}
+    </div>
+  );
+}
+
+// ── Offer-letter & contract templates (create / edit / merge) ────────────────
+const TOKENS = ['first_name', 'full_name', 'position', 'rate', 'contract_type', 'start_date', 'weekly_hours', 'business_name', 'today'];
+const SAMPLE_VARS = { first_name: 'Jordan', full_name: 'Jordan Lee', position: 'Bartender', rate: '£12.50 per hour', contract_type: 'Part time', start_date: '1 July 2026', weekly_hours: '20', business_name: 'The Anchor', today: '9 June 2026' };
+
+function WfTemplatesCard({ ctx, roles, showToast }) {
+  const [tpls, setTpls] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState(null); // template being edited/created
+
+  async function reload() {
+    setLoading(true);
+    try { setTpls(await wf.loadTemplates(ctx.locationId) || []); }
+    catch { setTpls(wf.DEFAULT_TEMPLATES); }
+    finally { setLoading(false); }
+  }
+  useEffect(() => { reload(); /* eslint-disable-next-line */ }, [ctx.locationId]);
+
+  const save = async (t) => {
+    try {
+      await wf.saveTemplate(t, ctx.locationId, ctx.orgId);
+      setEditing(null);
+      showToast('Template saved', 'success');
+      reload();
+    } catch (e) { showToast(e.message || 'Could not save template', 'error'); }
+  };
+  const remove = async (t) => {
+    if (t.builtin) return;
+    setTpls(prev => prev.filter(x => x.id !== t.id));
+    try { await wf.deleteTemplate(t.id); showToast('Template deleted', 'info'); } catch { reload(); }
+  };
+
+  const offers = tpls.filter(t => t.kind === 'offer');
+  const contracts = tpls.filter(t => t.kind === 'contract');
+
+  return (
+    <Card>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 10 }}>
+        <div>
+          <div style={{ fontSize: 15, fontWeight: 700 }}>Offer letters &amp; contracts</div>
+          <div style={{ fontSize: 12.5, color: 'var(--t3)', marginTop: 2 }}>Reusable templates with merge fields — onboarding fills in each person's details and sends them. Edit the wording to suit your business.</div>
+        </div>
+        <button className="btn btn-acc btn-sm" onClick={() => setEditing({ kind: 'offer', name: '', body: '', contractType: '' })}><Icon name="plus" size={14} /> New template</button>
+      </div>
+      {loading ? <div style={{ color: 'var(--t3)', fontSize: 13, padding: 8 }}>Loading…</div> : (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+          <TemplateList title="Offer letters" list={offers} onEdit={setEditing} onRemove={remove} />
+          <TemplateList title="Contracts" list={contracts} onEdit={setEditing} onRemove={remove} />
+        </div>
+      )}
+      {editing && <TemplateEditor tpl={editing} onClose={() => setEditing(null)} onSave={save} />}
+    </Card>
+  );
+}
+
+function TemplateList({ title, list, onEdit, onRemove }) {
+  return (
+    <div>
+      <div className="mono" style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--t4)', marginBottom: 8 }}>{title}</div>
+      <div style={{ display: 'grid', gap: 6 }}>
+        {list.length === 0 && <div style={{ fontSize: 12.5, color: 'var(--t4)' }}>None yet.</div>}
+        {list.map(t => (
+          <div key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 11px', borderRadius: 10, background: 'var(--inset)', border: '1px solid var(--inset-border)' }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.name}{t.builtin && <span style={{ marginLeft: 6, fontSize: 10, color: 'var(--t4)', fontFamily: 'var(--font-mono)' }}>BUILT-IN</span>}</div>
+              {t.contractType && <div style={{ fontSize: 10.5, color: 'var(--t4)' }}>For {t.contractType}</div>}
+            </div>
+            <button className="btn btn-ghost btn-xs" onClick={() => onEdit(t.builtin ? { ...t, id: undefined, builtin: false, name: t.name + ' (copy)' } : t)}>{t.builtin ? 'Duplicate' : 'Edit'}</button>
+            {!t.builtin && <button className="btn btn-ghost btn-xs" onClick={() => onRemove(t)} title="Delete"><Icon name="close" size={12} /></button>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function TemplateEditor({ tpl, onClose, onSave }) {
+  const [f, setF] = useState({ id: tpl.id, kind: tpl.kind || 'offer', name: tpl.name || '', body: tpl.body || '', contractType: tpl.contractType || '' });
+  const set = (k, v) => setF(p => ({ ...p, [k]: v }));
+  const valid = f.name.trim() && f.body.trim();
+  const preview = wf.mergeTemplate(f.body, SAMPLE_VARS);
+  return (
+    <div className="modal-back" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal-box" style={{ maxWidth: 760, maxHeight: '88vh', overflowY: 'auto' }}>
+        <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 14 }}>{tpl.id && !tpl.builtin ? 'Edit template' : 'New template'}</div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+          <div><label style={labelStyle}>Name</label><input style={inputStyle} value={f.name} onChange={e => set('name', e.target.value)} placeholder="e.g. Part-time contract" /></div>
+          <div><label style={labelStyle}>Type</label><select style={inputStyle} value={f.kind} onChange={e => set('kind', e.target.value)}><option value="offer">Offer letter</option><option value="contract">Contract</option></select></div>
+          {f.kind === 'contract' && <div style={{ gridColumn: '1 / -1' }}><label style={labelStyle}>Applies to (optional)</label><select style={inputStyle} value={f.contractType} onChange={e => set('contractType', e.target.value)}><option value="">Any contract type</option><option value="zeroHours">Zero hours</option><option value="partTime">Part time</option><option value="fullTime">Full time</option><option value="salaried">Salaried</option></select></div>}
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+          <div>
+            <label style={labelStyle}>Body</label>
+            <textarea style={{ ...inputStyle, height: 300, padding: 12, fontFamily: 'var(--font-mono)', fontSize: 12, lineHeight: 1.6, resize: 'vertical' }} value={f.body} onChange={e => set('body', e.target.value)} placeholder="Type your letter/contract. Use merge fields like {{first_name}}." />
+            <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 6 }}>Merge fields (click to insert): {TOKENS.map(tk => <button key={tk} onClick={() => set('body', f.body + `{{${tk}}}`)} style={{ margin: '2px 3px 0 0', padding: '2px 6px', borderRadius: 6, border: '1px solid var(--inset-border)', background: 'var(--inset)', color: 'var(--t2)', fontFamily: 'var(--font-mono)', fontSize: 10.5, cursor: 'pointer' }}>{`{{${tk}}}`}</button>)}</div>
+          </div>
+          <div>
+            <label style={labelStyle}>Preview (sample data)</label>
+            <div style={{ height: 300, overflowY: 'auto', padding: 14, borderRadius: 10, background: 'var(--bg3)', border: '1px solid var(--bdr2)', fontSize: 12.5, lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>{preview}</div>
+          </div>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 18 }}>
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn btn-acc" disabled={!valid} onClick={() => onSave(f)}>Save template</button>
+        </div>
+      </div>
     </div>
   );
 }

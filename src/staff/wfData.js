@@ -547,6 +547,102 @@ export async function saveOnboarding(onb, locationId, orgId) {
 }
 
 // ============================================================================
+// DOCUMENT TEMPLATES (wf_doc_templates) — offer letters + contracts with {{tokens}}
+// ============================================================================
+const mapTemplate = r => ({ id: r.id, kind: r.kind, name: r.name, body: r.body || '', contractType: r.contract_type || null, isDefault: !!r.is_default, active: r.active !== false });
+
+// Built-in starting templates so there's always something to send. Editable copies
+// are created in wf_doc_templates the first time the operator saves a change.
+export const DEFAULT_TEMPLATES = [
+  { id: 'builtin-offer', kind: 'offer', name: 'Standard offer letter', contractType: null, isDefault: true, builtin: true,
+    body: `Dear {{first_name}},
+
+We're delighted to offer you the position of {{position}} at {{business_name}}.
+
+• Rate of pay: {{rate}}
+• Employment type: {{contract_type}}
+• Proposed start date: {{start_date}}
+
+We're really pleased to have you joining the team. Please reply to this email to accept, and we'll send your contract to sign and get you set up.
+
+Warm regards,
+{{business_name}}` },
+  { id: 'builtin-contract', kind: 'contract', name: 'Statement of main terms (UK)', contractType: null, isDefault: true, builtin: true,
+    body: `STATEMENT OF MAIN TERMS OF EMPLOYMENT
+
+This statement sets out the main terms of your employment with {{business_name}} ("the Employer").
+
+Employee: {{full_name}}
+Position: {{position}}
+Employment type: {{contract_type}}
+Start date: {{start_date}}
+Rate of pay: {{rate}}
+Average weekly hours: {{weekly_hours}}
+Place of work: {{business_name}}
+
+1. Pay is calculated and paid in line with the Employer's normal payroll schedule.
+2. Holiday accrues in line with statutory entitlement (5.6 weeks per year, pro rata).
+3. Either party may end this employment by giving the statutory minimum notice.
+4. You agree to follow the Employer's policies and procedures while employed.
+
+By signing below you confirm you have read, understood and agree to these terms of employment.
+
+Signed: {{full_name}}     Date: {{today}}` },
+];
+
+/** Replace {{token}} placeholders in a template body. Unknown tokens → blank. */
+export function mergeTemplate(body, vars) {
+  return String(body || '').replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, k) => (vars[k] != null && vars[k] !== '' ? String(vars[k]) : '—'));
+}
+
+/** Build the merge variables for a staff member. */
+export function templateVars(staff, role, businessName) {
+  const rate = staff.rateOverride != null && staff.rateOverride !== '' ? `£${Number(staff.rateOverride).toFixed(2)} per hour`
+    : (role?.rate != null ? `£${Number(role.rate).toFixed(2)} per hour` : (role?.salary ? `£${Number(role.salary).toLocaleString()} per year` : 'to be confirmed'));
+  const ctMap = { zeroHours: 'Zero hours', partTime: 'Part time', fullTime: 'Full time', salaried: 'Salaried' };
+  return {
+    first_name: (staff.name || '').split(' ')[0] || 'there',
+    full_name: staff.name || '',
+    position: role?.lbl || staff.role || 'team member',
+    rate,
+    contract_type: ctMap[staff.contractType] || staff.contractType || '—',
+    start_date: staff.startDate ? new Date(staff.startDate + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) : 'to be confirmed',
+    weekly_hours: staff.weeklyHoursTarget || staff.contractedWeek || '—',
+    business_name: businessName || 'our team',
+    today: new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }),
+  };
+}
+
+/** Load templates (merges built-in defaults with saved ones; saved override built-ins by kind+name). */
+export async function loadTemplates(locationId, kind) {
+  let saved = [];
+  if (isMock || !supabase) saved = lsGet('templates');
+  else if (locationId) {
+    const { data, error } = await supabase.from('wf_doc_templates').select('*').eq('location_id', locationId).eq('active', true).order('created_at');
+    if (!error) saved = (data || []).map(mapTemplate);
+  }
+  const all = [...DEFAULT_TEMPLATES, ...saved];
+  return kind ? all.filter(t => t.kind === kind) : all;
+}
+export async function saveTemplate(tpl, locationId, orgId) {
+  if (isMock || !supabase) return lsUpsert('templates', { ...tpl, builtin: false });
+  const org = await resolveOrgForLocation(locationId, orgId);
+  const row = { location_id: locationId, org_id: org, kind: tpl.kind, name: tpl.name, body: tpl.body || '', contract_type: tpl.contractType || null, is_default: !!tpl.isDefault, active: true };
+  const real = tpl.id && !String(tpl.id).startsWith('builtin-') && !String(tpl.id).startsWith('tmp-') && !String(tpl.id).startsWith('wf-');
+  if (real) row.id = tpl.id;
+  const q = real ? supabase.from('wf_doc_templates').upsert(row, { onConflict: 'id' }) : supabase.from('wf_doc_templates').insert(row);
+  const { data, error } = await q.select().single();
+  if (error) throw new Error(error.message);
+  return mapTemplate(data);
+}
+export async function deleteTemplate(id) {
+  if (String(id).startsWith('builtin-')) return; // can't delete built-ins
+  if (isMock || !supabase) return lsDelete('templates', id);
+  const { error } = await supabase.from('wf_doc_templates').delete().eq('id', id);
+  if (error) console.warn('[wf] deleteTemplate:', error.message);
+}
+
+// ============================================================================
 // ANNOUNCEMENTS (wf_announcements)
 // ============================================================================
 const mapAnn = r => ({ id: r.id, authorName: r.author_name, audience: r.audience || {}, channels: r.channels || [], body: r.body, sentAt: r.sent_at, createdAt: r.created_at });

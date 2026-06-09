@@ -60,6 +60,7 @@ Deno.serve(async (req) => {
         position: onb.role_key || staff?.role_key || '',
         businessName: loc?.name ?? 'the team',
         contractUrl,
+        contractHtml: meta.contractHtml ?? null,
         signed: !!meta.signature,
         signature: meta.signature ?? null,
       });

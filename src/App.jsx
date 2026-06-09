@@ -82,6 +82,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.385', date: '9 Jun 2026', label: 'Workforce — build & send offer letters and contracts from templates',
+    changes: [
+      'New template manager (Workforce → Settings → "Offer letters & contracts"): create/edit reusable offer-letter and contract templates with merge fields like {{first_name}}, {{position}}, {{rate}}, {{start_date}} and a live preview. Contract templates can be scoped to a contract type (zero-hours, part-time, etc.). Ships with built-in UK defaults.',
+      'Onboarding now builds the document from a template: "Send offer" and "Generate" let you pick a template, see it merged with the person\'s real details, and send it — the offer by email, the contract to the e-sign page (rendered inline for the candidate to read and sign). Uploading a ready-made PDF is still available as an alternative.',
+      'Modelled on how Deputy / Workforce.com handle onboarding documents (reusable templates + placeholders + e-sign).',
+    ],
+  },
+  {
     version: '5.5.384', date: '9 Jun 2026', label: 'Workforce — fix staff-profile crash + capture emergency contact & address',
     changes: [
       'Fixed: opening a staff member could throw "undefined is not iterable" — a grey status badge (missing document / pending timesheet) hit a colour the local badge map didn\'t have. Added the grey tone + a safe fallback.',

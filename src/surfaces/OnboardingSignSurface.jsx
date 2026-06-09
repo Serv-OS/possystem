@@ -76,7 +76,9 @@ export default function OnboardingSignSurface({ token }) {
               Review your employment contract{info.position ? ` for the ${info.position} role` : ''}, then sign below by typing your full name. This is your legal electronic signature.
             </div>
 
-            {info.contractUrl ? (
+            {info.contractHtml ? (
+              <div style={{ marginTop: 16, maxHeight: 360, overflowY: 'auto', padding: 16, borderRadius: 12, background: '#fff', color: '#111', border: '1px solid var(--bdr2)' }} dangerouslySetInnerHTML={{ __html: info.contractHtml }} />
+            ) : info.contractUrl ? (
               <a href={info.contractUrl} target="_blank" rel="noreferrer" className="btn btn-ghost" style={{ marginTop: 16, display: 'inline-flex', width: '100%', justifyContent: 'center' }}>
                 <Icon name="tag" size={15} /> Open the contract to read
               </a>

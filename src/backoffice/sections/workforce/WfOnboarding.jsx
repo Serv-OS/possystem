@@ -25,6 +25,47 @@ const STEPS = [
 ];
 const freshSteps = () => STEPS.map(s => ({ key: s.key, status: 'pending', completedAt: null }));
 const genToken = () => (crypto?.randomUUID ? crypto.randomUUID().replace(/-/g, '') : `${Date.now()}${Math.random().toString(36).slice(2)}`) + Math.random().toString(36).slice(2, 8);
+const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const toHtml = text => `<div style="white-space:pre-wrap;font-family:system-ui,-apple-system,sans-serif;line-height:1.6;font-size:14px;color:#111">${esc(text)}</div>`;
+
+// Pick an offer/contract template, merge in this person's details, preview, send.
+function PickTemplateModal({ kind, member, role, ctx, title, cta, onClose, onConfirm }) {
+  const [tpls, setTpls] = useState([]);
+  const [selId, setSelId] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      const all = await wf.loadTemplates(ctx.locationId, kind).catch(() => []);
+      const scoped = kind === 'contract' ? all.filter(t => !t.contractType || t.contractType === member.contractType) : all;
+      const list = scoped.length ? scoped : all;
+      if (!live) return;
+      setTpls(list); setSelId(list[0]?.id || ''); setLoading(false);
+    })();
+    return () => { live = false; };
+  }, []);
+  const sel = tpls.find(t => t.id === selId);
+  const vars = wf.templateVars(member, role, ctx.locName);
+  const merged = sel ? wf.mergeTemplate(sel.body, vars) : '';
+  return (
+    <div className="modal-back" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal-box" style={{ maxWidth: 620, maxHeight: '88vh', overflowY: 'auto' }}>
+        <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>{title}</div>
+        <div style={{ fontSize: 12.5, color: 'var(--t3)', marginBottom: 14 }}>For {member.name}. Pick a template — their details are merged in automatically. Edit templates in Workforce → Settings.</div>
+        {loading ? <div style={{ color: 'var(--t3)', fontSize: 13 }}>Loading templates…</div> : !tpls.length ? <div style={{ color: 'var(--t4)', fontSize: 13 }}>No templates available.</div> : (<>
+          <div style={{ marginBottom: 12 }}><label style={labelStyle}>Template</label><select style={inputStyle} value={selId} onChange={e => setSelId(e.target.value)}>{tpls.map(t => <option key={t.id} value={t.id}>{t.name}{t.builtin ? ' (built-in)' : ''}</option>)}</select></div>
+          <label style={labelStyle}>Preview</label>
+          <div style={{ maxHeight: 320, overflowY: 'auto', padding: 14, borderRadius: 10, background: 'var(--bg3)', border: '1px solid var(--bdr2)', fontSize: 13, lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>{merged}</div>
+        </>)}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 18 }}>
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn btn-acc" disabled={busy || !sel} onClick={async () => { setBusy(true); try { await onConfirm(merged, sel); } finally { setBusy(false); } }}>{busy ? 'Sending…' : cta}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function WfOnboarding({ ctx, staff = [], roles, sections, settings, week, showToast }) {
   const [cases, setCases] = useState([]);
@@ -126,7 +167,7 @@ function OnboardingCard({ c, member, rolesMap, ctx, showToast, markStep, patchCa
         </StepRow>
 
         <StepRow done={stepStatus('contract') === 'complete'} label="Contract" hint={meta.signature ? `Signed by ${meta.signature.name} · ${new Date(meta.signature.signedAt).toLocaleDateString('en-GB')}` : meta.contractSentAt ? 'Sent — awaiting signature' : meta.contractPath ? 'Uploaded — send for signing' : 'Upload the contract'}>
-          <ContractAction c={c} member={member} ctx={ctx} showToast={showToast} patchCase={patchCase} />
+          <ContractAction c={c} member={member} role={rolesMap[member.role]} ctx={ctx} showToast={showToast} patchCase={patchCase} />
         </StepRow>
 
         <StepRow done={stepStatus('bank') === 'complete'} label="Bank details" hint={meta.bankMasked ? `On file · ${meta.bankMasked}` : 'Capture for payroll (stored masked)'}>
@@ -159,26 +200,20 @@ function StepRow({ done, label, hint, children }) {
 }
 
 function OfferAction({ c, member, role, ctx, showToast, markStep, done }) {
-  const [busy, setBusy] = useState(false);
+  const [pick, setPick] = useState(false);
   if (done) return <Badge tone="green">Sent</Badge>;
-  const send = async () => {
-    if (!member.email) { showToast('Add an email for this person in Staff first', 'error'); return; }
-    setBusy(true);
-    try {
-      const roleLbl = role?.lbl || 'team member';
-      const rate = member.rateOverride != null ? `£${Number(member.rateOverride).toFixed(2)}/h` : (role?.rate != null ? `£${Number(role.rate).toFixed(2)}/h` : 'to be confirmed');
-      const html = `<div style="font-family:system-ui,sans-serif;max-width:560px"><p>Dear ${member.name},</p>
-<p>We're delighted to offer you the position of <strong>${roleLbl}</strong> at ${ctx.locName}.</p>
-<ul><li>Rate of pay: ${rate}</li>${member.startDate ? `<li>Proposed start date: ${new Date(member.startDate + 'T00:00:00').toLocaleDateString('en-GB')}</li>` : ''}</ul>
-<p>We're really pleased to have you joining the team. Please reply to accept and we'll send your contract to sign and get you set up.</p>
-<p>Warm regards,<br/>${ctx.locName}</p></div>`;
-      await wf.sendEmail(member.email, `Your offer from ${ctx.locName}`, html, ctx.locationId);
-      await markStep(c, 'offer', 'complete', { offerSentAt: new Date().toISOString() });
-      showToast('Offer letter emailed', 'success');
-    } catch (e) { showToast('Could not send offer: ' + (e.message || 'error'), 'error'); }
-    finally { setBusy(false); }
+  if (!member.email) return <span style={{ fontSize: 11, color: 'var(--t4)' }}>Add email</span>;
+  const send = async (merged) => {
+    await wf.sendEmail(member.email, `Your offer from ${ctx.locName}`, toHtml(merged), ctx.locationId);
+    await markStep(c, 'offer', 'complete', { offerSentAt: new Date().toISOString() });
+    showToast('Offer letter emailed', 'success');
+    setPick(false);
   };
-  return <button className="btn btn-acc btn-xs" disabled={busy || !member.email} onClick={send}>{busy ? 'Sending…' : 'Send offer'}</button>;
+  return (<>
+    <button className="btn btn-acc btn-xs" onClick={() => setPick(true)}>Send offer</button>
+    {pick && <PickTemplateModal kind="offer" member={member} role={role} ctx={ctx} title="Send offer letter" cta="Send offer" onClose={() => setPick(false)}
+      onConfirm={async (m) => { try { await send(m); } catch (e) { showToast('Could not send: ' + (e.message || 'error'), 'error'); } }} />}
+  </>);
 }
 
 function UploadAction({ type, c, member, ctx, showToast, markStep, metaKey, stepKey, done }) {
@@ -204,51 +239,55 @@ function UploadAction({ type, c, member, ctx, showToast, markStep, metaKey, step
   </>);
 }
 
-function ContractAction({ c, member, ctx, showToast, patchCase }) {
+const signEmailHtml = (name, locName, link) => `<div style="font-family:system-ui,sans-serif;max-width:560px"><p>Dear ${esc(name)},</p>
+<p>Your contract with ${esc(locName)} is ready to sign. Please review and sign it here:</p>
+<p><a href="${link}" style="display:inline-block;background:#15C26A;color:#06130C;font-weight:700;padding:12px 20px;border-radius:10px;text-decoration:none">Review &amp; sign your contract</a></p>
+<p style="color:#666;font-size:13px">Or paste this link into your browser:<br/>${link}</p>
+<p>Warm regards,<br/>${esc(locName)}</p></div>`;
+
+function ContractAction({ c, member, role, ctx, showToast, patchCase }) {
   const meta = c.meta || {};
+  const [pick, setPick] = useState(false);
   const [busy, setBusy] = useState(false);
   const ref = useRef(null);
   if (meta.signature) return <Badge tone="green">Signed</Badge>;
 
+  // Upload a ready-made PDF instead of generating from a template.
   const uploadContract = async (e) => {
     const file = e.target.files?.[0]; e.target.value = '';
-    if (!file) return;
+    if (!file || !member.email) { if (!member.email) showToast('Add an email for this person first', 'error'); return; }
     setBusy(true);
     try {
       const { path } = await wf.uploadWfDocument(file, ctx.locationId, member.id, 'contract');
       await wf.saveDocument({ staffId: member.id, type: 'other', fileUrl: path, status: 'valid' }, ctx.locationId, ctx.orgId).catch(() => {});
-      await patchCase(c, { meta: { ...meta, contractPath: path } });
-      showToast('Contract uploaded — now send it for signing', 'success');
+      const token = meta.signToken || genToken();
+      await wf.sendEmail(member.email, `Sign your contract — ${ctx.locName}`, signEmailHtml(member.name, ctx.locName, `${window.location.origin}/sign/${token}`), ctx.locationId);
+      await patchCase(c, { meta: { ...meta, contractPath: path, contractHtml: null, signToken: token, contractSentAt: new Date().toISOString() }, steps: (c.steps || []).map(s => s.key === 'contract' ? { ...s, status: 'sent' } : s) });
+      showToast('Contract uploaded + sent for signing', 'success');
     } catch (err) { showToast('Upload failed: ' + (err.message || 'error'), 'error'); }
     finally { setBusy(false); }
   };
 
-  const sendForSigning = async () => {
-    if (!member.email) { showToast('Add an email for this person in Staff first', 'error'); return; }
-    setBusy(true);
-    try {
-      const token = meta.signToken || genToken();
-      const link = `${window.location.origin}/sign/${token}`;
-      const html = `<div style="font-family:system-ui,sans-serif;max-width:560px"><p>Dear ${member.name},</p>
-<p>Your contract with ${ctx.locName} is ready to sign. Please review and sign it here:</p>
-<p><a href="${link}" style="display:inline-block;background:#15C26A;color:#06130C;font-weight:700;padding:12px 20px;border-radius:10px;text-decoration:none">Review &amp; sign your contract</a></p>
-<p style="color:#666;font-size:13px">Or paste this link into your browser:<br/>${link}</p>
-<p>Warm regards,<br/>${ctx.locName}</p></div>`;
-      await wf.sendEmail(member.email, `Sign your contract — ${ctx.locName}`, html, ctx.locationId);
-      await patchCase(c, { meta: { ...meta, signToken: token, contractSentAt: new Date().toISOString() }, steps: (c.steps || []).map(s => s.key === 'contract' ? { ...s, status: 'sent' } : s) });
-      showToast('Contract sent for signing', 'success');
-    } catch (e) { showToast('Could not send: ' + (e.message || 'error'), 'error'); }
-    finally { setBusy(false); }
+  // Generate the contract from a template, store the rendered text, send the sign link.
+  const generateAndSend = async (merged) => {
+    if (!member.email) { showToast('Add an email for this person first', 'error'); return; }
+    const token = meta.signToken || genToken();
+    await wf.sendEmail(member.email, `Sign your contract — ${ctx.locName}`, signEmailHtml(member.name, ctx.locName, `${window.location.origin}/sign/${token}`), ctx.locationId);
+    await patchCase(c, { meta: { ...meta, signToken: token, contractHtml: toHtml(merged), contractPath: null, contractSentAt: new Date().toISOString() }, steps: (c.steps || []).map(s => s.key === 'contract' ? { ...s, status: 'sent' } : s) });
+    showToast('Contract generated + sent for signing', 'success');
+    setPick(false);
   };
 
   return (<>
     <input ref={ref} type="file" accept=".pdf,.doc,.docx" style={{ display: 'none' }} onChange={uploadContract} />
-    {!meta.contractPath
-      ? <button className="btn btn-acc btn-xs" disabled={busy} onClick={() => ref.current?.click()}>{busy ? 'Uploading…' : 'Upload'}</button>
+    {meta.contractSentAt
+      ? <button className="btn btn-ghost btn-xs" disabled={busy} onClick={() => setPick(true)} title="Awaiting signature">Resend</button>
       : <div style={{ display: 'flex', gap: 6 }}>
-          <button className="btn btn-ghost btn-xs" disabled={busy} onClick={() => ref.current?.click()} title="Replace contract">↻</button>
-          <button className="btn btn-acc btn-xs" disabled={busy || !member.email} onClick={sendForSigning}>{busy ? '…' : (meta.contractSentAt ? 'Resend' : 'Send to sign')}</button>
+          <button className="btn btn-acc btn-xs" disabled={busy || !member.email} onClick={() => setPick(true)}>Generate</button>
+          <button className="btn btn-ghost btn-xs" disabled={busy} onClick={() => ref.current?.click()} title="Upload a PDF instead">{busy ? '…' : 'Upload'}</button>
         </div>}
+    {pick && <PickTemplateModal kind="contract" member={member} role={role} ctx={ctx} title="Generate & send contract" cta="Generate & send" onClose={() => setPick(false)}
+      onConfirm={async (m) => { try { await generateAndSend(m); } catch (e) { showToast('Could not send: ' + (e.message || 'error'), 'error'); } }} />}
   </>);
 }
 
