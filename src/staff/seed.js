@@ -12,10 +12,9 @@ export const TODAY = 0;
 
 export const SECTIONS = { bar: 'Bar', floor: 'Floor', kitchen: 'Kitchen', door: 'Door' };
 
-// ── Venues (editable in Workforce → Settings) ───────────────────────────────
-export const VENUES = [
-  { id: 'anchor', name: 'The Anchor', type: 'pub', labourTargetPct: 0.28 },
-];
+// Workforce is scoped to the location selected in the Back Office (no per-module
+// venue switcher). Multi-site rollups live in Reports. The old VENUES seed has
+// been removed — there is no venues concept in Workforce anymore.
 
 // ── Roles + rates (editable rate card; drives rota cost + tronc weight) ──────
 export const ROLES = {

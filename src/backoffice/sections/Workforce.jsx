@@ -12,7 +12,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { useStore } from '../../store';
 import { supabase } from '../../lib/supabase';
 import { Icon } from '../../components/ServOSIcons';
-import { VENUES, DAYS, TODAY, SECTIONS, ROLES, SECTION_REQ, FORECAST, PAYROWS } from '../../staff/seed';
+import { DAYS, TODAY, SECTIONS, ROLES, SECTION_REQ, FORECAST, PAYROWS } from '../../staff/seed';
 import { hoursOf, effectiveRate, wageByDay, labourPct, LABOUR_TARGET, troncRun, tsVariance } from '../../staff/labour';
 
 const money = (n, dp = 0) => '£' + Number(n || 0).toLocaleString('en-GB', { minimumFractionDigits: dp, maximumFractionDigits: dp });
@@ -38,14 +38,15 @@ const SUBS = {
 
 export default function Workforce({ section, orgCtx }) {
   const { addStaffMember, showToast } = useStore();
-  const [venueId, setVenueId] = useState(VENUES[0]?.id || 'anchor');
   const [staff, setStaff] = useState(() => { try { return JSON.parse(localStorage.getItem(LS_KEY) || '[]'); } catch { return []; } });
   const [addOpen, setAddOpen] = useState(false);
   const [posFor, setPosFor] = useState(null); // staff being promoted to a POS user
 
   useEffect(() => { try { localStorage.setItem(LS_KEY, JSON.stringify(staff)); } catch { /* interim persistence */ } }, [staff]);
 
-  const venue = VENUES.find(v => v.id === venueId) || { name: 'All venues' };
+  // Workforce is scoped to the location selected in the Back Office (bottom-left
+  // switcher). Multi-site rollups live in Reports, not here.
+  const locName = orgCtx?.locationName || 'This location';
   const key = (section || 'wf-dashboard').replace('wf-', '');
   const [title, sub] = SUBS[section] || ['Workforce', ''];
 
@@ -76,13 +77,12 @@ export default function Workforce({ section, orgCtx }) {
     <div>
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: 16, marginBottom: 20, flexWrap: 'wrap' }}>
         <div>
-          <div className="mono" style={{ fontSize: 10.5, letterSpacing: '.16em', textTransform: 'uppercase', color: 'var(--acc)' }}>Workforce · {venue.name}</div>
+          <div className="mono" style={{ fontSize: 10.5, letterSpacing: '.16em', textTransform: 'uppercase', color: 'var(--acc)' }}>Workforce · {locName}</div>
           <h1 style={{ fontSize: 24, fontWeight: 700, letterSpacing: '-.02em', marginTop: 6 }}>{title}</h1>
           <div style={{ fontSize: 13, color: 'var(--t3)', marginTop: 2 }}>{sub}</div>
         </div>
         <div style={{ flex: 1 }} />
         {key === 'staff' && <button className="btn btn-acc" onClick={() => setAddOpen(true)}><Icon name="plus" size={15} /> Add staff member</button>}
-        <VenueSwitch venueId={venueId} setVenueId={setVenueId} />
       </div>
 
       {key === 'dashboard' && <WfDashboard groups={groups} staffCount={staff.length} />}
@@ -94,7 +94,7 @@ export default function Workforce({ section, orgCtx }) {
       {key === 'compliance' && <EmptyState icon="warn" title="No documents yet" body="Right-to-work, food hygiene, SIA and other documents are tracked per staff member. Add staff, then upload their documents here." />}
       {['timeoff', 'onboarding', 'announce', 'settings'].includes(key) && <WfPlaceholder title={title} />}
 
-      {addOpen && <AddStaffModal venue={venue} onClose={() => setAddOpen(false)} onSave={addStaff} />}
+      {addOpen && <AddStaffModal locName={locName} onClose={() => setAddOpen(false)} onSave={addStaff} />}
       {posFor && <PosUserModal staff={posFor} onClose={() => setPosFor(null)} onSave={(opts) => setAsPosUser(posFor, opts)} />}
     </div>
   );
@@ -110,27 +110,6 @@ function RoleChip({ role }) {
 }
 const BADGE = { green: ['var(--grn-d)', 'var(--grn-b)', 'var(--grn)'], amber: ['rgba(245,166,35,.13)', 'rgba(245,166,35,.30)', 'var(--amber)'], red: ['var(--red-d)', 'var(--red-b)', 'var(--red)'], blue: ['var(--blu-d)', 'var(--blu-b)', 'var(--blu)'] };
 function Badge({ tone = 'green', children }) { const [bg, bd, fg] = BADGE[tone]; return <span style={{ display: 'inline-flex', alignItems: 'center', fontSize: 10.5, fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: bg, border: `1px solid ${bd}`, color: fg, whiteSpace: 'nowrap' }}>{children}</span>; }
-function VenueSwitch({ venueId, setVenueId }) {
-  const [open, setOpen] = useState(false);
-  const venue = VENUES.find(v => v.id === venueId) || { name: 'All venues' };
-  const opts = VENUES.length > 1 ? [{ id: 'all', name: 'All venues', type: 'Group rollup' }, ...VENUES] : VENUES;
-  return (
-    <div style={{ position: 'relative' }}>
-      <button onClick={() => setOpen(o => !o)} style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '9px 13px', borderRadius: 11, cursor: 'pointer', fontFamily: 'inherit', fontSize: 13, fontWeight: 600, color: 'var(--t1)', background: 'var(--inset)', border: '1px solid var(--inset-border)' }}>
-        <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#15C26A', boxShadow: '0 0 8px #46E08C' }} />{venue.name}<Icon name="chevron" size={13} style={{ color: 'var(--t4)', transform: 'rotate(90deg)' }} />
-      </button>
-      {open && (
-        <div style={{ position: 'absolute', top: 'calc(100% + 6px)', right: 0, zIndex: 30, minWidth: 210, background: 'var(--bg1)', border: '1px solid var(--glass-border)', borderRadius: 12, boxShadow: 'var(--sh2)', overflow: 'hidden' }}>
-          {opts.map(v => (
-            <button key={v.id} onClick={() => { setVenueId(v.id); setOpen(false); }} style={{ display: 'flex', alignItems: 'center', gap: 9, width: '100%', padding: '10px 13px', cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left', border: 'none', background: venueId === v.id ? 'var(--acc-d)' : 'transparent', color: venueId === v.id ? 'var(--acc)' : 'var(--t1)' }}>
-              <span style={{ flex: 1, fontSize: 13, fontWeight: 600 }}>{v.name}</span><span style={{ fontSize: 11, color: 'var(--t4)', textTransform: 'capitalize' }}>{v.type}</span>
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
 const th = { padding: '11px 10px', textAlign: 'left', fontFamily: 'var(--font-mono)', fontSize: 9.5, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--t3)', borderBottom: '1px solid var(--glass-border)' };
 const td = { padding: '10px 10px', borderBottom: '1px solid var(--bdr)', verticalAlign: 'middle', fontSize: 13 };
 function EmptyState({ icon = 'sparkle', title, body, cta, onCta }) {
@@ -198,7 +177,7 @@ function WfStaff({ staff, onAdd, onSetPos, onRemove }) {
 const inputStyle = { width: '100%', background: 'var(--bg3)', border: '1.5px solid var(--bdr2)', borderRadius: 10, padding: '10px 12px', height: 42, fontSize: 13, color: 'var(--t1)', fontFamily: 'inherit', outline: 'none' };
 const labelStyle = { display: 'block', fontFamily: 'var(--font-mono)', fontSize: 9.5, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--t3)', marginBottom: 6 };
 
-function AddStaffModal({ venue, onClose, onSave }) {
+function AddStaffModal({ locName, onClose, onSave }) {
   const [f, setF] = useState({ name: '', role: 'server', contractType: 'partTime', mobile: '', email: '', dob: '', startDate: '' });
   const set = (k, v) => setF(p => ({ ...p, [k]: v }));
   const valid = f.name.trim().length > 1;
@@ -206,7 +185,7 @@ function AddStaffModal({ venue, onClose, onSave }) {
     <div className="modal-back" onClick={e => e.target === e.currentTarget && onClose()}>
       <div className="modal-box" style={{ maxWidth: 480 }}>
         <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 4 }}>Add staff member</div>
-        <div style={{ fontSize: 13, color: 'var(--t3)', marginBottom: 16 }}>HR record for {venue.name}. Set them as a POS user afterwards to grant till access.</div>
+        <div style={{ fontSize: 13, color: 'var(--t3)', marginBottom: 16 }}>HR record for {locName}. Set them as a POS user afterwards to grant till access.</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
           <div style={{ gridColumn: '1 / -1' }}><label style={labelStyle}>Full name</label><input style={inputStyle} value={f.name} onChange={e => set('name', e.target.value)} placeholder="e.g. Jordan Lee" autoFocus /></div>
           <div><label style={labelStyle}>Role</label><select style={inputStyle} value={f.role} onChange={e => set('role', e.target.value)}>{Object.entries(ROLES).map(([k, r]) => <option key={k} value={k}>{r.lbl}</option>)}</select></div>

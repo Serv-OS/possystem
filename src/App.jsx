@@ -80,6 +80,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.374', date: '9 Jun 2026', label: 'Workforce — per-location (venue switcher removed); hardened wf_* schema live',
+    changes: [
+      'Removed the Workforce venue switcher. Workforce now follows the location selected in the Back Office (bottom-left), so every screen — rota, staff, timesheets, pay, tronc, compliance — is scoped to the one location you’re in. Multi-site rollups will live in Reports.',
+      'Applied the production workforce database schema (18 wf_* tables) to the Ops DB with real tenant RLS (no “allow all”): payroll + employee PII are fenced by location/org and invisible to anonymous kiosk/online sessions. Money is typed + currency-stamped; pay rate/contracted-week snapshotted for reproducible historical pay; holiday accrual (12.07%) and audit are append-only; tronc payouts reconcile to the penny; finalized tronc runs are immutable; staff are soft-deleted so pay/compliance history is never destroyed.',
+    ],
+  },
+  {
     version: '5.5.373', date: '6 Jun 2026', label: 'Workforce — demo data removed; real Staff add + “Set as POS user” → Team',
     changes: [
       'Removed the placeholder roster / timesheets / tronc / compliance so the module can be built and tested for real. Workforce → Staff is now a real add/edit list (persisted); rota, timesheets, tronc and compliance show clean empty states until populated. Roles, sections and venues remain editable config defaults.',
