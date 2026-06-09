@@ -70,6 +70,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
   const [editing, setEditing] = useState(null);    // { staff, day, shift }
   const [saving, setSaving] = useState(false);
   const [publishing, setPublishing] = useState(false);
+  const [aiBusy, setAiBusy] = useState(false);     // AI rota generation in progress
   const [view, setView] = useState('staff');       // 'staff' | 'section'
 
   const targetPct = settings?.labourTargetPct ?? 0.3;
@@ -203,6 +204,67 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
     } finally { setPublishing(false); }
   }
 
+  // ── AI rota builder: availability + forecast + target % → draft shifts ──────
+  async function buildWithAI() {
+    if (!staff.length) return;
+    setAiBusy(true);
+    try {
+      const availability = await wf.loadAvailability(ctx.locationId).catch(() => []);
+      const avByStaff = {};
+      (availability || []).forEach(a => { avByStaff[a.staffId] = (avByStaff[a.staffId] || []).concat(a.perDay || []); });
+      const staffInfo = staff.map(s => {
+        const role = roles.map[s.role] || {};
+        const { rate } = resolveRate(s, role);
+        return {
+          staffId: s.id, name: s.name, position: role.lbl || s.role, section: GRP_SECTION[role.grp] || role.grp || 'Floor',
+          rate: Math.round((rate || 0) * 100) / 100, maxWeeklyHours: s.weeklyHoursTarget || s.contractedWeek || null,
+          availability: avByStaff[s.id] && avByStaff[s.id].length ? avByStaff[s.id] : 'flexible',
+        };
+      });
+      const sectionReq = (sections || []).map(sec => ({ section: sec.name, minCoverage: sec.minCoverage }));
+      const days = wk.days.map(d => ({ date: d.iso, day: d.label, forecastSales: Math.round(forecast[d.iso] || 0) }));
+      const targetPctNum = Math.round((settings?.labourTargetPct ?? 0.28) * 100);
+      const userMsg =
+        `Build a one-week rota.\n` +
+        `Week: ${weekRangeLabel(wk)} (use these exact dates).\n` +
+        `Days + sales forecast (£): ${JSON.stringify(days)}\n` +
+        `Staff (use staffId verbatim): ${JSON.stringify(staffInfo)}\n` +
+        `Section minimum coverage: ${JSON.stringify(sectionReq)}\n` +
+        `Target labour cost: ${targetPctNum}% of each day's forecast sales.\n` +
+        `Return ONLY the JSON array of shifts.`;
+      const resp = await wf.callAI([{ role: 'user', content: userMsg }], 'rota');
+      const text = (resp?.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n');
+      const m = text.match(/\[[\s\S]*\]/);
+      if (!m) throw new Error('the AI did not return a usable rota — try again');
+      let proposed;
+      try { proposed = JSON.parse(m[0]); } catch { throw new Error('could not read the AI rota — try again'); }
+      if (!Array.isArray(proposed) || !proposed.length) throw new Error('the AI returned no shifts');
+
+      const valid = new Set(staff.map(s => s.id));
+      const weekDates = new Set(wk.days.map(d => d.iso));
+      let added = 0;
+      for (const p of proposed) {
+        if (!valid.has(p.staffId) || !weekDates.has(p.date) || !p.start || !p.finish) continue;
+        const s = staff.find(x => x.id === p.staffId);
+        const role = roles.map[s.role];
+        const { rate, source } = resolveRate(s, role);
+        const breakMins = Number(p.breakMins) || 0;
+        const hours = Math.max(0, hoursOf(p.start, p.finish) - breakMins / 60);
+        const shift = {
+          staffId: s.id, roleKey: s.role, date: p.date, start: p.start, finish: p.finish, breakMins,
+          section: p.section || (GRP_SECTION[role?.grp] || null), status: 'draft',
+          effectiveRate: rate, rateSource: source,
+          computedHours: Math.round(hours * 100) / 100, computedCost: Math.round(hours * rate * 100) / 100,
+        };
+        try { const saved = await wf.saveShift(shift, ctx.locationId, ctx.orgId); setShifts(prev => [...prev.filter(x => x.id !== saved.id), saved]); added++; } catch { /* skip bad row */ }
+      }
+      await reload(wk);
+      showToast(added ? `AI added ${added} draft shift${added === 1 ? '' : 's'} — review, tweak, then publish` : 'AI produced no valid shifts — try adding availability/forecast', added ? 'success' : 'info');
+    } catch (e) {
+      showToast('AI rota: ' + (e.message || 'failed'), 'error');
+    } finally { setAiBusy(false); }
+  }
+
   // ── empty / loading ───────────────────────────────────────────────────────
   if (staff.length === 0) {
     return <EmptyState icon="team" title="Add your team first" body="The rota is built from your staff. Once you have people on the books, you'll be able to drop shifts onto a weekly grid, forecast sales, and watch your labour % live." />;
@@ -226,6 +288,9 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
             <button key={k} className={view === k ? 'btn btn-acc btn-xs' : 'btn btn-ghost btn-xs'} style={{ borderRadius: 999 }} onClick={() => setView(k)}>{lbl}</button>
           ))}
         </div>
+        <button className="btn btn-ghost btn-sm" disabled={aiBusy || publishing} onClick={buildWithAI} title="Generate a draft rota from availability, forecast and your target labour %">
+          <Icon name="sparkle" size={14} /> {aiBusy ? 'Building…' : 'Build with AI'}
+        </button>
         <button className="btn btn-acc btn-sm" disabled={publishing || !draftIds.length} onClick={publish}>
           {publishing ? 'Publishing…' : <>Publish rota <Icon name="arrow" size={13} /></>}
           {!!draftIds.length && <Badge tone="amber">{draftIds.length}</Badge>}

@@ -81,6 +81,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.381', date: '9 Jun 2026', label: 'Workforce — AI rota builder',
+    changes: [
+      'Rota → "Build with AI": Claude proposes a full week of shifts from your staff, their availability, section coverage minimums, the week\'s sales forecast and your target labour % (set in Workforce → Settings). Shifts drop in as DRAFT with pay-rate snapshots — review, tweak, then publish (which texts staff). New no-tools "rota" mode added to the AI proxy.',
+    ],
+  },
+  {
     version: '5.5.380', date: '9 Jun 2026', label: 'Workforce — document uploads, staff profiles, working rota SMS',
     changes: [
       'Compliance: real document upload (Right to Work, licences, training) to a PRIVATE store — no more pasting a URL. Files open via short-lived signed links and are fenced per location.',

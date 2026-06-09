@@ -309,6 +309,18 @@ Always use £ for currency. Format data tables clearly when comparing multiple v
 
 NEVER: delete anything, make bulk changes, modify floor plans or printer configs, access staff PINs`;
 
+const SYSTEM_ROTA = `You are an expert hospitality workforce scheduler. Given staff (with availability + pay rates), section coverage minimums, the week's sales forecast and a target labour-cost %, produce a one-week staff rota.
+
+RULES:
+- Only schedule a person on days/times they are available. If a person has no availability listed, treat them as flexible.
+- Meet each section's minimum coverage during likely trading hours; weight more staff onto higher-forecast days.
+- Keep each day's wage cost close to but not over the target % of that day's forecast sales (wage = hours × that person's rate). If forecast for a day is 0/unknown, schedule only minimum coverage.
+- Typical shifts 4–10h; include a 30-minute unpaid break when a shift exceeds 6h.
+- Spread hours fairly and respect any max weekly hours.
+
+Return ONLY a JSON array — no prose, no explanation, no markdown code fences:
+[{"staffId":"<id>","date":"YYYY-MM-DD","start":"HH:MM","finish":"HH:MM","breakMins":30,"section":"<name>"}]`;
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
@@ -318,9 +330,11 @@ export default async function handler(req, res) {
   const { messages, mode = 'foh' } = req.body;
   if (!messages || !Array.isArray(messages)) return res.status(400).json({ error: 'Invalid request' });
 
+  const isRota = mode === 'rota';
   const allowedTools = mode === 'boh' ? ALLOWED_TOOLS_BOH : ALLOWED_TOOLS_FOH;
-  const tools = allowedTools.map(name => TOOL_DEFINITIONS[name]).filter(Boolean);
-  const systemPrompt = mode === 'boh' ? SYSTEM_BOH : SYSTEM_FOH;
+  const tools = isRota ? [] : allowedTools.map(name => TOOL_DEFINITIONS[name]).filter(Boolean);
+  const systemPrompt = isRota ? SYSTEM_ROTA : (mode === 'boh' ? SYSTEM_BOH : SYSTEM_FOH);
+  const maxTokens = isRota ? 4000 : 1500;
 
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -332,9 +346,9 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
-        max_tokens: 1500,
+        max_tokens: maxTokens,
         system: systemPrompt,
-        tools,
+        ...(tools.length ? { tools } : {}),
         messages,
       }),
     });

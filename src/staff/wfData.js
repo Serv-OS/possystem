@@ -105,6 +105,18 @@ export async function sendStaffSms(to, message, locationId, type = 'rota_notific
   return { ok: true, ...j };
 }
 
+/** Call the Claude proxy (/api/ai). Returns the Anthropic Messages response. */
+export async function callAI(messages, mode = 'boh') {
+  if (isMock) throw new Error('AI is only available on the live system');
+  const res = await fetch('/api/ai', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ messages, mode }),
+  });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(j.error || 'AI request failed');
+  return j;
+}
+
 // ============================================================================
 // STAFF (wf_staff — org-scoped PII; Workforce shows the current location's staff)
 // ============================================================================
