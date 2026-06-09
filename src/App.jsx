@@ -82,6 +82,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.383', date: '9 Jun 2026', label: 'Internal: handoff docs refreshed (onboarding, documents, AI rota, SMS/email)',
+    changes: [
+      'No app changes — refreshed CURRENT_WORK / CLAUDE so the shared handoff covers the latest Workforce depth (onboarding pipeline + e-sign, private document upload, staff profiles, rota SMS, AI rota builder) and confirms SMS (Twilio) + email (Resend) are configured.',
+    ],
+  },
+  {
     version: '5.5.382', date: '9 Jun 2026', label: 'Workforce — full new-starter onboarding (offer → RTW → contract e-sign → bank)',
     changes: [
       'Onboarding is now a real per-person pipeline: email the offer letter, upload the Right to Work document, upload + send the contract for signing, capture bank details, set up POS access and book the first shift — with a live progress bar.',

@@ -1,6 +1,6 @@
 # Serv OS / RPOS — session handoff
 
-> **Current build: v5.5.379** · live: https://possystem-liard.vercel.app · repo: **Serv-OS/possystem** (branch `develop`, Vercel auto-deploys).
+> **Current build: v5.5.383** · live: https://possystem-liard.vercel.app · repo: **Serv-OS/possystem** (branch `develop`, Vercel auto-deploys).
 > Multi-tenant hospitality POS (React 19 + Vite, Zustand, Supabase; no TypeScript, no tests). First customer is UK / GBP.
 > **Pillars:** don't break working functionality · resolve the real `locationId` before any DB write (never `loc-demo`) · CSS vars not hardcoded colours · bump `src/lib/version.js` + add a `CHANGELOG` entry in `src/App.jsx` on every web deploy · money is `numeric`, never float.
 
@@ -27,6 +27,14 @@ Dedicated `?mode=clock` tablet for staff to clock in/out + take breaks via PIN. 
 
 ### 4. Tronc ↔ Tips report tie
 Workforce → Tronc now **pulls the real weekly pool from the POS** (card tips + service charge from `closed_checks`, same data the Tips report uses) instead of a manual figure; the Tips report cross-references the audited Workforce payout.
+
+### 5. Workforce depth (latest) — onboarding, documents, profiles, SMS, AI rota
+- **Onboarding** is a real per-starter pipeline: offer letter (email), Right-to-Work upload, **contract upload + lightweight in-app e-sign**, bank details (masked), POS access, first shift. Candidate signs via a public `/sign/<token>` page backed by the **`workforce-onboarding`** edge function.
+- **Compliance** now does **real file upload** to a **private `wf-documents` bucket** (per-location Storage RLS; served via short-lived signed URLs) instead of pasting a URL.
+- **Staff profile** — click a staff member for a detail modal (pay/override, contact, documents, holiday accrued, onboarding, recent timesheets).
+- **Rota notifications** — publishing now **texts each affected person** their shifts via `send-sms` (Twilio configured).
+- **AI rota builder** — Rota → "Build with AI" drafts a week from availability + section coverage + forecast + target labour % via `/api/ai` (new no-tools `rota` mode); drops in as draft to review/publish.
+- Bank details are **masked-only** (sort code + last 4); full BACS details go to payroll, never stored. SMS (Twilio) + email (Resend, via `send-receipt`) are both configured on the Ops project.
 
 ### (earlier in this block) Bar-tab card holds, multi-currency (`lib/currency.js`, `locations.currency`), MPOS hardening (86 on modifiers, tax breakdown, customer search), customer-display loyalty + theme.
 
@@ -62,7 +70,7 @@ Punches are written **server-side** by `supabase/functions/workforce-clock` (DEP
 
 ## Surfaces / modes
 
-`?mode=` → `pos` · `mpos` · `bar` · `tables` · `kds` · `kiosk` · `orders` · `customer-display` · **`clock`** · `office` (Back Office) · `admin` (internal Company Admin). Customer web: `/online/:slug`, `/customer/*`, `/gift/*`, `/qr/*`. Mode is chosen in `ModeSelector` and saved to `rpos-device-mode`.
+`?mode=` → `pos` · `mpos` · `bar` · `tables` · `kds` · `kiosk` · `orders` · `customer-display` · **`clock`** · `office` (Back Office) · `admin` (internal Company Admin). Customer web: `/online/:slug`, `/customer/*`, `/gift/*`, `/qr/*`, **`/sign/<token>`** (Workforce contract e-sign). Mode is chosen in `ModeSelector` and saved to `rpos-device-mode`.
 
 ---
 
@@ -73,7 +81,7 @@ Punches are written **server-side** by `supabase/functions/workforce-clock` (DEP
 | Holds | POS operational data + **all edge functions** | orgs, users, loyalty, gift cards |
 | Client | `supabase` (lib/supabase.js) | `platformSupabase` |
 
-**Ops tables:** `menu_items/categories/menus`, `modifier_groups`, `active_sessions`, `closed_checks`, `floor_tables`, `config_pushes`, `stock_levels`, `eighty_six`, `locations`, `device_profiles`, `pos_devices`, `staff_members`, `user_profiles`, `user_locations`, `order_queue`, `tax_rates`, `discount_definitions`, + the 18 **`wf_*`** Workforce tables. **Edge functions** (Deno): 44 gift/loyalty/stripe/send-* + **`workforce-compute`** + **`workforce-clock`**.
+**Ops tables:** `menu_items/categories/menus`, `modifier_groups`, `active_sessions`, `closed_checks`, `floor_tables`, `config_pushes`, `stock_levels`, `eighty_six`, `locations`, `device_profiles`, `pos_devices`, `staff_members`, `user_profiles`, `user_locations`, `order_queue`, `tax_rates`, `discount_definitions`, + the 18 **`wf_*`** Workforce tables. **Edge functions** (Deno): 44 gift/loyalty/stripe/send-* + **`workforce-compute`** (pay/tronc/accrual) + **`workforce-clock`** (time clock) + **`workforce-onboarding`** (contract e-sign). **Storage:** private **`wf-documents`** bucket (RTW/contracts; per-location RLS, signed URLs). SMS (Twilio) + email (Resend via `send-receipt`) configured.
 
 ---
 
@@ -93,7 +101,7 @@ Every deploy: bump `src/lib/version.js` + add a top-of-array `CHANGELOG` entry i
 1. **Workforce → Dashboard** still shows the legacy summary tiles (staff count is real; wage/labour read zero until shifts + a sales forecast exist) — wire it to the live rota/sales next.
 2. **"Who's on shift now"** live view (Workforce or POS) + an optional clock-in shortcut on the POS PIN screen as a secondary entry point.
 3. **UK vs US tip distribution** — the Tips *report* calculator is the US model (tip-out/shared-by-role); Workforce → Tronc is the UK Tipping Act model (hours × points). Consider offering the UK method inside the report for UK venues.
-4. Staff/manager **comms** (publish-rota SMS, swap approvals) are scaffolded — wire to the `send-sms` edge function.
+4. Swap-request approvals + announcements SMS still to wire (publish-rota SMS is live; `send-sms`/`send-receipt` both configured).
 5. Android self-update pipeline → production-real signing/CI (see `android/AUTO_UPDATE_PLAN.md`); Menu Board surface.
 
 ## Ops / secrets note

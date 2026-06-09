@@ -10,7 +10,7 @@
 **RPOS** — Restaurant OS. A multi-tenant, multi-device SaaS POS system for hospitality.
 Live at: https://possystem-liard.vercel.app
 GitHub: Serv-OS/possystem
-Current version: see `src/lib/version.js` (currently v5.5.379)
+Current version: see `src/lib/version.js` (currently v5.5.383)
 Codebase: ~97,000 lines across 246 source files
 
 **Product surfaces:**
