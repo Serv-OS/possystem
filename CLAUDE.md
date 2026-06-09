@@ -10,7 +10,7 @@
 **RPOS** — Restaurant OS. A multi-tenant, multi-device SaaS POS system for hospitality.
 Live at: https://possystem-liard.vercel.app
 GitHub: Serv-OS/possystem
-Current version: see `src/lib/version.js` (currently v5.5.290)
+Current version: see `src/lib/version.js` (currently v5.5.379)
 Codebase: ~97,000 lines across 246 source files
 
 **Product surfaces:**
@@ -24,6 +24,7 @@ Codebase: ~97,000 lines across 246 source files
 | Tables | `?mode=tables` | Floor plan — table management, seat tracking, course firing |
 | Kiosk | `?mode=kiosk` | Self-service ordering kiosk with Stripe Terminal card reader |
 | MPOS | `?mode=mpos` | Mobile POS for tableside ordering (phone/tablet) |
+| Time Clock | `?mode=clock` | Dedicated staff clock in/out + breaks tablet (PIN → server-side timesheets) |
 | Orders Hub | `?mode=orders` | Live order queue for collection/delivery |
 | Online Ordering | `/online/:slug` | Customer-facing web ordering (pickup/delivery) |
 | Customer Portal | `/customer/*` | Loyalty portal — points, rewards, stamp cards |
@@ -184,6 +185,8 @@ supabase/
     send-welcome       — New loyalty member welcome message
     wallet-pass        — Apple/Google Wallet pass generation
     create-user        — Platform user provisioning
+    workforce-compute  — Server-side pay/tronc/holiday-accrual/labour (service-role; tenant-fenced; tamper-evident audit)
+    workforce-clock    — Time Clock punches: PIN→staff_members→wf_timesheets (server-side; breaks; rate snapshot)
 ```
 
 ---
@@ -202,7 +205,9 @@ supabase/
 
 **Key Platform DB tables:** `gift_cards`, `gift_card_transactions`, `gift_brand_config`, `loyalty_members`, `loyalty_points_log`, `loyalty_rewards`, `loyalty_stamp_cards`, `user_company_roles`, `companies`
 
-**Key Ops DB tables:** `menu_items`, `menu_categories`, `menus`, `modifier_groups`, `active_sessions`, `closed_checks`, `floor_tables`, `config_pushes`, `stock_levels`, `eighty_six`, `locations`, `device_profiles`, `pos_devices`, `order_queue`, `staff_members`, `discount_definitions`, `tax_rates`
+**Key Ops DB tables:** `menu_items`, `menu_categories`, `menus`, `modifier_groups`, `active_sessions`, `closed_checks`, `floor_tables`, `config_pushes`, `stock_levels`, `eighty_six`, `locations`, `device_profiles`, `pos_devices`, `order_queue`, `staff_members`, `user_profiles`, `user_locations`, `discount_definitions`, `tax_rates`
+
+**Workforce tables (18, prefix `wf_`):** `wf_staff` (HR, org-scoped PII), `wf_roles` (positions/rate card), `wf_sections`, `wf_venue_settings`, `wf_shifts` (rota), `wf_timesheets` (clock vs scheduled), `wf_holiday_accrual` (append-only ledger), `wf_time_off`, `wf_availability`, `wf_tronc_runs` + `wf_tronc_lines`, `wf_documents` (compliance), `wf_sales_forecast`, `wf_user_roles`, `wf_audit` (append-only, hash-chained), `wf_swap_requests`, `wf_onboarding`, `wf_announcements`. Real tenant RLS via `user_accessible_locations()` / `user_accessible_orgs()`. Schema: `supabase/migrations/20260608_workforce.sql`. See Workforce in the Key Feature Systems section.
 
 ---
 
@@ -264,6 +269,17 @@ supabase/
 
 ### Reporting (20 reports)
 Sales Summary, Product Mix, Payments, Tax, Tips, Servers, Tables, Menu Engineering, DailyTrend, Daypart, Item Trend, Order Types, KDS Performance, Shifts, Cash Drawer, Z Report, Catalog, Loyalty, Exceptions, Location Compare.
+
+### Workforce / Staff Management (Back Office → Workforce)
+- **Per-location** staff-management module: Dashboard, Rota, Timesheets, Time off & availability, Staff, Onboarding, Compliance, Positions & rates, Tronc/tips, Announcements, Settings. It follows the BO location selector (no per-module venue switcher; multi-site rollups belong in Reports).
+- **Front end:** router `src/backoffice/sections/Workforce.jsx`; sections in `src/backoffice/sections/workforce/*`; data layer `src/staff/wfData.js`; shared UI `src/staff/wfUi.jsx`; week model `src/staff/wfWeek.js`; labour maths `src/staff/labour.js`.
+- **Live financials:** money is `numeric` + currency-stamped; pay rate/source snapshotted onto shifts/timesheets; FKs onto staff are `ON DELETE RESTRICT` with soft-delete (`status='leaver'`); `wf_audit` + `wf_holiday_accrual` are append-only.
+- **Server-side compute** (`workforce-compute` edge fn, service-role): `tronc.run` (largest-remainder, penny-exact), `accrual.run` (12.07% statutory), `pay.period`, `labour`. The client never computes money for the record.
+- **Flow:** add staff → "Set as POS user" (links `wf_staff.pos_user_id` ↔ `staff_members`) → build + publish rota → clock in/out → approve timesheets → pay/tronc/accrual.
+
+### Time Clock (`?mode=clock`)
+- Dedicated second-tablet surface (`src/surfaces/TimeClockSurface.jsx`): PIN pad → status → Clock in / Start break / End break / Clock out. Pairs to a location like a POS.
+- Punches write **server-side** via `workforce-clock` (validates PIN against `staff_members` for the location — PINs never reach the client; maps to `wf_staff`, auto-creating an HR record if needed; tracks breaks via `wf_timesheets.break_open_at`; snapshots rate; computes hours/pay at clock-out). Feeds Workforce → Timesheets/Pay/Tronc.
 
 ---
 

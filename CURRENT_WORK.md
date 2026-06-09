@@ -1,65 +1,100 @@
 # Serv OS / RPOS — session handoff
 
-> **Current build: v5.5.344** · live: https://possystem-liard.vercel.app · repo: **Serv-OS/possystem** (renamed from pwar2804aio).
-> First customer imminent (UK / GBP). Pillars: don't break working functionality; resolve real `locationId` before any DB write; CSS vars not hardcoded colours; bump `version.js` + CHANGELOG every web deploy.
+> **Current build: v5.5.379** · live: https://possystem-liard.vercel.app · repo: **Serv-OS/possystem** (branch `develop`, Vercel auto-deploys).
+> Multi-tenant hospitality POS (React 19 + Vite, Zustand, Supabase; no TypeScript, no tests). First customer is UK / GBP.
+> **Pillars:** don't break working functionality · resolve the real `locationId` before any DB write (never `loc-demo`) · CSS vars not hardcoded colours · bump `src/lib/version.js` + add a `CHANGELOG` entry in `src/App.jsx` on every web deploy · money is `numeric`, never float.
+
+Read alongside: **`CLAUDE.md`** (architecture/orientation), **`DECISIONS.md`** (ADRs), **`INVARIANTS.md`** (hard rules).
 
 ---
 
-## This session (v5.5.328 → v5.5.344 + infra)
+## What Serv OS is
 
-**Branding / UI**
-- 328–329 — Back-office light/dark toggle + Serv OS logo in brand spots; wordmark in Instrument Serif.
-- 330 / 333 — POS top bar: added logo + "current shift"; removed the non-working Covers/Sales/Avg stats.
-
-**Tips**
-- 331–332 — Tip prompt on split-card payments + capture split tips for reporting.
-- 334–336 — Tip pool reworked: role-aware in all modes, manager excluded by default; kiosk / online / QR tips auto-flow into the house pool.
-
-**Fixes**
-- 337 — Gift card "Card not found" on POS → `code_plain` fallback in gift-lookup.
-- 338 — Size variants now inherit the parent's per-order-type tax overrides (takeaway 0% etc.).
-- 339 — Removed "Open terminals for testing" dev panel.
-
-**Reports / MPOS / Admin / Online**
-- 340 — Overview "Today's snapshot" dashboard (sales by source / user / product, discounts).
-- 341–342 — MPOS: customer search, takeaway requires details, tax breakdown + prints on the bill, 86 on modifier options.
-- 343 — Forgot-password for back-office + admin login (both share `BOLogin` on the Ops `supabase` client).
-- 344 — Online ordering: **per-item notes** on the product screen; **86'd items blocked/greyed** in modifier groups (e.g. "Box of three"). Order note stays at checkout.
-
-**Infrastructure (no app version bump)**
-- **Email → Resend.** Supabase Auth SMTP wired to Resend; reset emails send from `noreply@serv-os.app` ("Serv OS"), branded template (logo = `receipt-assets/brand/servos-logo.png`), verified delivered. **Deliverability fixed:** added Resend DKIM + SPF + MX to **Vercel DNS** (they were lost when DNS moved to Vercel; DMARC `p=quarantine` was spam-foldering). dig-verified live.
-- **Android self-update (v1.3).** In-app updater shipped (`UpdateChecker.java` + manifest/FileProvider + MainActivity hook); Supabase public bucket `app-releases` + `latest.json`. On launch / every ~3h → checks → downloads → one-tap install. ⚠️ Not production-real until signed CI (see Next #1).
-- **GitHub renamed → Serv-OS.** Repo now `Serv-OS/possystem`; local remote repointed, refs updated, pushes verified. Auth now via **macOS keychain** (old leaked token revoked + replaced with a repo-scoped token; remote URL clean → no token in Dropbox-synced config). Vercel + Supabase logins are GitHub-OAuth, unaffected by the rename.
+A SaaS restaurant/bar POS with many device "surfaces" off one codebase (URL `?mode=…`): POS till, MPOS (mobile), Bar, Floor/Tables, KDS, Kiosk, Orders Hub, Customer Display, **Time Clock**, Back Office, and customer-facing Online/QR/Loyalty/Gift web flows. Two Supabase projects: **Ops DB** `tbetcegmszzotrwdtqhi` (all operational data, scoped by `location_id`, hosts the edge functions) and **Platform DB** `yhzjgyrkyjabvhblqxzu` (orgs, users, loyalty, gift cards). Back-office users authenticate with Supabase Auth; POS/clock/kiosk devices pair to a location and use **anonymous auth**.
 
 ---
 
-## Next stages (tomorrow)
+## Recent arc (this block of sessions)
 
-1. **Android pipeline (biggest).** Make auto-update production-real: one fixed signing key + CI auto-publish to Supabase, then multi-app flavors (Kiosk / MPOS / KDS; Menu Board needs a web surface first). Full plan in **`android/AUTO_UPDATE_PLAN.md`**. Also: get v1.3 (the updater build) onto the tills via one manual install.
-2. **Email polish (optional).** Confirm reset mail now inboxes (give DNS a few hours + mark older ones "Not spam"); consider a Supabase **custom auth domain** `auth.serv-os.app` so the reset *link* matches the sender; brand the invite / confirmation / magic-link templates too.
-3. **Menu Board.** Build the `?mode=menuboard` web surface (digital menu display) — prerequisite for packaging that Android app.
-4. **Account housekeeping.** Finish the GitHub email/password change if not done (Vercel/Supabase ride on GitHub SSO — nothing to change there); glance at Vercel to confirm a deploy fired after the rename.
-5. **Deferred backlog** (memory `project_post_launch_tasks.md`): consolidate `resolveCompanyForLocation` (2 copies), code-split bundles, commit `send-sms` source to git, multi-currency tail (cash denominations), bar-tab pre-auth refinements, Apple Pay / wallets on online.
-6. **Live/hardware verification:** bar-tab pre-auth on a real Stripe reader (hold → capture → refund), a USD location end-to-end, voids/refunds on the Sunmi.
+### 1. ServOS visual reskin (POS + Back Office)
+"Liquid glass" design system applied across POS + Back Office, **zero behaviour change** — scoped via `data-skin="servos"` on `<html>`, light/dark via `[data-theme]` (persisted to `rpos-theme`). Customer-facing online/QR/kiosk UIs deliberately untouched. Back-office sidebar reorganised into a 10-section collapsible IA (`NAV_IA` in `BackOfficeApp.jsx`). Shared tokens/classes in `src/styles/globals.css`; brand in `ServOSBrand.jsx`; line-icon set in `ServOSIcons.jsx`.
 
----
+### 2. Workforce module (NEW — the big one)
+A complete staff-management system inside Back Office (sidebar group **Workforce**), per-location, wired to live financials. Sections: **Dashboard · Rota · Timesheets · Time off & availability · Staff · Onboarding · Compliance · Positions & rates · Tronc/tips · Announcements · Workforce settings.** See the dedicated section below.
 
-## Key architecture / infra notes
-- **Two Supabase projects:** Ops `tbetcegmszzotrwdtqhi` (POS data, edge fns, back-office + admin auth) + Platform `yhzjgyrkyjabvhblqxzu` (companies / users / gift / loyalty).
-- **Edge deploy:** `SUPABASE_ACCESS_TOKEN=… npx --yes supabase functions deploy <fn> --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt` (PAT was at `/tmp/sbenv` this session — not persistent across sessions).
-- **Frontend deploy:** `git push origin develop` → Vercel auto-deploys. Bump `src/lib/version.js` + top-of-CHANGELOG in `src/App.jsx` every web deploy.
-- **GitHub:** `Serv-OS/possystem`; pushes authenticate via macOS keychain (osxkeychain), repo-scoped token.
-- **Currency:** per-location `locations.currency` on BOTH projects; never hardcode `£`/`'gbp'` — use `lib/currency.js` (`money()`, `currencySymbol()`, `stripeCurrency()`). Active currency cached in `localStorage['rpos-active-currency']`.
-- **Email:** Resend SMTP on Ops Auth (from `noreply@serv-os.app`); `serv-os.app` verified in Resend; DKIM/SPF/MX live in Vercel DNS; DMARC `p=quarantine` (passes via DKIM).
-- **Android:** `co.posup.rpos` WebView wrapper; self-updates via `app-releases` bucket; build = GitHub Actions `.github/workflows/build-apk.yml` (currently **debug → artifact**). See `android/RELEASING.md` + `android/AUTO_UPDATE_PLAN.md`.
-- **Closed-check `payment_intents` jsonb** = source of truth for auto-refundable card legs.
+### 3. Time Clock surface (NEW)
+Dedicated `?mode=clock` tablet for staff to clock in/out + take breaks via PIN. Punches write timesheets server-side and feed the Workforce timesheets → pay → tronc/accrual chain. See below.
 
-### Multi-currency known limits
-- Cash-drawer denomination labels stay GBP (country-specific note/coin sets, not just symbols).
-- Platform billing tiers stay GBP (platform charges venues in GBP).
-- Currency is per-location (confirmed), not org-level.
+### 4. Tronc ↔ Tips report tie
+Workforce → Tronc now **pulls the real weekly pool from the POS** (card tips + service charge from `closed_checks`, same data the Tips report uses) instead of a manual figure; the Tips report cross-references the audited Workforce payout.
+
+### (earlier in this block) Bar-tab card holds, multi-currency (`lib/currency.js`, `locations.currency`), MPOS hardening (86 on modifiers, tax breakdown, customer search), customer-display loyalty + theme.
 
 ---
 
-## Prior session (context)
-v5.5.290 → 327: launch-readiness audit (auth/sign-out, cross-DB provisioning, company-resolution fail-closed, loyalty, atomic gift redeem, VAT receipts, stock/KDS/tables) + backlog (split/bar-tab card refunds, bar-tab pre-auth holds, OTP lockout, multi-currency GBP/USD/EUR). See git history / CHANGELOG for detail.
+## Workforce module — how it works (for whoever picks this up)
+
+**Front end** — `src/backoffice/sections/Workforce.jsx` is the router; the staff list + add/edit modals live there. Each section is its own component in `src/backoffice/sections/workforce/` (`WfRota`, `WfTimesheets`, `WfTronc`, `WfPay`, `WfLeave`, `WfOnboarding`, `WfCompliance`, `WfAnnouncements`, `WfSettings`). Shared building blocks:
+- `src/staff/wfData.js` — **the data-access layer**. Location/org-scoped CRUD for every `wf_*` table + `loadActualSales` / `loadTipPool` (from `closed_checks`) + `invokeCompute` (calls the edge function). Maps snake_case ↔ camelCase. Has a `localStorage` fallback when `isMock` so it's testable without a backend.
+- `src/staff/wfUi.jsx` — shared ServOS UI primitives (Card, Badge, EmptyState, table styles, colours).
+- `src/staff/wfWeek.js` — current-week (Mon–Sun) date model for the rota.
+- `src/staff/labour.js` — labour engine: `resolveRate` (override → role base → salaried equiv, with provenance), `hoursOf`, `labourPct`, `troncRun` (largest-remainder, penny-exact), `accrueHolidayHours` (12.07%).
+
+**Database** — `supabase/migrations/20260608_workforce.sql` (APPLIED to Ops DB). 18 `wf_*` tables (`wf_staff`, `wf_roles`, `wf_sections`, `wf_venue_settings`, `wf_shifts`, `wf_timesheets`, `wf_holiday_accrual`, `wf_time_off`, `wf_availability`, `wf_tronc_runs`, `wf_tronc_lines`, `wf_documents`, `wf_sales_forecast`, `wf_user_roles`, `wf_audit`, `wf_swap_requests`, `wf_onboarding`, `wf_announcements`). Key properties:
+- **Real tenant RLS** (NOT "allow all"): location-scoped via `user_accessible_locations()`, PII (`wf_staff`) org-scoped via `user_accessible_orgs()` — anonymous kiosk/clock sessions get an empty fence and cannot read payroll/PII. Helpers are defined in this migration (self-sufficient) + super-admin bypass.
+- Money is `numeric` + currency-stamped; pay **rate/source snapshotted** onto shifts/timesheets so historical pay is reproducible.
+- `wf_audit` + `wf_holiday_accrual` are **append-only** (UPDATE/DELETE/TRUNCATE revoked from client roles; audit has a prev_hash/row_hash chain).
+- FKs onto staff are `ON DELETE RESTRICT` + staff are **soft-deleted** (`status='leaver'`) — pay/compliance history is never destroyed. Composite `(…,org_id)` FKs prevent cross-tenant linking. Finalised tronc runs are immutable (trigger).
+
+**Server-side compute** — `supabase/functions/workforce-compute` (DEPLOYED). Pay-critical maths never runs on the client. Actions: `tronc.run` (largest-remainder split of the pool by published-shift hours × role points, writes `wf_tronc_runs`+`wf_tronc_lines`+audit), `accrual.run` (12.07% of approved hours → `wf_holiday_accrual`), `pay.period` (per-staff pay from approved timesheets), `labour` (daily sales). Runs as service-role; enforces the tenant fence itself by checking the caller's location access.
+
+**The flow:** add staff → "Set as POS user" (creates a till login in `staff_members`, links `wf_staff.pos_user_id`) → build & **publish** the rota → staff clock in/out on the Time Clock → approve timesheets → Pay + Tronc + holiday accrual compute from the approved hours.
+
+---
+
+## Time Clock surface — how it works
+
+`src/surfaces/TimeClockSurface.jsx`, routed by `deviceMode === 'clock'` in `App.jsx` (after the device-pairing check; pairs like a POS). Selectable in `ModeSelector.jsx`. Full-screen PIN pad → status (clocked out / on shift since / on break) → **Clock in / Start break / End break / Clock out** with a confirmation, then auto-returns to the pad.
+
+Punches are written **server-side** by `supabase/functions/workforce-clock` (DEPLOYED): it validates the entered PIN against `staff_members` for the device's location (PINs never reach the client — more secure than the POS PIN pad), maps to `wf_staff` (auto-creating a minimal HR record if the POS user has none), snapshots the pay rate at clock-in, tracks the in-progress break via `wf_timesheets.break_open_at`, and computes `actual_hours`/`variance`/`pay_amount` at clock-out. These timesheets are exactly what Workforce → Timesheets/Pay/Tronc consume.
+
+---
+
+## Surfaces / modes
+
+`?mode=` → `pos` · `mpos` · `bar` · `tables` · `kds` · `kiosk` · `orders` · `customer-display` · **`clock`** · `office` (Back Office) · `admin` (internal Company Admin). Customer web: `/online/:slug`, `/customer/*`, `/gift/*`, `/qr/*`. Mode is chosen in `ModeSelector` and saved to `rpos-device-mode`.
+
+---
+
+## Two Supabase projects + key tables
+
+| | Ops DB `tbetcegmszzotrwdtqhi` | Platform DB `yhzjgyrkyjabvhblqxzu` |
+|---|---|---|
+| Holds | POS operational data + **all edge functions** | orgs, users, loyalty, gift cards |
+| Client | `supabase` (lib/supabase.js) | `platformSupabase` |
+
+**Ops tables:** `menu_items/categories/menus`, `modifier_groups`, `active_sessions`, `closed_checks`, `floor_tables`, `config_pushes`, `stock_levels`, `eighty_six`, `locations`, `device_profiles`, `pos_devices`, `staff_members`, `user_profiles`, `user_locations`, `order_queue`, `tax_rates`, `discount_definitions`, + the 18 **`wf_*`** Workforce tables. **Edge functions** (Deno): 44 gift/loyalty/stripe/send-* + **`workforce-compute`** + **`workforce-clock`**.
+
+---
+
+## Build / deploy
+
+```bash
+npm run dev        # mock mode locally (isMock; no Supabase)
+npm run build      # MUST be clean before pushing
+git add … && git commit && git push origin develop   # Vercel auto-deploys
+```
+Every deploy: bump `src/lib/version.js` + add a top-of-array `CHANGELOG` entry in `src/App.jsx`. Edge functions deploy via the Supabase CLI (`SUPABASE_ACCESS_TOKEN=<PAT> npx supabase functions deploy <name> --project-ref tbetcegmszzotrwdtqhi`) — native bundler, no Docker needed. DB migrations are applied via the Supabase Management API (`POST /v1/projects/<ref>/database/query`) or the dashboard SQL editor.
+
+---
+
+## Open items / next
+
+1. **Workforce → Dashboard** still shows the legacy summary tiles (staff count is real; wage/labour read zero until shifts + a sales forecast exist) — wire it to the live rota/sales next.
+2. **"Who's on shift now"** live view (Workforce or POS) + an optional clock-in shortcut on the POS PIN screen as a secondary entry point.
+3. **UK vs US tip distribution** — the Tips *report* calculator is the US model (tip-out/shared-by-role); Workforce → Tronc is the UK Tipping Act model (hours × points). Consider offering the UK method inside the report for UK venues.
+4. Staff/manager **comms** (publish-rota SMS, swap approvals) are scaffolded — wire to the `send-sms` edge function.
+5. Android self-update pipeline → production-real signing/CI (see `android/AUTO_UPDATE_PLAN.md`); Menu Board surface.
+
+## Ops / secrets note
+A Supabase **Personal Access Token** was used this session to apply the Workforce migration + deploy the two edge functions. All of that is done — **revoke the PAT** in the Supabase dashboard unless more DB/function deploys are imminent. Never commit it. Vercel env holds the real `VITE_SUPABASE_*` keys; `.env.local` is placeholders (mock).

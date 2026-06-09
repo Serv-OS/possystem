@@ -177,3 +177,16 @@ Short ADR entries for non-obvious choices in the codebase.
 - Currency lives on BOTH `locations.currency` columns: **Ops = creation seed**, **Platform = authoritative** for the running app. `provision-location` copies Ops→Platform on INSERT only (never on re-provision, so it can't clobber a Location Settings edit). The app reads the Platform value (`locationTime.getLocationConfig` for POS/kiosk, `CustomerBoot`/`lookupLocationBySlug` for online/QR/gift/portal) and caches it in `localStorage['rpos-active-currency']` for synchronous `money()` resolution.
 
 **Consequences:** Adding a currency means updating only `CURRENCIES` (+ allowing it in `stripe-create-payment-intent`). Known limits left for later: cash-drawer denomination *sets* and platform billing tiers stay GBP. `money()` reads localStorage per call (cheap); a brand-new non-GBP device may flash GBP once before the value persists.
+
+---
+
+## ADR-018: Workforce Module — Real RLS + Server-Side Pay Compute
+
+**Context:** Workforce (rota/timesheets/tronc/pay/holiday) touches live financials. The app's existing pattern often used permissive "allow all" RLS with an app-layer fence, and computed money client-side. Neither is acceptable for payroll, especially because POS/kiosk/clock devices authenticate **anonymously** (a real `authenticated` Postgres role with no `user_locations` rows).
+
+**Decision:**
+- **Real tenant RLS on every `wf_*` table** using the project's `user_accessible_locations()` (location-scoped) and `user_accessible_orgs()` (PII, `wf_staff`) helpers — defined in `supabase/migrations/20260608_workforce.sql` so it's self-sufficient. Anonymous sessions get an empty fence → cannot read payroll/PII.
+- **Pay-critical maths is server-side** (`workforce-compute` edge fn, service-role): tronc (largest-remainder, penny-exact), holiday accrual (12.07%), period pay. The client only displays. Anonymous **clock** punches go through `workforce-clock` (validates PIN server-side, writes `wf_timesheets`).
+- **Money integrity:** `numeric` + currency-stamped everywhere; effective rate + source snapshotted onto shifts/timesheets; FKs onto staff are `ON DELETE RESTRICT` + soft-delete (`status='leaver'`); `wf_audit` + `wf_holiday_accrual` append-only (UPDATE/DELETE/TRUNCATE revoked from client roles; audit hash-chained); finalised tronc runs immutable (trigger); composite `(…, org_id)` FKs prevent cross-tenant linking.
+
+**Consequences:** Two new edge functions to maintain; clients must call them rather than writing money rows. Migration was validated with a transactional dry-run + per-table column-insert test before applying, and the wf_ RLS depends on the helper functions existing (now created by the migration itself). Decided server-side compute over client maths per the operator: "linked to live financials, needs to be 100% correct."

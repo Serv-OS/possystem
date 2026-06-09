@@ -81,6 +81,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.379', date: '9 Jun 2026', label: 'Internal: handoff docs refreshed (Workforce + Time Clock) for team onboarding',
+    changes: [
+      'No app changes — updated the project handoff docs (CURRENT_WORK / CLAUDE / DECISIONS / INVARIANTS) to cover the Workforce module, Time Clock surface, server-side pay/tronc/accrual compute and the wf_* schema, so a new collaborator can pick the project up.',
+    ],
+  },
+  {
     version: '5.5.378', date: '9 Jun 2026', label: 'Tronc pulls the real tip pool from the POS (ties Workforce tronc to the Tips report)',
     changes: [
       'Workforce → Tronc now pre-fills the weekly pool from the actual POS tips — card tips + service charge for the week, the same closed_checks data the Tips report uses — instead of a manual figure. The breakdown is shown ("£X from the POS this week · card tips + service · cash kept by staff") and stays editable before you run the penny-reconciled distribution.',

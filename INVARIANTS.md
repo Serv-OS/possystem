@@ -124,3 +124,16 @@ Tables MUST never be lost between updates. These safeguards exist:
 - **`gridWithSpacers` merges spacers and items by `sortOrder`** — spacers have fractional/arbitrary sortOrder values to slot between items. When items are reordered, ALL sortOrders are reassigned as sequential integers via `reorderGrid()`.
 - **Kiosk stock decrement fires-and-forgets** — `decrementStockRPC(...).catch(e => console.warn(...))`. This is intentional — a stock decrement failure should not block order submission. The stock will eventually be corrected by the next stock sync or manual count.
 - **`resolveOptItemId` name-matching in KioskProductModal** — Falls back to matching modifier option names against sold-alone sub-items. This is intentional — many modifier options don't have explicit `itemId` links but represent the same physical product.
+
+---
+
+## Workforce / Payroll (live financials — `wf_*` tables)
+
+- **Never compute pay money on the client for the record.** Tronc, period pay and holiday accrual are computed server-side by the `workforce-compute` edge function; clock punches by `workforce-clock`. The client may *preview* but must not write money rows directly. (RLS blocks it anyway for anonymous devices.)
+- **`wf_*` money is `numeric` with scale, never float**, and carries a currency. The effective pay rate + its source must be **snapshotted** onto `wf_shifts`/`wf_timesheets` at write time so historical pay is reproducible.
+- **Staff are soft-deleted** (`wf_staff.status='leaver'`), never hard-deleted. All FKs onto `wf_staff` are `ON DELETE RESTRICT`. Deleting a staff member that has history must fail, not cascade.
+- **`wf_audit` and `wf_holiday_accrual` are append-only** — UPDATE/DELETE/TRUNCATE are revoked from `authenticated`/`anon`. Corrections are new rows, never edits. `wf_audit` rows form a `prev_hash`/`row_hash` chain — only write them via the edge function's `writeAudit`.
+- **A finalised tronc run is immutable** (status ≠ `draft`) — a trigger blocks deletion; supersede via an audited correction, never edit.
+- **`wf_*` RLS is real, not "allow all."** Every table is location-scoped via `user_accessible_locations()` except `wf_staff` (org-scoped PII via `user_accessible_orgs()`). Those helpers are created by `20260608_workforce.sql` — don't drop them. Anonymous (kiosk/clock/online) sessions MUST never read payroll/PII.
+- **`(location_id, org_id)` must be a real pair from `locations`** — composite FKs enforce it. Resolve `org_id` from the location (or trust `orgCtx.orgId`) so writes don't violate the fence.
+- **Clock PINs are validated server-side only** — `workforce-clock` matches the PIN against `staff_members`; never send the staff PIN list to a clock client.
