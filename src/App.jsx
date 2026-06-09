@@ -82,6 +82,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.387', date: '9 Jun 2026', label: 'Fix: offers/contracts now actually send + in-app contract signing',
+    changes: [
+      'Fixed offer letters and contracts not sending — the workforce email/SMS/compute calls now go through the Supabase SDK (correct gateway auth) instead of a raw request the gateway was rejecting. Verified the email function delivers via Resend.',
+      'Contract signing no longer depends on email: Generate a contract → "Sign now" opens the signing page on the device (hand it to the new starter), or Email / Copy link. Works without anyone receiving an email first.',
+    ],
+  },
+  {
     version: '5.5.386', date: '9 Jun 2026', label: 'Workforce — UK holiday model, payroll bank details, RTW/sections fixes',
     changes: [
       'UK-compliant holiday: hourly / irregular-hours staff accrue 12.07% of hours worked; salaried staff get a fixed 28-day allowance. For variable-hours staff a "day" of leave is worth their average paid hours per day worked (so a day is different hours per person). Holiday balances now show the right basis, accrued/allowance, taken and remaining per person.',

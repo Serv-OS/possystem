@@ -54,19 +54,23 @@ export async function resolveOrgForLocation(locationId, fallbackOrgId) {
   } catch { return fallbackOrgId || null; }
 }
 
+/** Invoke a Supabase edge function via the SDK (handles apikey + session auth)
+ *  and surface the function's own {error} message rather than a generic one. */
+async function invokeFn(name, body) {
+  const { data, error } = await supabase.functions.invoke(name, { body });
+  if (error) {
+    let msg = error.message || 'Request failed';
+    try { const b = await error.context?.json?.(); if (b?.error) msg = b.error; } catch { /* keep generic */ }
+    throw new Error(msg);
+  }
+  if (data && data.error) throw new Error(data.error);
+  return data;
+}
+
 /** Call the server-side compute edge function (tronc / pay / accrual / labour). */
 export async function invokeCompute(action, payload = {}) {
   if (isMock || !supabase) return { ok: true, mock: true, action };
-  const token = await authToken();
-  const base = import.meta.env.VITE_SUPABASE_URL;
-  const res = await fetch(`${base}/functions/v1/workforce-compute`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-    body: JSON.stringify({ action, ...payload }),
-  });
-  const j = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(j.error || `compute "${action}" failed`);
-  return j;
+  return invokeFn('workforce-compute', { action, ...payload });
 }
 
 // ── Document storage (private bucket wf-documents; path = locationId/staffId/…) ──
@@ -94,30 +98,16 @@ export async function signedDocUrl(pathOrUrl, expiresIn = 120) {
 export async function sendStaffSms(to, message, locationId, type = 'rota_notification', referenceId = null) {
   if (isMock || !supabase) return { ok: true, mock: true };
   if (!to) return { ok: false, skipped: 'no-mobile' };
-  const token = await authToken();
-  const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-sms`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-    body: JSON.stringify({ to, message, location_id: locationId, type, reference_id: referenceId }),
-  });
-  const j = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(j.error || 'SMS failed');
-  return { ok: true, ...j };
+  const data = await invokeFn('send-sms', { to, message, location_id: locationId, type, reference_id: referenceId });
+  return { ok: true, ...(data || {}) };
 }
 
 /** Send a transactional email via the send-receipt edge function (generic html). */
 export async function sendEmail(to, subject, html, locationId) {
   if (isMock || !supabase) return { ok: true, mock: true };
-  if (!to) return { ok: false, skipped: 'no-email' };
-  const token = await authToken();
-  const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-receipt`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-    body: JSON.stringify({ location_id: locationId, to, subject, html, text: html.replace(/<[^>]+>/g, ' ') }),
-  });
-  const j = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(j.error || 'Email failed');
-  return { ok: true, ...j };
+  if (!to) throw new Error('No email address on file for this person');
+  const data = await invokeFn('send-receipt', { location_id: locationId, to, subject, html, text: html.replace(/<[^>]+>/g, ' ') });
+  return { ok: true, ...(data || {}) };
 }
 
 /** Store bank details on the staff record — MASKED ONLY (sort code + last 4). */
