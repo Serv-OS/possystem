@@ -105,6 +105,33 @@ export async function sendStaffSms(to, message, locationId, type = 'rota_notific
   return { ok: true, ...j };
 }
 
+/** Send a transactional email via the send-receipt edge function (generic html). */
+export async function sendEmail(to, subject, html, locationId) {
+  if (isMock || !supabase) return { ok: true, mock: true };
+  if (!to) return { ok: false, skipped: 'no-email' };
+  const token = await authToken();
+  const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-receipt`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({ location_id: locationId, to, subject, html, text: html.replace(/<[^>]+>/g, ' ') }),
+  });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(j.error || 'Email failed');
+  return { ok: true, ...j };
+}
+
+/** Store bank details on the staff record — MASKED ONLY (sort code + last 4). */
+export async function saveStaffBank(staffId, sortCode, accountFull) {
+  const digits = String(accountFull || '').replace(/\D/g, '');
+  const masked = digits.length >= 4 ? `****${digits.slice(-4)}` : null;
+  const sort = String(sortCode || '').replace(/[^0-9]/g, '').replace(/(\d{2})(\d{2})(\d{2})/, '$1-$2-$3') || null;
+  if (isMock || !supabase) { const a = lsGet('staff'); const i = a.findIndex(x => x.id === staffId); if (i >= 0) { a[i].bankMasked = masked; lsSet('staff', a); } return { masked, sort }; }
+  if (!staffId || !masked) throw new Error('Enter a valid sort code + account number');
+  const { error } = await supabase.from('wf_staff').update({ bank_sort_code: sort, bank_account_masked: masked }).eq('id', staffId);
+  if (error) throw new Error(error.message);
+  return { masked, sort };
+}
+
 /** Call the Claude proxy (/api/ai). Returns the Anthropic Messages response. */
 export async function callAI(messages, mode = 'boh') {
   if (isMock) throw new Error('AI is only available on the live system');
@@ -497,7 +524,7 @@ export async function deleteDocument(id) {
 // ============================================================================
 // ONBOARDING (wf_onboarding)
 // ============================================================================
-const mapOnb = r => ({ id: r.id, staffId: r.staff_id, roleKey: r.role_key, steps: r.steps || [], status: r.status, firstShiftDate: r.first_shift_date });
+const mapOnb = r => ({ id: r.id, staffId: r.staff_id, roleKey: r.role_key, steps: r.steps || [], status: r.status, firstShiftDate: r.first_shift_date, meta: r.meta || {} });
 export async function loadOnboarding(locationId) {
   if (isMock || !supabase) return lsGet('onboarding');
   if (!locationId) return [];
@@ -508,7 +535,7 @@ export async function loadOnboarding(locationId) {
 export async function saveOnboarding(onb, locationId, orgId) {
   if (isMock || !supabase) return lsUpsert('onboarding', onb);
   const org = await resolveOrgForLocation(locationId, orgId);
-  const row = { location_id: locationId, org_id: org, staff_id: onb.staffId, role_key: onb.roleKey || null, steps: onb.steps || [], status: onb.status || 'inProgress', first_shift_date: onb.firstShiftDate || null };
+  const row = { location_id: locationId, org_id: org, staff_id: onb.staffId, role_key: onb.roleKey || null, steps: onb.steps || [], status: onb.status || 'inProgress', first_shift_date: onb.firstShiftDate || null, meta: onb.meta || {} };
   const real = onb.id && !String(onb.id).startsWith('tmp-') && !String(onb.id).startsWith('wf-');
   if (real) row.id = onb.id;
   const q = real ? supabase.from('wf_onboarding').upsert(row, { onConflict: 'id' }) : supabase.from('wf_onboarding').insert(row);

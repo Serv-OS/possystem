@@ -22,6 +22,7 @@ import TablesSurface from './surfaces/TablesSurface';
 import { KDSSurface } from './surfaces/OtherSurfaces';
 import MPOSSurface from './surfaces/MPOSSurface';
 import TimeClockSurface from './surfaces/TimeClockSurface';
+import OnboardingSignSurface from './surfaces/OnboardingSignSurface';
 import CustomerBoot from './surfaces/CustomerBoot';
 import { parseCustomerUrl as parseCustomerUrlForBoot } from './lib/customerUrl';
 import AIChat from './components/AIChat';
@@ -80,6 +81,14 @@ import { ServOSIcon } from './components/ServOSBrand';
 import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
+  {
+    version: '5.5.382', date: '9 Jun 2026', label: 'Workforce — full new-starter onboarding (offer → RTW → contract e-sign → bank)',
+    changes: [
+      'Onboarding is now a real per-person pipeline: email the offer letter, upload the Right to Work document, upload + send the contract for signing, capture bank details, set up POS access and book the first shift — with a live progress bar.',
+      'Lightweight in-app e-signature: the candidate gets an emailed link to a new public page (/sign/<token>) where they review the contract and sign by typing their name; the signature, timestamp and IP are recorded and the step ticks green. New workforce-onboarding edge function handles the token-gated signing.',
+      'Bank details are captured masked-only (sort code + last 4) per the security model — the full number goes straight to your payroll/BACS, never stored in Serv OS.',
+    ],
+  },
   {
     version: '5.5.381', date: '9 Jun 2026', label: 'Workforce — AI rota builder',
     changes: [
@@ -5601,6 +5610,9 @@ export default function App() {
   // precedence so an operator on the same hostname still gets their tools.
   const CUSTOMER_MODES = ['online', 'qr', 'gift', 'gift_balance', 'gift_success', 'account'];
   const urlMode = new URLSearchParams(window.location.search).get('mode');
+  // Public Workforce contract-signing page: /sign/<token>
+  const signMatch = window.location.pathname.match(/^\/sign\/([A-Za-z0-9_-]{8,})/);
+  if (signMatch) return <OnboardingSignSurface token={signMatch[1]} />;
   if (!urlMode) {
     const customerCtx = parseCustomerUrlForBoot();
     if (customerCtx?.slug && CUSTOMER_MODES.includes(customerCtx.mode)) {

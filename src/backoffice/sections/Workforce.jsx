@@ -78,7 +78,7 @@ export default function Workforce({ section, orgCtx }) {
   }, [locationId]);
 
   const week = useMemo(() => buildWeek(), []);
-  const ctx = useMemo(() => ({ locationId, orgId: orgCtx?.orgId || null, actor: { id: orgCtx?.userId || null, name: orgCtx?.userName || null } }), [locationId, orgCtx]);
+  const ctx = useMemo(() => ({ locationId, orgId: orgCtx?.orgId || null, locName: orgCtx?.locationName || 'our team', actor: { id: orgCtx?.userId || null, name: orgCtx?.userName || null } }), [locationId, orgCtx]);
   const sectionProps = { ctx, staff, roles, sections, settings, week, showToast };
   const rolesMap = (roles.map && Object.keys(roles.map).length) ? roles.map : ROLES;
   const [title, sub] = SUBS[section] || ['Workforce', ''];

@@ -32,3 +32,8 @@ do $$ begin
   create policy wf_docs_delete on storage.objects for delete to authenticated
     using (bucket_id = 'wf-documents' and (storage.foldername(name))[1] in (select public.user_accessible_locations()));
 exception when duplicate_object then null; end $$;
+
+-- Onboarding: per-case workflow data (offer/contract/sign token + signature/bank).
+-- Tokenised contract-signing: workforce-onboarding edge fn looks rows up by this.
+alter table wf_onboarding add column if not exists meta jsonb not null default '{}'::jsonb;
+create index if not exists idx_wf_onb_token on wf_onboarding ((meta->>'signToken'));
