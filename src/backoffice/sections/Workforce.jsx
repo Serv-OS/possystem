@@ -175,8 +175,8 @@ function RoleChip({ role, roles = ROLES }) {
   const r = roles[role]; if (!r) return <span style={{ color: 'var(--t3)' }}>{role || '—'}</span>; const col = groupColor(r.grp);
   return <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, color: col }}><span style={{ width: 7, height: 7, borderRadius: '50%', background: col }} />{r.lbl}</span>;
 }
-const BADGE = { green: ['var(--grn-d)', 'var(--grn-b)', 'var(--grn)'], amber: ['rgba(245,166,35,.13)', 'rgba(245,166,35,.30)', 'var(--amber)'], red: ['var(--red-d)', 'var(--red-b)', 'var(--red)'], blue: ['var(--blu-d)', 'var(--blu-b)', 'var(--blu)'] };
-function Badge({ tone = 'green', children }) { const [bg, bd, fg] = BADGE[tone]; return <span style={{ display: 'inline-flex', alignItems: 'center', fontSize: 10.5, fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: bg, border: `1px solid ${bd}`, color: fg, whiteSpace: 'nowrap' }}>{children}</span>; }
+const BADGE = { green: ['var(--grn-d)', 'var(--grn-b)', 'var(--grn)'], amber: ['rgba(245,166,35,.13)', 'rgba(245,166,35,.30)', 'var(--amber)'], red: ['var(--red-d)', 'var(--red-b)', 'var(--red)'], blue: ['var(--blu-d)', 'var(--blu-b)', 'var(--blu)'], grey: ['var(--inset)', 'var(--inset-border)', 'var(--t3)'] };
+function Badge({ tone = 'green', children }) { const [bg, bd, fg] = BADGE[tone] || BADGE.green; return <span style={{ display: 'inline-flex', alignItems: 'center', fontSize: 10.5, fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: bg, border: `1px solid ${bd}`, color: fg, whiteSpace: 'nowrap' }}>{children}</span>; }
 const th = { padding: '11px 10px', textAlign: 'left', fontFamily: 'var(--font-mono)', fontSize: 9.5, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--t3)', borderBottom: '1px solid var(--glass-border)' };
 const td = { padding: '10px 10px', borderBottom: '1px solid var(--bdr)', verticalAlign: 'middle', fontSize: 13 };
 function EmptyState({ icon = 'sparkle', title, body, cta, onCta }) {
@@ -251,14 +251,17 @@ const labelStyle = { display: 'block', fontFamily: 'var(--font-mono)', fontSize:
 function AddStaffModal({ locName, staff, roles = ROLES, onClose, onSave }) {
   const isEdit = !!staff;
   const roleOpts = Object.entries(roles);
+  const ec = (isEdit && staff.emergencyContact) || {};
   const [f, setF] = useState(isEdit
-    ? { name: staff.name || '', role: staff.role || roleOpts[0]?.[0] || 'server', contractType: staff.contractType || 'partTime', mobile: staff.mobile || '', email: staff.email || '', dob: staff.dob || '', startDate: staff.startDate || '', rateOverride: staff.rateOverride != null ? String(staff.rateOverride) : '' }
-    : { name: '', role: roleOpts[0]?.[0] || 'server', contractType: 'partTime', mobile: '', email: '', dob: '', startDate: '', rateOverride: '' });
+    ? { name: staff.name || '', role: staff.role || roleOpts[0]?.[0] || 'server', contractType: staff.contractType || 'partTime', mobile: staff.mobile || '', email: staff.email || '', dob: staff.dob || '', startDate: staff.startDate || '', rateOverride: staff.rateOverride != null ? String(staff.rateOverride) : '', address: staff.address || '', ecName: ec.name || '', ecPhone: ec.phone || '', ecRelation: ec.relationship || '' }
+    : { name: '', role: roleOpts[0]?.[0] || 'server', contractType: 'partTime', mobile: '', email: '', dob: '', startDate: '', rateOverride: '', address: '', ecName: '', ecPhone: '', ecRelation: '' });
   const set = (k, v) => setF(p => ({ ...p, [k]: v }));
   const valid = f.name.trim().length > 1;
   const roleRate = roles[f.role]?.rate;
   const submit = () => {
-    const payload = { ...f, rateOverride: f.rateOverride === '' ? null : Number(f.rateOverride) };
+    const { ecName, ecPhone, ecRelation, ...rest } = f;
+    const emergencyContact = (ecName || ecPhone || ecRelation) ? { name: ecName || null, phone: ecPhone || null, relationship: ecRelation || null } : null;
+    const payload = { ...rest, rateOverride: f.rateOverride === '' ? null : Number(f.rateOverride), emergencyContact };
     if (isEdit) payload.id = staff.id;
     onSave(payload);
   };
@@ -276,6 +279,11 @@ function AddStaffModal({ locName, staff, roles = ROLES, onClose, onSave }) {
           <div><label style={labelStyle}>Email</label><input style={inputStyle} value={f.email} onChange={e => set('email', e.target.value)} placeholder="name@email.com" /></div>
           <div><label style={labelStyle}>Date of birth</label><input style={inputStyle} type="date" value={f.dob} onChange={e => set('dob', e.target.value)} /></div>
           <div><label style={labelStyle}>Start date</label><input style={inputStyle} type="date" value={f.startDate} onChange={e => set('startDate', e.target.value)} /></div>
+          <div style={{ gridColumn: '1 / -1' }}><label style={labelStyle}>Home address</label><input style={inputStyle} value={f.address} onChange={e => set('address', e.target.value)} placeholder="House, street, town, postcode" /></div>
+          <div style={{ gridColumn: '1 / -1', marginTop: 4 }}><div className="mono" style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--acc)' }}>Emergency contact</div></div>
+          <div><label style={labelStyle}>Contact name</label><input style={inputStyle} value={f.ecName} onChange={e => set('ecName', e.target.value)} placeholder="e.g. Sam Lee" /></div>
+          <div><label style={labelStyle}>Contact phone</label><input style={inputStyle} value={f.ecPhone} onChange={e => set('ecPhone', e.target.value)} placeholder="+44 7700 900000" /></div>
+          <div style={{ gridColumn: '1 / -1' }}><label style={labelStyle}>Relationship</label><input style={inputStyle} value={f.ecRelation} onChange={e => set('ecRelation', e.target.value)} placeholder="e.g. Partner, Parent" /></div>
         </div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 9, marginTop: 20 }}>
           <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
@@ -334,6 +342,8 @@ function StaffDetailModal({ staff: s, roles = ROLES, ctx, onClose, onEdit, onSet
     ['Contract', CONTRACT_LABEL[s.contractType] || s.contractType || '—'], ['Status', s.status || 'active'],
     ['Mobile', s.mobile || '—'], ['Email', s.email || '—'],
     ['Date of birth', s.dob || '—'], ['Start date', s.startDate || '—'],
+    ['Address', s.address || '—'],
+    ['Emergency contact', s.emergencyContact ? `${s.emergencyContact.name || '—'}${s.emergencyContact.phone ? ` · ${s.emergencyContact.phone}` : ''}${s.emergencyContact.relationship ? ` (${s.emergencyContact.relationship})` : ''}` : '—'],
   ];
 
   return (

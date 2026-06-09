@@ -82,6 +82,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.384', date: '9 Jun 2026', label: 'Workforce — fix staff-profile crash + capture emergency contact & address',
+    changes: [
+      'Fixed: opening a staff member could throw "undefined is not iterable" — a grey status badge (missing document / pending timesheet) hit a colour the local badge map didn\'t have. Added the grey tone + a safe fallback.',
+      'Staff add/edit now captures home address and emergency contact (name, phone, relationship); both show on the staff profile.',
+    ],
+  },
+  {
     version: '5.5.383', date: '9 Jun 2026', label: 'Internal: handoff docs refreshed (onboarding, documents, AI rota, SMS/email)',
     changes: [
       'No app changes — refreshed CURRENT_WORK / CLAUDE so the shared handoff covers the latest Workforce depth (onboarding pipeline + e-sign, private document upload, staff profiles, rota SMS, AI rota builder) and confirms SMS (Twilio) + email (Resend) are configured.',

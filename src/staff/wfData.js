@@ -152,7 +152,8 @@ function mapStaff(r) {
     id: r.id, name: r.name, role: r.role_key, contractType: r.contract_type,
     mobile: r.mobile, email: r.email, dob: r.dob, startDate: r.start_date,
     status: r.status, posUserId: r.pos_user_id, sectionIds: r.section_ids || [],
-    rateOverride: r.rate_override, contractedWeek: r.contracted_week, days: {},
+    rateOverride: r.rate_override, contractedWeek: r.contracted_week,
+    address: r.address || null, emergencyContact: r.emergency_contact || null, days: {},
   };
 }
 export async function loadStaff(locationId) {
@@ -172,6 +173,7 @@ export async function saveStaff(member, locationId, orgId) {
     location_id: locationId, org_id: org, name: member.name, role_key: member.role || null,
     contract_type: member.contractType || 'partTime', mobile: member.mobile || null,
     email: member.email || null, dob: member.dob || null, start_date: member.startDate || null,
+    address: member.address || null, emergency_contact: member.emergencyContact || null,
     primary_venue_id: locationId, venue_ids: [locationId], status: member.status || 'active',
   };
   const real = member.id && !String(member.id).startsWith('tmp-') && !String(member.id).startsWith('wf-');
