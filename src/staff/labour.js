@@ -60,6 +60,40 @@ export function accrueHolidayHours(actualHours, rate = DEFAULT_ACCRUAL_RATE) {
   return Math.round(actualHours * rate * 100) / 100;
 }
 
+// UK statutory holiday for salaried / regular-hours staff: 5.6 weeks ≈ 28 days
+// (for a 5-day week). Hourly/irregular staff accrue at 12.07% instead.
+export const FIXED_HOLIDAY_DAYS = 28;
+
+/**
+ * Is this person paid hourly (accrues holiday at 12.07%) or salaried (fixed days)?
+ * Salaried = contract_type 'salaried', or a salaried role with no hourly rate.
+ */
+export function isHourly(staff, role) {
+  if (staff && staff.contractType === 'salaried') return false;
+  if (staff && staff.rateOverride != null) return true;
+  if (role && role.rate != null) return true;
+  if (role && role.salary != null && role.rate == null) return false;
+  return true; // default: hourly (accrues)
+}
+
+/**
+ * Average paid hours per working day, from a person's timesheets — this is what
+ * "a day" of holiday is worth for variable-hours staff (UK: avg over a reference
+ * period). Returns 0 if no history. (clockIn-dated; sums hours per distinct day.)
+ */
+export function avgHoursPerDay(timesheets) {
+  const byDay = {};
+  (timesheets || []).forEach(t => {
+    const iso = t.clockIn ? new Date(t.clockIn).toISOString().slice(0, 10) : null;
+    const hrs = Number(t.actualHours || 0);
+    if (iso && hrs > 0) byDay[iso] = (byDay[iso] || 0) + hrs;
+  });
+  const days = Object.keys(byDay).length;
+  if (!days) return 0;
+  const total = Object.values(byDay).reduce((a, b) => a + b, 0);
+  return Math.round((total / days) * 100) / 100;
+}
+
 /** Wage cost per day across the roster → 7-element array (Mon→Sun). */
 export function wageByDay(groups = GROUPS, roles = ROLES) {
   const wage = new Array(7).fill(0);

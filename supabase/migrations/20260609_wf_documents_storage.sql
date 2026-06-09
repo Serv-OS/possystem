@@ -37,3 +37,7 @@ exception when duplicate_object then null; end $$;
 -- Tokenised contract-signing: workforce-onboarding edge fn looks rows up by this.
 alter table wf_onboarding add column if not exists meta jsonb not null default '{}'::jsonb;
 create index if not exists idx_wf_onb_token on wf_onboarding ((meta->>'signToken'));
+
+-- Full bank account number for payroll/BACS (org-RLS-fenced; sort code + masked
+-- are kept alongside for display). Needed so staff can actually be paid.
+alter table wf_staff add column if not exists bank_account text;

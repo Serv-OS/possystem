@@ -162,16 +162,34 @@ Deno.serve(async (req) => {
       return json({ ok: true, run_id: run.id, pool: poolNum, total_paid: res.totalPaid, residual: res.residual, point_value: res.pointValue, lines: res.lines });
     }
 
-    // ── ACCRUAL RUN (12.07% statutory default) ────────────────────────────────
+    // ── ACCRUAL RUN — UK: only HOURLY/irregular staff accrue 12.07% of hours.
+    // Salaried/fixed staff get a fixed entitlement (28 days) tracked separately,
+    // so they are skipped here.
     if (action === 'accrual.run') {
       const { data: settings } = await admin.from('wf_venue_settings').select('accrual_rate').eq('location_id', location_id).maybeSingle();
       const rate = Number(settings?.accrual_rate ?? 0.1207);
+      // Classify staff: salaried (contract_type='salaried' or a salaried role with no hourly rate) → no accrual.
+      const [{ data: staffRows }, { data: roleRows }] = await Promise.all([
+        admin.from('wf_staff').select('id, contract_type, role_key, rate_override').eq('location_id', location_id),
+        admin.from('wf_roles').select('key, base_rate, salary_annual').eq('location_id', location_id),
+      ]);
+      const roleByKey: Record<string, any> = {}; (roleRows ?? []).forEach((r: any) => { roleByKey[r.key] = r; });
+      const isHourly = (sid: string) => {
+        const s = (staffRows ?? []).find((x: any) => x.id === sid);
+        if (!s) return true;
+        if (s.contract_type === 'salaried') return false;
+        if (s.rate_override != null) return true;
+        const role = roleByKey[s.role_key];
+        if (role && role.base_rate != null) return true;
+        if (role && role.salary_annual != null && role.base_rate == null) return false; // salaried role
+        return true; // default to hourly (accrues)
+      };
       const { data: tss } = await admin.from('wf_timesheets')
         .select('id, staff_id, actual_hours, effective_rate, currency').eq('location_id', location_id).eq('status', 'approved');
       const { data: existing } = await admin.from('wf_holiday_accrual')
         .select('source_timesheet_id').eq('location_id', location_id).not('source_timesheet_id', 'is', null);
       const done = new Set((existing ?? []).map((e: any) => e.source_timesheet_id));
-      const toInsert = (tss ?? []).filter((t: any) => !done.has(t.id) && Number(t.actual_hours) > 0).map((t: any) => {
+      const toInsert = (tss ?? []).filter((t: any) => !done.has(t.id) && Number(t.actual_hours) > 0 && isHourly(t.staff_id)).map((t: any) => {
         const hrs = round2(Number(t.actual_hours) * rate);
         return {
           location_id, org_id: org, staff_id: t.staff_id, kind: 'accrual', accrued_hours: hrs,

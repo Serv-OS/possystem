@@ -72,20 +72,23 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
   const [publishing, setPublishing] = useState(false);
   const [aiBusy, setAiBusy] = useState(false);     // AI rota generation in progress
   const [view, setView] = useState('staff');       // 'staff' | 'section'
+  const [secs, setSecs] = useState(sections || []); // sections loaded fresh (Settings may have changed them)
 
   const targetPct = settings?.labourTargetPct ?? 0.3;
 
   async function reload(w) {
     setLoading(true);
     try {
-      const [sh, fc, ac] = await Promise.all([
+      const [sh, fc, ac, sc] = await Promise.all([
         wf.loadShifts(ctx.locationId, w.startIso, w.endIso),
         wf.loadForecast(ctx.locationId, w.startIso, w.endIso),
         wf.loadActualSales(ctx.locationId, w.startIso, w.endIso),
+        wf.loadSections(ctx.locationId),
       ]);
       setShifts(sh || []);
       setForecast(fc || {});
       setActual(ac || {});
+      if (sc) setSecs(sc);
     } catch (e) {
       showToast('Could not load the rota: ' + e.message, 'error');
     } finally {
@@ -221,7 +224,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
           availability: avByStaff[s.id] && avByStaff[s.id].length ? avByStaff[s.id] : 'flexible',
         };
       });
-      const sectionReq = (sections || []).map(sec => ({ section: sec.name, minCoverage: sec.minCoverage }));
+      const sectionReq = (secs || []).map(sec => ({ section: sec.name, minCoverage: sec.minCoverage }));
       const days = wk.days.map(d => ({ date: d.iso, day: d.label, forecastSales: Math.round(forecast[d.iso] || 0) }));
       const targetPctNum = Math.round((settings?.labourTargetPct ?? 0.28) * 100);
       const userMsg =
@@ -310,14 +313,14 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
     return (
       <Card>
         {Header}
-        {sections.length === 0
+        {secs.length === 0
           ? <EmptyState icon="floor" title="No sections yet" body="Create sections (Bar, Floor, Kitchen…) in Settings to track coverage per area. Then assign each shift to a section and we'll flag any day that's understaffed." />
           : (
             <div style={{ overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 640 }}>
                 <thead><tr><th style={th}>Section</th>{dayCols}</tr></thead>
                 <tbody>
-                  {sections.map(sec => (
+                  {secs.map(sec => (
                     <tr key={sec.id}>
                       <td style={td}><span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontWeight: 600 }}><span style={{ width: 8, height: 8, borderRadius: '50%', background: sec.color || 'var(--t3)' }} />{sec.name}</span></td>
                       {wk.days.map(d => {
@@ -412,7 +415,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
       {editing && (
         <ShiftModal
           staff={editing.staff} day={editing.day} shift={editing.shift}
-          sections={sections} saving={saving}
+          sections={secs} saving={saving}
           onSave={saveShift} onDelete={removeShift} onClose={() => setEditing(null)}
         />
       )}

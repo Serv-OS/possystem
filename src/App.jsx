@@ -82,6 +82,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.386', date: '9 Jun 2026', label: 'Workforce — UK holiday model, payroll bank details, RTW/sections fixes',
+    changes: [
+      'UK-compliant holiday: hourly / irregular-hours staff accrue 12.07% of hours worked; salaried staff get a fixed 28-day allowance. For variable-hours staff a "day" of leave is worth their average paid hours per day worked (so a day is different hours per person). Holiday balances now show the right basis, accrued/allowance, taken and remaining per person.',
+      'Bank details are now stored in full (org-fenced) and shown on the staff profile under "Bank (for payroll)" so you can actually pay people — the full number goes to your BACS/payroll, with sort code + last 4 also kept.',
+      'Fixed: uploaded Right to Work documents showed as "Missing" — a held document with no expiry now reads as Valid (the file was always saved). Fixed: sections added in Settings now appear in the rota\'s "By section" view (it reloads sections live). Removed the "First shift" step from onboarding. Capture home address + emergency contact on the staff record.',
+    ],
+  },
+  {
     version: '5.5.385', date: '9 Jun 2026', label: 'Workforce — build & send offer letters and contracts from templates',
     changes: [
       'New template manager (Workforce → Settings → "Offer letters & contracts"): create/edit reusable offer-letter and contract templates with merge fields like {{first_name}}, {{position}}, {{rate}}, {{start_date}} and a live preview. Contract templates can be scoped to a contract type (zero-hours, part-time, etc.). Ships with built-in UK defaults.',

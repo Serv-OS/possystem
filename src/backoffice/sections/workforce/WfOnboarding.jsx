@@ -21,7 +21,6 @@ const STEPS = [
   { key: 'contract', label: 'Contract' },
   { key: 'bank', label: 'Bank details' },
   { key: 'posUser', label: 'POS access' },
-  { key: 'firstShift', label: 'First shift' },
 ];
 const freshSteps = () => STEPS.map(s => ({ key: s.key, status: 'pending', completedAt: null }));
 const genToken = () => (crypto?.randomUUID ? crypto.randomUUID().replace(/-/g, '') : `${Date.now()}${Math.random().toString(36).slice(2)}`) + Math.random().toString(36).slice(2, 8);
@@ -177,10 +176,6 @@ function OnboardingCard({ c, member, rolesMap, ctx, showToast, markStep, patchCa
         <StepRow done={posDone} label="POS access" hint={posDone ? 'Till user created' : 'Set them up from Staff → Set as POS user'}>
           {posDone ? <Badge tone="green">Done</Badge> : <span style={{ fontSize: 12, color: 'var(--t4)' }}>In Staff</span>}
         </StepRow>
-
-        <StepRow done={stepStatus('firstShift') === 'complete'} label="First shift" hint={meta.firstShiftDate ? new Date(meta.firstShiftDate + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }) : 'Book their first shift date'}>
-          <FirstShiftAction c={c} showToast={showToast} patchCase={patchCase} done={stepStatus('firstShift') === 'complete'} />
-        </StepRow>
       </div>
     </Card>
   );
@@ -326,13 +321,14 @@ function BankAction({ c, member, ctx, showToast, markStep, done }) {
   </>);
 }
 
-function FirstShiftAction({ c, showToast, patchCase, done }) {
+function FirstShiftActionRemoved() { return null; /* first-shift step removed from onboarding */ }
+function _UnusedFirstShift({ c, showToast, patchCase, done }) {
   const [open, setOpen] = useState(false);
   const [date, setDate] = useState('');
   if (done) return <Badge tone="green">Booked</Badge>;
   const save = async () => {
     if (!date) return;
-    await patchCase(c, { firstShiftDate: date, meta: { ...(c.meta || {}), firstShiftDate: date }, steps: (c.steps || []).map(s => s.key === 'firstShift' ? { ...s, status: 'complete', completedAt: new Date().toISOString() } : s) });
+    await patchCase(c, { firstShiftDate: date, meta: { ...(c.meta || {}), firstShiftDate: date }, steps: (c.steps || []) });
     setOpen(false);
     showToast('First shift date set', 'success');
   };

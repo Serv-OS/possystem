@@ -38,7 +38,10 @@ const daysBetween = (a, b) => Math.round((new Date(a + 'T00:00:00') - new Date(b
 
 /** Traffic-light status from an expiry date. No expiry held → missing. */
 function docStatus(doc) {
-  if (!doc || !doc.expiry) return 'missing';
+  if (!doc) return 'missing';
+  // A document that's been uploaded (has a file) but carries no expiry — e.g. a
+  // Right to Work share code or a permanent certificate — is held & valid, not "missing".
+  if (!doc.expiry) return doc.fileUrl ? 'valid' : 'missing';
   const d = daysBetween(doc.expiry, todayIso());
   if (d < 0) return 'expired';
   if (d <= EXPIRING_DAYS) return 'expiring';

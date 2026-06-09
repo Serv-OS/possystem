@@ -296,8 +296,10 @@ function AddStaffModal({ locName, staff, roles = ROLES, onClose, onSave }) {
 
 const CONTRACT_LABEL = { zeroHours: 'Zero hours', partTime: 'Part time', fullTime: 'Full time', salaried: 'Salaried' };
 const DOC_LABEL = { RTW: 'Right to Work', foodHygieneL2: 'Food Hygiene L2', allergenTraining: 'Allergen', SIA: 'SIA Licence', firstAid: 'First Aid', other: 'Other' };
-function docStat(expiry) {
-  if (!expiry) return ['missing', 'grey'];
+function docStat(doc) {
+  const expiry = doc && typeof doc === 'object' ? doc.expiry : doc;
+  const hasFile = doc && typeof doc === 'object' ? !!doc.fileUrl : false;
+  if (!expiry) return hasFile ? ['Valid', 'green'] : ['Missing', 'grey'];
   const days = Math.round((new Date(expiry + 'T00:00:00') - new Date(new Date().toISOString().slice(0, 10) + 'T00:00:00')) / 86400000);
   if (days < 0) return ['Expired', 'red'];
   if (days <= 30) return ['Expiring', 'amber'];
@@ -344,6 +346,7 @@ function StaffDetailModal({ staff: s, roles = ROLES, ctx, onClose, onEdit, onSet
     ['Date of birth', s.dob || '—'], ['Start date', s.startDate || '—'],
     ['Address', s.address || '—'],
     ['Emergency contact', s.emergencyContact ? `${s.emergencyContact.name || '—'}${s.emergencyContact.phone ? ` · ${s.emergencyContact.phone}` : ''}${s.emergencyContact.relationship ? ` (${s.emergencyContact.relationship})` : ''}` : '—'],
+    ['Bank (for payroll)', s.bankAccount ? `${s.bankSortCode || '—'} · ${s.bankAccount}` : (s.bankMasked ? `${s.bankSortCode || '—'} · ${s.bankMasked}` : '—')],
   ];
 
   return (
@@ -379,7 +382,7 @@ function StaffDetailModal({ staff: s, roles = ROLES, ctx, onClose, onEdit, onSet
         {data.loading ? <Muted>Loading…</Muted> : data.docs.length === 0 ? <Muted>No documents on file.</Muted> : (
           <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 16 }}>
             <tbody>
-              {data.docs.map(d => { const [lbl, tone] = docStat(d.expiry); return (
+              {data.docs.map(d => { const [lbl, tone] = docStat(d); return (
                 <tr key={d.id}>
                   <td style={{ ...td, padding: '7px 8px' }}>{DOC_LABEL[d.type] || d.type}</td>
                   <td style={{ ...td, padding: '7px 8px' }}><Badge tone={tone}>{lbl}</Badge></td>

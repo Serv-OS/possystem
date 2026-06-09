@@ -125,11 +125,13 @@ export async function saveStaffBank(staffId, sortCode, accountFull) {
   const digits = String(accountFull || '').replace(/\D/g, '');
   const masked = digits.length >= 4 ? `****${digits.slice(-4)}` : null;
   const sort = String(sortCode || '').replace(/[^0-9]/g, '').replace(/(\d{2})(\d{2})(\d{2})/, '$1-$2-$3') || null;
-  if (isMock || !supabase) { const a = lsGet('staff'); const i = a.findIndex(x => x.id === staffId); if (i >= 0) { a[i].bankMasked = masked; lsSet('staff', a); } return { masked, sort }; }
+  if (isMock || !supabase) { const a = lsGet('staff'); const i = a.findIndex(x => x.id === staffId); if (i >= 0) { a[i].bankMasked = masked; a[i].bankAccount = digits; a[i].bankSortCode = sort; lsSet('staff', a); } return { masked, sort, account: digits }; }
   if (!staffId || !masked) throw new Error('Enter a valid sort code + account number');
-  const { error } = await supabase.from('wf_staff').update({ bank_sort_code: sort, bank_account_masked: masked }).eq('id', staffId);
+  // Full account is stored (org-RLS-fenced) so staff can actually be paid via BACS;
+  // masked is kept for compact display.
+  const { error } = await supabase.from('wf_staff').update({ bank_sort_code: sort, bank_account: digits, bank_account_masked: masked }).eq('id', staffId);
   if (error) throw new Error(error.message);
-  return { masked, sort };
+  return { masked, sort, account: digits };
 }
 
 /** Call the Claude proxy (/api/ai). Returns the Anthropic Messages response. */
@@ -153,14 +155,18 @@ function mapStaff(r) {
     mobile: r.mobile, email: r.email, dob: r.dob, startDate: r.start_date,
     status: r.status, posUserId: r.pos_user_id, sectionIds: r.section_ids || [],
     rateOverride: r.rate_override, contractedWeek: r.contracted_week,
-    address: r.address || null, emergencyContact: r.emergency_contact || null, days: {},
+    weeklyHoursTarget: r.weekly_hours_target != null ? Number(r.weekly_hours_target) : null,
+    holidayEntitlementDays: r.holiday_entitlement_days != null ? Number(r.holiday_entitlement_days) : null,
+    address: r.address || null, emergencyContact: r.emergency_contact || null,
+    bankSortCode: r.bank_sort_code || null, bankAccount: r.bank_account || null, bankMasked: r.bank_account_masked || null,
+    days: {},
   };
 }
 export async function loadStaff(locationId) {
   if (isMock || !supabase) return lsGet('staff');
   if (!locationId) return [];
   const { data, error } = await supabase.from('wf_staff')
-    .select('id,name,role_key,contract_type,mobile,email,dob,start_date,status,pos_user_id,section_ids,rate_override,contracted_week,created_at')
+    .select('id,name,role_key,contract_type,mobile,email,dob,start_date,status,pos_user_id,section_ids,rate_override,contracted_week,weekly_hours_target,holiday_entitlement_days,address,emergency_contact,bank_sort_code,bank_account,bank_account_masked,created_at')
     .eq('location_id', locationId).neq('status', 'leaver').order('created_at', { ascending: true });
   if (error) { console.warn('[wf] loadStaff:', error.message); return []; }
   return (data || []).map(mapStaff);

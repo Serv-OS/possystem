@@ -10,6 +10,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { Icon } from '../../../components/ServOSIcons';
 import { Card, EmptyState, Badge, RoleChip, th, td, inputStyle, labelStyle, groupColor, cellTint, initials, LoadingCard } from '../../../staff/wfUi';
 import * as wf from '../../../staff/wfData';
+import { isHourly, avgHoursPerDay, FIXED_HOLIDAY_DAYS } from '../../../staff/labour';
 
 const TABS = [
   { key: 'leave', lbl: 'Leave requests', icon: 'note' },
@@ -39,6 +40,7 @@ export default function WfLeave({ ctx, staff = [], roles, sections, settings, we
   const [leave, setLeave] = useState([]);
   const [accrual, setAccrual] = useState([]);
   const [avail, setAvail] = useState([]);
+  const [timesheets, setTimesheets] = useState([]);
   const [reqOpen, setReqOpen] = useState(false);
   const [running, setRunning] = useState(false);
 
@@ -52,9 +54,10 @@ export default function WfLeave({ ctx, staff = [], roles, sections, settings, we
       wf.loadTimeOff(ctx?.locationId),
       wf.loadAccrual(ctx?.locationId),
       wf.loadAvailability(ctx?.locationId),
-    ]).then(([lv, ac, av]) => {
+      wf.loadTimesheets(ctx?.locationId),
+    ]).then(([lv, ac, av, ts]) => {
       if (!live) return;
-      setLeave(lv || []); setAccrual(ac || []); setAvail(av || []);
+      setLeave(lv || []); setAccrual(ac || []); setAvail(av || []); setTimesheets(ts || []);
     }).catch(() => { if (live) showToast?.('Could not load time off', 'error'); })
       .finally(() => { if (live) setLoading(false); });
     return () => { live = false; };
@@ -130,7 +133,7 @@ export default function WfLeave({ ctx, staff = [], roles, sections, settings, we
         <LeaveSection leave={leave} staffById={staffById} roles={roles} onRequest={() => setReqOpen(true)} onDecide={decide} />
       )}
       {tab === 'balances' && (
-        <BalancesSection staff={staff} roles={roles} balances={balances} accrual={accrual} running={running} onRun={runAccrual} />
+        <BalancesSection staff={staff} roles={roles} balances={balances} accrual={accrual} leave={leave} timesheets={timesheets} running={running} onRun={runAccrual} />
       )}
       {tab === 'avail' && (
         <AvailSection staff={staff} roles={roles} avail={avail} onSave={saveAvailRow} />
@@ -201,45 +204,68 @@ function LeaveSection({ leave, staffById, roles, onRequest, onDecide }) {
 }
 
 // ── Section: Holiday balances ────────────────────────────────────────────────
-function BalancesSection({ staff, roles, balances, accrual, running, onRun }) {
+function BalancesSection({ staff, roles, balances, accrual, leave, timesheets, running, onRun }) {
   const action = (
     <button className="btn btn-acc btn-sm" onClick={onRun} disabled={running}>
       <Icon name="sparkle" size={14} /> {running ? 'Running…' : 'Run accrual'}
     </button>
   );
   if (!staff.length) {
-    return <EmptyState icon="sun" title="No staff to accrue holiday for" body="Add team members in Workforce › Staff. Each approved hour worked accrues statutory holiday, computed on the server." />;
+    return <EmptyState icon="sun" title="No staff to accrue holiday for" body="Add team members in Workforce › Staff. Hourly staff accrue holiday at 12.07% of hours worked; salaried staff get a fixed allowance." />;
   }
+  const rolesMap = roles?.map || {};
+  const thisYear = new Date().getFullYear();
+  // approved holiday DAYS taken this year, per staff
+  const takenDays = {};
+  (leave || []).forEach(l => {
+    if (l.type !== 'holiday' || l.status !== 'approved') return;
+    const y = l.startDate ? new Date(l.startDate + 'T00:00:00').getFullYear() : thisYear;
+    if (y !== thisYear) return;
+    takenDays[l.staffId] = (takenDays[l.staffId] || 0) + Number(l.days || 0);
+  });
   return (
     <Card>
-      <Toolbar title="Holiday balances" sub="Accrued holiday hours per team member" action={action} />
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--t3)', background: 'var(--inset)', border: '1px solid var(--inset-border)', borderRadius: 10, padding: '8px 12px', marginBottom: 14 }}>
-        <Icon name="warn" size={14} /> 12.07% statutory of approved hours, server-computed.
+      <Toolbar title="Holiday balances" sub="Hourly staff accrue 12.07%; salaried staff get a fixed allowance" action={action} />
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 12, color: 'var(--t3)', background: 'var(--inset)', border: '1px solid var(--inset-border)', borderRadius: 10, padding: '8px 12px', marginBottom: 14, lineHeight: 1.6 }}>
+        <Icon name="warn" size={14} /> <span>UK statutory: <b>hourly / irregular-hours</b> staff accrue 12.07% of approved hours (server-computed); <b>salaried</b> staff get {FIXED_HOLIDAY_DAYS} days/year. For variable-hours staff, “a day” is their average paid hours per day worked, so a day is worth different hours per person.</span>
       </div>
-      {!accrual.length && (
-        <div style={{ fontSize: 12, color: 'var(--t4)', marginBottom: 12 }}>No accrual ledger yet — run accrual to populate balances from approved timesheets.</div>
-      )}
       <div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead><tr>
-            <th style={th}>Staff</th><th style={th}>Role</th>
-            <th style={{ ...th, textAlign: 'right' }}>Accrued hours</th>
-            <th style={{ ...th, textAlign: 'right' }}>Approx. days</th>
+            <th style={th}>Staff</th><th style={th}>Basis</th>
+            <th style={{ ...th, textAlign: 'right' }}>Accrued / allowance</th>
+            <th style={{ ...th, textAlign: 'right' }}>Taken</th>
+            <th style={{ ...th, textAlign: 'right' }}>Remaining</th>
           </tr></thead>
           <tbody>
             {staff.map(s => {
-              const hrs = balances[s.id] || 0;
+              const hourly = isHourly(s, rolesMap[s.role]);
+              const taken = takenDays[s.id] || 0;
+              let basis, accruedCol, takenCol, remainingCol;
+              if (hourly) {
+                const hrs = balances[s.id] || 0;
+                const avg = avgHoursPerDay((timesheets || []).filter(t => t.staffId === s.id)) || 0;
+                const accruedDays = avg > 0 ? hrs / avg : 0;
+                const remDays = Math.max(0, accruedDays - taken);
+                basis = <Badge tone="blue">Hourly · 12.07%</Badge>;
+                accruedCol = <span className="mono">{hrs.toFixed(1)}h{avg > 0 ? <span style={{ color: 'var(--t4)' }}> · ≈{accruedDays.toFixed(1)}d</span> : ''}</span>;
+                takenCol = <span className="mono" style={{ color: 'var(--t3)' }}>{taken.toFixed(1)}d</span>;
+                remainingCol = <span className="mono" style={{ fontWeight: 700 }}>{avg > 0 ? `${remDays.toFixed(1)}d` : '—'}</span>;
+              } else {
+                const allowance = s.holidayEntitlementDays != null ? Number(s.holidayEntitlementDays) : FIXED_HOLIDAY_DAYS;
+                const rem = Math.max(0, allowance - taken);
+                basis = <Badge tone="grey">Salaried · fixed</Badge>;
+                accruedCol = <span className="mono">{allowance}d</span>;
+                takenCol = <span className="mono" style={{ color: 'var(--t3)' }}>{taken.toFixed(1)}d</span>;
+                remainingCol = <span className="mono" style={{ fontWeight: 700, color: rem <= 0 ? 'var(--red)' : 'var(--t1)' }}>{rem.toFixed(1)}d</span>;
+              }
               return (
                 <tr key={s.id}>
-                  <td style={td}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <Avatar name={s.name} role={s.role} roles={roles} />
-                      <span style={{ fontWeight: 600 }}>{s.name}</span>
-                    </div>
-                  </td>
-                  <td style={td}>{s.role ? <RoleChip role={s.role} roles={roles?.map} /> : '—'}</td>
-                  <td style={{ ...td, textAlign: 'right' }} className="mono">{hrs.toFixed(2)}</td>
-                  <td style={{ ...td, textAlign: 'right', color: 'var(--t3)' }} className="mono">{(hrs / 8).toFixed(1)}</td>
+                  <td style={td}><div style={{ display: 'flex', alignItems: 'center', gap: 8 }}><Avatar name={s.name} role={s.role} roles={roles} /><span style={{ fontWeight: 600 }}>{s.name}</span></div></td>
+                  <td style={td}>{basis}</td>
+                  <td style={{ ...td, textAlign: 'right' }}>{accruedCol}</td>
+                  <td style={{ ...td, textAlign: 'right' }}>{takenCol}</td>
+                  <td style={{ ...td, textAlign: 'right' }}>{remainingCol}</td>
                 </tr>
               );
             })}
