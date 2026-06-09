@@ -1,0 +1,222 @@
+// supabase/functions/workforce-compute
+//
+// Server-side compute for pay-critical Workforce maths. The client NEVER
+// computes money for persistence — it calls this function, which runs with the
+// service role (bypasses RLS) and therefore enforces the tenant fence itself by
+// checking the caller's location access (mirroring user_accessible_locations).
+//
+// Actions:
+//   tronc.run    { location_id, week_start, pool }  → largest-remainder split of
+//                  the tip pool across published-shift hours × role points;
+//                  writes wf_tronc_runs + wf_tronc_lines + a tamper-evident audit.
+//   accrual.run  { location_id }                    → 12.07% (or venue rate) of
+//                  approved timesheet hours → wf_holiday_accrual (idempotent).
+//   pay.period   { location_id }                    → per-staff pay from approved
+//                  timesheets (read-only summary).
+//   labour       { location_id, from, to }          → daily closed_checks revenue.
+
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+
+const cors = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+};
+const json = (b: unknown, s = 200) =>
+  new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
+
+const admin = createClient(
+  Deno.env.get('SUPABASE_URL') ?? '',
+  Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
+  { auth: { autoRefreshToken: false, persistSession: false } },
+);
+
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
+async function sha256(s: string): Promise<string> {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
+  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** Append a tamper-evident audit row (prev_hash/row_hash chain per location). */
+async function writeAudit(loc: string, org: string | null, action: string, d: Record<string, unknown> = {}) {
+  const { data: last } = await admin.from('wf_audit')
+    .select('row_hash').eq('location_id', loc).order('at', { ascending: false }).limit(1).maybeSingle();
+  const prev = last?.row_hash ?? '';
+  const row_hash = await sha256(JSON.stringify({ loc, org, action, ...d, prev }));
+  await admin.from('wf_audit').insert({
+    location_id: loc, org_id: org, action,
+    actor_id: d.actorId ?? null, actor_name: d.actorName ?? null,
+    amount: d.amount ?? null, currency: d.currency ?? null, reason: d.reason ?? null,
+    entity: d.entity ?? null, entity_id: d.entityId ?? null,
+    before: d.before ?? null, after: d.after ?? null, prev_hash: prev, row_hash,
+  });
+}
+
+/** Largest-remainder allocation of a pool (£) across weighted units → pennies. */
+function allocate(pool: number, rows: { staff_id: string; hours: number; points: number }[]) {
+  const poolCents = Math.round(pool * 100);
+  const totalUnits = rows.reduce((a, r) => a + r.hours * r.points, 0);
+  if (poolCents <= 0 || totalUnits <= 0) {
+    return { totalUnits, pointValue: 0, totalPaid: 0, residual: round2(pool),
+      lines: rows.map(r => ({ ...r, units: r.hours * r.points, sharePct: 0, payout: 0 })) };
+  }
+  const calc = rows.map((r, i) => {
+    const units = r.hours * r.points;
+    const exact = (poolCents * units) / totalUnits;
+    const floor = Math.floor(exact);
+    return { i, units, sharePct: units / totalUnits, floor, frac: exact - floor };
+  });
+  const cents = calc.map(c => c.floor);
+  const remainder = poolCents - cents.reduce((a, c) => a + c, 0);
+  const order = [...calc].sort((a, b) => b.frac - a.frac || b.units - a.units || a.i - b.i);
+  for (let k = 0; k < remainder; k++) cents[order[k % order.length].i] += 1;
+  const lines = calc.map((c, idx) => ({ ...rows[idx], units: c.units, sharePct: c.sharePct, payout: cents[idx] / 100 }));
+  const totalPaid = cents.reduce((a, c) => a + c, 0) / 100;
+  return { totalUnits, pointValue: poolCents / 100 / totalUnits, totalPaid, residual: round2(poolCents / 100 - totalPaid), lines };
+}
+
+async function orgFor(loc: string): Promise<string | null> {
+  const { data } = await admin.from('locations').select('org_id').eq('id', loc).single();
+  return data?.org_id ?? null;
+}
+
+/** Enforce the tenant fence: caller must have access to the location (or be super_admin). */
+async function assertAccess(userId: string, loc: string): Promise<boolean> {
+  const [{ data: ul }, { data: prof }] = await Promise.all([
+    admin.from('user_locations').select('location_id').eq('user_id', userId),
+    admin.from('user_profiles').select('location_id, role').eq('id', userId).maybeSingle(),
+  ]);
+  if (prof?.role === 'super_admin') return true;
+  const allowed = new Set<string>([...(ul ?? []).map((r: any) => String(r.location_id))]);
+  if (prof?.location_id) allowed.add(String(prof.location_id));
+  return allowed.has(String(loc));
+}
+
+Deno.serve(async (req) => {
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
+  if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
+
+  const authHeader = req.headers.get('Authorization') ?? '';
+  const { data: { user } } = await admin.auth.getUser(authHeader.replace('Bearer ', ''));
+  if (!user) return json({ error: 'unauthorized' }, 401);
+
+  let body: Record<string, any>;
+  try { body = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
+
+  const { action, location_id } = body;
+  if (!action) return json({ error: 'action required' }, 400);
+  if (!location_id) return json({ error: 'location_id required' }, 400);
+  if (!(await assertAccess(user.id, location_id))) return json({ error: 'forbidden' }, 403);
+
+  const org = await orgFor(location_id);
+
+  try {
+    // ── TRONC RUN ────────────────────────────────────────────────────────────
+    if (action === 'tronc.run') {
+      const { week_start, pool } = body;
+      if (!week_start) return json({ error: 'week_start required' }, 400);
+      const poolNum = Number(pool) || 0;
+      const weekEnd = (() => { const d = new Date(week_start + 'T00:00:00'); d.setDate(d.getDate() + 6); return d.toISOString().slice(0, 10); })();
+
+      // Immutability: refuse to overwrite a finalized run; clear an existing draft.
+      const { data: existing } = await admin.from('wf_tronc_runs').select('id, status').eq('location_id', location_id).eq('week_start', week_start).maybeSingle();
+      if (existing && existing.status !== 'draft') return json({ error: `a ${existing.status} tronc run already exists for this week` }, 409);
+      if (existing) await admin.from('wf_tronc_runs').delete().eq('id', existing.id); // draft → replace (lines cascade)
+
+      const { data: shifts } = await admin.from('wf_shifts')
+        .select('staff_id, computed_hours, role_key')
+        .eq('location_id', location_id).gte('shift_date', week_start).lte('shift_date', weekEnd).eq('status', 'published');
+      if (!shifts || !shifts.length) return json({ error: 'no published shifts for this week — publish the rota first' }, 400);
+
+      const { data: roles } = await admin.from('wf_roles').select('key, tronc_weight').eq('location_id', location_id);
+      const pts: Record<string, number> = {}; (roles ?? []).forEach((r: any) => { pts[r.key] = Number(r.tronc_weight ?? 1); });
+
+      const byStaff: Record<string, { hours: number; role: string }> = {};
+      shifts.forEach((s: any) => {
+        const b = byStaff[s.staff_id] ?? (byStaff[s.staff_id] = { hours: 0, role: s.role_key });
+        b.hours += Number(s.computed_hours || 0);
+      });
+      const rows = Object.entries(byStaff).map(([staff_id, v]) => ({ staff_id, hours: round2(v.hours), points: pts[v.role] ?? 1 }));
+
+      const res = allocate(poolNum, rows);
+      const { data: run, error: runErr } = await admin.from('wf_tronc_runs').insert({
+        location_id, org_id: org, week_start, currency: 'GBP', pool: poolNum,
+        units_total: res.totalUnits, point_value: res.pointValue, total_paid: res.totalPaid, residual: res.residual,
+        status: 'run', lines: res.lines,
+      }).select().single();
+      if (runErr) return json({ error: runErr.message }, 500);
+
+      const lineRows = res.lines.map(l => ({
+        run_id: run.id, location_id, org_id: org, staff_id: l.staff_id,
+        hours: round2(l.hours), points: l.points, units: l.units, share_pct: l.sharePct, payout: l.payout, currency: 'GBP',
+      }));
+      const { error: linesErr } = await admin.from('wf_tronc_lines').insert(lineRows);
+      if (linesErr) { await admin.from('wf_tronc_runs').delete().eq('id', run.id); return json({ error: linesErr.message }, 500); }
+
+      await writeAudit(location_id, org, 'tronc.run', {
+        actorId: user.id, amount: res.totalPaid, currency: 'GBP', entity: 'wf_tronc_runs', entityId: run.id,
+        reason: `pool £${poolNum.toFixed(2)} over ${rows.length} staff, residual £${res.residual.toFixed(2)}`,
+        after: { week_start, pool: poolNum, total_paid: res.totalPaid },
+      });
+      return json({ ok: true, run_id: run.id, pool: poolNum, total_paid: res.totalPaid, residual: res.residual, point_value: res.pointValue, lines: res.lines });
+    }
+
+    // ── ACCRUAL RUN (12.07% statutory default) ────────────────────────────────
+    if (action === 'accrual.run') {
+      const { data: settings } = await admin.from('wf_venue_settings').select('accrual_rate').eq('location_id', location_id).maybeSingle();
+      const rate = Number(settings?.accrual_rate ?? 0.1207);
+      const { data: tss } = await admin.from('wf_timesheets')
+        .select('id, staff_id, actual_hours, effective_rate, currency').eq('location_id', location_id).eq('status', 'approved');
+      const { data: existing } = await admin.from('wf_holiday_accrual')
+        .select('source_timesheet_id').eq('location_id', location_id).not('source_timesheet_id', 'is', null);
+      const done = new Set((existing ?? []).map((e: any) => e.source_timesheet_id));
+      const toInsert = (tss ?? []).filter((t: any) => !done.has(t.id) && Number(t.actual_hours) > 0).map((t: any) => {
+        const hrs = round2(Number(t.actual_hours) * rate);
+        return {
+          location_id, org_id: org, staff_id: t.staff_id, kind: 'accrual', accrued_hours: hrs,
+          accrued_pay: t.effective_rate != null ? round2(hrs * Number(t.effective_rate)) : null,
+          accrual_rate: rate, currency: t.currency || 'GBP', source_timesheet_id: t.id,
+        };
+      });
+      if (toInsert.length) {
+        const { error } = await admin.from('wf_holiday_accrual').insert(toInsert);
+        if (error) return json({ error: error.message }, 500);
+        const totalHrs = round2(toInsert.reduce((a, r) => a + r.accrued_hours, 0));
+        await writeAudit(location_id, org, 'accrual.run', { actorId: user.id, reason: `${toInsert.length} timesheets @ ${(rate * 100).toFixed(2)}% → ${totalHrs}h`, after: { count: toInsert.length, hours: totalHrs } });
+        return json({ ok: true, accrued: toInsert.length, hours: totalHrs, rate });
+      }
+      return json({ ok: true, accrued: 0, hours: 0, rate });
+    }
+
+    // ── PAY PERIOD (read-only summary) ────────────────────────────────────────
+    if (action === 'pay.period') {
+      const { data: tss } = await admin.from('wf_timesheets')
+        .select('staff_id, actual_hours, effective_rate, pay_amount, status').eq('location_id', location_id).eq('status', 'approved');
+      const byStaff: Record<string, { hours: number; pay: number }> = {};
+      (tss ?? []).forEach((t: any) => {
+        const pay = t.pay_amount != null ? Number(t.pay_amount) : Number(t.actual_hours || 0) * Number(t.effective_rate || 0);
+        const b = byStaff[t.staff_id] ?? (byStaff[t.staff_id] = { hours: 0, pay: 0 });
+        b.hours += Number(t.actual_hours || 0); b.pay += pay;
+      });
+      const staff = Object.entries(byStaff).map(([staff_id, v]) => ({ staff_id, hours: round2(v.hours), pay: round2(v.pay) }));
+      return json({ ok: true, staff, total: round2(staff.reduce((a, s) => a + s.pay, 0)) });
+    }
+
+    // ── LABOUR (daily revenue from closed_checks) ─────────────────────────────
+    if (action === 'labour') {
+      const { from, to } = body;
+      if (!from || !to) return json({ error: 'from/to required' }, 400);
+      const { data } = await admin.from('closed_checks')
+        .select('total, closed_at, status').eq('location_id', String(location_id))
+        .gte('closed_at', `${from}T00:00:00`).lte('closed_at', `${to}T23:59:59`).neq('status', 'voided');
+      const daily: Record<string, number> = {};
+      (data ?? []).forEach((c: any) => { const d = new Date(c.closed_at).toISOString().slice(0, 10); daily[d] = (daily[d] || 0) + (Number(c.total) || 0); });
+      return json({ ok: true, daily });
+    }
+
+    return json({ error: `unknown action "${action}"` }, 400);
+  } catch (e) {
+    return json({ error: String((e as Error)?.message || e) }, 500);
+  }
+});

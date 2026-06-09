@@ -81,7 +81,7 @@ const NAV_IA = [
   { label:'Floor plan', icon:'floor',     single:'floorplan' },
   { label:'Inventory',  icon:'inventory', single:'inventory' },
   { label:'Team',       icon:'user',      single:'staff' },
-  { label:'Workforce',  icon:'team',      children:[['wf-dashboard','Dashboard'],['wf-rota','Rota'],['wf-timesheets','Timesheets'],['wf-timeoff','Time off & availability'],['wf-staff','Staff'],['wf-onboarding','Onboarding'],['wf-compliance','Compliance'],['wf-pay','Pay & rates'],['wf-tronc','Tronc / tips'],['wf-announce','Announcements'],['wf-settings','Workforce settings']] },
+  { label:'Workforce',  icon:'team',      children:[['wf-dashboard','Dashboard'],['wf-rota','Rota'],['wf-timesheets','Timesheets'],['wf-timeoff','Time off & availability'],['wf-staff','Staff'],['wf-onboarding','Onboarding'],['wf-compliance','Compliance'],['wf-pay','Positions & rates'],['wf-tronc','Tronc / tips'],['wf-announce','Announcements'],['wf-settings','Workforce settings']] },
   { label:'Customers',  icon:'customers', children:[['customers','Customers'],['loyalty','Loyalty'],['giftcards','Gift cards'],['messages','Messages']] },
   { label:'Channels',   icon:'channels',  children:[['online','Online ordering'],['kiosks','Kiosks']] },
   { label:'Hardware',   icon:'hardware',  children:[['devices','Terminals'],['profiles','Device profiles'],['printers','Printers'],['printing','Production printing'],['cardreaders','Card readers'],['cashdrawers','Cash drawers'],['network','Network & sync']] },
@@ -184,7 +184,7 @@ export default function BackOfficeApp() {
       }
       if (error || !data) {
         console.error('[BackOfficeApp] user_profiles query failed:', error?.message);
-        setOrgCtx({ role: null, boAccess: true, orgId: null, orgName: 'Serv OS', locationId: null, locationName: null });
+        setOrgCtx({ role: null, boAccess: true, orgId: null, orgName: 'Serv OS', locationId: null, locationName: null, userId: authUser?.id || null, userName: authUser?.email || null });
         return;
       }
       profile = data;
@@ -244,6 +244,8 @@ export default function BackOfficeApp() {
         orgName,
         locationId: effectiveLocId,
         locationName,
+        userId: authUser?.id || null,
+        userName: profile.full_name || authUser?.email || null,
       });
       if (effectiveLocId) {
         setResolvedLocationId(effectiveLocId);

@@ -14,7 +14,17 @@ import { supabase } from '../../lib/supabase';
 import { Icon } from '../../components/ServOSIcons';
 import { DAYS, TODAY, SECTIONS, ROLES, SECTION_REQ, FORECAST, PAYROWS } from '../../staff/seed';
 import { hoursOf, effectiveRate, wageByDay, labourPct, LABOUR_TARGET, troncRun, tsVariance } from '../../staff/labour';
-import { loadStaff, saveStaff, softDeleteStaff, markPosUser } from '../../staff/wfData';
+import { loadStaff, saveStaff, softDeleteStaff, markPosUser, loadRoles, loadSections, loadSettings } from '../../staff/wfData';
+import { buildWeek } from '../../staff/wfWeek';
+import WfRota from './workforce/WfRota';
+import WfTimesheets from './workforce/WfTimesheets';
+import WfTronc from './workforce/WfTronc';
+import WfPay from './workforce/WfPay';
+import WfLeave from './workforce/WfLeave';
+import WfOnboarding from './workforce/WfOnboarding';
+import WfCompliance from './workforce/WfCompliance';
+import WfAnnouncements from './workforce/WfAnnouncements';
+import WfSettings from './workforce/WfSettings';
 
 const money = (n, dp = 0) => '£' + Number(n || 0).toLocaleString('en-GB', { minimumFractionDigits: dp, maximumFractionDigits: dp });
 const HUE = { mgmt: 250, bar: 200, floor: 150, kitchen: 38, door: 285 };
@@ -30,7 +40,7 @@ const SUBS = {
   'wf-staff': ['Staff', 'HR records'],
   'wf-onboarding': ['Onboarding', 'New starter setup'],
   'wf-compliance': ['Compliance', 'Documents & expiries'],
-  'wf-pay': ['Pay & rates', 'Rates, labour & cost'],
+  'wf-pay': ['Positions & rates', 'Add, edit & remove positions and their pay'],
   'wf-tronc': ['Tronc / tips', 'Pooled tip distribution'],
   'wf-announce': ['Announcements', 'Team messaging'],
   'wf-settings': ['Workforce settings', 'Venues, roles & sections'],
@@ -41,6 +51,7 @@ export default function Workforce({ section, orgCtx }) {
   const [staff, setStaff] = useState([]);
   const [loading, setLoading] = useState(true);
   const [addOpen, setAddOpen] = useState(false);
+  const [editing, setEditing] = useState(null); // staff record being edited (HR + rate override)
   const [posFor, setPosFor] = useState(null); // staff being promoted to a POS user
 
   // Workforce is scoped to the location selected in the Back Office (bottom-left
@@ -49,13 +60,26 @@ export default function Workforce({ section, orgCtx }) {
   const locName = orgCtx?.locationName || 'This location';
   const key = (section || 'wf-dashboard').replace('wf-', '');
 
-  // Load this location's staff (wf_staff, RLS-fenced) on mount + on location change.
+  // Editable positions (wf_roles), sections (wf_sections) + venue settings.
+  const [roles, setRoles] = useState({ list: [], map: {} });
+  const [sections, setSections] = useState([]);
+  const [settings, setSettings] = useState({ currency: 'GBP', labourTargetPct: 0.28, accrualRate: 0.1207, premiums: {}, salesSource: 'pos' });
+
+  // Load this location's staff (wf_staff, RLS-fenced) + config on mount / location change.
   useEffect(() => {
     let alive = true;
     setLoading(true);
     loadStaff(locationId).then(rows => { if (alive) { setStaff(rows); setLoading(false); } });
+    Promise.all([loadRoles(locationId, orgCtx?.orgId), loadSections(locationId), loadSettings(locationId)])
+      .then(([r, s, set]) => { if (alive) { if (r) setRoles(r); if (s) setSections(s); if (set) setSettings(set); } })
+      .catch(() => {});
     return () => { alive = false; };
   }, [locationId]);
+
+  const week = useMemo(() => buildWeek(), []);
+  const ctx = useMemo(() => ({ locationId, orgId: orgCtx?.orgId || null, actor: { id: orgCtx?.userId || null, name: orgCtx?.userName || null } }), [locationId, orgCtx]);
+  const sectionProps = { ctx, staff, roles, sections, settings, week, showToast };
+  const rolesMap = (roles.map && Object.keys(roles.map).length) ? roles.map : ROLES;
   const [title, sub] = SUBS[section] || ['Workforce', ''];
 
   // Rota roster: real staff grouped by their role's section.
@@ -65,9 +89,19 @@ export default function Workforce({ section, orgCtx }) {
     return Object.keys(by).map(grp => ({ name: GRP_SECTION[grp] || grp, staff: by[grp] }));
   }, [staff]);
 
-  // Add an HR record: optimistic, then persist to wf_staff; roll back on failure.
-  const addStaff = async (data) => {
-    setAddOpen(false);
+  // Add or edit an HR record (incl. per-employee pay-rate override): optimistic,
+  // persist to wf_staff, roll back on failure.
+  const saveMember = async (data) => {
+    setAddOpen(false); setEditing(null);
+    if (data.id) { // edit
+      const prev = staff;
+      setStaff(st => st.map(x => x.id === data.id ? { ...x, ...data } : x));
+      try {
+        const saved = await saveStaff(data, locationId, orgCtx?.orgId);
+        setStaff(st => st.map(x => x.id === data.id ? { ...saved, days: x.days || {} } : x));
+      } catch (e) { setStaff(prev); showToast?.(`Couldn't save ${data.name}: ${e.message || 'error'}`, 'error'); }
+      return;
+    }
     const tmpId = `tmp-${Date.now()}`;
     setStaff(st => [...st, { ...data, id: tmpId, days: {} }]);
     try {
@@ -112,17 +146,20 @@ export default function Workforce({ section, orgCtx }) {
       </div>
 
       {key === 'dashboard' && <WfDashboard groups={groups} staffCount={staff.length} />}
-      {key === 'rota' && <WfRota groups={groups} />}
+      {key === 'rota' && <WfRota {...sectionProps} />}
       {key === 'staff' && (loading
         ? <Card style={{ textAlign: 'center', padding: 44, color: 'var(--t3)' }}>Loading staff…</Card>
-        : <WfStaff staff={staff} onAdd={() => setAddOpen(true)} onSetPos={setPosFor} onRemove={removeStaff} />)}
-      {key === 'timesheets' && <EmptyState icon="status" title="No timesheets yet" body="Timesheets appear when staff clock in/out against scheduled shifts. Build the rota and publish it first." />}
-      {key === 'pay' && <WfPay />}
-      {key === 'tronc' && <EmptyState icon="tag" title="No tronc run yet" body="The tip pool (card tips + service charge) comes from the POS. Once staff and hours exist, the weekly run splits the pool by hours × role points." />}
-      {key === 'compliance' && <EmptyState icon="warn" title="No documents yet" body="Right-to-work, food hygiene, SIA and other documents are tracked per staff member. Add staff, then upload their documents here." />}
-      {['timeoff', 'onboarding', 'announce', 'settings'].includes(key) && <WfPlaceholder title={title} />}
+        : <WfStaff staff={staff} roles={rolesMap} onAdd={() => setAddOpen(true)} onEdit={setEditing} onSetPos={setPosFor} onRemove={removeStaff} />)}
+      {key === 'timesheets' && <WfTimesheets {...sectionProps} />}
+      {key === 'pay' && <WfPay {...sectionProps} />}
+      {key === 'tronc' && <WfTronc {...sectionProps} />}
+      {key === 'compliance' && <WfCompliance {...sectionProps} />}
+      {key === 'timeoff' && <WfLeave {...sectionProps} />}
+      {key === 'onboarding' && <WfOnboarding {...sectionProps} />}
+      {key === 'announce' && <WfAnnouncements {...sectionProps} />}
+      {key === 'settings' && <WfSettings {...sectionProps} />}
 
-      {addOpen && <AddStaffModal locName={locName} onClose={() => setAddOpen(false)} onSave={addStaff} />}
+      {(addOpen || editing) && <AddStaffModal locName={locName} staff={editing} roles={rolesMap} onClose={() => { setAddOpen(false); setEditing(null); }} onSave={saveMember} />}
       {posFor && <PosUserModal staff={posFor} onClose={() => setPosFor(null)} onSave={(opts) => setAsPosUser(posFor, opts)} />}
     </div>
   );
@@ -132,8 +169,8 @@ export default function Workforce({ section, orgCtx }) {
 function Card({ children, style }) {
   return <div style={{ background: 'var(--glass-bg)', backdropFilter: 'blur(22px) saturate(150%)', WebkitBackdropFilter: 'blur(22px) saturate(150%)', border: '1px solid var(--glass-border)', boxShadow: 'var(--glass-shadow), var(--glass-hi)', borderRadius: 16, padding: 18, ...style }}>{children}</div>;
 }
-function RoleChip({ role }) {
-  const r = ROLES[role]; if (!r) return <span style={{ color: 'var(--t3)' }}>{role}</span>; const col = groupColor(r.grp);
+function RoleChip({ role, roles = ROLES }) {
+  const r = roles[role]; if (!r) return <span style={{ color: 'var(--t3)' }}>{role || '—'}</span>; const col = groupColor(r.grp);
   return <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, color: col }}><span style={{ width: 7, height: 7, borderRadius: '50%', background: col }} />{r.lbl}</span>;
 }
 const BADGE = { green: ['var(--grn-d)', 'var(--grn-b)', 'var(--grn)'], amber: ['rgba(245,166,35,.13)', 'rgba(245,166,35,.30)', 'var(--amber)'], red: ['var(--red-d)', 'var(--red-b)', 'var(--red)'], blue: ['var(--blu-d)', 'var(--blu-b)', 'var(--blu)'] };
@@ -176,23 +213,27 @@ function WfDashboard({ groups, staffCount }) {
 }
 
 // ── Staff (HR list + CRUD) ──
-function WfStaff({ staff, onAdd, onSetPos, onRemove }) {
+function WfStaff({ staff, roles = ROLES, onAdd, onEdit, onSetPos, onRemove }) {
   if (staff.length === 0) return <EmptyState icon="team" title="No staff yet" body="Add your team here. Each person is an HR record — you can then set them as a POS user to give them till access on the Team page." cta="Add staff member" onCta={onAdd} />;
   return (
     <Card style={{ padding: 0, overflow: 'hidden' }}>
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-        <thead><tr>{['Name', 'Role', 'Contract', 'Mobile', 'POS access', ''].map((h, i) => <th key={i} style={th}>{h}</th>)}</tr></thead>
+        <thead><tr>{['Name', 'Position', 'Pay rate', 'Contract', 'Mobile', 'POS access', ''].map((h, i) => <th key={i} style={th}>{h}</th>)}</tr></thead>
         <tbody>
           {staff.map(s => {
-            const role = ROLES[s.role]; const rate = role ? (role.rate ? `£${role.rate.toFixed(2)}/h` : `£${role.salary / 1000}k`) : '';
+            const role = roles[s.role];
+            const baseRate = role ? (role.rate != null ? `£${Number(role.rate).toFixed(2)}/h` : (role.salary ? `£${Math.round(role.salary / 1000)}k/yr` : '—')) : '—';
+            const hasOverride = s.rateOverride != null && s.rateOverride !== '';
+            const rateLbl = hasOverride ? `£${Number(s.rateOverride).toFixed(2)}/h` : baseRate;
             return (
               <tr key={s.id}>
                 <td style={td}><div style={{ display: 'flex', alignItems: 'center', gap: 9 }}><span style={{ width: 28, height: 28, borderRadius: '50%', background: 'var(--inset)', border: '1px solid var(--inset-border)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 700, color: 'var(--t3)', flexShrink: 0 }}>{initials(s.name)}</span><b style={{ fontWeight: 600 }}>{s.name}</b></div></td>
-                <td style={td}><RoleChip role={s.role} /> <span className="mono" style={{ fontSize: 11, color: 'var(--t4)', marginLeft: 4 }}>{rate}</span></td>
+                <td style={td}><RoleChip role={s.role} roles={roles} /></td>
+                <td style={{ ...td, whiteSpace: 'nowrap' }}><span className="mono" style={{ fontSize: 12, fontWeight: 700 }}>{rateLbl}</span>{hasOverride && <span style={{ marginLeft: 6 }}><Badge tone="blue">override</Badge></span>}</td>
                 <td style={{ ...td, color: 'var(--t2)' }}>{s.contractType || '—'}</td>
                 <td style={{ ...td, fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--t2)' }}>{s.mobile || '—'}</td>
                 <td style={td}>{s.posUserId ? <Badge tone="green">POS user ✓</Badge> : <button className="btn btn-ghost btn-xs" onClick={() => onSetPos(s)}>Set as POS user</button>}</td>
-                <td style={{ ...td, textAlign: 'right' }}><button className="btn btn-ghost btn-xs" onClick={() => onRemove(s.id)} title="Remove"><Icon name="close" size={13} /></button></td>
+                <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }}><button className="btn btn-ghost btn-xs" onClick={() => onEdit(s)}>Edit</button> <button className="btn btn-ghost btn-xs" onClick={() => onRemove(s.id)} title="Remove"><Icon name="close" size={13} /></button></td>
               </tr>
             );
           })}
@@ -205,18 +246,29 @@ function WfStaff({ staff, onAdd, onSetPos, onRemove }) {
 const inputStyle = { width: '100%', background: 'var(--bg3)', border: '1.5px solid var(--bdr2)', borderRadius: 10, padding: '10px 12px', height: 42, fontSize: 13, color: 'var(--t1)', fontFamily: 'inherit', outline: 'none' };
 const labelStyle = { display: 'block', fontFamily: 'var(--font-mono)', fontSize: 9.5, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--t3)', marginBottom: 6 };
 
-function AddStaffModal({ locName, onClose, onSave }) {
-  const [f, setF] = useState({ name: '', role: 'server', contractType: 'partTime', mobile: '', email: '', dob: '', startDate: '' });
+function AddStaffModal({ locName, staff, roles = ROLES, onClose, onSave }) {
+  const isEdit = !!staff;
+  const roleOpts = Object.entries(roles);
+  const [f, setF] = useState(isEdit
+    ? { name: staff.name || '', role: staff.role || roleOpts[0]?.[0] || 'server', contractType: staff.contractType || 'partTime', mobile: staff.mobile || '', email: staff.email || '', dob: staff.dob || '', startDate: staff.startDate || '', rateOverride: staff.rateOverride != null ? String(staff.rateOverride) : '' }
+    : { name: '', role: roleOpts[0]?.[0] || 'server', contractType: 'partTime', mobile: '', email: '', dob: '', startDate: '', rateOverride: '' });
   const set = (k, v) => setF(p => ({ ...p, [k]: v }));
   const valid = f.name.trim().length > 1;
+  const roleRate = roles[f.role]?.rate;
+  const submit = () => {
+    const payload = { ...f, rateOverride: f.rateOverride === '' ? null : Number(f.rateOverride) };
+    if (isEdit) payload.id = staff.id;
+    onSave(payload);
+  };
   return (
     <div className="modal-back" onClick={e => e.target === e.currentTarget && onClose()}>
       <div className="modal-box" style={{ maxWidth: 480 }}>
-        <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 4 }}>Add staff member</div>
-        <div style={{ fontSize: 13, color: 'var(--t3)', marginBottom: 16 }}>HR record for {locName}. Set them as a POS user afterwards to grant till access.</div>
+        <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 4 }}>{isEdit ? 'Edit staff member' : 'Add staff member'}</div>
+        <div style={{ fontSize: 13, color: 'var(--t3)', marginBottom: 16 }}>{isEdit ? `Editing ${staff.name}'s HR record at ${locName}.` : `HR record for ${locName}. Set them as a POS user afterwards to grant till access.`}</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
           <div style={{ gridColumn: '1 / -1' }}><label style={labelStyle}>Full name</label><input style={inputStyle} value={f.name} onChange={e => set('name', e.target.value)} placeholder="e.g. Jordan Lee" autoFocus /></div>
-          <div><label style={labelStyle}>Role</label><select style={inputStyle} value={f.role} onChange={e => set('role', e.target.value)}>{Object.entries(ROLES).map(([k, r]) => <option key={k} value={k}>{r.lbl}</option>)}</select></div>
+          <div><label style={labelStyle}>Position</label><select style={inputStyle} value={f.role} onChange={e => set('role', e.target.value)}>{roleOpts.map(([k, r]) => <option key={k} value={k}>{r.lbl}</option>)}</select></div>
+          <div><label style={labelStyle}>Pay rate override (£/h)</label><input style={inputStyle} value={f.rateOverride} onChange={e => set('rateOverride', e.target.value.replace(/[^0-9.]/g, ''))} placeholder={roleRate != null ? `Position default £${Number(roleRate).toFixed(2)}` : 'Position default'} inputMode="decimal" /></div>
           <div><label style={labelStyle}>Contract</label><select style={inputStyle} value={f.contractType} onChange={e => set('contractType', e.target.value)}><option value="zeroHours">Zero hours</option><option value="partTime">Part time</option><option value="fullTime">Full time</option><option value="salaried">Salaried</option></select></div>
           <div><label style={labelStyle}>Mobile (SMS)</label><input style={inputStyle} value={f.mobile} onChange={e => set('mobile', e.target.value)} placeholder="+44 7700 900000" /></div>
           <div><label style={labelStyle}>Email</label><input style={inputStyle} value={f.email} onChange={e => set('email', e.target.value)} placeholder="name@email.com" /></div>
@@ -225,7 +277,7 @@ function AddStaffModal({ locName, onClose, onSave }) {
         </div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 9, marginTop: 20 }}>
           <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn btn-acc" disabled={!valid} onClick={() => onSave(f)}>Add staff member</button>
+          <button className="btn btn-acc" disabled={!valid} onClick={submit}>{isEdit ? 'Save changes' : 'Add staff member'}</button>
         </div>
       </div>
     </div>
@@ -253,117 +305,6 @@ function PosUserModal({ staff, onClose, onSave }) {
   );
 }
 
-// ── Rota (the spine) — builds from real staff ──
-function WfRota({ groups }) {
-  const [view, setView] = useState('a');
-  const [pub, setPub] = useState(false);
-  const wage = wageByDay(groups);
-  if (groups.length === 0) return <EmptyState icon="floor" title="No rota yet" body="Add staff first — then they appear here grouped by section and you can build their shifts. The labour footer (wage vs sales) updates live as you schedule." />;
-  return (
-    <>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
-        <div style={{ display: 'inline-flex', padding: 3, borderRadius: 11, background: 'var(--inset)', border: '1px solid var(--inset-border)' }}>
-          {[['a', 'By staff'], ['b', 'By section']].map(([k, lbl]) => (
-            <button key={k} onClick={() => setView(k)} style={{ padding: '7px 14px', borderRadius: 8, border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12.5, fontWeight: 600, background: view === k ? 'var(--bg1)' : 'transparent', boxShadow: view === k ? 'var(--glass-hi)' : 'none', color: view === k ? 'var(--t1)' : 'var(--t3)' }}>{lbl}</button>
-          ))}
-        </div>
-        <div style={{ flex: 1 }} />
-        <button className="btn btn-acc btn-sm" onClick={() => setPub(true)}>Publish rota →</button>
-      </div>
-      <Card style={{ padding: 0, overflow: 'hidden' }}>
-        <div style={{ overflowX: 'auto' }}>{view === 'a' ? <RotaByStaff groups={groups} wage={wage} /> : <RotaBySection groups={groups} />}</div>
-      </Card>
-      {pub && <PublishModal groups={groups} onClose={() => setPub(false)} />}
-    </>
-  );
-}
-const cellTint = (col, a) => `color-mix(in oklch, ${col} ${a}%, transparent)`;
-function RotaByStaff({ groups, wage }) {
-  return (
-    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, minWidth: 880 }}>
-      <thead><tr><th style={{ ...th, minWidth: 200 }}>Staff · role</th>{DAYS.map((d, i) => <th key={i} style={{ ...th, textAlign: 'center', color: i === TODAY ? 'var(--acc)' : 'var(--t3)' }}>{d[0]} {d[1]}</th>)}</tr></thead>
-      <tbody>{groups.map(g => <RotaGroupRows key={g.name} g={g} />)}</tbody>
-      <tfoot>
-        <FootRow label="Forecast sales" cells={FORECAST.map(f => f ? money(f) : '—')} />
-        <FootRow label="Wage cost" cells={wage.map(w => money(w))} />
-        <tr><td style={{ ...td, fontWeight: 700, color: 'var(--t2)' }}>Labour % <span style={{ color: 'var(--t4)', fontWeight: 400 }}>(target {Math.round(LABOUR_TARGET * 100)}%)</span></td>{wage.map((w, i) => { const has = FORECAST[i] > 0; const p = labourPct(w, FORECAST[i]); const over = p > LABOUR_TARGET; return <td key={i} style={{ ...td, textAlign: 'center', fontFamily: 'var(--font-mono)', fontWeight: 800, color: !has ? 'var(--t4)' : over ? 'var(--red)' : 'var(--grn)' }}>{has ? Math.round(p * 100) + '%' : '—'}</td>; })}</tr>
-      </tfoot>
-    </table>
-  );
-}
-function RotaGroupRows({ g }) {
-  return (
-    <>
-      <tr><td colSpan={8} style={{ ...td, fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.12em', textTransform: 'uppercase', color: 'var(--t4)', background: 'var(--inset)', fontWeight: 700 }}>{g.name}</td></tr>
-      {g.staff.map(s => {
-        const role = ROLES[s.role]; const days = s.days || {};
-        const rateLbl = role ? (role.rate ? `£${role.rate.toFixed(2)}/h${s.band ? ' · ' + s.band : ''}` : `£${role.salary / 1000}k · salaried`) : '';
-        return (
-          <tr key={s.id || s.name}>
-            <td style={{ ...td, borderRight: '1px solid var(--bdr)' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-                <span style={{ width: 26, height: 26, borderRadius: '50%', background: 'var(--inset)', border: '1px solid var(--inset-border)', flexShrink: 0 }} />
-                <div style={{ minWidth: 0 }}><div style={{ fontWeight: 600 }}>{s.name}</div><div style={{ fontSize: 10.5, color: 'var(--t3)', display: 'flex', alignItems: 'center', gap: 6, marginTop: 1 }}><RoleChip role={s.role} /><span style={{ fontFamily: 'var(--font-mono)' }}>{rateLbl}</span></div></div>
-              </div>
-            </td>
-            {Array.from({ length: 7 }, (_, i) => {
-              const c = days[i]; const tcol = i === TODAY ? 'var(--inset)' : undefined;
-              if (Array.isArray(c)) { const col = groupColor(c[2]); const hrs = hoursOf(c[0], c[1]); return <td key={i} style={{ ...td, padding: 4, background: tcol }}><div style={{ borderRadius: 9, padding: '6px 8px', background: cellTint(col, 13), border: `1px solid ${cellTint(col, 30)}`, borderLeft: `2.5px solid ${col}` }}><div style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, fontWeight: 700 }}>{c[0]}–{c[1]}</div><div style={{ fontSize: 10, color: 'var(--t3)' }}>{hrs}h</div></div></td>; }
-              return <td key={i} style={{ ...td, textAlign: 'center', background: tcol }}><button style={{ width: 26, height: 26, borderRadius: 8, border: '1px dashed var(--bdr2)', background: 'transparent', color: 'var(--t4)', cursor: 'pointer', fontSize: 15 }}>+</button></td>;
-            })}
-          </tr>
-        );
-      })}
-    </>
-  );
-}
-function FootRow({ label, cells }) { return <tr><td style={{ ...td, fontWeight: 600, color: 'var(--t2)' }}>{label}</td>{cells.map((c, i) => <td key={i} style={{ ...td, textAlign: 'center', fontFamily: 'var(--font-mono)', color: 'var(--t2)' }}>{c}</td>)}</tr>; }
-function RotaBySection({ groups }) {
-  const map = {}; Object.keys(SECTION_REQ).forEach(s => map[s] = {});
-  groups.forEach(g => g.staff.forEach(s => { for (let i = 0; i < 7; i++) { const c = (s.days || {})[i]; if (Array.isArray(c) && map[c[2]]) { (map[c[2]][i] = map[c[2]][i] || []).push(s.name.split(' ')[0]); } } }));
-  return (
-    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 880 }}>
-      <thead><tr><th style={{ ...th, minWidth: 160 }}>Section</th>{DAYS.map((d, i) => <th key={i} style={{ ...th, textAlign: 'center', color: i === TODAY ? 'var(--acc)' : 'var(--t3)' }}>{d[0]} {d[1]}</th>)}</tr></thead>
-      <tbody>{Object.keys(SECTION_REQ).map(sec => { const req = SECTION_REQ[sec]; const col = groupColor(sec); return (
-        <tr key={sec}><td style={{ ...td, borderRight: '1px solid var(--bdr)' }}><div style={{ fontWeight: 600, color: col }}>{SECTIONS[sec]}</div><div style={{ fontSize: 10.5, color: 'var(--t4)' }}>Min {req}</div></td>
-          {Array.from({ length: 7 }, (_, i) => { const ppl = map[sec][i] || []; const n = ppl.length; const ok = n >= req; return <td key={i} style={{ ...td, textAlign: 'center', background: i === TODAY ? 'var(--inset)' : undefined }}><span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, color: ok ? 'var(--grn)' : n === 0 ? 'var(--t4)' : 'var(--red)' }}>{n}/{req}</span></td>; })}
-        </tr>); })}</tbody>
-    </table>
-  );
-}
-
-// ── Pay & rates (rate card from config) ──
-function WfPay() {
-  return (
-    <Card style={{ padding: 0, overflow: 'hidden' }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-        <thead><tr>{['Role', 'Pay type', 'Rate', 'Note', ''].map((h, i) => <th key={i} style={{ ...th, textAlign: i === 2 ? 'right' : 'left' }}>{h}</th>)}</tr></thead>
-        <tbody>{PAYROWS.map((r, i) => (
-          <tr key={i}><td style={td}><span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontWeight: 600, color: groupColor(r.grp) }}><span style={{ width: 7, height: 7, borderRadius: '50%', background: groupColor(r.grp) }} />{r.role}</span></td><td style={{ ...td, color: 'var(--t2)' }}>{r.type}</td><td style={{ ...td, textAlign: 'right', fontFamily: 'var(--font-mono)', fontWeight: 700 }}>{r.rate}</td><td style={{ ...td, color: 'var(--t3)', fontSize: 12 }}>{r.note || '—'}</td><td style={{ ...td, textAlign: 'right' }}><button className="btn btn-ghost btn-xs">Edit</button></td></tr>
-        ))}</tbody>
-      </table>
-    </Card>
-  );
-}
-
-function PublishModal({ groups, onClose }) {
-  const recipients = groups.flatMap(g => g.staff);
-  return (
-    <div className="modal-back" onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="modal-box" style={{ maxWidth: 440 }}>
-        <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 4 }}>Publish rota</div>
-        <div style={{ fontSize: 13, color: 'var(--t3)', marginBottom: 14 }}>Sends each person their own shifts by SMS with a confirm link.</div>
-        {recipients.length === 0 ? <div style={{ fontSize: 13, color: 'var(--t3)', padding: '12px 0' }}>No staff scheduled yet.</div> : (
-          <div style={{ border: '1px solid var(--bdr)', borderRadius: 10, maxHeight: 200, overflowY: 'auto', marginBottom: 14 }}>
-            {recipients.map((s, i) => <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '9px 12px', borderBottom: i < recipients.length - 1 ? '1px solid var(--bdr)' : 'none', fontSize: 13 }}><span style={{ flex: 1 }}>{s.name}</span><span className="mono" style={{ fontSize: 11, color: s.mobile ? 'var(--t4)' : 'var(--red)' }}>{s.mobile || 'No mobile'}</span></div>)}
-          </div>
-        )}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 9 }}><button className="btn btn-ghost" onClick={onClose}>Cancel</button><button className="btn btn-acc" onClick={onClose}>Publish & send SMS</button></div>
-      </div>
-    </div>
-  );
-}
-
-function WfPlaceholder({ title }) {
-  return <EmptyState icon="sparkle" title={title} body={`This Workforce screen is in the build queue. ${title} ships next, wired to the same staff + labour engine.`} />;
-}
+// Rota, Pay, Timesheets, Tronc, Leave, Onboarding, Compliance, Announcements and
+// Settings now live as their own components under ./workforce/ (imported above),
+// each wired to the wf_* tables + server-side compute.

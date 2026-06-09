@@ -80,6 +80,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.376', date: '9 Jun 2026', label: 'Workforce — full module live (rota, timesheets, tronc, positions, leave/accrual, onboarding, compliance, announcements, settings)',
+    changes: [
+      'Every Workforce screen is now a working, database-backed tool scoped to the selected location: Rota (weekly shift builder with live labour % vs forecast + actual POS sales, draft/publish), Timesheets (clock vs scheduled, variance, approve), Positions & rates (add/edit/remove positions with editable pay), Tronc/tips, Time off & holiday accrual, Onboarding, Compliance documents, Announcements and Workforce settings.',
+      'Pay-critical maths runs SERVER-SIDE (new workforce-compute edge function): tronc splits the pool by hours × position points reconciled to the penny, holiday accrues at 12.07% of approved hours, and pay totals come from approved timesheets — the client never computes money for the record. Finalised tronc runs are immutable and every money action is written to a tamper-evident audit log.',
+      'Staff records now support a per-employee pay-rate override (overrides the position default), plus full edit. "Pay & rates" is renamed "Positions & rates".',
+    ],
+  },
+  {
     version: '5.5.375', date: '9 Jun 2026', label: 'Workforce — Staff now persists to the database (per location)',
     changes: [
       'Workforce → Staff is now backed by the wf_staff table (was interim localStorage). Adding a person writes a real HR record scoped to the current location; the list reloads from the database on every visit and survives refresh, config push and wake-from-sleep.',

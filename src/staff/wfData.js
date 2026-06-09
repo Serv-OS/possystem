@@ -5,46 +5,43 @@
 // supabase/migrations/20260608_workforce.sql). Everything is scoped to the
 // Back Office's selected location; there is no per-module venue switcher.
 //
-// Tenant fence: wf_staff is ORG-scoped under RLS, but the Workforce UI is
-// per-LOCATION, so reads filter by location_id and writes stamp both
-// location_id (home venue) + org_id. org_id is resolved from the locations
-// table so the (location_id, org_id) pair always satisfies the composite FK.
+// Tenant fence: wf_staff is ORG-scoped under RLS; everything else is
+// LOCATION-scoped. Writes always stamp location_id + org_id, where org_id is
+// resolved from the locations table so the (location_id, org_id) pair satisfies
+// the composite FK. Pay-critical maths (tronc / pay / accrual) is computed
+// SERVER-SIDE via the workforce-compute edge function — never trust the client.
 //
-// Mock/local-dev (isMock, no Supabase) falls back to localStorage so the flow
-// is still testable without a backend. Production always hits Supabase.
+// Mock/local-dev (isMock, no Supabase) falls back to localStorage per table so
+// every flow is testable without a backend. Production always hits Supabase.
 
 import { supabase, isMock } from '../lib/supabase';
+import { ROLES as SEED_ROLES } from './seed';
 
-const LS_KEY = 'rpos-wf-staff';
-const orgCache = {}; // locationId -> org_id (avoids re-querying locations)
+const orgCache = {};
 
-// ── localStorage fallback (mock only) ───────────────────────────────────────
-function lsGet() { try { return JSON.parse(localStorage.getItem(LS_KEY) || '[]'); } catch { return []; } }
-function lsSet(a) { try { localStorage.setItem(LS_KEY, JSON.stringify(a)); } catch { /* ignore */ } }
+// ── localStorage mock layer ─────────────────────────────────────────────────
+const lsKey = t => `rpos-wf-${t}`;
+const lsGet = t => { try { return JSON.parse(localStorage.getItem(lsKey(t)) || '[]'); } catch { return []; } };
+const lsSet = (t, a) => { try { localStorage.setItem(lsKey(t), JSON.stringify(a)); } catch { /* ignore */ } };
+const newId = () => `wf-${Date.now()}-${Math.floor(Math.random() * 1e5)}`;
+function lsUpsert(t, obj) {
+  const a = lsGet(t);
+  const id = obj.id && !String(obj.id).startsWith('tmp-') ? obj.id : newId();
+  const o = { ...obj, id };
+  const i = a.findIndex(x => x.id === id);
+  if (i >= 0) a[i] = { ...a[i], ...o }; else a.push(o);
+  lsSet(t, a);
+  return o;
+}
+const lsDelete = (t, id) => lsSet(t, lsGet(t).filter(x => x.id !== id));
 
-// ── snake_case row → camelCase UI shape ─────────────────────────────────────
-function mapStaffRow(r) {
-  return {
-    id: r.id,
-    name: r.name,
-    role: r.role_key,
-    contractType: r.contract_type,
-    mobile: r.mobile,
-    email: r.email,
-    dob: r.dob,
-    startDate: r.start_date,
-    status: r.status,
-    posUserId: r.pos_user_id,
-    posRole: r.pos_role || null,           // UI-only convenience (not a column)
-    sectionIds: Array.isArray(r.section_ids) ? r.section_ids : [],
-    rateOverride: r.rate_override,
-    contractedWeek: r.contracted_week,
-    days: {},                              // rota assignment lives in wf_shifts
-  };
+// ── shared helpers ──────────────────────────────────────────────────────────
+async function authToken() {
+  try { const { data } = await supabase.auth.getSession(); return data?.session?.access_token || null; }
+  catch { return null; }
 }
 
-/** Resolve the canonical org_id for a location (cached). Guarantees the
- *  (location_id, org_id) pair matches the locations composite FK. */
+/** Resolve canonical org_id for a location (cached) so (location_id, org_id) is FK-valid. */
 export async function resolveOrgForLocation(locationId, fallbackOrgId) {
   if (!locationId) return fallbackOrgId || null;
   if (orgCache[locationId]) return orgCache[locationId];
@@ -57,77 +54,492 @@ export async function resolveOrgForLocation(locationId, fallbackOrgId) {
   } catch { return fallbackOrgId || null; }
 }
 
-/** Load active (non-leaver) staff for a location, newest-last. */
-export async function loadStaff(locationId) {
-  if (isMock || !supabase) return lsGet();
-  if (!locationId) return [];
-  const { data, error } = await supabase
-    .from('wf_staff')
-    .select('id,name,role_key,contract_type,mobile,email,dob,start_date,status,pos_user_id,section_ids,rate_override,contracted_week,created_at')
-    .eq('location_id', locationId)
-    .neq('status', 'leaver')
-    .order('created_at', { ascending: true });
-  if (error) { console.warn('[wf] loadStaff:', error.message); return []; }
-  return (data || []).map(mapStaffRow);
+/** Call the server-side compute edge function (tronc / pay / accrual / labour). */
+export async function invokeCompute(action, payload = {}) {
+  if (isMock || !supabase) return { ok: true, mock: true, action };
+  const token = await authToken();
+  const base = import.meta.env.VITE_SUPABASE_URL;
+  const res = await fetch(`${base}/functions/v1/workforce-compute`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({ action, ...payload }),
+  });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(j.error || `compute "${action}" failed`);
+  return j;
 }
 
-/** Insert (or update if it carries a real id) a staff HR record. Returns the
- *  canonical mapped row (with the DB-generated id). Throws on DB error so the
- *  caller can roll back the optimistic row + surface a toast. */
+// ============================================================================
+// STAFF (wf_staff — org-scoped PII; Workforce shows the current location's staff)
+// ============================================================================
+function mapStaff(r) {
+  return {
+    id: r.id, name: r.name, role: r.role_key, contractType: r.contract_type,
+    mobile: r.mobile, email: r.email, dob: r.dob, startDate: r.start_date,
+    status: r.status, posUserId: r.pos_user_id, sectionIds: r.section_ids || [],
+    rateOverride: r.rate_override, contractedWeek: r.contracted_week, days: {},
+  };
+}
+export async function loadStaff(locationId) {
+  if (isMock || !supabase) return lsGet('staff');
+  if (!locationId) return [];
+  const { data, error } = await supabase.from('wf_staff')
+    .select('id,name,role_key,contract_type,mobile,email,dob,start_date,status,pos_user_id,section_ids,rate_override,contracted_week,created_at')
+    .eq('location_id', locationId).neq('status', 'leaver').order('created_at', { ascending: true });
+  if (error) { console.warn('[wf] loadStaff:', error.message); return []; }
+  return (data || []).map(mapStaff);
+}
 export async function saveStaff(member, locationId, orgId) {
-  if (isMock || !supabase) {
-    const id = member.id && !String(member.id).startsWith('tmp-') ? member.id : `wf-${Date.now()}`;
-    const rows = lsGet();
-    const next = { ...member, id, status: member.status || 'active' };
-    const i = rows.findIndex(r => r.id === id);
-    if (i >= 0) rows[i] = { ...rows[i], ...next }; else rows.push(next);
-    lsSet(rows);
-    return next;
-  }
+  if (isMock || !supabase) return lsUpsert('staff', { ...member, status: member.status || 'active' });
   if (!locationId) throw new Error('No location selected');
   const org = await resolveOrgForLocation(locationId, orgId);
   const row = {
-    location_id: locationId,
-    org_id: org,
-    name: member.name,
-    role_key: member.role || null,
-    contract_type: member.contractType || 'partTime',
-    mobile: member.mobile || null,
-    email: member.email || null,
-    dob: member.dob || null,
-    start_date: member.startDate || null,
-    primary_venue_id: locationId,
-    venue_ids: [locationId],
-    status: member.status || 'active',
+    location_id: locationId, org_id: org, name: member.name, role_key: member.role || null,
+    contract_type: member.contractType || 'partTime', mobile: member.mobile || null,
+    email: member.email || null, dob: member.dob || null, start_date: member.startDate || null,
+    primary_venue_id: locationId, venue_ids: [locationId], status: member.status || 'active',
   };
-  const hasRealId = member.id && !String(member.id).startsWith('tmp-') && !String(member.id).startsWith('wf-');
-  if (hasRealId) row.id = member.id;
-  const q = hasRealId
-    ? supabase.from('wf_staff').upsert(row, { onConflict: 'id' })
-    : supabase.from('wf_staff').insert(row);
+  const real = member.id && !String(member.id).startsWith('tmp-') && !String(member.id).startsWith('wf-');
+  if (real) row.id = member.id;
+  const q = real ? supabase.from('wf_staff').upsert(row, { onConflict: 'id' }) : supabase.from('wf_staff').insert(row);
   const { data, error } = await q.select().single();
   if (error) { console.warn('[wf] saveStaff:', error.message); throw new Error(error.message); }
-  return mapStaffRow(data);
+  return mapStaff(data);
 }
-
-/** Soft-delete: mark as leaver (pay/compliance history is preserved, never hard-deleted). */
 export async function softDeleteStaff(id) {
-  if (isMock || !supabase) { lsSet(lsGet().filter(r => r.id !== id)); return; }
-  if (!id) return;
+  if (isMock || !supabase) return lsDelete('staff', id);
   const today = new Date().toISOString().slice(0, 10);
   const { error } = await supabase.from('wf_staff').update({ status: 'leaver', leaver_date: today }).eq('id', id);
   if (error) console.warn('[wf] softDeleteStaff:', error.message);
 }
-
-/** Link the HR record to its POS system user (staff_members.id) after "Set as POS user". */
 export async function markPosUser(staffId, posUserId) {
-  if (isMock || !supabase) {
-    const rows = lsGet();
-    const i = rows.findIndex(r => r.id === staffId);
-    if (i >= 0) { rows[i] = { ...rows[i], posUserId }; lsSet(rows); }
-    return;
-  }
-  if (!staffId) return;
+  if (isMock || !supabase) { const a = lsGet('staff'); const i = a.findIndex(x => x.id === staffId); if (i >= 0) { a[i].posUserId = posUserId; lsSet('staff', a); } return; }
   const { error } = await supabase.from('wf_staff').update({ pos_user_id: posUserId }).eq('id', staffId);
   if (error) console.warn('[wf] markPosUser:', error.message);
+}
+
+// ============================================================================
+// ROLES (wf_roles — editable rate card)
+// ============================================================================
+function mapRole(r) {
+  return {
+    id: r.id, key: r.key, lbl: r.label, grp: r.grp, payType: r.pay_type,
+    rate: r.base_rate != null ? Number(r.base_rate) : null,
+    salary: r.salary_annual != null ? Number(r.salary_annual) : null,
+    contractedWeek: r.contracted_week != null ? Number(r.contracted_week) : 40,
+    ageBands: r.age_bands || [], troncWeight: Number(r.tronc_weight ?? 1),
+    requiresSIA: !!r.requires_sia, premiumEligible: !!r.premium_eligible, sortOrder: r.sort_order || 0,
+  };
+}
+/** Returns { list:[roleObj], map:{key:roleObj} } for the location, seeding defaults if empty. */
+export async function loadRoles(locationId, orgId) {
+  let list;
+  if (isMock || !supabase) {
+    list = lsGet('roles');
+    if (!list.length) { list = seedRoleObjects(); lsSet('roles', list); }
+  } else {
+    if (!locationId) return { list: [], map: {} };
+    const { data, error } = await supabase.from('wf_roles').select('*').eq('location_id', locationId).order('sort_order');
+    if (error) { console.warn('[wf] loadRoles:', error.message); return { list: [], map: {} }; }
+    list = (data || []).map(mapRole);
+    if (!list.length) { list = await seedDefaultRoles(locationId, orgId); }
+  }
+  const map = {}; list.forEach(r => { map[r.key] = r; });
+  return { list, map };
+}
+function seedRoleObjects() {
+  return Object.entries(SEED_ROLES).map(([key, r], i) => ({
+    id: `wf-role-${key}`, key, lbl: r.lbl, grp: r.grp, payType: r.salary ? 'salaried' : r.band ? 'ageBanded' : 'hourly',
+    rate: r.rate ?? null, salary: r.salary ?? null, contractedWeek: 40, ageBands: [], troncWeight: 1,
+    requiresSIA: !!r.requiresSIA, premiumEligible: true, sortOrder: i,
+  }));
+}
+async function seedDefaultRoles(locationId, orgId) {
+  const org = await resolveOrgForLocation(locationId, orgId);
+  const rows = Object.entries(SEED_ROLES).map(([key, r], i) => ({
+    location_id: locationId, org_id: org, key, label: r.lbl, grp: r.grp,
+    pay_type: r.salary ? 'salaried' : r.band ? 'ageBanded' : 'hourly',
+    base_rate: r.rate ?? null, salary_annual: r.salary ?? null, contracted_week: 40,
+    tronc_weight: 1, requires_sia: !!r.requiresSIA, sort_order: i,
+  }));
+  const { data, error } = await supabase.from('wf_roles').insert(rows).select();
+  if (error) { console.warn('[wf] seedDefaultRoles:', error.message); return seedRoleObjects(); }
+  return (data || []).map(mapRole);
+}
+export async function saveRole(role, locationId, orgId) {
+  if (isMock || !supabase) return lsUpsert('roles', role);
+  const org = await resolveOrgForLocation(locationId, orgId);
+  const row = {
+    location_id: locationId, org_id: org, key: role.key, label: role.lbl, grp: role.grp,
+    pay_type: role.payType || 'hourly', base_rate: role.rate ?? null, salary_annual: role.salary ?? null,
+    contracted_week: role.contractedWeek ?? 40, tronc_weight: role.troncWeight ?? 1,
+    requires_sia: !!role.requiresSIA, premium_eligible: role.premiumEligible !== false, sort_order: role.sortOrder || 0,
+  };
+  const real = role.id && !String(role.id).startsWith('wf-role-') && !String(role.id).startsWith('tmp-');
+  if (real) row.id = role.id;
+  const q = real ? supabase.from('wf_roles').upsert(row, { onConflict: 'id' }) : supabase.from('wf_roles').insert(row);
+  const { data, error } = await q.select().single();
+  if (error) throw new Error(error.message);
+  return mapRole(data);
+}
+export async function deleteRole(id) {
+  if (isMock || !supabase) return lsDelete('roles', id);
+  const { error } = await supabase.from('wf_roles').delete().eq('id', id);
+  if (error) console.warn('[wf] deleteRole:', error.message);
+}
+
+// ============================================================================
+// SECTIONS (wf_sections)
+// ============================================================================
+const mapSection = r => ({ id: r.id, name: r.name, color: r.color, minCoverage: r.min_coverage, peakRules: r.peak_rules || [], sortOrder: r.sort_order || 0 });
+export async function loadSections(locationId) {
+  if (isMock || !supabase) return lsGet('sections');
+  if (!locationId) return [];
+  const { data, error } = await supabase.from('wf_sections').select('*').eq('location_id', locationId).order('sort_order');
+  if (error) { console.warn('[wf] loadSections:', error.message); return []; }
+  return (data || []).map(mapSection);
+}
+export async function saveSection(section, locationId, orgId) {
+  if (isMock || !supabase) return lsUpsert('sections', section);
+  const org = await resolveOrgForLocation(locationId, orgId);
+  const row = { location_id: locationId, org_id: org, name: section.name, color: section.color || null, min_coverage: section.minCoverage ?? 1, sort_order: section.sortOrder || 0 };
+  const real = section.id && !String(section.id).startsWith('wf-') && !String(section.id).startsWith('tmp-');
+  if (real) row.id = section.id;
+  const q = real ? supabase.from('wf_sections').upsert(row, { onConflict: 'id' }) : supabase.from('wf_sections').insert(row);
+  const { data, error } = await q.select().single();
+  if (error) throw new Error(error.message);
+  return mapSection(data);
+}
+export async function deleteSection(id) {
+  if (isMock || !supabase) return lsDelete('sections', id);
+  const { error } = await supabase.from('wf_sections').delete().eq('id', id);
+  if (error) console.warn('[wf] deleteSection:', error.message);
+}
+
+// ============================================================================
+// VENUE SETTINGS (wf_venue_settings — PK location_id)
+// ============================================================================
+const DEFAULT_SETTINGS = { currency: 'GBP', labourTargetPct: 0.28, accrualRate: 0.1207, premiums: {}, salesSource: 'pos', settings: {} };
+const mapSettings = r => ({ currency: r.currency || 'GBP', labourTargetPct: Number(r.labour_target_pct ?? 0.28), accrualRate: Number(r.accrual_rate ?? 0.1207), premiums: r.premiums || {}, salesSource: r.sales_source || 'pos', settings: r.settings || {} });
+export async function loadSettings(locationId) {
+  if (isMock || !supabase) { const a = lsGet('settings'); return a[0] || { ...DEFAULT_SETTINGS }; }
+  if (!locationId) return { ...DEFAULT_SETTINGS };
+  const { data, error } = await supabase.from('wf_venue_settings').select('*').eq('location_id', locationId).maybeSingle();
+  if (error) { console.warn('[wf] loadSettings:', error.message); return { ...DEFAULT_SETTINGS }; }
+  return data ? mapSettings(data) : { ...DEFAULT_SETTINGS };
+}
+export async function saveSettings(patch, locationId, orgId) {
+  if (isMock || !supabase) { lsSet('settings', [{ ...DEFAULT_SETTINGS, ...patch }]); return { ...DEFAULT_SETTINGS, ...patch }; }
+  const org = await resolveOrgForLocation(locationId, orgId);
+  const row = {
+    location_id: locationId, org_id: org,
+    currency: patch.currency || 'GBP', labour_target_pct: patch.labourTargetPct ?? 0.28,
+    accrual_rate: patch.accrualRate ?? 0.1207, premiums: patch.premiums || {}, sales_source: patch.salesSource || 'pos',
+    settings: patch.settings || {}, updated_at: new Date().toISOString(),
+  };
+  const { data, error } = await supabase.from('wf_venue_settings').upsert(row, { onConflict: 'location_id' }).select().single();
+  if (error) throw new Error(error.message);
+  return mapSettings(data);
+}
+
+// ============================================================================
+// SHIFTS (wf_shifts) — rota. Pay rate is SNAPSHOTTED at save time.
+// ============================================================================
+const mapShift = r => ({
+  id: r.id, staffId: r.staff_id, roleKey: r.role_key, sectionId: r.section_id, section: r.section,
+  date: r.shift_date, start: (r.start_time || '').slice(0, 5), finish: (r.finish_time || '').slice(0, 5),
+  breakMins: r.break_mins || 0, status: r.status, note: r.note,
+  effectiveRate: r.effective_rate != null ? Number(r.effective_rate) : null, rateSource: r.rate_source,
+  computedHours: r.computed_hours != null ? Number(r.computed_hours) : null,
+  computedCost: r.computed_cost != null ? Number(r.computed_cost) : null,
+});
+export async function loadShifts(locationId, fromIso, toIso) {
+  if (isMock || !supabase) return lsGet('shifts').filter(s => (!fromIso || s.date >= fromIso) && (!toIso || s.date <= toIso));
+  if (!locationId) return [];
+  let q = supabase.from('wf_shifts').select('*').eq('location_id', locationId);
+  if (fromIso) q = q.gte('shift_date', fromIso);
+  if (toIso) q = q.lte('shift_date', toIso);
+  const { data, error } = await q.order('shift_date');
+  if (error) { console.warn('[wf] loadShifts:', error.message); return []; }
+  return (data || []).map(mapShift);
+}
+export async function saveShift(shift, locationId, orgId) {
+  if (isMock || !supabase) return lsUpsert('shifts', shift);
+  const org = await resolveOrgForLocation(locationId, orgId);
+  const row = {
+    location_id: locationId, org_id: org, staff_id: shift.staffId, role_key: shift.roleKey || null,
+    section_id: shift.sectionId || null, section: shift.section || null, shift_date: shift.date,
+    start_time: shift.start, finish_time: shift.finish, break_mins: shift.breakMins || 0,
+    status: shift.status || 'draft', note: shift.note || null,
+    effective_rate: shift.effectiveRate ?? null, rate_source: shift.rateSource || null,
+    currency: shift.currency || 'GBP', computed_hours: shift.computedHours ?? null, computed_cost: shift.computedCost ?? null,
+  };
+  const real = shift.id && !String(shift.id).startsWith('tmp-') && !String(shift.id).startsWith('wf-');
+  if (real) row.id = shift.id;
+  const q = real ? supabase.from('wf_shifts').upsert(row, { onConflict: 'id' }) : supabase.from('wf_shifts').insert(row);
+  const { data, error } = await q.select().single();
+  if (error) throw new Error(error.message);
+  return mapShift(data);
+}
+export async function deleteShift(id) {
+  if (isMock || !supabase) return lsDelete('shifts', id);
+  const { error } = await supabase.from('wf_shifts').delete().eq('id', id);
+  if (error) console.warn('[wf] deleteShift:', error.message);
+}
+export async function publishShifts(ids) {
+  if (!ids?.length) return;
+  if (isMock || !supabase) { const a = lsGet('shifts'); a.forEach(s => { if (ids.includes(s.id)) s.status = 'published'; }); lsSet('shifts', a); return; }
+  const { error } = await supabase.from('wf_shifts').update({ status: 'published' }).in('id', ids);
+  if (error) console.warn('[wf] publishShifts:', error.message);
+}
+
+// ============================================================================
+// TIMESHEETS (wf_timesheets)
+// ============================================================================
+const mapTs = r => ({
+  id: r.id, shiftId: r.shift_id, staffId: r.staff_id, clockIn: r.clock_in, clockOut: r.clock_out,
+  breakTaken: r.break_taken || 0, scheduledHours: Number(r.scheduled_hours ?? 0), actualHours: Number(r.actual_hours ?? 0),
+  variance: r.variance != null ? Number(r.variance) : null, payAmount: r.pay_amount != null ? Number(r.pay_amount) : null,
+  effectiveRate: r.effective_rate != null ? Number(r.effective_rate) : null, rateSource: r.rate_source,
+  status: r.status, approvedBy: r.approved_by, approvedAt: r.approved_at,
+});
+export async function loadTimesheets(locationId, fromIso, toIso) {
+  if (isMock || !supabase) return lsGet('timesheets');
+  if (!locationId) return [];
+  let q = supabase.from('wf_timesheets').select('*').eq('location_id', locationId);
+  const { data, error } = await q.order('created_at', { ascending: false });
+  if (error) { console.warn('[wf] loadTimesheets:', error.message); return []; }
+  return (data || []).map(mapTs);
+}
+export async function saveTimesheet(ts, locationId, orgId) {
+  if (isMock || !supabase) return lsUpsert('timesheets', ts);
+  const org = await resolveOrgForLocation(locationId, orgId);
+  const row = {
+    location_id: locationId, org_id: org, shift_id: ts.shiftId || null, staff_id: ts.staffId,
+    clock_in: ts.clockIn || null, clock_out: ts.clockOut || null, break_taken: ts.breakTaken || 0,
+    scheduled_hours: ts.scheduledHours ?? null, actual_hours: ts.actualHours ?? null, variance: ts.variance ?? null,
+    effective_rate: ts.effectiveRate ?? null, rate_source: ts.rateSource || null, currency: ts.currency || 'GBP',
+    pay_amount: ts.payAmount ?? null, status: ts.status || 'pending',
+  };
+  const real = ts.id && !String(ts.id).startsWith('tmp-') && !String(ts.id).startsWith('wf-');
+  if (real) row.id = ts.id;
+  const q = real ? supabase.from('wf_timesheets').upsert(row, { onConflict: 'id' }) : supabase.from('wf_timesheets').insert(row);
+  const { data, error } = await q.select().single();
+  if (error) throw new Error(error.message);
+  return mapTs(data);
+}
+export async function approveTimesheet(id, approvedBy) {
+  if (isMock || !supabase) { const a = lsGet('timesheets'); const i = a.findIndex(x => x.id === id); if (i >= 0) { a[i].status = 'approved'; lsSet('timesheets', a); } return; }
+  const { error } = await supabase.from('wf_timesheets').update({ status: 'approved', approved_by: approvedBy || null, approved_at: new Date().toISOString() }).eq('id', id);
+  if (error) console.warn('[wf] approveTimesheet:', error.message);
+}
+
+// ============================================================================
+// TIME OFF (wf_time_off) + AVAILABILITY (wf_availability)
+// ============================================================================
+const mapLeave = r => ({ id: r.id, staffId: r.staff_id, type: r.type, startDate: r.start_date, endDate: r.end_date, days: Number(r.days ?? 0), note: r.note, status: r.status, decidedBy: r.decided_by, decidedAt: r.decided_at });
+export async function loadTimeOff(locationId) {
+  if (isMock || !supabase) return lsGet('timeoff');
+  if (!locationId) return [];
+  const { data, error } = await supabase.from('wf_time_off').select('*').eq('location_id', locationId).order('start_date', { ascending: false });
+  if (error) { console.warn('[wf] loadTimeOff:', error.message); return []; }
+  return (data || []).map(mapLeave);
+}
+export async function saveTimeOff(leave, locationId, orgId) {
+  if (isMock || !supabase) return lsUpsert('timeoff', leave);
+  const org = await resolveOrgForLocation(locationId, orgId);
+  const row = { location_id: locationId, org_id: org, staff_id: leave.staffId, type: leave.type, start_date: leave.startDate, end_date: leave.endDate, days: leave.days ?? null, note: leave.note || null, status: leave.status || 'pending' };
+  const real = leave.id && !String(leave.id).startsWith('tmp-') && !String(leave.id).startsWith('wf-');
+  if (real) row.id = leave.id;
+  const q = real ? supabase.from('wf_time_off').upsert(row, { onConflict: 'id' }) : supabase.from('wf_time_off').insert(row);
+  const { data, error } = await q.select().single();
+  if (error) throw new Error(error.message);
+  return mapLeave(data);
+}
+export async function decideTimeOff(id, status, decidedBy) {
+  if (isMock || !supabase) { const a = lsGet('timeoff'); const i = a.findIndex(x => x.id === id); if (i >= 0) { a[i].status = status; lsSet('timeoff', a); } return; }
+  const { error } = await supabase.from('wf_time_off').update({ status, decided_by: decidedBy || null, decided_at: new Date().toISOString() }).eq('id', id);
+  if (error) console.warn('[wf] decideTimeOff:', error.message);
+}
+const mapAvail = r => ({ id: r.id, staffId: r.staff_id, weekStart: r.week_start, recurring: r.recurring, perDay: r.per_day || [] });
+export async function loadAvailability(locationId) {
+  if (isMock || !supabase) return lsGet('availability');
+  if (!locationId) return [];
+  const { data, error } = await supabase.from('wf_availability').select('*').eq('location_id', locationId);
+  if (error) { console.warn('[wf] loadAvailability:', error.message); return []; }
+  return (data || []).map(mapAvail);
+}
+export async function saveAvailability(av, locationId, orgId) {
+  if (isMock || !supabase) return lsUpsert('availability', av);
+  const org = await resolveOrgForLocation(locationId, orgId);
+  const row = { location_id: locationId, org_id: org, staff_id: av.staffId, week_start: av.weekStart || null, recurring: !!av.recurring, per_day: av.perDay || [] };
+  const real = av.id && !String(av.id).startsWith('tmp-') && !String(av.id).startsWith('wf-');
+  if (real) row.id = av.id;
+  const q = real ? supabase.from('wf_availability').upsert(row, { onConflict: 'id' }) : supabase.from('wf_availability').insert(row);
+  const { data, error } = await q.select().single();
+  if (error) throw new Error(error.message);
+  return mapAvail(data);
+}
+
+// ============================================================================
+// HOLIDAY ACCRUAL (wf_holiday_accrual — append-only ledger; balance = sum)
+// ============================================================================
+const mapAccrual = r => ({ id: r.id, staffId: r.staff_id, kind: r.kind, periodStart: r.period_start, accruedHours: Number(r.accrued_hours ?? 0), accruedPay: r.accrued_pay != null ? Number(r.accrued_pay) : null, accrualRate: r.accrual_rate != null ? Number(r.accrual_rate) : null, createdAt: r.created_at });
+export async function loadAccrual(locationId) {
+  if (isMock || !supabase) return lsGet('accrual');
+  if (!locationId) return [];
+  const { data, error } = await supabase.from('wf_holiday_accrual').select('*').eq('location_id', locationId).order('created_at', { ascending: false });
+  if (error) { console.warn('[wf] loadAccrual:', error.message); return []; }
+  return (data || []).map(mapAccrual);
+}
+/** Per-staff balance (hours) derived from the ledger. */
+export function accrualBalances(rows) {
+  const bal = {};
+  rows.forEach(r => { bal[r.staffId] = (bal[r.staffId] || 0) + Number(r.accruedHours || 0); });
+  return bal;
+}
+
+// ============================================================================
+// TRONC (wf_tronc_runs + wf_tronc_lines) — runs are computed SERVER-SIDE.
+// ============================================================================
+const mapRun = r => ({ id: r.id, weekStart: r.week_start, currency: r.currency, pool: Number(r.pool ?? 0), unitsTotal: r.units_total != null ? Number(r.units_total) : null, pointValue: r.point_value != null ? Number(r.point_value) : null, totalPaid: Number(r.total_paid ?? 0), residual: Number(r.residual ?? 0), status: r.status, lines: r.lines || [], createdAt: r.created_at });
+const mapLine = r => ({ id: r.id, runId: r.run_id, staffId: r.staff_id, hours: Number(r.hours ?? 0), points: Number(r.points ?? 0), units: Number(r.units ?? 0), sharePct: Number(r.share_pct ?? 0), payout: Number(r.payout ?? 0) });
+export async function loadTroncRuns(locationId) {
+  if (isMock || !supabase) return lsGet('tronc');
+  if (!locationId) return [];
+  const { data, error } = await supabase.from('wf_tronc_runs').select('*').eq('location_id', locationId).order('week_start', { ascending: false });
+  if (error) { console.warn('[wf] loadTroncRuns:', error.message); return []; }
+  return (data || []).map(mapRun);
+}
+export async function loadTroncLines(runId) {
+  if (isMock || !supabase) return [];
+  const { data, error } = await supabase.from('wf_tronc_lines').select('*').eq('run_id', runId).order('payout', { ascending: false });
+  if (error) { console.warn('[wf] loadTroncLines:', error.message); return []; }
+  return (data || []).map(mapLine);
+}
+
+// ============================================================================
+// DOCUMENTS (wf_documents — compliance vault)
+// ============================================================================
+const mapDoc = r => ({ id: r.id, staffId: r.staff_id, type: r.type, fileUrl: r.file_url, status: r.status, issuedOn: r.issued_on, expiry: r.expiry, verifiedBy: r.verified_by, verifiedAt: r.verified_at });
+export async function loadDocuments(locationId) {
+  if (isMock || !supabase) return lsGet('documents');
+  if (!locationId) return [];
+  const { data, error } = await supabase.from('wf_documents').select('*').eq('location_id', locationId).order('expiry', { ascending: true, nullsFirst: false });
+  if (error) { console.warn('[wf] loadDocuments:', error.message); return []; }
+  return (data || []).map(mapDoc);
+}
+export async function saveDocument(doc, locationId, orgId) {
+  if (isMock || !supabase) return lsUpsert('documents', doc);
+  const org = await resolveOrgForLocation(locationId, orgId);
+  const row = { location_id: locationId, org_id: org, staff_id: doc.staffId, type: doc.type, file_url: doc.fileUrl || null, status: doc.status || 'missing', issued_on: doc.issuedOn || null, expiry: doc.expiry || null };
+  const real = doc.id && !String(doc.id).startsWith('tmp-') && !String(doc.id).startsWith('wf-');
+  if (real) row.id = doc.id;
+  const q = real ? supabase.from('wf_documents').upsert(row, { onConflict: 'id' }) : supabase.from('wf_documents').insert(row);
+  const { data, error } = await q.select().single();
+  if (error) throw new Error(error.message);
+  return mapDoc(data);
+}
+export async function deleteDocument(id) {
+  if (isMock || !supabase) return lsDelete('documents', id);
+  const { error } = await supabase.from('wf_documents').delete().eq('id', id);
+  if (error) console.warn('[wf] deleteDocument:', error.message);
+}
+
+// ============================================================================
+// ONBOARDING (wf_onboarding)
+// ============================================================================
+const mapOnb = r => ({ id: r.id, staffId: r.staff_id, roleKey: r.role_key, steps: r.steps || [], status: r.status, firstShiftDate: r.first_shift_date });
+export async function loadOnboarding(locationId) {
+  if (isMock || !supabase) return lsGet('onboarding');
+  if (!locationId) return [];
+  const { data, error } = await supabase.from('wf_onboarding').select('*').eq('location_id', locationId).order('created_at', { ascending: false });
+  if (error) { console.warn('[wf] loadOnboarding:', error.message); return []; }
+  return (data || []).map(mapOnb);
+}
+export async function saveOnboarding(onb, locationId, orgId) {
+  if (isMock || !supabase) return lsUpsert('onboarding', onb);
+  const org = await resolveOrgForLocation(locationId, orgId);
+  const row = { location_id: locationId, org_id: org, staff_id: onb.staffId, role_key: onb.roleKey || null, steps: onb.steps || [], status: onb.status || 'inProgress', first_shift_date: onb.firstShiftDate || null };
+  const real = onb.id && !String(onb.id).startsWith('tmp-') && !String(onb.id).startsWith('wf-');
+  if (real) row.id = onb.id;
+  const q = real ? supabase.from('wf_onboarding').upsert(row, { onConflict: 'id' }) : supabase.from('wf_onboarding').insert(row);
+  const { data, error } = await q.select().single();
+  if (error) throw new Error(error.message);
+  return mapOnb(data);
+}
+
+// ============================================================================
+// ANNOUNCEMENTS (wf_announcements)
+// ============================================================================
+const mapAnn = r => ({ id: r.id, authorName: r.author_name, audience: r.audience || {}, channels: r.channels || [], body: r.body, sentAt: r.sent_at, createdAt: r.created_at });
+export async function loadAnnouncements(locationId) {
+  if (isMock || !supabase) return lsGet('announce');
+  if (!locationId) return [];
+  const { data, error } = await supabase.from('wf_announcements').select('*').eq('location_id', locationId).order('created_at', { ascending: false });
+  if (error) { console.warn('[wf] loadAnnouncements:', error.message); return []; }
+  return (data || []).map(mapAnn);
+}
+export async function saveAnnouncement(ann, locationId, orgId, authorName) {
+  if (isMock || !supabase) return lsUpsert('announce', { ...ann, createdAt: new Date().toISOString() });
+  const org = await resolveOrgForLocation(locationId, orgId);
+  const row = { location_id: locationId, org_id: org, author_name: authorName || null, audience: ann.audience || {}, channels: ann.channels || ['inApp'], body: ann.body, sent_at: new Date().toISOString() };
+  const { data, error } = await supabase.from('wf_announcements').insert(row).select().single();
+  if (error) throw new Error(error.message);
+  return mapAnn(data);
+}
+
+// ============================================================================
+// SALES FORECAST (wf_sales_forecast) + ACTUAL sales (closed_checks)
+// ============================================================================
+export async function loadForecast(locationId, fromIso, toIso) {
+  if (isMock || !supabase) { const a = lsGet('forecast'); const m = {}; a.forEach(r => { m[r.date] = Number(r.amount || 0); }); return m; }
+  if (!locationId) return {};
+  let q = supabase.from('wf_sales_forecast').select('forecast_date, amount').eq('location_id', locationId);
+  if (fromIso) q = q.gte('forecast_date', fromIso);
+  if (toIso) q = q.lte('forecast_date', toIso);
+  const { data, error } = await q;
+  if (error) { console.warn('[wf] loadForecast:', error.message); return {}; }
+  const m = {}; (data || []).forEach(r => { m[r.forecast_date] = Number(r.amount || 0); });
+  return m;
+}
+export async function saveForecast(dateIso, amount, locationId, orgId) {
+  if (isMock || !supabase) { const a = lsGet('forecast').filter(r => r.date !== dateIso); a.push({ id: dateIso, date: dateIso, amount }); lsSet('forecast', a); return; }
+  const org = await resolveOrgForLocation(locationId, orgId);
+  const row = { location_id: locationId, org_id: org, forecast_date: dateIso, amount: Number(amount) || 0 };
+  const { error } = await supabase.from('wf_sales_forecast').upsert(row, { onConflict: 'location_id,forecast_date' });
+  if (error) console.warn('[wf] saveForecast:', error.message);
+}
+/** Actual revenue per day (YYYY-MM-DD → £) from closed_checks (excludes voids). */
+export async function loadActualSales(locationId, fromIso, toIso) {
+  if (isMock || !supabase || !locationId) return {};
+  const { data, error } = await supabase.from('closed_checks')
+    .select('total, closed_at, status')
+    .eq('location_id', String(locationId))
+    .gte('closed_at', `${fromIso}T00:00:00`).lte('closed_at', `${toIso}T23:59:59`)
+    .neq('status', 'voided');
+  if (error) { console.warn('[wf] loadActualSales:', error.message); return {}; }
+  const m = {};
+  (data || []).forEach(c => {
+    const d = new Date(c.closed_at);
+    const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    m[iso] = (m[iso] || 0) + (Number(c.total) || 0);
+  });
+  return m;
+}
+
+// ============================================================================
+// AUDIT (wf_audit — client writes non-financial events; financial chain is server-side)
+// ============================================================================
+export async function logAudit(entry, locationId, orgId, actor) {
+  if (isMock || !supabase || !locationId) return;
+  const org = await resolveOrgForLocation(locationId, orgId);
+  const row = {
+    location_id: locationId, org_id: org, actor_id: actor?.id || null, actor_name: actor?.name || null,
+    action: entry.action, entity: entry.entity || null, entity_id: entry.entityId || null,
+    amount: entry.amount ?? null, currency: entry.currency || null, reason: entry.reason || null,
+    before: entry.before || null, after: entry.after || null,
+  };
+  const { error } = await supabase.from('wf_audit').insert(row);
+  if (error) console.warn('[wf] logAudit:', error.message);
 }
