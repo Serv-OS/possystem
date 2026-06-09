@@ -69,6 +69,42 @@ export async function invokeCompute(action, payload = {}) {
   return j;
 }
 
+// ── Document storage (private bucket wf-documents; path = locationId/staffId/…) ──
+const DOCS_BUCKET = 'wf-documents';
+export async function uploadWfDocument(file, locationId, staffId, type) {
+  if (isMock || !supabase || !locationId) return { path: null, name: file?.name || null };
+  const ext = (String(file.name).split('.').pop() || 'pdf').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const safeType = String(type || 'doc').replace(/[^a-z0-9]/gi, '');
+  const path = `${locationId}/${staffId || 'general'}/${safeType}-${Date.now()}.${ext}`;
+  const { error } = await supabase.storage.from(DOCS_BUCKET).upload(path, file, { upsert: false, contentType: file.type });
+  if (error) throw new Error(error.message);
+  return { path, name: file.name };
+}
+/** Resolve a short-lived signed URL for a stored document path (or pass through a legacy full URL). */
+export async function signedDocUrl(pathOrUrl, expiresIn = 120) {
+  if (!pathOrUrl) return null;
+  if (/^https?:\/\//.test(pathOrUrl)) return pathOrUrl; // legacy file_url
+  if (isMock || !supabase) return null;
+  const { data, error } = await supabase.storage.from(DOCS_BUCKET).createSignedUrl(pathOrUrl, expiresIn);
+  if (error) { console.warn('[wf] signedDocUrl:', error.message); return null; }
+  return data?.signedUrl || null;
+}
+
+/** Send one SMS via the send-sms edge function. Throws on failure; no-op in mock. */
+export async function sendStaffSms(to, message, locationId, type = 'rota_notification', referenceId = null) {
+  if (isMock || !supabase) return { ok: true, mock: true };
+  if (!to) return { ok: false, skipped: 'no-mobile' };
+  const token = await authToken();
+  const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-sms`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({ to, message, location_id: locationId, type, reference_id: referenceId }),
+  });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(j.error || 'SMS failed');
+  return { ok: true, ...j };
+}
+
 // ============================================================================
 // STAFF (wf_staff — org-scoped PII; Workforce shows the current location's staff)
 // ============================================================================

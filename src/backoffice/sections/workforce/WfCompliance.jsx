@@ -5,10 +5,21 @@
 // the expiry date. Flags staff who are missing legally-required docs (Right to
 // Work always; SIA licence when their role requires it).
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { Icon } from '../../../components/ServOSIcons';
 import { Card, EmptyState, Badge, RoleChip, th, td, inputStyle, labelStyle, initials, LoadingCard } from '../../../staff/wfUi';
 import * as wf from '../../../staff/wfData';
+
+/** Open a stored document via a short-lived signed URL (private bucket). */
+function ViewDocLink({ path }) {
+  const [busy, setBusy] = useState(false);
+  const open = async () => {
+    setBusy(true);
+    try { const url = await wf.signedDocUrl(path, 120); if (url) window.open(url, '_blank', 'noopener'); }
+    finally { setBusy(false); }
+  };
+  return <button className="btn btn-ghost btn-xs" disabled={busy} onClick={open}><Icon name="tag" size={13} /> {busy ? '…' : 'View'}</button>;
+}
 
 const DOC_TYPES = ['RTW', 'foodHygieneL2', 'allergenTraining', 'SIA', 'firstAid', 'other'];
 const DOC_LABEL = {
@@ -171,9 +182,7 @@ export default function WfCompliance({ ctx, staff, roles, sections, settings, we
                         <td style={td} className="mono" >{fmtDate(d.issuedOn)}</td>
                         <td style={td} className="mono">{fmtDate(d.expiry)}</td>
                         <td style={td}>
-                          {d.fileUrl
-                            ? <a href={d.fileUrl} target="_blank" rel="noreferrer" style={{ color: 'var(--acc)', fontSize: 12.5, display: 'inline-flex', alignItems: 'center', gap: 5 }}><Icon name="tag" size={13} /> View</a>
-                            : <span style={{ color: 'var(--t4)' }}>—</span>}
+                          {d.fileUrl ? <ViewDocLink path={d.fileUrl} /> : <span style={{ color: 'var(--t4)' }}>—</span>}
                         </td>
                       </tr>
                     );
@@ -188,6 +197,7 @@ export default function WfCompliance({ ctx, staff, roles, sections, settings, we
       {adding && (
         <AddDocModal
           staff={staff}
+          ctx={ctx}
           onClose={() => setAdding(false)}
           onSave={handleSave}
         />
@@ -215,10 +225,25 @@ function AttentionBanner({ count }) {
   );
 }
 
-function AddDocModal({ staff, onClose, onSave }) {
-  const [form, setForm] = useState({ staffId: (staff[0] && staff[0].id) || '', type: 'RTW', issuedOn: '', expiry: '', fileUrl: '' });
+function AddDocModal({ staff, ctx, onClose, onSave }) {
+  const [form, setForm] = useState({ staffId: (staff[0] && staff[0].id) || '', type: 'RTW', issuedOn: '', expiry: '', fileUrl: '', fileName: '' });
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const valid = form.staffId && form.type;
+  const [uploading, setUploading] = useState(false);
+  const [upErr, setUpErr] = useState('');
+  const fileRef = useRef(null);
+  const onPickFile = async (e) => {
+    const file = e.target.files?.[0]; e.target.value = '';
+    if (!file) return;
+    setUpErr('');
+    if (file.size > 10 * 1024 * 1024) { setUpErr('File must be under 10MB'); return; }
+    setUploading(true);
+    try {
+      const { path, name } = await wf.uploadWfDocument(file, ctx.locationId, form.staffId, form.type);
+      setForm(f => ({ ...f, fileUrl: path, fileName: name }));
+    } catch (err) { setUpErr((err && err.message) || 'Upload failed'); }
+    finally { setUploading(false); }
+  };
 
   return (
     <div className="modal-back" onClick={e => e.target === e.currentTarget && onClose()}>
@@ -254,8 +279,16 @@ function AddDocModal({ staff, onClose, onSave }) {
         </div>
 
         <div style={{ marginBottom: 18 }}>
-          <label style={labelStyle}>File URL (optional)</label>
-          <input type="url" placeholder="https://…" style={inputStyle} value={form.fileUrl} onChange={e => set('fileUrl', e.target.value)} />
+          <label style={labelStyle}>Document file</label>
+          <input ref={fileRef} type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,.heic,.doc,.docx" style={{ display: 'none' }} onChange={onPickFile} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <button type="button" className="btn btn-ghost" disabled={uploading} onClick={() => fileRef.current?.click()}>
+              <Icon name={uploading ? 'clock' : 'plus'} size={14} /> {uploading ? 'Uploading…' : (form.fileUrl ? 'Replace file' : 'Upload file')}
+            </button>
+            {form.fileName && <span style={{ fontSize: 12.5, color: 'var(--grn)', display: 'inline-flex', alignItems: 'center', gap: 5 }}><Icon name="check" size={13} /> {form.fileName}</span>}
+          </div>
+          {upErr && <div style={{ fontSize: 11.5, color: 'var(--red)', marginTop: 6 }}>{upErr}</div>}
+          <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 6 }}>PDF or image, under 10MB. Stored privately — opened via a short-lived signed link.</div>
         </div>
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>

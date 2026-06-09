@@ -177,7 +177,26 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
       await wf.publishShifts(draftIds);
       await wf.logAudit({ action: 'rota.publish', entity: 'wf_shifts', entityId: wk.startIso, reason: `Published ${draftIds.length} shift(s) for ${weekRangeLabel(wk)}`, after: { ids: draftIds, week: wk.startIso } }, ctx.locationId, ctx.orgId);
       setShifts(prev => prev.map(s => draftIds.includes(s.id) ? { ...s, status: 'published' } : s));
-      showToast(`Published ${draftIds.length} shift${draftIds.length === 1 ? '' : 's'}`, 'success');
+
+      // Notify each affected staff member their week's shifts by SMS.
+      const affected = new Set(shifts.filter(s => draftIds.includes(s.id)).map(s => s.staffId));
+      const published = shifts.map(s => draftIds.includes(s.id) ? { ...s, status: 'published' } : s).filter(s => s.status === 'published');
+      const dayLabel = iso => new Date(iso + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+      const nameOf = id => (staff.find(s => s.id === id) || {});
+      let sent = 0, skipped = 0;
+      for (const sid of affected) {
+        const member = nameOf(sid);
+        const mine = published.filter(x => x.staffId === sid).sort((a, b) => (a.date + a.start).localeCompare(b.date + b.start));
+        if (!mine.length) continue;
+        if (!member.mobile) { skipped++; continue; }
+        const lines = mine.map(x => `${dayLabel(x.date)} ${x.start}–${x.finish}${x.section ? ` (${x.section})` : ''}`).join('\n');
+        const first = (member.name || '').split(' ')[0];
+        const msg = `Hi ${first}, your rota for w/c ${weekRangeLabel(wk)}:\n${lines}`;
+        try { await wf.sendStaffSms(member.mobile, msg, ctx.locationId, 'rota_notification', wk.startIso); sent++; }
+        catch { skipped++; }
+      }
+      const tail = sent || skipped ? ` · texted ${sent}${skipped ? `, ${skipped} skipped (no mobile)` : ''}` : '';
+      showToast(`Published ${draftIds.length} shift${draftIds.length === 1 ? '' : 's'}${tail}`, 'success');
     } catch (e) {
       showToast('Publish failed: ' + e.message, 'error');
       reload(wk);

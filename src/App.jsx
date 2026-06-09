@@ -81,6 +81,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.380', date: '9 Jun 2026', label: 'Workforce — document uploads, staff profiles, working rota SMS',
+    changes: [
+      'Compliance: real document upload (Right to Work, licences, training) to a PRIVATE store — no more pasting a URL. Files open via short-lived signed links and are fenced per location.',
+      'Staff: click a team member to open their profile — contract, pay rate (incl. override), contact, documents with status, holiday accrued, onboarding status and recent timesheets, with quick Edit / Set-as-POS.',
+      'Rota: publishing now actually texts each affected person their week’s shifts (via SMS) and reports how many were sent / skipped (no mobile). Fixes notifications not going out.',
+    ],
+  },
+  {
     version: '5.5.379', date: '9 Jun 2026', label: 'Internal: handoff docs refreshed (Workforce + Time Clock) for team onboarding',
     changes: [
       'No app changes — updated the project handoff docs (CURRENT_WORK / CLAUDE / DECISIONS / INVARIANTS) to cover the Workforce module, Time Clock surface, server-side pay/tronc/accrual compute and the wf_* schema, so a new collaborator can pick the project up.',

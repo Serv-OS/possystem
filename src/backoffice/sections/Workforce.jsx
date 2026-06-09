@@ -14,7 +14,7 @@ import { supabase } from '../../lib/supabase';
 import { Icon } from '../../components/ServOSIcons';
 import { DAYS, TODAY, SECTIONS, ROLES, SECTION_REQ, FORECAST, PAYROWS } from '../../staff/seed';
 import { hoursOf, effectiveRate, wageByDay, labourPct, LABOUR_TARGET, troncRun, tsVariance } from '../../staff/labour';
-import { loadStaff, saveStaff, softDeleteStaff, markPosUser, loadRoles, loadSections, loadSettings } from '../../staff/wfData';
+import { loadStaff, saveStaff, softDeleteStaff, markPosUser, loadRoles, loadSections, loadSettings, loadDocuments, loadTimesheets, loadOnboarding, loadAccrual, accrualBalances, signedDocUrl } from '../../staff/wfData';
 import { buildWeek } from '../../staff/wfWeek';
 import WfRota from './workforce/WfRota';
 import WfTimesheets from './workforce/WfTimesheets';
@@ -52,6 +52,7 @@ export default function Workforce({ section, orgCtx }) {
   const [loading, setLoading] = useState(true);
   const [addOpen, setAddOpen] = useState(false);
   const [editing, setEditing] = useState(null); // staff record being edited (HR + rate override)
+  const [viewing, setViewing] = useState(null); // staff record whose detail profile is open
   const [posFor, setPosFor] = useState(null); // staff being promoted to a POS user
 
   // Workforce is scoped to the location selected in the Back Office (bottom-left
@@ -149,7 +150,7 @@ export default function Workforce({ section, orgCtx }) {
       {key === 'rota' && <WfRota {...sectionProps} />}
       {key === 'staff' && (loading
         ? <Card style={{ textAlign: 'center', padding: 44, color: 'var(--t3)' }}>Loading staff…</Card>
-        : <WfStaff staff={staff} roles={rolesMap} onAdd={() => setAddOpen(true)} onEdit={setEditing} onSetPos={setPosFor} onRemove={removeStaff} />)}
+        : <WfStaff staff={staff} roles={rolesMap} onAdd={() => setAddOpen(true)} onView={setViewing} onEdit={setEditing} onSetPos={setPosFor} onRemove={removeStaff} />)}
       {key === 'timesheets' && <WfTimesheets {...sectionProps} />}
       {key === 'pay' && <WfPay {...sectionProps} />}
       {key === 'tronc' && <WfTronc {...sectionProps} />}
@@ -159,6 +160,7 @@ export default function Workforce({ section, orgCtx }) {
       {key === 'announce' && <WfAnnouncements {...sectionProps} />}
       {key === 'settings' && <WfSettings {...sectionProps} />}
 
+      {viewing && <StaffDetailModal staff={viewing} roles={rolesMap} ctx={ctx} onClose={() => setViewing(null)} onEdit={(s) => { setViewing(null); setEditing(s); }} onSetPos={(s) => { setViewing(null); setPosFor(s); }} />}
       {(addOpen || editing) && <AddStaffModal locName={locName} staff={editing} roles={rolesMap} onClose={() => { setAddOpen(false); setEditing(null); }} onSave={saveMember} />}
       {posFor && <PosUserModal staff={posFor} onClose={() => setPosFor(null)} onSave={(opts) => setAsPosUser(posFor, opts)} />}
     </div>
@@ -213,7 +215,7 @@ function WfDashboard({ groups, staffCount }) {
 }
 
 // ── Staff (HR list + CRUD) ──
-function WfStaff({ staff, roles = ROLES, onAdd, onEdit, onSetPos, onRemove }) {
+function WfStaff({ staff, roles = ROLES, onAdd, onView, onEdit, onSetPos, onRemove }) {
   if (staff.length === 0) return <EmptyState icon="team" title="No staff yet" body="Add your team here. Each person is an HR record — you can then set them as a POS user to give them till access on the Team page." cta="Add staff member" onCta={onAdd} />;
   return (
     <Card style={{ padding: 0, overflow: 'hidden' }}>
@@ -227,7 +229,7 @@ function WfStaff({ staff, roles = ROLES, onAdd, onEdit, onSetPos, onRemove }) {
             const rateLbl = hasOverride ? `£${Number(s.rateOverride).toFixed(2)}/h` : baseRate;
             return (
               <tr key={s.id}>
-                <td style={td}><div style={{ display: 'flex', alignItems: 'center', gap: 9 }}><span style={{ width: 28, height: 28, borderRadius: '50%', background: 'var(--inset)', border: '1px solid var(--inset-border)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 700, color: 'var(--t3)', flexShrink: 0 }}>{initials(s.name)}</span><b style={{ fontWeight: 600 }}>{s.name}</b></div></td>
+                <td style={td}><button onClick={() => onView?.(s)} title="View profile" style={{ display: 'flex', alignItems: 'center', gap: 9, background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}><span style={{ width: 28, height: 28, borderRadius: '50%', background: 'var(--inset)', border: '1px solid var(--inset-border)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 700, color: 'var(--t3)', flexShrink: 0 }}>{initials(s.name)}</span><b style={{ fontWeight: 600, color: 'var(--t1)', borderBottom: '1px dotted var(--bdr2)' }}>{s.name}</b></button></td>
                 <td style={td}><RoleChip role={s.role} roles={roles} /></td>
                 <td style={{ ...td, whiteSpace: 'nowrap' }}><span className="mono" style={{ fontSize: 12, fontWeight: 700 }}>{rateLbl}</span>{hasOverride && <span style={{ marginLeft: 6 }}><Badge tone="blue">override</Badge></span>}</td>
                 <td style={{ ...td, color: 'var(--t2)' }}>{s.contractType || '—'}</td>
@@ -283,6 +285,129 @@ function AddStaffModal({ locName, staff, roles = ROLES, onClose, onSave }) {
     </div>
   );
 }
+
+const CONTRACT_LABEL = { zeroHours: 'Zero hours', partTime: 'Part time', fullTime: 'Full time', salaried: 'Salaried' };
+const DOC_LABEL = { RTW: 'Right to Work', foodHygieneL2: 'Food Hygiene L2', allergenTraining: 'Allergen', SIA: 'SIA Licence', firstAid: 'First Aid', other: 'Other' };
+function docStat(expiry) {
+  if (!expiry) return ['missing', 'grey'];
+  const days = Math.round((new Date(expiry + 'T00:00:00') - new Date(new Date().toISOString().slice(0, 10) + 'T00:00:00')) / 86400000);
+  if (days < 0) return ['Expired', 'red'];
+  if (days <= 30) return ['Expiring', 'amber'];
+  return ['Valid', 'green'];
+}
+function DetailDocView({ path }) {
+  const [busy, setBusy] = useState(false);
+  if (!path) return <span style={{ color: 'var(--t4)' }}>—</span>;
+  return <button className="btn btn-ghost btn-xs" disabled={busy} onClick={async () => { setBusy(true); try { const u = await signedDocUrl(path, 120); if (u) window.open(u, '_blank', 'noopener'); } finally { setBusy(false); } }}>{busy ? '…' : 'View'}</button>;
+}
+
+// Staff profile — HR record + documents + onboarding + recent timesheets + holiday balance.
+function StaffDetailModal({ staff: s, roles = ROLES, ctx, onClose, onEdit, onSetPos }) {
+  const role = roles[s.role];
+  const [data, setData] = useState({ docs: [], timesheets: [], onb: null, holidayHrs: 0, loading: true });
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      const [docs, ts, onbs, accrual] = await Promise.all([
+        loadDocuments(ctx.locationId).catch(() => []),
+        loadTimesheets(ctx.locationId).catch(() => []),
+        loadOnboarding(ctx.locationId).catch(() => []),
+        loadAccrual(ctx.locationId).catch(() => []),
+      ]);
+      if (!live) return;
+      const bal = accrualBalances(accrual || []);
+      setData({
+        docs: (docs || []).filter(d => d.staffId === s.id),
+        timesheets: (ts || []).filter(t => t.staffId === s.id).slice(0, 6),
+        onb: (onbs || []).find(o => o.staffId === s.id) || null,
+        holidayHrs: bal[s.id] || 0,
+        loading: false,
+      });
+    })();
+    return () => { live = false; };
+  }, [s.id, ctx.locationId]);
+
+  const baseRate = role ? (role.rate != null ? `£${Number(role.rate).toFixed(2)}/h` : (role.salary ? `£${Math.round(role.salary / 1000)}k/yr` : '—')) : '—';
+  const payRate = s.rateOverride != null && s.rateOverride !== '' ? `£${Number(s.rateOverride).toFixed(2)}/h (override)` : baseRate;
+  const fields = [
+    ['Position', role?.lbl || s.role || '—'], ['Pay rate', payRate],
+    ['Contract', CONTRACT_LABEL[s.contractType] || s.contractType || '—'], ['Status', s.status || 'active'],
+    ['Mobile', s.mobile || '—'], ['Email', s.email || '—'],
+    ['Date of birth', s.dob || '—'], ['Start date', s.startDate || '—'],
+  ];
+
+  return (
+    <div className="modal-back" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal-box" style={{ maxWidth: 600, maxHeight: '88vh', overflowY: 'auto' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+          <span style={{ width: 44, height: 44, borderRadius: '50%', background: 'var(--inset)', border: '1px solid var(--inset-border)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15, fontWeight: 800, color: 'var(--t2)' }}>{initials(s.name)}</span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 18, fontWeight: 700 }}>{s.name}</div>
+            <div style={{ marginTop: 2 }}><RoleChip role={s.role} roles={roles} /></div>
+          </div>
+          {s.posUserId ? <Badge tone="green">POS user ✓</Badge> : <button className="btn btn-ghost btn-xs" onClick={() => onSetPos?.(s)}>Set as POS user</button>}
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px 18px', marginBottom: 18 }}>
+          {fields.map(([k, v]) => (
+            <div key={k}><div style={labelStyle}>{k}</div><div style={{ fontSize: 13.5, color: 'var(--t1)', marginTop: 2 }}>{v}</div></div>
+          ))}
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 18 }}>
+          <div style={{ padding: '12px 14px', borderRadius: 12, background: 'var(--inset)', border: '1px solid var(--inset-border)' }}>
+            <div style={labelStyle}>Holiday accrued</div>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 18, fontWeight: 800, marginTop: 4 }}>{Number(data.holidayHrs).toFixed(1)}h</div>
+          </div>
+          <div style={{ padding: '12px 14px', borderRadius: 12, background: 'var(--inset)', border: '1px solid var(--inset-border)' }}>
+            <div style={labelStyle}>Onboarding</div>
+            <div style={{ fontSize: 13.5, marginTop: 6 }}>{data.onb ? (data.onb.status === 'complete' ? <Badge tone="green">Complete</Badge> : <Badge tone="amber">In progress</Badge>) : <span style={{ color: 'var(--t4)' }}>Not started</span>}</div>
+          </div>
+        </div>
+
+        <SectionTitle>Documents</SectionTitle>
+        {data.loading ? <Muted>Loading…</Muted> : data.docs.length === 0 ? <Muted>No documents on file.</Muted> : (
+          <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 16 }}>
+            <tbody>
+              {data.docs.map(d => { const [lbl, tone] = docStat(d.expiry); return (
+                <tr key={d.id}>
+                  <td style={{ ...td, padding: '7px 8px' }}>{DOC_LABEL[d.type] || d.type}</td>
+                  <td style={{ ...td, padding: '7px 8px' }}><Badge tone={tone}>{lbl}</Badge></td>
+                  <td style={{ ...td, padding: '7px 8px', fontFamily: 'var(--font-mono)', color: 'var(--t3)', fontSize: 12 }}>{d.expiry || '—'}</td>
+                  <td style={{ ...td, padding: '7px 8px', textAlign: 'right' }}><DetailDocView path={d.fileUrl} /></td>
+                </tr>
+              ); })}
+            </tbody>
+          </table>
+        )}
+
+        <SectionTitle>Recent timesheets</SectionTitle>
+        {data.loading ? <Muted>Loading…</Muted> : data.timesheets.length === 0 ? <Muted>No timesheets yet — they appear once this person clocks in.</Muted> : (
+          <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 8 }}>
+            <thead><tr><th style={th}>Date</th><th style={{ ...th, textAlign: 'right' }}>Hours</th><th style={th}>Status</th><th style={{ ...th, textAlign: 'right' }}>Pay</th></tr></thead>
+            <tbody>
+              {data.timesheets.map(t => (
+                <tr key={t.id}>
+                  <td style={{ ...td, padding: '7px 8px', fontFamily: 'var(--font-mono)', fontSize: 12 }}>{t.clockIn ? new Date(t.clockIn).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) : '—'}</td>
+                  <td style={{ ...td, padding: '7px 8px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>{Number(t.actualHours || 0).toFixed(2)}</td>
+                  <td style={{ ...td, padding: '7px 8px' }}><Badge tone={t.status === 'approved' ? 'green' : 'grey'}>{t.status}</Badge></td>
+                  <td style={{ ...td, padding: '7px 8px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>{t.payAmount != null ? money(t.payAmount, 2) : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 9, marginTop: 18 }}>
+          <button className="btn btn-ghost" onClick={onClose}>Close</button>
+          <button className="btn btn-acc" onClick={() => onEdit?.(s)}><Icon name="edit" size={14} /> Edit details</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+function SectionTitle({ children }) { return <div className="mono" style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase', color: 'var(--t3)', margin: '4px 0 8px' }}>{children}</div>; }
+function Muted({ children }) { return <div style={{ fontSize: 13, color: 'var(--t3)', padding: '6px 0 14px' }}>{children}</div>; }
 
 function PosUserModal({ staff, onClose, onSave }) {
   const [pin, setPin] = useState('');
