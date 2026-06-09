@@ -21,6 +21,7 @@ import BarSurface from './surfaces/BarSurface';
 import TablesSurface from './surfaces/TablesSurface';
 import { KDSSurface } from './surfaces/OtherSurfaces';
 import MPOSSurface from './surfaces/MPOSSurface';
+import TimeClockSurface from './surfaces/TimeClockSurface';
 import CustomerBoot from './surfaces/CustomerBoot';
 import { parseCustomerUrl as parseCustomerUrlForBoot } from './lib/customerUrl';
 import AIChat from './components/AIChat';
@@ -79,6 +80,14 @@ import { ServOSIcon } from './components/ServOSBrand';
 import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
+  {
+    version: '5.5.377', date: '9 Jun 2026', label: 'Time Clock surface for staff clock in/out + breaks (new tablet mode) + POS user-menu fix',
+    changes: [
+      'New Time Clock device mode (?mode=clock) — a dedicated PIN-pad tablet by the staff entrance: staff enter their PIN to Clock in, Start/End break and Clock out, with a status screen ("On shift since 17:02"). Selectable from the device mode picker; pairs to a location like a POS.',
+      'Punches write real timesheets server-side via the new workforce-clock edge function — these feed Workforce → Timesheets (clock vs scheduled, variance), Pay and Tronc directly, so labour numbers come from what staff actually worked. Rate is snapshotted at clock-in; breaks tracked precisely; a POS user with no HR record yet is auto-added to Workforce on first clock-in.',
+      'Fixed: the staff user-menu at the bottom-left of the POS opened behind the floating panels — the sidebar is now lifted into the correct stacking layer so the menu sits on top.',
+    ],
+  },
   {
     version: '5.5.376', date: '9 Jun 2026', label: 'Workforce — full module live (rota, timesheets, tronc, positions, leave/accrual, onboarding, compliance, announcements, settings)',
     changes: [
@@ -5588,6 +5597,7 @@ export default function App() {
     <ModeSelector
       onSelectPOS={() => { localStorage.setItem('rpos-device-mode', 'pos'); window.location.href = '?mode=pos'; }}
       onSelectMPOS={() => { localStorage.setItem('rpos-device-mode', 'mpos'); window.location.href = '?mode=mpos'; }}
+      onSelectClock={() => { localStorage.setItem('rpos-device-mode', 'clock'); window.location.href = '?mode=clock'; }}
       onSelectBackOffice={() => { localStorage.setItem('rpos-device-mode', 'backoffice'); window.location.href = '?mode=office'; }}
       onSelectAdmin={() => { localStorage.setItem('rpos-device-mode', 'admin'); window.location.href = '?mode=admin'; }}
     />
@@ -5616,6 +5626,10 @@ export default function App() {
   // layer as ?mode=pos but with a portrait, single-column UI. Phase 1A: walk-in
   // only, cash + REST card. Phase 1B will add Stripe Tap to Pay native bridges.
   if (deviceMode === 'mpos') return <><SyncBridge onSyncPulse={handleSyncPulse}/><MPOSSurface /></>;
+
+  // Time Clock — dedicated second-tablet surface for staff to clock in/out + breaks.
+  // Pairs to a location like a POS; punches write server-side via workforce-clock.
+  if (deviceMode === 'clock') return <TimeClockSurface />;
 
   // Validate device against Supabase (checks if admin removed it)
   // Uses a component so hooks work properly
@@ -6216,7 +6230,7 @@ function Sidebar({ surface, setSurface }) {
 
   return (
     <>
-    <nav style={{ width:'var(--nav)', background:'var(--glass-bg)', backdropFilter:'blur(22px) saturate(150%)', WebkitBackdropFilter:'blur(22px) saturate(150%)', border:'1px solid var(--glass-border)', borderRadius:20, boxShadow:'var(--glass-shadow), var(--glass-hi), var(--glass-lo)', display:'flex', flexDirection:'column', alignItems:'center', padding:'10px 0', gap:4, flexShrink:0 }}>
+    <nav style={{ width:'var(--nav)', background:'var(--glass-bg)', backdropFilter:'blur(22px) saturate(150%)', WebkitBackdropFilter:'blur(22px) saturate(150%)', border:'1px solid var(--glass-border)', borderRadius:20, boxShadow:'var(--glass-shadow), var(--glass-hi), var(--glass-lo)', display:'flex', flexDirection:'column', alignItems:'center', padding:'10px 0', gap:4, flexShrink:0, position:'relative', zIndex:60 }}>
       {visibleNav.map(n=>{
         const active=surface===n.id;
         return(<button key={n.id} onClick={()=>setSurface(n.id)} style={{ width:46, height:46, borderRadius:12, cursor:'pointer', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:3, background:active?'var(--acc-d)':'transparent', border:`1px solid ${active?'var(--acc-b)':'transparent'}`, boxShadow:active?'var(--glass-hi)':'none', color:active?'var(--acc)':'var(--t3)', transition:'all .15s', fontFamily:'inherit', position:'relative' }}>

@@ -204,6 +204,7 @@ create table if not exists wf_timesheets (
   clock_in        timestamptz,
   clock_out       timestamptz,
   break_taken     int not null default 0 check (break_taken >= 0),
+  break_open_at   timestamptz,                            -- in-progress break start (null = not on break)
   scheduled_hours numeric(6,2) check (scheduled_hours is null or scheduled_hours >= 0),
   actual_hours    numeric(6,2) check (actual_hours is null or actual_hours >= 0),
   variance        numeric(6,2),

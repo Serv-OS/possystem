@@ -24,7 +24,7 @@ function Card({ icon, title, desc, note, accent, onClick }) {
   );
 }
 
-export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelectAdmin, onSelectMPOS }) {
+export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelectAdmin, onSelectMPOS, onSelectClock }) {
   return (
     <div style={{
       minHeight: '100vh',
@@ -41,7 +41,7 @@ export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelect
       </div>
 
       {/* Main cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 20, width: '100%', maxWidth: 1020, marginBottom: 20 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 20, width: '100%', maxWidth: 720, marginBottom: 20 }}>
         <Card
           icon="🖥"
           title="POS Terminal"
@@ -57,6 +57,14 @@ export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelect
           note="Pairs to a location like a regular POS"
           accent="#22c55e"
           onClick={onSelectMPOS}
+        />
+        <Card
+          icon="🕐"
+          title="Time Clock"
+          desc="A dedicated tablet by the staff entrance — staff enter their PIN to clock in/out and take breaks."
+          note="Pairs to a location like a regular POS"
+          accent="#a855f7"
+          onClick={onSelectClock}
         />
         <Card
           icon="🏢"
