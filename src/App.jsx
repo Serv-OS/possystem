@@ -81,6 +81,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.378', date: '9 Jun 2026', label: 'Tronc pulls the real tip pool from the POS (ties Workforce tronc to the Tips report)',
+    changes: [
+      'Workforce → Tronc now pre-fills the weekly pool from the actual POS tips — card tips + service charge for the week, the same closed_checks data the Tips report uses — instead of a manual figure. The breakdown is shown ("£X from the POS this week · card tips + service · cash kept by staff") and stays editable before you run the penny-reconciled distribution.',
+      'The Tips report now points to Workforce → Tronc for the official, audited weekly payout, noting both use the same pool so the analysis and the payout always agree.',
+    ],
+  },
+  {
     version: '5.5.377', date: '9 Jun 2026', label: 'Time Clock surface for staff clock in/out + breaks (new tablet mode) + POS user-menu fix',
     changes: [
       'New Time Clock device mode (?mode=clock) — a dedicated PIN-pad tablet by the staff entrance: staff enter their PIN to Clock in, Start/End break and Clock out, with a status screen ("On shift since 17:02"). Selectable from the device mode picker; pairs to a location like a POS.',

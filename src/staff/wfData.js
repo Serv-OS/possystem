@@ -528,6 +528,30 @@ export async function loadActualSales(locationId, fromIso, toIso) {
   return m;
 }
 
+/**
+ * Real tip pool from the POS for a period, mirroring the Tips report:
+ * card tips (non-cash) + service charge are the troncable pool; cash tips are
+ * shown for context. Excludes voided checks. Returns money rounded to 2dp.
+ */
+export async function loadTipPool(locationId, fromIso, toIso) {
+  const empty = { cardTips: 0, cashTips: 0, serviceCharge: 0, suggestedPool: 0, totalTips: 0 };
+  if (isMock || !supabase || !locationId) return empty;
+  const { data, error } = await supabase.from('closed_checks')
+    .select('tip, service, method, closed_at, status')
+    .eq('location_id', String(locationId))
+    .gte('closed_at', `${fromIso}T00:00:00`).lte('closed_at', `${toIso}T23:59:59`)
+    .neq('status', 'voided');
+  if (error) { console.warn('[wf] loadTipPool:', error.message); return empty; }
+  let cardTips = 0, cashTips = 0, serviceCharge = 0;
+  (data || []).forEach(c => {
+    const tip = Number(c.tip) || 0;
+    if ((c.method || '').toLowerCase() === 'cash') cashTips += tip; else cardTips += tip;
+    serviceCharge += Number(c.service) || 0;
+  });
+  const r2 = n => Math.round(n * 100) / 100;
+  return { cardTips: r2(cardTips), cashTips: r2(cashTips), serviceCharge: r2(serviceCharge), suggestedPool: r2(cardTips + serviceCharge), totalTips: r2(cardTips + cashTips) };
+}
+
 // ============================================================================
 // AUDIT (wf_audit — client writes non-financial events; financial chain is server-side)
 // ============================================================================

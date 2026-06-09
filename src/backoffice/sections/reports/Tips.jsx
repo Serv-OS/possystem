@@ -316,6 +316,7 @@ export default function Tips({ checks, fmt, fmtN }) {
         {mode !== 'none' && (
           <div style={{ marginTop:10, padding:'9px 12px', background:'var(--bg3)', border:'1px dashed var(--bdr)', borderRadius:8, fontSize:11, color:'var(--t4)', lineHeight:1.7 }}>
             ⓘ Pool math is a preview — export CSV to hand to payroll. Roles come from Staff manager; unrecognised names show "Unknown" and are treated as non-participants. Kiosk, online &amp; QR tips have no single server, so they always flow 100% into the pool.
+            <br/><br/>🇬🇧 For the official <strong style={{ color:'var(--t2)' }}>weekly tronc payout</strong> (UK Tipping Act — split by published-shift hours × role points, reconciled to the penny, recorded and audited), use <strong style={{ color:'var(--t2)' }}>Workforce → Tronc</strong>. It pulls this same pool automatically (card tips + service charge for the week), so this report and the payout always agree.
           </div>
         )}
       </div>

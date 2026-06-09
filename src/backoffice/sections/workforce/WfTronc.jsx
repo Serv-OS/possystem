@@ -18,6 +18,22 @@ export default function WfTronc({ ctx, staff = [], roles, sections, settings, we
   const [loading, setLoading] = useState(true);
   const [pool, setPool] = useState('');
   const [running, setRunning] = useState(false);
+  const [tipInfo, setTipInfo] = useState(null); // real POS tips for the week (card + service)
+
+  // Pull the actual tip pool from the POS (same closed_checks data as the Tips
+  // report): card tips + service charge for the week. Pre-fills the pool so it's
+  // never a manual guess; the operator can still adjust before running.
+  useEffect(() => {
+    let alive = true;
+    wf.loadTipPool(ctx.locationId, week.startIso, week.endIso)
+      .then(info => {
+        if (!alive) return;
+        setTipInfo(info);
+        setPool(p => (p === '' && info.suggestedPool > 0) ? info.suggestedPool.toFixed(2) : p);
+      })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [ctx.locationId, week.startIso, week.endIso]);
 
   const nameOf = useMemo(() => {
     const m = {};
@@ -74,9 +90,18 @@ export default function WfTronc({ ctx, staff = [], roles, sections, settings, we
               <Icon name="tag" size={15} /> New weekly run
             </div>
             <div style={{ fontSize: 12.5, color: 'var(--t3)', marginTop: 6, lineHeight: 1.6, maxWidth: 460 }}>
-              Pool split by published-shift hours × role points, reconciled to the penny. Enter the card tips + service charge collected for{' '}
+              Pool split by published-shift hours × role points, reconciled to the penny, for{' '}
               <span style={{ color: 'var(--t1)', fontWeight: 600 }}>{weekRangeLabel(week)}</span>.
             </div>
+            {/* Real tip pool pulled from the POS (card tips + service charge) */}
+            {tipInfo && (
+              <div style={{ marginTop: 12, display: 'inline-flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '9px 13px', borderRadius: 11, background: 'var(--inset)', border: '1px solid var(--inset-border)', fontSize: 12 }}>
+                <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, color: 'var(--acc)' }}>{money(tipInfo.suggestedPool, 2)}</span>
+                <span style={{ color: 'var(--t3)' }}>from the POS this week</span>
+                <span style={{ color: 'var(--t4)' }}>· card tips {money(tipInfo.cardTips, 2)} + service {money(tipInfo.serviceCharge, 2)}{tipInfo.cashTips > 0 ? ` · cash ${money(tipInfo.cashTips, 2)} kept by staff` : ''}</span>
+                <button className="btn btn-ghost btn-xs" disabled={running} onClick={() => setPool(tipInfo.suggestedPool.toFixed(2))}>Use this</button>
+              </div>
+            )}
           </div>
           <div style={{ display: 'flex', alignItems: 'flex-end', gap: 10 }}>
             <div style={{ width: 170 }}>
