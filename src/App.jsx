@@ -82,6 +82,16 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.407', date: '10 Jun 2026', label: 'Security hardening — closed open SMS/email relay, CSV-injection safe, payroll integrity, more indexes',
+    changes: [
+      'Critical Supabase alert resolved: enabled RLS on the loyalty OTP-code table (Platform DB) — it was publicly readable. Verified clean (0 error-level advisor issues on both databases).',
+      'send-sms and send-receipt now require authentication (service-role for internal calls, or a signed-in session) — previously anyone could POST to them and spend your Twilio/email balance or spam customers. Verified anon-key calls now return 401.',
+      'Payroll/customer CSV exports neutralise spreadsheet formula-injection (a name like "=cmd…" can no longer execute when the file is opened).',
+      'Payroll now derives every pay figure server-side from hours × snapshotted rate (+ paid breaks) instead of trusting the editable pay_amount field — same number for legitimate timesheets, no tamper vector.',
+      'More composite indexes (order_queue, bar_tabs, kds_tickets, device_heartbeats, active_sessions) and bounded boot loads, so a busy/large venue stays fast.',
+    ],
+  },
+  {
     version: '5.5.406', date: '10 Jun 2026', label: 'Scale pass — parallel everywhere, bounded queries, indexes, jittered polling',
     changes: [
       'Nothing pay-critical runs sequentially any more: payroll preview/close runs its five reads in one parallel round (was five round-trips), tronc runs fetch shifts/roles/run-check together, rota publish notifies every staff member’s SMS + email in parallel (was one at a time), and the AI rota builder inserts the whole week in ONE bulk request instead of one insert per shift.',

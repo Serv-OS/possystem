@@ -260,7 +260,7 @@ Deno.serve(async (req) => {
         admin.from('wf_venue_settings').select('settings').eq('location_id', location_id).maybeSingle(),
         // Base pay from APPROVED + already-PAID timesheets (paid rows keep the
         // preview of a closed period faithful to what was actually paid).
-        admin.from('wf_timesheets').select('id, staff_id, actual_hours, effective_rate, pay_amount, clock_in, status')
+        admin.from('wf_timesheets').select('id, staff_id, actual_hours, effective_rate, paid_break_mins, pay_amount, clock_in, status')
           .eq('location_id', location_id).in('status', ['approved', 'paid'])
           .gte('clock_in', `${from}T00:00:00`).lte('clock_in', `${to}T23:59:59`),
         admin.from('wf_tronc_runs').select('id, week_start, status, pool, total_paid')
@@ -282,11 +282,17 @@ Deno.serve(async (req) => {
       const directShare = tipMode === 'direct' ? 1 : tipMode === 'hybrid' ? Math.min(100, Math.max(0, Number(policy.directPct) || 0)) / 100 : 0;
       const allocator = policy.tipAllocator === 'troncmaster' ? 'troncmaster' : 'employer';
 
+      // Pay is ALWAYS derived server-side from hours × snapshotted rate (+ any
+      // paid break minutes) — never the client-writable pay_amount field, which
+      // a back-office account could otherwise inflate before closing. For a
+      // legitimate timesheet this equals the stored pay_amount exactly.
       const base: Record<string, { hours: number; pay: number }> = {};
       (tss ?? []).forEach((t: any) => {
-        const pay = t.pay_amount != null ? Number(t.pay_amount) : Number(t.actual_hours || 0) * Number(t.effective_rate || 0);
+        const hrs = Number(t.actual_hours || 0);
+        const paidBreakHrs = Number(t.paid_break_mins || 0) / 60;
+        const pay = round2((hrs + paidBreakHrs) * Number(t.effective_rate || 0));
         const b = base[t.staff_id] ?? (base[t.staff_id] = { hours: 0, pay: 0 });
-        b.hours += Number(t.actual_hours || 0); b.pay += pay;
+        b.hours += hrs; b.pay += pay;
       });
       const troncTips: Record<string, number> = {};
       const runIds = (runs ?? []).map((r: any) => r.id);

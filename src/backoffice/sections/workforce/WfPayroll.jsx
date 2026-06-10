@@ -93,7 +93,10 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
   // Minimum Wage, so the bureau checks NMW on basic pay alone.
   const exportCsv = () => {
     if (!run?.staff?.length) return;
-    const esc = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    // Neutralise spreadsheet formula injection: a value starting with = + - @
+    // (or tab/CR) is treated as a live formula by Excel/Sheets. A name like
+    // "=cmd|..." in a staff record would otherwise execute on open.
+    const esc = v => { let s = String(v ?? ''); if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; return `"${s.replace(/"/g, '""')}"`; };
     const isUK = (settings?.currency || 'GBP') === 'GBP';
     const troncFree = isUK && run.policy?.allocator === 'troncmaster';
     const troncCol = !isUK ? 'Pooled tips' : troncFree ? 'Tronc tips (PAYE, no NIC - independent troncmaster)' : 'Pooled tips (PAYE + NIC - employer allocated)';

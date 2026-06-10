@@ -269,7 +269,9 @@ export default function Customers() {
       ['Notes',        c => (c.notes || '').replace(/[\r\n]+/g, ' ')],
     ];
     const esc = v => {
-      const s = String(v ?? '');
+      let s = String(v ?? '');
+      // Neutralise spreadsheet formula injection (=,+,-,@ leading chars).
+      if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
       return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
     };
     const header = cols.map(c => esc(c[0])).join(',');

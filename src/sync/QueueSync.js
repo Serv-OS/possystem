@@ -168,9 +168,12 @@ export async function loadQueues() {
   if (!_locationId) return;
   if (!supabase) return;
   try {
+    // Bounded boot loads — a healthy location never has >500 open orders/tabs;
+    // a bigger backlog means an ops cleanup gap, not a sync job. Newest first so
+    // the cap keeps the relevant rows. Prevents slow boots + memory blow-up.
     const [qRes, tRes] = await Promise.all([
-      supabase.from('order_queue').select('*').eq('location_id', _locationId).neq('status', 'collected'),
-      supabase.from('bar_tabs').select('*').eq('location_id', _locationId).neq('status', 'closed'),
+      supabase.from('order_queue').select('*').eq('location_id', _locationId).neq('status', 'collected').order('created_at', { ascending: false }).limit(500),
+      supabase.from('bar_tabs').select('*').eq('location_id', _locationId).neq('status', 'closed').order('opened_at', { ascending: false }).limit(500),
     ]);
     const patch = {};
     if (!qRes.error && Array.isArray(qRes.data)) {

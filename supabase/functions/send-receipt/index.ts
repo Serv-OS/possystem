@@ -33,8 +33,19 @@ interface RequestBody {
   text?: string;
 }
 
+// Caller must be authenticated: service-role key (internal callers like
+// gift-fulfill/gift-resend) or a valid signed-in user (BO/POS). Closes the open
+// relay — previously anyone could POST arbitrary HTML email through the venue.
+async function authorize(req: Request): Promise<boolean> {
+  const token = (req.headers.get('Authorization') ?? '').replace('Bearer ', '').trim();
+  if (!token) return false;
+  if (token === SERVICE_ROLE) return true;
+  try { const { data: { user } } = await sb.auth.getUser(token); return !!user; } catch { return false; }
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
+  if (req.method !== 'OPTIONS' && !(await authorize(req))) return json({ error: 'unauthorized' }, 401);
   if (req.method !== 'POST') return json({ error:'POST only' }, 405);
   let body: RequestBody;
   try { body = await req.json(); } catch { return json({ error:'invalid JSON' }, 400); }
