@@ -19,6 +19,7 @@ import { buildWeek } from '../../staff/wfWeek';
 import WfRota from './workforce/WfRota';
 import { PickTemplateModal, freshSteps, genToken, toHtml, signEmailHtml } from './workforce/WfOnboarding';
 import WfTimesheets from './workforce/WfTimesheets';
+import WfPayroll from './workforce/WfPayroll';
 import WfTronc from './workforce/WfTronc';
 import WfPay from './workforce/WfPay';
 import WfLeave from './workforce/WfLeave';
@@ -37,6 +38,7 @@ const SUBS = {
   'wf-dashboard': ['Dashboard', 'Today across the group'],
   'wf-rota': ['Rota', 'Schedule & labour'],
   'wf-timesheets': ['Timesheets', 'Clocked vs scheduled'],
+  'wf-payroll': ['Payroll', 'Pay runs — wages + tips'],
   'wf-timeoff': ['Time off & availability', 'Leave, availability & swaps'],
   'wf-staff': ['Staff', 'HR records'],
   'wf-onboarding': ['Onboarding', 'New starter setup'],
@@ -155,6 +157,7 @@ export default function Workforce({ section, orgCtx }) {
         ? <Card style={{ textAlign: 'center', padding: 44, color: 'var(--t3)' }}>Loading staff…</Card>
         : <WfStaff staff={staff} roles={rolesMap} onAdd={() => setAddOpen(true)} onView={setViewing} onEdit={setEditing} onSetPos={setPosFor} onRemove={removeStaff} />)}
       {key === 'timesheets' && <WfTimesheets {...sectionProps} />}
+      {key === 'payroll' && <WfPayroll {...sectionProps} />}
       {key === 'pay' && <WfPay {...sectionProps} />}
       {key === 'tronc' && <WfTronc {...sectionProps} />}
       {key === 'compliance' && <WfCompliance {...sectionProps} />}

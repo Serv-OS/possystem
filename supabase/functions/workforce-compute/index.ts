@@ -225,6 +225,65 @@ Deno.serve(async (req) => {
       return json({ ok: true, from: from ?? null, to: to ?? null, staff, total: round2(staff.reduce((a, s) => a + s.pay, 0)) });
     }
 
+    // ── PAYROLL PERIOD — base pay + tips (tronc) for one locked pay period ───
+    // Base pay: approved timesheets clocked within [from, to].
+    // Tips: persisted tronc runs (status != draft) whose week_start falls in
+    // [from, to] — each tronc week belongs to exactly one pay period, so
+    // consecutive periods never double-count. Also reports which Mondays in
+    // the period have no tronc run yet, so the operator can run them first.
+    if (action === 'payroll.period') {
+      const { from, to } = body;
+      if (!from || !to) return json({ error: 'from/to required' }, 400);
+
+      const { data: tss } = await admin.from('wf_timesheets')
+        .select('staff_id, actual_hours, effective_rate, pay_amount, clock_in')
+        .eq('location_id', location_id).eq('status', 'approved')
+        .gte('clock_in', `${from}T00:00:00`).lte('clock_in', `${to}T23:59:59`);
+      const base: Record<string, { hours: number; pay: number }> = {};
+      (tss ?? []).forEach((t: any) => {
+        const pay = t.pay_amount != null ? Number(t.pay_amount) : Number(t.actual_hours || 0) * Number(t.effective_rate || 0);
+        const b = base[t.staff_id] ?? (base[t.staff_id] = { hours: 0, pay: 0 });
+        b.hours += Number(t.actual_hours || 0); b.pay += pay;
+      });
+
+      const { data: runs } = await admin.from('wf_tronc_runs')
+        .select('id, week_start, status, pool, total_paid')
+        .eq('location_id', location_id).gte('week_start', from).lte('week_start', to)
+        .neq('status', 'draft');
+      const tips: Record<string, number> = {};
+      const runIds = (runs ?? []).map((r: any) => r.id);
+      if (runIds.length) {
+        const { data: lines } = await admin.from('wf_tronc_lines').select('staff_id, payout').in('run_id', runIds);
+        (lines ?? []).forEach((l: any) => { tips[l.staff_id] = (tips[l.staff_id] ?? 0) + Number(l.payout || 0); });
+      }
+
+      // Mondays inside [from, to] with no tronc run = tips not yet distributed.
+      const missingWeeks: string[] = [];
+      const covered = new Set((runs ?? []).map((r: any) => r.week_start));
+      for (const d = new Date(from + 'T00:00:00'); d <= new Date(to + 'T00:00:00'); d.setDate(d.getDate() + 1)) {
+        if (d.getDay() === 1) {
+          const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+          if (!covered.has(iso)) missingWeeks.push(iso);
+        }
+      }
+
+      const ids = new Set([...Object.keys(base), ...Object.keys(tips)]);
+      const staff = [...ids].map((id) => {
+        const b = base[id] ?? { hours: 0, pay: 0 };
+        const tp = round2(tips[id] ?? 0);
+        return { staff_id: id, hours: round2(b.hours), pay: round2(b.pay), tips: tp, total: round2(b.pay + tp) };
+      }).sort((a, b) => b.total - a.total);
+      const totals = {
+        pay: round2(staff.reduce((a, s) => a + s.pay, 0)),
+        tips: round2(staff.reduce((a, s) => a + s.tips, 0)),
+        total: round2(staff.reduce((a, s) => a + s.total, 0)),
+      };
+      return json({
+        ok: true, from, to, staff, totals,
+        tronc: { runs: (runs ?? []).map((r: any) => ({ week_start: r.week_start, status: r.status, total_paid: r.total_paid })), missingWeeks },
+      });
+    }
+
     // ── LABOUR (daily revenue from closed_checks) ─────────────────────────────
     if (action === 'labour') {
       const { from, to } = body;

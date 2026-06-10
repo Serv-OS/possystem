@@ -9,7 +9,6 @@ import { useState, useEffect, useMemo } from 'react';
 import { Icon } from '../../../components/ServOSIcons';
 import { Card, EmptyState, Badge, RoleChip, money, th, td, inputStyle, labelStyle, groupColor, GRP_SECTION, LoadingCard } from '../../../staff/wfUi';
 import * as wf from '../../../staff/wfData';
-import { payPeriod, shiftPayPeriod } from '../../../staff/wfWeek';
 
 const PAY_TYPES = [
   { v: 'hourly', lbl: 'Hourly' },
@@ -33,20 +32,6 @@ export default function WfPay({ ctx, staff, roles, sections, settings, week, sho
   const [editing, setEditing] = useState(null);     // role object being edited (or new)
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(false);
-
-  // Period-pay state — locked to the configured pay period (monthly 26th–25th,
-  // or fixed-length periods anchored to a start date, e.g. fortnightly from
-  // Fri 12 Jun). The run + reports always cover exactly these dates.
-  const payCfg = useMemo(() => ({
-    payPeriodType: settings?.payPeriodType || 'monthly',
-    payPeriodStartDay: settings?.payPeriodStartDay ?? 1,
-    payPeriodAnchor: settings?.payPeriodAnchor || null,
-    payDay: settings?.payDay ?? null,
-  }), [settings?.payPeriodType, settings?.payPeriodStartDay, settings?.payPeriodAnchor, settings?.payDay]);
-  const [period, setPeriod] = useState(() => payPeriod(payCfg));
-  const [pay, setPay] = useState(null);             // { staff:[{staff_id,hours,pay}], total } | null
-  const [computing, setComputing] = useState(false);
-  useEffect(() => { setPeriod(payPeriod(payCfg)); setPay(null); }, [payCfg]);
 
   // Seed local roles from props; refresh when the location's roles change.
   useEffect(() => { setRoleList(roles?.list || []); }, [roles]);
@@ -83,17 +68,6 @@ export default function WfPay({ ctx, staff, roles, sections, settings, week, sho
       reloadRoles();
     } finally { setBusy(false); }
   }
-
-  async function computePay(p = period) {
-    setComputing(true);
-    try {
-      const res = await wf.invokeCompute('pay.period', { location_id: ctx.locationId, from: p.startIso, to: p.endIso });
-      setPay(res && Array.isArray(res.staff) ? res : { staff: [], total: 0 });
-    } catch (e) {
-      showToast(e.message || 'Payroll run failed', 'error');
-    } finally { setComputing(false); }
-  }
-  const gotoPeriod = (n) => { const p = shiftPayPeriod(payCfg, period.startIso, n); setPeriod(p); setPay(null); };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
@@ -160,73 +134,7 @@ export default function WfPay({ ctx, staff, roles, sections, settings, week, sho
         )}
       </Card>
 
-      {/* ── (2) PERIOD PAY ───────────────────────────────────────────── */}
-      <Card>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>
-          <div>
-            <div style={{ fontSize: 15, fontWeight: 700 }}>Run payroll</div>
-            <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>Approved timesheets for the pay period, computed server-side.</div>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-            <button className="btn btn-ghost btn-xs" onClick={() => gotoPeriod(-1)} disabled={computing} title="Previous period"><Icon name="chevron" size={13} style={{ transform: 'rotate(180deg)' }} /></button>
-            <div style={{ textAlign: 'center', minWidth: 170 }}>
-              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 700 }}>{period.label}</div>
-              {period.payDateIso && <div style={{ fontSize: 10.5, color: 'var(--t3)', marginTop: 1 }}>Pay day {new Date(period.payDateIso + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}</div>}
-              <button className="btn btn-ghost btn-xs" style={{ marginTop: 1 }} onClick={() => { setPeriod(payPeriod(payCfg)); setPay(null); }} disabled={computing}>This period</button>
-            </div>
-            <button className="btn btn-ghost btn-xs" onClick={() => gotoPeriod(1)} disabled={computing} title="Next period"><Icon name="chevron" size={13} /></button>
-            <button className="btn btn-acc btn-sm" onClick={() => computePay()} disabled={computing}>
-              <Icon name="status" size={14} /> {computing ? 'Running…' : 'Run payroll'}
-            </button>
-          </div>
-        </div>
-
-        {computing ? (
-          <LoadingCard label="Computing pay…" />
-        ) : pay === null ? (
-          <EmptyState
-            icon="status"
-            title="Run the pay period"
-            body="Compute pay totals each pay period. Hours and amounts come from approved timesheets and are calculated on the server — never on this device."
-            cta="Compute pay"
-            onCta={computePay}
-          />
-        ) : pay.staff.length === 0 ? (
-          <EmptyState
-            icon="clock"
-            title="Nothing to pay yet"
-            body="No approved timesheets in this period. Approve timesheets in Time & Attendance, then compute again."
-          />
-        ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr>
-                  <th style={th}>Staff</th>
-                  <th style={{ ...th, textAlign: 'right' }}>Approved hours</th>
-                  <th style={{ ...th, textAlign: 'right' }}>Pay</th>
-                </tr>
-              </thead>
-              <tbody>
-                {pay.staff.map(row => (
-                  <tr key={row.staff_id}>
-                    <td style={td}>{nameOf(row.staff_id)}</td>
-                    <td style={{ ...td, textAlign: 'right' }} className="mono">{Number(row.hours || 0).toFixed(2)}</td>
-                    <td style={{ ...td, textAlign: 'right' }} className="mono">{money(row.pay, 2)}</td>
-                  </tr>
-                ))}
-              </tbody>
-              <tfoot>
-                <tr>
-                  <td style={{ ...td, fontWeight: 700, borderBottom: 'none' }}>Total</td>
-                  <td style={{ ...td, borderBottom: 'none' }} />
-                  <td style={{ ...td, textAlign: 'right', fontWeight: 700, borderBottom: 'none' }} className="mono">{money(pay.total, 2)}</td>
-                </tr>
-              </tfoot>
-            </table>
-          </div>
-        )}
-      </Card>
+      {/* Payroll runs (wages + tips) live in Workforce → Payroll. */}
 
       {editing && (
         <RoleEditor

@@ -82,6 +82,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.395', date: '10 Jun 2026', label: 'Payroll gets its own menu — wages + tips (tronc) in one run, with BACS export',
+    changes: [
+      'New Workforce → Payroll section (right under Timesheets): Run payroll computes each person’s base pay from approved timesheets AND their tip share from tronc runs, server-side, locked to the configured pay period.',
+      'Tips come from the Tronc / tips tool (pool × hours × role points, penny-exact). If any week in the period has no tronc run yet, the payroll run flags it — w/c dates listed — so tips can’t silently go missing from pay.',
+      'The run shows each person’s bank details inline (red “No bank on file” where missing) and exports as CSV — name, sort code, account, hours, base, tips, total — ready for BACS.',
+      'Positions & rates now holds just the rate card; the payroll run moved to the new Payroll section.',
+    ],
+  },
+  {
     version: '5.5.394', date: '10 Jun 2026', label: 'Pay periods — weekly/fortnightly/4-weekly anchored to a start date + pay day',
     changes: [
       'Workforce settings now has a full Pay period card: pick the frequency (monthly, weekly, fortnightly, every 4 weeks), anchor the first period to a real start date (e.g. Fri 12 Jun → 12–25 Jun, 26 Jun–9 Jul, …) and set the pay day (day-of-month for monthly; days-after-period-end otherwise).',
