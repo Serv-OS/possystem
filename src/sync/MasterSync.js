@@ -19,6 +19,10 @@ import { supabase, isMock, getLocationId } from '../lib/supabase';
 import { useStore } from '../store';
 
 const HEARTBEAT_INTERVAL  = 10_000; // master writes every 10s
+// Jitter every poller ±20% so a fleet of devices doesn't hit the API in
+// lock-step (synchronized intervals = periodic thundering herds).
+const jittered = ms => ms + Math.round((Math.random() - 0.5) * 0.4 * ms);
+const _ipCache = { value: null, at: 0 };
 const CHECK_INTERVAL      = 15_000; // children check every 15s
 const STALE_THRESHOLD     = 30_000; // master considered offline after 30s
 
@@ -35,19 +39,25 @@ export async function startMasterHeartbeat({ deviceId, locationId, deviceName, v
     try {
       const tables = useStore.getState().tables || [];
       const openTables = tables.filter(t => t.session?.items?.length > 0).length;
-      // Get local IP hint (best effort — works in some browsers)
-      let ip = null;
-      try {
-        const pc = new RTCPeerConnection({ iceServers: [] });
-        pc.createDataChannel('');
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        await new Promise(r => setTimeout(r, 200));
-        const sdp = pc.localDescription?.sdp || '';
-        const m = sdp.match(/a=candidate:[^\r\n]+IN IP4 (\d+\.\d+\.\d+\.\d+)/);
-        if (m && !m[1].startsWith('0.')) ip = m[1];
-        pc.close();
-      } catch {}
+      // Get local IP hint (best effort) — CACHED: spinning up an
+      // RTCPeerConnection on every 10s beat is wasteful; the LAN IP barely
+      // changes, so detect once and refresh every 10 minutes.
+      let ip = _ipCache.value;
+      if (Date.now() - _ipCache.at > 600_000) {
+        _ipCache.at = Date.now();
+        try {
+          const pc = new RTCPeerConnection({ iceServers: [] });
+          pc.createDataChannel('');
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          await new Promise(r => setTimeout(r, 200));
+          const sdp = pc.localDescription?.sdp || '';
+          const m = sdp.match(/a=candidate:[^\r\n]+IN IP4 (\d+\.\d+\.\d+\.\d+)/);
+          if (m && !m[1].startsWith('0.')) ip = m[1];
+          pc.close();
+        } catch {}
+        _ipCache.value = ip;
+      }
 
       await supabase.from('device_heartbeats').upsert({
         device_id:   deviceId,
@@ -63,7 +73,7 @@ export async function startMasterHeartbeat({ deviceId, locationId, deviceName, v
   };
 
   await beat(); // immediate first beat
-  _heartbeatTimer = setInterval(beat, HEARTBEAT_INTERVAL);
+  _heartbeatTimer = setInterval(beat, jittered(HEARTBEAT_INTERVAL));
   console.log('[MasterSync] Heartbeat started — this device is MASTER');
 }
 
@@ -103,7 +113,7 @@ export async function startChildMonitor({ locationId }) {
   };
 
   await check(); // immediate first check
-  _checkTimer = setInterval(check, CHECK_INTERVAL);
+  _checkTimer = setInterval(check, jittered(CHECK_INTERVAL));
 }
 
 export function getMasterStatus() {

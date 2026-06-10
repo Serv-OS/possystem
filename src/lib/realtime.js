@@ -461,7 +461,8 @@ export function startRealtime(store, locationId = LOCATION_ID) {
         .eq('location_id', locationId)
         .in('source', ['kiosk', 'online', 'qr'])
         .is('kitchen_routed_at', null)
-        .neq('status', 'collected');
+        .neq('status', 'collected')
+        .limit(100); // bounded backfill — a bigger backlog signals a kitchen issue, not a sync job
       if (error) { console.warn('[Realtime] order backfill query failed', error); return; }
       if (data?.length) {
         console.log(`[Realtime] backfilling ${data.length} unrouted order(s)`);

@@ -100,7 +100,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
         wf.loadForecast(ctx.locationId, w.startIso, w.endIso),
         wf.loadActualSales(ctx.locationId, w.startIso, w.endIso),
         wf.loadSections(ctx.locationId),
-        wf.loadTimesheets(ctx.locationId),
+        wf.loadTimesheets(ctx.locationId, w.startIso, w.endIso),
       ]);
       setShifts(sh || []);
       setForecast(fc || {});
@@ -230,26 +230,26 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
       const published = shifts.map(s => draftIds.includes(s.id) ? { ...s, status: 'published' } : s).filter(s => s.status === 'published');
       const dayLabel = iso => new Date(iso + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
       const nameOf = id => (staff.find(s => s.id === id) || {});
+      // Notify everyone IN PARALLEL — this used to await one SMS/email at a
+      // time, so a 20-person publish took 20× a single send's latency.
       let notified = 0, noContact = 0, failed = 0;
-      for (const sid of affected) {
+      await Promise.all([...affected].map(async (sid) => {
         const member = nameOf(sid);
         const mine = published.filter(x => x.staffId === sid).sort((a, b) => (a.date + a.start).localeCompare(b.date + b.start));
-        if (!mine.length) continue;
+        if (!mine.length) return;
         const first = (member.name || 'there').split(' ')[0];
         const lines = mine.map(x => `${dayLabel(x.date)} ${x.start}–${x.finish}${x.section ? ` (${x.section})` : ''}`);
         const smsMsg = `Hi ${first}, your rota for w/c ${weekRangeLabel(wk)}:\n${lines.join('\n')}`;
         const emailHtml = `<div style="font-family:system-ui,sans-serif;max-width:560px"><p>Hi ${first},</p><p>Your shifts for the week commencing <strong>${weekRangeLabel(wk)}</strong>${ctx.locName ? ` at ${ctx.locName}` : ''}:</p><ul>${lines.map(l => `<li>${l}</li>`).join('')}</ul><p>See you then!</p></div>`;
-        let any = false, fail = false;
-        if (member.mobile) {
-          try { const r = await wf.sendStaffSms(member.mobile, smsMsg, ctx.locationId, 'rota_notification', wk.startIso); if (r?.ok) any = true; else fail = true; } catch { fail = true; }
-        }
-        if (member.email) {
-          try { await wf.sendEmail(member.email, `Your rota — w/c ${weekRangeLabel(wk)}`, emailHtml, ctx.locationId); any = true; } catch { fail = true; }
-        }
+        const [smsRes, emailRes] = await Promise.allSettled([
+          member.mobile ? wf.sendStaffSms(member.mobile, smsMsg, ctx.locationId, 'rota_notification', wk.startIso) : Promise.resolve(null),
+          member.email ? wf.sendEmail(member.email, `Your rota — w/c ${weekRangeLabel(wk)}`, emailHtml, ctx.locationId) : Promise.resolve(null),
+        ]);
+        const any = (smsRes.status === 'fulfilled' && smsRes.value?.ok) || (member.email && emailRes.status === 'fulfilled');
         if (any) notified++;
         else if (!member.mobile && !member.email) noContact++;
         else failed++;
-      }
+      }));
       const bits = [];
       if (notified) bits.push(`notified ${notified}`);
       if (failed) bits.push(`${failed} failed`);
@@ -303,7 +303,8 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
       // Clash guard: against existing shifts AND the batch as it grows — this
       // is what previously let repeated AI runs pile duplicates onto the week.
       const working = [...shifts];
-      let added = 0, skippedClash = 0;
+      let skippedClash = 0;
+      const toInsert = [];
       for (const p of proposed) {
         if (!valid.has(p.staffId) || !weekDates.has(p.date) || !p.start || !p.finish) continue;
         if (findClash(working, p.staffId, p.date, p.start, p.finish)) { skippedClash++; continue; }
@@ -318,7 +319,15 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
           effectiveRate: rate, rateSource: source,
           computedHours: Math.round(hours * 100) / 100, computedCost: Math.round(hours * rate * 100) / 100,
         };
-        try { const saved = await wf.saveShift(shift, ctx.locationId, ctx.orgId); setShifts(prev => [...prev.filter(x => x.id !== saved.id), saved]); working.push(saved); added++; } catch { /* skip bad row */ }
+        working.push(shift); // future proposals clash-check against this one too
+        toInsert.push(shift);
+      }
+      // ONE bulk insert instead of N sequential saves — a 30-shift week is a
+      // single round-trip rather than 30.
+      let added = 0;
+      if (toInsert.length) {
+        const saved = await wf.saveShiftsBulk(toInsert, ctx.locationId, ctx.orgId);
+        added = saved.length;
       }
       await reload(wk);
       const skipNote = skippedClash ? ` (${skippedClash} skipped — clashed with shifts already on the rota)` : '';

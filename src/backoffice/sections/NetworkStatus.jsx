@@ -26,7 +26,7 @@ export default function NetworkStatus() {
 
   useEffect(() => {
     loadDevices();
-    const t = setInterval(loadDevices, 15000);
+    const t = setInterval(loadDevices, 15000 + Math.round((Math.random() - 0.5) * 6000)); // ±3s jitter
     return () => clearInterval(t);
   }, []);
 

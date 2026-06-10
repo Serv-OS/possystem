@@ -404,11 +404,20 @@ const mapTs = r => ({
   effectiveRate: r.effective_rate != null ? Number(r.effective_rate) : null, rateSource: r.rate_source,
   status: r.status, approvedBy: r.approved_by, approvedAt: r.approved_at, payrollRunId: r.payroll_run_id || null,
 });
+/** Timesheets for a location. PASS A RANGE — wf_timesheets is append-only and
+ *  grows forever; range queries are served by the (location_id, clock_in)
+ *  index. Rows with NO clock_in (legacy) are always included so they can be
+ *  surfaced and fixed rather than silently hidden. */
 export async function loadTimesheets(locationId, fromIso, toIso) {
-  if (isMock || !supabase) return lsGet('timesheets');
+  if (isMock || !supabase) {
+    const all = lsGet('timesheets');
+    if (!fromIso || !toIso) return all;
+    return all.filter(t => !t.clockIn || (String(t.clockIn).slice(0, 10) >= fromIso && String(t.clockIn).slice(0, 10) <= toIso));
+  }
   if (!locationId) return [];
   let q = supabase.from('wf_timesheets').select('*').eq('location_id', locationId);
-  const { data, error } = await q.order('created_at', { ascending: false });
+  if (fromIso && toIso) q = q.or(`and(clock_in.gte.${fromIso}T00:00:00,clock_in.lte.${toIso}T23:59:59),clock_in.is.null`);
+  const { data, error } = await q.order('created_at', { ascending: false }).limit(2000);
   if (error) { console.warn('[wf] loadTimesheets:', error.message); return []; }
   return (data || []).map(mapTs);
 }
@@ -461,7 +470,7 @@ export async function loadPayrollRuns(locationId) {
   if (isMock || !supabase) return lsGet('payrollruns');
   if (!locationId) return [];
   const { data, error } = await supabase.from('wf_payroll_runs').select('*')
-    .eq('location_id', locationId).order('period_start', { ascending: false });
+    .eq('location_id', locationId).order('period_start', { ascending: false }).limit(52);
   if (error) { console.warn('[wf] loadPayrollRuns:', error.message); return []; }
   return (data || []).map(mapPayrollRun);
 }
@@ -520,7 +529,7 @@ const mapAccrual = r => ({ id: r.id, staffId: r.staff_id, kind: r.kind, periodSt
 export async function loadAccrual(locationId) {
   if (isMock || !supabase) return lsGet('accrual');
   if (!locationId) return [];
-  const { data, error } = await supabase.from('wf_holiday_accrual').select('*').eq('location_id', locationId).order('created_at', { ascending: false });
+  const { data, error } = await supabase.from('wf_holiday_accrual').select('id,staff_id,kind,accrued_hours,created_at').eq('location_id', locationId).order('created_at', { ascending: false }).limit(5000);
   if (error) { console.warn('[wf] loadAccrual:', error.message); return []; }
   return (data || []).map(mapAccrual);
 }
@@ -539,7 +548,7 @@ const mapLine = r => ({ id: r.id, runId: r.run_id, staffId: r.staff_id, hours: N
 export async function loadTroncRuns(locationId) {
   if (isMock || !supabase) return lsGet('tronc');
   if (!locationId) return [];
-  const { data, error } = await supabase.from('wf_tronc_runs').select('*').eq('location_id', locationId).order('week_start', { ascending: false });
+  const { data, error } = await supabase.from('wf_tronc_runs').select('*').eq('location_id', locationId).order('week_start', { ascending: false }).limit(52);
   if (error) { console.warn('[wf] loadTroncRuns:', error.message); return []; }
   return (data || []).map(mapRun);
 }
@@ -576,6 +585,25 @@ export async function deleteDocument(id) {
   if (isMock || !supabase) return lsDelete('documents', id);
   const { error } = await supabase.from('wf_documents').delete().eq('id', id);
   if (error) console.warn('[wf] deleteDocument:', error.message);
+}
+
+/** Bulk-insert shifts in ONE request — the AI rota builder was inserting one
+ *  shift at a time (N sequential round-trips for an N-shift week). */
+export async function saveShiftsBulk(shiftsArr, locationId, orgId) {
+  if (!shiftsArr.length) return [];
+  if (isMock || !supabase) return shiftsArr.map(s => lsUpsert('shifts', s));
+  const org = await resolveOrgForLocation(locationId, orgId);
+  const rows = shiftsArr.map(s => ({
+    location_id: locationId, org_id: org, staff_id: s.staffId, role_key: s.roleKey || null,
+    section_id: s.sectionId || null, section: s.section || null,
+    shift_date: s.date, start_time: s.start, finish_time: s.finish, break_mins: s.breakMins || 0,
+    status: s.status || 'draft', premiums_applied: [], effective_rate: s.effectiveRate ?? null,
+    rate_source: s.rateSource || null, currency: 'GBP',
+    computed_hours: s.computedHours ?? null, computed_cost: s.computedCost ?? null,
+  }));
+  const { data, error } = await supabase.from('wf_shifts').insert(rows).select();
+  if (error) throw new Error(error.message);
+  return (data || []).map(mapShift);
 }
 
 /** Upsert a document by (staffId, type) — a person holds ONE current doc per
@@ -744,7 +772,7 @@ const mapAnn = r => ({ id: r.id, authorName: r.author_name, audience: r.audience
 export async function loadAnnouncements(locationId) {
   if (isMock || !supabase) return lsGet('announce');
   if (!locationId) return [];
-  const { data, error } = await supabase.from('wf_announcements').select('*').eq('location_id', locationId).order('created_at', { ascending: false });
+  const { data, error } = await supabase.from('wf_announcements').select('*').eq('location_id', locationId).order('created_at', { ascending: false }).limit(100);
   if (error) { console.warn('[wf] loadAnnouncements:', error.message); return []; }
   return (data || []).map(mapAnn);
 }

@@ -350,7 +350,7 @@ function StaffDetailModal({ staff: s, roles = ROLES, ctx, showToast, onClose, on
     (async () => {
       const [docs, ts, onbs, accrual] = await Promise.all([
         loadDocuments(ctx.locationId).catch(() => []),
-        loadTimesheets(ctx.locationId).catch(() => []),
+        loadTimesheets(ctx.locationId, (() => { const d = new Date(); d.setDate(d.getDate() - 104 * 7); return d.toISOString().slice(0, 10); })(), new Date().toISOString().slice(0, 10)).catch(() => []),
         loadOnboarding(ctx.locationId).catch(() => []),
         loadAccrual(ctx.locationId).catch(() => []),
       ]);

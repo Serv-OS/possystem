@@ -63,7 +63,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
     try {
       const [sh, ts] = await Promise.all([
         wf.loadShifts(ctx.locationId, range.from, range.to),
-        wf.loadTimesheets(ctx.locationId),
+        wf.loadTimesheets(ctx.locationId, range.from, range.to),
       ]);
       setShifts((sh || []).filter(s => s.status === 'published'));
       setSheets(ts || []);

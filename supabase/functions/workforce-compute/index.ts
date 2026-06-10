@@ -119,17 +119,16 @@ Deno.serve(async (req) => {
       const poolNum = Number(pool) || 0;
       const weekEnd = (() => { const d = new Date(week_start + 'T00:00:00'); d.setDate(d.getDate() + 6); return d.toISOString().slice(0, 10); })();
 
-      // Immutability: refuse to overwrite a finalized run; clear an existing draft.
-      const { data: existing } = await admin.from('wf_tronc_runs').select('id, status').eq('location_id', location_id).eq('week_start', week_start).maybeSingle();
+      // Immutability check + shifts + roles are independent → fetch in parallel.
+      const [{ data: existing }, { data: shifts }, { data: roles }] = await Promise.all([
+        admin.from('wf_tronc_runs').select('id, status').eq('location_id', location_id).eq('week_start', week_start).maybeSingle(),
+        admin.from('wf_shifts').select('staff_id, computed_hours, role_key')
+          .eq('location_id', location_id).gte('shift_date', week_start).lte('shift_date', weekEnd).eq('status', 'published'),
+        admin.from('wf_roles').select('key, tronc_weight').eq('location_id', location_id),
+      ]);
       if (existing && existing.status !== 'draft') return json({ error: `a ${existing.status} tronc run already exists for this week` }, 409);
-      if (existing) await admin.from('wf_tronc_runs').delete().eq('id', existing.id); // draft → replace (lines cascade)
-
-      const { data: shifts } = await admin.from('wf_shifts')
-        .select('staff_id, computed_hours, role_key')
-        .eq('location_id', location_id).gte('shift_date', week_start).lte('shift_date', weekEnd).eq('status', 'published');
+      if (existing) await admin.from('wf_tronc_runs').delete().eq('id', existing.id).eq('status', 'draft'); // draft → replace (lines cascade)
       if (!shifts || !shifts.length) return json({ error: 'no published shifts for this week — publish the rota first' }, 400);
-
-      const { data: roles } = await admin.from('wf_roles').select('key, tronc_weight').eq('location_id', location_id);
       const pts: Record<string, number> = {}; (roles ?? []).forEach((r: any) => { pts[r.key] = Number(r.tronc_weight ?? 1); });
 
       const byStaff: Record<string, { hours: number; role: string }> = {};
@@ -174,8 +173,10 @@ Deno.serve(async (req) => {
         admin.from('wf_roles').select('key, base_rate, salary_annual').eq('location_id', location_id),
       ]);
       const roleByKey: Record<string, any> = {}; (roleRows ?? []).forEach((r: any) => { roleByKey[r.key] = r; });
+      const staffById: Record<string, any> = {};
+      (staffRows ?? []).forEach((x: any) => { staffById[x.id] = x; });
       const isHourly = (sid: string) => {
-        const s = (staffRows ?? []).find((x: any) => x.id === sid);
+        const s = staffById[sid];
         if (!s) return true;
         if (s.contract_type === 'salaried') return false;
         if (s.rate_override != null) return true;
@@ -244,45 +245,49 @@ Deno.serve(async (req) => {
       const { from, to, pay_date } = body;
       if (!from || !to) return json({ error: 'from/to required' }, 400);
 
+      // All five reads are independent — ONE parallel round instead of five
+      // sequential round-trips (this endpoint is hit on every payroll view).
+      const [
+        { data: existingRun },
+        { data: pendingRows },
+        { data: vs },
+        { data: tss },
+        { data: runs },
+      ] = await Promise.all([
+        admin.from('wf_payroll_runs').select('id, created_at, totals').eq('location_id', location_id).eq('period_start', from).maybeSingle(),
+        admin.from('wf_timesheets').select('id').eq('location_id', location_id).eq('status', 'pending')
+          .gte('clock_in', `${from}T00:00:00`).lte('clock_in', `${to}T23:59:59`),
+        admin.from('wf_venue_settings').select('settings').eq('location_id', location_id).maybeSingle(),
+        // Base pay from APPROVED + already-PAID timesheets (paid rows keep the
+        // preview of a closed period faithful to what was actually paid).
+        admin.from('wf_timesheets').select('id, staff_id, actual_hours, effective_rate, pay_amount, clock_in, status')
+          .eq('location_id', location_id).in('status', ['approved', 'paid'])
+          .gte('clock_in', `${from}T00:00:00`).lte('clock_in', `${to}T23:59:59`),
+        admin.from('wf_tronc_runs').select('id, week_start, status, pool, total_paid')
+          .eq('location_id', location_id).gte('week_start', from).lte('week_start', to).neq('status', 'draft'),
+      ]);
+
       // A period closes exactly once — the run is the immutable record.
-      const { data: existingRun } = await admin.from('wf_payroll_runs')
-        .select('id, created_at, totals').eq('location_id', location_id).eq('period_start', from).maybeSingle();
       if (closing && existingRun) return json({ ok: false, error: 'This pay period has already been closed — see Payroll history.' });
 
       // Pending timesheets BLOCK closing: every worked hour must be approved
       // (or deleted) before pay is finalised.
-      const { data: pendingRows } = await admin.from('wf_timesheets')
-        .select('id').eq('location_id', location_id).eq('status', 'pending')
-        .gte('clock_in', `${from}T00:00:00`).lte('clock_in', `${to}T23:59:59`);
       const pendingCount = (pendingRows ?? []).length;
       if (closing && pendingCount > 0) {
         return json({ ok: false, error: `Finish approving timesheets first — ${pendingCount} timesheet${pendingCount === 1 ? ' is' : 's are'} still pending in this period (approve or delete them under Timesheets).` });
       }
 
-      const { data: vs } = await admin.from('wf_venue_settings').select('settings').eq('location_id', location_id).maybeSingle();
       const policy = (vs?.settings ?? {}) as Record<string, any>;
       const tipMode = policy.tipMode === 'direct' || policy.tipMode === 'hybrid' ? policy.tipMode : 'pool';
       const directShare = tipMode === 'direct' ? 1 : tipMode === 'hybrid' ? Math.min(100, Math.max(0, Number(policy.directPct) || 0)) / 100 : 0;
       const allocator = policy.tipAllocator === 'troncmaster' ? 'troncmaster' : 'employer';
 
-      // Base pay from APPROVED + already-PAID timesheets (paid rows keep the
-      // preview of a closed period faithful to what was actually paid).
-      const { data: tss } = await admin.from('wf_timesheets')
-        .select('id, staff_id, actual_hours, effective_rate, pay_amount, clock_in, status')
-        .eq('location_id', location_id).in('status', ['approved', 'paid'])
-        .gte('clock_in', `${from}T00:00:00`).lte('clock_in', `${to}T23:59:59`);
       const base: Record<string, { hours: number; pay: number }> = {};
       (tss ?? []).forEach((t: any) => {
         const pay = t.pay_amount != null ? Number(t.pay_amount) : Number(t.actual_hours || 0) * Number(t.effective_rate || 0);
         const b = base[t.staff_id] ?? (base[t.staff_id] = { hours: 0, pay: 0 });
         b.hours += Number(t.actual_hours || 0); b.pay += pay;
       });
-
-      // Pooled tips from tronc runs in the period.
-      const { data: runs } = await admin.from('wf_tronc_runs')
-        .select('id, week_start, status, pool, total_paid')
-        .eq('location_id', location_id).gte('week_start', from).lte('week_start', to)
-        .neq('status', 'draft');
       const troncTips: Record<string, number> = {};
       const runIds = (runs ?? []).map((r: any) => r.id);
       if (runIds.length) {
@@ -301,17 +306,26 @@ Deno.serve(async (req) => {
             .neq('status', 'voided').gt('tip', 0),
           admin.from('wf_staff').select('id, name, pos_user_id').eq('location_id', location_id),
         ]);
+        // O(1) lookups per check: pos-user id, exact full name, and UNIQUE
+        // first name (the till often stores just "Peter"). The old fallback
+        // scanned every staff name per check — O(checks × staff).
         const byPos: Record<string, string> = {}; const byName: Record<string, string> = {};
+        const byFirst: Record<string, string | false> = {}; // false = ambiguous
         (wfRows ?? []).forEach((w: any) => {
           if (w.pos_user_id) byPos[w.pos_user_id] = w.id;
-          if (w.name) byName[String(w.name).trim().toLowerCase()] = w.id;
+          const full = String(w.name || '').trim().toLowerCase();
+          if (!full) return;
+          byName[full] = w.id;
+          const first = full.split(/\s+/)[0];
+          byFirst[first] = byFirst[first] === undefined ? w.id : false;
         });
         (checks ?? []).forEach((c: any) => {
           const tip = Number(c.tip) || 0;
           if (!tip) return;
+          const server = String(c.server || '').trim().toLowerCase();
           const sid = (c.staff_id && byPos[c.staff_id])
-            || (c.server && byName[String(c.server).trim().toLowerCase()])
-            || (c.server && Object.entries(byName).find(([n]) => n.startsWith(String(c.server).trim().toLowerCase()))?.[1])
+            || (server && byName[server])
+            || (server && byFirst[server] ? byFirst[server] : null)
             || null;
           if (sid) directTips[sid] = (directTips[sid] ?? 0) + tip * directShare;
           else unattributedTips += tip * directShare;
@@ -367,7 +381,7 @@ Deno.serve(async (req) => {
 
       if (tsIds.length) {
         const { error: tsErr } = await admin.from('wf_timesheets')
-          .update({ status: 'paid', payroll_run_id: run.id }).in('id', tsIds);
+          .update({ status: 'paid', payroll_run_id: run.id }).in('id', tsIds).eq('status', 'approved');
         if (tsErr) {
           await admin.from('wf_payroll_runs').delete().eq('id', run.id);
           return json({ error: tsErr.message }, 500);

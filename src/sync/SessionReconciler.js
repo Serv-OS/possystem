@@ -106,7 +106,7 @@ export async function startSessionReconciler() {
   await reconcile();
 
   // Then every 10 seconds
-  _timer = setInterval(reconcile, 10_000);
+  _timer = setInterval(reconcile, 10_000 + Math.round((Math.random() - 0.5) * 4000)); // ±2s jitter — avoid fleet lock-step
 }
 
 export function stopSessionReconciler() {

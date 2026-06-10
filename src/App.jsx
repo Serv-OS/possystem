@@ -82,6 +82,16 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.406', date: '10 Jun 2026', label: 'Scale pass — parallel everywhere, bounded queries, indexes, jittered polling',
+    changes: [
+      'Nothing pay-critical runs sequentially any more: payroll preview/close runs its five reads in one parallel round (was five round-trips), tronc runs fetch shifts/roles/run-check together, rota publish notifies every staff member’s SMS + email in parallel (was one at a time), and the AI rota builder inserts the whole week in ONE bulk request instead of one insert per shift.',
+      'Queries are bounded: timesheets load only the selected week/period (legacy no-time rows still surface), holiday maths uses the 104-week statutory window, and announcements/tronc/payroll histories cap at sane limits instead of growing forever.',
+      'New composite database indexes on the hot timesheet/announcement/document paths, so range queries stay fast as data grows.',
+      'Fleet behaviour: device heartbeats, master checks, session reconciliation and network-status polling now carry random jitter (no synchronized thundering-herd hits), the LAN-IP probe is cached for 10 minutes instead of re-detected every 10 seconds, and the kitchen-order backfill is bounded.',
+      'Concurrency safety: closing payroll can never double-mark timesheets paid, and tronc draft replacement is race-safe.',
+    ],
+  },
+  {
     version: '5.5.405', date: '10 Jun 2026', label: 'Announcements land on the Time Clock + statutory 52-week holiday averaging',
     changes: [
       '“In-app” announcements now have a real home: the staff Time Clock. When someone enters their PIN they see the last fortnight’s messages — audience-aware (all-staff, or targeted at their role). The Announcements screen now says exactly where in-app means.',

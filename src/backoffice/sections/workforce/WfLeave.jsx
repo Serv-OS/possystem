@@ -54,7 +54,8 @@ export default function WfLeave({ ctx, staff = [], roles, sections, settings, we
       wf.loadTimeOff(ctx?.locationId),
       wf.loadAccrual(ctx?.locationId),
       wf.loadAvailability(ctx?.locationId),
-      wf.loadTimesheets(ctx?.locationId),
+      // 104-week window: the statutory holiday lookback never needs more.
+      wf.loadTimesheets(ctx?.locationId, (() => { const d = new Date(); d.setDate(d.getDate() - 104 * 7); return d.toISOString().slice(0, 10); })(), new Date().toISOString().slice(0, 10)),
     ]).then(([lv, ac, av, ts]) => {
       if (!live) return;
       setLeave(lv || []); setAccrual(ac || []); setAvail(av || []); setTimesheets(ts || []);
