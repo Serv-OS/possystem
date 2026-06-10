@@ -209,8 +209,12 @@ Deno.serve(async (req) => {
 
     // ── PAY PERIOD (read-only summary) ────────────────────────────────────────
     if (action === 'pay.period') {
-      const { data: tss } = await admin.from('wf_timesheets')
-        .select('staff_id, actual_hours, effective_rate, pay_amount, status').eq('location_id', location_id).eq('status', 'approved');
+      const { from, to } = body; // pay-period dates (optional; defaults to all approved)
+      let q = admin.from('wf_timesheets')
+        .select('staff_id, actual_hours, effective_rate, pay_amount, status, clock_in').eq('location_id', location_id).eq('status', 'approved');
+      if (from) q = q.gte('clock_in', `${from}T00:00:00`);
+      if (to) q = q.lte('clock_in', `${to}T23:59:59`);
+      const { data: tss } = await q;
       const byStaff: Record<string, { hours: number; pay: number }> = {};
       (tss ?? []).forEach((t: any) => {
         const pay = t.pay_amount != null ? Number(t.pay_amount) : Number(t.actual_hours || 0) * Number(t.effective_rate || 0);
@@ -218,7 +222,7 @@ Deno.serve(async (req) => {
         b.hours += Number(t.actual_hours || 0); b.pay += pay;
       });
       const staff = Object.entries(byStaff).map(([staff_id, v]) => ({ staff_id, hours: round2(v.hours), pay: round2(v.pay) }));
-      return json({ ok: true, staff, total: round2(staff.reduce((a, s) => a + s.pay, 0)) });
+      return json({ ok: true, from: from ?? null, to: to ?? null, staff, total: round2(staff.reduce((a, s) => a + s.pay, 0)) });
     }
 
     // ── LABOUR (daily revenue from closed_checks) ─────────────────────────────

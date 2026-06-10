@@ -35,3 +35,8 @@ do $$ begin create policy wf_doc_templates_rls_insert on wf_doc_templates for in
 do $$ begin create policy wf_doc_templates_rls_update on wf_doc_templates for update using (location_id::text in (select public.user_accessible_locations())) with check (location_id::text in (select public.user_accessible_locations())); exception when duplicate_object then null; end $$;
 do $$ begin create policy wf_doc_templates_rls_delete on wf_doc_templates for delete using (location_id::text in (select public.user_accessible_locations())); exception when duplicate_object then null; end $$;
 do $$ begin create policy wf_doc_templates_super_admin_all on wf_doc_templates for all using (public.is_super_admin()) with check (public.is_super_admin()); exception when duplicate_object then null; end $$;
+
+-- Pay period (monthly, configurable start day-of-month, e.g. 26 → 26th–25th).
+-- Drives "Run payroll" in Workforce → Pay.
+alter table wf_venue_settings add column if not exists pay_period_type text not null default 'monthly';
+alter table wf_venue_settings add column if not exists pay_period_start_day int not null default 1;

@@ -82,6 +82,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.388', date: '9 Jun 2026', label: 'Workforce — pay periods drive Run payroll + actual wage vs sales on the rota',
+    changes: [
+      'Set your pay period in Workforce → Settings (monthly, e.g. starts on the 26th → runs 26th–25th). Workforce → Pay now has "Run payroll" scoped to that period, with prev/next navigation; it totals approved-timesheet pay for those exact dates server-side.',
+      'Rota footer now shows ACTUAL wage (from timesheets) alongside scheduled wage, plus two labour-% rows: Plan (scheduled wage ÷ forecast sales) and Actual (timesheet wage ÷ actual POS sales) — so you can see planned vs real labour cost against takings.',
+    ],
+  },
+  {
     version: '5.5.387', date: '9 Jun 2026', label: 'Fix: offers/contracts now actually send + in-app contract signing',
     changes: [
       'Fixed offer letters and contracts not sending — the workforce email/SMS/compute calls now go through the Supabase SDK (correct gateway auth) instead of a raw request the gateway was rejecting. Verified the email function delivers via Resend.',

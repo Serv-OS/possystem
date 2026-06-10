@@ -73,22 +73,25 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
   const [aiBusy, setAiBusy] = useState(false);     // AI rota generation in progress
   const [view, setView] = useState('staff');       // 'staff' | 'section'
   const [secs, setSecs] = useState(sections || []); // sections loaded fresh (Settings may have changed them)
+  const [timesheets, setTimesheets] = useState([]); // for actual wage cost
 
   const targetPct = settings?.labourTargetPct ?? 0.3;
 
   async function reload(w) {
     setLoading(true);
     try {
-      const [sh, fc, ac, sc] = await Promise.all([
+      const [sh, fc, ac, sc, ts] = await Promise.all([
         wf.loadShifts(ctx.locationId, w.startIso, w.endIso),
         wf.loadForecast(ctx.locationId, w.startIso, w.endIso),
         wf.loadActualSales(ctx.locationId, w.startIso, w.endIso),
         wf.loadSections(ctx.locationId),
+        wf.loadTimesheets(ctx.locationId),
       ]);
       setShifts(sh || []);
       setForecast(fc || {});
       setActual(ac || {});
       if (sc) setSecs(sc);
+      setTimesheets(ts || []);
     } catch (e) {
       showToast('Could not load the rota: ' + e.message, 'error');
     } finally {
@@ -110,13 +113,25 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
 
   const shiftFor = (staffId, iso) => shifts.find(s => s.staffId === staffId && s.date === iso);
 
-  // per-day wage from computedCost
+  // per-day SCHEDULED wage from shift computedCost
   const wageByIso = useMemo(() => {
     const m = {};
     wk.days.forEach(d => { m[d.iso] = 0; });
     shifts.forEach(s => { if (m[s.date] != null) m[s.date] += Number(s.computedCost || 0); });
     return m;
   }, [shifts, wk]);
+
+  // per-day ACTUAL wage from timesheets (pay_amount, else actual_hours × rate), by clock-in date
+  const actualWageByIso = useMemo(() => {
+    const m = {}; wk.days.forEach(d => { m[d.iso] = 0; });
+    (timesheets || []).forEach(t => {
+      const iso = t.clockIn ? new Date(t.clockIn).toISOString().slice(0, 10) : null;
+      if (iso == null || m[iso] == null) return;
+      const pay = t.payAmount != null ? Number(t.payAmount) : Number(t.actualHours || 0) * Number(t.effectiveRate || 0);
+      m[iso] += pay;
+    });
+    return m;
+  }, [timesheets, wk]);
 
   const draftIds = useMemo(() => shifts.filter(s => s.status !== 'published').map(s => s.id), [shifts]);
 
@@ -381,7 +396,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
                 ))}
               </FooterRow>
 
-              <FooterRow label="Wage cost" tint="amber">
+              <FooterRow label="Scheduled wage" tint="amber">
                 {wk.days.map(d => (
                   <td key={d.iso} style={{ ...td, textAlign: 'center' }}>
                     <span className="mono" style={{ fontSize: 12, color: wageByIso[d.iso] > 0 ? 'var(--t1)' : 'var(--t4)' }}>{wageByIso[d.iso] > 0 ? money(wageByIso[d.iso]) : '–'}</span>
@@ -389,17 +404,35 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
                 ))}
               </FooterRow>
 
-              <FooterRow label="Labour %" tint="grey">
+              <FooterRow label="Actual wage" tint="amber">
+                {wk.days.map(d => (
+                  <td key={d.iso} style={{ ...td, textAlign: 'center' }}>
+                    <span className="mono" style={{ fontSize: 12, color: actualWageByIso[d.iso] > 0 ? 'var(--t1)' : 'var(--t4)' }}>{actualWageByIso[d.iso] > 0 ? money(actualWageByIso[d.iso]) : '–'}</span>
+                  </td>
+                ))}
+              </FooterRow>
+
+              <FooterRow label="Labour % (plan)" tint="grey">
                 {wk.days.map(d => {
                   const sales = forecast[d.iso] || actual[d.iso] || 0;
                   const wage = wageByIso[d.iso] || 0;
-                  const pct = labourPct(wage, sales);
-                  const over = pct > targetPct;
+                  const pct = labourPct(wage, sales); const over = pct > targetPct;
                   return (
                     <td key={d.iso} style={{ ...td, textAlign: 'center' }}>
-                      {sales > 0 && wage > 0
-                        ? <Badge tone={over ? 'red' : 'green'}>{(pct * 100).toFixed(0)}%</Badge>
-                        : <span style={{ fontSize: 12, color: 'var(--t4)' }}>–</span>}
+                      {sales > 0 && wage > 0 ? <Badge tone={over ? 'red' : 'green'}>{(pct * 100).toFixed(0)}%</Badge> : <span style={{ fontSize: 12, color: 'var(--t4)' }}>–</span>}
+                    </td>
+                  );
+                })}
+              </FooterRow>
+
+              <FooterRow label="Labour % (actual)" tint="grey">
+                {wk.days.map(d => {
+                  const sales = actual[d.iso] || 0;
+                  const wage = actualWageByIso[d.iso] || 0;
+                  const pct = labourPct(wage, sales); const over = pct > targetPct;
+                  return (
+                    <td key={d.iso} style={{ ...td, textAlign: 'center' }}>
+                      {sales > 0 && wage > 0 ? <Badge tone={over ? 'red' : 'green'}>{(pct * 100).toFixed(0)}%</Badge> : <span style={{ fontSize: 12, color: 'var(--t4)' }}>–</span>}
                     </td>
                   );
                 })}
@@ -408,7 +441,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
           </table>
         </div>
         <div style={{ marginTop: 10, fontSize: 11, color: 'var(--t4)' }}>
-          Labour target {(targetPct * 100).toFixed(0)}% · labour % uses forecast where set, else actual sales.
+          Labour target {(targetPct * 100).toFixed(0)}% · <b>Plan</b> = scheduled wage ÷ forecast (or actual) sales · <b>Actual</b> = timesheet wage ÷ actual POS sales.
         </div>
       </Card>
 

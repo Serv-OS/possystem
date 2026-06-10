@@ -9,6 +9,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { Icon } from '../../../components/ServOSIcons';
 import { Card, EmptyState, Badge, RoleChip, money, th, td, inputStyle, labelStyle, groupColor, GRP_SECTION, LoadingCard } from '../../../staff/wfUi';
 import * as wf from '../../../staff/wfData';
+import { payPeriod, shiftPayPeriod } from '../../../staff/wfWeek';
 
 const PAY_TYPES = [
   { v: 'hourly', lbl: 'Hourly' },
@@ -33,9 +34,12 @@ export default function WfPay({ ctx, staff, roles, sections, settings, week, sho
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  // Period-pay state
+  // Period-pay state — uses the configured pay period (e.g. 26th–25th).
+  const startDay = settings?.payPeriodStartDay ?? 1;
+  const [period, setPeriod] = useState(() => payPeriod(startDay));
   const [pay, setPay] = useState(null);             // { staff:[{staff_id,hours,pay}], total } | null
   const [computing, setComputing] = useState(false);
+  useEffect(() => { setPeriod(payPeriod(settings?.payPeriodStartDay ?? 1)); setPay(null); }, [settings?.payPeriodStartDay]);
 
   // Seed local roles from props; refresh when the location's roles change.
   useEffect(() => { setRoleList(roles?.list || []); }, [roles]);
@@ -73,15 +77,16 @@ export default function WfPay({ ctx, staff, roles, sections, settings, week, sho
     } finally { setBusy(false); }
   }
 
-  async function computePay() {
+  async function computePay(p = period) {
     setComputing(true);
     try {
-      const res = await wf.invokeCompute('pay.period', { location_id: ctx.locationId });
+      const res = await wf.invokeCompute('pay.period', { location_id: ctx.locationId, from: p.startIso, to: p.endIso });
       setPay(res && Array.isArray(res.staff) ? res : { staff: [], total: 0 });
     } catch (e) {
-      showToast(e.message || 'Compute failed', 'error');
+      showToast(e.message || 'Payroll run failed', 'error');
     } finally { setComputing(false); }
   }
+  const gotoPeriod = (n) => { const p = shiftPayPeriod(startDay, period.startIso, n); setPeriod(p); setPay(null); };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
@@ -150,14 +155,22 @@ export default function WfPay({ ctx, staff, roles, sections, settings, week, sho
 
       {/* ── (2) PERIOD PAY ───────────────────────────────────────────── */}
       <Card>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>
           <div>
-            <div style={{ fontSize: 15, fontWeight: 700 }}>Period pay</div>
-            <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>From approved timesheets, computed server-side.</div>
+            <div style={{ fontSize: 15, fontWeight: 700 }}>Run payroll</div>
+            <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>Approved timesheets for the pay period, computed server-side.</div>
           </div>
-          <button className="btn btn-acc btn-sm" onClick={computePay} disabled={computing}>
-            <Icon name="status" size={14} /> {computing ? 'Computing…' : 'Compute pay'}
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <button className="btn btn-ghost btn-xs" onClick={() => gotoPeriod(-1)} disabled={computing} title="Previous period"><Icon name="chevron" size={13} style={{ transform: 'rotate(180deg)' }} /></button>
+            <div style={{ textAlign: 'center', minWidth: 170 }}>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 700 }}>{period.label}</div>
+              <button className="btn btn-ghost btn-xs" style={{ marginTop: 1 }} onClick={() => { setPeriod(payPeriod(startDay)); setPay(null); }} disabled={computing}>This period</button>
+            </div>
+            <button className="btn btn-ghost btn-xs" onClick={() => gotoPeriod(1)} disabled={computing} title="Next period"><Icon name="chevron" size={13} /></button>
+            <button className="btn btn-acc btn-sm" onClick={() => computePay()} disabled={computing}>
+              <Icon name="status" size={14} /> {computing ? 'Running…' : 'Run payroll'}
+            </button>
+          </div>
         </div>
 
         {computing ? (

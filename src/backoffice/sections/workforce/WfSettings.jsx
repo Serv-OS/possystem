@@ -34,6 +34,7 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
   const [accrualRate, setAccrualRate] = useState('');
   const [currency, setCurrency] = useState('GBP');
   const [salesSource, setSalesSource] = useState('pos');
+  const [payStartDay, setPayStartDay] = useState('1');
   const [savingVenue, setSavingVenue] = useState(false);
 
   // Seed venue form from props.settings
@@ -42,6 +43,7 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
     setAccrualRate(String(pct(settings?.accrualRate ?? 0.1207)));
     setCurrency(settings?.currency || 'GBP');
     setSalesSource(settings?.salesSource || 'pos');
+    setPayStartDay(String(settings?.payPeriodStartDay ?? 1));
   }, [settings]);
 
   // Sections: seed from props, reload fresh on mount / location change
@@ -70,12 +72,15 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
     const ac = Number(accrualRate);
     if (!Number.isFinite(lt) || lt < 0 || lt > 100) { showToast('Labour target must be between 0 and 100%', 'error'); return; }
     if (!Number.isFinite(ac) || ac < 0 || ac > 100) { showToast('Accrual rate must be between 0 and 100%', 'error'); return; }
+    const psd = Math.min(28, Math.max(1, parseInt(payStartDay, 10) || 1));
     setSavingVenue(true);
     const patch = {
       currency,
       salesSource,
       labourTargetPct: lt / 100,
       accrualRate: ac / 100,
+      payPeriodType: 'monthly',
+      payPeriodStartDay: psd,
       premiums: settings?.premiums || {},
       settings: settings?.settings || {},
     };
@@ -158,6 +163,17 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
             <select style={inputStyle} value={salesSource} onChange={e => setSalesSource(e.target.value)} disabled={savingVenue}>
               {SALES_SOURCES.map(s => <option key={s.v} value={s.v}>{s.lbl}</option>)}
             </select>
+          </div>
+          <div>
+            <label style={labelStyle}>Pay period starts on day</label>
+            <input
+              style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }}
+              type="number" min="1" max="28" step="1" inputMode="numeric"
+              value={payStartDay} onChange={e => setPayStartDay(e.target.value)} disabled={savingVenue}
+            />
+            <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>
+              Monthly. e.g. 26 → pay periods run 26th–25th. Drives “Run payroll”.
+            </div>
           </div>
         </div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>

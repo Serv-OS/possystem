@@ -44,6 +44,28 @@ export function addWeeks(startIso, n) {
   return buildWeek(d);
 }
 
+/**
+ * Monthly pay period running from `startDay` of one month to (startDay-1) of the
+ * next — e.g. startDay 26 → 26th to 25th. Returns the period containing `ref`.
+ */
+export function payPeriod(startDay = 1, ref = new Date()) {
+  const sd = Math.min(28, Math.max(1, Number(startDay) || 1));
+  const d = new Date(ref); d.setHours(0, 0, 0, 0);
+  let start = new Date(d.getFullYear(), d.getMonth(), sd);
+  if (d.getDate() < sd) start = new Date(d.getFullYear(), d.getMonth() - 1, sd);
+  const end = new Date(start.getFullYear(), start.getMonth() + 1, sd);
+  end.setDate(end.getDate() - 1); // day before the next period starts
+  const fmt = x => x.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+  return { startIso: ymd(start), endIso: ymd(end), label: `${fmt(start)} – ${fmt(end)}` };
+}
+
+/** Shift a monthly pay period by ±n months (returns a fresh period). */
+export function shiftPayPeriod(startDay, currentStartIso, n) {
+  const d = new Date(currentStartIso + 'T00:00:00');
+  d.setMonth(d.getMonth() + n);
+  return payPeriod(startDay, d);
+}
+
 /** Human label e.g. "9–15 Jun". */
 export function weekRangeLabel(week) {
   const a = new Date(week.startIso + 'T00:00:00');
