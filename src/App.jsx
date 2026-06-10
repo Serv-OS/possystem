@@ -82,6 +82,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.389', date: '9 Jun 2026', label: 'Internal: handoff docs refreshed (templates, e-sign, UK holiday, pay periods)',
+    changes: [
+      'No app changes — refreshed CURRENT_WORK / CLAUDE so the shared handoff covers the latest Workforce work (document templates + in-app e-sign, UK holiday model, pay periods + Run payroll, rota actual wage vs sales, payroll bank details, the offers/contracts send fix).',
+    ],
+  },
+  {
     version: '5.5.388', date: '9 Jun 2026', label: 'Workforce — pay periods drive Run payroll + actual wage vs sales on the rota',
     changes: [
       'Set your pay period in Workforce → Settings (monthly, e.g. starts on the 26th → runs 26th–25th). Workforce → Pay now has "Run payroll" scoped to that period, with prev/next navigation; it totals approved-timesheet pay for those exact dates server-side.',
