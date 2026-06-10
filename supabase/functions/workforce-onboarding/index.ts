@@ -5,9 +5,11 @@
 // stored on the onboarding record (meta.signToken). Runs as service-role.
 //
 // Actions { action, token, name? }:
-//   sign.get    → contract details + a short-lived signed URL to view it
-//   sign.submit → record the typed-name signature (name, timestamp, IP) and
-//                 mark the contract onboarding step complete (idempotent)
+//   sign.get     → offer + contract details + a short-lived signed URL
+//   sign.submit  → record the typed-name signature (name, timestamp, IP) and
+//                  mark the contract onboarding step complete (idempotent)
+//   offer.accept → record the candidate's acceptance of the offer letter
+//                  (timestamp + IP; idempotent)
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
@@ -63,7 +65,20 @@ Deno.serve(async (req) => {
         contractHtml: meta.contractHtml ?? null,
         signed: !!meta.signature,
         signature: meta.signature ?? null,
+        offerHtml: meta.offerHtml ?? null,
+        offerAccepted: meta.offerAccepted ?? null,
       });
+    }
+
+    if (action === 'offer.accept') {
+      if (meta.offerAccepted) return json({ ok: true, alreadyAccepted: true, offerAccepted: meta.offerAccepted });
+      const ip = (req.headers.get('x-forwarded-for') || '').split(',')[0].trim() || null;
+      const offerAccepted = { acceptedAt: new Date().toISOString(), ip, via: 'link' };
+      const steps = Array.isArray(onb.steps) ? onb.steps.map((s: any) => s.key === 'offer' ? { ...s, status: 'complete', completedAt: offerAccepted.acceptedAt } : s) : onb.steps;
+      const { error } = await admin.from('wf_onboarding')
+        .update({ meta: { ...meta, offerAccepted }, steps }).eq('id', onb.id);
+      if (error) return json({ error: error.message }, 500);
+      return json({ ok: true, offerAccepted });
     }
 
     if (action === 'sign.submit') {

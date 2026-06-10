@@ -82,6 +82,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.391', date: '10 Jun 2026', label: 'Onboarding — steps tick off properly, offer accept/resend, sign page scrolls',
+    changes: [
+      'Fixed steps not marking complete (offer sent, RTW uploaded, bank entered): older onboarding cases stored a legacy step format that the tick-off logic silently didn’t match — cases now self-heal on load, inferring completion from what’s already on file.',
+      'Offer letters now have a proper lifecycle: ticked off once sent, with Resend and Mark accepted actions, and the email now includes an "Accept your offer" link the candidate can tap — acceptance (timestamp + IP) shows on the step.',
+      'The public sign page now scrolls (it was clipped by the POS shell’s fixed layout, so the signature box could be unreachable) and shows the offer letter with an Accept button alongside the contract.',
+      'Step saves no longer report success when the save actually failed.',
+    ],
+  },
+  {
     version: '5.5.390', date: '9 Jun 2026', label: 'Workforce — fix offer/contract emails (CORS) + rota notifications (SMS E.164 + email)',
     changes: [
       'Offer letters & contracts now actually send: the send-receipt email function was missing CORS headers, so every browser-initiated email (offers, contracts) failed its preflight before the request ever reached the server — added CORS + OPTIONS handling and redeployed.',

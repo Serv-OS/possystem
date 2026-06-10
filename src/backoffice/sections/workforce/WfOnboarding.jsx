@@ -23,6 +23,37 @@ const STEPS = [
   { key: 'posUser', label: 'POS access' },
 ];
 const freshSteps = () => STEPS.map(s => ({ key: s.key, status: 'pending', completedAt: null }));
+
+// Older cases stored label-style step keys ("Right to work", "Bank & tax
+// details", 7 steps). markStep matches on the short keys above, so against a
+// legacy array it silently updates NOTHING — actions worked (email sent, doc
+// uploaded, bank saved) but never ticked. Heal on load: rebuild the steps from
+// the current STEPS, inferring completion from the meta evidence each action
+// leaves behind. The healed shape persists on the next save.
+const LEGACY_KEY_MAP = { 'Offer accepted': 'offer', 'Right to work': 'rtw', 'Contract signed': 'contract', 'Bank & tax details': 'bank', 'POS user created': 'posUser' };
+function normalizeCase(c) {
+  const meta = c.meta || {};
+  const have = new Set((c.steps || []).map(s => s.key));
+  if (STEPS.every(s => have.has(s.key))) return c;
+  const legacy = {};
+  (c.steps || []).forEach(s => { const k = LEGACY_KEY_MAP[s.key] || s.key; legacy[k] = s; });
+  const inferred = {
+    offer: meta.offerSentAt ? { status: 'complete', completedAt: meta.offerSentAt } : null,
+    rtw: meta.rtwPath ? { status: 'complete', completedAt: null } : null,
+    contract: meta.signature ? { status: 'complete', completedAt: meta.signature.signedAt || null }
+      : (meta.contractHtml || meta.contractPath) ? { status: 'sent', completedAt: null } : null,
+    bank: meta.bankMasked ? { status: 'complete', completedAt: meta.bankCapturedAt || null } : null,
+    posUser: null,
+  };
+  const steps = STEPS.map(({ key }) => {
+    const old = legacy[key];
+    if (old?.status === 'complete') return { key, status: 'complete', completedAt: old.completedAt || null };
+    const inf = inferred[key];
+    return inf ? { key, ...inf } : { key, status: 'pending', completedAt: null };
+  });
+  const status = steps.every(s => s.status === 'complete') ? 'complete' : 'inProgress';
+  return { ...c, steps, status };
+}
 const genToken = () => (crypto?.randomUUID ? crypto.randomUUID().replace(/-/g, '') : `${Date.now()}${Math.random().toString(36).slice(2)}`) + Math.random().toString(36).slice(2, 8);
 const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const toHtml = text => `<div style="white-space:pre-wrap;font-family:system-ui,-apple-system,sans-serif;line-height:1.6;font-size:14px;color:#111">${esc(text)}</div>`;
@@ -75,7 +106,7 @@ export default function WfOnboarding({ ctx, staff = [], roles, sections, setting
 
   async function reload() {
     setLoading(true);
-    try { setCases(await wf.loadOnboarding(ctx.locationId) || []); }
+    try { setCases((await wf.loadOnboarding(ctx.locationId) || []).map(normalizeCase)); }
     catch (e) { showToast(e.message || 'Could not load onboarding', 'error'); }
     finally { setLoading(false); }
   }
@@ -89,8 +120,10 @@ export default function WfOnboarding({ ctx, staff = [], roles, sections, setting
     const steps = next.steps || [];
     next.status = steps.length && steps.every(s => s.status === 'complete') ? 'complete' : 'inProgress';
     setCases(prev => prev.map(x => x.id === c.id ? next : x));
-    try { const saved = await wf.saveOnboarding(next, ctx.locationId, ctx.orgId); setCases(prev => prev.map(x => x.id === c.id ? saved : x)); return saved; }
-    catch (e) { showToast(e.message || 'Save failed', 'error'); reload(); }
+    // Rethrow on failure — callers show their own toast. Swallowing here let
+    // actions report success while the step save had actually failed.
+    try { const saved = await wf.saveOnboarding(next, ctx.locationId, ctx.orgId); setCases(prev => prev.map(x => x.id === c.id ? normalizeCase(saved) : x)); return saved; }
+    catch (e) { reload(); throw e; }
   };
 
   const markStep = (c, key, status = 'complete', meta) =>
@@ -157,7 +190,10 @@ function OnboardingCard({ c, member, rolesMap, ctx, showToast, markStep, patchCa
       </div>
 
       <div style={{ display: 'grid', gap: 8 }}>
-        <StepRow done={stepStatus('offer') === 'complete'} label="Offer letter" hint={meta.offerSentAt ? `Sent ${new Date(meta.offerSentAt).toLocaleDateString('en-GB')}` : (member.email ? 'Email the offer to the candidate' : 'No email on file — add one in Staff')}>
+        <StepRow done={stepStatus('offer') === 'complete'} label="Offer letter" hint={
+          meta.offerAccepted ? `Accepted ${new Date(meta.offerAccepted.acceptedAt).toLocaleDateString('en-GB')}${meta.offerAccepted.via === 'manual' ? ' (marked by manager)' : ''}`
+            : meta.offerSentAt ? `Sent ${new Date(meta.offerSentAt).toLocaleDateString('en-GB')} — awaiting acceptance`
+              : (member.email ? 'Email the offer to the candidate' : 'No email on file — add one in Staff')}>
           <OfferAction c={c} member={member} role={rolesMap[member.role]} ctx={ctx} showToast={showToast} markStep={markStep} done={stepStatus('offer') === 'complete'} />
         </StepRow>
 
@@ -194,19 +230,51 @@ function StepRow({ done, label, hint, children }) {
   );
 }
 
+const offerAcceptBlock = link => `<p style="margin-top:20px"><a href="${link}" style="display:inline-block;background:#15C26A;color:#06130C;font-weight:700;padding:12px 20px;border-radius:10px;text-decoration:none">Review &amp; accept your offer</a></p>
+<p style="color:#666;font-size:13px">Or paste this link into your browser:<br/>${link}</p>`;
+
 function OfferAction({ c, member, role, ctx, showToast, markStep, done }) {
   const [pick, setPick] = useState(false);
-  if (done) return <Badge tone="green">Sent</Badge>;
+  const [busy, setBusy] = useState(false);
+  const meta = c.meta || {};
+  if (meta.offerAccepted) return <Badge tone="green">Accepted</Badge>;
   if (!member.email) return <span style={{ fontSize: 11, color: 'var(--t4)' }}>Add email</span>;
+
   const send = async (merged) => {
-    await wf.sendEmail(member.email, `Your offer from ${ctx.locName}`, toHtml(merged), ctx.locationId);
-    await markStep(c, 'offer', 'complete', { offerSentAt: new Date().toISOString() });
-    showToast('Offer letter emailed', 'success');
+    const token = meta.signToken || genToken();
+    const offerHtml = toHtml(merged);
+    const link = `${window.location.origin}/sign/${token}`;
+    await wf.sendEmail(member.email, `Your offer from ${ctx.locName}`, offerHtml + offerAcceptBlock(link), ctx.locationId);
+    try {
+      await markStep(c, 'offer', 'complete', { offerSentAt: new Date().toISOString(), offerHtml, signToken: token });
+    } catch (e) {
+      showToast('Offer emailed, but progress could not be saved: ' + (e.message || 'error'), 'error');
+      setPick(false);
+      return;
+    }
+    showToast(done ? 'Offer letter re-sent' : 'Offer letter emailed — they can accept from the link inside', 'success');
     setPick(false);
   };
+
+  const markAccepted = async () => {
+    setBusy(true);
+    try {
+      await markStep(c, 'offer', 'complete', { offerAccepted: { acceptedAt: new Date().toISOString(), via: 'manual' } });
+      showToast('Offer marked as accepted', 'success');
+    } catch (e) { showToast(e.message || 'Could not save', 'error'); }
+    finally { setBusy(false); }
+  };
+
   return (<>
-    <button className="btn btn-acc btn-xs" onClick={() => setPick(true)}>Send offer</button>
-    {pick && <PickTemplateModal kind="offer" member={member} role={role} ctx={ctx} title="Send offer letter" cta="Send offer" onClose={() => setPick(false)}
+    {done ? (
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+        <button className="btn btn-ghost btn-xs" disabled={busy} onClick={() => setPick(true)}>Resend</button>
+        <button className="btn btn-acc btn-xs" disabled={busy} onClick={markAccepted} title="e.g. they accepted by reply or in person">Mark accepted</button>
+      </div>
+    ) : (
+      <button className="btn btn-acc btn-xs" onClick={() => setPick(true)}>Send offer</button>
+    )}
+    {pick && <PickTemplateModal kind="offer" member={member} role={role} ctx={ctx} title={done ? 'Resend offer letter' : 'Send offer letter'} cta={done ? 'Resend offer' : 'Send offer'} onClose={() => setPick(false)}
       onConfirm={async (m) => { try { await send(m); } catch (e) { showToast('Could not send: ' + (e.message || 'error'), 'error'); } }} />}
   </>);
 }
