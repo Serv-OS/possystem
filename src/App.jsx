@@ -82,6 +82,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.398', date: '10 Jun 2026', label: 'Rota — clashing shifts blocked',
+    changes: [
+      'A shift can no longer be saved if its times overlap another shift the same person already has that day — split shifts must be back-to-back or apart (09:00–17:00 then 17:00–22:00 is fine; 12:00–15:00 inside it is rejected with a clear message). Overnight finishes are handled.',
+      'The AI rota builder now skips proposals that clash with shifts already on the week — repeated runs were how duplicate shifts piled up. The result toast says how many were skipped.',
+    ],
+  },
+  {
     version: '5.5.397', date: '10 Jun 2026', label: 'Rota shows every shift (split shifts), breaks with UK law checks, role dropdown fix',
     changes: [
       'The rota now shows EVERY shift in a day cell, stacked — previously it rendered only the first, which hid duplicate shifts (e.g. from repeated AI-builder runs) that still appeared in Timesheets and counted in wages. Click any chip to edit/delete it; a small + under the stack adds another shift on the same day (split shifts).',

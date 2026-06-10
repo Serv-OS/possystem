@@ -14,6 +14,21 @@ import { hoursOf, resolveRate, labourPct } from '../../../staff/labour';
 
 const GRP_ORDER = ['mgmt', 'bar', 'floor', 'kitchen', 'door'];
 
+// ── shift clash detection ────────────────────────────────────────────────────
+// Split shifts are allowed (several per day) but must NOT overlap. Touching
+// endpoints (…–17:00 then 17:00–…) are fine. Overnight finishes roll past
+// midnight for the comparison.
+const toMins = hhmm => { const [h, m] = String(hhmm || '0:0').split(':').map(Number); return (h || 0) * 60 + (m || 0); };
+const spanOf = (start, finish) => { const s = toMins(start); let f = toMins(finish); if (f <= s) f += 24 * 60; return [s, f]; };
+function findClash(list, staffId, dateIso, start, finish, ignoreId) {
+  const [s1, f1] = spanOf(start, finish);
+  return (list || []).find(x => {
+    if (x.staffId !== staffId || x.date !== dateIso || x.id === ignoreId) return false;
+    const [s2, f2] = spanOf(x.start, x.finish);
+    return s1 < f2 && s2 < f1;
+  });
+}
+
 // ── Shift editor modal ──────────────────────────────────────────────────────
 function ShiftModal({ staff, day, shift, sections, onSave, onDelete, onClose, saving }) {
   const [start, setStart] = useState(shift?.start || '09:00');
@@ -143,6 +158,13 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
   // ── handlers ────────────────────────────────────────────────────────────
   async function saveShift(payload) {
     const { staff: s, day, shift } = editing;
+    // No clashing shifts: a person can work split shifts, but the times must
+    // not overlap an existing shift that day (editing a shift ignores itself).
+    const clash = findClash(shifts, s.id, day.iso, payload.start, payload.finish, shift?.id);
+    if (clash) {
+      showToast(`Clashes with their ${clash.start}–${clash.finish} shift on ${day.label} — change the times, or edit that shift instead`, 'error');
+      return;
+    }
     const role = roles.map[s.role];
     const { rate, source } = resolveRate(s, role);
     const hours = Math.max(0, hoursOf(payload.start, payload.finish) - payload.breakMins / 60);
@@ -278,9 +300,13 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
 
       const valid = new Set(staff.map(s => s.id));
       const weekDates = new Set(wk.days.map(d => d.iso));
-      let added = 0;
+      // Clash guard: against existing shifts AND the batch as it grows — this
+      // is what previously let repeated AI runs pile duplicates onto the week.
+      const working = [...shifts];
+      let added = 0, skippedClash = 0;
       for (const p of proposed) {
         if (!valid.has(p.staffId) || !weekDates.has(p.date) || !p.start || !p.finish) continue;
+        if (findClash(working, p.staffId, p.date, p.start, p.finish)) { skippedClash++; continue; }
         const s = staff.find(x => x.id === p.staffId);
         const role = roles.map[s.role];
         const { rate, source } = resolveRate(s, role);
@@ -292,10 +318,11 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
           effectiveRate: rate, rateSource: source,
           computedHours: Math.round(hours * 100) / 100, computedCost: Math.round(hours * rate * 100) / 100,
         };
-        try { const saved = await wf.saveShift(shift, ctx.locationId, ctx.orgId); setShifts(prev => [...prev.filter(x => x.id !== saved.id), saved]); added++; } catch { /* skip bad row */ }
+        try { const saved = await wf.saveShift(shift, ctx.locationId, ctx.orgId); setShifts(prev => [...prev.filter(x => x.id !== saved.id), saved]); working.push(saved); added++; } catch { /* skip bad row */ }
       }
       await reload(wk);
-      showToast(added ? `AI added ${added} draft shift${added === 1 ? '' : 's'} — review, tweak, then publish` : 'AI produced no valid shifts — try adding availability/forecast', added ? 'success' : 'info');
+      const skipNote = skippedClash ? ` (${skippedClash} skipped — clashed with shifts already on the rota)` : '';
+      showToast(added ? `AI added ${added} draft shift${added === 1 ? '' : 's'}${skipNote} — review, tweak, then publish` : `AI produced no new shifts${skipNote || ' — try adding availability/forecast'}`, added ? 'success' : 'info');
     } catch (e) {
       showToast('AI rota: ' + (e.message || 'failed'), 'error');
     } finally { setAiBusy(false); }
