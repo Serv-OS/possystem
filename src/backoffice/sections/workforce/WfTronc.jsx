@@ -8,7 +8,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { Icon } from '../../../components/ServOSIcons';
 import { Card, EmptyState, Badge, money, th, td, inputStyle, labelStyle, LoadingCard } from '../../../staff/wfUi';
 import * as wf from '../../../staff/wfData';
-import { weekRangeLabel } from '../../../staff/wfWeek';
+import { buildWeek, addWeeks, weekRangeLabel } from '../../../staff/wfWeek';
 
 const STATUS_TONE = { draft: 'grey', run: 'blue', exported: 'green' };
 const STATUS_LBL = { draft: 'Draft', run: 'Run', exported: 'Exported' };
@@ -18,22 +18,28 @@ export default function WfTronc({ ctx, staff = [], roles, sections, settings, we
   const [loading, setLoading] = useState(true);
   const [pool, setPool] = useState('');
   const [running, setRunning] = useState(false);
-  const [tipInfo, setTipInfo] = useState(null); // real POS tips for the week (card + service)
+  const [tipInfo, setTipInfo] = useState(null); // real POS tips for the selected week
+  // Week being distributed — navigable, so past weeks' tips (the usual case:
+  // you run tronc AFTER the week ends) pull through. Was locked to the
+  // current week, which made the system look like it found no tips.
+  const [wk, setWk] = useState(() => buildWeek());
 
   // Pull the actual tip pool from the POS (same closed_checks data as the Tips
-  // report): card tips + service charge for the week. Pre-fills the pool so it's
-  // never a manual guess; the operator can still adjust before running.
+  // report): card tips + service charge taken on the till during the selected
+  // week. Auto-fills the pool; the operator can still adjust (e.g. add cash
+  // tips that were pooled) before running.
   useEffect(() => {
     let alive = true;
-    wf.loadTipPool(ctx.locationId, week.startIso, week.endIso)
+    setTipInfo(null);
+    wf.loadTipPool(ctx.locationId, wk.startIso, wk.endIso)
       .then(info => {
         if (!alive) return;
         setTipInfo(info);
-        setPool(p => (p === '' && info.suggestedPool > 0) ? info.suggestedPool.toFixed(2) : p);
+        setPool(info.suggestedPool > 0 ? info.suggestedPool.toFixed(2) : '');
       })
       .catch(() => {});
     return () => { alive = false; };
-  }, [ctx.locationId, week.startIso, week.endIso]);
+  }, [ctx.locationId, wk.startIso, wk.endIso]);
 
   const nameOf = useMemo(() => {
     const m = {};
@@ -62,14 +68,16 @@ export default function WfTronc({ ctx, staff = [], roles, sections, settings, we
     return () => { alive = false; };
   }, [ctx.locationId]);
 
+  // A non-draft run already exists for the selected week → it's immutable.
+  const existingRun = useMemo(() => runs.find(r => r.weekStart === wk.startIso && r.status !== 'draft'), [runs, wk.startIso]);
+
   async function runDistribution() {
     const amount = Number(pool);
     if (!amount || amount <= 0) { showToast('Enter the tip pool amount first', 'error'); return; }
     setRunning(true);
     try {
-      const res = await wf.invokeCompute('tronc.run', { location_id: ctx.locationId, week_start: week.startIso, pool: amount });
+      const res = await wf.invokeCompute('tronc.run', { location_id: ctx.locationId, week_start: wk.startIso, pool: amount });
       showToast(`Tronc distributed — ${money(res.total_paid ?? amount, 2)} across the team`, 'success');
-      setPool('');
       await reload();
     } catch (e) {
       showToast(e.message || 'Distribution failed', 'error');
@@ -85,21 +93,36 @@ export default function WfTronc({ ctx, staff = [], roles, sections, settings, we
       {/* New weekly run */}
       <Card>
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 15, fontWeight: 700 }}>
-              <Icon name="tag" size={15} /> New weekly run
+          <div style={{ flex: 1, minWidth: 280 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 15, fontWeight: 700 }}>
+                <Icon name="tag" size={15} /> Weekly run
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <button className="btn btn-ghost btn-xs" disabled={running} onClick={() => setWk(addWeeks(wk.startIso, -1))} title="Previous week"><Icon name="chevron" size={13} style={{ transform: 'rotate(180deg)' }} /></button>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 700, minWidth: 86, textAlign: 'center' }}>{weekRangeLabel(wk)}</span>
+                <button className="btn btn-ghost btn-xs" disabled={running} onClick={() => setWk(addWeeks(wk.startIso, 1))} title="Next week"><Icon name="chevron" size={13} /></button>
+                <button className="btn btn-ghost btn-xs" disabled={running} onClick={() => setWk(buildWeek())}>This week</button>
+              </div>
             </div>
-            <div style={{ fontSize: 12.5, color: 'var(--t3)', marginTop: 6, lineHeight: 1.6, maxWidth: 460 }}>
-              Pool split by published-shift hours × role points, reconciled to the penny, for{' '}
-              <span style={{ color: 'var(--t1)', fontWeight: 600 }}>{weekRangeLabel(week)}</span>.
+            <div style={{ fontSize: 12.5, color: 'var(--t3)', marginTop: 6, lineHeight: 1.6, maxWidth: 520 }}>
+              How it works: tips taken on the till (card tips + service charge) during the selected week make the pool — pulled in automatically below. The pool is split by published-shift hours × role tronc weights, penny-exact, and the payouts feed Payroll for that period. You'd normally run a week once it's finished.
             </div>
-            {/* Real tip pool pulled from the POS (card tips + service charge) */}
-            {tipInfo && (
-              <div style={{ marginTop: 12, display: 'inline-flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '9px 13px', borderRadius: 11, background: 'var(--inset)', border: '1px solid var(--inset-border)', fontSize: 12 }}>
+            {/* Real tip pool pulled from the POS for the selected week */}
+            <div style={{ marginTop: 12, display: 'inline-flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '9px 13px', borderRadius: 11, background: 'var(--inset)', border: '1px solid var(--inset-border)', fontSize: 12 }}>
+              {!tipInfo ? (
+                <span style={{ color: 'var(--t3)' }}>Reading tips from the till…</span>
+              ) : tipInfo.suggestedPool > 0 ? (<>
                 <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, color: 'var(--acc)' }}>{money(tipInfo.suggestedPool, 2)}</span>
-                <span style={{ color: 'var(--t3)' }}>from the POS this week</span>
-                <span style={{ color: 'var(--t4)' }}>· card tips {money(tipInfo.cardTips, 2)} + service {money(tipInfo.serviceCharge, 2)}{tipInfo.cashTips > 0 ? ` · cash ${money(tipInfo.cashTips, 2)} kept by staff` : ''}</span>
-                <button className="btn btn-ghost btn-xs" disabled={running} onClick={() => setPool(tipInfo.suggestedPool.toFixed(2))}>Use this</button>
+                <span style={{ color: 'var(--t3)' }}>taken this week</span>
+                <span style={{ color: 'var(--t4)' }}>· card tips {money(tipInfo.cardTips, 2)} + service {money(tipInfo.serviceCharge, 2)}{tipInfo.cashTips > 0 ? ` · cash ${money(tipInfo.cashTips, 2)} not pooled` : ''}</span>
+              </>) : (
+                <span style={{ color: 'var(--t3)' }}>No card tips or service charge on the till for this week — use ‹ to pick the week you want to distribute.</span>
+              )}
+            </div>
+            {existingRun && (
+              <div style={{ marginTop: 10, fontSize: 12, color: 'var(--amber)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                <Icon name="warn" size={13} /> This week has already been distributed ({money(existingRun.totalPaid, 2)} paid) — runs are immutable. See it below.
               </div>
             )}
           </div>
@@ -115,14 +138,14 @@ export default function WfTronc({ ctx, staff = [], roles, sections, settings, we
                 placeholder="0.00"
                 value={pool}
                 onChange={e => setPool(e.target.value)}
-                disabled={running}
+                disabled={running || !!existingRun}
               />
             </div>
             <button
               className="btn btn-acc"
               style={{ height: 42, whiteSpace: 'nowrap' }}
               onClick={runDistribution}
-              disabled={running || !Number(pool)}
+              disabled={running || !Number(pool) || !!existingRun}
             >
               <Icon name={running ? 'clock' : 'sparkle'} size={14} /> {running ? 'Running…' : 'Run distribution'}
             </button>

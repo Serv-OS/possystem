@@ -82,6 +82,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.399', date: '10 Jun 2026', label: 'Tronc — pool pulls from the till automatically, any week',
+    changes: [
+      'Tronc now has week navigation (‹ › / This week). It was locked to the current week, so tips taken in earlier weeks looked like they weren’t being pulled in — you normally distribute a week after it ends.',
+      'The pool auto-fills from the till for the selected week: card tips + service charge from closed checks, with the breakdown shown (cash tips noted as not pooled). Still editable before running, e.g. to add pooled cash.',
+      'A clear "how it works" line explains the flow (till tips → weekly pool → split by published-shift hours × role weights → feeds Payroll), and weeks that already have a run show as locked (runs are immutable).',
+    ],
+  },
+  {
     version: '5.5.398', date: '10 Jun 2026', label: 'Rota — clashing shifts blocked',
     changes: [
       'A shift can no longer be saved if its times overlap another shift the same person already has that day — split shifts must be back-to-back or apart (09:00–17:00 then 17:00–22:00 is fine; 12:00–15:00 inside it is rejected with a clear message). Overnight finishes are handled.',
