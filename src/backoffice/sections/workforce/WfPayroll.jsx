@@ -63,9 +63,10 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
   const exportCsv = () => {
     if (!run?.staff?.length) return;
     const esc = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
-    const troncFree = run.policy?.allocator === 'troncmaster';
-    const troncCol = troncFree ? 'Tronc tips (PAYE, no NIC - independent troncmaster)' : 'Pooled tips (PAYE + NIC - employer allocated)';
-    const directCol = troncFree ? 'Direct tips via tronc (PAYE, no NIC)' : 'Direct tips (PAYE + NIC - employer allocated)';
+    const isUK = (settings?.currency || 'GBP') === 'GBP';
+    const troncFree = isUK && run.policy?.allocator === 'troncmaster';
+    const troncCol = !isUK ? 'Pooled tips' : troncFree ? 'Tronc tips (PAYE, no NIC - independent troncmaster)' : 'Pooled tips (PAYE + NIC - employer allocated)';
+    const directCol = !isUK ? 'Direct tips' : troncFree ? 'Direct tips via tronc (PAYE, no NIC)' : 'Direct tips (PAYE + NIC - employer allocated)';
     const rows = [
       ['First name', 'Surname', 'NI number', 'Period start', 'Period end', 'Hours', 'Basic pay', troncCol, directCol, 'Gross total', 'Sort code', 'Account number'],
       ...run.staff.map(r => {
@@ -78,10 +79,10 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
       ['TOTAL', '', '', '', '', '', run.totals.pay.toFixed(2), run.totals.tips_tronc.toFixed(2), run.totals.tips_direct.toFixed(2), run.totals.total.toFixed(2), '', ''],
       [],
       ['Notes for payroll:'],
-      ['Tips are separate pay elements and must not count toward National Minimum Wage.'],
-      [troncFree
+      [isUK ? 'Tips are separate pay elements and must not count toward National Minimum Wage.' : 'Tips are reported separately from wages; managers/supervisors must not receive pooled tips (FLSA). State tip-credit rules vary.'],
+      ...(isUK ? [[troncFree
         ? `Tronc/direct tip amounts were allocated by the independent troncmaster${run.policy?.troncmasterName ? ` (${run.policy.troncmasterName})` : ''} and must not be altered - taxable via PAYE, exempt from employee and employer NICs (HMRC E24).`
-        : 'Tip amounts were allocated by the employer - taxable via PAYE and subject to employee and employer NICs (HMRC E24).'],
+        : 'Tip amounts were allocated by the employer - taxable via PAYE and subject to employee and employer NICs (HMRC E24).']] : []),
     ];
     const blob = new Blob([rows.map(r => r.map(esc).join(',')).join('\n')], { type: 'text/csv' });
     const a = document.createElement('a');
@@ -140,7 +141,10 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
         )}
         {run && run.policy && (
           <div style={{ fontSize: 11.5, color: 'var(--t4)', marginBottom: 12 }}>
-            Tipping policy: {run.policy.tipMode === 'direct' ? 'card tips go to the seller' : run.policy.tipMode === 'hybrid' ? `seller keeps ${run.policy.directPct}% of their tips, rest pooled` : 'all card tips pooled (tronc)'} · allocation by {run.policy.allocator === 'troncmaster' ? 'independent troncmaster — tips are PAYE-taxed but NIC-free (HMRC E24); do not adjust these figures' : 'the business — tips attract employee + employer NICs'} · tips never count toward National Minimum Wage.
+            Tipping policy: {run.policy.tipMode === 'direct' ? 'card tips go to the seller' : run.policy.tipMode === 'hybrid' ? `seller keeps ${run.policy.directPct}% of their tips, rest pooled` : 'all card tips pooled'}
+            {(settings?.currency || 'GBP') === 'GBP'
+              ? <> · allocation by {run.policy.allocator === 'troncmaster' ? 'independent troncmaster — tips are PAYE-taxed but NIC-free (HMRC E24); do not adjust these figures' : 'the business — tips attract employee + employer NICs'} · tips never count toward National Minimum Wage.</>
+              : <> · US FLSA: tips belong to staff — managers/supervisors can't receive pooled tips; tips are reported separately from wages and tip-credit rules vary by state.</>}
           </div>
         )}
 

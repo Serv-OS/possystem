@@ -281,7 +281,9 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
         <div style={{ marginTop: 18, padding: '14px 16px', borderRadius: 12, background: 'var(--inset)', border: '1px solid var(--inset-border)' }}>
           <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 4 }}>Tipping policy</div>
           <div style={{ fontSize: 11.5, color: 'var(--t3)', lineHeight: 1.6, marginBottom: 12 }}>
-            How card tips are shared. Service charge is always pooled and distributed via Tronc. 100% of tips must reach staff (no deductions), paid no later than the end of the month after the customer tipped — keep a written policy.
+            {currency === 'GBP'
+              ? 'How card tips are shared. Service charge is always pooled and distributed via Tronc. UK law: 100% of tips must reach staff (no deductions), paid no later than the end of the month after the customer tipped — keep a written policy.'
+              : 'How card tips are shared. Service charge is always pooled and distributed via the weekly pool run. US federal law (FLSA): all tips belong to staff — owners, managers and supervisors can’t keep or receive pooled tips, and tip-credit rules vary by state.'}
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 14 }}>
             <div>
@@ -302,31 +304,34 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
                 <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>US-style tip-out: each seller gives this % of their own tips to the pool and keeps the rest.</div>
               </div>
             )}
-            <div>
-              <label style={labelStyle}>Who decides allocation</label>
-              <select style={inputStyle} value={tipAllocator} onChange={e => setTipAllocator(e.target.value)} disabled={savingVenue}>
-                <option value="employer">The business (NICs due on tips)</option>
-                <option value="troncmaster">Independent troncmaster (NIC-free)</option>
-              </select>
-              <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>HMRC E24: tips allocated by an independent troncmaster are free of employee + employer NICs; employer-decided shares are not.</div>
-            </div>
-            {tipAllocator === 'troncmaster' && (
+            {currency === 'GBP' && (<>
               <div>
-                <label style={labelStyle}>Troncmaster name</label>
-                <input style={inputStyle} value={troncmasterName} onChange={e => setTroncmasterName(e.target.value)} disabled={savingVenue} placeholder="e.g. Jane Doe / WMT Troncmaster Ltd" />
-                <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>Must genuinely set the rules independently; HMRC must be told the tronc exists.</div>
+                <label style={labelStyle}>Who decides allocation</label>
+                <select style={inputStyle} value={tipAllocator} onChange={e => setTipAllocator(e.target.value)} disabled={savingVenue}>
+                  <option value="employer">The business (NICs due on tips)</option>
+                  <option value="troncmaster">Independent troncmaster (NIC-free)</option>
+                </select>
+                <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>HMRC E24: tips allocated by an independent troncmaster are free of employee + employer NICs; employer-decided shares are not.</div>
               </div>
-            )}
+              {tipAllocator === 'troncmaster' && (
+                <div>
+                  <label style={labelStyle}>Troncmaster name</label>
+                  <input style={inputStyle} value={troncmasterName} onChange={e => setTroncmasterName(e.target.value)} disabled={savingVenue} placeholder="e.g. Jane Doe / WMT Troncmaster Ltd" />
+                  <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>Must genuinely set the rules independently; HMRC must be told the tronc exists.</div>
+                </div>
+              )}
+            </>)}
           </div>
           {/* Live worked example — the rule in plain money, both framings. */}
           {(() => {
             const keep = tipMode === 'direct' ? 100 : tipMode === 'hybrid' ? Math.min(100, Math.max(0, parseInt(directPct, 10) || 0)) : 0;
+            const sym = currency === 'USD' ? '$' : currency === 'EUR' ? '€' : '£';
             return (
               <div style={{ fontSize: 11.5, color: 'var(--t3)', marginTop: 12, lineHeight: 1.7 }}>
-                <span style={{ fontWeight: 700, color: 'var(--t2)' }}>So with £100 of card tips:</span>{' '}
-                <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700 }}>£{keep}</span> stays with the sellers whose tables tipped it ·{' '}
-                <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700 }}>£{100 - keep}</span> joins the weekly pool — split in <b>Tronc / tips</b> by hours × role weights (that's how kitchen and support staff share).
-                Service charge always joins the pool. Payroll then shows each person's two tip lines: <b>direct</b> (their own tables) + <b>pooled</b> (their tronc share).
+                <span style={{ fontWeight: 700, color: 'var(--t2)' }}>So with {sym}100 of card tips:</span>{' '}
+                <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700 }}>{sym}{keep}</span> stays with the sellers whose tables tipped it ·{' '}
+                <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700 }}>{sym}{100 - keep}</span> joins the weekly pool — split in <b>Tronc / tips</b> by hours × role weights (that's how kitchen and support staff share).
+                Service charge always joins the pool. Payroll then shows each person's two tip lines: <b>direct</b> (their own tables) + <b>pooled</b> (their tronc share). The Tips report in Reports opens on this same policy.
               </div>
             );
           })()}

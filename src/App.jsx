@@ -82,6 +82,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.402', date: '10 Jun 2026', label: 'Foolproof tipping — one policy everywhere, report synced, double-pay guard, UK/US aware',
+    changes: [
+      'The Tips & pooling report now OPENS on your live tipping policy (green LIVE POLICY badge). Touch any control and a what-if banner appears — naming the live policy, with “Back to live” and “Set as live policy” (which writes the rule to Workforce settings, so the report and payroll can never disagree).',
+      'Tronc double-pay guard: entering a pool bigger than the till’s poolable amount for the week shows a warning — card tips your policy already sent direct to sellers would be paid twice if pooled again.',
+      'UK/US aware: with currency set to USD the tipping policy shows US (FLSA) guidance and hides the UK troncmaster/NIC fields; payroll notes and the CSV use plain Direct/Pooled tip labels. GBP venues keep the full UK treatment (HMRC E24, NMW, Tipping Act).',
+      'Tip-out slider in the report now reaches 60% to match real keep-own splits.',
+    ],
+  },
+  {
     version: '5.5.401', date: '10 Jun 2026', label: 'Tipping policy speaks both languages (US tip-out %) + live worked example',
     changes: [
       'The tipping policy options now carry their US names — Pool everything (“shared pool”), Seller keeps their own (“no pooling”), and Keep own + tip-out a % — and the hybrid field is entered as the familiar US tip-out % (give X% of your own tips to the pool) instead of “seller keeps %”.',

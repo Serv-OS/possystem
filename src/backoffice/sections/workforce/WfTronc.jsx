@@ -135,6 +135,14 @@ export default function WfTronc({ ctx, staff = [], roles, sections, settings, we
                 <Icon name="warn" size={13} /> This week has already been distributed ({money(existingRun.totalPaid, 2)} paid) — runs are immutable. See it below.
               </div>
             )}
+            {/* Double-pay guard: pooling more than the till's poolable amount
+                means re-pooling money the policy already sent direct to sellers. */}
+            {!existingRun && tipInfo && Number(pool) > tipInfo.suggestedPool + 0.01 && (
+              <div style={{ marginTop: 10, fontSize: 12, color: 'var(--amber)', display: 'flex', alignItems: 'flex-start', gap: 6, maxWidth: 520, lineHeight: 1.5 }}>
+                <Icon name="warn" size={13} style={{ marginTop: 2, flexShrink: 0 }} />
+                <span>{money(Number(pool) - tipInfo.suggestedPool, 2)} more than the till's poolable amount for this week. Only add extra if it's genuinely pooled cash tips — card tips your policy sends direct to sellers would be <b>paid twice</b> if pooled here too.</span>
+              </div>
+            )}
           </div>
           <div style={{ display: 'flex', alignItems: 'flex-end', gap: 10 }}>
             <div style={{ width: 170 }}>

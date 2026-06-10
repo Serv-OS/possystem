@@ -13,11 +13,19 @@
 // Hours are derived from shift session (first-check-to-last-check per day, summed).
 // Export CSV for payroll with net tips per person.
 
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect, useRef } from 'react';
 import { useStore } from '../../../store';
 import { StatTile, ExportBtn, EmptyState, HourBar, BarRow } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
 import { currencySymbol } from '../../../lib/currency';
+import { loadSettings, saveSettings } from '../../../staff/wfData';
+import { getLocationId } from '../../../lib/supabase';
+
+// The LIVE tipping policy (Workforce settings) ↔ this calculator's modes.
+// One rule set, two vocabularies — keep them mapped so the report can never
+// silently disagree with what payroll actually pays.
+const POLICY_TO_MODE = { pool: 'shared', direct: 'none', hybrid: 'tipout' };
+const MODE_TO_POLICY = { shared: 'pool', none: 'direct', tipout: 'hybrid' };
 
 // Aggregate checks to per-server tip stats + hours derivation.
 // Groups by server NAME (since that's the field that's always present on historical
@@ -115,6 +123,59 @@ export default function Tips({ checks, fmt, fmtN }) {
   const [mode, setMode]            = useState('none');
   const [tipoutPct, setTipoutPct]  = useState(3.0);  // % of tips contributed (tip-out mode)
   const [byHours, setByHours]      = useState(true); // distribute pool by hours (vs equally)
+
+  // -------- Live tipping policy (Workforce settings) --------
+  // The calculator OPENS on the live policy so this report shows what payroll
+  // will actually pay. Changing the controls is an explicit what-if (banner
+  // appears); "Set as live policy" writes the rule back to settings.
+  const [venue, setVenue] = useState(null);
+  const [savingPolicy, setSavingPolicy] = useState(false);
+  const seededFromLive = useRef(false);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const locId = await getLocationId();
+        const s = await loadSettings(locId);
+        if (!alive || !s) return;
+        setVenue({ ...s, _locId: locId });
+        if (!seededFromLive.current) {
+          seededFromLive.current = true;
+          const sj = s.settings || {};
+          const liveMode = POLICY_TO_MODE[sj.tipMode] || 'shared';
+          setMode(liveMode);
+          if (liveMode === 'tipout') setTipoutPct(Math.min(100, Math.max(0, 100 - (Number(sj.directPct) || 0))));
+        }
+      } catch { /* report still works without settings */ }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  const livePolicy = useMemo(() => {
+    const sj = venue?.settings || {};
+    const liveMode = POLICY_TO_MODE[sj.tipMode] || 'shared';
+    const liveTipout = liveMode === 'tipout' ? Math.min(100, Math.max(0, 100 - (Number(sj.directPct) || 0))) : null;
+    return { mode: liveMode, tipout: liveTipout };
+  }, [venue]);
+  const matchesLive = venue != null && mode === livePolicy.mode && (mode !== 'tipout' || Math.abs(tipoutPct - (livePolicy.tipout ?? 0)) < 0.05);
+
+  async function makeLivePolicy() {
+    if (!venue) return;
+    setSavingPolicy(true);
+    try {
+      const patch = {
+        ...venue,
+        settings: {
+          ...(venue.settings || {}),
+          tipMode: MODE_TO_POLICY[mode] || 'pool',
+          ...(mode === 'tipout' ? { directPct: Math.round(100 - tipoutPct) } : {}),
+        },
+      };
+      const saved = await saveSettings(patch, venue._locId, null);
+      setVenue({ ...(saved || patch), _locId: venue._locId });
+    } catch { /* leave banner showing */ }
+    finally { setSavingPolicy(false); }
+  }
   // Tip-out: contributingRoles give a %, receivingRoles get the pool.
   // Shared:  contributingRoles ARE the pool (contribute 100% + share it back by hours).
   // A role in NEITHER set (e.g. Manager by default) is excluded and keeps the
@@ -229,10 +290,25 @@ export default function Tips({ checks, fmt, fmtN }) {
 
       {/* Tip pool calculator */}
       <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:12, padding:'14px 16px', marginBottom:18 }}>
-        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginBottom:10 }}>
-          <div style={{ fontSize:11, fontWeight:700, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em' }}>Tip pool calculator</div>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginBottom:10, gap:10, flexWrap:'wrap' }}>
+          <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+            <div style={{ fontSize:11, fontWeight:700, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em' }}>Tip pool calculator</div>
+            {venue != null && matchesLive && (
+              <span style={{ fontSize:10, fontWeight:700, padding:'2px 8px', borderRadius:999, background:'var(--grn-d)', border:'1px solid var(--grn-b)', color:'var(--grn)' }}>LIVE POLICY</span>
+            )}
+          </div>
           <div style={{ fontSize:11, color:'var(--t4)' }}>{POOL_MODES.find(m => m.id === mode).blurb}</div>
         </div>
+
+        {venue != null && !matchesLive && (
+          <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap', padding:'8px 12px', borderRadius:8, background:'rgba(245,166,35,.10)', border:'1px solid var(--amber)', marginBottom:12 }}>
+            <span style={{ fontSize:12, color:'var(--t2)', flex:1, minWidth:220 }}>
+              <b>What-if preview</b> — your live policy is “{POOL_MODES.find(m => m.id === livePolicy.mode)?.label}{livePolicy.tipout != null ? ` ${livePolicy.tipout}%` : ''}”, and Payroll keeps using it until you change it.
+            </span>
+            <button onClick={() => { setMode(livePolicy.mode); if (livePolicy.tipout != null) setTipoutPct(livePolicy.tipout); }} style={{ padding:'5px 12px', borderRadius:8, border:'1px solid var(--bdr)', background:'var(--bg3)', color:'var(--t2)', fontSize:11.5, fontWeight:600, cursor:'pointer', fontFamily:'inherit' }}>Back to live</button>
+            <button onClick={makeLivePolicy} disabled={savingPolicy} style={{ padding:'5px 12px', borderRadius:8, border:'1px solid var(--acc-b)', background:'var(--acc-d)', color:'var(--acc)', fontSize:11.5, fontWeight:700, cursor:'pointer', fontFamily:'inherit' }}>{savingPolicy ? 'Saving…' : 'Set as live policy'}</button>
+          </div>
+        )}
 
         {/* Mode pills */}
         <div style={{ display:'flex', gap:6, marginBottom:12, flexWrap:'wrap' }}>
@@ -252,7 +328,7 @@ export default function Tips({ checks, fmt, fmtN }) {
             <div>
               <div style={{ fontSize:10, fontWeight:700, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:6 }}>Contribution rate</div>
               <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-                <input type="range" min="0" max="15" step="0.5" value={tipoutPct} onChange={e => setTipoutPct(parseFloat(e.target.value))} style={{ flex:1 }}/>
+                <input type="range" min="0" max="60" step="0.5" value={tipoutPct} onChange={e => setTipoutPct(parseFloat(e.target.value))} style={{ flex:1 }}/>
                 <span style={{ fontSize:13, fontFamily:'var(--font-mono)', fontWeight:700, color:'var(--acc)', minWidth:46, textAlign:'right' }}>{tipoutPct.toFixed(1)}%</span>
               </div>
               <div style={{ fontSize:10, color:'var(--t4)', marginTop:4 }}>of each tipped-out person's tips goes to the pool</div>
