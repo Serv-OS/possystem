@@ -287,17 +287,19 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
             <div>
               <label style={labelStyle}>Card tips go to</label>
               <select style={inputStyle} value={tipMode} onChange={e => setTipMode(e.target.value)} disabled={savingVenue}>
-                <option value="pool">The pool (tronc — hours × role weights)</option>
-                <option value="direct">The seller (keep what your table tips)</option>
-                <option value="hybrid">Hybrid — seller keeps a %, rest pooled</option>
+                <option value="pool">Pool everything (US: “shared pool”)</option>
+                <option value="direct">Seller keeps their own (US: “no pooling”)</option>
+                <option value="hybrid">Keep own + tip-out a % to the pool</option>
               </select>
             </div>
             {tipMode === 'hybrid' && (
               <div>
-                <label style={labelStyle}>Seller keeps (%)</label>
+                <label style={labelStyle}>Tip-out to the pool (%)</label>
                 <input style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }} type="number" min="0" max="100" step="5"
-                  value={directPct} onChange={e => setDirectPct(e.target.value)} disabled={savingVenue} />
-                <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>Rest of their tips joins the weekly pool.</div>
+                  value={String(100 - (parseInt(directPct, 10) || 0))}
+                  onChange={e => setDirectPct(String(Math.min(100, Math.max(0, 100 - (parseInt(e.target.value, 10) || 0)))))}
+                  disabled={savingVenue} />
+                <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>US-style tip-out: each seller gives this % of their own tips to the pool and keeps the rest.</div>
               </div>
             )}
             <div>
@@ -316,6 +318,18 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
               </div>
             )}
           </div>
+          {/* Live worked example — the rule in plain money, both framings. */}
+          {(() => {
+            const keep = tipMode === 'direct' ? 100 : tipMode === 'hybrid' ? Math.min(100, Math.max(0, parseInt(directPct, 10) || 0)) : 0;
+            return (
+              <div style={{ fontSize: 11.5, color: 'var(--t3)', marginTop: 12, lineHeight: 1.7 }}>
+                <span style={{ fontWeight: 700, color: 'var(--t2)' }}>So with £100 of card tips:</span>{' '}
+                <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700 }}>£{keep}</span> stays with the sellers whose tables tipped it ·{' '}
+                <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700 }}>£{100 - keep}</span> joins the weekly pool — split in <b>Tronc / tips</b> by hours × role weights (that's how kitchen and support staff share).
+                Service charge always joins the pool. Payroll then shows each person's two tip lines: <b>direct</b> (their own tables) + <b>pooled</b> (their tronc share).
+              </div>
+            );
+          })()}
         </div>
 
         {/* ── Breaks policy (UK Working Time Regs 1998: 20-min break due over

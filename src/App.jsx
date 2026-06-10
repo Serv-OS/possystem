@@ -82,6 +82,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.401', date: '10 Jun 2026', label: 'Tipping policy speaks both languages (US tip-out %) + live worked example',
+    changes: [
+      'The tipping policy options now carry their US names — Pool everything (“shared pool”), Seller keeps their own (“no pooling”), and Keep own + tip-out a % — and the hybrid field is entered as the familiar US tip-out % (give X% of your own tips to the pool) instead of “seller keeps %”.',
+      'A live worked example under the fields shows the rule in money as you change it: “With £100 of card tips: £75 stays with the sellers · £25 joins the weekly pool”, plus where each part lands (Tronc / tips for the pool, Payroll’s direct + pooled columns).',
+    ],
+  },
+  {
     version: '5.5.400', date: '10 Jun 2026', label: 'Tipping policy (direct / pool / hybrid) + bureau-ready payroll export',
     changes: [
       'New Tipping policy in Workforce settings, built on the Employment (Allocation of Tips) Act 2023: card tips can go to the POOL (tronc), DIRECT to the seller who made the sale (lawful — pooling is not mandatory), or HYBRID (seller keeps a set %, the rest is pooled). Service charge is always pooled.',
