@@ -48,6 +48,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
     payDay: settings?.payDay ?? null,
   }), [settings?.payPeriodType, settings?.payPeriodStartDay, settings?.payPeriodAnchor, settings?.payDay]);
   const [mode, setMode] = useState('week'); // week | period
+  const [statusFilter, setStatusFilter] = useState('all'); // all | pending | approved | paid
   const [wk, setWk] = useState(() => buildWeek());
   const [pp, setPp] = useState(() => payPeriod(payCfg));
   useEffect(() => { setPp(payPeriod(payCfg)); }, [payCfg]);
@@ -99,7 +100,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
       const scheduled = round2(shift.computedHours ?? hoursOf(shift.start, shift.finish) - (shift.breakMins || 0) / 60);
       const draft = ts ? drafts[ts.id] : null;
       const actual = ts
-        ? (ts.status === 'approved' ? round2(ts.actualHours) : draft != null ? round2(parseFloat(draft) || 0) : round2(ts.actualHours))
+        ? (ts.status !== 'pending' ? round2(ts.actualHours) : draft != null ? round2(parseFloat(draft) || 0) : round2(ts.actualHours))
         : null;
       const { rate, source } = rateFor(shift.staffId, shift.roleKey);
       return {
@@ -120,7 +121,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
       const undated = !iso;                                        // legacy generated rows
       if (!inRange && !undated) return;
       const draft = drafts[ts.id];
-      const actual = ts.status === 'approved' ? round2(ts.actualHours) : draft != null ? round2(parseFloat(draft) || 0) : round2(ts.actualHours);
+      const actual = ts.status !== 'pending' ? round2(ts.actualHours) : draft != null ? round2(parseFloat(draft) || 0) : round2(ts.actualHours);
       const { rate, source } = rateFor(ts.staffId, staffMap[ts.staffId]?.role);
       const eff = ts.effectiveRate != null ? Number(ts.effectiveRate) : rate;
       out.push({
@@ -132,13 +133,27 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
         breakMins: ts.breakTaken || 0,
         paidBreak: (ts.paidBreakMins || 0) > 0,
         breaks: ts.breaks || [],
-        pay: ts.payAmount != null && ts.status === 'approved' ? round2(ts.payAmount) : payOf(actual, ts.paidBreakMins, eff),
+        pay: ts.payAmount != null && ts.status !== 'pending' ? round2(ts.payAmount) : payOf(actual, ts.paidBreakMins, eff),
       });
     });
     return out.sort((a, b) => String(a.date || '9999').localeCompare(String(b.date || '9999')) || String(staffMap[a.staffId]?.name || '').localeCompare(String(staffMap[b.staffId]?.name || '')));
   }, [shifts, sheets, tsByShift, drafts, staffMap, roles, range.from, range.to]);
 
-  const totals = useMemo(() => rows.reduce((a, r) => ({ hours: a.hours + (r.ts ? (r.actual || 0) : 0), pay: a.pay + (r.ts ? (r.pay || 0) : 0) }), { hours: 0, pay: 0 }), [rows]);
+  // Status filter: pending also shows rota-only rows (a shift still needing a
+  // timesheet IS pending work); approved/paid show only matching timesheets.
+  const visibleRows = useMemo(() => {
+    if (statusFilter === 'all') return rows;
+    if (statusFilter === 'pending') return rows.filter(r => !r.ts || r.ts.status === 'pending');
+    return rows.filter(r => r.ts && r.ts.status === statusFilter);
+  }, [rows, statusFilter]);
+  const statusCounts = useMemo(() => ({
+    all: rows.length,
+    pending: rows.filter(r => !r.ts || r.ts.status === 'pending').length,
+    approved: rows.filter(r => r.ts?.status === 'approved').length,
+    paid: rows.filter(r => r.ts?.status === 'paid').length,
+  }), [rows]);
+
+  const totals = useMemo(() => visibleRows.reduce((a, r) => ({ hours: a.hours + (r.ts ? (r.actual || 0) : 0), pay: a.pay + (r.ts ? (r.pay || 0) : 0) }), { hours: 0, pay: 0 }), [visibleRows]);
   const undatedCount = rows.filter(r => r.kind === 'undated').length;
 
   // ── actions ────────────────────────────────────────────────────────────────
@@ -164,7 +179,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
   }
 
   async function saveActual(r) {
-    if (!r.ts || r.ts.status === 'approved') return;
+    if (!r.ts || r.ts.status !== 'pending') return;
     const patch = {
       ...r.ts,
       actualHours: r.actual, variance: r.variance, payAmount: r.pay,
@@ -185,7 +200,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
   // stamps, worked hours are re-derived (gross − break); pay = worked + paid
   // break minutes.
   async function saveBreak(r, minsRaw, paidOverride) {
-    if (!r.ts || r.ts.status === 'approved') return;
+    if (!r.ts || r.ts.status !== 'pending') return;
     const mins = Math.max(0, Math.round(Number(minsRaw) || 0));
     const paid = paidOverride != null ? paidOverride : r.paidBreak;
     let actual = r.actual ?? 0;
@@ -210,7 +225,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
   }
 
   async function approve(r) {
-    if (!r.ts || r.ts.status === 'approved') return;
+    if (!r.ts || r.ts.status !== 'pending') return;
     if (drafts[r.ts.id] != null) await saveActual(r);
     const heal = !r.ts.clockIn && r.shift
       ? { clockIn: stamp(r.shift.date, r.shift.start), clockOut: clockOutOf(r.shift.date, r.shift.start, r.shift.finish) }
@@ -225,6 +240,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
 
   async function remove(r) {
     if (!r.ts) return;
+    if (r.ts.status === 'paid') { showToast?.('This timesheet was paid in a closed payroll run — it is part of the payroll record and cannot be deleted.', 'error'); return; }
     const who = staffMap[r.staffId]?.name || 'this person';
     if (!window.confirm(`Delete this timesheet for ${who}?${r.ts.status === 'approved' ? ' It is APPROVED — deleting removes it from pay.' : ''}`)) return;
     setSheets(prev => prev.filter(t => t.id !== r.ts.id));
@@ -265,6 +281,15 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
         </div>
       </div>
 
+      {/* status filter — pending also includes rota shifts still needing a timesheet */}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap' }}>
+        {[['all', 'All'], ['pending', 'Pending'], ['approved', 'Approved'], ['paid', 'Paid']].map(([k, lbl]) => (
+          <button key={k} onClick={() => setStatusFilter(k)} className={statusFilter === k ? 'btn btn-acc btn-xs' : 'btn btn-ghost btn-xs'}>
+            {lbl} ({statusCounts[k]})
+          </button>
+        ))}
+      </div>
+
       {undatedCount > 0 && (
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 12px', borderRadius: 10, background: 'rgba(245,166,35,.10)', border: '1px solid var(--amber)', marginBottom: 14 }}>
           <span style={{ color: 'var(--amber)', marginTop: 1 }}><Icon name="warn" size={15} /></span>
@@ -274,7 +299,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
         </div>
       )}
 
-      {rows.length === 0 ? (
+      {visibleRows.length === 0 ? (
         <EmptyState
           icon="clock"
           title="No timesheets in this range"
@@ -298,12 +323,13 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
               </tr>
             </thead>
             <tbody>
-              {rows.map(r => {
+              {visibleRows.map(r => {
                 const s = staffMap[r.staffId];
-                const approved = r.ts && r.ts.status === 'approved';
+                const locked = r.ts && r.ts.status !== 'pending';
+                const paid = r.ts && r.ts.status === 'paid';
                 const draftVal = r.ts ? drafts[r.ts.id] : null;
                 return (
-                  <tr key={r.key} style={approved ? { opacity: 0.85 } : null}>
+                  <tr key={r.key} style={locked ? { opacity: 0.85 } : null}>
                     <td style={td}>
                       <div style={{ fontWeight: 600 }}>{s?.name || 'Unknown'}</div>
                       <div style={{ fontSize: 11, color: 'var(--t3)' }}>{r.date ? new Date(r.date + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }) : 'No date'}</div>
@@ -325,7 +351,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
                     <td style={td}>
                       {!r.ts ? (
                         <span style={{ color: 'var(--t4)' }}>—</span>
-                      ) : approved ? (
+                      ) : locked ? (
                         <span className="mono">{(r.actual ?? 0).toFixed(2)}</span>
                       ) : (
                         <input
@@ -345,14 +371,16 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
                     <td style={{ ...td, textAlign: 'right' }}>
                       {!r.ts ? (
                         <button className="btn btn-ghost btn-xs" onClick={() => addForShift(r)} title="Add a timesheet for this shift (times from the rota)"><Icon name="plus" size={12} /> Add</button>
-                      ) : approved ? (
+                      ) : paid ? (
+                        <Badge tone="blue"><Icon name="check" size={11} /> Paid</Badge>
+                      ) : locked ? (
                         <Badge tone="green"><Icon name="check" size={11} /> Approved</Badge>
                       ) : (
                         <button className="btn btn-ghost btn-xs" onClick={() => approve(r)}><Icon name="check" size={13} /> Approve</button>
                       )}
                     </td>
                     <td style={{ ...td, textAlign: 'right' }}>
-                      {r.ts && <button className="btn btn-ghost btn-xs" style={{ color: 'var(--t4)' }} title="Delete timesheet" onClick={() => remove(r)}><Icon name="close" size={12} /></button>}
+                      {r.ts && r.ts.status !== 'paid' && <button className="btn btn-ghost btn-xs" style={{ color: 'var(--t4)' }} title="Delete timesheet" onClick={() => remove(r)}><Icon name="close" size={12} /></button>}
                     </td>
                   </tr>
                 );
@@ -408,7 +436,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
 function BreakCell({ r, staffMap, onSave }) {
   const [draft, setDraft] = useState(null);
   if (!r.ts) return <span style={{ color: 'var(--t4)' }}>{r.breakMins ? `${r.breakMins}m planned` : '—'}</span>;
-  const approved = r.ts.status === 'approved';
+  const approved = r.ts.status !== 'pending';
   const dob = staffMap[r.staffId]?.dob || null;
   const due = statutoryBreakMins(r.actual ?? 0, dob);
   const short = due > 0 && (r.breakMins || 0) < due;

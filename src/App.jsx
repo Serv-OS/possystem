@@ -82,6 +82,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.403', date: '10 Jun 2026', label: 'Payroll close — permanent records, timesheets marked paid, approval guard',
+    changes: [
+      'Closing a payroll is now a real event: after Run payroll, a Close payroll button records the run permanently (period, every staff line, totals, the tipping policy in force), marks all the period’s approved timesheets as PAID, and writes a tamper-evident audit entry. A period can only be closed once.',
+      'Approval guard: closing is blocked while the period has pending timesheets — the error says exactly that: “Finish approving timesheets first — N still pending”. Enforced on the server, mirrored with a red banner and disabled button in the UI.',
+      'New Payroll history list under the run: every closed period with staff count, wages, tips, total and close date.',
+      'Timesheets gained a status filter — All / Pending / Approved / Paid (with counts) — alongside Week / Pay period. Paid timesheets are locked: no editing, no deleting (they are part of a closed payroll record), shown with a blue Paid badge.',
+    ],
+  },
+  {
     version: '5.5.402', date: '10 Jun 2026', label: 'Foolproof tipping — one policy everywhere, report synced, double-pay guard, UK/US aware',
     changes: [
       'The Tips & pooling report now OPENS on your live tipping policy (green LIVE POLICY badge). Touch any control and a what-if banner appears — naming the live policy, with “Back to live” and “Set as live policy” (which writes the rule to Workforce settings, so the report and payroll can never disagree).',

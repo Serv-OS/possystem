@@ -239,9 +239,25 @@ Deno.serve(async (req) => {
     // back to a case-insensitive server-name match; any tips that match no
     // staff record are reported as unattributed (the Tipping Act requires
     // 100% of qualifying tips to be allocated).
-    if (action === 'payroll.period') {
-      const { from, to } = body;
+    if (action === 'payroll.period' || action === 'payroll.close') {
+      const closing = action === 'payroll.close';
+      const { from, to, pay_date } = body;
       if (!from || !to) return json({ error: 'from/to required' }, 400);
+
+      // A period closes exactly once — the run is the immutable record.
+      const { data: existingRun } = await admin.from('wf_payroll_runs')
+        .select('id, created_at, totals').eq('location_id', location_id).eq('period_start', from).maybeSingle();
+      if (closing && existingRun) return json({ ok: false, error: 'This pay period has already been closed — see Payroll history.' });
+
+      // Pending timesheets BLOCK closing: every worked hour must be approved
+      // (or deleted) before pay is finalised.
+      const { data: pendingRows } = await admin.from('wf_timesheets')
+        .select('id').eq('location_id', location_id).eq('status', 'pending')
+        .gte('clock_in', `${from}T00:00:00`).lte('clock_in', `${to}T23:59:59`);
+      const pendingCount = (pendingRows ?? []).length;
+      if (closing && pendingCount > 0) {
+        return json({ ok: false, error: `Finish approving timesheets first — ${pendingCount} timesheet${pendingCount === 1 ? ' is' : 's are'} still pending in this period (approve or delete them under Timesheets).` });
+      }
 
       const { data: vs } = await admin.from('wf_venue_settings').select('settings').eq('location_id', location_id).maybeSingle();
       const policy = (vs?.settings ?? {}) as Record<string, any>;
@@ -249,9 +265,11 @@ Deno.serve(async (req) => {
       const directShare = tipMode === 'direct' ? 1 : tipMode === 'hybrid' ? Math.min(100, Math.max(0, Number(policy.directPct) || 0)) / 100 : 0;
       const allocator = policy.tipAllocator === 'troncmaster' ? 'troncmaster' : 'employer';
 
+      // Base pay from APPROVED + already-PAID timesheets (paid rows keep the
+      // preview of a closed period faithful to what was actually paid).
       const { data: tss } = await admin.from('wf_timesheets')
-        .select('staff_id, actual_hours, effective_rate, pay_amount, clock_in')
-        .eq('location_id', location_id).eq('status', 'approved')
+        .select('id, staff_id, actual_hours, effective_rate, pay_amount, clock_in, status')
+        .eq('location_id', location_id).in('status', ['approved', 'paid'])
         .gte('clock_in', `${from}T00:00:00`).lte('clock_in', `${to}T23:59:59`);
       const base: Record<string, { hours: number; pay: number }> = {};
       (tss ?? []).forEach((t: any) => {
@@ -327,12 +345,41 @@ Deno.serve(async (req) => {
         tips: round2(staff.reduce((a, s) => a + s.tips, 0)),
         total: round2(staff.reduce((a, s) => a + s.total, 0)),
       };
-      return json({
+      const payload = {
         ok: true, from, to, staff, totals,
         policy: { tipMode, directPct: Math.round(directShare * 100), allocator, troncmasterName: policy.troncmasterName ?? null },
         unattributedTips: round2(unattributedTips),
+        pendingTimesheets: pendingCount,
+        closedRun: existingRun ? { id: existingRun.id, created_at: existingRun.created_at } : null,
         tronc: { runs: (runs ?? []).map((r: any) => ({ week_start: r.week_start, status: r.status, total_paid: r.total_paid })), missingWeeks },
+      };
+      if (!closing) return json(payload);
+
+      // ── CLOSE: persist the run, mark the period's timesheets paid, audit. ──
+      if (!staff.length) return json({ ok: false, error: 'Nothing to pay in this period — approve timesheets or run tronc first.' });
+      const tsIds = (tss ?? []).filter((t: any) => t.status === 'approved').map((t: any) => t.id);
+      const { data: run, error: runErr } = await admin.from('wf_payroll_runs').insert({
+        location_id, org_id: org, period_start: from, period_end: to, pay_date: pay_date || null,
+        status: 'completed', totals, lines: staff,
+        policy: payload.policy, timesheet_ids: tsIds, run_by: user.id,
+      }).select().single();
+      if (runErr) return json({ error: runErr.message }, 500);
+
+      if (tsIds.length) {
+        const { error: tsErr } = await admin.from('wf_timesheets')
+          .update({ status: 'paid', payroll_run_id: run.id }).in('id', tsIds);
+        if (tsErr) {
+          await admin.from('wf_payroll_runs').delete().eq('id', run.id);
+          return json({ error: tsErr.message }, 500);
+        }
+      }
+
+      await writeAudit(location_id, org, 'payroll.close', {
+        actorId: user.id, amount: totals.total, currency: 'GBP', entity: 'wf_payroll_runs', entityId: run.id,
+        reason: `period ${from} – ${to}: ${staff.length} staff, pay £${totals.pay.toFixed(2)} + tips £${totals.tips.toFixed(2)}; ${tsIds.length} timesheet(s) marked paid`,
+        after: { period_start: from, period_end: to, totals, timesheets_paid: tsIds.length },
       });
+      return json({ ...payload, closedRun: { id: run.id, created_at: run.created_at }, timesheetsPaid: tsIds.length });
     }
 
     // ── LABOUR (daily revenue from closed_checks) ─────────────────────────────

@@ -31,7 +31,17 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
   const [period, setPeriod] = useState(() => payPeriod(payCfg));
   const [run, setRun] = useState(null);     // { staff, totals, tronc } | null
   const [computing, setComputing] = useState(false);
+  const [closing, setClosing] = useState(false);
+  const [history, setHistory] = useState([]); // closed wf_payroll_runs
   useEffect(() => { setPeriod(payPeriod(payCfg)); setRun(null); }, [payCfg]);
+
+  const reloadHistory = async () => {
+    try { setHistory(await wf.loadPayrollRuns(ctx.locationId) || []); } catch { /* list stays */ }
+  };
+  useEffect(() => { reloadHistory(); /* eslint-disable-next-line */ }, [ctx.locationId]);
+
+  // Has THIS period already been closed?
+  const closedRecord = useMemo(() => history.find(h => h.periodStart === period.startIso), [history, period.startIso]);
 
   const staffById = useMemo(() => { const m = {}; (staff || []).forEach(s => { m[s.id] = s; }); return m; }, [staff]);
   const nameOf = id => staffById[id]?.name || id;
@@ -54,6 +64,27 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
     } finally { setComputing(false); }
   }
   const gotoPeriod = (n) => { const p = shiftPayPeriod(payCfg, period.startIso, n); setPeriod(p); setRun(null); };
+
+  // Close the period: server re-checks everything (no pending timesheets, not
+  // already closed), records the run, marks the period's timesheets PAID and
+  // writes the audit entry. Irreversible by design.
+  async function closePayroll() {
+    if (!run || closedRecord) return;
+    if (run.pendingTimesheets > 0) {
+      showToast(`Finish approving timesheets first — ${run.pendingTimesheets} still pending in this period`, 'error');
+      return;
+    }
+    if (!window.confirm(`Close payroll for ${period.label}?\n\nThis records the run permanently and marks every approved timesheet in the period as PAID. It cannot be undone.`)) return;
+    setClosing(true);
+    try {
+      const res = await wf.invokeCompute('payroll.close', { location_id: ctx.locationId, from: period.startIso, to: period.endIso, pay_date: period.payDateIso || null });
+      if (res && Array.isArray(res.staff)) setRun(res);
+      showToast(`Payroll closed — ${res?.timesheetsPaid ?? 0} timesheet${(res?.timesheetsPaid ?? 0) === 1 ? '' : 's'} marked paid`, 'success');
+      await reloadHistory();
+    } catch (e) {
+      showToast(e.message || 'Could not close payroll', 'error');
+    } finally { setClosing(false); }
+  }
 
   // Bureau-ready CSV (BrightPay-style identity: name + NI number). Tips are
   // SEPARATE pay elements from wages — tronc-allocated tips are PAYE'd but
@@ -111,11 +142,28 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
               <button className="btn btn-ghost btn-xs" style={{ marginTop: 1 }} onClick={() => { setPeriod(payPeriod(payCfg)); setRun(null); }} disabled={computing}>This period</button>
             </div>
             <button className="btn btn-ghost btn-xs" onClick={() => gotoPeriod(1)} disabled={computing} title="Next period"><Icon name="chevron" size={13} /></button>
-            <button className="btn btn-acc btn-sm" onClick={() => compute()} disabled={computing}>
+            <button className="btn btn-acc btn-sm" onClick={() => compute()} disabled={computing || closing}>
               <Icon name="status" size={14} /> {computing ? 'Running…' : 'Run payroll'}
             </button>
+            {closedRecord ? (
+              <Badge tone="blue"><Icon name="check" size={11} /> Closed {new Date(closedRecord.createdAt).toLocaleDateString('en-GB')}</Badge>
+            ) : run && run.staff.length > 0 ? (
+              <button className="btn btn-acc btn-sm" onClick={closePayroll} disabled={closing || computing || run.pendingTimesheets > 0}
+                title={run.pendingTimesheets > 0 ? `Blocked: ${run.pendingTimesheets} pending timesheet(s) — approve them first` : 'Record this run permanently and mark the period’s timesheets as paid'}>
+                <Icon name="check" size={14} /> {closing ? 'Closing…' : 'Close payroll'}
+              </button>
+            ) : null}
           </div>
         </div>
+
+        {run && !closedRecord && run.pendingTimesheets > 0 && (
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 12px', borderRadius: 10, background: 'var(--red-d)', border: '1px solid var(--red-b)', marginBottom: 14 }}>
+            <span style={{ color: 'var(--red)', marginTop: 1 }}><Icon name="warn" size={15} /></span>
+            <div style={{ fontSize: 12.5, color: 'var(--t2)', lineHeight: 1.55 }}>
+              <b>Finish approving timesheets first</b> — {run.pendingTimesheets} timesheet{run.pendingTimesheets === 1 ? ' is' : 's are'} still pending in this period. Approve (or delete) them under Timesheets, run payroll again, then close. Closing is blocked until the period is fully approved.
+            </div>
+          </div>
+        )}
 
         {run && missing.length > 0 && (
           <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 12px', borderRadius: 10, background: 'rgba(245,166,35,.10)', border: '1px solid var(--amber)', marginBottom: 14 }}>
@@ -211,6 +259,46 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
           </>
         )}
       </Card>
+
+      {/* ── Payroll history — every closed period, the permanent record ── */}
+      {history.length > 0 && (
+        <Card>
+          <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 4 }}>Payroll history</div>
+          <div style={{ fontSize: 12, color: 'var(--t3)', marginBottom: 12 }}>Closed pay runs — immutable records. Each run marked its period's timesheets as paid and is in the audit log.</div>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr>
+                  <th style={th}>Period</th>
+                  <th style={th}>Pay day</th>
+                  <th style={{ ...th, textAlign: 'right' }}>Staff</th>
+                  <th style={{ ...th, textAlign: 'right' }}>Wages</th>
+                  <th style={{ ...th, textAlign: 'right' }}>Tips</th>
+                  <th style={{ ...th, textAlign: 'right' }}>Total</th>
+                  <th style={th}>Closed</th>
+                  <th style={{ ...th, textAlign: 'right' }} />
+                </tr>
+              </thead>
+              <tbody>
+                {history.map(h => (
+                  <tr key={h.id}>
+                    <td style={{ ...td, fontFamily: 'var(--font-mono)', fontSize: 12 }}>{fmtDay(h.periodStart)} – {fmtDay(h.periodEnd)}</td>
+                    <td style={{ ...td, fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--t3)' }}>{h.payDate ? fmtDay(h.payDate) : '—'}</td>
+                    <td style={{ ...td, textAlign: 'right' }} className="mono">{h.lines.length}</td>
+                    <td style={{ ...td, textAlign: 'right' }} className="mono">{money(h.totals.pay)}</td>
+                    <td style={{ ...td, textAlign: 'right' }} className="mono">{money(h.totals.tips ?? ((h.totals.tips_direct || 0) + (h.totals.tips_tronc || 0)))}</td>
+                    <td style={{ ...td, textAlign: 'right', fontWeight: 700 }} className="mono">{money(h.totals.total)}</td>
+                    <td style={{ ...td, fontSize: 12, color: 'var(--t3)' }}>{new Date(h.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</td>
+                    <td style={{ ...td, textAlign: 'right' }}>
+                      <button className="btn btn-ghost btn-xs" title="View this run in the period selector" onClick={() => { setPeriod(payPeriod(payCfg, new Date(h.periodStart + 'T00:00:00'))); setRun(null); }}>View</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
     </div>
   );
 }

@@ -402,7 +402,7 @@ const mapTs = r => ({
   scheduledHours: Number(r.scheduled_hours ?? 0), actualHours: Number(r.actual_hours ?? 0),
   variance: r.variance != null ? Number(r.variance) : null, payAmount: r.pay_amount != null ? Number(r.pay_amount) : null,
   effectiveRate: r.effective_rate != null ? Number(r.effective_rate) : null, rateSource: r.rate_source,
-  status: r.status, approvedBy: r.approved_by, approvedAt: r.approved_at,
+  status: r.status, approvedBy: r.approved_by, approvedAt: r.approved_at, payrollRunId: r.payroll_run_id || null,
 });
 export async function loadTimesheets(locationId, fromIso, toIso) {
   if (isMock || !supabase) return lsGet('timesheets');
@@ -446,6 +446,24 @@ export async function deleteTimesheet(id) {
   if (isMock || !supabase) return lsDelete('timesheets', id);
   const { error } = await supabase.from('wf_timesheets').delete().eq('id', id);
   if (error) throw new Error(error.message);
+}
+
+// ============================================================================
+// PAYROLL RUNS (wf_payroll_runs — immutable record of each closed pay period;
+// created server-side by workforce-compute `payroll.close`, read-only here)
+// ============================================================================
+const mapPayrollRun = r => ({
+  id: r.id, periodStart: r.period_start, periodEnd: r.period_end, payDate: r.pay_date,
+  status: r.status, totals: r.totals || {}, lines: Array.isArray(r.lines) ? r.lines : [],
+  policy: r.policy || {}, timesheetIds: r.timesheet_ids || [], createdAt: r.created_at,
+});
+export async function loadPayrollRuns(locationId) {
+  if (isMock || !supabase) return lsGet('payrollruns');
+  if (!locationId) return [];
+  const { data, error } = await supabase.from('wf_payroll_runs').select('*')
+    .eq('location_id', locationId).order('period_start', { ascending: false });
+  if (error) { console.warn('[wf] loadPayrollRuns:', error.message); return []; }
+  return (data || []).map(mapPayrollRun);
 }
 
 // ============================================================================
