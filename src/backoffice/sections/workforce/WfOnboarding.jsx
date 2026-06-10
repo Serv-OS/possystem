@@ -217,7 +217,7 @@ function OnboardingCard({ c, member, rolesMap, ctx, showToast, markStep, patchCa
           <OfferAction c={c} member={member} role={rolesMap[member.role]} ctx={ctx} showToast={showToast} markStep={markStep} done={stepStatus('offer') === 'complete'} />
         </StepRow>
 
-        <StepRow done={stepStatus('rtw') === 'complete'} label="Right to Work" hint={meta.rtwPath ? 'Document on file' : 'Upload their RTW document'}>
+        <StepRow done={stepStatus('rtw') === 'complete'} label="Right to Work" hint={meta.rtwPath ? 'Uploaded — approve in Compliance to complete the RTW check' : 'Upload their RTW document'}>
           <UploadAction type="RTW" c={c} member={member} ctx={ctx} showToast={showToast} markStep={markStep} metaKey="rtwPath" stepKey="rtw" done={stepStatus('rtw') === 'complete'} />
         </StepRow>
 
@@ -310,9 +310,12 @@ function UploadAction({ type, c, member, ctx, showToast, markStep, metaKey, step
     setBusy(true);
     try {
       const { path } = await wf.uploadWfDocument(file, ctx.locationId, member.id, type);
-      await wf.saveDocument({ staffId: member.id, type, fileUrl: path, status: 'valid' }, ctx.locationId, ctx.orgId).catch(() => {});
+      // One current doc per person per type — re-uploads replace, never duplicate.
+      // Lands as 'pending': a manager must review + approve it in Compliance
+      // (that's the actual RTW check), setting issued/expiry dates there.
+      await wf.upsertStaffDocument({ staffId: member.id, type, fileUrl: path, status: 'pending' }, ctx.locationId, ctx.orgId).catch(() => {});
       await markStep(c, stepKey, 'complete', { [metaKey]: path });
-      showToast(`${type === 'RTW' ? 'Right to Work' : type} uploaded`, 'success');
+      showToast(`${type === 'RTW' ? 'Right to Work' : type} uploaded — approve it in Compliance to complete the check`, 'success');
     } catch (err) { showToast('Upload failed: ' + (err.message || 'error'), 'error'); }
     finally { setBusy(false); }
   };

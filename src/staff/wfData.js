@@ -537,6 +537,46 @@ export async function deleteDocument(id) {
   if (error) console.warn('[wf] deleteDocument:', error.message);
 }
 
+/** Upsert a document by (staffId, type) — a person holds ONE current doc per
+ *  type (except 'other'), so re-uploading replaces rather than duplicates. */
+export async function upsertStaffDocument(doc, locationId, orgId) {
+  if (doc.type !== 'other') {
+    if (isMock || !supabase) {
+      const existing = lsGet('documents').find(d => d.staffId === doc.staffId && d.type === doc.type);
+      return lsUpsert('documents', existing ? { ...existing, ...doc, id: existing.id } : doc);
+    }
+    const { data: existing } = await supabase.from('wf_documents').select('id')
+      .eq('staff_id', doc.staffId).eq('type', doc.type).eq('location_id', locationId)
+      .order('created_at', { ascending: false }).limit(1).maybeSingle();
+    if (existing?.id) doc = { ...doc, id: existing.id };
+  }
+  return saveDocument(doc, locationId, orgId);
+}
+
+/** Record a compliance review: set issued/expiry dates with a verdict —
+ *  'approve' (→ valid, stamped with who/when), 'reject', or 'pending' (send
+ *  back to review, clearing the verification stamp). Reviewer = signed-in BO user. */
+export async function reviewDocument(id, { issuedOn, expiry, verdict = 'approve' }) {
+  const status = verdict === 'approve' ? 'valid' : verdict === 'reject' ? 'rejected' : 'pending';
+  const stamp = verdict === 'pending' ? null : new Date().toISOString();
+  if (isMock || !supabase) {
+    const a = lsGet('documents'); const i = a.findIndex(x => x.id === id);
+    if (i >= 0) { a[i] = { ...a[i], issuedOn: issuedOn || null, expiry: expiry || null, status, verifiedAt: stamp }; lsSet('documents', a); return a[i]; }
+    throw new Error('Document not found');
+  }
+  let reviewer = null;
+  try { const { data } = await supabase.auth.getUser(); reviewer = data?.user?.id || null; } catch { /* anonymous */ }
+  const { data, error } = await supabase.from('wf_documents').update({
+    issued_on: issuedOn || null,
+    expiry: expiry || null,
+    status,
+    verified_by: stamp ? reviewer : null,
+    verified_at: stamp,
+  }).eq('id', id).select().single();
+  if (error) throw new Error(error.message);
+  return mapDoc(data);
+}
+
 // ============================================================================
 // ONBOARDING (wf_onboarding)
 // ============================================================================

@@ -1,9 +1,11 @@
 // src/backoffice/sections/workforce/WfCompliance.jsx
 //
 // Workforce › Compliance — the document vault. One row per required/held
-// document per staff member, with a traffic-light status derived purely from
-// the expiry date. Flags staff who are missing legally-required docs (Right to
-// Work always; SIA licence when their role requires it).
+// document per staff member. Uploads (e.g. RTW from Onboarding) arrive as
+// 'pending' and must be reviewed — a manager opens the file, keys the
+// issued/expiry dates off it and approves (or rejects) it; only then does the
+// expiry traffic-light apply. Flags staff missing legally-required docs
+// (Right to Work always; SIA licence when their role requires it).
 
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { Icon } from '../../../components/ServOSIcons';
@@ -36,20 +38,23 @@ const todayIso = () => new Date().toISOString().slice(0, 10);
 const fmtDate = iso => iso ? new Date(iso + 'T00:00:00').toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
 const daysBetween = (a, b) => Math.round((new Date(a + 'T00:00:00') - new Date(b + 'T00:00:00')) / 86400000);
 
-/** Traffic-light status from an expiry date. No expiry held → missing. */
+/** Status: review state first (an upload is only an upload — a manager must
+ *  approve it before it counts), then the expiry traffic-light. */
 function docStatus(doc) {
   if (!doc) return 'missing';
-  // A document that's been uploaded (has a file) but carries no expiry — e.g. a
-  // Right to Work share code or a permanent certificate — is held & valid, not "missing".
+  if (doc.status === 'pending') return 'pending';
+  if (doc.status === 'rejected') return 'rejected';
+  // Approved (or manually keyed by a manager): traffic-light from expiry. A doc
+  // with no expiry — e.g. a British passport RTW check — stays valid once approved.
   if (!doc.expiry) return doc.fileUrl ? 'valid' : 'missing';
   const d = daysBetween(doc.expiry, todayIso());
   if (d < 0) return 'expired';
   if (d <= EXPIRING_DAYS) return 'expiring';
   return 'valid';
 }
-const STATUS_TONE = { valid: 'green', expiring: 'amber', expired: 'red', missing: 'grey' };
-const STATUS_LBL = { valid: 'Valid', expiring: 'Expiring', expired: 'Expired', missing: 'Missing' };
-const NEEDS_ATTENTION = new Set(['expiring', 'expired', 'missing']);
+const STATUS_TONE = { valid: 'green', expiring: 'amber', expired: 'red', missing: 'grey', pending: 'amber', rejected: 'red' };
+const STATUS_LBL = { valid: 'Valid', expiring: 'Expiring', expired: 'Expired', missing: 'Missing', pending: 'Pending review', rejected: 'Rejected' };
+const NEEDS_ATTENTION = new Set(['expiring', 'expired', 'missing', 'pending', 'rejected']);
 
 /** Required docs for a staff member: RTW always, SIA when role.requiresSIA. */
 function requiredTypes(member, rolesMap) {
@@ -63,6 +68,7 @@ export default function WfCompliance({ ctx, staff, roles, sections, settings, we
   const [docs, setDocs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
+  const [reviewing, setReviewing] = useState(null); // { doc, member }
   const rolesMap = (roles && roles.map) || {};
 
   useEffect(() => {
@@ -101,16 +107,40 @@ export default function WfCompliance({ ctx, staff, roles, sections, settings, we
   }, [staff, byStaff, rolesMap]);
 
   async function handleSave(form) {
-    const tmp = { id: `tmp-${Date.now()}`, staffId: form.staffId, type: form.type, issuedOn: form.issuedOn || null, expiry: form.expiry || null, fileUrl: form.fileUrl || null };
-    tmp.status = docStatus(tmp);
-    setDocs(prev => [...prev, tmp]);
+    // Keyed in by a manager → they've seen the document, so it's reviewed
+    // (status from the expiry traffic-light). Candidate uploads via Onboarding
+    // arrive as 'pending' instead. Upsert: one current doc per person per type.
+    const doc = { staffId: form.staffId, type: form.type, issuedOn: form.issuedOn || null, expiry: form.expiry || null, fileUrl: form.fileUrl || null };
+    doc.status = !doc.expiry ? (doc.fileUrl ? 'valid' : 'missing')
+      : daysBetween(doc.expiry, todayIso()) < 0 ? 'expired' : 'valid';
     setAdding(false);
     try {
-      const saved = await wf.saveDocument(tmp, ctx.locationId, ctx.orgId);
-      setDocs(prev => prev.map(d => (d.id === tmp.id ? saved : d)));
-      showToast('Document added', 'success');
+      const saved = await wf.upsertStaffDocument(doc, ctx.locationId, ctx.orgId);
+      setDocs(prev => { const rest = prev.filter(d => d.id !== saved.id); return [...rest, saved]; });
+      showToast('Document saved', 'success');
     } catch (err) {
       showToast((err && err.message) || 'Could not save document', 'error');
+      const fresh = await wf.loadDocuments(ctx.locationId).catch(() => []);
+      setDocs(fresh || []);
+    }
+  }
+
+  async function handleReview({ issuedOn, expiry, verdict }) {
+    const { doc } = reviewing;
+    setReviewing(null);
+    try {
+      const saved = await wf.reviewDocument(doc.id, { issuedOn, expiry, verdict });
+      setDocs(prev => prev.map(d => (d.id === doc.id ? saved : d)));
+      showToast(verdict === 'approve' ? 'Document approved' : verdict === 'reject' ? 'Document rejected — ask them to re-upload' : 'Sent back for review', verdict === 'approve' ? 'success' : 'info');
+    } catch (err) { showToast((err && err.message) || 'Could not save review', 'error'); }
+  }
+
+  async function handleDelete(doc) {
+    if (!window.confirm(`Remove this ${DOC_LABEL[doc.type] || doc.type} record? The stored file stays in the vault until replaced.`)) return;
+    setDocs(prev => prev.filter(d => d.id !== doc.id));
+    try { await wf.deleteDocument(doc.id); showToast('Document removed', 'success'); }
+    catch (err) {
+      showToast((err && err.message) || 'Could not remove document', 'error');
       const fresh = await wf.loadDocuments(ctx.locationId).catch(() => []);
       setDocs(fresh || []);
     }
@@ -169,6 +199,7 @@ export default function WfCompliance({ ctx, staff, roles, sections, settings, we
                     <th style={th}>Issued</th>
                     <th style={th}>Expiry</th>
                     <th style={th}>File</th>
+                    <th style={{ ...th, textAlign: 'right' }}></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -186,6 +217,14 @@ export default function WfCompliance({ ctx, staff, roles, sections, settings, we
                         <td style={td} className="mono">{fmtDate(d.expiry)}</td>
                         <td style={td}>
                           {d.fileUrl ? <ViewDocLink path={d.fileUrl} /> : <span style={{ color: 'var(--t4)' }}>—</span>}
+                        </td>
+                        <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                          {!d._placeholder && (<>
+                            {st === 'pending'
+                              ? <button className="btn btn-acc btn-xs" onClick={() => setReviewing({ doc: d, member })}>Review</button>
+                              : <button className="btn btn-ghost btn-xs" onClick={() => setReviewing({ doc: d, member })}>Edit dates</button>}
+                            <button className="btn btn-ghost btn-xs" style={{ marginLeft: 6, color: 'var(--t4)' }} title="Remove this document record" onClick={() => handleDelete(d)}><Icon name="close" size={12} /></button>
+                          </>)}
                         </td>
                       </tr>
                     );
@@ -205,7 +244,53 @@ export default function WfCompliance({ ctx, staff, roles, sections, settings, we
           onSave={handleSave}
         />
       )}
+      {reviewing && (
+        <ReviewDocModal
+          doc={reviewing.doc}
+          member={reviewing.member}
+          onClose={() => setReviewing(null)}
+          onSave={handleReview}
+        />
+      )}
     </>
+  );
+}
+
+// Review an uploaded document: view the file, key the issued/expiry dates off
+// it, then approve (the RTW check) or reject. Also used to edit dates later.
+function ReviewDocModal({ doc, member, onClose, onSave }) {
+  const [issuedOn, setIssuedOn] = useState(doc.issuedOn || '');
+  const [expiry, setExpiry] = useState(doc.expiry || '');
+  const [busy, setBusy] = useState(false);
+  const pending = doc.status === 'pending';
+  const act = async (verdict) => { setBusy(true); try { await onSave({ issuedOn, expiry, verdict }); } finally { setBusy(false); } };
+  return (
+    <div className="modal-back" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal-box" style={{ maxWidth: 440 }}>
+        <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>{pending ? 'Review' : 'Edit'} — {DOC_LABEL[doc.type] || doc.type}</div>
+        <div style={{ fontSize: 12.5, color: 'var(--t3)', marginBottom: 14 }}>
+          {member?.name}. {pending ? 'Open the file, check it’s genuine and belongs to them, key the dates off the document, then approve.' : 'Update the dates from the document; saving re-approves it.'}
+        </div>
+        {doc.fileUrl && <div style={{ marginBottom: 14 }}><ViewDocLink path={doc.fileUrl} /></div>}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 18 }}>
+          <div>
+            <label style={labelStyle}>Issued</label>
+            <input type="date" style={inputStyle} value={issuedOn} onChange={e => setIssuedOn(e.target.value)} />
+          </div>
+          <div>
+            <label style={labelStyle}>Expiry <span style={{ color: 'var(--t4)', textTransform: 'none', letterSpacing: 0 }}>(blank = no expiry)</span></label>
+            <input type="date" style={inputStyle} value={expiry} onChange={e => setExpiry(e.target.value)} />
+          </div>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          {pending
+            ? <button className="btn btn-ghost" disabled={busy} style={{ color: 'var(--red)' }} onClick={() => act('reject')}>Reject</button>
+            : <button className="btn btn-ghost" disabled={busy} onClick={() => act('pending')} title="Clear the approval so it goes through review again">Send back to review</button>}
+          <button className="btn btn-acc" disabled={busy} onClick={() => act('approve')}><Icon name="check" size={14} /> {busy ? 'Saving…' : pending ? 'Approve' : 'Save'}</button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -218,7 +303,7 @@ function AttentionBanner({ count }) {
       </span>
       <div>
         <div style={{ fontSize: 14, fontWeight: 700, color: ok ? 'var(--grn)' : 'var(--amber)' }}>
-          {ok ? 'All documents in order' : `${count} document${count === 1 ? '' : 's'} need attention`}
+          {ok ? 'All documents in order' : `${count} document${count === 1 ? ' needs' : 's need'} attention`}
         </div>
         <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>
           {ok ? 'No missing, expired or expiring documents across the team.' : `Expiring within ${EXPIRING_DAYS} days, already expired, or required but not yet held.`}

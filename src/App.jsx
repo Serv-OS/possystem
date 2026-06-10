@@ -82,6 +82,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.393', date: '10 Jun 2026', label: 'Compliance — proper RTW review flow, no duplicate uploads, dates editable',
+    changes: [
+      'Uploads no longer duplicate: a person holds one current document per type, so re-uploading a Right to Work replaces the previous one instead of adding another row.',
+      'Uploaded documents now arrive as "Pending review" — nothing goes Valid by itself. A Review button opens the file, you key the issued/expiry dates off it, then Approve (recorded with who + when) or Reject.',
+      'Issued and expiry dates are now editable any time via Edit dates; approved documents can be sent back to review; document rows can be removed.',
+      'Onboarding RTW step now says approval in Compliance completes the check.',
+    ],
+  },
+  {
     version: '5.5.392', date: '10 Jun 2026', label: 'Onboarding archive + bank details & contracts on the staff profile',
     changes: [
       'Onboarding now has In progress / Completed tabs — once every step on a starter is done (POS access counts when they’re already a till user) they move to Completed automatically.',

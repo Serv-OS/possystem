@@ -299,6 +299,12 @@ function AddStaffModal({ locName, staff, roles = ROLES, onClose, onSave }) {
 const CONTRACT_LABEL = { zeroHours: 'Zero hours', partTime: 'Part time', fullTime: 'Full time', salaried: 'Salaried' };
 const DOC_LABEL = { RTW: 'Right to Work', foodHygieneL2: 'Food Hygiene L2', allergenTraining: 'Allergen', SIA: 'SIA Licence', firstAid: 'First Aid', other: 'Other' };
 function docStat(doc) {
+  // Review state wins (mirrors WfCompliance.docStatus): an upload only counts
+  // once a manager has approved it.
+  if (doc && typeof doc === 'object') {
+    if (doc.status === 'pending') return ['Pending review', 'amber'];
+    if (doc.status === 'rejected') return ['Rejected', 'red'];
+  }
   const expiry = doc && typeof doc === 'object' ? doc.expiry : doc;
   const hasFile = doc && typeof doc === 'object' ? !!doc.fileUrl : false;
   if (!expiry) return hasFile ? ['Valid', 'green'] : ['Missing', 'grey'];
