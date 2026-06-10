@@ -125,7 +125,9 @@ export async function sendEmail(to, subject, html, locationId) {
   return { ok: true, ...(data || {}) };
 }
 
-/** Store bank details on the staff record — MASKED ONLY (sort code + last 4). */
+/** Store bank details on the staff record — full sort code + account number
+ *  (org-RLS-fenced, needed to actually pay staff) plus a masked copy for
+ *  compact display. */
 export async function saveStaffBank(staffId, sortCode, accountFull) {
   const digits = String(accountFull || '').replace(/\D/g, '');
   const masked = digits.length >= 4 ? `****${digits.slice(-4)}` : null;

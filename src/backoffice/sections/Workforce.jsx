@@ -14,9 +14,10 @@ import { supabase } from '../../lib/supabase';
 import { Icon } from '../../components/ServOSIcons';
 import { DAYS, TODAY, SECTIONS, ROLES, SECTION_REQ, FORECAST, PAYROWS } from '../../staff/seed';
 import { hoursOf, effectiveRate, wageByDay, labourPct, LABOUR_TARGET, troncRun, tsVariance } from '../../staff/labour';
-import { loadStaff, saveStaff, softDeleteStaff, markPosUser, loadRoles, loadSections, loadSettings, loadDocuments, loadTimesheets, loadOnboarding, loadAccrual, accrualBalances, signedDocUrl } from '../../staff/wfData';
+import { loadStaff, saveStaff, softDeleteStaff, markPosUser, loadRoles, loadSections, loadSettings, loadDocuments, loadTimesheets, loadOnboarding, loadAccrual, accrualBalances, signedDocUrl, saveStaffBank, saveOnboarding, sendEmail } from '../../staff/wfData';
 import { buildWeek } from '../../staff/wfWeek';
 import WfRota from './workforce/WfRota';
+import { PickTemplateModal, freshSteps, genToken, toHtml, signEmailHtml } from './workforce/WfOnboarding';
 import WfTimesheets from './workforce/WfTimesheets';
 import WfTronc from './workforce/WfTronc';
 import WfPay from './workforce/WfPay';
@@ -160,7 +161,8 @@ export default function Workforce({ section, orgCtx }) {
       {key === 'announce' && <WfAnnouncements {...sectionProps} />}
       {key === 'settings' && <WfSettings {...sectionProps} />}
 
-      {viewing && <StaffDetailModal staff={viewing} roles={rolesMap} ctx={ctx} onClose={() => setViewing(null)} onEdit={(s) => { setViewing(null); setEditing(s); }} onSetPos={(s) => { setViewing(null); setPosFor(s); }} />}
+      {viewing && <StaffDetailModal staff={viewing} roles={rolesMap} ctx={ctx} showToast={showToast} onClose={() => setViewing(null)} onEdit={(s) => { setViewing(null); setEditing(s); }} onSetPos={(s) => { setViewing(null); setPosFor(s); }}
+        onPatch={(patch) => { setStaff(st => st.map(x => x.id === viewing.id ? { ...x, ...patch } : x)); setViewing(v => v ? { ...v, ...patch } : v); }} />}
       {(addOpen || editing) && <AddStaffModal locName={locName} staff={editing} roles={rolesMap} onClose={() => { setAddOpen(false); setEditing(null); }} onSave={saveMember} />}
       {posFor && <PosUserModal staff={posFor} onClose={() => setPosFor(null)} onSave={(opts) => setAsPosUser(posFor, opts)} />}
     </div>
@@ -311,8 +313,8 @@ function DetailDocView({ path }) {
   return <button className="btn btn-ghost btn-xs" disabled={busy} onClick={async () => { setBusy(true); try { const u = await signedDocUrl(path, 120); if (u) window.open(u, '_blank', 'noopener'); } finally { setBusy(false); } }}>{busy ? '…' : 'View'}</button>;
 }
 
-// Staff profile — HR record + documents + onboarding + recent timesheets + holiday balance.
-function StaffDetailModal({ staff: s, roles = ROLES, ctx, onClose, onEdit, onSetPos }) {
+// Staff profile — HR record + payroll bank + contract + documents + timesheets.
+function StaffDetailModal({ staff: s, roles = ROLES, ctx, showToast, onClose, onEdit, onSetPos, onPatch }) {
   const role = roles[s.role];
   const [data, setData] = useState({ docs: [], timesheets: [], onb: null, holidayHrs: 0, loading: true });
   useEffect(() => {
@@ -346,7 +348,6 @@ function StaffDetailModal({ staff: s, roles = ROLES, ctx, onClose, onEdit, onSet
     ['Date of birth', s.dob || '—'], ['Start date', s.startDate || '—'],
     ['Address', s.address || '—'],
     ['Emergency contact', s.emergencyContact ? `${s.emergencyContact.name || '—'}${s.emergencyContact.phone ? ` · ${s.emergencyContact.phone}` : ''}${s.emergencyContact.relationship ? ` (${s.emergencyContact.relationship})` : ''}` : '—'],
-    ['Bank (for payroll)', s.bankAccount ? `${s.bankSortCode || '—'} · ${s.bankAccount}` : (s.bankMasked ? `${s.bankSortCode || '—'} · ${s.bankMasked}` : '—')],
   ];
 
   return (
@@ -377,6 +378,13 @@ function StaffDetailModal({ staff: s, roles = ROLES, ctx, onClose, onEdit, onSet
             <div style={{ fontSize: 13.5, marginTop: 6 }}>{data.onb ? (data.onb.status === 'complete' ? <Badge tone="green">Complete</Badge> : <Badge tone="amber">In progress</Badge>) : <span style={{ color: 'var(--t4)' }}>Not started</span>}</div>
           </div>
         </div>
+
+        <SectionTitle>Bank details (for payroll)</SectionTitle>
+        <BankPanel s={s} ctx={ctx} showToast={showToast} onPatch={onPatch} />
+
+        <SectionTitle>Contract</SectionTitle>
+        <ContractPanel s={s} role={role} onb={data.onb} loading={data.loading} ctx={ctx} showToast={showToast}
+          onCase={(c) => setData(d => ({ ...d, onb: c }))} />
 
         <SectionTitle>Documents</SectionTitle>
         {data.loading ? <Muted>Loading…</Muted> : data.docs.length === 0 ? <Muted>No documents on file.</Muted> : (
@@ -421,6 +429,134 @@ function StaffDetailModal({ staff: s, roles = ROLES, ctx, onClose, onEdit, onSet
 }
 function SectionTitle({ children }) { return <div className="mono" style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase', color: 'var(--t3)', margin: '4px 0 8px' }}>{children}</div>; }
 function Muted({ children }) { return <div style={{ fontSize: 13, color: 'var(--t3)', padding: '6px 0 14px' }}>{children}</div>; }
+
+// Payroll bank details — full sort code + account number, editable in place.
+// Older records may only hold the masked copy (full storage landed later);
+// re-entering once upgrades them.
+function BankPanel({ s, ctx, showToast, onPatch }) {
+  const [editing, setEditing] = useState(false);
+  const [sort, setSort] = useState('');
+  const [acct, setAcct] = useState('');
+  const [busy, setBusy] = useState(false);
+  const open = () => { setSort(s.bankSortCode || ''); setAcct(s.bankAccount || ''); setEditing(true); };
+  const save = async () => {
+    setBusy(true);
+    try {
+      const { masked, sort: savedSort, account } = await saveStaffBank(s.id, sort, acct);
+      onPatch?.({ bankSortCode: savedSort, bankAccount: account, bankMasked: masked });
+      setEditing(false);
+      showToast?.('Bank details saved', 'success');
+    } catch (e) { showToast?.(e.message || 'Could not save', 'error'); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', borderRadius: 12, background: 'var(--inset)', border: '1px solid var(--inset-border)', marginBottom: 16 }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        {s.bankAccount ? (
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 15, fontWeight: 700 }}>{s.bankSortCode || '——'}&ensp;{s.bankAccount}</div>
+        ) : s.bankMasked ? (
+          <>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 15, fontWeight: 700 }}>{s.bankSortCode || '——'}&ensp;{s.bankMasked}</div>
+            <div style={{ fontSize: 11.5, color: 'var(--amber)', marginTop: 2 }}>Only a masked copy is on file — re-enter the account number once to store it in full for payroll.</div>
+          </>
+        ) : (
+          <div style={{ fontSize: 13, color: 'var(--t4)' }}>Not captured yet.</div>
+        )}
+      </div>
+      <button className="btn btn-ghost btn-xs" onClick={open}>{s.bankMasked || s.bankAccount ? 'Edit' : 'Enter'}</button>
+      {editing && (
+        <div className="modal-back" onClick={e => e.target === e.currentTarget && setEditing(false)}>
+          <div className="modal-box" style={{ maxWidth: 400 }}>
+            <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>Bank details — {s.name}</div>
+            <div style={{ fontSize: 12.5, color: 'var(--t3)', marginBottom: 16 }}>For payroll. Stored in full on the staff record (org-fenced) so you can pay them via BACS.</div>
+            <div style={{ marginBottom: 12 }}><label style={labelStyle}>Sort code</label><input style={inputStyle} value={sort} onChange={e => setSort(e.target.value)} placeholder="00-00-00" inputMode="numeric" /></div>
+            <div style={{ marginBottom: 18 }}><label style={labelStyle}>Account number</label><input style={inputStyle} value={acct} onChange={e => setAcct(e.target.value.replace(/\D/g, '').slice(0, 10))} placeholder="12345678" inputMode="numeric" /></div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <button className="btn btn-ghost" onClick={() => setEditing(false)}>Cancel</button>
+              <button className="btn btn-acc" disabled={busy || acct.replace(/\D/g, '').length < 4} onClick={save}>{busy ? 'Saving…' : 'Save'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Contract management from the profile — view status, copy/email the sign
+// link, and (re)generate from a template after onboarding. Contracts live on
+// the person's wf_onboarding case (one case per person; created on demand) so
+// the same /sign/<token> flow covers first issue and later changes.
+function ContractPanel({ s, role, onb, loading, ctx, showToast, onCase }) {
+  const [pick, setPick] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const meta = onb?.meta || {};
+  const signUrl = meta.signToken ? `${window.location.origin}/sign/${meta.signToken}` : null;
+  const hasContract = !!(meta.contractHtml || meta.contractPath);
+
+  const saveCase = async (next) => {
+    const steps = next.steps || [];
+    next.status = steps.length && steps.every(x => x.status === 'complete') ? 'complete' : 'inProgress';
+    const saved = await saveOnboarding(next, ctx.locationId, ctx.orgId);
+    onCase?.(saved);
+    return saved;
+  };
+
+  // (Re)generate: new contract text, signature cleared — it needs signing again.
+  const generate = async (merged) => {
+    const base = onb || { staffId: s.id, roleKey: s.role, steps: freshSteps(), status: 'inProgress', meta: {} };
+    const token = base.meta?.signToken || genToken();
+    const next = {
+      ...base,
+      meta: { ...(base.meta || {}), contractHtml: toHtml(merged), contractPath: null, signToken: token, signature: null, contractSentAt: null },
+      steps: (base.steps || freshSteps()).map(x => x.key === 'contract' ? { ...x, status: 'sent', completedAt: null } : x),
+    };
+    await saveCase(next);
+    showToast?.(meta.signature ? 'New contract generated — the previous signature no longer applies; send it for re-signing' : 'Contract generated — sign now, or email the link', 'success');
+    setPick(false);
+  };
+
+  const emailLink = async () => {
+    if (!s.email) { showToast?.('Add an email for this person first (Edit details)', 'error'); return; }
+    setBusy(true);
+    try {
+      await sendEmail(s.email, `Sign your contract — ${ctx.locName}`, signEmailHtml(s.name, ctx.locName, signUrl), ctx.locationId);
+      await saveCase({ ...onb, meta: { ...meta, contractSentAt: new Date().toISOString() } });
+      showToast?.(`Sign link emailed to ${s.email}`, 'success');
+    } catch (e) { showToast?.('Email failed: ' + (e.message || 'error'), 'error'); }
+    finally { setBusy(false); }
+  };
+
+  const copyLink = async () => { try { await navigator.clipboard.writeText(signUrl); showToast?.('Sign link copied', 'success'); } catch { showToast?.(signUrl || '', 'info'); } };
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', borderRadius: 12, background: 'var(--inset)', border: '1px solid var(--inset-border)', marginBottom: 16, flexWrap: 'wrap' }}>
+      <div style={{ flex: 1, minWidth: 160 }}>
+        {loading ? <span style={{ fontSize: 13, color: 'var(--t3)' }}>Loading…</span>
+          : meta.signature ? (<>
+            <Badge tone="green">Signed</Badge>
+            <div style={{ fontSize: 11.5, color: 'var(--t3)', marginTop: 4 }}>By {meta.signature.name} · {new Date(meta.signature.signedAt).toLocaleDateString('en-GB')}</div>
+          </>)
+            : hasContract ? (<>
+              <Badge tone="amber">Awaiting signature</Badge>
+              {meta.contractSentAt && <div style={{ fontSize: 11.5, color: 'var(--t3)', marginTop: 4 }}>Link emailed {new Date(meta.contractSentAt).toLocaleDateString('en-GB')}</div>}
+            </>)
+              : <span style={{ fontSize: 13, color: 'var(--t4)' }}>No contract issued yet.</span>}
+      </div>
+      {!loading && (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          {hasContract && signUrl && (<>
+            <button className="btn btn-ghost btn-xs" onClick={() => window.open(signUrl, '_blank', 'noopener')}>{meta.signature ? 'View' : 'Sign now'}</button>
+            {!meta.signature && <button className="btn btn-ghost btn-xs" disabled={busy} onClick={emailLink}>{meta.contractSentAt ? 'Re-email' : 'Email link'}</button>}
+            <button className="btn btn-ghost btn-xs" onClick={copyLink}>Copy link</button>
+          </>)}
+          <button className="btn btn-acc btn-xs" disabled={busy} onClick={() => setPick(true)}>{hasContract ? 'Regenerate' : 'Generate contract'}</button>
+        </div>
+      )}
+      {pick && <PickTemplateModal kind="contract" member={s} role={role} ctx={ctx} title={hasContract ? `New contract for ${s.name}` : 'Generate contract'} cta={hasContract ? 'Replace contract' : 'Generate'} onClose={() => setPick(false)}
+        onConfirm={async (m) => { try { await generate(m); } catch (e) { showToast?.('Could not generate: ' + (e.message || 'error'), 'error'); } }} />}
+    </div>
+  );
+}
 
 function PosUserModal({ staff, onClose, onSave }) {
   const [pin, setPin] = useState('');

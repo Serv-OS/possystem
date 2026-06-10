@@ -82,6 +82,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.392', date: '10 Jun 2026', label: 'Onboarding archive + bank details & contracts on the staff profile',
+    changes: [
+      'Onboarding now has In progress / Completed tabs — once every step on a starter is done (POS access counts when they’re already a till user) they move to Completed automatically.',
+      'Staff profile: dedicated "Bank details (for payroll)" panel showing the full sort code + account number, editable in place. Records that only hold a masked copy say so and prompt a one-off re-enter.',
+      'Staff profile: Contract panel — signed status (who + when), Sign now / Email link / Copy link, and Regenerate from a template after onboarding (a regenerated contract clears the old signature and goes back out for signing).',
+    ],
+  },
+  {
     version: '5.5.391', date: '10 Jun 2026', label: 'Onboarding — steps tick off properly, offer accept/resend, sign page scrolls',
     changes: [
       'Fixed steps not marking complete (offer sent, RTW uploaded, bank entered): older onboarding cases stored a legacy step format that the tick-off logic silently didn’t match — cases now self-heal on load, inferring completion from what’s already on file.',

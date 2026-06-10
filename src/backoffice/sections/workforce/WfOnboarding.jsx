@@ -5,24 +5,29 @@
 //   2. Right to Work — upload the RTW document (private storage + compliance row)
 //   3. Contract      — upload the contract + send a sign link; candidate signs
 //                      via the public /sign/<token> page (lightweight e-sign)
-//   4. Bank details  — captured for payroll, stored MASKED (sort code + last 4)
+//   4. Bank details  — captured for payroll (full details on the staff profile)
 //   5. POS access    — set them up as a till user (auto-detected from posUserId)
-//   6. First shift   — book their first shift date
-// Each step writes through to wf_onboarding (steps + meta jsonb).
+// Each step writes through to wf_onboarding (steps + meta jsonb). Cases where
+// every step is done show under the "Completed" tab.
 
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { Icon } from '../../../components/ServOSIcons';
 import { Card, EmptyState, Badge, RoleChip, initials, inputStyle, labelStyle, LoadingCard } from '../../../staff/wfUi';
 import * as wf from '../../../staff/wfData';
 
-const STEPS = [
+export const STEPS = [
   { key: 'offer', label: 'Offer letter' },
   { key: 'rtw', label: 'Right to Work' },
   { key: 'contract', label: 'Contract' },
   { key: 'bank', label: 'Bank details' },
   { key: 'posUser', label: 'POS access' },
 ];
-const freshSteps = () => STEPS.map(s => ({ key: s.key, status: 'pending', completedAt: null }));
+export const freshSteps = () => STEPS.map(s => ({ key: s.key, status: 'pending', completedAt: null }));
+
+// A case counts as done when every step is complete, treating POS access as
+// done if the staff record is already linked to a till user (that step is
+// inferred from posUserId rather than ticked by hand).
+export const caseDone = (c, member) => (c.steps || []).length > 0 && (c.steps || []).every(s => s.status === 'complete' || (s.key === 'posUser' && !!member?.posUserId));
 
 // Older cases stored label-style step keys ("Right to work", "Bank & tax
 // details", 7 steps). markStep matches on the short keys above, so against a
@@ -54,12 +59,13 @@ function normalizeCase(c) {
   const status = steps.every(s => s.status === 'complete') ? 'complete' : 'inProgress';
   return { ...c, steps, status };
 }
-const genToken = () => (crypto?.randomUUID ? crypto.randomUUID().replace(/-/g, '') : `${Date.now()}${Math.random().toString(36).slice(2)}`) + Math.random().toString(36).slice(2, 8);
+export const genToken = () => (crypto?.randomUUID ? crypto.randomUUID().replace(/-/g, '') : `${Date.now()}${Math.random().toString(36).slice(2)}`) + Math.random().toString(36).slice(2, 8);
 const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-const toHtml = text => `<div style="white-space:pre-wrap;font-family:system-ui,-apple-system,sans-serif;line-height:1.6;font-size:14px;color:#111">${esc(text)}</div>`;
+export const toHtml = text => `<div style="white-space:pre-wrap;font-family:system-ui,-apple-system,sans-serif;line-height:1.6;font-size:14px;color:#111">${esc(text)}</div>`;
 
 // Pick an offer/contract template, merge in this person's details, preview, send.
-function PickTemplateModal({ kind, member, role, ctx, title, cta, onClose, onConfirm }) {
+// Exported — the staff profile reuses it to regenerate contracts post-onboarding.
+export function PickTemplateModal({ kind, member, role, ctx, title, cta, onClose, onConfirm }) {
   const [tpls, setTpls] = useState([]);
   const [selId, setSelId] = useState('');
   const [loading, setLoading] = useState(true);
@@ -101,6 +107,7 @@ export default function WfOnboarding({ ctx, staff = [], roles, sections, setting
   const [cases, setCases] = useState([]);
   const [loading, setLoading] = useState(true);
   const [picking, setPicking] = useState(false);
+  const [tab, setTab] = useState('active'); // active | done
   const rolesMap = (roles && roles.map) || {};
   const nameOf = id => (staff.find(s => s.id === id) || {});
 
@@ -142,6 +149,10 @@ export default function WfOnboarding({ ctx, staff = [], roles, sections, setting
 
   if (loading) return <LoadingCard label="Loading onboarding…" />;
 
+  const activeCases = cases.filter(c => !caseDone(c, nameOf(c.staffId)));
+  const doneCases = cases.filter(c => caseDone(c, nameOf(c.staffId)));
+  const shown = tab === 'done' ? doneCases : activeCases;
+
   return (
     <>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 14, flexWrap: 'wrap' }}>
@@ -155,11 +166,19 @@ export default function WfOnboarding({ ctx, staff = [], roles, sections, setting
         </div>
       </div>
 
-      {cases.length === 0 ? (
-        <EmptyState icon="team" title="No one onboarding" body={candidates.length ? 'Start onboarding a new hire to email their offer, collect Right to Work, get the contract signed and capture bank details.' : 'Add a staff member first, then onboard them here.'} cta={candidates.length ? 'Start onboarding' : undefined} onCta={candidates.length ? () => setPicking(true) : undefined} />
+      <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
+        {[['active', `In progress (${activeCases.length})`], ['done', `Completed (${doneCases.length})`]].map(([k, lbl]) => (
+          <button key={k} onClick={() => setTab(k)} className={tab === k ? 'btn btn-acc btn-sm' : 'btn btn-ghost btn-sm'}>{lbl}</button>
+        ))}
+      </div>
+
+      {shown.length === 0 ? (
+        tab === 'done'
+          ? <EmptyState icon="team" title="No completed onboardings yet" body="Once every step on a starter is ticked (including till access), they move here automatically." />
+          : <EmptyState icon="team" title="No one onboarding" body={candidates.length ? 'Start onboarding a new hire to email their offer, collect Right to Work, get the contract signed and capture bank details.' : 'Add a staff member first, then onboard them here.'} cta={candidates.length ? 'Start onboarding' : undefined} onCta={candidates.length ? () => setPicking(true) : undefined} />
       ) : (
         <div style={{ display: 'grid', gap: 14 }}>
-          {cases.map(c => <OnboardingCard key={c.id} c={c} member={nameOf(c.staffId)} rolesMap={rolesMap} ctx={ctx} showToast={showToast} markStep={markStep} patchCase={patchCase} />)}
+          {shown.map(c => <OnboardingCard key={c.id} c={c} member={nameOf(c.staffId)} rolesMap={rolesMap} ctx={ctx} showToast={showToast} markStep={markStep} patchCase={patchCase} />)}
         </div>
       )}
 
@@ -174,19 +193,20 @@ function OnboardingCard({ c, member, rolesMap, ctx, showToast, markStep, patchCa
   const posDone = !!member.posUserId || stepStatus('posUser') === 'complete';
   const done = STEPS.filter(s => (s.key === 'posUser' ? posDone : stepStatus(s.key) === 'complete')).length;
   const pct = Math.round((done / STEPS.length) * 100);
+  const allDone = done === STEPS.length;
 
   return (
-    <Card style={c.status === 'complete' ? { borderColor: 'var(--grn-b)' } : undefined}>
+    <Card style={allDone ? { borderColor: 'var(--grn-b)' } : undefined}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
         <span style={{ width: 38, height: 38, borderRadius: 10, background: 'var(--inset)', border: '1px solid var(--inset-border)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 800, color: 'var(--t2)' }}>{initials(member.name)}</span>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 15, fontWeight: 700 }}>{member.name || 'Unknown'}</div>
           <RoleChip role={member.role} roles={rolesMap} />
         </div>
-        {c.status === 'complete' ? <Badge tone="green">Complete</Badge> : <Badge tone="amber">{done}/{STEPS.length} done</Badge>}
+        {allDone ? <Badge tone="green">Complete</Badge> : <Badge tone="amber">{done}/{STEPS.length} done</Badge>}
       </div>
       <div style={{ height: 6, borderRadius: 999, background: 'var(--inset)', overflow: 'hidden', marginBottom: 14 }}>
-        <div style={{ height: '100%', width: `${pct}%`, background: c.status === 'complete' ? 'var(--grn)' : 'var(--acc)', transition: 'width .25s' }} />
+        <div style={{ height: '100%', width: `${pct}%`, background: allDone ? 'var(--grn)' : 'var(--acc)', transition: 'width .25s' }} />
       </div>
 
       <div style={{ display: 'grid', gap: 8 }}>
@@ -302,7 +322,7 @@ function UploadAction({ type, c, member, ctx, showToast, markStep, metaKey, step
   </>);
 }
 
-const signEmailHtml = (name, locName, link) => `<div style="font-family:system-ui,sans-serif;max-width:560px"><p>Dear ${esc(name)},</p>
+export const signEmailHtml = (name, locName, link) => `<div style="font-family:system-ui,sans-serif;max-width:560px"><p>Dear ${esc(name)},</p>
 <p>Your contract with ${esc(locName)} is ready to sign. Please review and sign it here:</p>
 <p><a href="${link}" style="display:inline-block;background:#15C26A;color:#06130C;font-weight:700;padding:12px 20px;border-radius:10px;text-decoration:none">Review &amp; sign your contract</a></p>
 <p style="color:#666;font-size:13px">Or paste this link into your browser:<br/>${link}</p>
@@ -395,7 +415,7 @@ function BankAction({ c, member, ctx, showToast, markStep, done }) {
       <div className="modal-back" onClick={e => e.target === e.currentTarget && setOpen(false)}>
         <div className="modal-box" style={{ maxWidth: 400 }}>
           <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>Bank details — {member.name}</div>
-          <div style={{ fontSize: 12.5, color: 'var(--t3)', marginBottom: 16 }}>For payroll. Only the sort code + last 4 digits are stored in Serv OS — key the full number into your payroll/BACS system.</div>
+          <div style={{ fontSize: 12.5, color: 'var(--t3)', marginBottom: 16 }}>For payroll. Stored on their staff profile (org-fenced) — you can view or change them there any time.</div>
           <div style={{ marginBottom: 12 }}><label style={labelStyle}>Sort code</label><input style={inputStyle} value={sort} onChange={e => setSort(e.target.value)} placeholder="00-00-00" inputMode="numeric" /></div>
           <div style={{ marginBottom: 18 }}><label style={labelStyle}>Account number</label><input style={inputStyle} value={acct} onChange={e => setAcct(e.target.value.replace(/\D/g, '').slice(0, 10))} placeholder="12345678" inputMode="numeric" /></div>
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
