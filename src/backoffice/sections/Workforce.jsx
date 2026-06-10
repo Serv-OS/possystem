@@ -13,7 +13,7 @@ import { useStore } from '../../store';
 import { supabase } from '../../lib/supabase';
 import { Icon } from '../../components/ServOSIcons';
 import { DAYS, TODAY, SECTIONS, ROLES, SECTION_REQ, FORECAST, PAYROWS } from '../../staff/seed';
-import { hoursOf, effectiveRate, wageByDay, labourPct, LABOUR_TARGET, troncRun, tsVariance } from '../../staff/labour';
+import { hoursOf, effectiveRate, wageByDay, labourPct, LABOUR_TARGET, troncRun, tsVariance, isHourly, FIXED_HOLIDAY_DAYS } from '../../staff/labour';
 import { loadStaff, saveStaff, softDeleteStaff, markPosUser, loadRoles, loadSections, loadSettings, loadDocuments, loadTimesheets, loadOnboarding, loadAccrual, accrualBalances, signedDocUrl, saveStaffBank, saveOnboarding, sendEmail } from '../../staff/wfData';
 import { buildWeek } from '../../staff/wfWeek';
 import WfRota from './workforce/WfRota';
@@ -69,6 +69,10 @@ export default function Workforce({ section, orgCtx }) {
   const [sections, setSections] = useState([]);
   const [settings, setSettings] = useState({ currency: 'GBP', labourTargetPct: 0.28, accrualRate: 0.1207, premiums: {}, salesSource: 'pos' });
 
+  // Holiday accrued per staff (hours, from the accrual ledger) — shown on the
+  // staff list rows; salaried staff show their fixed days instead.
+  const [holidayHours, setHolidayHours] = useState({});
+
   // Load this location's staff (wf_staff, RLS-fenced) + config on mount / location change.
   useEffect(() => {
     let alive = true;
@@ -77,6 +81,7 @@ export default function Workforce({ section, orgCtx }) {
     Promise.all([loadRoles(locationId, orgCtx?.orgId), loadSections(locationId), loadSettings(locationId)])
       .then(([r, s, set]) => { if (alive) { if (r) setRoles(r); if (s) setSections(s); if (set) setSettings(set); } })
       .catch(() => {});
+    loadAccrual(locationId).then(rows => { if (alive) setHolidayHours(accrualBalances(rows || [])); }).catch(() => {});
     return () => { alive = false; };
   }, [locationId]);
 
@@ -160,7 +165,7 @@ export default function Workforce({ section, orgCtx }) {
       {key === 'rota' && <WfRota {...sectionProps} />}
       {key === 'staff' && (loading
         ? <Card style={{ textAlign: 'center', padding: 44, color: 'var(--t3)' }}>Loading staff…</Card>
-        : <WfStaff staff={staff} roles={rolesMap} onAdd={() => setAddOpen(true)} onView={setViewing} onEdit={setEditing} onSetPos={setPosFor} onRemove={removeStaff} />)}
+        : <WfStaff staff={staff} roles={rolesMap} holidayHours={holidayHours} onAdd={() => setAddOpen(true)} onView={setViewing} onEdit={setEditing} onSetPos={setPosFor} onRemove={removeStaff} />)}
       {key === 'timesheets' && <WfTimesheets {...sectionProps} />}
       {key === 'payroll' && <WfPayroll {...sectionProps} />}
       {key === 'pay' && <WfPay {...sectionProps} />}
@@ -227,12 +232,12 @@ function WfDashboard({ groups, staffCount }) {
 }
 
 // ── Staff (HR list + CRUD) ──
-function WfStaff({ staff, roles = ROLES, onAdd, onView, onEdit, onSetPos, onRemove }) {
+function WfStaff({ staff, roles = ROLES, holidayHours = {}, onAdd, onView, onEdit, onSetPos, onRemove }) {
   if (staff.length === 0) return <EmptyState icon="team" title="No staff yet" body="Add your team here. Each person is an HR record — you can then set them as a POS user to give them till access on the Team page." cta="Add staff member" onCta={onAdd} />;
   return (
     <Card style={{ padding: 0, overflow: 'hidden' }}>
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-        <thead><tr>{['Name', 'Position', 'Pay rate', 'Contract', 'Mobile', 'POS access', ''].map((h, i) => <th key={i} style={th}>{h}</th>)}</tr></thead>
+        <thead><tr>{['Name', 'Position', 'Pay rate', 'Contract', 'Holiday', 'Mobile', 'POS access', ''].map((h, i) => <th key={i} style={th}>{h}</th>)}</tr></thead>
         <tbody>
           {staff.map(s => {
             const role = roles[s.role];
@@ -245,6 +250,11 @@ function WfStaff({ staff, roles = ROLES, onAdd, onView, onEdit, onSetPos, onRemo
                 <td style={td}><RoleChip role={s.role} roles={roles} /></td>
                 <td style={{ ...td, whiteSpace: 'nowrap' }}><span className="mono" style={{ fontSize: 12, fontWeight: 700 }}>{rateLbl}</span>{hasOverride && <span style={{ marginLeft: 6 }}><Badge tone="blue">override</Badge></span>}</td>
                 <td style={{ ...td, color: 'var(--t2)' }}>{s.contractType || '—'}</td>
+                <td style={{ ...td, whiteSpace: 'nowrap' }}>
+                  {isHourly(s, role)
+                    ? <><span className="mono" style={{ fontSize: 12, fontWeight: 700 }}>{Number(holidayHours[s.id] || 0).toFixed(1)}h</span><span style={{ fontSize: 11, color: 'var(--t4)', marginLeft: 5 }}>accrued</span></>
+                    : <><span className="mono" style={{ fontSize: 12, fontWeight: 700 }}>{s.holidayEntitlementDays ?? FIXED_HOLIDAY_DAYS}d</span><span style={{ fontSize: 11, color: 'var(--t4)', marginLeft: 5 }}>fixed</span></>}
+                </td>
                 <td style={{ ...td, fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--t2)' }}>{s.mobile || '—'}</td>
                 <td style={td}>{s.posUserId ? <Badge tone="green">POS user ✓</Badge> : <button className="btn btn-ghost btn-xs" onClick={() => onSetPos(s)}>Set as POS user</button>}</td>
                 <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }}><button className="btn btn-ghost btn-xs" onClick={() => onEdit(s)}>Edit</button> <button className="btn btn-ghost btn-xs" onClick={() => onRemove(s.id)} title="Remove"><Icon name="close" size={13} /></button></td>

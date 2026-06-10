@@ -82,6 +82,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.404', date: '10 Jun 2026', label: 'Staff list — holiday on every row',
+    changes: [
+      'The staff list gained a Holiday column: hourly staff show their accrued balance from the holiday ledger (e.g. 12.6h accrued), salaried staff show their fixed annual entitlement (28 days by default, or their personal override).',
+    ],
+  },
+  {
     version: '5.5.403', date: '10 Jun 2026', label: 'Payroll close — permanent records, timesheets marked paid, approval guard',
     changes: [
       'Closing a payroll is now a real event: after Run payroll, a Close payroll button records the run permanently (period, every staff line, totals, the tipping policy in force), marks all the period’s approved timesheets as PAID, and writes a tamper-evident audit entry. A period can only be closed once.',
