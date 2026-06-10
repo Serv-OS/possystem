@@ -10,6 +10,31 @@ import { useState, useEffect } from 'react';
 import { Icon } from '../../../components/ServOSIcons';
 import { Card, EmptyState, th, td, inputStyle, labelStyle, LoadingCard } from '../../../staff/wfUi';
 import * as wf from '../../../staff/wfData';
+import { payPeriod, shiftPayPeriod } from '../../../staff/wfWeek';
+
+// Live "what you'll get" line under the pay-period fields — current period,
+// the next one, and the computed pay day, straight from the same function
+// "Run payroll" uses, so what you see here is exactly what payroll runs on.
+function PayPeriodPreview({ payType, payStartDay, payAnchor, payDayDom, payDayOffset }) {
+  const fixed = payType !== 'monthly';
+  if (fixed && !payAnchor) return <div style={{ fontSize: 11.5, color: 'var(--t4)', marginTop: 10 }}>Set the first period start date to see the schedule.</div>;
+  const cfg = {
+    payPeriodType: payType,
+    payPeriodStartDay: parseInt(payStartDay, 10) || 1,
+    payPeriodAnchor: fixed ? payAnchor : null,
+    payDay: fixed ? (payDayOffset === '' ? null : parseInt(payDayOffset, 10) || 0)
+      : (payDayDom === '' ? null : parseInt(payDayDom, 10) || 0),
+  };
+  let cur, next;
+  try { cur = payPeriod(cfg); next = shiftPayPeriod(cfg, cur.startIso, 1); } catch { return null; }
+  const fmt = iso => new Date(iso + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+  return (
+    <div style={{ fontSize: 11.5, color: 'var(--t3)', marginTop: 10, lineHeight: 1.7 }}>
+      <span style={{ fontWeight: 700, color: 'var(--t2)' }}>Current period:</span> {cur.label} · paid <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700 }}>{fmt(cur.payDateIso)}</span>
+      <br /><span style={{ fontWeight: 700, color: 'var(--t2)' }}>Next:</span> {next.label} · paid <span style={{ fontFamily: 'var(--font-mono)' }}>{fmt(next.payDateIso)}</span>
+    </div>
+  );
+}
 
 const CURRENCIES = [
   { v: 'GBP', lbl: 'GBP — British Pound (£)' },
@@ -24,7 +49,7 @@ const SECTION_COLOURS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', 
 
 const pct = frac => Math.round(Number(frac || 0) * 1000) / 10; // fraction -> whole-ish %
 
-export default function WfSettings({ ctx, staff, roles, sections, settings, week, showToast }) {
+export default function WfSettings({ ctx, staff, roles, sections, settings, week, showToast, onSettingsSaved }) {
   const [loading, setLoading] = useState(true);
   const [secList, setSecList] = useState(sections || []);
   const [editing, setEditing] = useState(null); // section being added/edited
@@ -35,6 +60,10 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
   const [currency, setCurrency] = useState('GBP');
   const [salesSource, setSalesSource] = useState('pos');
   const [payStartDay, setPayStartDay] = useState('1');
+  const [payType, setPayType] = useState('monthly');
+  const [payAnchor, setPayAnchor] = useState('');       // fixed-length: first period start (date)
+  const [payDayDom, setPayDayDom] = useState('');       // monthly: day-of-month paid (0 = last day)
+  const [payDayOffset, setPayDayOffset] = useState(''); // fixed-length: days after period end
   const [savingVenue, setSavingVenue] = useState(false);
 
   // Seed venue form from props.settings
@@ -44,6 +73,11 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
     setCurrency(settings?.currency || 'GBP');
     setSalesSource(settings?.salesSource || 'pos');
     setPayStartDay(String(settings?.payPeriodStartDay ?? 1));
+    setPayType(settings?.payPeriodType || 'monthly');
+    setPayAnchor(settings?.payPeriodAnchor || '');
+    const fixed = ['weekly', 'fortnightly', 'fourweekly'].includes(settings?.payPeriodType);
+    setPayDayDom(!fixed && settings?.payDay != null ? String(settings.payDay) : '');
+    setPayDayOffset(fixed && settings?.payDay != null ? String(settings.payDay) : '');
   }, [settings]);
 
   // Sections: seed from props, reload fresh on mount / location change
@@ -73,19 +107,26 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
     if (!Number.isFinite(lt) || lt < 0 || lt > 100) { showToast('Labour target must be between 0 and 100%', 'error'); return; }
     if (!Number.isFinite(ac) || ac < 0 || ac > 100) { showToast('Accrual rate must be between 0 and 100%', 'error'); return; }
     const psd = Math.min(28, Math.max(1, parseInt(payStartDay, 10) || 1));
+    const fixed = payType !== 'monthly';
+    if (fixed && !payAnchor) { showToast('Set the first period start date for a weekly/fortnightly pay period', 'error'); return; }
     setSavingVenue(true);
     const patch = {
       currency,
       salesSource,
       labourTargetPct: lt / 100,
       accrualRate: ac / 100,
-      payPeriodType: 'monthly',
+      payPeriodType: payType,
       payPeriodStartDay: psd,
+      payPeriodAnchor: fixed ? payAnchor : null,
+      payDay: fixed
+        ? (payDayOffset === '' ? null : Math.max(0, parseInt(payDayOffset, 10) || 0))
+        : (payDayDom === '' ? null : Math.min(28, Math.max(0, parseInt(payDayDom, 10) || 0))),
       premiums: settings?.premiums || {},
       settings: settings?.settings || {},
     };
     try {
-      await wf.saveSettings(patch, ctx.locationId, ctx.orgId);
+      const saved = await wf.saveSettings(patch, ctx.locationId, ctx.orgId);
+      onSettingsSaved?.(saved || patch);
       showToast('Venue settings saved', 'success');
     } catch (e) {
       showToast(e.message || 'Could not save venue settings', 'error');
@@ -164,17 +205,50 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
               {SALES_SOURCES.map(s => <option key={s.v} value={s.v}>{s.lbl}</option>)}
             </select>
           </div>
-          <div>
-            <label style={labelStyle}>Pay period starts on day</label>
-            <input
-              style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }}
-              type="number" min="1" max="28" step="1" inputMode="numeric"
-              value={payStartDay} onChange={e => setPayStartDay(e.target.value)} disabled={savingVenue}
-            />
-            <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>
-              Monthly. e.g. 26 → pay periods run 26th–25th. Drives “Run payroll”.
+        </div>
+
+        {/* ── Pay period — type + anchor + pay day; locks "Run payroll" to these dates ── */}
+        <div style={{ marginTop: 18, padding: '14px 16px', borderRadius: 12, background: 'var(--inset)', border: '1px solid var(--inset-border)' }}>
+          <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 10 }}>Pay period</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 14 }}>
+            <div>
+              <label style={labelStyle}>Frequency</label>
+              <select style={inputStyle} value={payType} onChange={e => setPayType(e.target.value)} disabled={savingVenue}>
+                <option value="monthly">Monthly</option>
+                <option value="weekly">Weekly</option>
+                <option value="fortnightly">Fortnightly (2 weeks)</option>
+                <option value="fourweekly">Every 4 weeks</option>
+              </select>
             </div>
+            {payType === 'monthly' ? (<>
+              <div>
+                <label style={labelStyle}>Starts on day</label>
+                <input style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }} type="number" min="1" max="28" step="1" inputMode="numeric"
+                  value={payStartDay} onChange={e => setPayStartDay(e.target.value)} disabled={savingVenue} />
+                <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>e.g. 26 → periods run 26th–25th.</div>
+              </div>
+              <div>
+                <label style={labelStyle}>Pay day (day of month)</label>
+                <input style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }} type="number" min="0" max="28" step="1" inputMode="numeric" placeholder="—"
+                  value={payDayDom} onChange={e => setPayDayDom(e.target.value)} disabled={savingVenue} />
+                <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>0 = last day of the month.</div>
+              </div>
+            </>) : (<>
+              <div>
+                <label style={labelStyle}>First period starts</label>
+                <input style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }} type="date"
+                  value={payAnchor} onChange={e => setPayAnchor(e.target.value)} disabled={savingVenue} />
+                <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>All later periods roll on from this date.</div>
+              </div>
+              <div>
+                <label style={labelStyle}>Paid (days after period ends)</label>
+                <input style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }} type="number" min="0" max="28" step="1" inputMode="numeric" placeholder="0"
+                  value={payDayOffset} onChange={e => setPayDayOffset(e.target.value)} disabled={savingVenue} />
+                <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>0 = paid on the period’s last day.</div>
+              </div>
+            </>)}
           </div>
+          <PayPeriodPreview payType={payType} payStartDay={payStartDay} payAnchor={payAnchor} payDayDom={payDayDom} payDayOffset={payDayOffset} />
         </div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
           <button className="btn btn-acc" onClick={saveVenue} disabled={savingVenue}>

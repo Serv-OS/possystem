@@ -82,6 +82,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.394', date: '10 Jun 2026', label: 'Pay periods — weekly/fortnightly/4-weekly anchored to a start date + pay day',
+    changes: [
+      'Workforce settings now has a full Pay period card: pick the frequency (monthly, weekly, fortnightly, every 4 weeks), anchor the first period to a real start date (e.g. Fri 12 Jun → 12–25 Jun, 26 Jun–9 Jul, …) and set the pay day (day-of-month for monthly; days-after-period-end otherwise).',
+      'A live preview under the fields shows the current and next period with their pay days — computed by the exact same function Run payroll uses.',
+      'Run payroll is locked to the configured period: it resolves which period today falls in, the header shows the dates + pay day, and ‹ › steps through past/future periods for reporting.',
+      'Saving venue settings now updates the rest of Workforce immediately (previously the Pay screen kept the old period until a reload).',
+    ],
+  },
+  {
     version: '5.5.393', date: '10 Jun 2026', label: 'Compliance — proper RTW review flow, no duplicate uploads, dates editable',
     changes: [
       'Uploads no longer duplicate: a person holds one current document per type, so re-uploading a Right to Work replaces the previous one instead of adding another row.',

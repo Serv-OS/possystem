@@ -34,12 +34,19 @@ export default function WfPay({ ctx, staff, roles, sections, settings, week, sho
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  // Period-pay state — uses the configured pay period (e.g. 26th–25th).
-  const startDay = settings?.payPeriodStartDay ?? 1;
-  const [period, setPeriod] = useState(() => payPeriod(startDay));
+  // Period-pay state — locked to the configured pay period (monthly 26th–25th,
+  // or fixed-length periods anchored to a start date, e.g. fortnightly from
+  // Fri 12 Jun). The run + reports always cover exactly these dates.
+  const payCfg = useMemo(() => ({
+    payPeriodType: settings?.payPeriodType || 'monthly',
+    payPeriodStartDay: settings?.payPeriodStartDay ?? 1,
+    payPeriodAnchor: settings?.payPeriodAnchor || null,
+    payDay: settings?.payDay ?? null,
+  }), [settings?.payPeriodType, settings?.payPeriodStartDay, settings?.payPeriodAnchor, settings?.payDay]);
+  const [period, setPeriod] = useState(() => payPeriod(payCfg));
   const [pay, setPay] = useState(null);             // { staff:[{staff_id,hours,pay}], total } | null
   const [computing, setComputing] = useState(false);
-  useEffect(() => { setPeriod(payPeriod(settings?.payPeriodStartDay ?? 1)); setPay(null); }, [settings?.payPeriodStartDay]);
+  useEffect(() => { setPeriod(payPeriod(payCfg)); setPay(null); }, [payCfg]);
 
   // Seed local roles from props; refresh when the location's roles change.
   useEffect(() => { setRoleList(roles?.list || []); }, [roles]);
@@ -86,7 +93,7 @@ export default function WfPay({ ctx, staff, roles, sections, settings, week, sho
       showToast(e.message || 'Payroll run failed', 'error');
     } finally { setComputing(false); }
   }
-  const gotoPeriod = (n) => { const p = shiftPayPeriod(startDay, period.startIso, n); setPeriod(p); setPay(null); };
+  const gotoPeriod = (n) => { const p = shiftPayPeriod(payCfg, period.startIso, n); setPeriod(p); setPay(null); };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
@@ -164,7 +171,8 @@ export default function WfPay({ ctx, staff, roles, sections, settings, week, sho
             <button className="btn btn-ghost btn-xs" onClick={() => gotoPeriod(-1)} disabled={computing} title="Previous period"><Icon name="chevron" size={13} style={{ transform: 'rotate(180deg)' }} /></button>
             <div style={{ textAlign: 'center', minWidth: 170 }}>
               <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 700 }}>{period.label}</div>
-              <button className="btn btn-ghost btn-xs" style={{ marginTop: 1 }} onClick={() => { setPeriod(payPeriod(startDay)); setPay(null); }} disabled={computing}>This period</button>
+              {period.payDateIso && <div style={{ fontSize: 10.5, color: 'var(--t3)', marginTop: 1 }}>Pay day {new Date(period.payDateIso + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}</div>}
+              <button className="btn btn-ghost btn-xs" style={{ marginTop: 1 }} onClick={() => { setPeriod(payPeriod(payCfg)); setPay(null); }} disabled={computing}>This period</button>
             </div>
             <button className="btn btn-ghost btn-xs" onClick={() => gotoPeriod(1)} disabled={computing} title="Next period"><Icon name="chevron" size={13} /></button>
             <button className="btn btn-acc btn-sm" onClick={() => computePay()} disabled={computing}>

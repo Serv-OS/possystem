@@ -80,7 +80,9 @@ export default function Workforce({ section, orgCtx }) {
 
   const week = useMemo(() => buildWeek(), []);
   const ctx = useMemo(() => ({ locationId, orgId: orgCtx?.orgId || null, locName: orgCtx?.locationName || 'our team', actor: { id: orgCtx?.userId || null, name: orgCtx?.userName || null } }), [locationId, orgCtx]);
-  const sectionProps = { ctx, staff, roles, sections, settings, week, showToast };
+  // onSettingsSaved: WfSettings pushes the saved row back up so every section
+  // (Pay's period maths especially) sees the change without a reload.
+  const sectionProps = { ctx, staff, roles, sections, settings, week, showToast, onSettingsSaved: setSettings };
   const rolesMap = (roles.map && Object.keys(roles.map).length) ? roles.map : ROLES;
   const [title, sub] = SUBS[section] || ['Workforce', ''];
 

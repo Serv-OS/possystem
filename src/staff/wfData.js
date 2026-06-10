@@ -309,8 +309,8 @@ export async function deleteSection(id) {
 // ============================================================================
 // VENUE SETTINGS (wf_venue_settings — PK location_id)
 // ============================================================================
-const DEFAULT_SETTINGS = { currency: 'GBP', labourTargetPct: 0.28, accrualRate: 0.1207, premiums: {}, salesSource: 'pos', payPeriodType: 'monthly', payPeriodStartDay: 1, settings: {} };
-const mapSettings = r => ({ currency: r.currency || 'GBP', labourTargetPct: Number(r.labour_target_pct ?? 0.28), accrualRate: Number(r.accrual_rate ?? 0.1207), premiums: r.premiums || {}, salesSource: r.sales_source || 'pos', payPeriodType: r.pay_period_type || 'monthly', payPeriodStartDay: Number(r.pay_period_start_day ?? 1), settings: r.settings || {} });
+const DEFAULT_SETTINGS = { currency: 'GBP', labourTargetPct: 0.28, accrualRate: 0.1207, premiums: {}, salesSource: 'pos', payPeriodType: 'monthly', payPeriodStartDay: 1, payPeriodAnchor: null, payDay: null, settings: {} };
+const mapSettings = r => ({ currency: r.currency || 'GBP', labourTargetPct: Number(r.labour_target_pct ?? 0.28), accrualRate: Number(r.accrual_rate ?? 0.1207), premiums: r.premiums || {}, salesSource: r.sales_source || 'pos', payPeriodType: r.pay_period_type || 'monthly', payPeriodStartDay: Number(r.pay_period_start_day ?? 1), payPeriodAnchor: r.pay_period_anchor || null, payDay: r.pay_day ?? null, settings: r.settings || {} });
 export async function loadSettings(locationId) {
   if (isMock || !supabase) { const a = lsGet('settings'); return a[0] || { ...DEFAULT_SETTINGS }; }
   if (!locationId) return { ...DEFAULT_SETTINGS };
@@ -326,6 +326,7 @@ export async function saveSettings(patch, locationId, orgId) {
     currency: patch.currency || 'GBP', labour_target_pct: patch.labourTargetPct ?? 0.28,
     accrual_rate: patch.accrualRate ?? 0.1207, premiums: patch.premiums || {}, sales_source: patch.salesSource || 'pos',
     pay_period_type: patch.payPeriodType || 'monthly', pay_period_start_day: patch.payPeriodStartDay ?? 1,
+    pay_period_anchor: patch.payPeriodAnchor || null, pay_day: patch.payDay ?? null,
     settings: patch.settings || {}, updated_at: new Date().toISOString(),
   };
   const { data, error } = await supabase.from('wf_venue_settings').upsert(row, { onConflict: 'location_id' }).select().single();
