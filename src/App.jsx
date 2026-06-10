@@ -82,6 +82,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.397', date: '10 Jun 2026', label: 'Rota shows every shift (split shifts), breaks with UK law checks, role dropdown fix',
+    changes: [
+      'The rota now shows EVERY shift in a day cell, stacked — previously it rendered only the first, which hid duplicate shifts (e.g. from repeated AI-builder runs) that still appeared in Timesheets and counted in wages. Click any chip to edit/delete it; a small + under the stack adds another shift on the same day (split shifts).',
+      'Breaks on timesheets: a Break column shows the minutes, when each break ran (the Time Clock now records start/end segments), an editable value until approved, and a per-timesheet "paid" toggle. Paid break minutes are paid on top of worked hours; editing the break re-derives worked hours from the clock times.',
+      'UK Working Time Regulations built in: rows flag "20m break due (WTR)" when someone works over 6 hours with less break than the law requires (30 minutes for under-18s over 4.5 hours, from their date of birth). A venue-wide "Breaks are paid" default lives in Workforce settings.',
+      'Deleted positions now disappear from the staff Position dropdown immediately (role changes propagate without a reload).',
+    ],
+  },
+  {
     version: '5.5.396', date: '10 Jun 2026', label: 'Timesheets — clock/manual only, delete, week & pay-period filters; positions deletable',
     changes: [
       'No more "random" timesheets: the bulk Generate-from-rota button is gone. Timesheets now come only from the Time Clock or are added manually — per rota shift (Add on the row) or free-standing (Add timesheet: staff, date, times, break).',

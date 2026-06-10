@@ -16,7 +16,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { Icon } from '../../../components/ServOSIcons';
 import { Card, EmptyState, Badge, RoleChip, money, th, td, inputStyle, labelStyle, LoadingCard } from '../../../staff/wfUi';
 import * as wf from '../../../staff/wfData';
-import { hoursOf, resolveRate } from '../../../staff/labour';
+import { hoursOf, resolveRate, statutoryBreakMins } from '../../../staff/labour';
 import { buildWeek, addWeeks, payPeriod, shiftPayPeriod, weekRangeLabel } from '../../../staff/wfWeek';
 
 const VAR_TOL = 0.17; // ≈ ±10 min — beyond this we flag the variance.
@@ -91,6 +91,9 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
   //     always shown so they can be fixed or deleted, never silently hidden.
   const rows = useMemo(() => {
     const shiftIds = new Set((shifts || []).map(s => s.id));
+    // Paid hours = net worked hours + any PAID break minutes (UK: the 20-min
+    // statutory break may be unpaid — paying it is venue policy).
+    const payOf = (actual, paidMins, rate) => round2(((actual ?? 0) + (paidMins || 0) / 60) * rate);
     const out = (shifts || []).map(shift => {
       const ts = tsByShift[shift.id] || null;
       const scheduled = round2(shift.computedHours ?? hoursOf(shift.start, shift.finish) - (shift.breakMins || 0) / 60);
@@ -104,7 +107,10 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
         staffId: shift.staffId, roleKey: shift.roleKey, date: shift.date,
         scheduled, actual, variance: ts ? round2((actual ?? 0) - scheduled) : null,
         rate, rateSource: source,
-        pay: ts ? round2((actual ?? 0) * rate) : null,
+        breakMins: ts ? (ts.breakTaken || 0) : (shift.breakMins || 0),
+        paidBreak: ts ? (ts.paidBreakMins || 0) > 0 : false,
+        breaks: ts?.breaks || [],
+        pay: ts ? payOf(actual, ts.paidBreakMins, rate) : null,
       };
     });
     (sheets || []).forEach(ts => {
@@ -123,7 +129,10 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
         scheduled: ts.scheduledHours != null ? round2(ts.scheduledHours) : null,
         actual, variance: ts.scheduledHours != null ? round2(actual - ts.scheduledHours) : null,
         rate: eff, rateSource: ts.rateSource || source,
-        pay: ts.payAmount != null && ts.status === 'approved' ? round2(ts.payAmount) : round2(actual * eff),
+        breakMins: ts.breakTaken || 0,
+        paidBreak: (ts.paidBreakMins || 0) > 0,
+        breaks: ts.breaks || [],
+        pay: ts.payAmount != null && ts.status === 'approved' ? round2(ts.payAmount) : payOf(actual, ts.paidBreakMins, eff),
       });
     });
     return out.sort((a, b) => String(a.date || '9999').localeCompare(String(b.date || '9999')) || String(staffMap[a.staffId]?.name || '').localeCompare(String(staffMap[b.staffId]?.name || '')));
@@ -133,15 +142,20 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
   const undatedCount = rows.filter(r => r.kind === 'undated').length;
 
   // ── actions ────────────────────────────────────────────────────────────────
+  // Venue policy: are breaks paid by default? (Workforce settings.)
+  const paidBreaksDefault = !!settings?.settings?.paidBreaks;
+
   // Manual add for one rota shift — clock times stamped from the shift.
   async function addForShift(r) {
+    const breakMins = r.shift.breakMins || 0;
+    const paidMins = paidBreaksDefault ? breakMins : 0;
     try {
       const ts = await wf.saveTimesheet({
         shiftId: r.shift.id, staffId: r.shift.staffId,
         clockIn: stamp(r.shift.date, r.shift.start), clockOut: clockOutOf(r.shift.date, r.shift.start, r.shift.finish),
-        breakTaken: r.shift.breakMins || 0,
+        breakTaken: breakMins, paidBreakMins: paidMins,
         scheduledHours: r.scheduled, actualHours: r.scheduled, variance: 0,
-        effectiveRate: r.rate, rateSource: r.rateSource, payAmount: round2(r.scheduled * r.rate),
+        effectiveRate: r.rate, rateSource: r.rateSource, payAmount: round2((r.scheduled + paidMins / 60) * r.rate),
         status: 'pending',
       }, ctx.locationId, ctx.orgId);
       setSheets(prev => [ts, ...prev]);
@@ -165,6 +179,34 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
       const saved = await wf.saveTimesheet(patch, ctx.locationId, ctx.orgId);
       setSheets(prev => prev.map(t => t.id === r.ts.id ? saved : t));
     } catch (e) { showToast?.('Could not save hours: ' + e.message, 'error'); reload(); }
+  }
+
+  // Change the break (minutes and/or paid flag). On rows with both clock
+  // stamps, worked hours are re-derived (gross − break); pay = worked + paid
+  // break minutes.
+  async function saveBreak(r, minsRaw, paidOverride) {
+    if (!r.ts || r.ts.status === 'approved') return;
+    const mins = Math.max(0, Math.round(Number(minsRaw) || 0));
+    const paid = paidOverride != null ? paidOverride : r.paidBreak;
+    let actual = r.actual ?? 0;
+    if (r.ts.clockIn && r.ts.clockOut) {
+      const gross = (new Date(r.ts.clockOut) - new Date(r.ts.clockIn)) / 3600000;
+      actual = round2(Math.max(0, gross - mins / 60));
+    }
+    const paidMins = paid ? mins : 0;
+    const patch = {
+      ...r.ts,
+      breakTaken: mins, paidBreakMins: paidMins,
+      actualHours: actual,
+      variance: r.scheduled != null ? round2(actual - r.scheduled) : r.ts.variance,
+      payAmount: round2((actual + paidMins / 60) * r.rate),
+      effectiveRate: r.rate, rateSource: r.rateSource,
+    };
+    setSheets(prev => prev.map(t => t.id === r.ts.id ? { ...t, ...patch } : t));
+    try {
+      const saved = await wf.saveTimesheet(patch, ctx.locationId, ctx.orgId);
+      setSheets(prev => prev.map(t => t.id === r.ts.id ? saved : t));
+    } catch (e) { showToast?.('Could not save break: ' + e.message, 'error'); reload(); }
   }
 
   async function approve(r) {
@@ -248,6 +290,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
                 <th style={th}>Source</th>
                 <th style={th}>Scheduled</th>
                 <th style={{ ...th, width: 110 }}>Actual hrs</th>
+                <th style={{ ...th, width: 130 }}>Break</th>
                 <th style={th}>Variance</th>
                 <th style={{ ...th, textAlign: 'right' }}>Pay</th>
                 <th style={{ ...th, textAlign: 'right' }}>Status</th>
@@ -294,6 +337,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
                         />
                       )}
                     </td>
+                    <td style={td}><BreakCell r={r} staffMap={staffMap} onSave={saveBreak} /></td>
                     <td style={td}><VarianceCell variance={r.ts ? r.variance : null} /></td>
                     <td style={{ ...td, textAlign: 'right' }}>
                       {r.ts ? <span className="mono" style={{ fontWeight: 600 }}>{money(r.pay, 2)}</span> : <span style={{ color: 'var(--t4)' }}>—</span>}
@@ -319,7 +363,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
                 <td style={{ ...td, fontWeight: 700, borderBottom: 'none' }} colSpan={3}>Totals (timesheets)</td>
                 <td style={{ ...td, borderBottom: 'none' }} />
                 <td style={{ ...td, borderBottom: 'none' }}><span className="mono" style={{ fontWeight: 700 }}>{totals.hours.toFixed(2)}h</span></td>
-                <td style={{ ...td, borderBottom: 'none' }} />
+                <td style={{ ...td, borderBottom: 'none' }} colSpan={2} />
                 <td style={{ ...td, textAlign: 'right', fontWeight: 700, borderBottom: 'none' }}><span className="mono">{money(totals.pay, 2)}</span></td>
                 <td style={{ ...td, borderBottom: 'none' }} colSpan={2} />
               </tr>
@@ -330,18 +374,20 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
 
       {adding && (
         <AddTimesheetModal
-          staff={staff} roles={roles} staffMap={staffMap} rateFor={rateFor}
+          staff={staff} paidDefault={paidBreaksDefault}
           onClose={() => setAdding(false)}
           onSave={async (form) => {
-            const hrs = round2(hoursOf(form.start, form.finish) - (Number(form.breakMins) || 0) / 60);
+            const breakMins = Number(form.breakMins) || 0;
+            const paidMins = form.breakPaid ? breakMins : 0;
+            const hrs = round2(hoursOf(form.start, form.finish) - breakMins / 60);
             const { rate, source } = rateFor(form.staffId, staffMap[form.staffId]?.role);
             try {
               const ts = await wf.saveTimesheet({
                 staffId: form.staffId,
                 clockIn: stamp(form.date, form.start), clockOut: clockOutOf(form.date, form.start, form.finish),
-                breakTaken: Number(form.breakMins) || 0,
+                breakTaken: breakMins, paidBreakMins: paidMins,
                 scheduledHours: null, actualHours: hrs, variance: null,
-                effectiveRate: rate, rateSource: source, payAmount: round2(hrs * rate),
+                effectiveRate: rate, rateSource: source, payAmount: round2((hrs + paidMins / 60) * rate),
                 status: 'pending',
               }, ctx.locationId, ctx.orgId);
               setSheets(prev => [ts, ...prev]);
@@ -355,11 +401,54 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
   );
 }
 
+// Break detail: total minutes (editable until approved), when each break ran
+// (from the Time Clock's recorded segments), whether it's paid, and a UK
+// Working Time Regulations check — 20 mins due over 6h worked (30 mins over
+// 4.5h for under-18s, from their date of birth).
+function BreakCell({ r, staffMap, onSave }) {
+  const [draft, setDraft] = useState(null);
+  if (!r.ts) return <span style={{ color: 'var(--t4)' }}>{r.breakMins ? `${r.breakMins}m planned` : '—'}</span>;
+  const approved = r.ts.status === 'approved';
+  const dob = staffMap[r.staffId]?.dob || null;
+  const due = statutoryBreakMins(r.actual ?? 0, dob);
+  const short = due > 0 && (r.breakMins || 0) < due;
+  const segs = (r.breaks || []).map(b => {
+    const t = x => new Date(x).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+    return b.start && b.end ? `${t(b.start)}–${t(b.end)}` : null;
+  }).filter(Boolean);
+  return (
+    <div title={segs.length ? `Breaks: ${segs.join(', ')}` : 'No break segments recorded'}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        {approved ? (
+          <span className="mono">{r.breakMins || 0}m</span>
+        ) : (
+          <input
+            type="number" min="0" step="5"
+            value={draft != null ? draft : (r.breakMins || 0)}
+            onChange={e => setDraft(e.target.value)}
+            onBlur={() => { if (draft != null) { onSave(r, draft); setDraft(null); } }}
+            style={{ width: 56, background: 'var(--bg3)', border: '1.5px solid var(--bdr2)', borderRadius: 8, padding: '4px 6px', height: 30, fontSize: 12.5, color: 'var(--t1)', fontFamily: 'var(--font-mono)', outline: 'none' }}
+          />
+        )}
+        {!approved && (
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 10.5, color: 'var(--t3)', cursor: 'pointer' }} title="Paid break: these minutes are paid on top of worked hours (venue policy — UK law doesn't require the statutory break to be paid)">
+            <input type="checkbox" checked={r.paidBreak} onChange={e => onSave(r, draft != null ? draft : r.breakMins, e.target.checked)} />
+            paid
+          </label>
+        )}
+        {approved && r.paidBreak && <Badge tone="green">paid</Badge>}
+      </div>
+      {segs.length > 0 && <div style={{ fontSize: 10, color: 'var(--t4)', marginTop: 2, fontFamily: 'var(--font-mono)' }}>{segs.join(' · ')}</div>}
+      {short && <div style={{ marginTop: 3 }}><Badge tone="red">{due}m break due (WTR)</Badge></div>}
+    </div>
+  );
+}
+
 // Free-standing manual timesheet — for hours worked off-rota (no shift).
-function AddTimesheetModal({ staff, onClose, onSave }) {
+function AddTimesheetModal({ staff, paidDefault = false, onClose, onSave }) {
   const today = new Date();
   const todayIso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-  const [form, setForm] = useState({ staffId: staff?.[0]?.id || '', date: todayIso, start: '09:00', finish: '17:00', breakMins: '0' });
+  const [form, setForm] = useState({ staffId: staff?.[0]?.id || '', date: todayIso, start: '09:00', finish: '17:00', breakMins: '0', breakPaid: paidDefault });
   const [busy, setBusy] = useState(false);
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const valid = form.staffId && form.date && form.start && form.finish;
@@ -378,10 +467,14 @@ function AddTimesheetModal({ staff, onClose, onSave }) {
           <div><label style={labelStyle}>Date</label><input type="date" style={inputStyle} value={form.date} onChange={e => set('date', e.target.value)} /></div>
           <div><label style={labelStyle}>Unpaid break (mins)</label><input type="number" min="0" step="5" style={inputStyle} value={form.breakMins} onChange={e => set('breakMins', e.target.value)} /></div>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 18 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
           <div><label style={labelStyle}>Start</label><input type="time" style={inputStyle} value={form.start} onChange={e => set('start', e.target.value)} /></div>
           <div><label style={labelStyle}>Finish</label><input type="time" style={inputStyle} value={form.finish} onChange={e => set('finish', e.target.value)} /></div>
         </div>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 18, fontSize: 13, color: 'var(--t2)', cursor: 'pointer' }}>
+          <input type="checkbox" checked={form.breakPaid} onChange={e => set('breakPaid', e.target.checked)} />
+          Break is paid <span style={{ fontSize: 11, color: 'var(--t4)' }}>(UK law: 20 mins due over 6h — doesn’t have to be paid; this is your policy)</span>
+        </label>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
           <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
           <button className="btn btn-acc" disabled={busy || !valid} onClick={async () => { setBusy(true); try { await onSave(form); } finally { setBusy(false); } }}>{busy ? 'Adding…' : 'Add timesheet'}</button>

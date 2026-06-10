@@ -394,7 +394,8 @@ export async function publishShifts(ids) {
 // ============================================================================
 const mapTs = r => ({
   id: r.id, shiftId: r.shift_id, staffId: r.staff_id, clockIn: r.clock_in, clockOut: r.clock_out,
-  breakTaken: r.break_taken || 0, scheduledHours: Number(r.scheduled_hours ?? 0), actualHours: Number(r.actual_hours ?? 0),
+  breakTaken: r.break_taken || 0, breaks: Array.isArray(r.breaks) ? r.breaks : [], paidBreakMins: r.paid_break_mins || 0,
+  scheduledHours: Number(r.scheduled_hours ?? 0), actualHours: Number(r.actual_hours ?? 0),
   variance: r.variance != null ? Number(r.variance) : null, payAmount: r.pay_amount != null ? Number(r.pay_amount) : null,
   effectiveRate: r.effective_rate != null ? Number(r.effective_rate) : null, rateSource: r.rate_source,
   status: r.status, approvedBy: r.approved_by, approvedAt: r.approved_at,
@@ -413,6 +414,7 @@ export async function saveTimesheet(ts, locationId, orgId) {
   const row = {
     location_id: locationId, org_id: org, shift_id: ts.shiftId || null, staff_id: ts.staffId,
     clock_in: ts.clockIn || null, clock_out: ts.clockOut || null, break_taken: ts.breakTaken || 0,
+    breaks: Array.isArray(ts.breaks) ? ts.breaks : [], paid_break_mins: ts.paidBreakMins || 0,
     scheduled_hours: ts.scheduledHours ?? null, actual_hours: ts.actualHours ?? null, variance: ts.variance ?? null,
     effective_rate: ts.effectiveRate ?? null, rate_source: ts.rateSource || null, currency: ts.currency || 'GBP',
     pay_amount: ts.payAmount ?? null, status: ts.status || 'pending',

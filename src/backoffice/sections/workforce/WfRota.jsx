@@ -111,7 +111,10 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
     return GRP_ORDER.filter(g => by[g]?.length).map(g => ({ grp: g, label: GRP_SECTION[g] || g, rows: by[g] }));
   }, [staff, roles]);
 
-  const shiftFor = (staffId, iso) => shifts.find(s => s.staffId === staffId && s.date === iso);
+  // ALL shifts for a staff/day — a person can work multiple (split shifts),
+  // and rendering only the first used to HIDE duplicates (e.g. repeated AI
+  // builder runs) that still counted in wages and showed up in Timesheets.
+  const shiftsFor = (staffId, iso) => shifts.filter(s => s.staffId === staffId && s.date === iso).sort((a, b) => (a.start || '').localeCompare(b.start || ''));
 
   // per-day SCHEDULED wage from shift computedCost
   const wageByIso = useMemo(() => {
@@ -383,7 +386,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
             <thead><tr><th style={{ ...th, minWidth: 160 }}>Team</th>{dayCols}</tr></thead>
             <tbody>
               {groups.map(g => (
-                <RotaGroup key={g.grp} g={g} wk={wk} roles={roles} shiftFor={shiftFor} onCell={(s, d, shift) => setEditing({ staff: s, day: d, shift })} />
+                <RotaGroup key={g.grp} g={g} wk={wk} roles={roles} shiftsFor={shiftsFor} onCell={(s, d, shift) => setEditing({ staff: s, day: d, shift })} />
               ))}
 
               {/* ── footer metric rows ── */}
@@ -472,7 +475,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
 }
 
 // ── group of staff rows under a section heading ───────────────────────────────
-function RotaGroup({ g, wk, roles, shiftFor, onCell }) {
+function RotaGroup({ g, wk, roles, shiftsFor, onCell }) {
   const col = groupColor(g.grp);
   return (
     <>
@@ -495,23 +498,30 @@ function RotaGroup({ g, wk, roles, shiftFor, onCell }) {
             </div>
           </td>
           {wk.days.map(d => {
-            const sh = shiftFor(s.id, d.iso);
+            const list = shiftsFor(s.id, d.iso);
             return (
-              <td key={d.iso} style={{ ...td, textAlign: 'center', padding: 4, background: d.isToday ? cellTint('var(--acc)', 5) : 'transparent' }}>
-                {sh ? (
-                  <button
-                    onClick={() => onCell(s, d, sh)}
-                    title={`${sh.start}–${sh.finish} · ${money(sh.computedCost)}`}
-                    style={{ width: '100%', cursor: 'pointer', textAlign: 'center', borderRadius: 9, padding: '6px 4px', fontFamily: 'inherit', background: sh.status === 'published' ? cellTint(col, 16) : 'var(--inset)', border: `1px solid ${sh.status === 'published' ? cellTint(col, 32) : 'var(--inset-border)'}` }}
-                  >
-                    <div className="mono" style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--t1)' }}>{sh.start}–{sh.finish}</div>
-                    <div style={{ fontSize: 10, color: 'var(--t3)', marginTop: 1 }}>{Number(sh.computedHours || 0).toFixed(1)}h{sh.status !== 'published' ? ' · draft' : ''}</div>
+              <td key={d.iso} style={{ ...td, textAlign: 'center', padding: 4, background: d.isToday ? cellTint('var(--acc)', 5) : 'transparent', verticalAlign: 'top' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {list.map(sh => (
+                    <button
+                      key={sh.id}
+                      onClick={() => onCell(s, d, sh)}
+                      title={`${sh.start}–${sh.finish} · ${money(sh.computedCost)}`}
+                      style={{ width: '100%', cursor: 'pointer', textAlign: 'center', borderRadius: 9, padding: '6px 4px', fontFamily: 'inherit', background: sh.status === 'published' ? cellTint(col, 16) : 'var(--inset)', border: `1px solid ${sh.status === 'published' ? cellTint(col, 32) : 'var(--inset-border)'}` }}
+                    >
+                      <div className="mono" style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--t1)' }}>{sh.start}–{sh.finish}</div>
+                      <div style={{ fontSize: 10, color: 'var(--t3)', marginTop: 1 }}>{Number(sh.computedHours || 0).toFixed(1)}h{sh.status !== 'published' ? ' · draft' : ''}</div>
+                    </button>
+                  ))}
+                  {/* add (another) shift — multiple per day = split shifts */}
+                  <button onClick={() => onCell(s, d, null)} className="btn btn-ghost btn-xs"
+                    title={list.length ? 'Add another shift (split shift)' : 'Add shift'}
+                    style={list.length
+                      ? { width: '100%', height: 18, padding: 0, borderRadius: 6, color: 'var(--t4)', fontSize: 10, lineHeight: 1 }
+                      : { width: 30, height: 30, padding: 0, borderRadius: 8, color: 'var(--t4)', margin: '0 auto' }}>
+                    <Icon name="plus" size={list.length ? 10 : 14} />
                   </button>
-                ) : (
-                  <button onClick={() => onCell(s, d, null)} className="btn btn-ghost btn-xs" style={{ width: 30, height: 30, padding: 0, borderRadius: 8, color: 'var(--t4)' }}>
-                    <Icon name="plus" size={14} />
-                  </button>
-                )}
+                </div>
               </td>
             );
           })}

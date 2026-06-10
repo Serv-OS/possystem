@@ -27,7 +27,7 @@ function rateLabel(r) {
   return r.rate != null ? `${money(r.rate, 2)}/h` : '—';
 }
 
-export default function WfPay({ ctx, staff, roles, sections, settings, week, showToast }) {
+export default function WfPay({ ctx, staff, roles, sections, settings, week, showToast, onRolesChanged }) {
   const [roleList, setRoleList] = useState(roles?.list || []);
   const [editing, setEditing] = useState(null);     // role object being edited (or new)
   const [busy, setBusy] = useState(false);
@@ -41,6 +41,7 @@ export default function WfPay({ ctx, staff, roles, sections, settings, week, sho
     try {
       const fresh = await wf.loadRoles(ctx.locationId, ctx.orgId);
       setRoleList(fresh.list || []);
+      onRolesChanged?.(fresh.list || []);
     } catch (e) {
       showToast(e.message || 'Could not reload roles', 'error');
     } finally { setLoading(false); }
@@ -56,11 +57,13 @@ export default function WfPay({ ctx, staff, roles, sections, settings, week, sho
     setBusy(true);
     try {
       const saved = await wf.saveRole(role, ctx.locationId, ctx.orgId);
+      let nextList;
       setRoleList(prev => {
         const i = prev.findIndex(r => r.id === saved.id || r.key === saved.key);
-        if (i >= 0) { const next = prev.slice(); next[i] = saved; return next; }
-        return [...prev, saved];
+        nextList = i >= 0 ? prev.map((r, j) => j === i ? saved : r) : [...prev, saved];
+        return nextList;
       });
+      onRolesChanged?.(nextList);
       setEditing(null);
       showToast('Rate card saved', 'success');
     } catch (e) {
@@ -78,7 +81,9 @@ export default function WfPay({ ctx, staff, roles, sections, settings, week, sho
     setBusy(true);
     try {
       await wf.deleteRole(role.id);
-      setRoleList(prev => prev.filter(r => r.id !== role.id));
+      const nextList = roleList.filter(r => r.id !== role.id);
+      setRoleList(nextList);
+      onRolesChanged?.(nextList);
       setEditing(null);
       showToast('Position deleted', 'success');
     } catch (e) {

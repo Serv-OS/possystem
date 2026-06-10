@@ -82,9 +82,14 @@ export default function Workforce({ section, orgCtx }) {
 
   const week = useMemo(() => buildWeek(), []);
   const ctx = useMemo(() => ({ locationId, orgId: orgCtx?.orgId || null, locName: orgCtx?.locationName || 'our team', actor: { id: orgCtx?.userId || null, name: orgCtx?.userName || null } }), [locationId, orgCtx]);
-  // onSettingsSaved: WfSettings pushes the saved row back up so every section
-  // (Pay's period maths especially) sees the change without a reload.
-  const sectionProps = { ctx, staff, roles, sections, settings, week, showToast, onSettingsSaved: setSettings };
+  // onSettingsSaved / onRolesChanged: child sections push saved state back up
+  // so the rest of Workforce (staff role dropdown, rota, pay maths) sees the
+  // change without a reload — deleted positions must leave dropdowns at once.
+  const sectionProps = {
+    ctx, staff, roles, sections, settings, week, showToast,
+    onSettingsSaved: setSettings,
+    onRolesChanged: (list) => { const map = {}; (list || []).forEach(r => { map[r.key] = r; }); setRoles({ list: list || [], map }); },
+  };
   const rolesMap = (roles.map && Object.keys(roles.map).length) ? roles.map : ROLES;
   const [title, sub] = SUBS[section] || ['Workforce', ''];
 

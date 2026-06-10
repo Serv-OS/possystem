@@ -144,8 +144,11 @@ Deno.serve(async (req) => {
       if (!open) return json({ error: 'not clocked in' }, 409);
       if (!open.break_open_at) return json({ error: 'not on break' }, 409);
       const mins = Math.max(0, Math.round((now.getTime() - new Date(open.break_open_at).getTime()) / 60000));
+      // Keep the segment (start/end) so managers can see WHEN the break was,
+      // not just how long — needed for UK rest-break compliance checks.
+      const segs = Array.isArray(open.breaks) ? open.breaks : [];
       const { error } = await admin.from('wf_timesheets')
-        .update({ break_taken: (open.break_taken || 0) + mins, break_open_at: null }).eq('id', open.id);
+        .update({ break_taken: (open.break_taken || 0) + mins, break_open_at: null, breaks: [...segs, { start: open.break_open_at, end: now.toISOString() }] }).eq('id', open.id);
       if (error) return json({ error: error.message }, 500);
       return json({ ok: true, staff: who, state: 'in', since: open.clock_in, breakAdded: mins });
     }

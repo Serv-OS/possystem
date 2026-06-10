@@ -64,6 +64,7 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
   const [payAnchor, setPayAnchor] = useState('');       // fixed-length: first period start (date)
   const [payDayDom, setPayDayDom] = useState('');       // monthly: day-of-month paid (0 = last day)
   const [payDayOffset, setPayDayOffset] = useState(''); // fixed-length: days after period end
+  const [paidBreaks, setPaidBreaks] = useState(false);  // venue policy: breaks paid by default
   const [savingVenue, setSavingVenue] = useState(false);
 
   // Seed venue form from props.settings
@@ -78,6 +79,7 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
     const fixed = ['weekly', 'fortnightly', 'fourweekly'].includes(settings?.payPeriodType);
     setPayDayDom(!fixed && settings?.payDay != null ? String(settings.payDay) : '');
     setPayDayOffset(fixed && settings?.payDay != null ? String(settings.payDay) : '');
+    setPaidBreaks(!!settings?.settings?.paidBreaks);
   }, [settings]);
 
   // Sections: seed from props, reload fresh on mount / location change
@@ -122,7 +124,7 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
         ? (payDayOffset === '' ? null : Math.max(0, parseInt(payDayOffset, 10) || 0))
         : (payDayDom === '' ? null : Math.min(28, Math.max(0, parseInt(payDayDom, 10) || 0))),
       premiums: settings?.premiums || {},
-      settings: settings?.settings || {},
+      settings: { ...(settings?.settings || {}), paidBreaks },
     };
     try {
       const saved = await wf.saveSettings(patch, ctx.locationId, ctx.orgId);
@@ -250,6 +252,19 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
           </div>
           <PayPeriodPreview payType={payType} payStartDay={payStartDay} payAnchor={payAnchor} payDayDom={payDayDom} payDayOffset={payDayOffset} />
         </div>
+
+        {/* ── Breaks policy (UK Working Time Regs 1998: 20-min break due over
+              6h worked, 30-min for under-18s over 4.5h — paying it is optional
+              and set here; timesheets flag any shortfall either way) ── */}
+        <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginTop: 14, cursor: 'pointer', fontSize: 13, color: 'var(--t1)' }}>
+          <input type="checkbox" checked={paidBreaks} onChange={e => setPaidBreaks(e.target.checked)} disabled={savingVenue} style={{ marginTop: 3 }} />
+          <span>
+            <b>Breaks are paid</b>
+            <span style={{ display: 'block', fontSize: 11.5, color: 'var(--t3)', marginTop: 2 }}>
+              When on, break minutes are paid on top of worked hours on new timesheets (changeable per timesheet). UK law requires a 20-minute rest break when working over 6 hours (30 minutes for under-18s over 4.5 hours) but does not require it to be paid — timesheets flag missing statutory breaks either way.
+            </span>
+          </span>
+        </label>
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
           <button className="btn btn-acc" onClick={saveVenue} disabled={savingVenue}>
             <Icon name={savingVenue ? 'clock' : 'check'} size={14} /> {savingVenue ? 'Saving…' : 'Save venue settings'}

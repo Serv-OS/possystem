@@ -77,6 +77,22 @@ export function isHourly(staff, role) {
 }
 
 /**
+ * UK statutory rest break due for a worked stretch (Working Time Regulations
+ * 1998, reg 12): adults get a 20-min uninterrupted break when working MORE
+ * than 6 hours; under-18s (young workers) get 30 mins when working more than
+ * 4.5 hours. The break need not be paid — that's venue policy. Returns the
+ * minutes due (0 if none). `dob` optional ISO date for the under-18 rule.
+ */
+export function statutoryBreakMins(workedHours, dob) {
+  const hrs = Number(workedHours) || 0;
+  if (dob) {
+    const age = (Date.now() - new Date(dob + 'T00:00:00').getTime()) / (365.25 * 86400000);
+    if (age < 18 && hrs > 4.5) return 30;
+  }
+  return hrs > 6 ? 20 : 0;
+}
+
+/**
  * Average paid hours per working day, from a person's timesheets — this is what
  * "a day" of holiday is worth for variable-hours staff (UK: avg over a reference
  * period). Returns 0 if no history. (clockIn-dated; sums hours per distinct day.)
