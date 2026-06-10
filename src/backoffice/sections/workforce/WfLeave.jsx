@@ -227,7 +227,7 @@ function BalancesSection({ staff, roles, balances, accrual, leave, timesheets, r
     <Card>
       <Toolbar title="Holiday balances" sub="Hourly staff accrue 12.07%; salaried staff get a fixed allowance" action={action} />
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 12, color: 'var(--t3)', background: 'var(--inset)', border: '1px solid var(--inset-border)', borderRadius: 10, padding: '8px 12px', marginBottom: 14, lineHeight: 1.6 }}>
-        <Icon name="warn" size={14} /> <span>UK statutory: <b>hourly / irregular-hours</b> staff accrue 12.07% of approved hours (server-computed); <b>salaried</b> staff get {FIXED_HOLIDAY_DAYS} days/year. For variable-hours staff, “a day” is their average paid hours per day worked, so a day is worth different hours per person.</span>
+        <Icon name="warn" size={14} /> <span>UK statutory: <b>hourly / irregular-hours</b> staff accrue 12.07% of approved hours (server-computed); <b>salaried</b> staff get {FIXED_HOLIDAY_DAYS} days/year. For variable-hours staff, “a day” = their average hours per day worked over the statutory <b>52-week reference period</b> (weeks with no work skipped, 104-week max lookback, fewer weeks if they’re newer — the post-Apr 2020 gov.uk method), so a day is worth different hours per person.</span>
       </div>
       <div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>

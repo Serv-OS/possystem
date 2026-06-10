@@ -82,6 +82,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.405', date: '10 Jun 2026', label: 'Announcements land on the Time Clock + statutory 52-week holiday averaging',
+    changes: [
+      '“In-app” announcements now have a real home: the staff Time Clock. When someone enters their PIN they see the last fortnight’s messages — audience-aware (all-staff, or targeted at their role). The Announcements screen now says exactly where in-app means.',
+      'UK holiday compliance: “a day” for variable-hours staff is now computed over the statutory 52-week reference period (post-April 2020 gov.uk method) — weeks with no work are skipped, lookback capped at 104 weeks, and staff newer than 52 weeks use however many full weeks they have. The Leave screen explains the method.',
+    ],
+  },
+  {
     version: '5.5.404', date: '10 Jun 2026', label: 'Staff list — holiday on every row',
     changes: [
       'The staff list gained a Holiday column: hourly staff show their accrued balance from the holiday ledger (e.g. 12.6h accrued), salaried staff show their fixed annual entitlement (28 days by default, or their personal override).',

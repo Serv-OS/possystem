@@ -26,7 +26,18 @@ function mockClock(action, pin, staffMembers) {
   const who = { name: m.name, initials: m.initials || (m.name || '?').slice(0, 2).toUpperCase(), color: m.color || '#15C26A', role: m.role };
   const all = mkGet(); const cur = all[m.id] || { state: 'out' };
   const now = new Date().toISOString();
-  if (action === 'status') return { ok: true, staff: who, state: cur.state, since: cur.since || null, breakSince: cur.breakSince || null, onBreak: cur.state === 'break' };
+  if (action === 'status') {
+    // Mock parity with the live edge fn: surface recent in-app announcements.
+    let announcements = [];
+    try {
+      const roleLc = String(m.role || '').toLowerCase();
+      announcements = (JSON.parse(localStorage.getItem('rpos-wf-announce') || '[]'))
+        .filter(a => { const k = a.audience?.kind; return !k || k === 'all' || (k === 'role' && String(a.audience?.value || '').toLowerCase() === roleLc); })
+        .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))
+        .slice(0, 3).map(a => ({ body: a.body, author: a.authorName || null, at: a.createdAt }));
+    } catch { /* none */ }
+    return { ok: true, staff: who, state: cur.state, since: cur.since || null, breakSince: cur.breakSince || null, onBreak: cur.state === 'break', announcements };
+  }
   if (action === 'in') { all[m.id] = { state: 'in', since: now, breakMins: 0 }; mkSet(all); return { ok: true, staff: who, state: 'in', since: now }; }
   if (action === 'break_start') { all[m.id] = { ...cur, state: 'break', breakSince: now }; mkSet(all); return { ok: true, staff: who, state: 'break', since: cur.since, breakSince: now }; }
   if (action === 'break_end') { const mins = cur.breakSince ? Math.round((Date.now() - new Date(cur.breakSince).getTime()) / 60000) : 0; all[m.id] = { ...cur, state: 'in', breakSince: null, breakMins: (cur.breakMins || 0) + mins }; mkSet(all); return { ok: true, staff: who, state: 'in', since: cur.since, breakAdded: mins }; }
@@ -158,6 +169,22 @@ export default function TimeClockSurface() {
             </>}
           </div>
           {error && <div style={{ marginTop: 16, color: 'var(--red)', fontSize: 13, fontWeight: 600 }}>{error}</div>}
+
+          {/* Team announcements — the "in-app" channel from Workforce → Announcements */}
+          {Array.isArray(s.announcements) && s.announcements.length > 0 && (
+            <div style={{ marginTop: 26, textAlign: 'left' }}>
+              <div className="mono" style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase', color: 'var(--t3)', marginBottom: 8 }}>Team announcements</div>
+              <div style={{ display: 'grid', gap: 8 }}>
+                {s.announcements.map((a, i) => (
+                  <div key={i} style={{ padding: '10px 14px', borderRadius: 12, background: 'var(--inset)', border: '1px solid var(--inset-border)' }}>
+                    <div style={{ fontSize: 13.5, color: 'var(--t1)', lineHeight: 1.5 }}>{a.body}</div>
+                    <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 4 }}>{a.author ? `${a.author} · ` : ''}{a.at ? new Date(a.at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : ''}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           <button className="btn btn-ghost btn-sm" style={{ marginTop: 22 }} onClick={() => { setSession(null); setPin(''); setError(''); }}>Cancel</button>
         </div>
       </Shell>

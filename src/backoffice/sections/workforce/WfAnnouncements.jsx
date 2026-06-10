@@ -160,6 +160,9 @@ export default function WfAnnouncements({ ctx, staff, roles, sections, settings,
                 );
               })}
             </div>
+            <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 6, lineHeight: 1.5 }}>
+              In-app = the staff <b>Time Clock</b>: the latest messages (last 14 days) show whenever someone enters their PIN. SMS texts everyone in the audience with a mobile on file.
+            </div>
           </div>
         </div>
 

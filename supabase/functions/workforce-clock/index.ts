@@ -109,7 +109,22 @@ Deno.serve(async (req) => {
     const now = new Date();
 
     if (action === 'status') {
-      return json({ ok: true, staff: who, ...stateOf(open) });
+      // "In-app" announcements land HERE: the Time Clock is the staff-facing
+      // surface, so the last fortnight's messages (audience: all, or their
+      // role) show whenever someone enters their PIN.
+      const fortnightAgo = new Date(now.getTime() - 14 * 86400000).toISOString();
+      const { data: ann } = await admin.from('wf_announcements')
+        .select('body, audience, author_name, created_at')
+        .eq('location_id', location_id).gte('created_at', fortnightAgo)
+        .order('created_at', { ascending: false }).limit(10);
+      const roleLc = String(member.role || '').toLowerCase();
+      const announcements = (ann ?? []).filter((a: any) => {
+        const k = a.audience?.kind;
+        if (!k || k === 'all') return true;
+        if (k === 'role') return String(a.audience?.value || '').toLowerCase() === roleLc;
+        return false; // section-targeted stay in the BO feed for now
+      }).slice(0, 3).map((a: any) => ({ body: a.body, author: a.author_name, at: a.created_at }));
+      return json({ ok: true, staff: who, ...stateOf(open), announcements });
     }
 
     if (action === 'in') {

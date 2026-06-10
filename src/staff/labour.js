@@ -93,24 +93,47 @@ export function statutoryBreakMins(workedHours, dob) {
 }
 
 /**
- * Average paid hours per working day, from a person's timesheets — this is what
- * "a day" of holiday is worth for variable-hours staff (UK: avg over a reference
- * period). Returns 0 if no history. (clockIn-dated; sums hours per distinct day.)
+ * Average hours per worked day — what "a day" of holiday is worth for
+ * variable-hours staff. UK-compliant method (Employment Rights Act reference
+ * period, as amended April 2020; gov.uk "Calculating holiday pay for workers
+ * without fixed hours or pay"):
+ *   - look at the last 52 WEEKS in which the person actually worked,
+ *   - SKIP whole weeks with no work (they don't dilute the average),
+ *   - look back no further than 104 weeks,
+ *   - if they've worked fewer than 52 weeks, use however many they have.
+ * Average = total hours in those weeks ÷ total days worked in those weeks.
+ * (The old 12-week/3-month rule was replaced in April 2020.)
  */
-export function avgHoursPerDay(timesheets) {
-  const byDay = {};
+export function avgHoursPerDay(timesheets, refDate = new Date()) {
   // Local date of the clock-in — toISOString() is UTC and can shift evening
   // clock-ins onto the wrong day depending on the device timezone.
   const localYmd = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  // Monday of the week containing a date — weeks are Mon–Sun.
+  const weekStartOf = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); const dow = x.getDay(); x.setDate(x.getDate() + (dow === 0 ? -6 : 1 - dow)); return x; };
+
+  const byDay = {};
   (timesheets || []).forEach(t => {
-    const iso = t.clockIn ? localYmd(new Date(t.clockIn)) : null;
     const hrs = Number(t.actualHours || 0);
-    if (iso && hrs > 0) byDay[iso] = (byDay[iso] || 0) + hrs;
+    if (!t.clockIn || hrs <= 0) return;
+    byDay[localYmd(new Date(t.clockIn))] = (byDay[localYmd(new Date(t.clockIn))] || 0) + hrs;
   });
-  const days = Object.keys(byDay).length;
-  if (!days) return 0;
-  const total = Object.values(byDay).reduce((a, b) => a + b, 0);
-  return Math.round((total / days) * 100) / 100;
+
+  // Bucket worked days into weeks.
+  const weeks = {}; // weekStartIso -> { hours, days }
+  Object.entries(byDay).forEach(([iso, hrs]) => {
+    const wk = localYmd(weekStartOf(new Date(iso + 'T00:00:00')));
+    const b = weeks[wk] || (weeks[wk] = { hours: 0, days: 0 });
+    b.hours += hrs; b.days += 1;
+  });
+
+  // Most recent first; cap lookback at 104 weeks; take up to 52 WORKED weeks.
+  const horizon = new Date(refDate); horizon.setDate(horizon.getDate() - 104 * 7);
+  const horizonIso = localYmd(weekStartOf(horizon));
+  const used = Object.keys(weeks).filter(wk => wk >= horizonIso).sort().reverse().slice(0, 52);
+  if (!used.length) return 0;
+  const total = used.reduce((a, wk) => ({ hours: a.hours + weeks[wk].hours, days: a.days + weeks[wk].days }), { hours: 0, days: 0 });
+  if (!total.days) return 0;
+  return Math.round((total.hours / total.days) * 100) / 100;
 }
 
 /** Wage cost per day across the roster → 7-element array (Mon→Sun). */
