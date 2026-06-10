@@ -48,23 +48,40 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
     try {
       const res = await wf.invokeCompute('payroll.period', { location_id: ctx.locationId, from: p.startIso, to: p.endIso });
       if (res && Array.isArray(res.staff)) setRun(res);
-      else setRun({ staff: [], totals: { pay: 0, tips: 0, total: 0 }, tronc: { runs: [], missingWeeks: [] }, mock: !!res?.mock });
+      else setRun({ staff: [], totals: { pay: 0, tips_tronc: 0, tips_direct: 0, tips: 0, total: 0 }, tronc: { runs: [], missingWeeks: [] }, mock: !!res?.mock });
     } catch (e) {
       showToast(e.message || 'Payroll run failed', 'error');
     } finally { setComputing(false); }
   }
   const gotoPeriod = (n) => { const p = shiftPayPeriod(payCfg, period.startIso, n); setPeriod(p); setRun(null); };
 
+  // Bureau-ready CSV (BrightPay-style identity: name + NI number). Tips are
+  // SEPARATE pay elements from wages — tronc-allocated tips are PAYE'd but
+  // NIC-free only when an independent troncmaster decides shares (HMRC E24);
+  // employer-allocated tips attract NICs; tips NEVER count toward National
+  // Minimum Wage, so the bureau checks NMW on basic pay alone.
   const exportCsv = () => {
     if (!run?.staff?.length) return;
     const esc = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const troncFree = run.policy?.allocator === 'troncmaster';
+    const troncCol = troncFree ? 'Tronc tips (PAYE, no NIC - independent troncmaster)' : 'Pooled tips (PAYE + NIC - employer allocated)';
+    const directCol = troncFree ? 'Direct tips via tronc (PAYE, no NIC)' : 'Direct tips (PAYE + NIC - employer allocated)';
     const rows = [
-      ['Name', 'Sort code', 'Account number', 'Hours', 'Base pay', 'Tips (tronc)', 'Total'],
+      ['First name', 'Surname', 'NI number', 'Period start', 'Period end', 'Hours', 'Basic pay', troncCol, directCol, 'Gross total', 'Sort code', 'Account number'],
       ...run.staff.map(r => {
         const s = staffById[r.staff_id] || {};
-        return [nameOf(r.staff_id), s.bankSortCode || '', s.bankAccount || s.bankMasked || '', r.hours.toFixed(2), r.pay.toFixed(2), r.tips.toFixed(2), r.total.toFixed(2)];
+        const parts = String(s.name || nameOf(r.staff_id)).trim().split(/\s+/);
+        const first = parts.slice(0, -1).join(' ') || parts[0] || '';
+        const last = parts.length > 1 ? parts[parts.length - 1] : '';
+        return [first, last, s.niNumber || '', period.startIso, period.endIso, r.hours.toFixed(2), r.pay.toFixed(2), r.tips_tronc.toFixed(2), r.tips_direct.toFixed(2), r.total.toFixed(2), s.bankSortCode || '', s.bankAccount || s.bankMasked || ''];
       }),
-      ['TOTAL', '', '', '', run.totals.pay.toFixed(2), run.totals.tips.toFixed(2), run.totals.total.toFixed(2)],
+      ['TOTAL', '', '', '', '', '', run.totals.pay.toFixed(2), run.totals.tips_tronc.toFixed(2), run.totals.tips_direct.toFixed(2), run.totals.total.toFixed(2), '', ''],
+      [],
+      ['Notes for payroll:'],
+      ['Tips are separate pay elements and must not count toward National Minimum Wage.'],
+      [troncFree
+        ? `Tronc/direct tip amounts were allocated by the independent troncmaster${run.policy?.troncmasterName ? ` (${run.policy.troncmasterName})` : ''} and must not be altered - taxable via PAYE, exempt from employee and employer NICs (HMRC E24).`
+        : 'Tip amounts were allocated by the employer - taxable via PAYE and subject to employee and employer NICs (HMRC E24).'],
     ];
     const blob = new Blob([rows.map(r => r.map(esc).join(',')).join('\n')], { type: 'text/csv' });
     const a = document.createElement('a');
@@ -110,7 +127,20 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
         )}
         {run && troncRuns.length > 0 && missing.length === 0 && (
           <div style={{ fontSize: 11.5, color: 'var(--t3)', marginBottom: 12 }}>
-            Tips from {troncRuns.length} tronc run{troncRuns.length === 1 ? '' : 's'} ({troncRuns.map(r => `w/c ${fmtDay(r.week_start)}`).join(', ')}) — all weeks in this period covered.
+            Pooled tips from {troncRuns.length} tronc run{troncRuns.length === 1 ? '' : 's'} ({troncRuns.map(r => `w/c ${fmtDay(r.week_start)}`).join(', ')}) — all weeks in this period covered.
+          </div>
+        )}
+        {run && Number(run.unattributedTips) > 0 && (
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 12px', borderRadius: 10, background: 'var(--red-d)', border: '1px solid var(--red-b)', marginBottom: 14 }}>
+            <span style={{ color: 'var(--red)', marginTop: 1 }}><Icon name="warn" size={15} /></span>
+            <div style={{ fontSize: 12.5, color: 'var(--t2)', lineHeight: 1.55 }}>
+              <b>{money(run.unattributedTips)} of direct tips couldn't be matched to a staff member</b> — checks with no or unknown server. The Tipping Act requires 100% of tips to reach staff: link till users to staff records (Staff → Set as POS user), or add this amount to the tronc pool.
+            </div>
+          </div>
+        )}
+        {run && run.policy && (
+          <div style={{ fontSize: 11.5, color: 'var(--t4)', marginBottom: 12 }}>
+            Tipping policy: {run.policy.tipMode === 'direct' ? 'card tips go to the seller' : run.policy.tipMode === 'hybrid' ? `seller keeps ${run.policy.directPct}% of their tips, rest pooled` : 'all card tips pooled (tronc)'} · allocation by {run.policy.allocator === 'troncmaster' ? 'independent troncmaster — tips are PAYE-taxed but NIC-free (HMRC E24); do not adjust these figures' : 'the business — tips attract employee + employer NICs'} · tips never count toward National Minimum Wage.
           </div>
         )}
 
@@ -140,7 +170,8 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
                     <th style={th}>Bank</th>
                     <th style={{ ...th, textAlign: 'right' }}>Hours</th>
                     <th style={{ ...th, textAlign: 'right' }}>Base pay</th>
-                    <th style={{ ...th, textAlign: 'right' }}>Tips (tronc)</th>
+                    <th style={{ ...th, textAlign: 'right' }}>Tips (direct)</th>
+                    <th style={{ ...th, textAlign: 'right' }}>Tips (pooled)</th>
                     <th style={{ ...th, textAlign: 'right' }}>Total</th>
                   </tr>
                 </thead>
@@ -151,7 +182,8 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
                       <td style={{ ...td, fontFamily: 'var(--font-mono)', fontSize: 11.5, color: bankOf(r.staff_id) ? 'var(--t3)' : 'var(--red)' }}>{bankOf(r.staff_id) || 'No bank on file'}</td>
                       <td style={{ ...td, textAlign: 'right' }} className="mono">{Number(r.hours || 0).toFixed(2)}</td>
                       <td style={{ ...td, textAlign: 'right' }} className="mono">{money(r.pay)}</td>
-                      <td style={{ ...td, textAlign: 'right' }} className="mono">{r.tips ? money(r.tips) : <span style={{ color: 'var(--t4)' }}>—</span>}</td>
+                      <td style={{ ...td, textAlign: 'right' }} className="mono">{r.tips_direct ? money(r.tips_direct) : <span style={{ color: 'var(--t4)' }}>—</span>}</td>
+                      <td style={{ ...td, textAlign: 'right' }} className="mono">{r.tips_tronc ? money(r.tips_tronc) : <span style={{ color: 'var(--t4)' }}>—</span>}</td>
                       <td style={{ ...td, textAlign: 'right', fontWeight: 700 }} className="mono">{money(r.total)}</td>
                     </tr>
                   ))}
@@ -162,7 +194,8 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
                     <td style={{ ...td, borderBottom: 'none' }} />
                     <td style={{ ...td, borderBottom: 'none' }} />
                     <td style={{ ...td, textAlign: 'right', fontWeight: 700, borderBottom: 'none' }} className="mono">{money(run.totals.pay)}</td>
-                    <td style={{ ...td, textAlign: 'right', fontWeight: 700, borderBottom: 'none' }} className="mono">{money(run.totals.tips)}</td>
+                    <td style={{ ...td, textAlign: 'right', fontWeight: 700, borderBottom: 'none' }} className="mono">{money(run.totals.tips_direct)}</td>
+                    <td style={{ ...td, textAlign: 'right', fontWeight: 700, borderBottom: 'none' }} className="mono">{money(run.totals.tips_tronc)}</td>
                     <td style={{ ...td, textAlign: 'right', fontWeight: 700, borderBottom: 'none' }} className="mono">{money(run.totals.total)}</td>
                   </tr>
                 </tfoot>

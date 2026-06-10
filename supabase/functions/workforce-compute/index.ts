@@ -225,15 +225,29 @@ Deno.serve(async (req) => {
       return json({ ok: true, from: from ?? null, to: to ?? null, staff, total: round2(staff.reduce((a, s) => a + s.pay, 0)) });
     }
 
-    // ── PAYROLL PERIOD — base pay + tips (tronc) for one locked pay period ───
+    // ── PAYROLL PERIOD — base pay + tips for one locked pay period ───────────
     // Base pay: approved timesheets clocked within [from, to].
-    // Tips: persisted tronc runs (status != draft) whose week_start falls in
-    // [from, to] — each tronc week belongs to exactly one pay period, so
-    // consecutive periods never double-count. Also reports which Mondays in
-    // the period have no tronc run yet, so the operator can run them first.
+    // Tips, per the venue's tipping policy (wf_venue_settings.settings):
+    //   tipMode 'pool'   → all card tips via tronc runs (current default)
+    //   tipMode 'direct' → card tips go to the seller on each closed check
+    //   tipMode 'hybrid' → seller keeps directPct% of their checks' tips;
+    //                      the remainder is pooled via tronc
+    // Tronc payouts come from persisted runs (status != draft) whose
+    // week_start falls in [from, to] — each week belongs to exactly one
+    // period, so consecutive periods never double-count. Direct tips are
+    // attributed via closed_checks.staff_id → wf_staff.pos_user_id, falling
+    // back to a case-insensitive server-name match; any tips that match no
+    // staff record are reported as unattributed (the Tipping Act requires
+    // 100% of qualifying tips to be allocated).
     if (action === 'payroll.period') {
       const { from, to } = body;
       if (!from || !to) return json({ error: 'from/to required' }, 400);
+
+      const { data: vs } = await admin.from('wf_venue_settings').select('settings').eq('location_id', location_id).maybeSingle();
+      const policy = (vs?.settings ?? {}) as Record<string, any>;
+      const tipMode = policy.tipMode === 'direct' || policy.tipMode === 'hybrid' ? policy.tipMode : 'pool';
+      const directShare = tipMode === 'direct' ? 1 : tipMode === 'hybrid' ? Math.min(100, Math.max(0, Number(policy.directPct) || 0)) / 100 : 0;
+      const allocator = policy.tipAllocator === 'troncmaster' ? 'troncmaster' : 'employer';
 
       const { data: tss } = await admin.from('wf_timesheets')
         .select('staff_id, actual_hours, effective_rate, pay_amount, clock_in')
@@ -246,40 +260,77 @@ Deno.serve(async (req) => {
         b.hours += Number(t.actual_hours || 0); b.pay += pay;
       });
 
+      // Pooled tips from tronc runs in the period.
       const { data: runs } = await admin.from('wf_tronc_runs')
         .select('id, week_start, status, pool, total_paid')
         .eq('location_id', location_id).gte('week_start', from).lte('week_start', to)
         .neq('status', 'draft');
-      const tips: Record<string, number> = {};
+      const troncTips: Record<string, number> = {};
       const runIds = (runs ?? []).map((r: any) => r.id);
       if (runIds.length) {
         const { data: lines } = await admin.from('wf_tronc_lines').select('staff_id, payout').in('run_id', runIds);
-        (lines ?? []).forEach((l: any) => { tips[l.staff_id] = (tips[l.staff_id] ?? 0) + Number(l.payout || 0); });
+        (lines ?? []).forEach((l: any) => { troncTips[l.staff_id] = (troncTips[l.staff_id] ?? 0) + Number(l.payout || 0); });
       }
 
-      // Mondays inside [from, to] with no tronc run = tips not yet distributed.
+      // Direct tips from closed checks (seller attribution).
+      const directTips: Record<string, number> = {};
+      let unattributedTips = 0;
+      if (directShare > 0) {
+        const [{ data: checks }, { data: wfRows }] = await Promise.all([
+          admin.from('closed_checks').select('tip, staff_id, server, status')
+            .eq('location_id', String(location_id))
+            .gte('closed_at', `${from}T00:00:00`).lte('closed_at', `${to}T23:59:59`)
+            .neq('status', 'voided').gt('tip', 0),
+          admin.from('wf_staff').select('id, name, pos_user_id').eq('location_id', location_id),
+        ]);
+        const byPos: Record<string, string> = {}; const byName: Record<string, string> = {};
+        (wfRows ?? []).forEach((w: any) => {
+          if (w.pos_user_id) byPos[w.pos_user_id] = w.id;
+          if (w.name) byName[String(w.name).trim().toLowerCase()] = w.id;
+        });
+        (checks ?? []).forEach((c: any) => {
+          const tip = Number(c.tip) || 0;
+          if (!tip) return;
+          const sid = (c.staff_id && byPos[c.staff_id])
+            || (c.server && byName[String(c.server).trim().toLowerCase()])
+            || (c.server && Object.entries(byName).find(([n]) => n.startsWith(String(c.server).trim().toLowerCase()))?.[1])
+            || null;
+          if (sid) directTips[sid] = (directTips[sid] ?? 0) + tip * directShare;
+          else unattributedTips += tip * directShare;
+        });
+      }
+
+      // Mondays inside [from, to] with no tronc run = pooled tips not yet
+      // distributed (only matters when something is pooled).
       const missingWeeks: string[] = [];
-      const covered = new Set((runs ?? []).map((r: any) => r.week_start));
-      for (const d = new Date(from + 'T00:00:00'); d <= new Date(to + 'T00:00:00'); d.setDate(d.getDate() + 1)) {
-        if (d.getDay() === 1) {
-          const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-          if (!covered.has(iso)) missingWeeks.push(iso);
+      if (tipMode !== 'direct') {
+        const covered = new Set((runs ?? []).map((r: any) => r.week_start));
+        for (const d = new Date(from + 'T00:00:00'); d <= new Date(to + 'T00:00:00'); d.setDate(d.getDate() + 1)) {
+          if (d.getDay() === 1) {
+            const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+            if (!covered.has(iso)) missingWeeks.push(iso);
+          }
         }
       }
 
-      const ids = new Set([...Object.keys(base), ...Object.keys(tips)]);
+      const ids = new Set([...Object.keys(base), ...Object.keys(troncTips), ...Object.keys(directTips)]);
       const staff = [...ids].map((id) => {
         const b = base[id] ?? { hours: 0, pay: 0 };
-        const tp = round2(tips[id] ?? 0);
-        return { staff_id: id, hours: round2(b.hours), pay: round2(b.pay), tips: tp, total: round2(b.pay + tp) };
+        const tronc = round2(troncTips[id] ?? 0);
+        const direct = round2(directTips[id] ?? 0);
+        return { staff_id: id, hours: round2(b.hours), pay: round2(b.pay), tips_tronc: tronc, tips_direct: direct, tips: round2(tronc + direct), total: round2(b.pay + tronc + direct) };
       }).sort((a, b) => b.total - a.total);
       const totals = {
         pay: round2(staff.reduce((a, s) => a + s.pay, 0)),
+        tips_tronc: round2(staff.reduce((a, s) => a + s.tips_tronc, 0)),
+        tips_direct: round2(staff.reduce((a, s) => a + s.tips_direct, 0)),
         tips: round2(staff.reduce((a, s) => a + s.tips, 0)),
         total: round2(staff.reduce((a, s) => a + s.total, 0)),
       };
       return json({
         ok: true, from, to, staff, totals,
+        policy: { tipMode, directPct: Math.round(directShare * 100), allocator, troncmasterName: policy.troncmasterName ?? null },
+        unattributedTips: round2(unattributedTips),
         tronc: { runs: (runs ?? []).map((r: any) => ({ week_start: r.week_start, status: r.status, total_paid: r.total_paid })), missingWeeks },
       });
     }

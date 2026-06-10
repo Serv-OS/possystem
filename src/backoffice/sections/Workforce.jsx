@@ -265,8 +265,8 @@ function AddStaffModal({ locName, staff, roles = ROLES, onClose, onSave }) {
   const roleOpts = Object.entries(roles);
   const ec = (isEdit && staff.emergencyContact) || {};
   const [f, setF] = useState(isEdit
-    ? { name: staff.name || '', role: staff.role || roleOpts[0]?.[0] || 'server', contractType: staff.contractType || 'partTime', mobile: staff.mobile || '', email: staff.email || '', dob: staff.dob || '', startDate: staff.startDate || '', rateOverride: staff.rateOverride != null ? String(staff.rateOverride) : '', address: staff.address || '', ecName: ec.name || '', ecPhone: ec.phone || '', ecRelation: ec.relationship || '' }
-    : { name: '', role: roleOpts[0]?.[0] || 'server', contractType: 'partTime', mobile: '', email: '', dob: '', startDate: '', rateOverride: '', address: '', ecName: '', ecPhone: '', ecRelation: '' });
+    ? { name: staff.name || '', role: staff.role || roleOpts[0]?.[0] || 'server', contractType: staff.contractType || 'partTime', mobile: staff.mobile || '', email: staff.email || '', dob: staff.dob || '', startDate: staff.startDate || '', rateOverride: staff.rateOverride != null ? String(staff.rateOverride) : '', address: staff.address || '', niNumber: staff.niNumber || '', ecName: ec.name || '', ecPhone: ec.phone || '', ecRelation: ec.relationship || '' }
+    : { name: '', role: roleOpts[0]?.[0] || 'server', contractType: 'partTime', mobile: '', email: '', dob: '', startDate: '', rateOverride: '', address: '', niNumber: '', ecName: '', ecPhone: '', ecRelation: '' });
   const set = (k, v) => setF(p => ({ ...p, [k]: v }));
   const valid = f.name.trim().length > 1;
   const roleRate = roles[f.role]?.rate;
@@ -292,6 +292,8 @@ function AddStaffModal({ locName, staff, roles = ROLES, onClose, onSave }) {
           <div><label style={labelStyle}>Date of birth</label><input style={inputStyle} type="date" value={f.dob} onChange={e => set('dob', e.target.value)} /></div>
           <div><label style={labelStyle}>Start date</label><input style={inputStyle} type="date" value={f.startDate} onChange={e => set('startDate', e.target.value)} /></div>
           <div style={{ gridColumn: '1 / -1' }}><label style={labelStyle}>Home address</label><input style={inputStyle} value={f.address} onChange={e => set('address', e.target.value)} placeholder="House, street, town, postcode" /></div>
+          <div style={{ gridColumn: '1 / -1' }}><label style={labelStyle}>National Insurance number</label><input style={{ ...inputStyle, fontFamily: 'var(--font-mono)', textTransform: 'uppercase' }} value={f.niNumber} onChange={e => set('niNumber', e.target.value.toUpperCase().replace(/[^A-Z0-9 ]/g, '').slice(0, 13))} placeholder="QQ 12 34 56 C" />
+            <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 4 }}>Needed by your payroll company — included in the payroll export.</div></div>
           <div style={{ gridColumn: '1 / -1', marginTop: 4 }}><div className="mono" style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--acc)' }}>Emergency contact</div></div>
           <div><label style={labelStyle}>Contact name</label><input style={inputStyle} value={f.ecName} onChange={e => set('ecName', e.target.value)} placeholder="e.g. Sam Lee" /></div>
           <div><label style={labelStyle}>Contact phone</label><input style={inputStyle} value={f.ecPhone} onChange={e => set('ecPhone', e.target.value)} placeholder="+44 7700 900000" /></div>
@@ -364,6 +366,7 @@ function StaffDetailModal({ staff: s, roles = ROLES, ctx, showToast, onClose, on
     ['Date of birth', s.dob || '—'], ['Start date', s.startDate || '—'],
     ['Address', s.address || '—'],
     ['Emergency contact', s.emergencyContact ? `${s.emergencyContact.name || '—'}${s.emergencyContact.phone ? ` · ${s.emergencyContact.phone}` : ''}${s.emergencyContact.relationship ? ` (${s.emergencyContact.relationship})` : ''}` : '—'],
+    ['NI number', s.niNumber || '—'],
   ];
 
   return (

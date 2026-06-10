@@ -82,6 +82,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.400', date: '10 Jun 2026', label: 'Tipping policy (direct / pool / hybrid) + bureau-ready payroll export',
+    changes: [
+      'New Tipping policy in Workforce settings, built on the Employment (Allocation of Tips) Act 2023: card tips can go to the POOL (tronc), DIRECT to the seller who made the sale (lawful — pooling is not mandatory), or HYBRID (seller keeps a set %, the rest is pooled). Service charge is always pooled.',
+      'Run payroll now shows Tips (direct) and Tips (pooled) separately: direct tips are attributed from the till (who sold each tipped check), pooled tips come from tronc runs. Unmatched tips are flagged — the Act requires 100% of tips to reach staff.',
+      'Who allocates tips drives the tax treatment (HMRC E24): an independent troncmaster makes tip lines NIC-free; employer-decided shares attract NICs. Set it in the policy; payroll and the export label the lines accordingly, and tips never count toward National Minimum Wage.',
+      'The payroll CSV is now bureau-ready: first/surname + NI number (now captured on the staff record), separate basic pay / tronc tips / direct tips columns with tax notes, bank details, and a notes block for the payroll company.',
+    ],
+  },
+  {
     version: '5.5.399', date: '10 Jun 2026', label: 'Tronc — pool pulls from the till automatically, any week',
     changes: [
       'Tronc now has week navigation (‹ › / This week). It was locked to the current week, so tips taken in earlier weeks looked like they weren’t being pulled in — you normally distribute a week after it ends.',

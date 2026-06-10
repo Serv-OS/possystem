@@ -166,6 +166,7 @@ function mapStaff(r) {
     holidayEntitlementDays: r.holiday_entitlement_days != null ? Number(r.holiday_entitlement_days) : null,
     address: r.address || null, emergencyContact: r.emergency_contact || null,
     bankSortCode: r.bank_sort_code || null, bankAccount: r.bank_account || null, bankMasked: r.bank_account_masked || null,
+    niNumber: r.ni_number || null,
     days: {},
   };
 }
@@ -173,7 +174,7 @@ export async function loadStaff(locationId) {
   if (isMock || !supabase) return lsGet('staff');
   if (!locationId) return [];
   const { data, error } = await supabase.from('wf_staff')
-    .select('id,name,role_key,contract_type,mobile,email,dob,start_date,status,pos_user_id,section_ids,rate_override,contracted_week,weekly_hours_target,holiday_entitlement_days,address,emergency_contact,bank_sort_code,bank_account,bank_account_masked,created_at')
+    .select('id,name,role_key,contract_type,mobile,email,dob,start_date,status,pos_user_id,section_ids,rate_override,contracted_week,weekly_hours_target,holiday_entitlement_days,address,emergency_contact,bank_sort_code,bank_account,bank_account_masked,ni_number,created_at')
     .eq('location_id', locationId).neq('status', 'leaver').order('created_at', { ascending: true });
   if (error) { console.warn('[wf] loadStaff:', error.message); return []; }
   return (data || []).map(mapStaff);
@@ -189,6 +190,9 @@ export async function saveStaff(member, locationId, orgId) {
     address: member.address || null, emergency_contact: member.emergencyContact || null,
     primary_venue_id: locationId, venue_ids: [locationId], status: member.status || 'active',
   };
+  // NI number: only write when the form actually carried the field (avoid
+  // wiping it from save paths that don't know about it).
+  if (member.niNumber !== undefined) row.ni_number = member.niNumber || null;
   const real = member.id && !String(member.id).startsWith('tmp-') && !String(member.id).startsWith('wf-');
   if (real) row.id = member.id;
   const q = real ? supabase.from('wf_staff').upsert(row, { onConflict: 'id' }) : supabase.from('wf_staff').insert(row);

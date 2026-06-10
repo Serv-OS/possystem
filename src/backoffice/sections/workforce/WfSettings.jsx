@@ -65,6 +65,12 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
   const [payDayDom, setPayDayDom] = useState('');       // monthly: day-of-month paid (0 = last day)
   const [payDayOffset, setPayDayOffset] = useState(''); // fixed-length: days after period end
   const [paidBreaks, setPaidBreaks] = useState(false);  // venue policy: breaks paid by default
+  // Tipping policy (Employment (Allocation of Tips) Act 2023): how card tips
+  // are distributed + who decides allocation (drives NIC treatment).
+  const [tipMode, setTipMode] = useState('pool');           // pool | direct | hybrid
+  const [directPct, setDirectPct] = useState('50');         // hybrid: % the seller keeps
+  const [tipAllocator, setTipAllocator] = useState('employer'); // employer | troncmaster
+  const [troncmasterName, setTroncmasterName] = useState('');
   const [savingVenue, setSavingVenue] = useState(false);
 
   // Seed venue form from props.settings
@@ -80,6 +86,11 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
     setPayDayDom(!fixed && settings?.payDay != null ? String(settings.payDay) : '');
     setPayDayOffset(fixed && settings?.payDay != null ? String(settings.payDay) : '');
     setPaidBreaks(!!settings?.settings?.paidBreaks);
+    const sj = settings?.settings || {};
+    setTipMode(['pool', 'direct', 'hybrid'].includes(sj.tipMode) ? sj.tipMode : 'pool');
+    setDirectPct(sj.directPct != null ? String(sj.directPct) : '50');
+    setTipAllocator(sj.tipAllocator === 'troncmaster' ? 'troncmaster' : 'employer');
+    setTroncmasterName(sj.troncmasterName || '');
   }, [settings]);
 
   // Sections: seed from props, reload fresh on mount / location change
@@ -124,7 +135,14 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
         ? (payDayOffset === '' ? null : Math.max(0, parseInt(payDayOffset, 10) || 0))
         : (payDayDom === '' ? null : Math.min(28, Math.max(0, parseInt(payDayDom, 10) || 0))),
       premiums: settings?.premiums || {},
-      settings: { ...(settings?.settings || {}), paidBreaks },
+      settings: {
+        ...(settings?.settings || {}),
+        paidBreaks,
+        tipMode,
+        directPct: Math.min(100, Math.max(0, parseInt(directPct, 10) || 0)),
+        tipAllocator,
+        troncmasterName: troncmasterName.trim() || null,
+      },
     };
     try {
       const saved = await wf.saveSettings(patch, ctx.locationId, ctx.orgId);
@@ -251,6 +269,53 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
             </>)}
           </div>
           <PayPeriodPreview payType={payType} payStartDay={payStartDay} payAnchor={payAnchor} payDayDom={payDayDom} payDayOffset={payDayOffset} />
+        </div>
+
+        {/* ── Tipping policy (Employment (Allocation of Tips) Act 2023) ──
+              Pooling is NOT mandatory under the Act — "customer intention" is a
+              recognised fairness factor, so direct/keep-your-own is lawful.
+              The allocator drives NIC treatment (HMRC E24): employer-allocated
+              tips attract NICs; an independent troncmaster's allocation is
+              NIC-free. Either way: 100% pass-through, paid by the end of the
+              month after the customer tipped, written policy + 3-year records. ── */}
+        <div style={{ marginTop: 18, padding: '14px 16px', borderRadius: 12, background: 'var(--inset)', border: '1px solid var(--inset-border)' }}>
+          <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 4 }}>Tipping policy</div>
+          <div style={{ fontSize: 11.5, color: 'var(--t3)', lineHeight: 1.6, marginBottom: 12 }}>
+            How card tips are shared. Service charge is always pooled and distributed via Tronc. 100% of tips must reach staff (no deductions), paid no later than the end of the month after the customer tipped — keep a written policy.
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 14 }}>
+            <div>
+              <label style={labelStyle}>Card tips go to</label>
+              <select style={inputStyle} value={tipMode} onChange={e => setTipMode(e.target.value)} disabled={savingVenue}>
+                <option value="pool">The pool (tronc — hours × role weights)</option>
+                <option value="direct">The seller (keep what your table tips)</option>
+                <option value="hybrid">Hybrid — seller keeps a %, rest pooled</option>
+              </select>
+            </div>
+            {tipMode === 'hybrid' && (
+              <div>
+                <label style={labelStyle}>Seller keeps (%)</label>
+                <input style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }} type="number" min="0" max="100" step="5"
+                  value={directPct} onChange={e => setDirectPct(e.target.value)} disabled={savingVenue} />
+                <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>Rest of their tips joins the weekly pool.</div>
+              </div>
+            )}
+            <div>
+              <label style={labelStyle}>Who decides allocation</label>
+              <select style={inputStyle} value={tipAllocator} onChange={e => setTipAllocator(e.target.value)} disabled={savingVenue}>
+                <option value="employer">The business (NICs due on tips)</option>
+                <option value="troncmaster">Independent troncmaster (NIC-free)</option>
+              </select>
+              <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>HMRC E24: tips allocated by an independent troncmaster are free of employee + employer NICs; employer-decided shares are not.</div>
+            </div>
+            {tipAllocator === 'troncmaster' && (
+              <div>
+                <label style={labelStyle}>Troncmaster name</label>
+                <input style={inputStyle} value={troncmasterName} onChange={e => setTroncmasterName(e.target.value)} disabled={savingVenue} placeholder="e.g. Jane Doe / WMT Troncmaster Ltd" />
+                <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>Must genuinely set the rules independently; HMRC must be told the tronc exists.</div>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* ── Breaks policy (UK Working Time Regs 1998: 20-min break due over

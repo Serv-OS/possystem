@@ -24,22 +24,28 @@ export default function WfTronc({ ctx, staff = [], roles, sections, settings, we
   // current week, which made the system look like it found no tips.
   const [wk, setWk] = useState(() => buildWeek());
 
-  // Pull the actual tip pool from the POS (same closed_checks data as the Tips
-  // report): card tips + service charge taken on the till during the selected
-  // week. Auto-fills the pool; the operator can still adjust (e.g. add cash
-  // tips that were pooled) before running.
+  // Venue tipping policy decides how much of the till's card tips are POOLED:
+  // 'pool' → all of them; 'hybrid' → (100 − directPct)%; 'direct' → none
+  // (sellers keep their own — paid via Payroll's direct-tips column instead).
+  // Service charge is always pooled. The pool stays editable (e.g. pooled cash).
+  const policy = settings?.settings || {};
+  const tipMode = ['pool', 'direct', 'hybrid'].includes(policy.tipMode) ? policy.tipMode : 'pool';
+  const pooledShare = tipMode === 'pool' ? 1 : tipMode === 'hybrid' ? 1 - Math.min(100, Math.max(0, Number(policy.directPct) || 0)) / 100 : 0;
+
   useEffect(() => {
     let alive = true;
     setTipInfo(null);
     wf.loadTipPool(ctx.locationId, wk.startIso, wk.endIso)
       .then(info => {
         if (!alive) return;
-        setTipInfo(info);
-        setPool(info.suggestedPool > 0 ? info.suggestedPool.toFixed(2) : '');
+        const r2 = n => Math.round(n * 100) / 100;
+        const suggested = r2(info.serviceCharge + info.cardTips * pooledShare);
+        setTipInfo({ ...info, suggestedPool: suggested, pooledCardTips: r2(info.cardTips * pooledShare) });
+        setPool(suggested > 0 ? suggested.toFixed(2) : '');
       })
       .catch(() => {});
     return () => { alive = false; };
-  }, [ctx.locationId, wk.startIso, wk.endIso]);
+  }, [ctx.locationId, wk.startIso, wk.endIso, pooledShare]);
 
   const nameOf = useMemo(() => {
     const m = {};
@@ -114,9 +120,13 @@ export default function WfTronc({ ctx, staff = [], roles, sections, settings, we
                 <span style={{ color: 'var(--t3)' }}>Reading tips from the till…</span>
               ) : tipInfo.suggestedPool > 0 ? (<>
                 <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, color: 'var(--acc)' }}>{money(tipInfo.suggestedPool, 2)}</span>
-                <span style={{ color: 'var(--t3)' }}>taken this week</span>
-                <span style={{ color: 'var(--t4)' }}>· card tips {money(tipInfo.cardTips, 2)} + service {money(tipInfo.serviceCharge, 2)}{tipInfo.cashTips > 0 ? ` · cash ${money(tipInfo.cashTips, 2)} not pooled` : ''}</span>
-              </>) : (
+                <span style={{ color: 'var(--t3)' }}>to pool this week</span>
+                <span style={{ color: 'var(--t4)' }}>
+                  · {tipMode === 'pool' ? `card tips ${money(tipInfo.cardTips, 2)}` : tipMode === 'hybrid' ? `pooled share of card tips ${money(tipInfo.pooledCardTips, 2)} (sellers keep ${policy.directPct || 0}%)` : `card tips go direct to sellers`} + service {money(tipInfo.serviceCharge, 2)}{tipInfo.cashTips > 0 ? ` · cash ${money(tipInfo.cashTips, 2)} not pooled` : ''}
+                </span>
+              </>) : tipInfo.cardTips > 0 && tipMode === 'direct' ? (
+                <span style={{ color: 'var(--t3)' }}>Card tips ({money(tipInfo.cardTips, 2)}) go direct to sellers under your tipping policy — they appear in Payroll's direct-tips column. Nothing to pool this week.</span>
+              ) : (
                 <span style={{ color: 'var(--t3)' }}>No card tips or service charge on the till for this week — use ‹ to pick the week you want to distribute.</span>
               )}
             </div>
