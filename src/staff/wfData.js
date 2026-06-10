@@ -275,7 +275,11 @@ export async function saveRole(role, locationId, orgId) {
 export async function deleteRole(id) {
   if (isMock || !supabase) return lsDelete('roles', id);
   const { error } = await supabase.from('wf_roles').delete().eq('id', id);
-  if (error) console.warn('[wf] deleteRole:', error.message);
+  if (error) {
+    // Most common cause: staff/shifts still reference the role (FK).
+    if (/foreign key|violates/i.test(error.message)) throw new Error('This position is still assigned to staff or shifts — move them to another position first');
+    throw new Error(error.message);
+  }
 }
 
 // ============================================================================
@@ -420,10 +424,22 @@ export async function saveTimesheet(ts, locationId, orgId) {
   if (error) throw new Error(error.message);
   return mapTs(data);
 }
-export async function approveTimesheet(id, approvedBy) {
-  if (isMock || !supabase) { const a = lsGet('timesheets'); const i = a.findIndex(x => x.id === id); if (i >= 0) { a[i].status = 'approved'; lsSet('timesheets', a); } return; }
-  const { error } = await supabase.from('wf_timesheets').update({ status: 'approved', approved_by: approvedBy || null, approved_at: new Date().toISOString() }).eq('id', id);
-  if (error) console.warn('[wf] approveTimesheet:', error.message);
+/** Approve a timesheet. `heal` may carry clockIn/clockOut — older generated
+ *  rows had no clock times, which made them invisible to every per-day wage
+ *  calc and payroll query (all keyed on clock_in); approving re-stamps them. */
+export async function approveTimesheet(id, approvedBy, heal = {}) {
+  if (isMock || !supabase) { const a = lsGet('timesheets'); const i = a.findIndex(x => x.id === id); if (i >= 0) { a[i] = { ...a[i], ...heal, status: 'approved' }; lsSet('timesheets', a); } return; }
+  const patch = { status: 'approved', approved_by: approvedBy || null, approved_at: new Date().toISOString() };
+  if (heal.clockIn) patch.clock_in = heal.clockIn;
+  if (heal.clockOut) patch.clock_out = heal.clockOut;
+  const { error } = await supabase.from('wf_timesheets').update(patch).eq('id', id);
+  if (error) throw new Error(error.message);
+}
+
+export async function deleteTimesheet(id) {
+  if (isMock || !supabase) return lsDelete('timesheets', id);
+  const { error } = await supabase.from('wf_timesheets').delete().eq('id', id);
+  if (error) throw new Error(error.message);
 }
 
 // ============================================================================

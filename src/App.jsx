@@ -82,6 +82,16 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.396', date: '10 Jun 2026', label: 'Timesheets — clock/manual only, delete, week & pay-period filters; positions deletable',
+    changes: [
+      'No more "random" timesheets: the bulk Generate-from-rota button is gone. Timesheets now come only from the Time Clock or are added manually — per rota shift (Add on the row) or free-standing (Add timesheet: staff, date, times, break).',
+      'Why actual wages and Labour % (actual) weren’t moving: bulk-generated timesheets had no clock-in time, and every per-day wage calc + payroll query keys on it. New timesheets always carry clock times; approving an old one re-stamps times from its shift so it starts counting. A banner flags any orphaned no-time rows so they can be deleted.',
+      'Any timesheet can be deleted (✕, with a warning if approved). Fixed a timezone bug that could land evening shifts’ wages on the wrong rota day.',
+      'Timesheets filter by Week or by Pay period (the same dates Run payroll uses), with ‹ › navigation.',
+      'Positions (rate card) can now be deleted — with a warning when staff are still assigned.',
+    ],
+  },
+  {
     version: '5.5.395', date: '10 Jun 2026', label: 'Payroll gets its own menu — wages + tips (tronc) in one run, with BACS export',
     changes: [
       'New Workforce → Payroll section (right under Timesheets): Run payroll computes each person’s base pay from approved timesheets AND their tip share from tronc runs, server-side, locked to the configured pay period.',

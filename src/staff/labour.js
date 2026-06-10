@@ -83,8 +83,11 @@ export function isHourly(staff, role) {
  */
 export function avgHoursPerDay(timesheets) {
   const byDay = {};
+  // Local date of the clock-in — toISOString() is UTC and can shift evening
+  // clock-ins onto the wrong day depending on the device timezone.
+  const localYmd = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   (timesheets || []).forEach(t => {
-    const iso = t.clockIn ? new Date(t.clockIn).toISOString().slice(0, 10) : null;
+    const iso = t.clockIn ? localYmd(new Date(t.clockIn)) : null;
     const hrs = Number(t.actualHours || 0);
     if (iso && hrs > 0) byDay[iso] = (byDay[iso] || 0) + hrs;
   });

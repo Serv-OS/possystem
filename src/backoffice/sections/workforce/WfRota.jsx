@@ -9,7 +9,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { Icon } from '../../../components/ServOSIcons';
 import { Card, EmptyState, Badge, RoleChip, money, th, td, inputStyle, labelStyle, groupColor, cellTint, GRP_SECTION, initials, LoadingCard } from '../../../staff/wfUi';
 import * as wf from '../../../staff/wfData';
-import { buildWeek, addWeeks, weekRangeLabel } from '../../../staff/wfWeek';
+import { buildWeek, addWeeks, weekRangeLabel, ymd } from '../../../staff/wfWeek';
 import { hoursOf, resolveRate, labourPct } from '../../../staff/labour';
 
 const GRP_ORDER = ['mgmt', 'bar', 'floor', 'kitchen', 'door'];
@@ -125,7 +125,9 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
   const actualWageByIso = useMemo(() => {
     const m = {}; wk.days.forEach(d => { m[d.iso] = 0; });
     (timesheets || []).forEach(t => {
-      const iso = t.clockIn ? new Date(t.clockIn).toISOString().slice(0, 10) : null;
+      // LOCAL date of the clock-in — toISOString() is UTC and shifts evening
+      // clock-ins across midnight depending on the device timezone.
+      const iso = t.clockIn ? ymd(new Date(t.clockIn)) : null;
       if (iso == null || m[iso] == null) return;
       const pay = t.payAmount != null ? Number(t.payAmount) : Number(t.actualHours || 0) * Number(t.effectiveRate || 0);
       m[iso] += pay;

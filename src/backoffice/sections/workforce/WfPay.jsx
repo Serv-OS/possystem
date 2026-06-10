@@ -69,6 +69,23 @@ export default function WfPay({ ctx, staff, roles, sections, settings, week, sho
     } finally { setBusy(false); }
   }
 
+  async function removeRole(role) {
+    const used = (staff || []).filter(s => s.role === role.key).length;
+    const msg = used
+      ? `${used} staff member${used === 1 ? ' is' : 's are'} assigned to "${role.lbl}". Deleting may fail until they're moved. Try anyway?`
+      : `Delete the "${role.lbl}" position?`;
+    if (!window.confirm(msg)) return;
+    setBusy(true);
+    try {
+      await wf.deleteRole(role.id);
+      setRoleList(prev => prev.filter(r => r.id !== role.id));
+      setEditing(null);
+      showToast('Position deleted', 'success');
+    } catch (e) {
+      showToast(e.message || 'Could not delete', 'error');
+    } finally { setBusy(false); }
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
       {/* ── (1) RATE CARD ────────────────────────────────────────────── */}
@@ -142,6 +159,7 @@ export default function WfPay({ ctx, staff, roles, sections, settings, week, sho
           busy={busy}
           onClose={() => setEditing(null)}
           onSave={saveRole}
+          onDelete={removeRole}
         />
       )}
     </div>
@@ -149,7 +167,7 @@ export default function WfPay({ ctx, staff, roles, sections, settings, week, sho
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-function RoleEditor({ role, busy, onClose, onSave }) {
+function RoleEditor({ role, busy, onClose, onSave, onDelete }) {
   const [draft, setDraft] = useState(role);
   const isNew = !role.id;
   const set = patch => setDraft(d => ({ ...d, ...patch }));
@@ -230,7 +248,13 @@ function RoleEditor({ role, busy, onClose, onSave }) {
           </div>
         </div>
 
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 20 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 20 }}>
+          {!isNew && (
+            <button className="btn btn-ghost" style={{ color: 'var(--red)' }} disabled={busy} onClick={() => onDelete?.(role)}>
+              <Icon name="close" size={13} /> Delete
+            </button>
+          )}
+          <div style={{ flex: 1 }} />
           <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
           <button className="btn btn-acc" onClick={submit} disabled={busy || !valid}>
             <Icon name="check" size={14} /> {busy ? 'Saving…' : 'Save role'}
