@@ -16,6 +16,14 @@ const PROVIDER = (Deno.env.get('RECEIPT_EMAIL_PROVIDER') || 'log').toLowerCase()
 
 const sb = createClient(SUPABASE_URL, SERVICE_ROLE);
 
+// CORS — without these, browser-initiated invokes (offer letters, contracts,
+// any front-end sendEmail) fail the preflight and the POST never reaches here,
+// so no email is sent and no receipt_emails row is written. Must mirror send-sms.
+const cors = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+};
+
 interface RequestBody {
   location_id: string;
   check_id?: string;
@@ -26,6 +34,7 @@ interface RequestBody {
 }
 
 Deno.serve(async (req) => {
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   if (req.method !== 'POST') return json({ error:'POST only' }, 405);
   let body: RequestBody;
   try { body = await req.json(); } catch { return json({ error:'invalid JSON' }, 400); }
@@ -126,6 +135,6 @@ async function sendViaPostmark(body: RequestBody) {
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
-    status, headers:{ 'content-type':'application/json' },
+    status, headers:{ ...cors, 'content-type':'application/json' },
   });
 }

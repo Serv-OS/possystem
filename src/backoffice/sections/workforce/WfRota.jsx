@@ -197,24 +197,37 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
       await wf.logAudit({ action: 'rota.publish', entity: 'wf_shifts', entityId: wk.startIso, reason: `Published ${draftIds.length} shift(s) for ${weekRangeLabel(wk)}`, after: { ids: draftIds, week: wk.startIso } }, ctx.locationId, ctx.orgId);
       setShifts(prev => prev.map(s => draftIds.includes(s.id) ? { ...s, status: 'published' } : s));
 
-      // Notify each affected staff member their week's shifts by SMS.
+      // Notify each affected staff member of their week's shifts — by SMS AND
+      // email (whichever contact details are on file), so no-one is missed.
       const affected = new Set(shifts.filter(s => draftIds.includes(s.id)).map(s => s.staffId));
       const published = shifts.map(s => draftIds.includes(s.id) ? { ...s, status: 'published' } : s).filter(s => s.status === 'published');
       const dayLabel = iso => new Date(iso + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
       const nameOf = id => (staff.find(s => s.id === id) || {});
-      let sent = 0, skipped = 0;
+      let notified = 0, noContact = 0, failed = 0;
       for (const sid of affected) {
         const member = nameOf(sid);
         const mine = published.filter(x => x.staffId === sid).sort((a, b) => (a.date + a.start).localeCompare(b.date + b.start));
         if (!mine.length) continue;
-        if (!member.mobile) { skipped++; continue; }
-        const lines = mine.map(x => `${dayLabel(x.date)} ${x.start}–${x.finish}${x.section ? ` (${x.section})` : ''}`).join('\n');
-        const first = (member.name || '').split(' ')[0];
-        const msg = `Hi ${first}, your rota for w/c ${weekRangeLabel(wk)}:\n${lines}`;
-        try { await wf.sendStaffSms(member.mobile, msg, ctx.locationId, 'rota_notification', wk.startIso); sent++; }
-        catch { skipped++; }
+        const first = (member.name || 'there').split(' ')[0];
+        const lines = mine.map(x => `${dayLabel(x.date)} ${x.start}–${x.finish}${x.section ? ` (${x.section})` : ''}`);
+        const smsMsg = `Hi ${first}, your rota for w/c ${weekRangeLabel(wk)}:\n${lines.join('\n')}`;
+        const emailHtml = `<div style="font-family:system-ui,sans-serif;max-width:560px"><p>Hi ${first},</p><p>Your shifts for the week commencing <strong>${weekRangeLabel(wk)}</strong>${ctx.locName ? ` at ${ctx.locName}` : ''}:</p><ul>${lines.map(l => `<li>${l}</li>`).join('')}</ul><p>See you then!</p></div>`;
+        let any = false, fail = false;
+        if (member.mobile) {
+          try { const r = await wf.sendStaffSms(member.mobile, smsMsg, ctx.locationId, 'rota_notification', wk.startIso); if (r?.ok) any = true; else fail = true; } catch { fail = true; }
+        }
+        if (member.email) {
+          try { await wf.sendEmail(member.email, `Your rota — w/c ${weekRangeLabel(wk)}`, emailHtml, ctx.locationId); any = true; } catch { fail = true; }
+        }
+        if (any) notified++;
+        else if (!member.mobile && !member.email) noContact++;
+        else failed++;
       }
-      const tail = sent || skipped ? ` · texted ${sent}${skipped ? `, ${skipped} skipped (no mobile)` : ''}` : '';
+      const bits = [];
+      if (notified) bits.push(`notified ${notified}`);
+      if (failed) bits.push(`${failed} failed`);
+      if (noContact) bits.push(`${noContact} no contact details`);
+      const tail = bits.length ? ` · ${bits.join(', ')}` : '';
       showToast(`Published ${draftIds.length} shift${draftIds.length === 1 ? '' : 's'}${tail}`, 'success');
     } catch (e) {
       showToast('Publish failed: ' + e.message, 'error');

@@ -94,11 +94,26 @@ export async function signedDocUrl(pathOrUrl, expiresIn = 120) {
   return data?.signedUrl || null;
 }
 
+/** Normalise a phone number to E.164 (UK-default). send-sms requires +44… and
+ *  rejects local 07… numbers with a 400, so we convert before sending.
+ *  07931129015 → +447931129015 · 00447… → +447… · already-+44 passes through. */
+export function toE164(raw) {
+  if (!raw) return null;
+  let s = String(raw).trim().replace(/[\s()\-.]/g, '');
+  if (s.startsWith('+')) return /^\+[1-9]\d{6,14}$/.test(s) ? s : null;
+  if (s.startsWith('00')) s = '+' + s.slice(2);
+  else if (s.startsWith('0')) s = '+44' + s.slice(1);   // UK local 07…/01… → +44…
+  else if (s.startsWith('44')) s = '+' + s;
+  else if (/^[1-9]\d{6,14}$/.test(s)) s = '+44' + s;    // bare national, no leading 0
+  return /^\+[1-9]\d{6,14}$/.test(s) ? s : null;
+}
+
 /** Send one SMS via the send-sms edge function. Throws on failure; no-op in mock. */
 export async function sendStaffSms(to, message, locationId, type = 'rota_notification', referenceId = null) {
   if (isMock || !supabase) return { ok: true, mock: true };
-  if (!to) return { ok: false, skipped: 'no-mobile' };
-  const data = await invokeFn('send-sms', { to, message, location_id: locationId, type, reference_id: referenceId });
+  const phone = toE164(to);
+  if (!phone) return { ok: false, skipped: 'no-mobile' };
+  const data = await invokeFn('send-sms', { to: phone, message, location_id: locationId, type, reference_id: referenceId });
   return { ok: true, ...(data || {}) };
 }
 

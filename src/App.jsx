@@ -82,6 +82,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.390', date: '9 Jun 2026', label: 'Workforce — fix offer/contract emails (CORS) + rota notifications (SMS E.164 + email)',
+    changes: [
+      'Offer letters & contracts now actually send: the send-receipt email function was missing CORS headers, so every browser-initiated email (offers, contracts) failed its preflight before the request ever reached the server — added CORS + OPTIONS handling and redeployed.',
+      'Rota publish now notifies staff by BOTH SMS and email (was SMS-only), so nobody is missed if they have one but not the other.',
+      'Rota/staff SMS now normalises UK mobiles to E.164 (07931… → +447931…) before sending — local-format numbers were being rejected by the SMS provider, so no texts went out.',
+      'Publish toast now reports honestly: notified / failed / no contact details.',
+    ],
+  },
+  {
     version: '5.5.389', date: '9 Jun 2026', label: 'Internal: handoff docs refreshed (templates, e-sign, UK holiday, pay periods)',
     changes: [
       'No app changes — refreshed CURRENT_WORK / CLAUDE so the shared handoff covers the latest Workforce work (document templates + in-app e-sign, UK holiday model, pay periods + Run payroll, rota actual wage vs sales, payroll bank details, the offers/contracts send fix).',
