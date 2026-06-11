@@ -83,6 +83,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.413', date: '11 Jun 2026', label: 'Ryft pricing → sell-rate model: our rate + interchange, by channel × card',
+    changes: [
+      'Reworked Ryft pricing to how we actually quote merchants: we set OUR RATE (ex-interchange) and the merchant pays our rate + interchange (pass-through). Standard rate card (editable in Platform defaults): in-store Visa/MC 2.00% / Amex 2.75%, online Visa/MC 2.80% / Amex 2.75%, +8p — Ryft only; Stripe untouched.',
+      'Per location (admin portal) you can override the sell rate by channel + card class; blank = the standard rate. The merchant card shows a full readout: what the merchant pays, our cost (Ryft scheme fee), and our margin, for each channel and card type.',
+      'Our cost = Ryft IC+ scheme fee ex-interchange (Visa/MC 0.40%, Amex 2.00%, +8p); margin = our rate − scheme fee (interchange + the 8p net out). The platform fee taken on each Ryft payment = our rate for that channel.',
+      'Interchange is recorded for display so merchants see "+ interchange" transparently.',
+    ],
+  },
+  {
     version: '5.5.412', date: '11 Jun 2026', label: 'Ryft pricing → real IC+ model: per-card buy rate card + single markup (% + per-txn fee)',
     changes: [
       'Reworked Ryft pricing to match the actual Ryft deal (IC+). The buy rate (our cost) is now a platform-wide rate card, all-in PER CARD TYPE — Tier 1 prefilled: debit 0.60%, credit 0.70%, amex 2.30%, +8p — edited once in Platform defaults (it is the same deal for every Ryft merchant).',

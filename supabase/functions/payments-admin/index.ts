@@ -105,13 +105,16 @@ Deno.serve(async (req) => {
     return json({ success: true, processor });
   }
 
-  // ── ryft_pricing (single markup = the platform fee: % + fixed pence) ─────
+  // ── ryft_pricing (per-location SELL rate override; null = platform standard) ──
   if (action === 'ryft_pricing') {
     const numOrNull = (v: unknown) => (v === '' || v === null || v === undefined ? null : Number(v));
     const intOrNull = (v: unknown) => (v === '' || v === null || v === undefined ? null : Math.round(Number(v)));
     const patch: Record<string, unknown> = {
-      markup_percent: numOrNull(body.markup_percent),
-      markup_fixed_pence: intOrNull(body.markup_fixed_pence),
+      sell_instore_vmc_percent:  numOrNull(body.sell_instore_vmc),
+      sell_instore_amex_percent: numOrNull(body.sell_instore_amex),
+      sell_online_vmc_percent:   numOrNull(body.sell_online_vmc),
+      sell_online_amex_percent:  numOrNull(body.sell_online_amex),
+      sell_fixed_pence:          intOrNull(body.sell_fixed_pence),
       pricing_notes: body.pricing_notes || null,
     };
     const { error } = await platformAdmin.from('merchant_ryft_accounts').update(patch).eq('location_id', loc.id);
