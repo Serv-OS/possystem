@@ -23,6 +23,7 @@ import { KDSSurface } from './surfaces/OtherSurfaces';
 import MPOSSurface from './surfaces/MPOSSurface';
 import TimeClockSurface from './surfaces/TimeClockSurface';
 import OnboardingSignSurface from './surfaces/OnboardingSignSurface';
+import RyftTestSurface from './surfaces/RyftTestSurface';
 import CustomerBoot from './surfaces/CustomerBoot';
 import { parseCustomerUrl as parseCustomerUrlForBoot } from './lib/customerUrl';
 import AIChat from './components/AIChat';
@@ -5816,6 +5817,8 @@ export default function App() {
   // Public Workforce contract-signing page: /sign/<token>
   const signMatch = window.location.pathname.match(/^\/sign\/([A-Za-z0-9_-]{8,})/);
   if (signMatch) return <OnboardingSignSurface token={signMatch[1]} />;
+  // Dev: Ryft sandbox payment harness (?mode=ryft-test) — sandbox only.
+  if (urlMode === 'ryft-test') return <RyftTestSurface />;
   if (!urlMode) {
     const customerCtx = parseCustomerUrlForBoot();
     if (customerCtx?.slug && CUSTOMER_MODES.includes(customerCtx.mode)) {
