@@ -83,6 +83,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.414', date: '11 Jun 2026', label: 'Back office shows the merchant their card processing rates',
+    changes: [
+      'Location Settings now shows a "Card processing rates" card to the venue (Ryft locations): a clear "you pay" table by channel and card type — our rate + interchange (passed through at cost), plus their per-location negotiated rate if one is set.',
+      'Read-only for the merchant; rates are set by us per location in the admin portal.',
+    ],
+  },
+  {
     version: '5.5.413', date: '11 Jun 2026', label: 'Ryft pricing → sell-rate model: our rate + interchange, by channel × card',
     changes: [
       'Reworked Ryft pricing to how we actually quote merchants: we set OUR RATE (ex-interchange) and the merchant pays our rate + interchange (pass-through). Standard rate card (editable in Platform defaults): in-store Visa/MC 2.00% / Amex 2.75%, online Visa/MC 2.80% / Amex 2.75%, +8p — Ryft only; Stripe untouched.',
