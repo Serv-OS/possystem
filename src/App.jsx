@@ -83,6 +83,29 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.410', date: '11 Jun 2026', label: 'Ryft card-present (POS terminal) flow — dual-processor checkout',
+    changes: [
+      'POS checkout now dispatches card-present payments to the right processor automatically: locations on Stripe keep using the Stripe Terminal reader exactly as before, and locations switched to Ryft take the payment on a Ryft terminal — same on-screen "present card / processing / approved" flow either way.',
+      'Which processor a location uses is resolved at checkout (new payments-processor service) and defaults to Stripe, so no live venue changes behaviour until it is explicitly moved to Ryft.',
+      'Ryft card-present is driven by new server functions (start the terminal charge, poll until the customer taps and it is approved/declined, and cancel an in-flight charge). The takings are recorded against the completed check the same way a Stripe payment is.',
+      'No hardware is wired to a live venue yet — this is the software path, built to the Ryft in-person spec, ready to verify against a Ryft reader when one arrives.',
+    ],
+  },
+  {
+    version: '5.5.409', date: '10 Jun 2026', label: 'Ryft embedded card form + sandbox test route',
+    changes: [
+      'Card-not-present Ryft payment form (the PCI-compliant hosted card fields) for online/QR/kiosk surfaces, plus a developer sandbox route (?mode=ryft-test) to exercise it end-to-end.',
+      'Verified a real Ryft sandbox payment session end-to-end on the server side.',
+    ],
+  },
+  {
+    version: '5.5.408', date: '10 Jun 2026', label: 'Ryft foundation — server client, create-session edge fn, dual-processor schema',
+    changes: [
+      'Groundwork to run Stripe and Ryft side by side: a shared Ryft REST client, a create-payment-session edge function (auth-guarded), and the data model to mark which processor each location uses and store its Ryft account.',
+      'The Ryft secret key lives only in the server function environment — never in the app bundle.',
+    ],
+  },
+  {
     version: '5.5.407', date: '10 Jun 2026', label: 'Security hardening — closed open SMS/email relay, CSV-injection safe, payroll integrity, more indexes',
     changes: [
       'Critical Supabase alert resolved: enabled RLS on the loyalty OTP-code table (Platform DB) — it was publicly readable. Verified clean (0 error-level advisor issues on both databases).',

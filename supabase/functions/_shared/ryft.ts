@@ -67,5 +67,30 @@ export const voidPaymentSession = (id: string, body: Record<string, unknown> = {
 export const refundPaymentSession = (id: string, body: Record<string, unknown>, opts: RyftOpts = {}) =>
   ryftFetch('POST', `/payment-sessions/${id}/refunds`, body, opts);
 
+// ── In-person / card-present terminals ──────────────────────────────────────
+// Take a payment on a Ryft Android terminal. The response carries
+// action.transaction.paymentSessionId — poll THAT payment session for the
+// PendingPayment → Approved → Captured lifecycle (same as card-not-present).
+export interface TerminalPaymentInput {
+  amounts: { requested: number };            // minor units
+  currency: string;                          // ISO, e.g. "GBP"
+  captureFlow?: 'Automatic' | 'Manual';
+  settings?: { receiptPrintingSource?: 'PointOfSale' | 'Terminal' };
+  metadata?: Record<string, string>;
+  [k: string]: unknown;
+}
+
+export const createTerminalPayment = (terminalId: string, input: TerminalPaymentInput, opts: RyftOpts = {}) =>
+  ryftFetch('POST', `/in-person/terminals/${terminalId}/payment`, input, opts);
+
+export const cancelTerminalAction = (terminalId: string, body: Record<string, unknown> = {}, opts: RyftOpts = {}) =>
+  ryftFetch('POST', `/in-person/terminals/${terminalId}/cancel-action`, body, opts);
+
+export const confirmTerminalReceipt = (terminalId: string, body: Record<string, unknown>, opts: RyftOpts = {}) =>
+  ryftFetch('POST', `/in-person/terminals/${terminalId}/confirm-receipt`, body, opts);
+
+export const refundTerminalPayment = (terminalId: string, body: Record<string, unknown>, opts: RyftOpts = {}) =>
+  ryftFetch('POST', `/in-person/terminals/${terminalId}/refund`, body, opts);
+
 export const ryftPublicKey = () => Deno.env.get('RYFT_PUBLIC_KEY') ?? '';
 export const ryftConfigured = () => !!RYFT_SECRET;

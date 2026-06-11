@@ -9,6 +9,8 @@ import {
   getAssignedNetworkReader,
 } from '../lib/networkReader';
 import { getActiveLocationSync, supabase, ensureAuthToken } from '../lib/supabase';
+import { getLocationProcessor } from '../lib/payments/processor';
+import { chargeRyftTerminal } from '../lib/payments/ryftTerminal';
 import { fetchCustomerByPhone } from '../lib/customerLookup';
 import { redeemLoyaltyReward } from '../lib/loyaltyRedeem';
 import { money, currencySymbol, stripeCurrency, getActiveCurrencyCode } from '../lib/currency';
@@ -109,8 +111,10 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
   const [state, setState] = useState('waiting');                      // waiting | approved
   const [errorMsg, setErrorMsg] = useState(null);
   const [piResult, setPiResult] = useState(null);
+  const [processor, setProcessor] = useState('stripe');                // 'stripe' | 'ryft' — per location
   const startedRef = useRef(false);
   const pollAbortRef = useRef(false);
+  const ryftAbortRef = useRef(null);
 
   // Resolve location + check for assigned network reader on mount
   useEffect(() => {
@@ -122,6 +126,8 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
         const platformId = await resolvePlatformLocationId(opsLocationId);
         if (cancelled) return;
         setPlatformLocId(platformId);
+        // Per-location processor (defaults to 'stripe' — never breaks live venues).
+        try { const p = await getLocationProcessor(opsLocationId); if (!cancelled) setProcessor(p); } catch { /* stays stripe */ }
         const assigned = await getAssignedNetworkReader();
         if (cancelled) return;
         setNetworkReader(assigned);
@@ -132,12 +138,16 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
     return () => { cancelled = true; };
   }, []);
 
-  // ─── REST flow: start payment when network reader is available ────────
+  // ─── REST flow: start payment when the terminal path is ready ─────────
+  // Stripe reader path needs the assigned reader + platform location resolved.
+  // Ryft path just needs the processor resolved to 'ryft' (no Stripe reader).
   useEffect(() => {
-    if (!networkReader || !platformLocId || restState !== 'idle' || startedRef.current) return;
+    if (restState !== 'idle' || startedRef.current) return;
+    const ryft = processor === 'ryft';
+    if (!ryft && (!networkReader || !platformLocId)) return;
     startedRef.current = true;
     runRestFlow();
-  }, [networkReader, platformLocId, restState]);
+  }, [networkReader, platformLocId, restState, processor]);
 
   // Smooth transition to "approved" → call onComplete after brief moment.
   // v5.5.172: pass the captured PI through so the parent can derive the
@@ -190,11 +200,46 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
       : { state: 'idle', items: [], total: 0 });
   }, []);
 
+  // ─── Ryft card-present (POS terminal) flow ──────────────────────────────
+  // Only runs for locations whose processor is 'ryft' (none in production yet).
+  // Drives the SAME restState UI as the Stripe reader flow. Built to the Ryft
+  // in-person spec; verify against a Ryft reader when hardware is available.
+  const runRyftTerminalFlow = async () => {
+    const controller = new AbortController();
+    ryftAbortRef.current = controller;
+    try {
+      const result = await chargeRyftTerminal({
+        locationId: getActiveLocationSync(),
+        posDeviceId: (() => { try { return JSON.parse(localStorage.getItem('rpos-device') || 'null')?.id || null; } catch { return null; } })(),
+        amountMinor: Math.round(grand * 100),
+        currency: stripeCurrency(),
+        captureMethod: 'automatic',
+        signal: controller.signal,
+        onProgress: (state) => {
+          if (state === 'present_card') { setRestState('collecting'); setRestStatusMsg('Ask the customer to present their card'); }
+          else if (state === 'processing') setRestStatusMsg('Processing on the terminal…');
+        },
+      });
+      setRestState('success');
+      setRestStatusMsg('Payment approved');
+      setPiResult({ status: 'succeeded', paymentIntentId: result.paymentSessionId, amount: Math.round(grand * 100), amountReceived: Math.round(grand * 100), processor: 'ryft' });
+    } catch (e) {
+      if (e.message === 'cancelled') return;             // user cancelled — handled by cancelRestFlow
+      setRestState('error');
+      setErrorMsg(e.message || 'Terminal payment failed');
+    } finally {
+      ryftAbortRef.current = null;
+    }
+  };
+
   // ─── REST flow runner ──────────────────────────────────────────────────
   const runRestFlow = async () => {
     setRestState('starting');
     setRestStatusMsg('Pushing cart to reader…');
     setErrorMsg(null);
+
+    // Ryft locations take the terminal payment via Ryft's in-person API.
+    if (processor === 'ryft') return runRyftTerminalFlow();
 
     try {
       // Build line items for set_reader_display
@@ -318,6 +363,12 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
   const cancelRestFlow = async () => {
     pollAbortRef.current = true;
     setRestState('cancelling');
+    // Ryft: abort the in-flight terminal charge (the helper cancels the action).
+    if (processor === 'ryft') {
+      try { ryftAbortRef.current?.abort(); } catch { /* */ }
+      onBack();
+      return;
+    }
     try {
       await callCancelReaderAction({
         paymentIntentId,
@@ -337,8 +388,9 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
   };
 
   // ─── Render ────────────────────────────────────────────────────────────
-  // Prioritise REST flow when a network reader is assigned
-  const useRest = !!networkReader;
+  // Prioritise REST flow when a network reader is assigned, OR when the
+  // location runs on Ryft (card-present goes through the Ryft terminal).
+  const useRest = !!networkReader || processor === 'ryft';
 
   return (
     <div style={{ display:'flex', flexDirection:'column', alignItems:'center', textAlign:'center' }}>
