@@ -83,6 +83,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.415', date: '11 Jun 2026', label: 'Merchants set up card payments themselves from the back office (Ryft)',
+    changes: [
+      'Ryft venues can now onboard themselves: Location Settings has a "Set up card payments" button that creates their Ryft account and opens secure hosted onboarding (verify business, add bank & payout details). "Continue payment setup" reappears until they are live.',
+      'Backed by a new location-scoped server function (payments-onboard) — the venue user must have access to that location; it is not a super-admin action. Stripe linking is unchanged (still arranged in the admin portal).',
+    ],
+  },
+  {
     version: '5.5.414', date: '11 Jun 2026', label: 'Back office shows the merchant their card processing rates',
     changes: [
       'Location Settings now shows a "Card processing rates" card to the venue (Ryft locations): a clear "you pay" table by channel and card type — our rate + interchange (passed through at cost), plus their per-location negotiated rate if one is set.',

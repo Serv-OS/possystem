@@ -104,6 +104,34 @@ export default function LocationSettings() {
   const [slugError,   setSlugError]   = useState('');
   // Card processing rates (read-only here — set by us in the admin portal).
   const [payInfo, setPayInfo] = useState(null);   // { processor, std, ovr }
+  const [onbBusy, setOnbBusy] = useState(false);
+  const [onbErr, setOnbErr]   = useState('');
+  const [onbLink, setOnbLink] = useState(null);
+
+  // Self-serve Ryft onboarding: ensure a sub-account + mint a hosted link.
+  const startRyftOnboarding = async () => {
+    setOnbBusy(true); setOnbErr(''); setOnbLink(null);
+    try {
+      const locId = await getLocationId().catch(() => null);
+      if (!locId) throw new Error('No location id.');
+      const { data: session } = await supabase.auth.getSession();
+      const token = session?.session?.access_token;
+      if (!token) throw new Error('Please sign in again.');
+      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/payments-onboard`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({ action: 'ryft_start', ops_location_id: locId, redirect_url: window.location.origin + '/?ryft_onboarded=1' }),
+      });
+      const j = await res.json();
+      if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
+      setOnbLink(j.onboarding_url || null);
+      if (j.onboarding_url) window.open(j.onboarding_url, '_blank', 'noopener');
+    } catch (e) {
+      setOnbErr(e.message || 'Could not start onboarding');
+    } finally {
+      setOnbBusy(false);
+    }
+  };
 
   useEffect(() => {
     if (!platformSupabase) { setLoading(false); return; }
@@ -336,6 +364,28 @@ export default function LocationSettings() {
             <div style={{ fontSize:11, color:'var(--t4)', marginTop:8 }}>
               Rates are set by your account manager{std.ryft_tier_label ? ` · ${std.ryft_tier_label}` : ''}. Interchange is the card networks' own fee and is passed through at cost.
             </div>
+
+            {/* Self-serve onboarding */}
+            {!live && (
+              <div style={{ marginTop:16, paddingTop:16, borderTop:'1px solid var(--bdr)' }}>
+                <button
+                  onClick={startRyftOnboarding}
+                  disabled={onbBusy}
+                  style={{ ...S.btn, background:'var(--acc)', color:'#0b0c10' }}
+                >
+                  {onbBusy ? 'Opening…' : (linked ? 'Continue payment setup' : 'Set up card payments')}
+                </button>
+                <span style={{ fontSize:12, color:'var(--t4)', marginLeft:12 }}>
+                  Opens secure onboarding to verify your business and add bank &amp; payout details.
+                </span>
+                {onbErr && <div style={{ fontSize:12, color:'var(--red)', marginTop:8 }}>{onbErr}</div>}
+                {onbLink && (
+                  <div style={{ fontSize:12, color:'var(--t3)', marginTop:8 }}>
+                    If a tab didn't open, use this link: <a href={onbLink} target="_blank" rel="noreferrer" style={{ color:'var(--acc)', wordBreak:'break-all' }}>{onbLink}</a>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         );
       })()}
