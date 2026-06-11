@@ -92,5 +92,36 @@ export const confirmTerminalReceipt = (terminalId: string, body: Record<string, 
 export const refundTerminalPayment = (terminalId: string, body: Record<string, unknown>, opts: RyftOpts = {}) =>
   ryftFetch('POST', `/in-person/terminals/${terminalId}/refund`, body, opts);
 
+// ── Marketplace sub-accounts (platform onboarding) ──────────────────────────
+// A platform (us) creates Sub-Accounts (merchants) under our Main account with
+// the PLATFORM secret key (no Account header on creation). The returned id
+// (ac_<uuid>) is then used as the `Account` header on that merchant's payments.
+// Verified against the Ryft OpenAPI spec (subAccountCreate / accountLinksCreate).
+export interface CreateSubAccountInput {
+  email?: string;                                  // required for Hosted when entityType omitted
+  onboardingFlow?: 'Hosted' | 'NonHosted';         // defaults to Hosted
+  entityType?: 'Business' | 'Individual';
+  business?: Record<string, unknown>;              // required when entityType=Business
+  individual?: Record<string, unknown>;            // required when entityType=Individual
+  metadata?: Record<string, string>;
+  [k: string]: unknown;
+}
+
+export const createSubAccount = (input: CreateSubAccountInput, opts: RyftOpts = {}) =>
+  ryftFetch('POST', '/accounts', input, opts);
+
+export const getAccount = (id: string, opts: RyftOpts = {}) =>
+  ryftFetch('GET', `/accounts/${id}`, undefined, opts);
+
+// Mint a temporary HOSTED onboarding portal URL the merchant uses to create a
+// login, submit KYC/KYB, add bank + payout details. Sandbox host:
+// https://sandbox-dash.ryftpay.com/join?l=al_...
+export const createAccountLink = (input: { accountId: string; redirectUrl: string }, opts: RyftOpts = {}) =>
+  ryftFetch('POST', '/account-links', input, opts);
+
+// Sign-in link for a RETURNING merchant that already has a Ryft login (Hosted only).
+export const authorizeAccount = (input: { email: string; redirectUrl: string }, opts: RyftOpts = {}) =>
+  ryftFetch('POST', '/accounts/authorize', input, opts);
+
 export const ryftPublicKey = () => Deno.env.get('RYFT_PUBLIC_KEY') ?? '';
 export const ryftConfigured = () => !!RYFT_SECRET;

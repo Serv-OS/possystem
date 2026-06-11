@@ -83,6 +83,16 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.411', date: '11 Jun 2026', label: 'Admin portal: pick the processor (Stripe/Ryft) per location + Ryft merchant onboarding & pricing',
+    changes: [
+      'Admin → Payments is now processor-aware: each location has a Stripe | Ryft toggle that sets which processor takes its payments. Defaults to Stripe, so nothing changes until a location is explicitly switched.',
+      'Ryft side mirrors the Stripe pricing model: a markup % (the platform fee, card-present + online) with platform-default fallback, plus a recorded buy rate (what we pay Ryft) shown purely for margin visibility — the card shows "merchant pays" and "our margin" for each channel.',
+      'Connect a Ryft merchant straight from the admin: creates a Hosted Ryft sub-account and returns the hosted onboarding link to send to the venue (they complete KYC/KYB, bank & payout in Ryft\'s portal). Plus "Continue onboarding", "Sync status", and "Unlink". Verified end-to-end against the Ryft sandbox.',
+      'All Ryft account/pricing/processor writes go through a new super-admin-only server function (payments-admin), so the Ryft account and pricing tables stay service-role-write — tighter than the legacy Stripe client-side writes.',
+      'Platform defaults now carry separate Ryft markup + Ryft buy-rate values alongside the existing Stripe markup defaults.',
+    ],
+  },
+  {
     version: '5.5.410', date: '11 Jun 2026', label: 'Ryft card-present (POS terminal) flow — dual-processor checkout',
     changes: [
       'POS checkout now dispatches card-present payments to the right processor automatically: locations on Stripe keep using the Stripe Terminal reader exactly as before, and locations switched to Ryft take the payment on a Ryft terminal — same on-screen "present card / processing / approved" flow either way.',
