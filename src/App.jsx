@@ -83,6 +83,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.412', date: '11 Jun 2026', label: 'Ryft pricing → real IC+ model: per-card buy rate card + single markup (% + per-txn fee)',
+    changes: [
+      'Reworked Ryft pricing to match the actual Ryft deal (IC+). The buy rate (our cost) is now a platform-wide rate card, all-in PER CARD TYPE — Tier 1 prefilled: debit 0.60%, credit 0.70%, amex 2.30%, +8p — edited once in Platform defaults (it is the same deal for every Ryft merchant).',
+      'Per merchant you now set a single markup (our margin / the platform fee): a percentage PLUS a per-transaction pence fee. The merchant card shows a per-card-type readout — our cost, what the merchant pays, and our margin — for debit, credit and amex.',
+      'The Ryft platform fee taken on each payment (online and card-present) is now markup% × amount + the fixed pence, resolved merchant-override → platform default. Card-present previously took no platform fee — now it does.',
+      'Buy rate stays margin-visibility only; it never changes what the customer is charged.',
+    ],
+  },
+  {
     version: '5.5.411', date: '11 Jun 2026', label: 'Admin portal: pick the processor (Stripe/Ryft) per location + Ryft merchant onboarding & pricing',
     changes: [
       'Admin → Payments is now processor-aware: each location has a Stripe | Ryft toggle that sets which processor takes its payments. Defaults to Stripe, so nothing changes until a location is explicitly switched.',

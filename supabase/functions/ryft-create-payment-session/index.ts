@@ -62,17 +62,23 @@ Deno.serve(async (req) => {
 
   // Resolve the location's Ryft sub-account (marketplace). Optional in sandbox —
   // without one we create on the platform account so the flow is testable now.
+  // platformFee (our take) = markup% × amount + fixed pence markup. Single
+  // markup across card types; merchant override → platform default.
   let accountId: string | undefined;
   let platformFee: number | undefined;
   if (location_id) {
     const { data: mra } = await platformAdmin.from('merchant_ryft_accounts')
-      .select('ryft_account_id, charges_enabled, cardpresent_markup_percent, online_markup_percent')
+      .select('ryft_account_id, charges_enabled, markup_percent, markup_fixed_pence')
       .eq('location_id', location_id).maybeSingle();
     if (mra?.ryft_account_id) {
       if (mra.charges_enabled === false) return json({ error: 'Ryft account cannot accept charges yet' }, 400);
       accountId = mra.ryft_account_id;
-      const markup = channel === 'card_present' ? mra.cardpresent_markup_percent : mra.online_markup_percent;
-      if (markup != null) platformFee = Math.round(amount_minor * (Number(markup) / 100));
+      const { data: ps } = await platformAdmin.from('platform_settings')
+        .select('default_ryft_markup_percent, default_ryft_markup_fixed_pence').eq('id', true).maybeSingle();
+      const pct = mra.markup_percent != null ? Number(mra.markup_percent) : Number(ps?.default_ryft_markup_percent ?? 0);
+      const fixed = mra.markup_fixed_pence != null ? Number(mra.markup_fixed_pence) : Number(ps?.default_ryft_markup_fixed_pence ?? 0);
+      const fee = Math.round(amount_minor * (pct / 100)) + Math.round(fixed);
+      if (fee > 0) platformFee = fee;
     }
   }
 

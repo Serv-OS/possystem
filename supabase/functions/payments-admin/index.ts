@@ -9,8 +9,7 @@
 //   ryft_link            { location_id, ryft_account_id, redirect_url? }
 //   ryft_sync            { location_id }
 //   ryft_onboarding_link { location_id, redirect_url, email? }
-//   ryft_pricing         { location_id, cardpresent_markup, online_markup,
-//                          cardpresent_buy_rate, online_buy_rate, pricing_notes }
+//   ryft_pricing         { location_id, markup_percent, markup_fixed_pence, pricing_notes }
 //
 // Auth: Ops DB user_profiles.role = 'super_admin' (matches stripe-link-merchant).
 // Ryft account API is the marketplace platform model — create a Sub-Account with
@@ -106,14 +105,13 @@ Deno.serve(async (req) => {
     return json({ success: true, processor });
   }
 
-  // ── ryft_pricing (margin-only buy rate + platform-fee markup) ───────────
+  // ── ryft_pricing (single markup = the platform fee: % + fixed pence) ─────
   if (action === 'ryft_pricing') {
     const numOrNull = (v: unknown) => (v === '' || v === null || v === undefined ? null : Number(v));
+    const intOrNull = (v: unknown) => (v === '' || v === null || v === undefined ? null : Math.round(Number(v)));
     const patch: Record<string, unknown> = {
-      cardpresent_markup_percent: numOrNull(body.cardpresent_markup),
-      online_markup_percent: numOrNull(body.online_markup),
-      cardpresent_buy_rate_percent: numOrNull(body.cardpresent_buy_rate),
-      online_buy_rate_percent: numOrNull(body.online_buy_rate),
+      markup_percent: numOrNull(body.markup_percent),
+      markup_fixed_pence: intOrNull(body.markup_fixed_pence),
       pricing_notes: body.pricing_notes || null,
     };
     const { error } = await platformAdmin.from('merchant_ryft_accounts').update(patch).eq('location_id', loc.id);

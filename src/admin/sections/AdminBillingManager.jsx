@@ -212,10 +212,8 @@ export default function AdminBillingManager({ authUser }) {
           }}
           onRyftSavePricing={async (vals) => {
             try { await callPaymentsAdmin('ryft_pricing', { location_id: loc.id, ...vals }); upsertRyaPatch(loc.id, {
-              cardpresent_markup_percent: vals.cardpresent_markup === '' ? null : Number(vals.cardpresent_markup),
-              online_markup_percent: vals.online_markup === '' ? null : Number(vals.online_markup),
-              cardpresent_buy_rate_percent: vals.cardpresent_buy_rate === '' ? null : Number(vals.cardpresent_buy_rate),
-              online_buy_rate_percent: vals.online_buy_rate === '' ? null : Number(vals.online_buy_rate),
+              markup_percent: vals.markup_percent === '' ? null : Number(vals.markup_percent),
+              markup_fixed_pence: vals.markup_fixed_pence === '' ? null : Math.round(Number(vals.markup_fixed_pence)),
               pricing_notes: vals.pricing_notes || null,
             }); return true; }
             catch (e) { setError(`Save failed: ${e.message}`); return false; }
@@ -242,27 +240,38 @@ export default function AdminBillingManager({ authUser }) {
 }
 
 // ─── Platform-wide defaults panel ─────────────────────────────────────────
+// Stripe: markup defaults (unchanged). Ryft: the IC+ BUY-RATE CARD (our cost,
+// all-in per card type + fixed pence, by GMV tier) plus the DEFAULT MARKUP
+// (single % + fixed pence) used where a merchant has no override.
 function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
   const [editing, setEditing] = useState(false);
   const [cp, setCp] = useState(defaults.default_cardpresent_markup_percent);
   const [on, setOn] = useState(defaults.default_online_markup_percent);
-  // Ryft defaults (markup + buy rate)
-  const [rCpMk, setRCpMk] = useState(defaults.default_ryft_cardpresent_markup_percent ?? '');
-  const [rOnMk, setROnMk] = useState(defaults.default_ryft_online_markup_percent ?? '');
-  const [rCpBr, setRCpBr] = useState(defaults.default_ryft_cardpresent_buy_rate_percent ?? '');
-  const [rOnBr, setROnBr] = useState(defaults.default_ryft_online_buy_rate_percent ?? '');
+  // Ryft IC+ buy-rate card
+  const [tier, setTier] = useState(defaults.ryft_tier_label ?? '');
+  const [bDeb, setBDeb] = useState(defaults.ryft_buy_debit_percent ?? '');
+  const [bCred, setBCred] = useState(defaults.ryft_buy_credit_percent ?? '');
+  const [bAmex, setBAmex] = useState(defaults.ryft_buy_amex_percent ?? '');
+  const [bFix, setBFix] = useState(defaults.ryft_buy_fixed_pence ?? '');
+  // Ryft default markup (single)
+  const [mkPct, setMkPct] = useState(defaults.default_ryft_markup_percent ?? '');
+  const [mkFix, setMkFix] = useState(defaults.default_ryft_markup_fixed_pence ?? '');
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     setCp(defaults.default_cardpresent_markup_percent);
     setOn(defaults.default_online_markup_percent);
-    setRCpMk(defaults.default_ryft_cardpresent_markup_percent ?? '');
-    setROnMk(defaults.default_ryft_online_markup_percent ?? '');
-    setRCpBr(defaults.default_ryft_cardpresent_buy_rate_percent ?? '');
-    setROnBr(defaults.default_ryft_online_buy_rate_percent ?? '');
+    setTier(defaults.ryft_tier_label ?? '');
+    setBDeb(defaults.ryft_buy_debit_percent ?? '');
+    setBCred(defaults.ryft_buy_credit_percent ?? '');
+    setBAmex(defaults.ryft_buy_amex_percent ?? '');
+    setBFix(defaults.ryft_buy_fixed_pence ?? '');
+    setMkPct(defaults.default_ryft_markup_percent ?? '');
+    setMkFix(defaults.default_ryft_markup_fixed_pence ?? '');
   }, [defaults]);
 
   const numOrNull = (v) => (v === '' || v === null || v === undefined ? null : Number(v));
+  const intOrNull = (v) => (v === '' || v === null || v === undefined ? null : Math.round(Number(v)));
 
   const save = async () => {
     setBusy(true);
@@ -270,10 +279,13 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
       const patch = {
         default_cardpresent_markup_percent: Number(cp),
         default_online_markup_percent: Number(on),
-        default_ryft_cardpresent_markup_percent: numOrNull(rCpMk),
-        default_ryft_online_markup_percent: numOrNull(rOnMk),
-        default_ryft_cardpresent_buy_rate_percent: numOrNull(rCpBr),
-        default_ryft_online_buy_rate_percent: numOrNull(rOnBr),
+        ryft_tier_label: tier || null,
+        ryft_buy_debit_percent: numOrNull(bDeb),
+        ryft_buy_credit_percent: numOrNull(bCred),
+        ryft_buy_amex_percent: numOrNull(bAmex),
+        ryft_buy_fixed_pence: intOrNull(bFix),
+        default_ryft_markup_percent: numOrNull(mkPct),
+        default_ryft_markup_fixed_pence: intOrNull(mkFix),
         updated_at: new Date().toISOString(),
         updated_by_user_id: authUserId,
       };
@@ -289,6 +301,7 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
   };
 
   const pct = (v) => `${Number(v ?? 0).toFixed(2)}%`;
+  const pence = (v) => `${Number(v ?? 0)}p`;
 
   return (
     <div style={{ ...S.card, borderColor: 'var(--acc-b)', background: 'var(--acc-d)' }}>
@@ -298,20 +311,24 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
             Platform defaults
           </div>
           <div style={{ fontSize: 14, color: 'var(--t1)', marginBottom: 8, lineHeight: 1.4 }}>
-            Used for any location where the merchant doesn't have a per-merchant override.
+            Stripe markup, the Ryft buy-rate card (our cost), and the default Ryft markup used where a merchant has no override.
           </div>
           {!editing && (
-            <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}>
-              <Stat label="Stripe in-person markup" value={pct(defaults.default_cardpresent_markup_percent)} />
-              <Stat label="Stripe online markup"    value={pct(defaults.default_online_markup_percent)} />
-              <Stat label="Ryft in-person markup"   value={pct(defaults.default_ryft_cardpresent_markup_percent)} />
-              <Stat label="Ryft online markup"      value={pct(defaults.default_ryft_online_markup_percent)} />
-              <Stat label="Ryft in-person buy rate" value={pct(defaults.default_ryft_cardpresent_buy_rate_percent)} />
-              <Stat label="Ryft online buy rate"    value={pct(defaults.default_ryft_online_buy_rate_percent)} />
+            <div style={{ display: 'grid', gap: 10 }}>
+              <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}>
+                <Stat label="Stripe in-person markup" value={pct(defaults.default_cardpresent_markup_percent)} />
+                <Stat label="Stripe online markup"    value={pct(defaults.default_online_markup_percent)} />
+              </div>
+              <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', paddingTop: 8, borderTop: '1px solid var(--bdr)' }}>
+                <Stat label={`Ryft buy · ${defaults.ryft_tier_label || 'Tier 1'}`} value={`Debit ${pct(defaults.ryft_buy_debit_percent)} · Credit ${pct(defaults.ryft_buy_credit_percent)} · Amex ${pct(defaults.ryft_buy_amex_percent)} · +${pence(defaults.ryft_buy_fixed_pence)}`} />
+              </div>
+              <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}>
+                <Stat label="Ryft default markup" value={`${pct(defaults.default_ryft_markup_percent)} + ${pence(defaults.default_ryft_markup_fixed_pence)}`} accent />
+              </div>
             </div>
           )}
           {editing && (
-            <div style={{ display: 'grid', gap: 12, maxWidth: 640 }}>
+            <div style={{ display: 'grid', gap: 14, maxWidth: 680 }}>
               <div>
                 <div style={{ ...S.label, color: 'var(--t2)' }}>Stripe markup (platform fee)</div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
@@ -320,17 +337,24 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
                 </div>
               </div>
               <div>
-                <div style={{ ...S.label, color: 'var(--t2)' }}>Ryft markup (platform fee)</div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                  <NumField label="In-person %" value={rCpMk} onChange={setRCpMk} />
-                  <NumField label="Online %" value={rOnMk} onChange={setROnMk} />
+                <div style={{ ...S.label, color: 'var(--t2)' }}>Ryft buy rate — our cost, all-in per card type (margin only)</div>
+                <div style={{ marginBottom: 8 }}>
+                  <label style={S.label}>Tier label</label>
+                  <input type="text" value={tier} onChange={e => setTier(e.target.value)} placeholder="Tier 1 (up to £500k/mo GMV)" style={S.input} />
                 </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
+                  <NumField label="Debit %" value={bDeb} onChange={setBDeb} />
+                  <NumField label="Credit %" value={bCred} onChange={setBCred} />
+                  <NumField label="Amex %" value={bAmex} onChange={setBAmex} />
+                  <NumField label="Fixed (pence)" value={bFix} onChange={setBFix} />
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 4 }}>All-in = interchange + Ryft IC+. Tier 1: debit 0.20+0.40, credit 0.30+0.40, amex 0.30+2.00, +8p.</div>
               </div>
               <div>
-                <div style={{ ...S.label, color: 'var(--t2)' }}>Ryft buy rate (our cost — margin only)</div>
+                <div style={{ ...S.label, color: 'var(--t2)' }}>Ryft default markup (platform fee added on top)</div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                  <NumField label="In-person %" value={rCpBr} onChange={setRCpBr} />
-                  <NumField label="Online %" value={rOnBr} onChange={setROnBr} />
+                  <NumField label="Markup %" value={mkPct} onChange={setMkPct} />
+                  <NumField label="Per-txn fee (pence)" value={mkFix} onChange={setMkFix} />
                 </div>
               </div>
             </div>
@@ -476,10 +500,8 @@ function RyftBlock({ rya, currency, defaults, onConnect, onSync, onUnlink, onOnb
       ? { label: 'Live · charges enabled', color: 'var(--grn)' }
       : { label: vStatus ? `Onboarding · ${vStatus}` : 'Onboarding incomplete', color: 'var(--orn)' };
 
-  const [cpMk, setCpMk] = useState(rya?.cardpresent_markup_percent ?? '');
-  const [onMk, setOnMk] = useState(rya?.online_markup_percent ?? '');
-  const [cpBr, setCpBr] = useState(rya?.cardpresent_buy_rate_percent ?? '');
-  const [onBr, setOnBr] = useState(rya?.online_buy_rate_percent ?? '');
+  const [mkPct, setMkPct] = useState(rya?.markup_percent ?? '');
+  const [mkFix, setMkFix] = useState(rya?.markup_fixed_pence ?? '');
   const [notes, setNotes] = useState(rya?.pricing_notes ?? '');
   const [busy, setBusy] = useState(false);
   const [savedAt, setSavedAt] = useState(null);
@@ -487,25 +509,27 @@ function RyftBlock({ rya, currency, defaults, onConnect, onSync, onUnlink, onOnb
   const [link, setLink] = useState(null);      // freshly-minted onboarding URL
 
   useEffect(() => {
-    setCpMk(rya?.cardpresent_markup_percent ?? '');
-    setOnMk(rya?.online_markup_percent ?? '');
-    setCpBr(rya?.cardpresent_buy_rate_percent ?? '');
-    setOnBr(rya?.online_buy_rate_percent ?? '');
+    setMkPct(rya?.markup_percent ?? '');
+    setMkFix(rya?.markup_fixed_pence ?? '');
     setNotes(rya?.pricing_notes ?? '');
-  }, [rya?.cardpresent_markup_percent, rya?.online_markup_percent, rya?.cardpresent_buy_rate_percent, rya?.online_buy_rate_percent, rya?.pricing_notes]);
+  }, [rya?.markup_percent, rya?.markup_fixed_pence, rya?.pricing_notes]);
 
   const dirty = linked && (
-    String(cpMk) !== String(rya?.cardpresent_markup_percent ?? '') ||
-    String(onMk) !== String(rya?.online_markup_percent ?? '') ||
-    String(cpBr) !== String(rya?.cardpresent_buy_rate_percent ?? '') ||
-    String(onBr) !== String(rya?.online_buy_rate_percent ?? '') ||
+    String(mkPct) !== String(rya?.markup_percent ?? '') ||
+    String(mkFix) !== String(rya?.markup_fixed_pence ?? '') ||
     (notes ?? '') !== (rya?.pricing_notes ?? '')
   );
-  const effMk = (v, d) => (v === '' ? Number(d ?? 0) : Number(v));
-  const cpMkEff = effMk(cpMk, defaults.default_ryft_cardpresent_markup_percent);
-  const onMkEff = effMk(onMk, defaults.default_ryft_online_markup_percent);
-  const cpBrEff = effMk(cpBr, defaults.default_ryft_cardpresent_buy_rate_percent);
-  const onBrEff = effMk(onBr, defaults.default_ryft_online_buy_rate_percent);
+  // Effective markup = override or platform default. Buy rate is the platform
+  // IC+ card (margin only). Merchant pays (per card) = buy% + markup%, fixed = buyFixed + markupFixed.
+  const num = (v, d) => (v === '' || v == null ? Number(d ?? 0) : Number(v));
+  const mkPctEff = num(mkPct, defaults.default_ryft_markup_percent);
+  const mkFixEff = num(mkFix, defaults.default_ryft_markup_fixed_pence);
+  const buyFix = Number(defaults.ryft_buy_fixed_pence ?? 0);
+  const CARDS = [
+    { key: 'Debit', buy: Number(defaults.ryft_buy_debit_percent ?? 0) },
+    { key: 'Credit', buy: Number(defaults.ryft_buy_credit_percent ?? 0) },
+    { key: 'Amex', buy: Number(defaults.ryft_buy_amex_percent ?? 0) },
+  ];
 
   return (
     <>
@@ -543,26 +567,32 @@ function RyftBlock({ rya, currency, defaults, onConnect, onSync, onUnlink, onOnb
       {linked && (
         <>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
-            <MarkupField label="In-person markup % (platform fee)" value={cpMk} onChange={setCpMk} effective={cpMkEff} isOverride={cpMk !== ''} def={defaults.default_ryft_cardpresent_markup_percent} />
-            <MarkupField label="Online markup % (platform fee)" value={onMk} onChange={setOnMk} effective={onMkEff} isOverride={onMk !== ''} def={defaults.default_ryft_online_markup_percent} />
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
-            <MarkupField label="In-person buy rate % (our cost)" value={cpBr} onChange={setCpBr} effective={cpBrEff} isOverride={cpBr !== ''} def={defaults.default_ryft_cardpresent_buy_rate_percent} muted />
-            <MarkupField label="Online buy rate % (our cost)" value={onBr} onChange={setOnBr} effective={onBrEff} isOverride={onBr !== ''} def={defaults.default_ryft_online_buy_rate_percent} muted />
+            <MarkupField label="Markup % (our margin / platform fee)" value={mkPct} onChange={setMkPct} effective={mkPctEff} isOverride={mkPct !== ''} def={defaults.default_ryft_markup_percent} />
+            <MarkupField label="Per-transaction fee" value={mkFix} onChange={setMkFix} effective={mkFixEff} isOverride={mkFix !== ''} def={defaults.default_ryft_markup_fixed_pence} unit="p" />
           </div>
 
-          {/* Margin readout */}
-          <div style={{ display: 'flex', gap: 22, flexWrap: 'wrap', padding: '10px 12px', background: 'var(--bg2)', borderRadius: 8, marginBottom: 14, border: '1px solid var(--bdr)' }}>
-            <Stat label="In-person — merchant pays" value={`${(cpBrEff + cpMkEff).toFixed(2)}%`} />
-            <Stat label="In-person — our margin" value={`${cpMkEff.toFixed(2)}%`} accent />
-            <Stat label="Online — merchant pays" value={`${(onBrEff + onMkEff).toFixed(2)}%`} />
-            <Stat label="Online — our margin" value={`${onMkEff.toFixed(2)}%`} accent />
+          {/* Per-card-type margin readout: buy = platform IC+ card, markup = our take */}
+          <div style={{ background: 'var(--bg2)', borderRadius: 8, marginBottom: 8, border: '1px solid var(--bdr)', overflow: 'hidden' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '0.8fr 1.2fr 1.4fr 1.2fr', fontSize: 10, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em', padding: '8px 12px' }}>
+              <div>Card</div><div>Our cost (buy)</div><div>Merchant pays</div><div>Our margin</div>
+            </div>
+            {CARDS.map(c => (
+              <div key={c.key} style={{ display: 'grid', gridTemplateColumns: '0.8fr 1.2fr 1.4fr 1.2fr', fontSize: 13, padding: '7px 12px', borderTop: '1px solid var(--bdr)', alignItems: 'center' }}>
+                <div style={{ fontWeight: 700, color: 'var(--t1)' }}>{c.key}</div>
+                <div style={{ color: 'var(--t2)' }}>{c.buy.toFixed(2)}% + {buyFix}p</div>
+                <div style={{ color: 'var(--t1)', fontWeight: 700 }}>{(c.buy + mkPctEff).toFixed(2)}% + {buyFix + mkFixEff}p</div>
+                <div style={{ color: 'var(--acc)', fontWeight: 700 }}>{mkPctEff.toFixed(2)}% + {mkFixEff}p</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--t3)', marginBottom: 12, lineHeight: 1.5 }}>
+            Buy rate is the platform <strong>{defaults.ryft_tier_label || 'Tier 1'}</strong> card (edit in Platform defaults). Our margin — the markup — is the platform fee taken on each Ryft payment.
           </div>
 
           <NotesRow notes={notes} setNotes={setNotes} />
           <SaveRow busy={busy} dirty={dirty} savedAt={savedAt}
-            onSave={async () => { setBusy(true); const ok = await onSavePricing({ cardpresent_markup: cpMk, online_markup: onMk, cardpresent_buy_rate: cpBr, online_buy_rate: onBr, pricing_notes: notes }); setBusy(false); if (ok) { setSavedAt(Date.now()); setTimeout(() => setSavedAt(null), 2500); } }}
-            onReset={() => { setCpMk(rya?.cardpresent_markup_percent ?? ''); setOnMk(rya?.online_markup_percent ?? ''); setCpBr(rya?.cardpresent_buy_rate_percent ?? ''); setOnBr(rya?.online_buy_rate_percent ?? ''); setNotes(rya?.pricing_notes ?? ''); }}
+            onSave={async () => { setBusy(true); const ok = await onSavePricing({ markup_percent: mkPct, markup_fixed_pence: mkFix, pricing_notes: notes }); setBusy(false); if (ok) { setSavedAt(Date.now()); setTimeout(() => setSavedAt(null), 2500); } }}
+            onReset={() => { setMkPct(rya?.markup_percent ?? ''); setMkFix(rya?.markup_fixed_pence ?? ''); setNotes(rya?.pricing_notes ?? ''); }}
           />
         </>
       )}
@@ -571,19 +601,21 @@ function RyftBlock({ rya, currency, defaults, onConnect, onSync, onUnlink, onOnb
 }
 
 // ─── Small shared pieces ───────────────────────────────────────────────────
-function MarkupField({ label, value, onChange, effective, isOverride, def, muted }) {
+function MarkupField({ label, value, onChange, effective, isOverride, def, muted, unit = '%' }) {
+  const isPence = unit === 'p';
+  const fmtV = (v) => (isPence ? `${Math.round(Number(v || 0))}p` : `${Number(v || 0).toFixed(2)}%`);
   return (
     <div>
       <label style={S.label}>{label}</label>
       <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-        <input type="number" step="0.01" min="0" max="100"
-          placeholder={`default ${Number(def ?? 0).toFixed(2)}`}
+        <input type="number" step={isPence ? '1' : '0.01'} min="0" max={isPence ? '1000' : '100'}
+          placeholder={`default ${isPence ? Math.round(Number(def ?? 0)) : Number(def ?? 0).toFixed(2)}`}
           value={value} onChange={e => onChange(e.target.value)}
           style={{ ...S.input, ...S.inputMono, ...(muted ? { opacity: 0.92 } : null) }} />
-        <span style={{ color: 'var(--t3)', fontSize: 13, fontWeight: 700 }}>%</span>
+        <span style={{ color: 'var(--t3)', fontSize: 13, fontWeight: 700 }}>{unit}</span>
       </div>
       <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 4 }}>
-        {isOverride ? <>Override: <strong>{Number(value).toFixed(2)}%</strong></> : <>Using default. Effective: <strong>{Number(effective ?? 0).toFixed(2)}%</strong></>}
+        {isOverride ? <>Override: <strong>{fmtV(value)}</strong></> : <>Using default. Effective: <strong>{fmtV(effective ?? 0)}</strong></>}
       </div>
     </div>
   );

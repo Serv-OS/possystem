@@ -52,6 +52,7 @@ Deno.serve(async (req) => {
   // Resolve the Ryft terminal + sub-account for this location.
   let terminalId = body.terminal_id;
   let accountId: string | undefined;
+  let platformFee: number | undefined;
   if (!terminalId) {
     if (!location_id) return json({ error: 'location_id or terminal_id required' }, 400);
     // Ops location → Platform location (ops_location_id) → Ryft terminal.
@@ -64,8 +65,19 @@ Deno.serve(async (req) => {
     const match = (devices ?? []).find((d: any) => pos_device_id && d.bound_pos_device_id === pos_device_id) ?? (devices ?? [])[0];
     if (!match?.ryft_terminal_id) return json({ error: 'no Ryft terminal registered for this location' }, 400);
     terminalId = match.ryft_terminal_id;
-    const { data: mra } = await platformAdmin.from('merchant_ryft_accounts').select('ryft_account_id').eq('location_id', platformLocId).maybeSingle();
+    const { data: mra } = await platformAdmin.from('merchant_ryft_accounts')
+      .select('ryft_account_id, markup_percent, markup_fixed_pence').eq('location_id', platformLocId).maybeSingle();
     accountId = mra?.ryft_account_id ?? undefined;
+    // platformFee (our take) = markup% × amount + fixed pence. Merchant override
+    // → platform default. Same single-markup model as the online flow.
+    if (accountId) {
+      const { data: ps } = await platformAdmin.from('platform_settings')
+        .select('default_ryft_markup_percent, default_ryft_markup_fixed_pence').eq('id', true).maybeSingle();
+      const pct = mra?.markup_percent != null ? Number(mra.markup_percent) : Number(ps?.default_ryft_markup_percent ?? 0);
+      const fixed = mra?.markup_fixed_pence != null ? Number(mra.markup_fixed_pence) : Number(ps?.default_ryft_markup_fixed_pence ?? 0);
+      const fee = Math.round(amount_minor * (pct / 100)) + Math.round(fixed);
+      if (fee > 0) platformFee = fee;
+    }
   }
 
   const res = await createTerminalPayment(terminalId!, {
@@ -73,6 +85,7 @@ Deno.serve(async (req) => {
     currency,
     captureFlow: capture_method === 'manual' ? 'Manual' : 'Automatic',
     settings: { receiptPrintingSource: 'PointOfSale' },
+    ...(platformFee != null ? { paymentSession: { platformFee } } : {}),
     metadata: { ...(closed_check_id ? { closed_check_id } : {}), ...metadata },
   }, accountId ? { accountId } : {});
 
