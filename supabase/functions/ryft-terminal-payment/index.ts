@@ -83,8 +83,11 @@ Deno.serve(async (req) => {
   const res = await createTerminalPayment(terminalId!, {
     amounts: { requested: amount_minor },
     currency,
-    captureFlow: capture_method === 'manual' ? 'Manual' : 'Automatic',
-    settings: { receiptPrintingSource: 'PointOfSale' },
+    // receiptPrintingSource MUST be 'Terminal' — the PAX device self-prints. With
+    // 'PointOfSale' the terminal action blocks waiting for a confirm-receipt call
+    // we never make, so the first live tap would hang. (captureFlow is NOT a field
+    // on TerminalPaymentRequestBody — it's online-only — so it's omitted here.)
+    settings: { receiptPrintingSource: 'Terminal' },
     ...(platformFee != null ? { paymentSession: { platformFee } } : {}),
     metadata: { ...(closed_check_id ? { closed_check_id } : {}), ...metadata },
   }, accountId ? { accountId } : {});

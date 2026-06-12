@@ -83,6 +83,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.422', date: '11 Jun 2026', label: 'Fix two latent Ryft terminal bugs found in the API audit (before hardware)',
+    changes: [
+      'Card-present receipts: the terminal now self-prints (receiptPrintingSource "Terminal"). It was set to "PointOfSale", which makes the device wait for a confirm-receipt call we never send — the first live tap would have hung. Caught in the Ryft API audit before any hardware arrived.',
+      'Removed an invalid captureFlow field from the terminal charge (it only exists on online payments, not terminal ones) — harmless but cleaned up so the card-present request matches the Ryft spec exactly.',
+    ],
+  },
+  {
     version: '5.5.421', date: '11 Jun 2026', label: 'Pair Ryft card readers in the back office (ready ahead of hardware)',
     changes: [
       'Back Office → Card readers now has a "Ryft card readers" panel for Ryft locations: enter the terminal serial number → it registers with Ryft and is ready to take card-present payments. Name it and optionally bind it to a specific till, or leave it available to any till.',
