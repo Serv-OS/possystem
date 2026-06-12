@@ -23,6 +23,18 @@ const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: 
 const opsAdmin = createClient(Deno.env.get('SUPABASE_URL') ?? '', Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '', { auth: { autoRefreshToken: false, persistSession: false } });
 const platformAdmin = createClient(Deno.env.get('PLATFORM_SUPABASE_URL') ?? '', Deno.env.get('PLATFORM_SUPABASE_SERVICE_ROLE_KEY') ?? '', { auth: { autoRefreshToken: false, persistSession: false } });
 
+function ryftErr(d: any): string | null { return d?.errors?.[0]?.message || d?.message || null; }
+// Ryft metadata values must be non-empty and whitespace-free.
+function cleanMeta(obj: Record<string, unknown>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v == null) continue;
+    const c = String(v).trim().replace(/\s+/g, '_').slice(0, 60);
+    if (c) out[k] = c;
+  }
+  return out;
+}
+
 function deriveStatus(account: any) {
   const v = account?.verification ?? {};
   const caps = account?.capabilities ?? {};
@@ -87,9 +99,9 @@ Deno.serve(async (req) => {
       if (!email) return json({ error: 'email required to create the account' }, 400);
       const created = await createSubAccount({
         onboardingFlow: 'Hosted', email,
-        metadata: { location_id: loc.id, location_name: String(loc.name ?? '').slice(0, 60), self_serve: 'true' },
+        metadata: cleanMeta({ location_id: loc.id, location_name: loc.name, self_serve: 'true' }),
       });
-      if (!created.ok || !created.data?.id) return json({ error: created.data?.message || `Ryft account create failed (${created.status})`, ryft: created.data }, 502);
+      if (!created.ok || !created.data?.id) return json({ error: ryftErr(created.data) || `Ryft account create failed (${created.status})`, ryft: created.data }, 502);
       accountId = created.data.id;
       const d = deriveStatus(created.data);
       const { error: upErr } = await platformAdmin.from('merchant_ryft_accounts').upsert({

@@ -39,6 +39,22 @@ const platformAdmin = createClient(
 // Ryft doesn't expose a single charges_enabled flag like Stripe — derive a
 // usable status from the verification block + card capabilities, and keep the
 // raw verification object for the UI to show what's still outstanding.
+// Ryft surfaces field errors in errors[]; pull the first useful message.
+function ryftErr(d: any): string | null {
+  return d?.errors?.[0]?.message || d?.message || null;
+}
+// Ryft metadata values must be NON-EMPTY and contain NO WHITESPACE. Collapse
+// whitespace to underscores and drop empties.
+function cleanMeta(obj: Record<string, unknown>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v == null) continue;
+    const cleaned = String(v).trim().replace(/\s+/g, '_').slice(0, 60);
+    if (cleaned) out[k] = cleaned;
+  }
+  return out;
+}
+
 function deriveStatus(account: any) {
   const v = account?.verification ?? {};
   const caps = account?.capabilities ?? {};
@@ -147,13 +163,12 @@ Deno.serve(async (req) => {
     // merchant fills entity type + KYC/KYB in Ryft's portal regardless.
     if (body.entity_type === 'Business' && body.business) { input.entityType = 'Business'; input.business = body.business; }
     else if (body.entity_type === 'Individual' && body.individual) { input.entityType = 'Individual'; input.individual = body.individual; }
-    const meta: Record<string, string> = { location_id: loc.id, location_name: String(loc.name ?? '').slice(0, 60) };
-    if (body.trading_name) meta.trading_name = String(body.trading_name).slice(0, 60);
-    input.metadata = meta;
+    const meta = cleanMeta({ location_id: loc.id, location_name: loc.name, trading_name: body.trading_name });
+    if (Object.keys(meta).length) input.metadata = meta;
 
     const created = await createSubAccount(input);
     if (!created.ok || !created.data?.id) {
-      return json({ error: created.data?.message || `Ryft account create failed (${created.status})`, ryft: created.data }, 502);
+      return json({ error: ryftErr(created.data) || `Ryft account create failed (${created.status})`, ryft: created.data }, 502);
     }
     const accountId = created.data.id as string;
 
@@ -165,7 +180,7 @@ Deno.serve(async (req) => {
     if (body.redirect_url) {
       const link = await createAccountLink({ accountId, redirectUrl: body.redirect_url });
       if (link.ok && link.data?.url) { onboarding_url = link.data.url; expires_at = link.data.expiresTimestamp ?? null; }
-      else link_error = link.data?.message || `account-link failed (${link.status})`;
+      else link_error = ryftErr(link.data) || `account-link failed (${link.status})`;
     }
     return json({ success: true, account_id: accountId, verification_status: derived.verification_status, charges_enabled: derived.charges_enabled, onboarding_url, expires_at, link_error });
   }
@@ -175,7 +190,7 @@ Deno.serve(async (req) => {
     const accountId = String(body.ryft_account_id ?? '').trim();
     if (!accountId.startsWith('ac_')) return json({ error: "ryft_account_id must start with 'ac_'" }, 400);
     const got = await getAccount(accountId);
-    if (!got.ok || !got.data?.id) return json({ error: got.data?.message || `Ryft account not found (${got.status})`, ryft: got.data }, 400);
+    if (!got.ok || !got.data?.id) return json({ error: ryftErr(got.data) || `Ryft account not found (${got.status})`, ryft: got.data }, 400);
     const { error: upErr, derived } = await upsertRyftAccount(loc, accountId, got.data, caller.id);
     if (upErr) return json({ error: `merchant_ryft_accounts upsert failed: ${upErr.message}` }, 500);
     return json({ success: true, account_id: accountId, verification_status: derived.verification_status, charges_enabled: derived.charges_enabled });
@@ -187,7 +202,7 @@ Deno.serve(async (req) => {
       .select('ryft_account_id').eq('location_id', loc.id).maybeSingle();
     if (!row?.ryft_account_id) return json({ error: 'No Ryft account linked to this location' }, 404);
     const got = await getAccount(row.ryft_account_id);
-    if (!got.ok || !got.data?.id) return json({ error: got.data?.message || `Ryft fetch failed (${got.status})`, ryft: got.data }, 502);
+    if (!got.ok || !got.data?.id) return json({ error: ryftErr(got.data) || `Ryft fetch failed (${got.status})`, ryft: got.data }, 502);
     const { error: upErr, derived } = await upsertRyftAccount(loc, row.ryft_account_id, got.data, caller.id);
     if (upErr) return json({ error: `merchant_ryft_accounts update failed: ${upErr.message}` }, 500);
     return json({ success: true, account_id: row.ryft_account_id, verification_status: derived.verification_status, charges_enabled: derived.charges_enabled });
@@ -206,7 +221,7 @@ Deno.serve(async (req) => {
       const auth = await authorizeAccount({ email: body.email, redirectUrl: body.redirect_url });
       if (auth.ok && auth.data?.url) return json({ success: true, onboarding_url: auth.data.url, expires_at: auth.data.expiresTimestamp ?? null, mode: 'authorize' });
     }
-    return json({ error: link.data?.message || `account-link failed (${link.status})`, ryft: link.data }, 502);
+    return json({ error: ryftErr(link.data) || `account-link failed (${link.status})`, ryft: link.data }, 502);
   }
 
   return json({ error: `unknown action: ${action}` }, 400);

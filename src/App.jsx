@@ -83,6 +83,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.416', date: '11 Jun 2026', label: 'Fix: creating a Ryft merchant failed (400) when the location name had a space',
+    changes: [
+      'Ryft rejects metadata values containing whitespace, so connecting a Ryft merchant for a location whose name had a space (e.g. "Location One") failed with a generic 400. We now sanitise metadata (whitespace → underscore, drop empties) before sending it.',
+      'Ryft errors now surface the real reason (Ryft\'s field-level message) instead of just the HTTP status, so any future failure is self-explanatory.',
+    ],
+  },
+  {
     version: '5.5.415', date: '11 Jun 2026', label: 'Merchants set up card payments themselves from the back office (Ryft)',
     changes: [
       'Ryft venues can now onboard themselves: Location Settings has a "Set up card payments" button that creates their Ryft account and opens secure hosted onboarding (verify business, add bank & payout details). "Continue payment setup" reappears until they are live.',
