@@ -87,6 +87,11 @@ Deno.serve(async (req) => {
     amount: amount_minor,
     currency,
     captureFlow: capture_method === 'manual' ? 'Manual' : 'Automatic',
+    // Book all of Ryft's processing fees to the merchant's sub-account so our
+    // pricing model (merchant pays Ryft cost; we add platformFee = our markup)
+    // is explicit, not reliant on Ryft's default. `combined` is valid on any
+    // pricing model (ICC++/Blended) — only the granular fields are model-locked.
+    ...(accountId ? { paymentSettings: { platform: { paymentFees: { combined: { bookTo: accountId } } } } } : {}),
     ...(customer_email ? { customerEmail: customer_email } : {}),
     ...(platformFee != null ? { platformFee } : {}),
     metadata: { channel, ...(closed_check_id ? { closed_check_id } : {}), ...metadata },

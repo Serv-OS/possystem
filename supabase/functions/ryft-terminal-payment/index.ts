@@ -88,7 +88,14 @@ Deno.serve(async (req) => {
     // we never make, so the first live tap would hang. (captureFlow is NOT a field
     // on TerminalPaymentRequestBody — it's online-only — so it's omitted here.)
     settings: { receiptPrintingSource: 'Terminal' },
-    ...(platformFee != null ? { paymentSession: { platformFee } } : {}),
+    // platformFee = our markup; book Ryft's own fees to the merchant sub-account
+    // (explicit, model-agnostic — see ryft-create-payment-session).
+    ...((platformFee != null || accountId) ? {
+      paymentSession: {
+        ...(platformFee != null ? { platformFee } : {}),
+        ...(accountId ? { paymentSettings: { platform: { paymentFees: { combined: { bookTo: accountId } } } } } : {}),
+      },
+    } : {}),
     metadata: { ...(closed_check_id ? { closed_check_id } : {}), ...metadata },
   }, accountId ? { accountId } : {});
 

@@ -83,6 +83,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.428', date: '12 Jun 2026', label: 'Ryft fee allocation made explicit (protects our margin)',
+    changes: [
+      'Every Ryft payment now explicitly books the card-network/processing fees to the merchant\'s account, so our model (merchant pays Ryft\'s cost, we add our markup as the platform fee) no longer relies on a Ryft default that could change. Applied to online, QR and card-present. Verified against the Ryft sandbox.',
+    ],
+  },
+  {
     version: '5.5.427', date: '12 Jun 2026', label: 'Ryft is now live in online & QR checkout',
     changes: [
       'Online ordering and QR table checkout now take card payments through Ryft for venues set to Ryft — the customer sees the Ryft card form instead of Stripe, dispatched automatically by the location\'s processor. Stripe venues are completely unchanged (it fails safe to Stripe).',
