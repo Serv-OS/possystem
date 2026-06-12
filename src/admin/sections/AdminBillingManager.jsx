@@ -251,7 +251,9 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
   const [editing, setEditing] = useState(false);
   const [cp, setCp] = useState(defaults.default_cardpresent_markup_percent);
   const [on, setOn] = useState(defaults.default_online_markup_percent);
-  // Ryft: just the default markup we add on top (% + per-txn pence).
+  // Ryft: our blended cost (what Ryft charges us) + the markup we add on top.
+  const [cPct, setCPct] = useState(defaults.ryft_cost_percent ?? '');
+  const [cFix, setCFix] = useState(defaults.ryft_cost_fixed_pence ?? '');
   const [mkPct, setMkPct] = useState(defaults.default_ryft_markup_percent ?? '');
   const [mkFix, setMkFix] = useState(defaults.default_ryft_markup_fixed_pence ?? '');
   const [busy, setBusy] = useState(false);
@@ -259,6 +261,8 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
   useEffect(() => {
     setCp(defaults.default_cardpresent_markup_percent);
     setOn(defaults.default_online_markup_percent);
+    setCPct(defaults.ryft_cost_percent ?? '');
+    setCFix(defaults.ryft_cost_fixed_pence ?? '');
     setMkPct(defaults.default_ryft_markup_percent ?? '');
     setMkFix(defaults.default_ryft_markup_fixed_pence ?? '');
   }, [defaults]);
@@ -272,6 +276,8 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
       const patch = {
         default_cardpresent_markup_percent: Number(cp),
         default_online_markup_percent: Number(on),
+        ryft_cost_percent: numOrNull(cPct),
+        ryft_cost_fixed_pence: intOrNull(cFix),
         default_ryft_markup_percent: numOrNull(mkPct),
         default_ryft_markup_fixed_pence: intOrNull(mkFix),
         updated_at: new Date().toISOString(),
@@ -299,15 +305,25 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
             Platform defaults
           </div>
           <div style={{ fontSize: 14, color: 'var(--t1)', marginBottom: 8, lineHeight: 1.4 }}>
-            Stripe markup, and the default Ryft markup we add on top. Ryft charges the card-network fees itself — we don't track those; actual costs come back live from Ryft.
+            Stripe markup, and the Ryft model in two numbers — our cost (what Ryft charges us) and the markup we add. The customer pays the sum.
           </div>
-          {!editing && (
-            <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}>
-              <Stat label="Stripe in-person markup" value={pct(defaults.default_cardpresent_markup_percent)} />
-              <Stat label="Stripe online markup"    value={pct(defaults.default_online_markup_percent)} />
-              <Stat label="Ryft markup (default)"   value={`${pct(defaults.default_ryft_markup_percent)} + ${pence(defaults.default_ryft_markup_fixed_pence)}`} accent />
-            </div>
-          )}
+          {!editing && (() => {
+            const c = Number(defaults.ryft_cost_percent ?? 0), cf = Number(defaults.ryft_cost_fixed_pence ?? 0);
+            const m = Number(defaults.default_ryft_markup_percent ?? 0), mf = Number(defaults.default_ryft_markup_fixed_pence ?? 0);
+            return (
+              <div style={{ display: 'grid', gap: 10 }}>
+                <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}>
+                  <Stat label="Stripe in-person markup" value={pct(defaults.default_cardpresent_markup_percent)} />
+                  <Stat label="Stripe online markup"    value={pct(defaults.default_online_markup_percent)} />
+                </div>
+                <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', paddingTop: 8, borderTop: '1px solid var(--bdr)' }}>
+                  <Stat label="Ryft cost (what Ryft charges us)" value={`${pct(c)} + ${pence(cf)}`} />
+                  <Stat label="Ryft markup (what we add)" value={`${pct(m)} + ${pence(mf)}`} accent />
+                  <Stat label="Customer pays (default)" value={`${pct(c + m)} + ${pence(cf + mf)}`} />
+                </div>
+              </div>
+            );
+          })()}
           {editing && (
             <div style={{ display: 'grid', gap: 14, maxWidth: 520 }}>
               <div>
@@ -318,7 +334,14 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
                 </div>
               </div>
               <div>
-                <div style={{ ...S.label, color: 'var(--t2)' }}>Ryft markup — what we add on top of Ryft's cost</div>
+                <div style={{ ...S.label, color: 'var(--t2)' }}>Ryft cost — what Ryft charges us (blended)</div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                  <NumField label="Cost %" value={cPct} onChange={setCPct} />
+                  <NumField label="Per-txn fee (pence)" value={cFix} onChange={setCFix} />
+                </div>
+              </div>
+              <div>
+                <div style={{ ...S.label, color: 'var(--t2)' }}>Ryft markup — what we add on top</div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                   <NumField label="Markup %" value={mkPct} onChange={setMkPct} />
                   <NumField label="Per-txn fee (pence)" value={mkFix} onChange={setMkFix} />
@@ -491,6 +514,8 @@ function RyftBlock({ rya, currency, defaults, onConnect, onSync, onUnlink, onOnb
   const num = (v, d) => (v === '' || v == null ? Number(d ?? 0) : Number(v));
   const mkPctEff = num(mkPct, defaults.default_ryft_markup_percent);
   const mkFixEff = num(mkFix, defaults.default_ryft_markup_fixed_pence);
+  const costPct = Number(defaults.ryft_cost_percent ?? 0);
+  const costFix = Number(defaults.ryft_cost_fixed_pence ?? 0);
   const fmtMoney = (minor) => fmt((Number(minor) || 0) / 100, fees?.currency || currency);
 
   return (
@@ -533,8 +558,14 @@ function RyftBlock({ rya, currency, defaults, onConnect, onSync, onUnlink, onOnb
             <MarkupField label="Markup %" value={mkPct} onChange={setMkPct} effective={mkPctEff} isOverride={mkPct !== ''} def={defaults.default_ryft_markup_percent} />
             <MarkupField label="Per-transaction fee" value={mkFix} onChange={setMkFix} effective={mkFixEff} isOverride={mkFix !== ''} def={defaults.default_ryft_markup_fixed_pence} unit="p" />
           </div>
+          {/* Our cost + what we add = what the customer pays */}
+          <div style={{ display: 'flex', gap: 22, flexWrap: 'wrap', padding: '10px 12px', background: 'var(--bg2)', borderRadius: 8, marginBottom: 12, border: '1px solid var(--bdr)' }}>
+            <Stat label="Our cost" value={`${costPct.toFixed(2)}% + ${costFix}p`} />
+            <Stat label="We add (markup)" value={`${mkPctEff.toFixed(2)}% + ${mkFixEff}p`} accent />
+            <Stat label="Customer pays" value={`${(costPct + mkPctEff).toFixed(2)}% + ${costFix + mkFixEff}p`} />
+          </div>
           <div style={{ fontSize: 11, color: 'var(--t3)', marginBottom: 12, lineHeight: 1.5 }}>
-            We charge <strong>{mkPctEff.toFixed(2)}% + {mkFixEff}p</strong> on each payment. Ryft charges the card-network fees (interchange + scheme) directly — we don't set those. See real costs &amp; margin below.
+            Our cost is set in Platform defaults; markup is the platformFee we take. The customer sees only "customer pays". Actual fees come back live from Ryft below.
           </div>
 
           <NotesRow notes={notes} setNotes={setNotes} />

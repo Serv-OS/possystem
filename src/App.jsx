@@ -83,6 +83,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.418', date: '11 Jun 2026', label: 'Ryft pricing in three numbers: our cost + what we add = what the customer pays',
+    changes: [
+      'Admin now shows the whole picture per merchant: our cost (one blended figure, what Ryft charges us), the markup we add, and "customer pays" = the two summed. Cost + default markup are set in Platform defaults.',
+      'The customer (back office) sees ONE number: "What you pay per card transaction — X% + Yp", a single all-in rate. None of our cost/markup internals.',
+      'Actual fees still come back live from Ryft (GMV / fees paid / markup collected) so you can check the blended cost against reality.',
+    ],
+  },
+  {
     version: '5.5.417', date: '11 Jun 2026', label: 'Ryft pricing radically simplified — just our markup + live costs from Ryft',
     changes: [
       'Stripped Ryft pricing down to one input: the markup we add on top (% + per-transaction fee), per location with a platform default. No more entering cost, scheme fees or interchange — Ryft charges those itself and reports the actuals.',

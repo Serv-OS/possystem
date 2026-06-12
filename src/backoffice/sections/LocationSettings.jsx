@@ -185,7 +185,7 @@ export default function LocationSettings() {
           // this location's negotiated override, if any). Non-fatal on error.
           try {
             const [{ data: ps }, { data: mra }] = await Promise.all([
-              platformSupabase.from('platform_settings').select('default_ryft_markup_percent, default_ryft_markup_fixed_pence').eq('id', true).maybeSingle(),
+              platformSupabase.from('platform_settings').select('ryft_cost_percent, ryft_cost_fixed_pence, default_ryft_markup_percent, default_ryft_markup_fixed_pence').eq('id', true).maybeSingle(),
               platformSupabase.from('merchant_ryft_accounts').select('charges_enabled, ryft_account_id, markup_percent, markup_fixed_pence').eq('location_id', row.id).maybeSingle(),
             ]);
             setPayInfo({ processor: row.payment_processor || 'stripe', std: ps || null, ovr: mra || null });
@@ -332,6 +332,8 @@ export default function LocationSettings() {
         const eff = (o, s) => (o != null ? Number(o) : Number(s ?? 0));
         const mkPct = eff(ovr.markup_percent, std.default_ryft_markup_percent);
         const mkFix = eff(ovr.markup_fixed_pence, std.default_ryft_markup_fixed_pence);
+        const costPct = Number(std.ryft_cost_percent ?? 0), costFix = Number(std.ryft_cost_fixed_pence ?? 0);
+        const payPct = costPct + mkPct, payFix = costFix + mkFix;   // what the customer pays
         const linked = !!payInfo.ovr?.ryft_account_id;
         const live = !!payInfo.ovr?.charges_enabled;
         return (
@@ -341,14 +343,14 @@ export default function LocationSettings() {
               {linked ? (live ? 'Your payments account is live.' : 'Your account is set up — finish onboarding to start taking payments.') : 'Connect your payments account below to start taking cards.'}
             </div>
             <div style={{ border:'1px solid var(--bdr)', borderRadius:10, padding:'14px 16px', background:'var(--bg2)' }}>
-              <div style={{ fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.04em', marginBottom:6 }}>Your fee per transaction</div>
-              <div style={{ fontSize:20, fontWeight:800, color:'var(--t1)' }}>{mkPct.toFixed(2)}% + {mkFix}p</div>
+              <div style={{ fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.04em', marginBottom:6 }}>What you pay per card transaction</div>
+              <div style={{ fontSize:24, fontWeight:800, color:'var(--t1)' }}>{payPct.toFixed(2)}% + {payFix}p</div>
               <div style={{ fontSize:12, color:'var(--t4)', marginTop:6, lineHeight:1.5 }}>
-                Plus the card networks' own processing fees, charged at cost (these vary by card type). No markup on those — you pay exactly what the networks charge.
+                One simple all-in rate per card payment.
               </div>
             </div>
             <div style={{ fontSize:11, color:'var(--t4)', marginTop:8 }}>
-              Your fee is set by your account manager.
+              Your rate is set by your account manager.
             </div>
 
             {/* Self-serve onboarding */}
