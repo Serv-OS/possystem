@@ -20,6 +20,8 @@ import { Elements, CardElement, useStripe, useElements } from '@stripe/react-str
 import { supabase, platformSupabase } from '../../lib/supabase';
 import { decrementStockRPC } from '../../lib/db';
 import { getStripeForAccount, createPaymentIntent } from '../../lib/stripeClient';
+import { getLocationProcessor } from '../../lib/payments/processor';
+import RyftPaymentForm from '../../components/RyftPaymentForm';
 import { attributeOnlineOrder } from '../../lib/customerLookup';
 import { getDayWindows } from '../../lib/openingHours';
 import { calculateOrderTax } from '../../lib/tax';
@@ -62,6 +64,10 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   const [step, setStep] = useState('details');
   const [pi, setPi] = useState(null);             // { client_secret, stripe_account, ... }
   const [stripePromise, setStripePromise] = useState(null);
+  const [processor, setProcessor] = useState('stripe');   // 'stripe' | 'ryft' — defaults stripe (fail-safe)
+
+  // Resolve the location's processor once (defaults to stripe on any error).
+  useEffect(() => { getLocationProcessor(platformLocationId).then(setProcessor).catch(() => {}); }, [platformLocationId]);
 
   // Customer details — pre-fill from loyalty sign-in if available
   const [name, setName]   = useState(loyalty?.customer?.name || '');
@@ -403,7 +409,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       if (giftCoversAll || fullyPaid) {
         await onGiftOnlyPayment();
       } else {
-        await startStripePayment();
+        await startPayment();
       }
     } catch (e) {
       console.error('[OnlineCheckout] continueFromGift failed:', e);
@@ -418,7 +424,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     if (hasLoyalty) { setStep('rewards'); return; }
     setWorking(true); setError('');
     try {
-      await startStripePayment();
+      await startPayment();
     } catch (e) {
       console.error('[OnlineCheckout] skipGiftCard failed:', e);
       setError(e?.message || 'Could not start payment.');
@@ -434,7 +440,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       if (fullyPaid) {
         await onGiftOnlyPayment();
       } else {
-        await startStripePayment();
+        await startPayment();
       }
     } catch (e) {
       console.error('[OnlineCheckout] continueFromRewards failed:', e);
@@ -445,6 +451,13 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   };
 
   // v5.5.243: Shared Stripe PI creation (used by multiple paths)
+  // Dispatch to the location's processor. Ryft is card-not-present here —
+  // RyftPaymentForm creates its own session, so we just advance to the pay step.
+  const startPayment = async () => {
+    if (processor === 'ryft') { setError(''); setStep('pay'); return; }
+    return startStripePayment();
+  };
+
   const startStripePayment = async () => {
     const token = await getAuthToken();
     const { ref, customer } = orderShape;
@@ -666,6 +679,9 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   const onPaymentSuccess = async (paymentIntent) => {
     try {
       const { ref, collectionAt, sentAt, customer, items } = orderShape;
+      // The success payload is a Stripe PaymentIntent OR a Ryft payment-session.
+      // Store the right id + processor so the order is refundable later.
+      const payId = processor === 'ryft' ? (paymentIntent?.sessionId || paymentIntent?.id || null) : (paymentIntent?.id || null);
       const collectionTimeLabel = collectionAt.toLocaleTimeString('en-GB', {
         timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false,
       });
@@ -715,6 +731,9 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           tax_amount: taxBreakdown?.totalTax || null, // v5.5.154: VAT for reports + receipt
           total: subtotal,
           method: (giftApplied || rewardApplied) ? 'split' : 'card',
+          stripe_payment_intent_id: payId,
+          payment_intents: payId ? [{ id: payId, amountMinor: remainingMinor }] : null,
+          processor,   // 'stripe' | 'ryft' — refund routes by this
           payment_method: (giftApplied || rewardApplied)
             ? [
                 giftApplied ? `gift_card:${(giftApplied.applied / 100).toFixed(2)}` : null,
@@ -821,8 +840,23 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           <div style={{ flex: 1, height: 4, borderRadius: 2, background: step === 'pay' ? theme.accent : cardBdr }}/>
         </div>
 
-        {/* ── STEP: PAY (Stripe card) ─────────────────────────────────── */}
-        {step === 'pay' && pi && stripePromise ? (
+        {/* ── STEP: PAY (Ryft card, card-not-present) ─────────────────── */}
+        {step === 'pay' && processor === 'ryft' ? (
+          <div style={{ padding: '0 24px 16px' }}>
+            <RyftPaymentForm
+              amountMinor={remainingMinor}
+              currency={stripeCurrency()}
+              locationId={platformLocationId}
+              channel="online"
+              customerEmail={orderShape?.customer?.email}
+              payLabel={`Pay ${money(remainingMinor / 100)}`}
+              onSuccess={onPaymentSuccess}
+              onError={(e) => setError(e?.message || 'Payment failed')}
+            />
+            {error && <div style={{ color: theme.danger || '#e5484d', fontSize: 13, marginTop: 10 }}>{error}</div>}
+          </div>
+        ) : /* ── STEP: PAY (Stripe card) ──────────────────────────────── */
+        step === 'pay' && pi && stripePromise ? (
           <Elements stripe={stripePromise} options={{ clientSecret: pi.client_secret, appearance: { theme: theme.isLight ? 'stripe' : 'night' } }}>
             <PayStep
               pi={pi} subtotal={remainingMinor / 100} theme={theme} cardBdr={cardBdr} inputBg={inputBg} muted={muted}

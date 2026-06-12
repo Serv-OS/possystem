@@ -83,6 +83,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.427', date: '12 Jun 2026', label: 'Ryft is now live in online & QR checkout',
+    changes: [
+      'Online ordering and QR table checkout now take card payments through Ryft for venues set to Ryft — the customer sees the Ryft card form instead of Stripe, dispatched automatically by the location\'s processor. Stripe venues are completely unchanged (it fails safe to Stripe).',
+      'Both online and QR now store the payment id + processor on the order, so these card payments are fully refundable from the back office.',
+      'Kiosk card payments already run through the shared card-present terminal flow, which handles Ryft. Note: QR open-tabs (pre-auth holds) charge in full up front on Ryft, since Ryft doesn\'t use Stripe-style holds — a dedicated Ryft tab flow can follow.',
+    ],
+  },
+  {
     version: '5.5.426', date: '12 Jun 2026', label: 'Refunds now work for Ryft card payments (routed by the original processor)',
     changes: [
       'Refunding a card payment now goes back through whichever processor originally took it — Stripe or Ryft. Each check records its processor at payment time, so the refund always uses the right one even if the venue\'s setting changed since.',

@@ -18,6 +18,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { supabase } from '../../lib/supabase';
 import { getStripeForAccount, createPaymentIntent } from '../../lib/stripeClient';
+import { getLocationProcessor } from '../../lib/payments/processor';
+import RyftPaymentForm from '../../components/RyftPaymentForm';
 import { attributeOnlineOrder } from '../../lib/customerLookup';
 import { calculateOrderTax } from '../../lib/tax';
 import { stashTab } from '../../lib/qrTabStorage';
@@ -47,6 +49,8 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
   const [step, setStep] = useState('details');
   const [pi, setPi] = useState(null);
   const [stripePromise, setStripePromise] = useState(null);
+  const [processor, setProcessor] = useState('stripe');   // 'stripe' | 'ryft' (fail-safe stripe)
+  useEffect(() => { getLocationProcessor(platformLocationId).then(setProcessor).catch(() => {}); }, [platformLocationId]);
 
   const [name, setName]   = useState(loyalty?.name  || '');
   const [phone, setPhone] = useState(loyalty?.phone || '');
@@ -202,6 +206,10 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
       setError('Please enter your name and a valid phone number (we use the last 4 digits to reconnect you with your tab).');
       return;
     }
+    // Ryft is card-not-present here and pays the full total now (Ryft doesn't do
+    // Stripe-style pre-auth holds, so open-tabs fall back to pay-now). RyftPaymentForm
+    // creates its own session — just advance to the pay step.
+    if (processor === 'ryft') { setError(''); setStep('pay'); return; }
     setWorking(true); setError('');
     try {
       // Anonymous sign-in so the connected-account edge fn accepts the JWT
@@ -269,6 +277,10 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
   const onPaymentSuccess = async (paymentIntent) => {
     try {
       const { ref, customer, items } = orderShape;
+      // Ryft pays in full now (no pre-auth tab); its id is a payment-session.
+      const ryft = processor === 'ryft';
+      const payId = ryft ? (paymentIntent?.sessionId || paymentIntent?.id || null) : (paymentIntent?.id || null);
+      const tabMode = isOpenTab && !ryft;   // Ryft never runs the open-tab/pre-auth path
 
       // v5.5.155: sub-numbering for multiple QR orders at the same table.
       // First customer at table 2 → "2.1"; second customer (separate scan,
@@ -313,13 +325,13 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
         // Override the orderShape.customer.tableLabel with the sub-numbered
         // version so POS displays "Table 4.2" not "Table 4".
         tableLabel: effectiveTableLabel,
-        payment_intent_id: paymentIntent?.id || null,
+        payment_intent_id: payId,
         stripe_account: pi?.stripe_account || null,
         // v5.5.160: stash payment_method id so we can charge an off_session
         // overage if the bill > pre-auth at close time. Stripe sets this on
         // the PI after confirm. Without it the overage path can't run.
         payment_method_id: paymentIntent?.payment_method || null,
-        ...(isOpenTab ? {
+        ...(tabMode ? {
           tab_open: true,
           tab_opened_at: new Date().toISOString(),
           pre_auth_amount: tabPreAuthAmount,
@@ -364,7 +376,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
       // 2. closed_checks — only on PAY-NOW orders. For open-tab the bill
       // isn't paid yet (status is requires_capture in Stripe) — closed_checks
       // gets written on force-close-and-capture by the operator (commit 3c).
-      if (!isOpenTab) {
+      if (!tabMode) {
         try {
           await supabase.from('closed_checks').insert({
             id: `chk-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
@@ -383,6 +395,9 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
             tax_amount: taxBreakdown?.totalTax || null, // v5.5.154: VAT for reports + receipt
             total,
             method: 'card',
+            stripe_payment_intent_id: payId,
+            payment_intents: payId ? [{ id: payId, amountMinor: Math.round(total * 100) }] : null,
+            processor,   // 'stripe' | 'ryft' — refund routes by this
             drawer_id: null,
             shift_id: null,
             closed_at: new Date().toISOString(),
@@ -412,7 +427,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
       // v5.5.155: stash for silent resume on next scan from this device.
       // Only for OPEN-TAB orders — pay-now orders are already paid in full
       // and don't need a resume flow.
-      if (isOpenTab && location.online_slug && tableId) {
+      if (tabMode && location.online_slug && tableId) {
         try {
           stashTab(location.online_slug, tableId, {
             tab_ref: ref,
@@ -563,7 +578,21 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
           <div style={{ flex: 1, height: 4, borderRadius: 2, background: step === 'pay' ? theme.accent : cardBdr }}/>
         </div>
 
-        {step === 'pay' && pi && stripePromise ? (
+        {step === 'pay' && processor === 'ryft' ? (
+          <div style={{ padding: '0 24px 16px' }}>
+            <RyftPaymentForm
+              amountMinor={Math.round(total * 100)}
+              currency={stripeCurrency()}
+              locationId={platformLocationId}
+              channel="online"
+              customerEmail={orderShape?.customer?.email}
+              payLabel={`Pay ${money(total)}`}
+              onSuccess={onPaymentSuccess}
+              onError={(e) => setError(e?.message || 'Payment failed')}
+            />
+            {error && <div style={{ color: theme.danger || '#e5484d', fontSize: 13, marginTop: 10 }}>{error}</div>}
+          </div>
+        ) : step === 'pay' && pi && stripePromise ? (
           <Elements stripe={stripePromise} options={{ clientSecret: pi.client_secret, appearance: { theme: theme.isLight ? 'stripe' : 'night' } }}>
             <PayStep
               pi={pi} subtotal={subtotal} serviceCharge={serviceCharge} tipAmount={tipAmount} total={total}
