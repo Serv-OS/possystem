@@ -44,6 +44,7 @@ export default function RyftTestSurface() {
               amountMinor={amount}
               currency="gbp"
               channel="online"
+              merchantName="ServOS Test"
               onSuccess={(ps) => setResult({ status: ps.status, id: ps.id })}
               onError={() => {}}
             />

@@ -89,13 +89,16 @@ export default function AdminBillingManager({ authUser }) {
 
       const ids = (locs ?? []).map(l => l.id);
       if (ids.length) {
-        const [{ data: msas }, { data: ryas }, { data: bses }] = await Promise.all([
+        // merchant_ryft_accounts is RLS service-role-read (the platform client is
+        // anonymous here), so fetch it through the super_admin edge fn — reading
+        // it directly returns nothing and shows linked accounts as "Not connected".
+        const [{ data: msas }, ryftStatus, { data: bses }] = await Promise.all([
           platformSupabase.from('merchant_stripe_accounts').select('*').in('location_id', ids),
-          platformSupabase.from('merchant_ryft_accounts').select('*').in('location_id', ids),
+          callPaymentsAdmin('ryft_status', { location_ids: ids }).catch(e => { console.warn('[billing] ryft_status failed', e?.message); return { accounts: [] }; }),
           platformSupabase.from('billing_state').select('*').in('location_id', ids),
         ]);
         const m = {}; (msas ?? []).forEach(r => { m[r.location_id] = r; });
-        const ry = {}; (ryas ?? []).forEach(r => { ry[r.location_id] = r; });
+        const ry = {}; (ryftStatus?.accounts ?? []).forEach(r => { ry[r.location_id] = r; });
         const b = {}; (bses ?? []).forEach(r => { b[r.location_id] = r; });
         setMsaByLoc(m);
         setRyaByLoc(ry);
@@ -503,10 +506,10 @@ function RyftBlock({ rya, currency, defaults, onConnect, onSync, onUnlink, onOnb
   const linked = !!rya;
   const vStatus = rya?.requirements?.status ?? null;       // verification.status, when known
   const status = !linked
-    ? { label: 'Not connected', color: 'var(--t3)' }
+    ? { label: 'Not connected', color: 'var(--t3)', ready: false }
     : rya.charges_enabled
-      ? { label: 'Live · charges enabled', color: 'var(--grn)' }
-      : { label: vStatus ? `Onboarding · ${vStatus}` : 'Onboarding incomplete', color: 'var(--orn)' };
+      ? { label: 'Ready to take payments', color: 'var(--grn)', ready: true }
+      : { label: vStatus ? `Onboarding — ${vStatus}` : 'Onboarding — not ready yet', color: 'var(--orn)', ready: false };
 
   const [mkPct, setMkPct] = useState(rya?.markup_percent ?? '');
   const [mkFix, setMkFix] = useState(rya?.markup_fixed_pence ?? '');
@@ -539,10 +542,16 @@ function RyftBlock({ rya, currency, defaults, onConnect, onSync, onUnlink, onOnb
   return (
     <>
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: linked ? 16 : 0 }}>
-        <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: 13, color: status.color, fontWeight: 700 }}>
-          <span style={{ width: 8, height: 8, borderRadius: 99, background: status.color }} />
-          {status.label}
-        </span>
+        {status.ready ? (
+          <span style={{ display: 'inline-flex', gap: 7, alignItems: 'center', fontSize: 13, fontWeight: 800, color: 'var(--grn)', background: 'var(--grn-d, rgba(48,164,108,.14))', border: '1px solid var(--grn-b, rgba(48,164,108,.4))', borderRadius: 99, padding: '4px 12px' }}>
+            ✅ {status.label}
+          </span>
+        ) : (
+          <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: 13, color: status.color, fontWeight: 700 }}>
+            <span style={{ width: 8, height: 8, borderRadius: 99, background: status.color }} />
+            {status.label}
+          </span>
+        )}
         {linked && (
           <>
             <span style={S.pill}>{rya.country ?? '—'}</span>
@@ -740,6 +749,26 @@ function RyftOnboardModal({ location, onClose, onDone }) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
   const [result, setResult] = useState(null);   // { account_id, onboarding_url }
+  const [preview, setPreview] = useState(null);  // ryft_inspect result (what you're about to connect)
+  const [inspecting, setInspecting] = useState(false);
+
+  // Look the account up at Ryft and SHOW what it is before connecting — email,
+  // status, and which location its metadata points to — so you never connect
+  // the wrong merchant.
+  const doInspect = async () => {
+    setError(null); setPreview(null);
+    const id = acctId.trim();
+    if (!id) return;
+    setInspecting(true);
+    try {
+      const r = await callPaymentsAdmin('ryft_inspect', { location_id: location.id, ryft_account_id: id });
+      setPreview(r);
+    } catch (e) {
+      setError(String(e?.message ?? e));
+    } finally {
+      setInspecting(false);
+    }
+  };
 
   const submitCreate = async () => {
     setError(null);
@@ -820,15 +849,44 @@ function RyftOnboardModal({ location, onClose, onDone }) {
 
       {mode === 'link' && (
         <>
-          <label style={S.label}>Ryft account ID</label>
-          <input type="text" value={acctId} onChange={e => setAcctId(e.target.value)} placeholder="ac_xxxxxxxx-..." style={{ ...S.input, ...S.inputMono }} autoFocus />
-          <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 6, marginBottom: 16 }}>
-            An existing sub-account id from the Ryft dashboard. Validated with Ryft before linking.
+          <div style={{ fontSize: 12, color: 'var(--t3)', marginBottom: 12, lineHeight: 1.5 }}>
+            Connecting one you already made in the Ryft dashboard? Most merchants don't need this — an account created with <strong>Create new</strong> connects itself, and onboarding flips it to “ready to trade” automatically. Use this only to attach an account created outside this portal.
           </div>
-          {error && <div style={S.errorBox}>{error}</div>}
-          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <label style={S.label}>Ryft account ID</label>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input type="text" value={acctId} onChange={e => { setAcctId(e.target.value); setPreview(null); }} onBlur={doInspect} placeholder="ac_xxxxxxxx-..." style={{ ...S.input, ...S.inputMono, flex: 1 }} autoFocus />
+            <button onClick={doInspect} disabled={inspecting || !acctId.trim()} style={{ ...S.btn, ...S.btnGhost, whiteSpace: 'nowrap' }}>{inspecting ? 'Checking…' : 'Check'}</button>
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 6 }}>
+            The account id starts with <code style={{ fontFamily: 'var(--font-mono, monospace)' }}>ac_</code> and is on the account's page in the Ryft dashboard (it is NOT the location id).
+          </div>
+
+          {/* Live preview — what you're about to connect */}
+          {preview && (
+            <div style={{ marginTop: 14, padding: 12, borderRadius: 10, border: `1px solid ${preview.matches_this_location === false ? 'var(--red-b, #e5484d55)' : 'var(--bdr)'}`, background: 'var(--bg2)' }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)', marginBottom: 4 }}>
+                {preview.metadata_location_name || preview.email || 'Ryft account'}
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--t3)', lineHeight: 1.6 }}>
+                <div>{preview.email || 'no email'} · verification: <strong>{preview.verification_status || '—'}</strong></div>
+                <div>{preview.charges_enabled ? '✅ Ready to trade (charges enabled)' : '⏳ Onboarding — not payment-ready yet'}</div>
+                {preview.already_linked_location_id && preview.already_linked_location_id !== location.id && (
+                  <div style={{ color: 'var(--red, #e5484d)' }}>⚠ Already linked to a different location.</div>
+                )}
+                {preview.matches_this_location === false && (
+                  <div style={{ color: 'var(--red, #e5484d)' }}>⚠ This account was set up for a different location — double-check before connecting.</div>
+                )}
+                {preview.matches_this_location === true && (
+                  <div style={{ color: 'var(--grn, #30a46c)' }}>✓ This account is set up for {location.name}.</div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {error && <div style={{ ...S.errorBox, marginTop: 12 }}>{error}</div>}
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
             <button onClick={onClose} disabled={submitting} style={{ ...S.btn, ...S.btnGhost }}>Cancel</button>
-            <button onClick={submitLink} disabled={submitting || !acctId} style={{ ...S.btn, ...S.btnPrim }}>{submitting ? 'Linking…' : 'Link account'}</button>
+            <button onClick={submitLink} disabled={submitting || !preview} style={{ ...S.btn, ...S.btnPrim }}>{submitting ? 'Connecting…' : 'Connect this account'}</button>
           </div>
         </>
       )}

@@ -20,6 +20,7 @@ import { supabase } from '../../lib/supabase';
 import { getStripeForAccount, createPaymentIntent } from '../../lib/stripeClient';
 import { getLocationProcessor } from '../../lib/payments/processor';
 import RyftPaymentForm from '../../components/RyftPaymentForm';
+import { readRyftStoredCard } from '../../lib/payments/ryft';
 import { attributeOnlineOrder } from '../../lib/customerLookup';
 import { calculateOrderTax } from '../../lib/tax';
 import { stashTab } from '../../lib/qrTabStorage';
@@ -206,9 +207,10 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
       setError('Please enter your name and a valid phone number (we use the last 4 digits to reconnect you with your tab).');
       return;
     }
-    // Ryft is card-not-present here and pays the full total now (Ryft doesn't do
-    // Stripe-style pre-auth holds, so open-tabs fall back to pay-now). RyftPaymentForm
-    // creates its own session — just advance to the pay step.
+    // Ryft is card-not-present here. RyftPaymentForm creates its own session, so
+    // we just advance to the pay step — for an open tab it's created with a
+    // manual-capture hold + the card stored (Unscheduled), exactly like Stripe's
+    // pre-auth, and the close path captures the actual bill (see render block).
     if (processor === 'ryft') { setError(''); setStep('pay'); return; }
     setWorking(true); setError('');
     try {
@@ -277,10 +279,13 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
   const onPaymentSuccess = async (paymentIntent) => {
     try {
       const { ref, customer, items } = orderShape;
-      // Ryft pays in full now (no pre-auth tab); its id is a payment-session.
+      // Ryft's id is a payment-session (ps_). On an open tab the manual-capture
+      // hold also stored the card — pull cus_/pmt_ so the close can charge any
+      // overage off-session (mirrors Stripe's payment_method_id stash).
       const ryft = processor === 'ryft';
-      const payId = ryft ? (paymentIntent?.sessionId || paymentIntent?.id || null) : (paymentIntent?.id || null);
-      const tabMode = isOpenTab && !ryft;   // Ryft never runs the open-tab/pre-auth path
+      const ryftCard = ryft ? readRyftStoredCard(paymentIntent) : null;
+      const payId = ryft ? (ryftCard?.sessionId || paymentIntent?.sessionId || paymentIntent?.id || null) : (paymentIntent?.id || null);
+      const tabMode = isOpenTab;            // both processors now run the open-tab/pre-auth path
 
       // v5.5.155: sub-numbering for multiple QR orders at the same table.
       // First customer at table 2 → "2.1"; second customer (separate scan,
@@ -325,12 +330,23 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
         // Override the orderShape.customer.tableLabel with the sub-numbered
         // version so POS displays "Table 4.2" not "Table 4".
         tableLabel: effectiveTableLabel,
+        // payment_intent_id stays the universal pooling key (holds the Ryft
+        // session id when on Ryft) so OrdersHub pooling + sub-numbering are
+        // processor-agnostic.
         payment_intent_id: payId,
+        processor,   // 'stripe' | 'ryft' — close + refund route by this
         stripe_account: pi?.stripe_account || null,
         // v5.5.160: stash payment_method id so we can charge an off_session
         // overage if the bill > pre-auth at close time. Stripe sets this on
         // the PI after confirm. Without it the overage path can't run.
         payment_method_id: paymentIntent?.payment_method || null,
+        // Ryft equivalents: the session id + the card stored at tab open
+        // (customer + tokenized payment-method) for the off-session overage.
+        ...(ryft ? {
+          payment_session_id: payId,
+          ryft_customer_id: ryftCard?.customerId || null,
+          ryft_payment_method_id: ryftCard?.storedCardId || null,
+        } : {}),
         ...(tabMode ? {
           tab_open: true,
           tab_opened_at: new Date().toISOString(),
@@ -431,8 +447,16 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
         try {
           stashTab(location.online_slug, tableId, {
             tab_ref: ref,
-            payment_intent_id: paymentIntent?.id || null,
+            payment_intent_id: payId,
+            processor,
             stripe_account: pi?.stripe_account || null,
+            // Ryft: the session + stored-card ids the close path needs (the
+            // resume screen reads straight from this stash, no DB re-fetch).
+            ...(ryft ? {
+              payment_session_id: payId,
+              ryft_customer_id: ryftCard?.customerId || null,
+              ryft_payment_method_id: ryftCard?.storedCardId || null,
+            } : {}),
             phone_last4: (customer.phone || '').replace(/\D/g, '').slice(-4),
             opened_at: new Date().toISOString(),
             table_label: effectiveTableLabel, // sub-numbered (4.1, 4.2, ...)
@@ -581,12 +605,15 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
         {step === 'pay' && processor === 'ryft' ? (
           <div style={{ padding: '0 24px 16px' }}>
             <RyftPaymentForm
-              amountMinor={Math.round(total * 100)}
+              amountMinor={Math.round((isOpenTab ? tabPreAuthAmount : total) * 100)}
               currency={stripeCurrency()}
               locationId={platformLocationId}
               channel="online"
+              merchantName={location?.name || ''}
+              captureMethod={isOpenTab ? 'manual' : 'automatic'}
+              storeCard={isOpenTab}
               customerEmail={orderShape?.customer?.email}
-              payLabel={`Pay ${money(total)}`}
+              payLabel={isOpenTab ? `Authorise ${money(tabPreAuthAmount)} hold` : `Pay ${money(total)}`}
               onSuccess={onPaymentSuccess}
               onError={(e) => setError(e?.message || 'Payment failed')}
             />

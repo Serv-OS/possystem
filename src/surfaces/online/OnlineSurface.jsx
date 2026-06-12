@@ -118,6 +118,14 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
             if (!byPi[pi]) byPi[pi] = {
               payment_intent_id: pi,
               stripe_account: r.customer?.stripe_account || null,
+              // Ryft tab routing — this no-stash "Settle bill" path builds the
+              // tab straight from the DB, so it MUST carry the processor + Ryft
+              // ids (or TabResumeScreen would mis-route a Ryft close to Stripe
+              // and strand the held funds). Default missing processor → stripe.
+              processor: r.customer?.processor || 'stripe',
+              payment_session_id: r.customer?.payment_session_id || null,
+              ryft_customer_id: r.customer?.ryft_customer_id || null,
+              ryft_payment_method_id: r.customer?.ryft_payment_method_id || null,
               tab_ref: r.customer?.tab_ref || r.ref,
               table_label: r.customer?.tableLabel || tableLabel || tableId,
               pre_auth_amount: Number(r.customer?.pre_auth_amount || 0),
@@ -420,6 +428,12 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
             setResumeTab({
               payment_intent_id: tab.payment_intent_id,
               stripe_account: tab.stripe_account,
+              // Carry the processor + Ryft ids so TabResumeScreen closes a Ryft
+              // tab through ryft-tab (not /api/stripe-capture).
+              processor: tab.processor || 'stripe',
+              payment_session_id: tab.payment_session_id || null,
+              ryft_customer_id: tab.ryft_customer_id || null,
+              ryft_payment_method_id: tab.ryft_payment_method_id || null,
               tab_ref: tab.tab_ref,
               table_label: tab.table_label,
               pre_auth_amount: tab.pre_auth_amount,

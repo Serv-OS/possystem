@@ -77,16 +77,20 @@ Deno.serve(async (req) => {
   if (!ryftConfigured()) return json({ error: 'Ryft not configured' }, 500);
 
   const { data: existing } = await platformAdmin.from('merchant_ryft_accounts')
-    .select('ryft_account_id, charges_enabled').eq('location_id', loc.id).maybeSingle();
+    .select('ryft_account_id, charges_enabled, markup_percent, markup_fixed_pence').eq('location_id', loc.id).maybeSingle();
+  // The back office card-payments card needs the negotiated markup to show what
+  // the venue pays. merchant_ryft_accounts is RLS service-role-read, so it can't
+  // read it from the client — return it here (service role) instead.
+  const markup = existing ? { markup_percent: existing.markup_percent ?? null, markup_fixed_pence: existing.markup_fixed_pence ?? null } : {};
 
   // ── ryft_status ─────────────────────────────────────────────────────────
   if (action === 'ryft_status') {
     if (!existing?.ryft_account_id) return json({ success: true, linked: false });
     const got = await getAccount(existing.ryft_account_id);
-    if (!got.ok) return json({ success: true, linked: true, charges_enabled: existing.charges_enabled });
+    if (!got.ok) return json({ success: true, linked: true, ryft_account_id: existing.ryft_account_id, charges_enabled: existing.charges_enabled, ...markup });
     const d = deriveStatus(got.data);
     await platformAdmin.from('merchant_ryft_accounts').update({ charges_enabled: d.charges_enabled, details_submitted: d.details_submitted, requirements: d.verification ?? null, country: d.country }).eq('location_id', loc.id);
-    return json({ success: true, linked: true, charges_enabled: d.charges_enabled, verification_status: d.verification_status });
+    return json({ success: true, linked: true, ryft_account_id: existing.ryft_account_id, charges_enabled: d.charges_enabled, verification_status: d.verification_status, ...markup });
   }
 
   // ── report: balance + payouts + recent transactions (financial report) ──

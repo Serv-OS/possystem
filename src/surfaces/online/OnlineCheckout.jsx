@@ -848,6 +848,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
               currency={stripeCurrency()}
               locationId={platformLocationId}
               channel="online"
+              merchantName={location?.name || ''}
               customerEmail={orderShape?.customer?.email}
               payLabel={`Pay ${money(remainingMinor / 100)}`}
               onSuccess={onPaymentSuccess}

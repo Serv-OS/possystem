@@ -14,6 +14,7 @@ import { useStore } from '../store';
 import { supabase } from '../lib/supabase';
 import { syncQrTableSession } from '../lib/qrTableSession';
 import { money, currencySymbol } from '../lib/currency';
+import { ryftTab } from '../lib/payments/ryft';
 
 // ── Channel definitions ────────────────────────────────────────────────────────
 const FILTER_TABS = [
@@ -186,6 +187,13 @@ export default function OrdersHub() {
           isOpenTab: isOpen,
           payment_intent_id: pi || null,
           stripe_account: o.customer?.stripe_account || null,
+          // Ryft tab routing — close goes through the ryft-tab edge fn instead
+          // of /api/stripe-capture. Default missing processor → stripe so tabs
+          // opened before dual-processor stay on the Stripe path.
+          processor: o.customer?.processor || 'stripe',
+          payment_session_id: o.customer?.payment_session_id || null,
+          ryft_customer_id: o.customer?.ryft_customer_id || null,
+          ryft_payment_method_id: o.customer?.ryft_payment_method_id || null,
           tableLabel: o.customer?.tableLabel || '?',
           tableId: o.customer?.tableId || null,
           customerName: o.customer?.name || 'Guest',
@@ -246,7 +254,12 @@ export default function OrdersHub() {
   // the full bill.
   const forceCloseQrTab = async (tab) => {
     if (closingTabRef) return;
-    if (!tab.payment_intent_id || !tab.stripe_account) {
+    // Route by processor. Default missing processor → stripe (tabs opened
+    // before dual-processor). Ryft holds are addressed by payment_session_id;
+    // the ryft-tab edge fn resolves the merchant account from location_id.
+    const isRyft = (tab.processor === 'ryft') || (!tab.stripe_account && !!tab.payment_session_id);
+    const ryftSession = tab.payment_session_id || tab.payment_intent_id;
+    if (isRyft ? !ryftSession : (!tab.payment_intent_id || !tab.stripe_account)) {
       showToast('Tab missing payment info — cannot capture', 'error');
       return;
     }
@@ -272,7 +285,12 @@ export default function OrdersHub() {
     // is now a normal flow, not an error.
     const willOverage = tab.preAuthAmount > 0 && finalTotal > tab.preAuthAmount;
     const paymentMethodId = tab.firstRow?.customer?.payment_method_id || null;
-    if (willOverage && !paymentMethodId) {
+    // Off-session overage needs a saved card: Stripe → payment_method id;
+    // Ryft → the stored customer + tokenized payment-method captured at open.
+    const ryftCustomerId   = tab.ryft_customer_id || tab.firstRow?.customer?.ryft_customer_id || null;
+    const ryftStoredCardId = tab.ryft_payment_method_id || tab.firstRow?.customer?.ryft_payment_method_id || null;
+    const hasSavedCard = isRyft ? (!!ryftCustomerId && !!ryftStoredCardId) : !!paymentMethodId;
+    if (willOverage && !hasSavedCard) {
       if (!confirm(
         `Bill is ${money(finalTotal)} but only ${money(tab.preAuthAmount)} was pre-authorised, and this tab was opened BEFORE v5.5.160 (no saved card on file).\n\n`
         + `Only ${money(tab.preAuthAmount)} can be captured. The ${money((finalTotal - tab.preAuthAmount))} shortfall must be collected via terminal or cash.\n\nProceed?`
@@ -284,23 +302,38 @@ export default function OrdersHub() {
           ? `Close Table ${tab.tableLabel}? Bill ${money(tab.total)} + surcharge ${money(surcharge)} (${surchargeReason}) = ${money(finalTotal)} captured.`
           : `Close Table ${tab.tableLabel} (${tab.rows.length} round${tab.rows.length === 1 ? '' : 's'}) and charge ${money(finalTotal)}?`)
       + (tab.preAuthAmount > finalTotal
-        ? `\n\nNOTE: customer's card was HELD for ${money(tab.preAuthAmount)} when the tab opened. Stripe captures ${money(finalTotal)} now; the remaining ${money((tab.preAuthAmount - finalTotal))} hold is released by their bank in 1–7 days. Customer's bank statement may briefly show both — this is normal.`
+        ? `\n\nNOTE: customer's card was HELD for ${money(tab.preAuthAmount)} when the tab opened. We capture ${money(finalTotal)} now; the remaining ${money((tab.preAuthAmount - finalTotal))} hold is released by their bank in 1–7 days. Customer's bank statement may briefly show both — this is normal.`
         : '')
     )) return;
 
     setClosingTabRef(tab.payment_intent_id);
     try {
-      const res = await fetch('/api/stripe-capture', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          paymentIntentId: tab.payment_intent_id,
-          stripeAccount: tab.stripe_account,
-          amountToCapture: Math.round(finalTotal * 100),
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.captured) throw new Error(data?.error || 'Capture failed');
+      // Capture the bill, clamped to the hold. Both paths return the same
+      // shape: { captured, captured_amount(minor), shortfall(minor), currency }.
+      let data;
+      if (isRyft) {
+        const r = await ryftTab('capture', {
+          location_id: tab.firstRow?.location_id,
+          payment_session_id: ryftSession,
+          amount_minor: Math.round(finalTotal * 100),
+        });
+        // Use the hold's real currency (echoed by capture) for the overage —
+        // never assume GBP, or a USD/EUR venue's MIT would currency-mismatch.
+        data = { captured: !!r.success, captured_amount: Number(r.captured_amount || 0), shortfall: Number(r.shortfall || 0), currency: (r.currency || 'gbp').toLowerCase() };
+      } else {
+        const res = await fetch('/api/stripe-capture', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            paymentIntentId: tab.payment_intent_id,
+            stripeAccount: tab.stripe_account,
+            amountToCapture: Math.round(finalTotal * 100),
+          }),
+        });
+        data = await res.json();
+        if (!res.ok) throw new Error(data?.error || 'Capture failed');
+      }
+      if (!data.captured) throw new Error(data?.error || 'Capture failed');
 
       // v5.5.160: if the capture was capped at the auth amount, charge the
       // shortfall off_session on the saved payment_method. Stripe will
@@ -310,8 +343,25 @@ export default function OrdersHub() {
       let overageError = null;
       const shortfallMinor = Number(data.shortfall || 0);
       if (shortfallMinor > 0) {
-        if (!paymentMethodId) {
+        if (!hasSavedCard) {
           overageError = `Could not auto-charge ${money((shortfallMinor / 100))} overage — no saved card on this tab.`;
+        } else if (isRyft) {
+          // Off-session MIT on the card stored at tab open (new Unscheduled
+          // session referencing the hold + customer + tokenized card).
+          try {
+            const ov = await ryftTab('overage', {
+              location_id: tab.firstRow?.location_id,
+              previous_session_id: ryftSession,
+              customer_id: ryftCustomerId,
+              stored_card_id: ryftStoredCardId,
+              amount_minor: shortfallMinor,
+              currency: data.currency || 'gbp',
+            });
+            if (!ov.charged) overageError = ov?.detail || ov?.error || 'Overage charge was not approved.';
+            else overageCaptured = shortfallMinor / 100;
+          } catch (e) {
+            overageError = e?.detail || e?.message || 'Overage charge failed.';
+          }
         } else {
           try {
             const ovRes = await fetch('/api/stripe-charge-overage', {
@@ -383,6 +433,13 @@ export default function OrdersHub() {
           tip: 0, tax_amount: null,
           total: totalCollected,
           method: 'card',
+          // Refund routing: refundCheck reads top-level processor + refunds each
+          // payment_intents[].id (payment_session_id for Ryft, payment_intent_id
+          // for Stripe). Reference the main captured hold; the overage is a
+          // separate session and is not auto-refunded here.
+          processor: isRyft ? 'ryft' : 'stripe',
+          stripe_payment_intent_id: isRyft ? null : tab.payment_intent_id,
+          payment_intents: [{ id: isRyft ? ryftSession : tab.payment_intent_id, amountMinor: Math.round(capturedFromAuth * 100) }],
           closed_at: new Date().toISOString(),
           // v5.5.162: was using 'partial' on shortfall but that may violate
           // a status enum/check constraint and silently fail the insert →

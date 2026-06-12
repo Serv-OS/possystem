@@ -15,8 +15,14 @@
 //     [slug]: {
 //       [tableId]: {
 //         tab_ref:           'QR-ABC12',
-//         payment_intent_id: 'pi_...',
+//         payment_intent_id: 'pi_... | ps_...',   // universal pooling key
+//         processor:         'stripe' | 'ryft',
+//         // Stripe-only:
 //         stripe_account:    'acct_...',
+//         // Ryft-only (the session + card stored at tab open, for close/overage):
+//         payment_session_id:    'ps_...',
+//         ryft_customer_id:      'cus_...',
+//         ryft_payment_method_id:'pmt_...',
 //         phone_last4:       '1234',
 //         opened_at:         '2026-05-09T12:00:00.000Z',
 //         table_label:       '4.1',

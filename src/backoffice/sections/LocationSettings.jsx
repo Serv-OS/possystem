@@ -184,11 +184,28 @@ export default function LocationSettings() {
           // Card processing rates for display (the standard Ryft rate card +
           // this location's negotiated override, if any). Non-fatal on error.
           try {
-            const [{ data: ps }, { data: mra }] = await Promise.all([
-              platformSupabase.from('platform_settings').select('ryft_cost_percent, ryft_cost_fixed_pence, default_ryft_markup_percent, default_ryft_markup_fixed_pence').eq('id', true).maybeSingle(),
-              platformSupabase.from('merchant_ryft_accounts').select('charges_enabled, ryft_account_id, markup_percent, markup_fixed_pence').eq('location_id', row.id).maybeSingle(),
-            ]);
-            setPayInfo({ processor: row.payment_processor || 'stripe', std: ps || null, ovr: mra || null });
+            const { data: ps } = await platformSupabase.from('platform_settings')
+              .select('ryft_cost_percent, ryft_cost_fixed_pence, default_ryft_markup_percent, default_ryft_markup_fixed_pence').eq('id', true).maybeSingle();
+            // merchant_ryft_accounts is RLS service-role-read, so a direct client
+            // read returns nothing and wrongly shows "Not connected". Read the
+            // venue's Ryft state through the location-scoped edge fn instead.
+            let ovr = null;
+            if ((row.payment_processor || 'stripe') === 'ryft') {
+              try {
+                const { data: session } = await supabase.auth.getSession();
+                const token = session?.session?.access_token;
+                if (token) {
+                  const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/payments-onboard`, {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+                    body: JSON.stringify({ action: 'ryft_status', ops_location_id: locId }),
+                  });
+                  const j = await res.json().catch(() => ({}));
+                  if (j?.linked) ovr = { charges_enabled: j.charges_enabled, ryft_account_id: j.ryft_account_id, markup_percent: j.markup_percent, markup_fixed_pence: j.markup_fixed_pence };
+                }
+              } catch { /* status best-effort */ }
+            }
+            setPayInfo({ processor: row.payment_processor || 'stripe', std: ps || null, ovr });
           } catch { /* rates display is best-effort */ }
         } else {
           setError('Could not load any location row from the platform DB. Check VITE_PLATFORM_SUPABASE_URL/KEY and the locations table SELECT policy.');

@@ -57,3 +57,44 @@ export async function createRyftSession({ amountMinor, currency = 'gbp', locatio
   if (!data?.clientSecret) throw new Error('Ryft session missing clientSecret');
   return data;
 }
+
+/**
+ * Pull the stored-card identifiers Ryft returns on a manual-capture tab hold.
+ * Needed to charge an overage off-session at close. Shape mirrors the
+ * PaymentSession response: customerDetails.id (cus_) + paymentMethod
+ * .tokenizedDetails.id (pmt_, .stored===true). Returns nulls if not present.
+ */
+export function readRyftStoredCard(ps) {
+  const td = ps?.paymentMethod?.tokenizedDetails;
+  return {
+    sessionId: ps?.id || ps?.sessionId || null,
+    customerId: ps?.customerDetails?.id || null,
+    // Only surface the card id if Ryft actually STORED it — otherwise the close
+    // path would try an off-session MIT on a card that can't be re-charged.
+    storedCardId: (td?.stored === true && td?.id) ? td.id : null,
+  };
+}
+
+/**
+ * Drive the Ryft open-tab lifecycle (close paths) via the ryft-tab edge
+ * function — the Ryft analogue of /api/stripe-capture & /api/stripe-charge-
+ * overage. Kept on Supabase (not Vercel) so RYFT_SECRET_KEY lives in exactly
+ * one place. `action` ∈ capture | void | overage.
+ *   capture { location_id, payment_session_id, amount_minor }
+ *   void    { location_id, payment_session_id }
+ *   overage { location_id, previous_session_id, customer_id, stored_card_id, amount_minor, currency }
+ */
+export async function ryftTab(action, payload) {
+  if (isMock || !supabase) return { success: true, mock: true };
+  try { await ensureAuthToken(); } catch { /* invoke attaches anon */ }
+  const { data, error } = await supabase.functions.invoke('ryft-tab', { body: { action, ...payload } });
+  if (error) {
+    let body = null;
+    try { body = await error.context?.json?.(); } catch { /* keep */ }
+    const e = new Error(body?.error || error.message || `ryft-tab ${action} failed`);
+    e.code = body?.error; e.detail = body?.detail; e.status = error.context?.status;
+    throw e;
+  }
+  if (data?.error) { const e = new Error(data.error); e.code = data.error; e.detail = data.detail; throw e; }
+  return data;
+}

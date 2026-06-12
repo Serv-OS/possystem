@@ -83,6 +83,43 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.434', date: '12 Jun 2026', label: 'Fix: linked Ryft merchants wrongly showed "Not connected"',
+    changes: [
+      'The admin portal was reading the Ryft merchant table directly, which is locked down — so even locations that were fully connected and ready to trade showed as "Not connected". It now reads that status through the secure admin service, so connected/live accounts show correctly.',
+      'Made the state unmistakable: a connected, charges-enabled location now shows a green “✅ Ready to take payments” badge; in-progress shows “Onboarding — not ready yet”.',
+      'Connecting an account that\'s already attached to another location now fails with a clear message instead of silently not saving.',
+    ],
+  },
+  {
+    version: '5.5.433', date: '12 Jun 2026', label: 'Ryft onboarding streamlined — accounts auto-connect, no id-pasting',
+    changes: [
+      'A Ryft merchant account created from the admin portal now connects itself to its location automatically and flips to “ready to trade” on its own as the merchant finishes onboarding (driven by the Ryft webhook) — no more copying account ids between systems.',
+      'When you do need to attach an account made directly in Ryft, the connect screen now LOOKS IT UP first and shows you exactly what you\'re connecting (business name, email, status, and whether it\'s set up for this location) before you confirm — and tells you plainly if you pasted a location id instead of the account id.',
+    ],
+  },
+  {
+    version: '5.5.432', date: '12 Jun 2026', label: 'Apple Pay & Google Pay on Ryft + open-tab hardening',
+    changes: [
+      'Ryft checkout now offers Apple Pay and Google Pay (online, QR and kiosk). On a supported phone/browser the wallet buttons appear above the card form; Google Pay needs no extra account setup, Apple Pay needs your live domain registered with Apple before go-live. A wallet payment opens a tab hold exactly like a card.',
+      'Hardening from an adversarial review of the new tab code: a Ryft open tab can now be closed from the "Settle bill" screen on a fresh device (previously only the same-device resume worked); tab overages are charged in the venue\'s real currency (not always GBP); a card that wasn\'t actually saved no longer triggers a doomed overage attempt; and the dashboard-refund reconciliation is hardened against a double-write race.',
+    ],
+  },
+  {
+    version: '5.5.431', date: '12 Jun 2026', label: 'Ryft payment reconciliation + 3DS hardening',
+    changes: [
+      'Ryft card payments are now reconciled server-side: when Ryft confirms a capture or refund, we record it against the order automatically. A refund issued directly in the Ryft dashboard now shows up in your reports (closed check marked refunded), and any captured payment that somehow has no recorded order is kept visible so nothing slips through.',
+      '3D Secure / Strong Customer Authentication is handled in the card form (inline 3DS v2, with a safe return path if a bank forces a redirect) — and the form now shows a clearer message while authentication is completing.',
+    ],
+  },
+  {
+    version: '5.5.430', date: '12 Jun 2026', label: 'Ryft QR open tabs: real pre-auth hold (no more charging the full bill up front)',
+    changes: [
+      'QR open tabs now work the same on Ryft as on Stripe: opening a tab places a pre-authorisation HOLD for the configured amount and saves the card — it does NOT charge the full bill up front. Closing the tab (operator force-close or the customer\'s "Close & pay") captures the actual bill up to the hold and releases the rest; if the bill exceeds the hold the difference is charged off-session on the saved card, with a clear "settle with staff" fallback if that can\'t be done.',
+      'Tab close + refunds route automatically by processor (Ryft vs Stripe). Force-closed tabs now also record the payment reference so they can be refunded from the Transactions report.',
+      'Verified against the Ryft sandbox: manual-capture hold creation, fee allocation, and the capture clamp. The live card tap runs through Ryft\'s secure card form in the browser.',
+    ],
+  },
+  {
     version: '5.5.429', date: '12 Jun 2026', label: 'Pair a Ryft reader: pick the till from a dropdown (no more typing ids)',
     changes: [
       'When pairing a Ryft card reader you now choose which till or kiosk to assign it to from a dropdown of the venue\'s configured devices — no typing internal ids. Leave it on "Available to any till" to share it. The reader list shows which device each reader is bound to.',

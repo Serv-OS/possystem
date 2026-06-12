@@ -108,6 +108,20 @@ Deno.serve(async (req) => {
   const action = body?.action as string;
   const location_id = body?.location_id as string;
   if (!action) return json({ error: 'action required' }, 400);
+
+  // ── ryft_status: read merchant_ryft_accounts for many locations. The table
+  //    is RLS service-role-read, so the admin client (anonymous on the platform
+  //    project) gets nothing — which made linked, live accounts show as "Not
+  //    connected". Read it here with the service role instead. Multi-location,
+  //    so handle BEFORE the single-location_id requirement below.
+  if (action === 'ryft_status') {
+    const ids = Array.isArray(body?.location_ids) ? body.location_ids.filter(Boolean) : [];
+    if (!ids.length) return json({ accounts: [] });
+    const { data, error } = await platformAdmin.from('merchant_ryft_accounts').select('*').in('location_id', ids);
+    if (error) return json({ error: error.message }, 500);
+    return json({ accounts: data ?? [] });
+  }
+
   if (!location_id) return json({ error: 'location_id required' }, 400);
 
   const loc = await resolveLocation(location_id);
@@ -207,12 +221,64 @@ Deno.serve(async (req) => {
   // ── ryft_link: attach an existing ac_… account ──────────────────────────
   if (action === 'ryft_link') {
     const accountId = String(body.ryft_account_id ?? '').trim();
-    if (!accountId.startsWith('ac_')) return json({ error: "ryft_account_id must start with 'ac_'" }, 400);
+    if (!accountId.startsWith('ac_')) {
+      const looksUuid = /^[0-9a-f-]{32,36}$/i.test(accountId);
+      return json({ error: looksUuid
+        ? "That looks like a location id, not a Ryft account id. The account id starts with 'ac_' and is on the account's page in the Ryft dashboard."
+        : "A Ryft account id starts with 'ac_'." }, 400);
+    }
+    // A Ryft account can only belong to ONE location (ryft_account_id is unique).
+    // Catch "already linked elsewhere" BEFORE the upsert so we return a clear
+    // message instead of a raw duplicate-key DB error (this was surfacing as
+    // "it loads but doesn't link").
+    const { data: dup } = await platformAdmin.from('merchant_ryft_accounts')
+      .select('location_id').eq('ryft_account_id', accountId).maybeSingle();
+    if (dup && dup.location_id !== loc.id) {
+      const { data: other } = await platformAdmin.from('locations').select('name').eq('id', dup.location_id).maybeSingle();
+      return json({ error: `This Ryft account is already connected to ${other?.name ? `“${other.name}”` : 'another location'}. Unlink it there first, then connect it here.` }, 409);
+    }
     const got = await getAccount(accountId);
-    if (!got.ok || !got.data?.id) return json({ error: ryftErr(got.data) || `Ryft account not found (${got.status})`, ryft: got.data }, 400);
+    if (!got.ok || !got.data?.id) {
+      return json({ error: `Ryft couldn't find account ${accountId}. We're in TEST mode — copy the id from the Ryft SANDBOX dashboard (a live account won't be found here).`, ryft: got.data }, 400);
+    }
     const { error: upErr, derived } = await upsertRyftAccount(loc, accountId, got.data, caller.id);
-    if (upErr) return json({ error: `merchant_ryft_accounts upsert failed: ${upErr.message}` }, 500);
+    if (upErr) return json({ error: `Couldn't save the connection: ${upErr.message}` }, 500);
     return json({ success: true, account_id: accountId, verification_status: derived.verification_status, charges_enabled: derived.charges_enabled });
+  }
+
+  // ── ryft_inspect: look up an account so the admin SEES what they're about to
+  //    connect (email, status, which location its metadata points to) before
+  //    saving — removes the "is this the right account?" guesswork. Read-only.
+  if (action === 'ryft_inspect') {
+    const accountId = String(body.ryft_account_id ?? '').trim();
+    if (!accountId.startsWith('ac_')) {
+      // Most common mistake: pasting a location UUID (or some other id) instead
+      // of the Ryft account id. Say so plainly.
+      const looksUuid = /^[0-9a-f-]{32,36}$/i.test(accountId);
+      return json({ error: looksUuid
+        ? "That looks like a location id, not a Ryft account id. The account id starts with 'ac_' and is shown on the account's page in the Ryft dashboard."
+        : "A Ryft account id starts with 'ac_'." }, 400);
+    }
+    const got = await getAccount(accountId);
+    if (!got.ok || !got.data?.id) return json({ error: ryftErr(got.data) || `Ryft account not found (${got.status})` }, 404);
+    const a = got.data;
+    const d = deriveStatus(a);
+    const metaLocId = a?.metadata?.location_id ?? null;
+    // If this account is already linked to a location, surface that too.
+    let linkedTo: string | null = null;
+    const { data: existing } = await platformAdmin.from('merchant_ryft_accounts').select('location_id').eq('ryft_account_id', accountId).maybeSingle();
+    if (existing?.location_id) linkedTo = existing.location_id;
+    return json({
+      success: true,
+      account_id: accountId,
+      email: a?.email ?? null,
+      verification_status: d.verification_status,
+      charges_enabled: d.charges_enabled,
+      metadata_location_id: metaLocId,
+      metadata_location_name: a?.metadata?.location_name ?? a?.metadata?.trading_name ?? null,
+      matches_this_location: metaLocId ? metaLocId === loc.id : null,
+      already_linked_location_id: linkedTo,
+    });
   }
 
   // ── ryft_sync: refresh status from Ryft ─────────────────────────────────

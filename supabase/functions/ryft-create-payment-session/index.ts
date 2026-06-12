@@ -83,14 +83,14 @@ Deno.serve(async (req) => {
     }
   }
 
+  // Book Ryft's fees to the merchant sub-account (explicit, model-agnostic —
+  // `combined` is valid on any pricing model). NB: saving the card for a tab
+  // hold is done CLIENT-SIDE via Ryft.attemptPayment({ paymentMethodOptions:
+  // { store: true } }), not here — that field isn't valid on session create.
   const res = await createPaymentSession({
     amount: amount_minor,
     currency,
     captureFlow: capture_method === 'manual' ? 'Manual' : 'Automatic',
-    // Book all of Ryft's processing fees to the merchant's sub-account so our
-    // pricing model (merchant pays Ryft cost; we add platformFee = our markup)
-    // is explicit, not reliant on Ryft's default. `combined` is valid on any
-    // pricing model (ICC++/Blended) — only the granular fields are model-locked.
     ...(accountId ? { paymentSettings: { platform: { paymentFees: { combined: { bookTo: accountId } } } } } : {}),
     ...(customer_email ? { customerEmail: customer_email } : {}),
     ...(platformFee != null ? { platformFee } : {}),

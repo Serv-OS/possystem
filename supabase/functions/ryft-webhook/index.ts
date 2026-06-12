@@ -10,11 +10,18 @@
 // Deployed with verify_jwt=false. Must return 200 fast (Ryft retries on failure).
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { getAccount } from '../_shared/ryft.ts';
+import { getAccount, getPaymentSession } from '../_shared/ryft.ts';
 
 const platformAdmin = createClient(
   Deno.env.get('PLATFORM_SUPABASE_URL') ?? '',
   Deno.env.get('PLATFORM_SUPABASE_SERVICE_ROLE_KEY') ?? '',
+  { auth: { autoRefreshToken: false, persistSession: false } },
+);
+
+// closed_checks live in the OPS DB — reconciliation reads/writes them here.
+const opsAdmin = createClient(
+  Deno.env.get('SUPABASE_URL') ?? '',
+  Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
   { auth: { autoRefreshToken: false, persistSession: false } },
 );
 
@@ -65,6 +72,91 @@ async function alertDispute(d: any, accountId: string | undefined, platformLocat
   await sendMerchantEmail(accountId, platformLocationId, 'Action needed: a card payment was disputed', html);
 }
 
+// Reconcile a PaymentSession outcome (captured / refunded / voided) against our
+// records. Writes a server-truth row to ryft_payments (Platform DB) and, on a
+// refund, reflects it in the matching closed_check (Ops DB) — so a refund issued
+// in the Ryft dashboard shows up in our reports, and a captured payment with no
+// closed_check stays visible as an orphan (matched_closed_check = null).
+async function reconcilePayment(evt: any, type: string) {
+  const dataPs: any = evt?.data ?? {};
+  const psId: string | undefined = dataPs.id;
+  const accountId: string | undefined = evt?.accountId ?? dataPs.accountId ?? dataPs.subAccount?.id;
+  if (!psId) return;
+  const nowIso = new Date().toISOString();
+  if (accountId) await platformAdmin.from('merchant_ryft_accounts').update({ last_webhook_at: nowIso }).eq('ryft_account_id', accountId);
+
+  const isRefund = type === 'PaymentSession.refunded';
+  const isVoid = type === 'PaymentSession.voided';
+  const status = isRefund ? 'Refunded' : isVoid ? 'Voided' : 'Captured';
+
+  // Refunds: re-fetch the session for the authoritative cumulative refundedAmount
+  // (event payloads can be partial). Captures/voids: trust the payload.
+  let ps = dataPs;
+  if (isRefund && accountId) {
+    try { const got = await getPaymentSession(psId, { accountId }); if (got.ok && got.data) ps = got.data; } catch { /* keep payload */ }
+  }
+
+  let location_id: string | null = null;
+  if (accountId) {
+    const { data: mra } = await platformAdmin.from('merchant_ryft_accounts').select('location_id').eq('ryft_account_id', accountId).maybeSingle();
+    location_id = mra?.location_id ?? null;
+  }
+
+  // Match the closed_check by the payment-session id (stored on Ryft checks as
+  // stripe_payment_intent_id and/or inside payment_intents[].id).
+  let matched: any = null;
+  try {
+    const a = await opsAdmin.from('closed_checks').select('id, refunds, status, total').eq('stripe_payment_intent_id', psId).limit(1);
+    matched = a.data?.[0] ?? null;
+    if (!matched) {
+      const b = await opsAdmin.from('closed_checks').select('id, refunds, status, total').contains('payment_intents', [{ id: psId }]).limit(1);
+      matched = b.data?.[0] ?? null;
+    }
+  } catch (e) { console.error('[ryft-webhook] closed_check match', (e as Error).message); }
+
+  const refundedMinor = Math.round(Number(ps?.refundedAmount ?? 0));
+  const meta = ps?.metadata ?? {};
+  await platformAdmin.from('ryft_payments').upsert({
+    payment_session_id: psId,
+    ryft_account_id: accountId ?? null,
+    location_id,
+    amount: Math.round(Number(ps?.amount ?? 0)),
+    amount_refunded: refundedMinor,
+    currency: ps?.currency ?? null,
+    status,
+    channel: meta.channel ?? null,
+    order_ref: meta.ref ?? meta.order_ref ?? null,
+    matched_closed_check: matched?.id ?? null,
+    raw: ps,
+    updated_at: nowIso,
+    ...(status === 'Captured' ? { captured_at: nowIso } : {}),
+    ...(isRefund ? { refunded_at: nowIso } : {}),
+  }, { onConflict: 'payment_session_id' });
+
+  // Reflect a Ryft-side refund into the closed_check without double-counting a
+  // refund our own app already recorded. refundedAmount is CUMULATIVE, so we
+  // only append the delta beyond what's already on the check (amounts in £).
+  // Re-read refunds immediately before writing to narrow the race with the
+  // app's own refundCheck write, and key our entry on a deterministic id so a
+  // duplicate/retry can't double-append.
+  if (isRefund && matched && refundedMinor > 0) {
+    const refundId = `ref-ryft-${psId}-${refundedMinor}`;
+    const { data: fresh } = await opsAdmin.from('closed_checks').select('refunds, total').eq('id', matched.id).maybeSingle();
+    const existing: any[] = Array.isArray(fresh?.refunds) ? fresh.refunds : [];
+    if (!existing.some((r) => r?.id === refundId)) {
+      const alreadyMajor = existing.reduce((s, r) => s + Number(r.amount ?? 0), 0);
+      const refundedMajor = +(refundedMinor / 100).toFixed(2);
+      if (refundedMajor > alreadyMajor + 0.005) {
+        const delta = +(refundedMajor - alreadyMajor).toFixed(2);
+        const refunds = [...existing, { id: refundId, timestamp: Date.now(), manager: 'Ryft', reason: 'Refunded in Ryft', amount: delta, source: 'ryft_reconcile' }];
+        const total = Number(fresh?.total ?? matched.total ?? 0);
+        const newStatus = refundedMajor >= total - 0.005 ? 'refunded' : 'partial_refund';
+        await opsAdmin.from('closed_checks').update({ refunds, status: newStatus }).eq('id', matched.id);
+      }
+    }
+  }
+}
+
 function deriveStatus(account: any) {
   const v = account?.verification ?? {};
   const caps = account?.capabilities ?? {};
@@ -111,13 +203,36 @@ Deno.serve(async (req) => {
         const got = await getAccount(accountId);
         const account = got.ok ? got.data : (evt?.data ?? {});
         const d = deriveStatus(account);
-        await platformAdmin.from('merchant_ryft_accounts').update({
+        const patch = {
           charges_enabled: d.charges_enabled,
           details_submitted: d.details_submitted,
           requirements: d.verification ?? null,
           country: d.country,
           last_webhook_at: new Date().toISOString(),
-        }).eq('ryft_account_id', accountId);
+        };
+        // AUTO-CONNECT: every account we create stamps metadata.location_id, so
+        // the moment it's created / progresses through onboarding we upsert the
+        // merchant row for that location — no manual "paste the account id" step
+        // in the admin, and "ready to trade" lights up on its own. Accounts made
+        // outside our system (no location_id metadata) fall back to updating an
+        // existing row by account id.
+        const metaLocId: string | undefined = account?.metadata?.location_id;
+        if (metaLocId) {
+          const { data: locRow } = await platformAdmin.from('locations').select('id, company_id').eq('id', metaLocId).maybeSingle();
+          if (locRow?.id) {
+            await platformAdmin.from('merchant_ryft_accounts').upsert({
+              location_id: locRow.id,
+              company_id: locRow.company_id ?? null,
+              ryft_account_id: accountId,
+              link_method: 'hosted',
+              ...patch,
+            }, { onConflict: 'location_id' });
+          } else {
+            await platformAdmin.from('merchant_ryft_accounts').update(patch).eq('ryft_account_id', accountId);
+          }
+        } else {
+          await platformAdmin.from('merchant_ryft_accounts').update(patch).eq('ryft_account_id', accountId);
+        }
       }
     } else if (/^Dispute\./.test(type)) {
       // Chargeback. Capture it with its respondBy DEADLINE so the merchant can
@@ -172,8 +287,12 @@ Deno.serve(async (req) => {
           await sendMerchantEmail(accountId, mra?.location_id ?? null, "Your payout didn't go through", html);
         }
       }
+    } else if (/^PaymentSession\.(captured|refunded|voided)$/.test(type)) {
+      // Reconcile the money movement to our records (ledger + closed_check).
+      await reconcilePayment(evt, type);
     } else if (/^(PaymentSession|Person)\./.test(type)) {
-      // Touch last_webhook_at so we can see the account is active. Best-effort.
+      // Other lifecycle events (approved/declined, person updates) — just touch
+      // last_webhook_at so we can see the account is active. Best-effort.
       const accountId: string | undefined = evt?.accountId ?? evt?.data?.accountId;
       if (accountId) await platformAdmin.from('merchant_ryft_accounts').update({ last_webhook_at: new Date().toISOString() }).eq('ryft_account_id', accountId);
     }

@@ -19,6 +19,7 @@ import { useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { clearStashedTab } from '../../lib/qrTabStorage';
 import { money } from '../../lib/currency';
+import { ryftTab } from '../../lib/payments/ryft';
 
 export default function TabResumeScreen({
   slug, tableId, tableLabel,
@@ -34,28 +35,64 @@ export default function TabResumeScreen({
   const handleClose = async () => {
     if (closing) return;
     if (!confirm(`Close your tab and charge ${money(runningTotal)} to your card?`)) return;
+    // Route by processor (the stash carries it). Ryft holds are addressed by
+    // payment_session_id; ryft-tab resolves the merchant account from
+    // location_id. Default missing processor → stripe (pre-dual-processor tabs).
+    const isRyft = (tab.processor === 'ryft') || (!tab.stripe_account && !!tab.payment_session_id);
+    const ryftSession      = tab.payment_session_id || tab.payment_intent_id;
+    const ryftCustomerId   = tab.ryft_customer_id || rounds?.[0]?.customer?.ryft_customer_id || null;
+    const ryftStoredCardId = tab.ryft_payment_method_id || rounds?.[0]?.customer?.ryft_payment_method_id || null;
+    const locId            = rounds?.[0]?.location_id || null;
     setClosing(true); setError('');
     try {
-      // Capture the pre-auth on the connected account. Same endpoint the
-      // operator force-close uses — server clamps to amount_capturable and
-      // reports any shortfall so we can charge an off_session overage on
-      // the saved payment_method (v5.5.160).
-      const res = await fetch('/api/stripe-capture', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          paymentIntentId: tab.payment_intent_id,
-          stripeAccount:   tab.stripe_account,
-          amountToCapture: Math.round(runningTotal * 100),
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.captured) throw new Error(data?.error || 'Capture failed');
+      // Capture the bill, clamped to the hold. Both paths yield the same shape:
+      // { captured, captured_amount(minor), shortfall(minor), currency, amount }.
+      let data;
+      if (isRyft) {
+        const r = await ryftTab('capture', { location_id: locId, payment_session_id: ryftSession, amount_minor: Math.round(runningTotal * 100) });
+        const cap = Number(r.captured_amount || 0);
+        // Real hold currency (echoed by capture) so an overage MIT matches it.
+        data = { captured: !!r.success, captured_amount: cap, shortfall: Number(r.shortfall || 0), currency: (r.currency || 'gbp').toLowerCase(), amount: cap };
+      } else {
+        const res = await fetch('/api/stripe-capture', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            paymentIntentId: tab.payment_intent_id,
+            stripeAccount:   tab.stripe_account,
+            amountToCapture: Math.round(runningTotal * 100),
+          }),
+        });
+        data = await res.json();
+        if (!res.ok) throw new Error(data?.error || 'Capture failed');
+      }
+      if (!data.captured) throw new Error(data?.error || 'Capture failed');
 
-      // v5.5.160: charge any shortfall off_session on the saved card.
+      // Charge any shortfall off-session on the card saved at tab open.
       const shortfallMinor = Number(data.shortfall || 0);
       const paymentMethodId = rounds?.[0]?.customer?.payment_method_id || null;
-      if (shortfallMinor > 0 && paymentMethodId) {
+      const hasSavedCard = isRyft ? (!!ryftCustomerId && !!ryftStoredCardId) : !!paymentMethodId;
+      if (shortfallMinor > 0 && !hasSavedCard) {
+        setError(`We charged ${money((data.amount / 100))} (the held amount). The remaining ${money((shortfallMinor / 100))} needs to be settled with staff.`);
+      } else if (shortfallMinor > 0 && isRyft) {
+        try {
+          const ov = await ryftTab('overage', {
+            location_id: locId,
+            previous_session_id: ryftSession,
+            customer_id: ryftCustomerId,
+            stored_card_id: ryftStoredCardId,
+            amount_minor: shortfallMinor,
+            currency: data.currency || 'gbp',
+          });
+          if (!ov.charged) {
+            console.warn('[TabResume] ryft overage not approved:', ov?.error || ov?.detail);
+            setError(`We charged ${money((data.amount / 100))} to your card. The remaining ${money((shortfallMinor / 100))} could not be captured automatically — please ask staff to settle the balance.`);
+          }
+        } catch (e) {
+          console.warn('[TabResume] ryft overage failed:', e?.message);
+          setError(`We charged ${money((data.amount / 100))} to your card. The remaining ${money((shortfallMinor / 100))} could not be captured automatically — please ask staff to settle the balance.`);
+        }
+      } else if (shortfallMinor > 0) {
         try {
           const ovRes = await fetch('/api/stripe-charge-overage', {
             method: 'POST',
@@ -75,15 +112,12 @@ export default function TabResumeScreen({
           });
           const ov = await ovRes.json();
           if (!ovRes.ok || !ov.ok) {
-            // Customer-facing: don't block the close — surface a soft note.
             console.warn('[TabResume] overage failed:', ov?.error);
             setError(`We charged ${money((data.amount / 100))} to your card. The remaining ${money((shortfallMinor / 100))} could not be captured automatically — please ask staff to settle the balance.`);
           }
         } catch (e) {
           console.warn('[TabResume] overage failed:', e?.message);
         }
-      } else if (shortfallMinor > 0 && !paymentMethodId) {
-        setError(`We charged ${money((data.amount / 100))} (the held amount). The remaining ${money((shortfallMinor / 100))} needs to be settled with staff — your tab was opened before saved-card support was added.`);
       }
 
       // Mark every round on this tab as collected so they leave the
@@ -115,6 +149,10 @@ export default function TabResumeScreen({
           service: 0, tip: 0, tax_amount: null,
           total: runningTotal,
           method: 'card',
+          // Refund routing (refundCheck reads top-level processor + payment_intents).
+          processor: isRyft ? 'ryft' : 'stripe',
+          stripe_payment_intent_id: isRyft ? null : tab.payment_intent_id,
+          payment_intents: [{ id: isRyft ? ryftSession : tab.payment_intent_id, amountMinor: Math.round(runningTotal * 100) }],
           closed_at: new Date().toISOString(),
           status: 'paid',
           refunds: [],
