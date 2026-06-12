@@ -135,7 +135,7 @@ export default function RyftDisputes() {
 
       {list.length > 0 && (
         <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 6 }}>
-          <button onClick={load} style={{ background: 'none', border: 'none', color: 'var(--acc)', cursor: 'pointer', fontSize: 11, fontWeight: 700, padding: 0 }}>↻ Refresh</button> · Disputes are captured automatically; you'll also want email/SMS alerts (coming next).
+          <button onClick={load} style={{ background: 'none', border: 'none', color: 'var(--acc)', cursor: 'pointer', fontSize: 11, fontWeight: 700, padding: 0 }}>↻ Refresh</button> · Disputes are captured automatically and you're emailed the moment one is raised.
         </div>
       )}
     </div>

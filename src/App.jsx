@@ -83,6 +83,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.424', date: '12 Jun 2026', label: 'Dispute raised → the merchant is emailed immediately',
+    changes: [
+      'The moment Ryft raises a chargeback, we now email the venue automatically (amount, respond-by deadline, and where to act) — so a dispute can\'t sit unnoticed until the deadline passes. Best-effort, never blocks the webhook.',
+    ],
+  },
+  {
     version: '5.5.423', date: '12 Jun 2026', label: 'Card disputes / chargebacks — captured live, with a deadline countdown + accept/challenge',
     changes: [
       'New Reports → Fiscal → "Disputes & chargebacks": every card dispute is captured the moment Ryft raises it, with the amount at stake, the reason, suggested evidence, and a respond-by countdown that turns red inside 72 hours.',

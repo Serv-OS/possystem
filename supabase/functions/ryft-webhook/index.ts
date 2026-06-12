@@ -31,6 +31,34 @@ async function validSignature(rawBody: string, header: string): Promise<boolean>
   return diff === 0;
 }
 
+// Best-effort urgent email to the merchant when a dispute is raised. Email goes
+// to the Ryft account email; routed through send-receipt (provider-agnostic).
+async function alertDispute(d: any, accountId: string | undefined, platformLocationId: string | null) {
+  try {
+    if (!accountId || !platformLocationId) return;
+    const acct = await getAccount(accountId);
+    const email = acct.ok ? acct.data?.email : null;
+    const { data: ploc } = await platformAdmin.from('locations').select('ops_location_id, name').eq('id', platformLocationId).maybeSingle();
+    const opsLoc = ploc?.ops_location_id;
+    if (!email || !opsLoc) return;
+    const amount = ((Number(d.amount) || 0) / 100).toFixed(2);
+    const by = d.respondBy ? new Date(Number(d.respondBy) * 1000).toUTCString() : 'soon';
+    const html = `<div style="font-family:system-ui,Arial,sans-serif;max-width:560px">
+      <h2 style="margin:0 0 8px">Action needed: a card payment was disputed</h2>
+      <p>A customer has disputed a card payment of <strong>${d.currency || 'GBP'} ${amount}</strong>${ploc?.name ? ` at ${ploc.name}` : ''}.</p>
+      <p>You must respond by <strong>${by}</strong>. If you don't, it is lost automatically and a non-reclaimable fee applies.</p>
+      <p>Open <strong>Back Office → Reports → Disputes &amp; chargebacks</strong> to accept it or challenge it with your evidence.</p>
+    </div>`;
+    await fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/send-receipt`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''}` },
+      body: JSON.stringify({ to: email, subject: 'Action needed: a card payment was disputed', html, location_id: opsLoc }),
+    });
+  } catch (e) {
+    console.error('[ryft-webhook] dispute alert failed', (e as Error).message);
+  }
+}
+
 function deriveStatus(account: any) {
   const v = account?.verification ?? {};
   const caps = account?.capabilities ?? {};
@@ -103,6 +131,7 @@ Deno.serve(async (req) => {
           last_event_at: nowIso,
         }, { onConflict: 'dispute_id' });
         if (accountId) await platformAdmin.from('merchant_ryft_accounts').update({ last_webhook_at: nowIso }).eq('ryft_account_id', accountId);
+        if (type === 'Dispute.created') await alertDispute(d, accountId, location_id);
       }
     } else if (/^(PaymentSession|Payout|Person)\./.test(type)) {
       // Touch last_webhook_at so we can see the account is active. Best-effort.
