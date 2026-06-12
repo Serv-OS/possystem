@@ -36,6 +36,7 @@ async function callTerminals(action, payload) {
 
 export default function RyftTerminals() {
   const [state, setState] = useState(null);   // { processor, linked, terminals }
+  const [devices, setDevices] = useState([]);  // configured POS tills + kiosks to bind to
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   // register form
@@ -46,11 +47,22 @@ export default function RyftTerminals() {
 
   const load = async () => {
     setLoading(true); setError('');
-    try { setState(await callTerminals('list', {})); }
+    try {
+      setState(await callTerminals('list', {}));
+      // The configured tills/kiosks at this location (Ops DB) — same source the
+      // Stripe reader assignment uses. Best-effort; binding is optional.
+      try {
+        const locId = await getActiveLocationSync();
+        const { data: devs } = await supabase.from('devices')
+          .select('id, name, type').eq('location_id', locId).in('type', ['pos', 'kiosk']).order('name', { ascending: true });
+        setDevices(devs || []);
+      } catch { /* devices optional */ }
+    }
     catch (e) { setError(e.message); }
     finally { setLoading(false); }
   };
   useEffect(() => { load(); }, []);
+  const deviceName = (id) => { const d = devices.find(x => x.id === id); return d ? `${d.name} (${d.type})` : null; };
 
   if (loading) return null;                                   // stay quiet until we know
   if (!state || state.processor !== 'ryft') return null;      // invisible on non-Ryft venues
@@ -92,6 +104,7 @@ export default function RyftTerminals() {
                 <div key={t.id} style={{ display:'grid', gridTemplateColumns:'1.3fr 1fr 1fr auto', fontSize:13, padding:'10px 14px', borderTop:'1px solid var(--bdr)', alignItems:'center' }}>
                   <div>
                     <div style={{ color:'var(--t1)', fontWeight:600 }}>{t.label || 'Card reader'}</div>
+                    <div style={{ fontSize:11, color:'var(--t3)' }}>{t.bound_pos_device_id ? `→ ${deviceName(t.bound_pos_device_id) || 'assigned till'}` : 'Any till'}</div>
                     <code style={{ fontSize:10, color:'var(--t4)', fontFamily:'var(--font-mono,monospace)' }}>{t.ryft_terminal_id}</code>
                   </div>
                   <div style={{ color:'var(--t2)', fontFamily:'var(--font-mono,monospace)', fontSize:12 }}>{t.serial_number || '—'}</div>
@@ -115,9 +128,16 @@ export default function RyftTerminals() {
               </div>
             </div>
             <div style={{ marginTop:12 }}>
-              <label style={S.label}>Assign to POS device id (optional)</label>
-              <input value={posDevice} onChange={e => setPosDevice(e.target.value)} placeholder="leave blank to make it available to any till" style={S.input} />
-              <div style={{ fontSize:11, color:'var(--t4)', marginTop:4 }}>Bind a reader to a specific till, or leave blank so any till at this location can use it.</div>
+              <label style={S.label}>Assign to a till / kiosk (optional)</label>
+              <select value={posDevice} onChange={e => setPosDevice(e.target.value)} style={S.input}>
+                <option value="">Available to any till at this location</option>
+                {devices.map(d => <option key={d.id} value={d.id}>{d.name} ({d.type})</option>)}
+              </select>
+              <div style={{ fontSize:11, color:'var(--t4)', marginTop:4 }}>
+                {devices.length
+                  ? 'Bind this reader to one device, or leave it open to all tills here.'
+                  : 'No tills or kiosks configured yet — pair the reader now and assign it later from Device setup.'}
+              </div>
             </div>
             <div style={{ marginTop:14, display:'flex', gap:10, alignItems:'center' }}>
               <button onClick={register} disabled={busy || !serial.trim()} style={{ ...S.btn, ...S.btnPrim }}>{busy ? 'Pairing…' : 'Pair reader'}</button>

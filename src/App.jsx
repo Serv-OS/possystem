@@ -83,6 +83,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.429', date: '12 Jun 2026', label: 'Pair a Ryft reader: pick the till from a dropdown (no more typing ids)',
+    changes: [
+      'When pairing a Ryft card reader you now choose which till or kiosk to assign it to from a dropdown of the venue\'s configured devices — no typing internal ids. Leave it on "Available to any till" to share it. The reader list shows which device each reader is bound to.',
+    ],
+  },
+  {
     version: '5.5.428', date: '12 Jun 2026', label: 'Ryft fee allocation made explicit (protects our margin)',
     changes: [
       'Every Ryft payment now explicitly books the card-network/processing fees to the merchant\'s account, so our model (merchant pays Ryft\'s cost, we add our markup as the platform fee) no longer relies on a Ryft default that could change. Applied to online, QR and card-present. Verified against the Ryft sandbox.',
