@@ -83,6 +83,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.421', date: '11 Jun 2026', label: 'Pair Ryft card readers in the back office (ready ahead of hardware)',
+    changes: [
+      'Back Office → Card readers now has a "Ryft card readers" panel for Ryft locations: enter the terminal serial number → it registers with Ryft and is ready to take card-present payments. Name it and optionally bind it to a specific till, or leave it available to any till.',
+      'On first pairing we auto-create the venue\'s Ryft in-person location using the address from onboarding — no extra form. Remove a reader to deregister it from Ryft.',
+      'Plumbing is complete and tested against the Ryft sandbox; the only thing that needs the physical device is the final tap-to-pay. The panel stays hidden on Stripe locations.',
+    ],
+  },
+  {
     version: '5.5.420', date: '11 Jun 2026', label: 'Ryft webhook — merchants flip to "live" automatically when onboarding completes',
     changes: [
       'New signed Ryft webhook (Account.updated): when a merchant finishes onboarding and can transact, their account flips to "live · charges enabled" automatically — no manual "Sync status" needed.',

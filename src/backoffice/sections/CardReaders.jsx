@@ -15,6 +15,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { supabase, platformSupabase, getActiveLocationSync } from '../../lib/supabase';
 import { resolvePlatformLocationId } from '../../lib/networkReader';
 import { stripeCurrency } from '../../lib/currency';
+import RyftTerminals from './RyftTerminals';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 
@@ -154,6 +155,9 @@ export default function CardReaders() {
       <div style={S.sub}>
         Network readers (Stripe Reader S700, WisePOS E in WiFi mode) are registered here and serve all POS terminals at this location.
       </div>
+
+      {/* Ryft terminals — self-gating: only renders when this location is on Ryft */}
+      <RyftTerminals />
 
       {error && <div style={S.errorBox}>{error}</div>}
 

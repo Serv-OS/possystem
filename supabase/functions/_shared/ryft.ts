@@ -80,6 +80,25 @@ export interface TerminalPaymentInput {
   [k: string]: unknown;
 }
 
+// ── In-person locations + terminal registration (pairing hardware) ──────────
+// A terminal lives under an in-person LOCATION (iploc_) which belongs to the
+// sub-account. Pass opts.accountId (Account header) to act for that merchant.
+export const createInPersonLocation = (input: { name: string; address: Record<string, unknown>; metadata?: Record<string, string> }, opts: RyftOpts = {}) =>
+  ryftFetch('POST', '/in-person/locations', input, opts);
+
+export const listInPersonLocations = (opts: RyftOpts = {}) =>
+  ryftFetch('GET', '/in-person/locations', undefined, opts);
+
+// Register a physical terminal by its serial number under an iploc_ location.
+export const registerTerminal = (input: { serialNumber: string; locationId: string; name?: string; metadata?: Record<string, string> }, opts: RyftOpts = {}) =>
+  ryftFetch('POST', '/in-person/terminals', input, opts);
+
+export const listTerminals = (opts: RyftOpts = {}) =>
+  ryftFetch('GET', '/in-person/terminals', undefined, opts);
+
+export const deleteTerminal = (terminalId: string, opts: RyftOpts = {}) =>
+  ryftFetch('DELETE', `/in-person/terminals/${terminalId}`, undefined, opts);
+
 export const createTerminalPayment = (terminalId: string, input: TerminalPaymentInput, opts: RyftOpts = {}) =>
   ryftFetch('POST', `/in-person/terminals/${terminalId}/payment`, input, opts);
 
