@@ -12,7 +12,7 @@
 //     → refreshes + returns the account's verification/charges status.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { createSubAccount, getAccount, createAccountLink, ryftConfigured } from '../_shared/ryft.ts';
+import { createSubAccount, getAccount, createAccountLink, listBalances, listPayouts, listBalanceTransactions, ryftConfigured } from '../_shared/ryft.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -87,6 +87,41 @@ Deno.serve(async (req) => {
     const d = deriveStatus(got.data);
     await platformAdmin.from('merchant_ryft_accounts').update({ charges_enabled: d.charges_enabled, details_submitted: d.details_submitted, requirements: d.verification ?? null, country: d.country }).eq('location_id', loc.id);
     return json({ success: true, linked: true, charges_enabled: d.charges_enabled, verification_status: d.verification_status });
+  }
+
+  // ── report: balance + payouts + recent transactions (financial report) ──
+  if (action === 'report') {
+    if (!existing?.ryft_account_id) return json({ success: true, linked: false });
+    const acct = existing.ryft_account_id;
+    const opts = { accountId: acct };
+    const [bal, pay, bt] = await Promise.all([
+      listBalances(opts),
+      listPayouts(acct, 50),
+      listBalanceTransactions(opts, 50),
+    ]);
+    const balItems: any[] = bal.ok ? (bal.data?.items ?? (Array.isArray(bal.data) ? bal.data : [])) : [];
+    const payItems: any[] = pay.ok ? (pay.data?.payouts ?? pay.data?.items ?? []) : [];
+    const btItems: any[] = bt.ok ? (bt.data?.items ?? []) : [];
+    const b0 = balItems[0] ?? {};
+    const sum = (arr: any[], f: (x: any) => number) => arr.reduce((s, x) => s + (Number(f(x)) || 0), 0);
+    const isCapture = (t: string) => /capture/i.test(t || '');
+    const isRefund = (t: string) => /refund/i.test(t || '');
+    return json({
+      success: true, linked: true,
+      currency: b0.currency ?? payItems[0]?.currency ?? btItems[0]?.currency ?? 'GBP',
+      balance: { cleared: b0.cleared?.amount ?? b0.cleared ?? 0, pending: b0.pending?.amount ?? b0.pending ?? 0 },
+      payouts: payItems.map((p) => ({
+        id: p.id, amount: p.amount, currency: p.currency, status: p.status,
+        scheduleType: p.scheduleType, created: p.createdTimestamp, scheduled: p.scheduledTimestamp,
+        completed: p.completedTimestamp, failureReason: p.failureReason ?? null,
+      })),
+      summary: {
+        gmv_minor: sum(btItems.filter((x) => isCapture(x.type)), (x) => x.amount),
+        fees_minor: sum(btItems, (x) => x.feeTotal),
+        refunds_minor: sum(btItems.filter((x) => isRefund(x.type)), (x) => x.amount),
+        txn_count: btItems.length, payout_count: payItems.length,
+      },
+    });
   }
 
   // ── ryft_start: ensure sub-account, mint hosted onboarding link ─────────

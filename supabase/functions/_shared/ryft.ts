@@ -134,5 +134,14 @@ export const listBalanceTransactions = (opts: RyftOpts = {}, limit = 50) =>
 export const listPlatformFees = (opts: RyftOpts = {}, limit = 50) =>
   ryftFetch('GET', `/platform-fees?limit=${limit}`, undefined, opts);
 
+// Account balance (available + pending). Account header scopes to a sub-account.
+export const listBalances = (opts: RyftOpts = {}) =>
+  ryftFetch('GET', '/balances', undefined, opts);
+
+// Payouts for a sub-account. The sub-account id is the {id} PATH param (no
+// Account header needed — it's account-scoped by path).
+export const listPayouts = (accountId: string, limit = 50, opts: RyftOpts = {}) =>
+  ryftFetch('GET', `/accounts/${accountId}/payouts?limit=${limit}`, undefined, opts);
+
 export const ryftPublicKey = () => Deno.env.get('RYFT_PUBLIC_KEY') ?? '';
 export const ryftConfigured = () => !!RYFT_SECRET;

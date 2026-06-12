@@ -40,6 +40,7 @@ export const CATEGORIES = [
       { id:'tax',      label:'Tax summary',      desc:'Per-rate + per-order-type breakdown, reuses POS tax engine', badge:'updated' },
       { id:'payments', label:'Payments & cash',  desc:'Method breakdown + drawer reconciliation' },
       { id:'cash_drawer', label:'Cash drawer sessions', desc:'Every cash-in / cash-out with opening float, expected, declared, variance', badge:'new' },
+      { id:'ryft_payouts', label:'Card payments & payouts', desc:'Live Ryft balance, payout history and settlement to your bank', badge:'new' },
     ],
   },
   {

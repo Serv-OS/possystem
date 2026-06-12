@@ -83,6 +83,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.419', date: '11 Jun 2026', label: 'New report: Card payments & payouts (live Ryft financials)',
+    changes: [
+      'Reports → Fiscal → "Card payments & payouts": a live financial report for the location pulled straight from Ryft — available + pending balance, recent sales / fees / refunds, and the full payout history (amount, status, schedule, settlement dates) with CSV export.',
+      'Backed by the location-scoped payments-onboard function (new "report" action) reading Ryft\'s /balances, /accounts/{id}/payouts and /balance-transactions. Shows a clean empty state until the account is live and money starts moving.',
+    ],
+  },
+  {
     version: '5.5.418', date: '11 Jun 2026', label: 'Ryft pricing in three numbers: our cost + what we add = what the customer pays',
     changes: [
       'Admin now shows the whole picture per merchant: our cost (one blended figure, what Ryft charges us), the markup we add, and "customer pays" = the two summed. Cost + default markup are set in Platform defaults.',
