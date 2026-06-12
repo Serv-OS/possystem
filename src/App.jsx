@@ -83,6 +83,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.426', date: '12 Jun 2026', label: 'Refunds now work for Ryft card payments (routed by the original processor)',
+    changes: [
+      'Refunding a card payment now goes back through whichever processor originally took it — Stripe or Ryft. Each check records its processor at payment time, so the refund always uses the right one even if the venue\'s setting changed since.',
+      'Ryft refunds support full and partial amounts and give your markup back on a full refund (kept proportionally on partials). Built on a new ryft-refund function; the refund screen needs no changes — routing happens automatically.',
+      'Also tightened a latent gap: single-reader card-present payments now reliably store their payment id, so they\'re always refundable.',
+    ],
+  },
+  {
     version: '5.5.425', date: '12 Jun 2026', label: 'Webhook idempotency + failed-payout alerts',
     changes: [
       'Ryft webhooks are now deduplicated (Ryft retries deliveries) so nothing is double-recorded or double-emailed — backed by a new event-id ledger that also serves as an audit trail.',

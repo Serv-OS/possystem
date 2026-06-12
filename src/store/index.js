@@ -22,6 +22,12 @@ function derivePaymentIntents(paymentInfo = {}) {
   if (paymentInfo.stripePaymentIntentId) {
     return [{ id: paymentInfo.stripePaymentIntentId, amountMinor: Math.round((paymentInfo.grand || 0) * 100) || null }];
   }
+  // Single-flow card-present (Stripe reader OR Ryft terminal) hands back the id
+  // as `paymentIntentId` (for Ryft this is the ps_ payment-session id). Capture
+  // it so the check is refundable; refundCheck routes by the check's processor.
+  if (paymentInfo.paymentIntentId) {
+    return [{ id: paymentInfo.paymentIntentId, amountMinor: Math.round((paymentInfo.grand || 0) * 100) || null }];
+  }
   return null;
 }
 
@@ -3721,7 +3727,8 @@ export const useStore = create((set, get) => ({
       taxAmount:  taxBreakdown?.totalTax != null ? taxBreakdown.totalTax : null,  // v4.6.19
       method:     paymentInfo.method || 'card',
       giftCard:   paymentInfo.giftCard || null,                  // v5.5.217: gift card reversal on refund
-      stripePaymentIntentId: paymentInfo.stripePaymentIntentId || null,  // v5.5.301: for card refunds
+      stripePaymentIntentId: paymentInfo.stripePaymentIntentId || paymentInfo.paymentIntentId || null,  // v5.5.301: for card refunds
+      processor:  paymentInfo.processor || 'stripe',             // which processor took the payment (refund routes by this)
       paymentIntents: derivePaymentIntents(paymentInfo),  // v5.5.323: all card legs (split portions) for multi-card refund
       loyaltyRedemption: paymentInfo.loyaltyRedemption || null,  // v5.5.315: link redeem→check for refund restore
       closedAt:   Date.now(),
@@ -3826,7 +3833,8 @@ export const useStore = create((set, get) => ({
       taxBreakdown,                                                                  // v5.5.341: store full breakdown so receipts/reports show VAT lines (walk-in/MPOS)
       method: paymentInfo.method || 'card',
       giftCard: paymentInfo.giftCard || null,                                        // v5.5.217
-      stripePaymentIntentId: paymentInfo.stripePaymentIntentId || null,              // v5.5.301
+      stripePaymentIntentId: paymentInfo.stripePaymentIntentId || paymentInfo.paymentIntentId || null,              // v5.5.301
+      processor: paymentInfo.processor || 'stripe',                                  // refund routes by this
       paymentIntents: derivePaymentIntents(paymentInfo),                             // v5.5.323: multi-card refund
       loyaltyRedemption: paymentInfo.loyaltyRedemption || null,                      // v5.5.315
       drawerId: get().myDrawer?.()?.id || null,                                   // v4.6.37
@@ -3997,10 +4005,15 @@ export const useStore = create((set, get) => ({
       return arr.filter(p => p && p.id);
     })();
     const refundAmountMinor = Math.round((amount || 0) * 100);
+    // Route the card refund to the processor that ORIGINALLY took the payment —
+    // never the location's current setting (it may have changed since). Ryft's id
+    // is a payment-session (ps_); Stripe's is a PaymentIntent (pi_).
+    const refundProcessor = check?.processor === 'ryft' ? 'ryft' : 'stripe';
+    const refundEndpoint = refundProcessor === 'ryft' ? 'ryft-refund' : 'stripe-refund';
     if (cardPIs.length && refundAmountMinor > 0) {
       (async () => {
         const token = await ensureAuthToken();
-        if (!token) { console.warn('[refundCheck] stripe refund skipped — no auth token'); return; }
+        if (!token) { console.warn('[refundCheck] card refund skipped — no auth token'); return; }
         // Allocate the refund across the card legs in order: each leg gets up to
         // its captured amount, earlier legs first, until the refund is exhausted.
         // A full refund tops every card leg out; a partial fills from the front.
@@ -4020,12 +4033,13 @@ export const useStore = create((set, get) => ({
           if (legRefund <= 0) continue;
           try {
             const res = await fetch(
-              `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-refund`,
+              `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/${refundEndpoint}`,
               {
                 method: 'POST',
                 headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
                 body: JSON.stringify({
-                  payment_intent_id: pi.id,
+                  // Ryft refunds by payment-session id; Stripe by PaymentIntent id.
+                  ...(refundProcessor === 'ryft' ? { payment_session_id: pi.id } : { payment_intent_id: pi.id }),
                   amount_minor: legRefund,
                   location_id: getActiveLocationSync(),
                   reason: 'requested_by_customer',
@@ -4037,13 +4051,13 @@ export const useStore = create((set, get) => ({
             );
             const j = await res.json().catch(() => ({}));
             if (res.ok) {
-              console.info('[refundCheck] stripe refund created:', j.refund_id, 'PI:', pi.id, 'amount:', j.amount);
+              console.info(`[refundCheck] ${refundProcessor} refund created:`, j.refund_id || j.refund?.id, 'id:', pi.id, 'amount:', j.amount);
               remainMinor -= legRefund;
             } else {
-              console.warn('[refundCheck] stripe refund HTTP error:', res.status, j.error || '', 'PI:', pi.id);
+              console.warn(`[refundCheck] ${refundProcessor} refund HTTP error:`, res.status, j.error || '', 'id:', pi.id);
             }
           } catch (e) {
-            console.warn('[refundCheck] stripe refund failed:', e?.message || e, 'PI:', pi.id);
+            console.warn(`[refundCheck] ${refundProcessor} refund failed:`, e?.message || e, 'id:', pi.id);
           }
         }
       })();
