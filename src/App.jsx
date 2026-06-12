@@ -83,6 +83,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.423', date: '12 Jun 2026', label: 'Card disputes / chargebacks — captured live, with a deadline countdown + accept/challenge',
+    changes: [
+      'New Reports → Fiscal → "Disputes & chargebacks": every card dispute is captured the moment Ryft raises it, with the amount at stake, the reason, suggested evidence, and a respond-by countdown that turns red inside 72 hours.',
+      'Act in-app: Accept (concede + refund the cardholder) or Challenge with a written defence submitted straight to the card scheme — no more logging into Ryft.',
+      'Why it matters: a missed dispute deadline auto-expires and the merchant loses the funds plus a non-reclaimable fee. The system now records every one and surfaces it in time. (Active email/SMS alerting is the next step.)',
+    ],
+  },
+  {
     version: '5.5.422', date: '11 Jun 2026', label: 'Fix two latent Ryft terminal bugs found in the API audit (before hardware)',
     changes: [
       'Card-present receipts: the terminal now self-prints (receiptPrintingSource "Terminal"). It was set to "PointOfSale", which makes the device wait for a confirm-receipt call we never send — the first live tap would have hung. Caught in the Ryft API audit before any hardware arrived.',

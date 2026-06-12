@@ -71,6 +71,39 @@ Deno.serve(async (req) => {
           last_webhook_at: new Date().toISOString(),
         }).eq('ryft_account_id', accountId);
       }
+    } else if (/^Dispute\./.test(type)) {
+      // Chargeback. Capture it with its respondBy DEADLINE so the merchant can
+      // act before it auto-Expires. The event payload carries the full Dispute.
+      const d: any = evt?.data ?? {};
+      const disputeId: string | undefined = d.id;
+      const accountId: string | undefined = d.subAccount?.id ?? evt?.accountId;
+      if (disputeId) {
+        let location_id: string | null = null;
+        if (accountId) {
+          const { data: mra } = await platformAdmin.from('merchant_ryft_accounts').select('location_id').eq('ryft_account_id', accountId).maybeSingle();
+          location_id = mra?.location_id ?? null;
+        }
+        const nowIso = new Date().toISOString();
+        await platformAdmin.from('merchant_ryft_disputes').upsert({
+          dispute_id: disputeId,
+          ryft_account_id: accountId ?? null,
+          location_id,
+          payment_session_id: d.paymentSession?.id ?? null,
+          amount: d.amount ?? null,
+          currency: d.currency ?? null,
+          status: d.status ?? null,
+          category: d.category ?? null,
+          reason_code: d.reason?.code ?? null,
+          reason_description: d.reason?.description ?? null,
+          respond_by: d.respondBy ? new Date(Number(d.respondBy) * 1000).toISOString() : null,
+          recommended_evidence: d.recommendedEvidence ?? null,
+          evidence: d.evidence ?? null,
+          raw: d,
+          updated_at: nowIso,
+          last_event_at: nowIso,
+        }, { onConflict: 'dispute_id' });
+        if (accountId) await platformAdmin.from('merchant_ryft_accounts').update({ last_webhook_at: nowIso }).eq('ryft_account_id', accountId);
+      }
     } else if (/^(PaymentSession|Payout|Person)\./.test(type)) {
       // Touch last_webhook_at so we can see the account is active. Best-effort.
       const accountId: string | undefined = evt?.accountId ?? evt?.data?.accountId;

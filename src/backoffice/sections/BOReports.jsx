@@ -35,6 +35,7 @@ import Tax          from './reports/Tax';
 import LocationCompare from './reports/LocationCompare';
 import CashDrawer    from './reports/CashDrawer';
 import RyftPayouts   from './reports/RyftPayouts';
+import RyftDisputes  from './reports/RyftDisputes';
 import LoyaltyReport from './reports/LoyaltyReport';
 import Transactions  from './Transactions';
 import { money } from '../../lib/currency';
@@ -272,6 +273,7 @@ export default function BOReports() {
           {view === 'location_compare' && <LocationCompare rangeFrom={range.from} rangeTo={range.to} periodLabelText={periodLabel(period, customRange, range)} fmt={fmt} fmtN={fmtN}/>}
           {view === 'cash_drawer' && <CashDrawer   fromMs={range.from} toMs={range.to}/>}
           {view === 'ryft_payouts' && <RyftPayouts />}
+          {view === 'ryft_disputes' && <RyftDisputes />}
           {view === 'transactions' && <Transactions checks={filtered} fmt={fmt}/>}
           {view === 'open'       && <LegacyOpen   openOrders={openOrders} fmt={fmt}/>}
           {view.startsWith('loyalty_') && <LoyaltyReport rangeFrom={range.from} rangeTo={range.to} initialTab={view.replace('loyalty_', '')}/>}

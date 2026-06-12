@@ -162,5 +162,25 @@ export const listBalances = (opts: RyftOpts = {}) =>
 export const listPayouts = (accountId: string, limit = 50, opts: RyftOpts = {}) =>
   ryftFetch('GET', `/accounts/${accountId}/payouts?limit=${limit}`, undefined, opts);
 
+// ── Disputes / chargebacks ──────────────────────────────────────────────────
+// Account header scopes to the sub-account. A dispute has a hard respondBy
+// deadline — accept (concede) or challenge (with evidence) before it.
+export const listDisputes = (opts: RyftOpts = {}, limit = 50) =>
+  ryftFetch('GET', `/disputes?limit=${limit}`, undefined, opts);
+
+export const getDispute = (id: string, opts: RyftOpts = {}) =>
+  ryftFetch('GET', `/disputes/${id}`, undefined, opts);
+
+export const acceptDispute = (id: string, opts: RyftOpts = {}) =>
+  ryftFetch('POST', `/disputes/${id}/accept`, {}, opts);
+
+// Attach text/file evidence (DisputeEvidence). text entries: billingAddress,
+// shippingAddress, duplicateTransaction, uncategorised; files by fileId.
+export const addDisputeEvidence = (id: string, evidence: Record<string, unknown>, opts: RyftOpts = {}) =>
+  ryftFetch('PATCH', `/disputes/${id}/evidence`, evidence, opts);
+
+export const challengeDispute = (id: string, opts: RyftOpts = {}) =>
+  ryftFetch('POST', `/disputes/${id}/challenge`, {}, opts);
+
 export const ryftPublicKey = () => Deno.env.get('RYFT_PUBLIC_KEY') ?? '';
 export const ryftConfigured = () => !!RYFT_SECRET;

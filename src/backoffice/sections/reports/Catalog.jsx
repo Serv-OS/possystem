@@ -41,6 +41,7 @@ export const CATEGORIES = [
       { id:'payments', label:'Payments & cash',  desc:'Method breakdown + drawer reconciliation' },
       { id:'cash_drawer', label:'Cash drawer sessions', desc:'Every cash-in / cash-out with opening float, expected, declared, variance', badge:'new' },
       { id:'ryft_payouts', label:'Card payments & payouts', desc:'Live Ryft balance, payout history and settlement to your bank', badge:'new' },
+      { id:'ryft_disputes', label:'Disputes & chargebacks', desc:'Card disputes with a respond-by deadline — accept or challenge', badge:'new' },
     ],
   },
   {
