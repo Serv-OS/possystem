@@ -518,6 +518,8 @@ function RyftBlock({ rya, currency, defaults, onConnect, onSync, onUnlink, onOnb
   const [savedAt, setSavedAt] = useState(null);
   const [syncing, setSyncing] = useState(false);
   const [link, setLink] = useState(null);      // freshly-minted onboarding URL
+  const [linkBusy, setLinkBusy] = useState(false);
+  const [linkErr, setLinkErr] = useState('');
   const [fees, setFees] = useState(null);      // live fees pulled from Ryft
   const [feesBusy, setFeesBusy] = useState(false);
 
@@ -563,13 +565,24 @@ function RyftBlock({ rya, currency, defaults, onConnect, onSync, onUnlink, onOnb
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
           {!linked && <button onClick={onConnect} style={{ ...S.btn, ...S.btnPrim }}>Connect Ryft merchant</button>}
           {linked && <>
-            <button onClick={async () => { const url = await onOnboardingLink(); if (url) setLink(url); }} style={{ ...S.btn, ...S.btnGhost }}>Continue onboarding</button>
+            <button
+              onClick={async () => {
+                setLinkBusy(true); setLinkErr('');
+                const url = await onOnboardingLink();
+                setLinkBusy(false);
+                if (url) { setLink(url); try { window.open(url, '_blank', 'noopener'); } catch { /* popup blocked → link box still shows */ } }
+                else setLinkErr('Couldn’t open the Ryft portal. Try “Sync status”, or open the account directly in your Ryft dashboard.');
+              }}
+              disabled={linkBusy}
+              style={{ ...S.btn, ...S.btnGhost }}
+            >{linkBusy ? 'Opening…' : (status.ready ? 'Manage on Ryft' : 'Continue onboarding')}</button>
             <button onClick={async () => { setSyncing(true); await onSync(); setSyncing(false); }} disabled={syncing} style={{ ...S.btn, ...S.btnGhost }}>{syncing ? 'Syncing…' : 'Sync status'}</button>
             <button onClick={onUnlink} style={{ ...S.btn, ...S.btnDan }}>Unlink</button>
           </>}
         </div>
       </div>
 
+      {linkErr && <div style={{ ...S.errorBox, marginTop: 4 }}>{linkErr}</div>}
       {link && <OnboardingLinkBox url={link} onClose={() => setLink(null)} />}
 
       {!linked && (

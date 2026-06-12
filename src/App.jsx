@@ -83,6 +83,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.435', date: '12 Jun 2026', label: 'Fix: admin "Continue onboarding" button did nothing on a live account',
+    changes: [
+      'In the admin portal, the Ryft "Continue onboarding" button silently failed once a merchant was fully onboarded (a hosted onboarding link can\'t be minted after onboarding completes). It now falls back to a secure sign-in link to the merchant\'s Ryft dashboard, opens it in a new tab, and shows a clear message if anything goes wrong.',
+      'On a live account the button is now labelled "Manage on Ryft" (there\'s nothing left to onboard); on an in-progress account it stays "Continue onboarding".',
+    ],
+  },
+  {
     version: '5.5.434', date: '12 Jun 2026', label: 'Fix: linked Ryft merchants wrongly showed "Not connected"',
     changes: [
       'The admin portal was reading the Ryft merchant table directly, which is locked down — so even locations that were fully connected and ready to trade showed as "Not connected". It now reads that status through the secure admin service, so connected/live accounts show correctly.',

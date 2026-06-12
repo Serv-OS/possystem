@@ -300,13 +300,18 @@ Deno.serve(async (req) => {
       .select('ryft_account_id').eq('location_id', loc.id).maybeSingle();
     if (!row?.ryft_account_id) return json({ error: 'No Ryft account linked to this location' }, 404);
     const link = await createAccountLink({ accountId: row.ryft_account_id, redirectUrl: body.redirect_url });
-    if (link.ok && link.data?.url) return json({ success: true, onboarding_url: link.data.url, expires_at: link.data.expiresTimestamp ?? null });
-    // Fall back to an authorize (sign-in) link for a returning merchant.
-    if (body.email) {
-      const auth = await authorizeAccount({ email: body.email, redirectUrl: body.redirect_url });
-      if (auth.ok && auth.data?.url) return json({ success: true, onboarding_url: auth.data.url, expires_at: auth.data.expiresTimestamp ?? null, mode: 'authorize' });
+    if (link.ok && link.data?.url) return json({ success: true, onboarding_url: link.data.url, expires_at: link.data.expiresTimestamp ?? null, mode: 'onboard' });
+    // A hosted onboarding link can't be minted once the merchant is fully
+    // onboarded — fall back to an authorize (sign-in) link so the button always
+    // opens their Ryft dashboard. Use the account's OWN email (the caller need
+    // not pass it) — this is why the button looked dead on a "ready" account.
+    let email = body.email as string | undefined;
+    if (!email) { const got = await getAccount(row.ryft_account_id); email = got.ok ? (got.data?.email as string | undefined) : undefined; }
+    if (email) {
+      const auth = await authorizeAccount({ email, redirectUrl: body.redirect_url });
+      if (auth.ok && auth.data?.url) return json({ success: true, onboarding_url: auth.data.url, expires_at: auth.data.expiresTimestamp ?? null, mode: 'manage' });
     }
-    return json({ error: ryftErr(link.data) || `account-link failed (${link.status})`, ryft: link.data }, 502);
+    return json({ error: ryftErr(link.data) || `Couldn't create a Ryft portal link (${link.status})`, ryft: link.data }, 502);
   }
 
   return json({ error: `unknown action: ${action}` }, 400);
