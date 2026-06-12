@@ -83,6 +83,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.417', date: '11 Jun 2026', label: 'Ryft pricing radically simplified — just our markup + live costs from Ryft',
+    changes: [
+      'Stripped Ryft pricing down to one input: the markup we add on top (% + per-transaction fee), per location with a platform default. No more entering cost, scheme fees or interchange — Ryft charges those itself and reports the actuals.',
+      'New "Fees & margin — live from Ryft" panel on each Ryft merchant pulls the real numbers (GMV, Ryft fees paid, our markup collected) straight from Ryft\'s balance-transactions / platform-fees API. No guessing.',
+      'Back office now shows the venue a simple "your fee: X% + Yp per transaction, plus card-network fees at cost" instead of a guessed rate table.',
+      'Removed the manual cost / interchange / per-channel-per-card rate card entirely (migration 20260611e).',
+    ],
+  },
+  {
     version: '5.5.416', date: '11 Jun 2026', label: 'Fix: creating a Ryft merchant failed (400) when the location name had a space',
     changes: [
       'Ryft rejects metadata values containing whitespace, so connecting a Ryft merchant for a location whose name had a space (e.g. "Location One") failed with a generic 400. We now sanitise metadata (whitespace → underscore, drop empties) before sending it.',

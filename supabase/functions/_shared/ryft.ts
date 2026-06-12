@@ -123,5 +123,16 @@ export const createAccountLink = (input: { accountId: string; redirectUrl: strin
 export const authorizeAccount = (input: { email: string; redirectUrl: string }, opts: RyftOpts = {}) =>
   ryftFetch('POST', '/accounts/authorize', input, opts);
 
+// ── Actual fees (read back what Ryft really charged / we collected) ─────────
+// Pass opts.accountId to scope to a sub-account (Account header). These are the
+// source of truth for cost + margin — Ryft computes the card-network fees, we
+// just read them. /balance-transactions item.feeTotal = fees taken on a txn;
+// /platform-fees = the markup we collected.
+export const listBalanceTransactions = (opts: RyftOpts = {}, limit = 50) =>
+  ryftFetch('GET', `/balance-transactions?limit=${limit}`, undefined, opts);
+
+export const listPlatformFees = (opts: RyftOpts = {}, limit = 50) =>
+  ryftFetch('GET', `/platform-fees?limit=${limit}`, undefined, opts);
+
 export const ryftPublicKey = () => Deno.env.get('RYFT_PUBLIC_KEY') ?? '';
 export const ryftConfigured = () => !!RYFT_SECRET;

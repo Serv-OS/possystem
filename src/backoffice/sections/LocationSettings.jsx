@@ -185,8 +185,8 @@ export default function LocationSettings() {
           // this location's negotiated override, if any). Non-fatal on error.
           try {
             const [{ data: ps }, { data: mra }] = await Promise.all([
-              platformSupabase.from('platform_settings').select('ryft_tier_label, ryft_sell_instore_vmc_percent, ryft_sell_instore_amex_percent, ryft_sell_online_vmc_percent, ryft_sell_online_amex_percent, ryft_sell_fixed_pence, ryft_ic_debit_percent, ryft_ic_credit_percent, ryft_ic_amex_percent').eq('id', true).maybeSingle(),
-              platformSupabase.from('merchant_ryft_accounts').select('charges_enabled, ryft_account_id, sell_instore_vmc_percent, sell_instore_amex_percent, sell_online_vmc_percent, sell_online_amex_percent, sell_fixed_pence').eq('location_id', row.id).maybeSingle(),
+              platformSupabase.from('platform_settings').select('default_ryft_markup_percent, default_ryft_markup_fixed_pence').eq('id', true).maybeSingle(),
+              platformSupabase.from('merchant_ryft_accounts').select('charges_enabled, ryft_account_id, markup_percent, markup_fixed_pence').eq('location_id', row.id).maybeSingle(),
             ]);
             setPayInfo({ processor: row.payment_processor || 'stripe', std: ps || null, ovr: mra || null });
           } catch { /* rates display is best-effort */ }
@@ -330,39 +330,25 @@ export default function LocationSettings() {
       {payInfo?.processor === 'ryft' && payInfo.std && (() => {
         const std = payInfo.std, ovr = payInfo.ovr || {};
         const eff = (o, s) => (o != null ? Number(o) : Number(s ?? 0));
-        const iVmc  = eff(ovr.sell_instore_vmc_percent, std.ryft_sell_instore_vmc_percent);
-        const iAmex = eff(ovr.sell_instore_amex_percent, std.ryft_sell_instore_amex_percent);
-        const oVmc  = eff(ovr.sell_online_vmc_percent, std.ryft_sell_online_vmc_percent);
-        const oAmex = eff(ovr.sell_online_amex_percent, std.ryft_sell_online_amex_percent);
-        const fix   = eff(ovr.sell_fixed_pence, std.ryft_sell_fixed_pence);
-        const icDeb = Number(std.ryft_ic_debit_percent ?? 0), icCred = Number(std.ryft_ic_credit_percent ?? 0), icAmex = Number(std.ryft_ic_amex_percent ?? 0);
-        const rows = [
-          ['In-store', 'Debit',  iVmc + icDeb], ['In-store', 'Credit', iVmc + icCred], ['In-store', 'Amex', iAmex + icAmex],
-          ['Online',   'Debit',  oVmc + icDeb], ['Online',   'Credit', oVmc + icCred], ['Online',   'Amex', oAmex + icAmex],
-        ];
+        const mkPct = eff(ovr.markup_percent, std.default_ryft_markup_percent);
+        const mkFix = eff(ovr.markup_fixed_pence, std.default_ryft_markup_fixed_pence);
         const linked = !!payInfo.ovr?.ryft_account_id;
         const live = !!payInfo.ovr?.charges_enabled;
         return (
           <div style={S.card}>
-            <div style={S.h2}>💳 Card processing rates</div>
+            <div style={S.h2}>💳 Card payments</div>
             <div style={S.desc}>
-              What you pay to take card payments — our rate plus card-scheme interchange (passed straight through, so it varies a little by card).
-              {linked ? (live ? ' Your payments account is live.' : ' Your account is set up — finish onboarding to start taking payments.') : ' Connect your payments account below to start taking cards.'}
+              {linked ? (live ? 'Your payments account is live.' : 'Your account is set up — finish onboarding to start taking payments.') : 'Connect your payments account below to start taking cards.'}
             </div>
-            <div style={{ border:'1px solid var(--bdr)', borderRadius:10, overflow:'hidden' }}>
-              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.04em', padding:'9px 14px', background:'var(--bg2)' }}>
-                <div>Channel</div><div>Card</div><div>You pay</div>
+            <div style={{ border:'1px solid var(--bdr)', borderRadius:10, padding:'14px 16px', background:'var(--bg2)' }}>
+              <div style={{ fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.04em', marginBottom:6 }}>Your fee per transaction</div>
+              <div style={{ fontSize:20, fontWeight:800, color:'var(--t1)' }}>{mkPct.toFixed(2)}% + {mkFix}p</div>
+              <div style={{ fontSize:12, color:'var(--t4)', marginTop:6, lineHeight:1.5 }}>
+                Plus the card networks' own processing fees, charged at cost (these vary by card type). No markup on those — you pay exactly what the networks charge.
               </div>
-              {rows.map((r, i) => (
-                <div key={i} style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', fontSize:13, padding:'8px 14px', borderTop:'1px solid var(--bdr)' }}>
-                  <div style={{ color:'var(--t3)' }}>{r[0]}</div>
-                  <div style={{ color:'var(--t1)', fontWeight:600 }}>{r[1]}</div>
-                  <div style={{ color:'var(--t1)', fontWeight:700 }}>{r[2].toFixed(2)}% + {fix}p</div>
-                </div>
-              ))}
             </div>
             <div style={{ fontSize:11, color:'var(--t4)', marginTop:8 }}>
-              Rates are set by your account manager{std.ryft_tier_label ? ` · ${std.ryft_tier_label}` : ''}. Interchange is the card networks' own fee and is passed through at cost.
+              Your fee is set by your account manager.
             </div>
 
             {/* Self-serve onboarding */}

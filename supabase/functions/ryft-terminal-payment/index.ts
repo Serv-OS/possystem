@@ -66,17 +66,15 @@ Deno.serve(async (req) => {
     if (!match?.ryft_terminal_id) return json({ error: 'no Ryft terminal registered for this location' }, 400);
     terminalId = match.ryft_terminal_id;
     const { data: mra } = await platformAdmin.from('merchant_ryft_accounts')
-      .select('ryft_account_id, sell_instore_vmc_percent, sell_fixed_pence').eq('location_id', platformLocId).maybeSingle();
+      .select('ryft_account_id, markup_percent, markup_fixed_pence').eq('location_id', platformLocId).maybeSingle();
     accountId = mra?.ryft_account_id ?? undefined;
-    // platformFee (our take) = our IN-STORE Visa/MC sell rate × amount + fixed
-    // pence. Card type isn't known up front, so the Visa/MC rate applies (the
-    // common case). Merchant override → platform standard. Interchange passes
-    // through and is not part of our fee.
+    // platformFee (our take) = our MARKUP: markup% × amount + fixed pence. Ryft
+    // charges the card-network fees itself. Merchant override → platform default.
     if (accountId) {
       const { data: ps } = await platformAdmin.from('platform_settings')
-        .select('ryft_sell_instore_vmc_percent, ryft_sell_fixed_pence').eq('id', true).maybeSingle();
-      const pct = mra?.sell_instore_vmc_percent != null ? Number(mra.sell_instore_vmc_percent) : Number(ps?.ryft_sell_instore_vmc_percent ?? 0);
-      const fixed = mra?.sell_fixed_pence != null ? Number(mra.sell_fixed_pence) : Number(ps?.ryft_sell_fixed_pence ?? 0);
+        .select('default_ryft_markup_percent, default_ryft_markup_fixed_pence').eq('id', true).maybeSingle();
+      const pct = mra?.markup_percent != null ? Number(mra.markup_percent) : Number(ps?.default_ryft_markup_percent ?? 0);
+      const fixed = mra?.markup_fixed_pence != null ? Number(mra.markup_fixed_pence) : Number(ps?.default_ryft_markup_fixed_pence ?? 0);
       const fee = Math.round(amount_minor * (pct / 100)) + Math.round(fixed);
       if (fee > 0) platformFee = fee;
     }

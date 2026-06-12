@@ -10,6 +10,7 @@
 //   ryft_sync            { location_id }
 //   ryft_onboarding_link { location_id, redirect_url, email? }
 //   ryft_pricing         { location_id, markup_percent, markup_fixed_pence, pricing_notes }
+//   ryft_fees            { location_id }  → actual GMV / Ryft fees paid / markup collected
 //
 // Auth: Ops DB user_profiles.role = 'super_admin' (matches stripe-link-merchant).
 // Ryft account API is the marketplace platform model — create a Sub-Account with
@@ -17,7 +18,7 @@
 // the Ryft OpenAPI spec.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { createSubAccount, getAccount, createAccountLink, authorizeAccount, ryftConfigured } from '../_shared/ryft.ts';
+import { createSubAccount, getAccount, createAccountLink, authorizeAccount, listBalanceTransactions, listPlatformFees, ryftConfigured } from '../_shared/ryft.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -121,21 +122,39 @@ Deno.serve(async (req) => {
     return json({ success: true, processor });
   }
 
-  // ── ryft_pricing (per-location SELL rate override; null = platform standard) ──
+  // ── ryft_pricing (our MARKUP on top: % + per-txn pence; null = platform default) ──
   if (action === 'ryft_pricing') {
     const numOrNull = (v: unknown) => (v === '' || v === null || v === undefined ? null : Number(v));
     const intOrNull = (v: unknown) => (v === '' || v === null || v === undefined ? null : Math.round(Number(v)));
     const patch: Record<string, unknown> = {
-      sell_instore_vmc_percent:  numOrNull(body.sell_instore_vmc),
-      sell_instore_amex_percent: numOrNull(body.sell_instore_amex),
-      sell_online_vmc_percent:   numOrNull(body.sell_online_vmc),
-      sell_online_amex_percent:  numOrNull(body.sell_online_amex),
-      sell_fixed_pence:          intOrNull(body.sell_fixed_pence),
+      markup_percent: numOrNull(body.markup_percent),
+      markup_fixed_pence: intOrNull(body.markup_fixed_pence),
       pricing_notes: body.pricing_notes || null,
     };
     const { error } = await platformAdmin.from('merchant_ryft_accounts').update(patch).eq('location_id', loc.id);
     if (error) return json({ error: `pricing update failed: ${error.message}` }, 500);
     return json({ success: true });
+  }
+
+  // ── ryft_fees: read ACTUAL fees from Ryft (cost + our markup collected) ──
+  if (action === 'ryft_fees') {
+    const { data: row } = await platformAdmin.from('merchant_ryft_accounts')
+      .select('ryft_account_id').eq('location_id', loc.id).maybeSingle();
+    if (!row?.ryft_account_id) return json({ success: true, linked: false });
+    if (!ryftConfigured()) return json({ error: 'Ryft not configured' }, 500);
+    const opts = { accountId: row.ryft_account_id };
+    const [bt, pf] = await Promise.all([listBalanceTransactions(opts, 50), listPlatformFees(opts, 50)]);
+    const btItems: any[] = bt.ok ? (bt.data?.items ?? []) : [];
+    const pfItems: any[] = pf.ok ? (pf.data?.items ?? []) : [];
+    const sum = (arr: any[], f: (x: any) => number) => arr.reduce((s, x) => s + (Number(f(x)) || 0), 0);
+    const isCapture = (t: string) => /capture/i.test(t || '');
+    return json({
+      success: true, linked: true, currency: btItems[0]?.currency ?? pfItems[0]?.currency ?? 'GBP',
+      gmv_minor: sum(btItems.filter((x) => isCapture(x.type)), (x) => x.amount),
+      ryft_fees_minor: sum(btItems, (x) => x.feeTotal),
+      markup_collected_minor: sum(pfItems, (x) => x.amount ?? x.fee ?? 0),
+      txn_count: btItems.length, fee_count: pfItems.length,
+    });
   }
 
   // ── ryft_unlink: detach the account row (does NOT delete it at Ryft) ─────

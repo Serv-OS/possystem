@@ -211,16 +211,16 @@ export default function AdminBillingManager({ authUser }) {
             } catch (e) { setError(`Couldn't create onboarding link: ${e.message}`); return null; }
           }}
           onRyftSavePricing={async (vals) => {
-            const n = (v) => (v === '' || v == null ? null : Number(v));
             try { await callPaymentsAdmin('ryft_pricing', { location_id: loc.id, ...vals }); upsertRyaPatch(loc.id, {
-              sell_instore_vmc_percent: n(vals.sell_instore_vmc),
-              sell_instore_amex_percent: n(vals.sell_instore_amex),
-              sell_online_vmc_percent: n(vals.sell_online_vmc),
-              sell_online_amex_percent: n(vals.sell_online_amex),
-              sell_fixed_pence: vals.sell_fixed_pence === '' || vals.sell_fixed_pence == null ? null : Math.round(Number(vals.sell_fixed_pence)),
+              markup_percent: vals.markup_percent === '' || vals.markup_percent == null ? null : Number(vals.markup_percent),
+              markup_fixed_pence: vals.markup_fixed_pence === '' || vals.markup_fixed_pence == null ? null : Math.round(Number(vals.markup_fixed_pence)),
               pricing_notes: vals.pricing_notes || null,
             }); return true; }
             catch (e) { setError(`Save failed: ${e.message}`); return false; }
+          }}
+          onRyftFees={async () => {
+            try { return await callPaymentsAdmin('ryft_fees', { location_id: loc.id }); }
+            catch (e) { setError(`Couldn't load fees: ${e.message}`); return null; }
           }}
         />
       ))}
@@ -251,32 +251,16 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
   const [editing, setEditing] = useState(false);
   const [cp, setCp] = useState(defaults.default_cardpresent_markup_percent);
   const [on, setOn] = useState(defaults.default_online_markup_percent);
-  const [tier, setTier] = useState(defaults.ryft_tier_label ?? '');
-  // Ryft cost (Ryft IC+ scheme, ex-interchange)
-  const [cVmc, setCVmc] = useState(defaults.ryft_cost_vmc_percent ?? '');
-  const [cAmex, setCAmex] = useState(defaults.ryft_cost_amex_percent ?? '');
-  const [cFix, setCFix] = useState(defaults.ryft_cost_fixed_pence ?? '');
-  // Ryft standard sell rates (our rate, ex-interchange)
-  const [sIVmc, setSIVmc] = useState(defaults.ryft_sell_instore_vmc_percent ?? '');
-  const [sIAmex, setSIAmex] = useState(defaults.ryft_sell_instore_amex_percent ?? '');
-  const [sOVmc, setSOVmc] = useState(defaults.ryft_sell_online_vmc_percent ?? '');
-  const [sOAmex, setSOAmex] = useState(defaults.ryft_sell_online_amex_percent ?? '');
-  const [sFix, setSFix] = useState(defaults.ryft_sell_fixed_pence ?? '');
-  // Interchange (pass-through, display)
-  const [icDeb, setIcDeb] = useState(defaults.ryft_ic_debit_percent ?? '');
-  const [icCred, setIcCred] = useState(defaults.ryft_ic_credit_percent ?? '');
-  const [icAmex, setIcAmex] = useState(defaults.ryft_ic_amex_percent ?? '');
+  // Ryft: just the default markup we add on top (% + per-txn pence).
+  const [mkPct, setMkPct] = useState(defaults.default_ryft_markup_percent ?? '');
+  const [mkFix, setMkFix] = useState(defaults.default_ryft_markup_fixed_pence ?? '');
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     setCp(defaults.default_cardpresent_markup_percent);
     setOn(defaults.default_online_markup_percent);
-    setTier(defaults.ryft_tier_label ?? '');
-    setCVmc(defaults.ryft_cost_vmc_percent ?? '');     setCAmex(defaults.ryft_cost_amex_percent ?? '');     setCFix(defaults.ryft_cost_fixed_pence ?? '');
-    setSIVmc(defaults.ryft_sell_instore_vmc_percent ?? ''); setSIAmex(defaults.ryft_sell_instore_amex_percent ?? '');
-    setSOVmc(defaults.ryft_sell_online_vmc_percent ?? '');  setSOAmex(defaults.ryft_sell_online_amex_percent ?? '');
-    setSFix(defaults.ryft_sell_fixed_pence ?? '');
-    setIcDeb(defaults.ryft_ic_debit_percent ?? '');   setIcCred(defaults.ryft_ic_credit_percent ?? '');   setIcAmex(defaults.ryft_ic_amex_percent ?? '');
+    setMkPct(defaults.default_ryft_markup_percent ?? '');
+    setMkFix(defaults.default_ryft_markup_fixed_pence ?? '');
   }, [defaults]);
 
   const numOrNull = (v) => (v === '' || v === null || v === undefined ? null : Number(v));
@@ -288,12 +272,8 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
       const patch = {
         default_cardpresent_markup_percent: Number(cp),
         default_online_markup_percent: Number(on),
-        ryft_tier_label: tier || null,
-        ryft_cost_vmc_percent: numOrNull(cVmc), ryft_cost_amex_percent: numOrNull(cAmex), ryft_cost_fixed_pence: intOrNull(cFix),
-        ryft_sell_instore_vmc_percent: numOrNull(sIVmc), ryft_sell_instore_amex_percent: numOrNull(sIAmex),
-        ryft_sell_online_vmc_percent: numOrNull(sOVmc),  ryft_sell_online_amex_percent: numOrNull(sOAmex),
-        ryft_sell_fixed_pence: intOrNull(sFix),
-        ryft_ic_debit_percent: numOrNull(icDeb), ryft_ic_credit_percent: numOrNull(icCred), ryft_ic_amex_percent: numOrNull(icAmex),
+        default_ryft_markup_percent: numOrNull(mkPct),
+        default_ryft_markup_fixed_pence: intOrNull(mkFix),
         updated_at: new Date().toISOString(),
         updated_by_user_id: authUserId,
       };
@@ -319,23 +299,17 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
             Platform defaults
           </div>
           <div style={{ fontSize: 14, color: 'var(--t1)', marginBottom: 8, lineHeight: 1.4 }}>
-            Stripe markup, and the Ryft rate card — our cost (Ryft IC+ scheme) and the standard rate we charge merchants. All ex-interchange (interchange passes through on top).
+            Stripe markup, and the default Ryft markup we add on top. Ryft charges the card-network fees itself — we don't track those; actual costs come back live from Ryft.
           </div>
           {!editing && (
-            <div style={{ display: 'grid', gap: 10 }}>
-              <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}>
-                <Stat label="Stripe in-person markup" value={pct(defaults.default_cardpresent_markup_percent)} />
-                <Stat label="Stripe online markup"    value={pct(defaults.default_online_markup_percent)} />
-              </div>
-              <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', paddingTop: 8, borderTop: '1px solid var(--bdr)' }}>
-                <Stat label={`Ryft standard sell · ${defaults.ryft_tier_label || 'Tier 1'}`} value={`In-store ${pct(defaults.ryft_sell_instore_vmc_percent)} / Amex ${pct(defaults.ryft_sell_instore_amex_percent)} · Online ${pct(defaults.ryft_sell_online_vmc_percent)} / Amex ${pct(defaults.ryft_sell_online_amex_percent)} · +${pence(defaults.ryft_sell_fixed_pence)}`} accent />
-                <Stat label="Ryft cost (scheme)" value={`V/MC ${pct(defaults.ryft_cost_vmc_percent)} · Amex ${pct(defaults.ryft_cost_amex_percent)} · +${pence(defaults.ryft_cost_fixed_pence)}`} />
-                <Stat label="Interchange (pass-through)" value={`Deb ${pct(defaults.ryft_ic_debit_percent)} · Cred ${pct(defaults.ryft_ic_credit_percent)} · Amex ${pct(defaults.ryft_ic_amex_percent)}`} />
-              </div>
+            <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}>
+              <Stat label="Stripe in-person markup" value={pct(defaults.default_cardpresent_markup_percent)} />
+              <Stat label="Stripe online markup"    value={pct(defaults.default_online_markup_percent)} />
+              <Stat label="Ryft markup (default)"   value={`${pct(defaults.default_ryft_markup_percent)} + ${pence(defaults.default_ryft_markup_fixed_pence)}`} accent />
             </div>
           )}
           {editing && (
-            <div style={{ display: 'grid', gap: 14, maxWidth: 720 }}>
+            <div style={{ display: 'grid', gap: 14, maxWidth: 520 }}>
               <div>
                 <div style={{ ...S.label, color: 'var(--t2)' }}>Stripe markup (platform fee)</div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
@@ -344,33 +318,10 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
                 </div>
               </div>
               <div>
-                <label style={S.label}>Ryft tier label</label>
-                <input type="text" value={tier} onChange={e => setTier(e.target.value)} placeholder="Tier 1 (up to £500k/mo GMV)" style={S.input} />
-              </div>
-              <div>
-                <div style={{ ...S.label, color: 'var(--t2)' }}>Ryft standard sell rate — what we charge (ex-interchange)</div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 10 }}>
-                  <NumField label="In-store V/MC %" value={sIVmc} onChange={setSIVmc} />
-                  <NumField label="In-store Amex %" value={sIAmex} onChange={setSIAmex} />
-                  <NumField label="Online V/MC %" value={sOVmc} onChange={setSOVmc} />
-                  <NumField label="Online Amex %" value={sOAmex} onChange={setSOAmex} />
-                  <NumField label="Fixed (pence)" value={sFix} onChange={setSFix} />
-                </div>
-              </div>
-              <div>
-                <div style={{ ...S.label, color: 'var(--t2)' }}>Ryft cost — Ryft IC+ scheme fee, ex-interchange (margin only)</div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
-                  <NumField label="Visa/MC %" value={cVmc} onChange={setCVmc} />
-                  <NumField label="Amex %" value={cAmex} onChange={setCAmex} />
-                  <NumField label="Fixed (pence)" value={cFix} onChange={setCFix} />
-                </div>
-              </div>
-              <div>
-                <div style={{ ...S.label, color: 'var(--t2)' }}>Interchange (pass-through — shown to merchants as "+ interchange")</div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
-                  <NumField label="Debit %" value={icDeb} onChange={setIcDeb} />
-                  <NumField label="Credit %" value={icCred} onChange={setIcCred} />
-                  <NumField label="Amex %" value={icAmex} onChange={setIcAmex} />
+                <div style={{ ...S.label, color: 'var(--t2)' }}>Ryft markup — what we add on top of Ryft's cost</div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                  <NumField label="Markup %" value={mkPct} onChange={setMkPct} />
+                  <NumField label="Per-txn fee (pence)" value={mkFix} onChange={setMkFix} />
                 </div>
               </div>
             </div>
@@ -400,7 +351,7 @@ function NumField({ label, value, onChange }) {
 // ─── Per-location card ────────────────────────────────────────────────────
 function LocationCard({ location, companyName, msa, rya, bs, defaults, onError,
   onSetProcessor, onLink, onUnlink, onSavePricing,
-  onRyftConnect, onRyftSync, onRyftUnlink, onRyftOnboardingLink, onRyftSavePricing }) {
+  onRyftConnect, onRyftSync, onRyftUnlink, onRyftOnboardingLink, onRyftSavePricing, onRyftFees }) {
   const processor = location.payment_processor || 'stripe';
   const currency = (msa?.default_currency || rya?.default_currency || bs?.current_period_currency || 'gbp').toUpperCase();
 
@@ -426,7 +377,7 @@ function LocationCard({ location, companyName, msa, rya, bs, defaults, onError,
 
       {processor === 'stripe'
         ? <StripeBlock msa={msa} bs={bs} currency={currency} defaults={defaults} onLink={onLink} onUnlink={onUnlink} onSavePricing={onSavePricing} />
-        : <RyftBlock rya={rya} currency={currency} defaults={defaults} onError={onError} onConnect={onRyftConnect} onSync={onRyftSync} onUnlink={onRyftUnlink} onOnboardingLink={onRyftOnboardingLink} onSavePricing={onRyftSavePricing} />}
+        : <RyftBlock rya={rya} currency={currency} defaults={defaults} onError={onError} onConnect={onRyftConnect} onSync={onRyftSync} onUnlink={onRyftUnlink} onOnboardingLink={onRyftOnboardingLink} onSavePricing={onRyftSavePricing} onFees={onRyftFees} />}
     </div>
   );
 }
@@ -507,7 +458,7 @@ function StripeBlock({ msa, bs, currency, defaults, onLink, onUnlink, onSavePric
 }
 
 // ─── Ryft block ────────────────────────────────────────────────────────────
-function RyftBlock({ rya, currency, defaults, onConnect, onSync, onUnlink, onOnboardingLink, onSavePricing }) {
+function RyftBlock({ rya, currency, defaults, onConnect, onSync, onUnlink, onOnboardingLink, onSavePricing, onFees }) {
   const linked = !!rya;
   const vStatus = rya?.requirements?.status ?? null;       // verification.status, when known
   const status = !linked
@@ -516,54 +467,31 @@ function RyftBlock({ rya, currency, defaults, onConnect, onSync, onUnlink, onOnb
       ? { label: 'Live · charges enabled', color: 'var(--grn)' }
       : { label: vStatus ? `Onboarding · ${vStatus}` : 'Onboarding incomplete', color: 'var(--orn)' };
 
-  const [sIVmc, setSIVmc] = useState(rya?.sell_instore_vmc_percent ?? '');
-  const [sIAmex, setSIAmex] = useState(rya?.sell_instore_amex_percent ?? '');
-  const [sOVmc, setSOVmc] = useState(rya?.sell_online_vmc_percent ?? '');
-  const [sOAmex, setSOAmex] = useState(rya?.sell_online_amex_percent ?? '');
-  const [sFix, setSFix] = useState(rya?.sell_fixed_pence ?? '');
+  const [mkPct, setMkPct] = useState(rya?.markup_percent ?? '');
+  const [mkFix, setMkFix] = useState(rya?.markup_fixed_pence ?? '');
   const [notes, setNotes] = useState(rya?.pricing_notes ?? '');
   const [busy, setBusy] = useState(false);
   const [savedAt, setSavedAt] = useState(null);
   const [syncing, setSyncing] = useState(false);
   const [link, setLink] = useState(null);      // freshly-minted onboarding URL
+  const [fees, setFees] = useState(null);      // live fees pulled from Ryft
+  const [feesBusy, setFeesBusy] = useState(false);
 
   useEffect(() => {
-    setSIVmc(rya?.sell_instore_vmc_percent ?? ''); setSIAmex(rya?.sell_instore_amex_percent ?? '');
-    setSOVmc(rya?.sell_online_vmc_percent ?? '');  setSOAmex(rya?.sell_online_amex_percent ?? '');
-    setSFix(rya?.sell_fixed_pence ?? '');
+    setMkPct(rya?.markup_percent ?? '');
+    setMkFix(rya?.markup_fixed_pence ?? '');
     setNotes(rya?.pricing_notes ?? '');
-  }, [rya?.sell_instore_vmc_percent, rya?.sell_instore_amex_percent, rya?.sell_online_vmc_percent, rya?.sell_online_amex_percent, rya?.sell_fixed_pence, rya?.pricing_notes]);
+  }, [rya?.markup_percent, rya?.markup_fixed_pence, rya?.pricing_notes]);
 
   const dirty = linked && (
-    String(sIVmc) !== String(rya?.sell_instore_vmc_percent ?? '') ||
-    String(sIAmex) !== String(rya?.sell_instore_amex_percent ?? '') ||
-    String(sOVmc) !== String(rya?.sell_online_vmc_percent ?? '') ||
-    String(sOAmex) !== String(rya?.sell_online_amex_percent ?? '') ||
-    String(sFix) !== String(rya?.sell_fixed_pence ?? '') ||
+    String(mkPct) !== String(rya?.markup_percent ?? '') ||
+    String(mkFix) !== String(rya?.markup_fixed_pence ?? '') ||
     (notes ?? '') !== (rya?.pricing_notes ?? '')
   );
-  // Effective sell rate = override or platform standard. Merchant pays our rate
-  // + interchange. Our cost = Ryft scheme fee (ex-IC). Margin = sell − cost.
   const num = (v, d) => (v === '' || v == null ? Number(d ?? 0) : Number(v));
-  const sIVmcEff = num(sIVmc, defaults.ryft_sell_instore_vmc_percent);
-  const sIAmexEff = num(sIAmex, defaults.ryft_sell_instore_amex_percent);
-  const sOVmcEff = num(sOVmc, defaults.ryft_sell_online_vmc_percent);
-  const sOAmexEff = num(sOAmex, defaults.ryft_sell_online_amex_percent);
-  const sFixEff = num(sFix, defaults.ryft_sell_fixed_pence);
-  const costVmc = Number(defaults.ryft_cost_vmc_percent ?? 0);
-  const costAmex = Number(defaults.ryft_cost_amex_percent ?? 0);
-  const costFix = Number(defaults.ryft_cost_fixed_pence ?? 0);
-  const icDeb = Number(defaults.ryft_ic_debit_percent ?? 0);
-  const icCred = Number(defaults.ryft_ic_credit_percent ?? 0);
-  const icAmex = Number(defaults.ryft_ic_amex_percent ?? 0);
-  const ROWS = [
-    { ch: 'In-store', card: 'Debit',  sell: sIVmcEff,  ic: icDeb,  cost: costVmc },
-    { ch: 'In-store', card: 'Credit', sell: sIVmcEff,  ic: icCred, cost: costVmc },
-    { ch: 'In-store', card: 'Amex',   sell: sIAmexEff, ic: icAmex, cost: costAmex },
-    { ch: 'Online',   card: 'Debit',  sell: sOVmcEff,  ic: icDeb,  cost: costVmc },
-    { ch: 'Online',   card: 'Credit', sell: sOVmcEff,  ic: icCred, cost: costVmc },
-    { ch: 'Online',   card: 'Amex',   sell: sOAmexEff, ic: icAmex, cost: costAmex },
-  ];
+  const mkPctEff = num(mkPct, defaults.default_ryft_markup_percent);
+  const mkFixEff = num(mkFix, defaults.default_ryft_markup_fixed_pence);
+  const fmtMoney = (minor) => fmt((Number(minor) || 0) / 100, fees?.currency || currency);
 
   return (
     <>
@@ -600,41 +528,40 @@ function RyftBlock({ rya, currency, defaults, onConnect, onSync, onUnlink, onOnb
 
       {linked && (
         <>
-          <div style={{ ...S.label, color: 'var(--t2)', marginBottom: 8 }}>Our rate to this merchant (ex-interchange) — blank = platform standard</div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12, marginBottom: 8 }}>
-            <MarkupField label="In-store Visa/MC %" value={sIVmc} onChange={setSIVmc} effective={sIVmcEff} isOverride={sIVmc !== ''} def={defaults.ryft_sell_instore_vmc_percent} />
-            <MarkupField label="In-store Amex %" value={sIAmex} onChange={setSIAmex} effective={sIAmexEff} isOverride={sIAmex !== ''} def={defaults.ryft_sell_instore_amex_percent} />
-            <MarkupField label="Online Visa/MC %" value={sOVmc} onChange={setSOVmc} effective={sOVmcEff} isOverride={sOVmc !== ''} def={defaults.ryft_sell_online_vmc_percent} />
-            <MarkupField label="Online Amex %" value={sOAmex} onChange={setSOAmex} effective={sOAmexEff} isOverride={sOAmex !== ''} def={defaults.ryft_sell_online_amex_percent} />
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
-            <MarkupField label="Per-transaction fee" value={sFix} onChange={setSFix} effective={sFixEff} isOverride={sFix !== ''} def={defaults.ryft_sell_fixed_pence} unit="p" />
-          </div>
-
-          {/* Margin readout: merchant pays our rate + interchange; cost = scheme fee */}
-          <div style={{ background: 'var(--bg2)', borderRadius: 8, marginBottom: 8, border: '1px solid var(--bdr)', overflow: 'hidden' }}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1.5fr 1fr 1fr', fontSize: 10, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em', padding: '8px 12px' }}>
-              <div>Channel</div><div>Card</div><div>Merchant pays</div><div>Our cost</div><div>Our margin</div>
-            </div>
-            {ROWS.map((r, i) => (
-              <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1.5fr 1fr 1fr', fontSize: 12.5, padding: '6px 12px', borderTop: '1px solid var(--bdr)', alignItems: 'center' }}>
-                <div style={{ color: 'var(--t2)' }}>{r.ch}</div>
-                <div style={{ fontWeight: 700, color: 'var(--t1)' }}>{r.card}</div>
-                <div style={{ color: 'var(--t1)', fontWeight: 700 }}>{(r.sell + r.ic).toFixed(2)}% + {sFixEff}p</div>
-                <div style={{ color: 'var(--t2)' }}>{(r.cost + r.ic).toFixed(2)}% + {costFix}p</div>
-                <div style={{ color: 'var(--acc)', fontWeight: 700 }}>{(r.sell - r.cost).toFixed(2)}%{(sFixEff - costFix) !== 0 ? ` + ${sFixEff - costFix}p` : ''}</div>
-              </div>
-            ))}
+          <div style={{ ...S.label, color: 'var(--t2)', marginBottom: 8 }}>Our markup — what we add on top of Ryft's cost (blank = platform default)</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 8 }}>
+            <MarkupField label="Markup %" value={mkPct} onChange={setMkPct} effective={mkPctEff} isOverride={mkPct !== ''} def={defaults.default_ryft_markup_percent} />
+            <MarkupField label="Per-transaction fee" value={mkFix} onChange={setMkFix} effective={mkFixEff} isOverride={mkFix !== ''} def={defaults.default_ryft_markup_fixed_pence} unit="p" />
           </div>
           <div style={{ fontSize: 11, color: 'var(--t3)', marginBottom: 12, lineHeight: 1.5 }}>
-            Merchant pays our rate + interchange (pass-through). Our cost is Ryft's scheme fee (edit in Platform defaults). Margin = our rate − Ryft scheme; interchange and the {costFix}p net out, so our take is the % spread{(sFixEff - costFix) !== 0 ? ` plus the ${sFixEff - costFix}p fee margin` : ''}.
+            We charge <strong>{mkPctEff.toFixed(2)}% + {mkFixEff}p</strong> on each payment. Ryft charges the card-network fees (interchange + scheme) directly — we don't set those. See real costs &amp; margin below.
           </div>
 
           <NotesRow notes={notes} setNotes={setNotes} />
           <SaveRow busy={busy} dirty={dirty} savedAt={savedAt}
-            onSave={async () => { setBusy(true); const ok = await onSavePricing({ sell_instore_vmc: sIVmc, sell_instore_amex: sIAmex, sell_online_vmc: sOVmc, sell_online_amex: sOAmex, sell_fixed_pence: sFix, pricing_notes: notes }); setBusy(false); if (ok) { setSavedAt(Date.now()); setTimeout(() => setSavedAt(null), 2500); } }}
-            onReset={() => { setSIVmc(rya?.sell_instore_vmc_percent ?? ''); setSIAmex(rya?.sell_instore_amex_percent ?? ''); setSOVmc(rya?.sell_online_vmc_percent ?? ''); setSOAmex(rya?.sell_online_amex_percent ?? ''); setSFix(rya?.sell_fixed_pence ?? ''); setNotes(rya?.pricing_notes ?? ''); }}
+            onSave={async () => { setBusy(true); const ok = await onSavePricing({ markup_percent: mkPct, markup_fixed_pence: mkFix, pricing_notes: notes }); setBusy(false); if (ok) { setSavedAt(Date.now()); setTimeout(() => setSavedAt(null), 2500); } }}
+            onReset={() => { setMkPct(rya?.markup_percent ?? ''); setMkFix(rya?.markup_fixed_pence ?? ''); setNotes(rya?.pricing_notes ?? ''); }}
           />
+
+          {/* Live fees & margin from Ryft */}
+          <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--bdr)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: fees ? 10 : 0 }}>
+              <div style={{ ...S.label, marginBottom: 0 }}>Fees &amp; margin — live from Ryft</div>
+              <button onClick={async () => { setFeesBusy(true); const r = await onFees(); if (r) setFees(r); setFeesBusy(false); }} disabled={feesBusy} style={{ ...S.btn, ...S.btnGhost, padding: '5px 10px', fontSize: 12 }}>
+                {feesBusy ? 'Loading…' : (fees ? '↻ Refresh' : 'Load fees')}
+              </button>
+            </div>
+            {fees && (fees.txn_count > 0 || fees.fee_count > 0 ? (
+              <div style={{ display: 'flex', gap: 22, flexWrap: 'wrap' }}>
+                <Stat label="Processed (GMV)" value={fmtMoney(fees.gmv_minor)} />
+                <Stat label="Ryft fees (cost)" value={fmtMoney(fees.ryft_fees_minor)} />
+                <Stat label="Our markup collected" value={fmtMoney(fees.markup_collected_minor)} accent />
+                <Stat label="Transactions" value={String(fees.txn_count)} />
+              </div>
+            ) : (
+              <div style={{ fontSize: 12, color: 'var(--t4)' }}>No transactions yet — this populates from Ryft as the merchant takes payments.</div>
+            ))}
+          </div>
         </>
       )}
     </>

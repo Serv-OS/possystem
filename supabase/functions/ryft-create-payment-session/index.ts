@@ -62,26 +62,22 @@ Deno.serve(async (req) => {
 
   // Resolve the location's Ryft sub-account (marketplace). Optional in sandbox —
   // without one we create on the platform account so the flow is testable now.
-  // platformFee (our take) = OUR SELL RATE for this channel × Visa/MC + fixed
-  // pence. Card type isn't known at session creation, so we apply the Visa/MC
-  // rate (the common case). Merchant override → platform standard. Interchange
-  // is Ryft's pass-through and is not part of our fee.
+  // platformFee (our take) = OUR MARKUP added on top: markup% × amount + fixed
+  // pence. Ryft charges the card-network fees itself; we only add our bit.
+  // Merchant override → platform default.
   let accountId: string | undefined;
   let platformFee: number | undefined;
   if (location_id) {
     const { data: mra } = await platformAdmin.from('merchant_ryft_accounts')
-      .select('ryft_account_id, charges_enabled, sell_instore_vmc_percent, sell_online_vmc_percent, sell_fixed_pence')
+      .select('ryft_account_id, charges_enabled, markup_percent, markup_fixed_pence')
       .eq('location_id', location_id).maybeSingle();
     if (mra?.ryft_account_id) {
       if (mra.charges_enabled === false) return json({ error: 'Ryft account cannot accept charges yet' }, 400);
       accountId = mra.ryft_account_id;
       const { data: ps } = await platformAdmin.from('platform_settings')
-        .select('ryft_sell_instore_vmc_percent, ryft_sell_online_vmc_percent, ryft_sell_fixed_pence').eq('id', true).maybeSingle();
-      const isInstore = channel === 'card_present';
-      const ovrPct = isInstore ? mra.sell_instore_vmc_percent : mra.sell_online_vmc_percent;
-      const stdPct = isInstore ? ps?.ryft_sell_instore_vmc_percent : ps?.ryft_sell_online_vmc_percent;
-      const pct = ovrPct != null ? Number(ovrPct) : Number(stdPct ?? 0);
-      const fixed = mra.sell_fixed_pence != null ? Number(mra.sell_fixed_pence) : Number(ps?.ryft_sell_fixed_pence ?? 0);
+        .select('default_ryft_markup_percent, default_ryft_markup_fixed_pence').eq('id', true).maybeSingle();
+      const pct = mra.markup_percent != null ? Number(mra.markup_percent) : Number(ps?.default_ryft_markup_percent ?? 0);
+      const fixed = mra.markup_fixed_pence != null ? Number(mra.markup_fixed_pence) : Number(ps?.default_ryft_markup_fixed_pence ?? 0);
       const fee = Math.round(amount_minor * (pct / 100)) + Math.round(fixed);
       if (fee > 0) platformFee = fee;
     }
