@@ -123,10 +123,28 @@ export default function AdminBillingManager({ authUser }) {
     setLocations(prev => prev.map(l => l.id === locationId ? { ...l, payment_processor: processor } : l));
   };
 
+  // Ryft onboarding at-a-glance: who can transact vs still onboarding.
+  const ryftSummary = (() => {
+    const ryft = locations.filter(l => (l.payment_processor || 'stripe') === 'ryft');
+    let live = 0, onboarding = 0, notConnected = 0;
+    ryft.forEach(l => { const r = ryaByLoc[l.id]; if (!r?.ryft_account_id) notConnected++; else if (r.charges_enabled) live++; else onboarding++; });
+    return { total: ryft.length, live, onboarding, notConnected };
+  })();
+
   return (
     <div style={S.page}>
       <h1 style={S.h1}>Payments — processors, accounts &amp; pricing</h1>
       <div style={S.sub}>Per-location payment processor (Stripe or Ryft), merchant account onboarding, and negotiated markup. For Ryft, the buy rate is recorded for margin visibility.</div>
+
+      {ryftSummary.total > 0 && (
+        <div style={{ ...S.card, display: 'flex', gap: 22, flexWrap: 'wrap', alignItems: 'center' }}>
+          <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--acc)', textTransform: 'uppercase', letterSpacing: '.06em' }}>Ryft onboarding</span>
+          <Stat label="Live · can transact" value={`${ryftSummary.live}`} accent />
+          <Stat label="Onboarding" value={`${ryftSummary.onboarding}`} />
+          <Stat label="Not connected" value={`${ryftSummary.notConnected}`} />
+          <div style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--t4)' }}>Auto-updates when a merchant finishes onboarding (Ryft webhook).</div>
+        </div>
+      )}
 
       {/* Platform-wide defaults */}
       <PlatformDefaultsPanel

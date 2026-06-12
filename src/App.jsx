@@ -83,6 +83,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.420', date: '11 Jun 2026', label: 'Ryft webhook — merchants flip to "live" automatically when onboarding completes',
+    changes: [
+      'New signed Ryft webhook (Account.updated): when a merchant finishes onboarding and can transact, their account flips to "live · charges enabled" automatically — no manual "Sync status" needed.',
+      'Admin → Payments now has an at-a-glance "Ryft onboarding" strip: how many merchants are live / still onboarding / not yet connected.',
+      'The webhook verifies Ryft\'s HMAC-SHA256 signature and re-fetches the account from Ryft to set the status from the authoritative source. Registered + secret stored server-side.',
+    ],
+  },
+  {
     version: '5.5.419', date: '11 Jun 2026', label: 'New report: Card payments & payouts (live Ryft financials)',
     changes: [
       'Reports → Fiscal → "Card payments & payouts": a live financial report for the location pulled straight from Ryft — available + pending balance, recent sales / fees / refunds, and the full payout history (amount, status, schedule, settlement dates) with CSV export.',
