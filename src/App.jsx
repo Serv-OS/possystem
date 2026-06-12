@@ -83,6 +83,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.425', date: '12 Jun 2026', label: 'Webhook idempotency + failed-payout alerts',
+    changes: [
+      'Ryft webhooks are now deduplicated (Ryft retries deliveries) so nothing is double-recorded or double-emailed — backed by a new event-id ledger that also serves as an audit trail.',
+      'If a payout to a venue\'s bank fails or is returned (usually wrong bank details), they\'re now emailed straight away with the reason — their money stays safe in the balance until it succeeds.',
+    ],
+  },
+  {
     version: '5.5.424', date: '12 Jun 2026', label: 'Dispute raised → the merchant is emailed immediately',
     changes: [
       'The moment Ryft raises a chargeback, we now email the venue automatically (amount, respond-by deadline, and where to act) — so a dispute can\'t sit unnoticed until the deadline passes. Best-effort, never blocks the webhook.',

@@ -33,30 +33,36 @@ async function validSignature(rawBody: string, header: string): Promise<boolean>
 
 // Best-effort urgent email to the merchant when a dispute is raised. Email goes
 // to the Ryft account email; routed through send-receipt (provider-agnostic).
-async function alertDispute(d: any, accountId: string | undefined, platformLocationId: string | null) {
+// Best-effort merchant email: resolves the Ryft account email + ops location,
+// routes through send-receipt (provider-agnostic). Never throws.
+async function sendMerchantEmail(accountId: string | undefined, platformLocationId: string | null, subject: string, html: string) {
   try {
     if (!accountId || !platformLocationId) return;
     const acct = await getAccount(accountId);
     const email = acct.ok ? acct.data?.email : null;
-    const { data: ploc } = await platformAdmin.from('locations').select('ops_location_id, name').eq('id', platformLocationId).maybeSingle();
+    const { data: ploc } = await platformAdmin.from('locations').select('ops_location_id').eq('id', platformLocationId).maybeSingle();
     const opsLoc = ploc?.ops_location_id;
     if (!email || !opsLoc) return;
-    const amount = ((Number(d.amount) || 0) / 100).toFixed(2);
-    const by = d.respondBy ? new Date(Number(d.respondBy) * 1000).toUTCString() : 'soon';
-    const html = `<div style="font-family:system-ui,Arial,sans-serif;max-width:560px">
-      <h2 style="margin:0 0 8px">Action needed: a card payment was disputed</h2>
-      <p>A customer has disputed a card payment of <strong>${d.currency || 'GBP'} ${amount}</strong>${ploc?.name ? ` at ${ploc.name}` : ''}.</p>
-      <p>You must respond by <strong>${by}</strong>. If you don't, it is lost automatically and a non-reclaimable fee applies.</p>
-      <p>Open <strong>Back Office → Reports → Disputes &amp; chargebacks</strong> to accept it or challenge it with your evidence.</p>
-    </div>`;
     await fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/send-receipt`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''}` },
-      body: JSON.stringify({ to: email, subject: 'Action needed: a card payment was disputed', html, location_id: opsLoc }),
+      body: JSON.stringify({ to: email, subject, html, location_id: opsLoc }),
     });
   } catch (e) {
-    console.error('[ryft-webhook] dispute alert failed', (e as Error).message);
+    console.error('[ryft-webhook] merchant email failed', (e as Error).message);
   }
+}
+
+async function alertDispute(d: any, accountId: string | undefined, platformLocationId: string | null) {
+  const amount = ((Number(d.amount) || 0) / 100).toFixed(2);
+  const by = d.respondBy ? new Date(Number(d.respondBy) * 1000).toUTCString() : 'soon';
+  const html = `<div style="font-family:system-ui,Arial,sans-serif;max-width:560px">
+    <h2 style="margin:0 0 8px">Action needed: a card payment was disputed</h2>
+    <p>A customer has disputed a card payment of <strong>${d.currency || 'GBP'} ${amount}</strong>.</p>
+    <p>You must respond by <strong>${by}</strong>. If you don't, it is lost automatically and a non-reclaimable fee applies.</p>
+    <p>Open <strong>Back Office → Reports → Disputes &amp; chargebacks</strong> to accept it or challenge it with your evidence.</p>
+  </div>`;
+  await sendMerchantEmail(accountId, platformLocationId, 'Action needed: a card payment was disputed', html);
 }
 
 function deriveStatus(account: any) {
@@ -81,6 +87,20 @@ Deno.serve(async (req) => {
   let evt: any;
   try { evt = JSON.parse(raw); } catch { return new Response('bad json', { status: 400 }); }
   const type: string = evt?.eventType ?? evt?.type ?? '';
+
+  // Idempotency — Ryft retries (0,1,5,10,10,10 min). Record the event id once;
+  // a duplicate delivery returns 200 without re-running side-effects.
+  const eventId: string | undefined = evt?.id;
+  if (eventId) {
+    try {
+      const { data: ins } = await platformAdmin.from('ryft_webhook_events')
+        .upsert({ event_id: eventId, event_type: type, account_id: evt?.accountId ?? evt?.data?.subAccount?.id ?? evt?.data?.id ?? null }, { onConflict: 'event_id', ignoreDuplicates: true })
+        .select('event_id');
+      if (Array.isArray(ins) && ins.length === 0) {
+        return new Response(JSON.stringify({ received: true, duplicate: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+    } catch { /* dedupe is best-effort; fall through and process */ }
+  }
 
   try {
     if (/^Account\.(updated|verification_status_updated|created)$/.test(type)) {
@@ -133,7 +153,26 @@ Deno.serve(async (req) => {
         if (accountId) await platformAdmin.from('merchant_ryft_accounts').update({ last_webhook_at: nowIso }).eq('ryft_account_id', accountId);
         if (type === 'Dispute.created') await alertDispute(d, accountId, location_id);
       }
-    } else if (/^(PaymentSession|Payout|Person)\./.test(type)) {
+    } else if (/^Payout\./.test(type)) {
+      // A failed/returned payout means the merchant's bank details are wrong and
+      // their money is stuck — alert them. Successful payouts show in the report.
+      const p: any = evt?.data ?? {};
+      const accountId: string | undefined = evt?.accountId ?? p.accountId;
+      if (accountId) {
+        await platformAdmin.from('merchant_ryft_accounts').update({ last_webhook_at: new Date().toISOString() }).eq('ryft_account_id', accountId);
+        const st = String(p.status || '').toLowerCase();
+        if (type === 'Payout.status_updated' && /(fail|return|revers|declin)/.test(st)) {
+          const { data: mra } = await platformAdmin.from('merchant_ryft_accounts').select('location_id').eq('ryft_account_id', accountId).maybeSingle();
+          const amount = ((Number(p.amount) || 0) / 100).toFixed(2);
+          const html = `<div style="font-family:system-ui,Arial,sans-serif;max-width:560px">
+            <h2 style="margin:0 0 8px">Your payout didn't go through</h2>
+            <p>A payout of <strong>${p.currency || 'GBP'} ${amount}</strong> to your bank failed${p.failureReason ? `: ${p.failureReason}` : ''}.</p>
+            <p>Please check your bank / payout details. Your funds stay safe in your balance until a payout succeeds.</p>
+          </div>`;
+          await sendMerchantEmail(accountId, mra?.location_id ?? null, "Your payout didn't go through", html);
+        }
+      }
+    } else if (/^(PaymentSession|Person)\./.test(type)) {
       // Touch last_webhook_at so we can see the account is active. Best-effort.
       const accountId: string | undefined = evt?.accountId ?? evt?.data?.accountId;
       if (accountId) await platformAdmin.from('merchant_ryft_accounts').update({ last_webhook_at: new Date().toISOString() }).eq('ryft_account_id', accountId);
