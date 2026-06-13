@@ -90,6 +90,8 @@ export function parseCustomerUrl(loc = (typeof window !== 'undefined' ? window.l
     mode = 'gift';
   } else if (pathname === '/account' || pathname.startsWith('/account/')) {
     mode = 'account';
+  } else if (pathname === '/review' || pathname.startsWith('/review/')) {
+    mode = 'review';
   } else if (pathname.startsWith('/k')) {
     mode = 'kiosk';
   } else {
@@ -98,6 +100,7 @@ export function parseCustomerUrl(loc = (typeof window !== 'undefined' ? window.l
     else if (surface === 'kiosk')     mode = 'kiosk';
     else if (surface === 'gift')      mode = 'gift';
     else if (surface === 'gift_balance') mode = 'gift_balance';
+    else if (surface === 'review')    mode = 'review';
     else if (surface === 'online')    mode = 'online';
     else if (slug) mode = 'online'; // having a slug implies online by default
   }

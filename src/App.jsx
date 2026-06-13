@@ -83,6 +83,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.436', date: '12 Jun 2026', label: 'Review Manager (1/8) — customer review card + rating router',
+    changes: [
+      'First screen of the new Review Manager: a branded, mobile-first review card at /review (e.g. yourslug.serv-os.app/review). The guest rates 1–5 and leaves feedback; the SERVER decides what happens next — at or above your threshold (default 3★) it confirms the review is being posted to your connected platforms; below it, the feedback is captured privately for the manager and never posted publicly, with an optional “what happened + contact” form.',
+      'New review_* tables (settings, feedback, replies, platform links, themes) with the same tenant security as the rest of the system, and a public submit endpoint that enforces the rating→routing rule server-side. Admin screens (dashboard, approval queue, private inbox, settings) follow next.',
+    ],
+  },
+  {
     version: '5.5.435', date: '12 Jun 2026', label: 'Fix: admin "Continue onboarding" button did nothing on a live account',
     changes: [
       'In the admin portal, the Ryft "Continue onboarding" button silently failed once a merchant was fully onboarded (a hosted onboarding link can\'t be minted after onboarding completes). It now falls back to a secure sign-in link to the merchant\'s Ryft dashboard, opens it in a new tab, and shows a clear message if anything goes wrong.',
@@ -6024,7 +6031,7 @@ export default function App() {
   // customers never see the device pairing / mode selector screens.
   // Operator URLs (?mode=pos / mpos / office / admin / kiosk) take
   // precedence so an operator on the same hostname still gets their tools.
-  const CUSTOMER_MODES = ['online', 'qr', 'gift', 'gift_balance', 'gift_success', 'account'];
+  const CUSTOMER_MODES = ['online', 'qr', 'gift', 'gift_balance', 'gift_success', 'account', 'review'];
   const urlMode = new URLSearchParams(window.location.search).get('mode');
   // Public Workforce contract-signing page: /sign/<token>
   const signMatch = window.location.pathname.match(/^\/sign\/([A-Za-z0-9_-]{8,})/);

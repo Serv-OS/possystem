@@ -21,6 +21,7 @@ import GiftPurchaseSurface from './gift/GiftPurchaseSurface';
 import GiftBalanceSurface from './gift/GiftBalanceSurface';
 import GiftSuccessSurface from './gift/GiftSuccessSurface';
 import CustomerPortal from './customer/CustomerPortal';
+import ReviewSurface from './ReviewSurface';
 
 export default function CustomerBoot({ slug, mode, tableId }) {
   const [state, setState] = useState({ loading: true, location: null, error: null });
@@ -68,6 +69,10 @@ export default function CustomerBoot({ slug, mode, tableId }) {
 
   // v5.5.221: Customer loyalty portal — always available (like gift cards).
   if (mode === 'account')      return <CustomerPortal location={loc}/>;
+
+  // Review Manager card — always available (feedback isn't gated by hours or
+  // whether online ordering is on). Server enforces the rating→routing split.
+  if (mode === 'review')       return <ReviewSurface location={loc}/>;
 
   // Surface enabled check
   if (mode === 'online' && !loc.online_enabled) {
