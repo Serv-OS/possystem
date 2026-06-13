@@ -9,6 +9,7 @@
 
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import { supabase, isMock } from '../lib/supabase';
+import { ServOSWordmark, ServOSLockup } from '../components/ServOSBrand';
 
 const money = (n, currency = 'GBP', dp = 0) => {
   try { return new Intl.NumberFormat('en-GB', { style: 'currency', currency, minimumFractionDigits: dp, maximumFractionDigits: dp }).format(Number(n) || 0); }
@@ -42,8 +43,10 @@ function Shell({ children }) {
 function Brand({ sub }) {
   return (
     <div style={{ textAlign: 'center', marginBottom: 22, paddingTop: 18 }}>
-      <div style={{ fontSize: 22, fontWeight: 900, letterSpacing: '-.02em' }}>Serv<span style={{ color: 'var(--acc)' }}>OS</span></div>
-      <div style={{ fontSize: 12.5, color: 'var(--t3)', marginTop: 3 }}>{sub || 'Owner snapshot'}</div>
+      <div style={{ display: 'flex', justifyContent: 'center' }}>
+        <ServOSLockup iconSize={36} fontSize={28} />
+      </div>
+      <div style={{ fontSize: 12.5, color: 'var(--t3)', marginTop: 8 }}>{sub || 'Owner snapshot'}</div>
     </div>
   );
 }
@@ -104,8 +107,11 @@ function Dashboard({ email }) {
     <>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
         <div>
-          <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: '-.02em' }}>Serv<span style={{ color: 'var(--acc)' }}>OS</span> <span style={{ color: 'var(--t3)', fontWeight: 700, fontSize: 14 }}>Owner</span></div>
-          <div style={{ fontSize: 11, color: 'var(--t4)' }}>{updated ? `Updated ${updated}` : 'Today'}</div>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 7 }}>
+            <ServOSWordmark fontSize={19} />
+            <span style={{ color: 'var(--t3)', fontWeight: 700, fontSize: 13 }}>Owner</span>
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 2 }}>{updated ? `Updated ${updated}` : 'Today'}</div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button onClick={load} title="Refresh" style={iconBtn}>↻</button>

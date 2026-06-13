@@ -84,6 +84,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.449', date: '12 Jun 2026', label: 'Owner app — correct ServOS branding',
+    changes: [
+      'The owner app now shows the real ServOS logo (the Syne “S” monogram + Signal-green dot, Space Grotesk wordmark) on the sign-in screen and header — using the shared brand components rendered in the brand fonts, instead of the placeholder text mark.',
+    ],
+  },
+  {
     version: '5.5.448', date: '12 Jun 2026', label: 'Owner app — your whole business on your phone',
     changes: [
       'New owner snapshot app at ?mode=owner — bookmark it on your phone and add to home screen. Sign in with your back-office login and see a top-down view of every venue you manage: today’s net sales vs forecast, % to forecast, labour %, orders, avg check, tips, live orders + tables on the floor, week-to-date vs last week, and today’s top sellers — all in one screen.',
