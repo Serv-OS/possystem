@@ -64,10 +64,15 @@ export default function MenuBoards() {
   useEffect(() => { load(); }, [load]);
 
   const itemsByCat = useMemo(() => {
+    const vis = items.filter(it => !it.archived && !(it.visibility && it.visibility.kiosk === false));
+    const byId = Object.fromEntries(vis.map(i => [i.id, i]));
+    const kids = {};
+    for (const it of vis) if (it.parent_id && byId[it.parent_id]) (kids[it.parent_id] ||= []).push(it);
+    for (const k in kids) kids[k].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
     const m = {};
-    for (const it of items) {
-      if (it.archived || (it.visibility && it.visibility.kiosk === false)) continue;
-      for (const cid of [it.cat, ...(Array.isArray(it.cats) ? it.cats : [])].filter(Boolean)) (m[cid] ||= []).push(it);
+    for (const it of vis) {
+      if (it.parent_id && byId[it.parent_id]) continue;   // variant child — nested under its parent
+      for (const cid of [it.cat, ...(Array.isArray(it.cats) ? it.cats : [])].filter(Boolean)) (m[cid] ||= []).push({ ...it, _variants: kids[it.id] || [] });
     }
     for (const k in m) m[k].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
     return m;
@@ -318,12 +323,31 @@ function Preview({ board, cats, itemsByCat, six }) {
                   <div key={sec.id} style={{ marginBottom: '0.9em', breakInside: 'auto' }}>
                     <div style={{ fontSize: '0.72em', letterSpacing: '.1em', color: t.accent, marginBottom: '0.35em', textTransform: 'uppercase', fontWeight: 700, breakAfter: 'avoid', WebkitColumnBreakAfter: 'avoid' }}>{sec.label}</div>
                     {sec.items.map(it => {
+                      const variants = it._variants || [];
+                      const hasVar = variants.length > 0;
                       const sold = six.has(it.id), price = boardPrice(it), diet = dietaryBadges(it);
-                      return <div key={it.id} style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: '0.28em', opacity: sold ? 0.45 : 1, breakInside: 'avoid', WebkitColumnBreakInside: 'avoid' }}>
-                        {disp.showImages && it.image && <img src={it.image} alt="" style={{ width: '1.8em', height: '1.8em', objectFit: 'cover', borderRadius: 3, flexShrink: 0 }} />}
-                        <span style={{ fontSize: '0.6em', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.menu_name || it.name}{diet.map(d => <span key={d} style={{ color: '#7fd99a', marginLeft: 4, fontWeight: 700 }}>{d}</span>)}</span>
-                        {sold ? <span style={{ fontSize: '0.5em', color: '#f3b0b0', flexShrink: 0 }}>SOLD OUT</span>
-                          : disp.showPrices && price > 0 && <span style={{ fontSize: '0.56em', background: t.accent, color: '#1c1206', borderRadius: 6, padding: '0 5px', flexShrink: 0 }}>{money(price)}</span>}
+                      const muted = t.mutedColor || '#8a8276';
+                      return <div key={it.id} style={{ marginBottom: '0.3em', opacity: sold ? 0.45 : 1, breakInside: 'avoid', WebkitColumnBreakInside: 'avoid' }}>
+                        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 5 }}>
+                          {disp.showImages && it.image && <img src={it.image} alt="" style={{ width: '1.8em', height: '1.8em', objectFit: 'cover', borderRadius: 3, flexShrink: 0 }} />}
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: '0.6em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.menu_name || it.name}
+                              {diet.map(d => <span key={d} style={{ color: '#7fd99a', marginLeft: 3, fontWeight: 700 }}>{d}</span>)}
+                              {disp.showAllergens && it.allergens?.length > 0 && it.allergens.map(a => <span key={a} style={{ color: muted, marginLeft: 3, fontSize: '0.85em' }}>{a}</span>)}
+                            </div>
+                            {disp.showDescription && it.description && <div style={{ fontSize: '0.46em', color: muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.description}</div>}
+                          </div>
+                          {sold ? <span style={{ fontSize: '0.5em', color: '#f3b0b0', flexShrink: 0 }}>SOLD OUT</span>
+                            : !hasVar && disp.showPrices && price > 0 && <span style={{ fontSize: '0.56em', background: t.accent, color: '#1c1206', borderRadius: 6, padding: '0 5px', flexShrink: 0 }}>{money(price)}</span>}
+                        </div>
+                        {hasVar && <div style={{ marginTop: 1, marginLeft: 1, paddingLeft: (disp.showImages && it.image) ? '2.3em' : 8, borderLeft: `2px solid ${t.accent}55` }}>
+                          {variants.map(v => { const vs = six.has(v.id), vp = boardPrice(v);
+                            return <div key={v.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 4, opacity: vs ? 0.45 : 1 }}>
+                              <span style={{ fontSize: '0.5em', color: muted }}>{v.menu_name || v.name}</span>
+                              {vs ? <span style={{ fontSize: '0.45em', color: '#f3b0b0' }}>SOLD OUT</span> : disp.showPrices && vp > 0 && <span style={{ fontSize: '0.5em', background: t.accent, color: '#1c1206', borderRadius: 5, padding: '0 4px' }}>{money(vp)}</span>}
+                            </div>;
+                          })}
+                        </div>}
                       </div>;
                     })}
                   </div>

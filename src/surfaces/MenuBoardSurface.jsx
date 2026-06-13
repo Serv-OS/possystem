@@ -228,35 +228,57 @@ function Section({ sec, theme, disp, six }) {
     <div style={{ marginBottom: '1em', breakInside: 'auto' }}>
       <div style={{ fontSize: '0.62em', fontWeight: 600, letterSpacing: '.16em', color: theme.accent, marginBottom: '0.45em', textTransform: 'uppercase', breakAfter: 'avoid', WebkitColumnBreakAfter: 'avoid' }}>{cat.label}</div>
       {items.map((it) => {
+        const variants = it._variants || [];
+        const hasVar = variants.length > 0;
         const sold = six.has(it.id);
         const diet = dietaryBadges(it);
         const price = boardPrice(it);
         return (
-          <div key={it.id} style={{ display: 'flex', alignItems: 'flex-start', gap: '0.55em', marginBottom: '0.5em', opacity: sold ? 0.42 : 1, breakInside: 'avoid', WebkitColumnBreakInside: 'avoid' }}>
-            {disp.showImages && it.image && <img src={it.image} alt="" style={{ width: '2.4em', height: '2.4em', objectFit: 'cover', borderRadius: '0.3em', flexShrink: 0 }} />}
-            <div style={{ minWidth: 0, flex: 1 }}>
-              <div style={{ fontSize: '0.5em', fontWeight: 600, lineHeight: 1.15 }}>
-                {it.menu_name || it.name}
-                {diet.map((d) => (
-                  <span key={d} style={{ fontSize: '0.66em', background: '#1f3a26', color: '#7fd99a', borderRadius: '1em', padding: '0 .55em', marginLeft: '.3em', whiteSpace: 'nowrap', fontWeight: 700 }}>{d}</span>
-                ))}
-                {disp.showAllergens && Array.isArray(it.allergens) && it.allergens.length > 0 && (
-                  <span style={{ marginLeft: '.35em' }}>
-                    {it.allergens.map((a) => (
-                      <span key={a} style={{ fontSize: '0.62em', background: `${theme.mutedColor}22`, color: theme.mutedColor, borderRadius: '1em', padding: '0 .5em', marginLeft: '.22em', whiteSpace: 'nowrap' }}>{a}</span>
-                    ))}
-                  </span>
+          <div key={it.id} style={{ marginBottom: '0.55em', opacity: sold ? 0.42 : 1, breakInside: 'avoid', WebkitColumnBreakInside: 'avoid' }}>
+            {/* product line */}
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.55em' }}>
+              {disp.showImages && it.image && <img src={it.image} alt="" style={{ width: '2.4em', height: '2.4em', objectFit: 'cover', borderRadius: '0.3em', flexShrink: 0 }} />}
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{ fontSize: '0.5em', fontWeight: 600, lineHeight: 1.15 }}>
+                  {it.menu_name || it.name}
+                  {diet.map((d) => (
+                    <span key={d} style={{ fontSize: '0.66em', background: '#1f3a26', color: '#7fd99a', borderRadius: '1em', padding: '0 .55em', marginLeft: '.3em', whiteSpace: 'nowrap', fontWeight: 700 }}>{d}</span>
+                  ))}
+                  {disp.showAllergens && Array.isArray(it.allergens) && it.allergens.length > 0 && (
+                    <span style={{ marginLeft: '.35em' }}>
+                      {it.allergens.map((a) => (
+                        <span key={a} style={{ fontSize: '0.62em', background: `${theme.mutedColor}22`, color: theme.mutedColor, borderRadius: '1em', padding: '0 .5em', marginLeft: '.22em', whiteSpace: 'nowrap' }}>{a}</span>
+                      ))}
+                    </span>
+                  )}
+                </div>
+                {disp.showDescription && it.description && (
+                  <div style={{ fontSize: '0.38em', color: theme.mutedColor, lineHeight: 1.3, marginTop: '.15em' }}>{it.description}</div>
                 )}
               </div>
-              {disp.showDescription && it.description && (
-                <div style={{ fontSize: '0.38em', color: theme.mutedColor, lineHeight: 1.3, marginTop: '.15em' }}>{it.description}</div>
-              )}
+              <div style={{ flexShrink: 0 }}>
+                {sold
+                  ? <span style={{ fontSize: '0.34em', fontWeight: 600, letterSpacing: '.05em', background: '#5a1e1e', color: '#f3b0b0', borderRadius: '1.4em', padding: '.2em .8em' }}>SOLD OUT</span>
+                  : (!hasVar && disp.showPrices && price > 0 && <span style={{ fontSize: '0.42em', fontWeight: 600, background: theme.accent, color: '#1c1206', borderRadius: '1.4em', padding: '.18em .7em' }}>{money(price)}</span>)}
+              </div>
             </div>
-            <div style={{ flexShrink: 0 }}>
-              {sold
-                ? <span style={{ fontSize: '0.34em', fontWeight: 600, letterSpacing: '.05em', background: '#5a1e1e', color: '#f3b0b0', borderRadius: '1.4em', padding: '.2em .8em' }}>SOLD OUT</span>
-                : (disp.showPrices && price > 0 && <span style={{ fontSize: '0.42em', fontWeight: 600, background: theme.accent, color: '#1c1206', borderRadius: '1.4em', padding: '.18em .7em' }}>{money(price)}</span>)}
-            </div>
+            {/* indented variant sizes */}
+            {hasVar && (
+              <div style={{ marginTop: '.18em', marginLeft: '.2em', paddingLeft: (disp.showImages && it.image) ? '3em' : '0.9em', borderLeft: `0.14em solid ${theme.accent}40` }}>
+                {variants.map((v) => {
+                  const vsold = six.has(v.id);
+                  const vp = boardPrice(v);
+                  return (
+                    <div key={v.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5em', marginBottom: '.12em', opacity: vsold ? 0.42 : 1 }}>
+                      <span style={{ fontSize: '0.4em', color: theme.mutedColor }}>{v.menu_name || v.name}</span>
+                      {vsold
+                        ? <span style={{ fontSize: '0.3em', fontWeight: 600, background: '#5a1e1e', color: '#f3b0b0', borderRadius: '1.4em', padding: '.2em .7em' }}>SOLD OUT</span>
+                        : (disp.showPrices && vp > 0 && <span style={{ fontSize: '0.36em', fontWeight: 600, background: theme.accent, color: '#1c1206', borderRadius: '1.4em', padding: '.16em .65em' }}>{money(vp)}</span>)}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         );
       })}
@@ -264,11 +286,19 @@ function Section({ sec, theme, disp, six }) {
   );
 }
 
-// Ordered, non-empty category sections (honours a saved board's chosen order).
+// Ordered, non-empty category sections. Variant children (items with a parent_id
+// pointing at a visible item — e.g. Regular/Large under "Pepsi Max") are nested
+// onto their parent as `_variants` rather than shown as flat top-level rows.
 function buildSections(data) {
+  const visible = data.items.filter(visibleItem);
+  const byId = Object.fromEntries(visible.map((i) => [i.id, i]));
+  const kids = {};
+  for (const it of visible) if (it.parent_id && byId[it.parent_id]) (kids[it.parent_id] ||= []).push(it);
+  for (const k in kids) kids[k].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+
   const itemsByCat = {};
-  for (const it of data.items) {
-    if (!visibleItem(it)) continue;
+  for (const it of visible) {
+    if (it.parent_id && byId[it.parent_id]) continue;   // variant child — shown under its parent
     const ids = new Set([it.cat, ...(Array.isArray(it.cats) ? it.cats : [])].filter(Boolean));
     for (const cid of ids) (itemsByCat[cid] ||= []).push(it);
   }
@@ -277,10 +307,12 @@ function buildSections(data) {
   let cats = data.cats.filter((c) => !c.parent_id && !c.is_special).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
   const blocks = data.board?.layout?.blocks;
   if (Array.isArray(blocks) && blocks.length) {
-    const byId = Object.fromEntries(cats.map((c) => [c.id, c]));
-    cats = blocks.map((b) => byId[b.categoryId]).filter(Boolean);
+    const byCatId = Object.fromEntries(cats.map((c) => [c.id, c]));
+    cats = blocks.map((b) => byCatId[b.categoryId]).filter(Boolean);
   }
-  return cats.map((cat) => ({ cat, items: itemsByCat[cat.id] || [] })).filter((s) => s.items.length > 0);
+  return cats
+    .map((cat) => ({ cat, items: (itemsByCat[cat.id] || []).map((it) => ({ ...it, _variants: kids[it.id] || [] })) }))
+    .filter((s) => s.items.length > 0);
 }
 
 // How many CSS columns the content flows into (operator override, else by volume).

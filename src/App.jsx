@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.458', date: '13 Jun 2026', label: 'Menu board — variants nested + descriptions/allergens',
+    changes: [
+      'Size/variant options (e.g. Regular / Large under a drink) now nest under their parent product — indented with an accent rule and their own prices — instead of floating as separate flat lines, so it’s clear which sizes belong to which item.',
+      'Descriptions and allergen tags now render on the board (and in the preview) whenever the toggle is on and the product actually has them.',
+    ],
+  },
+  {
     version: '5.5.457', date: '13 Jun 2026', label: 'Menu board — images & text size',
     changes: [
       'Menu boards can now show item photos (toggle “Images” on a screen) alongside the name, description and allergen tags. A new “Text size” control (Smaller / Default / Larger / Extra large) lets you nudge how big everything renders on top of the auto-fit. The Back Office preview reflects all of it live.',
