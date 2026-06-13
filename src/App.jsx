@@ -83,6 +83,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.441', date: '12 Jun 2026', label: 'Review Manager — full back office: Dashboard, Get-reviews engine & Settings',
+    changes: [
+      'Back Office → Customers → Reviews is now a complete tool with four tabs: Approvals (reply queue), Dashboard (avg rating, star distribution, sources, ask funnel), Get reviews (the automated ask engine), and Settings (threshold, connected platforms, AI voice, card copy).',
+      'Get reviews is the growth engine: after a table closes (or a collection/delivery completes) it can text the guest a one-tap link to leave a review, with a send-time window, a "don\'t re-ask within N days" cap, opt-out handling, and a test-send + run-now so you can see it fire. Compliant by design (de-gated, STOP opt-out).',
+      'Settings shows each platform honestly — Google connects for two-way sync+reply, others are read-only/manual or not available — and lets you set the routing threshold (internal triage only), AI house voice, and the customer card wording.',
+    ],
+  },
+  {
     version: '5.5.440', date: '12 Jun 2026', label: 'Review Manager — de-gated for compliance (UK DMCC / FTC)',
     changes: [
       'Important fix: the review card no longer hides the public review path from unhappy guests (that practice — "review-gating" — is now illegal under the UK Digital Markets Act 2024 and the US FTC Consumer Reviews Rule). After any rating, every guest is offered a one-tap link to post on Google; a low rating ALSO offers a private "tell the manager" route — as an addition, never a replacement.',
