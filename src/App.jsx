@@ -84,6 +84,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.451', date: '13 Jun 2026', label: 'Fix: Daily trading (P&L) report opened blank',
+    changes: [
+      'The new Daily trading (P&L) report was listed in the reports catalog but never wired into the report renderer, so opening it showed nothing. It now loads: per-day forecast (with the “same weekday last year” suggestion), actual sales, theoretical vs actual labour, COGS and overhead → operating profit, plus the inline forecast editor.',
+    ],
+  },
+  {
     version: '5.5.450', date: '12 Jun 2026', label: 'Owner app — light / dark mode switch',
     changes: [
       'The owner app now has a light/dark toggle (top-right, on both the sign-in screen and the dashboard). Your choice is remembered and uses the same theming as the rest of ServOS, so every figure, card and the logo render correctly in either mode.',
