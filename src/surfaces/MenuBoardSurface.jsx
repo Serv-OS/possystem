@@ -17,7 +17,7 @@ import { fetchMenuCategories, fetchMenuItems, fetch86List } from '../lib/db';
 import { money } from '../lib/currency';
 
 const DEFAULT_THEME = { bgColor: '#14110d', textColor: '#F5EFE6', mutedColor: '#B8AE9E', accent: '#E8A23C', font: '', footerNote: '', logoUrl: null, bgImageUrl: null };
-const DEFAULT_DISPLAY = { showDescription: true, showAllergens: true, showPrices: true, showImages: false, soldOut: 'grey' };
+const DEFAULT_DISPLAY = { showDescription: true, showAllergens: true, showPrices: true, showImages: false, soldOut: 'grey', textScale: 1 };
 const FIT = { base: 30, min: 11, max: 48 };          // px; the fit-loop lands somewhere in here
 const cacheKey = (loc, b) => `rpos-mb-${loc}-${b || 'def'}`;
 
@@ -121,6 +121,7 @@ function Board({ data }) {
   const disp = { ...DEFAULT_DISPLAY, ...(data.board?.display_options || {}) };
   const mode = data.board?.mode || 'menu';
   const orientation = data.board?.orientation || 'landscape';
+  const textScale = Math.max(0.6, Math.min(1.6, Number(disp.textScale) || 1));
 
   const boardRef = useRef(null);
   const contentRef = useRef(null);
@@ -143,6 +144,8 @@ function Board({ data }) {
       size += 1; root.style.fontSize = size + 'px';
       if (!fits()) { size -= 1; root.style.fontSize = size + 'px'; break; }
     }
+    // operator text-size preference, applied on top of the fitted size
+    if (textScale !== 1) root.style.fontSize = (size * textScale) + 'px';
   });
 
   useEffect(() => {
@@ -229,8 +232,9 @@ function Section({ sec, theme, disp, six }) {
         const diet = dietaryBadges(it);
         const price = boardPrice(it);
         return (
-          <div key={it.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.6em', marginBottom: '0.5em', opacity: sold ? 0.42 : 1, breakInside: 'avoid', WebkitColumnBreakInside: 'avoid' }}>
-            <div style={{ minWidth: 0 }}>
+          <div key={it.id} style={{ display: 'flex', alignItems: 'flex-start', gap: '0.55em', marginBottom: '0.5em', opacity: sold ? 0.42 : 1, breakInside: 'avoid', WebkitColumnBreakInside: 'avoid' }}>
+            {disp.showImages && it.image && <img src={it.image} alt="" style={{ width: '2.4em', height: '2.4em', objectFit: 'cover', borderRadius: '0.3em', flexShrink: 0 }} />}
+            <div style={{ minWidth: 0, flex: 1 }}>
               <div style={{ fontSize: '0.5em', fontWeight: 600, lineHeight: 1.15 }}>
                 {it.menu_name || it.name}
                 {diet.map((d) => (

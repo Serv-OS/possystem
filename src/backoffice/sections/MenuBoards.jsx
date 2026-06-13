@@ -14,7 +14,7 @@ import { money } from '../../lib/currency';
 const ASSET_BUCKET = 'receipt-assets';
 const FONTS = ['', 'Plus Jakarta Sans', 'Space Grotesk', 'Inter', 'Georgia', 'Oswald'];
 const DEF_THEME = { bgColor: '#14110d', textColor: '#F5EFE6', accent: '#E8A23C', font: '', footerNote: '', logoUrl: '', bgImageUrl: '' };
-const DEF_DISP = { showDescription: true, showAllergens: true, showPrices: true, showImages: false, soldOut: 'grey' };
+const DEF_DISP = { showDescription: true, showAllergens: true, showPrices: true, showImages: false, soldOut: 'grey', textScale: 1 };
 const newBoard = (n) => ({ name: `Menu board ${n}`, orientation: 'landscape', mode: 'menu', layout: { columns: 'auto', blocks: [] }, display_options: { ...DEF_DISP }, theme: { ...DEF_THEME }, marketing: { mediaUrl: '', mediaType: 'image', fit: 'cover' } });
 
 const boardPrice = (it) => {
@@ -225,6 +225,7 @@ function Editor({ board, setBoard, cats, itemsByCat, six, onSave, onPublish, onC
                   <Toggle on={board.display_options.showImages} label="Images" set={v => setDisp({ showImages: v })} />
                 </div>
                 <Field label="When an item is sold out"><Pills opts={[['grey', 'Grey “sold out”'], ['hide', 'Hide it']]} val={board.display_options.soldOut} on={v => setDisp({ soldOut: v })} /></Field>
+                <Field label="Text size"><Pills opts={[['0.85', 'Smaller'], ['1', 'Default'], ['1.15', 'Larger'], ['1.3', 'Extra large']]} val={String(board.display_options.textScale ?? 1)} on={v => setDisp({ textScale: Number(v) })} /></Field>
               </Section>
 
               <Section title="Branding">
@@ -286,9 +287,11 @@ function Preview({ board, cats, itemsByCat, six }) {
   useLayoutEffect(() => {
     const area = areaRef.current, flow = flowRef.current;
     if (!area || !flow) return;
+    const ts = Math.max(0.6, Math.min(1.6, Number(board.display_options?.textScale) || 1));
     let s = 13, g = 0; flow.style.fontSize = s + 'px';
     const fits = () => flow.scrollHeight <= area.clientHeight + 1;
     while (!fits() && s > 4 && g++ < 90) { s -= 0.5; flow.style.fontSize = s + 'px'; }
+    if (ts !== 1) flow.style.fontSize = (s * ts) + 'px';
   });
 
   if (board.mode === 'marketing') {
@@ -316,10 +319,11 @@ function Preview({ board, cats, itemsByCat, six }) {
                     <div style={{ fontSize: '0.72em', letterSpacing: '.1em', color: t.accent, marginBottom: '0.35em', textTransform: 'uppercase', fontWeight: 700, breakAfter: 'avoid', WebkitColumnBreakAfter: 'avoid' }}>{sec.label}</div>
                     {sec.items.map(it => {
                       const sold = six.has(it.id), price = boardPrice(it), diet = dietaryBadges(it);
-                      return <div key={it.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 6, marginBottom: '0.28em', opacity: sold ? 0.45 : 1, breakInside: 'avoid', WebkitColumnBreakInside: 'avoid' }}>
-                        <span style={{ fontSize: '0.6em', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.menu_name || it.name}{diet.map(d => <span key={d} style={{ color: '#7fd99a', marginLeft: 4, fontWeight: 700 }}>{d}</span>)}</span>
+                      return <div key={it.id} style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: '0.28em', opacity: sold ? 0.45 : 1, breakInside: 'avoid', WebkitColumnBreakInside: 'avoid' }}>
+                        {disp.showImages && it.image && <img src={it.image} alt="" style={{ width: '1.8em', height: '1.8em', objectFit: 'cover', borderRadius: 3, flexShrink: 0 }} />}
+                        <span style={{ fontSize: '0.6em', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.menu_name || it.name}{diet.map(d => <span key={d} style={{ color: '#7fd99a', marginLeft: 4, fontWeight: 700 }}>{d}</span>)}</span>
                         {sold ? <span style={{ fontSize: '0.5em', color: '#f3b0b0', flexShrink: 0 }}>SOLD OUT</span>
-                          : disp.showPrices && price > 0 && <span style={{ fontSize: '0.56em', background: t.accent, color: '#1c1206', borderRadius: 6, padding: '0 5px', flexShrink: 0, alignSelf: 'flex-start' }}>{money(price)}</span>}
+                          : disp.showPrices && price > 0 && <span style={{ fontSize: '0.56em', background: t.accent, color: '#1c1206', borderRadius: 6, padding: '0 5px', flexShrink: 0 }}>{money(price)}</span>}
                       </div>;
                     })}
                   </div>

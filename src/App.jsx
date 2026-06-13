@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.457', date: '13 Jun 2026', label: 'Menu board — images & text size',
+    changes: [
+      'Menu boards can now show item photos (toggle “Images” on a screen) alongside the name, description and allergen tags. A new “Text size” control (Smaller / Default / Larger / Extra large) lets you nudge how big everything renders on top of the auto-fit. The Back Office preview reflects all of it live.',
+    ],
+  },
+  {
     version: '5.5.456', date: '13 Jun 2026', label: 'Menu board — connect a specific screen',
     changes: [
       'Each menu board screen now has its own link. In Back Office → Channels → Menu boards, hit “Copy screen link” on a screen and open that link on the TV / Android stick (or set it as the stick’s home page) — that display shows that exact menu. Different sticks can show different screens.',
