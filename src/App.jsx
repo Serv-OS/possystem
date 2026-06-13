@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.464', date: '13 Jun 2026', label: 'Menu board — tighten single-item price spacing',
+    changes: [
+      'Fixed simple items (no sizes) showing the price dropped onto its own line with a big gap at large font sizes — the price badge now sits neatly on the same line as the product name, like the rest of the board.',
+    ],
+  },
+  {
     version: '5.5.463', date: '13 Jun 2026', label: 'Menu board — Text size never clips the menu',
     changes: [
       'Fixed “Larger”/“Extra large” text clipping the last category off the bottom. The text-size preference now widens or narrows the columns (bigger = fewer, wider columns) instead of zooming past the screen edge — so the whole menu always fits and fills the screen.',
