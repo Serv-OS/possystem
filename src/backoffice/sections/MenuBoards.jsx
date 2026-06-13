@@ -31,6 +31,16 @@ const dietaryBadges = (it) => {
   for (const t of (Array.isArray(it.tags) ? it.tags : [])) { const b = DIET[String(t).toLowerCase().trim()]; if (b && !seen.has(b)) { seen.add(b); out.push(b); } }
   return out;
 };
+// "online" if the screen heartbeat is recent, else a relative last-seen label.
+const seenLabel = (ts) => {
+  if (!ts) return { online: false, text: 'never seen' };
+  const mins = Math.round((Date.now() - new Date(ts).getTime()) / 60000);
+  if (mins <= 3) return { online: true, text: 'Online' };
+  if (mins < 90) return { online: false, text: `seen ${mins}m ago` };
+  const hrs = Math.round(mins / 60);
+  if (hrs < 36) return { online: false, text: `seen ${hrs}h ago` };
+  return { online: false, text: `seen ${Math.round(hrs / 24)}d ago` };
+};
 
 export default function MenuBoards() {
   const [locId, setLocId] = useState(null);
@@ -43,6 +53,10 @@ export default function MenuBoards() {
   const [busy, setBusy] = useState('');
   const [err, setErr] = useState('');
   const [copied, setCopied] = useState('');
+  const [paired, setPaired] = useState([]);        // physical screens (menu_board_screens) at this location
+  const [pairCode, setPairCode] = useState('');
+  const [pairBoard, setPairBoard] = useState('');
+  const [pairMsg, setPairMsg] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true); setErr('');
@@ -50,18 +64,46 @@ export default function MenuBoards() {
       const id = getActiveLocationSync();
       setLocId(id);
       if (isMock || !supabase || !id) { setLoading(false); return; }
-      const [b, c, it, s] = await Promise.all([
+      const [b, c, it, s, scr] = await Promise.all([
         supabase.from('menu_boards').select('*').eq('location_id', id).order('created_at'),
         fetchMenuCategories(id), fetchMenuItems(id), fetch86List(id),
+        supabase.from('menu_board_screens').select('*').eq('location_id', id).order('created_at'),
       ]);
       setScreens(b?.data || []);
       setCats((c?.data || []).filter(x => !x.parent_id && !x.is_special).sort((a, z) => (a.sort_order || 0) - (z.sort_order || 0)));
       setItems(it?.data || []);
       setSix(new Set((s?.data || []).map(r => r.item_id)));
+      setPaired(scr?.data || []);
     } catch (e) { setErr(e.message || 'Could not load'); }
     finally { setLoading(false); }
   }, []);
   useEffect(() => { load(); }, [load]);
+
+  // Pairing: claim a screen by the code it shows, then assign/reassign/unpair/retire.
+  const pairScreen = async () => {
+    const code = pairCode.trim(); if (!code || !pairBoard) { setPairMsg('Enter the code shown on the screen and pick a board.'); return; }
+    setBusy('pair'); setPairMsg('');
+    try {
+      const { error } = await supabase.rpc('claim_menu_board_screen', { p_code: code, p_board_id: pairBoard });
+      if (error) throw error;
+      setPairCode(''); setPairBoard(''); setPairMsg('✓ Screen paired'); await load();
+      setTimeout(() => setPairMsg(m => (m === '✓ Screen paired' ? '' : m)), 2500);
+    } catch (e) { setPairMsg(e.message || 'Could not pair — check the code.'); }
+    finally { setBusy(''); }
+  };
+  const reassign = async (screenId, boardId) => {
+    setBusy('scr-' + screenId);
+    try { const { error } = await supabase.rpc('set_menu_board_screen', { p_screen_id: screenId, p_board_id: boardId || null }); if (error) throw error; await load(); }
+    catch (e) { setErr(e.message || 'Could not update screen'); }
+    finally { setBusy(''); }
+  };
+  const retireScreen = async (screenId) => {
+    if (!window.confirm('Remove this screen? It will show a fresh pairing code next time it loads.')) return;
+    setBusy('scr-' + screenId);
+    try { await supabase.from('menu_board_screens').delete().eq('id', screenId); await load(); }
+    catch (e) { setErr(e.message || 'Could not remove screen'); }
+    finally { setBusy(''); }
+  };
 
   const itemsByCat = useMemo(() => {
     const vis = items.filter(it => !it.archived && !(it.visibility && it.visibility.kiosk === false));
@@ -134,9 +176,11 @@ export default function MenuBoards() {
       onUpload={upload} busy={busy} err={err} />
   );
 
+  const boardName = (id) => screens.find(b => b.id === id)?.name || '—';
+
   return (
     <div style={{ maxWidth: 1100 }}>
-      <Head title="Menu boards" sub="Screens shown on a TV / Android stick. Build a screen, then use “Copy screen link” and open that link on the TV (or set it as the stick’s home page) — that display shows that menu and refreshes live when you publish." />
+      <Head title="Menu boards" sub="Build a screen below, then put it on a TV one of two ways: pair the screen (power on the TV at the menu-board app, then enter the code it shows under “Paired screens”), or use “Copy screen link” for a direct link. Either way it refreshes live when you publish." />
       {err && <div style={S.errBar}>{err}</div>}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginTop: 14 }}>
         {screens.map(b => (
@@ -156,6 +200,45 @@ export default function MenuBoards() {
           </div>
         ))}
         <button style={S.addCard} onClick={() => setEditing(newBoard(screens.length + 1))}>+ New screen</button>
+      </div>
+
+      {/* Physical screens paired to this venue */}
+      <div style={{ ...S.section, marginTop: 22 }}>
+        <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--t1)' }}>Paired screens</div>
+        <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 3, marginBottom: 12 }}>
+          Power on a TV at the menu-board app — it shows a pairing code. Enter that code here and pick which board it should display.
+        </div>
+
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+          <input style={{ ...S.inp, width: 170, textTransform: 'uppercase' }} placeholder="Code e.g. WING-4823"
+            value={pairCode} onChange={e => setPairCode(e.target.value)} />
+          <select style={{ ...S.inp, width: 200 }} value={pairBoard} onChange={e => setPairBoard(e.target.value)}>
+            <option value="">Show board…</option>
+            {screens.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+          </select>
+          <button style={S.btnPrimary} onClick={pairScreen} disabled={busy === 'pair'}>{busy === 'pair' ? 'Pairing…' : 'Pair screen'}</button>
+          {pairMsg && <span style={{ fontSize: 12, color: pairMsg.startsWith('✓') ? 'var(--grn)' : 'var(--red)' }}>{pairMsg}</span>}
+        </div>
+
+        {paired.length > 0 ? (
+          <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {paired.map(s => { const sl = seenLabel(s.last_seen_at); return (
+              <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '8px 10px', border: '1px solid var(--bdr)', borderRadius: 10, background: 'var(--bg2)' }}>
+                <span style={{ width: 8, height: 8, borderRadius: '50%', background: sl.online ? '#3BD16F' : 'var(--bdr2)', flexShrink: 0 }} title={sl.text} />
+                <div style={{ flex: 1, minWidth: 140 }}>
+                  <div style={{ fontSize: 13, color: 'var(--t1)', fontWeight: 700 }}>{s.name || boardName(s.board_id)}</div>
+                  <div style={{ fontSize: 11, color: 'var(--t4)' }}>{s.code} · {sl.text}</div>
+                </div>
+                <select style={{ ...S.inp, width: 190 }} value={s.board_id || ''} disabled={busy === 'scr-' + s.id}
+                  onChange={e => reassign(s.id, e.target.value)}>
+                  <option value="">— Unpaired —</option>
+                  {screens.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+                </select>
+                <button style={S.btnGhost} onClick={() => retireScreen(s.id)} disabled={busy === 'scr-' + s.id}>Remove</button>
+              </div>
+            ); })}
+          </div>
+        ) : <div style={{ fontSize: 12, color: 'var(--t4)', marginTop: 12 }}>No screens paired yet.</div>}
       </div>
     </div>
   );

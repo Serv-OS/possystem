@@ -12,7 +12,7 @@
 // (see MENU_BOARD_PLAN.md).
 
 import { useEffect, useState, useRef, useLayoutEffect, useCallback, useMemo } from 'react';
-import { supabase, isMock, getActiveLocationSync } from '../lib/supabase';
+import { supabase, isMock, ensureAuthToken } from '../lib/supabase';
 import { fetchMenuCategories, fetchMenuItems, fetch86List } from '../lib/db';
 import { money } from '../lib/currency';
 
@@ -26,6 +26,10 @@ const FIT = { base: 30, min: 11, max: 160 };         // px; the fit-loop lands s
 const COLS_FOR_SCALE = { portrait: [1, 1, 2, 2], landscape: [2, 3, 4, 5] };  // Smaller / Default / Larger / Extra large
 const scaleTier = (ts) => (ts <= 0.9 ? 0 : ts < 1.075 ? 1 : ts < 1.225 ? 2 : 3);
 const cacheKey = (loc, b) => `rpos-mb-${loc}-${b || 'def'}`;
+const LS_SCREEN = 'rpos-mbscreen';   // this device's screen row {id,code,board_id} — kept across tenant-fence wipes
+// Human pairing code shown on an unassigned screen (operator types it into Back Office).
+const SCREEN_WORDS = ['WING', 'PIZZA', 'SODA', 'GRILL', 'BREW', 'CHILL', 'SPICE', 'FRESH', 'TASTE', 'BITE', 'SERVE', 'PLATE', 'FEAST', 'CRISP', 'ZEST', 'SAVOR'];
+const genCode = () => SCREEN_WORDS[Math.floor(Math.random() * SCREEN_WORDS.length)] + '-' + String(1000 + Math.floor(Math.random() * 9000));
 
 // Board price: prefer the dine-in price, then any-channel, then base, then legacy scalar.
 const boardPrice = (it) => {
@@ -48,42 +52,92 @@ const dietaryBadges = (it) => {
 const visibleItem = (it) => !it.archived && (!it.visibility || it.visibility.kiosk !== false);
 
 export default function MenuBoardSurface() {
-  // A screen is addressed by ?board=<id> — point a stick straight at one screen.
-  const boardId = useMemo(() => { try { return new URLSearchParams(window.location.search).get('board'); } catch { return null; } }, []);
+  // Two ways to drive a screen:
+  //   • ?board=<id>  — a direct link to one board (manual fallback / preview).
+  //   • no param     — DEVICE PAIRING: the screen self-registers, shows a pairing
+  //     code, and the operator assigns a board from Back Office. The screen then
+  //     learns its board over Realtime and renders it live.
+  const urlBoardId = useMemo(() => { try { return new URLSearchParams(window.location.search).get('board'); } catch { return null; } }, []);
+  const pairing = !urlBoardId;
+
+  const [screen, setScreen] = useState(() => {       // this device's screen row (pairing mode only)
+    if (!pairing) return null;
+    try { return JSON.parse(localStorage.getItem(LS_SCREEN) || 'null'); } catch { return null; }
+  });
+  const screenIdRef = useRef(screen?.id || null);
+  const effectiveBoardId = urlBoardId || screen?.board_id || null;
+
   const [locId, setLocId] = useState(null);
   const [resolving, setResolving] = useState(true);
   const [data, setData] = useState(null);   // { board, cats:[], items:[], six:Set }
   const reloadTimer = useRef(null);
 
-  // ── resolve the location. With ?board=<id> the board itself carries the
-  // location (no pairing needed). Otherwise use the paired/active location. ──
+  // ── device pairing: register/find this screen's row, then watch it for an
+  // assignment. The device only ever reads/heartbeats its OWN row (RLS scopes it
+  // by device_uid = auth.uid()); it never writes location_id/board_id. ──
   useEffect(() => {
-    let alive = true, tries = 0;
+    if (!pairing || isMock || !supabase) return;
+    let alive = true, hb = null, poll = null, ch = null;
+    const persist = (s) => { try { localStorage.setItem(LS_SCREEN, JSON.stringify(s)); } catch {} };
+    const apply = (r) => {
+      if (!alive || !r) return;
+      screenIdRef.current = r.id;
+      const s = { id: r.id, code: r.code, board_id: r.board_id || null };
+      setScreen(s); persist(s);
+    };
     (async () => {
-      if (boardId && !isMock && supabase) {
-        const { data: b } = await supabase.from('menu_boards').select('location_id').eq('id', boardId).maybeSingle();
-        if (alive && b?.location_id) { setLocId(b.location_id); setResolving(false); return; }
+      await ensureAuthToken();                 // anon session → auth.uid() for device_uid + RLS
+      if (!alive) return;
+      // 1) load our existing row (by cached id) or create a fresh unclaimed one
+      let row = null;
+      if (screenIdRef.current) {
+        const { data } = await supabase.from('menu_board_screens').select('*').eq('id', screenIdRef.current).maybeSingle();
+        row = data || null;
       }
-      const tick = () => {
-        if (!alive) return;
-        const id = getActiveLocationSync();
-        if (id && id !== 'loc-demo') { setLocId(id); setResolving(false); return; }
-        if (++tries > 8) { setResolving(false); return; }
-        setTimeout(tick, 1500);
-      };
-      tick();
+      for (let i = 0; i < 3 && !row; i++) {
+        const { data, error } = await supabase.from('menu_board_screens').insert({ code: genCode() }).select().maybeSingle();
+        if (!error) { row = data; break; }
+        if (error.code !== '23505') break;     // not a code collision → give up
+      }
+      if (!alive || !row) return;
+      apply(row);
+      // 2) realtime on our own row + 20s poll fallback + 60s heartbeat
+      ch = supabase.channel(`mbscreen-${row.id}`)
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'menu_board_screens', filter: `id=eq.${row.id}` }, (p) => apply(p.new))
+        .subscribe();
+      poll = setInterval(async () => {
+        const { data } = await supabase.from('menu_board_screens').select('*').eq('id', row.id).maybeSingle();
+        if (data) apply(data);
+        else { try { localStorage.removeItem(LS_SCREEN); } catch {} window.location.reload(); }   // retired in BO → re-register
+      }, 20000);
+      const beat = () => supabase.rpc('mb_screen_heartbeat', { p_id: row.id });
+      beat(); hb = setInterval(beat, 60000);
+    })();
+    return () => { alive = false; if (hb) clearInterval(hb); if (poll) clearInterval(poll); if (ch) supabase.removeChannel(ch); };
+  }, [pairing]);
+
+  // ── resolve the location from whatever board we're showing (direct link or
+  // the screen's assignment). The board row carries its own location_id. ──
+  useEffect(() => {
+    let alive = true;
+    setResolving(true);
+    (async () => {
+      if (effectiveBoardId && !isMock && supabase) {
+        const { data: b } = await supabase.from('menu_boards').select('location_id').eq('id', effectiveBoardId).maybeSingle();
+        if (alive) { if (b?.location_id) setLocId(b.location_id); setResolving(false); }
+      } else if (alive) {
+        setLocId(null); setResolving(false);     // no board yet → pairing splash
+      }
     })();
     return () => { alive = false; };
-  }, [boardId]);
+  }, [effectiveBoardId]);
 
   const load = useCallback(async (id) => {
-    if (isMock || !supabase || !id) return;
+    if (isMock || !supabase || !id || !effectiveBoardId) return;
     try {
-      const boardQ = boardId
-        ? supabase.from('menu_boards').select('*').eq('id', boardId).maybeSingle()
-        : supabase.from('menu_boards').select('*').eq('location_id', id).order('created_at').limit(1).maybeSingle();
       const [boardRes, catsRes, itemsRes, sixRes] = await Promise.all([
-        boardQ, fetchMenuCategories(id), fetchMenuItems(id), fetch86List(id),
+        supabase.from('menu_boards').select('*').eq('id', effectiveBoardId).maybeSingle(),
+        fetchMenuCategories(id), fetchMenuItems(id), fetch86List(id),
       ]);
       const next = {
         board: boardRes?.data || null,
@@ -92,34 +146,48 @@ export default function MenuBoardSurface() {
         six: new Set((sixRes?.data || []).map((r) => r.item_id)),
       };
       setData(next);
-      try { localStorage.setItem(cacheKey(id, boardId), JSON.stringify({ ...next, six: [...next.six] })); } catch {}
+      try { localStorage.setItem(cacheKey(id, effectiveBoardId), JSON.stringify({ ...next, six: [...next.six] })); } catch {}
     } catch (e) { console.warn('[menuboard] load', e?.message); }
-  }, [boardId]);
+  }, [effectiveBoardId]);
 
   // boot: render cache instantly, then refresh + subscribe
   useEffect(() => {
-    if (!locId) return;
+    if (!locId || !effectiveBoardId) return;
     try {
-      const c = JSON.parse(localStorage.getItem(cacheKey(locId, boardId)) || 'null');
+      const c = JSON.parse(localStorage.getItem(cacheKey(locId, effectiveBoardId)) || 'null');
       if (c) setData({ ...c, six: new Set(c.six || []) });
     } catch {}
     load(locId);
 
     if (isMock || !supabase) return;
     const reload = () => { clearTimeout(reloadTimer.current); reloadTimer.current = setTimeout(() => load(locId), 400); };
-    const ch = supabase.channel(`menuboard:${locId}:${boardId || 'def'}`)
+    const ch = supabase.channel(`menuboard:${locId}:${effectiveBoardId}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'eighty_six', filter: `location_id=eq.${locId}` }, reload)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'menu_items', filter: `location_id=eq.${locId}` }, reload)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'menu_boards', filter: `location_id=eq.${locId}` }, reload)
       .subscribe();
     const poll = setInterval(() => load(locId), 90000);   // safety net for missed events / long uptime
     return () => { supabase.removeChannel(ch); clearInterval(poll); clearTimeout(reloadTimer.current); };
-  }, [locId, load, boardId]);
+  }, [locId, load, effectiveBoardId]);
 
+  // No board yet → device-pairing screen (shows the code to type into Back Office).
+  if (pairing && !effectiveBoardId) return <PairScreen code={screen?.code} />;
   if (resolving && !data) return <Splash text="Starting menu board…" />;
-  if (!locId) return <Splash text="Pair this screen" sub="Open the device pairing screen to link this display to a venue." />;
   if (!data) return <Splash text="Loading menu…" />;
   return <Board data={data} />;
+}
+
+// Full-screen pairing prompt for an unassigned screen.
+function PairScreen({ code }) {
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: '#14110d', color: '#F5EFE6', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif", padding: '6vw' }}>
+      <div style={{ fontSize: 'clamp(16px,2.6vw,32px)', color: '#B8AE9E', letterSpacing: '.04em' }}>Pair this screen</div>
+      <div style={{ fontSize: 'clamp(48px,13vw,170px)', fontWeight: 700, letterSpacing: '.04em', color: '#E8A23C', lineHeight: 1.05, margin: '.25em 0' }}>{code || '· · ·'}</div>
+      <div style={{ fontSize: 'clamp(13px,1.7vw,20px)', color: '#B8AE9E', marginTop: '.6em', maxWidth: 780, lineHeight: 1.5 }}>
+        In Back Office → Channels → Menu boards, tap <strong style={{ color: '#F5EFE6' }}>“Pair a screen”</strong> and enter this code to choose what this display shows.
+      </div>
+    </div>
+  );
 }
 
 function Board({ data }) {

@@ -179,6 +179,7 @@ const TENANT_FENCE_KEEP = new Set([
   'rpos-device-mode',
   'rpos-theme',
   'rpos-device',
+  'rpos-mbscreen',   // menu-board screen pairing record (its own device identity; no rpos-device)
 ]);
 
 /**

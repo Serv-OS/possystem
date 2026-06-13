@@ -85,6 +85,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.466', date: '13 Jun 2026', label: 'Menu board — pair a screen from Back Office',
+    changes: [
+      'You can now pair a TV the easy way: power it on at the menu-board app and it shows a short code. In Back Office → Channels → Menu boards, under “Paired screens”, type that code and choose which board it should display — no more copying links per screen.',
+      'Reassign a paired screen to a different board, unpair it, or remove it from the same panel, with a live “Online / last seen” indicator per screen. The board still updates live when you publish.',
+      'Built on a new, tightly-scoped screens table: a screen only ever sees its own row, Back Office only sees its own venue’s screens, and the pairing code is required to claim one — no cross-venue access.',
+    ],
+  },
+  {
     version: '5.5.465', date: '13 Jun 2026', label: 'Menu board — Text size never runs off the screen',
     changes: [
       'Fixed larger text sizes pushing the bottom of the menu off the screen. The board now uses a fixed number of columns so it can always tell when content would overflow and scales the text down to fit — the whole menu always stays on one screen.',
