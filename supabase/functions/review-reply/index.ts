@@ -11,6 +11,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { postReply, type Platform } from '../_shared/review-platforms.ts';
+import { accessTokenFrom, replyToReview } from '../_shared/google-reviews.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -57,7 +58,7 @@ Deno.serve(async (req) => {
   if (!feedbackId || !text) return json({ error: 'feedback_id and text required' }, 400);
 
   const { data: fb } = await opsAdmin.from('review_feedback')
-    .select('id, location_id, is_public, source_platform, customer_email, customer_phone, customer_name').eq('id', feedbackId).maybeSingle();
+    .select('id, location_id, is_public, source_platform, external_review_id, customer_email, customer_phone, customer_name').eq('id', feedbackId).maybeSingle();
   if (!fb) return json({ error: 'feedback not found' }, 404);
 
   const caller = await callerWithAccess(req, fb.location_id);
@@ -77,6 +78,22 @@ Deno.serve(async (req) => {
   // ── synced platform review → post the reply back to the source platform ───
   if (fb.source_platform) {
     const platform = fb.source_platform as Platform;
+    // Google: post for real via the Business Profile API using the venue's token.
+    if (platform === 'google' && fb.external_review_id) {
+      try {
+        const { data: t } = await opsAdmin.from('review_google_tokens').select('refresh_token').eq('location_id', fb.location_id).maybeSingle();
+        if (!t?.refresh_token) throw new Error('Google not connected for this location');
+        const at = await accessTokenFrom(t.refresh_token);
+        await replyToReview(at, fb.external_review_id, text);
+        await recordReply('public_reply', 'posted');
+        await opsAdmin.from('review_feedback').update({ status: 'resolved', updated_at: nowIso }).eq('id', feedbackId);
+        return json({ ok: true, mode: 'api', message: 'Posted to Google.' });
+      } catch (e) {
+        await recordReply('public_reply', 'approved');
+        return json({ ok: false, mode: 'api', error: (e as Error).message }, 502);
+      }
+    }
+    // Other platforms: adapter (stubbed/manual until their API is wired).
     const { data: link } = await opsAdmin.from('review_platform_links')
       .select('platform, url, external_place_id').eq('location_id', fb.location_id).eq('platform', platform).maybeSingle();
     const result = await postReply({ platform, url: link?.url, external_place_id: link?.external_place_id }, text);

@@ -15,6 +15,7 @@
 
 import { useEffect, useState, useMemo } from 'react';
 import { supabase, getActiveLocationSync } from '../../../lib/supabase';
+import GoogleConnect from './GoogleConnect';
 
 const PLATFORM_LABEL = {
   google: 'Google', tripadvisor: 'TripAdvisor', facebook: 'Facebook', thefork: 'TheFork',
@@ -332,36 +333,27 @@ export default function ReviewSettings() {
                     </span>
                   </div>
                 </div>
-                <Toggle on={p.enabled} onChange={(v) => setPlatformField(key, { enabled: v })} />
+                {key !== 'google' && <Toggle on={p.enabled} onChange={(v) => setPlatformField(key, { enabled: v })} />}
               </div>
 
               {note.note && <div style={{ ...S.hint, marginTop: 8 }}>{note.note}</div>}
 
-              {showUrl && (
-                <div style={{ marginTop: 12 }}>
-                  <label style={S.label}>Listing URL</label>
-                  <input style={S.input} value={p.url || ''} placeholder="https://…"
-                    onChange={e => setPlatformField(key, { url: e.target.value })} />
-                  {showPlaceId && (
-                    <div style={{ marginTop: 10 }}>
-                      <label style={S.label}>Google Place ID</label>
-                      <input style={S.input} value={p.external_place_id || ''} placeholder="ChIJ…"
-                        onChange={e => setPlatformField(key, { external_place_id: e.target.value })} />
-                      <div style={S.hint}>Required for the Google Business Profile API (reading & replying).</div>
+              {key === 'google' ? (
+                <GoogleConnect locId={locId} />
+              ) : (
+                <>
+                  {showUrl && (
+                    <div style={{ marginTop: 12 }}>
+                      <label style={S.label}>Listing URL</label>
+                      <input style={S.input} value={p.url || ''} placeholder="https://…"
+                        onChange={e => setPlatformField(key, { url: e.target.value })} />
                     </div>
                   )}
-                </div>
+                  <div style={{ marginTop: 12 }}>
+                    <SaveBar onSave={() => savePlatform(key)} busy={ps.busy} done={ps.done} err={ps.err} label="Save" />
+                  </div>
+                </>
               )}
-
-              {!showUrl && cap.read === 'none' && cap.reply === 'none' && (
-                <div style={{ ...S.hint, marginTop: 8 }}>
-                  This platform doesn’t expose a public review API — there’s nothing to connect here.
-                </div>
-              )}
-
-              <div style={{ marginTop: 12 }}>
-                <SaveBar onSave={() => savePlatform(key)} busy={ps.busy} done={ps.done} err={ps.err} label="Save" />
-              </div>
             </div>
           );
         })}

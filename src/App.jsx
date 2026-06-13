@@ -83,6 +83,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.444', date: '12 Jun 2026', label: 'Review Manager — one-click Google connection',
+    changes: [
+      'Connect Google in one click: Back Office → Reviews → Settings → Google → “Connect Google”. The venue manager signs in, picks their Business Profile location, and from then on Google reviews sync into the Approvals queue and your approved replies post straight back to Google — no IDs to copy, no per-venue technical setup.',
+      'Built securely: the platform uses a single Google OAuth app, refresh tokens are stored server-side only (never in the browser), and the connect link is hijack-protected. Activates as soon as the platform’s Google API credentials + access approval are in place.',
+    ],
+  },
+  {
     version: '5.5.443', date: '12 Jun 2026', label: 'Review Manager — "Your card" tab: live preview + shareable link/QR',
     changes: [
       'Back Office → Customers → Reviews now has a "Your card" tab showing the branded page guests land on, with a live phone preview (rate / happy / needs-work states), the wording editor, and the customer link + a downloadable QR code for tables, receipts and the counter. This is the customer-facing portal — now visible and manageable in one place.',

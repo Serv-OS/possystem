@@ -14,6 +14,18 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { fetchReviews, PLATFORM_CAPS, type Platform, type PlatformReview } from '../_shared/review-platforms.ts';
+import { accessTokenFrom, listReviews } from '../_shared/google-reviews.ts';
+
+// Pull live Google Business Profile reviews for a connected venue (token stored
+// by review-google). Returns [] (never throws) so one platform can't break sync.
+async function googleReviewsFor(opsLocationId: string, opsAdmin: any): Promise<PlatformReview[]> {
+  try {
+    const { data: t } = await opsAdmin.from('review_google_tokens').select('refresh_token, location_name').eq('location_id', opsLocationId).maybeSingle();
+    if (!t?.refresh_token || !t?.location_name) return [];
+    const at = await accessTokenFrom(t.refresh_token);
+    return await listReviews(at, t.location_name);
+  } catch (e) { console.error('[review-sync] google pull failed', (e as Error).message); return []; }
+}
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -68,7 +80,10 @@ Deno.serve(async (req) => {
   let synced = 0;
   for (const link of links) {
     const platform = link.platform as Platform;
-    const reviews = injected[platform] ?? await fetchReviews({ platform, url: link.url, external_place_id: link.external_place_id });
+    const reviews = injected[platform]
+      ?? (platform === 'google'
+        ? await googleReviewsFor(opsLocationId, opsAdmin)
+        : await fetchReviews({ platform, url: link.url, external_place_id: link.external_place_id }));
     let added = 0;
     for (const rv of reviews) {
       if (!rv.external_review_id) continue;
