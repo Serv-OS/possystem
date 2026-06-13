@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.468', date: '13 Jun 2026', label: 'Menu board — pairing security hardening',
+    changes: [
+      'Pairing codes are now much harder to guess (8-character unambiguous codes), and a code can only be used while the screen is actually switched on — closing a gap where an unclaimed screen could in theory be paired by someone else before its owner got to it.',
+    ],
+  },
+  {
     version: '5.5.467', date: '13 Jun 2026', label: 'Menu board — allergens under the description',
     changes: [
       'Allergens now appear on their own line beneath the product description (instead of next to the name), in a smaller muted font and comma-separated, e.g. “Allergens: Milk, Gluten”.',

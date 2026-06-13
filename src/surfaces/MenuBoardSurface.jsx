@@ -28,8 +28,15 @@ const scaleTier = (ts) => (ts <= 0.9 ? 0 : ts < 1.075 ? 1 : ts < 1.225 ? 2 : 3);
 const cacheKey = (loc, b) => `rpos-mb-${loc}-${b || 'def'}`;
 const LS_SCREEN = 'rpos-mbscreen';   // this device's screen row {id,code,board_id} — kept across tenant-fence wipes
 // Human pairing code shown on an unassigned screen (operator types it into Back Office).
-const SCREEN_WORDS = ['WING', 'PIZZA', 'SODA', 'GRILL', 'BREW', 'CHILL', 'SPICE', 'FRESH', 'TASTE', 'BITE', 'SERVE', 'PLATE', 'FEAST', 'CRISP', 'ZEST', 'SAVOR'];
-const genCode = () => SCREEN_WORDS[Math.floor(Math.random() * SCREEN_WORDS.length)] + '-' + String(1000 + Math.floor(Math.random() * 9000));
+// 8 chars from a 30-symbol unambiguous alphabet (no I/L/O/U/0/1) ≈ 39 bits — high
+// enough that the codespace can't be brute-forced through the claim RPC, while
+// still readable across a room and quick to type. Formatted XXXX-XXXX.
+const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTVWXYZ23456789';
+const genCode = () => {
+  let out = '';
+  for (let i = 0; i < 8; i++) { if (i === 4) out += '-'; out += CODE_ALPHABET[Math.floor(Math.random() * CODE_ALPHABET.length)]; }
+  return out;
+};
 
 // Board price: prefer the dine-in price, then any-channel, then base, then legacy scalar.
 const boardPrice = (it) => {

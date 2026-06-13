@@ -210,7 +210,7 @@ export default function MenuBoards() {
         </div>
 
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
-          <input style={{ ...S.inp, width: 170, textTransform: 'uppercase' }} placeholder="Code e.g. WING-4823"
+          <input style={{ ...S.inp, width: 170, textTransform: 'uppercase' }} placeholder="Code e.g. K7P2-9XQM"
             value={pairCode} onChange={e => setPairCode(e.target.value)} />
           <select style={{ ...S.inp, width: 200 }} value={pairBoard} onChange={e => setPairBoard(e.target.value)}>
             <option value="">Show board…</option>
