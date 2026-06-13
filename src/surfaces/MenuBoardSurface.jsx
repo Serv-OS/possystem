@@ -332,16 +332,14 @@ function Section({ sec, theme, disp, six }) {
                   {diet.map((d) => (
                     <span key={d} style={{ fontSize: '0.66em', background: '#1f3a26', color: '#7fd99a', borderRadius: '1em', padding: '0 .55em', marginLeft: '.3em', whiteSpace: 'nowrap', fontWeight: 700 }}>{d}</span>
                   ))}
-                  {disp.showAllergens && Array.isArray(it.allergens) && it.allergens.length > 0 && (
-                    <span style={{ marginLeft: '.35em' }}>
-                      {it.allergens.map((a) => (
-                        <span key={a} style={{ fontSize: '0.62em', background: `${theme.mutedColor}22`, color: theme.mutedColor, borderRadius: '1em', padding: '0 .5em', marginLeft: '.22em', whiteSpace: 'nowrap' }}>{a}</span>
-                      ))}
-                    </span>
-                  )}
                 </div>
                 {disp.showDescription && it.description && (
                   <div style={{ fontSize: '0.38em', color: theme.mutedColor, lineHeight: 1.3, marginTop: '.15em' }}>{it.description}</div>
+                )}
+                {disp.showAllergens && Array.isArray(it.allergens) && it.allergens.length > 0 && (
+                  <div style={{ fontSize: '0.3em', color: theme.mutedColor, lineHeight: 1.3, marginTop: '.25em', textTransform: 'capitalize', opacity: 0.9 }}>
+                    Allergens: {it.allergens.join(', ')}
+                  </div>
                 )}
               </div>
               <div style={{ flexShrink: 0, display: 'flex', alignItems: 'flex-start', lineHeight: 1 }}>

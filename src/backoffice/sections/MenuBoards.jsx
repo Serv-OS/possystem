@@ -437,9 +437,9 @@ function Preview({ board, cats, itemsByCat, six }) {
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <div style={{ fontSize: '0.6em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.menu_name || it.name}
                               {diet.map(d => <span key={d} style={{ color: '#7fd99a', marginLeft: 3, fontWeight: 700 }}>{d}</span>)}
-                              {disp.showAllergens && it.allergens?.length > 0 && it.allergens.map(a => <span key={a} style={{ color: muted, marginLeft: 3, fontSize: '0.85em' }}>{a}</span>)}
                             </div>
                             {disp.showDescription && it.description && <div style={{ fontSize: '0.46em', color: muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.description}</div>}
+                            {disp.showAllergens && it.allergens?.length > 0 && <div style={{ fontSize: '0.4em', color: muted, textTransform: 'capitalize', marginTop: 1 }}>Allergens: {it.allergens.join(', ')}</div>}
                           </div>
                           {sold ? <span style={{ fontSize: '0.5em', color: '#f3b0b0', flexShrink: 0 }}>SOLD OUT</span>
                             : !hasVar && disp.showPrices && price > 0 && <span style={{ fontSize: '0.56em', background: t.accent, color: '#1c1206', borderRadius: 6, padding: '0 5px', flexShrink: 0 }}>{money(price)}</span>}

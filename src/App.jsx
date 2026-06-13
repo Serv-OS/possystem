@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.467', date: '13 Jun 2026', label: 'Menu board — allergens under the description',
+    changes: [
+      'Allergens now appear on their own line beneath the product description (instead of next to the name), in a smaller muted font and comma-separated, e.g. “Allergens: Milk, Gluten”.',
+    ],
+  },
+  {
     version: '5.5.466', date: '13 Jun 2026', label: 'Menu board — pair a screen from Back Office',
     changes: [
       'You can now pair a TV the easy way: power it on at the menu-board app and it shows a short code. In Back Office → Channels → Menu boards, under “Paired screens”, type that code and choose which board it should display — no more copying links per screen.',
