@@ -83,6 +83,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.443', date: '12 Jun 2026', label: 'Review Manager — "Your card" tab: live preview + shareable link/QR',
+    changes: [
+      'Back Office → Customers → Reviews now has a "Your card" tab showing the branded page guests land on, with a live phone preview (rate / happy / needs-work states), the wording editor, and the customer link + a downloadable QR code for tables, receipts and the counter. This is the customer-facing portal — now visible and manageable in one place.',
+    ],
+  },
+  {
     version: '5.5.442', date: '12 Jun 2026', label: 'Review Manager — only show platforms we can genuinely connect to',
     changes: [
       'Removed platforms we cannot truly connect to: a "manual — reply in their dashboard" link is not a connection, so TripAdvisor, Yelp, Facebook, OpenTable, Uber Eats, Deliveroo and Just Eat are no longer listed (none expose a usable review API; we can\'t pull their reviews, post replies, or tie a review to the right store/customer). Booking.com is parked until its provider onboarding reopens.',

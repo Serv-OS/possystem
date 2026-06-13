@@ -9,12 +9,14 @@
 
 import { useState } from 'react';
 import ReviewQueue from './review/ReviewQueue';
+import ReviewCard from './review/ReviewCard';
 import ReviewDashboard from './review/ReviewDashboard';
 import ReviewTriggers from './review/ReviewTriggers';
 import ReviewSettings from './review/ReviewSettings';
 
 const TABS = [
   ['approvals', 'Approvals', ReviewQueue],
+  ['card', 'Your card', ReviewCard],
   ['dashboard', 'Dashboard', ReviewDashboard],
   ['triggers', 'Get reviews', ReviewTriggers],
   ['settings', 'Settings', ReviewSettings],
