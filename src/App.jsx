@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.465', date: '13 Jun 2026', label: 'Menu board — Text size never runs off the screen',
+    changes: [
+      'Fixed larger text sizes pushing the bottom of the menu off the screen. The board now uses a fixed number of columns so it can always tell when content would overflow and scales the text down to fit — the whole menu always stays on one screen.',
+      'Text size now means: Smaller = fewer columns / smaller type, Extra large = more columns / bigger type, each filling the screen edge-to-edge. Raised the maximum type size so big 4K screens fill properly too.',
+    ],
+  },
+  {
     version: '5.5.464', date: '13 Jun 2026', label: 'Menu board — tighten single-item price spacing',
     changes: [
       'Fixed simple items (no sizes) showing the price dropped onto its own line with a big gap at large font sizes — the price badge now sits neatly on the same line as the product name, like the rest of the board.',

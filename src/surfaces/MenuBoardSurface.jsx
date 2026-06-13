@@ -18,7 +18,13 @@ import { money } from '../lib/currency';
 
 const DEFAULT_THEME = { bgColor: '#14110d', textColor: '#F5EFE6', mutedColor: '#B8AE9E', accent: '#E8A23C', font: '', footerNote: '', logoUrl: null, bgImageUrl: null };
 const DEFAULT_DISPLAY = { showDescription: true, showAllergens: true, showPrices: true, showImages: false, soldOut: 'grey', textScale: 1, hidePriceless: false };
-const FIT = { base: 30, min: 11, max: 48 };          // px; the fit-loop lands somewhere in here
+const FIT = { base: 30, min: 11, max: 160 };         // px; the fit-loop lands somewhere in here (max high enough for 4K TVs)
+// Text-size preference → how many columns to flow into. MORE columns = BIGGER text,
+// because the content is spread thinner per column and the auto-fit grows the font
+// to fill the screen height. Fewer columns = smaller text. Driven by an explicit
+// integer count (never column-width:auto, which lets Chromium clip overflow silently).
+const COLS_FOR_SCALE = { portrait: [1, 1, 2, 2], landscape: [2, 3, 4, 5] };  // Smaller / Default / Larger / Extra large
+const scaleTier = (ts) => (ts <= 0.9 ? 0 : ts < 1.075 ? 1 : ts < 1.225 ? 2 : 3);
 const cacheKey = (loc, b) => `rpos-mb-${loc}-${b || 'def'}`;
 
 // Board price: prefer the dine-in price, then any-channel, then base, then legacy scalar.
@@ -131,25 +137,26 @@ function Board({ data }) {
   // ordered sections; content flows column-by-column and fills the screen
   const sections = mode === 'menu' ? buildSections(data) : [];
   const fixedCols = Number(data.board?.layout?.columns) || 0;   // operator override; 0 = Auto
+  const totalItems = sections.reduce((n, s) => n + ((s.items && s.items.length) || 0), 0);
 
-  // ── auto-fit: FILL the screen. Columns fill top-to-bottom (column-fill:auto)
-  // so a column only breaks to the next when it is genuinely full — no early
-  // "balanced" break that leaves the bottom of the screen empty. We grow the
-  // root font-size until the content fills every column to the bottom (one more
-  // pixel would spill into an extra column). With "Auto" columns we drive the
-  // layout by a readable column WIDTH, so the column count adapts to how much
-  // content there is and how big the fitted font ends up. ──
+  // ── auto-fit: FILL the screen, never clip. Columns fill top-to-bottom
+  // (column-fill:auto) so a column only breaks when it is genuinely full. We use
+  // an EXPLICIT integer column count (operator override, else derived from the
+  // text-size preference) — never column-width:auto, because Chromium clips
+  // overflow from an auto count without reporting it, which let large fonts run
+  // off the bottom of the screen. With a fixed count, overflow creates a real
+  // extra column that scrollWidth reports, so the binary search always lands on
+  // the largest font that fits the whole menu on one screen. ──
   useLayoutEffect(() => {
     if (mode !== 'menu') return;
     const root = boardRef.current, flow = flowRef.current;
     if (!root || !flow) return;
-    // The text-size preference is NOT a post-multiply (that would overflow a
-    // screen the fit already filled). In Auto it widens/narrows the columns —
-    // "Larger" → wider columns → fewer of them → bigger text that still fills.
-    if (fixedCols) { flow.style.columnCount = String(fixedCols); flow.style.columnWidth = 'auto'; }
-    else { flow.style.columnCount = 'auto'; flow.style.columnWidth = ((orientation === 'portrait' ? 19 : 16) * textScale) + 'em'; }
-    // content fits when it neither spills into an extra column (width) nor
-    // overflows a too-tall element (height) — i.e. nothing is clipped.
+    const maxN = orientation === 'portrait' ? 3 : 6;
+    let cols = fixedCols || COLS_FOR_SCALE[orientation === 'portrait' ? 'portrait' : 'landscape'][scaleTier(textScale)];
+    // don't open more columns than the content can reasonably fill (~3 items each)
+    cols = Math.max(1, Math.min(cols, maxN, Math.ceil((totalItems || 1) / 3)));
+    flow.style.columnWidth = 'auto';
+    flow.style.columnCount = String(cols);
     const fits = () => flow.scrollWidth <= flow.clientWidth + 1 && flow.scrollHeight <= flow.clientHeight + 1;
     let lo = FIT.min, hi = FIT.max, best = FIT.min;
     while (lo <= hi) {
@@ -158,7 +165,7 @@ function Board({ data }) {
       if (fits()) { best = mid; lo = mid + 1; } else hi = mid - 1;
     }
     root.style.fontSize = best + 'px';
-  }, [data, mode, orientation, fixedCols, textScale, fitTick]);
+  }, [data, mode, orientation, fixedCols, textScale, totalItems, fitTick]);
 
   useEffect(() => {
     const refit = () => setFitTick((t) => t + 1);

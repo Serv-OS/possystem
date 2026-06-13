@@ -293,20 +293,25 @@ function Preview({ board, cats, itemsByCat, six }) {
   const blocks = board.layout?.blocks || [];
   const secs = blocks.map(b => ({ id: b.categoryId, label: cats.find(c => c.id === b.categoryId)?.label, items: itemsByCat[b.categoryId] || [], span: b.span })).filter(s => s.label);
   const fixedCols = Number(board.layout?.columns) || 0;   // 0 = Auto
+  const totalItems = secs.reduce((n, s) => n + ((s.items && s.items.length) || 0), 0);
 
-  // mini auto-fit: FILL the preview box exactly like the live board — columns fill
-  // top-to-bottom (column-fill:auto) and the font grows until the content fills
-  // every column to the bottom. "Auto" columns are driven by a readable column
-  // width so the count adapts; a fixed choice pins the count.
+  // mini auto-fit: mirror the live board exactly — explicit integer column count
+  // (text-size preference → more columns = bigger fill text), column-fill:auto so
+  // columns fill top-to-bottom, and the font grows until the content fills without
+  // clipping. Never column-width:auto (it would clip silently on the real board).
   useLayoutEffect(() => {
     const area = areaRef.current, flow = flowRef.current;
     if (!area || !flow) return;
     const ts = Math.max(0.6, Math.min(1.6, Number(board.display_options?.textScale) || 1));
-    // text-size preference widens/narrows columns (Auto) rather than post-multiplying
-    if (fixedCols) { flow.style.columnCount = String(fixedCols); flow.style.columnWidth = 'auto'; }
-    else { flow.style.columnCount = 'auto'; flow.style.columnWidth = ((board.orientation === 'portrait' ? 19 : 16) * ts) + 'em'; }
+    const portrait = board.orientation === 'portrait';
+    const maxN = portrait ? 3 : 6;
+    const tier = ts <= 0.9 ? 0 : ts < 1.075 ? 1 : ts < 1.225 ? 2 : 3;
+    let cols = fixedCols || (portrait ? [1, 1, 2, 2] : [2, 3, 4, 5])[tier];
+    cols = Math.max(1, Math.min(cols, maxN, Math.ceil((totalItems || 1) / 3)));
+    flow.style.columnWidth = 'auto';
+    flow.style.columnCount = String(cols);
     const fits = () => flow.scrollWidth <= flow.clientWidth + 1 && flow.scrollHeight <= flow.clientHeight + 1;
-    let lo = 4, hi = 26, best = 4;
+    let lo = 4, hi = 44, best = 4;
     while (lo <= hi) {
       const mid = (lo + hi) >> 1;
       flow.style.fontSize = mid + 'px';
