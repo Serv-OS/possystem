@@ -34,6 +34,14 @@ const S = {
   pos:   { color: 'var(--grn)' }, neg: { color: 'var(--red)' },
   empty: { textAlign: 'center', padding: '50px 20px', color: 'var(--t3)', fontSize: 14 },
   note:  { fontSize: 11.5, color: 'var(--t4)', marginTop: 10, lineHeight: 1.5 },
+  ladder:{ border: '1px solid var(--bdr)', borderRadius: 12, background: 'var(--bg1)', padding: '14px 18px', marginBottom: 16, maxWidth: 480 },
+  lTitle:{ fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 6 },
+  lRow:  { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '5px 0', fontSize: 13.5, color: 'var(--t1)' },
+  lLess: { color: 'var(--t3)', paddingLeft: 16 },
+  lSub:  { borderTop: '1px solid var(--bdr)', fontWeight: 800, marginTop: 2, paddingTop: 7 },
+  lFinal:{ borderTop: '2px solid var(--bdr2)', fontWeight: 900, fontSize: 15.5, marginTop: 2, paddingTop: 8 },
+  lHint: { fontSize: 10.5, color: 'var(--t4)', fontWeight: 600, fontStyle: 'italic' },
+  mono:  { fontVariantNumeric: 'tabular-nums' },
 };
 
 export default function DailyTrading({ rangeFrom, rangeTo, fmt }) {
@@ -100,14 +108,28 @@ export default function DailyTrading({ rangeFrom, rangeTo, fmt }) {
         <div style={{ ...S.note, marginTop: 0, flexBasis: '100%' }}>Sales &amp; labour are live from the system. COGS and overhead are your estimates — set them here and the P&amp;L applies them to forecast and actuals.</div>
       </div>
 
-      {/* period totals */}
+      {/* P&L ladder — full breakdown incl. VAT (this period, actual) */}
+      <div style={S.ladder}>
+        <div style={S.lTitle}>Period P&amp;L · actual</div>
+        <div style={S.lRow}><span>Gross takings <span style={{ color: 'var(--t4)' }}>(inc VAT)</span></span><span style={S.mono}>{money(totals.gross_sales)}</span></div>
+        <div style={S.lRow}><span style={S.lLess}>less VAT <span style={S.lHint}>— collected for HMRC, not income</span></span><span style={{ ...S.mono, color: 'var(--red)' }}>−{money(totals.vat)}</span></div>
+        <div style={{ ...S.lRow, ...S.lSub }}><span>Net sales (ex-VAT)</span><span style={S.mono}>{money(totals.actual_sales)}</span></div>
+        <div style={S.lRow}><span style={S.lLess}>less COGS{totals.actual_sales > 0 ? ` (${Math.round(totals.cogs_actual / totals.actual_sales * 100)}%)` : ''}</span><span style={{ ...S.mono, color: 'var(--red)' }}>−{money(totals.cogs_actual)}</span></div>
+        <div style={{ ...S.lRow, ...S.lSub }}><span>Gross profit</span><span style={S.mono}>{money(totals.gp_actual)}</span></div>
+        <div style={S.lRow}><span style={S.lLess}>less Labour</span><span style={{ ...S.mono, color: 'var(--red)' }}>−{money(totals.labour_actual)}</span></div>
+        <div style={S.lRow}><span style={S.lLess}>less Overhead</span><span style={{ ...S.mono, color: 'var(--red)' }}>−{money(totals.overhead)}</span></div>
+        <div style={{ ...S.lRow, ...S.lFinal, ...sign(totals.op_actual) }}><span>Operating profit</span><span style={S.mono}>{money(totals.op_actual)}</span></div>
+      </div>
+
+      {/* quick KPIs */}
       <div style={S.kpis}>
-        <div style={S.kpi}><div style={S.kLab}>Forecast sales</div><div style={S.kVal}>{money(totals.forecast)}</div></div>
-        <div style={S.kpi}><div style={S.kLab}>Actual sales</div><div style={S.kVal}>{money(totals.actual_sales)}</div>
+        <div style={S.kpi}><div style={S.kLab}>Forecast (net)</div><div style={S.kVal}>{money(totals.forecast)}</div></div>
+        <div style={S.kpi}><div style={S.kLab}>Net sales</div><div style={S.kVal}>{money(totals.actual_sales)}</div>
           <div style={{ fontSize: 12, fontWeight: 700, ...sign(totals.actual_sales - totals.forecast) }}>{totals.actual_sales - totals.forecast >= 0 ? '+' : ''}{money(totals.actual_sales - totals.forecast)} vs forecast</div></div>
+        <div style={S.kpi}><div style={S.kLab}>VAT (to HMRC)</div><div style={S.kVal}>{money(totals.vat)}</div>
+          <div style={{ fontSize: 12, color: 'var(--t3)', fontWeight: 700 }}>gross {money(totals.gross_sales)}</div></div>
         <div style={S.kpi}><div style={S.kLab}>Labour (actual)</div><div style={S.kVal}>{money(totals.labour_actual)}</div>
-          <div style={{ fontSize: 12, color: 'var(--t3)', fontWeight: 700 }}>{totals.labour_pct_actual != null ? `${totals.labour_pct_actual}% of sales` : '—'}</div></div>
-        <div style={S.kpi}><div style={S.kLab}>COGS (actual)</div><div style={S.kVal}>{money(totals.cogs_actual)}</div></div>
+          <div style={{ fontSize: 12, color: 'var(--t3)', fontWeight: 700 }}>{totals.labour_pct_actual != null ? `${totals.labour_pct_actual}% of net` : '—'}</div></div>
         <div style={S.kpi}><div style={S.kLab}>Operating profit</div><div style={{ ...S.kVal, ...sign(totals.op_actual) }}>{money(totals.op_actual)}</div>
           <div style={{ fontSize: 12, color: 'var(--t3)', fontWeight: 700 }}>forecast {money(totals.op_theo)}</div></div>
       </div>
@@ -117,9 +139,9 @@ export default function DailyTrading({ rangeFrom, rangeTo, fmt }) {
         <table style={S.table}>
           <thead><tr>
             <th style={{ ...S.th, ...S.thL }}>Day</th>
-            <th style={S.th}>Forecast</th><th style={S.th}>Actual</th><th style={S.th}>Δ sales</th>
+            <th style={S.th}>Forecast</th><th style={S.th}>Gross (inc VAT)</th><th style={S.th}>VAT</th><th style={S.th}>Net sales</th>
             <th style={S.th}>Labour (act)</th><th style={S.th}>Labour %</th>
-            <th style={S.th}>COGS</th><th style={S.th}>Gross profit</th><th style={S.th}>Op. profit</th>
+            <th style={S.th}>COGS</th><th style={S.th}>Op. profit</th>
           </tr></thead>
           <tbody>
             {rows.map(r => (
@@ -131,28 +153,30 @@ export default function DailyTrading({ rangeFrom, rangeTo, fmt }) {
                     onBlur={e => { if (Number(e.target.value || 0) !== r.forecast) setForecast(r.date, e.target.value); }} />
                   {r.last_year > 0 && <span style={S.ly} title="Use same weekday last year" onClick={() => setForecast(r.date, r.last_year)}>LY {money(r.last_year)}</span>}
                 </td>
+                <td style={S.td}>{money(r.gross_sales)}</td>
+                <td style={{ ...S.td, color: 'var(--t3)' }}>{money(r.vat)}</td>
                 <td style={S.td}>{money(r.actual_sales)}</td>
-                <td style={{ ...S.td, ...sign(r.sales_variance) }}>{r.sales_variance >= 0 ? '+' : ''}{money(r.sales_variance)}</td>
                 <td style={S.td}>{money(r.labour_actual)}<span style={{ color: 'var(--t4)' }}> / {money(r.labour_theo)}</span></td>
                 <td style={{ ...S.td, ...(r.labour_pct_actual > 35 ? S.neg : null) }}>{r.labour_pct_actual != null ? `${r.labour_pct_actual}%` : '—'}</td>
                 <td style={S.td}>{money(r.cogs_actual)}</td>
-                <td style={S.td}>{money(r.gp_actual)}</td>
                 <td style={{ ...S.td, ...sign(r.op_actual) }}>{money(r.op_actual)}</td>
               </tr>
             ))}
           </tbody>
           <tfoot><tr style={{ fontWeight: 800 }}>
             <td style={{ ...S.td, ...S.tdL }}>Total</td>
-            <td style={S.td}>{money(totals.forecast)}</td><td style={S.td}>{money(totals.actual_sales)}</td>
-            <td style={{ ...S.td, ...sign(totals.actual_sales - totals.forecast) }}>{money(totals.actual_sales - totals.forecast)}</td>
+            <td style={S.td}>{money(totals.forecast)}</td>
+            <td style={S.td}>{money(totals.gross_sales)}</td>
+            <td style={{ ...S.td, color: 'var(--t3)' }}>{money(totals.vat)}</td>
+            <td style={S.td}>{money(totals.actual_sales)}</td>
             <td style={S.td}>{money(totals.labour_actual)}</td>
             <td style={S.td}>{totals.labour_pct_actual != null ? `${totals.labour_pct_actual}%` : '—'}</td>
-            <td style={S.td}>{money(totals.cogs_actual)}</td><td style={S.td}>{money(totals.actual_sales - totals.cogs_actual)}</td>
+            <td style={S.td}>{money(totals.cogs_actual)}</td>
             <td style={{ ...S.td, ...sign(totals.op_actual) }}>{money(totals.op_actual)}</td>
           </tr></tfoot>
         </table>
       </div>
-      <div style={S.note}>Net sales are ex-VAT (the goods value). Type a forecast and press Enter, or tap “LY” to use the same weekday last year. Labour shows actual / theoretical (rota). “Op. profit” = sales − COGS − labour − overhead.</div>
+      <div style={S.note}>VAT is shown separately because it’s collected for HMRC — it’s never profit. Net sales (ex-VAT) are the P&amp;L basis. Type a forecast (net) and press Enter, or tap “LY” for the same weekday last year. Labour shows actual / theoretical (rota). Operating profit = net sales − COGS − labour − overhead.</div>
     </div>
   );
 }

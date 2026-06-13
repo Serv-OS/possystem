@@ -84,6 +84,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.452', date: '13 Jun 2026', label: 'Daily trading (P&L) — VAT broken out fully',
+    changes: [
+      'The P&L now shows the full ladder so it’s clear VAT is never profit: Gross takings (inc VAT) → less VAT (collected for HMRC) → Net sales (ex-VAT) → less COGS → Gross profit → less Labour → less Overhead → Operating profit.',
+      'Every day in the table now shows Gross (inc VAT), VAT, and Net sales separately, and there’s a “VAT (to HMRC)” figure in the KPI strip. VAT uses the tax recorded on each check (falling back to gross−net−service−tip for older checks).',
+    ],
+  },
+  {
     version: '5.5.451', date: '13 Jun 2026', label: 'Fix: Daily trading (P&L) report opened blank',
     changes: [
       'The new Daily trading (P&L) report was listed in the reports catalog but never wired into the report renderer, so opening it showed nothing. It now loads: per-day forecast (with the “same weekday last year” suggestion), actual sales, theoretical vs actual labour, COGS and overhead → operating profit, plus the inline forecast editor.',

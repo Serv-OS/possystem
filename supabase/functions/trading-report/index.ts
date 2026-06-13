@@ -46,18 +46,25 @@ function dayList(from: string, to: string): string[] {
 }
 const shift364 = (ymdStr: string) => { const d = new Date(ymdStr + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() - 364); return d.toISOString().slice(0, 10); };
 
-// Sum closed_checks net sales (subtotal, ex-VAT) per venue-local day.
-async function salesByDay(ops: string, fromYmd: string, toYmd: string, tz: string): Promise<Record<string, number>> {
+// Sum closed_checks per venue-local day: net (subtotal, ex-VAT) + VAT. VAT prefers
+// the stored tax_amount (v4.6.19+); for older checks with no stored tax it falls
+// back to (total − net − service − tip). Service and tips are NOT sales.
+async function salesByDay(ops: string, fromYmd: string, toYmd: string, tz: string): Promise<Record<string, { net: number; vat: number }>> {
   const startUtc = new Date(fromYmd + 'T00:00:00Z'); startUtc.setUTCHours(startUtc.getUTCHours() - 14);   // tz padding
   const endUtc = new Date(toYmd + 'T23:59:59Z'); endUtc.setUTCHours(endUtc.getUTCHours() + 14);
-  const out: Record<string, number> = {};
+  const out: Record<string, { net: number; vat: number }> = {};
   const { data } = await opsAdmin.from('closed_checks')
-    .select('subtotal, total, status, voided, closed_at')
+    .select('subtotal, total, tax_amount, service, tip, status, voided, closed_at')
     .eq('location_id', ops).gte('closed_at', startUtc.toISOString()).lte('closed_at', endUtc.toISOString()).limit(20000);
   for (const c of data ?? []) {
     if (c.voided || c.status === 'voided') continue;
     const key = ymd(new Date(c.closed_at), tz);
-    out[key] = (out[key] || 0) + (Number(c.subtotal) || 0);
+    const net = Number(c.subtotal) || 0;
+    const vat = c.tax_amount != null
+      ? (Number(c.tax_amount) || 0)
+      : Math.max(0, (Number(c.total) || 0) - net - (Number(c.service) || 0) - (Number(c.tip) || 0));
+    const e = (out[key] ??= { net: 0, vat: 0 });
+    e.net += net; e.vat += vat;
   }
   return out;
 }
@@ -143,14 +150,18 @@ Deno.serve(async (req) => {
 
   const rows = days.map((d) => {
     const forecast = fc[d] ?? 0;
-    const actualSales = sales[d] ?? 0;
-    const lastYear = lySales[shift364(d)] ?? 0;
+    const s = sales[d] ?? { net: 0, vat: 0 };
+    const actualSales = s.net;            // net, ex-VAT — the P&L basis
+    const vat = s.vat;                    // VAT collected (HMRC's, not income)
+    const grossSales = actualSales + vat; // gross takings, inc VAT
+    const lastYear = lySales[shift364(d)]?.net ?? 0;
     const lt = labTheo[d] ?? 0, la = labAct[d] ?? 0;
     const cogsT = forecast * cogsPct / 100, cogsA = actualSales * cogsPct / 100;
     const r2 = (n: number) => Math.round(n * 100) / 100;
     return {
       date: d,
       forecast: r2(forecast), actual_sales: r2(actualSales), last_year: r2(lastYear),
+      vat: r2(vat), gross_sales: r2(grossSales),
       sales_variance: r2(actualSales - forecast),
       labour_theo: r2(lt), labour_actual: r2(la),
       labour_pct_theo: forecast > 0 ? r2(lt / forecast * 100) : null,
@@ -165,9 +176,10 @@ Deno.serve(async (req) => {
   const sum = (k: string) => Math.round(rows.reduce((s, r) => s + (Number((r as any)[k]) || 0), 0) * 100) / 100;
   const totals = {
     forecast: sum('forecast'), actual_sales: sum('actual_sales'), last_year: sum('last_year'),
+    vat: sum('vat'), gross_sales: sum('gross_sales'),
     labour_theo: sum('labour_theo'), labour_actual: sum('labour_actual'),
     cogs_theo: sum('cogs_theo'), cogs_actual: sum('cogs_actual'), overhead: sum('overhead'),
-    gp_actual: sum('gp_actual'), op_theo: sum('op_theo'), op_actual: sum('op_actual'),
+    gp_theo: sum('gp_theo'), gp_actual: sum('gp_actual'), op_theo: sum('op_theo'), op_actual: sum('op_actual'),
     labour_pct_actual: sum('actual_sales') > 0 ? Math.round(sum('labour_actual') / sum('actual_sales') * 10000) / 100 : null,
   };
   return json({ ok: true, rows, totals, settings: { cogs_pct: cogsPct, daily_overhead: overhead, currency }, tz });
