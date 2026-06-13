@@ -302,8 +302,9 @@ function Preview({ board, cats, itemsByCat, six }) {
     const area = areaRef.current, flow = flowRef.current;
     if (!area || !flow) return;
     const ts = Math.max(0.6, Math.min(1.6, Number(board.display_options?.textScale) || 1));
+    // text-size preference widens/narrows columns (Auto) rather than post-multiplying
     if (fixedCols) { flow.style.columnCount = String(fixedCols); flow.style.columnWidth = 'auto'; }
-    else { flow.style.columnCount = 'auto'; flow.style.columnWidth = (board.orientation === 'portrait' ? 19 : 16) + 'em'; }
+    else { flow.style.columnCount = 'auto'; flow.style.columnWidth = ((board.orientation === 'portrait' ? 19 : 16) * ts) + 'em'; }
     const fits = () => flow.scrollWidth <= flow.clientWidth + 1 && flow.scrollHeight <= flow.clientHeight + 1;
     let lo = 4, hi = 26, best = 4;
     while (lo <= hi) {
@@ -311,7 +312,7 @@ function Preview({ board, cats, itemsByCat, six }) {
       flow.style.fontSize = mid + 'px';
       if (fits()) { best = mid; lo = mid + 1; } else hi = mid - 1;
     }
-    flow.style.fontSize = (best * ts) + 'px';
+    flow.style.fontSize = best + 'px';
   });
 
   if (board.mode === 'marketing') {

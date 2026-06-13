@@ -143,10 +143,13 @@ function Board({ data }) {
     if (mode !== 'menu') return;
     const root = boardRef.current, flow = flowRef.current;
     if (!root || !flow) return;
+    // The text-size preference is NOT a post-multiply (that would overflow a
+    // screen the fit already filled). In Auto it widens/narrows the columns —
+    // "Larger" → wider columns → fewer of them → bigger text that still fills.
     if (fixedCols) { flow.style.columnCount = String(fixedCols); flow.style.columnWidth = 'auto'; }
-    else { flow.style.columnCount = 'auto'; flow.style.columnWidth = (orientation === 'portrait' ? 19 : 16) + 'em'; }
+    else { flow.style.columnCount = 'auto'; flow.style.columnWidth = ((orientation === 'portrait' ? 19 : 16) * textScale) + 'em'; }
     // content fits when it neither spills into an extra column (width) nor
-    // overflows a too-tall element (height).
+    // overflows a too-tall element (height) — i.e. nothing is clipped.
     const fits = () => flow.scrollWidth <= flow.clientWidth + 1 && flow.scrollHeight <= flow.clientHeight + 1;
     let lo = FIT.min, hi = FIT.max, best = FIT.min;
     while (lo <= hi) {
@@ -154,7 +157,7 @@ function Board({ data }) {
       root.style.fontSize = mid + 'px';
       if (fits()) { best = mid; lo = mid + 1; } else hi = mid - 1;
     }
-    root.style.fontSize = (best * textScale) + 'px';
+    root.style.fontSize = best + 'px';
   }, [data, mode, orientation, fixedCols, textScale, fitTick]);
 
   useEffect(() => {

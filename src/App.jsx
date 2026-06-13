@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.463', date: '13 Jun 2026', label: 'Menu board — Text size never clips the menu',
+    changes: [
+      'Fixed “Larger”/“Extra large” text clipping the last category off the bottom. The text-size preference now widens or narrows the columns (bigger = fewer, wider columns) instead of zooming past the screen edge — so the whole menu always fits and fills the screen.',
+    ],
+  },
+  {
     version: '5.5.462', date: '13 Jun 2026', label: 'Menu board — fill the whole screen',
     changes: [
       'Fixed the layout leaving the bottom half of the screen empty: columns now fill top-to-bottom and only break to the next column when the current one is genuinely full (no more early “balanced” break).',
