@@ -149,3 +149,10 @@ Tables MUST never be lost between updates. These safeguards exist:
 - **Review Manager must never re-introduce review-gating** — happy and unhappy guests get the same public review path (UK DMCC Act 2024 / US FTC Oct-2024). The private feedback option is additive only.
 - **One platform Google OAuth client for reviews, never per-customer.** The Google client secret lives only in Supabase Edge Function env (`GOOGLE_OAUTH_CLIENT_SECRET`) — never in the repo, bundle, or client. Venues connect by signing in; the platform never holds venue Google passwords.
 - **Edge functions enforce their own tenant fence.** `trading-report` / `owner-snapshot` / `review-*` run `verify_jwt=false` and must validate the caller (`user_locations` / super_admin / service-role) before returning a location's data — RLS is not doing it for them.
+
+## Menu board / screen pairing (`menu_board_screens`)
+
+- **A menu-board device never writes its own `location_id`/`board_id`.** Those are set only by the SECURITY DEFINER RPCs (`claim_menu_board_screen` / `set_menu_board_screen`) after validating the caller's location access, and `location_id` is always taken from the chosen board's row (never device-supplied, never a default). The table has **no UPDATE policy** — do not add one; route all mutations through the RPCs. (Same "resolve real locationId" rule as everywhere else.)
+- **A device sees only its own screen row** (`device_uid = auth.uid()`); Back Office sees only its venue's screens. Do not widen the SELECT policy to expose unpaired rows broadly — that would let pairing codes be enumerated across tenants. Claiming is by code (a capability the operator reads off the physical screen).
+- **Pairing codes stay high-entropy + TTL'd.** Codes are ~39-bit (8-char unambiguous alphabet) and `claim` rejects screens not seen in 30 min. Don't drop back to short/low-entropy codes or remove the TTL without an alternative throttle.
+- **Don't break the `?board=<id>` direct-link path** when changing the pairing flow — it's the manual fallback and is used by the Back Office preview/Copy-screen-link.

@@ -1,6 +1,6 @@
 # Serv OS / RPOS — session handoff
 
-> **Current build: v5.5.452** · live: https://possystem-liard.vercel.app · dev: https://dev.serv-os.app · repo: **Serv-OS/possystem** (branch `develop`, Vercel auto-deploys).
+> **Current build: v5.5.468** · live: https://possystem-liard.vercel.app · dev: https://dev.serv-os.app · repo: **Serv-OS/possystem** (branch `develop`, Vercel auto-deploys).
 > Multi-tenant hospitality POS (React 19 + Vite, Zustand, Supabase; no TypeScript, no tests). First customer is UK / GBP.
 > **Pillars:** don't break working functionality · resolve the real `locationId` before any DB write (never `loc-demo`) · CSS vars not hardcoded colours · bump `src/lib/version.js` + add a `CHANGELOG` entry in `src/App.jsx` on every web deploy · money is `numeric`, never float.
 
@@ -53,6 +53,10 @@ Workforce → Tronc now **pulls the real weekly pool from the POS** (card tips +
   - **Payroll** — Staff → "Payroll". Reads closed `wf_payroll_runs`; per-run wages/tips, expandable per-staff breakdown, CSV.
 - **Owner app** (`?mode=owner`): mobile-first PWA. Back-office login → top-down snapshot across every location the owner can access (today net vs forecast, % to forecast, labour %, orders, avg check, tips, live orders + open tables, WTD vs last week, top sellers) in one `owner-snapshot` edge-fn call. Light/dark toggle (shared `rpos-theme`). Real ServOS logo via `ServOSBrand` components. `src/surfaces/OwnerSurface.jsx`.
 
+### 8. (newest) Digital Menu Board (NEW)
+A TV / Android-TV menu-board surface + a Back Office builder (Channels → **Menu boards**). Build a "screen" (a `menu_boards` row): pick categories (**drag to reorder**; mark any **Full width** to make a hero band), set orientation / columns / branding / **marketing mode** (fullscreen image or video, no menu), then Publish. The display (`?mode=menuboard`) **auto-fits to one screen** — columns fill **top-to-bottom** (`column-fill:auto` with an explicit integer column count so overflow is actually detected) and type scales up to fill the height; it never clips, even at large "Text size" (which maps to column count: more columns = bigger type). Shows descriptions, dietary badges, **allergens (comma-separated, on their own line under the description)**, variant sizes (indented with a price gap), and **"Sold out"** from the live 86 system. Live over Realtime on Publish; cache-first so it survives offline.
+**Screen pairing** (NEW): a screen opened with no `?board` self-registers and shows a high-entropy **pairing code**; in Back Office → Channels → Menu boards → **Paired screens**, enter the code + pick a board to assign it (then reassign / unpair / remove, each with an Online / last-seen indicator). The device learns its board over Realtime (+ 20s poll + 60s heartbeat) and renders it live. New **`menu_board_screens`** table with **device-scoped RLS** (a device only sees its own row; BO only its venue's screens) + `SECURITY DEFINER` `claim`/`set`/`heartbeat` RPCs — no cross-tenant code enumeration. Hardened after a 5-agent adversarial RLS review: **~39-bit codes** (8-char unambiguous, was ~17-bit) + a **30-min claim TTL**. `?board=<id>` direct links still work as a manual fallback. Files: `src/surfaces/MenuBoardSurface.jsx`, `src/backoffice/sections/MenuBoards.jsx`; migrations `20260613_menu_boards.sql` + `20260614*_menu_board_screens*.sql`; spec `MENU_BOARD_PLAN.md`.
+
 ### (earlier in this block) Bar-tab card holds, multi-currency (`lib/currency.js`, `locations.currency`), MPOS hardening (86 on modifiers, tax breakdown, customer search), customer-display loyalty + theme.
 
 ---
@@ -87,7 +91,7 @@ Punches are written **server-side** by `supabase/functions/workforce-clock` (DEP
 
 ## Surfaces / modes
 
-`?mode=` → `pos` · `mpos` · `bar` · `tables` · `kds` · `kiosk` · `orders` · `customer-display` · `clock` · **`owner`** (owner snapshot PWA — BO login, no device pairing) · `office` (Back Office) · `admin` (internal Company Admin). Customer web: `/online/:slug`, `/customer/*`, `/gift/*`, `/qr/*`, `/sign/<token>` (Workforce contract e-sign), **`/review`** (Review Manager customer card). Mode is chosen in `ModeSelector` and saved to `rpos-device-mode` (the owner app is URL-bookmarked, not a device tile).
+`?mode=` → `pos` · `mpos` · `bar` · `tables` · `kds` · `kiosk` · `orders` · `customer-display` · `clock` · **`menuboard`** (digital menu board — pairs to a board via a code, or open `?board=<id>` directly) · **`owner`** (owner snapshot PWA — BO login, no device pairing) · `office` (Back Office) · `admin` (internal Company Admin). Customer web: `/online/:slug`, `/customer/*`, `/gift/*`, `/qr/*`, `/sign/<token>` (Workforce contract e-sign), **`/review`** (Review Manager customer card). Mode is chosen in `ModeSelector` and saved to `rpos-device-mode` (the owner app is URL-bookmarked, not a device tile).
 
 ---
 
@@ -98,7 +102,7 @@ Punches are written **server-side** by `supabase/functions/workforce-clock` (DEP
 | Holds | POS operational data + **all edge functions** | orgs, users, loyalty, gift cards |
 | Client | `supabase` (lib/supabase.js) | `platformSupabase` |
 
-**Ops tables:** `menu_items/categories/menus`, `modifier_groups`, `active_sessions`, `closed_checks`, `floor_tables`, `config_pushes`, `stock_levels`, `eighty_six`, `locations`, `device_profiles`, `pos_devices`, `staff_members`, `user_profiles`, `user_locations`, `order_queue`, `tax_rates`, `discount_definitions`, the 18 **`wf_*`** Workforce tables, **`review_*`** (Review Manager incl. `review_settings`, `review_google_tokens`, `review_requests`), **`ryft_payments`** (reconciliation ledger). **Edge functions** (Deno): gift/loyalty/stripe/send-* + `workforce-compute` / `workforce-clock` / `workforce-onboarding` + **`trading-report`** (Daily P&L) + **`owner-snapshot`** (owner app) + **`review-*`** (review-admin/sync/reply/submit/request/google) + **`ryft-*`** / **`payments-*`** (dual-processor payments). All `verify_jwt=false` and enforce their own tenant fence. **Storage:** private `wf-documents` bucket + `receipt-assets` (review card backgrounds). SMS (Twilio) + email (Resend) configured. **Platform env (Ops project) secrets** include `GOOGLE_OAUTH_CLIENT_ID/_SECRET`, `RYFT_SECRET_KEY`, Stripe + Resend keys.
+**Ops tables:** `menu_items/categories/menus`, `modifier_groups`, `active_sessions`, `closed_checks`, `floor_tables`, `config_pushes`, `stock_levels`, `eighty_six`, `locations`, `device_profiles`, `pos_devices`, `staff_members`, `user_profiles`, `user_locations`, `order_queue`, `tax_rates`, `discount_definitions`, the 18 **`wf_*`** Workforce tables, **`review_*`** (Review Manager incl. `review_settings`, `review_google_tokens`, `review_requests`), **`ryft_payments`** (reconciliation ledger), **`menu_boards`** (digital menu-board screens/content) + **`menu_board_screens`** (paired physical TVs; device-scoped RLS + claim/set/heartbeat RPCs). **Edge functions** (Deno): gift/loyalty/stripe/send-* + `workforce-compute` / `workforce-clock` / `workforce-onboarding` + **`trading-report`** (Daily P&L) + **`owner-snapshot`** (owner app) + **`review-*`** (review-admin/sync/reply/submit/request/google) + **`ryft-*`** / **`payments-*`** (dual-processor payments). All `verify_jwt=false` and enforce their own tenant fence. **Storage:** private `wf-documents` bucket + `receipt-assets` (review card backgrounds). SMS (Twilio) + email (Resend) configured. **Platform env (Ops project) secrets** include `GOOGLE_OAUTH_CLIENT_ID/_SECRET`, `RYFT_SECRET_KEY`, Stripe + Resend keys.
 
 ---
 
@@ -117,7 +121,7 @@ Every deploy: bump `src/lib/version.js` + add a top-of-array `CHANGELOG` entry i
 
 ### 🔴 Time-sensitive — don't forget
 1. **Google review-data API approval — PENDING.** Business Profile **v4** access request submitted **13 Jun 2026**, case **`1-2668000040500`**, Google quoted **~7–10 business days** (≈ **24–27 Jun 2026**). Until granted, OAuth/"Connect Google" works but review list/reply calls **403**. **CHECK around 24–27 Jun**: the approval email lands on the submitting account **peter@posup.co.uk** (and/or the support case). When approved → enable the now-ungated "Google My Business API" in the `servos-crm` project; reviews then flow. (Full state: memory `reference_google_review_oauth.md`.)
-2. **Revoke the Supabase PAT** used 13 Jun to deploy `trading-report` — https://supabase.com/dashboard/account/tokens → Revoke (unless more deploys are imminent). Never commit it.
+2. **Revoke the Supabase PAT** used 13 Jun to deploy `trading-report`/`owner-snapshot` and to apply the `menu_board_screens` migrations — https://supabase.com/dashboard/account/tokens → Revoke (unless more deploys are imminent). Lives only in `/tmp/sbtoken`; never commit it.
 
 ### Review Manager / Google — to go fully live
 3. **Consent screen → External + Google verification** of the `business.manage` scope. It's currently **Internal** (serv-os.app Workspace), but the verified Business Profile (**POSUP**) sits on `peter@posup.co.uk` *outside* that org — so even *testing* the Connect flow needs **External + Testing mode + peter@posup.co.uk added as a Test user**. Full verification removes the "unverified app" warning so any external venue can connect.
@@ -131,6 +135,13 @@ Every deploy: bump `src/lib/version.js` + add a top-of-array `CHANGELOG` entry i
 7. Owner app: optional "View on phone" QR in Back Office; deeper drill-downs.
 8. Daily trading: surface a per-day **service charge / tips** line (tracked, not yet shown); CSV export.
 
+### Menu board — built & live; still open
+8a. **Pagination / auto-rotate** for menus too long for one screen, and/or **rotate between multiple boards** on one screen (e.g. food → drinks → promo).
+8b. **Dayparting / scheduling** — auto-switch board by time of day (breakfast → lunch → dinner → marketing at close).
+8c. **Fire TV / Android-TV APK flavor** (`menuboard` product flavor in `android/AUTO_UPDATE_PLAN.md`) + sideload guide, so it runs as a real installed app that boots straight to `?mode=menuboard`. *(The web surface + pairing are done; this is the device packaging.)*
+8d. **Display hardening** — overscan safe-margins, nightly reload, burn-in mitigation for 24/7 screens.
+8e. *(optional)* Rate-limit / lockout on `claim_menu_board_screen` — entropy (~39-bit) + 30-min TTL already make brute-force infeasible; a per-caller throttle is belt-and-braces, deferred.
+
 ### Workforce — still open from the prior block
 9. **Workforce → Dashboard** legacy tiles → wire to live rota/sales.
 10. **"Who's on shift now"** live view + optional clock-in shortcut on the POS PIN screen.
@@ -139,7 +150,7 @@ Every deploy: bump `src/lib/version.js` + add a top-of-array `CHANGELOG` entry i
 
 ### Platform / infra — post-launch (memory `project_post_launch_tasks.md`)
 13. **Apple Pay / Google Pay wallets** on online ordering (`<PaymentElement>` + per-venue Apple Pay domain verification).
-14. Android self-update → production signing/CI (`android/AUTO_UPDATE_PLAN.md`); Menu Board surface.
+14. Android self-update → production signing/CI (`android/AUTO_UPDATE_PLAN.md`). *(Menu Board web surface + pairing now built — see items 8a–8d; the Android `menuboard` flavor is 8c.)*
 15. Multi-currency tail (denomination sets), bar-tab pre-auth refinements, `resolveCompanyForLocation` dedup, code-split bundles, commit `send-sms` source.
 
 ## Ops / secrets note

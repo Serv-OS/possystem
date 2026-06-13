@@ -7,8 +7,8 @@ Multi-tenant, multi-device SaaS **point-of-sale for hospitality**.
 - **Current build:** see `src/lib/version.js`
 
 ## Surfaces
-POS · Back Office · KDS · Bar · Tables · Kiosk · MPOS · Orders Hub · Online Ordering · Customer Portal · Gift Cards · QR Order · AI Assistant
-(each is a mode of the same app, e.g. `?mode=pos`, `?mode=kiosk`, `/online/:slug`)
+POS · Back Office · KDS · Bar · Tables · Kiosk · MPOS · Orders Hub · Time Clock · **Menu Board** · **Owner app** · Online Ordering · Customer Portal · Gift Cards · QR Order · Review card · AI Assistant
+(each is a mode of the same app, e.g. `?mode=pos`, `?mode=kiosk`, `?mode=menuboard`, `?mode=owner`, `/online/:slug`)
 
 ## Stack
 React 19 + Vite (no TypeScript) · Zustand · Supabase (Postgres / Realtime / Storage / Edge Functions) · Stripe (Terminal in-person + Checkout online) · Vercel (frontend) · Android WebView wrapper for Sunmi hardware.

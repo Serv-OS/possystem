@@ -10,7 +10,7 @@
 **RPOS** — Restaurant OS. A multi-tenant, multi-device SaaS POS system for hospitality.
 Live at: https://possystem-liard.vercel.app
 GitHub: Serv-OS/possystem
-Current version: see `src/lib/version.js` (currently v5.5.452)
+Current version: see `src/lib/version.js` (currently v5.5.468)
 Codebase: ~97,000 lines across 246 source files
 
 **Product surfaces:**
@@ -33,6 +33,7 @@ Codebase: ~97,000 lines across 246 source files
 | AI Assistant | `?mode=ai` | Claude-powered shift assistant for staff |
 | Owner App | `?mode=owner` | Mobile owner snapshot — top-down KPIs across all accessible locations (back-office login; URL-bookmarked PWA, not a paired device) |
 | Review card | `/review` | Customer-facing branded review card (Review Manager) |
+| Menu Board | `?mode=menuboard` | Digital menu board for a TV / Android-TV stick. Pairs to a board via a code shown on screen (or open `?board=<id>` directly); auto-fits to one screen and live-updates on publish |
 
 ---
 
@@ -212,7 +213,7 @@ supabase/
 
 **Key Platform DB tables:** `gift_cards`, `gift_card_transactions`, `gift_brand_config`, `loyalty_members`, `loyalty_points_log`, `loyalty_rewards`, `loyalty_stamp_cards`, `user_company_roles`, `companies`
 
-**Key Ops DB tables:** `menu_items`, `menu_categories`, `menus`, `modifier_groups`, `active_sessions`, `closed_checks`, `floor_tables`, `config_pushes`, `stock_levels`, `eighty_six`, `locations`, `device_profiles`, `pos_devices`, `order_queue`, `staff_members`, `user_profiles`, `user_locations`, `discount_definitions`, `tax_rates`
+**Key Ops DB tables:** `menu_items`, `menu_categories`, `menus`, `modifier_groups`, `active_sessions`, `closed_checks`, `floor_tables`, `config_pushes`, `stock_levels`, `eighty_six`, `locations`, `device_profiles`, `pos_devices`, `order_queue`, `staff_members`, `user_profiles`, `user_locations`, `discount_definitions`, `tax_rates`, `menu_boards` (digital menu-board screens/content), `menu_board_screens` (paired physical TVs — device-scoped RLS + `claim`/`set`/`heartbeat` SECURITY DEFINER RPCs)
 
 **Workforce tables (18, prefix `wf_`):** `wf_staff` (HR, org-scoped PII), `wf_roles` (positions/rate card), `wf_sections`, `wf_venue_settings`, `wf_shifts` (rota), `wf_timesheets` (clock vs scheduled), `wf_holiday_accrual` (append-only ledger), `wf_time_off`, `wf_availability`, `wf_tronc_runs` + `wf_tronc_lines`, `wf_documents` (compliance), `wf_sales_forecast`, `wf_user_roles`, `wf_audit` (append-only, hash-chained), `wf_swap_requests`, `wf_onboarding`, `wf_announcements`. Real tenant RLS via `user_accessible_locations()` / `user_accessible_orgs()`. Schema: `supabase/migrations/20260608_workforce.sql`. See Workforce in the Key Feature Systems section.
 
@@ -289,6 +290,11 @@ Sales Summary, Product Mix, Payments, Tax, Tips, Servers, Tables, Menu Engineeri
 ### Time Clock (`?mode=clock`)
 - Dedicated second-tablet surface (`src/surfaces/TimeClockSurface.jsx`): PIN pad → status → Clock in / Start break / End break / Clock out. Pairs to a location like a POS.
 - Punches write **server-side** via `workforce-clock` (validates PIN against `staff_members` for the location — PINs never reach the client; maps to `wf_staff`, auto-creating an HR record if needed; tracks breaks via `wf_timesheets.break_open_at`; snapshots rate; computes hours/pay at clock-out). Feeds Workforce → Timesheets/Pay/Tronc.
+
+### Digital Menu Board (`?mode=menuboard`)
+- TV / Android-TV display surface (`src/surfaces/MenuBoardSurface.jsx`) + Back Office builder (`src/backoffice/sections/MenuBoards.jsx`, Channels → Menu boards). A "screen" is a `menu_boards` row: chosen categories (drag-reorder; `span:'all'` = full-width hero), orientation/columns/branding/marketing-mode, published live.
+- **Auto-fit:** content flows column-by-column (`column-fill:auto`) into an **explicit integer column count** so overflow is reliably detected (NOT `column-width:auto`, which lets Chromium clip silently); the root font binary-searches to fill one screen. "Text size" maps to column count (more columns = larger fill type). Shows descriptions, dietary badges, allergens (comma-separated, under the description), variants (indented), and 86 "Sold out". Cache-first; live via Realtime channel `menuboard:<loc>:<board>`.
+- **Screen pairing** (`menu_board_screens`): no `?board` → the device `ensureAuthToken()`s, self-registers an unclaimed row (`device_uid` default `auth.uid()`), shows a ~39-bit code, subscribes `mbscreen-<id>` + 20s poll + 60s `mb_screen_heartbeat`. Operator pairs by code in BO → `claim_menu_board_screen(code,board)` (validates location access, sets `location_id` from the board, 30-min TTL). Reassign/unpair via `set_menu_board_screen`. **RLS is tight:** a device sees only its own row, BO only its venue's screens, all writes go through the three SECURITY DEFINER RPCs — no cross-tenant code enumeration, no device-written `location_id`.
 
 ---
 
