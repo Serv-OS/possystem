@@ -6,7 +6,7 @@
 // orientation + mode + branding, then Publish (paired screens refresh live).
 // Keys here MUST match MenuBoardSurface.jsx (layout/display_options/theme/marketing).
 
-import { useEffect, useMemo, useState, useCallback } from 'react';
+import { useEffect, useMemo, useState, useCallback, useRef, useLayoutEffect } from 'react';
 import { supabase, isMock, getActiveLocationSync } from '../../lib/supabase';
 import { fetchMenuCategories, fetchMenuItems, fetch86List } from '../../lib/db';
 import { money } from '../../lib/currency';
@@ -17,7 +17,20 @@ const DEF_THEME = { bgColor: '#14110d', textColor: '#F5EFE6', accent: '#E8A23C',
 const DEF_DISP = { showDescription: true, showAllergens: true, showPrices: true, showImages: false, soldOut: 'grey' };
 const newBoard = (n) => ({ name: `Menu board ${n}`, orientation: 'landscape', mode: 'menu', layout: { columns: 'auto', blocks: [] }, display_options: { ...DEF_DISP }, theme: { ...DEF_THEME }, marketing: { mediaUrl: '', mediaType: 'image', fit: 'cover' } });
 
-const itemPrice = (it) => { const p = (it.pricing && it.pricing.base != null) ? it.pricing.base : it.price; return Number(p) || 0; };
+const boardPrice = (it) => {
+  const p = it.pricing;
+  if (p && typeof p === 'object') {
+    for (const k of ['dineIn', 'all', 'base']) if (p[k] != null && Number(p[k]) > 0) return Number(p[k]);
+    if (p.base != null) return Number(p.base) || 0;
+  }
+  return Number(it.price) || 0;
+};
+const DIET = { gf: 'GF', glutenfree: 'GF', 'gluten-free': 'GF', 'gluten free': 'GF', v: 'V', veg: 'V', vegetarian: 'V', vg: 'VG', vegan: 'VG', df: 'DF', dairyfree: 'DF', 'dairy-free': 'DF' };
+const dietaryBadges = (it) => {
+  const out = [], seen = new Set();
+  for (const t of (Array.isArray(it.tags) ? it.tags : [])) { const b = DIET[String(t).toLowerCase().trim()]; if (b && !seen.has(b)) { seen.add(b); out.push(b); } }
+  return out;
+};
 
 export default function MenuBoards() {
   const [locId, setLocId] = useState(null);
@@ -253,6 +266,23 @@ function Preview({ board, cats, itemsByCat, six }) {
   const t = { ...DEF_THEME, ...board.theme };
   const disp = { ...DEF_DISP, ...board.display_options };
   const ar = board.orientation === 'portrait' ? '9 / 16' : '16 / 9';
+  const areaRef = useRef(null), flowRef = useRef(null);
+
+  const blocks = board.layout?.blocks || [];
+  const secs = blocks.map(b => ({ id: b.categoryId, label: cats.find(c => c.id === b.categoryId)?.label, items: itemsByCat[b.categoryId] || [] })).filter(s => s.label);
+  let cols = Number(board.layout?.columns) || 0;
+  if (!cols) { const C = secs.length, T = secs.reduce((n, s) => n + s.items.length, 0); cols = board.orientation === 'portrait' ? (C <= 3 ? 1 : 2) : (C <= 2 ? Math.max(1, Math.min(C, 2)) : T <= 10 ? 2 : T <= 28 ? 3 : 4); }
+  cols = Math.max(1, Math.min(cols, Math.max(1, secs.length)));
+
+  // mini auto-fit: shrink the flowing content until it fits the preview box
+  useLayoutEffect(() => {
+    const area = areaRef.current, flow = flowRef.current;
+    if (!area || !flow) return;
+    let s = 13, g = 0; flow.style.fontSize = s + 'px';
+    const fits = () => flow.scrollHeight <= area.clientHeight + 1;
+    while (!fits() && s > 4 && g++ < 90) { s -= 0.5; flow.style.fontSize = s + 'px'; }
+  });
+
   if (board.mode === 'marketing') {
     return <div style={{ aspectRatio: ar, background: '#000', borderRadius: 10, border: '4px solid #060504', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#888', fontSize: 12, overflow: 'hidden' }}>
       {board.marketing?.mediaUrl ? (board.marketing.mediaType === 'video'
@@ -261,42 +291,32 @@ function Preview({ board, cats, itemsByCat, six }) {
       : 'Marketing media'}
     </div>;
   }
-  const blocks = board.layout?.blocks || [];
-  const secs = blocks.map(b => ({ id: b.categoryId, label: cats.find(c => c.id === b.categoryId)?.label, items: itemsByCat[b.categoryId] || [] })).filter(s => s.label);
-  let cols = Number(board.layout?.columns) || 0;
-  if (!cols) { const C = secs.length, T = secs.reduce((n, s) => n + s.items.length, 0); cols = board.orientation === 'portrait' ? (C <= 3 ? 1 : 2) : (C <= 2 ? Math.min(C, 2) : T <= 10 ? 2 : T <= 24 ? 3 : 4); }
-  cols = Math.max(1, Math.min(cols, Math.max(1, secs.length)));
-  const columns = Array.from({ length: cols }, () => []); const h = new Array(cols).fill(0);
-  for (const s of secs) { const c = h.indexOf(Math.min(...h)); columns[c].push(s); h[c] += 1.7 + s.items.length; }
   return (
     <div style={{ aspectRatio: ar, background: t.bgColor, color: t.textColor, borderRadius: 10, border: '4px solid #060504', padding: '10px 12px', overflow: 'hidden', fontFamily: t.font || 'inherit', position: 'relative' }}>
       {t.bgImageUrl && <><div style={{ position: 'absolute', inset: 0, backgroundImage: `url(${t.bgImageUrl})`, backgroundSize: 'cover', backgroundPosition: 'center' }} /><div style={{ position: 'absolute', inset: 0, background: t.bgColor, opacity: 0.72 }} /></>}
       <div style={{ position: 'relative', height: '100%', display: 'flex', flexDirection: 'column' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: `2px solid ${t.accent}`, paddingBottom: 4, marginBottom: 7 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: `2px solid ${t.accent}`, paddingBottom: 4, marginBottom: 7, flex: '0 0 auto' }}>
           {t.logoUrl ? <img src={t.logoUrl} alt="" style={{ height: 16, objectFit: 'contain' }} /> : <span style={{ fontSize: 11, fontWeight: 700 }}>{board.name || 'Menu'}</span>}
           <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#3BD16F' }} />
         </div>
         {secs.length === 0
           ? <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#8a8276', fontSize: 11 }}>Add categories to preview</div>
-          : <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'grid', gridTemplateColumns: `repeat(${cols},1fr)`, gap: 10 }}>
-              {columns.map((col, ci) => (
-                <div key={ci} style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
-                  {col.map(sec => (
-                    <div key={sec.id}>
-                      <div style={{ fontSize: 9, letterSpacing: '.1em', color: t.accent, marginBottom: 3, textTransform: 'uppercase' }}>{sec.label}</div>
-                      {sec.items.slice(0, 5).map(it => {
-                        const sold = six.has(it.id);
-                        return <div key={it.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 6, marginBottom: 2, opacity: sold ? 0.45 : 1 }}>
-                          <span style={{ fontSize: 8.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{it.menu_name || it.name}</span>
-                          {sold ? <span style={{ fontSize: 7, color: '#f3b0b0' }}>SOLD OUT</span>
-                            : disp.showPrices && <span style={{ fontSize: 8, background: t.accent, color: '#1c1206', borderRadius: 6, padding: '0 4px' }}>{money(itemPrice(it))}</span>}
-                        </div>;
-                      })}
-                      {sec.items.length > 5 && <div style={{ fontSize: 7.5, color: '#8a8276' }}>+{sec.items.length - 5} more</div>}
-                    </div>
-                  ))}
-                </div>
-              ))}
+          : <div ref={areaRef} style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+              <div ref={flowRef} style={{ columnCount: cols, columnGap: 12, columnFill: 'balance', fontSize: 13 }}>
+                {secs.map(sec => (
+                  <div key={sec.id} style={{ marginBottom: '0.9em', breakInside: 'auto' }}>
+                    <div style={{ fontSize: '0.72em', letterSpacing: '.1em', color: t.accent, marginBottom: '0.35em', textTransform: 'uppercase', fontWeight: 700, breakAfter: 'avoid', WebkitColumnBreakAfter: 'avoid' }}>{sec.label}</div>
+                    {sec.items.map(it => {
+                      const sold = six.has(it.id), price = boardPrice(it), diet = dietaryBadges(it);
+                      return <div key={it.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 6, marginBottom: '0.28em', opacity: sold ? 0.45 : 1, breakInside: 'avoid', WebkitColumnBreakInside: 'avoid' }}>
+                        <span style={{ fontSize: '0.6em', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.menu_name || it.name}{diet.map(d => <span key={d} style={{ color: '#7fd99a', marginLeft: 4, fontWeight: 700 }}>{d}</span>)}</span>
+                        {sold ? <span style={{ fontSize: '0.5em', color: '#f3b0b0', flexShrink: 0 }}>SOLD OUT</span>
+                          : disp.showPrices && price > 0 && <span style={{ fontSize: '0.56em', background: t.accent, color: '#1c1206', borderRadius: 6, padding: '0 5px', flexShrink: 0, alignSelf: 'flex-start' }}>{money(price)}</span>}
+                      </div>;
+                    })}
+                  </div>
+                ))}
+              </div>
             </div>}
       </div>
     </div>

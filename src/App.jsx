@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.455', date: '13 Jun 2026', label: 'Menu board — dynamic layout + real prices',
+    changes: [
+      'The menu board now flows like a real printed menu: EVERY item shows (no more “+N more”), categories flow and balance across columns newspaper-style instead of rigid boxes, and the whole board auto-scales to fill one screen at any density. The Back Office preview mirrors it exactly.',
+      'Prices fixed — items priced per order type (e.g. drinks) now show their real dine-in price instead of £0.00. Added GF / V / VG dietary badges and full allergen tags per item.',
+    ],
+  },
+  {
     version: '5.5.454', date: '13 Jun 2026', label: 'Menu board builder in Back Office',
     changes: [
       'Back Office → Channels → Menu boards: create and manage the screens shown on your menu-board TVs. Add a screen, pick which categories it shows and reorder them, set columns/orientation, choose what shows per item (descriptions, allergens, prices), set sold-out behaviour, and brand it (background image, logo, colours, font, footer). A live preview mirrors the real display. Hit Publish and paired screens refresh.',
