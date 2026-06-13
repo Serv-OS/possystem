@@ -83,6 +83,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.445', date: '12 Jun 2026', label: 'Review Manager — upload a background + smarter card',
+    changes: [
+      'You can now upload a background image for the review card (Reviews → Your card → Look). It sits behind the card with a subtle dark overlay so the content stays readable — turning the page into a proper branded portal. Plus a button-style choice (dark or your brand colour). The live preview updates instantly.',
+    ],
+  },
+  {
     version: '5.5.444', date: '12 Jun 2026', label: 'Review Manager — one-click Google connection',
     changes: [
       'Connect Google in one click: Back Office → Reviews → Settings → Google → “Connect Google”. The venue manager signs in, picks their Business Profile location, and from then on Google reviews sync into the Approvals queue and your approved replies post straight back to Google — no IDs to copy, no per-venue technical setup.',

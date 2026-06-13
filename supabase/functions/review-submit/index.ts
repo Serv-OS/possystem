@@ -53,7 +53,7 @@ Deno.serve(async (req) => {
     const loc = await resolveLocation(String(body.platform_location_id ?? '').trim());
     if (!loc) return json({ error: 'location not found' }, 404);
     const { data: cfg } = await opsAdmin.from('review_settings')
-      .select('enabled, threshold, page_title, intro_copy, thanks_public_copy, thanks_private_copy, custom_copy')
+      .select('enabled, threshold, page_title, intro_copy, thanks_public_copy, thanks_private_copy, custom_copy, hero_image_url, card_button_style')
       .eq('location_id', loc.opsLocationId).maybeSingle();
     return json({
       enabled: cfg?.enabled ?? true,
@@ -61,6 +61,8 @@ Deno.serve(async (req) => {
       intro_copy: cfg?.intro_copy ?? null,
       thanks_public_copy: cfg?.thanks_public_copy ?? null,
       thanks_private_copy: cfg?.thanks_private_copy ?? null,
+      hero_image_url: cfg?.hero_image_url ?? null,
+      card_button_style: cfg?.card_button_style ?? 'dark',
       custom_copy: cfg?.custom_copy ?? {},
     });
   }

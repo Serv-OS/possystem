@@ -89,14 +89,19 @@ export default function ReviewSurface({ location }) {
     }
   };
 
+  const heroBg = cfg?.hero_image_url || null;
+  const btnBg = cfg?.card_button_style === 'accent' ? accent : '#1f1f24';
+  const pageStyle = heroBg
+    ? { ...S.page, background: `linear-gradient(rgba(15,15,20,.5), rgba(15,15,20,.62)), url("${heroBg}")`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundAttachment: 'fixed' }
+    : S.page;
   return (
-    <div style={S.page}>
+    <div style={pageStyle}>
       <div style={S.card}>
-        {/* Brand hero */}
-        <div style={{ ...S.hero, background: `linear-gradient(135deg, ${accent}14, ${accent}05)` }}>
+        {/* Brand hero — show the venue's background image if set, else a soft brand tint */}
+        <div style={{ ...S.hero, ...(heroBg ? { backgroundImage: `linear-gradient(rgba(0,0,0,.32), rgba(0,0,0,.42)), url("${heroBg}")`, backgroundSize: 'cover', backgroundPosition: 'center', minHeight: 120 } : { background: `linear-gradient(135deg, ${accent}14, ${accent}05)` }) }}>
           {logo
             ? <img src={logo} alt={venueName} style={{ maxHeight: 56, maxWidth: '70%', objectFit: 'contain' }} />
-            : <div style={{ ...S.logoBox, borderColor: `${accent}55`, color: accent }}>{venueName}</div>}
+            : <div style={{ ...S.logoBox, borderColor: heroBg ? 'rgba(255,255,255,.7)' : `${accent}55`, color: heroBg ? '#fff' : accent }}>{venueName}</div>}
         </div>
 
         <div style={{ padding: '24px 22px 28px' }}>
@@ -125,7 +130,7 @@ export default function ReviewSurface({ location }) {
 
               {error && <div style={S.err}>{error}</div>}
 
-              <button onClick={submit} disabled={phase === 'sending'} style={S.sendBtn}>
+              <button onClick={submit} disabled={phase === 'sending'} style={{ ...S.sendBtn, background: btnBg }}>
                 {phase === 'sending' ? 'Sending…' : 'Send →'}
               </button>
             </>
@@ -143,7 +148,7 @@ export default function ReviewSurface({ location }) {
                   <input value={phone} onChange={(e) => setPhone(e.target.value)} type="tel" placeholder="Phone (optional)" style={S.input} />
                 </div>
                 {error && <div style={S.err}>{error}</div>}
-                <button onClick={sendPrivate} disabled={savingContact} style={S.sendBtn}>
+                <button onClick={sendPrivate} disabled={savingContact} style={{ ...S.sendBtn, background: btnBg }}>
                   {savingContact ? 'Sending…' : 'Send to the manager'}
                 </button>
                 {result?.google_review_url && (
@@ -159,7 +164,7 @@ export default function ReviewSurface({ location }) {
                 <h1 style={S.h1}>{cfg?.thanks_public_copy || 'Thanks — that means a lot!'}</h1>
                 <p style={S.sub}>If you’ve got a moment, would you share it on Google? It only takes a tap and really helps {venueName}.</p>
                 {result?.google_review_url
-                  ? <a href={result.google_review_url} target="_blank" rel="noopener noreferrer" style={S.googleBtn}><span style={S.gG}>G</span>&nbsp; Post my review on Google</a>
+                  ? <a href={result.google_review_url} target="_blank" rel="noopener noreferrer" style={{ ...S.googleBtn, background: btnBg }}><span style={S.gG}>G</span>&nbsp; Post my review on Google</a>
                   : <p style={{ fontSize: 13, color: '#9a9aa2' }}>Thanks again — we really appreciate it!</p>}
               </div>
             )

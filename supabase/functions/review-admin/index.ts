@@ -19,7 +19,7 @@ const opsAdmin = createClient(Deno.env.get('SUPABASE_URL') ?? '', SERVICE_ROLE, 
 const platformAdmin = createClient(Deno.env.get('PLATFORM_SUPABASE_URL') ?? '', Deno.env.get('PLATFORM_SUPABASE_SERVICE_ROLE_KEY') ?? '', { auth: { autoRefreshToken: false, persistSession: false } });
 
 // Fields the Settings screen may write to review_settings (whitelist).
-const SETTINGS_FIELDS = ['enabled', 'threshold', 'page_title', 'intro_copy', 'thanks_public_copy', 'thanks_private_copy', 'ai_auto_draft', 'ai_auto_send_hours', 'brand_voice', 'custom_copy', 'ask_enabled', 'ask_channel', 'ask_delay_minutes', 'ask_delay_collection_minutes', 'ask_window_start', 'ask_window_end', 'ask_frequency_days', 'ask_message'];
+const SETTINGS_FIELDS = ['enabled', 'threshold', 'page_title', 'intro_copy', 'thanks_public_copy', 'thanks_private_copy', 'hero_image_url', 'card_button_style', 'ai_auto_draft', 'ai_auto_send_hours', 'brand_voice', 'custom_copy', 'ask_enabled', 'ask_channel', 'ask_delay_minutes', 'ask_delay_collection_minutes', 'ask_window_start', 'ask_window_end', 'ask_frequency_days', 'ask_message'];
 
 async function authed(req: Request, opsLocationId: string): Promise<boolean> {
   const token = (req.headers.get('Authorization') ?? '').replace('Bearer ', '').trim();

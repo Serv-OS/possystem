@@ -13,12 +13,24 @@ import { customerUrl } from '../../../lib/env';
 import QRCode from 'qrcode';
 
 const FALLBACK_ACCENT = '#5a51c2';
+const ASSET_BUCKET = 'receipt-assets';   // shared image bucket (same as online/receipt assets)
 const DEFAULTS = {
   page_title: 'How was your visit?',
   intro_copy: 'We’d love to hear how we did — it only takes a few seconds.',
   thanks_public_copy: 'Thanks — that means a lot!',
   thanks_private_copy: 'Sorry we missed the mark.',
+  hero_image_url: '',
+  card_button_style: 'dark',
 };
+
+async function uploadBackground(file, opsId) {
+  const ext = (file.name.split('.').pop() || 'jpg').toLowerCase();
+  const path = `locations/${opsId}/review/background.${ext}`;
+  const { error } = await supabase.storage.from(ASSET_BUCKET).upload(path, file, { upsert: true, contentType: file.type });
+  if (error) throw error;
+  const { data } = supabase.storage.from(ASSET_BUCKET).getPublicUrl(path);
+  return `${data.publicUrl}?t=${Date.now()}`;   // cache-bust on replace
+}
 
 const S = {
   h1:    { fontSize: 22, fontWeight: 800, color: 'var(--t1)', margin: 0, letterSpacing: '-.01em' },
@@ -49,6 +61,7 @@ export default function ReviewCard() {
   const [preview, setPreview] = useState('rate');   // rate | happy | private
   const [qr, setQr] = useState(null);
   const [copied, setCopied] = useState(false);
+  const [bgBusy, setBgBusy] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -72,6 +85,8 @@ export default function ReviewCard() {
           intro_copy: s.intro_copy || DEFAULTS.intro_copy,
           thanks_public_copy: s.thanks_public_copy || DEFAULTS.thanks_public_copy,
           thanks_private_copy: s.thanks_private_copy || DEFAULTS.thanks_private_copy,
+          hero_image_url: s.hero_image_url || '',
+          card_button_style: s.card_button_style || 'dark',
         });
       } catch { /* leave defaults */ }
       finally { setLoading(false); }
@@ -100,6 +115,22 @@ export default function ReviewCard() {
   };
 
   const copyLink = async () => { try { await navigator.clipboard.writeText(reviewUrl); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch {} };
+
+  // Look changes (background, button style) save immediately so the preview + the
+  // live card stay in sync without a separate Save click.
+  const persist = async (patch) => {
+    const next = { ...copy, ...patch };
+    setCopy(next);
+    try { await supabase.functions.invoke('review-admin', { body: { action: 'save_settings', ops_location_id: locId, settings: next } }); }
+    catch (e) { setSave({ err: e.message || 'Save failed' }); }
+  };
+  const onBgFile = async (e) => {
+    const file = e.target.files?.[0]; if (!file) return;
+    setBgBusy(true); setSave({});
+    try { const url = await uploadBackground(file, locId); await persist({ hero_image_url: url }); }
+    catch (err) { setSave({ err: err.message || 'Upload failed' }); }
+    finally { setBgBusy(false); }
+  };
 
   if (loading) return <div style={S.empty}>Loading…</div>;
   if (!supabase || !locId) return <div style={S.empty}>{!locId ? 'Pick a location to manage its review card.' : 'Mock mode — connect Supabase to manage the review card.'}</div>;
@@ -130,6 +161,31 @@ export default function ReviewCard() {
               {save.err && <span style={S.err}>{save.err}</span>}
             </div>
             <div style={S.hint}>Logo &amp; colours come from this venue’s brand kit (Settings → Location → branding).</div>
+          </div>
+
+          <div style={S.card}>
+            <h2 style={S.h2}>Look</h2>
+            <div style={S.field}>
+              <label style={S.label}>Background image</label>
+              {copy.hero_image_url ? (
+                <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+                  <img src={copy.hero_image_url} alt="Background" style={{ width: 96, height: 60, objectFit: 'cover', borderRadius: 8, border: '1px solid var(--bdr)' }} />
+                  <label style={{ ...S.ghost, display: 'inline-block' }}>{bgBusy ? 'Uploading…' : 'Replace'}<input type="file" accept="image/*" onChange={onBgFile} style={{ display: 'none' }} /></label>
+                  <button style={S.ghost} onClick={() => persist({ hero_image_url: '' })}>Remove</button>
+                </div>
+              ) : (
+                <label style={{ ...S.ghost, display: 'inline-block' }}>{bgBusy ? 'Uploading…' : 'Upload background'}<input type="file" accept="image/*" onChange={onBgFile} style={{ display: 'none' }} /></label>
+              )}
+              <div style={S.hint}>A photo of your venue/food works well. It sits behind the card with a subtle dark overlay for legibility. JPG or PNG.</div>
+            </div>
+            <div style={S.field}>
+              <label style={S.label}>Button style</label>
+              <div style={{ display: 'flex', gap: 8 }}>
+                {[['dark', 'Dark'], ['accent', 'Brand colour']].map(([k, l]) =>
+                  <button key={k} onClick={() => persist({ card_button_style: k })}
+                    style={{ padding: '8px 14px', borderRadius: 8, border: '1px solid var(--bdr2)', cursor: 'pointer', fontSize: 13, fontWeight: 700, fontFamily: 'inherit', background: copy.card_button_style === k ? 'var(--acc)' : 'var(--bg2)', color: copy.card_button_style === k ? '#0b0c10' : 'var(--t2)' }}>{l}</button>)}
+              </div>
+            </div>
           </div>
 
           <div style={S.card}>
@@ -169,16 +225,24 @@ export default function ReviewCard() {
 
 // Faithful mini-render of ReviewSurface (the customer card).
 function Phone({ accent, logo, venue, copy, state }) {
+  const bg = copy.hero_image_url || null;
+  const btnBg = copy.card_button_style === 'accent' ? accent : '#1f1f24';
+  const heroBgStyle = bg
+    ? { backgroundImage: `linear-gradient(rgba(0,0,0,.32), rgba(0,0,0,.42)), url("${bg}")`, backgroundSize: 'cover', backgroundPosition: 'center', minHeight: 84 }
+    : { background: `linear-gradient(135deg, ${accent}14, ${accent}05)` };
+  const screenBg = bg
+    ? { background: `linear-gradient(rgba(15,15,20,.5), rgba(15,15,20,.62)), url("${bg}") center/cover` }
+    : { background: '#e9e9ec' };
   const P = {
     frame: { width: 280, margin: '0 auto', background: '#0e0e10', borderRadius: 30, padding: 9 },
-    screen:{ background: '#e9e9ec', borderRadius: 22, padding: 14, fontFamily: '"Hanken Grotesk",system-ui,sans-serif' },
+    screen:{ ...screenBg, borderRadius: 22, padding: 14, fontFamily: '"Hanken Grotesk",system-ui,sans-serif' },
     cardEl:{ background: '#fff', borderRadius: 20, overflow: 'hidden' },
-    hero:  { padding: '20px 14px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: `linear-gradient(135deg, ${accent}14, ${accent}05)` },
-    logo:  { border: `1.5px dashed ${accent}66`, borderRadius: 9, padding: '8px 14px', fontSize: 13, fontWeight: 800, color: accent },
+    hero:  { padding: '20px 14px', display: 'flex', alignItems: 'center', justifyContent: 'center', ...heroBgStyle },
+    logo:  { border: `1.5px dashed ${bg ? 'rgba(255,255,255,.7)' : `${accent}66`}`, borderRadius: 9, padding: '8px 14px', fontSize: 13, fontWeight: 800, color: bg ? '#fff' : accent },
     body:  { padding: '16px 15px 18px' },
     title: { fontSize: 16, fontWeight: 800, color: '#1f1f24', letterSpacing: '-.02em', margin: '0 0 5px' },
     sub:   { fontSize: 11.5, color: '#56565e', lineHeight: 1.4, margin: '0 0 12px' },
-    dark:  { background: '#1f1f24', color: '#fff', borderRadius: 9, padding: 10, textAlign: 'center', fontSize: 13, fontWeight: 700 },
+    dark:  { background: btnBg, color: '#fff', borderRadius: 9, padding: 10, textAlign: 'center', fontSize: 13, fontWeight: 700 },
     field: { border: '1px solid #ececef', borderRadius: 9, background: '#fafafb', padding: '8px 10px', fontSize: 11, color: '#9a9aa2' },
   };
   return (
