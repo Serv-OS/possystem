@@ -22,6 +22,7 @@ import TablesSurface from './surfaces/TablesSurface';
 import { KDSSurface } from './surfaces/OtherSurfaces';
 import MPOSSurface from './surfaces/MPOSSurface';
 import TimeClockSurface from './surfaces/TimeClockSurface';
+import OwnerSurface from './surfaces/OwnerSurface';
 import OnboardingSignSurface from './surfaces/OnboardingSignSurface';
 import RyftTestSurface from './surfaces/RyftTestSurface';
 import CustomerBoot from './surfaces/CustomerBoot';
@@ -82,6 +83,13 @@ import { ServOSIcon } from './components/ServOSBrand';
 import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
+  {
+    version: '5.5.448', date: '12 Jun 2026', label: 'Owner app — your whole business on your phone',
+    changes: [
+      'New owner snapshot app at ?mode=owner — bookmark it on your phone and add to home screen. Sign in with your back-office login and see a top-down view of every venue you manage: today’s net sales vs forecast, % to forecast, labour %, orders, avg check, tips, live orders + tables on the floor, week-to-date vs last week, and today’s top sellers — all in one screen.',
+      'When you run more than one site it leads with a combined “all venues today” rollup, then a card per venue. Read-only, refreshes itself, and powered by a single owner-snapshot call (locations fenced to what your account can access).',
+    ],
+  },
   {
     version: '5.5.447', date: '12 Jun 2026', label: 'Payroll in Reports',
     changes: [
@@ -6154,6 +6162,10 @@ export default function App() {
   // its target via ?till=<deviceId> or this device's own pairing; self-contained
   // (no SyncBridge — it only subscribes to the display broadcast).
   if (deviceMode === 'customer-display') return <CustomerDisplaySurface />;
+
+  // Owner snapshot — mobile-first, self-contained (own BO login + owner-snapshot
+  // edge fn). Read-only top-down view across every venue the owner can access.
+  if (deviceMode === 'owner') return <OwnerSurface />;
 
   // Back office mode — go to email login (no pairing needed)
   if (deviceMode === 'backoffice' || deviceMode === 'office') return <><SyncBridge onSyncPulse={handleSyncPulse}/><BackOfficeApp /></>;
