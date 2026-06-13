@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.456', date: '13 Jun 2026', label: 'Menu board — connect a specific screen',
+    changes: [
+      'Each menu board screen now has its own link. In Back Office → Channels → Menu boards, hit “Copy screen link” on a screen and open that link on the TV / Android stick (or set it as the stick’s home page) — that display shows that exact menu. Different sticks can show different screens.',
+      'The link carries the venue, so a stick pointed at a screen link needs no pairing; it just shows the menu and refreshes live on publish. (A pair-and-assign-from-Back-Office flow is still coming for fleets.)',
+    ],
+  },
+  {
     version: '5.5.455', date: '13 Jun 2026', label: 'Menu board — dynamic layout + real prices',
     changes: [
       'The menu board now flows like a real printed menu: EVERY item shows (no more “+N more”), categories flow and balance across columns newspaper-style instead of rigid boxes, and the whole board auto-scales to fill one screen at any density. The Back Office preview mirrors it exactly.',

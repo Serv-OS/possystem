@@ -11,7 +11,7 @@
 // offline cache. Builder, drag-arrange, pagination, dayparting come later
 // (see MENU_BOARD_PLAN.md).
 
-import { useEffect, useState, useRef, useLayoutEffect, useCallback } from 'react';
+import { useEffect, useState, useRef, useLayoutEffect, useCallback, useMemo } from 'react';
 import { supabase, isMock, getActiveLocationSync } from '../lib/supabase';
 import { fetchMenuCategories, fetchMenuItems, fetch86List } from '../lib/db';
 import { money } from '../lib/currency';
@@ -19,7 +19,7 @@ import { money } from '../lib/currency';
 const DEFAULT_THEME = { bgColor: '#14110d', textColor: '#F5EFE6', mutedColor: '#B8AE9E', accent: '#E8A23C', font: '', footerNote: '', logoUrl: null, bgImageUrl: null };
 const DEFAULT_DISPLAY = { showDescription: true, showAllergens: true, showPrices: true, showImages: false, soldOut: 'grey' };
 const FIT = { base: 30, min: 11, max: 48 };          // px; the fit-loop lands somewhere in here
-const cacheKey = (loc) => `rpos-mb-${loc}`;
+const cacheKey = (loc, b) => `rpos-mb-${loc}-${b || 'def'}`;
 
 // Board price: prefer the dine-in price, then any-channel, then base, then legacy scalar.
 const boardPrice = (it) => {
@@ -42,33 +42,42 @@ const dietaryBadges = (it) => {
 const visibleItem = (it) => !it.archived && (!it.visibility || it.visibility.kiosk !== false);
 
 export default function MenuBoardSurface() {
+  // A screen is addressed by ?board=<id> — point a stick straight at one screen.
+  const boardId = useMemo(() => { try { return new URLSearchParams(window.location.search).get('board'); } catch { return null; } }, []);
   const [locId, setLocId] = useState(null);
   const [resolving, setResolving] = useState(true);
   const [data, setData] = useState(null);   // { board, cats:[], items:[], six:Set }
   const reloadTimer = useRef(null);
 
-  // ── resolve location (retry a few times like the other paired surfaces) ──
+  // ── resolve the location. With ?board=<id> the board itself carries the
+  // location (no pairing needed). Otherwise use the paired/active location. ──
   useEffect(() => {
     let alive = true, tries = 0;
-    const tick = () => {
-      if (!alive) return;
-      const id = getActiveLocationSync();
-      if (id && id !== 'loc-demo') { setLocId(id); setResolving(false); return; }
-      if (++tries > 8) { setResolving(false); return; }
-      setTimeout(tick, 1500);
-    };
-    tick();
+    (async () => {
+      if (boardId && !isMock && supabase) {
+        const { data: b } = await supabase.from('menu_boards').select('location_id').eq('id', boardId).maybeSingle();
+        if (alive && b?.location_id) { setLocId(b.location_id); setResolving(false); return; }
+      }
+      const tick = () => {
+        if (!alive) return;
+        const id = getActiveLocationSync();
+        if (id && id !== 'loc-demo') { setLocId(id); setResolving(false); return; }
+        if (++tries > 8) { setResolving(false); return; }
+        setTimeout(tick, 1500);
+      };
+      tick();
+    })();
     return () => { alive = false; };
-  }, []);
+  }, [boardId]);
 
   const load = useCallback(async (id) => {
     if (isMock || !supabase || !id) return;
     try {
+      const boardQ = boardId
+        ? supabase.from('menu_boards').select('*').eq('id', boardId).maybeSingle()
+        : supabase.from('menu_boards').select('*').eq('location_id', id).order('created_at').limit(1).maybeSingle();
       const [boardRes, catsRes, itemsRes, sixRes] = await Promise.all([
-        supabase.from('menu_boards').select('*').eq('location_id', id).order('created_at').limit(1).maybeSingle(),
-        fetchMenuCategories(id),
-        fetchMenuItems(id),
-        fetch86List(id),
+        boardQ, fetchMenuCategories(id), fetchMenuItems(id), fetch86List(id),
       ]);
       const next = {
         board: boardRes?.data || null,
@@ -77,29 +86,29 @@ export default function MenuBoardSurface() {
         six: new Set((sixRes?.data || []).map((r) => r.item_id)),
       };
       setData(next);
-      try { localStorage.setItem(cacheKey(id), JSON.stringify({ ...next, six: [...next.six] })); } catch {}
+      try { localStorage.setItem(cacheKey(id, boardId), JSON.stringify({ ...next, six: [...next.six] })); } catch {}
     } catch (e) { console.warn('[menuboard] load', e?.message); }
-  }, []);
+  }, [boardId]);
 
   // boot: render cache instantly, then refresh + subscribe
   useEffect(() => {
     if (!locId) return;
     try {
-      const c = JSON.parse(localStorage.getItem(cacheKey(locId)) || 'null');
+      const c = JSON.parse(localStorage.getItem(cacheKey(locId, boardId)) || 'null');
       if (c) setData({ ...c, six: new Set(c.six || []) });
     } catch {}
     load(locId);
 
     if (isMock || !supabase) return;
     const reload = () => { clearTimeout(reloadTimer.current); reloadTimer.current = setTimeout(() => load(locId), 400); };
-    const ch = supabase.channel(`menuboard:${locId}`)
+    const ch = supabase.channel(`menuboard:${locId}:${boardId || 'def'}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'eighty_six', filter: `location_id=eq.${locId}` }, reload)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'menu_items', filter: `location_id=eq.${locId}` }, reload)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'menu_boards', filter: `location_id=eq.${locId}` }, reload)
       .subscribe();
     const poll = setInterval(() => load(locId), 90000);   // safety net for missed events / long uptime
     return () => { supabase.removeChannel(ch); clearInterval(poll); clearTimeout(reloadTimer.current); };
-  }, [locId, load]);
+  }, [locId, load, boardId]);
 
   if (resolving && !data) return <Splash text="Starting menu board…" />;
   if (!locId) return <Splash text="Pair this screen" sub="Open the device pairing screen to link this display to a venue." />;

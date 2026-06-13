@@ -42,6 +42,7 @@ export default function MenuBoards() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState('');
   const [err, setErr] = useState('');
+  const [copied, setCopied] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true); setErr('');
@@ -99,6 +100,12 @@ export default function MenuBoards() {
     await load();
   };
 
+  const screenUrl = (id) => `${window.location.origin}/?mode=menuboard&board=${id}`;
+  const copyLink = async (id) => {
+    try { await navigator.clipboard.writeText(screenUrl(id)); } catch {}
+    setCopied(id); setTimeout(() => setCopied(c => (c === id ? '' : c)), 1800);
+  };
+
   const upload = async (file, kind) => {
     if (!file || !locId) return null;
     setBusy('upload-' + kind);
@@ -124,7 +131,7 @@ export default function MenuBoards() {
 
   return (
     <div style={{ maxWidth: 1100 }}>
-      <Head title="Menu boards" sub="Screens shown on a TV / Android stick (?mode=menuboard). Pick a screen’s categories, arrange the layout, then publish — paired displays refresh live." />
+      <Head title="Menu boards" sub="Screens shown on a TV / Android stick. Build a screen, then use “Copy screen link” and open that link on the TV (or set it as the stick’s home page) — that display shows that menu and refreshes live when you publish." />
       {err && <div style={S.errBar}>{err}</div>}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginTop: 14 }}>
         {screens.map(b => (
@@ -136,7 +143,8 @@ export default function MenuBoards() {
             <div style={{ fontSize: 11, color: b.published_at ? 'var(--grn)' : 'var(--t4)', marginTop: 6 }}>
               {b.published_at ? `Published ${new Date(b.published_at).toLocaleDateString('en-GB')}` : 'Not published'}
             </div>
-            <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <button style={{ ...S.btn, width: '100%', marginTop: 12 }} onClick={() => copyLink(b.id)}>{copied === b.id ? '✓ Link copied' : 'Copy screen link'}</button>
+            <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
               <button style={S.btn} onClick={() => setEditing({ ...newBoard(1), ...b, layout: { ...newBoard(1).layout, ...b.layout }, display_options: { ...DEF_DISP, ...b.display_options }, theme: { ...DEF_THEME, ...b.theme }, marketing: { ...newBoard(1).marketing, ...b.marketing } })}>Edit</button>
               <button style={S.btnGhost} onClick={() => del(b.id)}>Delete</button>
             </div>
