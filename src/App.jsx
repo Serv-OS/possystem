@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.461', date: '13 Jun 2026', label: 'Menu board — drag to arrange + full-width heroes',
+    changes: [
+      'Categories on a screen can now be dragged to reorder (grab the ⠿ handle) instead of the ↑/↓ buttons — the “actually move things” feel.',
+      'New per-category “Full width” toggle makes a category span the whole board as a hero band; the rest auto-balance into columns around it. Carries through to the live board and the preview.',
+    ],
+  },
+  {
     version: '5.5.460', date: '13 Jun 2026', label: 'Menu board — hide price-less items',
     changes: [
       'New per-screen toggle “Hide items with no price” — filters out options like “No Ice / No Lemon” that have no price and no sizes, so the board only shows real sellable products. Off by default.',

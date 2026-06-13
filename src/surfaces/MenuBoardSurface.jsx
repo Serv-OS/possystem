@@ -225,7 +225,7 @@ function Board({ data }) {
 function Section({ sec, theme, disp, six }) {
   const { cat, items } = sec;
   return (
-    <div style={{ marginBottom: '1em', breakInside: 'auto' }}>
+    <div style={{ marginBottom: '1em', breakInside: 'auto', ...(sec.span === 'all' ? { columnSpan: 'all', WebkitColumnSpan: 'all' } : null) }}>
       <div style={{ fontSize: '0.62em', fontWeight: 600, letterSpacing: '.16em', color: theme.accent, marginBottom: '0.45em', textTransform: 'uppercase', breakAfter: 'avoid', WebkitColumnBreakAfter: 'avoid' }}>{cat.label}</div>
       {items.filter((it) => !(disp.hidePriceless && boardPrice(it) <= 0 && !(it._variants || []).length)).map((it) => {
         const variants = it._variants || [];
@@ -305,13 +305,14 @@ function buildSections(data) {
   for (const k in itemsByCat) itemsByCat[k].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
 
   let cats = data.cats.filter((c) => !c.parent_id && !c.is_special).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+  const spanById = {};
   const blocks = data.board?.layout?.blocks;
   if (Array.isArray(blocks) && blocks.length) {
     const byCatId = Object.fromEntries(cats.map((c) => [c.id, c]));
-    cats = blocks.map((b) => byCatId[b.categoryId]).filter(Boolean);
+    cats = blocks.map((b) => { spanById[b.categoryId] = b.span; return byCatId[b.categoryId]; }).filter(Boolean);
   }
   return cats
-    .map((cat) => ({ cat, items: (itemsByCat[cat.id] || []).map((it) => ({ ...it, _variants: kids[it.id] || [] })) }))
+    .map((cat) => ({ cat, span: spanById[cat.id], items: (itemsByCat[cat.id] || []).map((it) => ({ ...it, _variants: kids[it.id] || [] })) }))
     .filter((s) => s.items.length > 0);
 }
 

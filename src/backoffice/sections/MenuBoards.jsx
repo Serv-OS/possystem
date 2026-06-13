@@ -171,9 +171,11 @@ function Editor({ board, setBoard, cats, itemsByCat, six, onSave, onPublish, onC
   const blocks = board.layout?.blocks || [];
   const selIds = blocks.map(x => x.categoryId);
   const offCats = cats.filter(c => !selIds.includes(c.id));
-  const addCat = (id) => setLayout({ blocks: [...blocks, { categoryId: id }] });
+  const [dragI, setDragI] = useState(null);
+  const addCat = (id) => setLayout({ blocks: [...blocks, { categoryId: id, span: 1 }] });
   const removeBlk = (i) => setLayout({ blocks: blocks.filter((_, j) => j !== i) });
-  const move = (i, d) => { const a = [...blocks]; const j = i + d; if (j < 0 || j >= a.length) return; [a[i], a[j]] = [a[j], a[i]]; setLayout({ blocks: a }); };
+  const reorder = (from, to) => { if (from == null || to == null || from === to) return; const a = [...blocks]; const [m] = a.splice(from, 1); a.splice(to, 0, m); setLayout({ blocks: a }); };
+  const toggleSpan = (i) => setLayout({ blocks: blocks.map((b, j) => j === i ? { ...b, span: b.span === 'all' ? 1 : 'all' } : b) });
   const catLabel = (id) => cats.find(c => c.id === id)?.label || '—';
 
   const pickFile = (kind, accept, cb) => {
@@ -201,13 +203,18 @@ function Editor({ board, setBoard, cats, itemsByCat, six, onSave, onPublish, onC
 
           {board.mode === 'menu' ? (
             <>
-              <Section title="Categories on this screen" desc="Order top→bottom; auto-balance stacks them into columns.">
+              <Section title="Categories on this screen" desc="Drag to reorder. “Full width” makes a category span the whole board (a hero); the rest auto-balance into columns.">
                 {blocks.length === 0 && <div style={{ fontSize: 12, color: 'var(--t4)' }}>No categories yet — add some below.</div>}
                 {blocks.map((blk, i) => (
-                  <div key={blk.categoryId} style={S.row}>
+                  <div key={blk.categoryId} draggable
+                    onDragStart={() => setDragI(i)}
+                    onDragOver={e => e.preventDefault()}
+                    onDrop={() => { reorder(dragI, i); setDragI(null); }}
+                    onDragEnd={() => setDragI(null)}
+                    style={{ ...S.row, cursor: 'grab', borderRadius: 6, background: dragI === i ? 'var(--bg3)' : 'transparent' }}>
+                    <span style={{ color: 'var(--t4)', fontSize: 15, cursor: 'grab', userSelect: 'none' }} title="Drag to reorder">⠿</span>
                     <span style={{ flex: 1, fontSize: 13, color: 'var(--t1)' }}>{catLabel(blk.categoryId)} <span style={{ color: 'var(--t4)', fontSize: 11 }}>· {(itemsByCat[blk.categoryId] || []).length} items</span></span>
-                    <button style={S.mini} onClick={() => move(i, -1)} disabled={i === 0}>↑</button>
-                    <button style={S.mini} onClick={() => move(i, 1)} disabled={i === blocks.length - 1}>↓</button>
+                    <button style={blk.span === 'all' ? S.spanOn : S.spanOff} onClick={() => toggleSpan(i)} title="Span the full width of the board (hero)">Full width</button>
                     <button style={S.miniX} onClick={() => removeBlk(i)}>✕</button>
                   </div>
                 ))}
@@ -284,7 +291,7 @@ function Preview({ board, cats, itemsByCat, six }) {
   const areaRef = useRef(null), flowRef = useRef(null);
 
   const blocks = board.layout?.blocks || [];
-  const secs = blocks.map(b => ({ id: b.categoryId, label: cats.find(c => c.id === b.categoryId)?.label, items: itemsByCat[b.categoryId] || [] })).filter(s => s.label);
+  const secs = blocks.map(b => ({ id: b.categoryId, label: cats.find(c => c.id === b.categoryId)?.label, items: itemsByCat[b.categoryId] || [], span: b.span })).filter(s => s.label);
   let cols = Number(board.layout?.columns) || 0;
   if (!cols) { const C = secs.length, T = secs.reduce((n, s) => n + s.items.length, 0); cols = board.orientation === 'portrait' ? (C <= 3 ? 1 : 2) : (C <= 2 ? Math.max(1, Math.min(C, 2)) : T <= 10 ? 2 : T <= 28 ? 3 : 4); }
   cols = Math.max(1, Math.min(cols, Math.max(1, secs.length)));
@@ -321,7 +328,7 @@ function Preview({ board, cats, itemsByCat, six }) {
           : <div ref={areaRef} style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
               <div ref={flowRef} style={{ columnCount: cols, columnGap: 12, columnFill: 'balance', fontSize: 13 }}>
                 {secs.map(sec => (
-                  <div key={sec.id} style={{ marginBottom: '0.9em', breakInside: 'auto' }}>
+                  <div key={sec.id} style={{ marginBottom: '0.9em', breakInside: 'auto', ...(sec.span === 'all' ? { columnSpan: 'all', WebkitColumnSpan: 'all' } : null) }}>
                     <div style={{ fontSize: '0.72em', letterSpacing: '.1em', color: t.accent, marginBottom: '0.35em', textTransform: 'uppercase', fontWeight: 700, breakAfter: 'avoid', WebkitColumnBreakAfter: 'avoid' }}>{sec.label}</div>
                     {sec.items.filter(it => !(disp.hidePriceless && boardPrice(it) <= 0 && !(it._variants || []).length)).map(it => {
                       const variants = it._variants || [];
@@ -405,6 +412,8 @@ const S = {
   chip: { fontSize: 12, padding: '4px 10px', borderRadius: 8, border: '1px solid var(--bdr2)', background: 'var(--bg2)', color: 'var(--t2)', cursor: 'pointer', fontFamily: 'inherit' },
   pill: { fontSize: 12.5, padding: '6px 11px', borderRadius: 8, border: '1px solid var(--bdr2)', background: 'var(--bg2)', color: 'var(--t2)', cursor: 'pointer', fontFamily: 'inherit' },
   pillOn: { fontSize: 12.5, padding: '6px 11px', borderRadius: 8, border: '1px solid var(--acc)', background: 'var(--acc-d)', color: 'var(--acc)', cursor: 'pointer', fontFamily: 'inherit', fontWeight: 700 },
+  spanOff: { fontSize: 11, padding: '4px 9px', borderRadius: 6, border: '1px solid var(--bdr2)', background: 'var(--bg2)', color: 'var(--t3)', cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' },
+  spanOn: { fontSize: 11, padding: '4px 9px', borderRadius: 6, border: '1px solid var(--acc)', background: 'var(--acc-d)', color: 'var(--acc)', cursor: 'pointer', fontFamily: 'inherit', fontWeight: 700, whiteSpace: 'nowrap' },
   btn: { padding: '8px 14px', borderRadius: 8, border: '1px solid var(--bdr2)', background: 'var(--bg2)', color: 'var(--t1)', fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' },
   btnGhost: { padding: '8px 14px', borderRadius: 8, border: 'none', background: 'transparent', color: 'var(--t3)', fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' },
   btnPrimary: { padding: '8px 16px', borderRadius: 8, border: 'none', background: 'var(--acc)', color: '#0b0c10', fontSize: 13, fontWeight: 800, cursor: 'pointer', fontFamily: 'inherit' },
