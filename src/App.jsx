@@ -83,6 +83,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.442', date: '12 Jun 2026', label: 'Review Manager — only show platforms we can genuinely connect to',
+    changes: [
+      'Removed platforms we cannot truly connect to: a "manual — reply in their dashboard" link is not a connection, so TripAdvisor, Yelp, Facebook, OpenTable, Uber Eats, Deliveroo and Just Eat are no longer listed (none expose a usable review API; we can\'t pull their reviews, post replies, or tie a review to the right store/customer). Booking.com is parked until its provider onboarding reopens.',
+      'The connectable set is now Google, TheFork and Trustpilot — all genuine two-way APIs you connect by signing in with the venue\'s own account, so reviews tie to the correct listing and replies post under your identity. Your own review card remains the live, always-on source.',
+    ],
+  },
+  {
     version: '5.5.441', date: '12 Jun 2026', label: 'Review Manager — full back office: Dashboard, Get-reviews engine & Settings',
     changes: [
       'Back Office → Customers → Reviews is now a complete tool with four tabs: Approvals (reply queue), Dashboard (avg rating, star distribution, sources, ask funnel), Get reviews (the automated ask engine), and Settings (threshold, connected platforms, AI voice, card copy).',
