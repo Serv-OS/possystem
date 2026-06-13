@@ -39,6 +39,7 @@ import MessageTemplates from './sections/MessageTemplates';
 import LoyaltyManager from './sections/LoyaltyManager';
 import Workforce from './sections/Workforce';
 import ReviewManager from './sections/ReviewManager';
+import MenuBoards from './sections/MenuBoards';
 import { money, currencySymbol } from '../lib/currency';
 
 const NAV = [
@@ -85,7 +86,7 @@ const NAV_IA = [
   { label:'Team',       icon:'user',      single:'staff' },
   { label:'Workforce',  icon:'team',      children:[['wf-dashboard','Dashboard'],['wf-rota','Rota'],['wf-timesheets','Timesheets'],['wf-payroll','Payroll'],['wf-timeoff','Time off & availability'],['wf-staff','Staff'],['wf-onboarding','Onboarding'],['wf-compliance','Compliance'],['wf-pay','Positions & rates'],['wf-tronc','Tronc / tips'],['wf-announce','Announcements'],['wf-settings','Workforce settings']] },
   { label:'Customers',  icon:'customers', children:[['customers','Customers'],['reviews','Reviews'],['loyalty','Loyalty'],['giftcards','Gift cards'],['messages','Messages']] },
-  { label:'Channels',   icon:'channels',  children:[['online','Online ordering'],['kiosks','Kiosks']] },
+  { label:'Channels',   icon:'channels',  children:[['online','Online ordering'],['kiosks','Kiosks'],['menuboards','Menu boards']] },
   { label:'Hardware',   icon:'hardware',  children:[['devices','Terminals'],['profiles','Device profiles'],['printers','Printers'],['printing','Production printing'],['cardreaders','Card readers'],['cashdrawers','Cash drawers'],['network','Network & sync']] },
   { label:'Reports',    icon:'reports',   children:[['reports','Sales reports'],['shift','Shifts'],['eod','Close day'],['pettycash','Petty cash']] },
   { label:'Settings',   icon:'settings',  children:[['location','Location settings'],['receipt','Receipt'],['ai','AI assistant']] },
@@ -594,6 +595,7 @@ export default function BackOfficeApp() {
           {section === 'devices'    && <DeviceRegistry />}
           {section === 'kiosks'     && <KioskRegistry />}
           {section === 'online'     && <OnlineOrdering setSection={setSection} />}
+          {section === 'menuboards' && <MenuBoards />}
           {section === 'printers'   && <PrinterRegistry />}
           {section === 'cardreaders'&& <CardReaders />}
           {section === 'cashdrawers' && <CashDrawers />}

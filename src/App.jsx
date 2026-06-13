@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.454', date: '13 Jun 2026', label: 'Menu board builder in Back Office',
+    changes: [
+      'Back Office → Channels → Menu boards: create and manage the screens shown on your menu-board TVs. Add a screen, pick which categories it shows and reorder them, set columns/orientation, choose what shows per item (descriptions, allergens, prices), set sold-out behaviour, and brand it (background image, logo, colours, font, footer). A live preview mirrors the real display. Hit Publish and paired screens refresh.',
+      'Marketing screens: switch a screen to Marketing mode and upload a full-screen image or video. All screens save to the new menu_boards table that the ?mode=menuboard display reads live.',
+    ],
+  },
+  {
     version: '5.5.453', date: '13 Jun 2026', label: 'Digital menu board (phase 1)',
     changes: [
       'New ?mode=menuboard display surface for a TV/Android stick: renders your menu live with an auto-fit + auto-balance layout engine — categories stack into balanced columns and the whole board scales to fill one screen no matter how many you show. Prices, descriptions and allergens per item; items marked sold out automatically when 86’d; updates over the air in real time; caches the last menu so it never goes blank offline.',
