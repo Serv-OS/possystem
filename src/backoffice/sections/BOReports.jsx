@@ -25,6 +25,7 @@ import ProductMix   from './reports/ProductMix';
 import ItemTrend    from './reports/ItemTrend';
 import DailyTrend   from './reports/DailyTrend';
 import DailyTrading from './reports/DailyTrading';
+import PayrollReport from './reports/PayrollReport';
 import MenuEngineering from './reports/MenuEngineering';
 import Servers      from './reports/Servers';
 import Tips         from './reports/Tips';
@@ -260,6 +261,7 @@ export default function BOReports() {
           {view === 'payments'   && <Payments     checks={filtered} fmt={fmt} fmtN={fmtN}/>}
           {view === 'daypart'    && <Daypart      checks={filtered} fmt={fmt} locationConfig={locationConfig}/>}
           {view === 'shifts'      && <Shifts       checks={filtered} fmt={fmt} fmtN={fmtN} locationConfig={locationConfig}/>}
+          {view === 'payroll'     && <PayrollReport fmt={fmt}/>}
           {view === 'items'       && <ProductMix   checks={filtered} fmt={fmt} fmtN={fmtN}/>}
           {view === 'item_trend'  && <ItemTrend    checks={filtered} fmt={fmt} fmtN={fmtN} rangeFrom={range.from} rangeTo={range.to}/>}
           {view === 'daily_trend' && <DailyTrend   checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN} rangeFrom={range.from} rangeTo={range.to}/>}

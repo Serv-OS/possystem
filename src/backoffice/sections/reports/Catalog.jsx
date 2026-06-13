@@ -23,6 +23,7 @@ export const CATEGORIES = [
     reports: [
       { id:'servers', label:'Server scorecard', desc:'Full perf — tip %, discount rate, void rate, peer rank', badge:'new' },
       { id:'tips',    label:'Tips & pooling',   desc:'Per-server tips + configurable tip-pool calculator', badge:'new' },
+      { id:'payroll', label:'Payroll',          desc:'Closed pay runs — wages + tips per period, per-staff breakdown and BACS CSV', badge:'new' },
       { id:'shifts',  label:'Shifts',           desc:'Business-day shifts with per-server sessions' },
     ],
   },

@@ -83,6 +83,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.447', date: '12 Jun 2026', label: 'Payroll in Reports',
+    changes: [
+      'New report: Back Office → Reports → Staff → “Payroll”. Every closed pay run is now visible from Reports — period, pay day, headcount, wages, tips and total paid out, with running totals across all runs. Click a run to expand the per-person breakdown (hours, base pay, direct + pooled tips, total), or export any run as a CSV.',
+      'Reads the same immutable pay-run records created when you close a period in Workforce → Payroll, so owners and managers can review payroll without opening the Workforce module. Tips stay shown separately from wages (UK Tipping Act).',
+    ],
+  },
+  {
     version: '5.5.446', date: '12 Jun 2026', label: 'Daily Trading — the holistic P&L report',
     changes: [
       'New report: Back Office → Reports → Sales → “Daily trading (P&L)”. Set a forecast for each day — or tap “LY” to pull the same weekday from last year (the system learns from your own history) — then see, side by side, your forecast vs actual sales, theoretical vs actual labour (and labour %), COGS and overhead, all the way down to real operating profit per day with period totals.',
