@@ -269,7 +269,7 @@ function Section({ sec, theme, disp, six }) {
                   const vsold = six.has(v.id);
                   const vp = boardPrice(v);
                   return (
-                    <div key={v.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5em', marginBottom: '.12em', opacity: vsold ? 0.42 : 1 }}>
+                    <div key={v.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5em', marginBottom: '.34em', opacity: vsold ? 0.42 : 1 }}>
                       <span style={{ fontSize: '0.4em', color: theme.mutedColor }}>{v.menu_name || v.name}</span>
                       {vsold
                         ? <span style={{ fontSize: '0.3em', fontWeight: 600, background: '#5a1e1e', color: '#f3b0b0', borderRadius: '1.4em', padding: '.2em .7em' }}>SOLD OUT</span>

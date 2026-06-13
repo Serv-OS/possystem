@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.459', date: '13 Jun 2026', label: 'Menu board — variant spacing',
+    changes: [
+      'Added vertical breathing room between variant/size rows (e.g. Regular / Large) so the nested prices no longer sit on top of each other.',
+    ],
+  },
+  {
     version: '5.5.458', date: '13 Jun 2026', label: 'Menu board — variants nested + descriptions/allergens',
     changes: [
       'Size/variant options (e.g. Regular / Large under a drink) now nest under their parent product — indented with an accent rule and their own prices — instead of floating as separate flat lines, so it’s clear which sizes belong to which item.',

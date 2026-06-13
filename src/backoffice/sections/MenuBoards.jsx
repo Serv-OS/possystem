@@ -342,7 +342,7 @@ function Preview({ board, cats, itemsByCat, six }) {
                         </div>
                         {hasVar && <div style={{ marginTop: 1, marginLeft: 1, paddingLeft: (disp.showImages && it.image) ? '2.3em' : 8, borderLeft: `2px solid ${t.accent}55` }}>
                           {variants.map(v => { const vs = six.has(v.id), vp = boardPrice(v);
-                            return <div key={v.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 4, opacity: vs ? 0.45 : 1 }}>
+                            return <div key={v.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 4, marginBottom: '0.2em', opacity: vs ? 0.45 : 1 }}>
                               <span style={{ fontSize: '0.5em', color: muted }}>{v.menu_name || v.name}</span>
                               {vs ? <span style={{ fontSize: '0.45em', color: '#f3b0b0' }}>SOLD OUT</span> : disp.showPrices && vp > 0 && <span style={{ fontSize: '0.5em', background: t.accent, color: '#1c1206', borderRadius: 5, padding: '0 4px' }}>{money(vp)}</span>}
                             </div>;
