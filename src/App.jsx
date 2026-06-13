@@ -83,6 +83,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.440', date: '12 Jun 2026', label: 'Review Manager — de-gated for compliance (UK DMCC / FTC)',
+    changes: [
+      'Important fix: the review card no longer hides the public review path from unhappy guests (that practice — "review-gating" — is now illegal under the UK Digital Markets Act 2024 and the US FTC Consumer Reviews Rule). After any rating, every guest is offered a one-tap link to post on Google; a low rating ALSO offers a private "tell the manager" route — as an addition, never a replacement.',
+      'Removed the inaccurate "your review is being posted automatically" wording — no platform lets a business post a review on a guest\'s behalf, so the card now hands the guest a one-tap link to post it themselves.',
+    ],
+  },
+  {
     version: '5.5.439', date: '12 Jun 2026', label: 'Review Manager (3/8) — Approval Queue (the inbox)',
     changes: [
       'New Back Office → Customers → Reviews: one inbox for every review needing a reply — from your review card and (once connected) platforms. Each shows the original feedback alongside an AI-drafted reply you can edit, retone, or regenerate, then Approve & post (public) / Approve & send (private). Filters for All / Public / Private recovery.',

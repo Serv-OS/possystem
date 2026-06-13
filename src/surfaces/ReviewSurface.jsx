@@ -65,7 +65,7 @@ export default function ReviewSurface({ location }) {
       });
       setResult(r);
       setDetail(comment.trim());
-      setPhase(r.is_public ? 'happy' : 'unhappy');
+      setPhase('thanks');   // de-gated: one honest outcome; everyone is offered the public path
     } catch (e) {
       setError(e.message || 'Could not send — please try again.');
       setPhase('rate');
@@ -129,43 +129,40 @@ export default function ReviewSurface({ location }) {
                 {phase === 'sending' ? 'Sending…' : 'Send →'}
               </button>
             </>
-          ) : phase === 'happy' ? (
-            <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: 44, marginBottom: 6 }}>🎉</div>
-              <h1 style={S.h1}>{cfg?.thanks_public_copy || 'Thanks — that means a lot!'}</h1>
-              <p style={S.sub}>
-                {result?.platforms?.length
-                  ? 'Your review is being posted to our pages automatically.'
-                  : 'Thanks for the kind words — we really appreciate it.'}
-              </p>
-              {result?.platforms?.length > 0 && (
-                <div style={S.platforms}>
-                  {result.platforms.map((p) => (
-                    <div key={p.platform} style={S.platformRow}>
-                      <span style={{ ...S.platformDot, background: accent }}>{(PLATFORM_LABEL[p.platform] || p.platform)[0]}</span>
-                      <span style={{ flex: 1, textAlign: 'left', fontWeight: 600 }}>{PLATFORM_LABEL[p.platform] || p.platform}</span>
-                      <span style={S.posting}>⟳ Posting…</span>
-                    </div>
-                  ))}
+          ) : phase === 'thanks' ? (
+            result?.low_rating ? (
+              // Low rating: lead with the private manager route, but the public
+              // Google path is still OFFERED (never hidden) — de-gating compliance.
+              <>
+                <h1 style={S.h1}>{cfg?.thanks_private_copy || 'Sorry we missed the mark.'}</h1>
+                <p style={S.sub}>Tell us what happened — it goes straight to the manager so we can put it right.</p>
+                <textarea value={detail} onChange={(e) => setDetail(e.target.value)} rows={4}
+                  placeholder="What happened?" style={S.textarea} />
+                <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
+                  <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" placeholder="Email (optional)" style={S.input} />
+                  <input value={phone} onChange={(e) => setPhone(e.target.value)} type="tel" placeholder="Phone (optional)" style={S.input} />
                 </div>
-              )}
-            </div>
-          ) : phase === 'unhappy' ? (
-            <>
-              <h1 style={S.h1}>{cfg?.thanks_private_copy || 'Sorry we missed the mark.'}</h1>
-              <p style={S.sub}>Tell us what happened — this goes <strong>privately</strong> to the manager, not posted publicly.</p>
-              <textarea value={detail} onChange={(e) => setDetail(e.target.value)} rows={4}
-                placeholder="What happened?" style={S.textarea} />
-              <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
-                <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" placeholder="Email (optional)" style={S.input} />
-                <input value={phone} onChange={(e) => setPhone(e.target.value)} type="tel" placeholder="Phone (optional)" style={S.input} />
+                {error && <div style={S.err}>{error}</div>}
+                <button onClick={sendPrivate} disabled={savingContact} style={S.sendBtn}>
+                  {savingContact ? 'Sending…' : 'Send to the manager'}
+                </button>
+                {result?.google_review_url && (
+                  <a href={result.google_review_url} target="_blank" rel="noopener noreferrer" style={S.googleLinkSecondary}>
+                    Or post your review publicly on Google →
+                  </a>
+                )}
+              </>
+            ) : (
+              // Happy: invite (don't auto-post — no platform allows that) a Google review.
+              <div style={{ textAlign: 'center' }}>
+                <div style={{ fontSize: 44, marginBottom: 6 }}>🎉</div>
+                <h1 style={S.h1}>{cfg?.thanks_public_copy || 'Thanks — that means a lot!'}</h1>
+                <p style={S.sub}>If you’ve got a moment, would you share it on Google? It only takes a tap and really helps {venueName}.</p>
+                {result?.google_review_url
+                  ? <a href={result.google_review_url} target="_blank" rel="noopener noreferrer" style={S.googleBtn}><span style={S.gG}>G</span>&nbsp; Post my review on Google</a>
+                  : <p style={{ fontSize: 13, color: '#9a9aa2' }}>Thanks again — we really appreciate it!</p>}
               </div>
-              <div style={S.privateNote}>🔒 Not posted publicly — only the venue sees this.</div>
-              {error && <div style={S.err}>{error}</div>}
-              <button onClick={sendPrivate} disabled={savingContact} style={S.sendBtn}>
-                {savingContact ? 'Sending…' : 'Send privately'}
-              </button>
-            </>
+            )
           ) : (
             <div style={{ textAlign: 'center' }}>
               <div style={{ fontSize: 44, marginBottom: 6 }}>🙏</div>
@@ -194,6 +191,9 @@ const S = {
   textarea: { width: '100%', boxSizing: 'border-box', border: '1px solid #ececef', borderRadius: 12, padding: '12px 14px', fontSize: 14, fontFamily: 'inherit', resize: 'vertical', outline: 'none', color: '#1f1f24', background: '#fafafb' },
   input: { width: '100%', boxSizing: 'border-box', border: '1px solid #ececef', borderRadius: 10, padding: '11px 14px', fontSize: 14, fontFamily: 'inherit', outline: 'none', color: '#1f1f24', background: '#fafafb' },
   sendBtn: { width: '100%', marginTop: 16, padding: '15px', borderRadius: 12, background: '#1f1f24', color: '#fff', border: 'none', fontSize: 16, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' },
+  googleBtn: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '100%', boxSizing: 'border-box', marginTop: 8, padding: '15px', borderRadius: 12, background: '#1f1f24', color: '#fff', fontSize: 16, fontWeight: 700, textDecoration: 'none' },
+  gG: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 24, height: 24, borderRadius: 99, background: '#fff', color: '#4285F4', fontWeight: 800, fontSize: 14 },
+  googleLinkSecondary: { display: 'block', textAlign: 'center', marginTop: 14, fontSize: 13, color: '#56565e', textDecoration: 'underline' },
   err: { marginTop: 12, fontSize: 13, color: '#b06a3c', fontWeight: 600 },
   platforms: { marginTop: 18, display: 'grid', gap: 8, textAlign: 'left' },
   platformRow: { display: 'flex', alignItems: 'center', gap: 10, padding: '11px 14px', background: '#f5faf7', border: '1px solid #d3e7da', borderRadius: 12, fontSize: 14, color: '#1f1f24' },

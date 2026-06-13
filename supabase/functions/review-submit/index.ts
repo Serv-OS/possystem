@@ -94,20 +94,17 @@ Deno.serve(async (req) => {
     }).select('id').single();
     if (error) return json({ error: error.message }, 500);
 
-    // For a public review, surface the platforms it's being auto-published to
-    // (intent recorded; real posting is stubbed until the platform OAuth lands).
-    let platforms: Array<{ platform: string; status: string }> = [];
-    if (isPublic) {
-      const { data: links } = await opsAdmin.from('review_platform_links')
-        .select('platform').eq('location_id', loc.opsLocationId).eq('enabled', true);
-      platforms = (links ?? []).map((l: any) => ({ platform: l.platform, status: 'posting' }));
-      if (platforms.length) {
-        await opsAdmin.from('review_feedback').update({
-          published_to: platforms.map((p) => ({ platform: p.platform, status: 'posting', at: new Date().toISOString() })),
-        }).eq('id', row.id);
-      }
-    }
-    return json({ ok: true, feedback_id: row.id, is_public: isPublic, platforms }, 201);
+    // DE-GATED (UK DMCC 2024 / FTC Consumer Reviews Rule): we NEVER auto-post a
+    // guest's review (no platform allows it) and we never hide the public path
+    // from unhappy guests. So: offer the public Google one-tap link to EVERYONE;
+    // `low_rating` just tells the card to ALSO surface the private manager route.
+    // `is_public` is kept only as an internal triage label (alerting/reporting).
+    let googleReviewUrl: string | null = null;
+    const { data: g } = await opsAdmin.from('review_platform_links')
+      .select('external_place_id, url').eq('location_id', loc.opsLocationId).eq('platform', 'google').eq('enabled', true).maybeSingle();
+    if (g?.external_place_id) googleReviewUrl = `https://search.google.com/local/writereview?placeid=${g.external_place_id}`;
+    else if (g?.url) googleReviewUrl = g.url;
+    return json({ ok: true, feedback_id: row.id, is_public: isPublic, low_rating: !isPublic, google_review_url: googleReviewUrl }, 201);
   }
 
   // ── add_contact: attach recovery detail/contact to a PRIVATE review ───────
