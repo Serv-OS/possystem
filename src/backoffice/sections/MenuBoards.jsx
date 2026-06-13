@@ -292,19 +292,26 @@ function Preview({ board, cats, itemsByCat, six }) {
 
   const blocks = board.layout?.blocks || [];
   const secs = blocks.map(b => ({ id: b.categoryId, label: cats.find(c => c.id === b.categoryId)?.label, items: itemsByCat[b.categoryId] || [], span: b.span })).filter(s => s.label);
-  let cols = Number(board.layout?.columns) || 0;
-  if (!cols) { const C = secs.length, T = secs.reduce((n, s) => n + s.items.length, 0); cols = board.orientation === 'portrait' ? (C <= 3 ? 1 : 2) : (C <= 2 ? Math.max(1, Math.min(C, 2)) : T <= 10 ? 2 : T <= 28 ? 3 : 4); }
-  cols = Math.max(1, Math.min(cols, Math.max(1, secs.length)));
+  const fixedCols = Number(board.layout?.columns) || 0;   // 0 = Auto
 
-  // mini auto-fit: shrink the flowing content until it fits the preview box
+  // mini auto-fit: FILL the preview box exactly like the live board — columns fill
+  // top-to-bottom (column-fill:auto) and the font grows until the content fills
+  // every column to the bottom. "Auto" columns are driven by a readable column
+  // width so the count adapts; a fixed choice pins the count.
   useLayoutEffect(() => {
     const area = areaRef.current, flow = flowRef.current;
     if (!area || !flow) return;
     const ts = Math.max(0.6, Math.min(1.6, Number(board.display_options?.textScale) || 1));
-    let s = 13, g = 0; flow.style.fontSize = s + 'px';
-    const fits = () => flow.scrollHeight <= area.clientHeight + 1;
-    while (!fits() && s > 4 && g++ < 90) { s -= 0.5; flow.style.fontSize = s + 'px'; }
-    if (ts !== 1) flow.style.fontSize = (s * ts) + 'px';
+    if (fixedCols) { flow.style.columnCount = String(fixedCols); flow.style.columnWidth = 'auto'; }
+    else { flow.style.columnCount = 'auto'; flow.style.columnWidth = (board.orientation === 'portrait' ? 19 : 16) + 'em'; }
+    const fits = () => flow.scrollWidth <= flow.clientWidth + 1 && flow.scrollHeight <= flow.clientHeight + 1;
+    let lo = 4, hi = 26, best = 4;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      flow.style.fontSize = mid + 'px';
+      if (fits()) { best = mid; lo = mid + 1; } else hi = mid - 1;
+    }
+    flow.style.fontSize = (best * ts) + 'px';
   });
 
   if (board.mode === 'marketing') {
@@ -326,7 +333,7 @@ function Preview({ board, cats, itemsByCat, six }) {
         {secs.length === 0
           ? <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#8a8276', fontSize: 11 }}>Add categories to preview</div>
           : <div ref={areaRef} style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
-              <div ref={flowRef} style={{ columnCount: cols, columnGap: 12, columnFill: 'balance', fontSize: 13 }}>
+              <div ref={flowRef} style={{ height: '100%', columnGap: 12, columnFill: 'auto', fontSize: 13 }}>
                 {secs.map(sec => (
                   <div key={sec.id} style={{ marginBottom: '0.9em', breakInside: 'auto', ...(sec.span === 'all' ? { columnSpan: 'all', WebkitColumnSpan: 'all' } : null) }}>
                     <div style={{ fontSize: '0.72em', letterSpacing: '.1em', color: t.accent, marginBottom: '0.35em', textTransform: 'uppercase', fontWeight: 700, breakAfter: 'avoid', WebkitColumnBreakAfter: 'avoid' }}>{sec.label}</div>

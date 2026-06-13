@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.462', date: '13 Jun 2026', label: 'Menu board — fill the whole screen',
+    changes: [
+      'Fixed the layout leaving the bottom half of the screen empty: columns now fill top-to-bottom and only break to the next column when the current one is genuinely full (no more early “balanced” break).',
+      'The board scales up to fill the entire screen height — with “Auto” columns the column count now adapts to how much content there is, so a menu always looks intentional and full edge-to-edge. The Back Office preview mirrors it exactly.',
+    ],
+  },
+  {
     version: '5.5.461', date: '13 Jun 2026', label: 'Menu board — drag to arrange + full-width heroes',
     changes: [
       'Categories on a screen can now be dragged to reorder (grab the ⠿ handle) instead of the ↑/↓ buttons — the “actually move things” feel.',

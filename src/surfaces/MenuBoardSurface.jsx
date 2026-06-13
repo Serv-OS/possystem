@@ -126,32 +126,42 @@ function Board({ data }) {
   const boardRef = useRef(null);
   const contentRef = useRef(null);
   const flowRef = useRef(null);
+  const [fitTick, setFitTick] = useState(0);
 
-  // ordered sections + a dynamic column count; content flows & balances across columns
+  // ordered sections; content flows column-by-column and fills the screen
   const sections = mode === 'menu' ? buildSections(data) : [];
-  const cols = mode === 'menu' ? pickColumns(sections, orientation, data.board) : 1;
+  const fixedCols = Number(data.board?.layout?.columns) || 0;   // operator override; 0 = Auto
 
-  // ── auto-fit: scale the whole board (root font-size) so content fills one screen ──
+  // ── auto-fit: FILL the screen. Columns fill top-to-bottom (column-fill:auto)
+  // so a column only breaks to the next when it is genuinely full — no early
+  // "balanced" break that leaves the bottom of the screen empty. We grow the
+  // root font-size until the content fills every column to the bottom (one more
+  // pixel would spill into an extra column). With "Auto" columns we drive the
+  // layout by a readable column WIDTH, so the column count adapts to how much
+  // content there is and how big the fitted font ends up. ──
   useLayoutEffect(() => {
     if (mode !== 'menu') return;
-    const root = boardRef.current, area = contentRef.current, flow = flowRef.current;
-    if (!root || !area || !flow) return;
-    let size = FIT.base, guard = 0;
-    root.style.fontSize = size + 'px';
-    const fits = () => flow.scrollHeight <= area.clientHeight + 1;
-    while (!fits() && size > FIT.min && guard++ < 200) { size -= 1; root.style.fontSize = size + 'px'; }
-    while (fits() && size < FIT.max && guard++ < 400) {
-      size += 1; root.style.fontSize = size + 'px';
-      if (!fits()) { size -= 1; root.style.fontSize = size + 'px'; break; }
+    const root = boardRef.current, flow = flowRef.current;
+    if (!root || !flow) return;
+    if (fixedCols) { flow.style.columnCount = String(fixedCols); flow.style.columnWidth = 'auto'; }
+    else { flow.style.columnCount = 'auto'; flow.style.columnWidth = (orientation === 'portrait' ? 19 : 16) + 'em'; }
+    // content fits when it neither spills into an extra column (width) nor
+    // overflows a too-tall element (height).
+    const fits = () => flow.scrollWidth <= flow.clientWidth + 1 && flow.scrollHeight <= flow.clientHeight + 1;
+    let lo = FIT.min, hi = FIT.max, best = FIT.min;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      root.style.fontSize = mid + 'px';
+      if (fits()) { best = mid; lo = mid + 1; } else hi = mid - 1;
     }
-    // operator text-size preference, applied on top of the fitted size
-    if (textScale !== 1) root.style.fontSize = (size * textScale) + 'px';
-  });
+    root.style.fontSize = (best * textScale) + 'px';
+  }, [data, mode, orientation, fixedCols, textScale, fitTick]);
 
   useEffect(() => {
-    const onResize = () => { if (boardRef.current) boardRef.current.style.fontSize = FIT.base + 'px'; setTimeout(() => window.dispatchEvent(new Event('mb-refit')), 0); };
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
+    const refit = () => setFitTick((t) => t + 1);
+    window.addEventListener('resize', refit);
+    window.addEventListener('mb-refit', refit);
+    return () => { window.removeEventListener('resize', refit); window.removeEventListener('mb-refit', refit); };
   }, []);
 
   const rootStyle = {
@@ -206,7 +216,7 @@ function Board({ data }) {
         {/* dynamic newspaper flow — EVERY item; categories flow & balance across
             columns; the fit-loop scales the whole thing to fill one screen. */}
         <div ref={contentRef} style={{ flex: '1 1 auto', minHeight: 0, overflow: 'hidden' }}>
-          <div ref={flowRef} style={{ columnCount: cols, columnGap: '1.7em', columnFill: 'balance' }}>
+          <div ref={flowRef} style={{ height: '100%', columnGap: '1.7em', columnFill: 'auto' }}>
             {sections.map((sec) => (
               <Section key={sec.cat.id} sec={sec} theme={theme} disp={disp} six={data.six} />
             ))}
@@ -314,17 +324,6 @@ function buildSections(data) {
   return cats
     .map((cat) => ({ cat, span: spanById[cat.id], items: (itemsByCat[cat.id] || []).map((it) => ({ ...it, _variants: kids[it.id] || [] })) }))
     .filter((s) => s.items.length > 0);
-}
-
-// How many CSS columns the content flows into (operator override, else by volume).
-function pickColumns(sections, orientation, board) {
-  let cols = Number(board?.layout?.columns) || 0;
-  if (!cols || cols < 1) {
-    const C = sections.length, T = sections.reduce((n, s) => n + s.items.length, 0);
-    if (orientation === 'portrait') cols = C <= 3 ? 1 : 2;
-    else cols = C <= 2 ? Math.max(1, Math.min(C, 2)) : T <= 10 ? 2 : T <= 28 ? 3 : 4;
-  }
-  return Math.max(1, Math.min(cols, Math.max(1, sections.length)));
 }
 
 function Splash({ text, sub, inline }) {
