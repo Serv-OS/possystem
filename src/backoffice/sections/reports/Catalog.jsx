@@ -7,6 +7,7 @@ export const CATEGORIES = [
     id: 'sales', label: 'Sales reports', icon: '📈',
     description: 'Net and gross sales, products, performance by channel and time.',
     reports: [
+      { id:'daily_trading', label:'Daily trading (P&L)', desc:'Set a forecast per day (learns from last year), then sales vs theoretical vs actual costs → real operating profit', badge:'new' },
       { id:'summary',     label:'Business summary', desc:'Period stats with compare chips + net/gross ladder' },
       { id:'daily_trend', label:'Daily trend',      desc:'Revenue / covers / avg check / tips per day with vs-prev compare', badge:'new' },
       { id:'item_trend',  label:'Item sales trend', desc:'Items × days matrix with category + day-of-week filters', badge:'new' },

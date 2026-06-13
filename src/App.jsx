@@ -83,6 +83,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.446', date: '12 Jun 2026', label: 'Daily Trading — the holistic P&L report',
+    changes: [
+      'New report: Back Office → Reports → Sales → “Daily trading (P&L)”. Set a forecast for each day — or tap “LY” to pull the same weekday from last year (the system learns from your own history) — then see, side by side, your forecast vs actual sales, theoretical vs actual labour (and labour %), COGS and overhead, all the way down to real operating profit per day with period totals.',
+      'Sales and labour come straight from the system (closed checks + the rota and approved timesheets). COGS % and a daily overhead are yours to set once in the report (Save costs) and the P&L applies them to both forecast and actuals — giving owners a real-life, top-to-bottom view of how the business actually traded.',
+    ],
+  },
+  {
     version: '5.5.445', date: '12 Jun 2026', label: 'Review Manager — upload a background + smarter card',
     changes: [
       'You can now upload a background image for the review card (Reviews → Your card → Look). It sits behind the card with a subtle dark overlay so the content stays readable — turning the page into a proper branded portal. Plus a button-style choice (dark or your brand colour). The live preview updates instantly.',

@@ -24,6 +24,7 @@ import Shifts       from './reports/Shifts';
 import ProductMix   from './reports/ProductMix';
 import ItemTrend    from './reports/ItemTrend';
 import DailyTrend   from './reports/DailyTrend';
+import DailyTrading from './reports/DailyTrading';
 import MenuEngineering from './reports/MenuEngineering';
 import Servers      from './reports/Servers';
 import Tips         from './reports/Tips';
