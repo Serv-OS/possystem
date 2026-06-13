@@ -38,6 +38,7 @@ import GiftCards from './sections/GiftCards';
 import MessageTemplates from './sections/MessageTemplates';
 import LoyaltyManager from './sections/LoyaltyManager';
 import Workforce from './sections/Workforce';
+import ReviewManager from './sections/ReviewManager';
 import { money, currencySymbol } from '../lib/currency';
 
 const NAV = [
@@ -69,6 +70,7 @@ const NAV = [
   { id: 'giftcards', label: 'Gift Cards', icon: '\u{1F381}', group: 'Analytics' },
   { id: 'loyalty', label: 'Loyalty', icon: '\u{2B50}', group: 'Analytics' },
   { id: 'messages', label: 'Messages', icon: '\u{1F4AC}', group: 'Configuration' },
+  { id: 'reviews', label: 'Reviews', icon: '\u{2B50}', group: 'Analytics' },
 ];
 
 // v5.5.367 ServOS: intent-based 10-section sidebar IA. Every child keeps the
@@ -82,7 +84,7 @@ const NAV_IA = [
   { label:'Inventory',  icon:'inventory', single:'inventory' },
   { label:'Team',       icon:'user',      single:'staff' },
   { label:'Workforce',  icon:'team',      children:[['wf-dashboard','Dashboard'],['wf-rota','Rota'],['wf-timesheets','Timesheets'],['wf-payroll','Payroll'],['wf-timeoff','Time off & availability'],['wf-staff','Staff'],['wf-onboarding','Onboarding'],['wf-compliance','Compliance'],['wf-pay','Positions & rates'],['wf-tronc','Tronc / tips'],['wf-announce','Announcements'],['wf-settings','Workforce settings']] },
-  { label:'Customers',  icon:'customers', children:[['customers','Customers'],['loyalty','Loyalty'],['giftcards','Gift cards'],['messages','Messages']] },
+  { label:'Customers',  icon:'customers', children:[['customers','Customers'],['reviews','Reviews'],['loyalty','Loyalty'],['giftcards','Gift cards'],['messages','Messages']] },
   { label:'Channels',   icon:'channels',  children:[['online','Online ordering'],['kiosks','Kiosks']] },
   { label:'Hardware',   icon:'hardware',  children:[['devices','Terminals'],['profiles','Device profiles'],['printers','Printers'],['printing','Production printing'],['cardreaders','Card readers'],['cashdrawers','Cash drawers'],['network','Network & sync']] },
   { label:'Reports',    icon:'reports',   children:[['reports','Sales reports'],['shift','Shifts'],['eod','Close day'],['pettycash','Petty cash']] },
@@ -583,6 +585,7 @@ export default function BackOfficeApp() {
             via !important so we don't have to edit 20 files individually. */}
         <div className="bo-page-shell">
           {section === 'overview'   && <BOOverview setSection={setSection} orgCtx={orgCtx} />}
+          {section === 'reviews'    && <ReviewManager />}
           {section?.startsWith('wf-') && <Workforce section={section} orgCtx={orgCtx} />}
           {section === 'menu'       && <MenuManager />}
           {section === 'floorplan'  && <FloorPlanBuilder />}

@@ -83,6 +83,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.439', date: '12 Jun 2026', label: 'Review Manager (3/8) — Approval Queue (the inbox)',
+    changes: [
+      'New Back Office → Customers → Reviews: one inbox for every review needing a reply — from your review card and (once connected) platforms. Each shows the original feedback alongside an AI-drafted reply you can edit, retone, or regenerate, then Approve & post (public) / Approve & send (private). Filters for All / Public / Private recovery.',
+      'Nothing sends itself: the draft is AI-generated but only posts/sends when a human approves — public replies post back to the source platform, private recovery messages go to the guest by SMS/email.',
+    ],
+  },
+  {
     version: '5.5.438', date: '12 Jun 2026', label: 'Review Manager — wider platform support (Yelp + the landscape)',
     changes: [
       'Review Manager now models the realistic UK review-platform set: Google, TripAdvisor, Facebook, TheFork, Trustpilot, Booking.com, Yelp, OpenTable, Uber Eats, Deliveroo and Just Eat. Each carries its true capability — full two-way sync+reply (Google, TheFork, Trustpilot, Booking.com), read-only/deep-link (TripAdvisor, Yelp, OpenTable, the delivery apps), or none (Facebook). The ones with no API still get a one-tap "open the platform to reply" hand-off so nothing is a dead end.',
