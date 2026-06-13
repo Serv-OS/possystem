@@ -17,7 +17,7 @@ import { fetchMenuCategories, fetchMenuItems, fetch86List } from '../lib/db';
 import { money } from '../lib/currency';
 
 const DEFAULT_THEME = { bgColor: '#14110d', textColor: '#F5EFE6', mutedColor: '#B8AE9E', accent: '#E8A23C', font: '', footerNote: '', logoUrl: null, bgImageUrl: null };
-const DEFAULT_DISPLAY = { showDescription: true, showAllergens: true, showPrices: true, showImages: false, soldOut: 'grey', textScale: 1 };
+const DEFAULT_DISPLAY = { showDescription: true, showAllergens: true, showPrices: true, showImages: false, soldOut: 'grey', textScale: 1, hidePriceless: false };
 const FIT = { base: 30, min: 11, max: 48 };          // px; the fit-loop lands somewhere in here
 const cacheKey = (loc, b) => `rpos-mb-${loc}-${b || 'def'}`;
 
@@ -227,7 +227,7 @@ function Section({ sec, theme, disp, six }) {
   return (
     <div style={{ marginBottom: '1em', breakInside: 'auto' }}>
       <div style={{ fontSize: '0.62em', fontWeight: 600, letterSpacing: '.16em', color: theme.accent, marginBottom: '0.45em', textTransform: 'uppercase', breakAfter: 'avoid', WebkitColumnBreakAfter: 'avoid' }}>{cat.label}</div>
-      {items.map((it) => {
+      {items.filter((it) => !(disp.hidePriceless && boardPrice(it) <= 0 && !(it._variants || []).length)).map((it) => {
         const variants = it._variants || [];
         const hasVar = variants.length > 0;
         const sold = six.has(it.id);

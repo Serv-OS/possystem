@@ -14,7 +14,7 @@ import { money } from '../../lib/currency';
 const ASSET_BUCKET = 'receipt-assets';
 const FONTS = ['', 'Plus Jakarta Sans', 'Space Grotesk', 'Inter', 'Georgia', 'Oswald'];
 const DEF_THEME = { bgColor: '#14110d', textColor: '#F5EFE6', accent: '#E8A23C', font: '', footerNote: '', logoUrl: '', bgImageUrl: '' };
-const DEF_DISP = { showDescription: true, showAllergens: true, showPrices: true, showImages: false, soldOut: 'grey', textScale: 1 };
+const DEF_DISP = { showDescription: true, showAllergens: true, showPrices: true, showImages: false, soldOut: 'grey', textScale: 1, hidePriceless: false };
 const newBoard = (n) => ({ name: `Menu board ${n}`, orientation: 'landscape', mode: 'menu', layout: { columns: 'auto', blocks: [] }, display_options: { ...DEF_DISP }, theme: { ...DEF_THEME }, marketing: { mediaUrl: '', mediaType: 'image', fit: 'cover' } });
 
 const boardPrice = (it) => {
@@ -228,6 +228,7 @@ function Editor({ board, setBoard, cats, itemsByCat, six, onSave, onPublish, onC
                   <Toggle on={board.display_options.showAllergens} label="Allergens" set={v => setDisp({ showAllergens: v })} />
                   <Toggle on={board.display_options.showPrices} label="Prices" set={v => setDisp({ showPrices: v })} />
                   <Toggle on={board.display_options.showImages} label="Images" set={v => setDisp({ showImages: v })} />
+                  <Toggle on={board.display_options.hidePriceless} label="Hide items with no price" set={v => setDisp({ hidePriceless: v })} />
                 </div>
                 <Field label="When an item is sold out"><Pills opts={[['grey', 'Grey “sold out”'], ['hide', 'Hide it']]} val={board.display_options.soldOut} on={v => setDisp({ soldOut: v })} /></Field>
                 <Field label="Text size"><Pills opts={[['0.85', 'Smaller'], ['1', 'Default'], ['1.15', 'Larger'], ['1.3', 'Extra large']]} val={String(board.display_options.textScale ?? 1)} on={v => setDisp({ textScale: Number(v) })} /></Field>
@@ -322,7 +323,7 @@ function Preview({ board, cats, itemsByCat, six }) {
                 {secs.map(sec => (
                   <div key={sec.id} style={{ marginBottom: '0.9em', breakInside: 'auto' }}>
                     <div style={{ fontSize: '0.72em', letterSpacing: '.1em', color: t.accent, marginBottom: '0.35em', textTransform: 'uppercase', fontWeight: 700, breakAfter: 'avoid', WebkitColumnBreakAfter: 'avoid' }}>{sec.label}</div>
-                    {sec.items.map(it => {
+                    {sec.items.filter(it => !(disp.hidePriceless && boardPrice(it) <= 0 && !(it._variants || []).length)).map(it => {
                       const variants = it._variants || [];
                       const hasVar = variants.length > 0;
                       const sold = six.has(it.id), price = boardPrice(it), diet = dietaryBadges(it);

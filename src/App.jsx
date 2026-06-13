@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.460', date: '13 Jun 2026', label: 'Menu board — hide price-less items',
+    changes: [
+      'New per-screen toggle “Hide items with no price” — filters out options like “No Ice / No Lemon” that have no price and no sizes, so the board only shows real sellable products. Off by default.',
+    ],
+  },
+  {
     version: '5.5.459', date: '13 Jun 2026', label: 'Menu board — variant spacing',
     changes: [
       'Added vertical breathing room between variant/size rows (e.g. Regular / Large) so the nested prices no longer sit on top of each other.',
