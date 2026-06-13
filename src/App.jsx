@@ -84,6 +84,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.450', date: '12 Jun 2026', label: 'Owner app — light / dark mode switch',
+    changes: [
+      'The owner app now has a light/dark toggle (top-right, on both the sign-in screen and the dashboard). Your choice is remembered and uses the same theming as the rest of ServOS, so every figure, card and the logo render correctly in either mode.',
+    ],
+  },
+  {
     version: '5.5.449', date: '12 Jun 2026', label: 'Owner app — correct ServOS branding',
     changes: [
       'The owner app now shows the real ServOS logo (the Syne “S” monogram + Signal-green dot, Space Grotesk wordmark) on the sign-in screen and header — using the shared brand components rendered in the brand fonts, instead of the placeholder text mark.',

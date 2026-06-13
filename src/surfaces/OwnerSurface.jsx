@@ -19,8 +19,15 @@ const pctTone = (p, good = 'up') => p == null ? 'var(--t3)' : (good === 'up' ? (
 
 export default function OwnerSurface() {
   const [session, setSession] = useState(undefined); // undefined=checking
+  // Theme: reuse the app-wide rpos-theme key + [data-theme] CSS so the owner's
+  // choice persists and matches the rest of ServOS.
+  const [theme, setTheme] = useState(() => { try { return localStorage.getItem('rpos-theme') || 'dark'; } catch { return 'dark'; } });
+  const toggleTheme = useCallback(() => setTheme(t => (t === 'dark' ? 'light' : 'dark')), []);
+
+  useEffect(() => { try { document.documentElement.setAttribute('data-skin', 'servos'); } catch {} }, []);
+  useEffect(() => { try { document.documentElement.setAttribute('data-theme', theme); localStorage.setItem('rpos-theme', theme); } catch {} }, [theme]);
+
   useEffect(() => {
-    try { document.documentElement.setAttribute('data-skin', 'servos'); document.documentElement.setAttribute('data-theme', 'dark'); } catch {}
     if (isMock || !supabase) { setSession(null); return; }
     supabase.auth.getSession().then(({ data }) => setSession(data?.session || null));
     const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s || null));
@@ -28,17 +35,23 @@ export default function OwnerSurface() {
   }, []);
 
   if (session === undefined) return <Shell><div style={{ color: 'var(--t3)', textAlign: 'center', paddingTop: 80 }}>Loading…</div></Shell>;
-  if (!session) return <Shell><Login /></Shell>;
-  return <Shell><Dashboard email={session.user?.email} /></Shell>;
+  if (!session) return <Shell><Login theme={theme} onToggleTheme={toggleTheme} /></Shell>;
+  return <Shell><Dashboard email={session.user?.email} theme={theme} onToggleTheme={toggleTheme} /></Shell>;
 }
 
 function Shell({ children }) {
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--bg0, #0a0b0f)', color: 'var(--t1)', fontFamily: 'var(--font, system-ui, sans-serif)' }}>
+    <div style={{ minHeight: '100vh', background: 'var(--bg, #0F1211)', color: 'var(--t1)', fontFamily: 'var(--font, system-ui, sans-serif)' }}>
       <div style={{ maxWidth: 520, margin: '0 auto', padding: '16px 14px 40px' }}>{children}</div>
     </div>
   );
 }
+
+const ThemeBtn = ({ theme, onClick }) => (
+  <button onClick={onClick} title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'} aria-label="Toggle theme" style={iconBtn}>
+    {theme === 'dark' ? '☀' : '☾'}
+  </button>
+);
 
 function Brand({ sub }) {
   return (
@@ -51,7 +64,7 @@ function Brand({ sub }) {
   );
 }
 
-function Login() {
+function Login({ theme, onToggleTheme }) {
   const [email, setEmail] = useState('');
   const [pw, setPw] = useState('');
   const [busy, setBusy] = useState(false);
@@ -63,10 +76,12 @@ function Login() {
       if (error) throw error;
     } catch (e2) { setErr(e2.message || 'Could not sign in'); } finally { setBusy(false); }
   };
-  if (isMock || !supabase) return <><Brand /><div style={{ textAlign: 'center', color: 'var(--t3)', fontSize: 13, lineHeight: 1.6 }}>The owner app needs a live backend connection.</div></>;
+  const toggleRow = <div style={{ display: 'flex', justifyContent: 'flex-end' }}><ThemeBtn theme={theme} onClick={onToggleTheme} /></div>;
+  if (isMock || !supabase) return <>{toggleRow}<Brand /><div style={{ textAlign: 'center', color: 'var(--t3)', fontSize: 13, lineHeight: 1.6 }}>The owner app needs a live backend connection.</div></>;
   const inp = { width: '100%', padding: '13px 14px', borderRadius: 12, border: '1px solid var(--bdr2)', background: 'var(--bg2)', color: 'var(--t1)', fontSize: 16, fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' };
   return (
     <>
+      {toggleRow}
       <Brand sub="Sign in to your business" />
       <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 10 }}>
         <input style={inp} type="email" inputMode="email" autoComplete="email" placeholder="Email" value={email} onChange={e => setEmail(e.target.value)} required />
@@ -81,7 +96,7 @@ function Login() {
   );
 }
 
-function Dashboard({ email }) {
+function Dashboard({ email, theme, onToggleTheme }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
@@ -114,6 +129,7 @@ function Dashboard({ email }) {
           <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 2 }}>{updated ? `Updated ${updated}` : 'Today'}</div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
+          <ThemeBtn theme={theme} onClick={onToggleTheme} />
           <button onClick={load} title="Refresh" style={iconBtn}>↻</button>
           <button onClick={() => supabase.auth.signOut()} title="Sign out" style={iconBtn}>⎋</button>
         </div>
