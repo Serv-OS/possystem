@@ -24,7 +24,7 @@ function Card({ icon, title, desc, note, accent, onClick }) {
   );
 }
 
-export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelectAdmin, onSelectMPOS, onSelectClock }) {
+export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelectAdmin, onSelectMPOS, onSelectClock, onSelectMenuBoard }) {
   return (
     <div style={{
       minHeight: '100vh',
@@ -73,6 +73,14 @@ export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelect
           note="Requires a Serv OS account"
           accent="#6366f1"
           onClick={onSelectBackOffice}
+        />
+        <Card
+          icon="📺"
+          title="Menu Board"
+          desc="A TV or display showing your menu — categories, prices and allergens, updating live. Marks items sold out automatically."
+          note="Pairs to a location like a regular POS"
+          accent="#0ea5e9"
+          onClick={onSelectMenuBoard}
         />
       </div>
 

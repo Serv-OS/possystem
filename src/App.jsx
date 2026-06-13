@@ -23,6 +23,7 @@ import { KDSSurface } from './surfaces/OtherSurfaces';
 import MPOSSurface from './surfaces/MPOSSurface';
 import TimeClockSurface from './surfaces/TimeClockSurface';
 import OwnerSurface from './surfaces/OwnerSurface';
+import MenuBoardSurface from './surfaces/MenuBoardSurface';
 import OnboardingSignSurface from './surfaces/OnboardingSignSurface';
 import RyftTestSurface from './surfaces/RyftTestSurface';
 import CustomerBoot from './surfaces/CustomerBoot';
@@ -83,6 +84,13 @@ import { ServOSIcon } from './components/ServOSBrand';
 import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
+  {
+    version: '5.5.453', date: '13 Jun 2026', label: 'Digital menu board (phase 1)',
+    changes: [
+      'New ?mode=menuboard display surface for a TV/Android stick: renders your menu live with an auto-fit + auto-balance layout engine — categories stack into balanced columns and the whole board scales to fill one screen no matter how many you show. Prices, descriptions and allergens per item; items marked sold out automatically when 86’d; updates over the air in real time; caches the last menu so it never goes blank offline.',
+      'Marketing mode shows a full-screen image or video with no menu. New menu_boards table + a “Menu Board” option in the device chooser. Back-office screen builder (drag-arrange, branding, publish) and the Fire TV app flavor come next.',
+    ],
+  },
   {
     version: '5.5.452', date: '13 Jun 2026', label: 'Daily trading (P&L) — VAT broken out fully',
     changes: [
@@ -6171,6 +6179,7 @@ export default function App() {
       onSelectPOS={() => { localStorage.setItem('rpos-device-mode', 'pos'); window.location.href = '?mode=pos'; }}
       onSelectMPOS={() => { localStorage.setItem('rpos-device-mode', 'mpos'); window.location.href = '?mode=mpos'; }}
       onSelectClock={() => { localStorage.setItem('rpos-device-mode', 'clock'); window.location.href = '?mode=clock'; }}
+      onSelectMenuBoard={() => { localStorage.setItem('rpos-device-mode', 'menuboard'); window.location.href = '?mode=menuboard'; }}
       onSelectBackOffice={() => { localStorage.setItem('rpos-device-mode', 'backoffice'); window.location.href = '?mode=office'; }}
       onSelectAdmin={() => { localStorage.setItem('rpos-device-mode', 'admin'); window.location.href = '?mode=admin'; }}
     />
@@ -6191,6 +6200,11 @@ export default function App() {
   // Owner snapshot — mobile-first, self-contained (own BO login + owner-snapshot
   // edge fn). Read-only top-down view across every venue the owner can access.
   if (deviceMode === 'owner') return <OwnerSurface />;
+
+  // Digital menu board — read-only Android-TV display. Resolves its own location,
+  // renders one menu_boards "screen" with the auto-fit/auto-balance engine, live
+  // over Realtime. No SyncBridge (like customer-display).
+  if (deviceMode === 'menuboard') return <MenuBoardSurface />;
 
   // Back office mode — go to email login (no pairing needed)
   if (deviceMode === 'backoffice' || deviceMode === 'office') return <><SyncBridge onSyncPulse={handleSyncPulse}/><BackOfficeApp /></>;
