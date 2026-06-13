@@ -83,6 +83,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.437', date: '12 Jun 2026', label: 'Review Manager — two-way platform sync + reply-back loop',
+    changes: [
+      'Reviews left directly on connected platforms now flow into the same queue (deduped so they never import twice), and an approved reply can be sent back: to the platform for a public review, or to the guest by SMS/email for a private one. Built as one adapter across Google/TripAdvisor/Facebook + an AI reply drafter.',
+      'Honest per-platform reality (verified against each platform’s API): Google — reviews sync in and replies post back automatically once the venue connects its Business Profile (Google approval can take ~2 weeks); TripAdvisor — read-only, so we hand you the reply to paste into their Management Center; Facebook — Meta removed review API access in Sept 2025, so those are read/replied in Meta Business Suite. The full data flow (sync, dedup, draft, approve, send) is live; the platform connections light up as each is wired.',
+    ],
+  },
+  {
     version: '5.5.436', date: '12 Jun 2026', label: 'Review Manager (1/8) — customer review card + rating router',
     changes: [
       'First screen of the new Review Manager: a branded, mobile-first review card at /review (e.g. yourslug.serv-os.app/review). The guest rates 1–5 and leaves feedback; the SERVER decides what happens next — at or above your threshold (default 3★) it confirms the review is being posted to your connected platforms; below it, the feedback is captured privately for the manager and never posted publicly, with an optional “what happened + contact” form.',
