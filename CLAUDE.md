@@ -10,7 +10,7 @@
 **RPOS** — Restaurant OS. A multi-tenant, multi-device SaaS POS system for hospitality.
 Live at: https://possystem-liard.vercel.app
 GitHub: Serv-OS/possystem
-Current version: see `src/lib/version.js` (currently v5.5.389)
+Current version: see `src/lib/version.js` (currently v5.5.452)
 Codebase: ~97,000 lines across 246 source files
 
 **Product surfaces:**
@@ -31,6 +31,8 @@ Codebase: ~97,000 lines across 246 source files
 | Gift Cards | `/gift/*` | Purchase, check balance, and manage gift cards |
 | QR Order | `/qr/*` | QR code table ordering for dine-in customers |
 | AI Assistant | `?mode=ai` | Claude-powered shift assistant for staff |
+| Owner App | `?mode=owner` | Mobile owner snapshot — top-down KPIs across all accessible locations (back-office login; URL-bookmarked PWA, not a paired device) |
+| Review card | `/review` | Customer-facing branded review card (Review Manager) |
 
 ---
 
@@ -175,8 +177,8 @@ src/
 api/
   ai.js                — Vercel serverless: Claude AI endpoint
 supabase/
-  functions/           — 44 Supabase Edge Functions (Deno/TypeScript)
-    _shared/           — Shared utilities (CORS, auth, HMAC, gift card helpers)
+  functions/           — 60+ Supabase Edge Functions (Deno/TypeScript); all verify_jwt=false, each enforces its own tenant fence
+    _shared/           — Shared utilities (CORS, auth, HMAC, gift card helpers, review-platforms, google-reviews)
     gift-*             — 14 gift card functions (issue, redeem, void, balance, etc.)
     loyalty-*          — 8 loyalty functions (earn, redeem, OTP, rewards, etc.)
     stripe-*           — 13 Stripe functions (payments, readers, webhooks, etc.)
@@ -187,6 +189,11 @@ supabase/
     create-user        — Platform user provisioning
     workforce-compute  — Server-side pay/tronc/holiday-accrual/labour (service-role; tenant-fenced; tamper-evident audit)
     workforce-clock    — Time Clock punches: PIN→staff_members→wf_timesheets (server-side; breaks; rate snapshot)
+  workforce-onboarding — Contract e-sign (public /sign/<token> page)
+  trading-report     — Daily Trading P&L (forecast + same-weekday-LY; sales/VAT/COGS/labour/overhead ladder)
+  owner-snapshot     — Owner app (?mode=owner) multi-location top-down snapshot in one call
+  review-*           — Review Manager: review-admin / sync / reply / submit / request / google (one-time platform OAuth)
+  ryft-* / payments-* — Ryft dual-processor payments (card-present, tabs, refunds, disputes) + onboard/admin/processor
 ```
 
 ---
@@ -267,8 +274,10 @@ supabase/
 - **Order tracking:** Real-time order status tracking page.
 - **Configurable:** Per-location enable/disable, order types (pickup/delivery), service charges.
 
-### Reporting (20 reports)
-Sales Summary, Product Mix, Payments, Tax, Tips, Servers, Tables, Menu Engineering, DailyTrend, Daypart, Item Trend, Order Types, KDS Performance, Shifts, Cash Drawer, Z Report, Catalog, Loyalty, Exceptions, Location Compare.
+### Reporting (24 reports)
+Sales Summary, Product Mix, Payments, Tax, Tips, Servers, Tables, Menu Engineering, DailyTrend, Daypart, Item Trend, Order Types, KDS Performance, Shifts, Cash Drawer, Z Report, Catalog, Loyalty, Exceptions, Location Compare, **Daily Trading (P&L)**, **Payroll**, Card Payments & Payouts (Ryft), Disputes.
+- **Daily Trading (P&L)** (`reports/DailyTrading.jsx` + `trading-report` edge fn) — operator sets a per-day forecast (suggests same-weekday-last-year); full P&L ladder **gross takings → less VAT (HMRC, never profit) → net sales → less COGS (configurable %) → gross profit → less labour (theoretical rota vs actual timesheets) → less overhead → operating profit**. VAT from `closed_checks.tax_amount`; gross = net + VAT. COGS%/overhead in `wf_venue_settings.settings`. Net sales (ex-VAT) is the P&L revenue basis.
+- **Payroll** (`reports/PayrollReport.jsx`) — closed `wf_payroll_runs`: per-run wages/tips, per-staff breakdown, CSV.
 
 ### Workforce / Staff Management (Back Office → Workforce)
 - **Per-location** staff-management module: Dashboard, Rota, Timesheets, Time off & availability, Staff, Onboarding, Compliance, Positions & rates, Tronc/tips, Announcements, Settings. It follows the BO location selector (no per-module venue switcher; multi-site rollups belong in Reports).

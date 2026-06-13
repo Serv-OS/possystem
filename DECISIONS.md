@@ -190,3 +190,31 @@ Short ADR entries for non-obvious choices in the codebase.
 - **Money integrity:** `numeric` + currency-stamped everywhere; effective rate + source snapshotted onto shifts/timesheets; FKs onto staff are `ON DELETE RESTRICT` + soft-delete (`status='leaver'`); `wf_audit` + `wf_holiday_accrual` append-only (UPDATE/DELETE/TRUNCATE revoked from client roles; audit hash-chained); finalised tronc runs immutable (trigger); composite `(…, org_id)` FKs prevent cross-tenant linking.
 
 **Consequences:** Two new edge functions to maintain; clients must call them rather than writing money rows. Migration was validated with a transactional dry-run + per-table column-insert test before applying, and the wf_ RLS depends on the helper functions existing (now created by the migration itself). Decided server-side compute over client maths per the operator: "linked to live financials, needs to be 100% correct."
+
+---
+
+## ADR-019: Daily Trading (P&L) — forecast that learns, VAT broken out, COGS as settings
+
+**Context:** Owners wanted a "real-life holistic" daily P&L: set a forecast per day that learns from history, then see theoretical vs actual costs against real sales. The system has real **sales** (`closed_checks`) and real **labour** (rota `wf_shifts.computed_cost` + actual `wf_timesheets`), but **no per-item cost** (`menu_items` has no `cost_price`) and no overhead config.
+
+**Decision:**
+- Computed server-side by the **`trading-report`** edge fn (reuses the tenant-fence pattern; `verify_jwt=false`, validates `user_locations`/super_admin). Per-day rows + period totals.
+- **Forecast** is operator-set (`wf_sales_forecast`, net target) with a **"same weekday last year"** suggestion learned from `closed_checks` (date − 364 days = same weekday). Treated as a **net** figure.
+- **VAT is broken out and is never profit.** Ladder: gross takings (inc VAT) → **less VAT** → net sales (ex-VAT) → less COGS → gross profit → less labour → less overhead → operating profit. VAT comes from `closed_checks.tax_amount` (fallback `max(0, total − net − service − tip)` for pre-v4.6.19 checks). **Gross = net + VAT** — deliberately NOT the `total` column, which is unreliable in real data (observed `total` < `subtotal`). Net sales (subtotal, ex-VAT) is the P&L revenue basis.
+- **COGS % + daily overhead are operator estimates** stored in `wf_venue_settings.settings` jsonb (`cogs_pct`, `daily_overhead`) — **no schema migration**. Applied to both forecast (theoretical) and actuals.
+
+**Consequences:** COGS is an estimate until the stock system adds `cost_price` to items (then derive real COGS from `closed_checks.items` × cost; keep the flat-% as fallback). Labour shows theoretical (rota) vs actual (approved/paid timesheets), bucketed by venue tz. The same engine feeds the Owner app (`owner-snapshot`).
+
+---
+
+## ADR-020: Review Manager — de-gated, real-API-only, one-time platform Google OAuth
+
+**Context:** A design handoff proposed routing happy guests to public review sites and unhappy ones to a private form ("review gating"). That is now **illegal** (UK DMCC Act 2024; US FTC Consumer Reviews Rule, Oct 2024). Also, of the many review platforms, only a few expose real read+reply APIs.
+
+**Decision:**
+- **No review-gating.** Every guest always sees the public review path; the private feedback option is additive, never a diversion. Built INTO RPOS (Back Office → Customers → Reviews), reusing comms/CRM/Claude/multi-tenancy.
+- **Only surface a platform we can genuinely connect to.** Google has a live read+reply path; TheFork/Trustpilot are stubbed until OAuth is built; everything else (Yelp/Facebook/TripAdvisor/delivery apps) is excluded.
+- **Google uses ONE platform OAuth client** ("ServOS Reviews", in the `servos-crm` Google Cloud project), not one per customer — each venue just clicks **Connect Google** (`review-google` flow, refresh tokens stored server-side in `review_google_tokens`, hijack-guarded). Client secret lives **only** in Supabase env (`GOOGLE_OAUTH_CLIENT_ID/_SECRET`).
+- **Audience starts Internal, goes External + verified at launch.** Internal (serv-os.app Workspace) needs no verification but only org accounts can connect; real external venues require the consent screen switched to **External** + Google verification of the sensitive `business.manage` scope. Review **data** (v4 API) is separately access-gated by Google (~1–2 week approval).
+
+**Consequences:** The reviews feature ships connect-ready but review data flows only after Google's v4 approval. Per-venue setup is just a sign-in. Full operational state is tracked in memory `reference_google_review_oauth.md`.

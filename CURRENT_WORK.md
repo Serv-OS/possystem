@@ -1,6 +1,6 @@
 # Serv OS / RPOS — session handoff
 
-> **Current build: v5.5.389** · live: https://possystem-liard.vercel.app · repo: **Serv-OS/possystem** (branch `develop`, Vercel auto-deploys).
+> **Current build: v5.5.452** · live: https://possystem-liard.vercel.app · dev: https://dev.serv-os.app · repo: **Serv-OS/possystem** (branch `develop`, Vercel auto-deploys).
 > Multi-tenant hospitality POS (React 19 + Vite, Zustand, Supabase; no TypeScript, no tests). First customer is UK / GBP.
 > **Pillars:** don't break working functionality · resolve the real `locationId` before any DB write (never `loc-demo`) · CSS vars not hardcoded colours · bump `src/lib/version.js` + add a `CHANGELOG` entry in `src/App.jsx` on every web deploy · money is `numeric`, never float.
 
@@ -44,6 +44,15 @@ Workforce → Tronc now **pulls the real weekly pool from the POS** (card tips +
 - **Payroll bank**: full account stored (org-RLS-fenced) + sort + masked; shown on the staff profile so staff can be paid.
 - **Email/SMS via SDK**: all workforce `send-receipt`/`send-sms`/`workforce-compute` calls go through `supabase.functions.invoke` (correct gateway auth) — fixed offers/contracts not sending.
 
+### 7. (newest) Payments choice (Ryft), Review Manager + Google, Reporting suite, Owner app
+- **Ryft payments** built alongside Stripe (dual-processor, chosen per location): card-present (CheckoutModal), online/QR/kiosk, **bar-tab pre-auth** (store card → capture on close), refunds, **disputes** (accept/challenge with a respond-by deadline), a reconciliation ledger (`ryft_payments`) kept in sync by webhooks, and admin onboarding/connect. Edge fns `ryft-*`, `payments-onboard/admin/processor`. See `RYFT_INTEGRATION_PLAN.md`.
+- **Review Manager** (Back Office → Customers → Reviews): de-gated, **compliance-safe** (UK DMCC 2024 / US FTC Oct-2024 — no review-gating) reputation module. Approvals queue, branded customer review card at `/review` (inherits the venue brand kit + uploadable background), trigger engine (POS-driven SMS ask), dashboard, settings. Pulls/replies through **real platform APIs only** — Google (live path), TheFork/Trustpilot (stubbed until OAuth built). `review-*` edge fns + `review_*` tables.
+- **Google connection** (one-time *platform* OAuth, not per customer): `review-google` flow + `_shared/google-reviews.ts`. OAuth client **"ServOS Reviews"** created + Supabase `GOOGLE_OAUTH_CLIENT_ID/_SECRET` set (13 Jun); each venue just clicks **Connect Google**. **v4 review-DATA API access is PENDING Google approval** (case `1-2668000040500`, ~7–10 business days — see Open items). Full state in memory `reference_google_review_oauth.md`.
+- **Reporting suite** (Back Office → Reports):
+  - **Daily trading (P&L)** — Sales → "Daily trading (P&L)". `trading-report` edge fn. Per-day operator **forecast** (with a "same weekday last year" suggestion learned from `closed_checks`) → full P&L ladder: **gross takings → less VAT (collected for HMRC, never profit) → net sales (ex-VAT) → less COGS (configurable %) → gross profit → less labour (theoretical rota vs actual timesheets) → less overhead → operating profit**, with per-day table (Gross/VAT/Net columns) + totals. VAT from `closed_checks.tax_amount` (fallback `total−net−service−tip`); gross = net + VAT (the `total` column is unreliable). COGS%/overhead stored in `wf_venue_settings.settings` jsonb — **no schema change**.
+  - **Payroll** — Staff → "Payroll". Reads closed `wf_payroll_runs`; per-run wages/tips, expandable per-staff breakdown, CSV.
+- **Owner app** (`?mode=owner`): mobile-first PWA. Back-office login → top-down snapshot across every location the owner can access (today net vs forecast, % to forecast, labour %, orders, avg check, tips, live orders + open tables, WTD vs last week, top sellers) in one `owner-snapshot` edge-fn call. Light/dark toggle (shared `rpos-theme`). Real ServOS logo via `ServOSBrand` components. `src/surfaces/OwnerSurface.jsx`.
+
 ### (earlier in this block) Bar-tab card holds, multi-currency (`lib/currency.js`, `locations.currency`), MPOS hardening (86 on modifiers, tax breakdown, customer search), customer-display loyalty + theme.
 
 ---
@@ -78,7 +87,7 @@ Punches are written **server-side** by `supabase/functions/workforce-clock` (DEP
 
 ## Surfaces / modes
 
-`?mode=` → `pos` · `mpos` · `bar` · `tables` · `kds` · `kiosk` · `orders` · `customer-display` · **`clock`** · `office` (Back Office) · `admin` (internal Company Admin). Customer web: `/online/:slug`, `/customer/*`, `/gift/*`, `/qr/*`, **`/sign/<token>`** (Workforce contract e-sign). Mode is chosen in `ModeSelector` and saved to `rpos-device-mode`.
+`?mode=` → `pos` · `mpos` · `bar` · `tables` · `kds` · `kiosk` · `orders` · `customer-display` · `clock` · **`owner`** (owner snapshot PWA — BO login, no device pairing) · `office` (Back Office) · `admin` (internal Company Admin). Customer web: `/online/:slug`, `/customer/*`, `/gift/*`, `/qr/*`, `/sign/<token>` (Workforce contract e-sign), **`/review`** (Review Manager customer card). Mode is chosen in `ModeSelector` and saved to `rpos-device-mode` (the owner app is URL-bookmarked, not a device tile).
 
 ---
 
@@ -89,7 +98,7 @@ Punches are written **server-side** by `supabase/functions/workforce-clock` (DEP
 | Holds | POS operational data + **all edge functions** | orgs, users, loyalty, gift cards |
 | Client | `supabase` (lib/supabase.js) | `platformSupabase` |
 
-**Ops tables:** `menu_items/categories/menus`, `modifier_groups`, `active_sessions`, `closed_checks`, `floor_tables`, `config_pushes`, `stock_levels`, `eighty_six`, `locations`, `device_profiles`, `pos_devices`, `staff_members`, `user_profiles`, `user_locations`, `order_queue`, `tax_rates`, `discount_definitions`, + the 18 **`wf_*`** Workforce tables. **Edge functions** (Deno): 44 gift/loyalty/stripe/send-* + **`workforce-compute`** (pay/tronc/accrual) + **`workforce-clock`** (time clock) + **`workforce-onboarding`** (contract e-sign). **Storage:** private **`wf-documents`** bucket (RTW/contracts; per-location RLS, signed URLs). SMS (Twilio) + email (Resend via `send-receipt`) configured.
+**Ops tables:** `menu_items/categories/menus`, `modifier_groups`, `active_sessions`, `closed_checks`, `floor_tables`, `config_pushes`, `stock_levels`, `eighty_six`, `locations`, `device_profiles`, `pos_devices`, `staff_members`, `user_profiles`, `user_locations`, `order_queue`, `tax_rates`, `discount_definitions`, the 18 **`wf_*`** Workforce tables, **`review_*`** (Review Manager incl. `review_settings`, `review_google_tokens`, `review_requests`), **`ryft_payments`** (reconciliation ledger). **Edge functions** (Deno): gift/loyalty/stripe/send-* + `workforce-compute` / `workforce-clock` / `workforce-onboarding` + **`trading-report`** (Daily P&L) + **`owner-snapshot`** (owner app) + **`review-*`** (review-admin/sync/reply/submit/request/google) + **`ryft-*`** / **`payments-*`** (dual-processor payments). All `verify_jwt=false` and enforce their own tenant fence. **Storage:** private `wf-documents` bucket + `receipt-assets` (review card backgrounds). SMS (Twilio) + email (Resend) configured. **Platform env (Ops project) secrets** include `GOOGLE_OAUTH_CLIENT_ID/_SECRET`, `RYFT_SECRET_KEY`, Stripe + Resend keys.
 
 ---
 
@@ -104,13 +113,34 @@ Every deploy: bump `src/lib/version.js` + add a top-of-array `CHANGELOG` entry i
 
 ---
 
-## Open items / next
+## Open items / outstanding TODOs
 
-1. **Workforce → Dashboard** still shows the legacy summary tiles (staff count is real; wage/labour read zero until shifts + a sales forecast exist) — wire it to the live rota/sales next.
-2. **"Who's on shift now"** live view (Workforce or POS) + an optional clock-in shortcut on the POS PIN screen as a secondary entry point.
-3. **UK vs US tip distribution** — the Tips *report* calculator is the US model (tip-out/shared-by-role); Workforce → Tronc is the UK Tipping Act model (hours × points). Consider offering the UK method inside the report for UK venues.
-4. Swap-request approvals + announcements SMS still to wire (publish-rota SMS is live; `send-sms`/`send-receipt` both configured).
-5. Android self-update pipeline → production-real signing/CI (see `android/AUTO_UPDATE_PLAN.md`); Menu Board surface.
+### 🔴 Time-sensitive — don't forget
+1. **Google review-data API approval — PENDING.** Business Profile **v4** access request submitted **13 Jun 2026**, case **`1-2668000040500`**, Google quoted **~7–10 business days** (≈ **24–27 Jun 2026**). Until granted, OAuth/"Connect Google" works but review list/reply calls **403**. **CHECK around 24–27 Jun**: the approval email lands on the submitting account **peter@posup.co.uk** (and/or the support case). When approved → enable the now-ungated "Google My Business API" in the `servos-crm` project; reviews then flow. (Full state: memory `reference_google_review_oauth.md`.)
+2. **Revoke the Supabase PAT** used 13 Jun to deploy `trading-report` — https://supabase.com/dashboard/account/tokens → Revoke (unless more deploys are imminent). Never commit it.
+
+### Review Manager / Google — to go fully live
+3. **Consent screen → External + Google verification** of the `business.manage` scope. It's currently **Internal** (serv-os.app Workspace), but the verified Business Profile (**POSUP**) sits on `peter@posup.co.uk` *outside* that org — so even *testing* the Connect flow needs **External + Testing mode + peter@posup.co.uk added as a Test user**. Full verification removes the "unverified app" warning so any external venue can connect.
+4. **TheFork + Trustpilot OAuth** connect flows (currently stubbed in `_shared/review-platforms.ts`). Rule: only surface a platform once a real connect exists.
+5. **Review ask-engine cron** — schedule `review-request scan_all` (~every 15 min) so post-visit SMS asks fire automatically (manual run-now works today).
+
+### Stock / inventory — deferred by user (memory `project_post_launch_tasks.md`)
+6. **Finish the stock system, starting with `cost_price` on `menu_items`** (none today). Unlocks **real COGS** in Daily trading (P&L) + owner app (currently an estimated flat %). Thread via the 3 standard spots (db.js item upsert, store save path, SyncBridge mapping) + a MenuManager cost field.
+
+### Reporting / owner app — polish
+7. Owner app: optional "View on phone" QR in Back Office; deeper drill-downs.
+8. Daily trading: surface a per-day **service charge / tips** line (tracked, not yet shown); CSV export.
+
+### Workforce — still open from the prior block
+9. **Workforce → Dashboard** legacy tiles → wire to live rota/sales.
+10. **"Who's on shift now"** live view + optional clock-in shortcut on the POS PIN screen.
+11. **UK vs US tip distribution** — offer the UK Tronc (hours × points) method inside the Tips *report* for UK venues (report is US-model; Workforce → Tronc is UK).
+12. Swap-request approvals + announcements SMS (publish-rota SMS is live).
+
+### Platform / infra — post-launch (memory `project_post_launch_tasks.md`)
+13. **Apple Pay / Google Pay wallets** on online ordering (`<PaymentElement>` + per-venue Apple Pay domain verification).
+14. Android self-update → production signing/CI (`android/AUTO_UPDATE_PLAN.md`); Menu Board surface.
+15. Multi-currency tail (denomination sets), bar-tab pre-auth refinements, `resolveCompanyForLocation` dedup, code-split bundles, commit `send-sms` source.
 
 ## Ops / secrets note
-A Supabase **Personal Access Token** was used this session to apply the Workforce migration + deploy the two edge functions. All of that is done — **revoke the PAT** in the Supabase dashboard unless more DB/function deploys are imminent. Never commit it. Vercel env holds the real `VITE_SUPABASE_*` keys; `.env.local` is placeholders (mock).
+A Supabase **Personal Access Token** was used 13 Jun 2026 to deploy `trading-report` + `owner-snapshot` (written to `/tmp/sbtoken`, NOT committed). **Revoke it** once no more deploys are pending (item 2). `GOOGLE_OAUTH_CLIENT_ID/_SECRET`, `RYFT_SECRET_KEY`, Stripe + Resend keys live **only** in the Ops project's Edge Function secrets — never repo/bundle. Vercel env holds the real `VITE_SUPABASE_*`; `.env.local` is placeholders (mock).

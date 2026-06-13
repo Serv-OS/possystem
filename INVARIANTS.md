@@ -137,3 +137,15 @@ Tables MUST never be lost between updates. These safeguards exist:
 - **`wf_*` RLS is real, not "allow all."** Every table is location-scoped via `user_accessible_locations()` except `wf_staff` (org-scoped PII via `user_accessible_orgs()`). Those helpers are created by `20260608_workforce.sql` — don't drop them. Anonymous (kiosk/clock/online) sessions MUST never read payroll/PII.
 - **`(location_id, org_id)` must be a real pair from `locations`** — composite FKs enforce it. Resolve `org_id` from the location (or trust `orgCtx.orgId`) so writes don't violate the fence.
 - **Clock PINs are validated server-side only** — `workforce-clock` matches the PIN against `staff_members`; never send the staff PIN list to a clock client.
+
+---
+
+## Reporting / Tax / Reviews
+
+- **Net sales (`closed_checks.subtotal`, ex-VAT) is the P&L revenue basis. VAT is NEVER revenue or profit.** The Daily Trading (P&L) report and Owner app must always show VAT as a separate line ("collected for HMRC"), not fold it into sales or profit.
+- **Daily Trading gross = net + VAT**, computed from `subtotal` + `tax_amount`. Do **not** use `closed_checks.total` as "gross" — it's unreliable in real data (can be less than `subtotal`; may include service/tip). VAT prefers `tax_amount`; fallback `max(0, total − subtotal − service − tip)` only for legacy checks with null `tax_amount`.
+- **COGS % and daily overhead are operator estimates** (in `wf_venue_settings.settings`), not real costs — there is no per-item `cost_price` yet. Don't present estimated COGS as actual cost. When `cost_price` lands, derive real COGS but keep the flat-% as fallback.
+- **Tronc/tips are not sales** — never add `tip` (or `service`, unless modelling service charge explicitly) into the sales/net/gross figures.
+- **Review Manager must never re-introduce review-gating** — happy and unhappy guests get the same public review path (UK DMCC Act 2024 / US FTC Oct-2024). The private feedback option is additive only.
+- **One platform Google OAuth client for reviews, never per-customer.** The Google client secret lives only in Supabase Edge Function env (`GOOGLE_OAUTH_CLIENT_SECRET`) — never in the repo, bundle, or client. Venues connect by signing in; the platform never holds venue Google passwords.
+- **Edge functions enforce their own tenant fence.** `trading-report` / `owner-snapshot` / `review-*` run `verify_jwt=false` and must validate the caller (`user_locations` / super_admin / service-role) before returning a location's data — RLS is not doing it for them.
