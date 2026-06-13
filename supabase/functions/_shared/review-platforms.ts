@@ -13,7 +13,13 @@
 // nothing silently fails. Slot real API calls into the marked spots per
 // platform as OAuth lands; the callers don't change.
 
-export type Platform = 'google' | 'tripadvisor' | 'facebook';
+// The realistic platform set for UK hospitality/retail (verified landscape
+// research). API-capable ones have live calls wired later; the rest ride the
+// manual deep-link fallback. See PLATFORM_CAPS for read/reply capability.
+export type Platform =
+  | 'google' | 'tripadvisor' | 'facebook'
+  | 'thefork' | 'trustpilot' | 'booking'
+  | 'yelp' | 'opentable' | 'ubereats' | 'deliveroo' | 'justeat';
 
 export interface PlatformLink {
   platform: Platform;
@@ -50,16 +56,35 @@ export interface PostResult {
 //  • Facebook: Meta REMOVED Page recommendations/reviews from the Graph API
 //    (error code 12, all versions since 2025-09-09) — nothing programmatic.
 export const PLATFORM_CAPS: Record<Platform, { read: 'api' | 'manual' | 'none'; reply: 'api' | 'manual' | 'none' }> = {
-  google:      { read: 'api',    reply: 'api'    },
-  tripadvisor: { read: 'manual', reply: 'manual' },
-  facebook:    { read: 'none',   reply: 'none'   },
+  // Full two-way API (live calls wired per-platform as OAuth/credentials land):
+  google:      { read: 'api',    reply: 'api'    },  // Business Profile API v4 (3-legged OAuth + ~2wk approval)
+  thefork:     { read: 'api',    reply: 'api'    },  // TheFork B2B API (OAuth2 client-creds, light approval)
+  trustpilot:  { read: 'api',    reply: 'api'    },  // Trustpilot Business API (paid plan + API add-on)
+  booking:     { read: 'api',    reply: 'api'    },  // Booking.com Guest Review API (hotels; connectivity-gated)
+  // Read-only / no third-party API → deep-link staff to reply on the platform:
+  tripadvisor: { read: 'manual', reply: 'manual' },  // Content API read-only, no reply API
+  yelp:        { read: 'manual', reply: 'manual' },  // Fusion = 3 excerpts; reply API enterprise-gated only
+  opentable:   { read: 'manual', reply: 'manual' },  // no review API; OpenTable for Restaurants dashboard
+  ubereats:    { read: 'manual', reply: 'manual' },  // no ratings API; Uber Eats Manager dashboard
+  deliveroo:   { read: 'manual', reply: 'manual' },  // no ratings API; Deliveroo Hub dashboard
+  justeat:     { read: 'manual', reply: 'manual' },  // no ratings API; Just Eat Partner dashboard
+  // No usable API at all:
+  facebook:    { read: 'none',   reply: 'none'   },  // Meta removed reviews from Graph API (2025-09)
 };
 
 // User-facing copy for the Settings screen (per-platform connection state).
 export const PLATFORM_NOTES: Record<Platform, { status_label: string; note: string }> = {
-  google: { status_label: 'Connect (recommended)', note: 'Reviews sync in and your approved replies post back automatically once you connect this venue’s Google Business Profile. Connecting needs the profile owner/manager to sign in (Google access approval can take ~2 weeks). To get more Google reviews, send guests your Google review link — they post it themselves.' },
-  tripadvisor: { status_label: 'Read-only — replies open in TripAdvisor', note: 'TripAdvisor’s terms don’t allow us to store your review history or post replies for you, so we can’t sync a full feed here. Approve a reply and we’ll open it for you to paste into the TripAdvisor Management Center.' },
-  facebook: { status_label: 'Not available via API', note: 'Meta removed API access to Page recommendations/reviews (Sept 2025), so we can’t sync them or reply automatically. Read and respond in Meta Business Suite — we’ll keep your approved reply text ready to paste.' },
+  google: { status_label: 'Connect (recommended)', note: 'Reviews sync in and your approved replies post back automatically once you connect this venue’s Google Business Profile. Connecting needs the profile owner/manager to sign in (Google access approval can take ~2 weeks). To get more reviews, send guests your Google review link.' },
+  thefork: { status_label: 'Connect', note: 'TheFork reviews sync in and your approved replies post back automatically once connected (a quick API approval). Strong for UK/EU restaurants on TheFork.' },
+  trustpilot: { status_label: 'Connect (needs a Trustpilot plan)', note: 'Full two-way sync + reply + review invitations — but Trustpilot’s API is a paid add-on on a paid plan. Best for venues already on Trustpilot; great for actively growing review volume via invites.' },
+  booking: { status_label: 'Connect (hotels)', note: 'Booking.com guest reviews sync in and management responses post back via the Guest Review API — accommodation only, and gated behind Booking.com connectivity approval.' },
+  tripadvisor: { status_label: 'Read-only — replies open in TripAdvisor', note: 'TripAdvisor’s terms don’t allow us to store your review history or post replies for you. Approve a reply and we’ll open it for you to paste into the TripAdvisor Management Center.' },
+  yelp: { status_label: 'Manual — reply in Yelp', note: 'Yelp’s open API only shows 3 short review snippets and has no reply API (the full version is reserved for 10+ location enterprise accounts). Approve a reply and we’ll deep-link you to Yelp for Business.' },
+  opentable: { status_label: 'Manual — reply in OpenTable', note: 'OpenTable has no review API. We’ll deep-link you to OpenTable for Restaurants to read and reply; we keep your approved reply ready to paste.' },
+  ubereats: { status_label: 'Manual — reply in Uber Eats', note: 'Uber Eats doesn’t expose ratings via API. Reply in Uber Eats Manager (note its ~7-day reply window); we keep your approved reply ready to paste.' },
+  deliveroo: { status_label: 'Manual — reply in Deliveroo', note: 'Deliveroo doesn’t expose ratings via API. Reply in Deliveroo Hub; we keep your approved reply ready to paste.' },
+  justeat: { status_label: 'Manual — reply in Just Eat', note: 'Just Eat doesn’t expose ratings via API. Reply in the Just Eat Partner dashboard; we keep your approved reply ready to paste.' },
+  facebook: { status_label: 'Not available via API', note: 'Meta removed API access to Page recommendations/reviews (Sept 2025). Read and respond in Meta Business Suite — we keep your approved reply text ready to paste.' },
 };
 
 // True once real OAuth credentials are wired for a platform. Until then we run

@@ -83,6 +83,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.438', date: '12 Jun 2026', label: 'Review Manager — wider platform support (Yelp + the landscape)',
+    changes: [
+      'Review Manager now models the realistic UK review-platform set: Google, TripAdvisor, Facebook, TheFork, Trustpilot, Booking.com, Yelp, OpenTable, Uber Eats, Deliveroo and Just Eat. Each carries its true capability — full two-way sync+reply (Google, TheFork, Trustpilot, Booking.com), read-only/deep-link (TripAdvisor, Yelp, OpenTable, the delivery apps), or none (Facebook). The ones with no API still get a one-tap "open the platform to reply" hand-off so nothing is a dead end.',
+      'Researched per platform: Yelp’s public API only returns 3 short snippets and has no reply API (the real one is enterprise-only), so it’s deep-link only. TheFork is the best next real integration for restaurants; Trustpilot the best for retail breadth (needs the venue’s own paid Trustpilot plan).',
+    ],
+  },
+  {
     version: '5.5.437', date: '12 Jun 2026', label: 'Review Manager — two-way platform sync + reply-back loop',
     changes: [
       'Reviews left directly on connected platforms now flow into the same queue (deduped so they never import twice), and an approved reply can be sent back: to the platform for a public review, or to the guest by SMS/email for a private one. Built as one adapter across Google/TripAdvisor/Facebook + an AI reply drafter.',
