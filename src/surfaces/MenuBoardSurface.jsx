@@ -79,6 +79,18 @@ export default function MenuBoardSurface() {
   const [data, setData] = useState(null);   // { board, cats:[], items:[], six:Set }
   const reloadTimer = useRef(null);
 
+  // Lock the viewport to 1:1 for signage. TV browsers (notably LG webOS) otherwise
+  // apply their own default zoom, scaling the board past the screen ("zoomed in /
+  // doesn't fit"). Restore the previous viewport on unmount so other surfaces are
+  // unaffected. The auto-fit then sizes the menu to the real screen.
+  useEffect(() => {
+    let meta = document.querySelector('meta[name=viewport]');
+    const prev = meta ? meta.getAttribute('content') : null;
+    if (!meta) { meta = document.createElement('meta'); meta.setAttribute('name', 'viewport'); document.head.appendChild(meta); }
+    meta.setAttribute('content', 'width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no');
+    return () => { if (prev != null) meta.setAttribute('content', prev); };
+  }, []);
+
   // ── device pairing: register/find this screen's row, then watch it for an
   // assignment. The device only ever reads/heartbeats its OWN row (RLS scopes it
   // by device_uid = auth.uid()); it never writes location_id/board_id. ──

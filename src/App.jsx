@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.470', date: '13 Jun 2026', label: 'Menu board — lock viewport scale for TV browsers (LG)',
+    changes: [
+      'Lock the menu board to a 1:1 viewport so TV browsers (notably LG webOS) can’t apply their own zoom and push it off the screen. Only affects the menu-board surface.',
+    ],
+  },
+  {
     version: '5.5.469', date: '13 Jun 2026', label: 'Menu board — fix TV “zoomed in / off the edge”',
     changes: [
       'Fixed the menu board overflowing the screen on some TV browsers: it now re-fits after the web font finishes loading (the font’s real size differs from the placeholder used during the first fit) and after the TV reports its final screen size, so the menu always settles to fit one screen.',
