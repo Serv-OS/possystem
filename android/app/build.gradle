@@ -16,6 +16,28 @@ android {
         versionName "1.6"
     }
 
+    // BuildConfig.SURFACE drives which web surface MainActivity loads (AGP 8 needs this opt-in).
+    buildFeatures {
+        buildConfig true
+    }
+
+    // One codebase, multiple device "surfaces". POS keeps co.posup.rpos so existing
+    // tills upgrade in place; menuboard is a side-by-side install for a TV / Fire-TV stick.
+    flavorDimensions "surface"
+    productFlavors {
+        pos {
+            dimension "surface"
+            // applicationId inherited from defaultConfig (co.posup.rpos) — DO NOT change.
+            buildConfigField "String", "SURFACE", '"pos"'
+        }
+        menuboard {
+            dimension "surface"
+            applicationId "co.posup.rpos.menuboard"
+            versionNameSuffix "-mb"
+            buildConfigField "String", "SURFACE", '"menuboard"'
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
