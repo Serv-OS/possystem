@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.469', date: '13 Jun 2026', label: 'Menu board — fix TV “zoomed in / off the edge”',
+    changes: [
+      'Fixed the menu board overflowing the screen on some TV browsers: it now re-fits after the web font finishes loading (the font’s real size differs from the placeholder used during the first fit) and after the TV reports its final screen size, so the menu always settles to fit one screen.',
+    ],
+  },
+  {
     version: '5.5.468', date: '13 Jun 2026', label: 'Menu board — pairing security hardening',
     changes: [
       'Pairing codes are now much harder to guess (8-character unambiguous codes), and a code can only be used while the screen is actually switched on — closing a gap where an unclaimed screen could in theory be paired by someone else before its owner got to it.',

@@ -246,7 +246,20 @@ function Board({ data }) {
     const refit = () => setFitTick((t) => t + 1);
     window.addEventListener('resize', refit);
     window.addEventListener('mb-refit', refit);
-    return () => { window.removeEventListener('resize', refit); window.removeEventListener('mb-refit', refit); };
+    if (window.visualViewport) window.visualViewport.addEventListener('resize', refit);
+    // Re-fit once the web font has actually loaded — its metrics differ from the
+    // system fallback, so on a slow TV browser the first fit (done against the
+    // fallback) would otherwise overflow once the real font swaps in, making the
+    // board look "zoomed in / off the edge". Also a couple of delayed passes for
+    // TV browsers that report their final viewport size only after first paint.
+    try { if (document.fonts && document.fonts.ready) document.fonts.ready.then(refit).catch(() => {}); } catch {}
+    const timers = [setTimeout(refit, 400), setTimeout(refit, 1500), setTimeout(refit, 4000)];
+    return () => {
+      window.removeEventListener('resize', refit);
+      window.removeEventListener('mb-refit', refit);
+      if (window.visualViewport) window.visualViewport.removeEventListener('resize', refit);
+      timers.forEach(clearTimeout);
+    };
   }, []);
 
   const rootStyle = {
