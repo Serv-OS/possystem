@@ -27,6 +27,16 @@ export default function OwnerSurface() {
   useEffect(() => { try { document.documentElement.setAttribute('data-skin', 'servos'); } catch {} }, []);
   useEffect(() => { try { document.documentElement.setAttribute('data-theme', theme); localStorage.setItem('rpos-theme', theme); } catch {} }, [theme]);
 
+  // The app globally locks html/body/#root to height:100% + overflow:hidden
+  // (kiosk/POS style — no page scroll). The owner app is a normal scrollable
+  // mobile page, so unlock scrolling while it's mounted and restore on unmount.
+  useEffect(() => {
+    const nodes = [document.documentElement, document.body, document.getElementById('root')].filter(Boolean);
+    const prev = nodes.map((n) => ({ n, overflow: n.style.overflow, height: n.style.height }));
+    nodes.forEach((n) => { n.style.overflow = 'auto'; n.style.height = 'auto'; });
+    return () => { prev.forEach((p) => { p.n.style.overflow = p.overflow; p.n.style.height = p.height; }); };
+  }, []);
+
   useEffect(() => {
     if (isMock || !supabase) { setSession(null); return; }
     supabase.auth.getSession().then(({ data }) => setSession(data?.session || null));

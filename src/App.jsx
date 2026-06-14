@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.471', date: '13 Jun 2026', label: 'Owner app — fix page not scrolling on mobile',
+    changes: [
+      'Fixed the owner snapshot not scrolling on phones — the app-wide no-scroll lock (used by the POS/kiosk screens) was also locking the owner page. It now scrolls normally.',
+    ],
+  },
+  {
     version: '5.5.470', date: '13 Jun 2026', label: 'Menu board — lock viewport scale for TV browsers (LG)',
     changes: [
       'Lock the menu board to a 1:1 viewport so TV browsers (notably LG webOS) can’t apply their own zoom and push it off the screen. Only affects the menu-board surface.',
