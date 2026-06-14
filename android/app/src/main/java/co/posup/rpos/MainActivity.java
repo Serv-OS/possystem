@@ -12,9 +12,6 @@ import co.posup.rpos.printer.PrinterBridge;
 
 public class MainActivity extends Activity {
     private static final String POS_URL = "https://possystem-liard.vercel.app/?mode=pos";
-    // Digital menu board (Fire TV / Android-TV flavor). Boots straight to the board;
-    // it shows a pairing code until assigned a menu in Back Office.
-    private static final String MENUBOARD_URL = "https://dev.serv-os.app/?mode=menuboard";
     private WebView webView;
     private PrinterBridge printerBridge;
     private UpdateChecker updateChecker;
@@ -26,13 +23,6 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-
-        // Menu-board flavor (Fire TV): a thin display-only WebView. None of the POS
-        // machinery below (printer bridge, Sunmi rear screen, self-updater) applies.
-        if ("menuboard".equals(BuildConfig.SURFACE)) {
-            setupMenuBoard();
-            return;
-        }
 
         // Keep screen on permanently — POS terminal must never sleep
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
@@ -108,57 +98,6 @@ public class MainActivity extends Activity {
 
         // v1.4: mirror the customer-facing display onto the Sunmi rear/second screen.
         setupCustomerDisplay();
-    }
-
-    // ── Menu board (Fire TV / Android-TV) ───────────────────────────────────
-    // Display-only WebView pointed at ?mode=menuboard. No printer bridge, no
-    // second screen, no self-updater — just a screen that stays on and shows the
-    // assigned menu (or a pairing code until one is assigned).
-    private void setupMenuBoard() {
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        getWindow().getDecorView().setSystemUiVisibility(
-            View.SYSTEM_UI_FLAG_FULLSCREEN |
-            View.SYSTEM_UI_FLAG_HIDE_NAVIGATION |
-            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY |
-            View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-        );
-
-        webView = new WebView(this);
-        setContentView(webView);
-
-        WebSettings s = webView.getSettings();
-        s.setJavaScriptEnabled(true);
-        s.setDomStorageEnabled(true);     // localStorage: pairing cache + Supabase anon session
-        s.setDatabaseEnabled(true);
-        s.setCacheMode(WebSettings.LOAD_DEFAULT);
-        s.setMediaPlaybackRequiresUserGesture(false);  // marketing video autoplay
-        s.setAllowFileAccess(false);
-        s.setLoadWithOverviewMode(true);
-        s.setUseWideViewPort(true);
-        s.setSupportZoom(false);
-        s.setDisplayZoomControls(false);
-        s.setBuiltInZoomControls(false);
-        s.setUserAgentString(
-            "Mozilla/5.0 (Linux; Android 11; AFT) AppleWebKit/537.36 (KHTML, like Gecko) " +
-            "Chrome/120.0.0.0 Safari/537.36 ServOS-MenuBoard/1.0"
-        );
-
-        CookieManager cm = CookieManager.getInstance();
-        cm.setAcceptCookie(true);
-        cm.setAcceptThirdPartyCookies(webView, true);
-
-        webView.setWebViewClient(new WebViewClient() {
-            @Override
-            public void onReceivedError(WebView v, int code, String desc, String url) {
-                // Signage must self-heal: reload after a network blip.
-                v.postDelayed(() -> v.loadUrl(MENUBOARD_URL), 5000);
-            }
-        });
-        webView.setWebChromeClient(new WebChromeClient() {
-            @Override public boolean onConsoleMessage(ConsoleMessage msg) { return true; }
-        });
-
-        webView.loadUrl(MENUBOARD_URL);
     }
 
     // ── Customer-facing second screen (Sunmi rear display) ──────────────────

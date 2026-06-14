@@ -14,11 +14,12 @@ menu content, layout, pairing and live updates come from the web app you already
 
 The app is built by GitHub Actions, not the Play Store.
 
-1. GitHub → the `Serv-OS/possystem` repo → **Actions** → **Build Android APK** →
+1. GitHub → the `Serv-OS/possystem` repo → **Actions** → **Build Menu Board APK (Fire TV)** →
    **Run workflow** (pick `develop`). It also runs automatically whenever anything
-   under `android/` changes.
-2. When it finishes (~3–4 min) it produces two downloadable artifacts:
-   **`ServOS-MenuBoard-FireTV-APK`** (the Fire TV menu board) and `RestaurantOS-POS-APK`.
+   under `android/menuboard/` changes. *(This is its own workflow/module, separate
+   from the POS build — each app builds independently.)*
+2. When it finishes (~3–4 min) it produces the artifact **`ServOS-MenuBoard-FireTV-APK`**
+   (the file inside is `menuboard-debug.apk`).
 
 You then need to get that APK onto the stick. Two ways — pick one.
 
@@ -31,7 +32,7 @@ One-time: let CI host the APK at a public URL the stick can fetch.
 1. In **GitHub → repo → Settings → Secrets and variables → Actions → New repository
    secret**, add **`SUPABASE_SERVICE_KEY`** = the Ops project's *service_role* key
    (Supabase → Project `tbetcegmszzotrwdtqhi` → Settings → API → `service_role`).
-2. Re-run the **Build Android APK** workflow. It now uploads the APK to:
+2. Re-run the **Build Menu Board APK (Fire TV)** workflow. It now uploads the APK to:
    ```
    https://tbetcegmszzotrwdtqhi.supabase.co/storage/v1/object/public/app-releases/menuboard.apk
    ```
@@ -51,11 +52,12 @@ Then on the Fire TV:
 
 1. On the Fire TV: Settings → My Fire TV → Developer options → **ADB debugging** ON, and
    note the stick's IP (Settings → My Fire TV → About → Network).
-2. Download + unzip the `ServOS-MenuBoard-FireTV-APK` artifact from the GitHub Actions run.
+2. Download + unzip the `ServOS-MenuBoard-FireTV-APK` artifact from the GitHub Actions run
+   (it contains `menuboard-debug.apk`).
 3. On your computer (with the Android platform-tools `adb` installed):
    ```bash
    adb connect <FIRE_TV_IP>:5555
-   adb install -r app-menuboard-debug.apk
+   adb install -r menuboard-debug.apk
    ```
 
 ---
@@ -96,9 +98,11 @@ itself like the POS app) is the next step — see `android/AUTO_UPDATE_PLAN.md`
 
 - **URL/environment:** the app points at `dev.serv-os.app`. To point it at a different
   host (e.g. production), change `MENUBOARD_URL` in
-  `android/app/src/main/java/co/posup/rpos/MainActivity.java` and rebuild.
-- **Why a separate app:** the POS wrapper (`co.posup.rpos`) carries Sunmi printer /
-  second-screen / self-update code that's irrelevant on a TV. The menu-board flavor strips
-  all of that — it's display-only.
+  `android/menuboard/src/main/java/co/posup/rpos/menuboard/MainActivity.java` and rebuild.
+- **Why a separate app/module:** the POS wrapper (`co.posup.rpos`) carries Sunmi printer /
+  second-screen / self-update code that's irrelevant on a TV. The menu board is its own
+  Gradle module (`android/menuboard`, `co.posup.rpos.menuboard`) with its own build,
+  version and CI workflow — display-only, and fully independent of the POS app. New device
+  apps (KDS, kiosk, …) follow the same pattern: a module under `android/` + its own workflow.
 - **Other TVs:** the same APK works on any Android-TV / Google-TV device. For a non-Amazon
   smart TV's built-in browser, just open `https://dev.serv-os.app/?mode=menuboard` instead.
