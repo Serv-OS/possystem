@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.490', date: '15 Jun 2026', label: 'WiFi: on-site authoriser (get guests online on UniFi)',
+    changes: [
+      'Added wifi-agent/ — a tiny on-site program that authorises signed-up guests onto UniFi WiFi locally (UniFi only allows the grant on the venue network). Runs on a Mac/mini-PC; the get-online piece, like Stampede’s box.',
+    ],
+  },
+  {
     version: '5.5.489', date: '15 Jun 2026', label: 'WiFi — UniFi can point straight at the portal',
     changes: [
       'UniFi external portal can now target the venue page directly (/guest/* lands on the WiFi portal), so a separate bridge server may not be needed where UniFi accepts a hostname.',
