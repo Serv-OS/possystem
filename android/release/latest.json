@@ -1,7 +1,7 @@
 {
-  "versionCode": 8,
-  "versionName": "1.7",
+  "versionCode": 9,
+  "versionName": "1.8",
   "apkUrl": "https://tbetcegmszzotrwdtqhi.supabase.co/storage/v1/object/public/app-releases/app.apk",
   "mandatory": false,
-  "notes": "Fixed-key signing — auto-updates from here on."
+  "notes": "New S. POS app icon."
 }

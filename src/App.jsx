@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.479', date: '15 Jun 2026', label: 'POS app icon (S. POS)',
+    changes: [
+      'New “S. POS” app icon for the till app — delivered as the first real auto-update (no manual reinstall).',
+    ],
+  },
+  {
     version: '5.5.478', date: '15 Jun 2026', label: 'POS app — fixed-key signing + auto-update',
     changes: [
       'The POS till app now uses fixed-key signing and joins the self-updating fleet, so future releases install themselves (one-time reinstall when migrating each till to the new signing key).',
