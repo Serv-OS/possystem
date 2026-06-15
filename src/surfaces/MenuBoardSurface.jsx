@@ -96,7 +96,7 @@ export default function MenuBoardSurface() {
   // by device_uid = auth.uid()); it never writes location_id/board_id. ──
   useEffect(() => {
     if (!pairing || isMock || !supabase) return;
-    let alive = true, hb = null, poll = null, ch = null;
+    let alive = true, poll = null, ch = null;
     const persist = (s) => { try { localStorage.setItem(LS_SCREEN, JSON.stringify(s)); } catch {} };
     const apply = (r) => {
       if (!alive || !r) return;
@@ -120,19 +120,30 @@ export default function MenuBoardSurface() {
       }
       if (!alive || !row) return;
       apply(row);
-      // 2) realtime on our own row + 20s poll fallback + 60s heartbeat
-      ch = supabase.channel(`mbscreen-${row.id}`)
-        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'menu_board_screens', filter: `id=eq.${row.id}` }, (p) => apply(p.new))
-        .subscribe();
-      poll = setInterval(async () => {
-        const { data } = await supabase.from('menu_board_screens').select('*').eq('id', row.id).maybeSingle();
-        if (data) apply(data);
-        else { try { localStorage.removeItem(LS_SCREEN); } catch {} window.location.reload(); }   // retired in BO → re-register
-      }, 20000);
-      const beat = () => supabase.rpc('mb_screen_heartbeat', { p_id: row.id });
-      beat(); hb = setInterval(beat, 60000);
+      const sid = row.id;
+      // Reliable loop: re-auth, re-read our row, and stamp last_seen — every 12s.
+      // This is the source of truth and works even when the realtime socket can't
+      // open on an older TV browser (which previously left the heartbeat stuck at
+      // "never seen" and the assignment unseen). Realtime below is a best-effort
+      // instant push layered on top, wrapped so it can never break this loop.
+      let misses = 0;
+      const tick = async () => {
+        try {
+          await ensureAuthToken();
+          const { data } = await supabase.from('menu_board_screens').select('*').eq('id', sid).maybeSingle();
+          if (data) { misses = 0; apply(data); supabase.rpc('mb_screen_heartbeat', { p_id: sid }).then(() => {}, () => {}); }
+          else if (++misses >= 3) { try { localStorage.removeItem(LS_SCREEN); } catch {} window.location.reload(); }  // genuinely retired in BO
+        } catch {}
+      };
+      tick();
+      poll = setInterval(tick, 12000);
+      try {
+        ch = supabase.channel(`mbscreen-${sid}`)
+          .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'menu_board_screens', filter: `id=eq.${sid}` }, (p) => apply(p.new))
+          .subscribe();
+      } catch {}
     })();
-    return () => { alive = false; if (hb) clearInterval(hb); if (poll) clearInterval(poll); if (ch) supabase.removeChannel(ch); };
+    return () => { alive = false; if (poll) clearInterval(poll); if (ch) { try { supabase.removeChannel(ch); } catch {} } };
   }, [pairing]);
 
   // ── resolve the location from whatever board we're showing (direct link or
@@ -307,7 +318,7 @@ function Board({ data }) {
     return <div style={rootStyle}><Splash text="Menu coming soon" inline /></div>;
   }
 
-  const pad = orientation === 'portrait' ? '4.5vmin 4vmin' : '3.5vmin 4vmin';
+  const pad = orientation === 'portrait' ? '6vmin 5.5vmin' : '5.5vmin 6vmin';   // safe edge margin (also covers TV overscan)
   return (
     <div ref={boardRef} style={rootStyle}>
       {bgLayer && <div style={bgLayer} />}
@@ -345,8 +356,8 @@ function Board({ data }) {
 function Section({ sec, theme, disp, six }) {
   const { cat, items } = sec;
   return (
-    <div style={{ marginBottom: '1em', breakInside: 'auto', ...(sec.span === 'all' ? { columnSpan: 'all', WebkitColumnSpan: 'all' } : null) }}>
-      <div style={{ fontSize: '0.62em', fontWeight: 600, letterSpacing: '.16em', color: theme.accent, marginBottom: '0.45em', textTransform: 'uppercase', breakAfter: 'avoid', WebkitColumnBreakAfter: 'avoid' }}>{cat.label}</div>
+    <div style={{ marginBottom: '1.4em', breakInside: 'avoid', WebkitColumnBreakInside: 'avoid', ...(sec.span === 'all' ? { columnSpan: 'all', WebkitColumnSpan: 'all', breakInside: 'auto' } : null) }}>
+      <div style={{ fontSize: '0.82em', fontWeight: 700, letterSpacing: '.12em', color: theme.accent, marginBottom: '0.55em', textTransform: 'uppercase', breakAfter: 'avoid', WebkitColumnBreakAfter: 'avoid' }}>{cat.label}</div>
       {items.filter((it) => !(disp.hidePriceless && boardPrice(it) <= 0 && !(it._variants || []).length)).map((it) => {
         const variants = it._variants || [];
         const hasVar = variants.length > 0;
@@ -354,30 +365,30 @@ function Section({ sec, theme, disp, six }) {
         const diet = dietaryBadges(it);
         const price = boardPrice(it);
         return (
-          <div key={it.id} style={{ marginBottom: '0.55em', opacity: sold ? 0.42 : 1, breakInside: 'avoid', WebkitColumnBreakInside: 'avoid' }}>
+          <div key={it.id} style={{ marginBottom: '0.65em', opacity: sold ? 0.42 : 1, breakInside: 'avoid', WebkitColumnBreakInside: 'avoid' }}>
             {/* product line */}
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.55em' }}>
               {disp.showImages && it.image && <img src={it.image} alt="" style={{ width: '2.4em', height: '2.4em', objectFit: 'cover', borderRadius: '0.3em', flexShrink: 0 }} />}
               <div style={{ minWidth: 0, flex: 1 }}>
-                <div style={{ fontSize: '0.5em', fontWeight: 600, lineHeight: 1.15 }}>
+                <div style={{ fontSize: '0.56em', fontWeight: 600, lineHeight: 1.15 }}>
                   {it.menu_name || it.name}
                   {diet.map((d) => (
-                    <span key={d} style={{ fontSize: '0.66em', background: '#1f3a26', color: '#7fd99a', borderRadius: '1em', padding: '0 .55em', marginLeft: '.3em', whiteSpace: 'nowrap', fontWeight: 700 }}>{d}</span>
+                    <span key={d} style={{ fontSize: '0.6em', background: '#1f3a26', color: '#7fd99a', borderRadius: '1em', padding: '0 .55em', marginLeft: '.3em', whiteSpace: 'nowrap', fontWeight: 700 }}>{d}</span>
                   ))}
                 </div>
                 {disp.showDescription && it.description && (
-                  <div style={{ fontSize: '0.38em', color: theme.mutedColor, lineHeight: 1.3, marginTop: '.15em' }}>{it.description}</div>
+                  <div style={{ fontSize: '0.42em', color: theme.mutedColor, lineHeight: 1.3, marginTop: '.15em' }}>{it.description}</div>
                 )}
                 {disp.showAllergens && Array.isArray(it.allergens) && it.allergens.length > 0 && (
-                  <div style={{ fontSize: '0.3em', color: theme.mutedColor, lineHeight: 1.3, marginTop: '.25em', textTransform: 'capitalize', opacity: 0.9 }}>
+                  <div style={{ fontSize: '0.34em', color: theme.mutedColor, lineHeight: 1.3, marginTop: '.25em', textTransform: 'capitalize', opacity: 0.9 }}>
                     Allergens: {it.allergens.join(', ')}
                   </div>
                 )}
               </div>
               <div style={{ flexShrink: 0, display: 'flex', alignItems: 'flex-start', lineHeight: 1 }}>
                 {sold
-                  ? <span style={{ fontSize: '0.34em', fontWeight: 600, letterSpacing: '.05em', background: '#5a1e1e', color: '#f3b0b0', borderRadius: '1.4em', padding: '.2em .8em' }}>SOLD OUT</span>
-                  : (!hasVar && disp.showPrices && price > 0 && <span style={{ fontSize: '0.42em', fontWeight: 600, background: theme.accent, color: '#1c1206', borderRadius: '1.4em', padding: '.18em .7em' }}>{money(price)}</span>)}
+                  ? <span style={{ fontSize: '0.38em', fontWeight: 600, letterSpacing: '.05em', background: '#5a1e1e', color: '#f3b0b0', borderRadius: '1.4em', padding: '.2em .8em' }}>SOLD OUT</span>
+                  : (!hasVar && disp.showPrices && price > 0 && <span style={{ fontSize: '0.5em', fontWeight: 700, background: theme.accent, color: '#1c1206', borderRadius: '1.4em', padding: '.18em .7em' }}>{money(price)}</span>)}
               </div>
             </div>
             {/* indented variant sizes */}
@@ -387,11 +398,11 @@ function Section({ sec, theme, disp, six }) {
                   const vsold = six.has(v.id);
                   const vp = boardPrice(v);
                   return (
-                    <div key={v.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5em', marginBottom: '.34em', opacity: vsold ? 0.42 : 1 }}>
-                      <span style={{ fontSize: '0.4em', color: theme.mutedColor }}>{v.menu_name || v.name}</span>
+                    <div key={v.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5em', marginBottom: '.4em', opacity: vsold ? 0.42 : 1 }}>
+                      <span style={{ fontSize: '0.46em', color: theme.mutedColor }}>{v.menu_name || v.name}</span>
                       {vsold
-                        ? <span style={{ fontSize: '0.3em', fontWeight: 600, background: '#5a1e1e', color: '#f3b0b0', borderRadius: '1.4em', padding: '.2em .7em' }}>SOLD OUT</span>
-                        : (disp.showPrices && vp > 0 && <span style={{ fontSize: '0.36em', fontWeight: 600, background: theme.accent, color: '#1c1206', borderRadius: '1.4em', padding: '.16em .65em' }}>{money(vp)}</span>)}
+                        ? <span style={{ fontSize: '0.34em', fontWeight: 600, background: '#5a1e1e', color: '#f3b0b0', borderRadius: '1.4em', padding: '.2em .7em' }}>SOLD OUT</span>
+                        : (disp.showPrices && vp > 0 && <span style={{ fontSize: '0.42em', fontWeight: 700, background: theme.accent, color: '#1c1206', borderRadius: '1.4em', padding: '.16em .65em' }}>{money(vp)}</span>)}
                     </div>
                   );
                 })}

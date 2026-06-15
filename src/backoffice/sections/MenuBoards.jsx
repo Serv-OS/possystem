@@ -424,8 +424,8 @@ function Preview({ board, cats, itemsByCat, six }) {
           : <div ref={areaRef} style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
               <div ref={flowRef} style={{ height: '100%', columnGap: 12, columnFill: 'auto', fontSize: 13 }}>
                 {secs.map(sec => (
-                  <div key={sec.id} style={{ marginBottom: '0.9em', breakInside: 'auto', ...(sec.span === 'all' ? { columnSpan: 'all', WebkitColumnSpan: 'all' } : null) }}>
-                    <div style={{ fontSize: '0.72em', letterSpacing: '.1em', color: t.accent, marginBottom: '0.35em', textTransform: 'uppercase', fontWeight: 700, breakAfter: 'avoid', WebkitColumnBreakAfter: 'avoid' }}>{sec.label}</div>
+                  <div key={sec.id} style={{ marginBottom: '1.2em', breakInside: 'avoid', WebkitColumnBreakInside: 'avoid', ...(sec.span === 'all' ? { columnSpan: 'all', WebkitColumnSpan: 'all', breakInside: 'auto' } : null) }}>
+                    <div style={{ fontSize: '0.82em', letterSpacing: '.08em', color: t.accent, marginBottom: '0.4em', textTransform: 'uppercase', fontWeight: 700, breakAfter: 'avoid', WebkitColumnBreakAfter: 'avoid' }}>{sec.label}</div>
                     {sec.items.filter(it => !(disp.hidePriceless && boardPrice(it) <= 0 && !(it._variants || []).length)).map(it => {
                       const variants = it._variants || [];
                       const hasVar = variants.length > 0;

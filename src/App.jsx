@@ -85,6 +85,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.472', date: '14 Jun 2026', label: 'Menu board — stronger design + resilient pairing',
+    changes: [
+      'Categories now stay together in one column instead of splitting across two (a category only ever splits if it is genuinely taller than a full column).',
+      'Bigger, bolder type throughout — category headings, item names and prices — and a proper safe margin around the screen edges (also covers TV overscan).',
+      'Pairing/heartbeat made resilient on TV browsers: the screen re-checks its assignment and reports “online” on one reliable timer even when the live socket can’t connect, fixing screens stuck on the code or showing “never seen”.',
+    ],
+  },
+  {
     version: '5.5.471', date: '13 Jun 2026', label: 'Owner app — fix page not scrolling on mobile',
     changes: [
       'Fixed the owner snapshot not scrolling on phones — the app-wide no-scroll lock (used by the POS/kiosk screens) was also locking the owner page. It now scrolls normally.',
