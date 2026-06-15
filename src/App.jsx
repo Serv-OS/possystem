@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.475', date: '14 Jun 2026', label: 'MPOS app icon',
+    changes: [
+      'Serv OS MPOS Android app now ships with its own “S. MPOS” app icon.',
+    ],
+  },
+  {
     version: '5.5.474', date: '14 Jun 2026', label: 'MPOS Android app',
     changes: [
       'New Serv OS MPOS Android app: take orders tableside on a phone. Installs as its own app with its own icon, built and updated independently of the POS and menu-board apps.',

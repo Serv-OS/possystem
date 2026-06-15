@@ -1,5 +1,5 @@
-name: Build MPOS APK (Tap to Pay)
-# Standalone build for the Mobile POS (co.posup.rpos.mpos) with NATIVE Stripe Tap to Pay.
+name: Build MPOS APK
+# Standalone build for the Mobile POS (co.posup.rpos.mpos) — an order-taking WebView app.
 # Independent of POS (build-apk.yml) and Menu Board (build-menuboard.yml). New device apps
 # get their own module + their own workflow like this.
 on:
@@ -24,7 +24,7 @@ jobs:
           distribution: 'temurin'
       - uses: android-actions/setup-android@v3
       - run: chmod +x android/gradlew
-      - name: Build MPOS APK (debug = simulated Tap to Pay)
+      - name: Build MPOS APK (debug)
         working-directory: android
         run: ./gradlew :mpos:assembleDebug --no-daemon --stacktrace
       - name: Upload MPOS APK
