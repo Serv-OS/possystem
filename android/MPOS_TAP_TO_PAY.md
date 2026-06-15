@@ -48,3 +48,30 @@ further web changes.
 2. Sideload onto the Android phone (allow unknown sources) and open **Serv OS MPOS**.
 3. Take an order → pay by **Card**: with an assigned reader it runs the WisePOS/Ryft flow; in a
    browser / unassigned device it offers a simulated approval to test the flow end-to-end.
+
+## Self-update (auto-update on relaunch)
+
+The app updates itself, no Play Store. On launch (and on resume, throttled to ~3h) it reads
+`app-releases/latest-mpos.json` from Supabase; if its `versionCode` is higher than the installed
+one it downloads `mpos.apk` and fires the system installer (one tap: "Install"). First run per
+device needs a one-time "allow install from this source" grant (Android 8+).
+
+- Client: `android/mpos/.../UpdateChecker.java`; manifest has `REQUEST_INSTALL_PACKAGES` + a
+  `FileProvider` (`res/xml/file_paths.xml`). Wired in `MainActivity` (check on launch + resume).
+- Channel files: manifest `app-releases/latest-mpos.json` (canonical copy
+  `android/release/latest-mpos.json`), APK `app-releases/mpos.apk`.
+
+**Fixed-key signing is required** — Android only installs an update in place if it's signed with
+the SAME key as the installed app. CI signs RELEASE builds with one keystore from repo secrets
+`ANDROID_KEYSTORE_BASE64` / `ANDROID_KEYSTORE_PASSWORD` / `ANDROID_KEY_ALIAS` /
+`ANDROID_KEY_PASSWORD`; set `SUPABASE_SERVICE_KEY` too and CI auto-publishes the APK + manifest on
+every push (a release = one push). The keystore (PKCS12, alias `servos`) is generated once and
+kept OUT of the repo — back it up; losing it means the app can never auto-update again.
+
+**To ship an update:** bump `versionCode` (+ `versionName`) in `android/mpos/build.gradle` AND in
+`android/release/latest-mpos.json`, then push. CI builds the signed APK and publishes it; running
+apps pick it up within ~3h or on next launch.
+
+One-time migration: switching from the throwaway debug key to the fixed release key changes the
+signature, so the currently-installed (debug) build must be **uninstalled + reinstalled once**
+onto the first release-signed build. After that every update is automatic.

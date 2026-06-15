@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.476', date: '14 Jun 2026', label: 'MPOS auto-update',
+    changes: [
+      'The Serv OS MPOS app now updates itself: on launch it checks for a new version, downloads it, and prompts a one-tap install — no manual reinstalling each release.',
+    ],
+  },
+  {
     version: '5.5.475', date: '14 Jun 2026', label: 'MPOS app icon',
     changes: [
       'Serv OS MPOS Android app now ships with its own “S. MPOS” app icon.',

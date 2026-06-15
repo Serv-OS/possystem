@@ -22,6 +22,7 @@ public class MainActivity extends Activity {
     // To point at a different environment (e.g. production), change this and rebuild.
     private static final String MPOS_URL = "https://dev.serv-os.app/?mode=mpos";
     private WebView webView;
+    private UpdateChecker updateChecker;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -64,12 +65,17 @@ public class MainActivity extends Activity {
         });
 
         webView.loadUrl(MPOS_URL);
+
+        // Self-update: check shortly after launch (throttled, no-op when already current).
+        updateChecker = new UpdateChecker(this);
+        webView.postDelayed(() -> updateChecker.check(false), 8000);
     }
 
     @Override
     protected void onResume() {
         super.onResume();
         if (webView != null) webView.onResume();
+        if (updateChecker != null) updateChecker.check(false);
     }
 
     @Override
@@ -87,6 +93,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        if (updateChecker != null) updateChecker.destroy();
         if (webView != null) webView.destroy();
     }
 }
