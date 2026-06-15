@@ -23,6 +23,7 @@ const DEFAULTS = {
   marketing_copy: 'Keep me updated with news, offers and events by email and SMS.',
   success_copy: "You're connected. Enjoy your visit!",
   button_style: 'dark', age_gate: true, bg_image_url: '', logo_url: '', terms_url: '', privacy_url: '',
+  loyalty_offer: false, loyalty_copy: 'Join our rewards — earn points and get exclusive offers by email & SMS.',
   fields: DEFAULT_FIELDS,
 };
 
@@ -123,6 +124,11 @@ export default function WifiPortal() {
             <div style={S.field}><label style={S.label}>Headline</label><input style={S.input} value={cfg.headline} maxLength={60} onChange={e => set({ headline: e.target.value })} /></div>
             <div style={S.field}><label style={S.label}>Sub-text</label><input style={S.input} value={cfg.subtext} maxLength={120} onChange={e => set({ subtext: e.target.value })} placeholder="Pop in your details and you're online." /></div>
             <div style={S.field}><label style={S.label}>Marketing opt-in wording</label><textarea style={S.area} value={cfg.marketing_copy} onChange={e => set({ marketing_copy: e.target.value })} /><div style={S.hint}>Exact text shown next to the (unticked) opt-in box. Stored with each consent for your records.</div></div>
+            <div style={{ ...S.field, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+              <div><div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)' }}>Offer loyalty sign-up</div><div style={S.hint}>Swaps the opt-in for “Join rewards” — one tick enrols the guest in loyalty <b>and</b> opts them into marketing.</div></div>
+              <button style={S.toggle(cfg.loyalty_offer)} onClick={() => persist({ loyalty_offer: !cfg.loyalty_offer })}>{cfg.loyalty_offer ? 'On' : 'Off'}</button>
+            </div>
+            {cfg.loyalty_offer && <div style={S.field}><label style={S.label}>“Join rewards” wording</label><textarea style={S.area} value={cfg.loyalty_copy} onChange={e => set({ loyalty_copy: e.target.value })} /><div style={S.hint}>Requires loyalty to be enabled for this venue (Customers → Loyalty).</div></div>}
             <div style={S.field}><label style={S.label}>“You're connected” message</label><input style={S.input} value={cfg.success_copy} maxLength={120} onChange={e => set({ success_copy: e.target.value })} /></div>
             <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
               <button style={S.btn} onClick={() => doSave()} disabled={save.busy}>{save.busy ? 'Saving…' : 'Save wording'}</button>
@@ -219,7 +225,7 @@ function Phone({ accent, logo, venue, cfg, fields }) {
         {show('phone') && <div style={P.inp}>Mobile</div>}
         {show('dob') && <div style={P.inp}>Date of birth</div>}
         {show('is_local') && <div style={{ ...P.chk, marginTop: 2 }}><span style={{ width: 12, height: 12, border: '1px solid #c9c9cf', borderRadius: 3 }} />Are you local?</div>}
-        <div style={P.chk}><span style={{ width: 12, height: 12, border: '1px solid #c9c9cf', borderRadius: 3, flexShrink: 0 }} /><span>{cfg.marketing_copy}</span></div>
+        <div style={P.chk}><span style={{ width: 12, height: 12, border: '1px solid #c9c9cf', borderRadius: 3, flexShrink: 0 }} /><span>{cfg.loyalty_offer ? cfg.loyalty_copy : cfg.marketing_copy}</span></div>
         <div style={P.dark}>Connect to WiFi</div>
       </div>
     </div></div></div>

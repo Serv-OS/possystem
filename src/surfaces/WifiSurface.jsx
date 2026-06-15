@@ -66,6 +66,7 @@ export default function WifiSurface({ location }) {
   const [phase, setPhase] = useState('form');  // form | connecting | connected | error
   const [form, setForm] = useState({ email: '', phone: '', first_name: '', last_name: '', dob: '', is_local: false });
   const [marketing, setMarketing] = useState(false);
+  const [joinLoyalty, setJoinLoyalty] = useState(false);
   const [error, setError] = useState('');
   const [result, setResult] = useState(null);
 
@@ -111,8 +112,9 @@ export default function WifiSurface({ location }) {
         email: form.email.trim() || null, phone: form.phone.trim() || null,
         first_name: form.first_name.trim() || null, last_name: form.last_name.trim() || null,
         dob: form.dob || null, is_local: fields.is_local?.show ? form.is_local : null,
-        marketing_consent: marketing && !isMinor,
-        consent_text: cfg?.marketing_copy || null, privacy_version: cfg?.privacy_version || null,
+        marketing_consent: (cfg?.loyalty_offer ? joinLoyalty : marketing) && !isMinor,
+        join_loyalty: cfg?.loyalty_offer ? (joinLoyalty && !isMinor) : false,
+        consent_text: (cfg?.loyalty_offer ? cfg?.loyalty_copy : cfg?.marketing_copy) || null, privacy_version: cfg?.privacy_version || null,
         client_mac: unifi.client_mac, ap_mac: unifi.ap_mac, ssid: unifi.ssid,
         user_agent: typeof navigator !== 'undefined' ? navigator.userAgent : null,
       });
@@ -183,13 +185,26 @@ export default function WifiSurface({ location }) {
                 )}
               </div>
 
-              {/* Single marketing opt-in (unticked). WiFi is never gated on this. */}
+              {/* Opt-in (unticked) — WiFi is never gated on this. When the venue offers loyalty,
+                  one "Join rewards" tick = marketing consent + loyalty enrolment. */}
               <label style={{ ...S.check, marginTop: 14, alignItems: 'flex-start', opacity: isMinor ? 0.5 : 1 }}>
-                <input type="checkbox" checked={marketing && !isMinor} disabled={isMinor} onChange={(e) => setMarketing(e.target.checked)} style={{ ...S.checkbox, marginTop: 2 }} />
-                <span style={{ fontSize: 12.5, color: '#56565e', lineHeight: 1.45 }}>
-                  {cfg?.marketing_copy || 'Keep me updated with news, offers and events by email and SMS.'}
-                  {isMinor && <em style={{ display: 'block', color: '#b06a3c', marginTop: 4 }}>You must be 18 or over to receive marketing — you can still use the WiFi.</em>}
-                </span>
+                {cfg?.loyalty_offer ? (
+                  <>
+                    <input type="checkbox" checked={joinLoyalty && !isMinor} disabled={isMinor} onChange={(e) => setJoinLoyalty(e.target.checked)} style={{ ...S.checkbox, marginTop: 2 }} />
+                    <span style={{ fontSize: 12.5, color: '#56565e', lineHeight: 1.45 }}>
+                      {cfg?.loyalty_copy || 'Join our rewards — earn points and get exclusive offers by email & SMS.'}
+                      {isMinor && <em style={{ display: 'block', color: '#b06a3c', marginTop: 4 }}>You must be 18 or over to join rewards — you can still use the WiFi.</em>}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <input type="checkbox" checked={marketing && !isMinor} disabled={isMinor} onChange={(e) => setMarketing(e.target.checked)} style={{ ...S.checkbox, marginTop: 2 }} />
+                    <span style={{ fontSize: 12.5, color: '#56565e', lineHeight: 1.45 }}>
+                      {cfg?.marketing_copy || 'Keep me updated with news, offers and events by email and SMS.'}
+                      {isMinor && <em style={{ display: 'block', color: '#b06a3c', marginTop: 4 }}>You must be 18 or over to receive marketing — you can still use the WiFi.</em>}
+                    </span>
+                  </>
+                )}
               </label>
 
               {error && <div style={S.err}>{error}</div>}

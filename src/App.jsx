@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.487', date: '15 Jun 2026', label: 'WiFi — join loyalty option',
+    changes: [
+      'The WiFi page can now offer loyalty sign-up: turn it on in the editor and the opt-in becomes “Join rewards” — one tick enrols the guest in your loyalty programme AND opts them into marketing (18+).',
+    ],
+  },
+  {
     version: '5.5.486', date: '15 Jun 2026', label: 'WiFi — back-office editor',
     changes: [
       'New WiFi section in Back Office (Customers → WiFi): brand the captive portal with a live preview, choose which fields to capture, load UniFi voucher passes, and a dashboard with auto-segments (locals, birthdays, new/returning/lapsed, opted-in) + CSV export.',

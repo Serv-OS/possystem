@@ -77,7 +77,7 @@ Deno.serve(async (req) => {
     const loc = await resolveLocation(String(body.platform_location_id ?? '').trim());
     if (!loc) return json({ error: 'location not found' }, 404);
     const { data: cfg } = await opsAdmin.from('wifi_portal_settings')
-      .select('enabled, headline, subtext, bg_image_url, logo_url, accent_color, button_style, fields, age_gate, marketing_copy, success_copy, redirect_url, terms_url, privacy_url, privacy_version')
+      .select('enabled, headline, subtext, bg_image_url, logo_url, accent_color, button_style, fields, age_gate, marketing_copy, success_copy, redirect_url, terms_url, privacy_url, privacy_version, loyalty_offer, loyalty_copy')
       .eq('location_id', loc.opsLocationId).maybeSingle();
     return json({
       enabled: cfg?.enabled ?? true,
@@ -95,6 +95,8 @@ Deno.serve(async (req) => {
       terms_url: cfg?.terms_url ?? null,
       privacy_url: cfg?.privacy_url ?? null,
       privacy_version: cfg?.privacy_version ?? 'v1',
+      loyalty_offer: cfg?.loyalty_offer ?? false,
+      loyalty_copy: cfg?.loyalty_copy ?? 'Join our rewards — earn points and get exclusive offers by email & SMS.',
     });
   }
 
@@ -116,10 +118,12 @@ Deno.serve(async (req) => {
     const isLocal = typeof body.is_local === 'boolean' ? body.is_local : null;
     if (!email && !phone) return json({ error: 'email or phone required' }, 400);
 
-    // 18+ gate: under-18s may use WiFi but are never opted into marketing.
+    // 18+ gate: under-18s may use WiFi but are never opted into marketing or loyalty marketing.
     const age = ageFromDob(dob);
     const isMinor = age != null && age < 18;
-    const wantsMarketing = body.marketing_consent === true && !isMinor;
+    // "Join rewards" = loyalty enrolment AND marketing consent (one opt-in, per product spec).
+    const joinLoyalty = body.join_loyalty === true && !isMinor;
+    const wantsMarketing = (body.marketing_consent === true || joinLoyalty) && !isMinor;
 
     const fullName = [firstName, lastName].filter(Boolean).join(' ').trim() || null;
     const nowIso = new Date().toISOString();
@@ -215,15 +219,29 @@ Deno.serve(async (req) => {
       is_return: isReturn, marketing_opt_in: wantsMarketing, authorized, auth_method: authMethod,
     });
 
+    // "Join rewards" → enrol in loyalty (reuses the same machinery as purchase auto-enrol).
+    let loyaltyEnrolled = false, memberCode: string | null = null;
+    if (joinLoyalty && loc.companyId) {
+      try {
+        const r = await fetch(`${FN_BASE}/loyalty-enroll`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SERVICE_KEY}` },
+          body: JSON.stringify({ customer_id: customerId, company_id: loc.companyId, location_id: loc.opsLocationId, source: 'wifi' }),
+        });
+        const j = await r.json().catch(() => ({}));
+        loyaltyEnrolled = !!j.enrolled; memberCode = j.member_code ?? null;
+      } catch (_e) { /* never block capture on loyalty enrol failure */ }
+    }
+
     // Optional welcome on a brand-new, opted-in contact (fire-and-forget; send-welcome dedups).
-    if (!existing && wantsMarketing) {
+    // Skipped when loyalty enrolled — ensureMembership already sends its own welcome credit/message.
+    if (!existing && wantsMarketing && !loyaltyEnrolled) {
       fetch(`${FN_BASE}/send-welcome`, {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SERVICE_KEY}` },
         body: JSON.stringify({ customer_id: customerId, company_id: loc.companyId, location_id: loc.opsLocationId }),
       }).catch(() => {});
     }
 
-    return json({ ok: true, customer_id: customerId, is_return: isReturn, marketing_opt_in: wantsMarketing, is_minor: isMinor, authorized, auth_method: authMethod, voucher_redirect_url: voucherRedirectUrl });
+    return json({ ok: true, customer_id: customerId, is_return: isReturn, marketing_opt_in: wantsMarketing, is_minor: isMinor, loyalty_enrolled: loyaltyEnrolled, member_code: memberCode, authorized, auth_method: authMethod, voucher_redirect_url: voucherRedirectUrl });
   }
 
   return json({ error: `unknown action: ${action}` }, 400);
