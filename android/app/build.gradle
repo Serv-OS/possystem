@@ -2,6 +2,12 @@ plugins {
     id 'com.android.application'
 }
 
+// Fixed-key release signing so the in-app auto-updater (UpdateChecker.java) can install
+// updates in place. CI provides the shared keystore via ANDROID_KEYSTORE_* secrets; falls
+// back to the debug key locally so the build still succeeds.
+def ksPath = System.getenv('ANDROID_KEYSTORE_FILE')
+def hasKeystore = ksPath != null && new File(ksPath).exists()
+
 android {
     namespace 'co.posup.rpos'
     compileSdk 34
@@ -12,14 +18,27 @@ android {
         // minSdk could be lowered now, but keeping 26 to match prior installs.
         minSdk 26
         targetSdk 34
-        versionCode 7
-        versionName "1.6"
+        versionCode 8          // bump every release; UpdateChecker compares this to latest.json
+        versionName "1.7"
+    }
+
+    signingConfigs {
+        release {
+            if (hasKeystore) {
+                storeFile file(ksPath)
+                storePassword System.getenv('ANDROID_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('ANDROID_KEY_ALIAS')
+                keyPassword System.getenv('ANDROID_KEY_PASSWORD')
+                storeType 'PKCS12'
+            }
+        }
     }
 
     buildTypes {
         release {
             minifyEnabled false
             debuggable false
+            signingConfig hasKeystore ? signingConfigs.release : signingConfigs.debug
         }
     }
 
