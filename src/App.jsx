@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.486', date: '15 Jun 2026', label: 'WiFi — back-office editor',
+    changes: [
+      'New WiFi section in Back Office (Customers → WiFi): brand the captive portal with a live preview, choose which fields to capture, load UniFi voucher passes, and a dashboard with auto-segments (locals, birthdays, new/returning/lapsed, opted-in) + CSV export.',
+    ],
+  },
+  {
     version: '5.5.484', date: '15 Jun 2026', label: 'WiFi capture portal — live',
     changes: [
       'The branded WiFi sign-up page is live (/wifi): guests enter name, email, phone, DOB and “are you local?”, and land in the CRM with proper UK marketing consent. Capture verified end-to-end; the back-office editor + “get online” via vouchers are next.',
