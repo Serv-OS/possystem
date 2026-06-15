@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.481', date: '15 Jun 2026', label: 'New green Serv OS favicon + app icons',
+    changes: [
+      'Browser tab favicon and the PWA / add-to-home-screen icons are now the new green “S.” mark (replacing the old orange icon); mobile theme colour updated to match. (Browsers cache favicons — a hard refresh may be needed to see it.)',
+    ],
+  },
+  {
     version: '5.5.480', date: '15 Jun 2026', label: 'POS app renamed to “Serv OS POS”',
     changes: [
       'The till app is now named “Serv OS POS” (was “Restaurant OS”) with the new S. POS icon — consistent with Serv OS MPOS and Serv OS Menu.',
