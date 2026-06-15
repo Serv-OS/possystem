@@ -94,6 +94,10 @@ export function parseCustomerUrl(loc = (typeof window !== 'undefined' ? window.l
     mode = 'review';
   } else if (pathname === '/wifi' || pathname.startsWith('/wifi/')) {
     mode = 'wifi';
+  } else if (pathname.startsWith('/guest')) {
+    // UniFi's external captive portal redirects to <host>/guest/s/<site>/?id=&ap=&ssid=…
+    // so point UniFi's "External Portal" field straight at the venue host and it lands here.
+    mode = 'wifi';
   } else if (pathname.startsWith('/k')) {
     mode = 'kiosk';
   } else {

@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.489', date: '15 Jun 2026', label: 'WiFi — UniFi can point straight at the portal',
+    changes: [
+      'UniFi external portal can now target the venue page directly (/guest/* lands on the WiFi portal), so a separate bridge server may not be needed where UniFi accepts a hostname.',
+    ],
+  },
+  {
     version: '5.5.488', date: '15 Jun 2026', label: 'WiFi — UniFi portal bridge',
     changes: [
       'Added the ServOS WiFi bridge (wifi-bridge/): the small fixed-IP service that lets a UniFi guest network point at our branded captive portal (UniFi needs an IP target, so it bounces guests to <venue>.serv-os.app/wifi). Multi-tenant via hostname; deploy guide included. Get-online uses vouchers (or the seamless controller API).',
