@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.484', date: '15 Jun 2026', label: 'WiFi capture portal — live',
+    changes: [
+      'The branded WiFi sign-up page is live (/wifi): guests enter name, email, phone, DOB and “are you local?”, and land in the CRM with proper UK marketing consent. Capture verified end-to-end; the back-office editor + “get online” via vouchers are next.',
+    ],
+  },
+  {
     version: '5.5.482', date: '15 Jun 2026', label: 'WiFi guest data-capture — groundwork',
     changes: [
       'Foundations for WiFi guest data capture: a branded captive-portal that feeds guest details (name, email, phone, DOB, “are you local?”) straight into the CRM with proper UK marketing consent. Schema + plan landed; the portal and back-office editor are next.',
@@ -6329,7 +6335,7 @@ export default function App() {
   // customers never see the device pairing / mode selector screens.
   // Operator URLs (?mode=pos / mpos / office / admin / kiosk) take
   // precedence so an operator on the same hostname still gets their tools.
-  const CUSTOMER_MODES = ['online', 'qr', 'gift', 'gift_balance', 'gift_success', 'account', 'review'];
+  const CUSTOMER_MODES = ['online', 'qr', 'gift', 'gift_balance', 'gift_success', 'account', 'review', 'wifi'];
   const urlMode = new URLSearchParams(window.location.search).get('mode');
   // Public Workforce contract-signing page: /sign/<token>
   const signMatch = window.location.pathname.match(/^\/sign\/([A-Za-z0-9_-]{8,})/);

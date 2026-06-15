@@ -22,6 +22,7 @@ import GiftBalanceSurface from './gift/GiftBalanceSurface';
 import GiftSuccessSurface from './gift/GiftSuccessSurface';
 import CustomerPortal from './customer/CustomerPortal';
 import ReviewSurface from './ReviewSurface';
+import WifiSurface from './WifiSurface';
 
 export default function CustomerBoot({ slug, mode, tableId }) {
   const [state, setState] = useState({ loading: true, location: null, error: null });
@@ -73,6 +74,10 @@ export default function CustomerBoot({ slug, mode, tableId }) {
   // Review Manager card — always available (feedback isn't gated by hours or
   // whether online ordering is on). Server enforces the rating→routing split.
   if (mode === 'review')       return <ReviewSurface location={loc}/>;
+
+  // WiFi captive-portal — always available (guests connect any time the venue
+  // exists; not gated by opening hours or online-ordering being on).
+  if (mode === 'wifi')         return <WifiSurface location={loc}/>;
 
   // Surface enabled check
   if (mode === 'online' && !loc.online_enabled) {
