@@ -85,6 +85,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.491', date: '15 Jun 2026', label: 'WiFi: get guests online CLOUD-ONLY on UniFi (no on-site box)',
+    changes: [
+      'Guests now get online with NO on-site agent and NO port-forwarding. A cloud-adopted UniFi console is reachable from the internet (UniFi Remote Access, valid cert), so wifi-authorize calls the console’s API directly to authorise each device — exactly how Stampede et al do it.',
+      'wifi-authorize: implemented the unifi_local_api (Network Integration API + X-API-KEY) and unifi_legacy (classic API + local-admin login → cmd/stamgr) branches. New _shared/unifi.ts does the cloud→console authorize for both.',
+      'Back Office → WiFi setup: pick API key (recommended) or local-admin, enter the controller URL + credentials, optional time/data/speed caps. Credentials are AES-GCM encrypted at rest (_shared/wifi-crypto.ts) and never returned. “Test authorize” dry-runs a real sign-in to your console.',
+      'Retired the on-site wifi-agent approach — Ubiquiti’s own cloud provides the reachability, so no local software is needed. Scales to unlimited venues worldwide.',
+    ],
+  },
+  {
     version: '5.5.490', date: '15 Jun 2026', label: 'WiFi: on-site authoriser (get guests online on UniFi)',
     changes: [
       'Added wifi-agent/ — a tiny on-site program that authorises signed-up guests onto UniFi WiFi locally (UniFi only allows the grant on the venue network). Runs on a Mac/mini-PC; the get-online piece, like Stampede’s box.',
