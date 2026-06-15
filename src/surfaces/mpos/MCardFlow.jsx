@@ -1,12 +1,15 @@
 // MCardFlow — runs the card payment.
 //
-// Phase 1C decision tree at runtime:
-//   1) If profile.payment_mode is 'assigned_reader' AND a network reader is
-//      bound to this device → REST flow (stripe-process-payment-on-reader,
-//      poll, customer pays on the WisePOS E screen). This is the path that
-//      ships in production today.
-//   2) If 'tap_to_pay' → simulated approval for now. Phase 1E (native shell)
-//      replaces this with the real Stripe Tap to Pay native bridge call.
+// Runtime decision tree:
+//   1) If the native MPOS app injected the Tap to Pay bridge (window.RposTapToPay)
+//      and this device isn't pinned to a hardware reader → NATIVE Tap to Pay:
+//      connect the phone's built-in reader, create a card_present PaymentIntent,
+//      collect+confirm the tap natively (Stripe forbids driving the NFC reader
+//      from a WebView). Debug build → simulated reader (no real money); release
+//      build (signed + cert registered) → real taps.
+//   2) If profile.payment_mode is 'assigned_reader' AND a network reader is
+//      bound to this device → REST flow (stripe-process-payment-on-reader, poll,
+//      customer pays on the WisePOS E screen).
 //   3) Otherwise → simulated approval (browser dev / unconfigured devices).
 
 import { useState, useEffect, useRef } from 'react';
@@ -15,6 +18,7 @@ import { resolvePlatformLocationId, getAssignedNetworkReader } from '../../lib/n
 import { getActiveLocationSync, supabase, ensureAuthToken } from '../../lib/supabase';
 import { Sx, money } from './MShellStyles';
 import { stripeCurrency } from '../../lib/currency';
+import { tapToPayAvailable, tapInit, tapCollect, tapCancel } from '../../lib/tapToPay';
 
 export default function MCardFlow({ payment, onCancel, onApproved }) {
   const { deviceConfig, walkInOrder, activeTableId, tables } = useStore();
@@ -37,6 +41,12 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
 
   const runFlow = async () => {
     try {
+      // Native Tap to Pay takes priority when the MPOS app injected the bridge,
+      // unless this device is explicitly pinned to a hardware (network) reader.
+      if (paymentMode !== 'assigned_reader' && tapToPayAvailable()) {
+        await runTapToPayFlow();
+        return;
+      }
       if (paymentMode === 'assigned_reader') {
         const reader = await getAssignedNetworkReader();
         if (!reader) {
@@ -47,12 +57,89 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
         await runRestFlow(reader);
         return;
       }
-      // 'tap_to_pay' or anything else → simulated for now (1E adds native bridge)
+      // No native bridge (browser/dev) and no hardware reader → simulate.
       setPhase('sim');
     } catch (e) {
       setErrorMsg(e?.message || String(e));
       setPhase('error');
     }
+  };
+
+  // Native Stripe Tap to Pay: connect the phone's reader, create a card_present
+  // PaymentIntent (amount incl. tip, captured automatically), then collect+confirm
+  // the tap on-device. The whole money path stays Stripe — we just brand it 'stripe'.
+  const runTapToPayFlow = async () => {
+    setPhase('rest'); setStatusMsg('Connecting Tap to Pay…');
+    const opsLocation = getActiveLocationSync();
+    const platformLocId = await resolvePlatformLocationId(opsLocation);
+    if (!platformLocId) throw new Error('No connected Stripe account for this location');
+    const token = await ensureAuthToken();
+    if (!token) throw new Error('Could not obtain auth token — check Anonymous sign-ins are enabled in Supabase Auth.');
+
+    // Stripe Terminal Location (tml_…) for connectReader — per-merchant config.
+    const tmlId = import.meta.env.VITE_STRIPE_TERMINAL_LOCATION_ID || deviceConfig?.tapTerminalLocationId || '';
+
+    // 1) Connect the built-in Tap to Pay reader (one-time per app session).
+    const initRes = await tapInit({
+      locationId: platformLocId,
+      supabaseUrl: import.meta.env.VITE_SUPABASE_URL,
+      supabaseAnonKey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+      accessToken: token,
+      stripeTerminalLocationId: tmlId,
+    });
+    if (!initRes.ok) {
+      // Not fatal — let staff still test the rest of the flow; show why.
+      setStatusMsg(initRes.message || 'Tap to Pay unavailable');
+      setPhase('sim');
+      return;
+    }
+
+    // 2) Create the card_present PaymentIntent (tip already in `grand`).
+    setStatusMsg('Ready — present card');
+    const piRes = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-create-payment-intent`, {
+      method:'POST',
+      headers:{ 'content-type':'application/json', authorization:`Bearer ${token}` },
+      body: JSON.stringify({
+        location_id: platformLocId,
+        amount_minor: Math.round(grand * 100),
+        currency: stripeCurrency(),
+        channel: 'card_present',
+        payment_method_types: ['card_present'],
+        capture_method: 'automatic',
+        description: 'MPOS Tap to Pay',
+        ...(payment?.tip > 0 ? { metadata: { tip_minor: String(Math.round(payment.tip * 100)) } } : {}),
+      }),
+    });
+    const pj = await piRes.json();
+    if (!piRes.ok || pj.error || !pj.client_secret) throw new Error(pj.error || `HTTP ${piRes.status}`);
+
+    // 3) Run the tap natively (full-screen OS Tap to Pay UI takes over here).
+    const tap = await tapCollect({
+      clientSecret: pj.client_secret,
+      paymentIntentId: pj.payment_intent_id,
+      amountMinor: Math.round(grand * 100),
+      currency: stripeCurrency(),
+    });
+    if (!tap.ok) {
+      const code = String(tap.code || '').toUpperCase();
+      if (code.includes('CANCEL')) { onCancel?.(); return; }
+      throw new Error(tap.message || 'Tap to Pay failed');
+    }
+
+    setPhase('approved');
+    onApproved?.({
+      method: 'card',
+      paymentIntentId: tap.paymentIntentId || pj.payment_intent_id,
+      tip: payment.tip,
+      grand,
+      processor: 'stripe',
+    });
+  };
+
+  const cancelFlow = () => {
+    // Best-effort cancel of an in-progress native tap, then bubble up.
+    try { if (tapToPayAvailable()) tapCancel(); } catch (e) { /* noop */ }
+    onCancel?.();
   };
 
   const runRestFlow = async (reader) => {
@@ -141,7 +228,7 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
   // ── Render ────────────────────────────────────────────────────────────────
 
   if (phase === 'rest' || phase === 'starting') {
-    return <Waiting grand={grand} title="Customer paying on reader" sub={statusMsg} onCancel={onCancel} />;
+    return <Waiting grand={grand} title="Customer paying on reader" sub={statusMsg} onCancel={cancelFlow} />;
   }
   if (phase === 'sim') {
     return (
@@ -150,18 +237,18 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
           <button onClick={onCancel} style={Sx.iconBtn} aria-label="Cancel">←</button>
           <div style={{ flex:1 }}>
             <div style={Sx.hTitle}>Card payment</div>
-            <div style={Sx.hSub}>{paymentMode === 'tap_to_pay' ? 'Tap to Pay (simulated)' : 'Simulated · no reader assigned'}</div>
+            <div style={Sx.hSub}>{statusMsg || 'Simulated card flow'}</div>
           </div>
         </div>
         <div style={{ ...Sx.scroller, padding:'24px 16px', textAlign:'center' }}>
           <div style={{ fontSize:54, marginBottom:8 }}>📱</div>
           <div style={{ fontSize:18, fontWeight:800, color:'var(--t1)', marginBottom:6 }}>
-            {paymentMode === 'tap_to_pay' ? 'Real Tap to Pay arrives in Phase 1E' : 'Simulated card flow'}
+            Simulated card flow
           </div>
           <div style={{ fontSize:13, color:'var(--t3)', lineHeight:1.5, marginBottom:20, maxWidth:360, margin:'0 auto 20px' }}>
-            {paymentMode === 'tap_to_pay'
-              ? 'The native iOS / Android shell with Stripe Tap to Pay is the next milestone. For now you can simulate a successful card payment to test the rest of the flow end-to-end.'
-              : 'No network reader is assigned to this device. Either assign one in Back office → Card readers, or simulate to test the flow.'}
+            Tap to Pay runs in the Serv OS MPOS Android app. In a browser (or until the
+            Tap to Pay reader is configured) you can simulate a successful card payment to
+            test the rest of the flow end-to-end.
           </div>
           <div style={{ fontSize:36, fontWeight:800, fontFamily:'var(--font-mono)', color:'var(--t1)', marginBottom:24 }}>{money(grand)}</div>
         </div>

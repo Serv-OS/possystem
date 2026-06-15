@@ -1,0 +1,95 @@
+// Serv OS MPOS — mobile point-of-sale for a phone (tableside ordering + NATIVE Tap to Pay).
+//
+// Standalone module: own applicationId, versionCode, signing, update channel — same
+// "one module per device app" pattern as :app (POS) and :menuboard (Fire TV). The one
+// difference: this module carries a real native SDK — the Stripe Terminal / Tap to Pay
+// stack that :app deliberately dropped in v5.5.58 — scoped here so the POS APK stays small
+// and Kotlin-free.
+//
+// The POS UI is still the web app (WebView → ?mode=mpos); only the contactless card
+// collection runs natively (Stripe forbids driving the NFC reader from a WebView). A JS
+// bridge (window.RposTapToPay) connects the two.
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace 'co.posup.rpos.mpos'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "co.posup.rpos.mpos"
+        minSdk 26          // Stripe Terminal SDK build floor (Tap to Pay runtime needs Android 13+)
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+    }
+
+    // Tap to Pay attestation REFUSES a debug-signed / debuggable APK for the REAL reader.
+    // Strategy: debug build → SIMULATED reader (test the whole flow, no real money, no
+    // cert registration). Release build (signed + cert registered with Stripe) → REAL taps.
+    // The reader mode is chosen at runtime from BuildConfig.DEBUG (see TerminalManager).
+    signingConfigs {
+        release {
+            // Populated by CI from secrets when going live; see .github/workflows/build-mpos.yml.
+            // Until a keystore is provided, the release variant is built unsigned (debug is used).
+            def ksFile = System.getenv('MPOS_KEYSTORE_FILE')
+            if (ksFile != null && new File(ksFile).exists()) {
+                storeFile file(ksFile)
+                storePassword System.getenv('MPOS_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('MPOS_KEY_ALIAS')
+                keyPassword System.getenv('MPOS_KEY_PASSWORD')
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            // Simulated Tap to Pay reader — installable + testable with no Stripe cert work.
+            applicationIdSuffix '.debug'
+            versionNameSuffix '-debug'
+        }
+        release {
+            minifyEnabled true        // R8 shrink: keeps the Terminal-bearing APK under Supabase's 50MB cap
+            shrinkResources true
+            debuggable false          // required: Tap to Pay rejects debuggable APKs
+            signingConfig signingConfigs.release
+        }
+    }
+
+    // Stripe Terminal adds large native payment-kernel .so libs; ship arm64 only (real phones).
+    splits {
+        abi {
+            enable true
+            reset()
+            include 'arm64-v8a'
+            universalApk false
+        }
+    }
+
+    buildFeatures {
+        buildConfig true   // TerminalManager reads BuildConfig.DEBUG to pick simulated vs real reader
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+}
+
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'androidx.core:core-ktx:1.13.1'
+
+    // Stripe Terminal core + the Tap to Pay (on Android) reader implementation.
+    // Versions MUST match. 5.6.0 is current as of 2026-06; SDK build floor minSdk 26.
+    implementation 'com.stripe:stripeterminal-core:5.6.0'
+    implementation 'com.stripe:stripeterminal-taptopay:5.6.0'
+
+    // Terminal SDK callbacks run on coroutines internally.
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
+}

@@ -1,6 +1,6 @@
 # Serv OS / RPOS — session handoff
 
-> **Current build: v5.5.468** · live: https://possystem-liard.vercel.app · dev: https://dev.serv-os.app · repo: **Serv-OS/possystem** (branch `develop`, Vercel auto-deploys).
+> **Current build: v5.5.473** · live: https://possystem-liard.vercel.app · dev: https://dev.serv-os.app · repo: **Serv-OS/possystem** (branch `develop`, Vercel auto-deploys).
 > Multi-tenant hospitality POS (React 19 + Vite, Zustand, Supabase; no TypeScript, no tests). First customer is UK / GBP.
 > **Pillars:** don't break working functionality · resolve the real `locationId` before any DB write (never `loc-demo`) · CSS vars not hardcoded colours · bump `src/lib/version.js` + add a `CHANGELOG` entry in `src/App.jsx` on every web deploy · money is `numeric`, never float.
 
@@ -15,6 +15,10 @@ A SaaS restaurant/bar POS with many device "surfaces" off one codebase (URL `?mo
 ---
 
 ## Recent arc (this block of sessions)
+
+### 0. MPOS Android app + Stripe Tap to Pay (NEW — in progress, v5.5.473)
+A real phone POS: the `:mpos` Gradle module (own `applicationId co.posup.rpos.mpos`, own CI), a WebView → `?mode=mpos` **plus a native Stripe Tap to Pay layer** (the menu-board/POS apps are pure WebViews; this one carries the Stripe Terminal SDK because Stripe forbids driving the NFC reader from a WebView). Native Kotlin (`MposApplication`/`TerminalManager`/`TapToPayBridge`) exposes `window.RposTapToPay`; `src/lib/tapToPay.js` wraps it and `src/surfaces/mpos/MCardFlow.jsx` runs the native tap (create `card_present` PaymentIntent → collect → confirm) with graceful fallback to the WisePOS/simulated path off-device. **Processor = Stripe** (researched: Ryft has no Tap-to-Pay/SoftPOS, only PAX hardware). Reuses existing edge fns `stripe-terminal-connection-token` + `stripe-create-payment-intent` — no new backend. **Debug build = simulated reader (test now, no real money); release build (signed + cert registered with Stripe) = real taps.** Full spec + go-live checklist: **`android/MPOS_TAP_TO_PAY.md`**.
+- **Still to do:** create `.github/workflows/build-mpos.yml` via the GitHub web editor (PAT can't push workflow files) → first CI build → iterate any Kotlin/SDK compile fixes → sideload debug APK → test simulated tap → then the operator-side go-live steps (Terminal Location `tml_…` → `VITE_STRIPE_TERMINAL_LOCATION_ID`, release keystore + `MPOS_*` secrets, register cert SHA-256 with Stripe, enable TTP).
 
 ### 1. ServOS visual reskin (POS + Back Office)
 "Liquid glass" design system applied across POS + Back Office, **zero behaviour change** — scoped via `data-skin="servos"` on `<html>`, light/dark via `[data-theme]` (persisted to `rpos-theme`). Customer-facing online/QR/kiosk UIs deliberately untouched. Back-office sidebar reorganised into a 10-section collapsible IA (`NAV_IA` in `BackOfficeApp.jsx`). Shared tokens/classes in `src/styles/globals.css`; brand in `ServOSBrand.jsx`; line-icon set in `ServOSIcons.jsx`.

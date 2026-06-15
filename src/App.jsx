@@ -85,6 +85,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.473', date: '14 Jun 2026', label: 'MPOS Android app + Stripe Tap to Pay',
+    changes: [
+      'New Serv OS MPOS Android app: take orders tableside on a phone, with contactless card payments built in via Stripe Tap to Pay (no separate card reader needed).',
+      'Tap to Pay runs natively (Stripe forbids it inside a web view) through a bridge into the existing checkout — the card payment finalises and prints exactly like the rest of the POS.',
+      'Debug builds use a simulated card so the whole flow can be tested with no real money; live taps need the app release-signed and its certificate registered with Stripe (see android/MPOS_TAP_TO_PAY.md).',
+      'Ryft has no Tap-to-Pay/SoftPOS product, so phone contactless uses Stripe; Ryft stays for online + its PAX hardware terminals.',
+    ],
+  },
+  {
     version: '5.5.472', date: '14 Jun 2026', label: 'Menu board — stronger design + resilient pairing',
     changes: [
       'Categories now stay together in one column instead of splitting across two (a category only ever splits if it is genuinely taller than a full column).',

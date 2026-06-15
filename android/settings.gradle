@@ -10,3 +10,4 @@ include ':app'
 // Each device "app" is its own module (own applicationId, own CI workflow, own
 // update channel). ':app' = POS. Add new surfaces (menuboard, kds, …) the same way.
 include ':menuboard'
+include ':mpos'

@@ -1,4 +1,7 @@
-// Root build.gradle. v5.5.58: Kotlin plugin removed alongside Stripe Terminal SDK ripout.
+// Root build.gradle. v5.5.58 removed Kotlin alongside the Stripe Terminal ripout from ':app'.
+// The Kotlin classpath is back ONLY because ':mpos' re-introduces the Stripe Terminal /
+// Tap to Pay SDK (Kotlin). ':app' and ':menuboard' don't apply the kotlin plugin, so they
+// stay Kotlin-free and unaffected.
 buildscript {
     repositories {
         google()
@@ -6,6 +9,7 @@ buildscript {
     }
     dependencies {
         classpath 'com.android.tools.build:gradle:8.2.2'
+        classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.22'
     }
 }
 
