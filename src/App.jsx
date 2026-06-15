@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.477', date: '14 Jun 2026', label: 'Menu board auto-update + app template',
+    changes: [
+      'The Menu Board app now self-updates too: on launch it checks for a new version, downloads it, and installs — same as MPOS.',
+      'Every future Serv OS device app gets its own icon and automatic updates by default (shared signing + a per-app update channel).',
+    ],
+  },
+  {
     version: '5.5.476', date: '14 Jun 2026', label: 'MPOS auto-update',
     changes: [
       'The Serv OS MPOS app now updates itself: on launch it checks for a new version, downloads it, and prompts a one-tap install — no manual reinstalling each release.',

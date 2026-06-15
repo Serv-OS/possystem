@@ -1,19 +1,29 @@
 name: Build Menu Board APK (Fire TV)
-# Standalone build for the digital menu board (co.posup.rpos.menuboard).
-# Independent of the POS build (build-apk.yml). New device apps get their own
-# module + their own workflow like this.
+# Standalone build for the digital menu board (co.posup.rpos.menuboard), self-updating.
+# Independent of the POS build (build-apk.yml). New device apps get their own module + workflow.
+#
+# Signed RELEASE builds use one shared keystore from secrets so the in-app auto-updater can
+# install updates in place. Set repo secrets: ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD,
+# ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD (+ SUPABASE_SERVICE_KEY to auto-publish). Without them
+# the build falls back to the debug key (builds fine, but won't auto-update a key-signed install).
 on:
   push:
     branches: [ main, develop ]
     paths:
       - 'android/menuboard/**'
       - 'android/settings.gradle'
+      - 'android/build.gradle'
+      - 'android/release/latest-menuboard.json'
       - '.github/workflows/build-menuboard.yml'
   workflow_dispatch:
 jobs:
   build:
     runs-on: ubuntu-latest
     env:
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
       SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
     steps:
       - uses: actions/checkout@v4
@@ -23,24 +33,39 @@ jobs:
           distribution: 'temurin'
       - uses: android-actions/setup-android@v3
       - run: chmod +x android/gradlew
-      - name: Build Menu Board APK
+
+      - name: Decode signing keystore
+        if: ${{ env.ANDROID_KEYSTORE_BASE64 != '' }}
+        run: |
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/servos-release.p12"
+          echo "ANDROID_KEYSTORE_FILE=$RUNNER_TEMP/servos-release.p12" >> "$GITHUB_ENV"
+
+      - name: Build Menu Board release APK
         working-directory: android
-        run: ./gradlew :menuboard:assembleDebug --no-daemon --stacktrace
+        run: ./gradlew :menuboard:assembleRelease --no-daemon --stacktrace
+
       - name: Upload Menu Board APK (Fire TV)
         uses: actions/upload-artifact@v4
         with:
           name: ServOS-MenuBoard-FireTV-APK
-          path: android/menuboard/build/outputs/apk/debug/menuboard-debug.apk
+          path: android/menuboard/build/outputs/apk/release/*.apk
           retention-days: 90
-      # Optional no-PC install: publish to a public URL the Fire-TV "Downloader" app can fetch.
-      # No-op until the SUPABASE_SERVICE_KEY repo secret is set. Lands at:
-      #   https://tbetcegmszzotrwdtqhi.supabase.co/storage/v1/object/public/app-releases/menuboard.apk
-      - name: Publish Menu Board APK to Supabase (if configured)
+
+      # Auto-publish (no-op until SUPABASE_SERVICE_KEY is set): push the signed APK + the
+      # version manifest so every menu-board screen sees the new build and self-updates.
+      - name: Publish Menu Board APK + manifest to Supabase (if configured)
         if: ${{ env.SUPABASE_SERVICE_KEY != '' }}
         run: |
-          curl -fsS -X POST \
+          APK=$(find android/menuboard/build/outputs/apk/release -name '*.apk' | head -1)
+          curl -fsS --http1.1 -X POST \
             "https://tbetcegmszzotrwdtqhi.supabase.co/storage/v1/object/app-releases/menuboard.apk" \
             -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
             -H "x-upsert: true" \
             -H "Content-Type: application/vnd.android.package-archive" \
-            --data-binary @android/menuboard/build/outputs/apk/debug/menuboard-debug.apk
+            --data-binary @"$APK"
+          curl -fsS --http1.1 -X POST \
+            "https://tbetcegmszzotrwdtqhi.supabase.co/storage/v1/object/app-releases/latest-menuboard.json" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
+            -H "x-upsert: true" \
+            -H "Content-Type: application/json" \
+            --data-binary @android/release/latest-menuboard.json
