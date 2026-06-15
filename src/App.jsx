@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.482', date: '15 Jun 2026', label: 'WiFi guest data-capture — groundwork',
+    changes: [
+      'Foundations for WiFi guest data capture: a branded captive-portal that feeds guest details (name, email, phone, DOB, “are you local?”) straight into the CRM with proper UK marketing consent. Schema + plan landed; the portal and back-office editor are next.',
+    ],
+  },
+  {
     version: '5.5.481', date: '15 Jun 2026', label: 'New green Serv OS favicon + app icons',
     changes: [
       'Browser tab favicon and the PWA / add-to-home-screen icons are now the new green “S.” mark (replacing the old orange icon); mobile theme colour updated to match. (Browsers cache favicons — a hard refresh may be needed to see it.)',
