@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.488', date: '15 Jun 2026', label: 'WiFi — UniFi portal bridge',
+    changes: [
+      'Added the ServOS WiFi bridge (wifi-bridge/): the small fixed-IP service that lets a UniFi guest network point at our branded captive portal (UniFi needs an IP target, so it bounces guests to <venue>.serv-os.app/wifi). Multi-tenant via hostname; deploy guide included. Get-online uses vouchers (or the seamless controller API).',
+    ],
+  },
+  {
     version: '5.5.487', date: '15 Jun 2026', label: 'WiFi — join loyalty option',
     changes: [
       'The WiFi page can now offer loyalty sign-up: turn it on in the editor and the opt-in becomes “Join rewards” — one tick enrols the guest in your loyalty programme AND opts them into marketing (18+).',
