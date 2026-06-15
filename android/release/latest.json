@@ -1,7 +1,7 @@
 {
-  "versionCode": 9,
-  "versionName": "1.8",
+  "versionCode": 10,
+  "versionName": "1.9",
   "apkUrl": "https://tbetcegmszzotrwdtqhi.supabase.co/storage/v1/object/public/app-releases/app.apk",
   "mandatory": false,
-  "notes": "New S. POS app icon."
+  "notes": "New S. POS app icon + name."
 }

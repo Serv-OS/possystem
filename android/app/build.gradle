@@ -18,8 +18,8 @@ android {
         // minSdk could be lowered now, but keeping 26 to match prior installs.
         minSdk 26
         targetSdk 34
-        versionCode 9          // bump every release; UpdateChecker compares this to latest.json
-        versionName "1.8"
+        versionCode 10         // bump every release; UpdateChecker compares this to latest.json
+        versionName "1.9"
     }
 
     signingConfigs {

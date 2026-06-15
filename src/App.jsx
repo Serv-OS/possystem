@@ -85,9 +85,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.480', date: '15 Jun 2026', label: 'POS app renamed to “Serv OS POS”',
+    changes: [
+      'The till app is now named “Serv OS POS” (was “Restaurant OS”) with the new S. POS icon — consistent with Serv OS MPOS and Serv OS Menu.',
+    ],
+  },
+  {
     version: '5.5.479', date: '15 Jun 2026', label: 'POS app icon (S. POS)',
     changes: [
-      'New “S. POS” app icon for the till app — delivered as the first real auto-update (no manual reinstall).',
+      'New “S. POS” app icon for the till app.',
     ],
   },
   {
