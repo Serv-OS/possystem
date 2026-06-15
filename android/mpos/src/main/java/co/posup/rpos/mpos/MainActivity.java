@@ -1,49 +1,33 @@
 package co.posup.rpos.mpos;
 
-import android.Manifest;
 import android.app.Activity;
-import android.content.pm.PackageManager;
 import android.os.Bundle;
 import android.view.WindowManager;
 import android.webkit.ConsoleMessage;
 import android.webkit.CookieManager;
-import android.webkit.PermissionRequest;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 
-import androidx.core.app.ActivityCompat;
-import androidx.core.content.ContextCompat;
-
 /**
  * Serv OS MPOS — mobile point-of-sale for a phone.
  *
- * A WebView pointed at ?mode=mpos for tableside ordering, plus a native Tap to Pay bridge
- * (window.RposTapToPay) so the web checkout can take contactless card payments through the
- * Stripe Terminal SDK — which cannot run inside a WebView. The bridge is wired here exactly
- * like the POS app wires its printer bridge.
+ * A WebView pointed at ?mode=mpos for tableside ordering. Unlike the menu board this is an
+ * interactive app, so it keeps the system bars, lets the soft keyboard resize the view, and
+ * allows in-app back navigation. Card payments are handled by the web surface (assigned
+ * hardware reader, or simulated in a browser); there is no native payment SDK in this app.
  */
 public class MainActivity extends Activity {
-    // To point at a different environment, change this and rebuild.
+    // To point at a different environment (e.g. production), change this and rebuild.
     private static final String MPOS_URL = "https://dev.serv-os.app/?mode=mpos";
-    private static final int REQ_LOCATION = 1001;
-
     private WebView webView;
-    private TapToPayBridge tapBridge;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         // A POS terminal shouldn't dim/sleep mid-order.
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-
-        // Tap to Pay needs location granted before the reader can connect; ask up front.
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
-                != PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(this,
-                    new String[]{Manifest.permission.ACCESS_FINE_LOCATION}, REQ_LOCATION);
-        }
 
         webView = new WebView(this);
         setContentView(webView);
@@ -69,10 +53,6 @@ public class MainActivity extends Activity {
         cm.setAcceptCookie(true);
         cm.setAcceptThirdPartyCookies(webView, true);
 
-        // Expose the Tap to Pay bridge to the web POS as window.RposTapToPay.
-        tapBridge = new TapToPayBridge(this, webView);
-        webView.addJavascriptInterface(tapBridge, "RposTapToPay");
-
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public void onReceivedError(WebView v, int code, String desc, String url) {
@@ -81,7 +61,6 @@ public class MainActivity extends Activity {
         });
         webView.setWebChromeClient(new WebChromeClient() {
             @Override public boolean onConsoleMessage(ConsoleMessage msg) { return true; }
-            @Override public void onPermissionRequest(PermissionRequest req) { req.grant(req.getResources()); }
         });
 
         webView.loadUrl(MPOS_URL);

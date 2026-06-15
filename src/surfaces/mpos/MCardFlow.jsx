@@ -3,10 +3,11 @@
 // Runtime decision tree:
 //   1) If the native MPOS app injected the Tap to Pay bridge (window.RposTapToPay)
 //      and this device isn't pinned to a hardware reader → NATIVE Tap to Pay:
-//      connect the phone's built-in reader, create a card_present PaymentIntent,
-//      collect+confirm the tap natively (Stripe forbids driving the NFC reader
-//      from a WebView). Debug build → simulated reader (no real money); release
-//      build (signed + cert registered) → real taps.
+//      connect the device's built-in reader, create a card_present PaymentIntent,
+//      collect+confirm the tap natively (the NFC reader can't be driven from a
+//      WebView). This bridge is implemented by the native iOS MPOS app (Apple Tap
+//      to Pay on iPhone). On Android the bridge is absent, so this branch is
+//      skipped — the Android MPOS app takes orders and uses a hardware reader.
 //   2) If profile.payment_mode is 'assigned_reader' AND a network reader is
 //      bound to this device → REST flow (stripe-process-payment-on-reader, poll,
 //      customer pays on the WisePOS E screen).
@@ -246,9 +247,9 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
             Simulated card flow
           </div>
           <div style={{ fontSize:13, color:'var(--t3)', lineHeight:1.5, marginBottom:20, maxWidth:360, margin:'0 auto 20px' }}>
-            Tap to Pay runs in the Serv OS MPOS Android app. In a browser (or until the
-            Tap to Pay reader is configured) you can simulate a successful card payment to
-            test the rest of the flow end-to-end.
+            Take card payments with an assigned reader, or Tap to Pay in the native MPOS app.
+            In a browser (or when no reader is assigned) you can simulate a successful card
+            payment to test the rest of the flow end-to-end.
           </div>
           <div style={{ fontSize:36, fontWeight:800, fontFamily:'var(--font-mono)', color:'var(--t1)', marginBottom:24 }}>{money(grand)}</div>
         </div>

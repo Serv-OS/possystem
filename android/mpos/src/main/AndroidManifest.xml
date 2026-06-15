@@ -4,22 +4,14 @@
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
-    <!-- Stripe Tap to Pay on Android: NFC radio + location (Stripe attaches device geo to every
-         card-present charge for fraud/compliance) + foreground service for the reader. -->
-    <uses-permission android:name="android.permission.NFC"/>
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE"/>
-
-    <uses-feature android:name="android.hardware.nfc" android:required="true"/>
 
     <application
-        android:name=".MposApplication"
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:theme="@android:style/Theme.NoTitleBar"
-        android:hardwareAccelerated="true">
+        android:hardwareAccelerated="true"
+        android:usesCleartextTraffic="true">
 
         <activity
             android:name=".MainActivity"
