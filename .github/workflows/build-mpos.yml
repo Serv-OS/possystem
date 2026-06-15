@@ -1,0 +1,47 @@
+name: Build MPOS APK (Tap to Pay)
+# Standalone build for the Mobile POS (co.posup.rpos.mpos) with NATIVE Stripe Tap to Pay.
+# Independent of POS (build-apk.yml) and Menu Board (build-menuboard.yml). New device apps
+# get their own module + their own workflow like this.
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'android/mpos/**'
+      - 'android/settings.gradle'
+      - 'android/build.gradle'
+      - '.github/workflows/build-mpos.yml'
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+      - uses: android-actions/setup-android@v3
+      - run: chmod +x android/gradlew
+      - name: Build MPOS APK (debug = simulated Tap to Pay)
+        working-directory: android
+        run: ./gradlew :mpos:assembleDebug --no-daemon --stacktrace
+      - name: Upload MPOS APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ServOS-MPOS-APK
+          path: android/mpos/build/outputs/apk/debug/*.apk
+          retention-days: 90
+      # Optional no-PC install: publish to a public URL. No-op until SUPABASE_SERVICE_KEY is set.
+      #   https://tbetcegmszzotrwdtqhi.supabase.co/storage/v1/object/public/app-releases/mpos.apk
+      - name: Publish MPOS APK to Supabase (if configured)
+        if: ${{ env.SUPABASE_SERVICE_KEY != '' }}
+        run: |
+          APK=$(find android/mpos/build/outputs/apk/debug -name '*.apk' | head -1)
+          curl -fsS -X POST \
+            "https://tbetcegmszzotrwdtqhi.supabase.co/storage/v1/object/app-releases/mpos.apk" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
+            -H "x-upsert: true" \
+            -H "Content-Type: application/vnd.android.package-archive" \
+            --data-binary @"$APK"
