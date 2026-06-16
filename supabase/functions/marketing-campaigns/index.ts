@@ -18,7 +18,7 @@ const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const sb = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { autoRefreshToken: false, persistSession: false } });
 
-const CAMPAIGN_FIELDS = ['name', 'description', 'type', 'channel', 'segment_id', 'trigger', 'schedule', 'subject', 'email_html', 'sms_body', 'from_name', 'offer_id', 'status'];
+const CAMPAIGN_FIELDS = ['name', 'description', 'type', 'channel', 'segment_id', 'trigger', 'schedule', 'subject', 'email_html', 'email_blocks', 'sms_body', 'from_name', 'offer_id', 'status'];
 
 async function authed(req: Request, opsLocationId: string): Promise<boolean> {
   const token = (req.headers.get('Authorization') ?? '').replace('Bearer ', '').trim();

@@ -6,8 +6,10 @@
 // run daily via Vercel Cron → marketing-run; "Run now" forces a test run (never-twice still holds).
 // All reads/writes go through the marketing-campaigns edge fn (org-scoped, resolved from the location).
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { supabase, getActiveLocationSync } from '../../../lib/supabase';
+import EmailBuilder from './EmailBuilder';
+import { compileEmail, SAMPLE_MERGE, STARTER_BLOCKS, MERGE_TAGS } from '../../../lib/emailCompiler';
 
 const S = {
   h1: { fontSize: 22, fontWeight: 800, color: 'var(--t1)', margin: 0, letterSpacing: '-.01em' },
@@ -32,15 +34,19 @@ const S = {
 
 const STATUS_COLOR = { active: 'var(--grn)', paused: 'var(--amber, #d98a00)', draft: 'var(--t4)', scheduled: 'var(--acc)', archived: 'var(--t4)' };
 
+const MIN_BLOCKS = () => ([{ type: 'heading', text: '' }, { type: 'text', text: '' }]);
+// Ensure a campaign opened in the editor has an email_blocks array (derive from legacy email_html if needed).
+const ensureBlocks = (c) => (Array.isArray(c.email_blocks) && c.email_blocks.length) ? c.email_blocks : (c.email_html ? [{ type: 'html', html: c.email_html }] : MIN_BLOCKS());
+
 const BIRTHDAY_PRESET = () => ({
   name: 'Birthday treat', description: 'Send a unique code a week before each customer\'s birthday',
   type: 'automation', channel: 'both', trigger: { type: 'birthday', days_before: 7 }, segment_id: '', offer_id: '',
   subject: 'Happy birthday {{first_name}}! 🎂', from_name: '',
-  email_html: '<p>Hi {{first_name}},</p><p>Your birthday treat is here — use <b>{{promo_code}}</b> for {{offer}} on us. See you soon!</p>',
+  email_blocks: STARTER_BLOCKS(),
   sms_body: 'Happy birthday {{first_name}}! Your treat: {{promo_code}} ({{offer}}). Reply STOP to opt out.',
   status: 'draft',
 });
-const BLANK = () => ({ name: '', description: '', type: 'automation', channel: 'email', trigger: { type: 'birthday', days_before: 7 }, segment_id: '', offer_id: '', subject: '', from_name: '', email_html: '', sms_body: '', status: 'draft' });
+const BLANK = () => ({ name: '', description: '', type: 'automation', channel: 'email', trigger: { type: 'birthday', days_before: 7 }, segment_id: '', offer_id: '', subject: '', from_name: '', email_blocks: MIN_BLOCKS(), sms_body: '', status: 'draft' });
 
 export default function Campaigns() {
   const [locId, setLocId] = useState(null);
@@ -52,6 +58,8 @@ export default function Campaigns() {
   const [save, setSave] = useState({});
   const [runMsg, setRunMsg] = useState({});      // { [id]: summary|busy|err }
   const [runsView, setRunsView] = useState(null); // { campaign, runs, sends }
+  const [test, setTest] = useState({ email: '', phone: '' });
+  const smsRef = useRef(null);
 
   const call = (action, extra = {}) => supabase.functions.invoke('marketing-campaigns', { body: { action, ops_location_id: locId, ...extra } })
     .then(({ data, error }) => { if (error) throw new Error(error.message); if (data?.error) throw new Error(data.error); return data; });
@@ -77,12 +85,15 @@ export default function Campaigns() {
     setSave({ busy: true });
     try {
       const c = editing;
+      const blocks = Array.isArray(c.email_blocks) ? c.email_blocks : [];
       const campaign = {
         ...(c.id ? { id: c.id } : {}),
         name: c.name.trim(), description: c.description || null, type: c.type, channel: c.channel,
         segment_id: c.segment_id || null, offer_id: c.offer_id || null,
         trigger: c.trigger || {}, subject: c.subject || null, from_name: c.from_name || null,
-        email_html: c.email_html || null, sms_body: c.sms_body || null,
+        // Compile blocks → responsive HTML (what the engine sends); keep blocks for re-editing.
+        email_blocks: blocks, email_html: blocks.length ? compileEmail(blocks) : null,
+        sms_body: c.sms_body || null,
         status: c.status || 'draft',
       };
       await call('save_campaign', { campaign });
@@ -100,6 +111,35 @@ export default function Campaigns() {
     catch (e) { setRunMsg((s) => ({ ...s, [c.id]: { err: e.message } })); }
   };
   const viewRuns = async (c) => { try { const d = await call('list_runs', { campaign_id: c.id }); setRunsView({ campaign: c, ...d }); } catch (e) { alert(e.message); } };
+
+  // Send a test message to a chosen address. Goes through marketing-send (consent bypassed for the
+  // test; suppression + sandbox still apply — so in sandbox mode it logs/returns a preview, and once
+  // a provider is configured it actually delivers).
+  const sendTest = async () => {
+    const wantEmail = (editing.channel === 'email' || editing.channel === 'both') && test.email.trim();
+    const wantSms = (editing.channel === 'sms' || editing.channel === 'both') && test.phone.trim();
+    if (!wantEmail && !wantSms) { setTest((t) => ({ ...t, msg: { err: 'Enter a test email or phone first.' } })); return; }
+    setTest((t) => ({ ...t, msg: { busy: true } }));
+    try {
+      const html = compileEmail(editing.email_blocks || []);
+      const calls = [];
+      if (wantEmail) calls.push(supabase.functions.invoke('marketing-send', { body: { action: 'send', ops_location_id: locId, channel: 'email', to: { email: test.email.trim() }, subject: editing.subject, html, merge: SAMPLE_MERGE, bypass_consent: true } }));
+      if (wantSms) calls.push(supabase.functions.invoke('marketing-send', { body: { action: 'send', ops_location_id: locId, channel: 'sms', to: { phone: test.phone.trim() }, sms_body: editing.sms_body, merge: SAMPLE_MERGE, bypass_consent: true } }));
+      const res = await Promise.all(calls);
+      const parts = res.map(({ data, error }) => error ? `error: ${error.message}` : (data?.error ? data.error : data?.status || 'ok'));
+      setTest((t) => ({ ...t, msg: { ok: `Test → ${parts.join(' · ')}` } }));
+    } catch (e) { setTest((t) => ({ ...t, msg: { err: e.message } })); }
+  };
+
+  const insertSmsTag = (tag) => {
+    const el = smsRef.current; if (!el) { setEditing((e) => ({ ...e, sms_body: (e.sms_body || '') + tag })); return; }
+    const start = el.selectionStart ?? el.value.length, end = el.selectionEnd ?? el.value.length;
+    const next = (editing.sms_body || '').slice(0, start) + tag + (editing.sms_body || '').slice(end);
+    setEditing((e) => ({ ...e, sms_body: next }));
+    requestAnimationFrame(() => { try { el.focus(); el.setSelectionRange(start + tag.length, start + tag.length); } catch {} });
+  };
+  const smsLen = (editing?.sms_body || '').length;
+  const smsSegments = smsLen === 0 ? 0 : smsLen <= 160 ? 1 : Math.ceil(smsLen / 153);
 
   const t = editing?.trigger || {};
   const setTrigger = (patch) => setEditing((e) => ({ ...e, trigger: { ...e.trigger, ...patch } }));
@@ -140,7 +180,7 @@ export default function Campaigns() {
                   {c.status !== 'active' && <button style={S.ghost} onClick={() => setStatus(c, 'active')}>Activate</button>}
                   {c.status === 'active' && <button style={S.ghost} onClick={() => setStatus(c, 'paused')}>Pause</button>}
                   <button style={S.ghost} onClick={() => viewRuns(c)}>Runs</button>
-                  <button style={S.ghost} onClick={() => { setEditing({ ...BLANK(), ...c, segment_id: c.segment_id || '', offer_id: c.offer_id || '', trigger: c.trigger || { type: 'birthday', days_before: 7 } }); setSave({}); }}>Edit</button>
+                  <button style={S.ghost} onClick={() => { setEditing({ ...BLANK(), ...c, segment_id: c.segment_id || '', offer_id: c.offer_id || '', trigger: c.trigger || { type: 'birthday', days_before: 7 }, email_blocks: ensureBlocks(c) }); setSave({}); }}>Edit</button>
                 </div>
               </div>
             );
@@ -202,13 +242,34 @@ export default function Campaigns() {
           {(editing.channel === 'email' || editing.channel === 'both') && (
             <>
               <div style={S.field}><label style={S.label}>Email subject</label><input style={S.input} value={editing.subject} onChange={(e) => setEditing({ ...editing, subject: e.target.value })} placeholder="Happy birthday {{first_name}}!" /></div>
-              <div style={S.field}><label style={S.label}>Email body (HTML)</label><textarea style={S.ta} value={editing.email_html} onChange={(e) => setEditing({ ...editing, email_html: e.target.value })} /></div>
+              <div style={S.field}><label style={S.label}>Email content</label>
+                <EmailBuilder blocks={editing.email_blocks} onChange={(blocks) => setEditing({ ...editing, email_blocks: blocks })} />
+              </div>
             </>
           )}
           {(editing.channel === 'sms' || editing.channel === 'both') && (
-            <div style={S.field}><label style={S.label}>SMS message</label><textarea style={{ ...S.ta, minHeight: 48 }} value={editing.sms_body} onChange={(e) => setEditing({ ...editing, sms_body: e.target.value })} /></div>
+            <div style={S.field}>
+              <label style={S.label}>SMS message</label>
+              <div style={{ marginBottom: 6 }}>
+                {MERGE_TAGS.map(([tag]) => <button key={tag} type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => insertSmsTag(tag)} style={{ padding: '3px 8px', borderRadius: 99, border: '1px solid var(--bdr2)', background: 'var(--bg2)', color: 'var(--t2)', cursor: 'pointer', fontSize: 11, fontWeight: 700, marginRight: 5, fontFamily: 'var(--font-mono, monospace)' }}>{tag}</button>)}
+              </div>
+              <textarea ref={smsRef} style={{ ...S.ta, minHeight: 64, fontFamily: 'inherit' }} value={editing.sms_body} onChange={(e) => setEditing({ ...editing, sms_body: e.target.value })} placeholder="Happy birthday {{first_name}}! Your code: {{promo_code}}" />
+              <div style={S.hint}>{smsLen} chars · {smsSegments} SMS segment{smsSegments === 1 ? '' : 's'} · a “Reply STOP to opt out” line is appended automatically.</div>
+            </div>
           )}
           <div style={S.hint}>Merge tags: <code>{'{{first_name}}'}</code> <code>{'{{name}}'}</code> <code>{'{{promo_code}}'}</code> (when an offer is attached) <code>{'{{offer}}'}</code>. The unsubscribe link / STOP footer is added automatically.</div>
+
+          {/* Send test */}
+          <div style={{ marginTop: 14, padding: 12, border: '1px solid var(--bdr2)', borderRadius: 10, background: 'var(--bg2)' }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--t2)', marginBottom: 8 }}>Send a test (uses sample data; nothing sends to your customers)</div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              {(editing.channel === 'email' || editing.channel === 'both') && <input style={{ ...S.input, maxWidth: 220 }} value={test.email} onChange={(e) => setTest({ ...test, email: e.target.value })} placeholder="you@example.com" />}
+              {(editing.channel === 'sms' || editing.channel === 'both') && <input style={{ ...S.input, maxWidth: 180 }} value={test.phone} onChange={(e) => setTest({ ...test, phone: e.target.value })} placeholder="+447…" />}
+              <button style={S.ghost} onClick={sendTest} disabled={test.msg?.busy}>{test.msg?.busy ? 'Sending…' : 'Send test'}</button>
+              {test.msg?.ok && <span style={S.ok}>{test.msg.ok}</span>}
+              {test.msg?.err && <span style={S.err}>{test.msg.err}</span>}
+            </div>
+          </div>
 
           <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginTop: 16 }}>
             <button style={S.btn} onClick={saveCampaign} disabled={save.busy}>{save.busy ? 'Saving…' : (editing.id ? 'Save campaign' : 'Create campaign')}</button>

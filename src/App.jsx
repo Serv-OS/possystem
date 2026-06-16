@@ -85,6 +85,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.508', date: '16 Jun 2026', label: 'Marketing slice 5: email builder + SMS composer (merge tags, live preview, send test)',
+    changes: [
+      'Campaigns now have a block-based email builder (heading / text / button / image / divider / spacer / raw-HTML) — drag to reorder (or up/down), insert merge tags at the cursor, with a live rendered preview using sample data. Blocks compile to a responsive ~600px inline-styled email on save; the engine still sends the compiled HTML.',
+      'SMS composer: merge-tag insert + live character / segment counter, with the “Reply STOP” line appended automatically.',
+      'Send a test: fire the email and/or SMS to your own address with sample data (consent bypassed for the test; suppression + sandbox still apply, so it logs a preview until a provider is configured). Migration 20260616e adds campaigns.email_blocks (additive); legacy HTML bodies load as a raw-HTML block so nothing is lost.',
+    ],
+  },
+  {
     version: '5.5.507', date: '16 Jun 2026', label: 'Marketing slice 4 hardening (adversarial review fixes)',
     changes: [
       'Security: the marketing cron endpoint now fails SECURE — it refuses to run if CRON_SECRET is unset (previously the auth check was skipped when the secret was missing, allowing an unauthenticated trigger).',
