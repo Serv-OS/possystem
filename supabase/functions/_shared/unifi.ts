@@ -115,33 +115,88 @@ export async function authorizeIntegration(opts: {
     : /\/proxy\/consoles\/[^/]+$/.test(base) ? `${base}/network/integration/v1`
     : `${base}/proxy/network/integration/v1`;
   const H = { 'X-API-KEY': opts.apiKey, 'Accept': 'application/json' };
+  const connMatch = base.match(/\/connector\/consoles\/([^/]+)/);
 
-  // ALWAYS resolve the site via /sites — this is the real reachability + auth check, and the
-  // Integration API needs the site's UUID (the classic name 'default' is NOT a valid id here).
+  // ── CONNECTOR (api.ui.com) → CLASSIC API by MAC ──
+  // The Integration API needs a site UUID the connector never exposes usefully, but the CLASSIC API
+  // works through the connector with the X-API-KEY and authorizes by MAC directly — no site UUID, no
+  // client lookup. (Verified: GET …/proxy/network/api/s/default/self → 200 meta.rc=ok.)
+  if (connMatch) {
+    const classicRoot = `${base}/proxy/network/api`;
+    const site = opts.siteId || 'default';
+    if (opts.probeOnly) {
+      try {
+        const r = await fetch(`${classicRoot}/s/${site}/self`, { headers: H });
+        const t = await r.text().catch(() => '');
+        if (!r.ok) return { ok: false, status: r.status, error: `connector reachable but classic API failed (${r.status})`, detail: t.slice(0, 200) };
+        return { ok: true, status: 200, detail: { reached: true, via: 'connector/classic', site } };
+      } catch (e) { return { ok: false, error: `cannot reach connector: ${(e as Error).message}` }; }
+    }
+    const cmd: Record<string, unknown> = { cmd: 'authorize-guest', mac, minutes: opts.minutes ?? 1440 };
+    if (opts.dataMb) cmd.bytes = opts.dataMb * 1024 * 1024;
+    if (opts.downKbps) cmd.down = opts.downKbps;
+    if (opts.upKbps) cmd.up = opts.upKbps;
+    try {
+      const r = await fetch(`${classicRoot}/s/${site}/cmd/stamgr`, { method: 'POST', headers: { ...H, 'Content-Type': 'application/json' }, body: JSON.stringify(cmd) });
+      const t = await r.text().catch(() => '');
+      if (!r.ok) return { ok: false, status: r.status, error: `authorize failed (${r.status})`, detail: t.slice(0, 200) };
+      let j: any = {}; try { j = JSON.parse(t); } catch { /* ignore */ }
+      if (j?.meta?.rc && j.meta.rc !== 'ok') return { ok: false, status: r.status, error: `authorize rejected: ${j.meta.msg || j.meta.rc}`, detail: t.slice(0, 200) };
+      return { ok: true, status: r.status };
+    } catch (e) { return { ok: false, error: `authorize request failed: ${(e as Error).message}` }; }
+  }
+
+  // ── DIRECT console + Integration API key (non-connector) ──
+  // Resolve the site id from /sites (the Integration API uses the site's id directly here).
   let siteId = '';
   try {
-    const sr = await fetch(`${root}/sites`, { headers: H });
-    const body = await sr.text().catch(() => '');
-    if (!sr.ok) {
-      const hint = sr.status === 401 || sr.status === 403 ? ' — API key rejected'
-        : sr.status === 404 ? ' — wrong controller URL (the console isn’t at this address/path)'
-        : body.trim().startsWith('<') ? ' — got an HTML login page, not the API (wrong URL — needs the per-console remote path)'
-        : '';
-      return { ok: false, status: sr.status, error: `list sites failed (${sr.status})${hint}`, detail: body.slice(0, 200) };
+    if (connMatch) {
+      const consoleId = decodeURIComponent(connMatch[1]);
+      const sr = await fetch('https://api.ui.com/v1/sites', { headers: H });
+      const body = await sr.text().catch(() => '');
+      if (!sr.ok) return { ok: false, status: sr.status, error: `Site Manager /sites failed (${sr.status}) — check the Site Manager API key`, detail: body.slice(0, 200) };
+      let sj: any = {}; try { sj = JSON.parse(body); } catch { return { ok: false, error: 'Site Manager /sites returned non-JSON', detail: body.slice(0, 200) }; }
+      const list: any[] = Array.isArray(sj?.data) ? sj.data : [];
+      const forHost = list.filter((s) => String(s.hostId) === consoleId);
+      const pool = forHost.length ? forHost : list;
+      const want = String(opts.siteId || '').toLowerCase();
+      const site = (want ? pool.find((s) => [s.siteId, s?.meta?.name, s?.meta?.desc].filter(Boolean).some((x) => String(x).toLowerCase() === want)) : null) || pool[0];
+      siteId = site?.siteId || '';
+      if (!siteId) return { ok: false, error: 'no site found for this console in Site Manager (check the console ID)' };
+    } else {
+      const sr = await fetch(`${root}/sites`, { headers: H });
+      const body = await sr.text().catch(() => '');
+      if (!sr.ok) {
+        const hint = sr.status === 401 || sr.status === 403 ? ' — API key rejected'
+          : sr.status === 404 ? ' — wrong controller URL (the console isn’t at this address/path)'
+          : body.trim().startsWith('<') ? ' — got an HTML login page, not the API' : '';
+        return { ok: false, status: sr.status, error: `list sites failed (${sr.status})${hint}`, detail: body.slice(0, 200) };
+      }
+      let sj: any = {}; try { sj = JSON.parse(body); } catch { return { ok: false, error: 'controller returned non-JSON for /sites (wrong URL — likely a login page)', detail: body.slice(0, 200) }; }
+      const sites = Array.isArray(sj?.data?.data) ? sj.data.data : Array.isArray(sj?.data) ? sj.data : Array.isArray(sj) ? sj : [];
+      if (!Array.isArray(sites) || !sites.length) return { ok: false, error: 'no sites returned for this API key' };
+      const idOf = (s: any) => s?.id || s?._id || s?.siteId || s?.internalReference || '';
+      const want = String(opts.siteId || '').toLowerCase();
+      const m = want ? sites.find((s: any) => [idOf(s), s.name, s.internalReference].filter(Boolean).some((x: any) => String(x).toLowerCase() === want)) : null;
+      siteId = idOf(m || sites[0]);
+      if (!siteId) return { ok: false, error: 'site has no id field' };
     }
-    let sj: any = {}; try { sj = JSON.parse(body); } catch { return { ok: false, error: 'controller returned non-JSON for /sites (wrong URL — likely a login page, not the API)', detail: body.slice(0, 200) }; }
-    // The api.ui.com connector double-wraps: {data:{data:[...sites...]}} ; the local API is {data:[...]}.
-    const sites = Array.isArray(sj?.data?.data) ? sj.data.data : Array.isArray(sj?.data) ? sj.data : Array.isArray(sj) ? sj : [];
-    if (!Array.isArray(sites) || !sites.length) return { ok: false, error: 'no sites returned for this API key', detail: JSON.stringify(sj).slice(0, 300) };
-    const idOf = (s: any) => s?.id || s?._id || s?.siteId || s?.internalReference || '';
-    const want = String(opts.siteId || '').toLowerCase();
-    const match = want ? sites.find((s: any) => [idOf(s), s.name, s.internalReference, s.description].filter(Boolean).some((x: any) => String(x).toLowerCase() === want)) : null;
-    siteId = idOf(match || sites[0]);
-    if (!siteId) return { ok: false, error: 'site has no id field', detail: JSON.stringify(sites[0]).slice(0, 300) };
   } catch (e) {
-    return { ok: false, error: `cannot reach controller: ${(e as Error).message} (check the URL is internet-reachable with a valid cert)` };
+    return { ok: false, error: `cannot reach controller: ${(e as Error).message}` };
   }
-  if (opts.probeOnly) return { ok: true, status: 200, detail: { siteId, reached: true } };
+  if (opts.probeOnly) {
+    const dd: Record<string, unknown> = { siteId, reached: true };
+    try {
+      const cr = await fetch(`${root}/sites/${siteId}/clients?limit=3`, { headers: H });
+      dd.clientsStatus = cr.status; dd.clientsBody = (await cr.text().catch(() => '')).slice(0, 200);
+    } catch (e) { dd.clientsErr = String((e as Error).message); }
+    try {
+      const classicRoot = root.replace('/integration/v1', '/api');
+      const xr = await fetch(`${classicRoot}/s/${opts.siteId || 'default'}/self`, { headers: H });
+      dd.classicStatus = xr.status; dd.classicBody = (await xr.text().catch(() => '')).slice(0, 160);
+    } catch (e) { dd.classicErr = String((e as Error).message); }
+    return { ok: true, status: 200, detail: dd };
+  }
 
   // resolve clientId from the client MAC — try server-side filter, then fall back to scanning the
   // client list (filter syntax varies by version). Surface the real HTTP status if it errors.

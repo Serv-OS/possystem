@@ -85,6 +85,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.496', date: '16 Jun 2026', label: 'WiFi: guest authorize WORKS cloud-only (connector + classic cmd/stamgr by MAC)',
+    changes: [
+      'Guest authorize confirmed end-to-end: a REAL authorize (not dry-run) returns success. Cloud-only via the api.ui.com connector — no box, no relay, no port-forward.',
+      'The Integration API was a dead end through the connector (it demands a site UUID the connector never exposes). Switched the connector path to the CLASSIC API: POST …/connector/consoles/{id}/proxy/network/api/s/default/cmd/stamgr {cmd:"authorize-guest",mac,minutes} with the Site Manager X-API-KEY — authorizes by MAC directly, no site/client UUID lookup. (Verified classic /self → 200 meta.rc=ok through the connector.)',
+      'Site Manager key + console ID is all a venue needs; Test reaches the console via the connector and a real guest MAC authorizes.',
+    ],
+  },
+  {
     version: '5.5.495', date: '16 Jun 2026', label: 'WiFi: cloud connector VERIFIED working (cloud-only authorize, no box)',
     changes: [
       'UniFi cloud connector confirmed end-to-end: Site Manager key authenticates to api.ui.com (200) and the connector reaches the venue console (site resolved, reached=true). Cloud-only — no on-site box, no relay, no port-forward.',
