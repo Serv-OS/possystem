@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.505', date: '16 Jun 2026', label: 'POS: one code box for gift cards AND promo codes (+ cash discount fix)',
+    changes: [
+      'The gift-voucher box at the till now also accepts marketing promo codes — staff enter any code in one box and it works out which it is: 16-char gift-alphabet codes try the gift card first; on a clean "not found" (or any shorter/hyphenated code) it falls through to a promo validate. Gift errors (void/zero balance/transport) are never misreported as a promo miss. Removed the separate promo field — one entry point, one double-apply guard. Reuses all the slice-1 promo apply→complete→store wiring.',
+      'Fix: cash payments now show the correct amount due after a promo/loyalty/gift discount (CashTransaction was given the pre-discount total, so a discounted cash order showed the wrong "amount due"/change and could wrongly block completion). Card already used the discounted figure.',
+    ],
+  },
+  {
     version: '5.5.504', date: '16 Jun 2026', label: 'Marketing slice 3: segmentation + RFM (prebuilt audiences + dynamic rule builder)',
     changes: [
       'New Back Office → Customers → Segments: prebuilt audiences (VIPs, Regulars, New, At-risk/Lapsed, Birthdays this week/month, Email/SMS subscribers) with live counts, plus a dynamic rule builder (match ALL/ANY of conditions on total spend, visits, days since last visit, days until birthday, signup recency, source, opt-in, reachability). Preview shows the matching count + a sample before you save.',

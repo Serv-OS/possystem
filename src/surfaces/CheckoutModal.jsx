@@ -650,7 +650,12 @@ function CashTransaction({ grand, onComplete, onBack }) {
 // ─── Gift card entry (v5.5.193) ─────────────────────────────────────────────
 const GIFT_FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 
-function GiftCardEntry({ totalMinor, giftAlreadyApplied, onApplied, onBack, tableId, orderType }) {
+// v5.5.505: this single box accepts BOTH a gift card and a marketing promo code. We tell them apart
+// by shape — gift codes are exactly 16 chars of the gift alphabet (separators stripped); promo codes
+// are short and usually hyphenated (e.g. BDAY-7F3K9). Try gift first ONLY when the input is 16 gift-
+// chars; on a clean "not found" fall through to a promo validate. Promo apply is delegated to the
+// parent (onPromoCode) which reuses the slice-1 promo wiring; gift redeem is unchanged.
+function GiftCardEntry({ totalMinor, giftAlreadyApplied, onApplied, onBack, tableId, orderType, promoAlreadyApplied, onPromoCode }) {
   const compact = useCompact();
   const [code, setCode] = useState('');
   const [loading, setLoading] = useState(false);
@@ -660,31 +665,54 @@ function GiftCardEntry({ totalMinor, giftAlreadyApplied, onApplied, onBack, tabl
 
   useEffect(() => { codeRef.current?.focus(); }, []);
 
-  // Step 1: look up the card to check balance and PIN requirement
-  const handleLookup = async () => {
-    if (code.replace(/[\s-]/g, '').length < 16) {
-      setError('Enter the full 16 character code');
-      return;
+  // Step 1: decide gift-vs-promo, then look up the gift card OR validate the promo code.
+  const handleSubmit = async () => {
+    const raw = code.trim();
+    if (!raw) return;
+    const giftStripped = raw.replace(/[\s-]/g, '').toUpperCase();
+    setError(null);
+
+    // Gift-shaped (exactly 16 chars of the gift alphabet) → try gift card first.
+    if (/^[A-Z2-9]{16}$/.test(giftStripped)) {
+      setLoading(true); setCardInfo(null);
+      let status, j;
+      try {
+        const { data: session } = await supabase.auth.getSession();
+        const token = session?.session?.access_token;
+        if (!token) throw new Error('Not authenticated');
+        const res = await fetch(`${GIFT_FUNCTIONS_URL}/gift-lookup`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+          body: JSON.stringify({ code: giftStripped, location_id: getActiveLocationSync() }),
+        });
+        status = res.status; j = await res.json().catch(() => ({}));
+      } catch (e) {
+        // Transport error — we can't tell "not a gift" from "gift service down"; do NOT fall through.
+        setError('Could not check code — try again'); setLoading(false); return;
+      }
+      const notFound = status === 404 || (j?.error && /not found/i.test(j.error));
+      if (!notFound) {
+        // Definitive gift answer (found / void / zero balance / other error) — never misreport as promo.
+        if (status >= 200 && status < 300 && !j?.error) {
+          if (j.status !== 'active') { setError(`Card is ${j.status}`); setLoading(false); return; }
+          if (j.balance <= 0) { setError('Card has zero balance'); setLoading(false); return; }
+          setCardInfo(j); setLoading(false); return;
+        }
+        setError(j?.error || `HTTP ${status}`); setLoading(false); return;
+      }
+      // gift not found → fall through to promo
     }
-    setError(null); setLoading(true); setCardInfo(null);
+
+    // Promo attempt. Keep the original (hyphen-preserving) string — promo lookup is case-insensitive
+    // on the stored hyphenated code. Apply is delegated to the parent (reuses slice-1 wiring).
+    if (promoAlreadyApplied) { setError('A promo code is already applied'); return; }
+    setLoading(true);
     try {
-      const { data: session } = await supabase.auth.getSession();
-      const token = session?.session?.access_token;
-      if (!token) throw new Error('Not authenticated');
-      const res = await fetch(`${GIFT_FUNCTIONS_URL}/gift-lookup`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-        body: JSON.stringify({ code: code.replace(/[\s-]/g, ''), location_id: getActiveLocationSync() }),
-      });
-      const j = await res.json();
-      if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
-      if (j.status !== 'active') throw new Error(`Card is ${j.status}`);
-      if (j.balance <= 0) throw new Error('Card has zero balance');
-      setCardInfo(j);
+      const r = await onPromoCode?.(raw.toUpperCase());
+      if (r?.error) { setError(r.error); setLoading(false); }
+      // on success the parent navigates away (this component unmounts)
     } catch (e) {
-      setError(String(e?.message ?? e));
-    } finally {
-      setLoading(false);
+      setError('Could not check code — try again'); setLoading(false);
     }
   };
 
@@ -754,14 +782,14 @@ function GiftCardEntry({ totalMinor, giftAlreadyApplied, onApplied, onBack, tabl
       {!cardInfo && (
         <div>
           <label style={{ fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.06em', marginBottom:6, display:'block' }}>
-            Gift card code
+            Gift card or promo code
           </label>
           <input
             ref={codeRef}
             type="text"
             value={code}
-            onChange={e => setCode(e.target.value.toUpperCase().replace(/[^A-Z2-9\s-]/g, ''))}
-            placeholder="ABCD EFGH JKLM NPQR"
+            onChange={e => setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9\s-]/g, ''))}
+            placeholder="Gift card or promo code"
             maxLength={19}
             style={{
               width:'100%', padding:'12px 14px', borderRadius:12,
@@ -769,20 +797,23 @@ function GiftCardEntry({ totalMinor, giftAlreadyApplied, onApplied, onBack, tabl
               fontSize:18, fontFamily:'var(--font-mono, monospace)', letterSpacing:'0.15em',
               textAlign:'center', outline:'none', boxSizing:'border-box',
             }}
-            onKeyDown={e => e.key === 'Enter' && handleLookup()}
+            onKeyDown={e => e.key === 'Enter' && handleSubmit()}
           />
           <button
-            onClick={handleLookup}
-            disabled={loading || code.replace(/[\s-]/g, '').length < 16}
+            onClick={handleSubmit}
+            disabled={loading || !code.trim()}
             style={{
               width:'100%', marginTop:12, padding:'14px', borderRadius:12,
               border:'none', cursor:'pointer', fontFamily:'inherit',
               background:'var(--acc)', color:'#0b0c10', fontSize:15, fontWeight:800,
-              opacity: loading || code.replace(/[\s-]/g, '').length < 16 ? 0.5 : 1,
+              opacity: loading || !code.trim() ? 0.5 : 1,
             }}
           >
-            {loading ? 'Checking...' : 'Look up card'}
+            {loading ? 'Checking...' : 'Apply code'}
           </button>
+          <div style={{ fontSize:11, color:'var(--t4)', marginTop:8, textAlign:'center' }}>
+            Enter a gift card number or a promo code — we'll work out which it is.
+          </div>
         </div>
       )}
 
@@ -1073,10 +1104,8 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
   const [loyaltyLoading, setLoyaltyLoading] = useState(false);
   const [loyaltyApplied, setLoyaltyApplied] = useState(null);
   // Promo code (marketing offers) — validated via promo-redeem; redeemed (bound to the order) by the store.
+  // v5.5.505: entered through the unified gift-card/promo box (no separate field).
   const [promoApplied, setPromoApplied] = useState(null);   // { code, code_id, offer_id, type, value, amount, label }
-  const [promoInput, setPromoInput] = useState('');
-  const [promoMsg, setPromoMsg] = useState('');
-  const [promoBusy, setPromoBusy] = useState(false);
   // loyaltyApplied: { reward_id, reward_name, points_deducted, discount_type, discount_value, idempotency_key }
 
   // Fetch loyalty data when checkout opens with a customer that has a phone
@@ -1114,11 +1143,12 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
   const grand    = Math.max(0, total + tipAmt - giftCredit - loyaltyCredit - promoCredit);
 
   // Validate a promo code in real time (no write). On success, hold it; the store redeems it
-  // atomically (bound to the order) on payment completion.
-  const applyPromo = async () => {
-    const code = promoInput.trim();
-    if (!code) return;
-    setPromoBusy(true); setPromoMsg('');
+  // atomically (bound to the order) on payment completion. Called from the unified gift/promo box;
+  // returns { ok } or { error } so the box can show the message (it never throws).
+  const applyPromoCode = async (rawCode) => {
+    const code = (rawCode || '').trim();
+    if (!code) return { error: 'Enter a code' };
+    if (promoApplied) return { error: 'A promo code is already applied' };
     try {
       const { data, error } = await supabase.functions.invoke('promo-redeem', { body: {
         action: 'validate', code, location_id: getActiveLocationSync(),
@@ -1127,13 +1157,11 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
       if (error) throw new Error(error.message);
       if (data?.valid) {
         setPromoApplied({ code, code_id: data.code_id, offer_id: data.offer?.id, ...data.discount });
-        setPromoInput(''); setPromoMsg('');
-      } else {
-        const reasons = { not_found: 'Code not found', expired: 'Code expired', not_yet_active: 'Not active yet', already_used: 'Already used', usage_limit: 'Usage limit reached', min_spend: `Minimum spend £${Number(data?.min_spend || 0).toFixed(2)}`, wrong_venue: 'Not valid at this venue', customer_mismatch: 'Belongs to another customer', customer_required: 'Attach the customer first', inactive: 'Offer inactive', voided: 'Code voided' };
-        setPromoMsg(reasons[data?.reason] || 'Invalid code');
+        return { ok: true };
       }
-    } catch (e) { setPromoMsg(e.message || 'Could not check code'); }
-    finally { setPromoBusy(false); }
+      const reasons = { not_found: 'Code not found', expired: 'Code expired', not_yet_active: 'Not active yet', already_used: 'Already used', usage_limit: 'Usage limit reached', min_spend: `Minimum spend £${Number(data?.min_spend || 0).toFixed(2)}`, wrong_venue: 'Not valid at this venue', customer_mismatch: 'Belongs to another customer', customer_required: 'Attach the customer first', inactive: 'Offer inactive', voided: 'Code voided' };
+      return { error: reasons[data?.reason] || 'Invalid code' };
+    } catch (e) { return { error: e.message || 'Could not check code' }; }
   };
 
   // Calculate tax breakdown
@@ -1383,7 +1411,7 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
                 )}
                 {promoApplied && (
                   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginTop:4 }}>
-                    <span style={{ fontSize:13, color:'var(--grn)', fontWeight:600 }}>{String.fromCodePoint(0x1F3AB)} {promoApplied.label || promoApplied.code} <button onClick={()=>{ setPromoApplied(null); setPromoMsg(''); }} style={{ marginLeft:6, background:'none', border:'none', color:'var(--t3)', cursor:'pointer', fontSize:12, textDecoration:'underline' }}>remove</button></span>
+                    <span style={{ fontSize:13, color:'var(--grn)', fontWeight:600 }}>{String.fromCodePoint(0x1F3AB)} {promoApplied.label || promoApplied.code} <button onClick={()=>{ setPromoApplied(null); }} style={{ marginLeft:6, background:'none', border:'none', color:'var(--t3)', cursor:'pointer', fontSize:12, textDecoration:'underline' }}>remove</button></span>
                     <span style={{ fontSize:14, fontWeight:700, color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{promoCredit > 0 ? `${String.fromCodePoint(0x2212)}${String.fromCodePoint(0x00A3)}${promoCredit.toFixed(2)}` : '✓'}</span>
                   </div>
                 )}
@@ -1398,16 +1426,7 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
                 )}
               </div>
 
-              {/* ── Promo code ── */}
-              {!promoApplied && (
-                <div style={{ display:'flex', gap:8, marginTop:10, alignItems:'center' }}>
-                  <input value={promoInput} onChange={e=>setPromoInput(e.target.value.toUpperCase())} onKeyDown={e=>{ if(e.key==='Enter') applyPromo(); }} placeholder="Promo code" autoCapitalize="characters"
-                    style={{ flex:1, padding:'9px 12px', borderRadius:10, border:'1px solid var(--bdr2)', background:'var(--bg2)', color:'var(--t1)', fontSize:14, fontFamily:'var(--font-mono)', outline:'none', textTransform:'uppercase' }} />
-                  <button onClick={applyPromo} disabled={promoBusy || !promoInput.trim()}
-                    style={{ padding:'9px 16px', borderRadius:10, border:'1px solid var(--bdr2)', background:'var(--bg2)', color:'var(--t1)', fontWeight:700, fontSize:13, cursor:'pointer', opacity:(promoBusy||!promoInput.trim())?0.5:1 }}>{promoBusy?'…':'Apply'}</button>
-                </div>
-              )}
-              {promoMsg && <div style={{ fontSize:12, color:'var(--red)', marginTop:6 }}>{promoMsg}</div>}
+              {/* Promo codes are entered through the unified gift card / promo box below (v5.5.505). */}
 
               {/* ── Print receipt checkbox ── */}
               <div
@@ -1465,7 +1484,7 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
                 </button>}
               </div>
 
-              {/* v5.5.193: Gift card button */}
+              {/* v5.5.193: Gift card button (v5.5.505: also accepts promo codes) */}
               <button onClick={()=>setScreen('gift_card')} style={{
                 width:'100%', padding:'13px', borderRadius:13, cursor:'pointer', fontFamily:'inherit',
                 background:'var(--bg3)', border:'1.5px solid var(--bdr2)',
@@ -1478,7 +1497,7 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
                 <span>{String.fromCodePoint(0x1F381)}</span>
                 {giftApplied
                   ? `Gift card applied: ${String.fromCodePoint(0x00A3)}${giftCredit.toFixed(2)} (${String.fromCodePoint(0x00A3)}${grand.toFixed(2)} remaining)`
-                  : 'Pay with gift card'}
+                  : 'Gift card or promo code'}
               </button>
 
               {/* Split — secondary */}
@@ -1520,7 +1539,7 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
 
           {screen==='cash' && (
             <CashTransaction
-              grand={total}
+              grand={grand}
               onComplete={(tendered)=>complete('cash', 0, tendered)}
               onBack={()=>setScreen('review')}
             />
@@ -1558,6 +1577,8 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
               onBack={()=>setScreen('review')}
               tableId={tableId}
               orderType={orderType}
+              promoAlreadyApplied={promoApplied}
+              onPromoCode={async (code) => { const r = await applyPromoCode(code); if (r?.ok) setScreen('review'); return r; }}
             />
           )}
         </div>
