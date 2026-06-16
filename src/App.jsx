@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.511', date: '16 Jun 2026', label: 'Marketing slice 7: reporting & attribution dashboard',
+    changes: [
+      'New Back Office → Customers → Marketing report: KPIs over a 7/30/90-day window — messages sent, delivered / opened / clicked rates, codes redeemed, discount given, and revenue attributed (the value of orders where a code was redeemed), plus email/SMS split.',
+      'Per-campaign table (sent, open%, click%, redeemed, discount, revenue) and per-offer table (issued, redeemed, redemption rate, discount). All aggregation runs server-side in one call (marketing_report SQL function) so it scales without row-cap limits. Migration 20260616g (read-only function, org-scoped).',
+    ],
+  },
+  {
     version: '5.5.510', date: '16 Jun 2026', label: 'Marketing slice 6 hardening (adversarial review fixes)',
     changes: [
       'Workflow engine: a transient send failure on a step is now retried on the next run instead of being treated as a permanent skip and abandoned (a real provider error no longer silently drops a drip step). Verified: a failed step is reclaimed and re-sent, not skipped past.',
