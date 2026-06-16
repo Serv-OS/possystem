@@ -85,6 +85,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.510', date: '16 Jun 2026', label: 'Marketing slice 6 hardening (adversarial review fixes)',
+    changes: [
+      'Workflow engine: a transient send failure on a step is now retried on the next run instead of being treated as a permanent skip and abandoned (a real provider error no longer silently drops a drip step). Verified: a failed step is reclaimed and re-sent, not skipped past.',
+      'Workflow engine: step claims now have the same staleness guard as the campaign engine — a fresh in-flight "pending" (from a concurrent run) is left alone, so a step can never double-send under overlapping runs.',
+      'Workflows: every step is guaranteed a unique key on save (prevents one step silently overwriting another); manual enrolment validates customer IDs belong to the venue and reports how many were already enrolled instead of a silent "0".',
+    ],
+  },
+  {
     version: '5.5.509', date: '16 Jun 2026', label: 'Marketing slice 6: drip / workflow builder',
     changes: [
       'New Back Office → Customers → Workflows: automated multi-step sequences (e.g. a welcome series, post-visit follow-ups). Pick an entry trigger (new sign-up / birthday / entering a segment / manual), then add ordered steps — each with a delay, channel (email/SMS/both), block-built content, and an optional offer (unique code per step). "Run now" tests safely; Activate runs it daily.',

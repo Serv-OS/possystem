@@ -63,6 +63,17 @@ Deno.serve(async (req) => {
     for (const k of WORKFLOW_FIELDS) if (k in incoming) row[k] = incoming[k];
     if (incoming.id) row.id = incoming.id;
     if (!row.name) return json({ error: 'name required' }, 400);
+    // Guarantee every step has a UNIQUE key — the engine keys per-step idempotency on (enrollment, step_key),
+    // so a duplicate/missing key would make one step silently overwrite/skip another.
+    if (Array.isArray(row.steps)) {
+      const seen = new Set<string>();
+      row.steps = (row.steps as any[]).map((st, i) => {
+        let key = String(st?.key || '').trim();
+        if (!key || seen.has(key)) key = `s${i}_${crypto.randomUUID().slice(0, 8)}`;
+        seen.add(key);
+        return { ...st, key };
+      });
+    }
     const { data, error } = await sb.from('workflows').upsert(row, { onConflict: 'id' }).select('*').maybeSingle();
     if (error) return json({ error: error.message }, 500);
     return json({ ok: true, workflow: data });
@@ -96,12 +107,16 @@ Deno.serve(async (req) => {
     const { data: wf } = await sb.from('workflows').select('*').eq('id', String(body.id)).eq('org_id', org_id).maybeSingle();
     if (!wf) return json({ error: 'workflow not found' }, 404);
     let ids: string[] = Array.isArray(body.customer_ids) ? body.customer_ids.map(String) : [];
-    if (!ids.length && body.segment_id) {
+    if (ids.length) {
+      // Only enrol real customers in THIS org — drop fabricated or foreign-org UUIDs.
+      const { data: valid } = await sb.from('customers').select('id').eq('org_id', org_id).is('deleted_at', null).in('id', ids);
+      ids = (valid ?? []).map((r: any) => r.id);
+    } else if (body.segment_id) {
       const { data: seg } = await sb.from('segments').select('definition').eq('id', String(body.segment_id)).eq('org_id', org_id).maybeSingle();
       if (seg) { const { data } = await sb.rpc('marketing_resolve_segment', { p_org: org_id, p_def: seg.definition, p_limit: null }); ids = (data ?? []).map((r: any) => r.customer_id); }
     }
-    const n = await enrollCustomers(sb, wf, ids, engineOpts(body.now));
-    return json({ ok: true, enrolled: n, candidates: ids.length });
+    const r = await enrollCustomers(sb, wf, ids, engineOpts(body.now));
+    return json({ ok: true, enrolled: r.enrolled, already_enrolled: r.skipped, candidates: ids.length });
   }
 
   if (action === 'list_enrollments') {

@@ -66,19 +66,21 @@ async function entryAudience(sb: SB, wf: any, opts: WfOpts): Promise<string[]> {
 }
 
 // Enroll a set of customers into a workflow at step 0 (used by entry triggers + BO manual enroll).
-export async function enrollCustomers(sb: SB, wf: any, customerIds: string[], opts: WfOpts): Promise<number> {
+// Enrol-once: a customer who already has ANY enrollment (active/completed/cancelled) is left as-is and
+// counted as `skipped` (not silently dropped) — recurring annual sends should use a birthday Campaign.
+export async function enrollCustomers(sb: SB, wf: any, customerIds: string[], opts: WfOpts): Promise<{ enrolled: number; skipped: number }> {
   const steps = Array.isArray(wf.steps) ? wf.steps : [];
-  if (!steps.length) return 0;
+  if (!steps.length) return { enrolled: 0, skipped: 0 };
   const nowMs = new Date(opts.now || new Date().toISOString()).getTime();
   const firstDue = new Date(nowMs + (Number(steps[0].after_days) || 0) * 86400000).toISOString();
-  let n = 0;
+  let enrolled = 0, skipped = 0;
   for (const cid of customerIds) {
     const { data: en } = await sb.from('workflow_enrollments')
       .upsert({ org_id: wf.org_id, workflow_id: wf.id, customer_id: cid, status: 'active', current_step: 0, next_run_at: firstDue }, { onConflict: 'workflow_id,customer_id', ignoreDuplicates: true })
       .select('id').maybeSingle();
-    if (en) n++;
+    if (en) enrolled++; else skipped++;
   }
-  return n;
+  return { enrolled, skipped };
 }
 
 export async function runWorkflow(sb: SB, wf: any, opts: WfOpts): Promise<WfSummary> {
@@ -97,33 +99,40 @@ export async function runWorkflow(sb: SB, wf: any, opts: WfOpts): Promise<WfSumm
   };
 
   // 1. ENROLL
-  try { summary.enrolled = await enrollCustomers(sb, wf, await entryAudience(sb, wf, opts), opts); }
+  try { const er = await enrollCustomers(sb, wf, await entryAudience(sb, wf, opts), opts); summary.enrolled = er.enrolled; }
   catch (e) { summary.error = `enroll: ${e instanceof Error ? e.message : e}`; }
 
   // 2. ADVANCE due enrollments (one step per enrollment per run).
   const { data: due } = await sb.from('workflow_enrollments').select('*').eq('workflow_id', wf.id).eq('status', 'active').lte('next_run_at', nowIso).limit(1000);
   const offerCache: Record<string, any> = {};
+  const STALE_MS = 5 * 60 * 1000;
   for (const en of due ?? []) {
     const idx = en.current_step;
     const step = steps[idx];
     if (!step) { await sb.from('workflow_enrollments').update({ status: 'completed', completed_at: nowIso }).eq('id', en.id); summary.completed++; continue; }
     const stepKey = step.key || `s${idx}`;
 
-    const { data: existing } = await sb.from('workflow_step_sends').select('id, status, promo_code').eq('enrollment_id', en.id).eq('step_key', stepKey).maybeSingle();
-    if (existing && TERMINAL.includes(existing.status)) { await advance(en.id, idx); continue; }   // already sent → just move on
-
-    // claim / reclaim the step row
-    let rowId: string | null = existing?.id || null;
-    let reuseCode: string | null = existing?.promo_code || null;
-    if (!existing) {
+    // Resolve + claim the step row first. Reclaim only an ORPHAN (failed, or a 'pending' older than 5
+    // min from a crashed/concurrent run); a FRESH pending means another run owns it → skip (no double-send).
+    let rowId: string | null = null, reuseCode: string | null = null;
+    const { data: existing } = await sb.from('workflow_step_sends').select('id, status, promo_code, created_at').eq('enrollment_id', en.id).eq('step_key', stepKey).maybeSingle();
+    if (existing) {
+      if (TERMINAL.includes(existing.status)) { await advance(en.id, idx); continue; }   // already sent → move on
+      const stale = existing.status === 'pending' && (Date.now() - new Date(existing.created_at).getTime() > STALE_MS);
+      if (existing.status === 'failed' || stale) { rowId = existing.id; reuseCode = existing.promo_code || null; await sb.from('workflow_step_sends').update({ status: 'pending', error: null }).eq('id', rowId); }
+      else { summary.skipped++; continue; }   // fresh pending → concurrent run owns it
+    } else {
       const { data: c } = await sb.from('workflow_step_sends')
         .upsert({ org_id: org, workflow_id: wf.id, enrollment_id: en.id, customer_id: en.customer_id, step_key: stepKey, channel: step.channel, status: 'pending' }, { onConflict: 'enrollment_id,step_key', ignoreDuplicates: true })
         .select('id').maybeSingle();
       if (c) rowId = c.id;
-      else { const { data: e2 } = await sb.from('workflow_step_sends').select('id, status, promo_code').eq('enrollment_id', en.id).eq('step_key', stepKey).maybeSingle();
-        if (e2 && TERMINAL.includes(e2.status)) { await advance(en.id, idx); continue; } rowId = e2?.id || null; reuseCode = e2?.promo_code || null; }
-    } else {
-      await sb.from('workflow_step_sends').update({ status: 'pending', error: null }).eq('id', rowId);
+      else {
+        const { data: e2 } = await sb.from('workflow_step_sends').select('id, status, promo_code, created_at').eq('enrollment_id', en.id).eq('step_key', stepKey).maybeSingle();
+        if (e2 && TERMINAL.includes(e2.status)) { await advance(en.id, idx); continue; }
+        const stale = e2?.status === 'pending' && (Date.now() - new Date(e2.created_at).getTime() > STALE_MS);
+        if (e2 && (e2.status === 'failed' || stale)) { rowId = e2.id; reuseCode = e2.promo_code || null; await sb.from('workflow_step_sends').update({ status: 'pending', error: null }).eq('id', rowId); }
+        else { summary.skipped++; continue; }
+      }
     }
 
     try {
@@ -133,16 +142,21 @@ export async function runWorkflow(sb: SB, wf: any, opts: WfOpts): Promise<WfSumm
       if (offer && !promoCode) { promoCode = await issueCode(sb, org, offer, en.customer_id); if (promoCode) await sb.from('workflow_step_sends').update({ promo_code: promoCode }).eq('id', rowId); }
       const merge = { promo_code: promoCode || '', offer: offer?.reward_label || '' };
       const channels: ('email' | 'sms')[] = step.channel === 'both' ? ['email', 'sms'] : [step.channel];
-      let emailMid: string | undefined, smsMid: string | undefined, anyOk = false, anyFail = false;
+      let emailMid: string | undefined, smsMid: string | undefined;
+      const results: { ok: boolean; status: string }[] = [];
       for (const ch of channels) {
         const r = await sendOne(opts, org, ch, en.customer_id, { subject: step.subject, html: step.email_html, sms: step.sms_body }, merge, promoCode, `w:${en.id}:${stepKey}:${ch}`);
         if (ch === 'email') emailMid = r.message_id; else smsMid = r.message_id;
-        if (r.ok) anyOk = true; else anyFail = true;
+        results.push({ ok: r.ok, status: r.status });
       }
-      const st = anyOk && anyFail ? 'partial' : anyOk ? 'sent' : 'skipped';
+      const anyOk = results.some((r) => r.ok);
+      const anyTransient = results.some((r) => !r.ok && r.status === 'failed');   // a real send error, not a gate
+      // sent/partial = at least one delivered → advance. failed = transient, nothing delivered → DO NOT
+      // advance (retry next run). skipped = all permanent gates (no_consent/suppressed/unreachable) → advance.
+      const st = anyOk ? (results.some((r) => !r.ok) ? 'partial' : 'sent') : anyTransient ? 'failed' : 'skipped';
       await sb.from('workflow_step_sends').update({ status: st, promo_code: promoCode, email_message_id: emailMid || null, sms_message_id: smsMid || null }).eq('id', rowId);
-      summary.advanced++;
-      await advance(en.id, idx);     // only advance on a completed send → a failure is retried next run
+      if (st === 'failed') { summary.failed++; }                       // leave next_run_at <= now → reclaimed + retried next run
+      else { if (st === 'skipped') summary.skipped++; else summary.advanced++; await advance(en.id, idx); }
     } catch (e) {
       try { await sb.from('workflow_step_sends').update({ status: 'failed', error: String(e instanceof Error ? e.message : e).slice(0, 400) }).eq('id', rowId); } catch (_e2) { /* reclaimable */ }
       summary.failed++;
