@@ -1,0 +1,19 @@
+# Fly.io config for the ServOS WiFi relay. One app, one dedicated IPv4, serves all venues.
+# Deploy:  fly launch --no-deploy --copy-config   (accept name)  →  fly ips allocate-v4
+#          fly secrets set RELAY_TOKEN=<long-random>  →  fly deploy
+app = "servos-wifi-relay"
+primary_region = "lhr"   # London — change to your nearest region
+
+[build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false   # keep it always-on so the IP stays warm + reachable
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

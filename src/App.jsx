@@ -85,6 +85,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.493', date: '15 Jun 2026', label: 'WiFi: fixed-IP relay so cloud authorize actually works',
+    changes: [
+      'Found why the UniFi account/cloud login was failing: Ubiquiti’s CloudFront blocks Supabase’s serverless egress IPs (403) — confirmed by live tests (same URL works from a normal IP). This is why Stampede et al run from fixed allow-listed IPs.',
+      'Added wifi-relay/ — a tiny zero-dependency Node forwarder that runs on one small fixed-IP box (serves ALL venues, no per-venue hardware). It only forwards to *.ui.com and requires a shared token; all UniFi login/2FA/authorize logic stays in the edge function.',
+      'wifi-authorize now routes UniFi cloud-account calls through the relay when UNIFI_RELAY_URL/UNIFI_RELAY_TOKEN are set (graceful direct-fallback otherwise). _shared/unifi.ts relayFetch().',
+      'Deploy guide in wifi-relay/README.md (Fly.io, dedicated IPv4, ~£2/mo).',
+    ],
+  },
+  {
     version: '5.5.492', date: '15 Jun 2026', label: 'WiFi: UniFi account/cloud authorize (the Stampede method)',
     changes: [
       'Added the "UniFi account / cloud" get-online method — the way Stampede et al actually do it. ServOS logs into a (dedicated) Ubiquiti account at unifi.ui.com and authorises each guest THROUGH Ubiquiti’s cloud to the console. Genuinely cloud-only: no on-site box, no port-forward.',

@@ -25,6 +25,17 @@ const trim = (u: string) => {
   if (s && !/^https?:\/\//i.test(s)) s = `https://${s}`;
   return s;
 };
+
+// unifi.ui.com sits behind CloudFront/WAF that 403s requests with no/blank or bot User-Agent.
+// Send browser-like headers so the cloud login isn't rejected before it checks credentials.
+const BROWSER_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+const browserHeaders = (origin: string, extra: Record<string, string> = {}) => ({
+  'User-Agent': BROWSER_UA,
+  'Accept': 'application/json, text/plain, */*',
+  'Accept-Language': 'en-GB,en;q=0.9',
+  'Origin': origin,
+  ...extra,
+});
 const macLc = (m: string) => String(m || '').trim().toLowerCase();
 
 // ─────────────────────────── legacy: local-admin login → cmd/stamgr ───────────────────────────
@@ -206,25 +217,60 @@ async function totp(secret: string): Promise<string> {
   return code.toString().padStart(6, '0');
 }
 
+// Optional fixed-IP relay. Ubiquiti's CloudFront blocks serverless egress IPs, so when
+// UNIFI_RELAY_URL is set the cloud-account requests are replayed through a small relay on an
+// allowed IP. The relay is a dumb forwarder — ALL login/2FA/authorize logic stays here. When no
+// relay is configured it falls back to a direct fetch. Returns a normalized response either way.
+type NormRes = { status: number; ok: boolean; headers: { get(k: string): string | null }; setCookie: string[]; bodyText: string };
+async function relayFetch(url: string, init: { method?: string; headers?: Record<string, string>; body?: string } = {}): Promise<NormRes> {
+  const norm = (status: number, h: Record<string, string>, setCookie: string[], bodyText: string): NormRes => ({
+    status, ok: status >= 200 && status < 300,
+    headers: { get: (k) => h[k.toLowerCase()] ?? null }, setCookie, bodyText,
+  });
+  const RELAY_URL = Deno.env.get('UNIFI_RELAY_URL');
+  if (RELAY_URL) {
+    const rr = await fetch(`${RELAY_URL.replace(/\/$/, '')}/forward`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Relay-Token': Deno.env.get('UNIFI_RELAY_TOKEN') || '' },
+      body: JSON.stringify({ url, method: init.method || 'GET', headers: init.headers || {}, body: init.body ?? null }),
+    });
+    const j: any = await rr.json().catch(() => ({}));
+    if (j.error) throw new Error(`relay error: ${j.error}`);
+    const h: Record<string, string> = {};
+    for (const [k, v] of Object.entries(j.headers || {})) h[String(k).toLowerCase()] = String(v);
+    return norm(j.status ?? rr.status, h, j.setCookie || [], j.body || '');
+  }
+  const r = await fetch(url, init);
+  const bodyText = await r.text().catch(() => '');
+  const h: Record<string, string> = {};
+  r.headers.forEach((v, k) => { h[k.toLowerCase()] = v; });
+  return norm(r.status, h, r.headers.getSetCookie?.() ?? [], bodyText);
+}
+
 export async function authorizeCloud(opts: {
   base?: string; email: string; pass: string; totpSecret?: string; consoleId?: string; site?: string;
   mac: string; minutes?: number; dataMb?: number; downKbps?: number; upKbps?: number; probeOnly?: boolean;
 }): Promise<UnifiResult> {
-  const base = trim(opts.base || 'https://unifi.ui.com');
+  // Cloud login + proxy are always built from the ORIGIN (scheme://host) — ignore any
+  // /proxy/consoles/.../network path that may have been pasted into controller_url; the
+  // consoleId drives the proxy path instead.
+  const raw = trim(opts.base || 'https://unifi.ui.com');
+  let origin = 'https://unifi.ui.com';
+  try { const u = new URL(raw); origin = `${u.protocol}//${u.host}`; } catch { /* keep default */ }
   const site = opts.site || 'default';
   const mac = macLc(opts.mac);
   if (!opts.email || !opts.pass) return { ok: false, error: 'account email + password not set' };
 
-  const doLogin = (extra: Record<string, unknown> = {}) => fetch(`${base}/api/auth/login`, {
+  const doLogin = (extra: Record<string, unknown> = {}) => relayFetch(`${origin}/api/auth/login`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Referer': `${base}/login` },
+    headers: browserHeaders(origin, { 'Content-Type': 'application/json', 'Referer': `${origin}/login` }),
     body: JSON.stringify({ username: opts.email, password: opts.pass, rememberMe: true, ...extra }),
   });
 
-  let r: Response;
+  let r: NormRes;
   try { r = await doLogin(); }
-  catch (e) { return { ok: false, error: `cannot reach ${base}: ${(e as Error).message}` }; }
-  let body = await r.text().catch(() => '');
+  catch (e) { return { ok: false, error: `cannot reach ${origin}: ${(e as Error).message}` }; }
+  let body = r.bodyText;
 
   // 2FA required → resubmit with a generated TOTP code
   if (!r.ok && (r.status === 499 || /2fa|Ubic2fa|TokenRequired/i.test(body))) {
@@ -232,15 +278,18 @@ export async function authorizeCloud(opts: {
     const code = await totp(opts.totpSecret);
     if (!code) return { ok: false, error: '2FA secret looks invalid (could not generate a code)' };
     try { r = await doLogin({ token: code }); } catch (e) { return { ok: false, error: `2FA login failed: ${(e as Error).message}` }; }
-    body = await r.text().catch(() => '');
+    body = r.bodyText;
   }
   if (!r.ok) {
-    const hint = /invalid|credential|password|authentic/i.test(body) ? ' — wrong email/password'
-      : /2fa|token/i.test(body) ? ' — 2FA code rejected (check the secret)' : '';
-    return { ok: false, status: r.status, error: `account login failed (${r.status})${hint}`, detail: body.slice(0, 200) };
+    const server = r.headers.get('server') || '';
+    const blockedByEdge = r.status === 403 && (/cloudfront|cloudflare/i.test(server) || /request could not be satisfied|just a moment|attention required/i.test(body));
+    const hint = blockedByEdge ? ' — our server’s IP is being blocked by Ubiquiti; the fixed-IP relay isn’t set up / reachable yet'
+      : /invalid|credential|password|authentic|badrequest/i.test(body) ? ' — wrong email/password'
+      : /2fa|token/i.test(body) ? ' — 2FA code rejected (check the 2FA secret key, not the 6-digit code)' : '';
+    return { ok: false, status: r.status, error: `account login failed (${r.status})${hint}`, detail: { body: body.slice(0, 200), server } };
   }
 
-  const cookie = (r.headers.getSetCookie?.() || []).map((c) => c.split(';')[0]).join('; ');
+  const cookie = (r.setCookie || []).map((c) => c.split(';')[0]).join('; ');
   if (!cookie) return { ok: false, error: 'logged in but no session cookie was returned' };
   let csrf = r.headers.get('x-csrf-token') || '';
   if (!csrf && /(^|; )TOKEN=/.test(cookie)) {
@@ -249,19 +298,18 @@ export async function authorizeCloud(opts: {
   if (opts.probeOnly) return { ok: true, status: 200, detail: { loggedIn: true, hasCsrf: !!csrf, consoleId: opts.consoleId || null } };
 
   // authorize via the cloud proxy → the specific console's classic Network API
-  const netBase = opts.consoleId ? `${base}/proxy/consoles/${opts.consoleId}/network` : `${base}/proxy/network`;
+  const netBase = opts.consoleId ? `${origin}/proxy/consoles/${opts.consoleId}/network` : `${origin}/proxy/network`;
   const cmdBody: Record<string, unknown> = { cmd: 'authorize-guest', mac, minutes: opts.minutes ?? 1440 };
   if (opts.dataMb) cmdBody.bytes = opts.dataMb * 1024 * 1024;
   if (opts.downKbps) cmdBody.down = opts.downKbps;
   if (opts.upKbps) cmdBody.up = opts.upKbps;
   try {
-    const ar = await fetch(`${netBase}/api/s/${site}/cmd/stamgr`, {
+    const ar = await relayFetch(`${netBase}/api/s/${site}/cmd/stamgr`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Cookie': cookie, ...(csrf ? { 'x-csrf-token': csrf } : {}) },
+      headers: browserHeaders(origin, { 'Content-Type': 'application/json', 'Cookie': cookie, ...(csrf ? { 'x-csrf-token': csrf } : {}) }),
       body: JSON.stringify(cmdBody),
     });
-    const t = await ar.text().catch(() => '');
-    if (!ar.ok) return { ok: false, status: ar.status, error: `authorize failed (${ar.status})${t.trim().startsWith('<') ? ' — proxy returned HTML (check console id)' : ''}`, detail: t.slice(0, 200) };
+    if (!ar.ok) return { ok: false, status: ar.status, error: `authorize failed (${ar.status})${ar.bodyText.trim().startsWith('<') ? ' — proxy returned HTML (check console id)' : ''}`, detail: ar.bodyText.slice(0, 200) };
     return { ok: true, status: ar.status };
   } catch (e) {
     return { ok: false, error: `authorize request failed: ${(e as Error).message}` };
