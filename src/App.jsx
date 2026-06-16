@@ -85,6 +85,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.492', date: '15 Jun 2026', label: 'WiFi: UniFi account/cloud authorize (the Stampede method)',
+    changes: [
+      'Added the "UniFi account / cloud" get-online method — the way Stampede et al actually do it. ServOS logs into a (dedicated) Ubiquiti account at unifi.ui.com and authorises each guest THROUGH Ubiquiti’s cloud to the console. Genuinely cloud-only: no on-site box, no port-forward.',
+      'Handles Ubiquiti’s mandatory 2FA automatically: store the account’s authenticator secret and wifi-authorize generates the TOTP code at login (_shared/unifi.ts authorizeCloud + TOTP).',
+      'Confirmed via research + live tests why the API-key path failed: Ubiquiti’s cloud proxy needs a logged-in SSON session, not a key; there is no UniFi OAuth. Account login is the only cloud-only route.',
+      'Back Office → WiFi setup: new account email/password/2FA-secret/console-ID fields with dedicated-account guidance; credentials AES-GCM encrypted at rest, never returned. Migration: console_id + totp_secret_enc on wifi_unifi_bindings.',
+    ],
+  },
+  {
     version: '5.5.491', date: '15 Jun 2026', label: 'WiFi: get guests online CLOUD-ONLY on UniFi (no on-site box)',
     changes: [
       'Guests now get online with NO on-site agent and NO port-forwarding. A cloud-adopted UniFi console is reachable from the internet (UniFi Remote Access, valid cert), so wifi-authorize calls the console’s API directly to authorise each device — exactly how Stampede et al do it.',

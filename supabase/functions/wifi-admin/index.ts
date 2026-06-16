@@ -27,9 +27,10 @@ const platformAdmin = createClient(Deno.env.get('PLATFORM_SUPABASE_URL') ?? '', 
 
 const SETTINGS_FIELDS = ['enabled', 'headline', 'subtext', 'bg_image_url', 'logo_url', 'accent_color', 'button_style', 'fields', 'age_gate', 'marketing_copy', 'success_copy', 'redirect_url', 'terms_url', 'privacy_url', 'privacy_version', 'loyalty_offer', 'loyalty_copy'];
 // Non-secret binding fields the BO may set directly.
-const BINDING_FIELDS = ['auth_method', 'controller_url', 'site_id', 'ssid', 'auth_minutes', 'data_limit_mb', 'down_kbps', 'up_kbps'];
+const BINDING_FIELDS = ['auth_method', 'controller_url', 'site_id', 'console_id', 'ssid', 'auth_minutes', 'data_limit_mb', 'down_kbps', 'up_kbps'];
 // Secret binding fields → AES-GCM into *_enc columns (never returned to the client).
-const BINDING_SECRETS: Record<string, string> = { api_key: 'api_key_enc', admin_user: 'admin_user_enc', admin_pass: 'admin_pass_enc' };
+// admin_user/admin_pass double as the Ubiquiti ACCOUNT email/password for unifi_cloud; totp_secret = its 2FA seed.
+const BINDING_SECRETS: Record<string, string> = { api_key: 'api_key_enc', admin_user: 'admin_user_enc', admin_pass: 'admin_pass_enc', totp_secret: 'totp_secret_enc' };
 
 async function authed(req: Request, opsLocationId: string): Promise<boolean> {
   const token = (req.headers.get('Authorization') ?? '').replace('Bearer ', '').trim();
@@ -68,10 +69,10 @@ Deno.serve(async (req) => {
     ]);
     const pool: any[] = Array.isArray(b?.voucher_pool) ? b!.voucher_pool : [];
     const binding_status = b ? {
-      auth_method: b.auth_method, controller_url: b.controller_url, site_id: b.site_id, ssid: b.ssid,
+      auth_method: b.auth_method, controller_url: b.controller_url, site_id: b.site_id, console_id: b.console_id, ssid: b.ssid,
       auth_minutes: b.auth_minutes, data_limit_mb: b.data_limit_mb, down_kbps: b.down_kbps, up_kbps: b.up_kbps,
       voucher_total: pool.length, voucher_remaining: pool.filter((v) => v && !v.consumed_at).length,
-      has_api_key: !!b.api_key_enc, has_admin: !!(b.admin_user_enc && b.admin_pass_enc),
+      has_api_key: !!b.api_key_enc, has_admin: !!(b.admin_user_enc && b.admin_pass_enc), has_totp: !!b.totp_secret_enc,
       last_authorize_at: b.last_authorize_at, last_error: b.last_error,
     } : { auth_method: 'none', voucher_total: 0, voucher_remaining: 0 };
     return json({ settings: settings ?? null, binding_status });

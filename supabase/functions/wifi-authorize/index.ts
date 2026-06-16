@@ -25,7 +25,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { decryptSecret } from '../_shared/wifi-crypto.ts';
-import { authorizeLegacy, authorizeIntegration } from '../_shared/unifi.ts';
+import { authorizeLegacy, authorizeIntegration, authorizeCloud } from '../_shared/unifi.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -85,6 +85,27 @@ Deno.serve(async (req) => {
     return json({ authorized: true, auth_method: 'unifi_voucher', voucher_code: voucher, voucher_redirect_url: redirect, dry_run: dryRun });
   }
 
+  // ── unifi_cloud: log into the Ubiquiti ACCOUNT at unifi.ui.com (email+password+2FA) and
+  //    authorize via the cloud proxy to the console. The Stampede method — true cloud-only. ──
+  if (method === 'unifi_cloud') {
+    const mac = String(body.client_mac ?? '').trim();
+    if (!mac && !dryRun) return json({ authorized: false, auth_method: method, message: 'No device MAC in the captive-portal redirect (id param) — cannot authorize.' });
+    const email = await decryptSecret(b.admin_user_enc);
+    const pass = await decryptSecret(b.admin_pass_enc);
+    const totpSecret = await decryptSecret(b.totp_secret_enc);
+    const res = await authorizeCloud({
+      base: b.controller_url || 'https://unifi.ui.com', email, pass, totpSecret: totpSecret || undefined,
+      consoleId: b.console_id || undefined, site: b.site_id || 'default', mac, probeOnly: dryRun,
+      minutes: b.auth_minutes ?? 1440, dataMb: b.data_limit_mb ?? undefined, downKbps: b.down_kbps ?? undefined, upKbps: b.up_kbps ?? undefined,
+    });
+    if (res.ok) {
+      if (!dryRun) await stamp({ last_authorize_at: new Date().toISOString(), last_error: null });
+      return json({ authorized: true, auth_method: method, dry_run: dryRun, detail: res.detail });
+    }
+    await stamp({ last_error: res.error || `authorize failed (${res.status ?? '?'})` });
+    return json({ authorized: false, auth_method: method, status: res.status, message: res.error || 'authorize failed', detail: res.detail });
+  }
+
   // ── unifi_local_api / unifi_legacy: authorize the client by MAC, FROM THE CLOUD, against the
   //    venue's cloud-adopted console. No on-site agent, no port-forward. ──
   if (method === 'unifi_local_api' || method === 'unifi_legacy') {
@@ -103,6 +124,21 @@ Deno.serve(async (req) => {
     let res;
     if (method === 'unifi_local_api') {
       const apiKey = await decryptSecret(b.api_key_enc);
+      // DIAGNOSTIC (dry-run only): also try the Ubiquiti CLOUD Site Manager API with this key.
+      // If it returns the host list, this is a cloud (Site Manager) key and the console IS
+      // reachable through Ubiquiti's cloud — which changes the whole approach.
+      if (dryRun) {
+        let sm: any = { tried: 'https://api.ui.com/v1/hosts' };
+        try {
+          const r = await fetch('https://api.ui.com/v1/hosts', { headers: { 'X-API-KEY': apiKey, 'Accept': 'application/json' } });
+          const t = await r.text().catch(() => '');
+          sm.status = r.status;
+          sm.ok = r.ok;
+          sm.body = t.slice(0, 600);
+        } catch (e) { sm.error = (e as Error).message; }
+        const probe = await authorizeIntegration({ base: b.controller_url, apiKey, siteId: b.site_id || undefined, mac: mac || 'aa:bb:cc:dd:ee:ff', probeOnly: true, ...limits });
+        return json({ authorized: false, auth_method: method, dry_run: true, site_manager_cloud_probe: sm, direct_probe: probe });
+      }
       res = await authorizeIntegration({ base: b.controller_url, apiKey, siteId: b.site_id || undefined, mac, probeOnly: dryRun, ...limits });
     } else {
       const user = await decryptSecret(b.admin_user_enc);

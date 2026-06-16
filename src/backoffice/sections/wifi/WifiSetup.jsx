@@ -38,19 +38,21 @@ const S = {
 };
 
 const METHODS = [
-  ['unifi_local_api', 'UniFi API key (recommended)', 'Seamless. We authorize each guest directly on your console with an API key. No vouchers, no extra hardware. UniFi OS 9.x+.'],
-  ['unifi_legacy', 'UniFi local admin', 'Seamless on any UniFi console. We sign in with a dedicated local-admin account and authorize each guest. Use this if your console is older.'],
-  ['unifi_voucher', 'UniFi vouchers', 'Fallback. Paste a pool of guest passes; the portal hands one to each guest. No API access needed.'],
+  ['unifi_cloud', 'UniFi account / cloud (recommended)', 'Seamless & cloud-only — the way Stampede works. We log into your Ubiquiti account and authorize each guest through Ubiquiti’s cloud. No on-site box, no port-forward. Use a dedicated UniFi account.'],
+  ['unifi_local_api', 'UniFi API key (direct)', 'Authorize via an API key — only works if your console is directly reachable from the internet (public address + valid cert).'],
+  ['unifi_legacy', 'UniFi local admin (direct)', 'Authorize via a local-admin login — only works if your console is directly reachable from the internet.'],
+  ['unifi_voucher', 'UniFi vouchers', 'Fallback. Paste a pool of guest passes; the portal hands one to each guest. No login needed.'],
   ['none', 'Capture only', 'Collect details; guests get online however they do today.'],
 ];
 const isDirect = (m) => m === 'unifi_local_api' || m === 'unifi_legacy';
+const isCloud = (m) => m === 'unifi_cloud';
 
 export default function WifiSetup() {
   const [locId, setLocId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [slug, setSlug] = useState(null);
-  const [b, setB] = useState({ auth_method: 'none', ssid: '', controller_url: '', site_id: 'default', auth_minutes: 1440, data_limit_mb: '', down_kbps: '', up_kbps: '' });
-  const [secret, setSecret] = useState({ api_key: '', admin_user: '', admin_pass: '' }); // never pre-filled
+  const [b, setB] = useState({ auth_method: 'none', ssid: '', controller_url: '', site_id: 'default', console_id: '', auth_minutes: 1440, data_limit_mb: '', down_kbps: '', up_kbps: '' });
+  const [secret, setSecret] = useState({ api_key: '', admin_user: '', admin_pass: '', totp_secret: '' }); // never pre-filled
   const [status, setStatus] = useState(null);
   const [codes, setCodes] = useState('');
   const [save, setSave] = useState({});
@@ -64,7 +66,7 @@ export default function WifiSetup() {
         try { const { data: loc } = await platformSupabase.from('locations').select('online_slug').or(`ops_location_id.eq.${id},id.eq.${id}`).maybeSingle(); setSlug(loc?.online_slug || null); } catch {}
         const { data } = await supabase.functions.invoke('wifi-admin', { body: { action: 'get_config', ops_location_id: id } });
         const st = data?.binding_status || {}; setStatus(st);
-        setB({ auth_method: st.auth_method || 'none', ssid: st.ssid || '', controller_url: st.controller_url || '', site_id: st.site_id || 'default', auth_minutes: st.auth_minutes || 1440, data_limit_mb: st.data_limit_mb || '', down_kbps: st.down_kbps || '', up_kbps: st.up_kbps || '' });
+        setB({ auth_method: st.auth_method || 'none', ssid: st.ssid || '', controller_url: st.controller_url || '', site_id: st.site_id || 'default', console_id: st.console_id || '', auth_minutes: st.auth_minutes || 1440, data_limit_mb: st.data_limit_mb || '', down_kbps: st.down_kbps || '', up_kbps: st.up_kbps || '' });
       } catch {} finally { setLoading(false); }
     })();
   }, []);
@@ -77,8 +79,9 @@ export default function WifiSetup() {
     setSave({ busy: true });
     try {
       const binding = {
-        auth_method: b.auth_method, ssid: b.ssid || null, controller_url: b.controller_url || null,
-        site_id: b.site_id || null, auth_minutes: Number(b.auth_minutes) || 1440,
+        auth_method: b.auth_method, ssid: b.ssid || null,
+        controller_url: b.auth_method === 'unifi_cloud' ? (b.controller_url || 'https://unifi.ui.com') : (b.controller_url || null),
+        site_id: b.site_id || null, console_id: b.console_id || null, auth_minutes: Number(b.auth_minutes) || 1440,
         data_limit_mb: b.data_limit_mb === '' ? null : Number(b.data_limit_mb),
         down_kbps: b.down_kbps === '' ? null : Number(b.down_kbps),
         up_kbps: b.up_kbps === '' ? null : Number(b.up_kbps),
@@ -86,15 +89,16 @@ export default function WifiSetup() {
       };
       // Only send secrets the operator actually typed (blank = leave existing untouched).
       if (b.auth_method === 'unifi_local_api' && secret.api_key.trim()) binding.api_key = secret.api_key.trim();
-      if (b.auth_method === 'unifi_legacy') {
+      if (b.auth_method === 'unifi_legacy' || b.auth_method === 'unifi_cloud') {
         if (secret.admin_user.trim()) binding.admin_user = secret.admin_user.trim();
         if (secret.admin_pass) binding.admin_pass = secret.admin_pass;
       }
+      if (b.auth_method === 'unifi_cloud' && secret.totp_secret.trim()) binding.totp_secret = secret.totp_secret.replace(/\s/g, '');
       const { data, error } = await supabase.functions.invoke('wifi-admin', { body: { action: 'save_binding', ops_location_id: locId, binding } });
       if (error) { let j = null; try { j = await error.context?.json?.(); } catch {} throw new Error(j?.error || error.message); }
       if (data?.error) throw new Error(data.error);
       const { data: cfg } = await supabase.functions.invoke('wifi-admin', { body: { action: 'get_config', ops_location_id: locId } });
-      setStatus(cfg?.binding_status || status); setCodes(''); setSecret({ api_key: '', admin_user: '', admin_pass: '' });
+      setStatus(cfg?.binding_status || status); setCodes(''); setSecret({ api_key: '', admin_user: '', admin_pass: '', totp_secret: '' });
       setSave({ done: true }); setTimeout(() => setSave(s => (s.done ? {} : s)), 2200);
     } catch (e) { setSave({ err: e.message || 'Save failed' }); }
   };
@@ -127,6 +131,40 @@ export default function WifiSetup() {
           {save.done && <span style={S.ok}>✓ Saved</span>}{save.err && <span style={S.err}>{save.err}</span>}
         </div>
       </div>
+
+      {isCloud(b.auth_method) && (
+        <div style={S.card}>
+          <h2 style={S.h2}>Ubiquiti account</h2>
+          <div style={{ ...S.hint, marginTop: -4, marginBottom: 12 }}>
+            <b>Use a dedicated UniFi account</b>, not your personal one — create a new Ubiquiti account, then in UniFi add it as an <b>Admin</b> on this console. We log in as that account to get guests online. Credentials are encrypted; never shown again.
+          </div>
+          <div style={S.row2}>
+            <div style={S.field}>
+              <label style={S.label}>Account email {status?.has_admin && <span style={S.set}>✓ set</span>}</label>
+              <input style={S.input} value={secret.admin_user} onChange={e => setSec({ admin_user: e.target.value })} placeholder={status?.has_admin ? 'Leave blank to keep saved' : 'servos@your-venue.com'} autoComplete="off" />
+            </div>
+            <div style={S.field}>
+              <label style={S.label}>Account password</label>
+              <input style={S.input} type="password" value={secret.admin_pass} onChange={e => setSec({ admin_pass: e.target.value })} placeholder={status?.has_admin ? 'Leave blank to keep saved' : '••••••••'} autoComplete="new-password" />
+            </div>
+          </div>
+          <div style={S.field}>
+            <label style={S.label}>2FA secret (authenticator key) {status?.has_totp && <span style={S.set}>✓ set</span>}</label>
+            <input style={S.input} type="password" value={secret.totp_secret} onChange={e => setSec({ totp_secret: e.target.value })} placeholder={status?.has_totp ? 'Leave blank to keep saved' : 'e.g. JBSWY3DPEHPK3PXP'} autoComplete="new-password" />
+            <div style={S.hint}>Ubiquiti requires 2-factor. When you turn on 2FA for the account, choose <b>authenticator app</b> and copy the <b>setup key / secret</b> shown — paste it here so we can generate codes automatically.</div>
+          </div>
+          <div style={S.field}>
+            <label style={S.label}>Console ID</label>
+            <input style={S.input} value={b.console_id} onChange={e => set({ console_id: e.target.value })} placeholder="from unifi.ui.com URL: /consoles/<THIS>/network" />
+            <div style={S.hint}>At unifi.ui.com, open this console — the address bar shows <span style={S.code}>/consoles/&lt;ID&gt;/network</span>. Paste that ID.</div>
+          </div>
+          <div style={S.field}>
+            <label style={S.label}>Site</label>
+            <input style={{ ...S.input, maxWidth: 220 }} value={b.site_id} onChange={e => set({ site_id: e.target.value })} placeholder="default" />
+          </div>
+          <button style={S.btn} onClick={() => saveBinding()} disabled={save.busy}>{save.busy ? 'Saving…' : 'Save account'}</button>
+        </div>
+      )}
 
       {isDirect(b.auth_method) && (
         <div style={S.card}>
@@ -201,13 +239,19 @@ export default function WifiSetup() {
         <div style={S.step}><span style={S.num}>1</span><span>In UniFi Network, create (or pick) your <b>Guest</b> WiFi network and turn on the <b>Hotspot / Captive Portal</b>.</span></div>
         <div style={S.step}><span style={S.num}>2</span><span>Set the portal to <b>External portal server</b> and point it at:<br/><span style={S.code}>{portalUrl}</span></span></div>
         <div style={S.step}><span style={S.num}>3</span><span>Add a <b>walled garden / pre-authorization allow-list</b> so guests can reach the page before they log in: <span style={S.code}>*.serv-os.app</span>, <span style={S.code}>tbetcegmszzotrwdtqhi.supabase.co</span>, <span style={S.code}>fonts.googleapis.com</span>, <span style={S.code}>fonts.gstatic.com</span>.</span></div>
-        {isDirect(b.auth_method) ? (
+        {isCloud(b.auth_method) ? (
           <>
-            <div style={S.step}><span style={S.num}>4</span><span>Turn on <b>Remote Access</b> (Settings → System) so we can reach the console from the cloud — no port-forwarding needed.</span></div>
+            <div style={S.step}><span style={S.num}>4</span><span>Make a <b>dedicated Ubiquiti account</b> (a new email at account.ui.com), turn on its <b>2FA via authenticator app</b>, and copy the <b>secret/setup key</b>.</span></div>
+            <div style={S.step}><span style={S.num}>5</span><span>In UniFi, add that account as an <b>Admin</b> on this console (Settings → Admins &amp; Users → Invite Admin).</span></div>
+            <div style={S.step}><span style={S.num}>6</span><span>Enter the email, password, 2FA secret and console ID above → <b>Save</b>, then hit <b>Test</b> below.</span></div>
+          </>
+        ) : isDirect(b.auth_method) ? (
+          <>
+            <div style={S.step}><span style={S.num}>4</span><span>Make sure the console is <b>reachable from the internet</b> at a public address with a <b>valid certificate</b>, and enter that address above.</span></div>
             <div style={S.step}><span style={S.num}>5</span><span>{b.auth_method === 'unifi_local_api'
-              ? <>Create an <b>API key</b> in Settings → Control Plane → Integrations, and paste it above with your controller URL.</>
-              : <>Create a dedicated <b>local-admin</b> account (Settings → Admins & Users → Add → Local Access Only, no MFA) and enter it above with your controller URL.</>}</span></div>
-            <div style={S.step}><span style={S.num}>6</span><span>Hit <b>Test authorize</b> below — it confirms we can sign in to your console from the cloud.</span></div>
+              ? <>Create an <b>API key</b> in Settings → Control Plane → Integrations, and paste it above.</>
+              : <>Create a <b>local-admin</b> account (Settings → Admins &amp; Users → Add → Local Access Only) and enter it above.</>}</span></div>
+            <div style={S.step}><span style={S.num}>6</span><span>Hit <b>Test authorize</b> below — it confirms we can reach + sign in to your console.</span></div>
           </>
         ) : b.auth_method === 'unifi_voucher' ? (
           <div style={S.step}><span style={S.num}>4</span><span>In <b>Hotspot Manager → Vouchers</b> generate a batch, then paste them above.</span></div>
@@ -222,10 +266,10 @@ export default function WifiSetup() {
         </div>
         <div style={{ marginTop: 12, display: 'flex', gap: 12, alignItems: 'center' }}>
           <button style={S.ghost} onClick={runTest} disabled={test?.busy}>{test?.busy ? 'Testing…' : 'Test authorize'}</button>
-          {test?.result && <span style={{ fontSize: 12.5, color: test.result.authorized ? 'var(--grn)' : 'var(--t3)' }}>{test.result.authorized ? `✓ reachable (${test.result.auth_method})` : (test.result.message || 'not authorized')}</span>}
+          {test?.result && <span style={{ fontSize: 12.5, color: test.result.authorized ? 'var(--grn)' : 'var(--t3)' }}>{test.result.authorized ? `✓ connected (${test.result.auth_method})` : (test.result.message || 'not authorized')}</span>}
           {test?.err && <span style={S.err}>{test.err}</span>}
         </div>
-        {isDirect(b.auth_method) && <div style={S.hint}>Test does a dry-run: it signs in to your console (and lists sites) to prove the cloud can reach and authenticate — without authorizing a real device.</div>}
+        {(isCloud(b.auth_method) || isDirect(b.auth_method)) && <div style={S.hint}>Test does a dry-run: it signs in {isCloud(b.auth_method) ? 'to your Ubiquiti account (incl. 2FA)' : 'to your console'} to prove the connection works — without authorizing a real device.</div>}
       </div>
     </div>
   );
