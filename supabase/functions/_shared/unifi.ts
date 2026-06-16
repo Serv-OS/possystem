@@ -130,12 +130,14 @@ export async function authorizeIntegration(opts: {
       return { ok: false, status: sr.status, error: `list sites failed (${sr.status})${hint}`, detail: body.slice(0, 200) };
     }
     let sj: any = {}; try { sj = JSON.parse(body); } catch { return { ok: false, error: 'controller returned non-JSON for /sites (wrong URL — likely a login page, not the API)', detail: body.slice(0, 200) }; }
-    const sites = sj?.data ?? sj ?? [];
-    if (!Array.isArray(sites) || !sites.length) return { ok: false, error: 'no sites returned for this API key' };
+    // The api.ui.com connector double-wraps: {data:{data:[...sites...]}} ; the local API is {data:[...]}.
+    const sites = Array.isArray(sj?.data?.data) ? sj.data.data : Array.isArray(sj?.data) ? sj.data : Array.isArray(sj) ? sj : [];
+    if (!Array.isArray(sites) || !sites.length) return { ok: false, error: 'no sites returned for this API key', detail: JSON.stringify(sj).slice(0, 300) };
+    const idOf = (s: any) => s?.id || s?._id || s?.siteId || s?.internalReference || '';
     const want = String(opts.siteId || '').toLowerCase();
-    const match = want ? sites.find((s: any) => [s.id, s.name, s.internalReference].filter(Boolean).some((x: any) => String(x).toLowerCase() === want)) : null;
-    siteId = (match || sites[0]).id;
-    if (!siteId) return { ok: false, error: 'site has no id field' };
+    const match = want ? sites.find((s: any) => [idOf(s), s.name, s.internalReference, s.description].filter(Boolean).some((x: any) => String(x).toLowerCase() === want)) : null;
+    siteId = idOf(match || sites[0]);
+    if (!siteId) return { ok: false, error: 'site has no id field', detail: JSON.stringify(sites[0]).slice(0, 300) };
   } catch (e) {
     return { ok: false, error: `cannot reach controller: ${(e as Error).message} (check the URL is internet-reachable with a valid cert)` };
   }
@@ -151,10 +153,11 @@ export async function authorizeIntegration(opts: {
       clientStatus = cr.status;
       if (!cr.ok) continue;
       const cj = await cr.json().catch(() => ({}));
-      const list = cj?.data ?? cj ?? [];
+      const list = Array.isArray(cj?.data?.data) ? cj.data.data : Array.isArray(cj?.data) ? cj.data : Array.isArray(cj) ? cj : [];
+      const cidOf = (c: any) => c?.id || c?._id || '';
       const hit = (Array.isArray(list) ? list : []).find((c: any) => String(c.macAddress || c.mac || '').toLowerCase() === mac);
-      if (hit?.id) { clientId = hit.id; break; }
-      if (Array.isArray(list) && list.length === 1 && list[0]?.id && q.includes('filter')) { clientId = list[0].id; break; }
+      if (cidOf(hit)) { clientId = cidOf(hit); break; }
+      if (Array.isArray(list) && list.length === 1 && cidOf(list[0]) && q.includes('filter')) { clientId = cidOf(list[0]); break; }
     } catch (_e) { /* try next */ }
   }
   if (!clientId) {

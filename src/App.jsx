@@ -85,6 +85,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.495', date: '16 Jun 2026', label: 'WiFi: cloud connector VERIFIED working (cloud-only authorize, no box)',
+    changes: [
+      'UniFi cloud connector confirmed end-to-end: Site Manager key authenticates to api.ui.com (200) and the connector reaches the venue console (site resolved, reached=true). Cloud-only — no on-site box, no relay, no port-forward.',
+      'Fixed the connector response parsing: api.ui.com double-wraps the proxied Network Integration payload ({data:{data:[…]}}) — unwrap both sites and clients; resolve site/client id across id/_id/siteId/internalReference.',
+      'Removed the temporary dry-run diagnostic that always reported "not authorized"; Test now correctly shows ✓ connected.',
+    ],
+  },
+  {
     version: '5.5.494', date: '15 Jun 2026', label: 'WiFi: UniFi cloud connector (api.ui.com) — the real cloud-only authorize',
     changes: [
       'Added "UniFi cloud connector" method — authorizes guests through Ubiquiti’s official Site Manager connector at api.ui.com (valid cert, no CloudFront bot-block) using an account-level Site Manager API key. Genuinely cloud-only: no on-site box, no port-forward, no scripted login.',

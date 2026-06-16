@@ -124,21 +124,6 @@ Deno.serve(async (req) => {
     let res;
     if (method === 'unifi_local_api') {
       const apiKey = await decryptSecret(b.api_key_enc);
-      // DIAGNOSTIC (dry-run only): also try the Ubiquiti CLOUD Site Manager API with this key.
-      // If it returns the host list, this is a cloud (Site Manager) key and the console IS
-      // reachable through Ubiquiti's cloud — which changes the whole approach.
-      if (dryRun) {
-        let sm: any = { tried: 'https://api.ui.com/v1/hosts' };
-        try {
-          const r = await fetch('https://api.ui.com/v1/hosts', { headers: { 'X-API-KEY': apiKey, 'Accept': 'application/json' } });
-          const t = await r.text().catch(() => '');
-          sm.status = r.status;
-          sm.ok = r.ok;
-          sm.body = t.slice(0, 600);
-        } catch (e) { sm.error = (e as Error).message; }
-        const probe = await authorizeIntegration({ base: b.controller_url, apiKey, siteId: b.site_id || undefined, mac: mac || 'aa:bb:cc:dd:ee:ff', probeOnly: true, ...limits });
-        return json({ authorized: false, auth_method: method, dry_run: true, site_manager_cloud_probe: sm, direct_probe: probe });
-      }
       res = await authorizeIntegration({ base: b.controller_url, apiKey, siteId: b.site_id || undefined, mac, probeOnly: dryRun, ...limits });
     } else {
       const user = await decryptSecret(b.admin_user_enc);
