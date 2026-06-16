@@ -63,12 +63,19 @@ export default function WifiSurface({ location }) {
   const unifi = useMemo(readUnifiParams, []);
 
   const [cfg, setCfg] = useState(null);
-  const [phase, setPhase] = useState('form');  // form | connecting | connected | error
+  // 'checking' first when we have a device id (try a silent reconnect); else straight to the form.
+  const [phase, setPhase] = useState(unifi.client_mac ? 'checking' : 'form');  // checking | form | connecting | connected | error
   const [form, setForm] = useState({ email: '', phone: '', first_name: '', last_name: '', dob: '', is_local: false });
   const [marketing, setMarketing] = useState(false);
   const [joinLoyalty, setJoinLoyalty] = useState(false);
   const [error, setError] = useState('');
   const [result, setResult] = useState(null);
+
+  // Bounce the captive browser to its original check URL so the OS re-tests and drops the sign-in screen.
+  const releaseDevice = () => {
+    const rel = unifi.orig_url || cfg?.redirect_url || 'http://captive.apple.com/hotspot-detect.html';
+    setTimeout(() => { try { window.location.href = rel; } catch { /* user taps the button */ } }, 1600);
+  };
 
   useEffect(() => {
     let off = false;
@@ -76,6 +83,21 @@ export default function WifiSurface({ location }) {
       .then((c) => { if (!off) setCfg(c || {}); })
       .catch(() => { if (!off) setCfg({}); });
     return () => { off = true; };
+  }, [location.id]);
+
+  // Seamless return: if this device signed up here before, authorise it instantly — no form.
+  useEffect(() => {
+    if (!unifi.client_mac) return;
+    let off = false;
+    callWifi({ action: 'reconnect', platform_location_id: location.id, client_mac: unifi.client_mac, ap_mac: unifi.ap_mac, ssid: unifi.ssid })
+      .then((r) => {
+        if (off) return;
+        if (r?.returning && r?.authorized) { setResult(r); setPhase('connected'); releaseDevice(); }
+        else setPhase('form');   // new device (or couldn't auto-authorise) → collect details
+      })
+      .catch(() => { if (!off) setPhase('form'); });
+    return () => { off = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.id]);
 
   const fields = cfg?.fields || DEFAULT_FIELDS;
@@ -122,13 +144,9 @@ export default function WifiSurface({ location }) {
       // If the venue is live with vouchers, hand the browser to the gateway to get online.
       if (r?.voucher_redirect_url) { window.location.href = r.voucher_redirect_url; return; }
       setPhase('connected');
-      // UniFi has authorised the device, but the phone's captive screen only drops (and the WiFi
-      // symbol appears) once the OS re-tests connectivity. Bounce the captive browser to the URL it
-      // was originally checking (or Apple's check) so iOS/Android notice they're online and release.
-      if (r?.authorized) {
-        const release = unifi.orig_url || 'http://captive.apple.com/hotspot-detect.html';
-        setTimeout(() => { try { window.location.href = release; } catch { /* user can tap the button */ } }, 1800);
-      }
+      // UniFi authorised the device, but the phone's captive screen only drops once the OS re-tests
+      // connectivity — bounce it to its original check URL so it notices and releases.
+      if (r?.authorized) releaseDevice();
     } catch (e) {
       setError(e.message || 'Could not connect — please try again.');
       setPhase('form');
@@ -149,7 +167,13 @@ export default function WifiSurface({ location }) {
         </div>
 
         <div style={{ padding: '22px 22px 26px' }}>
-          {phase === 'connected' ? (
+          {phase === 'checking' ? (
+            <div style={{ textAlign: 'center', padding: '24px 0' }}>
+              <div style={{ fontSize: 40, marginBottom: 8 }}>📶</div>
+              <h1 style={S.h1}>Getting you online…</h1>
+              <p style={S.sub}>Welcome back — reconnecting you to {venueName} WiFi.</p>
+            </div>
+          ) : phase === 'connected' ? (
             <div style={{ textAlign: 'center' }}>
               <div style={{ fontSize: 44, marginBottom: 6 }}>📶</div>
               <h1 style={S.h1}>{cfg?.success_copy || "You're connected. Enjoy your visit!"}</h1>

@@ -100,6 +100,36 @@ Deno.serve(async (req) => {
     });
   }
 
+  // ── reconnect: a device we've captured before → authorise instantly, no form (seamless return) ──
+  if (action === 'reconnect') {
+    const loc = await resolveLocation(String(body.platform_location_id ?? '').trim());
+    if (!loc) return json({ error: 'location not found' }, 404);
+    const clientMac = body.client_mac ? String(body.client_mac).slice(0, 40) : null;
+    if (!clientMac) return json({ returning: false });
+    // Seen this device sign up here before?
+    const { data: prior } = await opsAdmin.from('wifi_captures')
+      .select('customer_id').eq('location_id', loc.opsLocationId).eq('client_mac', clientMac)
+      .order('created_at', { ascending: false }).limit(1).maybeSingle();
+    if (!prior) return json({ returning: false });
+    // Authorise straight onto WiFi — no details needed.
+    let authorized = false, authMethod: string | null = null, voucherRedirectUrl: string | null = null;
+    try {
+      const r = await fetch(`${FN_BASE}/wifi-authorize`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SERVICE_KEY}` },
+        body: JSON.stringify({ ops_location_id: loc.opsLocationId, client_mac: clientMac, ap_mac: body.ap_mac ?? null, ssid: body.ssid ?? null }),
+      });
+      const j = await r.json().catch(() => ({}));
+      authorized = !!j.authorized; authMethod = j.auth_method ?? null; voucherRedirectUrl = j.voucher_redirect_url ?? null;
+    } catch (_e) { /* fall through to needs-form on the client if not authorised */ }
+    await opsAdmin.from('wifi_captures').insert({
+      location_id: loc.opsLocationId, company_id: loc.companyId, customer_id: prior.customer_id ?? null,
+      client_mac: clientMac, ap_mac: body.ap_mac ? String(body.ap_mac).slice(0, 40) : null,
+      ssid: body.ssid ? String(body.ssid).slice(0, 64) : null,
+      is_return: true, marketing_opt_in: false, authorized, auth_method: authMethod,
+    });
+    return json({ returning: true, authorized, auth_method: authMethod, voucher_redirect_url: voucherRedirectUrl, customer_id: prior.customer_id ?? null });
+  }
+
   // ── capture: upsert contact + consent + log + authorize ───────────────────
   if (action === 'capture') {
     const loc = await resolveLocation(String(body.platform_location_id ?? '').trim());

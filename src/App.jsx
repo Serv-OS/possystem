@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.498', date: '16 Jun 2026', label: 'WiFi: seamless reconnect for returning guests (no form again)',
+    changes: [
+      'Returning devices are recognised by MAC and authorised instantly — the portal shows a brief "Getting you online…" and connects, no form. Only genuinely new devices see the sign-up form. New wifi-capture "reconnect" action; WifiSurface tries it on load.',
+      'Verified: known device → returning+authorized (seamless); new device → form.',
+    ],
+  },
+  {
     version: '5.5.497', date: '16 Jun 2026', label: 'WiFi: portal now releases the phone after authorise (captive screen closes)',
     changes: [
       'After UniFi authorises the device, the portal now bounces the captive browser to its original check URL (or Apple’s hotspot-detect) so iOS/Android re-test connectivity, drop the "Sign in" screen and show the WiFi symbol — instead of the portal lingering until "use without network".',
