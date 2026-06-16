@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.497', date: '16 Jun 2026', label: 'WiFi: portal now releases the phone after authorise (captive screen closes)',
+    changes: [
+      'After UniFi authorises the device, the portal now bounces the captive browser to its original check URL (or Apple’s hotspot-detect) so iOS/Android re-test connectivity, drop the "Sign in" screen and show the WiFi symbol — instead of the portal lingering until "use without network".',
+      'Success screen shows an "Open the internet →" button (to the original URL) as a manual fallback when the OS blocks the auto-redirect inside the sign-in window.',
+    ],
+  },
+  {
     version: '5.5.496', date: '16 Jun 2026', label: 'WiFi: guest authorize WORKS cloud-only (connector + classic cmd/stamgr by MAC)',
     changes: [
       'Guest authorize confirmed end-to-end: a REAL authorize (not dry-run) returns success. Cloud-only via the api.ui.com connector — no box, no relay, no port-forward.',

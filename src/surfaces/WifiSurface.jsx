@@ -122,6 +122,13 @@ export default function WifiSurface({ location }) {
       // If the venue is live with vouchers, hand the browser to the gateway to get online.
       if (r?.voucher_redirect_url) { window.location.href = r.voucher_redirect_url; return; }
       setPhase('connected');
+      // UniFi has authorised the device, but the phone's captive screen only drops (and the WiFi
+      // symbol appears) once the OS re-tests connectivity. Bounce the captive browser to the URL it
+      // was originally checking (or Apple's check) so iOS/Android notice they're online and release.
+      if (r?.authorized) {
+        const release = unifi.orig_url || 'http://captive.apple.com/hotspot-detect.html';
+        setTimeout(() => { try { window.location.href = release; } catch { /* user can tap the button */ } }, 1800);
+      }
     } catch (e) {
       setError(e.message || 'Could not connect — please try again.');
       setPhase('form');
@@ -146,11 +153,18 @@ export default function WifiSurface({ location }) {
             <div style={{ textAlign: 'center' }}>
               <div style={{ fontSize: 44, marginBottom: 6 }}>📶</div>
               <h1 style={S.h1}>{cfg?.success_copy || "You're connected. Enjoy your visit!"}</h1>
-              {!result?.authorized && (
-                <p style={S.sub}>You're all set. If the internet doesn't open automatically, ask a member of staff.</p>
-              )}
-              {cfg?.redirect_url && (
-                <a href={cfg.redirect_url} style={{ ...S.btn, background: btnBg, marginTop: 12, display: 'inline-block', textDecoration: 'none' }}>Continue →</a>
+              {result?.authorized ? (
+                <>
+                  <p style={S.sub}>You're online! If this screen doesn't close on its own, tap below.</p>
+                  <a href={unifi.orig_url || cfg?.redirect_url || 'http://captive.apple.com/hotspot-detect.html'} style={{ ...S.btn, background: btnBg, marginTop: 12, display: 'inline-block', textDecoration: 'none' }}>Open the internet →</a>
+                </>
+              ) : (
+                <>
+                  <p style={S.sub}>You're all set. If the internet doesn't open automatically, ask a member of staff.</p>
+                  {cfg?.redirect_url && (
+                    <a href={cfg.redirect_url} style={{ ...S.btn, background: btnBg, marginTop: 12, display: 'inline-block', textDecoration: 'none' }}>Continue →</a>
+                  )}
+                </>
               )}
             </div>
           ) : (
