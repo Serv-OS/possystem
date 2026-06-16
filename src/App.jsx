@@ -85,6 +85,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.503', date: '16 Jun 2026', label: 'Marketing slice 2: sending infrastructure (email + SMS, sandbox-first, consent/suppression, webhooks)',
+    changes: [
+      'New unified sender marketing-send edge fn — one entry point for email + SMS. Email adapter reuses the send-receipt provider plumbing (log/resend/postmark); SMS adapter uses the send-sms Twilio env. No new secrets: with nothing configured it runs in SANDBOX (logged, not sent), so the flow ships safely.',
+      'Every send enforces CONSENT (customer_consents ledger; falls back to customers.marketing_opt_in) and the SUPPRESSION list, renders merge tags ({{first_name|there}} etc.), appends compliance footers (email unsubscribe + SMS "Reply STOP"), and writes one auditable row to marketing_messages — idempotent on idempotency_key (double-send impossible).',
+      'New marketing-webhook edge fn: one-click/RFC-8058 unsubscribe (HMAC-token verified), plus Twilio/Resend/Postmark delivery events → advances message status (delivered/opened/clicked) and on bounce/complaint/SMS-STOP adds a suppression. Migration 20260616b_marketing_messaging.sql adds marketing_messages + marketing_suppressions (Ops DB, org-scoped RLS). Verified live: status transitions, STOP/bounce→suppression, suppression + idempotency both deduped.',
+    ],
+  },
+  {
     version: '5.5.502', date: '16 Jun 2026', label: 'Marketing slice 1 (UI): Promotions back office + promo codes at the till',
     changes: [
       'Back Office → Customers → Promotions: create/edit offers, issue one-time codes, look up a code (status/owner/redemptions), void codes. Calls the marketing-admin edge fn.',
