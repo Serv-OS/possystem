@@ -85,6 +85,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.509', date: '16 Jun 2026', label: 'Marketing slice 6: drip / workflow builder',
+    changes: [
+      'New Back Office → Customers → Workflows: automated multi-step sequences (e.g. a welcome series, post-visit follow-ups). Pick an entry trigger (new sign-up / birthday / entering a segment / manual), then add ordered steps — each with a delay, channel (email/SMS/both), block-built content, and an optional offer (unique code per step). "Run now" tests safely; Activate runs it daily.',
+      'Engine: customers are enrolled once on the trigger (unique per workflow) and advanced through their steps by the daily run (marketing-run now drives campaigns AND workflows). Each step sends via marketing-send (consent/suppression/sandbox enforced) and fires at most once per enrolment (claim-first + reclaim-on-failure, same resilience as the campaign engine). Migration 20260616f adds workflows / workflow_enrollments / workflow_step_sends (org-scoped RLS).',
+      'Proven live: a 2-step welcome drip (immediate email → +3d SMS with a unique code) enrolled a new sign-up, fired step 1, no-opped when not due, then fired step 2 and completed — exactly once each.',
+    ],
+  },
+  {
     version: '5.5.508', date: '16 Jun 2026', label: 'Marketing slice 5: email builder + SMS composer (merge tags, live preview, send test)',
     changes: [
       'Campaigns now have a block-based email builder (heading / text / button / image / divider / spacer / raw-HTML) — drag to reorder (or up/down), insert merge tags at the cursor, with a live rendered preview using sample data. Blocks compile to a responsive ~600px inline-styled email on save; the engine still sends the compiled HTML.',

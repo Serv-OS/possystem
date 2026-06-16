@@ -43,6 +43,7 @@ import WifiManager from './sections/WifiManager';
 import Promotions from './sections/marketing/Promotions';
 import Segments from './sections/marketing/Segments';
 import Campaigns from './sections/marketing/Campaigns';
+import Workflows from './sections/marketing/Workflows';
 import MenuBoards from './sections/MenuBoards';
 import { money, currencySymbol } from '../lib/currency';
 
@@ -80,6 +81,7 @@ const NAV = [
   { id: 'promotions', label: 'Promotions', icon: '\u{1F3AB}', group: 'Analytics' },
   { id: 'segments', label: 'Segments', icon: '\u{1F465}', group: 'Analytics' },
   { id: 'campaigns', label: 'Campaigns', icon: '\u{1F4E3}', group: 'Analytics' },
+  { id: 'workflows', label: 'Workflows', icon: '\u{1F500}', group: 'Analytics' },
 ];
 
 // v5.5.367 ServOS: intent-based 10-section sidebar IA. Every child keeps the
@@ -93,7 +95,7 @@ const NAV_IA = [
   { label:'Inventory',  icon:'inventory', single:'inventory' },
   { label:'Team',       icon:'user',      single:'staff' },
   { label:'Workforce',  icon:'team',      children:[['wf-dashboard','Dashboard'],['wf-rota','Rota'],['wf-timesheets','Timesheets'],['wf-payroll','Payroll'],['wf-timeoff','Time off & availability'],['wf-staff','Staff'],['wf-onboarding','Onboarding'],['wf-compliance','Compliance'],['wf-pay','Positions & rates'],['wf-tronc','Tronc / tips'],['wf-announce','Announcements'],['wf-settings','Workforce settings']] },
-  { label:'Customers',  icon:'customers', children:[['customers','Customers'],['promotions','Promotions'],['segments','Segments'],['campaigns','Campaigns'],['wifi','WiFi'],['reviews','Reviews'],['loyalty','Loyalty'],['giftcards','Gift cards'],['messages','Messages']] },
+  { label:'Customers',  icon:'customers', children:[['customers','Customers'],['promotions','Promotions'],['segments','Segments'],['campaigns','Campaigns'],['workflows','Workflows'],['wifi','WiFi'],['reviews','Reviews'],['loyalty','Loyalty'],['giftcards','Gift cards'],['messages','Messages']] },
   { label:'Channels',   icon:'channels',  children:[['online','Online ordering'],['kiosks','Kiosks'],['menuboards','Menu boards']] },
   { label:'Hardware',   icon:'hardware',  children:[['devices','Terminals'],['profiles','Device profiles'],['printers','Printers'],['printing','Production printing'],['cardreaders','Card readers'],['cashdrawers','Cash drawers'],['network','Network & sync']] },
   { label:'Reports',    icon:'reports',   children:[['reports','Sales reports'],['shift','Shifts'],['eod','Close day'],['pettycash','Petty cash']] },
@@ -599,6 +601,7 @@ export default function BackOfficeApp() {
           {section === 'promotions' && <Promotions />}
           {section === 'segments' && <Segments />}
           {section === 'campaigns' && <Campaigns />}
+          {section === 'workflows' && <Workflows />}
           {section?.startsWith('wf-') && <Workforce section={section} orgCtx={orgCtx} />}
           {section === 'menu'       && <MenuManager />}
           {section === 'floorplan'  && <FloorPlanBuilder />}

@@ -9,6 +9,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { runCampaign, runDueCampaigns } from '../_shared/campaign-engine.ts';
+import { runWorkflows } from '../_shared/workflow-engine.ts';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-run-secret' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -39,8 +40,10 @@ Deno.serve(async (req) => {
       const summary = await runCampaign(sb, c, { ...opts, force: body?.force === true });
       return json({ ok: true, today: opts.today, results: [summary] });
     }
+    const wfOpts = { ...opts, now: body?.now };   // body.now lets tests fast-forward drips
     const results = await runDueCampaigns(sb, opts);
-    return json({ ok: true, today: opts.today, count: results.length, results });
+    const workflows = await runWorkflows(sb, wfOpts);
+    return json({ ok: true, today: opts.today, count: results.length, results, workflows });
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : String(e) }, 500);
   }
