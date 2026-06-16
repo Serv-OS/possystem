@@ -38,7 +38,8 @@ const S = {
 };
 
 const METHODS = [
-  ['unifi_cloud', 'UniFi account / cloud (recommended)', 'Seamless & cloud-only — the way Stampede works. We log into your Ubiquiti account and authorize each guest through Ubiquiti’s cloud. No on-site box, no port-forward. Use a dedicated UniFi account.'],
+  ['unifi_connector', 'UniFi cloud connector (recommended)', 'Cloud-only, no box, no port-forward. We authorize each guest through Ubiquiti’s official Site Manager connector (api.ui.com) using a Site Manager API key. Works on any cloud-adopted console.'],
+  ['unifi_cloud', 'UniFi account / cloud', 'We log into your Ubiquiti account and authorize through the cloud. Blocked by Ubiquiti’s bot-protection from servers — use the connector above instead.'],
   ['unifi_local_api', 'UniFi API key (direct)', 'Authorize via an API key — only works if your console is directly reachable from the internet (public address + valid cert).'],
   ['unifi_legacy', 'UniFi local admin (direct)', 'Authorize via a local-admin login — only works if your console is directly reachable from the internet.'],
   ['unifi_voucher', 'UniFi vouchers', 'Fallback. Paste a pool of guest passes; the portal hands one to each guest. No login needed.'],
@@ -46,6 +47,9 @@ const METHODS = [
 ];
 const isDirect = (m) => m === 'unifi_local_api' || m === 'unifi_legacy';
 const isCloud = (m) => m === 'unifi_cloud';
+const isConnector = (m) => m === 'unifi_connector';
+// The connector reuses the Integration-API authorize path, pointed at the api.ui.com cloud connector.
+const connectorUrl = (consoleId) => `https://api.ui.com/v1/connector/consoles/${String(consoleId || '').trim()}`;
 
 export default function WifiSetup() {
   const [locId, setLocId] = useState(null);
@@ -66,7 +70,9 @@ export default function WifiSetup() {
         try { const { data: loc } = await platformSupabase.from('locations').select('online_slug').or(`ops_location_id.eq.${id},id.eq.${id}`).maybeSingle(); setSlug(loc?.online_slug || null); } catch {}
         const { data } = await supabase.functions.invoke('wifi-admin', { body: { action: 'get_config', ops_location_id: id } });
         const st = data?.binding_status || {}; setStatus(st);
-        setB({ auth_method: st.auth_method || 'none', ssid: st.ssid || '', controller_url: st.controller_url || '', site_id: st.site_id || 'default', console_id: st.console_id || '', auth_minutes: st.auth_minutes || 1440, data_limit_mb: st.data_limit_mb || '', down_kbps: st.down_kbps || '', up_kbps: st.up_kbps || '' });
+        // The connector is stored as unifi_local_api with an api.ui.com controller_url — show it as its own method.
+        const isConn = (st.controller_url || '').includes('api.ui.com/v1/connector');
+        setB({ auth_method: isConn ? 'unifi_connector' : (st.auth_method || 'none'), ssid: st.ssid || '', controller_url: st.controller_url || '', site_id: st.site_id || 'default', console_id: st.console_id || '', auth_minutes: st.auth_minutes || 1440, data_limit_mb: st.data_limit_mb || '', down_kbps: st.down_kbps || '', up_kbps: st.up_kbps || '' });
       } catch {} finally { setLoading(false); }
     })();
   }, []);
@@ -78,9 +84,13 @@ export default function WifiSetup() {
   const saveBinding = async (extra = {}) => {
     setSave({ busy: true });
     try {
+      const connector = b.auth_method === 'unifi_connector';
       const binding = {
-        auth_method: b.auth_method, ssid: b.ssid || null,
-        controller_url: b.auth_method === 'unifi_cloud' ? (b.controller_url || 'https://unifi.ui.com') : (b.controller_url || null),
+        // The connector is stored as unifi_local_api with an api.ui.com controller_url.
+        auth_method: connector ? 'unifi_local_api' : b.auth_method,
+        ssid: b.ssid || null,
+        controller_url: connector ? connectorUrl(b.console_id)
+          : b.auth_method === 'unifi_cloud' ? (b.controller_url || 'https://unifi.ui.com') : (b.controller_url || null),
         site_id: b.site_id || null, console_id: b.console_id || null, auth_minutes: Number(b.auth_minutes) || 1440,
         data_limit_mb: b.data_limit_mb === '' ? null : Number(b.data_limit_mb),
         down_kbps: b.down_kbps === '' ? null : Number(b.down_kbps),
@@ -88,7 +98,7 @@ export default function WifiSetup() {
         ...extra,
       };
       // Only send secrets the operator actually typed (blank = leave existing untouched).
-      if (b.auth_method === 'unifi_local_api' && secret.api_key.trim()) binding.api_key = secret.api_key.trim();
+      if ((b.auth_method === 'unifi_local_api' || connector) && secret.api_key.trim()) binding.api_key = secret.api_key.trim();
       if (b.auth_method === 'unifi_legacy' || b.auth_method === 'unifi_cloud') {
         if (secret.admin_user.trim()) binding.admin_user = secret.admin_user.trim();
         if (secret.admin_pass) binding.admin_pass = secret.admin_pass;
@@ -131,6 +141,36 @@ export default function WifiSetup() {
           {save.done && <span style={S.ok}>✓ Saved</span>}{save.err && <span style={S.err}>{save.err}</span>}
         </div>
       </div>
+
+      {isConnector(b.auth_method) && (
+        <div style={S.card}>
+          <h2 style={S.h2}>UniFi cloud connector</h2>
+          <div style={{ ...S.hint, marginTop: -4, marginBottom: 12 }}>
+            We authorize each guest through Ubiquiti’s official cloud connector — no box, no port-forward. You need a <b>Site Manager API key</b> (account-level) and your <b>console ID</b>.
+          </div>
+          <div style={S.field}>
+            <label style={S.label}>Site Manager API key {status?.has_api_key && <span style={S.set}>✓ set</span>}</label>
+            <input style={S.input} type="password" value={secret.api_key} onChange={e => setSec({ api_key: e.target.value })} placeholder={status?.has_api_key ? 'Leave blank to keep the saved key' : 'Paste the Site Manager key'} autoComplete="new-password" />
+            <div style={S.hint}>Make it at <b>unifi.ui.com → Settings → API Keys</b> (NOT the per-console “Integrations” key). Stored encrypted; never shown again.</div>
+          </div>
+          <div style={S.field}>
+            <label style={S.label}>Console ID</label>
+            <input style={S.input} value={b.console_id} onChange={e => set({ console_id: e.target.value })} placeholder="from unifi.ui.com URL: /consoles/<THIS>/network" />
+            <div style={S.hint}>At unifi.ui.com, open this console — the address bar shows <span style={S.code}>/consoles/&lt;ID&gt;/network</span>. Paste that ID.</div>
+          </div>
+          <div style={S.row2}>
+            <div style={S.field}>
+              <label style={S.label}>Site</label>
+              <input style={S.input} value={b.site_id} onChange={e => set({ site_id: e.target.value })} placeholder="default" />
+            </div>
+            <div style={S.field}>
+              <label style={S.label}>Access duration (minutes)</label>
+              <input style={S.input} type="number" value={b.auth_minutes} onChange={e => set({ auth_minutes: e.target.value })} placeholder="1440" />
+            </div>
+          </div>
+          <button style={S.btn} onClick={() => saveBinding()} disabled={save.busy || (!b.console_id && !status?.console_id)}>{save.busy ? 'Saving…' : 'Save connector'}</button>
+        </div>
+      )}
 
       {isCloud(b.auth_method) && (
         <div style={S.card}>
@@ -239,7 +279,13 @@ export default function WifiSetup() {
         <div style={S.step}><span style={S.num}>1</span><span>In UniFi Network, create (or pick) your <b>Guest</b> WiFi network and turn on the <b>Hotspot / Captive Portal</b>.</span></div>
         <div style={S.step}><span style={S.num}>2</span><span>Set the portal to <b>External portal server</b> and point it at:<br/><span style={S.code}>{portalUrl}</span></span></div>
         <div style={S.step}><span style={S.num}>3</span><span>Add a <b>walled garden / pre-authorization allow-list</b> so guests can reach the page before they log in: <span style={S.code}>*.serv-os.app</span>, <span style={S.code}>tbetcegmszzotrwdtqhi.supabase.co</span>, <span style={S.code}>fonts.googleapis.com</span>, <span style={S.code}>fonts.gstatic.com</span>.</span></div>
-        {isCloud(b.auth_method) ? (
+        {isConnector(b.auth_method) ? (
+          <>
+            <div style={S.step}><span style={S.num}>4</span><span>Make a <b>Site Manager API key</b>: unifi.ui.com → <b>Settings → API Keys → Create</b>. Copy it.</span></div>
+            <div style={S.step}><span style={S.num}>5</span><span>Grab your <b>Console ID</b> from the address bar at unifi.ui.com (<span style={S.code}>/consoles/&lt;ID&gt;/network</span>).</span></div>
+            <div style={S.step}><span style={S.num}>6</span><span>Paste both above → <b>Save connector</b>, then hit <b>Test</b> below.</span></div>
+          </>
+        ) : isCloud(b.auth_method) ? (
           <>
             <div style={S.step}><span style={S.num}>4</span><span>Make a <b>dedicated Ubiquiti account</b> (a new email at account.ui.com), turn on its <b>2FA via authenticator app</b>, and copy the <b>secret/setup key</b>.</span></div>
             <div style={S.step}><span style={S.num}>5</span><span>In UniFi, add that account as an <b>Admin</b> on this console (Settings → Admins &amp; Users → Invite Admin).</span></div>
@@ -269,7 +315,7 @@ export default function WifiSetup() {
           {test?.result && <span style={{ fontSize: 12.5, color: test.result.authorized ? 'var(--grn)' : 'var(--t3)' }}>{test.result.authorized ? `✓ connected (${test.result.auth_method})` : (test.result.message || 'not authorized')}</span>}
           {test?.err && <span style={S.err}>{test.err}</span>}
         </div>
-        {(isCloud(b.auth_method) || isDirect(b.auth_method)) && <div style={S.hint}>Test does a dry-run: it signs in {isCloud(b.auth_method) ? 'to your Ubiquiti account (incl. 2FA)' : 'to your console'} to prove the connection works — without authorizing a real device.</div>}
+        {(isConnector(b.auth_method) || isCloud(b.auth_method) || isDirect(b.auth_method)) && <div style={S.hint}>Test does a dry-run: it reaches your console {isConnector(b.auth_method) ? 'through the Ubiquiti cloud connector' : isCloud(b.auth_method) ? 'via your Ubiquiti account (incl. 2FA)' : 'directly'} to prove the connection works — without authorizing a real device.</div>}
       </div>
     </div>
   );

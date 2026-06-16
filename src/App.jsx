@@ -85,6 +85,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.494', date: '15 Jun 2026', label: 'WiFi: UniFi cloud connector (api.ui.com) — the real cloud-only authorize',
+    changes: [
+      'Added "UniFi cloud connector" method — authorizes guests through Ubiquiti’s official Site Manager connector at api.ui.com (valid cert, no CloudFront bot-block) using an account-level Site Manager API key. Genuinely cloud-only: no on-site box, no port-forward, no scripted login.',
+      'Confirmed api.ui.com is reachable from our cloud (clean 401 JSON, not the unifi.ui.com login wall). The connector proxies the per-console Network Integration API: api.ui.com/v1/connector/consoles/{id}/proxy/network/integration/v1/...',
+      'Reuses the existing unifi_local_api authorize path (no edge change) — BO stores it as unifi_local_api with an api.ui.com controller_url built from the console ID. Back Office → WiFi → setup: pick "UniFi cloud connector", paste the Site Manager key + console ID, Test.',
+    ],
+  },
+  {
     version: '5.5.493', date: '15 Jun 2026', label: 'WiFi: fixed-IP relay so cloud authorize actually works',
     changes: [
       'Found why the UniFi account/cloud login was failing: Ubiquiti’s CloudFront blocks Supabase’s serverless egress IPs (403) — confirmed by live tests (same URL works from a normal IP). This is why Stampede et al run from fixed allow-listed IPs.',
