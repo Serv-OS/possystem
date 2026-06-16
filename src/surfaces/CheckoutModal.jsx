@@ -1072,6 +1072,11 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
   const [loyaltyData, setLoyaltyData] = useState(null); // { credit, rewards, memberCode, tier, ... }
   const [loyaltyLoading, setLoyaltyLoading] = useState(false);
   const [loyaltyApplied, setLoyaltyApplied] = useState(null);
+  // Promo code (marketing offers) — validated via promo-redeem; redeemed (bound to the order) by the store.
+  const [promoApplied, setPromoApplied] = useState(null);   // { code, code_id, offer_id, type, value, amount, label }
+  const [promoInput, setPromoInput] = useState('');
+  const [promoMsg, setPromoMsg] = useState('');
+  const [promoBusy, setPromoBusy] = useState(false);
   // loyaltyApplied: { reward_id, reward_name, points_deducted, discount_type, discount_value, idempotency_key }
 
   // Fetch loyalty data when checkout opens with a customer that has a phone
@@ -1105,7 +1110,31 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
   const giftCredit = giftApplied?.applied ? giftApplied.applied / 100 : 0;
   // Loyalty discount applied to total
   const loyaltyCredit = loyaltyApplied?.discount_value ? loyaltyApplied.discount_value / 100 : 0;
-  const grand    = Math.max(0, total + tipAmt - giftCredit - loyaltyCredit);
+  const promoCredit = promoApplied?.amount ? Number(promoApplied.amount) : 0;   // major units, from promo-redeem
+  const grand    = Math.max(0, total + tipAmt - giftCredit - loyaltyCredit - promoCredit);
+
+  // Validate a promo code in real time (no write). On success, hold it; the store redeems it
+  // atomically (bound to the order) on payment completion.
+  const applyPromo = async () => {
+    const code = promoInput.trim();
+    if (!code) return;
+    setPromoBusy(true); setPromoMsg('');
+    try {
+      const { data, error } = await supabase.functions.invoke('promo-redeem', { body: {
+        action: 'validate', code, location_id: getActiveLocationSync(),
+        customer_id: customer?.customerId || customer?.id || null, basket: { subtotal: total },
+      } });
+      if (error) throw new Error(error.message);
+      if (data?.valid) {
+        setPromoApplied({ code, code_id: data.code_id, offer_id: data.offer?.id, ...data.discount });
+        setPromoInput(''); setPromoMsg('');
+      } else {
+        const reasons = { not_found: 'Code not found', expired: 'Code expired', not_yet_active: 'Not active yet', already_used: 'Already used', usage_limit: 'Usage limit reached', min_spend: `Minimum spend £${Number(data?.min_spend || 0).toFixed(2)}`, wrong_venue: 'Not valid at this venue', customer_mismatch: 'Belongs to another customer', customer_required: 'Attach the customer first', inactive: 'Offer inactive', voided: 'Code voided' };
+        setPromoMsg(reasons[data?.reason] || 'Invalid code');
+      }
+    } catch (e) { setPromoMsg(e.message || 'Could not check code'); }
+    finally { setPromoBusy(false); }
+  };
 
   // Calculate tax breakdown
   const taxBreakdown = useMemo(() => {
@@ -1122,6 +1151,7 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
     if (hasGift && grand > 0) finalMethod = `gift_card+${method}`;
     else if (hasGift) finalMethod = 'gift_card';
     if (hasLoyalty) finalMethod = `loyalty+${finalMethod}`;
+    if (promoApplied) finalMethod = `promo+${finalMethod}`;
     onComplete({
       method: finalMethod,
       tip,
@@ -1130,6 +1160,7 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
       printReceipt,
       giftCard: giftApplied || undefined,
       loyaltyRedemption: loyaltyApplied || undefined,
+      promoRedemption: promoApplied || undefined,
       stripePaymentIntentId,
     });
   };
@@ -1335,8 +1366,8 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
                 ) : null}
                 <div style={{ height:1, background:'var(--bdr)', margin:'8px 0' }}/>
                 <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
-                  <span style={{ fontSize:15, fontWeight:600, color:'var(--t2)' }}>{(giftApplied || loyaltyApplied) ? 'Subtotal' : 'Total due'}</span>
-                  <span style={{ fontSize:(giftApplied || loyaltyApplied)?(compact?16:18):(compact?20:26), fontWeight:800, color:(giftApplied || loyaltyApplied)?'var(--t2)':'var(--acc)', fontFamily:'var(--font-mono)', letterSpacing:'-.02em' }}>{String.fromCodePoint(0x00A3)}{total.toFixed(2)}</span>
+                  <span style={{ fontSize:15, fontWeight:600, color:'var(--t2)' }}>{(giftApplied || loyaltyApplied || promoApplied) ? 'Subtotal' : 'Total due'}</span>
+                  <span style={{ fontSize:(giftApplied || loyaltyApplied || promoApplied)?(compact?16:18):(compact?20:26), fontWeight:800, color:(giftApplied || loyaltyApplied || promoApplied)?'var(--t2)':'var(--acc)', fontFamily:'var(--font-mono)', letterSpacing:'-.02em' }}>{String.fromCodePoint(0x00A3)}{total.toFixed(2)}</span>
                 </div>
                 {loyaltyApplied && (
                   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginTop:4 }}>
@@ -1350,7 +1381,13 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
                     <span style={{ fontSize:14, fontWeight:700, color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{String.fromCodePoint(0x2212)}{String.fromCodePoint(0x00A3)}{giftCredit.toFixed(2)}</span>
                   </div>
                 )}
-                {(giftApplied || loyaltyApplied) && (
+                {promoApplied && (
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginTop:4 }}>
+                    <span style={{ fontSize:13, color:'var(--grn)', fontWeight:600 }}>{String.fromCodePoint(0x1F3AB)} {promoApplied.label || promoApplied.code} <button onClick={()=>{ setPromoApplied(null); setPromoMsg(''); }} style={{ marginLeft:6, background:'none', border:'none', color:'var(--t3)', cursor:'pointer', fontSize:12, textDecoration:'underline' }}>remove</button></span>
+                    <span style={{ fontSize:14, fontWeight:700, color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{promoCredit > 0 ? `${String.fromCodePoint(0x2212)}${String.fromCodePoint(0x00A3)}${promoCredit.toFixed(2)}` : '✓'}</span>
+                  </div>
+                )}
+                {(giftApplied || loyaltyApplied || promoApplied) && (
                   <>
                     <div style={{ height:1, background:'var(--bdr)', margin:'6px 0' }}/>
                     <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
@@ -1360,6 +1397,17 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
                   </>
                 )}
               </div>
+
+              {/* ── Promo code ── */}
+              {!promoApplied && (
+                <div style={{ display:'flex', gap:8, marginTop:10, alignItems:'center' }}>
+                  <input value={promoInput} onChange={e=>setPromoInput(e.target.value.toUpperCase())} onKeyDown={e=>{ if(e.key==='Enter') applyPromo(); }} placeholder="Promo code" autoCapitalize="characters"
+                    style={{ flex:1, padding:'9px 12px', borderRadius:10, border:'1px solid var(--bdr2)', background:'var(--bg2)', color:'var(--t1)', fontSize:14, fontFamily:'var(--font-mono)', outline:'none', textTransform:'uppercase' }} />
+                  <button onClick={applyPromo} disabled={promoBusy || !promoInput.trim()}
+                    style={{ padding:'9px 16px', borderRadius:10, border:'1px solid var(--bdr2)', background:'var(--bg2)', color:'var(--t1)', fontWeight:700, fontSize:13, cursor:'pointer', opacity:(promoBusy||!promoInput.trim())?0.5:1 }}>{promoBusy?'…':'Apply'}</button>
+                </div>
+              )}
+              {promoMsg && <div style={{ fontSize:12, color:'var(--red)', marginTop:6 }}>{promoMsg}</div>}
 
               {/* ── Print receipt checkbox ── */}
               <div

@@ -31,6 +31,12 @@ function derivePaymentIntents(paymentInfo = {}) {
   return null;
 }
 
+// Marketing promo → an entry in the closed_check.discounts jsonb (reuses the existing discount slot).
+function promoDiscountEntry(promo) {
+  if (!promo?.code) return [];
+  return [{ source: 'promo', code: promo.code, name: promo.label || promo.code, type: promo.type, value: promo.value, amount: Number(promo.amount) || 0 }];
+}
+
 // ── Supabase helpers ─────────────────────────────────────────────────────────
 const sbUpsertMenu = async (menu) => {
   if (isMock) return;
@@ -3719,7 +3725,7 @@ export const useStore = create((set, get) => ({
       covers:     session.covers || 1,
       orderType:  'dine-in',
       items:      session.items.filter(i => !i.voided).map(i => ({ ...i })),
-      discounts:  session.discounts || [],
+      discounts:  [...(session.discounts || []), ...promoDiscountEntry(paymentInfo.promoRedemption)],
       subtotal:   session.subtotal || 0,
       service:    (session.subtotal || 0) * 0.125,
       tip:        paymentInfo.tip || 0,
@@ -3738,6 +3744,7 @@ export const useStore = create((set, get) => ({
     };
     set(s => ({ closedChecks: [record, ...s.closedChecks] }));
     insertClosedCheck(record);
+    if (paymentInfo.promoRedemption) get().redeemPromoCode?.(paymentInfo.promoRedemption, record, session.customer);
     // v5.5.163: Challenge 21 — increment alcohol counter; fire prompt at threshold.
     get().triggerChallenge21Check?.(record);
     // v4.6.65: dine-in customer attribution. Reads session.customer (attached
@@ -3760,6 +3767,20 @@ export const useStore = create((set, get) => ({
       });
     }
     return record;
+  },
+
+  // Redeem a held promo code against a recorded check — atomic + race-safe server-side, bound to the
+  // order id. Fire-and-forget: validate already confirmed eligibility at apply time; never blocks a sale.
+  redeemPromoCode: (promo, record, customer) => {
+    if (!promo?.code || !supabase || !record?.id) return;
+    const { staff } = get();
+    let locId = getActiveLocationSync(); if (!locId) { try { locId = localStorage.getItem('rpos-active-location') || null; } catch {} }
+    supabase.functions.invoke('promo-redeem', { body: {
+      action: 'redeem', code: promo.code, order_id: record.id, location_id: locId,
+      customer_id: customer?.customerId || customer?.id || null, staff_id: staff?.id || null,
+      basket_value: record.subtotal || 0, idempotency_key: `${record.id}:${promo.code}`,
+    } }).then(({ data }) => { if (data && !data.ok && !data.redeemed) console.warn('[promo redeem]', data.reason); })
+      .catch(err => console.warn('[promo redeem]', err?.message || err));
   },
 
   // Direct record insertion — used by bar tabs and other ad-hoc payment flows
@@ -3824,7 +3845,7 @@ export const useStore = create((set, get) => ({
       orderType,
       customer,
       items: walkInOrder.items.filter(i => !i.voided).map(i => ({ ...i })),
-      discounts: walkInOrder.discounts || [],
+      discounts: [...(walkInOrder.discounts || []), ...promoDiscountEntry(paymentInfo.promoRedemption)],
       subtotal,
       service: 0,
       tip: paymentInfo.tip || 0,
@@ -3869,6 +3890,7 @@ export const useStore = create((set, get) => ({
       });
     }
     insertClosedCheck(record);
+    if (paymentInfo.promoRedemption) get().redeemPromoCode?.(paymentInfo.promoRedemption, record, customer);
     // v5.5.163: Challenge 21 — alcohol counter + prompt
     get().triggerChallenge21Check?.(record);
     return record;

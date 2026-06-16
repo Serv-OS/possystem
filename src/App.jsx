@@ -85,6 +85,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.502', date: '16 Jun 2026', label: 'Marketing slice 1 (UI): Promotions back office + promo codes at the till',
+    changes: [
+      'Back Office → Customers → Promotions: create/edit offers, issue one-time codes, look up a code (status/owner/redemptions), void codes. Calls the marketing-admin edge fn.',
+      'POS CheckoutModal: a Promo code field validates in real time (promo-redeem) and applies the reward through the existing discount slot (reduces the amount due, like loyalty/gift). On payment the store redeems the code atomically, bound to the order id, and records it in closed_checks.discounts — wired for both dine-in and walk-in/takeaway.',
+      'Slice 1 complete end-to-end: issue → validate at till → apply → redeem-once (race-safe) → audited; second use rejected.',
+    ],
+  },
+  {
     version: '5.5.501', date: '16 Jun 2026', label: 'Marketing slice 1 (backend): offers + one-time promo codes + race-safe POS redemption',
     changes: [
       'New marketing foundation: migration 20260616_marketing_offers.sql adds offers, promo_codes, promo_redemptions (Ops DB, org-scoped RLS, venue-filtered) — additive, does not touch CRM tables.',
