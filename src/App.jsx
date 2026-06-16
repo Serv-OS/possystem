@@ -85,6 +85,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.504', date: '16 Jun 2026', label: 'Marketing slice 3: segmentation + RFM (prebuilt audiences + dynamic rule builder)',
+    changes: [
+      'New Back Office → Customers → Segments: prebuilt audiences (VIPs, Regulars, New, At-risk/Lapsed, Birthdays this week/month, Email/SMS subscribers) with live counts, plus a dynamic rule builder (match ALL/ANY of conditions on total spend, visits, days since last visit, days until birthday, signup recency, source, opt-in, reachability). Preview shows the matching count + a sample before you save.',
+      'Reuses the RFM already materialised in customer_locations via a new customer_rfm view (per-customer rollup: spend, visits, recency, signup age, days-until-birthday — leap-safe). Migration 20260616c_marketing_segments.sql adds the view + segments table (org-scoped RLS) + marketing_resolve_segment() — an injection-safe rule-tree→SQL resolver (whitelisted fields/operators, literalised values).',
+      'marketing-segments edge fn (BO-authed): list/save/delete segments, preview (count+sample), resolve (customer_ids for the campaign engine). Resolver verified live: prebuilt audiences, AND/OR, in/contains, and an injection payload all correct (matched 0, table intact). Segments feed slice 4; the send still re-checks consent + suppression.',
+    ],
+  },
+  {
     version: '5.5.503', date: '16 Jun 2026', label: 'Marketing slice 2: sending infrastructure (email + SMS, sandbox-first, consent/suppression, webhooks)',
     changes: [
       'New unified sender marketing-send edge fn — one entry point for email + SMS. Email adapter reuses the send-receipt provider plumbing (log/resend/postmark); SMS adapter uses the send-sms Twilio env. No new secrets: with nothing configured it runs in SANDBOX (logged, not sent), so the flow ships safely.',
