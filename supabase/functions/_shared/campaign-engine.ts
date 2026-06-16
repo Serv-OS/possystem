@@ -114,12 +114,27 @@ export async function runCampaign(sb: SB, campaign: any, opts: RunOpts): Promise
       ids = await resolveIds(sb, org, rule);
       if (campaign.segment_id) {
         const { data: seg } = await sb.from('segments').select('definition').eq('id', campaign.segment_id).eq('org_id', org).maybeSingle();
-        const segIds = new Set(await resolveIds(sb, org, seg?.definition));
-        ids = ids.filter((id) => segIds.has(id));
+        // If the segment was deleted, do NOT zero the audience — fall back to the trigger matches.
+        if (seg) {
+          const segIds = new Set(await resolveIds(sb, org, seg.definition));
+          ids = ids.filter((id) => segIds.has(id));
+        }
       }
     } else {
+      // No trigger rule (one_off / manual): the segment IS the audience. A missing/deleted segment is an
+      // explicit error, not a silent zero-send (so the operator can tell it apart from "0 matched").
+      if (!campaign.segment_id) {
+        summary.status = 'error'; summary.error = 'no audience: pick a segment for a one-off campaign';
+        await sb.from('campaign_runs').update({ status: 'error', error: summary.error, finished_at: new Date().toISOString() }).eq('id', runId);
+        return summary;
+      }
       const { data: seg } = await sb.from('segments').select('definition').eq('id', campaign.segment_id).eq('org_id', org).maybeSingle();
-      ids = seg ? await resolveIds(sb, org, seg.definition) : [];
+      if (!seg) {
+        summary.status = 'error'; summary.error = 'audience segment not found (deleted?)';
+        await sb.from('campaign_runs').update({ status: 'error', error: summary.error, finished_at: new Date().toISOString() }).eq('id', runId);
+        return summary;
+      }
+      ids = await resolveIds(sb, org, seg.definition);
     }
     summary.candidates = ids.length;
 
@@ -133,15 +148,32 @@ export async function runCampaign(sb: SB, campaign: any, opts: RunOpts): Promise
     const channels: ('email' | 'sms')[] = campaign.channel === 'both' ? ['email', 'sms'] : [campaign.channel];
 
     for (const customerId of ids) {
-      // 3. Claim the send FIRST → never twice.
+      // 3. Claim the send FIRST → never twice. On conflict, reclaim only an ORPHANED row: a failed
+      // attempt, or a 'pending' older than 5 min (a crashed run). A FRESH 'pending' means a concurrent
+      // run owns it → skip (no double-send). A terminal success (sent/partial/skipped) is never resent.
+      let claimedId: string | null = null;
+      let reuseCode: string | null = null;
       const { data: claimed } = await sb.from('campaign_sends')
         .upsert({ org_id: org, campaign_id: campaign.id, run_id: runId, customer_id: customerId, dedupe_key: dedupeKey, channel: campaign.channel, status: 'pending' },
           { onConflict: 'campaign_id,customer_id,dedupe_key', ignoreDuplicates: true })
         .select('id').maybeSingle();
-      if (!claimed) { summary.skipped++; continue; }   // already handled this occurrence
+      if (claimed) {
+        claimedId = claimed.id;
+      } else {
+        const { data: ex } = await sb.from('campaign_sends').select('id, status, promo_code, created_at')
+          .eq('campaign_id', campaign.id).eq('customer_id', customerId).eq('dedupe_key', dedupeKey).maybeSingle();
+        const stalePending = ex?.status === 'pending' && (Date.now() - new Date(ex.created_at).getTime() > 5 * 60 * 1000);
+        if (ex && (ex.status === 'failed' || stalePending)) {
+          claimedId = ex.id; reuseCode = ex.promo_code || null;   // reuse an already-issued code (no leak on retry)
+          await sb.from('campaign_sends').update({ run_id: runId, status: 'pending', error: null }).eq('id', claimedId);
+        } else { summary.skipped++; continue; }
+      }
 
       try {
-        const promoCode = offer ? await issueCode(sb, campaign, offer, customerId) : null;
+        // Reuse a code already issued for this send; only mint a new one if none exists. Persist it
+        // immediately so a later retry reuses it rather than issuing another.
+        let promoCode = reuseCode;
+        if (offer && !promoCode) { promoCode = await issueCode(sb, campaign, offer, customerId); if (promoCode) await sb.from('campaign_sends').update({ promo_code: promoCode }).eq('id', claimedId); }
         const merge = { promo_code: promoCode || '', offer: offer?.reward_label || '' };
         let emailMid: string | undefined, smsMid: string | undefined, anyOk = false, anyFail = false;
         for (const ch of channels) {
@@ -151,10 +183,12 @@ export async function runCampaign(sb: SB, campaign: any, opts: RunOpts): Promise
           if (r.ok) anyOk = true; else anyFail = true;
         }
         const status = anyOk && anyFail ? 'partial' : anyOk ? 'sent' : 'skipped';
-        await sb.from('campaign_sends').update({ status, promo_code: promoCode, email_message_id: emailMid || null, sms_message_id: smsMid || null }).eq('id', claimed.id);
+        await sb.from('campaign_sends').update({ status, run_id: runId, promo_code: promoCode, email_message_id: emailMid || null, sms_message_id: smsMid || null }).eq('id', claimedId);
         if (anyOk) summary.sent++; else summary.skipped++;
       } catch (e) {
-        await sb.from('campaign_sends').update({ status: 'failed', error: String(e instanceof Error ? e.message : e).slice(0, 400) }).eq('id', claimed.id);
+        // The recovery write is itself guarded — a transient failure here must NOT abort the run or
+        // orphan the row permanently (a 'failed'/stale-'pending' row is reclaimable on a later run).
+        try { await sb.from('campaign_sends').update({ status: 'failed', error: String(e instanceof Error ? e.message : e).slice(0, 400) }).eq('id', claimedId); } catch (_e2) { /* swallow; reclaimable */ }
         summary.failed++;
       }
     }
@@ -164,6 +198,9 @@ export async function runCampaign(sb: SB, campaign: any, opts: RunOpts): Promise
     await sb.from('campaigns').update({ last_run_at: new Date().toISOString() }).eq('id', campaign.id);
   } catch (e) {
     summary.status = 'error'; summary.error = String(e instanceof Error ? e.message : e);
+    // Best-effort: a run that aborted mid-loop may have left 'pending' rows — mark them failed (guarded)
+    // so reports show no unexplained 'pending' and the occurrences stay reclaimable.
+    try { await sb.from('campaign_sends').update({ status: 'failed', error: 'run aborted' }).eq('run_id', runId).eq('status', 'pending'); } catch (_e2) { /* swallow */ }
     await sb.from('campaign_runs').update({ status: 'error', error: summary.error.slice(0, 500), finished_at: new Date().toISOString() }).eq('id', runId);
   }
   return summary;

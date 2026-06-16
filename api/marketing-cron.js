@@ -16,10 +16,15 @@
  *   (SUPABASE_URL or VITE_SUPABASE_URL is already present for the frontend build)
  */
 export default async function handler(req, res) {
-  // Accept Vercel Cron (GET) and manual POST.
+  // Accept Vercel Cron (GET) and manual POST. Fail SECURE: if CRON_SECRET isn't configured, refuse
+  // (don't fall open), and otherwise require an exact match. Vercel sends `Authorization: Bearer
+  // <CRON_SECRET>` automatically on scheduled invocations.
   const cronSecret = process.env.CRON_SECRET;
+  if (!cronSecret) {
+    return res.status(500).json({ error: 'CRON_SECRET not set on Vercel — refusing to run unauthenticated' });
+  }
   const auth = req.headers.authorization || '';
-  if (cronSecret && auth !== `Bearer ${cronSecret}`) {
+  if (auth !== `Bearer ${cronSecret}`) {
     return res.status(401).json({ error: 'unauthorised' });
   }
 

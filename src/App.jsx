@@ -85,6 +85,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.507', date: '16 Jun 2026', label: 'Marketing slice 4 hardening (adversarial review fixes)',
+    changes: [
+      'Security: the marketing cron endpoint now fails SECURE — it refuses to run if CRON_SECRET is unset (previously the auth check was skipped when the secret was missing, allowing an unauthenticated trigger).',
+      'Campaign engine: a deleted/missing segment on a trigger campaign no longer zeroes the audience (it falls back to the trigger matches); a one-off with no segment now reports a clear error instead of silently "0 sent".',
+      'Campaign engine resilience: per-recipient send claims are now orphan-safe — a transient failure can no longer abort the whole run or leave an unrecoverable "pending" row; failed/stale sends are reclaimed (reusing any already-issued code, so no duplicate codes) on a later run. Re-verified: birthday e2e still sends once, forced re-run sends to nobody.',
+    ],
+  },
+  {
     version: '5.5.506', date: '16 Jun 2026', label: 'Marketing slice 4: campaign + trigger engine (birthday automation, daily cron)',
     changes: [
       'New Back Office → Customers → Campaigns: automations (birthday, win-back/lapsed) and one-off sends. Attach an offer and every recipient gets a UNIQUE single-use promo code (merged as {{promo_code}}); pick email/SMS/both; optionally limit to a segment. "Run now" tests a campaign safely (nothing is sent twice); Activate lets it run daily. Includes a one-click Birthday preset.',
