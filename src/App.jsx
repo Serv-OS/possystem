@@ -85,6 +85,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.506', date: '16 Jun 2026', label: 'Marketing slice 4: campaign + trigger engine (birthday automation, daily cron)',
+    changes: [
+      'New Back Office → Customers → Campaigns: automations (birthday, win-back/lapsed) and one-off sends. Attach an offer and every recipient gets a UNIQUE single-use promo code (merged as {{promo_code}}); pick email/SMS/both; optionally limit to a segment. "Run now" tests a campaign safely (nothing is sent twice); Activate lets it run daily. Includes a one-click Birthday preset.',
+      'Engine: marketing-run edge fn (+ shared campaign-engine) runs every active automation for "today" — resolves the audience via the slice-3 resolver, issues codes, and sends via slice-2 marketing-send (consent/suppression/sandbox enforced). Idempotent: campaign_runs unique per day-window; campaign_sends unique per occurrence = the "never twice" guarantee. Scheduled by Vercel Cron (api/marketing-cron, daily 08:00 UTC). Migration 20260616d adds campaigns/campaign_runs/campaign_sends (org-scoped RLS).',
+      'Birthday-within-7-days proven end-to-end live: one matched customer → unique code via email+SMS → recorded + attributed; a same-day re-run is a no-op and a forced re-run resends to nobody (0 sent). New env: MARKETING_RUN_SECRET (Supabase edge + Vercel), CRON_SECRET (Vercel); MARKETING_SANDBOX=true is set so nothing sends until providers are configured.',
+    ],
+  },
+  {
     version: '5.5.505', date: '16 Jun 2026', label: 'POS: one code box for gift cards AND promo codes (+ cash discount fix)',
     changes: [
       'The gift-voucher box at the till now also accepts marketing promo codes — staff enter any code in one box and it works out which it is: 16-char gift-alphabet codes try the gift card first; on a clean "not found" (or any shorter/hyphenated code) it falls through to a promo validate. Gift errors (void/zero balance/transport) are never misreported as a promo miss. Removed the separate promo field — one entry point, one double-apply guard. Reuses all the slice-1 promo apply→complete→store wiring.',
