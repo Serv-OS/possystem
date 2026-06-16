@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.499', date: '16 Jun 2026', label: 'WiFi: tidied Back Office setup — one method, live status, documented steps',
+    changes: [
+      'Rebuilt Back Office → WiFi setup: removed the non-working/legacy connection methods (account-login, direct API key/local-admin, vouchers). One supported path only — the UniFi cloud connector (Site Manager key + Console ID).',
+      'Added a live Connected / Not connected status badge (auto-checks on load + Re-check button), a clear 6-step "set it up in UniFi" guide, and a "turn off (capture only)" switch.',
+    ],
+  },
+  {
     version: '5.5.498', date: '16 Jun 2026', label: 'WiFi: seamless reconnect for returning guests (no form again)',
     changes: [
       'Returning devices are recognised by MAC and authorised instantly — the portal shows a brief "Getting you online…" and connects, no form. Only genuinely new devices see the sign-up form. New wifi-capture "reconnect" action; WifiSurface tries it on load.',
