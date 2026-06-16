@@ -85,6 +85,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.501', date: '16 Jun 2026', label: 'Marketing slice 1 (backend): offers + one-time promo codes + race-safe POS redemption',
+    changes: [
+      'New marketing foundation: migration 20260616_marketing_offers.sql adds offers, promo_codes, promo_redemptions (Ops DB, org-scoped RLS, venue-filtered) — additive, does not touch CRM tables.',
+      'promo-redeem edge fn (POS-facing): validate + redeem. Redemption is RACE-SAFE via a compare-and-swap on uses_count — proven with a concurrent test (exactly one winner; the second gets "already used"). Idempotent retries via promo_redemptions.idempotency_key. Clear rejection reasons (expired/not-yet-active/already-used/usage-limit/min-spend/wrong-venue/customer-mismatch/not-found).',
+      'marketing-admin edge fn (Back Office): offers CRUD + issue/lookup/void codes + offer stats. _shared/promo.ts: human-readable non-guessable code gen (no ambiguous chars) + reward→discount mapping that reuses the existing till discount slot. UI (POS promo input + BO offers) next.',
+    ],
+  },
+  {
     version: '5.5.500', date: '16 Jun 2026', label: 'WiFi: separate marketing + loyalty opt-ins; optional "marketing required to connect"',
     changes: [
       'Marketing opt-in and loyalty sign-up are now TWO independent ticks on the portal (previously loyalty bundled marketing). Each enrols separately; BO has a toggle + wording for each.',
