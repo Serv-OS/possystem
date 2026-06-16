@@ -25,7 +25,7 @@ const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const opsAdmin = createClient(SUPA_URL, SERVICE_ROLE, { auth: { autoRefreshToken: false, persistSession: false } });
 const platformAdmin = createClient(Deno.env.get('PLATFORM_SUPABASE_URL') ?? '', Deno.env.get('PLATFORM_SUPABASE_SERVICE_ROLE_KEY') ?? '', { auth: { autoRefreshToken: false, persistSession: false } });
 
-const SETTINGS_FIELDS = ['enabled', 'headline', 'subtext', 'bg_image_url', 'logo_url', 'accent_color', 'button_style', 'fields', 'age_gate', 'marketing_copy', 'success_copy', 'redirect_url', 'terms_url', 'privacy_url', 'privacy_version', 'loyalty_offer', 'loyalty_copy'];
+const SETTINGS_FIELDS = ['enabled', 'headline', 'subtext', 'bg_image_url', 'logo_url', 'accent_color', 'button_style', 'fields', 'age_gate', 'marketing_offer', 'marketing_required', 'marketing_copy', 'success_copy', 'redirect_url', 'terms_url', 'privacy_url', 'privacy_version', 'loyalty_offer', 'loyalty_copy'];
 // Non-secret binding fields the BO may set directly.
 const BINDING_FIELDS = ['auth_method', 'controller_url', 'site_id', 'console_id', 'ssid', 'auth_minutes', 'data_limit_mb', 'down_kbps', 'up_kbps'];
 // Secret binding fields → AES-GCM into *_enc columns (never returned to the client).

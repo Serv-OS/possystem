@@ -77,7 +77,7 @@ Deno.serve(async (req) => {
     const loc = await resolveLocation(String(body.platform_location_id ?? '').trim());
     if (!loc) return json({ error: 'location not found' }, 404);
     const { data: cfg } = await opsAdmin.from('wifi_portal_settings')
-      .select('enabled, headline, subtext, bg_image_url, logo_url, accent_color, button_style, fields, age_gate, marketing_copy, success_copy, redirect_url, terms_url, privacy_url, privacy_version, loyalty_offer, loyalty_copy')
+      .select('enabled, headline, subtext, bg_image_url, logo_url, accent_color, button_style, fields, age_gate, marketing_offer, marketing_required, marketing_copy, success_copy, redirect_url, terms_url, privacy_url, privacy_version, loyalty_offer, loyalty_copy')
       .eq('location_id', loc.opsLocationId).maybeSingle();
     return json({
       enabled: cfg?.enabled ?? true,
@@ -89,6 +89,8 @@ Deno.serve(async (req) => {
       button_style: cfg?.button_style ?? 'dark',
       fields: cfg?.fields ?? null,                 // null → portal uses its built-in defaults
       age_gate: cfg?.age_gate ?? true,
+      marketing_offer: cfg?.marketing_offer ?? true,
+      marketing_required: cfg?.marketing_required ?? false,
       marketing_copy: cfg?.marketing_copy ?? 'Keep me updated with news, offers and events by email and SMS.',
       success_copy: cfg?.success_copy ?? "You're connected. Enjoy your visit!",
       redirect_url: cfg?.redirect_url ?? null,

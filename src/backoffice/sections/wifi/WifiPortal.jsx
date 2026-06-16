@@ -23,6 +23,7 @@ const DEFAULTS = {
   marketing_copy: 'Keep me updated with news, offers and events by email and SMS.',
   success_copy: "You're connected. Enjoy your visit!",
   button_style: 'dark', age_gate: true, bg_image_url: '', logo_url: '', terms_url: '', privacy_url: '',
+  marketing_offer: true, marketing_required: false,
   loyalty_offer: false, loyalty_copy: 'Join our rewards — earn points and get exclusive offers by email & SMS.',
   fields: DEFAULT_FIELDS,
 };
@@ -123,9 +124,23 @@ export default function WifiPortal() {
             <h2 style={S.h2}>Wording</h2>
             <div style={S.field}><label style={S.label}>Headline</label><input style={S.input} value={cfg.headline} maxLength={60} onChange={e => set({ headline: e.target.value })} /></div>
             <div style={S.field}><label style={S.label}>Sub-text</label><input style={S.input} value={cfg.subtext} maxLength={120} onChange={e => set({ subtext: e.target.value })} placeholder="Pop in your details and you're online." /></div>
-            <div style={S.field}><label style={S.label}>Marketing opt-in wording</label><textarea style={S.area} value={cfg.marketing_copy} onChange={e => set({ marketing_copy: e.target.value })} /><div style={S.hint}>Exact text shown next to the (unticked) opt-in box. Stored with each consent for your records.</div></div>
+            {/* Marketing opt-in — separate from loyalty */}
             <div style={{ ...S.field, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-              <div><div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)' }}>Offer loyalty sign-up</div><div style={S.hint}>Swaps the opt-in for “Join rewards” — one tick enrols the guest in loyalty <b>and</b> opts them into marketing.</div></div>
+              <div><div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)' }}>Show marketing opt-in</div><div style={S.hint}>A separate tick for news &amp; offers by email/SMS.</div></div>
+              <button style={S.toggle(cfg.marketing_offer !== false)} onClick={() => persist({ marketing_offer: cfg.marketing_offer === false })}>{cfg.marketing_offer !== false ? 'On' : 'Off'}</button>
+            </div>
+            {cfg.marketing_offer !== false && (
+              <>
+                <div style={S.field}><label style={S.label}>Marketing opt-in wording</label><textarea style={S.area} value={cfg.marketing_copy} onChange={e => set({ marketing_copy: e.target.value })} /><div style={S.hint}>Shown next to the (unticked) marketing box. Stored with each consent for your records.</div></div>
+                <div style={{ ...S.field, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                  <div><div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)' }}>Require marketing to connect</div><div style={{ ...S.hint, color: 'var(--red)' }}>Guests must tick marketing to get online. ⚠️ Not UK GDPR/PECR compliant — consent must be freely given. Use at your own risk.</div></div>
+                  <button style={S.toggle(cfg.marketing_required)} onClick={() => persist({ marketing_required: !cfg.marketing_required })}>{cfg.marketing_required ? 'On' : 'Off'}</button>
+                </div>
+              </>
+            )}
+            {/* Loyalty sign-up — separate from marketing */}
+            <div style={{ ...S.field, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+              <div><div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)' }}>Offer loyalty sign-up</div><div style={S.hint}>A separate “Join rewards” tick that enrols the guest in loyalty (independent of marketing).</div></div>
               <button style={S.toggle(cfg.loyalty_offer)} onClick={() => persist({ loyalty_offer: !cfg.loyalty_offer })}>{cfg.loyalty_offer ? 'On' : 'Off'}</button>
             </div>
             {cfg.loyalty_offer && <div style={S.field}><label style={S.label}>“Join rewards” wording</label><textarea style={S.area} value={cfg.loyalty_copy} onChange={e => set({ loyalty_copy: e.target.value })} /><div style={S.hint}>Requires loyalty to be enabled for this venue (Customers → Loyalty).</div></div>}
@@ -225,7 +240,8 @@ function Phone({ accent, logo, venue, cfg, fields }) {
         {show('phone') && <div style={P.inp}>Mobile</div>}
         {show('dob') && <div style={P.inp}>Date of birth</div>}
         {show('is_local') && <div style={{ ...P.chk, marginTop: 2 }}><span style={{ width: 12, height: 12, border: '1px solid #c9c9cf', borderRadius: 3 }} />Are you local?</div>}
-        <div style={P.chk}><span style={{ width: 12, height: 12, border: '1px solid #c9c9cf', borderRadius: 3, flexShrink: 0 }} /><span>{cfg.loyalty_offer ? cfg.loyalty_copy : cfg.marketing_copy}</span></div>
+        {cfg.marketing_offer !== false && <div style={P.chk}><span style={{ width: 12, height: 12, border: '1px solid #c9c9cf', borderRadius: 3, flexShrink: 0 }} /><span>{cfg.marketing_copy}{cfg.marketing_required ? ' (required)' : ''}</span></div>}
+        {cfg.loyalty_offer && <div style={{ ...P.chk, marginTop: 2 }}><span style={{ width: 12, height: 12, border: '1px solid #c9c9cf', borderRadius: 3, flexShrink: 0 }} /><span>{cfg.loyalty_copy}</span></div>}
         <div style={P.dark}>Connect to WiFi</div>
       </div>
     </div></div></div>

@@ -85,6 +85,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.500', date: '16 Jun 2026', label: 'WiFi: separate marketing + loyalty opt-ins; optional "marketing required to connect"',
+    changes: [
+      'Marketing opt-in and loyalty sign-up are now TWO independent ticks on the portal (previously loyalty bundled marketing). Each enrols separately; BO has a toggle + wording for each.',
+      'New per-venue "Require marketing to connect" toggle (default OFF) — when on, guests must opt into marketing to get online. Flagged in the BO as not UK GDPR/PECR compliant (consent must be freely given) — operator’s choice.',
+      'Schema: marketing_offer + marketing_required on wifi_portal_settings; surfaced via wifi-capture portal_config + saved via wifi-admin. Minors (18+ gate) are never required to opt in.',
+    ],
+  },
+  {
     version: '5.5.499', date: '16 Jun 2026', label: 'WiFi: tidied Back Office setup — one method, live status, documented steps',
     changes: [
       'Rebuilt Back Office → WiFi setup: removed the non-working/legacy connection methods (account-login, direct API key/local-admin, vouchers). One supported path only — the UniFi cloud connector (Site Manager key + Console ID).',
