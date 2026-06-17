@@ -43,6 +43,28 @@ export function recurringDueNow(campaign: any, opts: RunOpts): boolean {
   return now.getUTCDay() === Number(t.weekday ?? 1);   // weekly (default): 1 = Monday
 }
 
+// Forecast trigger (#6): fire when actual sales are below threshold_pct of forecast, at/after the cutoff.
+// scope 'day' = today's forecast vs sales-so-far; 'week' = week-to-date (only on the cutoff weekday).
+// UTC day boundaries (venue-timezone refinement is a future enhancement).
+export async function forecastDueNow(sb: SB, campaign: any, opts: RunOpts): Promise<boolean> {
+  const t = campaign.trigger || {};
+  const now = new Date(opts.now || new Date().toISOString());
+  const scope = t.scope === 'week' ? 'week' : 'day';
+  if (scope === 'week' && now.getUTCDay() !== Number(t.cutoff_weekday ?? 3)) return false;  // default Wednesday
+  if (now.getUTCHours() < Number(t.cutoff_hour ?? 14)) return false;
+  const todayStr = (opts.now || now.toISOString()).slice(0, 10);
+  let startDate = todayStr;
+  if (scope === 'week') {
+    const d = new Date(todayStr + 'T00:00:00Z'); const dow = (d.getUTCDay() + 6) % 7;  // 0 = Mon
+    const mon = new Date(d); mon.setUTCDate(d.getUTCDate() - dow); startDate = mon.toISOString().slice(0, 10);
+  }
+  const { data: fc } = await sb.from('wf_sales_forecast').select('amount').eq('org_id', campaign.org_id).gte('forecast_date', startDate).lte('forecast_date', todayStr);
+  const forecast = (fc ?? []).reduce((s: number, r: any) => s + Number(r.amount || 0), 0);
+  if (forecast <= 0) return false;   // no forecast set for the period → never fire
+  const { data: actual } = await sb.rpc('marketing_period_sales', { p_org: campaign.org_id, p_start: `${startDate}T00:00:00Z`, p_end: now.toISOString() });
+  return (Number(actual || 0) / forecast) * 100 < Number(t.threshold_pct ?? 60);
+}
+
 // Build the trigger's audience rule + the dedupe/run keys for this campaign+day.
 function triggerContext(campaign: any, today: string): { rule: any | null; runKey: string; dedupeKey: string } {
   const t = campaign.trigger || {};
@@ -50,6 +72,10 @@ function triggerContext(campaign: any, today: string): { rule: any | null; runKe
   if (type === 'recurring') {
     const period = t.recurrence === 'monthly' ? today.slice(0, 7) : isoWeek(new Date(today + 'T00:00:00Z'));
     return { rule: null, runKey: `recurring:${period}`, dedupeKey: `recurring:${period}` };  // audience = segment, once/period
+  }
+  if (type === 'forecast') {
+    const period = t.scope === 'week' ? isoWeek(new Date(today + 'T00:00:00Z')) : today;
+    return { rule: null, runKey: `forecast:${period}`, dedupeKey: `forecast:${period}` };   // audience = segment, once/period
   }
   if (type === 'birthday') {
     const daysBefore = Number(t.days_before ?? 7);
@@ -241,6 +267,7 @@ export async function runDueCampaigns(sb: SB, opts: RunOpts): Promise<RunSummary
   const { data: autos } = await sb.from('campaigns').select('*').eq('status', 'active').eq('type', 'automation');
   for (const c of autos ?? []) {
     if (c.trigger?.type === 'recurring' && !recurringDueNow(c, opts)) continue;
+    if (c.trigger?.type === 'forecast' && !(await forecastDueNow(sb, c, opts))) continue;
     out.push(await runCampaign(sb, c, opts));
   }
   // Scheduled one-offs whose send_at has arrived → run once, then archive.

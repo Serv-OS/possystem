@@ -149,14 +149,18 @@ export default function Workflows() {
           <div style={S.row3}>
             <div style={S.field}><label style={S.label}>Enrol customers on…</label>
               <select style={S.input} value={tr.type || 'signup'} onChange={(e) => setTrigger({ type: e.target.value })}>
-                <option value="signup">New sign-up</option><option value="birthday">Birthday</option><option value="segment">Entering a segment</option><option value="manual">Manual only</option>
+                <option value="signup">New sign-up</option><option value="birthday">Birthday</option><option value="segment">Entering a segment</option>
+                <option value="wifi_connect">Connected to WiFi</option><option value="wifi_not_loyal">WiFi guest — not yet in loyalty</option>
+                <option value="manual">Manual only</option>
               </select>
             </div>
             {(tr.type || 'signup') === 'birthday' && <div style={S.field}><label style={S.label}>Days before birthday</label><input style={S.input} type="number" min={0} max={60} value={tr.days_before ?? 7} onChange={(e) => setTrigger({ days_before: Number(e.target.value) })} /></div>}
+            {(tr.type === 'wifi_connect' || tr.type === 'wifi_not_loyal') && <div style={S.field}><label style={S.label}>Connected within (days)</label><input style={S.input} type="number" min={1} max={30} value={tr.days_within ?? 2} onChange={(e) => setTrigger({ days_within: Number(e.target.value) })} /></div>}
             {tr.type === 'segment' && <div style={S.field}><label style={S.label}>Segment</label>
               <select style={S.input} value={tr.segment_id || ''} onChange={(e) => setTrigger({ segment_id: e.target.value })}><option value="">Select…</option>{segmentOptions()}</select>
             </div>}
           </div>
+          {(tr.type === 'wifi_connect' || tr.type === 'wifi_not_loyal') && <div style={{ ...S.hint, marginTop: -4, marginBottom: 8 }}>Tip: a “review request” drip = trigger “Connected to WiFi”, step 1 delay ≈ 0.17 days (4h), message asking for a review. Enrols once per guest.</div>}
 
           <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--t1)', margin: '8px 0' }}>Steps</div>
           {editing.steps.map((st, i) => (

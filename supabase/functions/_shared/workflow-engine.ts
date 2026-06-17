@@ -57,6 +57,20 @@ async function entryAudience(sb: SB, wf: any, opts: WfOpts): Promise<string[]> {
   } else if (type === 'segment') {
     const sid = tr.segment_id || wf.segment_id;
     if (sid) { const { data: seg } = await sb.from('segments').select('definition').eq('id', sid).eq('org_id', org).maybeSingle(); ids = seg ? await resolveIds(sb, org, seg.definition) : []; }
+  } else if (type === 'wifi_connect' || type === 'wifi_not_loyal') {
+    // Customers who connected to (and were authorised on) the venue WiFi within the lookback window.
+    const days = Number(tr.days_within ?? 2);
+    const since = new Date(new Date(opts.now || new Date().toISOString()).getTime() - days * 86400000).toISOString();
+    const { data: caps } = await sb.from('wifi_captures').select('customer_id').not('customer_id', 'is', null).eq('authorized', true).gte('created_at', since);
+    ids = [...new Set((caps ?? []).map((r: any) => r.customer_id))];
+    // org-scope (wifi_captures has no org_id) + not soft-deleted
+    if (ids.length) { const { data: custs } = await sb.from('customers').select('id').eq('org_id', org).is('deleted_at', null).in('id', ids); ids = (custs ?? []).map((c: any) => c.id); }
+    // "…but not loyalty": drop anyone who has any loyalty activity (loyalty_transactions, Ops DB).
+    if (type === 'wifi_not_loyal' && ids.length) {
+      const { data: loy } = await sb.from('loyalty_transactions').select('customer_id').in('customer_id', ids);
+      const loyal = new Set((loy ?? []).map((r: any) => r.customer_id));
+      ids = ids.filter((id) => !loyal.has(id));
+    }
   } else { return []; }   // manual → only enrolled via the BO action
   if (wf.segment_id && type !== 'segment') {
     const { data: seg } = await sb.from('segments').select('definition').eq('id', wf.segment_id).eq('org_id', org).maybeSingle();
@@ -98,8 +112,9 @@ export async function runWorkflow(sb: SB, wf: any, opts: WfOpts): Promise<WfSumm
     else { await sb.from('workflow_enrollments').update({ current_step: nextIdx, next_run_at: dueAt(steps[nextIdx].after_days) }).eq('id', enId); }
   };
 
-  // 1. ENROLL
-  try { const er = await enrollCustomers(sb, wf, await entryAudience(sb, wf, opts), opts); summary.enrolled = er.enrolled; }
+  // 1. ENROLL — use the run's own clock so an immediate (after_days 0) step 0 is due in THIS run.
+  const o = { ...opts, now: nowIso };
+  try { const er = await enrollCustomers(sb, wf, await entryAudience(sb, wf, o), o); summary.enrolled = er.enrolled; }
   catch (e) { summary.error = `enroll: ${e instanceof Error ? e.message : e}`; }
 
   // 2. ADVANCE due enrollments (one step per enrollment per run).

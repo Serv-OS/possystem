@@ -242,19 +242,27 @@ export default function Campaigns() {
               <div style={S.row3}>
                 <div style={S.field}><label style={S.label}>Trigger</label>
                   <select style={S.input} value={t.type || 'birthday'} onChange={(e) => setTrigger({ type: e.target.value })}>
-                    <option value="birthday">Birthday</option><option value="lapsed">Win-back (lapsed)</option><option value="recurring">Recurring (every week/month)</option>
+                    <option value="birthday">Birthday</option><option value="lapsed">Win-back (lapsed)</option><option value="recurring">Recurring (every week/month)</option><option value="forecast">Sales behind forecast</option>
                   </select>
                 </div>
                 {(t.type || 'birthday') === 'birthday' && <div style={S.field}><label style={S.label}>Days before birthday</label><input style={S.input} type="number" min={0} max={60} value={t.days_before ?? 7} onChange={(e) => setTrigger({ days_before: Number(e.target.value) })} /></div>}
                 {t.type === 'lapsed' && <div style={S.field}><label style={S.label}>Days since last visit</label><input style={S.input} type="number" min={1} value={t.days ?? 30} onChange={(e) => setTrigger({ days: Number(e.target.value) })} /></div>}
                 {t.type === 'recurring' && <div style={S.field}><label style={S.label}>Repeat</label><select style={S.input} value={t.recurrence || 'weekly'} onChange={(e) => setTrigger({ recurrence: e.target.value })}><option value="weekly">Weekly</option><option value="monthly">Monthly</option></select></div>}
-                <div style={S.field}><label style={S.label}>{t.type === 'recurring' ? 'Audience (segment)' : 'Also limit to segment'} <span style={{ color: 'var(--t4)', fontWeight: 500 }}>{t.type === 'recurring' ? '' : 'opt.'}</span></label>
+                <div style={S.field}><label style={S.label}>{(t.type === 'recurring' || t.type === 'forecast') ? 'Audience (segment)' : 'Also limit to segment'} <span style={{ color: 'var(--t4)', fontWeight: 500 }}>{(t.type === 'recurring' || t.type === 'forecast') ? '' : 'opt.'}</span></label>
                   <select style={S.input} value={editing.segment_id} onChange={(e) => setEditing({ ...editing, segment_id: e.target.value })}>
-                    <option value="">{t.type === 'recurring' ? 'Select a segment…' : 'Everyone matching the trigger'}</option>
+                    <option value="">{(t.type === 'recurring' || t.type === 'forecast') ? 'Select a segment…' : 'Everyone matching the trigger'}</option>
                     {segmentOptions()}
                   </select>
                 </div>
               </div>
+              {t.type === 'forecast' && (
+                <div style={S.row3}>
+                  <div style={S.field}><label style={S.label}>Window</label><select style={S.input} value={t.scope || 'day'} onChange={(e) => setTrigger({ scope: e.target.value })}><option value="day">Today</option><option value="week">This week</option></select></div>
+                  <div style={S.field}><label style={S.label}>Send if below (% of forecast)</label><input style={S.input} type="number" min={1} max={100} value={t.threshold_pct ?? 60} onChange={(e) => setTrigger({ threshold_pct: Number(e.target.value) })} /></div>
+                  <div style={S.field}><label style={S.label}>Check after hour (UTC)</label><input style={S.input} type="number" min={0} max={23} value={t.cutoff_hour ?? 14} onChange={(e) => setTrigger({ cutoff_hour: Number(e.target.value) })} /></div>
+                  {t.scope === 'week' && <div style={S.field}><label style={S.label}>Check on</label><select style={S.input} value={t.cutoff_weekday ?? 3} onChange={(e) => setTrigger({ cutoff_weekday: Number(e.target.value) })}>{['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((d, i) => <option key={i} value={i}>{d}</option>)}</select></div>}
+                </div>
+              )}
               {t.type === 'recurring' && (
                 <div style={S.row3}>
                   {(t.recurrence || 'weekly') === 'weekly' && <div style={S.field}><label style={S.label}>Day of week</label><select style={S.input} value={t.weekday ?? 1} onChange={(e) => setTrigger({ weekday: Number(e.target.value) })}>{['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((d, i) => <option key={i} value={i}>{d}</option>)}</select></div>}

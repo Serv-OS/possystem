@@ -85,6 +85,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.518', date: '17 Jun 2026', label: 'Marketing v2 Phase 4: forecast trigger + WiFi/behaviour automations',
+    changes: [
+      'Forecast trigger: a campaign can fire when actual sales fall below a % of forecast — e.g. "if we\'re under 60% of today\'s forecast by 2pm, send an offer to everyone", or a weekly check on a chosen day. Reads wf_sales_forecast vs live closed_checks; fires once per day/week window via the hourly engine.',
+      'WiFi / behaviour workflows: enrol customers who "Connected to WiFi" (within N days) or "WiFi guest — not yet in loyalty" (joined WiFi but no loyalty activity). Combine with step delays for, e.g., a review request a few hours after connecting, or a loyalty nudge. Immediate first steps now fire in the same run.',
+      'No new tables — forecast idempotency reuses campaign_runs; WiFi triggers read wifi_captures + loyalty_transactions (one new RPC marketing_period_sales sums actuals server-side). Engine continues hourly. NOTE: the forecast fire path needs confirming on a live venue with a forecast set (it can\'t be exercised on test data due to org/location foreign keys).',
+    ],
+  },
+  {
     version: '5.5.517', date: '17 Jun 2026', label: 'Marketing v2 Phase 3: scheduled + recurring sends, audience exclusions, hourly engine',
     changes: [
       'Campaigns can now be SCHEDULED for a date/time (one-offs) or set to RECUR weekly/monthly on a chosen day + hour — the engine runs them once per window automatically.',
