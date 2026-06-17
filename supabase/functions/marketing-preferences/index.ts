@@ -19,6 +19,7 @@ async function tokenFor(customerId: string): Promise<string> {
   return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, '0')).join('').slice(0, 32);
 }
 const norm = (channel: string, addr: string) => (channel === 'email' ? addr.trim().toLowerCase() : addr.replace(/\s/g, ''));
+const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
 
 async function isSuppressed(org: string, channel: string, addr: string): Promise<boolean> {
   const { data } = await sb.from('marketing_suppressions').select('id').eq('org_id', org).eq('channel', channel).ilike('address', norm(channel, addr)).maybeSingle();
@@ -27,7 +28,7 @@ async function isSuppressed(org: string, channel: string, addr: string): Promise
 
 function page(customerId: string, token: string, opts: { email?: string; phone?: string; emailOn: boolean; smsOn: boolean; saved?: boolean }): string {
   const cb = (name: string, label: string, addr: string | undefined, on: boolean) => addr
-    ? `<label style="display:flex;align-items:center;gap:10px;padding:12px 0;border-top:1px solid #eee"><input type="checkbox" name="${name}" ${on ? 'checked' : ''} style="width:18px;height:18px"> <span><b>${label}</b><br><span style="color:#888;font-size:13px">${addr}</span></span></label>`
+    ? `<label style="display:flex;align-items:center;gap:10px;padding:12px 0;border-top:1px solid #eee"><input type="checkbox" name="${name}" ${on ? 'checked' : ''} style="width:18px;height:18px"> <span><b>${label}</b><br><span style="color:#888;font-size:13px">${esc(addr)}</span></span></label>`
     : `<div style="padding:12px 0;border-top:1px solid #eee;color:#aaa;font-size:13px">${label}: not on file</div>`;
   return `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Email & SMS preferences</title></head>
 <body style="font-family:system-ui,Arial,sans-serif;background:#f4f4f5;margin:0">
@@ -36,7 +37,7 @@ function page(customerId: string, token: string, opts: { email?: string; phone?:
   <p style="color:#666;font-size:14px;margin:0 0 14px">Choose how you'd like to hear about offers and news. You can change this any time.</p>
   ${opts.saved ? '<div style="background:#e8f5e9;color:#1b5e20;padding:10px 12px;border-radius:8px;font-size:14px;margin-bottom:12px">✓ Your preferences have been saved.</div>' : ''}
   <form method="POST">
-    <input type="hidden" name="c" value="${customerId}"><input type="hidden" name="t" value="${token}">
+    <input type="hidden" name="c" value="${esc(customerId)}"><input type="hidden" name="t" value="${esc(token)}">
     ${cb('email', 'Email', opts.email, opts.emailOn)}
     ${cb('sms', 'SMS / text', opts.phone, opts.smsOn)}
     <button type="submit" style="width:100%;margin-top:18px;padding:12px;border:none;border-radius:10px;background:#111;color:#fff;font-size:15px;font-weight:700;cursor:pointer">Save preferences</button>
