@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.524', date: '17 Jun 2026', label: 'Security — receipt + welcome email caller checks',
+    changes: [
+      'send-receipt now fences by venue: a receipt must be tied to a real check at that location, or the caller must have access to the location (offer letters / contracts) — internal sends (gift cards, review replies, dispute alerts) are unaffected. Stops a signed-in session sending email for, or polluting the audit of, another venue.',
+      'send-welcome (new-customer welcome SMS/email) now requires a valid session — it previously accepted unauthenticated calls. The kiosk / online / POS that trigger it now pass their session token; loyalty + WiFi-capture sends were already authenticated.',
+    ],
+  },
+  {
     version: '5.5.523', date: '17 Jun 2026', label: 'Marketing report — workflow (drip) performance',
     changes: [
       'The Marketing report now has a “By workflow” table: per drip workflow it shows enrolled, completed (with conversion %), messages sent, open %, click %, redemptions and attributed revenue — so automations are measured alongside campaigns and offers.',

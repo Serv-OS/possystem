@@ -2429,9 +2429,10 @@ export const useStore = create((set, get) => ({
             companyId = pLoc?.company_id;
           }
           if (companyId) {
+            const wToken = await ensureAuthToken();
             fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-welcome`, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: { 'Content-Type': 'application/json', ...(wToken ? { Authorization: `Bearer ${wToken}` } : {}) },
               body: JSON.stringify({
                 customer_id: customerId,
                 company_id: companyId,

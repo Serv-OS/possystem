@@ -223,8 +223,9 @@ export async function captureLoyaltyByPhone(rawPhone, locationId, orgId) {
         companyId = pLoc?.company_id;
       }
       if (companyId) {
+        const wToken = await ensureAuthToken();
         fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-welcome`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          method: 'POST', headers: { 'Content-Type': 'application/json', ...(wToken ? { Authorization: `Bearer ${wToken}` } : {}) },
           body: JSON.stringify({ customer_id: ins.id, company_id: companyId, location_id: locationId }),
         }).catch(() => {});
       }
@@ -303,9 +304,10 @@ export async function attributeOnlineOrder({
           }
           if (companyId) {
             const welcomeUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-welcome`;
+            const wToken = await ensureAuthToken();
             fetch(welcomeUrl, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: { 'Content-Type': 'application/json', ...(wToken ? { Authorization: `Bearer ${wToken}` } : {}) },
               body: JSON.stringify({
                 customer_id: customerId,
                 company_id: companyId,

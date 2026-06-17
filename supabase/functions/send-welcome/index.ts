@@ -119,6 +119,16 @@ Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   if (req.method !== 'POST') return json({ error: 'POST only' }, 405);
 
+  // Auth gate (was missing): service-role for internal callers (loyalty-otp, wifi-capture) OR any valid
+  // Supabase session — kiosk/online/POS use anon/device sessions and pass their access token. Closes the
+  // unauthenticated trigger; the welcome_sent_at atomic dedup already bounds repeat sends.
+  {
+    const token = (req.headers.get('Authorization') ?? '').replace('Bearer ', '').trim();
+    let ok = !!token && token === SERVICE_ROLE;
+    if (!ok && token) { try { const { data: { user } } = await opsAdmin.auth.getUser(token); ok = !!user; } catch { ok = false; } }
+    if (!ok) return json({ error: 'unauthorized' }, 401);
+  }
+
   let body: { customer_id: string; company_id: string; location_id: string };
   try { body = await req.json(); } catch { return json({ error: 'invalid JSON' }, 400); }
 

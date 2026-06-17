@@ -35,18 +35,18 @@ interface RequestBody {
 }
 
 // Caller must be authenticated: service-role key (internal callers like
-// gift-fulfill/gift-resend) or a valid signed-in user (BO/POS). Closes the open
-// relay — previously anyone could POST arbitrary HTML email through the venue.
-async function authorize(req: Request): Promise<boolean> {
+// gift-fulfill/gift-resend/review-reply/ryft-webhook) or a valid signed-in user (BO/POS/MPOS).
+async function authorize(req: Request): Promise<{ ok: boolean; isService: boolean }> {
   const token = (req.headers.get('Authorization') ?? '').replace('Bearer ', '').trim();
-  if (!token) return false;
-  if (token === SERVICE_ROLE) return true;
-  try { const { data: { user } } = await sb.auth.getUser(token); return !!user; } catch { return false; }
+  if (!token) return { ok: false, isService: false };
+  if (token === SERVICE_ROLE) return { ok: true, isService: true };
+  try { const { data: { user } } = await sb.auth.getUser(token); return { ok: !!user, isService: false }; } catch { return { ok: false, isService: false }; }
 }
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
-  if (req.method !== 'OPTIONS' && !(await authorize(req))) return json({ error: 'unauthorized' }, 401);
+  const auth = await authorize(req);
+  if (!auth.ok) return json({ error: 'unauthorized' }, 401);
   if (req.method !== 'POST') return json({ error:'POST only' }, 405);
   let body: RequestBody;
   try { body = await req.json(); } catch { return json({ error:'invalid JSON' }, 400); }
@@ -56,6 +56,21 @@ Deno.serve(async (req) => {
   }
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.to)) {
     return json({ error:'invalid email address' }, 400);
+  }
+
+  // Tenant fence for non-internal callers: the send must be bound to a real check at this location
+  // (receipts pass check_id), OR the caller must have access to the location (no-check sends like offer
+  // letters / contracts). Service-role (gift/review/ryft/webhooks) is trusted. Stops a signed-in (incl
+  // anonymous) session from sending arbitrary content for, or polluting the receipt_emails audit of,
+  // another venue via a guessed location_id.
+  if (!auth.isService) {
+    let allowed = false;
+    if (body.check_id) {
+      const { data: chk } = await sb.from('closed_checks').select('id').eq('id', body.check_id).eq('location_id', body.location_id).maybeSingle();
+      allowed = !!chk;
+    }
+    if (!allowed) allowed = await callerCanBrandForLocation(req, sb, body.location_id, SERVICE_ROLE);
+    if (!allowed) return json({ error: 'not authorized for this location' }, 403);
   }
 
   // Insert audit row first — gives us a stable id even if dispatch fails
