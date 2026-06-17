@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.515', date: '17 Jun 2026', label: 'Marketing v2 Phase 1: Quick Send (bulk blast)',
+    changes: [
+      'New Back Office → Customers → Quick send: blast an offer to a segment right now without setting up a saved campaign. Pick the audience (prebuilt or saved) → see the live recipient count → write the email (block builder) and/or SMS → attach an offer for unique single-use codes → Send now (with confirmation). Consent + suppression are enforced as always.',
+      'After sending you get a result summary and can download the full recipient list — including each customer\'s unique code — as CSV. Blasts run through the same engine as campaigns but are stored as hidden "ephemeral" records (kept for reporting, not cluttering the Campaigns list). Migration 20260616h adds campaigns.ephemeral.',
+    ],
+  },
+  {
     version: '5.5.514', date: '16 Jun 2026', label: 'Marketing v2 Phase 0: prebuilt audiences usable in campaigns/workflows + send confirmation',
     changes: [
       'Fix: the prebuilt audiences (VIPs, Regulars, At-risk, Birthdays, Email/SMS subscribers) are now selectable directly in the Campaign and Workflow segment pickers — previously only hand-saved segments appeared, so the dropdowns looked empty. Picking a prebuilt persists it on first use, so it also shows under "Your segments" afterwards.',

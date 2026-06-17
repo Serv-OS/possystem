@@ -50,7 +50,7 @@ Deno.serve(async (req) => {
 
   if (action === 'list_campaigns') {
     const [{ data: campaigns }, { data: segments }, { data: offers }] = await Promise.all([
-      sb.from('campaigns').select('*').eq('org_id', org_id).order('created_at', { ascending: false }),
+      sb.from('campaigns').select('*').eq('org_id', org_id).eq('ephemeral', false).order('created_at', { ascending: false }),
       sb.from('segments').select('id, name').eq('org_id', org_id).order('name'),
       sb.from('offers').select('id, name, reward_type, reward_value, reward_label').eq('org_id', org_id).eq('active', true).order('name'),
     ]);
@@ -103,6 +103,39 @@ Deno.serve(async (req) => {
       sb.from('campaign_sends').select('customer_id, channel, status, promo_code, created_at').eq('org_id', org_id).eq('campaign_id', cid).order('created_at', { ascending: false }).limit(50),
     ]);
     return json({ runs: runs ?? [], sends: sends ?? [] });
+  }
+
+  // Quick Send: compose + bulk-send an offer to a segment NOW (no saved campaign to manage). Stored as
+  // an ephemeral campaign (hidden from the list, kept for reporting) + run immediately. Unique codes if an
+  // offer is attached; consent/suppression enforced by marketing-send.
+  if (action === 'blast_send') {
+    const b = body.blast || {};
+    const segment_id = await resolveSegmentRef(sb, org_id, b.segment_id);
+    if (!segment_id) return json({ error: 'pick an audience' }, 400);
+    if (!['email', 'sms', 'both'].includes(b.channel)) return json({ error: 'pick a channel' }, 400);
+    const row = {
+      org_id, name: (b.name || 'Quick send').toString().slice(0, 120), type: 'one_off', status: 'archived', ephemeral: true,
+      channel: b.channel, segment_id, offer_id: b.offer_id || null, trigger: { type: 'manual' },
+      subject: b.subject || null, email_html: b.email_html || null, email_blocks: b.email_blocks || null, sms_body: b.sms_body || null,
+    };
+    const { data: camp, error } = await sb.from('campaigns').insert(row).select('*').maybeSingle();
+    if (error || !camp) return json({ error: error?.message || 'could not create blast' }, 500);
+    const summary = await runCampaign(sb, camp, { today: new Date().toISOString().slice(0, 10), supabaseUrl: SUPABASE_URL, serviceRole: SERVICE_ROLE, force: true });
+    return json({ ok: true, campaign_id: camp.id, summary });
+  }
+
+  if (action === 'blast_recipients') {
+    const cid = String(body.campaign_id ?? '').trim();
+    if (!cid) return json({ error: 'campaign_id required' }, 400);
+    const { data: sends } = await sb.from('campaign_sends').select('customer_id, status, promo_code').eq('org_id', org_id).eq('campaign_id', cid);
+    const ids = [...new Set((sends ?? []).map((s: any) => s.customer_id))];
+    const { data: custs } = ids.length ? await sb.from('customers').select('id, first_name, last_name, name, email, phone').in('id', ids) : { data: [] };
+    const cmap: Record<string, any> = Object.fromEntries((custs ?? []).map((c: any) => [c.id, c]));
+    const recipients = (sends ?? []).map((s: any) => {
+      const c = cmap[s.customer_id] || {};
+      return { customer_id: s.customer_id, name: c.name || [c.first_name, c.last_name].filter(Boolean).join(' '), email: c.email || '', phone: c.phone || '', promo_code: s.promo_code || '', status: s.status };
+    });
+    return json({ recipients });
   }
 
   return json({ error: 'unknown action' }, 400);
