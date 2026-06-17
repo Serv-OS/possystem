@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.522', date: '17 Jun 2026', label: 'Campaigns — A/B subject testing',
+    changes: [
+      'Test two subject lines on any email campaign: tick “A/B test the subject line”, add Subject B, and recipients are split 50/50. The split is deterministic (the same customer always sees the same version) and the email body is identical — only the subject differs.',
+      'See the winner under a campaign’s Runs: sent, open %, click % and redemptions per variant, with the winner flagged once there’s enough volume (most redemptions, then clicks, then opens). Open/click rates need the email provider’s tracking webhook enabled.',
+    ],
+  },
+  {
     version: '5.5.521', date: '17 Jun 2026', label: 'Custom domains hardening (adversarial review fixes)',
     changes: [
       'Security: the branded sending domain is now only applied for trusted callers (an internal/server call, or a user with access to the venue) — anonymous kiosk/online callers still send, but from the platform default, so a guessed location_id can never make email go out from another venue\'s verified domain.',

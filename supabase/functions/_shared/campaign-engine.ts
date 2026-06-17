@@ -24,6 +24,15 @@ export interface RunSummary {
   candidates: number; sent: number; skipped: number; failed: number; error?: string;
 }
 
+// Stable 32-bit FNV-1a hash → deterministic A/B variant assignment (no Math.random, so a recipient
+// always lands in the same bucket across reruns; salted by campaign id so buckets don't correlate
+// across different A/B tests).
+function hashInt(s: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+
 // ISO-8601 week string (YYYY-Www) for recurring weekly dedupe.
 function isoWeek(d: Date): string {
   const date = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
@@ -229,15 +238,27 @@ export async function runCampaign(sb: SB, campaign: any, opts: RunOpts): Promise
         let promoCode = reuseCode;
         if (offer && !promoCode) { promoCode = await issueCode(sb, campaign, offer, customerId); if (promoCode) await sb.from('campaign_sends').update({ promo_code: promoCode }).eq('id', claimedId); }
         const merge = { promo_code: promoCode || '', offer: offer?.reward_label || '' };
+        // A/B subject split (email-only): pick a variant deterministically per (customer, campaign).
+        const variants = Array.isArray(campaign.variants) ? campaign.variants.filter((v: any) => v && v.subject) : [];
+        let variantKey: string | null = null;
+        let subjectForRecipient = campaign.subject;
+        if (variants.length >= 2) {
+          // Reduce via the well-mixed high bits (NOT % n: the FNV multiply preserves low bits, so a
+          // mod-2 split would degenerate to character-parity and ignore the campaign salt).
+          const idx = Math.min(Math.floor((hashInt(`${customerId}:${campaign.id}`) / 4294967296) * variants.length), variants.length - 1);
+          const v = variants[idx];
+          variantKey = v.key || null;
+          subjectForRecipient = v.subject || campaign.subject;
+        }
         let emailMid: string | undefined, smsMid: string | undefined, anyOk = false, anyFail = false;
         for (const ch of channels) {
           const r = await sendOne(opts, org, campaign.id, ch, customerId,
-            { subject: campaign.subject, html: campaign.email_html, sms: campaign.sms_body }, merge, promoCode, dedupeKey);
+            { subject: subjectForRecipient, html: campaign.email_html, sms: campaign.sms_body }, merge, promoCode, dedupeKey);
           if (ch === 'email') emailMid = r.message_id; else smsMid = r.message_id;
           if (r.ok) anyOk = true; else anyFail = true;
         }
         const status = anyOk && anyFail ? 'partial' : anyOk ? 'sent' : 'skipped';
-        await sb.from('campaign_sends').update({ status, run_id: runId, promo_code: promoCode, email_message_id: emailMid || null, sms_message_id: smsMid || null }).eq('id', claimedId);
+        await sb.from('campaign_sends').update({ status, run_id: runId, promo_code: promoCode, email_message_id: emailMid || null, sms_message_id: smsMid || null, variant_key: variantKey }).eq('id', claimedId);
         if (anyOk) summary.sent++; else summary.skipped++;
       } catch (e) {
         // The recovery write is itself guarded — a transient failure here must NOT abort the run or

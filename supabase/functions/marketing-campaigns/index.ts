@@ -19,7 +19,7 @@ const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const sb = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { autoRefreshToken: false, persistSession: false } });
 
-const CAMPAIGN_FIELDS = ['name', 'description', 'type', 'channel', 'segment_id', 'exclusion_segment_id', 'trigger', 'schedule', 'subject', 'email_html', 'email_blocks', 'sms_body', 'from_name', 'offer_id', 'status'];
+const CAMPAIGN_FIELDS = ['name', 'description', 'type', 'channel', 'segment_id', 'exclusion_segment_id', 'trigger', 'schedule', 'subject', 'email_html', 'email_blocks', 'sms_body', 'from_name', 'offer_id', 'status', 'variants'];
 
 async function authed(req: Request, opsLocationId: string): Promise<boolean> {
   const token = (req.headers.get('Authorization') ?? '').replace('Bearer ', '').trim();
@@ -101,11 +101,12 @@ Deno.serve(async (req) => {
 
   if (action === 'list_runs') {
     const cid = String(body.campaign_id ?? '').trim();
-    const [{ data: runs }, { data: sends }] = await Promise.all([
+    const [{ data: runs }, { data: sends }, { data: ab }] = await Promise.all([
       sb.from('campaign_runs').select('*').eq('org_id', org_id).eq('campaign_id', cid).order('run_at', { ascending: false }).limit(20),
       sb.from('campaign_sends').select('customer_id, channel, status, promo_code, created_at').eq('org_id', org_id).eq('campaign_id', cid).order('created_at', { ascending: false }).limit(50),
+      sb.rpc('marketing_ab_report', { p_org: org_id, p_campaign: cid }),
     ]);
-    return json({ runs: runs ?? [], sends: sends ?? [] });
+    return json({ runs: runs ?? [], sends: sends ?? [], ab: ab ?? [] });
   }
 
   // Quick Send: compose + bulk-send an offer to a segment NOW (no saved campaign to manage). Stored as

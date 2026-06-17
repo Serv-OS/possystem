@@ -46,7 +46,8 @@ const BIRTHDAY_PRESET = () => ({
   sms_body: 'Happy birthday {{first_name}}! Your treat: {{promo_code}} ({{offer}}). Reply STOP to opt out.',
   status: 'draft',
 });
-const BLANK = () => ({ name: '', description: '', type: 'automation', channel: 'email', trigger: { type: 'birthday', days_before: 7 }, segment_id: '', exclusion_segment_id: '', schedule: {}, offer_id: '', subject: '', from_name: '', email_blocks: MIN_BLOCKS(), sms_body: '', status: 'draft' });
+const BLANK = () => ({ name: '', description: '', type: 'automation', channel: 'email', trigger: { type: 'birthday', days_before: 7 }, segment_id: '', exclusion_segment_id: '', schedule: {}, offer_id: '', subject: '', from_name: '', email_blocks: MIN_BLOCKS(), sms_body: '', variants: [], status: 'draft' });
+const pct = (n, d) => (d ? Math.round((Number(n) / d) * 100) : 0);
 // ISO (UTC) <-> <input type="datetime-local"> (shown in the operator's local time).
 const toLocalInput = (iso) => { if (!iso) return ''; const d = new Date(iso); if (isNaN(d.getTime())) return ''; const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; };
 
@@ -106,6 +107,10 @@ export default function Campaigns() {
         // Compile blocks → responsive HTML (what the engine sends); keep blocks for re-editing.
         email_blocks: blocks, email_html: blocks.length ? compileEmail(blocks) : null,
         sms_body: c.sms_body || null,
+        // A/B subject test: variant 'a' is the main subject; persist only when both subjects are set and
+        // the channel sends email. variants=[] means a single subject for everyone.
+        variants: (Array.isArray(c.variants) && c.variants.length >= 2 && (c.subject || '').trim() && (c.variants[1]?.subject || '').trim() && c.channel !== 'sms')
+          ? [{ key: 'a', subject: c.subject.trim() }, { key: 'b', subject: c.variants[1].subject.trim() }] : [],
         status: c.status || 'draft',
       };
       await call('save_campaign', { campaign });
@@ -203,7 +208,7 @@ export default function Campaigns() {
                   {c.status !== 'active' && <button style={S.ghost} onClick={() => setStatus(c, 'active')}>Activate</button>}
                   {c.status === 'active' && <button style={S.ghost} onClick={() => setStatus(c, 'paused')}>Pause</button>}
                   <button style={S.ghost} onClick={() => viewRuns(c)}>Runs</button>
-                  <button style={S.ghost} onClick={() => { setEditing({ ...BLANK(), ...c, segment_id: c.segment_id || '', exclusion_segment_id: c.exclusion_segment_id || '', schedule: c.schedule || {}, offer_id: c.offer_id || '', trigger: c.trigger || { type: 'birthday', days_before: 7 }, email_blocks: ensureBlocks(c) }); setSave({}); }}>Edit</button>
+                  <button style={S.ghost} onClick={() => { setEditing({ ...BLANK(), ...c, segment_id: c.segment_id || '', exclusion_segment_id: c.exclusion_segment_id || '', schedule: c.schedule || {}, offer_id: c.offer_id || '', trigger: c.trigger || { type: 'birthday', days_before: 7 }, email_blocks: ensureBlocks(c), variants: Array.isArray(c.variants) ? c.variants : [] }); setSave({}); }}>Edit</button>
                 </div>
               </div>
             );
@@ -294,7 +299,22 @@ export default function Campaigns() {
 
           {(editing.channel === 'email' || editing.channel === 'both') && (
             <>
-              <div style={S.field}><label style={S.label}>Email subject</label><input style={S.input} value={editing.subject} onChange={(e) => setEditing({ ...editing, subject: e.target.value })} placeholder="Happy birthday {{first_name}}!" /></div>
+              <div style={S.field}>
+                <label style={S.label}>Email subject{(editing.variants?.length || 0) >= 2 ? ' A' : ''}</label>
+                <input style={S.input} value={editing.subject} onChange={(e) => setEditing({ ...editing, subject: e.target.value })} placeholder="Happy birthday {{first_name}}!" />
+                <label style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 8, fontSize: 12, color: 'var(--t2)', cursor: 'pointer', fontWeight: 600 }}>
+                  <input type="checkbox" checked={(editing.variants?.length || 0) >= 2}
+                    onChange={(e) => setEditing({ ...editing, variants: e.target.checked ? [{ key: 'a', subject: editing.subject || '' }, { key: 'b', subject: '' }] : [] })} />
+                  A/B test the subject line
+                </label>
+                {(editing.variants?.length || 0) >= 2 && (
+                  <div style={{ marginTop: 8 }}>
+                    <label style={S.label}>Subject B <span style={{ color: 'var(--t4)', fontWeight: 500 }}>— half the audience gets this instead</span></label>
+                    <input style={S.input} value={editing.variants?.[1]?.subject || ''} onChange={(e) => setEditing({ ...editing, variants: [{ key: 'a', subject: editing.subject || '' }, { key: 'b', subject: e.target.value }] })} placeholder="A different subject to test…" />
+                    <div style={S.hint}>Recipients are split 50/50 (the same person always lands in the same group). Compare opens, clicks and redemptions per variant under <b>Runs</b>. The email body is identical — only the subject differs.</div>
+                  </div>
+                )}
+              </div>
               <div style={S.field}><label style={S.label}>Email content</label>
                 <EmailBuilder blocks={editing.email_blocks} onChange={(blocks) => setEditing({ ...editing, email_blocks: blocks })} locationId={locId} />
               </div>
@@ -347,6 +367,34 @@ export default function Campaigns() {
               <div style={{ fontSize: 12, color: 'var(--t3)' }}>{r.candidates} matched · {r.sent} sent · {r.skipped} skipped{r.failed ? ` · ${r.failed} failed` : ''}</div>
             </div>
           ))}
+          {(() => {
+            const ab = (runsView.ab || []).filter((r) => r && r.variant);
+            if (ab.length < 2) return null;
+            const subjOf = (k) => (runsView.campaign.variants || []).find((v) => v.key === k)?.subject || `Variant ${String(k).toUpperCase()}`;
+            const totalSent = ab.reduce((s, r) => s + Number(r.sent || 0), 0);
+            // Rank by what matters most that we have data for: redemptions → clicks → opens → volume.
+            const ranked = [...ab].sort((a, b) => (b.redeemed - a.redeemed) || (b.clicked - a.clicked) || (b.opened - a.opened) || (b.sent - a.sent));
+            const top = ranked[0]; const enough = totalSent >= 20;
+            const winnerKey = enough && top && (top.redeemed > 0 || top.clicked > 0 || top.opened > 0) ? top.variant : null;
+            return (
+              <div style={{ marginTop: 14 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--t2)', marginBottom: 6 }}>A/B subject test</div>
+                {ab.sort((a, b) => String(a.variant).localeCompare(String(b.variant))).map((r) => (
+                  <div key={r.variant} style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 10, alignItems: 'center', padding: '9px 0', borderTop: '1px solid var(--bdr2)' }}>
+                    <div style={{ minWidth: 0 }}>
+                      <span style={{ ...S.pill }}>{String(r.variant).toUpperCase()}</span>
+                      {winnerKey === r.variant && <span style={{ ...S.pill, marginLeft: 6, color: 'var(--grn)', borderColor: 'var(--grn)' }}>✓ winner</span>}
+                      <div style={{ fontSize: 12, color: 'var(--t2)', marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={subjOf(r.variant)}>{subjOf(r.variant)}</div>
+                    </div>
+                    <div style={{ textAlign: 'right', fontSize: 12, color: 'var(--t3)', whiteSpace: 'nowrap' }}>
+                      <span style={{ color: 'var(--t1)', fontWeight: 700 }}>{r.sent}</span> sent · {pct(r.opened, r.sent)}% open · {pct(r.clicked, r.sent)}% click{r.redeemed ? <> · <span style={{ color: 'var(--t1)', fontWeight: 700 }}>{r.redeemed}</span> redeemed</> : ''}
+                    </div>
+                  </div>
+                ))}
+                <div style={{ ...S.hint, marginTop: 6 }}>{enough ? (winnerKey ? 'Winner = most redemptions (then clicks, then opens).' : 'No engagement yet — winner appears once a variant gets an open, click or redemption.') : `Not enough data yet (${totalSent} sent) — a winner is called once at least 20 have been sent. Open/click rates need the provider webhook configured.`}</div>
+              </div>
+            );
+          })()}
           {(runsView.sends || []).length > 0 && (
             <div style={{ marginTop: 12 }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--t2)', marginBottom: 4 }}>Recent sends</div>
