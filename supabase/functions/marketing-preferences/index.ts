@@ -22,7 +22,7 @@ const norm = (channel: string, addr: string) => (channel === 'email' ? addr.trim
 const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
 
 async function isSuppressed(org: string, channel: string, addr: string): Promise<boolean> {
-  const { data } = await sb.from('marketing_suppressions').select('id').eq('org_id', org).eq('channel', channel).ilike('address', norm(channel, addr)).maybeSingle();
+  const { data } = await sb.from('marketing_suppressions').select('id').eq('org_id', org).eq('channel', channel).eq('address', norm(channel, addr)).maybeSingle();
   return !!data;
 }
 
@@ -71,7 +71,7 @@ Deno.serve(async (req) => {
     const apply = async (channel: 'email' | 'sms', addr: string | null | undefined, want: boolean) => {
       if (!addr) return;
       if (want) {
-        await sb.from('marketing_suppressions').delete().eq('org_id', org).eq('channel', channel).ilike('address', norm(channel, addr));
+        await sb.from('marketing_suppressions').delete().eq('org_id', org).eq('channel', channel).eq('address', norm(channel, addr));
       } else {
         await sb.from('marketing_suppressions').upsert({ org_id: org, channel, address: norm(channel, addr), reason: 'unsubscribe', customer_id: c, source: 'preference_centre' }, { onConflict: 'org_id,channel,address', ignoreDuplicates: true });
       }

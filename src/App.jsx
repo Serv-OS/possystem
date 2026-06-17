@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.513', date: '16 Jun 2026', label: 'Marketing: fix suppression address matching (exact, not pattern) — compliance hardening',
+    changes: [
+      'Suppression lookups/deletes now match the address EXACTLY instead of as a SQL LIKE pattern. Because "_" and "%" are valid in email addresses (e.g. john_smith@…), the previous pattern match could: on opt-in, clear a different customer\'s suppression (silently re-subscribing someone who had unsubscribed/bounced); and in the sender\'s suppression check, fail to block a genuinely suppressed address when more than one matched. Found by adversarial review of the compliance layer; fixed in marketing-send + marketing-preferences (the operator suppression search stays a substring search by design).',
+    ],
+  },
+  {
     version: '5.5.512', date: '16 Jun 2026', label: 'Marketing slice 8: compliance — suppression management + preference centre (module complete)',
     changes: [
       'New Back Office → Customers → Marketing compliance: review the suppression list (who can never receive marketing — populated automatically from STOP replies, unsubscribes, hard bounces and spam complaints, and enforced at send time), search/filter it, add a manual block, or remove one (e.g. a mistaken bounce). Plus a consent-history lookup per customer.',

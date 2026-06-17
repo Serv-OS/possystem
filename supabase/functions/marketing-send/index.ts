@@ -96,7 +96,7 @@ async function hasConsent(customerId: string | null, channel: string, org_id: st
 
 async function isSuppressed(org_id: string, channel: string, addr: string): Promise<boolean> {
   const { data } = await opsAdmin.from('marketing_suppressions')
-    .select('id').eq('org_id', org_id).eq('channel', channel).ilike('address', normAddr(channel, addr)).maybeSingle();
+    .select('id').eq('org_id', org_id).eq('channel', channel).eq('address', normAddr(channel, addr)).maybeSingle();
   return !!data;
 }
 
