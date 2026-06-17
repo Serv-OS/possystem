@@ -53,6 +53,7 @@ export default function MarketingReports() {
 
   const m = report?.messages || {}; const r = report?.redemptions || {};
   const campaigns = report?.campaigns || []; const offers = report?.offers || [];
+  const workflows = report?.workflows || [];
 
   return (
     <div>
@@ -108,6 +109,26 @@ export default function MarketingReports() {
             </tbody>
           </table>
         )}
+      </div>
+
+      <div style={S.card}>
+        <h2 style={S.h2}>By workflow</h2>
+        {workflows.length === 0 ? <div style={{ fontSize: 13, color: 'var(--t4)' }}>No drip workflows yet.</div> : (
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead><tr><th style={S.th}>Workflow</th><th style={{ ...S.th, textAlign: 'right' }}>Enrolled</th><th style={{ ...S.th, textAlign: 'right' }}>Completed</th><th style={{ ...S.th, textAlign: 'right' }}>Sent</th><th style={{ ...S.th, textAlign: 'right' }}>Open</th><th style={{ ...S.th, textAlign: 'right' }}>Click</th><th style={{ ...S.th, textAlign: 'right' }}>Redeemed</th><th style={{ ...S.th, textAlign: 'right' }}>Revenue</th></tr></thead>
+            <tbody>
+              {workflows.map((w) => (
+                <tr key={w.workflow_id}>
+                  <td style={S.td}>{w.name} {w.status !== 'active' && <span style={{ fontSize: 11, color: 'var(--t4)' }}>· {w.status}</span>}</td>
+                  <td style={S.tdr}>{w.enrolled}</td><td style={S.tdr}>{w.completed}<span style={{ color: 'var(--t4)' }}> ({pct(w.completed, w.enrolled)})</span></td>
+                  <td style={S.tdr}>{w.sent}</td><td style={S.tdr}>{pct(w.opened, w.sent)}</td><td style={S.tdr}>{pct(w.clicked, w.sent)}</td>
+                  <td style={S.tdr}>{w.redeemed}</td><td style={S.tdr}>{money(w.revenue)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        <div style={{ fontSize: 11.5, color: 'var(--t4)', marginTop: 8 }}>Enrolled/Completed are over the window; “Completed (%)” is the conversion to the end of the drip. Sent/Open/Click are this window’s step sends (open/click need the email provider’s tracking webhook). Revenue is orders where a code from this workflow was redeemed.</div>
       </div>
     </div>
   );

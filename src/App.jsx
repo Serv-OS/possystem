@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.523', date: '17 Jun 2026', label: 'Marketing report — workflow (drip) performance',
+    changes: [
+      'The Marketing report now has a “By workflow” table: per drip workflow it shows enrolled, completed (with conversion %), messages sent, open %, click %, redemptions and attributed revenue — so automations are measured alongside campaigns and offers.',
+      'Fixed: drip sends now stamp their workflow id on the message record (was missing), so workflow attribution is accurate going forward; the report itself works on existing data too (it attributes via the workflow’s step-send log).',
+    ],
+  },
+  {
     version: '5.5.522', date: '17 Jun 2026', label: 'Campaigns — A/B subject testing',
     changes: [
       'Test two subject lines on any email campaign: tick “A/B test the subject line”, add Subject B, and recipients are split 50/50. The split is deterministic (the same customer always sees the same version) and the email body is identical — only the subject differs.',

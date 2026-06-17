@@ -35,10 +35,11 @@ async function issueCode(sb: SB, org: string, offer: any, customerId: string): P
 }
 
 async function sendOne(opts: WfOpts, org: string, channel: 'email' | 'sms', customerId: string,
-  content: { subject?: string; html?: string; sms?: string }, merge: Record<string, unknown>, promoCode: string | null, idemKey: string) {
+  content: { subject?: string; html?: string; sms?: string }, merge: Record<string, unknown>, promoCode: string | null, idemKey: string, workflowId?: string) {
   const res = await fetch(`${opts.supabaseUrl}/functions/v1/marketing-send`, {
     method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${opts.serviceRole}` },
-    body: JSON.stringify({ action: 'send', org_id: org, channel, to: { customer_id: customerId }, subject: content.subject, html: content.html, sms_body: content.sms, merge, promo_code: promoCode || undefined, idempotency_key: idemKey }),
+    // workflow_id stamps marketing_messages so a drip send is attributable to its workflow (was missing).
+    body: JSON.stringify({ action: 'send', org_id: org, workflow_id: workflowId || undefined, channel, to: { customer_id: customerId }, subject: content.subject, html: content.html, sms_body: content.sms, merge, promo_code: promoCode || undefined, idempotency_key: idemKey }),
   });
   const j = await res.json().catch(() => ({}));
   return { ok: !!j.ok, status: j.status || (res.ok ? 'sent' : 'failed'), message_id: j.message_id as string | undefined };
@@ -160,7 +161,7 @@ export async function runWorkflow(sb: SB, wf: any, opts: WfOpts): Promise<WfSumm
       let emailMid: string | undefined, smsMid: string | undefined;
       const results: { ok: boolean; status: string }[] = [];
       for (const ch of channels) {
-        const r = await sendOne(opts, org, ch, en.customer_id, { subject: step.subject, html: step.email_html, sms: step.sms_body }, merge, promoCode, `w:${en.id}:${stepKey}:${ch}`);
+        const r = await sendOne(opts, org, ch, en.customer_id, { subject: step.subject, html: step.email_html, sms: step.sms_body }, merge, promoCode, `w:${en.id}:${stepKey}:${ch}`, wf.id);
         if (ch === 'email') emailMid = r.message_id; else smsMid = r.message_id;
         results.push({ ok: r.ok, status: r.status });
       }
