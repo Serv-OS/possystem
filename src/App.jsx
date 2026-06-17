@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.525', date: '17 Jun 2026', label: 'Online orders — record net revenue (accounting fix)',
+    changes: [
+      'Fixed: online orders recorded the GROSS order value even when a gift card or loyalty reward was applied, overstating online revenue (and over-crediting campaigns/offers in the Marketing report). They now record the NET amount actually paid — consistent with POS and kiosk. Forward-only; historical online orders are left unchanged to preserve already-closed periods.',
+    ],
+  },
+  {
     version: '5.5.524', date: '17 Jun 2026', label: 'Security — receipt + welcome email caller checks',
     changes: [
       'send-receipt now fences by venue: a receipt must be tied to a real check at that location, or the caller must have access to the location (offer letters / contracts) — internal sends (gift cards, review replies, dispute alerts) are unaffected. Stops a signed-in session sending email for, or polluting the audit of, another venue.',

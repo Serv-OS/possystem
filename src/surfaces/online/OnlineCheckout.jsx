@@ -624,7 +624,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           service: 0,
           tip: 0,
           tax_amount: taxBreakdown?.totalTax || null,
-          total: subtotal,
+          total: remainingMinor / 100,   // NET of gift card + loyalty (what was actually paid) — matches POS/kiosk
           method: rewardApplied && giftApplied ? 'split' : giftApplied ? 'gift_card' : rewardApplied ? 'loyalty' : 'gift_card',
           drawer_id: null,
           shift_id: null,
@@ -729,7 +729,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           service: 0,
           tip: 0,
           tax_amount: taxBreakdown?.totalTax || null, // v5.5.154: VAT for reports + receipt
-          total: subtotal,
+          total: remainingMinor / 100,   // NET of gift card + loyalty (what was actually paid) — matches POS/kiosk
           method: (giftApplied || rewardApplied) ? 'split' : 'card',
           stripe_payment_intent_id: payId,
           payment_intents: payId ? [{ id: payId, amountMinor: remainingMinor }] : null,
