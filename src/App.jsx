@@ -85,6 +85,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.512', date: '16 Jun 2026', label: 'Marketing slice 8: compliance — suppression management + preference centre (module complete)',
+    changes: [
+      'New Back Office → Customers → Marketing compliance: review the suppression list (who can never receive marketing — populated automatically from STOP replies, unsubscribes, hard bounces and spam complaints, and enforced at send time), search/filter it, add a manual block, or remove one (e.g. a mistaken bounce). Plus a consent-history lookup per customer.',
+      'New customer preference centre: every marketing email now carries a "Manage preferences" link (alongside Unsubscribe) to a token-secured page where the customer turns email / SMS marketing on or off per channel. Choices write the consent ledger and add/remove suppressions instantly. New edge fns marketing-compliance (BO) and marketing-preferences (public, HMAC-token).',
+      'This completes the 8-slice Marketing & Promotions engine: offers + one-time codes, sending (email/SMS), segmentation, the birthday campaign engine, the email/SMS composer, drip workflows, reporting/attribution, and compliance — consent and suppression enforced end to end.',
+    ],
+  },
+  {
     version: '5.5.511', date: '16 Jun 2026', label: 'Marketing slice 7: reporting & attribution dashboard',
     changes: [
       'New Back Office → Customers → Marketing report: KPIs over a 7/30/90-day window — messages sent, delivered / opened / clicked rates, codes redeemed, discount given, and revenue attributed (the value of orders where a code was redeemed), plus email/SMS split.',

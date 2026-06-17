@@ -42,6 +42,8 @@ const TWILIO_FROM = Deno.env.get('TWILIO_FROM_NUMBER') || '';
 const FORCE_SANDBOX = (Deno.env.get('MARKETING_SANDBOX') || '').toLowerCase() === 'true';
 // Unsubscribe/one-click lands on the marketing-webhook edge fn (public; verifies an HMAC token).
 const WEBHOOK_BASE = (Deno.env.get('MARKETING_WEBHOOK_BASE') || `${SUPABASE_URL}/functions/v1/marketing-webhook`).replace(/\/$/, '');
+// Customer preference centre (slice 8) — per-channel opt-in management.
+const PREF_BASE = (Deno.env.get('MARKETING_PREF_BASE') || `${SUPABASE_URL}/functions/v1/marketing-preferences`).replace(/\/$/, '');
 
 // --- auth + org resolution (mirror marketing-admin) -------------------------
 async function authForOrg(req: Request, body: any): Promise<{ ok: boolean; org_id: string | null }> {
@@ -107,6 +109,13 @@ async function unsubToken(customerId: string, channel: string): Promise<string> 
 async function unsubUrl(customerId: string | null, channel: string): Promise<string | null> {
   if (!customerId) return null;
   return `${WEBHOOK_BASE}?action=unsubscribe&c=${customerId}&ch=${channel}&t=${await unsubToken(customerId, channel)}`;
+}
+async function prefUrl(customerId: string | null): Promise<string | null> {
+  if (!customerId) return null;
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(SERVICE_ROLE), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`pref:${customerId}`));
+  const t = [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, '0')).join('').slice(0, 32);
+  return `${PREF_BASE}?c=${customerId}&t=${t}`;
 }
 
 // --- provider adapters ------------------------------------------------------
@@ -235,7 +244,8 @@ Deno.serve(async (req) => {
 
   // ---- render content ----
   const link = await unsubUrl(customerId, channel);
-  const ctx = buildMergeContext(customer || to, { ...(body?.merge || {}), unsubscribe_url: link || '' });
+  const prefs = channel === 'email' ? await prefUrl(customerId) : null;
+  const ctx = buildMergeContext(customer || to, { ...(body?.merge || {}), unsubscribe_url: link || '', preferences_url: prefs || '' });
   const subject = renderMergeTags(body?.subject || '', ctx);
   let html = renderMergeTags(body?.html || '', ctx);
   let text = renderMergeTags(body?.text || '', ctx);
@@ -243,8 +253,9 @@ Deno.serve(async (req) => {
 
   // ---- compliance footers ----
   if (channel === 'email' && link) {
-    html += `\n<hr style="border:none;border-top:1px solid #e5e5e5;margin:24px 0 12px"><p style="font-size:12px;color:#888">You're receiving this because you opted in to marketing. <a href="${link}">Unsubscribe</a>.</p>`;
-    if (text) text += `\n\n—\nUnsubscribe: ${link}`;
+    const prefsLink = prefs ? ` · <a href="${prefs}">Manage preferences</a>` : '';
+    html += `\n<hr style="border:none;border-top:1px solid #e5e5e5;margin:24px 0 12px"><p style="font-size:12px;color:#888">You're receiving this because you opted in to marketing. <a href="${link}">Unsubscribe</a>${prefsLink}.</p>`;
+    if (text) text += `\n\n—\nUnsubscribe: ${link}${prefs ? `\nManage preferences: ${prefs}` : ''}`;
   }
   if (channel === 'sms' && smsBody && !/\bSTOP\b/i.test(smsBody)) smsBody += ' Reply STOP to opt out.';
 
