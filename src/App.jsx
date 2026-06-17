@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.519', date: '17 Jun 2026', label: 'Email: SendGrid provider wired in (marketing + receipts)',
+    changes: [
+      'Added a SendGrid adapter to both the marketing sender and the receipt sender (v3 Mail Send API, List-Unsubscribe header on marketing). Set RECEIPT_EMAIL_PROVIDER=sendgrid + SENDGRID_API_KEY (+ a verified RECEIPT_EMAIL_FROM/MARKETING_EMAIL_FROM) to send for real; removing MARKETING_SANDBOX takes marketing live. Until the key is present everything stays in safe sandbox (logged, not sent).',
+    ],
+  },
+  {
     version: '5.5.518', date: '17 Jun 2026', label: 'Marketing v2 Phase 4: forecast trigger + WiFi/behaviour automations',
     changes: [
       'Forecast trigger: a campaign can fire when actual sales fall below a % of forecast — e.g. "if we\'re under 60% of today\'s forecast by 2pm, send an offer to everyone", or a weekly check on a chosen day. Reads wf_sales_forecast vs live closed_checks; fires once per day/week window via the hourly engine.',

@@ -36,6 +36,7 @@ const EMAIL_PROVIDER = (Deno.env.get('RECEIPT_EMAIL_PROVIDER') || 'log').toLower
 const EMAIL_FROM = Deno.env.get('MARKETING_EMAIL_FROM') || Deno.env.get('RECEIPT_EMAIL_FROM') || 'hello@posup.co.uk';
 const RESEND_KEY = Deno.env.get('RESEND_API_KEY') || '';
 const POSTMARK_TOKEN = Deno.env.get('POSTMARK_API_TOKEN') || '';
+const SENDGRID_KEY = Deno.env.get('SENDGRID_API_KEY') || '';
 const TWILIO_SID = Deno.env.get('TWILIO_ACCOUNT_SID') || '';
 const TWILIO_TOKEN = Deno.env.get('TWILIO_AUTH_TOKEN') || '';
 const TWILIO_FROM = Deno.env.get('TWILIO_FROM_NUMBER') || '';
@@ -150,6 +151,19 @@ async function sendEmail(to: string, subject: string, html: string, text: string
     if (!r.ok) throw new Error(j?.Message || `Postmark HTTP ${r.status}`);
     return { id: j?.MessageID };
   }
+  if (EMAIL_PROVIDER === 'sendgrid') {
+    if (!SENDGRID_KEY) throw new Error('SENDGRID_API_KEY not set');
+    const headers: Record<string, string> = listUnsub ? { 'List-Unsubscribe': `<${listUnsub}>`, 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' } : {};
+    // SendGrid requires non-empty content, plain part before html.
+    const content = [{ type: 'text/plain', value: text || (html ? html.replace(/<[^>]+>/g, ' ').trim() || ' ' : ' ') }];
+    if (html) content.push({ type: 'text/html', value: html });
+    const r = await withRetry(() => fetch('https://api.sendgrid.com/v3/mail/send', {
+      method: 'POST', headers: { Authorization: `Bearer ${SENDGRID_KEY}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ personalizations: [{ to: [{ email: to }] }], from: { email: EMAIL_FROM }, subject: subject || ' ', content, ...(Object.keys(headers).length ? { headers } : {}) }),
+    }));
+    if (!r.ok) { const t = await r.text().catch(() => ''); throw new Error(`SendGrid HTTP ${r.status} ${t.slice(0, 200)}`); }
+    return { id: r.headers.get('x-message-id') || undefined };   // 202 Accepted, id in header
+  }
   throw new Error(`email provider '${EMAIL_PROVIDER}' is log-only`); // caught → treated as sandbox upstream
 }
 
@@ -260,7 +274,7 @@ Deno.serve(async (req) => {
   if (channel === 'sms' && smsBody && !/\bSTOP\b/i.test(smsBody)) smsBody += ' Reply STOP to opt out.';
 
   // ---- sandbox? (forced, or no real provider configured) ----
-  const emailLive = EMAIL_PROVIDER === 'resend' ? !!RESEND_KEY : EMAIL_PROVIDER === 'postmark' ? !!POSTMARK_TOKEN : false;
+  const emailLive = EMAIL_PROVIDER === 'resend' ? !!RESEND_KEY : EMAIL_PROVIDER === 'postmark' ? !!POSTMARK_TOKEN : EMAIL_PROVIDER === 'sendgrid' ? !!SENDGRID_KEY : false;
   const smsLive = !!(TWILIO_SID && TWILIO_TOKEN && TWILIO_FROM);
   const live = channel === 'email' ? emailLive : smsLive;
   const sandbox = FORCE_SANDBOX || body?.sandbox === true || !live;

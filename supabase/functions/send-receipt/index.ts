@@ -80,6 +80,7 @@ Deno.serve(async (req) => {
     switch (PROVIDER) {
       case 'resend':   result = await sendViaResend(body); break;
       case 'postmark': result = await sendViaPostmark(body); break;
+      case 'sendgrid': result = await sendViaSendgrid(body); break;
       case 'log':
       default:         result = await sendViaLog(body); break;
     }
@@ -142,6 +143,22 @@ async function sendViaPostmark(body: RequestBody) {
   const j = await res.json();
   if (!res.ok) throw new Error(j?.Message || `Postmark HTTP ${res.status}`);
   return { provider_message_id: j?.MessageID };
+}
+
+// 'sendgrid' — https://sendgrid.com (v3 Mail Send). 202 Accepted, message id in X-Message-Id header.
+async function sendViaSendgrid(body: RequestBody) {
+  const key = Deno.env.get('SENDGRID_API_KEY');
+  const fromAddr = Deno.env.get('RECEIPT_EMAIL_FROM') || 'receipts@posup.co.uk';
+  if (!key) throw new Error('SENDGRID_API_KEY not set');
+  const content: Array<{ type: string; value: string }> = [{ type: 'text/plain', value: body.text || body.html.replace(/<[^>]+>/g, ' ').trim() || ' ' }];
+  if (body.html) content.push({ type: 'text/html', value: body.html });
+  const res = await fetch('https://api.sendgrid.com/v3/mail/send', {
+    method: 'POST',
+    headers: { 'authorization': `Bearer ${key}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ personalizations: [{ to: [{ email: body.to }] }], from: { email: fromAddr }, subject: body.subject || 'Your receipt', content }),
+  });
+  if (!res.ok) { const t = await res.text().catch(() => ''); throw new Error(`SendGrid HTTP ${res.status} ${t.slice(0, 200)}`); }
+  return { provider_message_id: res.headers.get('x-message-id') || undefined };
 }
 
 function json(body: unknown, status = 200) {
