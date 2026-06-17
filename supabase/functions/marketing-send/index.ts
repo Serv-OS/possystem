@@ -23,6 +23,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { renderMergeTags, buildMergeContext } from '../_shared/marketing-merge.ts';
+import { resolveSenderForOrg, type Sender } from '../_shared/sending-domain.ts';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -128,13 +129,13 @@ async function withRetry<T>(fn: () => Promise<T>, tries = 2): Promise<T> {
   throw last;
 }
 
-async function sendEmail(to: string, subject: string, html: string, text: string, listUnsub: string | null): Promise<{ id?: string }> {
+async function sendEmail(to: string, subject: string, html: string, text: string, listUnsub: string | null, sender: Sender): Promise<{ id?: string }> {
   if (EMAIL_PROVIDER === 'resend') {
     if (!RESEND_KEY) throw new Error('RESEND_API_KEY not set');
     const headers: Record<string, string> = listUnsub ? { 'List-Unsubscribe': `<${listUnsub}>`, 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' } : {};
     const r = await withRetry(() => fetch('https://api.resend.com/emails', {
       method: 'POST', headers: { Authorization: `Bearer ${RESEND_KEY}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ from: EMAIL_FROM, to, subject, html, text, headers }),
+      body: JSON.stringify({ from: sender.from, to, subject, html, text, headers, ...(sender.replyTo ? { reply_to: sender.replyTo } : {}) }),
     }));
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j?.message || `Resend HTTP ${r.status}`);
@@ -145,7 +146,7 @@ async function sendEmail(to: string, subject: string, html: string, text: string
     const Headers = listUnsub ? [{ Name: 'List-Unsubscribe', Value: `<${listUnsub}>` }, { Name: 'List-Unsubscribe-Post', Value: 'List-Unsubscribe=One-Click' }] : [];
     const r = await withRetry(() => fetch('https://api.postmarkapp.com/email', {
       method: 'POST', headers: { 'X-Postmark-Server-Token': POSTMARK_TOKEN, 'content-type': 'application/json', accept: 'application/json' },
-      body: JSON.stringify({ From: EMAIL_FROM, To: to, Subject: subject, HtmlBody: html, TextBody: text, MessageStream: 'broadcast', Headers }),
+      body: JSON.stringify({ From: sender.from, To: to, Subject: subject, HtmlBody: html, TextBody: text, MessageStream: 'broadcast', Headers, ...(sender.replyTo ? { ReplyTo: sender.replyTo } : {}) }),
     }));
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j?.Message || `Postmark HTTP ${r.status}`);
@@ -159,7 +160,7 @@ async function sendEmail(to: string, subject: string, html: string, text: string
     if (html) content.push({ type: 'text/html', value: html });
     const r = await withRetry(() => fetch('https://api.sendgrid.com/v3/mail/send', {
       method: 'POST', headers: { Authorization: `Bearer ${SENDGRID_KEY}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ personalizations: [{ to: [{ email: to }] }], from: { email: EMAIL_FROM }, subject: subject || ' ', content, ...(Object.keys(headers).length ? { headers } : {}) }),
+      body: JSON.stringify({ personalizations: [{ to: [{ email: to }] }], from: { email: sender.email, ...(sender.name ? { name: sender.name } : {}) }, ...(sender.replyTo ? { reply_to: { email: sender.replyTo } } : {}), subject: subject || ' ', content, ...(Object.keys(headers).length ? { headers } : {}) }),
     }));
     if (!r.ok) { const t = await r.text().catch(() => ''); throw new Error(`SendGrid HTTP ${r.status} ${t.slice(0, 200)}`); }
     return { id: r.headers.get('x-message-id') || undefined };   // 202 Accepted, id in header
@@ -288,8 +289,9 @@ Deno.serve(async (req) => {
 
   // ---- live send ----
   try {
+    const sender = await resolveSenderForOrg(opsAdmin, org_id, EMAIL_FROM);   // per-org branded From, else platform default
     const res = channel === 'email'
-      ? await sendEmail(address, subject || '(no subject)', html, text, link)
+      ? await sendEmail(address, subject || '(no subject)', html, text, link, sender)
       : await sendSms(address, smsBody);
     const r = await logRow({ status: 'sent', subject: subject || null, preview, provider: channel === 'email' ? EMAIL_PROVIDER : 'twilio', provider_message_id: res.id || null, sent_at: new Date().toISOString() });
     return json({ ok: true, status: 'sent', message_id: r.id, provider_message_id: res.id || null });

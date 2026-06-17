@@ -10,6 +10,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { runCampaign, runDueCampaigns } from '../_shared/campaign-engine.ts';
 import { runWorkflows } from '../_shared/workflow-engine.ts';
+import { refreshSendingDomains } from '../_shared/sending-domain.ts';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-run-secret' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -44,7 +45,12 @@ Deno.serve(async (req) => {
     }
     const results = await runDueCampaigns(sb, opts);     // now + today flow into recurring/scheduled gates
     const workflows = await runWorkflows(sb, opts);
-    return json({ ok: true, today: opts.today, count: results.length, results, workflows });
+    // Once a day, re-check custom sending domains against Resend (catch silent DNS breakage).
+    let domains_checked = 0;
+    if (new Date(opts.now || new Date().toISOString()).getUTCHours() === 7) {
+      domains_checked = await refreshSendingDomains(sb, Deno.env.get('RESEND_API_KEY') ?? '');
+    }
+    return json({ ok: true, today: opts.today, count: results.length, results, workflows, domains_checked });
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : String(e) }, 500);
   }

@@ -28,6 +28,7 @@
 //   RECEIPT_EMAIL_FROM (defaults to 'hello@posup.co.uk')
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { resolveSenderFrom, type Sender } from '../_shared/sending-domain.ts';
 import { resolveAndRender } from '../_shared/template-resolver.ts';
 import { wrapInEmailHtml } from '../_shared/template-resolver.ts';
 
@@ -86,13 +87,13 @@ async function sendSms(to: string, message: string): Promise<boolean> {
 }
 
 // ── Email via Resend / Postmark ──────────────────────────────────────
-async function sendEmail(to: string, subject: string, html: string): Promise<boolean> {
+async function sendEmail(to: string, subject: string, html: string, sender: Sender): Promise<boolean> {
   try {
     if (EMAIL_PROVIDER === 'resend' && RESEND_KEY) {
       const res = await fetch('https://api.resend.com/emails', {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ from: EMAIL_FROM, to: [to], subject, html }),
+        body: JSON.stringify({ from: sender.from, to: [to], subject, html, ...(sender.replyTo ? { reply_to: sender.replyTo } : {}) }),
       });
       return res.ok;
     }
@@ -100,7 +101,7 @@ async function sendEmail(to: string, subject: string, html: string): Promise<boo
       const res = await fetch('https://api.postmarkapp.com/email', {
         method: 'POST',
         headers: { 'X-Postmark-Server-Token': POSTMARK_KEY, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ From: EMAIL_FROM, To: to, Subject: subject, HtmlBody: html }),
+        body: JSON.stringify({ From: sender.from, To: to, Subject: subject, HtmlBody: html, ...(sender.replyTo ? { ReplyTo: sender.replyTo } : {}) }),
       });
       return res.ok;
     }
@@ -211,7 +212,8 @@ Deno.serve(async (req) => {
       );
     }
 
-    emailSent = await sendEmail(customer.email, subject, html);
+    const sender = await resolveSenderFrom(opsAdmin, location_id, EMAIL_FROM);   // per-venue branded From, else platform default
+    emailSent = await sendEmail(customer.email, subject, html, sender);
 
     // Audit log
     try {

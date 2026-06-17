@@ -85,6 +85,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.520', date: '17 Jun 2026', label: 'Custom sending domains — branded email per venue (deliverability + brand)',
+    changes: [
+      'New Settings → Email domain: connect your own domain so marketing + receipts send from e.g. hello@mail.yourvenue.com instead of the shared sender. Add domain → copy the shown DNS records (MX + SPF + DKIM, with a DMARC tip) → Verify → set From + Reply-to → Make active → send a test. Better deliverability (your own authenticated domain reputation) and your brand in the inbox.',
+      'Backend: org_sending_domains table (migration 20260617c, org-scoped, one active per org) + marketing-domains edge fn wrapping the Resend Domains API (add/verify/refresh/set-from/activate/delete). A shared resolveSenderFrom() is wired into marketing-send, send-receipt and send-welcome — it uses the venue From only when the domain is verified AND active, otherwise SILENTLY falls back to the platform sender (a broken/absent custom domain can never block a send). Reply-to threaded through all providers.',
+      'A daily job re-checks active domains against Resend so a domain that silently loses a DNS record is caught (status → temporary_failure) rather than failing sends. All on the existing Resend account — no new vendor.',
+    ],
+  },
+  {
     version: '5.5.519', date: '17 Jun 2026', label: 'Email: SendGrid provider wired in (marketing + receipts)',
     changes: [
       'Added a SendGrid adapter to both the marketing sender and the receipt sender (v3 Mail Send API, List-Unsubscribe header on marketing). Set RECEIPT_EMAIL_PROVIDER=sendgrid + SENDGRID_API_KEY (+ a verified RECEIPT_EMAIL_FROM/MARKETING_EMAIL_FROM) to send for real; removing MARKETING_SANDBOX takes marketing live. Until the key is present everything stays in safe sandbox (logged, not sent).',

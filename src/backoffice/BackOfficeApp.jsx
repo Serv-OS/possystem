@@ -47,6 +47,7 @@ import QuickSend from './sections/marketing/QuickSend';
 import Workflows from './sections/marketing/Workflows';
 import MarketingReports from './sections/marketing/MarketingReports';
 import Compliance from './sections/marketing/Compliance';
+import SendingDomain from './sections/marketing/SendingDomain';
 import MenuBoards from './sections/MenuBoards';
 import { money, currencySymbol } from '../lib/currency';
 
@@ -105,7 +106,7 @@ const NAV_IA = [
   { label:'Channels',   icon:'channels',  children:[['online','Online ordering'],['kiosks','Kiosks'],['menuboards','Menu boards']] },
   { label:'Hardware',   icon:'hardware',  children:[['devices','Terminals'],['profiles','Device profiles'],['printers','Printers'],['printing','Production printing'],['cardreaders','Card readers'],['cashdrawers','Cash drawers'],['network','Network & sync']] },
   { label:'Reports',    icon:'reports',   children:[['reports','Sales reports'],['shift','Shifts'],['eod','Close day'],['pettycash','Petty cash']] },
-  { label:'Settings',   icon:'settings',  children:[['location','Location settings'],['receipt','Receipt'],['ai','AI assistant']] },
+  { label:'Settings',   icon:'settings',  children:[['location','Location settings'],['receipt','Receipt'],['sending-domain','Email domain'],['ai','AI assistant']] },
 ];
 
 export default function BackOfficeApp() {
@@ -611,6 +612,7 @@ export default function BackOfficeApp() {
           {section === 'workflows' && <Workflows />}
           {section === 'marketing-reports' && <MarketingReports />}
           {section === 'compliance' && <Compliance />}
+          {section === 'sending-domain' && <SendingDomain />}
           {section?.startsWith('wf-') && <Workforce section={section} orgCtx={orgCtx} />}
           {section === 'menu'       && <MenuManager />}
           {section === 'floorplan'  && <FloorPlanBuilder />}

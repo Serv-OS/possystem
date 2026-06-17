@@ -9,6 +9,7 @@
 // matching API key secret. No UI/UX changes needed.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.0';
+import { resolveSenderFrom, type Sender } from '../_shared/sending-domain.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -77,10 +78,12 @@ Deno.serve(async (req) => {
 
   try {
     let result: { provider_message_id?: string };
+    // per-venue branded From (verified custom domain), else the platform default.
+    const sender = await resolveSenderFrom(sb, body.location_id, Deno.env.get('RECEIPT_EMAIL_FROM') || 'receipts@posup.co.uk');
     switch (PROVIDER) {
-      case 'resend':   result = await sendViaResend(body); break;
-      case 'postmark': result = await sendViaPostmark(body); break;
-      case 'sendgrid': result = await sendViaSendgrid(body); break;
+      case 'resend':   result = await sendViaResend(body, sender); break;
+      case 'postmark': result = await sendViaPostmark(body, sender); break;
+      case 'sendgrid': result = await sendViaSendgrid(body, sender); break;
       case 'log':
       default:         result = await sendViaLog(body); break;
     }
@@ -110,16 +113,15 @@ async function sendViaLog(body: RequestBody) {
 }
 
 // 'resend' — https://resend.com (recommended; clean API, generous free tier)
-async function sendViaResend(body: RequestBody) {
+async function sendViaResend(body: RequestBody, sender: Sender) {
   const apiKey = Deno.env.get('RESEND_API_KEY');
-  const fromAddr = Deno.env.get('RECEIPT_EMAIL_FROM') || 'receipts@posup.co.uk';
   if (!apiKey) throw new Error('RESEND_API_KEY not set');
   const res = await fetch('https://api.resend.com/emails', {
     method:'POST',
     headers:{ 'authorization': `Bearer ${apiKey}`, 'content-type':'application/json' },
     body: JSON.stringify({
-      from: fromAddr, to: body.to, subject: body.subject || 'Your receipt',
-      html: body.html, text: body.text,
+      from: sender.from, to: body.to, subject: body.subject || 'Your receipt',
+      html: body.html, text: body.text, ...(sender.replyTo ? { reply_to: sender.replyTo } : {}),
     }),
   });
   const j = await res.json();
@@ -128,16 +130,15 @@ async function sendViaResend(body: RequestBody) {
 }
 
 // 'postmark' — alternative provider with great deliverability
-async function sendViaPostmark(body: RequestBody) {
+async function sendViaPostmark(body: RequestBody, sender: Sender) {
   const token = Deno.env.get('POSTMARK_API_TOKEN');
-  const fromAddr = Deno.env.get('RECEIPT_EMAIL_FROM') || 'receipts@posup.co.uk';
   if (!token) throw new Error('POSTMARK_API_TOKEN not set');
   const res = await fetch('https://api.postmarkapp.com/email', {
     method:'POST',
     headers:{ 'X-Postmark-Server-Token': token, 'content-type':'application/json' },
     body: JSON.stringify({
-      From: fromAddr, To: body.to, Subject: body.subject || 'Your receipt',
-      HtmlBody: body.html, TextBody: body.text,
+      From: sender.from, To: body.to, Subject: body.subject || 'Your receipt',
+      HtmlBody: body.html, TextBody: body.text, ...(sender.replyTo ? { ReplyTo: sender.replyTo } : {}),
     }),
   });
   const j = await res.json();
@@ -146,16 +147,15 @@ async function sendViaPostmark(body: RequestBody) {
 }
 
 // 'sendgrid' — https://sendgrid.com (v3 Mail Send). 202 Accepted, message id in X-Message-Id header.
-async function sendViaSendgrid(body: RequestBody) {
+async function sendViaSendgrid(body: RequestBody, sender: Sender) {
   const key = Deno.env.get('SENDGRID_API_KEY');
-  const fromAddr = Deno.env.get('RECEIPT_EMAIL_FROM') || 'receipts@posup.co.uk';
   if (!key) throw new Error('SENDGRID_API_KEY not set');
   const content: Array<{ type: string; value: string }> = [{ type: 'text/plain', value: body.text || body.html.replace(/<[^>]+>/g, ' ').trim() || ' ' }];
   if (body.html) content.push({ type: 'text/html', value: body.html });
   const res = await fetch('https://api.sendgrid.com/v3/mail/send', {
     method: 'POST',
     headers: { 'authorization': `Bearer ${key}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ personalizations: [{ to: [{ email: body.to }] }], from: { email: fromAddr }, subject: body.subject || 'Your receipt', content }),
+    body: JSON.stringify({ personalizations: [{ to: [{ email: body.to }] }], from: { email: sender.email, ...(sender.name ? { name: sender.name } : {}) }, ...(sender.replyTo ? { reply_to: { email: sender.replyTo } } : {}), subject: body.subject || 'Your receipt', content }),
   });
   if (!res.ok) { const t = await res.text().catch(() => ''); throw new Error(`SendGrid HTTP ${res.status} ${t.slice(0, 200)}`); }
   return { provider_message_id: res.headers.get('x-message-id') || undefined };
