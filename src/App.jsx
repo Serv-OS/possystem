@@ -85,6 +85,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.517', date: '17 Jun 2026', label: 'Marketing v2 Phase 3: scheduled + recurring sends, audience exclusions, hourly engine',
+    changes: [
+      'Campaigns can now be SCHEDULED for a date/time (one-offs) or set to RECUR weekly/monthly on a chosen day + hour — the engine runs them once per window automatically.',
+      'Audience EXCLUSIONS: pick a segment to leave out (e.g. send to everyone except VIPs). Resolved as audience minus exclusion before sending.',
+      'The marketing engine now runs hourly (Vercel Cron) so scheduled/recurring sends fire near their time; everything stays idempotent (one fire per day/week/month window, never-twice per recipient). Migration 20260617 adds campaigns.schedule + exclusion_segment_id.',
+    ],
+  },
+  {
     version: '5.5.516', date: '17 Jun 2026', label: 'Marketing v2 Phase 2: visual email builder + image upload',
     changes: [
       'The email builder is now a visual designer: a Design & branding panel sets the page + email background colours, content width, font, and a header logo; each block has its own section background colour, padding, alignment and text colour; buttons take a brand colour + you can set one brand colour for the whole email. Live preview reflects it all.',

@@ -24,10 +24,33 @@ export interface RunSummary {
   candidates: number; sent: number; skipped: number; failed: number; error?: string;
 }
 
+// ISO-8601 week string (YYYY-Www) for recurring weekly dedupe.
+function isoWeek(d: Date): string {
+  const date = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  const dayNum = (date.getUTCDay() + 6) % 7;
+  date.setUTCDate(date.getUTCDate() - dayNum + 3);
+  const firstThursday = new Date(Date.UTC(date.getUTCFullYear(), 0, 4));
+  const week = 1 + Math.round((((date.getTime() - firstThursday.getTime()) / 86400000) - 3 + ((firstThursday.getUTCDay() + 6) % 7)) / 7);
+  return `${date.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
+}
+
+// Whether a recurring campaign should fire in the current hour (gated; dedupe makes it fire once/period).
+export function recurringDueNow(campaign: any, opts: RunOpts): boolean {
+  const t = campaign.trigger || {};
+  const now = new Date(opts.now || new Date().toISOString());
+  if (now.getUTCHours() < Number(t.hour ?? 9)) return false;
+  if (t.recurrence === 'monthly') return now.getUTCDate() === Number(t.monthday ?? 1);
+  return now.getUTCDay() === Number(t.weekday ?? 1);   // weekly (default): 1 = Monday
+}
+
 // Build the trigger's audience rule + the dedupe/run keys for this campaign+day.
 function triggerContext(campaign: any, today: string): { rule: any | null; runKey: string; dedupeKey: string } {
   const t = campaign.trigger || {};
   const type = String(t.type || (campaign.type === 'one_off' ? 'manual' : 'birthday'));
+  if (type === 'recurring') {
+    const period = t.recurrence === 'monthly' ? today.slice(0, 7) : isoWeek(new Date(today + 'T00:00:00Z'));
+    return { rule: null, runKey: `recurring:${period}`, dedupeKey: `recurring:${period}` };  // audience = segment, once/period
+  }
   if (type === 'birthday') {
     const daysBefore = Number(t.days_before ?? 7);
     const occ = new Date(today + 'T00:00:00Z');
@@ -136,6 +159,11 @@ export async function runCampaign(sb: SB, campaign: any, opts: RunOpts): Promise
       }
       ids = await resolveIds(sb, org, seg.definition);
     }
+    // Audience exclusion: remove anyone in the exclusion segment (e.g. "everyone except VIPs").
+    if (campaign.exclusion_segment_id) {
+      const { data: ex } = await sb.from('segments').select('definition').eq('id', campaign.exclusion_segment_id).eq('org_id', org).maybeSingle();
+      if (ex) { const exSet = new Set(await resolveIds(sb, org, ex.definition)); ids = ids.filter((id) => !exSet.has(id)); }
+    }
     summary.candidates = ids.length;
 
     // optional offer (one unique code per recipient)
@@ -208,8 +236,21 @@ export async function runCampaign(sb: SB, campaign: any, opts: RunOpts): Promise
 
 // Run all active automations (the daily cron entry).
 export async function runDueCampaigns(sb: SB, opts: RunOpts): Promise<RunSummary[]> {
-  const { data: campaigns } = await sb.from('campaigns').select('*').eq('status', 'active').eq('type', 'automation');
   const out: RunSummary[] = [];
-  for (const c of campaigns ?? []) out.push(await runCampaign(sb, c, opts));
+  // Active automations (birthday/lapsed/recurring). Recurring only fires inside its weekly/monthly window.
+  const { data: autos } = await sb.from('campaigns').select('*').eq('status', 'active').eq('type', 'automation');
+  for (const c of autos ?? []) {
+    if (c.trigger?.type === 'recurring' && !recurringDueNow(c, opts)) continue;
+    out.push(await runCampaign(sb, c, opts));
+  }
+  // Scheduled one-offs whose send_at has arrived → run once, then archive.
+  const nowIso = opts.now || new Date().toISOString();
+  const { data: sched } = await sb.from('campaigns').select('*').eq('status', 'scheduled');
+  for (const c of sched ?? []) {
+    if (c.schedule?.send_at && String(c.schedule.send_at) <= nowIso) {
+      out.push(await runCampaign(sb, c, opts));
+      await sb.from('campaigns').update({ status: 'archived', updated_at: nowIso }).eq('id', c.id);
+    }
+  }
   return out;
 }

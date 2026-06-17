@@ -31,7 +31,9 @@ Deno.serve(async (req) => {
   const authed = (bearer && bearer === SERVICE_ROLE) || (RUN_SECRET && secret === RUN_SECRET);
   if (!authed) return json({ error: 'unauthorised' }, 403);
 
-  const opts = { today: String(body?.today || todayUTC()), supabaseUrl: SUPABASE_URL, serviceRole: SERVICE_ROLE };
+  // body.now (ISO) lets tests fast-forward; today is derived from it so the run/period keys line up.
+  const now = body?.now ? String(body.now) : undefined;
+  const opts = { today: String(body?.today || (now ? now.slice(0, 10) : todayUTC())), supabaseUrl: SUPABASE_URL, serviceRole: SERVICE_ROLE, now };
 
   try {
     if (body?.campaign_id) {
@@ -40,9 +42,8 @@ Deno.serve(async (req) => {
       const summary = await runCampaign(sb, c, { ...opts, force: body?.force === true });
       return json({ ok: true, today: opts.today, results: [summary] });
     }
-    const wfOpts = { ...opts, now: body?.now };   // body.now lets tests fast-forward drips
-    const results = await runDueCampaigns(sb, opts);
-    const workflows = await runWorkflows(sb, wfOpts);
+    const results = await runDueCampaigns(sb, opts);     // now + today flow into recurring/scheduled gates
+    const workflows = await runWorkflows(sb, opts);
     return json({ ok: true, today: opts.today, count: results.length, results, workflows });
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : String(e) }, 500);

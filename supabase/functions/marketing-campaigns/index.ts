@@ -19,7 +19,7 @@ const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const sb = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { autoRefreshToken: false, persistSession: false } });
 
-const CAMPAIGN_FIELDS = ['name', 'description', 'type', 'channel', 'segment_id', 'trigger', 'schedule', 'subject', 'email_html', 'email_blocks', 'sms_body', 'from_name', 'offer_id', 'status'];
+const CAMPAIGN_FIELDS = ['name', 'description', 'type', 'channel', 'segment_id', 'exclusion_segment_id', 'trigger', 'schedule', 'subject', 'email_html', 'email_blocks', 'sms_body', 'from_name', 'offer_id', 'status'];
 
 async function authed(req: Request, opsLocationId: string): Promise<boolean> {
   const token = (req.headers.get('Authorization') ?? '').replace('Bearer ', '').trim();
@@ -63,8 +63,11 @@ Deno.serve(async (req) => {
     for (const k of CAMPAIGN_FIELDS) if (k in incoming) row[k] = incoming[k];
     if (incoming.id) row.id = incoming.id;
     if (!row.name) return json({ error: 'name required' }, 400);
-    // Persist a prebuilt audience on first use so segment_id is always a real id the engine can resolve.
+    // Persist a prebuilt audience on first use so the ids are always real segment ids the engine can resolve.
     if ('segment_id' in row) row.segment_id = await resolveSegmentRef(sb, org_id, row.segment_id);
+    if ('exclusion_segment_id' in row) row.exclusion_segment_id = await resolveSegmentRef(sb, org_id, row.exclusion_segment_id);
+    // A one-off with a future send time becomes 'scheduled' so the hourly cron fires it at that time.
+    if (row.type === 'one_off' && (row.schedule as any)?.send_at) row.status = 'scheduled';
     const { data, error } = await sb.from('campaigns').upsert(row, { onConflict: 'id' }).select('*').maybeSingle();
     if (error) return json({ error: error.message }, 500);
     return json({ ok: true, campaign: data });

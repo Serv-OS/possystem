@@ -46,7 +46,9 @@ const BIRTHDAY_PRESET = () => ({
   sms_body: 'Happy birthday {{first_name}}! Your treat: {{promo_code}} ({{offer}}). Reply STOP to opt out.',
   status: 'draft',
 });
-const BLANK = () => ({ name: '', description: '', type: 'automation', channel: 'email', trigger: { type: 'birthday', days_before: 7 }, segment_id: '', offer_id: '', subject: '', from_name: '', email_blocks: MIN_BLOCKS(), sms_body: '', status: 'draft' });
+const BLANK = () => ({ name: '', description: '', type: 'automation', channel: 'email', trigger: { type: 'birthday', days_before: 7 }, segment_id: '', exclusion_segment_id: '', schedule: {}, offer_id: '', subject: '', from_name: '', email_blocks: MIN_BLOCKS(), sms_body: '', status: 'draft' });
+// ISO (UTC) <-> <input type="datetime-local"> (shown in the operator's local time).
+const toLocalInput = (iso) => { if (!iso) return ''; const d = new Date(iso); if (isNaN(d.getTime())) return ''; const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; };
 
 export default function Campaigns() {
   const [locId, setLocId] = useState(null);
@@ -98,7 +100,8 @@ export default function Campaigns() {
       const campaign = {
         ...(c.id ? { id: c.id } : {}),
         name: c.name.trim(), description: c.description || null, type: c.type, channel: c.channel,
-        segment_id: c.segment_id || null, offer_id: c.offer_id || null,
+        segment_id: c.segment_id || null, exclusion_segment_id: c.exclusion_segment_id || null, schedule: c.schedule || {},
+        offer_id: c.offer_id || null,
         trigger: c.trigger || {}, subject: c.subject || null, from_name: c.from_name || null,
         // Compile blocks → responsive HTML (what the engine sends); keep blocks for re-editing.
         email_blocks: blocks, email_html: blocks.length ? compileEmail(blocks) : null,
@@ -188,7 +191,9 @@ export default function Campaigns() {
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--t1)' }}>{c.name} <span style={{ ...S.pill, marginLeft: 6, color: STATUS_COLOR[c.status] || 'var(--t2)' }}>{c.status}</span></div>
                   <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>
-                    {c.type === 'automation' ? `Automation · ${c.trigger?.type || '—'}${c.trigger?.type === 'birthday' ? ` (${c.trigger.days_before ?? 7}d before)` : c.trigger?.type === 'lapsed' ? ` (${c.trigger.days ?? 30}d)` : ''}` : 'One-off'} · {c.channel}{c.offer_id ? ' · offer ✓' : ''}{c.last_run_at ? ` · last run ${new Date(c.last_run_at).toLocaleDateString('en-GB')}` : ''}
+                    {c.type === 'automation'
+                      ? `Automation · ${c.trigger?.type || '—'}${c.trigger?.type === 'birthday' ? ` (${c.trigger.days_before ?? 7}d before)` : c.trigger?.type === 'lapsed' ? ` (${c.trigger.days ?? 30}d)` : c.trigger?.type === 'recurring' ? ` (${c.trigger.recurrence || 'weekly'})` : ''}`
+                      : c.schedule?.send_at ? `Scheduled · ${new Date(c.schedule.send_at).toLocaleString('en-GB')}` : 'One-off'} · {c.channel}{c.offer_id ? ' · offer ✓' : ''}{c.exclusion_segment_id ? ' · excl ✓' : ''}{c.last_run_at ? ` · last run ${new Date(c.last_run_at).toLocaleDateString('en-GB')}` : ''}
                   </div>
                   {rm.summary && <div style={{ ...S.ok, marginTop: 6 }}>Ran: {rm.summary.candidates} matched · {rm.summary.sent} sent · {rm.summary.skipped} skipped{rm.summary.failed ? ` · ${rm.summary.failed} failed` : ''}</div>}
                   {rm.err && <div style={S.err}>{rm.err}</div>}
@@ -198,7 +203,7 @@ export default function Campaigns() {
                   {c.status !== 'active' && <button style={S.ghost} onClick={() => setStatus(c, 'active')}>Activate</button>}
                   {c.status === 'active' && <button style={S.ghost} onClick={() => setStatus(c, 'paused')}>Pause</button>}
                   <button style={S.ghost} onClick={() => viewRuns(c)}>Runs</button>
-                  <button style={S.ghost} onClick={() => { setEditing({ ...BLANK(), ...c, segment_id: c.segment_id || '', offer_id: c.offer_id || '', trigger: c.trigger || { type: 'birthday', days_before: 7 }, email_blocks: ensureBlocks(c) }); setSave({}); }}>Edit</button>
+                  <button style={S.ghost} onClick={() => { setEditing({ ...BLANK(), ...c, segment_id: c.segment_id || '', exclusion_segment_id: c.exclusion_segment_id || '', schedule: c.schedule || {}, offer_id: c.offer_id || '', trigger: c.trigger || { type: 'birthday', days_before: 7 }, email_blocks: ensureBlocks(c) }); setSave({}); }}>Edit</button>
                 </div>
               </div>
             );
@@ -233,29 +238,51 @@ export default function Campaigns() {
           </div>
 
           {editing.type === 'automation' ? (
-            <div style={S.row3}>
-              <div style={S.field}><label style={S.label}>Trigger</label>
-                <select style={S.input} value={t.type || 'birthday'} onChange={(e) => setTrigger({ type: e.target.value })}>
-                  <option value="birthday">Birthday</option><option value="lapsed">Win-back (lapsed)</option>
-                </select>
+            <>
+              <div style={S.row3}>
+                <div style={S.field}><label style={S.label}>Trigger</label>
+                  <select style={S.input} value={t.type || 'birthday'} onChange={(e) => setTrigger({ type: e.target.value })}>
+                    <option value="birthday">Birthday</option><option value="lapsed">Win-back (lapsed)</option><option value="recurring">Recurring (every week/month)</option>
+                  </select>
+                </div>
+                {(t.type || 'birthday') === 'birthday' && <div style={S.field}><label style={S.label}>Days before birthday</label><input style={S.input} type="number" min={0} max={60} value={t.days_before ?? 7} onChange={(e) => setTrigger({ days_before: Number(e.target.value) })} /></div>}
+                {t.type === 'lapsed' && <div style={S.field}><label style={S.label}>Days since last visit</label><input style={S.input} type="number" min={1} value={t.days ?? 30} onChange={(e) => setTrigger({ days: Number(e.target.value) })} /></div>}
+                {t.type === 'recurring' && <div style={S.field}><label style={S.label}>Repeat</label><select style={S.input} value={t.recurrence || 'weekly'} onChange={(e) => setTrigger({ recurrence: e.target.value })}><option value="weekly">Weekly</option><option value="monthly">Monthly</option></select></div>}
+                <div style={S.field}><label style={S.label}>{t.type === 'recurring' ? 'Audience (segment)' : 'Also limit to segment'} <span style={{ color: 'var(--t4)', fontWeight: 500 }}>{t.type === 'recurring' ? '' : 'opt.'}</span></label>
+                  <select style={S.input} value={editing.segment_id} onChange={(e) => setEditing({ ...editing, segment_id: e.target.value })}>
+                    <option value="">{t.type === 'recurring' ? 'Select a segment…' : 'Everyone matching the trigger'}</option>
+                    {segmentOptions()}
+                  </select>
+                </div>
               </div>
-              {(t.type || 'birthday') === 'birthday' && <div style={S.field}><label style={S.label}>Days before birthday</label><input style={S.input} type="number" min={0} max={60} value={t.days_before ?? 7} onChange={(e) => setTrigger({ days_before: Number(e.target.value) })} /></div>}
-              {t.type === 'lapsed' && <div style={S.field}><label style={S.label}>Days since last visit</label><input style={S.input} type="number" min={1} value={t.days ?? 30} onChange={(e) => setTrigger({ days: Number(e.target.value) })} /></div>}
-              <div style={S.field}><label style={S.label}>{editing.type === 'automation' ? 'Also limit to segment' : 'Audience'} <span style={{ color: 'var(--t4)', fontWeight: 500 }}>opt.</span></label>
+              {t.type === 'recurring' && (
+                <div style={S.row3}>
+                  {(t.recurrence || 'weekly') === 'weekly' && <div style={S.field}><label style={S.label}>Day of week</label><select style={S.input} value={t.weekday ?? 1} onChange={(e) => setTrigger({ weekday: Number(e.target.value) })}>{['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((d, i) => <option key={i} value={i}>{d}</option>)}</select></div>}
+                  {t.recurrence === 'monthly' && <div style={S.field}><label style={S.label}>Day of month</label><input style={S.input} type="number" min={1} max={28} value={t.monthday ?? 1} onChange={(e) => setTrigger({ monthday: Number(e.target.value) })} /></div>}
+                  <div style={S.field}><label style={S.label}>Hour (UTC)</label><input style={S.input} type="number" min={0} max={23} value={t.hour ?? 9} onChange={(e) => setTrigger({ hour: Number(e.target.value) })} /></div>
+                </div>
+              )}
+            </>
+          ) : (
+            <div style={S.row2}>
+              <div style={S.field}><label style={S.label}>Audience (segment)</label>
                 <select style={S.input} value={editing.segment_id} onChange={(e) => setEditing({ ...editing, segment_id: e.target.value })}>
-                  <option value="">Everyone matching the trigger</option>
+                  <option value="">Select a segment…</option>
                   {segmentOptions()}
                 </select>
               </div>
-            </div>
-          ) : (
-            <div style={S.field}><label style={S.label}>Audience (segment)</label>
-              <select style={S.input} value={editing.segment_id} onChange={(e) => setEditing({ ...editing, segment_id: e.target.value })}>
-                <option value="">Select a segment…</option>
-                {segmentOptions()}
-              </select>
+              <div style={S.field}><label style={S.label}>Schedule <span style={{ color: 'var(--t4)', fontWeight: 500 }}>(leave blank to use “Run now”)</span></label>
+                <input style={S.input} type="datetime-local" value={toLocalInput(editing.schedule?.send_at)} onChange={(e) => setEditing({ ...editing, schedule: { ...editing.schedule, send_at: e.target.value ? new Date(e.target.value).toISOString() : undefined } })} />
+              </div>
             </div>
           )}
+
+          <div style={S.field}><label style={S.label}>Exclude segment <span style={{ color: 'var(--t4)', fontWeight: 500 }}>opt. — these customers never get it</span></label>
+            <select style={S.input} value={editing.exclusion_segment_id || ''} onChange={(e) => setEditing({ ...editing, exclusion_segment_id: e.target.value })}>
+              <option value="">No exclusions</option>
+              {segmentOptions()}
+            </select>
+          </div>
 
           {(editing.channel === 'email' || editing.channel === 'both') && (
             <>
