@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.526', date: '17 Jun 2026', label: 'Deploy — activate the hourly marketing cron',
+    changes: [
+      'Redeploy so the production app picks up the cron authentication secrets (CRON_SECRET / MARKETING_RUN_SECRET) — enabling the hourly marketing run that fires birthday, recurring, scheduled and forecast campaigns plus drip workflows.',
+    ],
+  },
+  {
     version: '5.5.525', date: '17 Jun 2026', label: 'Online orders — record net revenue (accounting fix)',
     changes: [
       'Fixed: online orders recorded the GROSS order value even when a gift card or loyalty reward was applied, overstating online revenue (and over-crediting campaigns/offers in the Marketing report). They now record the NET amount actually paid — consistent with POS and kiosk. Forward-only; historical online orders are left unchanged to preserve already-closed periods.',
