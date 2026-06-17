@@ -28,7 +28,7 @@
 //   RECEIPT_EMAIL_FROM (defaults to 'hello@posup.co.uk')
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { resolveSenderFrom, type Sender } from '../_shared/sending-domain.ts';
+import { resolveSenderFrom, callerCanBrandForLocation, type Sender } from '../_shared/sending-domain.ts';
 import { resolveAndRender } from '../_shared/template-resolver.ts';
 import { wrapInEmailHtml } from '../_shared/template-resolver.ts';
 
@@ -212,7 +212,9 @@ Deno.serve(async (req) => {
       );
     }
 
-    const sender = await resolveSenderFrom(opsAdmin, location_id, EMAIL_FROM);   // per-venue branded From, else platform default
+    // Branded From only for trusted callers (service-role / user with location access), else platform default.
+    const branded = await callerCanBrandForLocation(req, opsAdmin, location_id, SERVICE_ROLE);
+    const sender = await resolveSenderFrom(opsAdmin, branded ? location_id : null, EMAIL_FROM);
     emailSent = await sendEmail(customer.email, subject, html, sender);
 
     // Audit log

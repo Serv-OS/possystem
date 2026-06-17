@@ -91,7 +91,7 @@ Deno.serve(async (req) => {
     if (!row) return json({ error: 'domain not found' }, 404);
     const from = String(body.from_address || '').trim().toLowerCase();
     if (from && !from.endsWith(`@${row.domain}`)) return json({ error: `the From address must end with @${row.domain}` }, 400);
-    const { data, error } = await sb.from('org_sending_domains').update({ from_name: body.from_name || null, from_address: from || null, reply_to: body.reply_to || null, updated_at: now }).eq('id', String(body.id)).eq('org_id', org_id).select('*').maybeSingle();
+    const { data, error } = await sb.from('org_sending_domains').update({ from_name: body.from_name || null, from_address: from || null, reply_to: String(body.reply_to || '').trim() || null, updated_at: now }).eq('id', String(body.id)).eq('org_id', org_id).select('*').maybeSingle();
     if (error) return json({ error: error.message }, 500);
     return json({ ok: true, domain: data });
   }
@@ -101,8 +101,8 @@ Deno.serve(async (req) => {
     const { data: row } = await sb.from('org_sending_domains').select('*').eq('id', String(body.id)).eq('org_id', org_id).maybeSingle();
     if (!row) return json({ error: 'domain not found' }, 404);
     if (active && (row.status !== 'verified' || !row.from_address)) return json({ error: 'verify the domain and set a From address before activating' }, 400);
-    if (active) await sb.from('org_sending_domains').update({ is_active: false, updated_at: now }).eq('org_id', org_id).neq('id', row.id);  // one active per org
-    const { error } = await sb.from('org_sending_domains').update({ is_active: active, updated_at: now }).eq('id', row.id);
+    // Atomic deactivate-others + activate-this (one transaction) so a partial failure can't leave zero active.
+    const { error } = await sb.rpc('marketing_set_active_domain', { p_org: org_id, p_id: row.id, p_active: active });
     if (error) return json({ error: error.message }, 500);
     return json({ ok: true });
   }

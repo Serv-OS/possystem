@@ -9,7 +9,7 @@
 // matching API key secret. No UI/UX changes needed.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.0';
-import { resolveSenderFrom, type Sender } from '../_shared/sending-domain.ts';
+import { resolveSenderFrom, callerCanBrandForLocation, type Sender } from '../_shared/sending-domain.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -78,8 +78,10 @@ Deno.serve(async (req) => {
 
   try {
     let result: { provider_message_id?: string };
-    // per-venue branded From (verified custom domain), else the platform default.
-    const sender = await resolveSenderFrom(sb, body.location_id, Deno.env.get('RECEIPT_EMAIL_FROM') || 'receipts@posup.co.uk');
+    // per-venue branded From — but ONLY for trusted callers (service-role / user with location access);
+    // anonymous kiosk/online callers still send, from the platform default (no cross-tenant domain spoof).
+    const branded = await callerCanBrandForLocation(req, sb, body.location_id, SERVICE_ROLE);
+    const sender = await resolveSenderFrom(sb, branded ? body.location_id : null, Deno.env.get('RECEIPT_EMAIL_FROM') || 'receipts@posup.co.uk');
     switch (PROVIDER) {
       case 'resend':   result = await sendViaResend(body, sender); break;
       case 'postmark': result = await sendViaPostmark(body, sender); break;
@@ -155,7 +157,7 @@ async function sendViaSendgrid(body: RequestBody, sender: Sender) {
   const res = await fetch('https://api.sendgrid.com/v3/mail/send', {
     method: 'POST',
     headers: { 'authorization': `Bearer ${key}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ personalizations: [{ to: [{ email: body.to }] }], from: { email: sender.email, ...(sender.name ? { name: sender.name } : {}) }, ...(sender.replyTo ? { reply_to: { email: sender.replyTo } } : {}), subject: body.subject || 'Your receipt', content }),
+    body: JSON.stringify({ personalizations: [{ to: [{ email: body.to }] }], from: { email: sender.email, ...(sender.name ? { name: sender.name } : {}) }, ...(sender.replyTo ? { reply_to: { email: (sender.replyTo.match(/<([^>]+)>/)?.[1] || sender.replyTo).trim() } } : {}), subject: body.subject || 'Your receipt', content }),
   });
   if (!res.ok) { const t = await res.text().catch(() => ''); throw new Error(`SendGrid HTTP ${res.status} ${t.slice(0, 200)}`); }
   return { provider_message_id: res.headers.get('x-message-id') || undefined };

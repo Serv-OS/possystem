@@ -160,7 +160,7 @@ async function sendEmail(to: string, subject: string, html: string, text: string
     if (html) content.push({ type: 'text/html', value: html });
     const r = await withRetry(() => fetch('https://api.sendgrid.com/v3/mail/send', {
       method: 'POST', headers: { Authorization: `Bearer ${SENDGRID_KEY}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ personalizations: [{ to: [{ email: to }] }], from: { email: sender.email, ...(sender.name ? { name: sender.name } : {}) }, ...(sender.replyTo ? { reply_to: { email: sender.replyTo } } : {}), subject: subject || ' ', content, ...(Object.keys(headers).length ? { headers } : {}) }),
+      body: JSON.stringify({ personalizations: [{ to: [{ email: to }] }], from: { email: sender.email, ...(sender.name ? { name: sender.name } : {}) }, ...(sender.replyTo ? { reply_to: { email: (sender.replyTo.match(/<([^>]+)>/)?.[1] || sender.replyTo).trim() } } : {}), subject: subject || ' ', content, ...(Object.keys(headers).length ? { headers } : {}) }),
     }));
     if (!r.ok) { const t = await r.text().catch(() => ''); throw new Error(`SendGrid HTTP ${r.status} ${t.slice(0, 200)}`); }
     return { id: r.headers.get('x-message-id') || undefined };   // 202 Accepted, id in header

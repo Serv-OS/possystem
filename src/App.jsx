@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.521', date: '17 Jun 2026', label: 'Custom domains hardening (adversarial review fixes)',
+    changes: [
+      'Security: the branded sending domain is now only applied for trusted callers (an internal/server call, or a user with access to the venue) — anonymous kiosk/online callers still send, but from the platform default, so a guessed location_id can never make email go out from another venue\'s verified domain.',
+      'Robustness: activating a sending domain is now atomic (a partial failure can no longer leave a venue with zero active domains); the From display-name is RFC-5322-escaped (commas/quotes in a venue name no longer break the header); reply-to is trimmed and the SendGrid reply-to is parsed to a bare address.',
+    ],
+  },
+  {
     version: '5.5.520', date: '17 Jun 2026', label: 'Custom sending domains — branded email per venue (deliverability + brand)',
     changes: [
       'New Settings → Email domain: connect your own domain so marketing + receipts send from e.g. hello@mail.yourvenue.com instead of the shared sender. Add domain → copy the shown DNS records (MX + SPF + DKIM, with a DMARC tip) → Verify → set From + Reply-to → Make active → send a test. Better deliverability (your own authenticated domain reputation) and your brand in the inbox.',
