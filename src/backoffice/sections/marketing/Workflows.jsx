@@ -43,6 +43,7 @@ export default function Workflows() {
   const [loading, setLoading] = useState(true);
   const [workflows, setWorkflows] = useState([]);
   const [segments, setSegments] = useState([]);
+  const [prebuilt, setPrebuilt] = useState([]);
   const [offers, setOffers] = useState([]);
   const [editing, setEditing] = useState(null);
   const [expanded, setExpanded] = useState(0);
@@ -55,8 +56,15 @@ export default function Workflows() {
 
   const load = async (id = locId) => {
     const { data } = await supabase.functions.invoke('marketing-workflows', { body: { action: 'list_workflows', ops_location_id: id } });
-    setWorkflows(data?.workflows || []); setSegments(data?.segments || []); setOffers(data?.offers || []);
+    setWorkflows(data?.workflows || []); setSegments(data?.segments || []); setPrebuilt(data?.prebuilt || []); setOffers(data?.offers || []);
   };
+
+  const segmentOptions = () => (
+    <>
+      {prebuilt.length > 0 && <optgroup label="Prebuilt audiences">{prebuilt.map((p) => <option key={p.key} value={`prebuilt:${p.key}`}>{p.icon} {p.name}</option>)}</optgroup>}
+      {segments.length > 0 && <optgroup label="Your segments">{segments.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</optgroup>}
+    </>
+  );
 
   useEffect(() => {
     (async () => {
@@ -146,7 +154,7 @@ export default function Workflows() {
             </div>
             {(tr.type || 'signup') === 'birthday' && <div style={S.field}><label style={S.label}>Days before birthday</label><input style={S.input} type="number" min={0} max={60} value={tr.days_before ?? 7} onChange={(e) => setTrigger({ days_before: Number(e.target.value) })} /></div>}
             {tr.type === 'segment' && <div style={S.field}><label style={S.label}>Segment</label>
-              <select style={S.input} value={tr.segment_id || ''} onChange={(e) => setTrigger({ segment_id: e.target.value })}><option value="">Select…</option>{segments.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select>
+              <select style={S.input} value={tr.segment_id || ''} onChange={(e) => setTrigger({ segment_id: e.target.value })}><option value="">Select…</option>{segmentOptions()}</select>
             </div>}
           </div>
 

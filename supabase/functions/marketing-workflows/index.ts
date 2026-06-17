@@ -11,6 +11,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { runWorkflow, enrollCustomers } from '../_shared/workflow-engine.ts';
+import { PREBUILT, resolveSegmentRef } from '../_shared/segments-prebuilt.ts';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -54,7 +55,7 @@ Deno.serve(async (req) => {
       sb.from('segments').select('id, name').eq('org_id', org_id).order('name'),
       sb.from('offers').select('id, name').eq('org_id', org_id).eq('active', true).order('name'),
     ]);
-    return json({ workflows: workflows ?? [], segments: segments ?? [], offers: offers ?? [] });
+    return json({ workflows: workflows ?? [], segments: segments ?? [], offers: offers ?? [], prebuilt: PREBUILT });
   }
 
   if (action === 'save_workflow') {
@@ -73,6 +74,11 @@ Deno.serve(async (req) => {
         seen.add(key);
         return { ...st, key };
       });
+    }
+    // Persist any prebuilt audience picked for the segment filter or a segment entry trigger.
+    if ('segment_id' in row) row.segment_id = await resolveSegmentRef(sb, org_id, row.segment_id);
+    if (row.entry_trigger && typeof row.entry_trigger === 'object' && (row.entry_trigger as any).segment_id) {
+      (row.entry_trigger as any).segment_id = await resolveSegmentRef(sb, org_id, (row.entry_trigger as any).segment_id);
     }
     const { data, error } = await sb.from('workflows').upsert(row, { onConflict: 'id' }).select('*').maybeSingle();
     if (error) return json({ error: error.message }, 500);

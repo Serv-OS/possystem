@@ -53,6 +53,7 @@ export default function Campaigns() {
   const [loading, setLoading] = useState(true);
   const [campaigns, setCampaigns] = useState([]);
   const [segments, setSegments] = useState([]);
+  const [prebuilt, setPrebuilt] = useState([]);
   const [offers, setOffers] = useState([]);
   const [editing, setEditing] = useState(null);
   const [save, setSave] = useState({});
@@ -66,8 +67,16 @@ export default function Campaigns() {
 
   const load = async (id = locId) => {
     const { data } = await supabase.functions.invoke('marketing-campaigns', { body: { action: 'list_campaigns', ops_location_id: id } });
-    setCampaigns(data?.campaigns || []); setSegments(data?.segments || []); setOffers(data?.offers || []);
+    setCampaigns(data?.campaigns || []); setSegments(data?.segments || []); setPrebuilt(data?.prebuilt || []); setOffers(data?.offers || []);
   };
+
+  // Segment <select> options: prebuilt audiences (value "prebuilt:<key>") + the org's saved segments.
+  const segmentOptions = () => (
+    <>
+      {prebuilt.length > 0 && <optgroup label="Prebuilt audiences">{prebuilt.map((p) => <option key={p.key} value={`prebuilt:${p.key}`}>{p.icon} {p.name}</option>)}</optgroup>}
+      {segments.length > 0 && <optgroup label="Your segments">{segments.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</optgroup>}
+    </>
+  );
 
   useEffect(() => {
     (async () => {
@@ -106,6 +115,15 @@ export default function Campaigns() {
   const del = async (c) => { if (!window.confirm(`Delete campaign "${c.name}"?`)) return; try { await call('delete_campaign', { id: c.id }); await load(); } catch (e) { alert(e.message); } };
 
   const runNow = async (c) => {
+    // Safety rail: show an audience count (when a segment is set) and confirm before sending for real.
+    let note = '';
+    try {
+      if (c.segment_id) {
+        const { data } = await supabase.functions.invoke('marketing-segments', { body: { action: 'preview_segment', ops_location_id: locId, id: c.segment_id } });
+        if (typeof data?.count === 'number') note = c.type === 'automation' ? ` Up to ${data.count} in the audience (before the ${c.trigger?.type || 'trigger'} filter).` : ` About ${data.count} customer${data.count === 1 ? '' : 's'} will be messaged.`;
+      }
+    } catch { /* count is best-effort */ }
+    if (!window.confirm(`Send "${c.name}" now?${note} Codes will be issued and messages sent — this can't be undone.`)) return;
     setRunMsg((s) => ({ ...s, [c.id]: { busy: true } }));
     try { const d = await call('run_now', { id: c.id }); setRunMsg((s) => ({ ...s, [c.id]: { summary: d.summary } })); await load(); }
     catch (e) { setRunMsg((s) => ({ ...s, [c.id]: { err: e.message } })); }
@@ -226,7 +244,7 @@ export default function Campaigns() {
               <div style={S.field}><label style={S.label}>{editing.type === 'automation' ? 'Also limit to segment' : 'Audience'} <span style={{ color: 'var(--t4)', fontWeight: 500 }}>opt.</span></label>
                 <select style={S.input} value={editing.segment_id} onChange={(e) => setEditing({ ...editing, segment_id: e.target.value })}>
                   <option value="">Everyone matching the trigger</option>
-                  {segments.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  {segmentOptions()}
                 </select>
               </div>
             </div>
@@ -234,7 +252,7 @@ export default function Campaigns() {
             <div style={S.field}><label style={S.label}>Audience (segment)</label>
               <select style={S.input} value={editing.segment_id} onChange={(e) => setEditing({ ...editing, segment_id: e.target.value })}>
                 <option value="">Select a segment…</option>
-                {segments.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                {segmentOptions()}
               </select>
             </div>
           )}

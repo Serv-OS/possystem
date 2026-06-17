@@ -11,25 +11,14 @@
 //   resolve_segment  { ops_location_id, id? | definition, limit? }→ { customer_ids:[...] }   (slice 4)
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { PREBUILT } from '../_shared/segments-prebuilt.ts';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const opsAdmin = createClient(Deno.env.get('SUPABASE_URL') ?? '', SERVICE_ROLE, { auth: { autoRefreshToken: false, persistSession: false } });
 
-// Prebuilt audience catalogue (editable thresholds via `params`; "Save as segment" persists a copy).
-const PREBUILT = [
-  { key: 'vips', name: 'VIPs', description: 'Top spenders by lifetime revenue', icon: '💎', definition: { match: 'all', rules: [{ field: 'lifetime_revenue', op: 'gte', value: 250 }] } },
-  { key: 'regulars', name: 'Regulars', description: 'Frequent visitors', icon: '🔁', definition: { match: 'all', rules: [{ field: 'visit_count', op: 'gte', value: 5 }] } },
-  { key: 'new_customers', name: 'New customers', description: 'Joined in the last 30 days', icon: '🌱', definition: { match: 'all', rules: [{ field: 'signed_up_days', op: 'lte', value: 30 }] } },
-  { key: 'lapsed_30', name: 'At risk (30d)', description: 'No visit in 30+ days', icon: '⏳', definition: { match: 'all', rules: [{ field: 'days_since_visit', op: 'gte', value: 30 }] } },
-  { key: 'lapsed_90', name: 'Lapsed (90d)', description: 'No visit in 90+ days', icon: '💤', definition: { match: 'all', rules: [{ field: 'days_since_visit', op: 'gte', value: 90 }] } },
-  { key: 'birthdays_7', name: 'Birthdays this week', description: 'Birthday within 7 days', icon: '🎂', definition: { match: 'all', rules: [{ field: 'birthday_in_days', op: 'gte', value: 0 }, { field: 'birthday_in_days', op: 'lte', value: 7 }] } },
-  { key: 'birthdays_30', name: 'Birthdays this month', description: 'Birthday within 30 days', icon: '🎈', definition: { match: 'all', rules: [{ field: 'birthday_in_days', op: 'gte', value: 0 }, { field: 'birthday_in_days', op: 'lte', value: 30 }] } },
-  { key: 'email_optin', name: 'Email subscribers', description: 'Has email + opted in to marketing', icon: '✉️', definition: { match: 'all', rules: [{ field: 'has_email', op: 'is_true' }, { field: 'marketing_opt_in', op: 'is_true' }] } },
-  { key: 'sms_optin', name: 'SMS subscribers', description: 'Has mobile + opted in to marketing', icon: '📱', definition: { match: 'all', rules: [{ field: 'has_phone', op: 'is_true' }, { field: 'marketing_opt_in', op: 'is_true' }] } },
-];
-
+// Prebuilt audience catalogue is shared with the campaign/workflow pickers (see _shared/segments-prebuilt.ts).
 const SEGMENT_FIELDS = ['name', 'description', 'kind', 'prebuilt_key', 'definition', 'active'];
 
 async function authed(req: Request, opsLocationId: string): Promise<boolean> {

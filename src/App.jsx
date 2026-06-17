@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.514', date: '16 Jun 2026', label: 'Marketing v2 Phase 0: prebuilt audiences usable in campaigns/workflows + send confirmation',
+    changes: [
+      'Fix: the prebuilt audiences (VIPs, Regulars, At-risk, Birthdays, Email/SMS subscribers) are now selectable directly in the Campaign and Workflow segment pickers — previously only hand-saved segments appeared, so the dropdowns looked empty. Picking a prebuilt persists it on first use, so it also shows under "Your segments" afterwards.',
+      'Safety: "Run now" on a campaign now shows a confirmation (with an audience count when a segment is set) before issuing codes and sending — no more accidental mass sends.',
+    ],
+  },
+  {
     version: '5.5.513', date: '16 Jun 2026', label: 'Marketing: fix suppression address matching (exact, not pattern) — compliance hardening',
     changes: [
       'Suppression lookups/deletes now match the address EXACTLY instead of as a SQL LIKE pattern. Because "_" and "%" are valid in email addresses (e.g. john_smith@…), the previous pattern match could: on opt-in, clear a different customer\'s suppression (silently re-subscribing someone who had unsubscribed/bounced); and in the sender\'s suppression check, fail to block a genuinely suppressed address when more than one matched. Found by adversarial review of the compliance layer; fixed in marketing-send + marketing-preferences (the operator suppression search stays a substring search by design).',

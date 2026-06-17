@@ -11,6 +11,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { runCampaign } from '../_shared/campaign-engine.ts';
+import { PREBUILT, resolveSegmentRef } from '../_shared/segments-prebuilt.ts';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -53,7 +54,7 @@ Deno.serve(async (req) => {
       sb.from('segments').select('id, name').eq('org_id', org_id).order('name'),
       sb.from('offers').select('id, name, reward_type, reward_value, reward_label').eq('org_id', org_id).eq('active', true).order('name'),
     ]);
-    return json({ campaigns: campaigns ?? [], segments: segments ?? [], offers: offers ?? [] });
+    return json({ campaigns: campaigns ?? [], segments: segments ?? [], offers: offers ?? [], prebuilt: PREBUILT });
   }
 
   if (action === 'save_campaign') {
@@ -62,6 +63,8 @@ Deno.serve(async (req) => {
     for (const k of CAMPAIGN_FIELDS) if (k in incoming) row[k] = incoming[k];
     if (incoming.id) row.id = incoming.id;
     if (!row.name) return json({ error: 'name required' }, 400);
+    // Persist a prebuilt audience on first use so segment_id is always a real id the engine can resolve.
+    if ('segment_id' in row) row.segment_id = await resolveSegmentRef(sb, org_id, row.segment_id);
     const { data, error } = await sb.from('campaigns').upsert(row, { onConflict: 'id' }).select('*').maybeSingle();
     if (error) return json({ error: error.message }, 500);
     return json({ ok: true, campaign: data });
