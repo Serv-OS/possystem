@@ -156,7 +156,7 @@ export default function QuickSend() {
         {(form.channel === 'email' || form.channel === 'both') && (
           <>
             <div style={S.field}><label style={S.label}>Email subject</label><input style={S.input} value={form.subject} onChange={(e) => setForm({ ...form, subject: e.target.value })} placeholder="A little something for you, {{first_name}}" /></div>
-            <div style={S.field}><label style={S.label}>Email content</label><EmailBuilder blocks={form.email_blocks} onChange={(b) => setForm({ ...form, email_blocks: b })} /></div>
+            <div style={S.field}><label style={S.label}>Email content</label><EmailBuilder blocks={form.email_blocks} onChange={(b) => setForm({ ...form, email_blocks: b })} locationId={locId} /></div>
           </>
         )}
         {(form.channel === 'sms' || form.channel === 'both') && (

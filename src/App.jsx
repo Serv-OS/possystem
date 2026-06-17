@@ -85,6 +85,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.516', date: '17 Jun 2026', label: 'Marketing v2 Phase 2: visual email builder + image upload',
+    changes: [
+      'The email builder is now a visual designer: a Design & branding panel sets the page + email background colours, content width, font, and a header logo; each block has its own section background colour, padding, alignment and text colour; buttons take a brand colour + you can set one brand colour for the whole email. Live preview reflects it all.',
+      'Images can now be UPLOADED (drag a file) instead of pasting a URL — image blocks and the header logo upload to Supabase Storage (the public receipt-assets bucket). "Use my branding" pulls the venue logo straight from Receipt branding.',
+      'All design lives inside the email content (a hidden settings block), so it flows through campaigns, quick-send and every workflow step unchanged — no new columns, fully backward-compatible with existing emails.',
+    ],
+  },
+  {
     version: '5.5.515', date: '17 Jun 2026', label: 'Marketing v2 Phase 1: Quick Send (bulk blast)',
     changes: [
       'New Back Office → Customers → Quick send: blast an offer to a segment right now without setting up a saved campaign. Pick the audience (prebuilt or saved) → see the live recipient count → write the email (block builder) and/or SMS → attach an offer for unique single-use codes → Send now (with confirmation). Consent + suppression are enforced as always.',

@@ -181,7 +181,7 @@ export default function Workflows() {
                   {(st.channel === 'email' || st.channel === 'both') && (
                     <>
                       <div style={S.field}><label style={S.label}>Email subject</label><input style={S.input} value={st.subject || ''} onChange={(e) => setStep(i, { subject: e.target.value })} placeholder="Welcome {{first_name}}!" /></div>
-                      <div style={S.field}><label style={S.label}>Email content</label><EmailBuilder blocks={st.email_blocks} onChange={(blocks) => setStep(i, { email_blocks: blocks })} /></div>
+                      <div style={S.field}><label style={S.label}>Email content</label><EmailBuilder blocks={st.email_blocks} onChange={(blocks) => setStep(i, { email_blocks: blocks })} locationId={locId} /></div>
                     </>
                   )}
                   {(st.channel === 'sms' || st.channel === 'both') && (

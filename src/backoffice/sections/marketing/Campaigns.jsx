@@ -261,7 +261,7 @@ export default function Campaigns() {
             <>
               <div style={S.field}><label style={S.label}>Email subject</label><input style={S.input} value={editing.subject} onChange={(e) => setEditing({ ...editing, subject: e.target.value })} placeholder="Happy birthday {{first_name}}!" /></div>
               <div style={S.field}><label style={S.label}>Email content</label>
-                <EmailBuilder blocks={editing.email_blocks} onChange={(blocks) => setEditing({ ...editing, email_blocks: blocks })} />
+                <EmailBuilder blocks={editing.email_blocks} onChange={(blocks) => setEditing({ ...editing, email_blocks: blocks })} locationId={locId} />
               </div>
             </>
           )}
