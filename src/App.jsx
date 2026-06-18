@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.537', date: '17 Jun 2026', label: 'Fix — catering item images now show',
+    changes: [
+      'Menu item photos now appear on the catering ordering site (each item card shows its image like the online ordering menu does) — previously the catering cards were text-only.',
+    ],
+  },
+  {
     version: '5.5.536', date: '17 Jun 2026', label: 'Fix — catering checkout silently closed the basket',
     changes: [
       'Fixed: tapping checkout on the catering site just closed the basket when something was missing (usually the event date/time, or being under the order minimum). It now tells you exactly what’s needed and scrolls you to the event details, and proceeds to checkout once everything’s set.',

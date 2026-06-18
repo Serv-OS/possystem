@@ -254,10 +254,13 @@ export default function CateringSurface({ location }) {
                   const lim = limitFor(item.id);
                   const limText = [lim.min ? `min ${lim.min}` : '', lim.max ? `max ${lim.max}` : ''].filter(Boolean).join(' · ');
                   return (
-                    <button key={item.id} disabled={sold} onClick={() => setOpenItem(item)} style={{ textAlign: 'left', background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, padding: 14, cursor: sold ? 'default' : 'pointer', opacity: sold ? 0.5 : 1 }}>
-                      <div style={{ fontWeight: 700 }}>{item.menu_name || item.name}</div>
-                      {item.description && <div style={{ fontSize: 12.5, color: '#64748b', marginTop: 3 }}>{item.description}</div>}
-                      <div style={{ marginTop: 8, fontWeight: 800, color: theme.brand }}>{sold ? 'Sold out' : money(Number(item.pricing?.base ?? item.price ?? 0), cur)}{!sold && limText && <span style={{ fontSize: 11.5, fontWeight: 600, color: '#94a3b8', marginLeft: 8 }}>{limText}</span>}</div>
+                    <button key={item.id} disabled={sold} onClick={() => setOpenItem(item)} style={{ textAlign: 'left', background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', cursor: sold ? 'default' : 'pointer', opacity: sold ? 0.55 : 1 }}>
+                      {item.image && <div style={{ width: '100%', height: 150, backgroundImage: `url(${item.image})`, backgroundSize: 'cover', backgroundPosition: 'center', filter: sold ? 'grayscale(1)' : 'none' }} />}
+                      <div style={{ padding: 14 }}>
+                        <div style={{ fontWeight: 700 }}>{item.menu_name || item.name}</div>
+                        {item.description && <div style={{ fontSize: 12.5, color: '#64748b', marginTop: 3 }}>{item.description}</div>}
+                        <div style={{ marginTop: 8, fontWeight: 800, color: theme.brand }}>{sold ? 'Sold out' : money(Number(item.pricing?.base ?? item.price ?? 0), cur)}{!sold && limText && <span style={{ fontSize: 11.5, fontWeight: 600, color: '#94a3b8', marginLeft: 8 }}>{limText}</span>}</div>
+                      </div>
                     </button>
                   );
                 })}
