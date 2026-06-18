@@ -94,6 +94,8 @@ export function parseCustomerUrl(loc = (typeof window !== 'undefined' ? window.l
     mode = 'review';
   } else if (pathname === '/wifi' || pathname.startsWith('/wifi/')) {
     mode = 'wifi';
+  } else if (pathname === '/catering' || pathname.startsWith('/catering/')) {
+    mode = 'catering';
   } else if (pathname.startsWith('/guest')) {
     // UniFi's external captive portal redirects to <host>/guest/s/<site>/?id=&ap=&ssid=…
     // so point UniFi's "External Portal" field straight at the venue host and it lands here.
@@ -108,6 +110,7 @@ export function parseCustomerUrl(loc = (typeof window !== 'undefined' ? window.l
     else if (surface === 'gift_balance') mode = 'gift_balance';
     else if (surface === 'review')    mode = 'review';
     else if (surface === 'wifi')      mode = 'wifi';
+    else if (surface === 'catering')  mode = 'catering';
     else if (surface === 'online')    mode = 'online';
     else if (slug) mode = 'online'; // having a slug implies online by default
   }

@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.528', date: '17 Jun 2026', label: 'Catering ordering — customer ordering site (step 2)',
+    changes: [
+      'Guests can now order catering at your-venue/catering: browse the catering menus (reusing the online item builder + basket), pick an event date + time, and check out. The catering rules are enforced — lead time (min/max days), closed dates/hours, order minimum, and a per-day capacity gate that blocks fully-booked dates.',
+      'Orders land in your Orders hub tagged as catering (so they fire your existing order notifications). This step supports “pay later” (the order arrives confirmed-unpaid for you to arrange payment); online card payment + deposits come next.',
+    ],
+  },
+  {
     version: '5.5.527', date: '17 Jun 2026', label: 'Catering ordering — setup page (new module, step 1)',
     changes: [
       'New Channels → Catering ordering: a single setup page for a catering order site — hours + closed dates, lead time (min/max days) + prep time, order minimum, tips, takeout/delivery with delivery radius + fee, which menus to show, checkout options (tax-exempt/VAT id, promo code, pay-later), and per-day capacity with date overrides. Multi-currency (£/$/€) per location.',
@@ -6644,7 +6651,7 @@ export default function App() {
   // customers never see the device pairing / mode selector screens.
   // Operator URLs (?mode=pos / mpos / office / admin / kiosk) take
   // precedence so an operator on the same hostname still gets their tools.
-  const CUSTOMER_MODES = ['online', 'qr', 'gift', 'gift_balance', 'gift_success', 'account', 'review', 'wifi'];
+  const CUSTOMER_MODES = ['online', 'qr', 'gift', 'gift_balance', 'gift_success', 'account', 'review', 'wifi', 'catering'];
   const urlMode = new URLSearchParams(window.location.search).get('mode');
   // Public Workforce contract-signing page: /sign/<token>
   const signMatch = window.location.pathname.match(/^\/sign\/([A-Za-z0-9_-]{8,})/);

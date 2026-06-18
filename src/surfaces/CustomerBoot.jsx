@@ -23,6 +23,7 @@ import GiftSuccessSurface from './gift/GiftSuccessSurface';
 import CustomerPortal from './customer/CustomerPortal';
 import ReviewSurface from './ReviewSurface';
 import WifiSurface from './WifiSurface';
+import CateringSurface from './catering/CateringSurface';
 
 export default function CustomerBoot({ slug, mode, tableId }) {
   const [state, setState] = useState({ loading: true, location: null, error: null });
@@ -78,6 +79,10 @@ export default function CustomerBoot({ slug, mode, tableId }) {
   // WiFi captive-portal — always available (guests connect any time the venue
   // exists; not gated by opening hours or online-ordering being on).
   if (mode === 'wifi')         return <WifiSurface location={loc}/>;
+
+  // Catering ordering — has its OWN hours/lead-time (set in BO), so it bypasses the
+  // venue's live opening-hours gate below. The surface self-checks the catering site is enabled.
+  if (mode === 'catering')     return <CateringSurface location={loc}/>;
 
   // Surface enabled check
   if (mode === 'online' && !loc.online_enabled) {
