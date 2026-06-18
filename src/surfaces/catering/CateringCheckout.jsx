@@ -140,7 +140,7 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
 
   return (
     <div style={{ position: 'fixed', inset: 0, overflowY: 'auto', overflowX: 'hidden', WebkitOverflowScrolling: 'touch', paddingBottom: 40, background: theme.bg || '#f5f5f5', color: theme.fg || '#0f172a', fontFamily: '-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",system-ui,sans-serif' }}>
-      <header style={{ background: theme.accent, color: '#fff', padding: '16px 0' }}>
+      <header style={{ background: theme.brand, color: '#fff', padding: '16px 0' }}>
         <div style={{ ...center, display: 'flex', alignItems: 'center', gap: 12 }}>
           {theme.logo && <img src={theme.logo} alt={theme.name} style={{ width: 38, height: 38, borderRadius: 8, objectFit: 'cover', flexShrink: 0 }} />}
           <div>
@@ -195,7 +195,7 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
             )}
             {cfg.tips_enabled && (
               <div style={{ marginTop: 12 }}><label style={lbl}>Add a tip</label>
-                <div style={{ display: 'flex', gap: 8 }}>{[0, Number(cfg.tip_default_pct) || 10, 15, 20].filter((v, i, a) => a.indexOf(v) === i).map((p) => <button key={p} onClick={() => setTipPct(p)} style={{ padding: '8px 14px', borderRadius: 99, border: '1px solid #cbd5e1', background: tipPct === p ? theme.accent : '#fff', color: tipPct === p ? '#fff' : '#0f172a', cursor: 'pointer', fontWeight: 700 }}>{p === 0 ? 'No tip' : `${p}%`}</button>)}</div>
+                <div style={{ display: 'flex', gap: 8 }}>{[0, Number(cfg.tip_default_pct) || 10, 15, 20].filter((v, i, a) => a.indexOf(v) === i).map((p) => <button key={p} onClick={() => setTipPct(p)} style={{ padding: '8px 14px', borderRadius: 99, border: '1px solid #cbd5e1', background: tipPct === p ? theme.brand : '#fff', color: tipPct === p ? '#fff' : '#0f172a', cursor: 'pointer', fontWeight: 700 }}>{p === 0 ? 'No tip' : `${p}%`}</button>)}</div>
               </div>
             )}
             <div style={{ marginTop: 12 }}><label style={lbl}>Notes for the venue <span style={{ color: '#94a3b8', fontWeight: 500 }}>dietary needs, setup, etc.</span></label><textarea style={{ ...inp, minHeight: 70, resize: 'vertical' }} value={notes} onChange={(e) => setNotes(e.target.value)} /></div>
@@ -203,13 +203,13 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
             {cfg.allow_pay_later && (
               <div style={{ marginTop: 14 }}><label style={lbl}>Payment</label>
                 <div style={{ display: 'flex', gap: 8 }}>
-                  {[['now', 'Pay now by card'], ['later', 'Pay later']].map(([m, t]) => <button key={m} onClick={() => setPayMode(m)} style={{ padding: '9px 14px', borderRadius: 10, border: `1px solid ${payMode === m ? theme.accent : '#cbd5e1'}`, background: payMode === m ? theme.accent : '#fff', color: payMode === m ? '#fff' : '#0f172a', cursor: 'pointer', fontWeight: 700 }}>{t}</button>)}
+                  {[['now', 'Pay now by card'], ['later', 'Pay later']].map(([m, t]) => <button key={m} onClick={() => setPayMode(m)} style={{ padding: '9px 14px', borderRadius: 10, border: `1px solid ${payMode === m ? theme.brand : '#cbd5e1'}`, background: payMode === m ? theme.brand : '#fff', color: payMode === m ? '#fff' : '#0f172a', cursor: 'pointer', fontWeight: 700 }}>{t}</button>)}
                 </div>
               </div>
             )}
 
             {err && <div style={{ color: '#dc2626', fontSize: 13, marginTop: 12 }}>{err}</div>}
-            <button onClick={payMode === 'later' ? placeLater : startPayNow} disabled={busy || !valid} style={{ marginTop: 16, width: '100%', padding: '13px', borderRadius: 10, border: 'none', background: theme.accent, color: '#fff', fontWeight: 800, fontSize: 15, cursor: valid ? 'pointer' : 'default', opacity: valid && !busy ? 1 : 0.5 }}>
+            <button onClick={payMode === 'later' ? placeLater : startPayNow} disabled={busy || !valid} style={{ marginTop: 16, width: '100%', padding: '13px', borderRadius: 10, border: 'none', background: theme.brand, color: '#fff', fontWeight: 800, fontSize: 15, cursor: valid ? 'pointer' : 'default', opacity: valid && !busy ? 1 : 0.5 }}>
               {busy ? 'Please wait…' : payMode === 'later' ? `Place order — pay later (${money(total, cur)})` : `Continue to payment (${money(total, cur)})`}
             </button>
           </div>
@@ -240,7 +240,7 @@ function CateringPayStep({ theme, total, cur, pi, onPaid, onError }) {
       <div style={{ padding: 14, borderRadius: 12, border: '1.5px solid #cbd5e1', background: '#fff' }}>
         <CardElement options={{ style: { base: { color: '#0f172a', fontSize: '16px', fontFamily: 'inherit', '::placeholder': { color: '#9a9aa1' } } } }} />
       </div>
-      <button onClick={submit} disabled={busy} style={{ width: '100%', padding: '13px', borderRadius: 10, border: 'none', background: theme.accent, color: '#fff', fontWeight: 800, fontSize: 15, cursor: 'pointer', opacity: busy ? 0.6 : 1 }}>{busy ? 'Processing…' : `Pay ${money(total, cur)}`}</button>
+      <button onClick={submit} disabled={busy} style={{ width: '100%', padding: '13px', borderRadius: 10, border: 'none', background: theme.brand, color: '#fff', fontWeight: 800, fontSize: 15, cursor: 'pointer', opacity: busy ? 0.6 : 1 }}>{busy ? 'Processing…' : `Pay ${money(total, cur)}`}</button>
     </div>
   );
 }

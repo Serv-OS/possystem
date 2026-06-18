@@ -47,15 +47,15 @@ export default function CateringSurface({ location }) {
   const cur = cfg?.currency || (location.currency || 'gbp').toLowerCase();
   // Branding = the venue's online_branding (BO → Online ordering), falling back to receipt_branding.
   // Field names match OnlineSurface exactly (accent_color / background / foreground / logo_url / hero_url).
-  const theme = useMemo(() => ({
-    accent: branding?.accent_color || '#e8a020',
-    bg: branding?.background || '#ffffff',
-    fg: branding?.foreground || '#1a1a1a',
-    logo: branding?.logo_url || null,
-    hero: branding?.hero_url || null,
-    name: location.name || 'Catering',
-    isLight: isLightBackground(branding?.background || '#ffffff'),
-  }), [branding, location.name]);
+  const theme = useMemo(() => {
+    const accent = branding?.accent_color || '#e8a020';
+    const bg = branding?.background || '#ffffff';
+    const fg = branding?.foreground || '#1a1a1a';
+    // A primary colour that's ALWAYS readable with white text — a venue's accent can be very light
+    // (e.g. pale cream), which makes white-on-accent invisible. Prefer accent, fall back to fg, then slate.
+    const brand = !isLightBackground(accent) ? accent : (!isLightBackground(fg) ? fg : '#0f172a');
+    return { accent, bg, fg, brand, logo: branding?.logo_url || null, hero: branding?.hero_url || null, name: location.name || 'Catering', isLight: isLightBackground(bg) };
+  }, [branding, location.name]);
 
   useEffect(() => {
     (async () => {
@@ -185,15 +185,19 @@ export default function CateringSurface({ location }) {
 
   return (
     <div style={shell(theme)}>
-      <header style={{ background: theme.hero ? `linear-gradient(180deg, rgba(0,0,0,0.28) 0%, rgba(0,0,0,0.62) 100%), url(${theme.hero}) center/cover no-repeat` : theme.accent, color: '#fff', padding: theme.hero ? '36px 0' : '18px 0' }}>
-        <div style={{ ...center, display: 'flex', alignItems: 'center', gap: 12 }}>
-          {theme.logo && <img src={theme.logo} alt={theme.name} style={{ width: 46, height: 46, borderRadius: 10, objectFit: 'cover', flexShrink: 0 }} />}
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 20, fontWeight: 800 }}>{theme.name} — Catering</div>
-            {cfg.banner_message && <div style={{ marginTop: 4, opacity: 0.92, fontSize: 13.5 }}>{cfg.banner_message}</div>}
+      <div style={{ position: 'relative', height: 200, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', color: '#fff',
+        background: theme.hero ? `linear-gradient(180deg, rgba(0,0,0,0.35) 0%, rgba(0,0,0,0.8) 100%), url(${theme.hero}) center/cover no-repeat` : `linear-gradient(160deg, ${theme.brand} 0%, rgba(0,0,0,0.5) 100%)` }}>
+        <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: 50, background: `linear-gradient(180deg, transparent, ${theme.bg})`, pointerEvents: 'none' }} />
+        <div style={{ ...center, position: 'relative', display: 'flex', alignItems: 'center', gap: 16, paddingBottom: 18 }}>
+          {theme.logo
+            ? <img src={theme.logo} alt={theme.name} style={{ width: 72, height: 72, borderRadius: 16, objectFit: 'cover', border: '3px solid #fff', boxShadow: '0 8px 24px rgba(0,0,0,0.35)', flexShrink: 0, background: '#fff' }} />
+            : <div style={{ width: 72, height: 72, borderRadius: 16, background: theme.brand, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 32, fontWeight: 900, border: '3px solid #fff', flexShrink: 0 }}>{(theme.name || 'C')[0]}</div>}
+          <div style={{ minWidth: 0, textShadow: '0 2px 10px rgba(0,0,0,0.55)' }}>
+            <div style={{ fontSize: 24, fontWeight: 800 }}>{theme.name}</div>
+            <div style={{ fontSize: 14, fontWeight: 700, opacity: 0.95 }}>Catering{cfg.banner_message ? ` · ${cfg.banner_message}` : ''}</div>
           </div>
         </div>
-      </header>
+      </div>
 
       <div style={{ ...center, paddingTop: 16, paddingBottom: 120 }}>
         {/* Event details */}
@@ -206,7 +210,7 @@ export default function CateringSurface({ location }) {
           {(cfg.takeout_enabled && cfg.delivery_enabled) && (
             <div style={{ marginTop: 12 }}><label style={lbl}>How would you like it?</label>
               <div style={{ display: 'flex', gap: 8 }}>
-                {['collection', 'delivery'].map((f) => <button key={f} onClick={() => setFulfilment(f)} style={{ ...pill, ...(fulfilment === f ? { background: theme.accent, color: '#fff', borderColor: theme.accent } : {}) }}>{f === 'collection' ? 'Collection' : 'Delivery'}</button>)}
+                {['collection', 'delivery'].map((f) => <button key={f} onClick={() => setFulfilment(f)} style={{ ...pill, ...(fulfilment === f ? { background: theme.brand, color: '#fff', borderColor: theme.brand } : {}) }}>{f === 'collection' ? 'Collection' : 'Delivery'}</button>)}
               </div>
             </div>
           )}
@@ -214,7 +218,7 @@ export default function CateringSurface({ location }) {
             Orders {minDays > 0 ? `at least ${minDays} day${minDays === 1 ? '' : 's'} ahead` : 'for upcoming dates'}{maxDays ? `, up to ${maxDays} days out` : ''}. Minimum order {money(minOrder, cur)}.
             {eventDate && dateProblem && <span style={{ color: '#dc2626', fontWeight: 700 }}> · {dateProblem}</span>}
           </div>
-          {atCapacity && nextDate && <button onClick={() => setEventDate(nextDate)} style={{ ...pill, marginTop: 8, fontSize: 12.5, borderColor: theme.accent, color: theme.accent }}>Next available: {new Date(nextDate + 'T00:00:00').toLocaleDateString('en-GB')} — use this date</button>}
+          {atCapacity && nextDate && <button onClick={() => setEventDate(nextDate)} style={{ ...pill, marginTop: 8, fontSize: 12.5, borderColor: theme.brand, color: theme.brand }}>Next available: {new Date(nextDate + 'T00:00:00').toLocaleDateString('en-GB')} — use this date</button>}
         </div>
 
         {/* Menu */}
@@ -234,7 +238,7 @@ export default function CateringSurface({ location }) {
                     <button key={item.id} disabled={sold} onClick={() => setOpenItem(item)} style={{ textAlign: 'left', background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, padding: 14, cursor: sold ? 'default' : 'pointer', opacity: sold ? 0.5 : 1 }}>
                       <div style={{ fontWeight: 700 }}>{item.menu_name || item.name}</div>
                       {item.description && <div style={{ fontSize: 12.5, color: '#64748b', marginTop: 3 }}>{item.description}</div>}
-                      <div style={{ marginTop: 8, fontWeight: 800, color: theme.accent }}>{sold ? 'Sold out' : money(Number(item.pricing?.base ?? item.price ?? 0), cur)}{!sold && limText && <span style={{ fontSize: 11.5, fontWeight: 600, color: '#94a3b8', marginLeft: 8 }}>{limText}</span>}</div>
+                      <div style={{ marginTop: 8, fontWeight: 800, color: theme.brand }}>{sold ? 'Sold out' : money(Number(item.pricing?.base ?? item.price ?? 0), cur)}{!sold && limText && <span style={{ fontSize: 11.5, fontWeight: 600, color: '#94a3b8', marginLeft: 8 }}>{limText}</span>}</div>
                     </button>
                   );
                 })}
@@ -273,4 +277,4 @@ export default function CateringSurface({ location }) {
 const lbl = { display: 'block', fontSize: 12, fontWeight: 700, color: '#475569', marginBottom: 5 };
 const inp = { width: '100%', boxSizing: 'border-box', border: '1px solid #cbd5e1', borderRadius: 10, padding: '9px 12px', fontSize: 14, fontFamily: 'inherit' };
 const pill = { padding: '9px 14px', borderRadius: 99, border: '1px solid #cbd5e1', background: '#fff', cursor: 'pointer', fontSize: 13.5, fontWeight: 700, fontFamily: 'inherit', color: '#0f172a' };
-const btnPrimary = (theme) => ({ padding: '11px 20px', borderRadius: 10, border: 'none', cursor: 'pointer', fontSize: 14, fontWeight: 800, fontFamily: 'inherit', background: theme.accent, color: '#fff' });
+const btnPrimary = (theme) => ({ padding: '11px 20px', borderRadius: 10, border: 'none', cursor: 'pointer', fontSize: 14, fontWeight: 800, fontFamily: 'inherit', background: theme.brand, color: '#fff' });

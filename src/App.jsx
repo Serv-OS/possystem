@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.535', date: '17 Jun 2026', label: 'Catering site — proper hero/image header',
+    changes: [
+      'The catering site now has a tall hero header with your logo (and your hero/banner image if you’ve set one under Online ordering branding) — matching the online ordering site, instead of a thin bar.',
+      'Fixed washed-out buttons/prices: when a venue’s accent colour is very light, the catering site now uses a guaranteed-readable brand colour for buttons, prices and the header so nothing disappears against a pale background.',
+    ],
+  },
+  {
     version: '5.5.534', date: '17 Jun 2026', label: 'Fix — catering site scroll + branding',
     changes: [
       'Fixed: the catering ordering site (and its checkout) wouldn’t scroll — they now use their own scroll container like the online ordering site.',
