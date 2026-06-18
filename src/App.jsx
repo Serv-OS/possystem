@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.527', date: '17 Jun 2026', label: 'Catering ordering — setup page (new module, step 1)',
+    changes: [
+      'New Channels → Catering ordering: a single setup page for a catering order site — hours + closed dates, lead time (min/max days) + prep time, order minimum, tips, takeout/delivery with delivery radius + fee, which menus to show, checkout options (tax-exempt/VAT id, promo code, pay-later), and per-day capacity with date overrides. Multi-currency (£/$/€) per location.',
+      'You complete the setup; the catering site stays off until the required fields are filled. This is step 1 of the catering ordering module — the customer-facing ordering site and live orders/calendar come next.',
+    ],
+  },
+  {
     version: '5.5.526', date: '17 Jun 2026', label: 'Deploy — activate the hourly marketing cron',
     changes: [
       'Redeploy so the production app picks up the cron authentication secrets (CRON_SECRET / MARKETING_RUN_SECRET) — enabling the hourly marketing run that fires birthday, recurring, scheduled and forecast campaigns plus drip workflows.',

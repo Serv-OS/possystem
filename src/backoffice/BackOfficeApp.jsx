@@ -46,6 +46,7 @@ import Campaigns from './sections/marketing/Campaigns';
 import QuickSend from './sections/marketing/QuickSend';
 import Workflows from './sections/marketing/Workflows';
 import MarketingReports from './sections/marketing/MarketingReports';
+import CateringSettings from './sections/CateringSettings';
 import Compliance from './sections/marketing/Compliance';
 import SendingDomain from './sections/marketing/SendingDomain';
 import MenuBoards from './sections/MenuBoards';
@@ -103,7 +104,7 @@ const NAV_IA = [
   { label:'Team',       icon:'user',      single:'staff' },
   { label:'Workforce',  icon:'team',      children:[['wf-dashboard','Dashboard'],['wf-rota','Rota'],['wf-timesheets','Timesheets'],['wf-payroll','Payroll'],['wf-timeoff','Time off & availability'],['wf-staff','Staff'],['wf-onboarding','Onboarding'],['wf-compliance','Compliance'],['wf-pay','Positions & rates'],['wf-tronc','Tronc / tips'],['wf-announce','Announcements'],['wf-settings','Workforce settings']] },
   { label:'Customers',  icon:'customers', children:[['customers','Customers'],['promotions','Promotions'],['segments','Segments'],['campaigns','Campaigns'],['quicksend','Quick send'],['workflows','Workflows'],['marketing-reports','Marketing report'],['compliance','Marketing compliance'],['wifi','WiFi'],['reviews','Reviews'],['loyalty','Loyalty'],['giftcards','Gift cards'],['messages','Messages']] },
-  { label:'Channels',   icon:'channels',  children:[['online','Online ordering'],['kiosks','Kiosks'],['menuboards','Menu boards']] },
+  { label:'Channels',   icon:'channels',  children:[['online','Online ordering'],['catering','Catering ordering'],['kiosks','Kiosks'],['menuboards','Menu boards']] },
   { label:'Hardware',   icon:'hardware',  children:[['devices','Terminals'],['profiles','Device profiles'],['printers','Printers'],['printing','Production printing'],['cardreaders','Card readers'],['cashdrawers','Cash drawers'],['network','Network & sync']] },
   { label:'Reports',    icon:'reports',   children:[['reports','Sales reports'],['shift','Shifts'],['eod','Close day'],['pettycash','Petty cash']] },
   { label:'Settings',   icon:'settings',  children:[['location','Location settings'],['receipt','Receipt'],['sending-domain','Email domain'],['ai','AI assistant']] },
@@ -621,6 +622,7 @@ export default function BackOfficeApp() {
           {section === 'devices'    && <DeviceRegistry />}
           {section === 'kiosks'     && <KioskRegistry />}
           {section === 'online'     && <OnlineOrdering setSection={setSection} />}
+          {section === 'catering'   && <CateringSettings />}
           {section === 'menuboards' && <MenuBoards />}
           {section === 'printers'   && <PrinterRegistry />}
           {section === 'cardreaders'&& <CardReaders />}
