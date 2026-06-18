@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.536', date: '17 Jun 2026', label: 'Fix — catering checkout silently closed the basket',
+    changes: [
+      'Fixed: tapping checkout on the catering site just closed the basket when something was missing (usually the event date/time, or being under the order minimum). It now tells you exactly what’s needed and scrolls you to the event details, and proceeds to checkout once everything’s set.',
+    ],
+  },
+  {
     version: '5.5.535', date: '17 Jun 2026', label: 'Catering site — proper hero/image header',
     changes: [
       'The catering site now has a tall hero header with your logo (and your hero/banner image if you’ve set one under Online ordering branding) — matching the online ordering site, instead of a thin bar.',

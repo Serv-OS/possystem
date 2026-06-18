@@ -6,7 +6,7 @@
 // come from the catering_public_settings RPC (anon-safe; only returns when the site is enabled). Menus
 // are read directly (anon, like the online site). Handoff → CateringCheckout for placement.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase, ensureAuthToken } from '../../lib/supabase';
 import OnlineItemSheet from '../online/OnlineItemSheet';
 import OnlineCart from '../online/OnlineCart';
@@ -43,6 +43,8 @@ export default function CateringSurface({ location }) {
   const [nextDate, setNextDate] = useState(null);        // suggested next free date when the chosen one is full
   const [checkout, setCheckout] = useState(false);
   const [branding, setBranding] = useState(null);
+  const [notice, setNotice] = useState('');     // why checkout is blocked (shown on the event card)
+  const eventRef = useRef(null);
 
   const cur = cfg?.currency || (location.currency || 'gbp').toLowerCase();
   // Branding = the venue's online_branding (BO → Online ordering), falling back to receipt_branding.
@@ -171,6 +173,22 @@ export default function CateringSurface({ location }) {
   const dateProblem = !eventDate ? 'Pick an event date' : dateClosed(eventDate) ? 'We’re closed on that date — pick another' : atCapacity ? 'That date is fully booked — please choose another' : !eventTime ? 'Pick an event time' : null;
   const canCheckout = cart.length > 0 && !dateProblem && !belowMin && fulfilment;
 
+  // Try to go to checkout; if blocked, say WHY and scroll to the event card (don't silently close).
+  const goCheckout = () => {
+    if (cart.length === 0) return;
+    const reason = !fulfilment ? 'Choose collection or delivery.'
+      : !eventDate ? 'Please pick an event date.'
+      : dateClosed(eventDate) ? 'We’re closed on that date — please pick another.'
+      : atCapacity ? 'That date is fully booked — please choose another date.'
+      : !eventTime ? 'Please pick an event time.'
+      : belowMin ? `Your order is below the ${money(minOrder, cur)} minimum — add a little more.`
+      : null;
+    setShowCart(false);
+    if (reason) { setNotice(reason); try { eventRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch {} return; }
+    setNotice(''); setCheckout(true);
+  };
+  useEffect(() => { if (canCheckout && notice) setNotice(''); }, [canCheckout, notice]);
+
   if (boot.loading) return <div style={fullCenter}>Loading…</div>;
   if (boot.error === 'unavailable') return <div style={fullCenter}><div><div style={{ fontSize: 40 }}>🍽️</div><h2>Catering isn’t available right now</h2><div style={{ color: '#64748b' }}>Please contact {location.name} directly.</div></div></div>;
   if (boot.error) return <div style={fullCenter}>Couldn’t load catering. Please try again.</div>;
@@ -201,8 +219,9 @@ export default function CateringSurface({ location }) {
 
       <div style={{ ...center, paddingTop: 16, paddingBottom: 120 }}>
         {/* Event details */}
-        <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14, padding: 16, marginBottom: 16 }}>
+        <div ref={eventRef} style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14, padding: 16, marginBottom: 16, scrollMarginTop: 12 }}>
           <div style={{ fontWeight: 800, marginBottom: 10 }}>Your event</div>
+          {notice && <div style={{ background: '#fef2f2', border: '1px solid #fecaca', color: '#b91c1c', borderRadius: 10, padding: '8px 12px', fontSize: 13, fontWeight: 600, marginBottom: 10 }}>{notice}</div>}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             <div><label style={lbl}>Event date</label><input type="date" min={dateMin} max={dateMax} value={eventDate} onChange={(e) => setEventDate(e.target.value)} style={inp} /></div>
             <div><label style={lbl}>Event time</label><input type="time" value={eventTime} onChange={(e) => setEventTime(e.target.value)} style={inp} /></div>
@@ -253,7 +272,7 @@ export default function CateringSurface({ location }) {
         <div style={{ position: 'fixed', left: 0, right: 0, bottom: 0, background: '#fff', borderTop: '1px solid #e2e8f0', padding: '12px 0' }}>
           <div style={{ ...center, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
             <button onClick={() => setShowCart(true)} style={{ ...pill }}>View basket ({cart.reduce((n, l) => n + (l.qty || 1), 0)}) · {money(subtotal, cur)}</button>
-            <button disabled={!canCheckout} onClick={() => setCheckout(true)} style={{ ...btnPrimary(theme), opacity: canCheckout ? 1 : 0.5 }}>
+            <button onClick={goCheckout} style={{ ...btnPrimary(theme), opacity: canCheckout ? 1 : 0.85 }}>
               {belowMin ? `Min ${money(minOrder, cur)}` : dateProblem ? 'Set event details' : 'Proceed to checkout'}
             </button>
           </div>
@@ -268,7 +287,7 @@ export default function CateringSurface({ location }) {
         <OnlineCart cart={cart} theme={theme} orderType={fulfilment || 'collection'} taxRates={taxRates}
           onClose={() => setShowCart(false)} onRemove={(uid) => setCart((c) => c.filter((l) => l.uid !== uid))}
           onUpdateQty={(uid, q) => setCart((c) => c.map((l) => (l.uid === uid ? { ...l, qty: Math.max(1, q) } : l)))}
-          onCheckout={() => { setShowCart(false); if (canCheckout) setCheckout(true); }} />
+          onCheckout={goCheckout} />
       )}
     </div>
   );
