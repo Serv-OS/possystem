@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.531', date: '17 Jun 2026', label: 'Catering ordering — promo codes applied at checkout',
+    changes: [
+      'Promo codes now actually discount the catering order. The guest enters a code and taps Apply — it’s validated against your offers (with the venue/min-spend/usage rules) and the discount comes off the total. The code is redeemed when the order is placed, using the same race-safe, single-use redemption as the till and online (no double-spend).',
+    ],
+  },
+  {
     version: '5.5.530', date: '17 Jun 2026', label: 'Catering ordering — per-item limits + next-available date',
     changes: [
       'Catering setup now has per-item quantity limits: set a minimum and/or maximum per item for the items on your catering menus. Set the maximum to 0 to hide (86) an item from the catering site. The ordering site enforces these and shows the limits on each item.',
