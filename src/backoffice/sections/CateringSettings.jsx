@@ -7,7 +7,8 @@
 // in integer minor units. Multi-currency (£/$/€) per location.
 
 import { useEffect, useState } from 'react';
-import { supabase, getActiveLocationSync } from '../../lib/supabase';
+import { supabase, platformSupabase, getActiveLocationSync } from '../../lib/supabase';
+import { CUSTOMER_ROOT, customerUrl } from '../../lib/env';
 
 const S = {
   h1: { fontSize: 22, fontWeight: 800, color: 'var(--t1)', margin: 0, letterSpacing: '-.01em' },
@@ -79,6 +80,7 @@ export default function CateringSettings() {
   const [menus, setMenus] = useState([]);
   const [menuItems, setMenuItems] = useState([]);
   const [menuLinks, setMenuLinks] = useState([]);
+  const [venueSlug, setVenueSlug] = useState(null);
   const [s, setS] = useState(null);
   const [save, setSave] = useState({});
 
@@ -99,6 +101,8 @@ export default function CateringSettings() {
         const menuIds = menuList.map((m) => m.id);
         const { data: ml } = menuIds.length ? await supabase.from('menu_category_links').select('menu_id, category_id').in('menu_id', menuIds) : { data: [] };
         setMenuLinks(ml || []);
+        // The catering site lives at the venue's existing web slug + /catering — fetch it for the URL/link.
+        try { const { data: pl } = await platformSupabase.from('locations').select('online_slug').or(`ops_location_id.eq.${id},id.eq.${id}`).limit(1).maybeSingle(); setVenueSlug(pl?.online_slug || null); } catch { /* slug optional */ }
         setS(row ? fromRow(row) : BLANK(id));
       } catch { /* leave blank */ } finally { setLoading(false); }
     })();
@@ -161,7 +165,18 @@ export default function CateringSettings() {
           </select>
         </div>
         {s.enabled && need.length > 0 && <div style={{ ...S.warn, marginTop: 12 }}>⚠ Setup incomplete — still needed: <b>{need.join(', ')}</b>. The site won’t save as ON until these are filled.</div>}
-        <div style={S.field}><label style={{ ...S.label, marginTop: 12 }}>Public URL slug</label><input style={S.input} value={s.slug} onChange={(e) => set({ slug: e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '') })} placeholder="your-venue-catering" /><div style={S.hint}>Guests will order at /catering/{s.slug || 'your-slug'}</div></div>
+        <div style={{ ...S.field, marginTop: 12 }}>
+          <label style={S.label}>Your catering site</label>
+          {venueSlug ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <code style={{ fontSize: 13, background: 'var(--bg2)', border: '1px solid var(--bdr2)', borderRadius: 8, padding: '7px 10px', color: 'var(--t1)' }}>https://{venueSlug}.{CUSTOMER_ROOT}/catering</code>
+              <a href={customerUrl(venueSlug, '/catering')} target="_blank" rel="noopener" style={{ ...S.btn, textDecoration: 'none', display: 'inline-block' }}>Open catering site ↗</a>
+            </div>
+          ) : (
+            <div style={S.hint}>Set a public web address (slug) for this venue in <b>Channels → Online ordering</b> first — your catering site is then that address with <code>/catering</code> on the end.</div>
+          )}
+          <div style={S.hint}>It’s your venue’s web address + <b>/catering</b>. It goes live once you complete setup and switch it on above.</div>
+        </div>
         <div style={S.field}><label style={S.label}>Banner message <span style={{ color: 'var(--t4)', fontWeight: 500 }}>optional</span></label><input style={S.input} value={s.banner_message} onChange={(e) => set({ banner_message: e.target.value })} placeholder="Order 48h ahead for events" /></div>
       </div>
 

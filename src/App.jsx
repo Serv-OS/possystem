@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.532', date: '17 Jun 2026', label: 'Catering ordering — show the live site link in setup',
+    changes: [
+      'The Catering ordering setup page now shows your actual catering site address (your venue’s web address + /catering) with an “Open catering site” button, instead of a placeholder. If no web address (slug) is set yet, it tells you to set one under Online ordering first.',
+    ],
+  },
+  {
     version: '5.5.531', date: '17 Jun 2026', label: 'Catering ordering — promo codes applied at checkout',
     changes: [
       'Promo codes now actually discount the catering order. The guest enters a code and taps Apply — it’s validated against your offers (with the venue/min-spend/usage rules) and the discount comes off the total. The code is redeemed when the order is placed, using the same race-safe, single-use redemption as the till and online (no double-spend).',
