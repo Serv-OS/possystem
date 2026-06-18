@@ -28,7 +28,8 @@ create table if not exists catering_site_settings (
   delivery_fee_minor       integer,
   delivery_fee_per_mile_minor integer,
   -- menus shown on the catering site + per-item qty limits (max 0 = 86'd)
-  menu_ids                 uuid[],
+  -- NB: menu/item ids in this system are TEXT (app-generated, e.g. 'menu-1776196849535'), NOT uuid.
+  menu_ids                 text[],
   item_limits              jsonb,                             -- { "<item_id>": { "min": n, "max": n } }
   -- checkout
   allow_tax_exempt         boolean not null default false,

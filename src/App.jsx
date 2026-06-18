@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.533', date: '17 Jun 2026', label: 'Fix — catering menu selection wouldn’t save',
+    changes: [
+      'Fixed: selecting a menu on the Catering ordering setup page failed to save (“invalid input syntax for type uuid”). The catering settings stored menu references as UUIDs, but menu IDs in the system are text — corrected the column type. Saving menus on the catering site now works.',
+    ],
+  },
+  {
     version: '5.5.532', date: '17 Jun 2026', label: 'Catering ordering — show the live site link in setup',
     changes: [
       'The Catering ordering setup page now shows your actual catering site address (your venue’s web address + /catering) with an “Open catering site” button, instead of a placeholder. If no web address (slug) is set yet, it tells you to set one under Online ordering first.',
