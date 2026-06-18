@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.529', date: '17 Jun 2026', label: 'Catering ordering — pay-now by card (module complete)',
+    changes: [
+      'Catering guests can now pay by card at checkout (full payment), using your venue’s existing card processor — alongside the “pay later” option. Paid catering orders record like online orders (so they appear in your sales reports), tagged as catering.',
+      'That completes the catering ordering module: set-up page + customer ordering site + pay-now/pay-later. (Calendar, deposits, quotes/contracts and BEO sheets belong to the separate Events module, to come later.)',
+    ],
+  },
+  {
     version: '5.5.528', date: '17 Jun 2026', label: 'Catering ordering — customer ordering site (step 2)',
     changes: [
       'Guests can now order catering at your-venue/catering: browse the catering menus (reusing the online item builder + basket), pick an event date + time, and check out. The catering rules are enforced — lead time (min/max days), closed dates/hours, order minimum, and a per-day capacity gate that blocks fully-booked dates.',
