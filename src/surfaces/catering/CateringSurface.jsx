@@ -12,12 +12,17 @@ import OnlineItemSheet from '../online/OnlineItemSheet';
 import OnlineCart from '../online/OnlineCart';
 import CateringCheckout from './CateringCheckout';
 
-const wrap = { minHeight: '100vh', background: 'var(--bg, #f5f5f5)', color: '#0f172a', fontFamily: '-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Helvetica,Arial,sans-serif' };
+const FONT = '-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",system-ui,sans-serif';
+// Customer surfaces must be their OWN scroll container — the operator app sets body{overflow:hidden},
+// so a normal-flow div won't scroll. (Same pattern as OnlineSurface's ScrollShell.)
+const shell = (theme) => ({ position: 'fixed', inset: 0, overflowY: 'auto', overflowX: 'hidden', WebkitOverflowScrolling: 'touch', background: theme?.bg || '#f5f5f5', color: theme?.fg || '#0f172a', fontFamily: FONT });
+const fullCenter = { position: 'fixed', inset: 0, display: 'grid', placeItems: 'center', textAlign: 'center', padding: 24, background: '#f5f5f5', color: '#0f172a', fontFamily: FONT };
 const center = { maxWidth: 980, margin: '0 auto', padding: '0 16px' };
 const money = (n, cur) => `${({ gbp: '£', usd: '$', eur: '€' }[cur] || '£')}${Number(n || 0).toFixed(2)}`;
 const DOW = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 const addDays = (n) => { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() + n); return d; };
 const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const isLightBackground = (hex) => { if (!hex) return true; const c = String(hex).replace('#', ''); const n = c.length === 3 ? c.split('').map((x) => x + x).join('') : c; if (n.length !== 6) return true; const r = parseInt(n.slice(0, 2), 16), g = parseInt(n.slice(2, 4), 16), b = parseInt(n.slice(4, 6), 16); return (0.299 * r + 0.587 * g + 0.114 * b) > 128; };
 
 export default function CateringSurface({ location }) {
   const opsId = location.ops_location_id || location.id;
@@ -37,14 +42,20 @@ export default function CateringSurface({ location }) {
   const [dayLoad, setDayLoad] = useState(null);          // { count, value }
   const [nextDate, setNextDate] = useState(null);        // suggested next free date when the chosen one is full
   const [checkout, setCheckout] = useState(false);
+  const [branding, setBranding] = useState(null);
 
-  const branding = location.online_branding || {};
   const cur = cfg?.currency || (location.currency || 'gbp').toLowerCase();
-  const theme = {
-    accent: branding.accent || branding.primaryColor || '#16a34a',
-    bg: '#ffffff', fg: '#0f172a', isLight: true,
-    logo: branding.logo || null, hero: branding.hero || null, name: location.name,
-  };
+  // Branding = the venue's online_branding (BO → Online ordering), falling back to receipt_branding.
+  // Field names match OnlineSurface exactly (accent_color / background / foreground / logo_url / hero_url).
+  const theme = useMemo(() => ({
+    accent: branding?.accent_color || '#e8a020',
+    bg: branding?.background || '#ffffff',
+    fg: branding?.foreground || '#1a1a1a',
+    logo: branding?.logo_url || null,
+    hero: branding?.hero_url || null,
+    name: location.name || 'Catering',
+    isLight: isLightBackground(branding?.background || '#ffffff'),
+  }), [branding, location.name]);
 
   useEffect(() => {
     (async () => {
@@ -56,13 +67,14 @@ export default function CateringSurface({ location }) {
         setFulfilment(settings.takeout_enabled ? 'collection' : settings.delivery_enabled ? 'delivery' : null);
         // Categories shown = those linked to the chosen menus; items + tax read directly (anon).
         const menuIds = settings.menu_ids || [];
-        const [{ data: linkRows }, { data: itemRows }, { data: catRows }, { data: taxRows }, { data: e86 }, { data: pushRow }] = await Promise.all([
+        const [{ data: linkRows }, { data: itemRows }, { data: catRows }, { data: taxRows }, { data: e86 }, { data: pushRow }, { data: brandRow }] = await Promise.all([
           menuIds.length ? supabase.from('menu_category_links').select('category_id').in('menu_id', menuIds) : Promise.resolve({ data: [] }),
           supabase.from('menu_items').select('*').eq('location_id', opsId).eq('archived', false).order('sort_order'),
           supabase.from('menu_categories').select('*').eq('location_id', opsId).order('sort_order'),
           supabase.from('tax_rates').select('id, name, rate, type, active').eq('location_id', opsId),
           supabase.from('eighty_six').select('item_id').eq('location_id', opsId),
           supabase.from('config_pushes').select('snapshot').eq('location_id', opsId).order('created_at', { ascending: false }).limit(1).maybeSingle(),
+          supabase.from('locations').select('receipt_branding').eq('id', opsId).maybeSingle(),
         ]);
         const allow = new Set((linkRows || []).map((l) => l.category_id));
         setCats((catRows || []).filter((c) => allow.size === 0 || allow.has(c.id)));
@@ -70,6 +82,7 @@ export default function CateringSurface({ location }) {
         setTaxRates(taxRows || []);
         setEightySix((e86 || []).map((r) => r.item_id));
         setInstGroupDefs(pushRow?.snapshot?.instructionGroupDefs || []);
+        setBranding(location.online_branding || brandRow?.receipt_branding || null);
         setBoot({ loading: false, error: null });
       } catch (e) { setBoot({ loading: false, error: e?.message || 'failed' }); }
     })();
@@ -158,9 +171,9 @@ export default function CateringSurface({ location }) {
   const dateProblem = !eventDate ? 'Pick an event date' : dateClosed(eventDate) ? 'We’re closed on that date — pick another' : atCapacity ? 'That date is fully booked — please choose another' : !eventTime ? 'Pick an event time' : null;
   const canCheckout = cart.length > 0 && !dateProblem && !belowMin && fulfilment;
 
-  if (boot.loading) return <div style={{ ...wrap, display: 'grid', placeItems: 'center' }}>Loading…</div>;
-  if (boot.error === 'unavailable') return <div style={{ ...wrap, display: 'grid', placeItems: 'center', textAlign: 'center', padding: 24 }}><div><div style={{ fontSize: 40 }}>🍽️</div><h2>Catering isn’t available right now</h2><div style={{ color: '#64748b' }}>Please contact {location.name} directly.</div></div></div>;
-  if (boot.error) return <div style={{ ...wrap, display: 'grid', placeItems: 'center' }}>Couldn’t load catering. Please try again.</div>;
+  if (boot.loading) return <div style={fullCenter}>Loading…</div>;
+  if (boot.error === 'unavailable') return <div style={fullCenter}><div><div style={{ fontSize: 40 }}>🍽️</div><h2>Catering isn’t available right now</h2><div style={{ color: '#64748b' }}>Please contact {location.name} directly.</div></div></div>;
+  if (boot.error) return <div style={fullCenter}>Couldn’t load catering. Please try again.</div>;
 
   if (checkout) return (
     <CateringCheckout
@@ -171,9 +184,15 @@ export default function CateringSurface({ location }) {
   );
 
   return (
-    <div style={wrap}>
-      <header style={{ background: theme.accent, color: '#fff', padding: '18px 0' }}>
-        <div style={center}><div style={{ fontSize: 20, fontWeight: 800 }}>{location.name} — Catering</div>{cfg.banner_message && <div style={{ marginTop: 4, opacity: 0.9, fontSize: 13.5 }}>{cfg.banner_message}</div>}</div>
+    <div style={shell(theme)}>
+      <header style={{ background: theme.hero ? `linear-gradient(180deg, rgba(0,0,0,0.28) 0%, rgba(0,0,0,0.62) 100%), url(${theme.hero}) center/cover no-repeat` : theme.accent, color: '#fff', padding: theme.hero ? '36px 0' : '18px 0' }}>
+        <div style={{ ...center, display: 'flex', alignItems: 'center', gap: 12 }}>
+          {theme.logo && <img src={theme.logo} alt={theme.name} style={{ width: 46, height: 46, borderRadius: 10, objectFit: 'cover', flexShrink: 0 }} />}
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 20, fontWeight: 800 }}>{theme.name} — Catering</div>
+            {cfg.banner_message && <div style={{ marginTop: 4, opacity: 0.92, fontSize: 13.5 }}>{cfg.banner_message}</div>}
+          </div>
+        </div>
       </header>
 
       <div style={{ ...center, paddingTop: 16, paddingBottom: 120 }}>

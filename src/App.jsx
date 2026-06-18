@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.534', date: '17 Jun 2026', label: 'Fix — catering site scroll + branding',
+    changes: [
+      'Fixed: the catering ordering site (and its checkout) wouldn’t scroll — they now use their own scroll container like the online ordering site.',
+      'Fixed: your branding now applies to the catering site — logo, hero image, brand colour and background pull from your Online ordering branding (same source as the online site), instead of the plain default look.',
+    ],
+  },
+  {
     version: '5.5.533', date: '17 Jun 2026', label: 'Fix — catering menu selection wouldn’t save',
     changes: [
       'Fixed: selecting a menu on the Catering ordering setup page failed to save (“invalid input syntax for type uuid”). The catering settings stored menu references as UUIDs, but menu IDs in the system are text — corrected the column type. Saving menus on the catering site now works.',

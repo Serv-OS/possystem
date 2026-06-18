@@ -129,7 +129,7 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
 
   // ── Confirmation ───────────────────────────────────────────────────
   if (placed) return (
-    <div style={{ minHeight: '100vh', background: '#f5f5f5', display: 'grid', placeItems: 'center', textAlign: 'center', padding: 24, fontFamily: 'inherit', color: '#0f172a' }}>
+    <div style={{ position: 'fixed', inset: 0, overflowY: 'auto', background: theme.bg || '#f5f5f5', display: 'grid', placeItems: 'center', textAlign: 'center', padding: 24, fontFamily: 'inherit', color: theme.fg || '#0f172a' }}>
       <div>
         <div style={{ fontSize: 44 }}>✅</div>
         <h2 style={{ margin: '8px 0' }}>{placed.paid ? 'Order confirmed' : 'Enquiry received'}</h2>
@@ -139,9 +139,15 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
   );
 
   return (
-    <div style={{ minHeight: '100vh', background: '#f5f5f5', paddingBottom: 40, fontFamily: '-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Helvetica,Arial,sans-serif', color: '#0f172a' }}>
+    <div style={{ position: 'fixed', inset: 0, overflowY: 'auto', overflowX: 'hidden', WebkitOverflowScrolling: 'touch', paddingBottom: 40, background: theme.bg || '#f5f5f5', color: theme.fg || '#0f172a', fontFamily: '-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",system-ui,sans-serif' }}>
       <header style={{ background: theme.accent, color: '#fff', padding: '16px 0' }}>
-        <div style={center}><button onClick={() => (step === 'pay' ? setStep('details') : onBack())} style={{ background: 'transparent', border: 'none', color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 700, padding: 0 }}>← {step === 'pay' ? 'Back to details' : 'Back to menu'}</button><div style={{ fontSize: 19, fontWeight: 800, marginTop: 4 }}>Checkout</div></div>
+        <div style={{ ...center, display: 'flex', alignItems: 'center', gap: 12 }}>
+          {theme.logo && <img src={theme.logo} alt={theme.name} style={{ width: 38, height: 38, borderRadius: 8, objectFit: 'cover', flexShrink: 0 }} />}
+          <div>
+            <button onClick={() => (step === 'pay' ? setStep('details') : onBack())} style={{ background: 'transparent', border: 'none', color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 700, padding: 0 }}>← {step === 'pay' ? 'Back to details' : 'Back to menu'}</button>
+            <div style={{ fontSize: 19, fontWeight: 800, marginTop: 4 }}>Checkout</div>
+          </div>
+        </div>
       </header>
       <div style={{ ...center, paddingTop: 16 }}>
         <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14, padding: 16, marginBottom: 14 }}>
