@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.530', date: '17 Jun 2026', label: 'Catering ordering — per-item limits + next-available date',
+    changes: [
+      'Catering setup now has per-item quantity limits: set a minimum and/or maximum per item for the items on your catering menus. Set the maximum to 0 to hide (86) an item from the catering site. The ordering site enforces these and shows the limits on each item.',
+      'When a guest picks a date that’s already at capacity, the catering site now suggests the next available date with one tap.',
+    ],
+  },
+  {
     version: '5.5.529', date: '17 Jun 2026', label: 'Catering ordering — pay-now by card (module complete)',
     changes: [
       'Catering guests can now pay by card at checkout (full payment), using your venue’s existing card processor — alongside the “pay later” option. Paid catering orders record like online orders (so they appear in your sales reports), tagged as catering.',

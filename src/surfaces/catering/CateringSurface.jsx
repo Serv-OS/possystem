@@ -35,6 +35,7 @@ export default function CateringSurface({ location }) {
   const [eventDate, setEventDate] = useState('');
   const [eventTime, setEventTime] = useState('');
   const [dayLoad, setDayLoad] = useState(null);          // { count, value }
+  const [nextDate, setNextDate] = useState(null);        // suggested next free date when the chosen one is full
   const [checkout, setCheckout] = useState(false);
 
   const branding = location.online_branding || {};
@@ -91,10 +92,20 @@ export default function CateringSurface({ location }) {
   const subtotal = useMemo(() => cart.reduce((s, l) => s + (l.price + (l.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0)) * (l.qty || 1), 0), [cart]);
 
   const itemsForCat = (catId) => items.filter((i) => (i.cat === catId || (Array.isArray(i.cats) && i.cats.includes(catId))) && !i.parent_id);
-  const is86 = (id) => eightySix.includes(id);
+  const limitFor = (id) => (cfg?.item_limits || {})[id] || {};
+  const is86 = (id) => eightySix.includes(id) || limitFor(id).max === 0;   // max 0 = operator-hidden (86)
   const addToCart = (item, mods, qty, notes = '') => {
+    const lim = limitFor(item.id);
+    let q = qty;
+    if (lim.min) q = Math.max(q, lim.min);                                  // bump up to the per-item minimum
+    if (lim.max != null) {
+      const existing = cart.filter((l) => l.itemId === item.id).reduce((s, l) => s + (l.qty || 1), 0);
+      const room = lim.max - existing;
+      if (room <= 0) { alert(`You've reached the maximum (${lim.max}) for ${item.menu_name || item.name}.`); return; }
+      q = Math.min(q, room);
+    }
     const price = Number(item.pricing?.base ?? item.price ?? 0);
-    setCart((c) => [...c, { uid: `${item.id}-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`, itemId: item.id, name: item.menu_name || item.name, kitchenName: item.kitchen_name || null, cat: item.cat || null, cats: Array.isArray(item.cats) ? item.cats : null, parentId: item.parent_id || null, taxRateId: item.tax_rate_id || null, taxOverrides: item.tax_overrides || {}, price, qty, mods, notes }]);
+    setCart((c) => [...c, { uid: `${item.id}-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`, itemId: item.id, name: item.menu_name || item.name, kitchenName: item.kitchen_name || null, cat: item.cat || null, cats: Array.isArray(item.cats) ? item.cats : null, parentId: item.parent_id || null, taxRateId: item.tax_rate_id || null, taxOverrides: item.tax_overrides || {}, price, qty: q, mods, notes }]);
   };
 
   // Date gating
@@ -115,6 +126,32 @@ export default function CateringSurface({ location }) {
     if (cfg.capacity_mode === 'value') return dayLoad.value >= Number(capLimit) / 100;
     return dayLoad.count >= Number(capLimit);
   }, [dayLoad, capLimit, cfg]);
+
+  // When the chosen date is full, scan forward (within range, skipping closed dates) for the next free day.
+  useEffect(() => {
+    if (!atCapacity || !eventDate || !cfg) { setNextDate(null); return; }
+    let live = true;
+    (async () => {
+      const start = new Date(eventDate + 'T00:00:00'); const end = new Date(dateMax + 'T00:00:00');
+      let found = null;
+      for (let i = 1; i <= 21 && !found; i++) {
+        const d = new Date(start); d.setDate(start.getDate() + i);
+        if (d > end) break;
+        const ds = iso(d);
+        if (dateClosed(ds)) continue;
+        const lim = cfg.capacity_overrides?.[ds] ?? cfg.capacity_per_day;
+        if (lim == null || lim === '') { found = ds; break; }
+        const { data } = await supabase.from('order_queue').select('total, status').eq('location_id', opsId).eq('source', 'catering').eq('event_date', ds);
+        const rows = (data || []).filter((r) => r.status !== 'cancelled');
+        const used = cfg.capacity_mode === 'value' ? rows.reduce((s, r) => s + Number(r.total || 0), 0) : rows.length;
+        const cap = cfg.capacity_mode === 'value' ? Number(lim) / 100 : Number(lim);
+        if (used < cap) found = ds;
+      }
+      if (live) setNextDate(found);
+    })();
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [atCapacity, eventDate, cfg, opsId]);
 
   const minOrder = (cfg?.order_minimum_minor ?? 0) / 100;
   const belowMin = subtotal < minOrder;
@@ -158,6 +195,7 @@ export default function CateringSurface({ location }) {
             Orders {minDays > 0 ? `at least ${minDays} day${minDays === 1 ? '' : 's'} ahead` : 'for upcoming dates'}{maxDays ? `, up to ${maxDays} days out` : ''}. Minimum order {money(minOrder, cur)}.
             {eventDate && dateProblem && <span style={{ color: '#dc2626', fontWeight: 700 }}> · {dateProblem}</span>}
           </div>
+          {atCapacity && nextDate && <button onClick={() => setEventDate(nextDate)} style={{ ...pill, marginTop: 8, fontSize: 12.5, borderColor: theme.accent, color: theme.accent }}>Next available: {new Date(nextDate + 'T00:00:00').toLocaleDateString('en-GB')} — use this date</button>}
         </div>
 
         {/* Menu */}
@@ -171,11 +209,13 @@ export default function CateringSurface({ location }) {
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(280px,1fr))', gap: 12 }}>
                 {ci.map((item) => {
                   const sold = is86(item.id);
+                  const lim = limitFor(item.id);
+                  const limText = [lim.min ? `min ${lim.min}` : '', lim.max ? `max ${lim.max}` : ''].filter(Boolean).join(' · ');
                   return (
                     <button key={item.id} disabled={sold} onClick={() => setOpenItem(item)} style={{ textAlign: 'left', background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, padding: 14, cursor: sold ? 'default' : 'pointer', opacity: sold ? 0.5 : 1 }}>
                       <div style={{ fontWeight: 700 }}>{item.menu_name || item.name}</div>
                       {item.description && <div style={{ fontSize: 12.5, color: '#64748b', marginTop: 3 }}>{item.description}</div>}
-                      <div style={{ marginTop: 8, fontWeight: 800, color: theme.accent }}>{sold ? 'Sold out' : money(Number(item.pricing?.base ?? item.price ?? 0), cur)}</div>
+                      <div style={{ marginTop: 8, fontWeight: 800, color: theme.accent }}>{sold ? 'Sold out' : money(Number(item.pricing?.base ?? item.price ?? 0), cur)}{!sold && limText && <span style={{ fontSize: 11.5, fontWeight: 600, color: '#94a3b8', marginLeft: 8 }}>{limText}</span>}</div>
                     </button>
                   );
                 })}

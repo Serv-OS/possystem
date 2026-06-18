@@ -77,6 +77,8 @@ export default function CateringSettings() {
   const [locId, setLocId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [menus, setMenus] = useState([]);
+  const [menuItems, setMenuItems] = useState([]);
+  const [menuLinks, setMenuLinks] = useState([]);
   const [s, setS] = useState(null);
   const [save, setSave] = useState({});
 
@@ -85,11 +87,18 @@ export default function CateringSettings() {
       try {
         const id = await getActiveLocationSync(); setLocId(id);
         if (!supabase || !id) { setLoading(false); return; }
-        const [{ data: row }, { data: ms }] = await Promise.all([
+        const [{ data: row }, { data: ms }, { data: mi }] = await Promise.all([
           supabase.from('catering_site_settings').select('*').eq('location_id', id).maybeSingle(),
           supabase.from('menus').select('id, name, is_active').eq('location_id', id).order('name'),
+          supabase.from('menu_items').select('id, name, menu_name, cat, cats, parent_id').eq('location_id', id).eq('archived', false).order('sort_order'),
         ]);
-        setMenus((ms || []).filter((m) => m.is_active !== false));
+        const menuList = (ms || []).filter((m) => m.is_active !== false);
+        setMenus(menuList);
+        setMenuItems(mi || []);
+        // Links scoped to this location's menus (menu_category_links has no location_id column).
+        const menuIds = menuList.map((m) => m.id);
+        const { data: ml } = menuIds.length ? await supabase.from('menu_category_links').select('menu_id, category_id').in('menu_id', menuIds) : { data: [] };
+        setMenuLinks(ml || []);
         setS(row ? fromRow(row) : BLANK(id));
       } catch { /* leave blank */ } finally { setLoading(false); }
     })();
@@ -128,6 +137,15 @@ export default function CateringSettings() {
   const need = missing();
   const toggleMenu = (id) => set({ menu_ids: s.menu_ids.includes(id) ? s.menu_ids.filter((x) => x !== id) : [...s.menu_ids, id] });
   const setHour = (d, patch) => set({ hours: { ...s.hours, [d]: { ...(s.hours[d] || {}), ...patch } } });
+  const setItemLimit = (itemId, key, val) => {
+    const next = { ...(s.item_limits || {}) };
+    const entry = { ...(next[itemId] || {}) };
+    if (val === '' || val == null) delete entry[key]; else entry[key] = Number(val);
+    if (Object.keys(entry).length) next[itemId] = entry; else delete next[itemId];
+    set({ item_limits: next });
+  };
+  const selectedCatIds = new Set(menuLinks.filter((l) => (s.menu_ids || []).includes(l.menu_id)).map((l) => l.category_id));
+  const limitItems = menuItems.filter((it) => !it.parent_id && (selectedCatIds.has(it.cat) || (Array.isArray(it.cats) && it.cats.some((c) => selectedCatIds.has(c)))));
 
   return (
     <div>
@@ -219,7 +237,31 @@ export default function CateringSettings() {
         {menus.length === 0 ? <div style={S.hint}>No menus found for this location. Create one in Menu manager first.</div> : menus.map((m) => (
           <label key={m.id} style={{ ...S.toggle, marginBottom: 8 }}><input type="checkbox" checked={s.menu_ids.includes(m.id)} onChange={() => toggleMenu(m.id)} /> {m.name}</label>
         ))}
-        <div style={S.hint}>A menu becomes catering-only by adding it here and not to standard online ordering. Per-item min/max quantities can be set later.</div>
+        <div style={S.hint}>A menu becomes catering-only by adding it here and not to standard online ordering.</div>
+      </div>
+
+      {/* Per-item limits */}
+      <div style={S.card}>
+        <h2 style={S.h2}>Per-item quantity limits <span style={{ fontWeight: 500, color: 'var(--t4)', fontSize: 12 }}>optional</span></h2>
+        {(s.menu_ids || []).length === 0 ? <div style={S.hint}>Pick at least one menu above to set item limits.</div>
+          : limitItems.length === 0 ? <div style={S.hint}>No items found in the selected menus.</div> : (
+            <>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 92px 92px', gap: 10, marginBottom: 4 }}>
+                <div style={S.label}>Item</div><div style={{ ...S.label, textAlign: 'right' }}>Min qty</div><div style={{ ...S.label, textAlign: 'right' }}>Max qty</div>
+              </div>
+              {limitItems.map((it) => {
+                const lim = (s.item_limits || {})[it.id] || {};
+                return (
+                  <div key={it.id} style={{ display: 'grid', gridTemplateColumns: '1fr 92px 92px', gap: 10, alignItems: 'center', marginBottom: 6 }}>
+                    <div style={{ fontSize: 13, color: 'var(--t1)' }}>{it.menu_name || it.name}{lim.max === 0 && <span style={{ marginLeft: 6, fontSize: 10.5, fontWeight: 700, color: 'var(--red)', border: '1px solid var(--red)', borderRadius: 99, padding: '1px 7px' }}>hidden</span>}</div>
+                    <input type="number" min={0} style={{ ...S.input, textAlign: 'right' }} value={lim.min ?? ''} onChange={(e) => setItemLimit(it.id, 'min', e.target.value)} />
+                    <input type="number" min={0} style={{ ...S.input, textAlign: 'right' }} value={lim.max ?? ''} onChange={(e) => setItemLimit(it.id, 'max', e.target.value)} />
+                  </div>
+                );
+              })}
+              <div style={S.hint}>Leave blank for no limit. Set <b>Max to 0</b> to hide an item (86 it) on the catering site.</div>
+            </>
+          )}
       </div>
 
       {/* Checkout */}
