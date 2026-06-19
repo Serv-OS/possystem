@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.543', date: '17 Jun 2026', label: 'Menu theming (3/3) — Menu appearance back office',
+    changes: [
+      'New Channels → Menu appearance: choose your brand colour, header style (cinematic / framed / compact), header photo, logo + logo shape, and the open/prep status pills — with a live preview that toggles Online ordering / Catering and Desktop / Mobile. Save publishes it to both customer sites.',
+      'Completes the themeable menu system: one brand colour drives the whole look across online ordering + catering, set entirely from the back office.',
+    ],
+  },
+  {
     version: '5.5.542', date: '17 Jun 2026', label: 'Menu theming (2/3) — online ordering aligned',
     changes: [
       'Online ordering now uses the same themeable header (cinematic / framed / compact), brand-colour palette, fonts and section styling as the catering site, so both look identical. Your cards and the 2-col mobile layout are unchanged.',

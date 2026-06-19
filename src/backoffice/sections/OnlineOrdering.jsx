@@ -206,6 +206,7 @@ export default function OnlineOrdering({ setSection }) {
 
     // Strip empty strings so the JSONB stays clean
     const cleanBranding = {
+      ...branding,   // preserve Menu-appearance theme fields (brand_color, header_style, logo_shape, show_open_status)
       logo_url:     branding.logo_url?.trim()     || null,
       hero_url:     branding.hero_url?.trim()     || null,
       accent_color: branding.accent_color || BLANK_BRANDING.accent_color,
