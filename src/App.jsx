@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.542', date: '17 Jun 2026', label: 'Menu theming (2/3) — online ordering aligned',
+    changes: [
+      'Online ordering now uses the same themeable header (cinematic / framed / compact), brand-colour palette, fonts and section styling as the catering site, so both look identical. Your cards and the 2-col mobile layout are unchanged.',
+      'Next: the back-office “Menu appearance” screen to choose the brand colour, header style, header photo and logo shape with a live preview.',
+    ],
+  },
+  {
     version: '5.5.541', date: '17 Jun 2026', label: 'Menu theming (1/3) — themeable header + catering restyle',
     changes: [
       'New themeable menu design system (from the design handoff): one brand colour drives the whole palette, with three header styles (cinematic / framed / compact), a white logo plate that fits any logo shape, an ember-gradient fallback when there’s no header photo, and the Space Grotesk + Hanken Grotesk type. Applied to the catering site first; the cards you loved are unchanged (2-col on mobile).',

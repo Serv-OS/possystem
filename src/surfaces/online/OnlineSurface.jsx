@@ -23,6 +23,8 @@ import OrderTracker from './OrderTracker';
 import QrCheckout from '../qr/QrCheckout';
 import TabResumeScreen from '../qr/TabResumeScreen';
 import { money } from '../../lib/currency';
+import MenuHeader from '../menu/MenuHeader';
+import { readTheme, deriveVars, DISPLAY_FONT } from '../menu/menuTheme';
 
 const FALLBACK_ACCENT = '#e8a020';
 const FALLBACK_BG     = '#ffffff';
@@ -328,6 +330,10 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
     isLight: isLightBackground(branding?.background || FALLBACK_BG),
   }), [branding, location.name]);
 
+  // Themeable menu (prototype design system): brand-colour palette as CSS vars + themed header.
+  const mt = useMemo(() => readTheme(branding), [branding]);
+  const vars = useMemo(() => deriveVars(mt.brandColor), [mt.brandColor]);
+
   const topCategories = useMemo(
     () => (categories || []).filter(c => !c.parent_id).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)),
     [categories]
@@ -415,7 +421,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
 
   if (isQr && !tableConfirmed) {
     return (
-      <ScrollShell theme={theme}>
+      <ScrollShell theme={theme} vars={vars}>
         <ConfirmTableScreen
           theme={theme} cardBdr={theme.isLight ? '#ececef' : '#2a2a30'} muted={theme.isLight ? '#6b6b70' : '#a0a0a8'}
           locationName={location.name}
@@ -456,7 +462,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   if (isQr && resumeChecked && resumeTab && !existingTab) {
     const runningTotal = (resumeRounds || []).reduce((s, r) => s + Number(r.total || 0), 0);
     return (
-      <ScrollShell theme={theme}>
+      <ScrollShell theme={theme} vars={vars}>
         <TabResumeScreen
           slug={location.online_slug}
           tableId={tableId}
@@ -489,7 +495,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   // Welcome step — first thing customers see
   if (!orderType) {
     return (
-      <ScrollShell theme={theme}>
+      <ScrollShell theme={theme} vars={vars}>
         {paymentNotice === 'cancel' && (
           <div style={{
             position: 'fixed', top: 16, left: '50%', transform: 'translateX(-50%)', zIndex: 70,
@@ -523,11 +529,15 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   }
 
   return (
-    <ScrollShell theme={theme} extraBottomPad={cart.length > 0 ? 96 : 0}>
-      {/* HERO with overlay logo */}
-      <Hero theme={theme} muted={muted}
-        leadMin={Number(location.online_collection_lead_min) || 0}
-        tableLabel={isQr ? effectiveTableLabel : null}/>
+    <ScrollShell theme={theme} vars={vars} extraBottomPad={cart.length > 0 ? 96 : 0}>
+      {/* Themeable header (cinematic / framed / compact) */}
+      <MenuHeader theme={mt} name={location.name} pills={
+        isQr
+          ? [{ label: `Table ${effectiveTableLabel}` }]
+          : (mt.showOpenStatus
+            ? [{ label: 'Open now', dot: true, green: true }].concat(Number(location.online_collection_lead_min) ? [{ label: `${Number(location.online_collection_lead_min)} min prep time` }] : [])
+            : [])
+      }/>
 
       {/* Sticky header — order-type pill + allergy filter + loyalty + categories */}
       <div style={{
@@ -656,9 +666,11 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           if (!catItems.length) return null;
           return (
             <section key={cat.id} id={`cat-${cat.id}`} style={{ marginBottom: 36, scrollMarginTop: 80 }}>
-              <h2 style={{ fontSize: 24, fontWeight: 800, margin: '0 0 14px',
-                letterSpacing: '-0.02em',
-              }}>{cat.label || cat.name}</h2>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 18 }}>
+                <h2 style={{ fontFamily: DISPLAY_FONT, fontWeight: 700, fontSize: 'clamp(20px,4.4cqw,28px)', margin: 0, letterSpacing: '-.02em', color: 'var(--ink)' }}>{cat.label || cat.name}</h2>
+                <span style={{ height: 1, flex: 1, background: 'var(--line)' }} />
+                <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 600 }}>{catItems.length} item{catItems.length === 1 ? '' : 's'}</span>
+              </div>
               <div style={{ display: 'grid',
                 gridTemplateColumns: 'repeat(auto-fill, minmax(min(47%, 300px), 1fr))',
                 gap: 14,
@@ -794,13 +806,14 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
 // ─────────────────────────────────────────────────────────────────────────────
 // ScrollShell — wraps the surface in its own scroll container so we don't
 // inherit the operator app's body { overflow: hidden } from globals.css.
-function ScrollShell({ theme, extraBottomPad = 0, children }) {
+function ScrollShell({ theme, vars, extraBottomPad = 0, children }) {
   return (
     <div style={{
+      ...(vars || {}),
       position: 'fixed', inset: 0, overflowY: 'auto', overflowX: 'hidden',
-      WebkitOverflowScrolling: 'touch',
-      background: theme.bg, color: theme.fg,
-      fontFamily: '-apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif',
+      WebkitOverflowScrolling: 'touch', containerType: 'inline-size',
+      background: vars ? 'var(--bg)' : theme.bg, color: vars ? 'var(--ink)' : theme.fg,
+      fontFamily: "'Hanken Grotesk', system-ui, sans-serif",
       paddingBottom: extraBottomPad,
     }}>
       {children}
