@@ -660,7 +660,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
                 letterSpacing: '-0.02em',
               }}>{cat.label || cat.name}</h2>
               <div style={{ display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
+                gridTemplateColumns: 'repeat(auto-fill, minmax(min(47%, 300px), 1fr))',
                 gap: 14,
               }}>
                 {catItems.map(item => {
@@ -1355,7 +1355,7 @@ function ItemCard({ item, theme, cardBg, cardBdr, muted, onPick, variantInfo, is
     <button onClick={is86 ? undefined : onPick} disabled={is86}
       className={is86 ? undefined : 'op-btn'}
       style={{
-        display: 'flex', alignItems: 'stretch',
+        display: 'flex', flexDirection: 'column',
         width: '100%', textAlign: 'left',
         padding: 0, borderRadius: 14, overflow: 'hidden',
         background: cardBg, border: `1px solid ${cardBdr}`,
@@ -1390,6 +1390,13 @@ function ItemCard({ item, theme, cardBg, cardBdr, muted, onPick, variantInfo, is
           fontSize: 10, fontWeight: 800, letterSpacing: '0.04em',
           backdropFilter: 'blur(4px)',
         }}>Only {stock.remaining} left</div>
+      )}
+      {item.image && (
+        <div style={{
+          width: '100%', height: 160, flexShrink: 0,
+          backgroundImage: `url(${item.image})`,
+          backgroundSize: 'cover', backgroundPosition: 'center',
+        }}/>
       )}
       <div style={{ flex: 1, minWidth: 0, padding: 16, display: 'flex', flexDirection: 'column', gap: 4 }}>
         <div style={{ fontSize: 15, fontWeight: 700, lineHeight: 1.3, textDecoration: is86 ? 'line-through' : undefined }}>
@@ -1428,13 +1435,6 @@ function ItemCard({ item, theme, cardBg, cardBdr, muted, onPick, variantInfo, is
           )}
         </div>
       </div>
-      {item.image && (
-        <div style={{
-          width: 130, flexShrink: 0,
-          backgroundImage: `url(${item.image})`,
-          backgroundSize: 'cover', backgroundPosition: 'center',
-        }}/>
-      )}
     </button>
   );
 }

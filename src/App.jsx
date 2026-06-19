@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.539', date: '17 Jun 2026', label: 'Online ordering — new card layout (matches catering)',
+    changes: [
+      'The online ordering menu now uses the same card style as the catering site: a photo on top with the details below, and two products per row on mobile. All the existing badges (out-of-stock, low-stock, allergens, “from £X” sizes) are kept.',
+    ],
+  },
+  {
     version: '5.5.538', date: '17 Jun 2026', label: 'Catering site — 2 product columns on mobile',
     changes: [
       'The catering menu now shows two products per row on phones (and larger cards on desktop), making better use of the screen.',
