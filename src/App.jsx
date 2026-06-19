@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.546', date: '18 Jun 2026', label: 'Online ordering — tidier branding upload boxes',
+    changes: [
+      'Cleaned up the Logo and Hero banner upload boxes in Online ordering branding — the heavy dark frame is gone; the image now sits on a light card with a subtle border.',
+      'Made the logo upload preview smaller (was oversized) and trimmed the hero preview height so the section reads neatly.',
+    ],
+  },
+  {
     version: '5.5.545', date: '17 Jun 2026', label: 'Catering — kitchen fire time + sales on the event day',
     changes: [
       'Catering setup has a new “Kitchen fire time” — the time on the event day the order is meant to hit the kitchen.',

@@ -352,7 +352,7 @@ export default function OnlineOrdering({ setSection }) {
             onPick={(file) => handleUpload(file, 'logo', setUploadingLogo)}
             onClear={() => setBranding(b => ({ ...b, logo_url: '' }))}
             help="Square works best · PNG with transparency recommended · max 4 MB"
-            previewBg="#0e0e10" previewWidth={88} previewHeight={88}/>
+            previewBg="#0e0e10" previewWidth={56} previewHeight={56}/>
           <ImageUpload
             label="Hero banner"
             url={branding.hero_url}
@@ -362,7 +362,7 @@ export default function OnlineOrdering({ setSection }) {
             onPick={(file) => handleUpload(file, 'hero', setUploadingHero)}
             onClear={() => setBranding(b => ({ ...b, hero_url: '' }))}
             help="Wide image · 1600×600 ideal · max 4 MB"
-            previewBg="#0e0e10" previewWidth="100%" previewHeight={110}/>
+            previewBg="#0e0e10" previewWidth="100%" previewHeight={88}/>
         </div>
 
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:14 }}>
@@ -740,16 +740,16 @@ function ImageUpload({ label, url, kind, uploading, inputRef, onPick, onClear, h
     <div>
       <div style={S.label}>{label}</div>
       <div style={{
-        background: previewBg, borderRadius: 8, border:'1px dashed var(--bdr)',
-        padding: 10, display:'flex', alignItems:'center', gap:12,
+        background: 'var(--bg2)', borderRadius: 10, border:'1px solid var(--bdr2)',
+        padding: 8, display:'flex', alignItems:'center', gap:12,
       }}>
         {url ? (
           <img src={url} alt={label}
-            style={{ width: previewWidth, height: previewHeight, objectFit:'cover', borderRadius:6, flexShrink:0 }}/>
+            style={{ width: previewWidth, height: previewHeight, objectFit:'cover', borderRadius:6, flexShrink:0, background: previewBg, border:'1px solid var(--bdr)' }}/>
         ) : (
           <div style={{
             width: previewWidth, height: previewHeight, borderRadius:6,
-            background: 'var(--bg3)', display:'flex', alignItems:'center', justifyContent:'center',
+            background: 'var(--bg3)', border:'1px dashed var(--bdr)', display:'flex', alignItems:'center', justifyContent:'center',
             color:'var(--t4)', fontSize:11, flexShrink:0,
           }}>
             No {kind}
