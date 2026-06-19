@@ -217,6 +217,18 @@ export default function CateringSurface({ location }) {
         </div>
       </div>
 
+      {/* Sticky category chooser — scrolls to each menu section */}
+      {cats.filter((c) => itemsForCat(c.id).length).length > 1 && (
+        <div style={{ position: 'sticky', top: 0, zIndex: 8, background: theme.bg, borderBottom: '1px solid #e2e8f0' }}>
+          <div style={{ ...center, padding: '8px 16px', overflowX: 'auto', whiteSpace: 'nowrap', WebkitOverflowScrolling: 'touch', scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+            {cats.map((c) => {
+              if (!itemsForCat(c.id).length) return null;
+              return <button key={c.id} onClick={() => document.getElementById(`cat-${c.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })} style={{ display: 'inline-block', padding: '7px 13px', marginRight: 6, borderRadius: 99, background: 'transparent', color: theme.brand, border: `1.5px solid ${theme.brand}`, fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>{c.label || c.name}</button>;
+            })}
+          </div>
+        </div>
+      )}
+
       <div style={{ ...center, paddingTop: 16, paddingBottom: 120 }}>
         {/* Event details */}
         <div ref={eventRef} style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14, padding: 16, marginBottom: 16, scrollMarginTop: 12 }}>
@@ -246,7 +258,7 @@ export default function CateringSurface({ location }) {
           const ci = itemsForCat(cat.id);
           if (!ci.length) return null;
           return (
-            <section key={cat.id} style={{ marginBottom: 22 }}>
+            <section key={cat.id} id={`cat-${cat.id}`} style={{ marginBottom: 22, scrollMarginTop: 58 }}>
               <h2 style={{ fontSize: 16, fontWeight: 800, margin: '0 0 10px' }}>{cat.label || cat.name}</h2>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(47%, 280px), 1fr))', gap: 12 }}>
                 {ci.map((item) => {

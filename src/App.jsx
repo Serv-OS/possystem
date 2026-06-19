@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.540', date: '17 Jun 2026', label: 'Catering site — category chooser',
+    changes: [
+      'The catering ordering site now has a sticky category bar (like online ordering) — tap a category to jump straight to it. It stays pinned at the top as you scroll.',
+    ],
+  },
+  {
     version: '5.5.539', date: '17 Jun 2026', label: 'Online ordering — new card layout (matches catering)',
     changes: [
       'The online ordering menu now uses the same card style as the catering site: a photo on top with the details below, and two products per row on mobile. All the existing badges (out-of-stock, low-stock, allergens, “from £X” sizes) are kept.',
