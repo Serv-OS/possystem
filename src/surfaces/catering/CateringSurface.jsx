@@ -248,7 +248,7 @@ export default function CateringSurface({ location }) {
           return (
             <section key={cat.id} style={{ marginBottom: 22 }}>
               <h2 style={{ fontSize: 16, fontWeight: 800, margin: '0 0 10px' }}>{cat.label || cat.name}</h2>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(280px,1fr))', gap: 12 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(47%, 280px), 1fr))', gap: 12 }}>
                 {ci.map((item) => {
                   const sold = is86(item.id);
                   const lim = limitFor(item.id);

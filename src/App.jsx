@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.538', date: '17 Jun 2026', label: 'Catering site — 2 product columns on mobile',
+    changes: [
+      'The catering menu now shows two products per row on phones (and larger cards on desktop), making better use of the screen.',
+    ],
+  },
+  {
     version: '5.5.537', date: '17 Jun 2026', label: 'Fix — catering item images now show',
     changes: [
       'Menu item photos now appear on the catering ordering site (each item card shows its image like the online ordering menu does) — previously the catering cards were text-only.',
