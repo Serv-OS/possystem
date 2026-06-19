@@ -11,6 +11,8 @@ import { supabase, ensureAuthToken } from '../../lib/supabase';
 import OnlineItemSheet from '../online/OnlineItemSheet';
 import OnlineCart from '../online/OnlineCart';
 import CateringCheckout from './CateringCheckout';
+import MenuHeader from '../menu/MenuHeader';
+import { readTheme, deriveVars, FIXED, BODY_FONT, DISPLAY_FONT } from '../menu/menuTheme';
 
 const FONT = '-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",system-ui,sans-serif';
 // Customer surfaces must be their OWN scroll container — the operator app sets body{overflow:hidden},
@@ -47,17 +49,11 @@ export default function CateringSurface({ location }) {
   const eventRef = useRef(null);
 
   const cur = cfg?.currency || (location.currency || 'gbp').toLowerCase();
-  // Branding = the venue's online_branding (BO → Online ordering), falling back to receipt_branding.
-  // Field names match OnlineSurface exactly (accent_color / background / foreground / logo_url / hero_url).
-  const theme = useMemo(() => {
-    const accent = branding?.accent_color || '#e8a020';
-    const bg = branding?.background || '#ffffff';
-    const fg = branding?.foreground || '#1a1a1a';
-    // A primary colour that's ALWAYS readable with white text — a venue's accent can be very light
-    // (e.g. pale cream), which makes white-on-accent invisible. Prefer accent, fall back to fg, then slate.
-    const brand = !isLightBackground(accent) ? accent : (!isLightBackground(fg) ? fg : '#0f172a');
-    return { accent, bg, fg, brand, logo: branding?.logo_url || null, hero: branding?.hero_url || null, name: location.name || 'Catering', isLight: isLightBackground(bg) };
-  }, [branding, location.name]);
+  // Themeable menu (prototype design system): one brand colour drives the palette via CSS vars.
+  const mt = useMemo(() => readTheme(branding), [branding]);
+  const vars = useMemo(() => deriveVars(mt.brandColor), [mt.brandColor]);
+  // `theme` keeps the (unchanged) card/checkout internals working; brand unified to the menu brand colour.
+  const theme = useMemo(() => ({ brand: mt.brandColor, bg: '#ffffff', fg: FIXED.ink, accent: mt.brandColor, logo: mt.logoUrl, hero: mt.headerImageUrl, name: location.name || 'Catering', isLight: true }), [mt, location.name]);
 
   useEffect(() => {
     (async () => {
@@ -202,20 +198,8 @@ export default function CateringSurface({ location }) {
   );
 
   return (
-    <div style={shell(theme)}>
-      <div style={{ position: 'relative', height: 200, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', color: '#fff',
-        background: theme.hero ? `linear-gradient(180deg, rgba(0,0,0,0.35) 0%, rgba(0,0,0,0.8) 100%), url(${theme.hero}) center/cover no-repeat` : `linear-gradient(160deg, ${theme.brand} 0%, rgba(0,0,0,0.5) 100%)` }}>
-        <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: 50, background: `linear-gradient(180deg, transparent, ${theme.bg})`, pointerEvents: 'none' }} />
-        <div style={{ ...center, position: 'relative', display: 'flex', alignItems: 'center', gap: 16, paddingBottom: 18 }}>
-          {theme.logo
-            ? <img src={theme.logo} alt={theme.name} style={{ width: 72, height: 72, borderRadius: 16, objectFit: 'cover', border: '3px solid #fff', boxShadow: '0 8px 24px rgba(0,0,0,0.35)', flexShrink: 0, background: '#fff' }} />
-            : <div style={{ width: 72, height: 72, borderRadius: 16, background: theme.brand, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 32, fontWeight: 900, border: '3px solid #fff', flexShrink: 0 }}>{(theme.name || 'C')[0]}</div>}
-          <div style={{ minWidth: 0, textShadow: '0 2px 10px rgba(0,0,0,0.55)' }}>
-            <div style={{ fontSize: 24, fontWeight: 800 }}>{theme.name}</div>
-            <div style={{ fontSize: 14, fontWeight: 700, opacity: 0.95 }}>Catering{cfg.banner_message ? ` · ${cfg.banner_message}` : ''}</div>
-          </div>
-        </div>
-      </div>
+    <div style={{ ...vars, position: 'fixed', inset: 0, overflowY: 'auto', overflowX: 'hidden', WebkitOverflowScrolling: 'touch', containerType: 'inline-size', background: 'var(--bg)', color: 'var(--ink)', fontFamily: BODY_FONT }}>
+      <MenuHeader theme={mt} name={location.name || 'Catering'} pills={[{ label: cfg.banner_message || 'Catering · Pre-order' }]} max={980} />
 
       {/* Sticky category chooser — scrolls to each menu section */}
       {cats.filter((c) => itemsForCat(c.id).length).length > 1 && (
@@ -258,8 +242,12 @@ export default function CateringSurface({ location }) {
           const ci = itemsForCat(cat.id);
           if (!ci.length) return null;
           return (
-            <section key={cat.id} id={`cat-${cat.id}`} style={{ marginBottom: 22, scrollMarginTop: 58 }}>
-              <h2 style={{ fontSize: 16, fontWeight: 800, margin: '0 0 10px' }}>{cat.label || cat.name}</h2>
+            <section key={cat.id} id={`cat-${cat.id}`} style={{ marginBottom: 'clamp(30px,5cqw,48px)', scrollMarginTop: 58 }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 16 }}>
+                <h2 style={{ fontFamily: DISPLAY_FONT, fontWeight: 700, fontSize: 'clamp(20px,4.4cqw,28px)', margin: 0, letterSpacing: '-.02em', color: 'var(--ink)' }}>{cat.label || cat.name}</h2>
+                <span style={{ height: 1, flex: 1, background: 'var(--line)' }} />
+                <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 600 }}>{ci.length} item{ci.length === 1 ? '' : 's'}</span>
+              </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(47%, 280px), 1fr))', gap: 12 }}>
                 {ci.map((item) => {
                   const sold = is86(item.id);
