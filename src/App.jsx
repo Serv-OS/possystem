@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.544', date: '17 Jun 2026', label: 'Catering orders list (kitchen planning)',
+    changes: [
+      'New Channels → Catering orders: a forward view of all catering pre-orders grouped by event date, with filters (upcoming / today / next 7 days / past / all, and paid / pay-later), KPIs (count, total value, awaiting payment), and expandable rows showing items, contact, fulfilment, promo and notes — so the kitchen can plan for big orders ahead of time.',
+      'Next: releasing orders into the live Orders Hub on their event day, an auto-fire time into the kitchen/KDS, and counting them as sales on the production day.',
+    ],
+  },
+  {
     version: '5.5.543', date: '17 Jun 2026', label: 'Menu theming (3/3) — Menu appearance back office',
     changes: [
       'New Channels → Menu appearance: choose your brand colour, header style (cinematic / framed / compact), header photo, logo + logo shape, and the open/prep status pills — with a live preview that toggles Online ordering / Catering and Desktop / Mobile. Save publishes it to both customer sites.',
