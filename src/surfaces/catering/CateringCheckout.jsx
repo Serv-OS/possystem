@@ -112,13 +112,18 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
       const pay = { payment_intent_id: payId, processor, pay_later: false };
       // order_queue (paid)
       await supabase.from('order_queue').insert(queueRow(true, pay));
-      // closed_checks (paid, net) — mirrors the online paid-order record
+      // closed_checks (paid, net) — mirrors the online paid-order record. Sales are dated to the
+      // PRODUCTION day (event day at the kitchen-fire time / event time), so a pre-order counts on
+      // the day it's made — not the day it was placed. Payment is still captured now.
       const taxBk = calculateOrderTax(cart.map((l) => ({ price: l.price + (l.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0), qty: l.qty || 1, taxRateId: l.taxRateId, taxOverrides: l.taxOverrides })), taxRates || [], fulfilment);
+      const fireT = cfg.kitchen_fire_time || eventTime || '12:00';
+      const prod = new Date(`${eventDate}T${fireT}:00`);
+      const closedAt = isNaN(prod.getTime()) ? new Date().toISOString() : prod.toISOString();
       const closedCheck = {
         id: `chk-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`, ref, location_id: opsId, server: 'Catering', staff_id: null, covers: 1,
         order_type: fulfilment, customer: buildCustomer(pay), items: buildItems().map((i) => ({ ...i, voided: false })), discounts: discountLine,
         subtotal, service: deliveryFee, tip, tax_amount: taxBk?.totalTax || null, total, method: 'card',
-        closed_at: new Date().toISOString(), status: 'paid', refunds: [], table_id: null, table_label: `Catering ${ref}`,
+        closed_at: closedAt, status: 'paid', refunds: [], table_id: null, table_label: `Catering ${ref}`,
         source: 'catering', stripe_payment_intent_id: payId, payment_intents: payId ? [{ id: payId, amountMinor: totalMinor }] : null, processor,
       };
       await supabase.from('closed_checks').insert(closedCheck);

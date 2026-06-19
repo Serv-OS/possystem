@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.545', date: '17 Jun 2026', label: 'Catering — kitchen fire time + sales on the event day',
+    changes: [
+      'Catering setup has a new “Kitchen fire time” — the time on the event day the order is meant to hit the kitchen.',
+      'Catering sales now count on the event/production day (dated to the fire time), not the day the order was placed — so pre-orders land in the right day’s sales reports. Payment is still taken at order time.',
+    ],
+  },
+  {
     version: '5.5.544', date: '17 Jun 2026', label: 'Catering orders list (kitchen planning)',
     changes: [
       'New Channels → Catering orders: a forward view of all catering pre-orders grouped by event date, with filters (upcoming / today / next 7 days / past / all, and paid / pay-later), KPIs (count, total value, awaiting payment), and expandable rows showing items, contact, fulfilment, promo and notes — so the kitchen can plan for big orders ahead of time.',

@@ -33,7 +33,7 @@ const DAYS = [['mon', 'Mon'], ['tue', 'Tue'], ['wed', 'Wed'], ['thu', 'Thu'], ['
 
 const BLANK = (locId) => ({
   location_id: locId, enabled: false, currency: 'gbp', slug: '', banner_message: '',
-  hours: {}, closures: [], lead_time_min_days: '', lead_time_max_days: '', prep_time_minutes: '',
+  hours: {}, closures: [], lead_time_min_days: '', lead_time_max_days: '', prep_time_minutes: '', kitchen_fire_time: '',
   order_minimum: '', tips_enabled: false, tip_default_pct: '',
   takeout_enabled: false, takeout_dining_option: 'collection',
   delivery_enabled: false, delivery_dining_option: 'delivery', delivery_radius_miles: '', delivery_fee: '', delivery_fee_per_mile: '',
@@ -46,7 +46,7 @@ function fromRow(r) {
   return {
     location_id: r.location_id, enabled: r.enabled, currency: r.currency || 'gbp', slug: r.slug || '', banner_message: r.banner_message || '',
     hours: r.hours || {}, closures: r.closures || [],
-    lead_time_min_days: r.lead_time_min_days ?? '', lead_time_max_days: r.lead_time_max_days ?? '', prep_time_minutes: r.prep_time_minutes ?? '',
+    lead_time_min_days: r.lead_time_min_days ?? '', lead_time_max_days: r.lead_time_max_days ?? '', prep_time_minutes: r.prep_time_minutes ?? '', kitchen_fire_time: r.kitchen_fire_time || '',
     order_minimum: major(r.order_minimum_minor), tips_enabled: r.tips_enabled, tip_default_pct: r.tip_default_pct ?? '',
     takeout_enabled: r.takeout_enabled, takeout_dining_option: r.takeout_dining_option || 'collection',
     delivery_enabled: r.delivery_enabled, delivery_dining_option: r.delivery_dining_option || 'delivery',
@@ -61,7 +61,7 @@ function toRow(s) {
   return {
     location_id: s.location_id, enabled: !!s.enabled, currency: s.currency || 'gbp', slug: s.slug || null, banner_message: s.banner_message || null,
     hours: s.hours && Object.keys(s.hours).length ? s.hours : null, closures: s.closures && s.closures.length ? s.closures : null,
-    lead_time_min_days: num(s.lead_time_min_days), lead_time_max_days: num(s.lead_time_max_days), prep_time_minutes: num(s.prep_time_minutes),
+    lead_time_min_days: num(s.lead_time_min_days), lead_time_max_days: num(s.lead_time_max_days), prep_time_minutes: num(s.prep_time_minutes), kitchen_fire_time: s.kitchen_fire_time || null,
     order_minimum_minor: minor(s.order_minimum), tips_enabled: !!s.tips_enabled, tip_default_pct: num(s.tip_default_pct),
     takeout_enabled: !!s.takeout_enabled, takeout_dining_option: s.takeout_dining_option || null,
     delivery_enabled: !!s.delivery_enabled, delivery_dining_option: s.delivery_dining_option || null,
@@ -213,6 +213,7 @@ export default function CateringSettings() {
           <div style={S.field}><label style={S.label}>Lead time — min (days)</label><input type="number" min={0} style={S.input} value={s.lead_time_min_days} onChange={(e) => set({ lead_time_min_days: e.target.value })} /></div>
           <div style={S.field}><label style={S.label}>Lead time — max (days)</label><input type="number" min={0} style={S.input} value={s.lead_time_max_days} onChange={(e) => set({ lead_time_max_days: e.target.value })} /></div>
           <div style={S.field}><label style={S.label}>Prep time (minutes)</label><input type="number" min={0} style={S.input} value={s.prep_time_minutes} onChange={(e) => set({ prep_time_minutes: e.target.value })} /></div>
+          <div style={S.field}><label style={S.label}>Kitchen fire time</label><input type="time" style={S.input} value={s.kitchen_fire_time} onChange={(e) => set({ kitchen_fire_time: e.target.value })} /><div style={S.hint}>On the event day, when the order fires into the kitchen + counts as that day’s sales. Blank = the event time.</div></div>
         </div>
         <div style={S.row3}>
           <div style={S.field}><label style={S.label}>Order minimum ({cur})</label><input type="number" min={0} step="0.01" style={S.input} value={s.order_minimum} onChange={(e) => set({ order_minimum: e.target.value })} /></div>
