@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.553', date: '21 Jun 2026', label: 'HubRise — product images + cooking instructions in the catalog',
+    changes: [
+      'Product images now upload to HubRise and appear on the delivery-channel catalog (≤1 MB each).',
+      'Cooking-instruction groups (Cooking preference, Spice level, Bread service, Allergy note, etc.) now publish as choice lists on their items, with required ones staying required. Re-publish the menu to apply both.',
+    ],
+  },
+  {
     version: '5.5.552', date: '21 Jun 2026', label: 'HubRise — nested modifiers flattened into the catalog',
     changes: [
       'Nested modifier groups (an option that opens another group, e.g. Milk → Coffee Temp) are now published to HubRise as side-by-side option lists on the item, so every choice appears on the delivery channels. HubRise can’t do cascading modifiers (its model is flat), so the choices are preserved but shown alongside each other rather than one-after-another. Re-publish the menu to apply.',

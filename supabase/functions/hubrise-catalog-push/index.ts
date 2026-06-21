@@ -8,8 +8,22 @@
 // POST { ops_location_id }. Auth: signed-in user with location access, or service role.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { createLocationCatalog, putCatalog } from '../_shared/hubrise.ts';
+import { createLocationCatalog, putCatalog, uploadCatalogImage } from '../_shared/hubrise.ts';
 import { buildCatalog } from '../_shared/hubrise-map.ts';
+
+const EMPTY_CATALOG = { variants: [], categories: [], products: [], option_lists: [], deals: [], discounts: [], charges: [] };
+
+/** Fetch an image URL and upload its bytes to the catalog; returns the HubRise image id (or null). */
+async function uploadImageFromUrl(token: string, catalogId: string, url: string): Promise<string | null> {
+  try {
+    const r = await fetch(url);
+    if (!r.ok) return null;
+    const ct = r.headers.get('content-type') || 'image/jpeg';
+    const buf = new Uint8Array(await r.arrayBuffer());
+    if (buf.length === 0 || buf.length > 1_000_000) return null; // HubRise: 1 MB per image
+    return await uploadCatalogImage(token, catalogId, buf, ct);
+  } catch { return null; }
+}
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -32,15 +46,19 @@ async function requireAccess(req: Request, loc: string): Promise<Response | null
 }
 
 /** Pull the venue's menu and publish it. Shared so the reconcile cron can call it too. */
-export async function pushCatalog(loc: string): Promise<{ catalogId: string; products: number }> {
+export async function pushCatalog(loc: string): Promise<{ catalogId: string; products: number; images: number }> {
   const { data: conn } = await sb.from('hubrise_connections').select('*').eq('location_id', loc).maybeSingle();
   if (!conn?.access_token) throw new Error('not connected');
+  const token = conn.access_token;
 
-  const [{ data: categories }, { data: items }, { data: groups }] = await Promise.all([
+  const [{ data: categories }, { data: items }, { data: groups }, { data: snapRow }] = await Promise.all([
     sb.from('menu_categories').select('*').eq('location_id', loc),
     sb.from('menu_items').select('*').eq('location_id', loc),
     sb.from('modifier_groups').select('*').eq('location_id', loc),
+    sb.from('config_pushes').select('snapshot').eq('location_id', loc).order('created_at', { ascending: false }).limit(1).maybeSingle(),
   ]);
+  // Cooking-instruction groups live in the latest config-push snapshot, not a table.
+  const instructionGroups = snapRow?.snapshot?.instructionGroupDefs || [];
 
   // Menu selection: if the operator picked which menu(s) publish to HubRise, restrict to
   // those and resolve each item's DELIVERY price from that menu's tier; otherwise publish
@@ -69,33 +87,47 @@ export async function pushCatalog(loc: string): Promise<{ catalogId: string; pro
     });
   }
 
-  const data = buildCatalog({
-    categories: cats, items: items || [], modifierGroups: groups || [],
-    currency: conn.currency || 'GBP', publishIds, itemMenuId, channel: 'delivery',
-  });
-
-  let catalogId = conn.hubrise_catalog_id;
   const name = `${conn.hubrise_location_name || 'ServOS'} menu`;
+  let catalogId = conn.hubrise_catalog_id;
   try {
+    // Ensure the catalog exists first — image upload (POST /catalogs/:id/images) needs its id.
     if (!catalogId) {
-      const created = await createLocationCatalog(conn.access_token, name, data);
+      const created = await createLocationCatalog(token, name, EMPTY_CATALOG);
       catalogId = created?.id;
       await sb.from('hubrise_connections').update({
-        hubrise_catalog_id: catalogId, hubrise_catalog_name: name,
-        catalog_pushed_at: new Date().toISOString(), catalog_push_error: null, updated_at: new Date().toISOString(),
-      }).eq('location_id', loc);
-    } else {
-      await putCatalog(conn.access_token, catalogId, name, data);
-      await sb.from('hubrise_connections').update({
-        catalog_pushed_at: new Date().toISOString(), catalog_push_error: null, updated_at: new Date().toISOString(),
+        hubrise_catalog_id: catalogId, hubrise_catalog_name: name, updated_at: new Date().toISOString(),
       }).eq('location_id', loc);
     }
+
+    // Upload product images (HubRise needs uploaded image ids, not URLs). Products only,
+    // in-scope, online, with an image; oversized/failed uploads are skipped silently.
+    const imageIdByItem: Record<string, string> = {};
+    for (const it of (items || [])) {
+      if (it.parent_id || it.archived || it.type === 'subitem' || it.sold_alone === false) continue;
+      if (it.visibility && it.visibility.online === false) continue;
+      if (publishIds && !publishIds.has(String(it.id))) continue;
+      if (!it.image) continue;
+      const id = await uploadImageFromUrl(token, catalogId!, String(it.image));
+      if (id) imageIdByItem[String(it.id)] = id;
+    }
+
+    const data = buildCatalog({
+      categories: cats, items: items || [], modifierGroups: groups || [],
+      currency: conn.currency || 'GBP', publishIds, itemMenuId, channel: 'delivery',
+      instructionGroups, imageIdByItem,
+    });
+
+    await putCatalog(token, catalogId!, name, data);
+    await sb.from('hubrise_connections').update({
+      hubrise_catalog_name: name, catalog_pushed_at: new Date().toISOString(),
+      catalog_push_error: null, updated_at: new Date().toISOString(),
+    }).eq('location_id', loc);
+    return { catalogId: catalogId!, products: data.products.length, images: Object.keys(imageIdByItem).length };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     await sb.from('hubrise_connections').update({ catalog_push_error: msg, updated_at: new Date().toISOString() }).eq('location_id', loc);
     throw e;
   }
-  return { catalogId: catalogId!, products: data.products.length };
 }
 
 Deno.serve(async (req) => {

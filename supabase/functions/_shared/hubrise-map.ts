@@ -23,6 +23,8 @@ export function buildCatalog(opts: {
   publishIds?: Set<string> | null;          // top-level item ids to publish (null = all online)
   itemMenuId?: Record<string, string | null>; // item id -> the HubRise-selected menu it belongs to (for tier pricing)
   channel?: string;                          // price channel to publish (default 'delivery')
+  instructionGroups?: any[];                 // config-snapshot instruction defs [{id,name,options:[str]}] (cooking prefs etc.)
+  imageIdByItem?: Record<string, string>;    // item id -> uploaded HubRise image id
 }): { variants: any[]; categories: any[]; products: any[]; option_lists: any[]; deals: any[]; discounts: any[]; charges: any[] } {
   const ccy = opts.currency || 'GBP';
   const items = opts.items || [];
@@ -31,6 +33,8 @@ export function buildCatalog(opts: {
   const publishIds = opts.publishIds || null;
   const itemMenuId = opts.itemMenuId || {};
   const channel = opts.channel || 'delivery';
+  const instrGroups = opts.instructionGroups || [];
+  const imageIdByItem = opts.imageIdByItem || {};
 
   // Resolve the price for a given price channel, mirroring store.getItemPrice exactly:
   //   menu+channel -> menu.all -> channel default -> base. So HubRise publishes the
@@ -101,10 +105,31 @@ export function buildCatalog(opts: {
     return ordered;
   };
 
+  // Cooking instructions / preferences live in the config snapshot (instructionGroupDefs),
+  // not the modifier_groups table. They're choice-lists ({id,name,options:[strings]}), so we
+  // publish them as additional option_lists. min comes from the per-item assignment (so a
+  // required cooking-temp stays required); single-select.
+  const instrById = new Map<string, any>(instrGroups.map((g: any) => [String(g.id), g]));
+  const usedInstrIds = new Set<string>();
+  const instrMin: Record<string, number> = {};
+  const instructionRefs = (it: any): string[] => {
+    const refs: string[] = [];
+    for (const a of (it.assigned_instruction_groups || [])) {
+      const gid = a?.groupId ?? a?.id ?? a;
+      if (gid != null && instrById.has(String(gid))) {
+        const id = String(gid);
+        refs.push(id); usedInstrIds.add(id);
+        const m = Number(a?.min) || 0;
+        if (m > (instrMin[id] || 0)) instrMin[id] = m;
+      }
+    }
+    return refs;
+  };
+
   const products: any[] = [];
   for (const it of items) {
     if (!publishable(it)) continue;
-    const optionListRefs = skuOptionRefs(it);
+    const optionListRefs = [...skuOptionRefs(it), ...instructionRefs(it)];
     let skus: any[];
     const parentMenuId = itemMenuId[String(it.id)] ?? null;
     if (it.type === 'variants') {
@@ -132,6 +157,8 @@ export function buildCatalog(opts: {
     if (catRef && catRefSet.has(catRef)) product.category_ref = catRef;
     if (it.description) product.description = it.description;
     if (Array.isArray(it.allergens) && it.allergens.length) product.tags = it.allergens.map(String);
+    const imgId = imageIdByItem[String(it.id)];
+    if (imgId) product.image_ids = [imgId];
     products.push(product);
   }
 
@@ -151,7 +178,24 @@ export function buildCatalog(opts: {
       })),
     }));
 
-  return { variants: [], categories, products, option_lists, deals: [], discounts: [], charges: [] };
+  // Plus option_lists for the cooking-instruction groups (single-select; options are plain
+  // strings so we synthesise refs). Appended after modifier lists.
+  const instruction_lists = instrGroups
+    .filter((g: any) => usedInstrIds.has(String(g.id)))
+    .map((g: any) => ({
+      ref: String(g.id),
+      name: g.name || 'Choice',
+      min_selections: instrMin[String(g.id)] || 0,
+      max_selections: 1,
+      multiple_selection: false,
+      options: (g.options || []).map((txt: any, i: number) => ({
+        ref: `${g.id}-${i}`,
+        name: String(txt),
+        price: toMoney(0, ccy),
+      })),
+    }));
+
+  return { variants: [], categories, products, option_lists: [...option_lists, ...instruction_lists], deals: [], discounts: [], charges: [] };
 }
 
 // ── 2. Order -> order_queue row ──────────────────────────────────────────────

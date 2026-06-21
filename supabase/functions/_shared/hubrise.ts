@@ -113,6 +113,18 @@ export function putCatalog(token: string, catalogId: string, name: string, data:
 }
 export const getCatalog = (token: string, catalogId: string) => hr(token, 'GET', `/catalogs/${catalogId}`);
 
+/** Upload a binary image to a catalog and return its image id (for product.image_ids). */
+export async function uploadCatalogImage(token: string, catalogId: string, bytes: Uint8Array, contentType: string): Promise<string | null> {
+  const res = await fetch(`${HUBRISE_API}/catalogs/${catalogId}/images`, {
+    method: 'POST',
+    headers: { 'X-Access-Token': token, 'Content-Type': contentType || 'image/jpeg' },
+    body: bytes,
+  });
+  if (!res.ok) return null;
+  const j = await res.json().catch(() => null);
+  return j?.id || null;
+}
+
 /** Incremental inventory update for the connected location. entries: [{sku_ref|option_ref, stock, expires_at?}] */
 export function patchInventory(token: string, catalogId: string, entries: unknown[]) {
   return hr(token, 'PATCH', `/catalogs/${catalogId}/location/inventory`, entries);
