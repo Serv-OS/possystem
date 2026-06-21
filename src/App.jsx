@@ -85,6 +85,16 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.547', date: '20 Jun 2026', label: 'HubRise integration — delivery channels (Deliveroo / Uber Eats / Just Eat)',
+    changes: [
+      'New Channels → “Delivery channels (HubRise)” screen: connect a venue to HubRise (authorize or paste a token), publish your menu, resync stock, and set an order-accept policy.',
+      'Channel orders land straight in the Orders Hub + kitchen with a loud alert, a channel badge (Deliveroo / Uber Eats / Just Eat) and a PAID/UNPAID marker; staff Accept (with a prep time) or Reject, and the status flows back to the channel automatically as the order is advanced.',
+      'Delivery kitchen ticket shows the channel, handover code, customer + address, wanted time, payment status and special instructions.',
+      'Menu (catalog) is published to HubRise and out-of-stock (86) items are pushed so channels stop selling them; a background reconcile keeps everything in sync and recovers anything missed.',
+      'Code-complete and ready to deploy — see HUBRISE_INTEGRATION_PLAN.md for the go-live runbook (register a HubRise app, set secrets, apply the migration, deploy the edge functions).',
+    ],
+  },
+  {
     version: '5.5.546', date: '18 Jun 2026', label: 'Online ordering — tidier branding upload boxes',
     changes: [
       'Cleaned up the Logo and Hero banner upload boxes in Online ordering branding — the heavy dark frame is gone; the image now sits on a light card with a subtle border.',

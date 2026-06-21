@@ -396,14 +396,16 @@ export function startRealtime(store, locationId = LOCATION_ID) {
       // banner that stays for 5s and is dismissable. Online orders are
       // written to order_queue ONLY after Stripe payment succeeds, so the
       // INSERT itself is the moment of truth.
-      if (payload.eventType === 'INSERT' && ['kiosk','online','qr'].includes(payload.new?.source)) {
+      if (payload.eventType === 'INSERT' && ['kiosk','online','qr','hubrise'].includes(payload.new?.source)) {
         const row = payload.new;
         const src = row.source;
         const ref = row.ref || '';
-        // "who" prefers table label for QR, else customer name, else fallbacks
+        // "who" prefers table label for QR, channel name for HubRise, else customer name
         const tableLabel = row.customer?.tableLabel || row.customer?.tableId;
         const who = src === 'qr'
           ? (tableLabel ? `Table ${tableLabel}` : (row.customer?.name || 'QR order'))
+          : src === 'hubrise'
+          ? (row.customer?.channel || 'Delivery order')
           : (row.customer?.name || (src === 'online' ? 'Online customer' : 'Walk-in'));
         playOrderChime();
         store.getState().showOrderAlert?.({
@@ -422,7 +424,9 @@ export function startRealtime(store, locationId = LOCATION_ID) {
         // (matches kiosk-source path that's worked correctly all along).
         let isMaster = false;
         try { isMaster = JSON.parse(localStorage.getItem('rpos-device-config') || '{}').isMaster === true; } catch {}
-        if (isMaster && !row.kitchen_routed_at) {
+        // HubRise/channel orders are NOT auto-printed on receipt — staff Accept them
+        // in the Orders Hub (which prints + confirms a prep time back to the channel).
+        if (isMaster && !row.kitchen_routed_at && src !== 'hubrise') {
           store.getState().routeKioskOrderPrints?.({
             ref,
             source: src,                                     // 'kiosk' | 'online' | 'qr'

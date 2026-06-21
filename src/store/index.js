@@ -4,6 +4,7 @@ import { calculateOrderTax } from '../lib/tax';
 import { resolveServiceCharge } from '../lib/serviceCharge';
 import { upsertMenuItem, upsertFloorTable, deleteFloorTable, insertKDSTicket, insertClosedCheck, toggle86DB, getNextOrderRefLocal, updateClosedCheckRefunds, upsertStockLevel, deleteStockLevel, decrementStockRPC, restoreStockRPC } from '../lib/db';
 import { printService } from '../lib/printer';
+import { hubrisePushStock, isHubriseConnected } from '../lib/hubrise';
 
 // ── Payment-intent normaliser ────────────────────────────────────────────────
 // v5.5.323: a check can have MULTIPLE card PaymentIntents — one per card portion
@@ -2611,6 +2612,12 @@ export const useStore = create((set, get) => ({
     set(s => ({ eightySixIds: is86 ? s.eightySixIds.filter(x=>x!==id) : [...s.eightySixIds, id] }));
     // Write to Supabase (no-op in mock mode)
     toggle86DB(id, is86);
+    // Best-effort: mirror the new 86 state to HubRise channels (instant out-of-stock).
+    // The reconcile cron also resyncs, so a missed push self-heals. !is86 = now 86'd.
+    try {
+      const locId = getActiveLocationSync();
+      if (locId && isHubriseConnected(locId)) hubrisePushStock(locId, [{ itemId: id, is86: !is86 }]).catch(() => {});
+    } catch { /* non-fatal */ }
   },
 
   // ── Daily counts / par levels ──────────────────────────────────────────────
@@ -4324,6 +4331,7 @@ export const useStore = create((set, get) => ({
             centreName: centre?.name || job.printerName || 'Kitchen',
             items: printItems,
             sentAt: basePrintJob.sentAt,
+            delivery: job.delivery || null,   // HubRise/delivery context block (null for all other tickets)
           }, printerId, { idempotencyKey });
 
       // Any outcome here is "first attempt done". PrintRetrier handles persistent retries.
@@ -4491,13 +4499,27 @@ export const useStore = create((set, get) => ({
       // v5.5.126: source-correct labels so the kitchen ticket / KDS card says
       // "Online OL-XXX" or "QR T5" instead of always "Kiosk". Falls back to
       // the previous "Kiosk" wording when source is unknown.
-      const SRC_LABEL = { kiosk: 'Kiosk', online: 'Online', qr: 'QR' };
+      const SRC_LABEL = { kiosk: 'Kiosk', online: 'Online', qr: 'QR', hubrise: 'HubRise' };
       const srcLabel = SRC_LABEL[order.source] || 'Kiosk';
       const tableLabel = order.source === 'qr' && order.tableLabel
         ? `Table ${order.tableLabel}`
         : `${srcLabel} ${order.ref}`;
       const serverName = order.customer?.name || `${srcLabel} ${order.ref}`;
       const sentAt = order.sentAt || Date.now();
+
+      // HubRise delivery-channel context printed on each centre's kitchen ticket.
+      const deliveryBlock = order.source === 'hubrise' ? {
+        channel: order.customer?.channel,
+        serviceType: order.customer?.serviceType || order.type,
+        paid: order.customer?.paid,
+        collectionCode: order.customer?.collectionCode,
+        name: order.customer?.name,
+        phone: order.customer?.phone,
+        address: order.customer?.address,
+        notes: order.customer?.notes,
+        expected: order.isASAP ? 'ASAP'
+          : (order.collectionTime ? new Date(order.collectionTime).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : null),
+      } : null;
 
       // Per-centre KDS tickets. v5.5.132: status MUST be 'pending' — that's
       // what the KDS surface filters on (OtherSurfaces.jsx:420 — `status
@@ -4564,6 +4586,7 @@ export const useStore = create((set, get) => ({
             mods: i.mods,
           })),
           type: 'kitchen',
+          delivery: deliveryBlock,
         });
       });
 

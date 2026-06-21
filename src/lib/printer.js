@@ -230,7 +230,7 @@ export async function buildCustomerReceipt({ location, check, items, totals }) {
   return b.toBytes();
 }
 
-export function buildKitchenTicket({ table, server, covers, course, centreName, items, sentAt }) {
+export function buildKitchenTicket({ table, server, covers, course, centreName, items, sentAt, delivery }) {
   const b = new EscPosBuilder(42);
   const time = new Date(sentAt||Date.now()).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
 
@@ -252,13 +252,36 @@ export function buildKitchenTicket({ table, server, covers, course, centreName, 
     // ` . ` separator catches the existing "Takeaway . Sarah" pattern.
     const isNonTableLabel = / . /.test(table)
       || /^(takeaway|collection|delivery|counter)$/i.test(table)
-      || /^(online|kiosk|qr|table)\s/i.test(table);
+      || /^(online|kiosk|qr|table|hubrise)\s/i.test(table);
     b.center().line(isNonTableLabel ? table : `TABLE ${table}`).left();
   } else {
     b.center().line('WALK-IN').left();
   }
 
   b.normal();
+
+  // v5.5.547: HubRise / delivery-channel context block. Only present for HubRise
+  // orders (delivery passed in); all other tickets are unchanged. Gives the kitchen
+  // + packer the channel, paid status, handover code, customer/address and ETA.
+  if (delivery) {
+    b.divider();
+    if (delivery.channel) b.center().bold(true).line(String(delivery.channel).toUpperCase()).bold(false).left();
+    const st = delivery.serviceType === 'delivery' ? 'DELIVERY'
+      : delivery.serviceType === 'collection' ? 'COLLECTION'
+      : delivery.serviceType === 'eat_in' ? 'EAT IN' : 'ORDER';
+    b.bold(true).line(`${st}  ·  ${delivery.paid ? 'PAID' : 'UNPAID — COLLECT'}`).bold(false);
+    if (delivery.collectionCode) b.fontB().line(`Code: ${delivery.collectionCode}`).fontA();
+    if (delivery.expected) b.fontB().line(`Wanted: ${delivery.expected}`).fontA();
+    if (delivery.name) b.line(delivery.name);
+    if (delivery.phone) b.line(delivery.phone);
+    if (delivery.address) {
+      const a = delivery.address;
+      [a.line1, a.line2, [a.city, a.postcode].filter(Boolean).join(' ')].filter(Boolean).forEach(l => b.line(l));
+    }
+    if (delivery.notes) b.red().bold(true).underline(true).line(delivery.notes).underline(false).bold(false).black();
+    b.divider();
+  }
+
   if(server) b.fontB().line(`Server: ${server}`).fontA();
   if(covers>1) b.fontB().line(`Covers: ${covers}`).fontA();
   // v4.6.9: no more single-course header line. Per-course headers below handle it
@@ -809,7 +832,7 @@ class PrintService {
   async printKitchenTicket(ticketData, printerId = null, opts = {}) {
     const printer = this._printerForRole('kitchen', printerId);
     if (printer?.address) {
-      const bytes = buildKitchenTicket(ticketData);
+      const bytes = buildKitchenTicket(ticketData);   // ticketData.delivery (if set) renders the channel block
       return this._submitJob(printer, 'kitchen', bytes, {
         idempotencyKey: opts.idempotencyKey,
         metadata: { tableLabel: ticketData.table, server: ticketData.server, covers: ticketData.covers, course: ticketData.course, centreName: ticketData.centreName },
