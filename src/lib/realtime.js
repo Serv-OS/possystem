@@ -424,9 +424,10 @@ export function startRealtime(store, locationId = LOCATION_ID) {
         // (matches kiosk-source path that's worked correctly all along).
         let isMaster = false;
         try { isMaster = JSON.parse(localStorage.getItem('rpos-device-config') || '{}').isMaster === true; } catch {}
-        // HubRise/channel orders are NOT auto-printed on receipt — staff Accept them
-        // in the Orders Hub (which prints + confirms a prep time back to the channel).
-        if (isMaster && !row.kitchen_routed_at && src !== 'hubrise') {
+        // HubRise/channel orders aren't auto-printed on receipt when manual-accept is on —
+        // staff Accept them in the Orders Hub (which prints + confirms a prep time back to the
+        // channel). When the venue AUTO-accepts, the row arrives already 'prep', so it prints.
+        if (isMaster && !row.kitchen_routed_at && (src !== 'hubrise' || row.status === 'prep')) {
           store.getState().routeKioskOrderPrints?.({
             ref,
             source: src,                                     // 'kiosk' | 'online' | 'qr'
@@ -436,6 +437,22 @@ export function startRealtime(store, locationId = LOCATION_ID) {
             sentAt: row.sent_at ? new Date(row.sent_at).getTime() : Date.now(),
           });
         }
+      }
+      // v5.5.550: a channel-side cancellation (HubRise order.update -> status cancelled,
+      // written by hubrise-webhook) must NOT be silent — the kitchen may be mid-prep.
+      // Fire the chime + a banner so staff stop and reconcile.
+      if (payload.eventType === 'UPDATE'
+          && payload.new?.source === 'hubrise'
+          && payload.new?.status === 'cancelled'
+          && payload.old?.status !== 'cancelled') {
+        playOrderChime();
+        store.getState().showOrderAlert?.({
+          source: 'hubrise',
+          who: `CANCELLED · ${payload.new.customer?.channel || 'HubRise'}`,
+          ref: payload.new.ref || '',
+          total: 0,
+          orderType: payload.new.type || null,
+        });
       }
     })
     .subscribe();

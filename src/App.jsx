@@ -85,6 +85,16 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.550', date: '21 Jun 2026', label: 'HubRise — compliance hardening (order handshake)',
+    changes: [
+      'Channel orders are now acknowledged back to HubRise the instant they arrive (status “received”), as HubRise requires — this stops the channel raising “order not picked up” alerts before staff accept.',
+      'Auto-accept (if enabled) now fully works: the order is accepted with a confirmed prep time and auto-prints to the kitchen on arrival.',
+      'Our order id is now sent to HubRise (private_ref) for clean mapping/de-duplication.',
+      'A channel-side cancellation now triggers the loud alert + banner (so the kitchen stops), instead of silently dropping.',
+      'Normalised HubRise’s deprecated “awaiting_shipment” status to “ready”.',
+    ],
+  },
+  {
     version: '5.5.549', date: '21 Jun 2026', label: 'HubRise — menu selection + delivery pricing',
     changes: [
       'HubRise screen: choose which menu(s) publish to the delivery channels (leave blank to publish all online-visible items).',

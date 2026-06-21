@@ -149,6 +149,7 @@ export function hrToQueueStatus(hr: string): string {
     case 'accepted':
     case 'in_preparation': return 'prep';
     case 'awaiting_collection':
+    case 'awaiting_shipment': // deprecated by HubRise → treat as awaiting_collection
     case 'in_delivery': return 'ready';
     case 'completed': return 'collected';
     case 'rejected':

@@ -28,13 +28,24 @@ export async function ingestOrder(sb: any, opsLocationId: string, order: any, ev
   const { row, link } = orderToQueueRow(order, { locationId: opsLocationId });
 
   const { data: existingLink } = await sb.from('hubrise_order_links')
-    .select('last_event_created_at').eq('hubrise_order_id', order.id).maybeSingle();
+    .select('last_event_created_at, pushed_status').eq('hubrise_order_id', order.id).maybeSingle();
   if (existingLink?.last_event_created_at && eventCreatedAt &&
       new Date(eventCreatedAt) < new Date(existingLink.last_event_created_at)) return;
 
   const { data: existingRow } = await sb.from('order_queue').select('ref, status').eq('ref', row.ref).maybeSingle();
+  const { data: conn } = await sb.from('hubrise_connections')
+    .select('access_token, auto_accept, default_prep_minutes').eq('location_id', opsLocationId).maybeSingle();
+
+  const incomingNew = (order.status || 'new') === 'new';
+  const autoAccept = incomingNew && !!conn?.auto_accept;
   const terminal = TERMINAL.has(order.status);
-  const status = !existingRow ? hrToQueueStatus(order.status || 'new') : (terminal ? 'cancelled' : existingRow.status);
+
+  // Initial local status: a brand-new order is 'received' — or 'prep' when the venue
+  // auto-accepts (which signals the realtime client to auto-print). Existing orders keep
+  // their prep progress unless HubRise now reports a terminal (cancelled) state.
+  const status = existingRow
+    ? (terminal ? 'cancelled' : existingRow.status)
+    : (terminal ? 'cancelled' : (autoAccept ? 'prep' : hrToQueueStatus(order.status || 'new')));
 
   await sb.from('order_queue').upsert(queuePayload({ ...row, status }, !existingRow), { onConflict: 'ref' });
 
@@ -42,6 +53,22 @@ export async function ingestOrder(sb: any, opsLocationId: string, order: any, ev
     ...link, hr_status: order.status || 'new',
     last_event_created_at: eventCreatedAt || new Date().toISOString(), updated_at: new Date().toISOString(),
   }, { onConflict: 'ref' });
+
+  // COMPLIANCE — acknowledge a new order back to HubRise. HubRise requires the EPOS to move
+  // new -> 'received' on ingest (suppresses the channel's "order not picked up" alerts). If the
+  // venue auto-accepts, jump straight to 'accepted' + confirmed_time. private_ref carries our
+  // ref for HubRise's ID-mapping/dedup. Best-effort: failures are retried by the reconcile cron.
+  if (incomingNew && conn?.access_token && !(existingLink && existingLink.pushed_status)) {
+    try {
+      if (autoAccept) {
+        const prep = Number.isFinite(conn.default_prep_minutes) ? conn.default_prep_minutes : 20;
+        const ct = new Date(Date.now() + prep * 60_000).toISOString();
+        await patchOrderStatus(sb, row.ref, 'accepted', ct, null, { private_ref: row.ref });
+      } else {
+        await patchOrderStatus(sb, row.ref, 'received', null, null, { private_ref: row.ref });
+      }
+    } catch { /* reconcile retries via link.push_error */ }
+  }
 }
 
 /** Fetch the full order then ingest (used by the passive-event reconcile path). */
@@ -76,7 +103,7 @@ export async function resyncInventory(sb: any, loc: string): Promise<{ outOfStoc
 }
 
 /** PATCH a HubRise order's status + record the result on the link row. */
-export async function patchOrderStatus(sb: any, ref: string, hrStatus: string, confirmedTime?: string | null, reason?: string | null) {
+export async function patchOrderStatus(sb: any, ref: string, hrStatus: string, confirmedTime?: string | null, reason?: string | null, extra?: Record<string, unknown> | null) {
   const { data: link } = await sb.from('hubrise_order_links').select('*').eq('ref', ref).maybeSingle();
   if (!link) throw new Error('not a HubRise order');
   const { data: conn } = await sb.from('hubrise_connections').select('access_token').eq('location_id', link.location_id).maybeSingle();
@@ -85,6 +112,7 @@ export async function patchOrderStatus(sb: any, ref: string, hrStatus: string, c
   const body: Record<string, unknown> = { status: hrStatus };
   if (confirmedTime) body.confirmed_time = confirmedTime;
   if (reason) body.seller_notes = reason;
+  if (extra) Object.assign(body, extra);   // e.g. private_ref for ID mapping
   const now = new Date().toISOString();
   try {
     await patchOrder(conn.access_token, link.hubrise_location_id, link.hubrise_order_id, body);
