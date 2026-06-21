@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.554', date: '21 Jun 2026', label: 'HubRise — fix order callback (orders now reach the POS)',
+    changes: [
+      'Fixed the order callback registration: HubRise allows only one callback per connection, and we were registering an active then a passive one — the passive overwrote the active, so HubRise had nowhere to push orders. Now we register a single active callback (our webhook). Channel orders now arrive in the Orders Hub.',
+    ],
+  },
+  {
     version: '5.5.553', date: '21 Jun 2026', label: 'HubRise — product images + cooking instructions in the catalog',
     changes: [
       'Product images now upload to HubRise and appear on the delivery-channel catalog (≤1 MB each).',

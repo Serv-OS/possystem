@@ -18,7 +18,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import {
   authorizeUrl, exchangeCode, revokeToken, getAccount, getLocation,
-  createCallback, deleteCallback, HUBRISE_SCOPE,
+  createCallback, HUBRISE_SCOPE,
 } from '../_shared/hubrise.ts';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
@@ -102,16 +102,15 @@ async function storeConnection(opsLocationId: string, token: string, bound: any,
 }
 
 async function registerCallbacks(opsLocationId: string, token: string) {
-  // Drop any previous callbacks we recorded, then register a fresh active + passive pair.
-  const { data: conn } = await sb.from('hubrise_connections').select('active_callback_id, passive_callback_id').eq('location_id', opsLocationId).maybeSingle();
-  for (const id of [conn?.active_callback_id, conn?.passive_callback_id]) {
-    if (id) await deleteCallback(token, id).catch(() => {});
-  }
-  const active = await createCallback(token, WEBHOOK_URL(opsLocationId), ORDER_EVENTS);
-  const passive = await createCallback(token, null, ORDER_EVENTS);
+  // HubRise has exactly ONE callback per connection (it has no id — GET/POST /callback
+  // get/set the single config). Set it ACTIVE (url = our webhook). Do NOT also create a
+  // "passive" one: a second POST would overwrite this and leave HubRise with nowhere to
+  // push orders (that was the bug). Failed/missed deliveries still queue in
+  // /callback/events, which hubrise-reconcile drains — so active-only is correct.
+  await createCallback(token, WEBHOOK_URL(opsLocationId), ORDER_EVENTS);
   await sb.from('hubrise_connections').update({
-    active_callback_id: active?.id || null,
-    passive_callback_id: passive?.id || null,
+    active_callback_id: 'active',
+    passive_callback_id: null,
     callbacks_registered_at: new Date().toISOString(),
   }).eq('location_id', opsLocationId);
 }
@@ -215,7 +214,9 @@ Deno.serve(async (req) => {
       case 'disconnect': {
         const { data: c } = await sb.from('hubrise_connections').select('*').eq('location_id', opsLocationId).maybeSingle();
         if (c?.access_token) {
-          for (const id of [c.active_callback_id, c.passive_callback_id]) if (id) await deleteCallback(c.access_token, id).catch(() => {});
+          // Stop pushes (set the callback passive) best-effort, then revoke the token
+          // (which fully invalidates the connection anyway). No callback id to delete.
+          await createCallback(c.access_token, null, ORDER_EVENTS).catch(() => {});
           if (CLIENT_ID && CLIENT_SECRET) await revokeToken(CLIENT_ID, CLIENT_SECRET, c.access_token);
         }
         await sb.from('hubrise_connections').delete().eq('location_id', opsLocationId);
