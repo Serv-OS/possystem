@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.559', date: '22 Jun 2026', label: 'HubRise — upload images for sold-standalone sub-items',
+    changes: [
+      'Product images for sub-items that are sold standalone (e.g. Bueno Filled donut) now upload to HubRise. The image-upload step was still skipping all sub-items; it now matches what gets published. Re-publish the menu to apply.',
+    ],
+  },
+  {
     version: '5.5.558', date: '21 Jun 2026', label: 'HubRise — sync standalone sub-items (donuts) + 86 reaches modifier options',
     changes: [
       'Items that are sub-items but also sold standalone (e.g. individual donuts) now publish to HubRise — previously all sub-items were skipped, so they were missing from the channel menu.',

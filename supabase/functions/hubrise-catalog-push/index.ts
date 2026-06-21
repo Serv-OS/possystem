@@ -103,7 +103,8 @@ export async function pushCatalog(loc: string): Promise<{ catalogId: string; pro
     // in-scope, online, with an image; oversized/failed uploads are skipped silently.
     const imageIdByItem: Record<string, string> = {};
     for (const it of (items || [])) {
-      if (it.parent_id || it.archived || it.type === 'subitem' || it.sold_alone === false) continue;
+      // Match buildCatalog.publishable — incl. sold-alone sub-items (donuts) so their images upload too.
+      if (it.parent_id || it.archived || it.sold_alone === false) continue;
       if (it.visibility && it.visibility.online === false) continue;
       if (publishIds && !publishIds.has(String(it.id))) continue;
       if (!it.image) continue;
