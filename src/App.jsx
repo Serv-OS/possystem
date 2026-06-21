@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.549', date: '21 Jun 2026', label: 'HubRise — menu selection + delivery pricing',
+    changes: [
+      'HubRise screen: choose which menu(s) publish to the delivery channels (leave blank to publish all online-visible items).',
+      'Catalog now publishes your DELIVERY price, not the base price — using each item’s Delivery channel price and any per-menu “Deliveroo +0.50” pricing tier (same resolver the POS uses). So the same menu can carry a higher price on delivery channels.',
+    ],
+  },
+  {
     version: '5.5.548', date: '21 Jun 2026', label: 'HubRise — fix OAuth scope (deployed live)',
     changes: [
       'Fixed the HubRise connect scope — HubRise rejects a resource listed twice; request orders.write (includes read) instead of orders.read + orders.write so “Connect with HubRise” authorizes cleanly.',

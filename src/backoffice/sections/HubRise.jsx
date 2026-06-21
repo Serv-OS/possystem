@@ -6,9 +6,9 @@
 // server-side only — this screen talks to the hubrise-* edge functions.
 
 import { useEffect, useState, useCallback } from 'react';
-import { getActiveLocationSync, platformSupabase } from '../../lib/supabase';
+import { getActiveLocationSync, platformSupabase, supabase } from '../../lib/supabase';
 import {
-  hubriseStatus, hubriseOAuthStart, hubriseConnectToken, hubriseSetPolicy,
+  hubriseStatus, hubriseOAuthStart, hubriseConnectToken, hubriseSetPolicy, hubriseSetMenus,
   hubriseRegister, hubriseDisconnect, hubrisePushCatalog, hubriseResyncStock,
   setHubriseConnected,
 } from '../../lib/hubrise';
@@ -39,6 +39,7 @@ export default function HubRise() {
   const [locId, setLocId] = useState(null);
   const [venueName, setVenueName] = useState('');
   const [status, setStatus] = useState(null);
+  const [menus, setMenus] = useState([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState('');
   const [token, setToken] = useState('');
@@ -61,6 +62,10 @@ export default function HubRise() {
         const { data: pl } = await platformSupabase.from('locations').select('name').or(`ops_location_id.eq.${id},id.eq.${id}`).limit(1).maybeSingle();
         setVenueName(pl?.name || '');
       } catch { /* name optional */ }
+      try {
+        const { data: ms } = await supabase.from('menus').select('id, name, is_active').eq('location_id', id).order('sort_order', { ascending: true });
+        setMenus(ms || []);
+      } catch { /* menus optional */ }
       // Surface the OAuth redirect result, then clean the URL.
       try {
         const q = new URLSearchParams(window.location.search);
@@ -78,6 +83,12 @@ export default function HubRise() {
     try { await fn(); if (okText) setMsg({ kind: 'ok', text: okText }); await refresh(locId); }
     catch (e) { setMsg({ kind: 'err', text: e.message }); }
     finally { setBusy(''); }
+  };
+
+  const toggleMenu = (id) => {
+    const cur = new Set(status?.menu_ids || []);
+    cur.has(id) ? cur.delete(id) : cur.add(id);
+    run('menus', () => hubriseSetMenus(locId, [...cur]));
   };
 
   if (loading) return <div style={S.empty}>Loading…</div>;
@@ -143,6 +154,35 @@ export default function HubRise() {
           </>
         )}
       </div>
+
+      {/* Which menu publishes */}
+      {connected && (
+        <div style={S.card}>
+          <div style={S.h2}>Menu to publish</div>
+          <div style={{ ...S.sub, marginTop: 0, marginBottom: 10 }}>
+            Choose which menu(s) go to the delivery channels. Prices use each item's <b>Delivery</b> price
+            (set per item, or a per-menu “Deliveroo +0.50” tier in Menu → item → Per-menu pricing tiers).
+            Leave all unticked to publish every online-visible item at its delivery price.
+          </div>
+          {menus.length === 0 ? (
+            <div style={{ fontSize: 12, color: 'var(--t3)' }}>No menus found for this location.</div>
+          ) : menus.map((m) => {
+            const on = (status?.menu_ids || []).includes(m.id);
+            return (
+              <label key={m.id} style={{ ...S.row, cursor: 'pointer', padding: '5px 0' }}>
+                <input type="checkbox" checked={on} disabled={busy === 'menus'} onChange={() => toggleMenu(m.id)} />
+                <span style={{ fontSize: 13, color: 'var(--t1)' }}>{m.name}</span>
+                {m.is_active === false && <span style={{ fontSize: 10, color: 'var(--t4)' }}>(inactive)</span>}
+              </label>
+            );
+          })}
+          <div style={{ ...S.sub, marginTop: 8 }}>
+            {(status?.menu_ids || []).length
+              ? `Publishing ${status.menu_ids.length} selected menu(s). Re-publish below after changing this.`
+              : 'Publishing all online-visible items.'}
+          </div>
+        </div>
+      )}
 
       {/* Menu + stock */}
       {connected && (

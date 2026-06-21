@@ -20,18 +20,39 @@ export function buildCatalog(opts: {
   items: any[];
   modifierGroups: any[];
   currency: string;
+  publishIds?: Set<string> | null;          // top-level item ids to publish (null = all online)
+  itemMenuId?: Record<string, string | null>; // item id -> the HubRise-selected menu it belongs to (for tier pricing)
+  channel?: string;                          // price channel to publish (default 'delivery')
 }): { variants: any[]; categories: any[]; products: any[]; option_lists: any[]; deals: any[]; discounts: any[]; charges: any[] } {
   const ccy = opts.currency || 'GBP';
   const items = opts.items || [];
   const cats = opts.categories || [];
   const groups = opts.modifierGroups || [];
+  const publishIds = opts.publishIds || null;
+  const itemMenuId = opts.itemMenuId || {};
+  const channel = opts.channel || 'delivery';
 
-  // What we publish to channels: live items visible online, sold on their own, and
-  // NOT a child of another item (variant children are published as their parent's
-  // skus, never as standalone products — that would duplicate the sku ref).
+  // Resolve the price for a given price channel, mirroring store.getItemPrice exactly:
+  //   menu+channel -> menu.all -> channel default -> base. So HubRise publishes the
+  // operator's DELIVERY price (and any per-menu "Deliveroo +X" tier), not the base price.
+  const resolvePrice = (pricing: any, menuId: string | null): number => {
+    const p = pricing || {};
+    if (menuId && p.menus && p.menus[menuId]) {
+      const t = p.menus[menuId];
+      if (t[channel] != null) return t[channel];
+      if (t.all != null) return t.all;
+    }
+    if (p[channel] != null) return p[channel];
+    return p.base != null ? p.base : (p.price != null ? p.price : 0);
+  };
+
+  // What we publish: live items visible online, sold on their own, NOT a variant child
+  // (children are published as their parent's skus), and — when a menu filter is set —
+  // only items in one of the selected menus.
   const publishable = (it: any) =>
     it && !it.archived && it.type !== 'subitem' && it.sold_alone !== false && !it.parent_id &&
-    (!it.visibility || it.visibility.online !== false);
+    (!it.visibility || it.visibility.online !== false) &&
+    (!publishIds || publishIds.has(String(it.id)));
 
   const childrenOf = (parentId: string) =>
     items.filter((c) => c.parent_id === parentId && !c.archived);
@@ -64,18 +85,19 @@ export function buildCatalog(opts: {
     if (!publishable(it)) continue;
     const optionListRefs = skuOptionRefs(it);
     let skus: any[];
+    const parentMenuId = itemMenuId[String(it.id)] ?? null;
     if (it.type === 'variants') {
       const kids = childrenOf(String(it.id));
       skus = (kids.length ? kids : [it]).map((k) => ({
         ref: String(k.id),
         name: k === it ? undefined : displayName(k),
-        price: toMoney(k.pricing?.base ?? k.price ?? 0, ccy),
+        price: toMoney(resolvePrice(k.pricing, itemMenuId[String(k.id)] ?? parentMenuId), ccy),
         ...(optionListRefs.length ? { option_list_refs: optionListRefs } : {}),
       }));
     } else {
       skus = [{
         ref: String(it.id),
-        price: toMoney(it.pricing?.base ?? it.price ?? 0, ccy),
+        price: toMoney(resolvePrice(it.pricing, parentMenuId), ccy),
         ...(optionListRefs.length ? { option_list_refs: optionListRefs } : {}),
       }];
     }

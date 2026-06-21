@@ -36,6 +36,7 @@ create table if not exists hubrise_connections (
   last_error               text,
   auto_accept              boolean not null default false,
   default_prep_minutes     integer not null default 20,
+  menu_ids                 text[] not null default '{}',   -- which ServOS menu(s) publish to HubRise (empty = all online-visible)
   connected_by             uuid,
   connected_at             timestamptz not null default now(),
   updated_at               timestamptz not null default now()

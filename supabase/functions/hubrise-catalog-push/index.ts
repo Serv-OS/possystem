@@ -42,9 +42,36 @@ export async function pushCatalog(loc: string): Promise<{ catalogId: string; pro
     sb.from('modifier_groups').select('*').eq('location_id', loc),
   ]);
 
+  // Menu selection: if the operator picked which menu(s) publish to HubRise, restrict to
+  // those and resolve each item's DELIVERY price from that menu's tier; otherwise publish
+  // all online-visible items at the top-level delivery price.
+  const menuIds = Array.isArray(conn.menu_ids) ? conn.menu_ids.map(String) : [];
+  let cats = categories || [];
+  let publishIds: Set<string> | null = null;
+  const itemMenuId: Record<string, string | null> = {};
+  if (menuIds.length) {
+    const sel = new Set(menuIds);
+    const { data: links } = await sb.from('menu_category_links').select('menu_id, category_id');
+    const catMenus: Record<string, Set<string>> = {};
+    (links || []).forEach((l: any) => { (catMenus[String(l.category_id)] ??= new Set()).add(String(l.menu_id)); });
+    (categories || []).forEach((c: any) => { if (c.menu_id) (catMenus[String(c.id)] ??= new Set()).add(String(c.menu_id)); });
+    const selCatMenu: Record<string, string> = {};  // category id -> first selected menu it's in
+    for (const [catId, menus] of Object.entries(catMenus)) {
+      for (const m of menus) if (sel.has(m)) { selCatMenu[catId] = m; break; }
+    }
+    cats = (categories || []).filter((c: any) => selCatMenu[String(c.id)]);
+    publishIds = new Set();
+    (items || []).forEach((it: any) => {
+      if (it.parent_id) return; // variant children ride with their parent
+      const candidates = [it.cat, ...(Array.isArray(it.cats) ? it.cats : [])].filter(Boolean).map(String);
+      const menuForItem = candidates.map((c) => selCatMenu[c]).find(Boolean) || null;
+      if (menuForItem) { publishIds!.add(String(it.id)); itemMenuId[String(it.id)] = menuForItem; }
+    });
+  }
+
   const data = buildCatalog({
-    categories: categories || [], items: items || [], modifierGroups: groups || [],
-    currency: conn.currency || 'GBP',
+    categories: cats, items: items || [], modifierGroups: groups || [],
+    currency: conn.currency || 'GBP', publishIds, itemMenuId, channel: 'delivery',
   });
 
   let catalogId = conn.hubrise_catalog_id;
