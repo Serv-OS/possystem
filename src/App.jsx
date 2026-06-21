@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.552', date: '21 Jun 2026', label: 'HubRise — nested modifiers flattened into the catalog',
+    changes: [
+      'Nested modifier groups (an option that opens another group, e.g. Milk → Coffee Temp) are now published to HubRise as side-by-side option lists on the item, so every choice appears on the delivery channels. HubRise can’t do cascading modifiers (its model is flat), so the choices are preserved but shown alongside each other rather than one-after-another. Re-publish the menu to apply.',
+    ],
+  },
+  {
     version: '5.5.551', date: '21 Jun 2026', label: 'HubRise — fix catalog publish (orphaned modifier refs)',
     changes: [
       'Fixed a “Push menu to HubRise” validation error (422) caused by menu items still referencing a deleted modifier group — the catalog now skips dangling modifier-group references instead of failing the whole publish.',

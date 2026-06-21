@@ -69,19 +69,36 @@ export function buildCatalog(opts: {
   // Drop dangling parent_ref (parent was special/missing) so HubRise doesn't reject the tree.
   for (const c of categories) if (c.parent_ref && !catRefSet.has(c.parent_ref)) delete c.parent_ref;
 
-  // Which modifier groups actually EXIST (in the modifier_groups table). Items can carry
-  // stale assigned_modifier_groups pointing at a deleted group; referencing such a ref in a
-  // sku without a matching option_list makes HubRise reject the whole catalog (422). So we
-  // only emit option_list_refs for groups that exist + get built below.
   const groupIdSet = new Set((groups || []).map((g: any) => String(g.id)));
+  const groupsById = new Map<string, any>((groups || []).map((g: any) => [String(g.id), g]));
   const usedGroupIds = new Set<string>();
+
+  // HubRise option_lists are FLAT — an option cannot open another option_list. ServOS
+  // supports NESTED modifier groups (an option's subGroupId opens a child group). To reflect
+  // the menu as faithfully as a flat model allows, we FLATTEN: a sku's option_lists = its
+  // assigned groups PLUS every nested sub-group reachable through them (transitively),
+  // attached as sibling lists in parent-first order. Each group keeps its own min/max so
+  // required choices stay required. Orphaned/deleted refs are skipped (no dangling ref →
+  // no 422); cycles are guarded. The only thing a flat model can't preserve is the cascade
+  // (a sub-list showing only after a specific parent option is chosen).
   const skuOptionRefs = (it: any): string[] => {
-    const refs: string[] = [];
+    const top: string[] = [];
     for (const a of (it.assigned_modifier_groups || [])) {
       const gid = a?.groupId ?? a?.id ?? a;
-      if (gid != null && groupIdSet.has(String(gid))) { refs.push(String(gid)); usedGroupIds.add(String(gid)); }
+      if (gid != null && groupIdSet.has(String(gid))) top.push(String(gid));
     }
-    return refs;
+    const ordered: string[] = [];
+    const seen = new Set<string>();
+    const visit = (gid: string) => {
+      gid = String(gid);
+      if (seen.has(gid)) return;
+      const g = groupsById.get(gid);
+      if (!g) return;                         // missing/orphaned group → skip
+      seen.add(gid); ordered.push(gid); usedGroupIds.add(gid);
+      for (const o of (g.options || [])) { if (o?.subGroupId) visit(String(o.subGroupId)); }
+    };
+    top.forEach(visit);
+    return ordered;
   };
 
   const products: any[] = [];
