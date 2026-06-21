@@ -69,13 +69,17 @@ export function buildCatalog(opts: {
   // Drop dangling parent_ref (parent was special/missing) so HubRise doesn't reject the tree.
   for (const c of categories) if (c.parent_ref && !catRefSet.has(c.parent_ref)) delete c.parent_ref;
 
-  // Which modifier groups are actually referenced by a published item.
+  // Which modifier groups actually EXIST (in the modifier_groups table). Items can carry
+  // stale assigned_modifier_groups pointing at a deleted group; referencing such a ref in a
+  // sku without a matching option_list makes HubRise reject the whole catalog (422). So we
+  // only emit option_list_refs for groups that exist + get built below.
+  const groupIdSet = new Set((groups || []).map((g: any) => String(g.id)));
   const usedGroupIds = new Set<string>();
   const skuOptionRefs = (it: any): string[] => {
     const refs: string[] = [];
     for (const a of (it.assigned_modifier_groups || [])) {
       const gid = a?.groupId ?? a?.id ?? a;
-      if (gid != null) { refs.push(String(gid)); usedGroupIds.add(String(gid)); }
+      if (gid != null && groupIdSet.has(String(gid))) { refs.push(String(gid)); usedGroupIds.add(String(gid)); }
     }
     return refs;
   };

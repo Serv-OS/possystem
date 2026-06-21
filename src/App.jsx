@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.551', date: '21 Jun 2026', label: 'HubRise — fix catalog publish (orphaned modifier refs)',
+    changes: [
+      'Fixed a “Push menu to HubRise” validation error (422) caused by menu items still referencing a deleted modifier group — the catalog now skips dangling modifier-group references instead of failing the whole publish.',
+    ],
+  },
+  {
     version: '5.5.550', date: '21 Jun 2026', label: 'HubRise — compliance hardening (order handshake)',
     changes: [
       'Channel orders are now acknowledged back to HubRise the instant they arrive (status “received”), as HubRise requires — this stops the channel raising “order not picked up” alerts before staff accept.',
