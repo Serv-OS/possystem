@@ -85,6 +85,16 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.560', date: '22 Jun 2026', label: 'Printing — much faster (master prints its own jobs instantly)',
+    changes: [
+      'The master device now sends kitchen tickets, receipts and the cash-drawer pulse to the printer immediately, then records the job in the background — instead of waiting on database round-trips first. Removes several seconds of delay per order.',
+      'Cash drawer opens instantly on cash sales (it was queued like a print job and waited for a polling cycle).',
+      'Trimmed a 900ms cosmetic delay after card approval before the receipt/drawer fire (now 250ms).',
+      'Receipt logos/QR now time out after 2s instead of stalling the whole receipt if the image is slow to load.',
+      'Failed prints still retry exactly as before — the durable/retry safety net is preserved, just moved off the critical path.',
+    ],
+  },
+  {
     version: '5.5.559', date: '22 Jun 2026', label: 'HubRise — upload images for sold-standalone sub-items',
     changes: [
       'Product images for sub-items that are sold standalone (e.g. Bueno Filled donut) now upload to HubRise. The image-upload step was still skipping all sub-items; it now matches what gets published. Re-publish the menu to apply.',

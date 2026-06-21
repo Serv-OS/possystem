@@ -154,7 +154,10 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
   // ACTUAL reader-collected tip (amountReceived - base bill).
   useEffect(() => {
     if (state === 'approved' || restState === 'success') {
-      const t = setTimeout(() => onComplete(piResult), 900);
+      // v5.5.560: 900ms → 250ms. This delay sat in front of the whole close → print →
+      // cash-drawer chain; 250ms still shows the "approved" tick but cuts ~650ms of dead
+      // time before the kitchen ticket/receipt print and the drawer pulse.
+      const t = setTimeout(() => onComplete(piResult), 250);
       return () => clearTimeout(t);
     }
   }, [state, restState, onComplete, piResult]);

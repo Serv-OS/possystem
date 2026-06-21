@@ -48,15 +48,21 @@ export function buildGsV0(bits, widthDots, heightDots) {
 // High-level: image URL → raster bytes with dithering
 // ───────────────────────────────────────────────────────────────────────────
 
-async function loadImage(url) {
+async function loadImage(url, timeoutMs = 2000) {
   // Cross-origin logos should work because Supabase Storage bucket is public
   // and sends CORS headers. If you switch to signed URLs, the bucket's
   // CORS policy needs to include the site origin.
+  // v5.5.560: hard timeout — a slow/unreachable CDN must never stall the receipt build.
+  // Callers wrap this in try/catch and skip the logo/QR on failure, so a timeout just
+  // means a logo-less receipt instead of a hung print.
   return new Promise((resolve, reject) => {
     const img = new Image();
+    let done = false;
+    const finish = (fn, arg) => { if (!done) { done = true; clearTimeout(timer); fn(arg); } };
+    const timer = setTimeout(() => finish(reject, new Error(`Image load timed out: ${url}`)), timeoutMs);
     img.crossOrigin = 'anonymous';
-    img.onload = () => resolve(img);
-    img.onerror = (e) => reject(new Error(`Image load failed: ${url}`));
+    img.onload = () => finish(resolve, img);
+    img.onerror = () => finish(reject, new Error(`Image load failed: ${url}`));
     img.src = url;
   });
 }

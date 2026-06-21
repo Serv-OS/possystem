@@ -594,7 +594,30 @@ class PrintService {
     const idempotencyKey = opts.idempotencyKey || genIdempotencyKey();
     const metadata = opts.metadata || null;
 
-    // ── FAST PATH ─────────────────────────────────────────────────────────────
+    // ── MASTER FAST PATH — dispatch FIRST, persist in the background ────────────
+    // If this device can print directly (native bridge), send the bytes to the printer
+    // IMMEDIATELY, then persist the durable/audit row asynchronously. No Supabase round-trip
+    // sits on the hot path, so paper (and the cash-drawer pulse) come out in the printer's
+    // own latency — not 2-3s of insert + claim + Realtime choreography. This is the whole
+    // point of the master being the print host. Durability is preserved: a FAILED dispatch
+    // is persisted (+ offline-queued) for PrintRetrier; a SUCCESS writes a 'done' audit row
+    // in the background. An in-memory key window dedupes double-fires without the DB.
+    if (isNativeBridgeAvailable() && ip) {
+      if (this._isRecentlyDispatched(idempotencyKey)) return { ok: true, transport: 'idempotent', printer: printer.name };
+      this._markDispatched(idempotencyKey);
+      try {
+        const result = await nativePrint(bytes, ip, port);
+        this._persistJobAsync(printer, jobType, bytes, idempotencyKey, metadata, 'done', null);
+        return { ...result, ok: true, transport: 'native', printer: printer.name };
+      } catch (e) {
+        const errMsg = e.message || 'Native bridge failure';
+        this._persistJobAsync(printer, jobType, bytes, idempotencyKey, metadata, 'failed', errMsg);
+        console.warn('[Print] Native dispatch failed — queued for retry:', errMsg);
+        return { ok: false, error: errMsg, transport: 'native-failed' };
+      }
+    }
+
+    // ── FAST PATH (slave / browser: no local printer — master prints) ───────────
     // Fire a Supabase Realtime broadcast BEFORE the durable insert. The master
     // device subscribes to `print-fast:${locationId}` and prints immediately on
     // receipt — typical broadcast latency is 50-150ms each leg, so paper comes
@@ -753,6 +776,44 @@ class PrintService {
 
     // ── Step 3: No native bridge — row is pending, agent will pick up ──────────
     return { ok: true, transport: 'queued', printer: printer.name, jobId };
+  }
+
+  // ── Master fast-path helpers ───────────────────────────────────────────────
+  // In-memory dedup so a double-fire of the same idempotency key can't print twice
+  // without waiting on the DB unique constraint (60s window).
+  _isRecentlyDispatched(key) {
+    const m = this._recentKeys || (this._recentKeys = new Map());
+    const t = m.get(key);
+    return !!t && (Date.now() - t) < 60_000;
+  }
+  _markDispatched(key) {
+    const m = this._recentKeys || (this._recentKeys = new Map());
+    m.set(key, Date.now());
+    if (m.size > 500) for (const [k, ts] of m) if (Date.now() - ts > 60_000) m.delete(k);
+  }
+  // Persist the durable/audit print_jobs row OFF the hot path (after the bytes are already
+  // sent). 'done' = audit only; 'failed' = retry trigger (PrintRetrier polls it), with an
+  // OfflineQueue fallback so a failed print is never lost if Supabase is unreachable.
+  _persistJobAsync(printer, jobType, bytes, idempotencyKey, metadata, status, errorMsg) {
+    (async () => {
+      try {
+        if (!supabase) return;
+        const locationId = await getLocationId().catch(() => null);
+        if (!locationId) return;
+        const base = {
+          location_id: locationId, printer_id: printer.id, printer_ip: printer.address,
+          printer_port: printer.port || 9100, job_type: jobType,
+          payload: btoa(String.fromCharCode(...bytes)), idempotency_key: idempotencyKey, metadata,
+        };
+        const row = status === 'done'
+          ? { ...base, status: 'done', attempts: 0, processed_at: new Date().toISOString(), agent_id: getDeviceId() }
+          : { ...base, status: 'failed', attempts: 1, error_message: errorMsg, next_retry_at: new Date(Date.now() + 2000).toISOString(), processed_at: new Date().toISOString() };
+        const { error } = await supabase.from('print_jobs').insert(row);
+        if (error && error.code !== '23505' && status === 'failed') {
+          try { const { queueWrite } = await import('../sync/OfflineQueue.js'); await queueWrite({ type: 'insert', table: 'print_jobs', kind: 'print_job', payload: row }); } catch { /* last resort */ }
+        }
+      } catch (e) { console.warn('[Print] async persist failed:', e?.message); }
+    })();
   }
 
   // Called by PrintRetrier (master POS only) to redispatch a failed/retry-pending job.
