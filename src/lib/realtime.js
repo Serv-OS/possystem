@@ -11,6 +11,7 @@
 import { supabase, isMock, LOCATION_ID } from './supabase';
 import { applyQueueRealtimeEvent, applyTabRealtimeEvent } from '../sync/QueueSync';
 import { playOrderChime } from './orderChime';
+import { isHubriseAutoReceipt } from './hubrise';
 
 let channels = [];
 
@@ -427,15 +428,25 @@ export function startRealtime(store, locationId = LOCATION_ID) {
         // HubRise/channel orders aren't auto-printed on receipt when manual-accept is on —
         // staff Accept them in the Orders Hub (which prints + confirms a prep time back to the
         // channel). When the venue AUTO-accepts, the row arrives already 'prep', so it prints.
-        if (isMaster && !row.kitchen_routed_at && (src !== 'hubrise' || row.status === 'prep')) {
+        const hubriseAuto = src === 'hubrise' && row.status === 'prep';
+        if (isMaster && !row.kitchen_routed_at && (src !== 'hubrise' || hubriseAuto)) {
           store.getState().routeKioskOrderPrints?.({
             ref,
-            source: src,                                     // 'kiosk' | 'online' | 'qr'
+            source: src,                                     // 'kiosk' | 'online' | 'qr' | 'hubrise'
             tableLabel: row.customer?.tableLabel || null,    // QR only
             items: row.items || [],
             customer: row.customer || null,
+            collectionTime: row.collection_time || null,
+            isASAP: !!row.is_asap,
             sentAt: row.sent_at ? new Date(row.sent_at).getTime() : Date.now(),
           });
+          // Auto-accepted HubRise order → also auto-print the dispatch receipt (if enabled).
+          if (hubriseAuto && isHubriseAutoReceipt(locationId)) {
+            store.getState().printHubriseReceipt?.({
+              ref: row.ref, customer: row.customer || null, items: row.items || [],
+              total: row.total, collectionTime: row.collection_time || null, isASAP: !!row.is_asap,
+            });
+          }
         }
       }
       // v5.5.550: a channel-side cancellation (HubRise order.update -> status cancelled,

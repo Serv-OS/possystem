@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.556', date: '21 Jun 2026', label: 'HubRise — auto customer receipt with order no. + customer details',
+    changes: [
+      'Delivery orders now auto-print a customer/dispatch receipt with the channel order number, customer name/phone, delivery address, requested time, PAID status and itemised totals — on Accept (or on arrival if auto-accept is on).',
+      'New toggle in Channels → Delivery channels (HubRise) → Order handling: “Always print a customer receipt for delivery orders” (on by default).',
+    ],
+  },
+  {
     version: '5.5.555', date: '21 Jun 2026', label: 'HubRise — always print + book completed orders to history',
     changes: [
       'Channel orders now always print: if an item doesn’t match a kitchen station (e.g. an unrecognised item), the order is routed to the default kitchen instead of silently not printing.',

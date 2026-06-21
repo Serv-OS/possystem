@@ -135,6 +135,7 @@ function publicStatus(c: any) {
     last_error: c.last_error,
     auto_accept: c.auto_accept,
     default_prep_minutes: c.default_prep_minutes,
+    auto_print_receipt: c.auto_print_receipt !== false,
     menu_ids: c.menu_ids || [],
     connected_at: c.connected_at,
   };
@@ -204,6 +205,7 @@ Deno.serve(async (req) => {
         if (typeof body?.auto_accept === 'boolean') patch.auto_accept = body.auto_accept;
         if (Number.isFinite(body?.default_prep_minutes)) patch.default_prep_minutes = Math.max(0, Math.round(body.default_prep_minutes));
         if (Array.isArray(body?.menu_ids)) patch.menu_ids = body.menu_ids.map(String);
+        if (typeof body?.auto_print_receipt === 'boolean') patch.auto_print_receipt = body.auto_print_receipt;
         await sb.from('hubrise_connections').update(patch).eq('location_id', opsLocationId);
         return json({ ok: true });
       }

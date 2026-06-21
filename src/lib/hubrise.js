@@ -44,3 +44,13 @@ export function setHubriseConnected(locId, on) {
 export function isHubriseConnected(locId) {
   try { return localStorage.getItem(CK(locId)) === '1'; } catch { return false; }
 }
+
+// ── "Auto-print customer receipt for delivery orders" cache (set from BO status) ──
+const RK = (locId) => `rpos-hubrise-autoreceipt-${locId}`;
+export function setHubriseAutoReceipt(locId, on) {
+  try { localStorage.setItem(RK(locId), on ? '1' : '0'); } catch { /* ignore */ }
+}
+// Default ON: delivery orders normally want a dispatch receipt unless turned off.
+export function isHubriseAutoReceipt(locId) {
+  try { return localStorage.getItem(RK(locId)) !== '0'; } catch { return true; }
+}

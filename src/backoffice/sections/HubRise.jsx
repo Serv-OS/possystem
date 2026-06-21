@@ -10,7 +10,7 @@ import { getActiveLocationSync, platformSupabase, supabase } from '../../lib/sup
 import {
   hubriseStatus, hubriseOAuthStart, hubriseConnectToken, hubriseSetPolicy, hubriseSetMenus,
   hubriseRegister, hubriseDisconnect, hubrisePushCatalog, hubriseResyncStock,
-  setHubriseConnected,
+  setHubriseConnected, setHubriseAutoReceipt,
 } from '../../lib/hubrise';
 
 const S = {
@@ -50,6 +50,7 @@ export default function HubRise() {
       const r = await hubriseStatus(id);
       setStatus(r?.status || { connected: false });
       setHubriseConnected(id, !!r?.status?.connected);
+      setHubriseAutoReceipt(id, r?.status?.auto_print_receipt !== false);
     } catch (e) { setMsg({ kind: 'err', text: e.message }); }
   }, []);
 
@@ -215,6 +216,11 @@ export default function HubRise() {
             <input type="checkbox" checked={!!status.auto_accept} disabled={busy === 'pol'}
               onChange={(e) => run('pol', () => hubriseSetPolicy(locId, { auto_accept: e.target.checked }))} />
             <span style={{ fontSize: 13, color: 'var(--t1)' }}>Auto-accept incoming channel orders</span>
+          </label>
+          <label style={{ ...S.row, cursor: 'pointer', marginTop: 8 }}>
+            <input type="checkbox" checked={status.auto_print_receipt !== false} disabled={busy === 'pol'}
+              onChange={(e) => run('pol', () => hubriseSetPolicy(locId, { auto_print_receipt: e.target.checked }))} />
+            <span style={{ fontSize: 13, color: 'var(--t1)' }}>Always print a customer receipt for delivery orders</span>
           </label>
           <div style={{ ...S.label, marginTop: 14 }}>Default prep time (minutes) sent to the channel on accept</div>
           <div style={S.row}>

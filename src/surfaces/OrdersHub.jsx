@@ -16,7 +16,7 @@ import { syncQrTableSession } from '../lib/qrTableSession';
 import { money, currencySymbol } from '../lib/currency';
 import { ryftTab } from '../lib/payments/ryft';
 import { getActiveLocationSync } from '../lib/supabase';
-import { hubrisePushStatus } from '../lib/hubrise';
+import { hubrisePushStatus, isHubriseAutoReceipt } from '../lib/hubrise';
 
 // ── Channel definitions ────────────────────────────────────────────────────────
 const FILTER_TABS = [
@@ -62,7 +62,7 @@ function elapsed(date) {
 export default function OrdersHub() {
   const {
     tables, tabs, orderQueue,
-    updateQueueStatus, removeFromQueue, routeKioskOrderPrints,
+    updateQueueStatus, removeFromQueue, routeKioskOrderPrints, printHubriseReceipt,
     showToast, setSurface, setActiveTableId,
     staff,
   } = useStore();
@@ -270,6 +270,7 @@ export default function OrdersHub() {
       collectionTime: o.collectionTime, isASAP: o.isASAP,
       sentAt: Date.now(),
     });
+    if (isHubriseAutoReceipt(locId)) printHubriseReceipt?.(o._raw || o);  // dispatch receipt (order no. + customer)
     updateQueueStatus(o.ref, 'prep');
     hubrisePushStatus(locId, o.ref, 'accept', { prep_minutes: 20 }).catch(() => {});
     showToast(`Accepted ${o.customer?.channel || 'order'} ${o.ref}`, 'success');

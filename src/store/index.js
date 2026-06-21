@@ -4660,6 +4660,34 @@ export const useStore = create((set, get) => ({
     }
   },
 
+  // Print a customer/dispatch receipt for a HubRise delivery order — order number +
+  // channel + customer/address details + itemised totals + PAID. Triggered on Accept
+  // (or auto-accept) when the venue's "auto-print receipt" setting is on.
+  printHubriseReceipt: async (order) => {
+    try {
+      if (!order) return;
+      const c = order.customer || {};
+      const items = (order.items || []).map(i => ({ ...i, voided: false }));
+      const subtotal = items.reduce((s, it) => s + (Number(it.qty) || 1) * ((Number(it.price) || 0) + (it.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0)), 0);
+      const total = Number(order.total) || 0;
+      const a = c.address || {};
+      const addr = [a.line1, a.line2, [a.city, a.postcode].filter(Boolean).join(' '), a.country].filter(Boolean);
+      const check = {
+        ref: c.collectionCode || order.ref,
+        server: c.channel || 'HubRise',
+        orderType: c.serviceType === 'delivery' ? 'Delivery' : c.serviceType === 'collection' ? 'Collection' : 'Order',
+        method: c.paid ? 'card' : null,
+        delivery: {
+          channel: c.channel, serviceType: c.serviceType, paid: !!c.paid,
+          name: c.name, phone: c.phone, address: addr, notes: c.notes,
+          expected: order.isASAP ? 'ASAP' : (order.collectionTime ? new Date(order.collectionTime).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : null),
+        },
+      };
+      const totals = { subtotal, service: Math.max(0, +(total - subtotal).toFixed(2)), tip: 0, grand: total };
+      await printService.printReceipt({ check, items, totals });
+    } catch (e) { console.warn('[hubrise] receipt print failed:', e?.message); }
+  },
+
   // Print a customer receipt (called from close-check flow, ReceiptModal, etc.)
   // Safe to call even if no receipt printer is configured — falls back to browser print.
   printCustomerReceipt: async ({ location, check, items, totals }, printerId = null) => {

@@ -154,9 +154,23 @@ export async function buildCustomerReceipt({ location, check, items, totals }) {
   if (header?.show_server_name !== false) {
     b.twoCol(`Server: ${check?.server||''}`, check?.covers>1 && header?.show_covers !== false ? `${check.covers} covers` : '');
   }
-  b.twoCol(`${check?.tableLabel||check?.orderType||''}`, '')
-   .divider()
-   .bold(true).line('ITEMS').bold(false);
+  b.twoCol(`${check?.tableLabel||check?.orderType||''}`, '');
+
+  // Delivery-channel block (HubRise/Deliveroo etc.): the order number already printed above
+  // as "ORDER #". Add channel + payment + the customer/address details from the platform.
+  if (check?.delivery) {
+    const d = check.delivery;
+    b.divider();
+    if (d.channel) b.bold(true).line(String(d.channel).toUpperCase() + (d.serviceType ? `  ·  ${String(d.serviceType).toUpperCase()}` : '')).bold(false);
+    b.line(d.paid ? 'PAID online' : 'UNPAID — collect on delivery');
+    if (d.expected) b.fontB().line(`Wanted: ${d.expected}`).fontA();
+    if (d.name) b.line(d.name);
+    if (d.phone) b.line(d.phone);
+    (Array.isArray(d.address) ? d.address : []).filter(Boolean).forEach(l => b.line(l));
+    if (d.notes) b.fontB().line(`Note: ${d.notes}`).fontA();
+  }
+
+  b.divider().bold(true).line('ITEMS').bold(false);
 
   (items||[]).filter(i=>!i.voided).forEach(item=>{
     const linePrice=`\xA3${(item.price*item.qty).toFixed(2)}`;
