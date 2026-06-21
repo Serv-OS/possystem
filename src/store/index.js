@@ -2601,7 +2601,21 @@ export const useStore = create((set, get) => ({
   addToQueue: o => set(s => ({ orderQueue: [o, ...s.orderQueue] })),
   updateQueueStatus: (ref, status) => set(s => ({ orderQueue: s.orderQueue.map(o => o.ref===ref ? {...o, status} : o) })),
   updateQueueItem: (ref, patch) => set(s => ({ orderQueue: s.orderQueue.map(o => o.ref===ref ? {...o,...patch} : o) })),
-  removeFromQueue: ref => set(s => ({ orderQueue: s.orderQueue.filter(o => o.ref!==ref) })),
+  removeFromQueue: ref => {
+    set(s => ({ orderQueue: s.orderQueue.filter(o => o.ref!==ref) }));
+    // v5.5.557: also delete the DB row. Previously this only cleared the local screen;
+    // the order_queue row lingered (QueueSync only writes/deletes via in-memory tracking
+    // that resets on reload), so a finished/collected order RESURRECTED on the next boot
+    // (loadQueues re-pulls any row that isn't status 'collected'). Location-scoped because
+    // refs (e.g. #1002) collide across locations.
+    try {
+      const locId = getActiveLocationSync();
+      if (supabase && locId && ref) {
+        Promise.resolve(supabase.from('order_queue').delete().eq('ref', ref).eq('location_id', locId))
+          .catch(e => console.warn('[removeFromQueue] db delete:', e?.message));
+      }
+    } catch { /* non-fatal */ }
+  },
 
   // ── 86 ────────────────────────────────────
   eightySixIds: [],
