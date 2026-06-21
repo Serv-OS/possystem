@@ -265,12 +265,13 @@ export function buildKitchenTicket({ table, server, covers, course, centreName, 
   // + packer the channel, paid status, handover code, customer/address and ETA.
   if (delivery) {
     b.divider();
+    // Channel + big handover/order number front-and-centre (what staff + driver quote).
     if (delivery.channel) b.center().bold(true).line(String(delivery.channel).toUpperCase()).bold(false).left();
+    if (delivery.collectionCode) b.center().bold(true).doubleBoth().line(`#${delivery.collectionCode}`).normal().left();
     const st = delivery.serviceType === 'delivery' ? 'DELIVERY'
       : delivery.serviceType === 'collection' ? 'COLLECTION'
       : delivery.serviceType === 'eat_in' ? 'EAT IN' : 'ORDER';
     b.bold(true).line(`${st}  ·  ${delivery.paid ? 'PAID' : 'UNPAID — COLLECT'}`).bold(false);
-    if (delivery.collectionCode) b.fontB().line(`Code: ${delivery.collectionCode}`).fontA();
     if (delivery.expected) b.fontB().line(`Wanted: ${delivery.expected}`).fontA();
     if (delivery.name) b.line(delivery.name);
     if (delivery.phone) b.line(delivery.phone);

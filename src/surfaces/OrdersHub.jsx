@@ -252,7 +252,11 @@ export default function OrdersHub() {
       if (action) hubrisePushStatus(getActiveLocationSync(), o.ref, action).catch(() => {});
     }
     if (next === 'ready')     showToast(`${o.displayName} — ready!`, 'success');
-    if (next === 'collected') { showToast(`${o.ref} collected`, 'info'); setTimeout(() => removeFromQueue(o.ref), 8000); }
+    if (next === 'collected') {
+      if (o.source === 'hubrise') bookHubriseSale(o);   // record the sale in history/reports
+      showToast(`${o.ref} collected`, 'info');
+      setTimeout(() => removeFromQueue(o.ref), 8000);
+    }
   };
 
   // HubRise accept/reject gate (before the normal prep→ready→collected flow).
@@ -275,6 +279,29 @@ export default function OrdersHub() {
     hubrisePushStatus(getActiveLocationSync(), o.ref, 'reject', { reason: 'Rejected by store' }).catch(() => {});
     removeFromQueue(o.ref);
     showToast(`Rejected ${o.ref}`, 'info');
+  };
+
+  // Book a completed HubRise order into closed_checks so it lands in sales history + reports
+  // (channel orders are pre-paid sales; they aren't written to closed_checks anywhere else).
+  // Idempotent via the deterministic id (a duplicate insert just errors and is ignored).
+  const bookHubriseSale = async (o) => {
+    try {
+      const locId = getActiveLocationSync();
+      const items = (o.items || []).map(i => ({ ...i, voided: false }));
+      const lineTotal = items.reduce((s, it) => s + (Number(it.qty) || 1) * ((Number(it.price) || 0) + (it.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0)), 0);
+      const total = Number(o.total) || 0;
+      const paid = !!(o.customer?.paid);
+      await supabase.from('closed_checks').insert({
+        id: `chk-hr-${o.ref}`, ref: o.ref, location_id: locId,
+        server: o.customer?.channel || 'HubRise', staff_id: null, covers: 1,
+        order_type: o.channel || o.type || 'delivery', customer: o.customer || {}, items,
+        discounts: [], subtotal: +lineTotal.toFixed(2), service: Math.max(0, +(total - lineTotal).toFixed(2)),
+        tip: 0, tax_amount: null, total, method: paid ? 'card' : 'cash',
+        closed_at: new Date().toISOString(), status: 'paid', refunds: [], table_id: null,
+        table_label: `${o.customer?.channel || 'HubRise'} ${o.customer?.collectionCode || o.ref}`,
+        source: 'hubrise',
+      });
+    } catch (e) { console.warn('[hubrise] book sale failed:', e?.message); }
   };
 
   // v5.5.157: force-close a POOLED QR tab (multiple rounds aggregated by

@@ -85,6 +85,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.555', date: '21 Jun 2026', label: 'HubRise — always print + book completed orders to history',
+    changes: [
+      'Channel orders now always print: if an item doesn’t match a kitchen station (e.g. an unrecognised item), the order is routed to the default kitchen instead of silently not printing.',
+      'The delivery ticket now shows the channel order number prominently at the top (plus channel, PAID/UNPAID, wanted time, customer/address).',
+      'Completed delivery orders are now booked into sales history + reports (they were never recorded before, so they vanished when completed). View them in Transactions / sales reports.',
+    ],
+  },
+  {
     version: '5.5.554', date: '21 Jun 2026', label: 'HubRise — fix order callback (orders now reach the POS)',
     changes: [
       'Fixed the order callback registration: HubRise allows only one callback per connection, and we were registering an active then a passive one — the passive overwrote the active, so HubRise had nowhere to push orders. Now we register a single active callback (our webhook). Channel orders now arrive in the Orders Hub.',

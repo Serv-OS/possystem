@@ -4496,6 +4496,15 @@ export const useStore = create((set, get) => ({
         });
       });
 
+      // v5.5.555: FALLBACK — a channel/online order whose items match no centre (e.g. a
+      // HubRise sku_ref that isn't in our catalog) must STILL print, not silently drop
+      // (HubRise rule: handle unknown items gracefully). Route everything to a default
+      // kitchen centre (first with a printer, else first centre).
+      if (Object.keys(byCentre).length === 0 && order.items.length && routingConfig.centres?.length) {
+        const fb = routingConfig.centres.find(c => c.printer?.id) || routingConfig.centres[0];
+        if (fb) byCentre[fb.id] = [...order.items];
+      }
+
       // v5.5.126: source-correct labels so the kitchen ticket / KDS card says
       // "Online OL-XXX" or "QR T5" instead of always "Kiosk". Falls back to
       // the previous "Kiosk" wording when source is unknown.
