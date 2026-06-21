@@ -85,6 +85,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.558', date: '21 Jun 2026', label: 'HubRise — sync standalone sub-items (donuts) + 86 reaches modifier options',
+    changes: [
+      'Items that are sub-items but also sold standalone (e.g. individual donuts) now publish to HubRise — previously all sub-items were skipped, so they were missing from the channel menu.',
+      'Modifier options now link to the matching item (by name when not linked explicitly), so an out-of-stock (86) item also greys out as a modifier choice, and channel orders map options back to the right item for the kitchen.',
+      'Re-publish the menu to apply (Channels → Delivery channels → Push menu to HubRise).',
+    ],
+  },
+  {
     version: '5.5.557', date: '21 Jun 2026', label: 'Fix: completed orders no longer reappear after a reload',
     changes: [
       'Collecting/clearing an order now deletes it from the database, not just the screen. Previously the row lingered and a completed order could reappear in the Orders Hub on the next app reload (e.g. after an update). Affects all order types (counter, online, kiosk, delivery).',

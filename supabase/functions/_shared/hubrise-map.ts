@@ -50,16 +50,34 @@ export function buildCatalog(opts: {
     return p.base != null ? p.base : (p.price != null ? p.price : 0);
   };
 
-  // What we publish: live items visible online, sold on their own, NOT a variant child
-  // (children are published as their parent's skus), and — when a menu filter is set —
-  // only items in one of the selected menus.
+  // What we publish: live items visible online, sold on their own (sold_alone !== false —
+  // this INCLUDES type='subitem' items that are also sold standalone, e.g. donuts), NOT a
+  // variant child (children are published as their parent's skus), and — when a menu filter
+  // is set — only items in one of the selected menus. (We deliberately do NOT exclude
+  // type='subitem' here: a subitem with sold_alone=true is a real standalone product.)
   const publishable = (it: any) =>
-    it && !it.archived && it.type !== 'subitem' && it.sold_alone !== false && !it.parent_id &&
+    it && !it.archived && it.sold_alone !== false && !it.parent_id &&
     (!it.visibility || it.visibility.online !== false) &&
     (!publishIds || publishIds.has(String(it.id)));
 
   const childrenOf = (parentId: string) =>
     items.filter((c) => c.parent_id === parentId && !c.archived);
+
+  // Link a modifier option to a sold-alone item by explicit itemId, else by NAME match
+  // (the donut options carry itemId=null). The option then SHARES the item's ref, so an
+  // inbound order's option maps to the real item (KDS routing) and 86/stock on the item
+  // flows to the option. Falls back to the option's own id when there's no match.
+  const itemIdByName = new Map<string, string>();
+  for (const it of items) {
+    if (it.archived || it.parent_id || it.sold_alone === false) continue;
+    const nm = displayName(it).trim().toLowerCase();
+    if (nm && !itemIdByName.has(nm)) itemIdByName.set(nm, String(it.id));
+  }
+  const resolveOptionRef = (o: any): string => {
+    if (o.itemId) return String(o.itemId);
+    const m = itemIdByName.get(String(o.name || '').trim().toLowerCase());
+    return m || String(o.id);
+  };
 
   // Categories — keep operator order; drop "special" (internal-only) groups.
   const categories = cats
@@ -172,7 +190,7 @@ export function buildCatalog(opts: {
       max_selections: g.max == null ? null : Number(g.max),
       multiple_selection: g.selection_type !== 'single',
       options: (g.options || []).map((o: any) => ({
-        ref: String(o.id),
+        ref: resolveOptionRef(o),
         name: o.name || 'Option',
         price: toMoney(o.price ?? 0, ccy),
       })),

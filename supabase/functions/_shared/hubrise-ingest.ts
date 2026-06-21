@@ -90,16 +90,21 @@ export async function resyncInventory(sb: any, loc: string): Promise<{ outOfStoc
   const ids = new Set<string>();
   (eightySix || []).forEach((r: any) => r.item_id && ids.add(String(r.item_id)));
   (stock || []).forEach((r: any) => r.item_id && ids.add(String(r.item_id)));
-  const entries = [...ids].map((id) => ({ sku_ref: id, stock: '0' }));
+  // Our catalog uses the item id as BOTH the sku ref (standalone) and (when name-matched)
+  // the option ref — so push each 86'd id as sku_ref AND option_ref to cover items sold both
+  // ways. If HubRise rejects unknown option refs, fall back to sku-only so 86 still applies.
+  const skuEntries = [...ids].map((id) => ({ sku_ref: id, stock: '0' }));
+  const allEntries = [...skuEntries, ...[...ids].map((id) => ({ option_ref: id, stock: '0' }))];
 
   try {
-    await putInventory(conn.access_token, conn.hubrise_catalog_id, entries);
+    try { await putInventory(conn.access_token, conn.hubrise_catalog_id, allEntries); }
+    catch { await putInventory(conn.access_token, conn.hubrise_catalog_id, skuEntries); }
     await sb.from('hubrise_connections').update({ inventory_synced_at: new Date().toISOString(), inventory_sync_error: null }).eq('location_id', loc);
   } catch (e) {
     await sb.from('hubrise_connections').update({ inventory_sync_error: e instanceof Error ? e.message : String(e) }).eq('location_id', loc);
     throw e;
   }
-  return { outOfStock: entries.length };
+  return { outOfStock: ids.size };
 }
 
 /** PATCH a HubRise order's status + record the result on the link row. */

@@ -58,15 +58,18 @@ Deno.serve(async (req) => {
     if (!conn?.access_token) return json({ ok: true, skipped: 'not connected' });
     if (!conn.hubrise_catalog_id) return json({ ok: true, skipped: 'no catalog' });
 
-    // 86 -> stock "0"; un-86 -> stock null (removes the entry = unlimited).
-    const entries = changes
-      .filter((c: any) => c?.itemId)
-      .map((c: any) => ({ sku_ref: String(c.itemId), stock: c.is86 ? '0' : null }));
-    if (!entries.length) return json({ ok: true, skipped: 'no valid changes' });
+    // 86 -> stock "0"; un-86 -> stock null (removes the entry = unlimited). Push each id as
+    // BOTH sku_ref and option_ref (items can be sold standalone AND appear as a modifier
+    // option sharing the same ref); sku-only fallback if HubRise rejects unknown option refs.
+    const valid = changes.filter((c: any) => c?.itemId);
+    if (!valid.length) return json({ ok: true, skipped: 'no valid changes' });
+    const skuEntries = valid.map((c: any) => ({ sku_ref: String(c.itemId), stock: c.is86 ? '0' : null }));
+    const allEntries = [...skuEntries, ...valid.map((c: any) => ({ option_ref: String(c.itemId), stock: c.is86 ? '0' : null }))];
 
-    await patchInventory(conn.access_token, conn.hubrise_catalog_id, entries);
+    try { await patchInventory(conn.access_token, conn.hubrise_catalog_id, allEntries); }
+    catch { await patchInventory(conn.access_token, conn.hubrise_catalog_id, skuEntries); }
     await sb.from('hubrise_connections').update({ inventory_synced_at: new Date().toISOString() }).eq('location_id', loc);
-    return json({ ok: true, pushed: entries.length });
+    return json({ ok: true, pushed: skuEntries.length });
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : String(e) }, 500);
   }
