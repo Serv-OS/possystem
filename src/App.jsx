@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.548', date: '21 Jun 2026', label: 'HubRise — fix OAuth scope (deployed live)',
+    changes: [
+      'Fixed the HubRise connect scope — HubRise rejects a resource listed twice; request orders.write (includes read) instead of orders.read + orders.write so “Connect with HubRise” authorizes cleanly.',
+    ],
+  },
+  {
     version: '5.5.547', date: '20 Jun 2026', label: 'HubRise integration — delivery channels (Deliveroo / Uber Eats / Just Eat)',
     changes: [
       'New Channels → “Delivery channels (HubRise)” screen: connect a venue to HubRise (authorize or paste a token), publish your menu, resync stock, and set an order-accept policy.',

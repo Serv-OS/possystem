@@ -10,9 +10,11 @@
 export const HUBRISE_API = 'https://api.hubrise.com/v1';
 export const HUBRISE_MANAGER = 'https://manager.hubrise.com/oauth2/v1';
 
-// Scope we request: read+write orders, write catalog (incl. inventory). customer_list.read
-// lets us read the embedded customer block; we do NOT request customer_list.write.
-export const HUBRISE_SCOPE = 'location[orders.read,orders.write,catalog.write,customer_list.read]';
+// Scope we request. HubRise requires ONE right per resource (listing a resource twice —
+// e.g. orders.read AND orders.write — is rejected: "Resource type 'orders' specified more
+// than once"). `write` includes read, so orders.write covers receiving + updating orders,
+// catalog.write covers menu + inventory, customer_list.read reads the embedded customer.
+export const HUBRISE_SCOPE = 'location[orders.write,catalog.write,customer_list.read]';
 
 export class HubRiseError extends Error {
   status: number;
