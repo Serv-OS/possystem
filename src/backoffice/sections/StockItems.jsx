@@ -338,7 +338,7 @@ function StockTab({ draft, locId, onChanged, showToast }) {
   const [count, setCount] = useState('');
   const [busy, setBusy] = useState(false);
   const [par, setPar] = useState({ parLevel: '', reorderPoint: '' });
-  const [countUnit, setCountUnit] = useState(() => { const cd = (draft.packaging || []).find(f => f.isCountDefault); return cd ? formatToken(cd.id) : draft.baseUnit; });
+  const [countUnit, setCountUnit] = useState(() => { const fmts = draft.packaging || []; const cd = fmts.find(f => f.isCountDefault) || fmts[0]; return cd ? formatToken(cd.id) : draft.baseUnit; });
 
   const loadMoves = useCallback(async () => {
     if (!draft.id) return;
@@ -366,7 +366,10 @@ function StockTab({ draft, locId, onChanged, showToast }) {
     itemConversions: (draft.conversions || []).map(c => ({ fromQty: c.fromQty, fromUnit: c.fromUnit, toQty: c.toQty, toUnit: c.toUnit })),
     formats: (draft.packaging || []).map(f => ({ id: f.id, name: f.name, qtyInBase: f.qtyInBase })),
   };
-  const countOpts = unitOptions(uomItem);
+  // Count only in the item's named units when it has them; ml/base stays hidden.
+  const countOpts = uomItem.formats.length
+    ? [...uomItem.formats].sort((a, b) => b.qtyInBase - a.qtyInBase).map(f => ({ token: formatToken(f.id), label: f.name }))
+    : [{ token: uomItem.baseUnit, label: uomItem.baseUnit }];
   let countBase = null;
   if (count !== '' && Number(count) >= 0) { try { countBase = toBase(Number(count), countUnit, uomItem); } catch { countBase = null; } }
 

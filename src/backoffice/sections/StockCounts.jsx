@@ -39,7 +39,10 @@ export default function StockCounts() {
   // Unit helpers — count in the item's friendly units (Keg / Case / Bottle / base), mixed allowed.
   const itemsById = {}; (items || []).forEach(i => { itemsById[i.id] = i; });
   const uomFor = (id) => { const i = itemsById[id]; return i ? { baseUnit: i.baseUnit, itemConversions: (i.conversions || []).map(c => ({ fromQty: c.fromQty, fromUnit: c.fromUnit, toQty: c.toQty, toUnit: c.toUnit })), formats: (i.packaging || []).map(f => ({ id: f.id, name: f.name, qtyInBase: f.qtyInBase })) } : { baseUnit: 'each', itemConversions: [], formats: [] }; };
-  const countUnitsFor = (id) => { const u = uomFor(id); const fmts = [...u.formats].sort((a, b) => b.qtyInBase - a.qtyInBase).map(f => ({ token: formatToken(f.id), label: f.name })); return [...fmts, { token: u.baseUnit, label: u.baseUnit }]; };
+  // Count ONLY in the item's named units (Bottle/Case) when it has them — the base
+  // unit (ml/g) is maths-only and never shown for counting. Fall back to base unit
+  // for loose items with no packs defined.
+  const countUnitsFor = (id) => { const u = uomFor(id); const fmts = [...u.formats].sort((a, b) => b.qtyInBase - a.qtyInBase).map(f => ({ token: formatToken(f.id), label: f.name })); return fmts.length ? fmts : [{ token: u.baseUnit, label: u.baseUnit }]; };
   const defaultTokenFor = (id) => { const i = itemsById[id]; const cd = (i?.packaging || []).find(f => f.isCountDefault); return cd ? formatToken(cd.id) : (i?.baseUnit || 'each'); };
   const countedBase = (line) => {
     const e = edits[line.id]; if (!e) return null;
@@ -128,11 +131,15 @@ export default function StockCounts() {
                     </div>
                   ))}
                 </div>
-                {base != null && (
-                  <div style={{ fontSize: 11, marginTop: 6, color: variance < 0 ? 'var(--red, #ef4444)' : variance > 0 ? 'var(--grn, #16a34a)' : 'var(--t3)' }}>
-                    counted = {r3(base)} {u.baseUnit}{variance !== 0 ? ` · ${variance > 0 ? '+' : ''}${r3(variance)} vs system` : ' · matches'}
-                  </div>
-                )}
+                {base != null && (() => {
+                  const cDisp = fromBase(base, dToken, u);
+                  const vDisp = (cDisp != null && expDisp != null) ? cDisp - expDisp : null;
+                  return (
+                    <div style={{ fontSize: 11, marginTop: 6, color: variance < 0 ? 'var(--red, #ef4444)' : variance > 0 ? 'var(--grn, #16a34a)' : 'var(--t3)' }}>
+                      counted = {r3(cDisp == null ? base : cDisp)} {dLabel}{vDisp != null && vDisp !== 0 ? ` · ${vDisp > 0 ? '+' : ''}${r3(vDisp)} vs system` : ' · matches'}
+                    </div>
+                  );
+                })()}
               </div>
             );
           })}

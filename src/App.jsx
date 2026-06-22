@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.579', date: '23 Jun 2026', label: 'Stock counting — only your real units (no more ml)',
+    changes: [
+      'When an item has units defined, counting now shows ONLY those units (Bottle, Case…) — the maths unit (ml/g) is hidden. You never count in ml again.',
+      'Count totals and variance now read in your count unit too (e.g. “counted = 15 Bottle”), not the base unit.',
+    ],
+  },
+  {
     version: '5.5.578', date: '23 Jun 2026', label: 'Stock counts — count in units, mixed (2 cases + 3 bottles)',
     changes: [
       'The count sheet now lets you count in your real units, and mix them — e.g. enter 2 in Cases and 3 in Bottles on the same line and it totals correctly.',
