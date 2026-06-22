@@ -85,6 +85,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.586', date: '23 Jun 2026', label: 'Order Pad v2 — delivery-day cover, safety stock, swap supplier per line',
+    changes: [
+      'Suggested order quantities now cover you to each supplier’s next delivery day (so what arrives lasts until the delivery after) instead of a flat number of days — set delivery days on the supplier and the Order Pad does the maths.',
+      'Added a Safety buffer (days) on top of cover, and a per-line supplier switch when an item has more than one supplier.',
+      'Flags suppliers whose basket is under their minimum order value, and usage rates are now aggregated server-side so the pad stays fast with lots of stock history.',
+    ],
+  },
+  {
     version: '5.5.585', date: '23 Jun 2026', label: 'POS — log waste from the till',
     changes: [
       'Staff can now log waste straight from the POS: open the drawer/functions menu → "Log waste", search a stock item, enter the quantity in friendly units (e.g. 1 Bottle), pick a reason.',

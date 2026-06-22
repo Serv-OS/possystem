@@ -349,6 +349,32 @@ export const fetchMovementsRange = async (fromIso, toIso, locationId = null, lim
   };
 };
 
+/**
+ * Average daily usage per item over the last `days`, as { itemId: avgDailyBase }.
+ * Prefers the server-side `stock_usage_rates` RPC (aggregates in Postgres, scales
+ * to any number of movements); falls back to a client-side aggregate of the
+ * movements range if the RPC isn't deployed yet, so the Order Pad works either way.
+ */
+export const fetchUsageRates = async (days = 28, locationId = null) => {
+  if (isMock || !supabase) return { data: {}, error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: {}, error: null };
+  const { data: rpcData, error: rpcErr } = await supabase.rpc('stock_usage_rates', { p_location_id: locationId, p_days: days });
+  if (!rpcErr && Array.isArray(rpcData)) {
+    const rate = {};
+    rpcData.forEach(r => { rate[r.inventory_item_id] = Number(r.avg_daily_base) || 0; });
+    return { data: rate, error: null };
+  }
+  // fallback — RPC missing/not yet migrated: aggregate from the movements range.
+  const fromIso = new Date(Date.now() - days * 86400000).toISOString();
+  const { data: moves } = await fetchMovementsRange(fromIso, null, locationId, 8000);
+  const used = {};
+  (moves || []).forEach(m => { if (m.movementType === 'SALE_DEPLETION' || m.movementType === 'PRODUCTION_CONSUME') used[m.inventoryItemId] = (used[m.inventoryItemId] || 0) + (-m.qtyBase); });
+  const rate = {};
+  Object.entries(used).forEach(([id, base]) => { rate[id] = base / days; });
+  return { data: rate, error: null };
+};
+
 /** Recent movements for one item, newest first (the reconciliation view). */
 export const fetchItemMovements = async (inventoryItemId, locationId = null, limit = 100) => {
   if (isMock || !supabase) return { data: [], error: null };
