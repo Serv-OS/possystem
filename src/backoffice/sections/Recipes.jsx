@@ -1,14 +1,15 @@
 /**
- * Recipes — back-office recipe & sub-recipe builder (Produce → Recipes).
- * Slice 3a of the Stock & Production system.
+ * Recipes — back-office recipe builder (Produce → Recipes).
  *
- *  • Dish recipe → links a menu product to its stock-item spec; shows live plate
- *    cost, food-cost %, GP £/% vs the menu price, with a GP-target flag.
- *  • Prep recipe → produces a Made-here stock item; its rolled cost ÷ yield becomes
- *    that item's unit cost (persisted on save), so dishes using it re-cost.
+ * Two modes:
+ *  • Dishes — a list of your POS menu products (search), each badged "recipe ✓" or
+ *    "no recipe". Click a product to build/edit its recipe; cost & GP show live
+ *    against its menu price. This is the easy way to find "Heineken Half" etc.
+ *  • Prep — sub-recipes that produce a made-here stock item (cost ÷ yield).
  *
- * Costing is the pure engine (costing.js); nesting/cycles handled there. Sale
- * depletion into the ledger is wired in slice 3b.
+ * Ingredient lines accept the component's own units (Keg, Bottle, 175ml glass) AND
+ * same-dimension standard units (ml, cl, l, pt) so a half-pint is "0.5 pt" or "284 ml".
+ * Costing is the pure engine (costing.js + uom.js).
  */
 
 import { useState, useEffect, useMemo, useCallback } from 'react';
@@ -21,18 +22,16 @@ import { toBase, unitOptions } from '../../lib/stock/uom';
 import { fetchInventoryItems } from '../../lib/stock/data';
 import {
   fetchRecipes, upsertRecipe, replaceRecipeLines, setRecipeArchived,
-  linkMenuItemRecipe, unlinkMenuItem, buildCostingCtx, recomputeMadeItemCost, costRecipeWith,
+  linkMenuItemRecipe, buildCostingCtx, recomputeMadeItemCost, costRecipeWith,
 } from '../../lib/stock/recipes';
 
-const TYPES = [
-  { id: 'MENU', label: 'Dish', desc: 'A sellable menu item’s spec — drives food cost & GP.' },
-  { id: 'PREP', label: 'Prep / sub-recipe', desc: 'Produces a made-here stock item used by other recipes.' },
-];
 const UNIT_OPTS = Object.entries(UNITS).map(([code, u]) => ({ code, ...u }));
 const DIM_ORDER = [DIMENSIONS.COUNT, DIMENSIONS.WEIGHT, DIMENSIONS.VOLUME];
 const field = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '8px 10px', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
 const lbl = { display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 5 };
 const fmtCost = (v) => (v == null || !Number.isFinite(Number(v)) ? '—' : currencySymbol() + Number(v).toFixed(4).replace(/0+$/, '').replace(/\.$/, ''));
+// Standard units in the same dimension as an item's base unit (so a litre item also offers ml/cl/pt).
+const sameDimGlobals = (baseUnit) => { const dim = UNITS[baseUnit]?.dimension; return UNIT_OPTS.filter(u => u.dimension === dim).map(u => u.code); };
 
 function UnitSelect({ value, onChange, width = 110 }) {
   return (
@@ -46,109 +45,138 @@ function UnitSelect({ value, onChange, width = 110 }) {
   );
 }
 
-const blank = () => ({ name: '', recipeType: 'MENU', outputItemId: null, menuItemId: null, portion: 1, yieldQty: 1, yieldUnit: 'each', wastagePct: 0, gpTargetPct: '', method: '', lines: [] });
-
 export default function Recipes() {
   const showToast = useStore(s => s.showToast);
   const menuItems = useStore(s => s.menuItems) || [];
   const [locId, setLocId] = useState(getActiveLocationSync());
   const [recipes, setRecipes] = useState([]);
-  const [items, setItems] = useState([]);          // inventory items
+  const [items, setItems] = useState([]);
   const [ctx, setCtx] = useState({ itemsById: {}, recipesByOutputItem: {} });
   const [loading, setLoading] = useState(true);
+  const [mode, setMode] = useState('dishes');     // 'dishes' | 'prep'
   const [search, setSearch] = useState('');
-  const [filter, setFilter] = useState('all');
-  const [selectedId, setSelectedId] = useState(null);
+  const [selectedKey, setSelectedKey] = useState(null);  // dishes: menuItemId · prep: recipeId
   const [draft, setDraft] = useState(null);
   const [saving, setSaving] = useState(false);
 
-  const reload = useCallback(async (keepId) => {
+  const reload = useCallback(async (keep) => {
     const loc = locId || getActiveLocationSync() || await getLocationId().catch(() => null);
     if (loc && loc !== locId) setLocId(loc);
     const [{ data: recs }, { data: its }, c] = await Promise.all([fetchRecipes(loc), fetchInventoryItems(loc), buildCostingCtx(loc)]);
     setRecipes(recs || []); setItems(its || []); setCtx(c); setLoading(false);
-    if (keepId) { const f = (recs || []).find(r => r.id === keepId); if (f) { setDraft(structuredClone(f)); setSelectedId(keepId); } }
+    if (keep?.menuItemId) { const r = (recs || []).find(x => String(x.menuItemId) === String(keep.menuItemId)); if (r) { setDraft(structuredClone(r)); } }
+    else if (keep?.recipeId) { const r = (recs || []).find(x => x.id === keep.recipeId); if (r) { setDraft(structuredClone(r)); setSelectedKey(keep.recipeId); } }
   }, [locId]);
   useEffect(() => { reload(); /* eslint-disable-next-line */ }, []);
 
-  const filtered = useMemo(() => {
+  // menu-item display helpers (parent-qualified names; hide variant containers + sub-items)
+  const menuMeta = useMemo(() => {
+    const byId = {}; menuItems.forEach(m => { byId[String(m.id)] = m; });
+    const parents = new Set(menuItems.filter(m => m.parentId).map(m => String(m.parentId)));
+    const label = (m) => { if (!m?.parentId) return m?.name || ''; const p = byId[String(m.parentId)]; if (!p) return m.name || ''; const n = (m.name || '').trim(); return n.toLowerCase().startsWith((p.name || '').toLowerCase()) ? n : `${p.name} ${n}`.trim(); };
+    return { byId, parents, label };
+  }, [menuItems]);
+  const recipeByMenuId = useMemo(() => { const m = {}; recipes.forEach(r => { if (r.recipeType === 'MENU' && r.menuItemId) m[String(r.menuItemId)] = r; }); return m; }, [recipes]);
+
+  const dishProducts = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return recipes.filter(r => {
-      if (filter !== 'all' && r.recipeType !== filter) return false;
-      if (q && !r.name.toLowerCase().includes(q)) return false;
-      return true;
-    });
-  }, [recipes, search, filter]);
+    return menuItems
+      .filter(m => !m.archived && m.type !== 'subitem' && !menuMeta.parents.has(String(m.id)))
+      .map(m => ({ m, label: menuMeta.label(m), recipe: recipeByMenuId[String(m.id)] || null }))
+      .filter(x => !q || x.label.toLowerCase().includes(q))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [menuItems, menuMeta, recipeByMenuId, search]);
+
+  const prepRecipes = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return recipes.filter(r => r.recipeType !== 'MENU').filter(r => !q || (r.name || '').toLowerCase().includes(q));
+  }, [recipes, search]);
 
   const madeItems = useMemo(() => items.filter(i => i.kind === 'MADE' && !i.archivedAt), [items]);
   const itemName = useCallback((id) => items.find(i => i.id === id)?.name || '—', [items]);
-  const menuItemName = useCallback((id) => menuItems.find(m => String(m.id) === String(id))?.name || '(unlinked)', [menuItems]);
 
-  // Live cost of the draft recipe.
-  const cost = useMemo(() => {
-    if (!draft) return null;
-    return costRecipeWith(draft, ctx);
-  }, [draft, ctx]);
+  const cost = useMemo(() => (draft ? costRecipeWith(draft, ctx) : null), [draft, ctx]);
   const menuPrice = useMemo(() => {
     if (!draft || draft.recipeType !== 'MENU' || !draft.menuItemId) return null;
-    const mi = menuItems.find(m => String(m.id) === String(draft.menuItemId));
+    const mi = menuMeta.byId[String(draft.menuItemId)];
     return mi?.pricing?.base ?? mi?.price ?? null;
-  }, [draft, menuItems]);
+  }, [draft, menuMeta]);
 
-  const select = (r) => { setDraft(structuredClone(r)); setSelectedId(r.id); };
-  const startNew = () => { setDraft(blank()); setSelectedId(null); };
+  const selectDish = (x) => {
+    setSelectedKey(String(x.m.id));
+    setDraft(x.recipe ? structuredClone(x.recipe)
+      : { recipeType: 'MENU', menuItemId: String(x.m.id), name: x.label, portion: 1, yieldQty: 1, yieldUnit: 'each', wastagePct: 0, gpTargetPct: '', method: '', lines: [] });
+  };
+  const selectPrep = (r) => { setSelectedKey(r.id); setDraft(structuredClone(r)); };
+  const newPrep = () => { setSelectedKey(null); setDraft({ recipeType: 'PREP', name: '', outputItemId: null, yieldQty: 1, yieldUnit: 'each', wastagePct: 0, method: '', lines: [] }); };
+
   const upd = (k, v) => setDraft(d => ({ ...d, [k]: v }));
-
   const addLine = (invItem) => setDraft(d => ({ ...d, lines: [...d.lines, { componentItemId: invItem.id, qty: 1, unit: invItem.baseUnit, usablePct: 100 }] }));
   const updLine = (i, k, v) => setDraft(d => ({ ...d, lines: d.lines.map((l, j) => j === i ? { ...l, [k]: v } : l) }));
   const rmLine = (i) => setDraft(d => ({ ...d, lines: d.lines.filter((_, j) => j !== i) }));
 
   const save = async () => {
-    if (!draft.name.trim()) { showToast?.('Name is required', 'error'); return; }
     if (draft.recipeType === 'PREP' && !draft.outputItemId) { showToast?.('Choose the made-here item this prep produces', 'error'); return; }
+    if (!draft.name?.trim()) upd('name', draft.recipeType === 'MENU' ? 'Dish' : 'Prep');
     setSaving(true);
-    const { data, error } = await upsertRecipe(draft, locId);
+    const { data, error } = await upsertRecipe({ ...draft, name: draft.name?.trim() || (draft.recipeType === 'MENU' ? menuMeta.label(menuMeta.byId[String(draft.menuItemId)] || {}) : 'Prep') }, locId);
     if (error) { setSaving(false); showToast?.('Save failed: ' + error.message, 'error'); return; }
     const rid = data?.id || draft.id;
     await replaceRecipeLines(rid, draft.lines, locId);
-    if (draft.recipeType === 'MENU') {
-      if (draft.menuItemId) await linkMenuItemRecipe(draft.menuItemId, rid, draft.portion || 1, locId);
-      else await unlinkMenuItem(draft.menuItemId, locId).catch(() => {});
-    } else if (draft.outputItemId) {
-      await recomputeMadeItemCost(draft.outputItemId, locId);
-    }
+    if (draft.recipeType === 'MENU' && draft.menuItemId) await linkMenuItemRecipe(draft.menuItemId, rid, draft.portion || 1, locId);
+    if (draft.recipeType === 'PREP' && draft.outputItemId) await recomputeMadeItemCost(draft.outputItemId, locId);
     setSaving(false); showToast?.('Recipe saved', 'success');
-    await reload(rid);
+    await reload(draft.recipeType === 'MENU' ? { menuItemId: draft.menuItemId } : { recipeId: rid });
   };
   const archive = async () => {
     if (!draft?.id) return;
+    if (!confirm('Remove this recipe?')) return;
     await setRecipeArchived(draft.id, true, locId);
-    showToast?.('Archived', 'info'); setDraft(null); setSelectedId(null); await reload();
+    showToast?.('Recipe removed', 'info'); setDraft(null); setSelectedKey(null); await reload();
   };
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', height: '100%', minHeight: 0, background: 'var(--bg0)' }}>
+    <div style={{ display: 'grid', gridTemplateColumns: '330px 1fr', height: '100%', minHeight: 0, background: 'var(--bg0)' }}>
       <aside style={{ borderRight: '1px solid var(--bdr)', background: 'var(--bg1)', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-        <div style={{ padding: 14, position: 'relative' }}>
-          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search recipes…" style={{ ...field, paddingRight: 40 }} />
-          <button onClick={startNew} title="New recipe" style={{ position: 'absolute', top: 14, right: 16, width: 28, height: 28, borderRadius: 6, background: 'var(--acc)', color: '#fff', border: 0, fontSize: 18, cursor: 'pointer' }}>+</button>
-          <div style={{ display: 'flex', gap: 5, marginTop: 10 }}>
-            {[{ id: 'all', label: 'All' }, { id: 'MENU', label: 'Dishes' }, { id: 'PREP', label: 'Prep' }].map(f => (
-              <button key={f.id} onClick={() => setFilter(f.id)} style={{ fontSize: 11, padding: '4px 9px', borderRadius: 5, cursor: 'pointer', background: filter === f.id ? 'var(--bg3)' : 'transparent', color: filter === f.id ? 'var(--t1)' : 'var(--t3)', border: '1px solid ' + (filter === f.id ? 'var(--bg3)' : 'var(--bdr)') }}>{f.label}</button>
+        <div style={{ padding: 14 }}>
+          <div style={{ display: 'flex', gap: 4, marginBottom: 10 }}>
+            {[['dishes', 'Dishes'], ['prep', 'Prep']].map(([id, label]) => (
+              <button key={id} onClick={() => { setMode(id); setDraft(null); setSelectedKey(null); }} style={{ flex: 1, fontSize: 12, fontWeight: 700, padding: '7px 0', borderRadius: 7, cursor: 'pointer', background: mode === id ? 'var(--acc)' : 'var(--bg2)', color: mode === id ? '#fff' : 'var(--t3)', border: '1px solid ' + (mode === id ? 'var(--acc)' : 'var(--bdr)') }}>{label}</button>
             ))}
           </div>
+          <div style={{ position: 'relative' }}>
+            <input value={search} onChange={e => setSearch(e.target.value)} placeholder={mode === 'dishes' ? 'Search menu products…' : 'Search prep recipes…'} style={{ ...field, paddingRight: mode === 'prep' ? 40 : 10 }} />
+            {mode === 'prep' && <button onClick={newPrep} title="New prep recipe" style={{ position: 'absolute', top: 4, right: 6, width: 28, height: 28, borderRadius: 6, background: 'var(--acc)', color: '#fff', border: 0, fontSize: 18, cursor: 'pointer' }}>+</button>}
+          </div>
         </div>
+
         <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
           {loading && <div style={{ padding: 16, color: 'var(--t3)', fontSize: 13 }}>Loading…</div>}
-          {!loading && filtered.length === 0 && <div style={{ padding: 16, color: 'var(--t3)', fontSize: 13 }}>No recipes yet. Press <b>+</b> to build one. You’ll need stock items first (Inventory → Stock items).</div>}
-          {filtered.map(r => {
-            const sel = r.id === selectedId;
+
+          {!loading && mode === 'dishes' && dishProducts.length === 0 && <div style={{ padding: 16, color: 'var(--t3)', fontSize: 13 }}>No menu products found. Add menu items in Menu manager first.</div>}
+          {!loading && mode === 'dishes' && dishProducts.map(x => {
+            const sel = String(x.m.id) === String(selectedKey);
+            const linked = !!x.recipe;
             return (
-              <div key={r.id} onClick={() => select(r)} style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '10px 16px', cursor: 'pointer', borderLeft: '3px solid ' + (sel ? 'var(--acc)' : 'transparent'), background: sel ? 'var(--bg2)' : 'transparent' }}>
-                <div style={{ width: 34, height: 34, borderRadius: 7, background: 'var(--bg3)', display: 'grid', placeItems: 'center', fontSize: 15, flexShrink: 0 }}>{r.recipeType === 'MENU' ? '🍽' : '🍲'}</div>
+              <div key={x.m.id} onClick={() => selectDish(x)} style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '10px 16px', cursor: 'pointer', borderLeft: '3px solid ' + (sel ? 'var(--acc)' : 'transparent'), background: sel ? 'var(--bg2)' : 'transparent' }}>
                 <div style={{ minWidth: 0, flex: 1 }}>
-                  <div style={{ fontSize: 13, color: 'var(--t1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.name}</div>
-                  <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2 }}>{r.recipeType === 'MENU' ? `Dish · ${menuItemName(r.menuItemId)}` : `Prep → ${itemName(r.outputItemId)}`}</div>
+                  <div style={{ fontSize: 13, color: 'var(--t1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{x.label}</div>
+                  <div style={{ fontSize: 11, marginTop: 2, color: linked ? 'var(--grn, #16a34a)' : 'var(--t4)' }}>{linked ? `✓ recipe · ${x.recipe.lines?.length || 0} ingredient${(x.recipe.lines?.length || 0) === 1 ? '' : 's'}` : 'no recipe yet'}</div>
+                </div>
+                {!linked && <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--t4)', border: '1px solid var(--bdr)', borderRadius: 20, padding: '2px 7px' }}>add</span>}
+              </div>
+            );
+          })}
+
+          {!loading && mode === 'prep' && prepRecipes.length === 0 && <div style={{ padding: 16, color: 'var(--t3)', fontSize: 13 }}>No prep recipes. Press + to add one (produces a made-here stock item).</div>}
+          {!loading && mode === 'prep' && prepRecipes.map(r => {
+            const sel = r.id === selectedKey;
+            return (
+              <div key={r.id} onClick={() => selectPrep(r)} style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '10px 16px', cursor: 'pointer', borderLeft: '3px solid ' + (sel ? 'var(--acc)' : 'transparent'), background: sel ? 'var(--bg2)' : 'transparent' }}>
+                <div style={{ width: 32, height: 32, borderRadius: 7, background: 'var(--bg3)', display: 'grid', placeItems: 'center', fontSize: 14, flexShrink: 0 }}>🍲</div>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ fontSize: 13, color: 'var(--t1)' }}>{r.name}</div>
+                  <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2 }}>→ {itemName(r.outputItemId)}</div>
                 </div>
               </div>
             );
@@ -159,64 +187,44 @@ export default function Recipes() {
       <main style={{ display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
         {!draft && (
           <div style={{ display: 'grid', placeItems: 'center', height: '100%', color: 'var(--t3)', textAlign: 'center', padding: 24 }}>
-            <div><div style={{ fontSize: 40, marginBottom: 10 }}>📖</div><div style={{ fontSize: 15, color: 'var(--t2)' }}>Select a recipe, or press + to build one.</div></div>
+            <div><div style={{ fontSize: 40, marginBottom: 10 }}>📖</div><div style={{ fontSize: 15, color: 'var(--t2)' }}>{mode === 'dishes' ? 'Pick a menu product on the left to build its recipe.' : 'Pick a prep recipe, or press + to add one.'}</div></div>
           </div>
         )}
         {draft && (
           <>
             <div style={{ padding: '16px 22px', borderBottom: '1px solid var(--bdr)', display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
               <div style={{ flex: 1, minWidth: 200 }}>
-                <h1 style={{ fontSize: 21, fontWeight: 600, margin: 0, color: 'var(--t1)' }}>{draft.name || 'New recipe'}</h1>
-                <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 3 }}>{draft.recipeType === 'MENU' ? 'Dish' : 'Prep'} · {draft.lines.length} ingredient{draft.lines.length === 1 ? '' : 's'}</div>
+                <h1 style={{ fontSize: 21, fontWeight: 600, margin: 0, color: 'var(--t1)' }}>{draft.recipeType === 'MENU' ? (menuMeta.label(menuMeta.byId[String(draft.menuItemId)] || {}) || draft.name) : (draft.name || 'New prep recipe')}</h1>
+                <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 3 }}>{draft.recipeType === 'MENU' ? `Dish recipe${menuPrice != null ? ` · sells at ${money(menuPrice)}` : ''}` : 'Prep / sub-recipe'} · {draft.lines.length} ingredient{draft.lines.length === 1 ? '' : 's'}</div>
               </div>
               <RecipeStats draft={draft} cost={cost} menuPrice={menuPrice} />
-              {draft.id && <button onClick={archive} style={{ padding: '8px 14px', borderRadius: 8, cursor: 'pointer', background: 'var(--bg2)', border: '1px solid var(--bdr)', color: 'var(--t2)', fontSize: 13 }}>Archive</button>}
+              {draft.id && <button onClick={archive} style={{ padding: '8px 14px', borderRadius: 8, cursor: 'pointer', background: 'var(--bg2)', border: '1px solid var(--bdr)', color: 'var(--t2)', fontSize: 13 }}>Remove</button>}
             </div>
 
             <div style={{ flex: 1, overflowY: 'auto', padding: '20px 22px', minHeight: 0 }}>
-              <div style={{ maxWidth: 760 }}>
-                <div style={{ marginBottom: 14 }}><label style={lbl}>Name</label><input value={draft.name} onChange={e => upd('name', e.target.value)} style={field} placeholder="e.g. Margherita pizza, or Pizza dough" /></div>
-
-                <div style={{ marginBottom: 14 }}>
-                  <label style={lbl}>Type</label>
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    {TYPES.map(t => (
-                      <button key={t.id} onClick={() => upd('recipeType', t.id)} style={{ flex: 1, textAlign: 'left', padding: '10px 12px', borderRadius: 8, cursor: 'pointer', background: draft.recipeType === t.id ? 'var(--acc-d, rgba(249,115,22,0.10))' : 'var(--bg2)', border: '1.5px solid ' + (draft.recipeType === t.id ? 'var(--acc)' : 'var(--bdr)') }}>
-                        <div style={{ fontSize: 13, fontWeight: 700, color: draft.recipeType === t.id ? 'var(--acc)' : 'var(--t1)' }}>{t.label}</div>
-                        <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2 }}>{t.desc}</div>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
+              <div style={{ maxWidth: 780 }}>
                 {draft.recipeType === 'MENU' ? (
-                  <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 14, marginBottom: 14 }}>
-                    <div><label style={lbl}>Menu item</label>
-                      <select value={draft.menuItemId || ''} onChange={e => upd('menuItemId', e.target.value || null)} style={field}>
-                        <option value="">— link a menu product —</option>
-                        {menuItems.filter(m => !m.archived).map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
-                      </select>
-                    </div>
-                    <div><label style={lbl}>GP target %</label><input type="number" min="0" max="100" value={draft.gpTargetPct ?? ''} onChange={e => upd('gpTargetPct', e.target.value)} style={field} placeholder="e.g. 70" /></div>
-                  </div>
+                  <div style={{ marginBottom: 14, maxWidth: 200 }}><label style={lbl}>GP target %</label><input type="number" min="0" max="100" value={draft.gpTargetPct ?? ''} onChange={e => upd('gpTargetPct', e.target.value)} style={field} placeholder="e.g. 70" /></div>
                 ) : (
-                  <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr', gap: 14, marginBottom: 14 }}>
-                    <div><label style={lbl}>Produces (made item)</label>
-                      <select value={draft.outputItemId || ''} onChange={e => { const it = madeItems.find(m => m.id === e.target.value); upd('outputItemId', e.target.value || null); if (it) upd('yieldUnit', it.baseUnit); }} style={field}>
-                        <option value="">— choose made-here item —</option>
-                        {madeItems.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
-                      </select>
+                  <>
+                    <div style={{ marginBottom: 14 }}><label style={lbl}>Recipe name</label><input value={draft.name} onChange={e => upd('name', e.target.value)} style={field} placeholder="e.g. Pizza dough" /></div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr', gap: 14, marginBottom: 14 }}>
+                      <div><label style={lbl}>Produces (made item)</label>
+                        <select value={draft.outputItemId || ''} onChange={e => { const it = madeItems.find(m => m.id === e.target.value); upd('outputItemId', e.target.value || null); if (it) upd('yieldUnit', it.baseUnit); }} style={field}>
+                          <option value="">— choose made-here item —</option>
+                          {madeItems.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                        </select>
+                      </div>
+                      <div><label style={lbl}>Yield qty</label><input type="number" min="0" step="any" value={draft.yieldQty} onChange={e => upd('yieldQty', e.target.value)} style={field} /></div>
+                      <div><label style={lbl}>Yield unit</label><UnitSelect value={draft.yieldUnit} onChange={v => upd('yieldUnit', v)} width="100%" /></div>
+                      <div><label style={lbl}>Wastage %</label><input type="number" min="0" max="100" value={draft.wastagePct} onChange={e => upd('wastagePct', e.target.value)} style={field} /></div>
                     </div>
-                    <div><label style={lbl}>Yield qty</label><input type="number" min="0" step="any" value={draft.yieldQty} onChange={e => upd('yieldQty', e.target.value)} style={field} /></div>
-                    <div><label style={lbl}>Yield unit</label><UnitSelect value={draft.yieldUnit} onChange={v => upd('yieldUnit', v)} width="100%" /></div>
-                    <div><label style={lbl}>Wastage %</label><input type="number" min="0" max="100" value={draft.wastagePct} onChange={e => upd('wastagePct', e.target.value)} style={field} /></div>
-                  </div>
+                  </>
                 )}
 
-                {/* Ingredient lines */}
                 <label style={lbl}>Ingredients</label>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 10 }}>
-                  {draft.lines.length === 0 && <div style={{ fontSize: 12, color: 'var(--t3)' }}>No ingredients yet — add stock items below.</div>}
+                  {draft.lines.length === 0 && <div style={{ fontSize: 12, color: 'var(--t3)' }}>No ingredients yet — add stock items below (e.g. the Heineken keg, used 0.5 pt).</div>}
                   {draft.lines.map((l, i) => {
                     const comp = ctx.itemsById[l.componentItemId];
                     const noCost = comp && (comp.currentCost == null || !(comp.currentCost > 0)) && comp.kind !== 'MADE';
@@ -233,8 +241,8 @@ export default function Recipes() {
                         <span style={{ fontSize: 12, color: 'var(--t3)' }}>uses</span>
                         <input type="number" min="0" step="any" value={l.qty} onChange={e => updLine(i, 'qty', e.target.value)} placeholder="qty" style={{ ...field, width: 72 }} />
                         {comp
-                          ? <select value={l.unit} onChange={e => updLine(i, 'unit', e.target.value)} style={{ ...field, width: 116 }}>
-                              {unitOptions(comp).map(o => <option key={o.token} value={o.token}>{o.label}</option>)}
+                          ? <select value={l.unit} onChange={e => updLine(i, 'unit', e.target.value)} style={{ ...field, width: 128 }}>
+                              {unitOptions(comp, sameDimGlobals(comp.baseUnit)).map(o => <option key={o.token} value={o.token}>{o.label}</option>)}
                             </select>
                           : <UnitSelect value={l.unit} onChange={v => updLine(i, 'unit', v)} width={92} />}
                         <span style={{ fontSize: 13, color: 'var(--t3)' }}>=</span>
@@ -246,7 +254,7 @@ export default function Recipes() {
                 </div>
                 <IngredientPicker items={items} onPick={addLine} />
 
-                <div style={{ marginTop: 16 }}><label style={lbl}>Method (optional)</label><textarea value={draft.method || ''} onChange={e => upd('method', e.target.value)} style={{ ...field, minHeight: 70, resize: 'vertical' }} /></div>
+                <div style={{ marginTop: 16 }}><label style={lbl}>Method (optional)</label><textarea value={draft.method || ''} onChange={e => upd('method', e.target.value)} style={{ ...field, minHeight: 64, resize: 'vertical' }} /></div>
 
                 <button onClick={save} disabled={saving} style={{ marginTop: 16, padding: '10px 22px', borderRadius: 8, background: 'var(--acc)', color: '#fff', border: 0, fontSize: 14, fontWeight: 700, cursor: 'pointer', opacity: saving ? 0.6 : 1 }}>
                   {saving ? 'Saving…' : draft.id ? 'Save recipe' : 'Create recipe'}
@@ -285,19 +293,19 @@ function RecipeStats({ draft, cost, menuPrice }) {
 
 function IngredientPicker({ items, onPick }) {
   const [q, setQ] = useState('');
+  const [focused, setFocused] = useState(false);
   const matches = useMemo(() => {
     const s = q.trim().toLowerCase();
-    if (!s) return [];
-    return items.filter(i => !i.archivedAt && i.name.toLowerCase().includes(s)).slice(0, 8);
+    return items.filter(i => !i.archivedAt && (!s || i.name.toLowerCase().includes(s))).slice(0, 10);
   }, [q, items]);
   return (
     <div style={{ position: 'relative' }}>
-      <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search stock items to add…" style={field} />
-      {matches.length > 0 && (
-        <div style={{ position: 'absolute', zIndex: 5, left: 0, right: 0, background: 'var(--bg2)', border: '1px solid var(--bdr)', borderRadius: 8, marginTop: 4, overflow: 'hidden', boxShadow: '0 10px 30px rgba(0,0,0,0.3)' }}>
+      <input value={q} onChange={e => setQ(e.target.value)} onFocus={() => setFocused(true)} onBlur={() => setTimeout(() => setFocused(false), 150)} placeholder="Add an ingredient (search your stock items)…" style={field} />
+      {focused && matches.length > 0 && (
+        <div style={{ position: 'absolute', zIndex: 5, left: 0, right: 0, background: 'var(--bg2)', border: '1px solid var(--bdr)', borderRadius: 8, marginTop: 4, overflow: 'hidden', boxShadow: '0 10px 30px rgba(0,0,0,0.3)', maxHeight: 280, overflowY: 'auto' }}>
           {matches.map(i => (
             <div key={i.id} onClick={() => { onPick(i); setQ(''); }} style={{ padding: '9px 12px', cursor: 'pointer', fontSize: 13, color: 'var(--t1)', display: 'flex', justifyContent: 'space-between' }}>
-              <span>{i.name}</span><span style={{ color: 'var(--t3)', fontSize: 11 }}>{i.kind === 'MADE' ? 'prep' : ''} {fmtCost(i.currentCost)}/{i.baseUnit}</span>
+              <span>{i.name}</span><span style={{ color: 'var(--t3)', fontSize: 11 }}>{i.kind === 'MADE' ? 'prep · ' : ''}{fmtCost(i.currentCost)}/{i.baseUnit}</span>
             </div>
           ))}
         </div>

@@ -85,6 +85,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.582', date: '23 Jun 2026', label: 'Recipes — build from your menu + measure in any unit',
+    changes: [
+      'Recipes now start from your POS menu: a “Dishes” list of every product (e.g. Heineken Half, Heineken Pint) with a clear “recipe ✓ / no recipe yet” badge — just click a product to build its recipe. No more hunting in a dropdown.',
+      'A separate “Prep” tab for sub-recipes that produce a made-here item.',
+      'Ingredient lines now accept standard units too — so a half-pint is simply “0.5 pt” or “284 ml”, not just the keg’s own units. Each line still shows its live cost.',
+      'Ingredient search lists your items on focus (no need to guess the name).',
+    ],
+  },
+  {
     version: '5.5.581', date: '23 Jun 2026', label: 'Purchasing — Order pad (forecast ordering, auto-split by supplier)',
     changes: [
       'NEW: Purchasing → Order pad. A single product list with on-hand, average daily use and a forecast-based suggested quantity. Set quantities (or click “Fill from forecast”), and a basket builds across all suppliers.',
