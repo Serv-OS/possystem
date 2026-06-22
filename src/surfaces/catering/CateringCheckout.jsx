@@ -13,6 +13,7 @@ import { getStripeForAccount, createPaymentIntent } from '../../lib/stripeClient
 import { getLocationProcessor } from '../../lib/payments/processor';
 import RyftPaymentForm from '../../components/RyftPaymentForm';
 import { calculateOrderTax } from '../../lib/tax';
+import { sendEmailReceipt } from '../../lib/sendReceipt';
 
 const money = (n, cur) => `${({ gbp: '£', usd: '$', eur: '€' }[cur] || '£')}${Number(n || 0).toFixed(2)}`;
 const center = { maxWidth: 640, margin: '0 auto', padding: '0 16px' };
@@ -71,6 +72,15 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
   };
   const discountLine = promoApplied ? [{ type: 'promo', code: promoApplied.code, label: promoApplied.name, amount: promoApplied.amount }] : [];
   const queueRow = (paid, pay) => ({ ref, location_id: opsId, type: fulfilment, status: 'received', source: 'catering', event_date: eventDate, collection_time: eventTime, is_asap: false, paid, items: buildItems(), customer: buildCustomer(pay), total, sent_at: new Date().toISOString(), ...(paid ? { payment_method: 'card' } : {}) });
+  // Snapshot everything the confirmation screen needs, so it renders the full
+  // branded receipt independent of any later state change.
+  const placedSnapshot = (paid, emailedTo) => ({
+    ref, paid, emailedTo: emailedTo || null,
+    items: buildItems(), customerName: name.trim(),
+    isDelivery, eventDate, eventTime,
+    address: isDelivery ? { line1: addr1.trim(), postcode: postcode.trim().toUpperCase() } : null,
+    subtotal, deliveryFee, tip, discount, total, promoName: promoApplied?.name || null,
+  });
 
   // ── PAY LATER ──────────────────────────────────────────────────────
   const placeLater = async () => {
@@ -81,7 +91,7 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
       const { error } = await supabase.from('order_queue').insert(queueRow(false, { pay_later: true }));
       if (error) throw error;
       await redeemPromo(ref);
-      setPlaced({ ref, paid: false });
+      setPlaced(placedSnapshot(false, null));
     } catch (e) { setErr(e?.message || 'Could not place the order.'); } finally { setBusy(false); }
   };
 
@@ -128,20 +138,84 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
       };
       await supabase.from('closed_checks').insert(closedCheck);
       await redeemPromo(ref);
-      setPlaced({ ref, paid: true });
+      // Email the customer their confirmation/receipt (best-effort; never blocks the
+      // on-screen confirmation). Reuses the receipt pipeline; the just-inserted
+      // closed_checks row clears the send-receipt tenant fence via check_id.
+      const toEmail = email.trim();
+      if (toEmail) {
+        sendEmailReceipt({
+          to: toEmail, locationId: opsId, locationLabel: location.name,
+          check: {
+            id: closedCheck.id, ref, items: closedCheck.items, customer: closedCheck.customer,
+            closedAt: closedAt, total, method: 'card', service: deliveryFee, tip,
+            discountAmount: discount, taxAmount: taxBk?.totalTax || 0, taxBreakdown: taxBk, server: 'Catering',
+          },
+        }).catch(() => { /* best-effort; on-screen confirmation already shown */ });
+      }
+      setPlaced(placedSnapshot(true, toEmail || null));
     } catch (e) { setErr(e?.message || 'Payment captured but saving the order failed — please contact the venue with your reference.'); } finally { setBusy(false); }
   };
 
   // ── Confirmation ───────────────────────────────────────────────────
-  if (placed) return (
-    <div style={{ position: 'fixed', inset: 0, overflowY: 'auto', background: theme.bg || '#f5f5f5', display: 'grid', placeItems: 'center', textAlign: 'center', padding: 24, fontFamily: 'inherit', color: theme.fg || '#0f172a' }}>
-      <div>
-        <div style={{ fontSize: 44 }}>✅</div>
-        <h2 style={{ margin: '8px 0' }}>{placed.paid ? 'Order confirmed' : 'Enquiry received'}</h2>
-        <div style={{ color: '#475569' }}>Your catering order <b>{placed.ref}</b> for <b>{eventDate} at {eventTime}</b> is in. {placed.paid ? `${location.name} has received your payment of ${money(total, cur)}.` : `${location.name} will confirm and arrange payment with you.`}</div>
+  if (placed) {
+    const P = placed;
+    const lineTotal = (it) => ((Number(it.price) || 0) + (it.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0)) * (it.qty || 1);
+    const sumRow = (label, value, opts = {}) => (
+      <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0', fontSize: opts.big ? 16 : 13.5, fontWeight: opts.big ? 800 : 500, color: opts.muted ? '#475569' : '#0f172a', ...(opts.top ? { borderTop: '1px solid #e2e8f0', marginTop: 6, paddingTop: 8 } : {}) }}>
+        <span>{label}</span><span>{value}</span>
       </div>
-    </div>
-  );
+    );
+    return (
+      <div style={{ position: 'fixed', inset: 0, overflowY: 'auto', background: theme.bg || '#f5f5f5', color: theme.fg || '#0f172a', fontFamily: '-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",system-ui,sans-serif' }}>
+        <header style={{ background: theme.brand, color: '#fff', padding: '16px 0' }}>
+          <div style={{ ...center, display: 'flex', alignItems: 'center', gap: 12 }}>
+            {theme.logo && <img src={theme.logo} alt={theme.name} style={{ width: 38, height: 38, borderRadius: 8, objectFit: 'cover', flexShrink: 0 }} />}
+            <div style={{ fontSize: 19, fontWeight: 800 }}>{theme.name || location.name}</div>
+          </div>
+        </header>
+        <div style={{ ...center, paddingTop: 24, paddingBottom: 40 }}>
+          <div style={{ textAlign: 'center', marginBottom: 18 }}>
+            <div style={{ fontSize: 44 }}>{P.paid ? '✅' : '📩'}</div>
+            <h2 style={{ margin: '8px 0 4px' }}>{P.paid ? 'Order confirmed' : 'Enquiry received'}</h2>
+            <div style={{ color: '#475569', fontSize: 14 }}>Order <b style={{ color: theme.fg || '#0f172a' }}>{P.ref}</b> · {P.isDelivery ? 'Delivery' : 'Collection'} <b style={{ color: theme.fg || '#0f172a' }}>{P.eventDate} at {P.eventTime}</b></div>
+            <div style={{ color: '#475569', fontSize: 14, marginTop: 4 }}>{P.paid ? `${location.name} has received your payment of ${money(P.total, cur)}.` : `${location.name} will confirm and arrange payment with you.`}</div>
+            {P.emailedTo && <div style={{ color: '#16a34a', fontSize: 13, marginTop: 6, fontWeight: 700 }}>✉ Confirmation sent to {P.emailedTo}</div>}
+          </div>
+
+          <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14, padding: 16, color: '#0f172a' }}>
+            <div style={{ fontWeight: 800, marginBottom: 10 }}>Your order</div>
+            {P.items.map((it, i) => {
+              const mods = (it.mods || []).map((m) => m?.name || m?.label || m).filter(Boolean);
+              return (
+                <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, padding: '5px 0', fontSize: 13.5, borderBottom: '1px solid #f1f5f9' }}>
+                  <div>
+                    <div>{(it.qty || 1) > 1 ? <b>{it.qty}× </b> : null}{it.name}</div>
+                    {mods.length > 0 && <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>+ {mods.join(' · ')}</div>}
+                    {it.notes ? <div style={{ fontSize: 12, color: '#64748b', marginTop: 2, fontStyle: 'italic' }}>{it.notes}</div> : null}
+                  </div>
+                  <div style={{ whiteSpace: 'nowrap', fontWeight: 600 }}>{money(lineTotal(it), cur)}</div>
+                </div>
+              );
+            })}
+            <div style={{ marginTop: 8 }}>
+              {sumRow('Subtotal', money(P.subtotal, cur), { muted: true })}
+              {P.deliveryFee > 0 && sumRow('Delivery', money(P.deliveryFee, cur), { muted: true })}
+              {P.tip > 0 && sumRow('Tip', money(P.tip, cur), { muted: true })}
+              {P.discount > 0 && sumRow(`Promo${P.promoName ? ` · ${P.promoName}` : ''}`, `−${money(P.discount, cur)}`, { muted: true })}
+              {sumRow('Total', money(P.total, cur), { big: true, top: true })}
+            </div>
+          </div>
+
+          <div style={{ marginTop: 14, fontSize: 13, color: '#475569' }}>
+            <div><b style={{ color: theme.fg || '#0f172a' }}>{P.isDelivery ? 'Delivery to' : 'Collection by'}:</b> {P.customerName}</div>
+            {P.address && <div style={{ marginTop: 2 }}>{P.address.line1}, {P.address.postcode}</div>}
+          </div>
+
+          <button onClick={() => onBack && onBack()} style={{ marginTop: 20, width: '100%', padding: '12px', borderRadius: 10, border: `1px solid ${theme.brand}`, background: 'transparent', color: theme.brand, fontWeight: 800, fontSize: 14, cursor: 'pointer' }}>Back to menu</button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{ position: 'fixed', inset: 0, overflowY: 'auto', overflowX: 'hidden', WebkitOverflowScrolling: 'touch', paddingBottom: 40, background: theme.bg || '#f5f5f5', color: theme.fg || '#0f172a', fontFamily: '-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",system-ui,sans-serif' }}>

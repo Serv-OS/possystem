@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.590', date: '23 Jun 2026', label: 'Catering — branded confirmation + confirmation email',
+    changes: [
+      'The catering order-confirmed screen is now branded (your logo + colours) and shows the full order: every line with options, subtotal, delivery, tip, promo and total, plus collection/delivery details.',
+      'Paying for a catering order now emails the customer their confirmation/receipt automatically (same receipt pipeline as the till). Delivery depends on your email provider being set up — the same one the “email receipt” button uses.',
+    ],
+  },
+  {
     version: '5.5.589', date: '23 Jun 2026', label: 'Housekeeping — repo & import tidy-up',
     changes: [
       'Stopped tracking stray .DS_Store files and added them to .gitignore.',
