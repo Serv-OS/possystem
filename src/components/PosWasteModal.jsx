@@ -15,7 +15,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store';
 import { getActiveLocationSync } from '../lib/supabase';
 import { money } from '../lib/currency';
-import { logWaste, WASTE_REASONS } from '../lib/stock/waste';
+import { logMenuItemWaste, WASTE_REASONS } from '../lib/stock/waste';
 import { fetchInventoryItems } from '../lib/stock/data';
 import { buildDepletionCtx } from '../lib/stock/recipes';
 import { explodeBasket } from '../lib/stock/explode';
@@ -61,16 +61,18 @@ export default function PosWasteModal({ open, onClose, locationId, showToast }) 
     const parents = new Set(menuItems.filter(m => m.parentId).map(m => String(m.parentId)));
     const label = (m) => { if (!m?.parentId) return m?.menuName || m?.name || ''; const p = byId[String(m.parentId)]; const n = (m.menuName || m.name || '').trim(); if (!p) return n; const pn = (p.menuName || p.name || ''); return n.toLowerCase().startsWith(pn.toLowerCase()) ? n : `${pn} ${n}`.trim(); };
     const linked = ctx?.menuRecipes || {};
+    const priceOf = (m) => Number(m.pricing?.base ?? m.price ?? 0);
     return menuItems
       .filter(m => isSellingItem(m, parents))
-      .map(m => ({ id: m.id, label: label(m), linked: !!linked[String(m.id)] }))
+      .map(m => ({ id: m.id, label: label(m), linked: !!linked[String(m.id)], price: priceOf(m) }))
       .sort((a, b) => a.label.localeCompare(b.label));
   }, [menuItems, ctx]);
 
+  // Filtered list (or the whole menu when the box is empty) so staff can browse, not just type.
   const matches = useMemo(() => {
     const s = q.trim().toLowerCase();
-    if (!s) return [];
-    return products.filter(p => p.label.toLowerCase().includes(s)).slice(0, 8);
+    const list = s ? products.filter(p => p.label.toLowerCase().includes(s)) : products;
+    return list.slice(0, 100);
   }, [q, products]);
 
   // Live stock impact of the selection: explode the product × qty through its recipe,
@@ -80,14 +82,16 @@ export default function PosWasteModal({ open, onClose, locationId, showToast }) 
     const n = Number(qty);
     if (!(n > 0)) return null;
     const agg = explodeBasket([{ itemId: product.id, qty: n }], ctx);
-    const rows = Object.entries(agg).filter(([, base]) => base > 0).map(([invId, qtyBase]) => {
+    const ingredients = Object.entries(agg).filter(([, base]) => base > 0).map(([invId, qtyBase]) => ({ inventoryItemId: invId, qtyBase }));
+    const rows = ingredients.map(({ inventoryItemId: invId, qtyBase }) => {
       const it = invById[invId];
       const disp = it ? displayInUnits(qtyBase, { baseUnit: it.baseUnit, formats: it.formats }) : null;
       const cost = it && it.currentCost != null ? qtyBase * Number(it.currentCost) : null;
       return { invId, name: it?.name || 'Stock item', qtyLabel: disp ? `${disp.qty} ${disp.label}` : `${Math.round(qtyBase * 100) / 100}`, cost };
     });
     const totalCost = rows.reduce((s, r) => s + (r.cost || 0), 0);
-    return { rows, totalCost };
+    const lostSale = (Number(product.price) || 0) * n;   // forgone revenue at the menu price
+    return { rows, ingredients, totalCost, lostSale };
   }, [product, qty, ctx, invById]);
 
   const submit = async () => {
@@ -100,17 +104,13 @@ export default function PosWasteModal({ open, onClose, locationId, showToast }) 
     }
     setBusy(true);
     try {
-      const fullNote = `Wasted ${n}× ${product.label}${note.trim() ? ` — ${note.trim()}` : ''}`;
-      const agg = explodeBasket([{ itemId: product.id, qty: n }], ctx);
-      let failed = 0;
-      for (const [invId, qtyBase] of Object.entries(agg)) {
-        if (!(qtyBase > 0)) continue;
-        const { error } = await logWaste({ inventoryItemId: invId, qty: qtyBase, unit: null, reason, note: fullNote, source: 'pos' }, loc);
-        if (error) failed++;
-      }
+      const { error } = await logMenuItemWaste({
+        productName: product.label, qty: n, salePrice: product.price,
+        ingredients: impact.ingredients, reason, note: note.trim() || null, source: 'pos',
+      }, loc);
       setBusy(false);
-      if (failed) showToast?.(`Logged, but ${failed} ingredient${failed === 1 ? '' : 's'} couldn’t be deducted`, 'error');
-      else showToast?.(`Waste logged — ${n}× ${product.label} (${money(impact.totalCost)})`, 'success');
+      if (error) { showToast?.(error.message || 'Could not log waste', 'error'); return; }
+      showToast?.(`Waste logged — ${n}× ${product.label} · lost sale ${money(impact.lostSale)}`, 'success');
       onClose?.();
     } catch (e) { setBusy(false); showToast?.(e?.message || 'Could not log waste', 'error'); }
   };
@@ -119,7 +119,7 @@ export default function PosWasteModal({ open, onClose, locationId, showToast }) 
   const noRecipesAtAll = !loading && ctx && Object.keys(ctx.menuRecipes || {}).length === 0;
   return (
     <div className="modal-back" style={{ zIndex: 99999 }} onClick={e => e.target === e.currentTarget && onClose?.()}>
-      <div style={{ background: 'var(--bg1)', border: '1px solid var(--bdr2)', borderRadius: 20, width: '100%', maxWidth: 440, padding: '22px 24px', boxShadow: 'var(--sh3)', maxHeight: '88vh', overflowY: 'auto' }}>
+      <div style={{ background: 'var(--bg1)', border: '1px solid var(--bdr2)', borderRadius: 20, width: '100%', maxWidth: 540, padding: '24px 26px', boxShadow: 'var(--sh3)', maxHeight: '92vh', overflowY: 'auto' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
           <div style={{ fontSize: 17, fontWeight: 800, color: 'var(--t1)' }}>Record waste</div>
           <button onClick={() => onClose?.()} style={{ background: 'transparent', border: 'none', fontSize: 24, color: 'var(--t4)', cursor: 'pointer', padding: 4 }}>×</button>
@@ -129,20 +129,24 @@ export default function PosWasteModal({ open, onClose, locationId, showToast }) 
         {noRecipesAtAll ? (
           <div style={{ fontSize: 13, color: 'var(--t3)', lineHeight: 1.5 }}>No recipes are linked yet, so menu waste can’t deduct stock. Link recipes in <b>Back Office → Recipes</b>, then record waste here. Raw stock (a dropped keg, a damaged case) can be wasted from <b>Back Office → Wastage</b>.</div>
         ) : !product ? (
-          <div style={{ position: 'relative' }}>
+          <div>
             <label style={lbl}>Menu item</label>
-            <input autoFocus value={q} onChange={e => setQ(e.target.value)} placeholder={loading ? 'Loading menu…' : 'Search the menu…'} style={field} />
-            {matches.length > 0 && (
-              <div style={{ position: 'absolute', zIndex: 5, left: 0, right: 0, background: 'var(--bg2)', border: '1px solid var(--bdr2)', borderRadius: 10, marginTop: 4, overflow: 'hidden', boxShadow: '0 12px 34px rgba(0,0,0,0.4)' }}>
-                {matches.map(p => (
-                  <div key={p.id} onClick={() => { setProduct(p); setQ(''); }} style={{ padding: '12px 14px', cursor: 'pointer', fontSize: 14, color: 'var(--t1)', borderBottom: '1px solid var(--bdr)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-                    <span>{p.label}</span>
+            <input autoFocus value={q} onChange={e => setQ(e.target.value)} placeholder={loading ? 'Loading menu…' : 'Search or browse the menu…'} style={field} />
+            <div style={{ marginTop: 8, maxHeight: '48vh', overflowY: 'auto', border: '1px solid var(--bdr)', borderRadius: 10 }}>
+              {loading ? (
+                <div style={{ padding: '16px', fontSize: 13, color: 'var(--t4)' }}>Loading menu…</div>
+              ) : matches.length === 0 ? (
+                <div style={{ padding: '16px', fontSize: 13, color: 'var(--t4)' }}>{q.trim() ? 'No matching menu item.' : 'No menu items found.'}</div>
+              ) : matches.map(p => (
+                <div key={p.id} onClick={() => { setProduct(p); setQ(''); }} style={{ padding: '12px 14px', cursor: 'pointer', fontSize: 14, color: 'var(--t1)', borderBottom: '1px solid var(--bdr)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                  <span>{p.label}</span>
+                  <span style={{ display: 'flex', gap: 10, alignItems: 'center', flexShrink: 0 }}>
+                    {p.price > 0 && <span style={{ fontSize: 12.5, color: 'var(--t3)', fontVariantNumeric: 'tabular-nums' }}>{money(p.price)}</span>}
                     {!p.linked && <span style={{ fontSize: 10, color: 'var(--t4)', whiteSpace: 'nowrap' }}>no recipe</span>}
-                  </div>
-                ))}
-              </div>
-            )}
-            {!loading && q.trim() && matches.length === 0 && <div style={{ fontSize: 12, color: 'var(--t4)', marginTop: 8 }}>No matching menu item.</div>}
+                  </span>
+                </div>
+              ))}
+            </div>
           </div>
         ) : (
           <>
@@ -173,9 +177,14 @@ export default function PosWasteModal({ open, onClose, locationId, showToast }) 
                     <span style={{ color: 'var(--t1)', fontVariantNumeric: 'tabular-nums' }}>{r.cost == null ? '—' : money(r.cost)}</span>
                   </div>
                 ))}
-                <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid var(--bdr)', marginTop: 6, paddingTop: 6, fontSize: 13.5, fontWeight: 800, color: 'var(--t1)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid var(--bdr)', marginTop: 6, paddingTop: 6, fontSize: 13.5, fontWeight: 700, color: 'var(--t2)' }}>
                   <span>Stock cost</span><span style={{ fontVariantNumeric: 'tabular-nums' }}>{money(impact.totalCost)}</span>
                 </div>
+                {impact.lostSale > 0 && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4, fontSize: 14, fontWeight: 800, color: 'var(--red,#cc5959)' }}>
+                    <span>Lost sale</span><span style={{ fontVariantNumeric: 'tabular-nums' }}>{money(impact.lostSale)}</span>
+                  </div>
+                )}
               </div>
             )}
 

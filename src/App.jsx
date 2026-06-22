@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.594', date: '23 Jun 2026', label: 'POS waste — lost-sale value + bigger, browsable picker',
+    changes: [
+      'Recording waste now also captures the lost sale (the revenue you forgo) alongside the stock cost — shown before you confirm and recorded against the waste. Back Office → Wastage now totals waste at cost AND lost sales.',
+      'The Record waste window is larger with a scrollable, browsable menu list (and each item’s price) so you can find things without the results being cut off.',
+    ],
+  },
+  {
     version: '5.5.593', date: '23 Jun 2026', label: 'POS waste — finds every selling item + shows the stock it costs',
     changes: [
       'Record waste now finds every selling item (including sold-alone extras and each size), not just some — search the menu and pick what was wasted.',

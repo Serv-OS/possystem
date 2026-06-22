@@ -42,6 +42,7 @@ export default function Wastage() {
     return items.filter(i => !i.archivedAt && i.name.toLowerCase().includes(s)).slice(0, 8);
   }, [q, items]);
   const total = useMemo(() => log.reduce((s, w) => s + (w.costValue || 0), 0), [log]);
+  const lostSaleTotal = useMemo(() => log.reduce((s, w) => s + (w.saleValue || 0), 0), [log]);
 
   const pick = (it) => { setRow(r => ({ ...r, item: it, unit: it.baseUnit })); setQ(''); };
   const submit = async () => {
@@ -96,13 +97,13 @@ export default function Wastage() {
       {/* Log */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
         <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)' }}>Last 30 days</div>
-        <div style={{ fontSize: 14, color: 'var(--t1)' }}>Waste value: <b style={{ color: 'var(--red, #ef4444)' }}>{money(total)}</b></div>
+        <div style={{ fontSize: 14, color: 'var(--t1)' }}>Waste at cost: <b style={{ color: 'var(--red, #ef4444)' }}>{money(total)}</b>{lostSaleTotal > 0 && <span> · lost sales: <b style={{ color: 'var(--red, #ef4444)' }}>{money(lostSaleTotal)}</b></span>}</div>
       </div>
       {loading && <div style={{ fontSize: 12, color: 'var(--t3)' }}>Loading…</div>}
       {!loading && log.length === 0 && <div style={{ fontSize: 12, color: 'var(--t3)' }}>No waste logged yet.</div>}
       {log.length > 0 && (
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
-          <thead><tr style={{ color: 'var(--t3)', textAlign: 'left' }}>{['Date', 'Item', 'Qty', 'Reason', 'Value', 'Note'].map(h => <th key={h} style={{ padding: '6px 8px', borderBottom: '1px solid var(--bdr)', fontWeight: 600 }}>{h}</th>)}</tr></thead>
+          <thead><tr style={{ color: 'var(--t3)', textAlign: 'left' }}>{['Date', 'Item', 'Qty', 'Reason', 'Cost', 'Lost sale', 'Note'].map(h => <th key={h} style={{ padding: '6px 8px', borderBottom: '1px solid var(--bdr)', fontWeight: 600 }}>{h}</th>)}</tr></thead>
           <tbody>{log.map(w => (
             <tr key={w.id} style={{ color: 'var(--t1)' }}>
               <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)', color: 'var(--t3)' }}>{new Date(w.occurredAt).toLocaleString()}</td>
@@ -110,6 +111,7 @@ export default function Wastage() {
               <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)' }}>{w.qty} {w.unit}</td>
               <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)', color: 'var(--t3)' }}>{w.reason}</td>
               <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)' }}>{w.costValue == null ? '—' : money(w.costValue)}</td>
+              <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)', color: 'var(--t3)' }}>{w.saleValue == null ? '—' : money(w.saleValue)}</td>
               <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)', color: 'var(--t3)' }}>{w.note || ''}</td>
             </tr>
           ))}</tbody>
