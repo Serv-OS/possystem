@@ -182,6 +182,39 @@ export const recomputeMadeItemCost = async (outputItemId, locationId = null) => 
   return { ok: true, cost };
 };
 
+/**
+ * Build the context for SALE depletion: the costing ctx plus a menuRecipes map
+ * (menu_item_id → { lines, portion, wastagePct }) so a sold dish can be exploded
+ * into the stock items it consumes. Used by stock/deplete.js.
+ */
+export const buildDepletionCtx = async (locationId = null) => {
+  const base = await buildCostingCtx(locationId);
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { ...base, menuRecipes: {} };
+  const [{ data: links }, { data: recs }, { data: lines }] = await Promise.all([
+    supabase.from('menu_item_recipes').select('menu_item_id, recipe_id, portion').eq('location_id', locationId),
+    supabase.from('recipes').select('id, wastage_pct').eq('location_id', locationId).is('archived_at', null),
+    supabase.from('recipe_lines').select('recipe_id, component_item_id, qty, unit, usable_pct').eq('location_id', locationId).order('sort_order'),
+  ]);
+  const wastageByRecipe = {};
+  (recs || []).forEach((r) => { wastageByRecipe[r.id] = Number(r.wastage_pct) || 0; });
+  const linesByRecipe = {};
+  (lines || []).forEach((l) => {
+    (linesByRecipe[l.recipe_id] ??= []).push({
+      componentItemId: l.component_item_id, qty: Number(l.qty), unit: l.unit,
+      usablePct: l.usable_pct == null ? 100 : Number(l.usable_pct),
+    });
+  });
+  const menuRecipes = {};
+  (links || []).forEach((k) => {
+    menuRecipes[String(k.menu_item_id)] = {
+      lines: linesByRecipe[k.recipe_id] || [], portion: Number(k.portion) || 1,
+      wastagePct: wastageByRecipe[k.recipe_id] || 0,
+    };
+  });
+  return { ...base, menuRecipes };
+};
+
 /** Cost a recipe given its lines + an output descriptor. Pure-engine wrapper for the UI. */
 export const costRecipeWith = (recipe, ctx) => {
   const outputItem = recipe.outputItemId

@@ -85,6 +85,16 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.565', date: '22 Jun 2026', label: 'Stock & Production — slice 3b: sales now deplete recipe ingredients (theoretical COGS)',
+    changes: [
+      'When a check is paid, each dish with a recipe now depletes its ingredients from the stock ledger — so on-hand and stock value move with real sales, and the movement history shows a “Sale” line per ingredient.',
+      'Refunds reverse it: refunded items post a “Return” movement back into stock.',
+      'Safe by design — fire-and-forget and idempotent (a sale only ever depletes once, even on retry), and a menu item with no recipe yet simply does nothing. No effect on items you haven’t recipe-linked.',
+      'This is the basis for theoretical-vs-actual variance (“the gap”): theoretical usage from sales × recipes now lands in the same ledger your physical counts reconcile against.',
+      'Note: counter/table/bar sales deplete now; kiosk & online depletion follows via a server-side path.',
+    ],
+  },
+  {
     version: '5.5.564', date: '22 Jun 2026', label: 'Stock & Production — slice 3a: recipes, sub-recipes & live recipe costing / GP',
     changes: [
       'NEW: Produce → Recipes. Build a recipe by searching your stock items, set quantities, units and usable % (trim/yield loss), and see the cost roll up live.',

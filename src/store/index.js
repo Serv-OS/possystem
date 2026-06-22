@@ -5,6 +5,7 @@ import { resolveServiceCharge } from '../lib/serviceCharge';
 import { upsertMenuItem, upsertFloorTable, deleteFloorTable, insertKDSTicket, insertClosedCheck, toggle86DB, getNextOrderRefLocal, updateClosedCheckRefunds, upsertStockLevel, deleteStockLevel, decrementStockRPC, restoreStockRPC } from '../lib/db';
 import { printService } from '../lib/printer';
 import { hubrisePushStock, isHubriseConnected, hubrisePushStatus, isHubriseAutoReceipt } from '../lib/hubrise';
+import { depleteForSale, reverseForSale } from '../lib/stock/deplete';
 
 // ── Payment-intent normaliser ────────────────────────────────────────────────
 // v5.5.323: a check can have MULTIPLE card PaymentIntents — one per card portion
@@ -3766,6 +3767,7 @@ export const useStore = create((set, get) => ({
     };
     set(s => ({ closedChecks: [record, ...s.closedChecks] }));
     insertClosedCheck(record);
+    depleteForSale(record);   // v5.5.565: deplete recipe ingredients from the stock ledger (theoretical COGS); fire-and-forget no-op if no recipe
     if (paymentInfo.promoRedemption) get().redeemPromoCode?.(paymentInfo.promoRedemption, record, session.customer);
     // v5.5.163: Challenge 21 — increment alcohol counter; fire prompt at threshold.
     get().triggerChallenge21Check?.(record);
@@ -3819,6 +3821,7 @@ export const useStore = create((set, get) => ({
     };
     set(s => ({ closedChecks: [fullRecord, ...s.closedChecks] }));
     insertClosedCheck(fullRecord).catch(()=>{});
+    depleteForSale(fullRecord);   // v5.5.565: recipe → stock ledger depletion (fire-and-forget)
     // v5.5.163: Challenge 21 — alcohol counter + prompt
     get().triggerChallenge21Check?.(fullRecord);
     // v4.6.30: cash drawer auto-fire on cash payment
@@ -3912,6 +3915,7 @@ export const useStore = create((set, get) => ({
       });
     }
     insertClosedCheck(record);
+    depleteForSale(record);   // v5.5.565: recipe → stock ledger depletion (fire-and-forget)
     if (paymentInfo.promoRedemption) get().redeemPromoCode?.(paymentInfo.promoRedemption, record, customer);
     // v5.5.163: Challenge 21 — alcohol counter + prompt
     get().triggerChallenge21Check?.(record);
@@ -3956,6 +3960,9 @@ export const useStore = create((set, get) => ({
     // the local refund mutation already happened so UX stays responsive.
     // The edge function is idempotent (refund:{original_key}) — safe to retry.
     const check = get().closedChecks.find(c => c.id === checkId);
+    // v5.5.565: reverse recipe-ingredient depletion for refunded items (RETURN
+    // movements). Keyed by the new refund id so repeated partial refunds each post.
+    reverseForSale(check, refundItems, nextRefunds?.[nextRefunds.length - 1]?.id);
     // v5.5.311: gift-reverse-redeem restores the FULL original gift redemption.
     // Only run it on a FULL refund — on a partial refund it would credit the
     // whole gift balance back regardless of the (smaller) refund amount, badly
