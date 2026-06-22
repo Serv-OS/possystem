@@ -82,6 +82,7 @@ Deno.serve(async (req) => {
   const { data: vs } = await opsAdmin.from('wf_venue_settings').select('org_id, currency, settings').eq('location_id', ops).maybeSingle();
   const settings = (vs?.settings && typeof vs.settings === 'object') ? vs.settings : {};
   const cogsPct = Number(settings.cogs_pct ?? 0);
+  const cogsBasis = String(settings.cogs_basis || 'estimate'); // 'estimate' (%) | 'recipe' (actual from stock ledger)
   const overhead = Number(settings.daily_overhead ?? 0);
   const currency = vs?.currency || 'GBP';
   const { data: ploc } = await platformAdmin.from('locations').select('timezone').or(`ops_location_id.eq.${ops},id.eq.${ops}`).maybeSingle();
@@ -100,6 +101,7 @@ Deno.serve(async (req) => {
     const org = await resolveOrg();
     if (!org) return json({ error: 'could not resolve org for this location' }, 400);
     const next = { ...settings, cogs_pct: Math.max(0, Number(body.cogs_pct) || 0), daily_overhead: Math.max(0, Number(body.daily_overhead) || 0) };
+    if (body.cogs_basis === 'recipe' || body.cogs_basis === 'estimate') next.cogs_basis = body.cogs_basis;
     const { error } = await opsAdmin.from('wf_venue_settings').upsert({
       location_id: ops, org_id: org, settings: next, updated_at: new Date().toISOString(),
     }, { onConflict: 'location_id' });
@@ -148,6 +150,11 @@ Deno.serve(async (req) => {
   const { data: ts } = await opsAdmin.from('wf_timesheets').select('clock_in, pay_amount, status').eq('location_id', ops).gte('clock_in', tsStart.toISOString()).lte('clock_in', tsEnd.toISOString()).limit(20000);
   for (const t of ts ?? []) { if (!['approved', 'paid'].includes(t.status)) continue; const k = ymd(new Date(t.clock_in), tz); labAct[k] = (labAct[k] || 0) + (Number(t.pay_amount) || 0); }
 
+  // actual recipe COGS from the stock ledger: sum of SALE_DEPLETION value per venue-local day.
+  const recipeCogs: Record<string, number> = {};
+  const { data: mv } = await opsAdmin.from('stock_movements').select('value_delta, occurred_at').eq('location_id', ops).eq('movement_type', 'SALE_DEPLETION').gte('occurred_at', tsStart.toISOString()).lte('occurred_at', tsEnd.toISOString()).limit(50000);
+  for (const m of mv ?? []) { const k = ymd(new Date(m.occurred_at), tz); recipeCogs[k] = (recipeCogs[k] || 0) + Math.abs(Number(m.value_delta) || 0); }
+
   const rows = days.map((d) => {
     const forecast = fc[d] ?? 0;
     const s = sales[d] ?? { net: 0, vat: 0 };
@@ -156,7 +163,10 @@ Deno.serve(async (req) => {
     const grossSales = actualSales + vat; // gross takings, inc VAT
     const lastYear = lySales[shift364(d)]?.net ?? 0;
     const lt = labTheo[d] ?? 0, la = labAct[d] ?? 0;
-    const cogsT = forecast * cogsPct / 100, cogsA = actualSales * cogsPct / 100;
+    const recipeC = recipeCogs[d] || 0;                       // actual COGS from the stock ledger
+    const cogsEst = actualSales * cogsPct / 100;              // flat-% estimate (full menu coverage)
+    const cogsT = forecast * cogsPct / 100;                   // theoretical always on the % basis
+    const cogsA = cogsBasis === 'recipe' ? recipeC : cogsEst; // actual basis: recipe ledger or % estimate
     const r2 = (n: number) => Math.round(n * 100) / 100;
     return {
       date: d,
@@ -167,6 +177,8 @@ Deno.serve(async (req) => {
       labour_pct_theo: forecast > 0 ? r2(lt / forecast * 100) : null,
       labour_pct_actual: actualSales > 0 ? r2(la / actualSales * 100) : null,
       cogs_theo: r2(cogsT), cogs_actual: r2(cogsA),
+      cogs_recipe: r2(recipeC), cogs_estimate: r2(cogsEst),
+      cogs_pct_actual: actualSales > 0 ? r2(cogsA / actualSales * 100) : null,
       overhead: r2(overhead),
       gp_theo: r2(forecast - cogsT), gp_actual: r2(actualSales - cogsA),
       op_theo: r2(forecast - cogsT - lt - overhead),
@@ -178,9 +190,10 @@ Deno.serve(async (req) => {
     forecast: sum('forecast'), actual_sales: sum('actual_sales'), last_year: sum('last_year'),
     vat: sum('vat'), gross_sales: sum('gross_sales'),
     labour_theo: sum('labour_theo'), labour_actual: sum('labour_actual'),
-    cogs_theo: sum('cogs_theo'), cogs_actual: sum('cogs_actual'), overhead: sum('overhead'),
+    cogs_theo: sum('cogs_theo'), cogs_actual: sum('cogs_actual'),
+    cogs_recipe: sum('cogs_recipe'), cogs_estimate: sum('cogs_estimate'), overhead: sum('overhead'),
     gp_theo: sum('gp_theo'), gp_actual: sum('gp_actual'), op_theo: sum('op_theo'), op_actual: sum('op_actual'),
     labour_pct_actual: sum('actual_sales') > 0 ? Math.round(sum('labour_actual') / sum('actual_sales') * 10000) / 100 : null,
   };
-  return json({ ok: true, rows, totals, settings: { cogs_pct: cogsPct, daily_overhead: overhead, currency }, tz });
+  return json({ ok: true, rows, totals, settings: { cogs_pct: cogsPct, cogs_basis: cogsBasis, daily_overhead: overhead, currency }, tz });
 });

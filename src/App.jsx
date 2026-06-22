@@ -85,6 +85,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.584', date: '23 Jun 2026', label: 'Daily Trading — real recipe COGS in the P&L',
+    changes: [
+      'The Daily Trading P&L can now use your actual recipe cost (from the stock ledger) for COGS instead of a flat % — pick "COGS basis" → Recipe cost once your recipes are linked, for a true gross profit.',
+      'Even on the estimate basis, the P&L now shows the real "recipe cost so far" alongside it, so you can see your true COGS building up and know when to switch.',
+      'Recipe COGS is the sum of every ingredient depleted by sales (counter, bar, table, kiosk and online) for the period, valued at moving-average cost.',
+    ],
+  },
+  {
     version: '5.5.583', date: '23 Jun 2026', label: 'Stock — kiosk & online sales now deplete stock too',
     changes: [
       'Kiosk and online orders now deplete their recipe ingredients from the stock ledger, just like counter/bar/table sales — so stock and theoretical COGS are correct on every channel.',

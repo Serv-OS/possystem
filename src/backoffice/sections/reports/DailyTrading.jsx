@@ -52,6 +52,7 @@ export default function DailyTrading({ rangeFrom, rangeTo, fmt }) {
   const [err, setErr] = useState('');
   const [cogs, setCogs] = useState('');
   const [ovh, setOvh] = useState('');
+  const [basis, setBasis] = useState('estimate'); // 'estimate' (%) | 'recipe' (actual from stock)
 
   const from = useMemo(() => toYmd(rangeFrom), [rangeFrom]);
   const to = useMemo(() => toYmd(rangeTo), [rangeTo]);
@@ -72,7 +73,7 @@ export default function DailyTrading({ rangeFrom, rangeTo, fmt }) {
       const { data: d, error } = await supabase.functions.invoke('trading-report', { body: { action: 'get', ops_location_id: id, from, to } });
       if (error) { let b = null; try { b = await error.context?.json?.(); } catch {} throw new Error(b?.error || error.message); }
       if (d?.error) throw new Error(d.error);
-      setData(d); setCogs(String(d.settings?.cogs_pct ?? '')); setOvh(String(d.settings?.daily_overhead ?? ''));
+      setData(d); setCogs(String(d.settings?.cogs_pct ?? '')); setOvh(String(d.settings?.daily_overhead ?? '')); setBasis(d.settings?.cogs_basis || 'estimate');
     } catch (e) { setErr(e.message || 'Could not load'); }
     finally { setLoading(false); }
   };
@@ -80,7 +81,7 @@ export default function DailyTrading({ rangeFrom, rangeTo, fmt }) {
   useEffect(() => { load(); }, [from, to]);
 
   const saveSettings = async () => {
-    try { await call('save_settings', { cogs_pct: Number(cogs) || 0, daily_overhead: Number(ovh) || 0 }); await load(); }
+    try { await call('save_settings', { cogs_pct: Number(cogs) || 0, daily_overhead: Number(ovh) || 0, cogs_basis: basis }); await load(); }
     catch (e) { setErr(e.message); }
   };
   const setForecast = async (date, amount) => {
@@ -104,8 +105,13 @@ export default function DailyTrading({ rangeFrom, rangeTo, fmt }) {
           <input style={S.inp} value={cogs} onChange={e => setCogs(e.target.value)} inputMode="decimal" placeholder="e.g. 28" /></div>
         <div style={S.fld}><span style={S.lab}>Daily overhead (£)</span>
           <input style={S.inp} value={ovh} onChange={e => setOvh(e.target.value)} inputMode="decimal" placeholder="rent+utilities/day" /></div>
+        <div style={S.fld}><span style={S.lab}>COGS basis</span>
+          <select style={{ ...S.inp, width: 200 }} value={basis} onChange={e => setBasis(e.target.value)}>
+            <option value="estimate">Estimate ({cogs || '0'}% of sales)</option>
+            <option value="recipe">Recipe cost (from stock)</option>
+          </select></div>
         <button style={S.btn} onClick={saveSettings}>Save costs</button>
-        <div style={{ ...S.note, marginTop: 0, flexBasis: '100%' }}>Sales &amp; labour are live from the system. COGS and overhead are your estimates — set them here and the P&amp;L applies them to forecast and actuals.</div>
+        <div style={{ ...S.note, marginTop: 0, flexBasis: '100%' }}>Sales &amp; labour are live from the system. <b>Estimate</b> applies your flat COGS % to sales. <b>Recipe cost</b> uses the actual cost of every ingredient depleted by sales from the stock ledger — switch to it once your recipes are linked for a true gross profit.</div>
       </div>
 
       {/* P&L ladder — full breakdown incl. VAT (this period, actual) */}
@@ -114,7 +120,13 @@ export default function DailyTrading({ rangeFrom, rangeTo, fmt }) {
         <div style={S.lRow}><span>Gross takings <span style={{ color: 'var(--t4)' }}>(inc VAT)</span></span><span style={S.mono}>{money(totals.gross_sales)}</span></div>
         <div style={S.lRow}><span style={S.lLess}>less VAT <span style={S.lHint}>— collected for HMRC, not income</span></span><span style={{ ...S.mono, color: 'var(--red)' }}>−{money(totals.vat)}</span></div>
         <div style={{ ...S.lRow, ...S.lSub }}><span>Net sales (ex-VAT)</span><span style={S.mono}>{money(totals.actual_sales)}</span></div>
-        <div style={S.lRow}><span style={S.lLess}>less COGS{totals.actual_sales > 0 ? ` (${Math.round(totals.cogs_actual / totals.actual_sales * 100)}%)` : ''}</span><span style={{ ...S.mono, color: 'var(--red)' }}>−{money(totals.cogs_actual)}</span></div>
+        <div style={S.lRow}><span style={S.lLess}>less COGS <span style={S.lHint}>— {basis === 'recipe' ? 'recipe cost' : 'estimate'}{totals.actual_sales > 0 ? ` ${Math.round(totals.cogs_actual / totals.actual_sales * 100)}%` : ''}</span></span><span style={{ ...S.mono, color: 'var(--red)' }}>−{money(totals.cogs_actual)}</span></div>
+        {basis === 'estimate' && totals.cogs_recipe > 0 && (
+          <div style={S.lRow}><span style={{ ...S.lLess, ...S.lHint }}>recipe cost so far (from stock)</span><span style={{ ...S.mono, color: 'var(--t3)' }}>{money(totals.cogs_recipe)}</span></div>
+        )}
+        {basis === 'recipe' && (
+          <div style={S.lRow}><span style={{ ...S.lLess, ...S.lHint }}>vs estimate ({cogs || '0'}%)</span><span style={{ ...S.mono, color: 'var(--t3)' }}>{money(totals.cogs_estimate)}</span></div>
+        )}
         <div style={{ ...S.lRow, ...S.lSub }}><span>Gross profit</span><span style={S.mono}>{money(totals.gp_actual)}</span></div>
         <div style={S.lRow}><span style={S.lLess}>less Labour</span><span style={{ ...S.mono, color: 'var(--red)' }}>−{money(totals.labour_actual)}</span></div>
         <div style={S.lRow}><span style={S.lLess}>less Overhead</span><span style={{ ...S.mono, color: 'var(--red)' }}>−{money(totals.overhead)}</span></div>
@@ -176,7 +188,7 @@ export default function DailyTrading({ rangeFrom, rangeTo, fmt }) {
           </tr></tfoot>
         </table>
       </div>
-      <div style={S.note}>VAT is shown separately because it’s collected for HMRC — it’s never profit. Net sales (ex-VAT) are the P&amp;L basis. Type a forecast (net) and press Enter, or tap “LY” for the same weekday last year. Labour shows actual / theoretical (rota). Operating profit = net sales − COGS − labour − overhead.</div>
+      <div style={S.note}>VAT is shown separately because it’s collected for HMRC — it’s never profit. Net sales (ex-VAT) are the P&amp;L basis. Type a forecast (net) and press Enter, or tap “LY” for the same weekday last year. Labour shows actual / theoretical (rota). Operating profit = net sales − COGS − labour − overhead. COGS basis is currently <b>{basis === 'recipe' ? 'recipe cost (actual ingredient cost from the stock ledger)' : `estimate (${cogs || '0'}% of sales)`}</b> — change it above.</div>
     </div>
   );
 }
