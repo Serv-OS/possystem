@@ -85,6 +85,16 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.571', date: '23 Jun 2026', label: 'Stock reports — valuation, recipe GP, movements & “the gap”',
+    changes: [
+      'NEW: Inventory → Stock reports. Four views, all exportable to CSV:',
+      'Valuation — every item’s on-hand × cost, ranked by value, with a total.',
+      'Recipe GP — plate cost, food-cost %, GP £ and GP % per dish, flagged red below target.',
+      'Movements — the full stock ledger over any date range (deliveries, sales, production, counts, waste).',
+      'The Gap — theoretical usage vs your physical counts = unexplained £ loss, ranked by biggest loser (the number Nory is built around).',
+    ],
+  },
+  {
     version: '5.5.570', date: '23 Jun 2026', label: 'Stock — guided Overview dashboard',
     changes: [
       'NEW: Inventory → Overview. One page that shows your live stock value, what needs a price, recipe coverage and suppliers — plus a 5-step “set up your stock” checklist that ticks off as you go and jumps you to the right screen.',

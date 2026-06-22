@@ -310,6 +310,26 @@ export const fetchRecentMovements = async (locationId = null, limit = 15) => {
   };
 };
 
+/** All movements in a date range (for stock reports / the gap). */
+export const fetchMovementsRange = async (fromIso, toIso, locationId = null, limit = 5000) => {
+  if (isMock || !supabase) return { data: [], error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: [], error: null };
+  let q = supabase.from('stock_movements')
+    .select('id, inventory_item_id, qty_base, value_delta, movement_type, occurred_at')
+    .eq('location_id', locationId);
+  if (fromIso) q = q.gte('occurred_at', fromIso);
+  if (toIso) q = q.lte('occurred_at', toIso);
+  const { data, error } = await q.order('occurred_at', { ascending: false }).limit(limit);
+  return {
+    data: (data || []).map(r => ({
+      id: r.id, inventoryItemId: r.inventory_item_id, qtyBase: Number(r.qty_base),
+      valueDelta: r.value_delta == null ? null : Number(r.value_delta), movementType: r.movement_type, occurredAt: r.occurred_at,
+    })),
+    error,
+  };
+};
+
 /** Recent movements for one item, newest first (the reconciliation view). */
 export const fetchItemMovements = async (inventoryItemId, locationId = null, limit = 100) => {
   if (isMock || !supabase) return { data: [], error: null };
