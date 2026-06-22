@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.591', date: '23 Jun 2026', label: 'Menu builder — items open on Details',
+    changes: [
+      'Opening a menu item now lands on the Details tab instead of Flow, so editing an item starts where you expect.',
+    ],
+  },
+  {
     version: '5.5.590', date: '23 Jun 2026', label: 'Catering — branded confirmation + confirmation email',
     changes: [
       'The catering order-confirmed screen is now branded (your logo + colours) and shows the full order: every line with options, subtotal, delivery, tip, promo and total, plus collection/delivery details.',

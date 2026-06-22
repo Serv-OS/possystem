@@ -1623,7 +1623,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
   const rootCats = allCategories.filter(c => !c.parentId);
   const subCats  = allCategories.filter(c =>  c.parentId);
 
-  const [sec, setSec]             = useState(isSub ? 'details' : 'flow');
+  const [sec, setSec]             = useState('details');  // always open on Details (was 'flow' for products)
   const [modSearch, setModSearch] = useState('');
   const [instSearch, setInstSearch] = useState('');
   const [dragModIdx, setDragModIdx] = useState(null);
