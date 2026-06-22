@@ -85,6 +85,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.577', date: '23 Jun 2026', label: 'Stock — buy in packs & sell by the glass (units everywhere)',
+    changes: [
+      'Supplier price is now “Buy 1 Keg for £152” / “1 Case for £40” — pick the unit you actually buy in (from the Units tab); cost-per-unit is worked out for you.',
+      'Recipe ingredients can be measured in your units too — a wine recipe can use “1 × 175ml glass” or “1 Bottle”, a draught uses “0.5 pint”. The cost resolves automatically.',
+      'So the whole loop — buy, count, sell, cost — runs in the friendly units you defined, with litres/ml only behind the scenes.',
+    ],
+  },
+  {
     version: '5.5.576', date: '23 Jun 2026', label: 'Stock — Add unit confirmation + clearer errors',
     changes: [
       'Adding a unit now shows a clear “Unit added” confirmation (and surfaces any error instead of failing silently).',

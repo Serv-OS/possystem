@@ -21,8 +21,6 @@ import { ALLERGENS } from '../../data/seed';
 import { getActiveLocationSync, getLocationId } from '../../lib/supabase';
 import { money, currencySymbol } from '../../lib/currency';
 import { UNITS, DIMENSIONS } from '../../lib/stock/units';
-import { packBaseUnitCost } from '../../lib/stock/costing';
-import { canConvert } from '../../lib/stock/conversion';
 import {
   fetchInventoryItems, upsertInventoryItem, setInventoryItemArchived,
   fetchSuppliers, upsertSupplier,
@@ -32,7 +30,7 @@ import {
   setInventoryOnHand, fetchItemMovements, movementLabel,
 } from '../../lib/stock/data';
 import { fetchParLevels, upsertParLevel } from '../../lib/stock/counts';
-import { toBase, unitOptions, formatToken } from '../../lib/stock/uom';
+import { toBase, unitOptions, formatToken, unitLabel } from '../../lib/stock/uom';
 
 const KINDS = [
   { id: 'PURCHASED', label: 'Purchased', desc: 'Bought from a supplier — cost comes from invoices/packs.' },
@@ -580,30 +578,47 @@ function SuppliersTab({ draft, suppliers, locId, onChanged, showToast }) {
   const [newSupplier, setNewSupplier] = useState('');
   if (!draft.id) return <NeedSaveFirst />;
 
-  const bridges = (draft.conversions || []).map(c => ({ fromQty: c.fromQty, fromUnit: c.fromUnit, toQty: c.toQty, toUnit: c.toUnit }));
-  const preview = (r) => {
-    try {
-      const { baseUnitCost } = packBaseUnitCost({
-        packPrice: Number(r.packPrice), packQty: Number(r.packQty), innerQty: Number(r.innerQty),
-        innerUnit: r.innerUnit, baseUnit: draft.baseUnit, itemConversions: bridges,
-      });
-      return baseUnitCost;
-    } catch { return null; }
+  const uomItem = {
+    baseUnit: draft.baseUnit,
+    itemConversions: (draft.conversions || []).map(c => ({ fromQty: c.fromQty, fromUnit: c.fromUnit, toQty: c.toQty, toUnit: c.toUnit })),
+    formats: (draft.packaging || []).map(f => ({ id: f.id, name: f.name, qtyInBase: f.qtyInBase })),
   };
-  const bridgeMissing = (r) => r.innerUnit && draft.baseUnit && r.innerUnit !== draft.baseUnit && !canConvert(r.innerUnit, draft.baseUnit, { itemConversions: bridges });
+  const buyOpts = unitOptions(uomItem);
+  const defaultBuyToken = (() => { const pd = (draft.packaging || []).find(f => f.isPurchaseDefault) || (draft.packaging || [])[0]; return pd ? formatToken(pd.id) : draft.baseUnit; })();
+  const contentBase = (r) => { try { return toBase(Number(r.buyQty) || 0, r.buyUnit, uomItem); } catch { return null; } };
+  const preview = (r) => { const c = contentBase(r); return (c && c > 0) ? Number(r.packPrice) / c : null; };
+  const unitBad = (r) => contentBase(r) == null;
 
   const startAdd = () => {
-    setRow({ inventoryItemId: draft.id, supplierId: suppliers[0]?.id || '', supplierSku: '', packDescription: '', packQty: 1, innerQty: '', innerUnit: draft.baseUnit, packPrice: '', isPreferred: (draft.supplierProducts || []).length === 0 });
+    setRow({ inventoryItemId: draft.id, supplierId: suppliers[0]?.id || '', supplierSku: '', buyQty: 1, buyUnit: defaultBuyToken, packPrice: '', isPreferred: (draft.supplierProducts || []).length === 0 });
     setAdding(true);
   };
   const saveRow = async () => {
     if (!row.supplierId) { showToast?.('Pick or add a supplier first', 'error'); return; }
-    if (!(Number(row.packPrice) >= 0)) { showToast?.('Enter a pack price', 'error'); return; }
-    const { error } = await upsertSupplierProduct(row, locId);
+    if (!(Number(row.packPrice) >= 0)) { showToast?.('Enter a price', 'error'); return; }
+    const content = contentBase(row);
+    if (!(content > 0)) { showToast?.('Pick a valid buy unit', 'error'); return; }
+    const sp = {
+      id: row.id, inventoryItemId: draft.id, supplierId: row.supplierId, supplierSku: row.supplierSku || '',
+      packQty: 1, innerQty: content, innerUnit: draft.baseUnit, packPrice: Number(row.packPrice),
+      packDescription: `${Number(row.buyQty) > 1 ? Number(row.buyQty) + ' ' : ''}${unitLabel(row.buyUnit, uomItem)}`,
+      isPreferred: row.isPreferred,
+    };
+    const { error } = await upsertSupplierProduct(sp, locId);
     if (error) { showToast?.(error.message, 'error'); return; }
     setAdding(false); setRow(null); onChanged();
   };
-  const editRow = (sp) => { setRow({ ...sp, inventoryItemId: draft.id }); setAdding(true); };
+  const editRow = (sp) => {
+    // Show it back in a friendly unit: a pack whose size divides the stored content evenly, else the base unit.
+    let buyUnit = draft.baseUnit, buyQty = sp.innerQty;
+    for (const f of [...(draft.packaging || [])].sort((a, b) => b.qtyInBase - a.qtyInBase)) {
+      if (f.qtyInBase > 0 && Math.abs((sp.innerQty / f.qtyInBase) - Math.round(sp.innerQty / f.qtyInBase)) < 1e-9) {
+        buyUnit = formatToken(f.id); buyQty = Math.round((sp.innerQty / f.qtyInBase) * 1000) / 1000; break;
+      }
+    }
+    setRow({ id: sp.id, inventoryItemId: draft.id, supplierId: sp.supplierId, supplierSku: sp.supplierSku || '', buyQty, buyUnit, packPrice: sp.packPrice, isPreferred: sp.isPreferred });
+    setAdding(true);
+  };
   const removeRow = async (sp) => { await deleteSupplierProduct(sp.id, draft.id, locId); onChanged(); };
   const setPreferred = async (sp) => { await upsertSupplierProduct({ ...sp, inventoryItemId: draft.id, isPreferred: true }, locId); onChanged(); };
   const addSupplier = async () => {
@@ -619,9 +634,9 @@ function SuppliersTab({ draft, suppliers, locId, onChanged, showToast }) {
   return (
     <div style={{ maxWidth: 760 }}>
       <p style={{ fontSize: 13, color: 'var(--t2)', marginTop: 0 }}>
-        Just enter <b>what you buy and what it costs</b> — e.g. a Heineken keg is <b>54 l for £152</b>. The cost
-        per {draft.baseUnit} is worked out for you ({currencySymbol()}152 ÷ 54 = {currencySymbol()}2.81/l). The <b>preferred</b> line
-        sets this item's cost. Buy it in the same unit you set as the stock unit and there's nothing else to think about.
+        Enter what you buy it in (a unit from the <b>Units</b> tab) and what it costs — e.g. <b>1 Keg for £152</b> or
+        <b> 1 Case for £40</b>. The cost per {draft.baseUnit} is worked out for you and the <b>preferred</b> line sets this
+        item's cost. {(draft.packaging || []).length === 0 && <span style={{ color: 'var(--red, #ef4444)' }}>Tip: add your buy units on the Units tab first.</span>}
       </p>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 16 }}>
@@ -631,7 +646,7 @@ function SuppliersTab({ draft, suppliers, locId, onChanged, showToast }) {
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 13, color: 'var(--t1)', fontWeight: 600 }}>{supName(sp.supplierId)} {sp.supplierSku ? <span style={{ color: 'var(--t3)', fontWeight: 400 }}>· {sp.supplierSku}</span> : null}</div>
               <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>
-{sp.innerQty} {sp.innerUnit} for {money(sp.packPrice)} → <b style={{ color: 'var(--t1)' }}>{fmtUnitCost(sp.baseUnitCost)}/{draft.baseUnit}</b>
+{sp.packDescription || `${sp.innerQty} ${sp.innerUnit}`} for {money(sp.packPrice)} → <b style={{ color: 'var(--t1)' }}>{fmtUnitCost(sp.baseUnitCost)}/{draft.baseUnit}</b>
               </div>
             </div>
             {sp.isPreferred
@@ -659,19 +674,21 @@ function SuppliersTab({ draft, suppliers, locId, onChanged, showToast }) {
           </Field>
           <Field label="How you buy it">
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 13, color: 'var(--t3)' }}>1 delivery unit =</span>
-              <input type="number" min="0" step="any" value={row.innerQty} onChange={e => setRow(r => ({ ...r, innerQty: e.target.value }))} placeholder="54" style={{ ...fieldStyle, width: 90 }} />
-              <UnitSelect value={row.innerUnit} onChange={v => setRow(r => ({ ...r, innerUnit: v }))} style={{ width: 140 }} />
+              <span style={{ fontSize: 13, color: 'var(--t3) ' }}>Buy</span>
+              <input type="number" min="0" step="any" value={row.buyQty} onChange={e => setRow(r => ({ ...r, buyQty: e.target.value }))} placeholder="1" style={{ ...fieldStyle, width: 70 }} />
+              <select value={row.buyUnit} onChange={e => setRow(r => ({ ...r, buyUnit: e.target.value }))} style={{ ...fieldStyle, width: 170 }}>
+                {buyOpts.map(o => <option key={o.token} value={o.token}>{o.label}</option>)}
+              </select>
               <span style={{ fontSize: 13, color: 'var(--t3)' }}>for</span>
               <span style={{ fontSize: 13, color: 'var(--t2)' }}>{currencySymbol()}</span>
               <input type="number" min="0" step="any" value={row.packPrice} onChange={e => setRow(r => ({ ...r, packPrice: e.target.value }))} placeholder="152" style={{ ...fieldStyle, width: 100 }} />
             </div>
-            <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 6 }}>e.g. a keg = <b>54 l for £152</b>, or a case = <b>24 each for £40</b>. (Tip: an optional note &amp; SKU can be added later.)</div>
+            <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 6 }}>e.g. <b>1 Keg for £152</b>, or <b>1 Case for £40</b>. Add units on the <b>Units</b> tab.</div>
           </Field>
           <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginTop: 4, flexWrap: 'wrap' }}>
             <div style={{ fontSize: 14, color: 'var(--t1)' }}>
-              Derived unit cost: <b>{bridgeMissing(row) ? '—' : fmtUnitCost(preview(row))}</b> /{draft.baseUnit}
-              {bridgeMissing(row) && <span style={{ color: 'var(--red, #ef4444)', fontSize: 12, marginLeft: 8 }}>Add a {row.innerUnit}→{draft.baseUnit} bridge in Dimension &amp; Measure</span>}
+              Works out at: <b>{unitBad(row) ? '—' : fmtUnitCost(preview(row))}</b> /{draft.baseUnit}
+              {unitBad(row) && <span style={{ color: 'var(--red, #ef4444)', fontSize: 12, marginLeft: 8 }}>can't resolve that unit — check the Units tab</span>}
             </div>
             <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13, color: 'var(--t2)', cursor: 'pointer', marginLeft: 'auto' }}>
               <input type="checkbox" checked={row.isPreferred} onChange={e => setRow(r => ({ ...r, isPreferred: e.target.checked }))} /> Preferred

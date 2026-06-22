@@ -16,8 +16,8 @@ import { useStore } from '../../store';
 import { getActiveLocationSync, getLocationId } from '../../lib/supabase';
 import { money, currencySymbol } from '../../lib/currency';
 import { UNITS, DIMENSIONS } from '../../lib/stock/units';
-import { convert } from '../../lib/stock/conversion';
 import { componentUnitCost, foodCostPct, gpAmount, gpPct } from '../../lib/stock/costing';
+import { toBase, unitOptions } from '../../lib/stock/uom';
 import { fetchInventoryItems } from '../../lib/stock/data';
 import {
   fetchRecipes, upsertRecipe, replaceRecipeLines, setRecipeArchived,
@@ -221,7 +221,7 @@ export default function Recipes() {
                     const comp = ctx.itemsById[l.componentItemId];
                     const noCost = comp && (comp.currentCost == null || !(comp.currentCost > 0)) && comp.kind !== 'MADE';
                     let lc = null, convErr = false;
-                    if (comp) { try { lc = convert(Number(l.qty), l.unit, comp.baseUnit, { itemConversions: comp.itemConversions || [] }) * componentUnitCost(l.componentItemId, ctx); } catch { convErr = true; } }
+                    if (comp) { try { lc = toBase(Number(l.qty), l.unit, comp) * componentUnitCost(l.componentItemId, ctx); } catch { convErr = true; } }
                     return (
                       <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 7, padding: '8px 10px' }}>
                         <div style={{ flex: 1, minWidth: 0 }}>
@@ -232,7 +232,11 @@ export default function Recipes() {
                         </div>
                         <span style={{ fontSize: 12, color: 'var(--t3)' }}>uses</span>
                         <input type="number" min="0" step="any" value={l.qty} onChange={e => updLine(i, 'qty', e.target.value)} placeholder="qty" style={{ ...field, width: 72 }} />
-                        <UnitSelect value={l.unit} onChange={v => updLine(i, 'unit', v)} width={92} />
+                        {comp
+                          ? <select value={l.unit} onChange={e => updLine(i, 'unit', e.target.value)} style={{ ...field, width: 116 }}>
+                              {unitOptions(comp).map(o => <option key={o.token} value={o.token}>{o.label}</option>)}
+                            </select>
+                          : <UnitSelect value={l.unit} onChange={v => updLine(i, 'unit', v)} width={92} />}
                         <span style={{ fontSize: 13, color: 'var(--t3)' }}>=</span>
                         <span style={{ width: 74, textAlign: 'right', fontSize: 13, fontWeight: 600, color: convErr ? 'var(--red, #ef4444)' : 'var(--t1)' }}>{convErr ? 'unit?' : lc == null ? '—' : money(lc)}</span>
                         <button onClick={() => rmLine(i)} style={{ background: 'transparent', border: 0, color: 'var(--t3)', cursor: 'pointer', fontSize: 16 }}>×</button>
