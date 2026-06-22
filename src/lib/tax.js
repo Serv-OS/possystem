@@ -109,6 +109,23 @@ export function netOf(grossPrice, taxRate) {
 }
 
 /**
+ * NET (ex-VAT) purchase price used for costing/COGS.
+ * If the entered price already excludes VAT (the default) it IS the net cost.
+ * If the operator flagged the price as VAT-inclusive (e.g. typed straight off a
+ * gross invoice), strip the rate: net = price ÷ (1 + rate). A null/zero rate or a
+ * non-numeric price returns the input unchanged (null for non-numeric).
+ * `rateDecimal` is the bare fraction (0.2 for 20%), not a rate object.
+ */
+export function purchaseNet(price, includesTax, rateDecimal) {
+  if (price == null || price === '') return null;
+  const p = Number(price);
+  if (!Number.isFinite(p)) return null;
+  if (!includesTax) return p;
+  const r = Number(rateDecimal) || 0;
+  return r > 0 ? p / (1 + r) : p;
+}
+
+/**
  * Format a tax rate for display: "20% VAT" or "8.875% Sales Tax"
  */
 export function formatRateLabel(rate) {

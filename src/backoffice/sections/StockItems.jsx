@@ -20,6 +20,7 @@ import { useStore } from '../../store';
 import { ALLERGENS } from '../../data/seed';
 import { getActiveLocationSync, getLocationId } from '../../lib/supabase';
 import { money, currencySymbol } from '../../lib/currency';
+import { formatRateLabel, purchaseNet } from '../../lib/tax';
 import { UNITS, DIMENSIONS } from '../../lib/stock/units';
 import {
   fetchInventoryItems, upsertInventoryItem, setInventoryItemArchived,
@@ -268,6 +269,7 @@ export default function StockItems() {
 
 // ── General tab ───────────────────────────────────────────────────────────────
 function GeneralTab({ draft, upd, onSave, saving }) {
+  const taxRates = useStore(s => s.taxRates) || [];
   return (
     <div style={{ maxWidth: 640 }}>
       <Field label="Name"><input value={draft.name} onChange={e => upd('name', e.target.value)} style={fieldStyle} placeholder="e.g. Coca-Cola 330ml can" /></Field>
@@ -294,7 +296,14 @@ function GeneralTab({ draft, upd, onSave, saving }) {
         <Field label="Storage location"><input value={draft.storageLocation || ''} onChange={e => upd('storageLocation', e.target.value)} style={fieldStyle} placeholder="e.g. Dry store" /></Field>
         <Field label="Shelf life (days)"><input type="number" min="0" value={draft.shelfLifeDays ?? ''} onChange={e => upd('shelfLifeDays', e.target.value)} style={fieldStyle} /></Field>
         <Field label="SKU / code"><input value={draft.sku || ''} onChange={e => upd('sku', e.target.value)} style={fieldStyle} /></Field>
+        <Field label="Purchase VAT (input tax)">
+          <select value={draft.purchaseTaxRateId || ''} onChange={e => upd('purchaseTaxRateId', e.target.value || null)} style={fieldStyle}>
+            <option value="">No VAT / zero-rated</option>
+            {taxRates.filter(r => r.active !== false).map(r => <option key={r.id} value={r.id}>{formatRateLabel(r)}</option>)}
+          </select>
+        </Field>
       </div>
+      <div style={{ fontSize: 11, color: 'var(--t4)', margin: '-6px 0 14px' }}>The VAT you pay on this item when you buy it (e.g. 20% on alcohol). Cost &amp; GP always use the ex-VAT price; this drives VAT on POs/invoices and your input-VAT reclaim.</div>
 
       <Field label="Tracking">
         <div style={{ display: 'flex', gap: 18 }}>
@@ -579,7 +588,12 @@ function SuppliersTab({ draft, suppliers, locId, onChanged, showToast }) {
   const [adding, setAdding] = useState(false);
   const [row, setRow] = useState(null);
   const [newSupplier, setNewSupplier] = useState('');
+  const taxRates = useStore(s => s.taxRates) || [];
+  const ratesById = useMemo(() => { const m = {}; taxRates.forEach(r => { m[r.id] = r; }); return m; }, [taxRates]);
   if (!draft.id) return <NeedSaveFirst />;
+  // Effective purchase VAT for a row: its override → the item default → none.
+  const rateObjFor = (r) => ratesById[(r && r.purchaseTaxRateId) || draft.purchaseTaxRateId] || null;
+  const rateDecFor = (r) => Number(rateObjFor(r)?.rate || 0);
 
   const uomItem = {
     baseUnit: draft.baseUnit,
@@ -589,11 +603,13 @@ function SuppliersTab({ draft, suppliers, locId, onChanged, showToast }) {
   const buyOpts = unitOptions(uomItem);
   const defaultBuyToken = (() => { const pd = (draft.packaging || []).find(f => f.isPurchaseDefault) || (draft.packaging || [])[0]; return pd ? formatToken(pd.id) : draft.baseUnit; })();
   const contentBase = (r) => { try { return toBase(Number(r.buyQty) || 0, r.buyUnit, uomItem); } catch { return null; } };
-  const preview = (r) => { const c = contentBase(r); return (c && c > 0) ? Number(r.packPrice) / c : null; };
+  // preview is the NET cost per base unit (strip VAT only when the price is inc-VAT).
+  const netPackOf = (r) => purchaseNet(Number(r.packPrice), r.priceIncludesTax, rateDecFor(r));
+  const preview = (r) => { const c = contentBase(r); const net = netPackOf(r); return (c && c > 0 && net != null) ? net / c : null; };
   const unitBad = (r) => contentBase(r) == null;
 
   const startAdd = () => {
-    setRow({ inventoryItemId: draft.id, supplierId: suppliers[0]?.id || '', supplierSku: '', buyQty: 1, buyUnit: defaultBuyToken, packPrice: '', isPreferred: (draft.supplierProducts || []).length === 0 });
+    setRow({ inventoryItemId: draft.id, supplierId: suppliers[0]?.id || '', supplierSku: '', buyQty: 1, buyUnit: defaultBuyToken, packPrice: '', priceIncludesTax: false, purchaseTaxRateId: '', isPreferred: (draft.supplierProducts || []).length === 0 });
     setAdding(true);
   };
   const saveRow = async () => {
@@ -605,6 +621,7 @@ function SuppliersTab({ draft, suppliers, locId, onChanged, showToast }) {
       id: row.id, inventoryItemId: draft.id, supplierId: row.supplierId, supplierSku: row.supplierSku || '',
       packQty: 1, innerQty: content, innerUnit: draft.baseUnit, packPrice: Number(row.packPrice),
       packDescription: `${Number(row.buyQty) > 1 ? Number(row.buyQty) + ' ' : ''}${unitLabel(row.buyUnit, uomItem)}`,
+      purchaseTaxRateId: row.purchaseTaxRateId || null, priceIncludesTax: row.priceIncludesTax === true,
       isPreferred: row.isPreferred,
     };
     const { error } = await upsertSupplierProduct(sp, locId);
@@ -619,7 +636,7 @@ function SuppliersTab({ draft, suppliers, locId, onChanged, showToast }) {
         buyUnit = formatToken(f.id); buyQty = Math.round((sp.innerQty / f.qtyInBase) * 1000) / 1000; break;
       }
     }
-    setRow({ id: sp.id, inventoryItemId: draft.id, supplierId: sp.supplierId, supplierSku: sp.supplierSku || '', buyQty, buyUnit, packPrice: sp.packPrice, isPreferred: sp.isPreferred });
+    setRow({ id: sp.id, inventoryItemId: draft.id, supplierId: sp.supplierId, supplierSku: sp.supplierSku || '', buyQty, buyUnit, packPrice: sp.packPrice, priceIncludesTax: sp.priceIncludesTax === true, purchaseTaxRateId: sp.purchaseTaxRateId || '', isPreferred: sp.isPreferred });
     setAdding(true);
   };
   const removeRow = async (sp) => { await deleteSupplierProduct(sp.id, draft.id, locId); onChanged(); };
@@ -649,7 +666,7 @@ function SuppliersTab({ draft, suppliers, locId, onChanged, showToast }) {
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 13, color: 'var(--t1)', fontWeight: 600 }}>{supName(sp.supplierId)} {sp.supplierSku ? <span style={{ color: 'var(--t3)', fontWeight: 400 }}>· {sp.supplierSku}</span> : null}</div>
               <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>
-{sp.packDescription || `${sp.innerQty} ${sp.innerUnit}`} for {money(sp.packPrice)} → <b style={{ color: 'var(--t1)' }}>{fmtUnitCost(sp.baseUnitCost)}/{draft.baseUnit}</b>
+{sp.packDescription || `${sp.innerQty} ${sp.innerUnit}`} for {money(sp.packPrice)}{sp.priceIncludesTax ? ' inc VAT' : ''} → <b style={{ color: 'var(--t1)' }}>{fmtUnitCost(sp.baseUnitCost)}/{draft.baseUnit}</b>{sp.vatRate > 0 ? <span style={{ color: 'var(--t4)' }}> ex VAT</span> : null}
               </div>
             </div>
             {sp.isPreferred
@@ -687,10 +704,25 @@ function SuppliersTab({ draft, suppliers, locId, onChanged, showToast }) {
               <input type="number" min="0" step="any" value={row.packPrice} onChange={e => setRow(r => ({ ...r, packPrice: e.target.value }))} placeholder="152" style={{ ...fieldStyle, width: 100 }} />
             </div>
             <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 6 }}>e.g. <b>1 Keg for £152</b>, or <b>1 Case for £40</b>. Add units on the <b>Units</b> tab.</div>
+            {rateDecFor(row) > 0 ? (
+              <label style={{ display: 'flex', gap: 7, alignItems: 'center', fontSize: 13, color: 'var(--t2)', cursor: 'pointer', marginTop: 8 }}>
+                <input type="checkbox" checked={row.priceIncludesTax === true} onChange={e => setRow(r => ({ ...r, priceIncludesTax: e.target.checked }))} />
+                This price <b>includes {formatRateLabel(rateObjFor(row))}</b> — strip it to get the net cost
+              </label>
+            ) : (
+              <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 8 }}>No purchase VAT set for this item — set it on the <b>General</b> tab to handle inc-VAT prices.</div>
+            )}
           </Field>
           <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginTop: 4, flexWrap: 'wrap' }}>
             <div style={{ fontSize: 14, color: 'var(--t1)' }}>
-              Works out at: <b>{unitBad(row) ? '—' : fmtUnitCost(preview(row))}</b> /{draft.baseUnit}
+              Works out at: <b>{unitBad(row) ? '—' : fmtUnitCost(preview(row))}</b> /{draft.baseUnit} <span style={{ color: 'var(--t4)', fontSize: 12 }}>ex VAT</span>
+              {!unitBad(row) && rateDecFor(row) > 0 && (
+                <span style={{ color: 'var(--t3)', fontSize: 12, marginLeft: 8 }}>
+                  {row.priceIncludesTax
+                    ? `· ${money(Number(row.packPrice) || 0)} inc VAT → ${money(netPackOf(row))} net`
+                    : `· pay ${money((Number(row.packPrice) || 0) * (1 + rateDecFor(row)))} inc ${Math.round(rateDecFor(row) * 100)}% VAT`}
+                </span>
+              )}
               {unitBad(row) && <span style={{ color: 'var(--red, #ef4444)', fontSize: 12, marginLeft: 8 }}>can't resolve that unit — check the Units tab</span>}
             </div>
             <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13, color: 'var(--t2)', cursor: 'pointer', marginLeft: 'auto' }}>

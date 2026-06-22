@@ -10,7 +10,8 @@
 import { supabase, isMock, getLocationId, getActiveLocationSync } from '../supabase';
 import { convert } from './conversion.js';
 import { movingAverageCost } from './costing.js';
-import { postStockMovement } from './data.js';
+import { postStockMovement, fetchTaxRateMap } from './data.js';
+import { purchaseNet } from '../tax.js';
 
 const nowIso = () => new Date().toISOString();
 async function ensureLoc(locationId) {
@@ -70,12 +71,14 @@ async function applyReceipt(locationId, item, itemId, recvBase, unitCostPerBase,
 const poFromRow = (r) => ({
   id: r.id, locationId: r.location_id, supplierId: r.supplier_id, reference: r.reference, status: r.status,
   expectedDate: r.expected_date, orderedAt: r.ordered_at, receivedAt: r.received_at,
-  subtotal: r.subtotal == null ? null : Number(r.subtotal), notes: r.notes, createdAt: r.created_at,
+  subtotal: r.subtotal == null ? null : Number(r.subtotal), tax: r.tax == null ? null : Number(r.tax),
+  notes: r.notes, createdAt: r.created_at,
 });
 const poLineFromRow = (r) => ({
   id: r.id, poId: r.po_id, inventoryItemId: r.inventory_item_id, supplierProductId: r.supplier_product_id,
   description: r.description, qtyPacks: Number(r.qty_packs), packQty: Number(r.pack_qty), innerQty: Number(r.inner_qty),
   innerUnit: r.inner_unit, unitPrice: Number(r.unit_price), qtyReceived: Number(r.qty_received), sortOrder: r.sort_order,
+  purchaseTaxRateId: r.purchase_tax_rate_id || null, lineTax: r.line_tax == null ? null : Number(r.line_tax),
 });
 
 export const fetchPurchaseOrders = async (locationId = null, limit = 100) => {
@@ -97,21 +100,32 @@ export const savePurchaseOrder = async (po, lines, locationId = null) => {
   if (isMock || !supabase) return { data: null, error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: null, error: new Error('No locationId') };
-  const subtotal = (lines || []).reduce((s, l) => s + (Number(l.qtyPacks) || 0) * (Number(l.unitPrice) || 0), 0);
+  // unit_price is NET (ex-VAT). VAT is metadata for the payable/return: per-line
+  // line_tax = net line × rate; header tax = Σ line_tax; total payable = subtotal + tax.
+  const ratesById = await fetchTaxRateMap(locationId);
+  const keepLines = (lines || []).filter(l => l.inventoryItemId || l.description);
+  const lineTaxes = keepLines.map((l) => {
+    const net = (Number(l.qtyPacks) || 0) * (Number(l.unitPrice) || 0);
+    const rate = Number(ratesById[l.purchaseTaxRateId] || 0);
+    return Math.round(net * rate * 100) / 100;
+  });
+  const subtotal = keepLines.reduce((s, l) => s + (Number(l.qtyPacks) || 0) * (Number(l.unitPrice) || 0), 0);
+  const tax = Math.round(lineTaxes.reduce((s, t) => s + t, 0) * 100) / 100;
   const row = {
     ...(po.id ? { id: po.id } : {}),
     location_id: locationId, supplier_id: po.supplierId || null, reference: po.reference || null,
     status: po.status || 'DRAFT', expected_date: po.expectedDate || null, notes: po.notes || null,
-    subtotal, updated_at: nowIso(),
+    subtotal, tax, updated_at: nowIso(),
   };
   const { data, error } = await supabase.from('purchase_orders').upsert(row).select().maybeSingle();
   if (error || !data) return { data: null, error: error || new Error('PO save failed') };
   await supabase.from('po_lines').delete().eq('location_id', locationId).eq('po_id', data.id);
-  const lrows = (lines || []).filter(l => l.inventoryItemId || l.description).map((l, i) => ({
+  const lrows = keepLines.map((l, i) => ({
     location_id: locationId, po_id: data.id, inventory_item_id: l.inventoryItemId || null,
     supplier_product_id: l.supplierProductId || null, description: l.description || null,
     qty_packs: Number(l.qtyPacks) || 0, pack_qty: Number(l.packQty) || 1, inner_qty: Number(l.innerQty) || 1,
-    inner_unit: l.innerUnit || 'each', unit_price: Number(l.unitPrice) || 0, qty_received: Number(l.qtyReceived) || 0, sort_order: i,
+    inner_unit: l.innerUnit || 'each', unit_price: Number(l.unitPrice) || 0, qty_received: Number(l.qtyReceived) || 0,
+    purchase_tax_rate_id: l.purchaseTaxRateId || null, line_tax: lineTaxes[i], sort_order: i,
   }));
   if (lrows.length) await supabase.from('po_lines').insert(lrows);
   return { data: poFromRow(data), error: null };
@@ -221,14 +235,23 @@ export const postInvoice = async (header, lines, locationId = null) => {
   }).select().maybeSingle();
   if (error || !inv) return { data: null, error: error || new Error('Invoice save failed') };
 
+  const ratesById = await fetchTaxRateMap(locationId);
   const map = await itemMap(locationId, lines.map(l => l.matchedItemId));
   const lineRows = [];
   for (let i = 0; i < lines.length; i++) {
     const l = lines[i];
+    const rate = Number(ratesById[l.purchaseTaxRateId] || 0);
+    // Resolve the NET line total ONCE here: strip VAT only when the line is flagged inc-VAT.
+    // Everything stored/costed downstream (line_total, unit cost, moving avg) is then NET.
+    const raw = l.lineTotal != null ? Number(l.lineTotal) : (Number(l.qty) * Number(l.unitPrice));
+    const netLine = purchaseNet(raw, l.priceIncludesTax === true, rate) ?? 0;
+    const lineTax = Math.round(netLine * rate * 100) / 100;
     lineRows.push({
       location_id: locationId, invoice_id: inv.id, matched_item_id: l.matchedItemId || null,
       description: l.description || null, qty: Number(l.qty) || 0, unit: l.unit || 'each',
-      unit_price: Number(l.unitPrice) || 0, line_total: l.lineTotal ?? null, flags: l.flags || [], sort_order: i,
+      unit_price: Number(l.unitPrice) || 0, line_total: Math.round(netLine * 100) / 100,
+      purchase_tax_rate_id: l.purchaseTaxRateId || null, line_tax: lineTax,
+      flags: l.flags || [], sort_order: i,
     });
     const item = map[l.matchedItemId];
     if (!item || !(Number(l.qty) > 0)) continue;
@@ -236,8 +259,7 @@ export const postInvoice = async (header, lines, locationId = null) => {
     try { qtyBase = convert(Number(l.qty), l.unit || item.baseUnit, item.baseUnit, { itemConversions: item.conversions }); }
     catch { continue; }
     if (!(qtyBase > 0)) continue;
-    const lineTotal = l.lineTotal != null ? Number(l.lineTotal) : (Number(l.qty) * Number(l.unitPrice));
-    const unitCostPerBase = lineTotal / qtyBase;
+    const unitCostPerBase = netLine / qtyBase;
     await applyReceipt(locationId, item, l.matchedItemId, qtyBase, unitCostPerBase, 'supplier_invoice', inv.id, `inv:${inv.id}:${l.matchedItemId}:${i}`);
   }
   if (lineRows.length) await supabase.from('supplier_invoice_lines').insert(lineRows);

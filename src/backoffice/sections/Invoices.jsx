@@ -8,6 +8,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useStore } from '../../store';
 import { getActiveLocationSync, getLocationId } from '../../lib/supabase';
 import { money, currencySymbol } from '../../lib/currency';
+import { formatRateLabel, purchaseNet } from '../../lib/tax';
 import { convert } from '../../lib/stock/conversion';
 import { fetchSuppliers, fetchInventoryItems } from '../../lib/stock/data';
 import { scanInvoice, postInvoice, fetchInvoices } from '../../lib/stock/purchasing';
@@ -32,6 +33,12 @@ const guessMatch = (desc, items) => {
 
 export default function Invoices() {
   const showToast = useStore(s => s.showToast);
+  const taxRates = useStore(s => s.taxRates) || [];
+  const ratesById = useMemo(() => { const m = {}; taxRates.forEach(r => { m[r.id] = r; }); return m; }, [taxRates]);
+  const lineRateDec = useCallback((l) => Number(ratesById[l.purchaseTaxRateId]?.rate || 0), [ratesById]);
+  const rawLineOf = (l) => (l.lineTotal != null ? Number(l.lineTotal) : Number(l.qty) * Number(l.unitPrice));
+  // NET line total: strip VAT only when the operator flagged the line inc-VAT.
+  const netLineOf = useCallback((l) => purchaseNet(rawLineOf(l), l.priceIncludesTax === true, lineRateDec(l)) ?? 0, [lineRateDec]);
   const [locId, setLocId] = useState(getActiveLocationSync());
   const [suppliers, setSuppliers] = useState([]);
   const [items, setItems] = useState([]);
@@ -63,7 +70,7 @@ export default function Invoices() {
         header: { supplierId: sup?.id || '', supplierName: data.supplier_name, invoiceNumber: data.invoice_number || '', invoiceDate: data.invoice_date || '', subtotal: data.subtotal, tax: data.tax, total: data.total, ocrConfidence: data.confidence != null ? Math.round(Number(data.confidence) * 100) : null, rawJson: data },
         lines: (data.lines || []).map(l => {
           const m = guessMatch(l.description, items);
-          return { matchedItemId: m?.id || '', description: l.description || '', qty: Number(l.qty) || 0, unit: l.unit || (m?.baseUnit) || 'each', unitPrice: Number(l.unit_price) || 0, lineTotal: l.line_total != null ? Number(l.line_total) : null };
+          return { matchedItemId: m?.id || '', description: l.description || '', qty: Number(l.qty) || 0, unit: l.unit || (m?.baseUnit) || 'each', unitPrice: Number(l.unit_price) || 0, lineTotal: l.line_total != null ? Number(l.line_total) : null, purchaseTaxRateId: m?.purchaseTaxRateId || '', priceIncludesTax: false };
         }),
       });
     };
@@ -83,7 +90,7 @@ export default function Invoices() {
     let qtyBase;
     try { qtyBase = convert(Number(l.qty), l.unit || it.baseUnit, it.baseUnit, { itemConversions: (it.conversions || []).map(c => ({ fromQty: c.fromQty, fromUnit: c.fromUnit, toQty: c.toQty, toUnit: c.toUnit })) }); }
     catch { return { newCost: null, flag: 'UNIT?' }; }
-    const total = l.lineTotal != null ? Number(l.lineTotal) : Number(l.qty) * Number(l.unitPrice);
+    const total = netLineOf(l);   // NET (VAT stripped if the line is inc-VAT)
     const newCost = qtyBase > 0 ? total / qtyBase : null;
     let flag = null;
     if (newCost != null && it.currentCost != null && it.currentCost > 0) {
@@ -98,8 +105,12 @@ export default function Invoices() {
     const matched = review.lines.filter(l => l.matchedItemId && Number(l.qty) > 0);
     if (!matched.length) { showToast?.('Match at least one line to a stock item', 'error'); return; }
     setPosting(true);
+    // Store the VAT computed from the (reviewed) lines, net of any inc-VAT entries.
+    const net = review.lines.reduce((s, l) => s + netLineOf(l), 0);
+    const vat = review.lines.reduce((s, l) => s + netLineOf(l) * lineRateDec(l), 0);
     const { error } = await postInvoice({
       ...review.header,
+      subtotal: Math.round(net * 100) / 100, tax: Math.round(vat * 100) / 100, total: Math.round((net + vat) * 100) / 100,
       flags: undefined,
     }, review.lines.map(l => ({ ...l, flags: lineInfo(l).flag ? [lineInfo(l).flag] : [] })), locId);
     setPosting(false);
@@ -139,7 +150,7 @@ export default function Invoices() {
 
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
             <thead><tr style={{ color: 'var(--t3)', textAlign: 'left' }}>
-              {['On invoice', 'Match to stock item', 'Qty', 'Unit', 'Line total', 'New unit cost', ''].map(h => <th key={h} style={{ padding: '6px 6px', borderBottom: '1px solid var(--bdr)', fontWeight: 600 }}>{h}</th>)}
+              {['On invoice', 'Match to stock item', 'Qty', 'Unit', 'Line total', 'VAT', 'New unit cost (ex VAT)', ''].map(h => <th key={h} style={{ padding: '6px 6px', borderBottom: '1px solid var(--bdr)', fontWeight: 600 }}>{h}</th>)}
             </tr></thead>
             <tbody>
               {review.lines.map((l, i) => {
@@ -148,7 +159,7 @@ export default function Invoices() {
                   <tr key={i}>
                     <td style={{ padding: '5px 6px', borderBottom: '1px solid var(--bg2)' }}><input value={l.description} onChange={e => updLine(i, 'description', e.target.value)} style={{ ...field, width: 200 }} /></td>
                     <td style={{ padding: '5px 6px', borderBottom: '1px solid var(--bg2)' }}>
-                      <select value={l.matchedItemId} onChange={e => { const it = itemById(e.target.value); updLine(i, 'matchedItemId', e.target.value); if (it && (!l.unit)) updLine(i, 'unit', it.baseUnit); }} style={{ ...field, width: 200, color: l.matchedItemId ? 'var(--t1)' : 'var(--red, #ef4444)' }}>
+                      <select value={l.matchedItemId} onChange={e => { const it = itemById(e.target.value); updLine(i, 'matchedItemId', e.target.value); if (it && (!l.unit)) updLine(i, 'unit', it.baseUnit); updLine(i, 'purchaseTaxRateId', it?.purchaseTaxRateId || ''); }} style={{ ...field, width: 200, color: l.matchedItemId ? 'var(--t1)' : 'var(--red, #ef4444)' }}>
                         <option value="">— unmatched —</option>
                         {items.filter(it => !it.archivedAt).map(it => <option key={it.id} value={it.id}>{it.name}</option>)}
                       </select>
@@ -156,6 +167,17 @@ export default function Invoices() {
                     <td style={{ padding: '5px 6px', borderBottom: '1px solid var(--bg2)' }}><input type="number" min="0" step="any" value={l.qty} onChange={e => updLine(i, 'qty', e.target.value)} style={{ ...field, width: 64 }} /></td>
                     <td style={{ padding: '5px 6px', borderBottom: '1px solid var(--bg2)' }}><input value={l.unit} onChange={e => updLine(i, 'unit', e.target.value)} style={{ ...field, width: 64 }} /></td>
                     <td style={{ padding: '5px 6px', borderBottom: '1px solid var(--bg2)' }}><input type="number" min="0" step="any" value={l.lineTotal ?? ''} onChange={e => updLine(i, 'lineTotal', e.target.value === '' ? null : Number(e.target.value))} placeholder={money(Number(l.qty) * Number(l.unitPrice))} style={{ ...field, width: 84 }} /></td>
+                    <td style={{ padding: '5px 6px', borderBottom: '1px solid var(--bg2)', whiteSpace: 'nowrap' }}>
+                      <select value={l.purchaseTaxRateId || ''} onChange={e => updLine(i, 'purchaseTaxRateId', e.target.value)} style={{ ...field, width: 78, display: 'inline-block' }}>
+                        <option value="">No VAT</option>
+                        {taxRates.filter(r => r.active !== false).map(r => <option key={r.id} value={r.id}>{Math.round(Number(r.rate) * 100)}%</option>)}
+                      </select>
+                      {lineRateDec(l) > 0 && (
+                        <label title="Tick if the line total above already includes VAT" style={{ display: 'inline-flex', gap: 3, alignItems: 'center', fontSize: 10, color: 'var(--t3)', marginLeft: 5, cursor: 'pointer' }}>
+                          <input type="checkbox" checked={l.priceIncludesTax === true} onChange={e => updLine(i, 'priceIncludesTax', e.target.checked)} /> inc
+                        </label>
+                      )}
+                    </td>
                     <td style={{ padding: '5px 6px', borderBottom: '1px solid var(--bg2)', whiteSpace: 'nowrap' }}>
                       {info.newCost == null ? '—' : currencySymbol() + info.newCost.toFixed(4).replace(/0+$/, '').replace(/\.$/, '')}
                       {info.flag && <span style={{ marginLeft: 6, fontSize: 11, fontWeight: 700, color: info.flag.startsWith('↑') || info.flag === 'NEW' ? 'var(--red, #ef4444)' : info.flag.startsWith('↓') ? 'var(--grn, #16a34a)' : 'var(--t3)' }}>{info.flag === 'NEW' ? 'new item' : info.flag === 'UNIT?' ? 'unit?' : info.flag}</span>}
@@ -167,10 +189,22 @@ export default function Invoices() {
             </tbody>
           </table>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 16 }}>
-            <div style={{ fontSize: 12, color: 'var(--t3)', marginRight: 'auto' }}>Invoice total (read): <b style={{ color: 'var(--t1)' }}>{review.header.total != null ? money(review.header.total) : '—'}</b></div>
-            <button onClick={post} disabled={posting} style={{ padding: '10px 22px', borderRadius: 8, background: 'var(--grn, #16a34a)', color: '#fff', border: 0, fontSize: 14, fontWeight: 700, cursor: 'pointer', opacity: posting ? 0.6 : 1 }}>{posting ? 'Posting…' : 'Post to stock'}</button>
-          </div>
+          {(() => {
+            const net = review.lines.reduce((s, l) => s + netLineOf(l), 0);
+            const vat = review.lines.reduce((s, l) => s + netLineOf(l) * lineRateDec(l), 0);
+            const gross = net + vat;
+            const read = review.header.total;
+            const mismatch = read != null && Math.abs(gross - Number(read)) > 0.01;
+            return (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 16, flexWrap: 'wrap' }}>
+                <div style={{ fontSize: 13, color: 'var(--t1)', marginRight: 'auto' }}>
+                  Subtotal (ex VAT): <b>{money(net)}</b> · VAT: <b>{money(vat)}</b> · Total: <b>{money(gross)}</b>
+                  {read != null && <span style={{ fontSize: 11, color: mismatch ? 'var(--amb,#e8a020)' : 'var(--t3)', marginLeft: 10 }}>{mismatch ? `⚠ read total ${money(read)} — check VAT/lines` : `✓ matches read total`}</span>}
+                </div>
+                <button onClick={post} disabled={posting} style={{ padding: '10px 22px', borderRadius: 8, background: 'var(--grn, #16a34a)', color: '#fff', border: 0, fontSize: 14, fontWeight: 700, cursor: 'pointer', opacity: posting ? 0.6 : 1 }}>{posting ? 'Posting…' : 'Post to stock'}</button>
+              </div>
+            );
+          })()}
         </div>
       )}
 

@@ -12,8 +12,24 @@
 
 import { supabase, isMock, getLocationId, getActiveLocationSync } from '../supabase';
 import { packBaseUnitCost } from './costing.js';
+import { purchaseNet } from '../tax.js';
 
 const nowIso = () => new Date().toISOString();
+
+/**
+ * Fetch this location's purchase VAT rates as { rateId: rateDecimal } (0.2 for 20%).
+ * Reuses the sales tax_rates table (same Ops DB). Missing/empty → no rates → no VAT
+ * stripping happens, so callers degrade safely to net-as-entered.
+ */
+export async function fetchTaxRateMap(locationId) {
+  const out = {};
+  if (!supabase || !locationId) return out;
+  const { data } = await supabase.from('tax_rates').select('id, rate').eq('location_id', locationId);
+  (data || []).forEach((r) => { out[r.id] = Number(r.rate) || 0; });
+  return out;
+}
+/** Resolved purchase VAT rate (decimal) for a supplier product: line override → item default → 0. */
+const spVatRate = (sp, item, ratesById) => Number(ratesById[sp.purchaseTaxRateId || item.purchaseTaxRateId] || 0);
 
 /** Resolve a usable locationId or null (never loc-demo). */
 async function ensureLoc(locationId) {
@@ -36,6 +52,7 @@ const itemFromRow = (r) => ({
   allergens: Array.isArray(r.allergens) ? r.allergens : [],
   shelfLifeDays: r.shelf_life_days, storageLocation: r.storage_location,
   defaultSupplierId: r.default_supplier_id, sku: r.sku, barcode: r.barcode, notes: r.notes,
+  purchaseTaxRateId: r.purchase_tax_rate_id || null,
   archivedAt: r.archived_at, createdAt: r.created_at, updatedAt: r.updated_at,
 });
 const itemToRow = (i, locationId) => ({
@@ -49,6 +66,7 @@ const itemToRow = (i, locationId) => ({
   shelf_life_days: i.shelfLifeDays == null || i.shelfLifeDays === '' ? null : Number(i.shelfLifeDays),
   storage_location: i.storageLocation || null, default_supplier_id: i.defaultSupplierId || null,
   sku: i.sku || null, barcode: i.barcode || null, notes: i.notes || null,
+  purchase_tax_rate_id: i.purchaseTaxRateId || null,
   updated_at: nowIso(),
 });
 
@@ -74,13 +92,16 @@ const spFromRow = (r) => ({
   supplierSku: r.supplier_sku, packDescription: r.pack_description,
   packQty: Number(r.pack_qty), innerQty: Number(r.inner_qty), innerUnit: r.inner_unit,
   packPrice: Number(r.pack_price), isPreferred: r.is_preferred === true,
+  purchaseTaxRateId: r.purchase_tax_rate_id || null, priceIncludesTax: r.price_includes_tax === true,
 });
 const spToRow = (sp, locationId) => ({
   ...(sp.id ? { id: sp.id } : {}),
   location_id: locationId, inventory_item_id: sp.inventoryItemId, supplier_id: sp.supplierId,
   supplier_sku: sp.supplierSku || null, pack_description: sp.packDescription || null,
   pack_qty: Number(sp.packQty) || 1, inner_qty: Number(sp.innerQty) || 1, inner_unit: sp.innerUnit || 'each',
-  pack_price: Number(sp.packPrice) || 0, is_preferred: sp.isPreferred === true, updated_at: nowIso(),
+  pack_price: Number(sp.packPrice) || 0, is_preferred: sp.isPreferred === true,
+  purchase_tax_rate_id: sp.purchaseTaxRateId || null, price_includes_tax: sp.priceIncludesTax === true,
+  updated_at: nowIso(),
 });
 
 const convFromRow = (r) => ({
@@ -109,11 +130,12 @@ export const fetchInventoryItems = async (locationId = null) => {
   if (isMock || !supabase) return { data: [], error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: [], error: null };
-  const [{ data: items, error }, { data: convs }, { data: sps }, { data: packs }] = await Promise.all([
+  const [{ data: items, error }, { data: convs }, { data: sps }, { data: packs }, ratesById] = await Promise.all([
     supabase.from('inventory_items').select('*').eq('location_id', locationId).order('name'),
     supabase.from('inventory_item_conversions').select('*').eq('location_id', locationId),
     supabase.from('supplier_products').select('*').eq('location_id', locationId),
     supabase.from('item_packaging_formats').select('*').eq('location_id', locationId),
+    fetchTaxRateMap(locationId),
   ]);
   if (error) return { data: [], error };
   const convByItem = {};
@@ -128,14 +150,17 @@ export const fetchInventoryItems = async (locationId = null) => {
     it.packaging = packByItem[r.id] || [];
     const bridges = it.conversions.map((c) => ({ fromQty: c.fromQty, fromUnit: c.fromUnit, toQty: c.toQty, toUnit: c.toUnit }));
     it.supplierProducts = (spByItem[r.id] || []).map((sp) => {
+      // NET pack price feeds costing: strip VAT only when the price was entered inc-VAT.
+      const vatRate = spVatRate(sp, it, ratesById);
+      const netPackPrice = purchaseNet(sp.packPrice, sp.priceIncludesTax, vatRate);
       let baseUnitCost = null;
       try {
         baseUnitCost = packBaseUnitCost({
-          packPrice: sp.packPrice, packQty: sp.packQty, innerQty: sp.innerQty,
+          packPrice: netPackPrice, packQty: sp.packQty, innerQty: sp.innerQty,
           innerUnit: sp.innerUnit, baseUnit: it.baseUnit, itemConversions: bridges,
         }).baseUnitCost;
       } catch { /* unit bridge missing — surfaced in UI */ }
-      return { ...sp, baseUnitCost };
+      return { ...sp, baseUnitCost, netPackPrice, vatRate };
     });
     return it;
   });
@@ -405,27 +430,31 @@ export async function recomputeItemCost(itemId, locationId = null) {
   if (isMock || !supabase || !itemId) return { ok: false };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { ok: false };
-  const [{ data: itemRows }, { data: sps }, { data: convs }] = await Promise.all([
+  const [{ data: itemRows }, { data: sps }, { data: convs }, ratesById] = await Promise.all([
     supabase.from('inventory_items').select('*').eq('location_id', locationId).eq('id', itemId).limit(1),
     supabase.from('supplier_products').select('*').eq('location_id', locationId).eq('inventory_item_id', itemId),
     supabase.from('inventory_item_conversions').select('*').eq('location_id', locationId).eq('inventory_item_id', itemId),
+    fetchTaxRateMap(locationId),
   ]);
   const item = itemRows?.[0];
   if (!item) return { ok: false };
   if (!sps || !sps.length) return { ok: true, unchanged: true };
   const bridges = (convs || []).map((c) => ({ fromQty: Number(c.from_qty), fromUnit: c.from_unit, toQty: Number(c.to_qty), toUnit: c.to_unit }));
+  // NET pack price per supplier: strip VAT only when the price was entered inc-VAT.
+  const netOfSp = (sp) => purchaseNet(Number(sp.pack_price), sp.price_includes_tax === true,
+    Number(ratesById[sp.purchase_tax_rate_id || item.purchase_tax_rate_id] || 0));
 
-  let chosen = null, chosenCost = Infinity;
+  let chosen = null, chosenCost = Infinity, chosenNetPack = null;
   for (const sp of sps) {
-    let bc;
+    let bc; const netPack = netOfSp(sp);
     try {
       bc = packBaseUnitCost({
-        packPrice: Number(sp.pack_price), packQty: Number(sp.pack_qty), innerQty: Number(sp.inner_qty),
+        packPrice: netPack, packQty: Number(sp.pack_qty), innerQty: Number(sp.inner_qty),
         innerUnit: sp.inner_unit, baseUnit: item.base_unit, itemConversions: bridges,
       }).baseUnitCost;
     } catch { continue; }
-    if (sp.is_preferred) { chosen = sp; chosenCost = bc; break; }
-    if (bc < chosenCost) { chosen = sp; chosenCost = bc; }
+    if (sp.is_preferred) { chosen = sp; chosenCost = bc; chosenNetPack = netPack; break; }
+    if (bc < chosenCost) { chosen = sp; chosenCost = bc; chosenNetPack = netPack; }
   }
   if (!chosen || !Number.isFinite(chosenCost)) return { ok: true, unchanged: true };
 
@@ -436,7 +465,7 @@ export async function recomputeItemCost(itemId, locationId = null) {
       .eq('location_id', locationId).eq('inventory_item_id', itemId).is('effective_to', null);
     await supabase.from('item_cost_history').insert({
       location_id: locationId, inventory_item_id: itemId, supplier_product_id: chosen.id,
-      pack_price: Number(chosen.pack_price), base_unit_cost: chosenCost, source: 'CATALOG', effective_from: nowIso(),
+      pack_price: chosenNetPack, base_unit_cost: chosenCost, source: 'CATALOG', effective_from: nowIso(),
     });
     await supabase.from('inventory_items').update({ current_cost: chosenCost, updated_at: nowIso() })
       .eq('location_id', locationId).eq('id', itemId);

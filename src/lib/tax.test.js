@@ -6,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { netOf, resolveTaxRate } from './tax.js';
+import { netOf, resolveTaxRate, purchaseNet } from './tax.js';
 
 const near = (a, b, eps = 1e-6) => assert.ok(Math.abs(a - b) < eps, `${a} ≈ ${b}`);
 
@@ -35,6 +35,26 @@ test('resolveTaxRate honours order-type overrides then the item default', () => 
   const item = { taxRateId: 'r20', taxOverrides: { takeaway: 'r0' } };
   assert.equal(resolveTaxRate(item, rates, 'dine-in').id, 'r20');
   assert.equal(resolveTaxRate(item, rates, 'takeaway').id, 'r0');   // zero-rated takeaway
+});
+
+test('purchaseNet keeps ex-VAT prices and strips inc-VAT prices', () => {
+  near(purchaseNet(10, false, 0.2), 10);   // entered ex-VAT → already net
+  near(purchaseNet(12, true, 0.2), 10);    // entered inc-VAT → strip 20% → £10 net
+  near(purchaseNet(10, true, 0), 10);      // inc-VAT but 0% rate → unchanged
+  near(purchaseNet(10, false, 0), 10);
+});
+
+test('purchaseNet returns null for a non-numeric price', () => {
+  assert.equal(purchaseNet(null, true, 0.2), null);
+  assert.equal(purchaseNet('', false, 0.2), null);
+});
+
+test('alcohol GP correct end-to-end on net buy and net sell', () => {
+  const grossBuy = 12.0, grossSell = 18.0;            // both inc 20% VAT
+  const netCost = purchaseNet(grossBuy, true, 0.2);   // £10
+  const netSell = netOf(grossSell, VAT20);            // £15
+  near(netCost, 10); near(netSell, 15);
+  near(((netSell - netCost) / netSell) * 100, 100 / 3); // 33.3% GP on net/net
 });
 
 test('GP on a VAT-inclusive price uses the net, not the shelf price', () => {

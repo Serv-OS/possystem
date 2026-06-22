@@ -29,6 +29,8 @@ import { fetchPurchaseOrders, createOrdersFromBasket } from '../../lib/stock/pur
 
 const USAGE_DAYS = 28;
 const r2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
+// NET (ex-VAT) pack price — the cost basis. fetchInventoryItems strips inc-VAT prices.
+const spNet = (sp) => (sp && sp.netPackPrice != null) ? Number(sp.netPackPrice) : Number(sp?.packPrice || 0);
 const field = { background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '7px 9px', fontSize: 13, outline: 'none' };
 const th = { padding: '7px 8px', borderBottom: '1px solid var(--bdr)', fontWeight: 600, color: 'var(--t3)', textAlign: 'left', fontSize: 11, textTransform: 'uppercase', letterSpacing: '.04em' };
 const td = { padding: '7px 8px', borderBottom: '1px solid var(--bg2)' };
@@ -122,20 +124,23 @@ export default function OrderPad() {
     rows.forEach(r => { const n = Number(qty[r.it.id]) || 0; if (!r.sp || n <= 0) return; (groups[r.sp.supplierId] ??= []).push({ r, n }); });
     return groups;
   }, [rows, qty]);
-  const basketTotal = useMemo(() => Object.values(basket).flat().reduce((s, { r, n }) => s + n * Number(r.sp.packPrice || 0), 0), [basket]);
+  const basketTotal = useMemo(() => Object.values(basket).flat().reduce((s, { r, n }) => s + n * spNet(r.sp), 0), [basket]);
+  const basketVat = useMemo(() => Object.values(basket).flat().reduce((s, { r, n }) => s + n * spNet(r.sp) * Number(r.sp.vatRate || 0), 0), [basket]);
   const basketCount = Object.values(basket).flat().length;
   const supplierCount = Object.keys(basket).length;
   // flag suppliers under their minimum order value
   const minWarnings = useMemo(() => Object.entries(basket).map(([sid, ls]) => {
     const min = supById[sid]?.minOrderValue;
-    const val = ls.reduce((s, { r, n }) => s + n * Number(r.sp.packPrice || 0), 0);
+    const val = ls.reduce((s, { r, n }) => s + n * spNet(r.sp), 0);
     return (min > 0 && val < min) ? { name: supName(sid), val, min } : null;
   }).filter(Boolean), [basket, supById, supName]);
 
   const createOrders = async () => {
+    // unit_price MUST be NET (ex-VAT); the PO line carries the rate so VAT is shown on the order.
     const lines = Object.values(basket).flat().map(({ r, n }) => ({
       supplierId: r.sp.supplierId, inventoryItemId: r.it.id, description: r.it.name,
-      qtyPacks: n, packQty: 1, innerQty: r.perPack, innerUnit: r.it.baseUnit, unitPrice: r.sp.packPrice,
+      qtyPacks: n, packQty: 1, innerQty: r.perPack, innerUnit: r.it.baseUnit, unitPrice: spNet(r.sp),
+      purchaseTaxRateId: r.sp.purchaseTaxRateId || r.it.purchaseTaxRateId || null,
     }));
     if (!lines.length) { showToast?.('Add some quantities first', 'error'); return; }
     setBusy(true);
@@ -178,7 +183,7 @@ export default function OrderPad() {
 
       <div style={{ flex: 1, overflowY: 'auto', padding: '0 24px' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-          <thead><tr>{['Item', 'On hand', 'Use/day', 'Cover', 'Suggested', 'Order', 'Supplier', 'Line £'].map((h, i) => <th key={h} style={{ ...th, textAlign: i >= 1 && i <= 5 ? 'right' : 'left', position: 'sticky', top: 0, background: 'var(--bg0)' }}>{h}</th>)}</tr></thead>
+          <thead><tr>{['Item', 'On hand', 'Use/day', 'Cover', 'Suggested', 'Order', 'Supplier', 'Line £ (ex VAT)'].map((h, i) => <th key={h} style={{ ...th, textAlign: i >= 1 && i <= 5 ? 'right' : 'left', position: 'sticky', top: 0, background: 'var(--bg0)' }}>{h}</th>)}</tr></thead>
           <tbody>
             {filtered.map(r => {
               const oh = displayInUnits(r.onHand, r.it);
@@ -203,11 +208,11 @@ export default function OrderPad() {
                   <td style={{ ...td, color: 'var(--t3)' }}>
                     {!r.sp ? '—' : r.allSps.length > 1 ? (
                       <select value={r.sp.id} onChange={e => setSupplierOverride(o => ({ ...o, [r.it.id]: e.target.value }))} style={{ ...field, padding: '4px 6px', fontSize: 12, maxWidth: 200 }}>
-                        {r.allSps.map(s => <option key={s.id} value={s.id}>{supName(s.supplierId)} · {money(s.packPrice)}{s.isPreferred ? ' ★' : ''}</option>)}
+                        {r.allSps.map(s => <option key={s.id} value={s.id}>{supName(s.supplierId)} · {money(spNet(s))}{s.isPreferred ? ' ★' : ''}</option>)}
                       </select>
                     ) : `${supName(r.sp.supplierId)} · ${r.sp.packDescription || r.perPack + ' ' + r.it.baseUnit}`}
                   </td>
-                  <td style={{ ...td, textAlign: 'right' }}>{r.sp && Number(n) > 0 ? money(Number(n) * Number(r.sp.packPrice || 0)) : ''}</td>
+                  <td style={{ ...td, textAlign: 'right' }}>{r.sp && Number(n) > 0 ? money(Number(n) * spNet(r.sp)) : ''}</td>
                 </tr>
               );
             })}
@@ -219,7 +224,7 @@ export default function OrderPad() {
       {/* Basket bar */}
       <div style={{ borderTop: '1px solid var(--bdr)', background: 'var(--bg1)', padding: '12px 24px', display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
         <div style={{ fontSize: 13, color: 'var(--t1)' }}>
-          {basketCount === 0 ? 'Nothing in the basket yet' : <><b>{basketCount}</b> line{basketCount === 1 ? '' : 's'} · <b>{supplierCount}</b> supplier{supplierCount === 1 ? '' : 's'} · <b>{money(basketTotal)}</b></>}
+          {basketCount === 0 ? 'Nothing in the basket yet' : <><b>{basketCount}</b> line{basketCount === 1 ? '' : 's'} · <b>{supplierCount}</b> supplier{supplierCount === 1 ? '' : 's'} · <b>{money(basketTotal)}</b> <span style={{ color: 'var(--t3)' }}>ex VAT{basketVat > 0.005 ? ` · VAT ${money(basketVat)} · pay ${money(basketTotal + basketVat)}` : ''}</span></>}
         </div>
         {supplierCount > 0 && <div style={{ fontSize: 12, color: 'var(--t3)' }}>{Object.entries(basket).map(([sid, ls]) => `${supName(sid)} (${ls.length})`).join(' · ')}</div>}
         {minWarnings.length > 0 && <div style={{ fontSize: 12, color: 'var(--amb,#e8a020)' }}>⚠ below min order: {minWarnings.map(w => `${w.name} ${money(w.val)}/${money(w.min)}`).join(' · ')}</div>}

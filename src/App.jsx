@@ -85,6 +85,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.588', date: '23 Jun 2026', label: 'Purchase VAT on stock items (input tax → correct GP)',
+    changes: [
+      'You can now set the purchase VAT rate per stock item (e.g. 20% on alcohol, zero on most food) on the item’s General tab — different items from the same supplier can differ.',
+      'Supplier prices are entered ex-VAT; tick “price includes VAT” to type a gross price and have it stripped to the net cost. Cost and gross profit always use the net price, so alcohol GP is now correct on the buy and the sell.',
+      'Purchase orders and invoices now show net + VAT + total payable, with the VAT frozen on the order; invoice lines can be marked inc-VAT and are stripped to net before they update cost.',
+    ],
+  },
+  {
     version: '5.5.587', date: '23 Jun 2026', label: 'Recipe GP now on the ex-VAT price',
     changes: [
       'Recipe gross profit (in the recipe builder and the Recipe GP report) is now calculated on the ex-VAT net selling price, not the VAT-inclusive shelf price — so GP %, food cost % and GP £ are correct.',

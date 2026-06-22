@@ -13,9 +13,12 @@ import { fetchPurchaseOrders, savePurchaseOrder, setPOStatus, receivePurchaseOrd
 const field = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '8px 10px', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
 const lbl = { display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 5 };
 const STATUS_COLOR = { DRAFT: 'var(--t3)', SENT: '#2563eb', PARTIAL: '#e8a020', RECEIVED: 'var(--grn, #16a34a)', CANCELLED: 'var(--red, #ef4444)' };
+// NET (ex-VAT) pack price — the cost basis fetchInventoryItems already resolved.
+const spNet = (sp) => (sp && sp.netPackPrice != null) ? Number(sp.netPackPrice) : Number(sp?.packPrice || 0);
 
 export default function PurchaseOrders() {
   const showToast = useStore(s => s.showToast);
+  const taxRates = useStore(s => s.taxRates) || [];
   const [locId, setLocId] = useState(getActiveLocationSync());
   const [pos, setPos] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
@@ -36,6 +39,8 @@ export default function PurchaseOrders() {
 
   const supName = useCallback((id) => suppliers.find(s => s.id === id)?.name || '—', [suppliers]);
   const itemName = useCallback((id) => items.find(i => i.id === id)?.name || '—', [items]);
+  const ratesById = useMemo(() => { const m = {}; taxRates.forEach(r => { m[r.id] = r; }); return m; }, [taxRates]);
+  const lineRateDec = useCallback((l) => Number(ratesById[l.purchaseTaxRateId]?.rate || 0), [ratesById]);
   const newPO = () => { setDraft({ supplierId: suppliers[0]?.id || '', reference: '', expectedDate: '', notes: '', status: 'DRAFT', lines: [] }); setSelId(null); };
 
   const upd = (k, v) => setDraft(d => ({ ...d, [k]: v }));
@@ -44,12 +49,14 @@ export default function PurchaseOrders() {
     setDraft(d => ({ ...d, lines: [...d.lines, {
       inventoryItemId: it.id, description: it.name, qtyPacks: 1,
       packQty: sp?.packQty || 1, innerQty: sp?.innerQty || 1, innerUnit: sp?.innerUnit || it.baseUnit,
-      unitPrice: sp?.packPrice || 0, qtyReceived: 0, supplierProductId: sp?.id || null,
+      unitPrice: spNet(sp), qtyReceived: 0, supplierProductId: sp?.id || null,
+      purchaseTaxRateId: sp?.purchaseTaxRateId || it.purchaseTaxRateId || null,
     }] }));
   };
   const updLine = (i, k, v) => setDraft(d => ({ ...d, lines: d.lines.map((l, j) => j === i ? { ...l, [k]: v } : l) }));
   const rmLine = (i) => setDraft(d => ({ ...d, lines: d.lines.filter((_, j) => j !== i) }));
   const total = useMemo(() => (draft?.lines || []).reduce((s, l) => s + (Number(l.qtyPacks) || 0) * (Number(l.unitPrice) || 0), 0), [draft]);
+  const vatTotal = useMemo(() => (draft?.lines || []).reduce((s, l) => s + (Number(l.qtyPacks) || 0) * (Number(l.unitPrice) || 0) * lineRateDec(l), 0), [draft, lineRateDec]);
 
   const save = async (status) => {
     if (!draft.supplierId) { showToast?.('Pick a supplier', 'error'); return; }
@@ -123,7 +130,8 @@ export default function PurchaseOrders() {
                   <span style={{ flex: 1, minWidth: 0, fontSize: 13, color: 'var(--t1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{itemName(l.inventoryItemId) || l.description}</span>
                   <input disabled={!editable} type="number" min="0" step="any" value={l.qtyPacks} onChange={e => updLine(i, 'qtyPacks', e.target.value)} style={{ ...field, width: 64 }} title="packs" />
                   <span style={{ fontSize: 11, color: 'var(--t3)' }}>× {l.packQty}×{l.innerQty}{l.innerUnit} @</span>
-                  <input disabled={!editable} type="number" min="0" step="any" value={l.unitPrice} onChange={e => updLine(i, 'unitPrice', e.target.value)} style={{ ...field, width: 78 }} title="price per pack" />
+                  <input disabled={!editable} type="number" min="0" step="any" value={l.unitPrice} onChange={e => updLine(i, 'unitPrice', e.target.value)} style={{ ...field, width: 78 }} title="price per pack, ex VAT" />
+                  {lineRateDec(l) > 0 && <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--t4)' }} title="purchase VAT">+{Math.round(lineRateDec(l) * 100)}%</span>}
                   <span style={{ width: 70, textAlign: 'right', fontSize: 13, color: 'var(--t2)' }}>{money((Number(l.qtyPacks) || 0) * (Number(l.unitPrice) || 0))}</span>
                   {editable && <button onClick={() => rmLine(i)} style={{ background: 'transparent', border: 0, color: 'var(--t3)', cursor: 'pointer', fontSize: 16 }}>×</button>}
                 </div>
@@ -132,7 +140,10 @@ export default function PurchaseOrders() {
             {editable && <ItemPicker items={items} onPick={addItemLine} />}
 
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 18, flexWrap: 'wrap' }}>
-              <div style={{ fontSize: 15, color: 'var(--t1)', marginRight: 'auto' }}>Order total: <b>{money(total)}</b></div>
+              <div style={{ fontSize: 14, color: 'var(--t1)', marginRight: 'auto' }}>
+                Subtotal (ex VAT): <b>{money(total)}</b>
+                {vatTotal > 0.005 && <span style={{ color: 'var(--t3)' }}> · VAT {money(vatTotal)} · <b style={{ color: 'var(--t1)' }}>pay {money(total + vatTotal)}</b></span>}
+              </div>
               {editable && <button onClick={() => save('DRAFT')} disabled={busy} style={{ padding: '9px 16px', borderRadius: 8, background: 'var(--bg2)', border: '1px solid var(--bdr)', color: 'var(--t1)', fontSize: 13, cursor: 'pointer' }}>Save draft</button>}
               {editable && <button onClick={() => save('SENT')} disabled={busy || !draft.lines.length} style={{ padding: '9px 18px', borderRadius: 8, background: '#2563eb', color: '#fff', border: 0, fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>Save &amp; mark sent</button>}
               {draft.id && (draft.status === 'SENT' || draft.status === 'PARTIAL') && <button onClick={receive} disabled={busy} style={{ padding: '9px 18px', borderRadius: 8, background: 'var(--grn, #16a34a)', color: '#fff', border: 0, fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>Receive into stock</button>}
