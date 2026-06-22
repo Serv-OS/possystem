@@ -24,6 +24,7 @@ import MPOSSurface from './surfaces/MPOSSurface';
 import TimeClockSurface from './surfaces/TimeClockSurface';
 import OwnerSurface from './surfaces/OwnerSurface';
 import MenuBoardSurface from './surfaces/MenuBoardSurface';
+import OperationsSurface from './surfaces/OperationsSurface';
 import OnboardingSignSurface from './surfaces/OnboardingSignSurface';
 import RyftTestSurface from './surfaces/RyftTestSurface';
 import CustomerBoot from './surfaces/CustomerBoot';
@@ -7184,6 +7185,7 @@ export default function App() {
       onSelectMPOS={() => { localStorage.setItem('rpos-device-mode', 'mpos'); window.location.href = '?mode=mpos'; }}
       onSelectClock={() => { localStorage.setItem('rpos-device-mode', 'clock'); window.location.href = '?mode=clock'; }}
       onSelectMenuBoard={() => { localStorage.setItem('rpos-device-mode', 'menuboard'); window.location.href = '?mode=menuboard'; }}
+      onSelectOps={() => { localStorage.setItem('rpos-device-mode', 'ops'); window.location.href = '?mode=ops'; }}
       onSelectBackOffice={() => { localStorage.setItem('rpos-device-mode', 'backoffice'); window.location.href = '?mode=office'; }}
       onSelectAdmin={() => { localStorage.setItem('rpos-device-mode', 'admin'); window.location.href = '?mode=admin'; }}
     />
@@ -7209,6 +7211,10 @@ export default function App() {
   // renders one menu_boards "screen" with the auto-fit/auto-balance engine, live
   // over Realtime. No SyncBridge (like customer-display).
   if (deviceMode === 'menuboard') return <MenuBoardSurface />;
+
+  // Operations — mobile food-safety/ops surface (temperature, deliveries, maintenance).
+  // Pairs itself via ops_devices (claim-code + heartbeat) then staff PIN; no rpos-device.
+  if (deviceMode === 'ops') return <OperationsSurface />;
 
   // Back office mode — go to email login (no pairing needed)
   if (deviceMode === 'backoffice' || deviceMode === 'office') return <><SyncBridge onSyncPulse={handleSyncPulse}/><BackOfficeApp /></>;

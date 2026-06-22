@@ -24,7 +24,7 @@ function Card({ icon, title, desc, note, accent, onClick }) {
   );
 }
 
-export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelectAdmin, onSelectMPOS, onSelectClock, onSelectMenuBoard }) {
+export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelectAdmin, onSelectMPOS, onSelectClock, onSelectMenuBoard, onSelectOps }) {
   return (
     <div style={{
       minHeight: '100vh',
@@ -81,6 +81,14 @@ export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelect
           note="Pairs to a location like a regular POS"
           accent="#0ea5e9"
           onClick={onSelectMenuBoard}
+        />
+        <Card
+          icon="🌡"
+          title="Operations"
+          desc="Mobile food-safety & ops — temperature checks, deliveries, checklists and maintenance, with manager alerts on a breach."
+          note="Pairs to a location, then staff sign in by PIN"
+          accent="#15C26A"
+          onClick={onSelectOps}
         />
       </div>
 
