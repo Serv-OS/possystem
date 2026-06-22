@@ -5,7 +5,7 @@
  */
 
 import { supabase, getLocationId } from './supabase';
-import { money } from './/currency';
+import { money } from './currency.js';
 
 // Tools that require user confirmation before executing
 export const WRITE_TOOLS = new Set(['add_menu_item', 'update_item_price', 'eighty_six_item', 'add_to_order', 'remove_from_order', 'apply_order_discount']);

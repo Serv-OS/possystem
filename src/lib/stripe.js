@@ -1,4 +1,4 @@
-import { stripeCurrency } from './/currency';
+import { stripeCurrency } from './currency.js';
 /**
  * stripe.js — Stripe Terminal integration scaffold
  *

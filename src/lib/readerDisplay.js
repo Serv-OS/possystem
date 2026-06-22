@@ -20,7 +20,7 @@
 //   useEffect(() => { pushReaderDisplay({ lineItems, totalMinor }); }, [cart]);
 
 import { supabase, isMock, ensureAuthToken } from './supabase';
-import { money } from './/currency';
+import { money } from './currency.js';
 
 // ── Per-reader customer display toggle ──────────────────────────────────────
 // Cached in localStorage so every pushReaderDisplay call is a sync read (no DB).

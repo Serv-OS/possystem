@@ -13,7 +13,7 @@
 
 import { supabase, getLocationId } from './supabase';
 import { loadLocationBranding, mergeBrandingIntoLocation, invalidateBrandingCache } from './receiptBranding';
-import { money } from './/currency';
+import { money } from './currency.js';
 
 // ─── ESC/POS builder ──────────────────────────────────────────────────────────
 const ESC = 0x1b, GS = 0x1d, LF = 0x0a;

@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.589', date: '23 Jun 2026', label: 'Housekeeping — repo & import tidy-up',
+    changes: [
+      'Stopped tracking stray .DS_Store files and added them to .gitignore.',
+      'Fixed malformed currency imports in 5 library files (cosmetic; no behaviour change). Stock DB verified clean: all migrations applied, ledger and on-hand cache in sync.',
+    ],
+  },
+  {
     version: '5.5.588', date: '23 Jun 2026', label: 'Purchase VAT on stock items (input tax → correct GP)',
     changes: [
       'You can now set the purchase VAT rate per stock item (e.g. 20% on alcohol, zero on most food) on the item’s General tab — different items from the same supplier can differ.',
