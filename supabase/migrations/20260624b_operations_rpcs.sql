@@ -9,7 +9,7 @@
 -- caller is allowed at this location if they have BO access OR a claimed ops_device for it
 create or replace function public.ops_can_write(p_location_id uuid)
 returns boolean language sql stable security definer set search_path = public as $$
-  select exists (select 1 from user_accessible_locations() where location_id = p_location_id)
+  select (p_location_id::text in (select user_accessible_locations()))
       or exists (select 1 from ops_devices d where d.device_uid = auth.uid() and d.location_id = p_location_id and d.active);
 $$;
 
@@ -30,7 +30,7 @@ create or replace function public.claim_ops_device(p_code text, p_location_id uu
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare v ops_devices; v_org uuid;
 begin
-  if not exists (select 1 from user_accessible_locations() where location_id = p_location_id) then
+  if not (p_location_id::text in (select user_accessible_locations())) then
     raise exception 'not authorized for this location';
   end if;
   select org_id into v_org from locations where id = p_location_id;

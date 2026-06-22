@@ -237,8 +237,8 @@ begin
     execute format('drop policy if exists %I_rls on %I;', t, t);
     execute format($f$
       create policy %I_rls on %I for all
-        using (location_id in (select location_id from user_accessible_locations()))
-        with check (location_id in (select location_id from user_accessible_locations()));
+        using (location_id::text in (select user_accessible_locations()))
+        with check (location_id::text in (select user_accessible_locations()));
     $f$, t, t);
   end loop;
 end $$;
@@ -251,7 +251,7 @@ begin
   foreach t in array array['temp_readings','ops_audit'] loop
     execute format('drop policy if exists %I_sel on %I;', t, t);
     execute format('drop policy if exists %I_ins on %I;', t, t);
-    execute format('create policy %I_sel on %I for select using (location_id in (select location_id from user_accessible_locations()));', t, t);
-    execute format('create policy %I_ins on %I for insert with check (location_id in (select location_id from user_accessible_locations()));', t, t);
+    execute format('create policy %I_sel on %I for select using (location_id::text in (select user_accessible_locations()));', t, t);
+    execute format('create policy %I_ins on %I for insert with check (location_id::text in (select user_accessible_locations()));', t, t);
   end loop;
 end $$;
