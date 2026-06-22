@@ -7,15 +7,35 @@
  * have no recipe is a complete no-op — harmless before recipes exist, and only
  * touches stock for items that are actually recipe-linked.
  *
- * Scope: POS path (authenticated). Kiosk/online run as anonymous users that can't
- * read the recipe tables under RLS, so their depletion will go through a server-side
- * edge function in a follow-up; this module short-circuits to a no-op for them.
+ * Scope: POS/bar/table (authenticated) deplete client-side here. Kiosk & online run
+ * as anonymous users that can't read the recipe tables under RLS, so they call the
+ * `stock-deplete` edge function (service role) via depleteForSaleServer().
  */
 
-import { getActiveLocationSync } from '../supabase';
+import { supabase, isMock, getActiveLocationSync } from '../supabase';
 import { buildDepletionCtx } from './recipes.js';
 import { postStockMovement } from './data.js';
 import { explodeBasket } from './explode.js';
+
+/**
+ * Server-side depletion for anonymous channels (kiosk / online). Fire-and-forget —
+ * never blocks or throws into the order flow. The edge function explodes the sold
+ * items through their recipes with the service role and posts the movements.
+ */
+export async function depleteForSaleServer(check, { reverse = false } = {}) {
+  try {
+    if (isMock || !supabase) return;
+    const loc = getActiveLocationSync();
+    if (!loc) return;
+    const items = (check?.items || [])
+      .filter((it) => !it.voided && it.itemId)
+      .map((it) => ({ itemId: it.itemId, qty: Number(it.qty) || 1 }));
+    if (!items.length) return;
+    const checkId = check?.id || check?.ref;
+    if (!checkId) return;
+    await supabase.functions.invoke('stock-deplete', { body: { location_id: loc, check_id: String(checkId), items, reverse } });
+  } catch (e) { console.warn('[stock] depleteForSaleServer failed:', e?.message); }
+}
 
 let _cache = { loc: null, at: 0, ctx: null };
 /** Drop the cached depletion context (call after editing recipes/costs). */

@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.583', date: '23 Jun 2026', label: 'Stock — kiosk & online sales now deplete stock too',
+    changes: [
+      'Kiosk and online orders now deplete their recipe ingredients from the stock ledger, just like counter/bar/table sales — so stock and theoretical COGS are correct on every channel.',
+      'Runs server-side (kiosk/online are anonymous) and fire-and-forget, so it never slows or blocks an order; a sale only ever depletes once.',
+    ],
+  },
+  {
     version: '5.5.582', date: '23 Jun 2026', label: 'Recipes — build from your menu + measure in any unit',
     changes: [
       'Recipes now start from your POS menu: a “Dishes” list of every product (e.g. Heineken Half, Heineken Pint) with a clear “recipe ✓ / no recipe yet” badge — just click a product to build its recipe. No more hunting in a dropdown.',
