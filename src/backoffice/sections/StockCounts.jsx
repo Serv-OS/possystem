@@ -10,7 +10,8 @@ import { useStore } from '../../store';
 import { getActiveLocationSync, getLocationId } from '../../lib/supabase';
 import { money } from '../../lib/currency';
 import { fetchInventoryItems } from '../../lib/stock/data';
-import { fetchCounts, fetchCount, createCount, saveCountLine, approveCount, setCountStatus } from '../../lib/stock/counts';
+import { fetchCounts, fetchCount, createCount, saveCountLine, approveCount } from '../../lib/stock/counts';
+import { toBase, fromBase, formatToken } from '../../lib/stock/uom';
 
 const field = { background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 8, padding: '10px 12px', fontSize: 16, outline: 'none', boxSizing: 'border-box', textAlign: 'right' };
 const r3 = (v) => Math.round((Number(v) || 0) * 1000) / 1000;
@@ -34,11 +35,29 @@ export default function StockCounts() {
   useEffect(() => { reload(); /* eslint-disable-next-line */ }, []);
 
   const itemName = useCallback((id) => items.find(i => i.id === id)?.name || '—', [items]);
-  const itemUnit = useCallback((id) => items.find(i => i.id === id)?.baseUnit || '', [items]);
+
+  // Unit helpers — count in the item's friendly units (Keg / Case / Bottle / base), mixed allowed.
+  const itemsById = {}; (items || []).forEach(i => { itemsById[i.id] = i; });
+  const uomFor = (id) => { const i = itemsById[id]; return i ? { baseUnit: i.baseUnit, itemConversions: (i.conversions || []).map(c => ({ fromQty: c.fromQty, fromUnit: c.fromUnit, toQty: c.toQty, toUnit: c.toUnit })), formats: (i.packaging || []).map(f => ({ id: f.id, name: f.name, qtyInBase: f.qtyInBase })) } : { baseUnit: 'each', itemConversions: [], formats: [] }; };
+  const countUnitsFor = (id) => { const u = uomFor(id); const fmts = [...u.formats].sort((a, b) => b.qtyInBase - a.qtyInBase).map(f => ({ token: formatToken(f.id), label: f.name })); return [...fmts, { token: u.baseUnit, label: u.baseUnit }]; };
+  const defaultTokenFor = (id) => { const i = itemsById[id]; const cd = (i?.packaging || []).find(f => f.isCountDefault); return cd ? formatToken(cd.id) : (i?.baseUnit || 'each'); };
+  const countedBase = (line) => {
+    const e = edits[line.id]; if (!e) return null;
+    const u = uomFor(line.inventoryItemId);
+    let any = false, sum = 0;
+    for (const [tok, v] of Object.entries(e)) { if (v === '' || v == null) continue; const n = Number(v); if (!Number.isFinite(n)) continue; any = true; try { sum += toBase(n, tok, u); } catch { /* skip bad unit */ } }
+    return any ? sum : null;
+  };
 
   const openCount = async (id) => {
     const { data } = await fetchCount(id, locId);
-    if (data) { setActive(data); setEdits({}); }
+    if (!data) return;
+    // Seed any previously-counted lines into their default unit so editing resumes.
+    const init = {};
+    data.lines.forEach(l => {
+      if (l.countedQty != null) { const tok = defaultTokenFor(l.inventoryItemId); const inU = fromBase(l.countedQty, tok, uomFor(l.inventoryItemId)); init[l.id] = { [tok]: inU == null ? '' : String(r3(inU)) }; }
+    });
+    setActive(data); setEdits(init);
   };
   const startCount = async () => {
     setBusy(true);
@@ -48,14 +67,14 @@ export default function StockCounts() {
     await reload();
     if (data) openCount(data.id);
   };
-  const onEdit = (lineId, v) => setEdits(e => ({ ...e, [lineId]: v }));
+  const onEdit = (lineId, token, v) => setEdits(e => ({ ...e, [lineId]: { ...(e[lineId] || {}), [token]: v } }));
   const onBlur = async (line) => {
-    const v = edits[line.id];
-    if (v === undefined) return;
-    await saveCountLine(line.id, v, locId);
+    if (!edits[line.id]) return;
+    const base = countedBase(line);
+    await saveCountLine(line.id, base == null ? '' : base, locId);
   };
   const flush = async () => {
-    for (const [lineId, v] of Object.entries(edits)) await saveCountLine(lineId, v, locId);
+    for (const line of active.lines) { if (edits[line.id]) { const base = countedBase(line); await saveCountLine(line.id, base == null ? '' : base, locId); } }
   };
   const approve = async () => {
     if (!confirm('Approve this count? It will adjust on-hand to your counted figures and post the differences to the ledger.')) return;
@@ -74,7 +93,7 @@ export default function StockCounts() {
   // ── Count sheet ──
   if (active) {
     const approved = active.status === 'APPROVED';
-    const countedNum = active.lines.filter(l => (edits[l.id] ?? l.countedQty) != null && (edits[l.id] ?? l.countedQty) !== '').length;
+    const countedNum = active.lines.filter(l => countedBase(l) != null || (l.countedQty != null && !edits[l.id])).length;
     return (
       <div style={{ height: '100%', overflowY: 'auto', background: 'var(--bg0)', padding: '18px 20px', maxWidth: 640, margin: '0 auto' }}>
         <button onClick={() => { setActive(null); reload(); }} style={{ background: 'transparent', border: 0, color: 'var(--t3)', cursor: 'pointer', fontSize: 13, marginBottom: 10 }}>← All counts</button>
@@ -86,22 +105,34 @@ export default function StockCounts() {
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 80 }}>
           {active.lines.map(line => {
-            const val = edits[line.id] ?? (line.countedQty ?? '');
-            const counted = val === '' || val == null ? null : Number(val);
-            const variance = counted == null ? null : counted - line.expectedQty;
+            const u = uomFor(line.inventoryItemId);
+            const units = countUnitsFor(line.inventoryItemId);
+            const dToken = defaultTokenFor(line.inventoryItemId);
+            const dLabel = units.find(x => x.token === dToken)?.label || u.baseUnit;
+            const expDisp = fromBase(line.expectedQty, dToken, u);
+            const base = countedBase(line);
+            const variance = base == null ? null : base - line.expectedQty;
             return (
-              <div key={line.id} style={{ display: 'flex', alignItems: 'center', gap: 12, background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 10, padding: '10px 14px' }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
+              <div key={line.id} style={{ background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 10, padding: '10px 14px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10 }}>
                   <div style={{ fontSize: 14, color: 'var(--t1)' }}>{itemName(line.inventoryItemId)}</div>
-                  <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 1 }}>
-                    system: {r3(line.expectedQty)} {itemUnit(line.inventoryItemId)}
-                    {variance != null && variance !== 0 && <span style={{ color: variance < 0 ? 'var(--red, #ef4444)' : 'var(--grn, #16a34a)', marginLeft: 8 }}>{variance > 0 ? '+' : ''}{r3(variance)}</span>}
-                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--t3)' }}>system: {r3(expDisp == null ? line.expectedQty : expDisp)} {dLabel}</div>
                 </div>
-                <input type="number" inputMode="decimal" step="any" disabled={approved} value={val}
-                  onChange={e => onEdit(line.id, e.target.value)} onBlur={() => onBlur(line)}
-                  placeholder="count" style={{ ...field, width: 96 }} />
-                <span style={{ fontSize: 12, color: 'var(--t3)', width: 28 }}>{itemUnit(line.inventoryItemId)}</span>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+                  {units.map(uo => (
+                    <div key={uo.token} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <input type="number" inputMode="decimal" step="any" disabled={approved} value={edits[line.id]?.[uo.token] ?? ''}
+                        onChange={e => onEdit(line.id, uo.token, e.target.value)} onBlur={() => onBlur(line)}
+                        placeholder="0" style={{ ...field, width: 64, textAlign: 'right' }} />
+                      <span style={{ fontSize: 11, color: 'var(--t3)' }}>{uo.label}</span>
+                    </div>
+                  ))}
+                </div>
+                {base != null && (
+                  <div style={{ fontSize: 11, marginTop: 6, color: variance < 0 ? 'var(--red, #ef4444)' : variance > 0 ? 'var(--grn, #16a34a)' : 'var(--t3)' }}>
+                    counted = {r3(base)} {u.baseUnit}{variance !== 0 ? ` · ${variance > 0 ? '+' : ''}${r3(variance)} vs system` : ' · matches'}
+                  </div>
+                )}
               </div>
             );
           })}

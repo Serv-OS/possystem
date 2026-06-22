@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.578', date: '23 Jun 2026', label: 'Stock counts — count in units, mixed (2 cases + 3 bottles)',
+    changes: [
+      'The count sheet now lets you count in your real units, and mix them — e.g. enter 2 in Cases and 3 in Bottles on the same line and it totals correctly.',
+      'Each item shows the system figure in your count unit, and a live “counted = X · variance vs system” line as you go. Approve still reconciles on-hand and records the variance.',
+    ],
+  },
+  {
     version: '5.5.577', date: '23 Jun 2026', label: 'Stock — buy in packs & sell by the glass (units everywhere)',
     changes: [
       'Supplier price is now “Buy 1 Keg for £152” / “1 Case for £40” — pick the unit you actually buy in (from the Units tab); cost-per-unit is worked out for you.',
