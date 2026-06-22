@@ -85,6 +85,16 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.567', date: '22 Jun 2026', label: 'Stock & Production — purchasing: suppliers, purchase orders & AI invoice scanning',
+    changes: [
+      'NEW: Purchasing → Suppliers — add and manage vendors (contact, payment terms, delivery days, minimum order, cut-off).',
+      'NEW: Purchasing → Purchase orders — build an order (pack sizes & prices prefill from each item’s supplier), save a draft, mark it sent, then Receive into stock — which adds the stock and updates each item’s cost.',
+      'NEW: Purchasing → Invoices — snap or upload a supplier invoice / delivery note; it’s read automatically (Claude vision), you check and match the lines to your stock items (with price-change flags vs your current cost), then post — updating stock and costs in one go. Always reviewed before posting.',
+      'Receiving (PO or invoice) posts a Delivery movement to the stock ledger and rolls each item’s moving-average cost forward.',
+      'Tidy-up: Daily counts now lists only top-level products — variant halves and modifier options (e.g. “half and half”) no longer clutter the list.',
+    ],
+  },
+  {
     version: '5.5.566', date: '22 Jun 2026', label: 'Stock & Production — production batches (make-here items)',
     changes: [
       'NEW: Produce → Batches. Make a prep / sub-recipe item — choose the recipe, enter how much you actually made, and the batch consumes the ingredients and adds the finished item to stock at real production cost.',

@@ -1,0 +1,223 @@
+/**
+ * stock/purchasing.js — purchase orders, receiving, and supplier invoices.
+ *
+ * Receiving a PO or posting an invoice writes PURCHASE_RECEIPT movements to the
+ * ledger (via post_stock_movement) and updates each item's moving-average cost
+ * with a new effective-dated item_cost_history row. House pattern: loc-demo guard,
+ * camelCase ↔ snake_case, idempotent receipts.
+ */
+
+import { supabase, isMock, getLocationId, getActiveLocationSync } from '../supabase';
+import { convert } from './conversion.js';
+import { movingAverageCost } from './costing.js';
+import { postStockMovement } from './data.js';
+
+const nowIso = () => new Date().toISOString();
+async function ensureLoc(locationId) {
+  if (!locationId || locationId === 'loc-demo') locationId = getActiveLocationSync();
+  if (!locationId || locationId === 'loc-demo') locationId = await getLocationId().catch(() => null);
+  if (!locationId || locationId === 'loc-demo') return null;
+  return locationId;
+}
+
+/** Map of item id → { baseUnit, conversions, onHand, currentCost, costMethod } for a set of ids. */
+async function itemMap(locationId, ids) {
+  const uniq = [...new Set(ids.filter(Boolean))];
+  if (!uniq.length) return {};
+  const [{ data: items }, { data: convs }] = await Promise.all([
+    supabase.from('inventory_items').select('id, base_unit, on_hand, current_cost, cost_method').eq('location_id', locationId).in('id', uniq),
+    supabase.from('inventory_item_conversions').select('*').eq('location_id', locationId).in('inventory_item_id', uniq),
+  ]);
+  const convByItem = {};
+  (convs || []).forEach((c) => { (convByItem[c.inventory_item_id] ??= []).push({ fromQty: Number(c.from_qty), fromUnit: c.from_unit, toQty: Number(c.to_qty), toUnit: c.to_unit }); });
+  const m = {};
+  (items || []).forEach((it) => {
+    m[it.id] = {
+      baseUnit: it.base_unit, conversions: convByItem[it.id] || [],
+      onHand: Number(it.on_hand) || 0, currentCost: it.current_cost == null ? 0 : Number(it.current_cost),
+      costMethod: it.cost_method || 'MOVING_AVG',
+    };
+  });
+  return m;
+}
+
+/**
+ * Apply one receipt to an item: post PURCHASE_RECEIPT (+qtyBase at unitCostPerBase)
+ * and update moving-average cost. Idempotent on idemKey (skips cost update on dupe).
+ */
+async function applyReceipt(locationId, item, itemId, recvBase, unitCostPerBase, sourceType, sourceId, idemKey) {
+  if (!(recvBase > 0)) return;
+  const res = await postStockMovement({
+    inventoryItemId: itemId, qtyBase: recvBase, unitCost: unitCostPerBase, movementType: 'PURCHASE_RECEIPT',
+    sourceType, sourceId, idempotencyKey: idemKey,
+  }, locationId);
+  if (res?.data?.duplicate) return; // already received — don't re-cost
+  const newAvg = item.costMethod === 'LAST_COST'
+    ? unitCostPerBase
+    : movingAverageCost({ onHandQty: item.onHand, currentAvg: item.currentCost, receivedQty: recvBase, receivedUnitCost: unitCostPerBase });
+  await supabase.from('item_cost_history').update({ effective_to: nowIso() })
+    .eq('location_id', locationId).eq('inventory_item_id', itemId).is('effective_to', null);
+  await supabase.from('item_cost_history').insert({
+    location_id: locationId, inventory_item_id: itemId, base_unit_cost: newAvg, source: 'INVOICE', effective_from: nowIso(),
+  });
+  await supabase.from('inventory_items').update({ current_cost: newAvg, updated_at: nowIso() })
+    .eq('location_id', locationId).eq('id', itemId);
+  // keep the local snapshot current in case the same item appears twice in one receipt
+  item.onHand += recvBase; item.currentCost = newAvg;
+}
+
+// ── Purchase orders ───────────────────────────────────────────────────────────
+const poFromRow = (r) => ({
+  id: r.id, locationId: r.location_id, supplierId: r.supplier_id, reference: r.reference, status: r.status,
+  expectedDate: r.expected_date, orderedAt: r.ordered_at, receivedAt: r.received_at,
+  subtotal: r.subtotal == null ? null : Number(r.subtotal), notes: r.notes, createdAt: r.created_at,
+});
+const poLineFromRow = (r) => ({
+  id: r.id, poId: r.po_id, inventoryItemId: r.inventory_item_id, supplierProductId: r.supplier_product_id,
+  description: r.description, qtyPacks: Number(r.qty_packs), packQty: Number(r.pack_qty), innerQty: Number(r.inner_qty),
+  innerUnit: r.inner_unit, unitPrice: Number(r.unit_price), qtyReceived: Number(r.qty_received), sortOrder: r.sort_order,
+});
+
+export const fetchPurchaseOrders = async (locationId = null, limit = 100) => {
+  if (isMock || !supabase) return { data: [], error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: [], error: null };
+  const [{ data: pos, error }, { data: lines }] = await Promise.all([
+    supabase.from('purchase_orders').select('*').eq('location_id', locationId).order('created_at', { ascending: false }).limit(limit),
+    supabase.from('po_lines').select('*').eq('location_id', locationId).order('sort_order'),
+  ]);
+  if (error) return { data: [], error };
+  const linesByPo = {};
+  (lines || []).forEach((l) => { (linesByPo[l.po_id] ??= []).push(poLineFromRow(l)); });
+  return { data: (pos || []).map((r) => ({ ...poFromRow(r), lines: linesByPo[r.id] || [] })), error: null };
+};
+
+/** Create or update a PO header + replace its lines. Returns { data: po, error }. */
+export const savePurchaseOrder = async (po, lines, locationId = null) => {
+  if (isMock || !supabase) return { data: null, error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: null, error: new Error('No locationId') };
+  const subtotal = (lines || []).reduce((s, l) => s + (Number(l.qtyPacks) || 0) * (Number(l.unitPrice) || 0), 0);
+  const row = {
+    ...(po.id ? { id: po.id } : {}),
+    location_id: locationId, supplier_id: po.supplierId || null, reference: po.reference || null,
+    status: po.status || 'DRAFT', expected_date: po.expectedDate || null, notes: po.notes || null,
+    subtotal, updated_at: nowIso(),
+  };
+  const { data, error } = await supabase.from('purchase_orders').upsert(row).select().maybeSingle();
+  if (error || !data) return { data: null, error: error || new Error('PO save failed') };
+  await supabase.from('po_lines').delete().eq('location_id', locationId).eq('po_id', data.id);
+  const lrows = (lines || []).filter(l => l.inventoryItemId || l.description).map((l, i) => ({
+    location_id: locationId, po_id: data.id, inventory_item_id: l.inventoryItemId || null,
+    supplier_product_id: l.supplierProductId || null, description: l.description || null,
+    qty_packs: Number(l.qtyPacks) || 0, pack_qty: Number(l.packQty) || 1, inner_qty: Number(l.innerQty) || 1,
+    inner_unit: l.innerUnit || 'each', unit_price: Number(l.unitPrice) || 0, qty_received: Number(l.qtyReceived) || 0, sort_order: i,
+  }));
+  if (lrows.length) await supabase.from('po_lines').insert(lrows);
+  return { data: poFromRow(data), error: null };
+};
+
+export const setPOStatus = async (poId, status, locationId = null) => {
+  if (isMock || !supabase) return { error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { error: new Error('No locationId') };
+  const patch = { status, updated_at: nowIso() };
+  if (status === 'SENT') patch.ordered_at = nowIso();
+  return supabase.from('purchase_orders').update(patch).eq('location_id', locationId).eq('id', poId);
+};
+
+/** Receive a PO in full: post receipts for every line's outstanding packs + mark RECEIVED. */
+export const receivePurchaseOrder = async (poId, locationId = null) => {
+  if (isMock || !supabase) return { error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { error: new Error('No locationId') };
+  const { data: lines } = await supabase.from('po_lines').select('*').eq('location_id', locationId).eq('po_id', poId);
+  if (!lines?.length) return { error: new Error('No lines') };
+  const map = await itemMap(locationId, lines.map(l => l.inventory_item_id));
+  for (const l of lines) {
+    const item = map[l.inventory_item_id];
+    if (!item) continue;
+    const outstanding = Number(l.qty_packs) - Number(l.qty_received);
+    if (!(outstanding > 0)) continue;
+    let baseContentPerPack;
+    try { baseContentPerPack = convert(Number(l.pack_qty) * Number(l.inner_qty), l.inner_unit, item.baseUnit, { itemConversions: item.conversions }); }
+    catch { continue; }
+    if (!(baseContentPerPack > 0)) continue;
+    const recvBase = outstanding * baseContentPerPack;
+    const unitCostPerBase = Number(l.unit_price) / baseContentPerPack;
+    await applyReceipt(locationId, item, l.inventory_item_id, recvBase, unitCostPerBase, 'purchase_order', poId, `po:${poId}:${l.id}`);
+    await supabase.from('po_lines').update({ qty_received: Number(l.qty_packs) }).eq('location_id', locationId).eq('id', l.id);
+  }
+  await supabase.from('purchase_orders').update({ status: 'RECEIVED', received_at: nowIso(), updated_at: nowIso() })
+    .eq('location_id', locationId).eq('id', poId);
+  return { error: null };
+};
+
+// ── Invoices (scan → review → post) ───────────────────────────────────────────
+const invFromRow = (r) => ({
+  id: r.id, locationId: r.location_id, supplierId: r.supplier_id, invoiceNumber: r.invoice_number,
+  invoiceDate: r.invoice_date, status: r.status, subtotal: r.subtotal, tax: r.tax, total: r.total,
+  ocrConfidence: r.ocr_confidence, postedAt: r.posted_at, createdAt: r.created_at,
+});
+
+export const fetchInvoices = async (locationId = null, limit = 100) => {
+  if (isMock || !supabase) return { data: [], error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: [], error: null };
+  const { data, error } = await supabase.from('supplier_invoices').select('*')
+    .eq('location_id', locationId).order('created_at', { ascending: false }).limit(limit);
+  return { data: (data || []).map(invFromRow), error };
+};
+
+/** Send an invoice image to the Claude-vision OCR endpoint. Returns parsed JSON. */
+export const scanInvoice = async (imageBase64, mediaType) => {
+  try {
+    const res = await fetch('/api/stock-invoice-scan', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ image: imageBase64, media_type: mediaType || 'image/jpeg' }),
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) return { error: j.error || `Scan failed (${res.status})` };
+    return { data: j };
+  } catch (e) { return { error: e.message }; }
+};
+
+/**
+ * Post a reviewed invoice: write the invoice + lines, and for each matched line
+ * post a PURCHASE_RECEIPT + update cost. lines: [{matchedItemId, description, qty,
+ * unit, unitPrice, lineTotal, flags}]. Returns { data: invoice, error }.
+ */
+export const postInvoice = async (header, lines, locationId = null) => {
+  if (isMock || !supabase) return { data: null, error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: null, error: new Error('No locationId') };
+  const { data: inv, error } = await supabase.from('supplier_invoices').insert({
+    location_id: locationId, supplier_id: header.supplierId || null, invoice_number: header.invoiceNumber || null,
+    invoice_date: header.invoiceDate || null, status: 'POSTED', ocr_confidence: header.ocrConfidence ?? null,
+    subtotal: header.subtotal ?? null, tax: header.tax ?? null, total: header.total ?? null,
+    raw_json: header.rawJson || null, posted_at: nowIso(),
+  }).select().maybeSingle();
+  if (error || !inv) return { data: null, error: error || new Error('Invoice save failed') };
+
+  const map = await itemMap(locationId, lines.map(l => l.matchedItemId));
+  const lineRows = [];
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    lineRows.push({
+      location_id: locationId, invoice_id: inv.id, matched_item_id: l.matchedItemId || null,
+      description: l.description || null, qty: Number(l.qty) || 0, unit: l.unit || 'each',
+      unit_price: Number(l.unitPrice) || 0, line_total: l.lineTotal ?? null, flags: l.flags || [], sort_order: i,
+    });
+    const item = map[l.matchedItemId];
+    if (!item || !(Number(l.qty) > 0)) continue;
+    let qtyBase;
+    try { qtyBase = convert(Number(l.qty), l.unit || item.baseUnit, item.baseUnit, { itemConversions: item.conversions }); }
+    catch { continue; }
+    if (!(qtyBase > 0)) continue;
+    const lineTotal = l.lineTotal != null ? Number(l.lineTotal) : (Number(l.qty) * Number(l.unitPrice));
+    const unitCostPerBase = lineTotal / qtyBase;
+    await applyReceipt(locationId, item, l.matchedItemId, qtyBase, unitCostPerBase, 'supplier_invoice', inv.id, `inv:${inv.id}:${l.matchedItemId}:${i}`);
+  }
+  if (lineRows.length) await supabase.from('supplier_invoice_lines').insert(lineRows);
+  return { data: invFromRow(inv), error: null };
+};

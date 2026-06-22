@@ -34,7 +34,9 @@ export default function Inventory() {
 
   const itemsWithStatus = useMemo(() => {
     return MENU_ITEMS
-      .filter(i => !i.archived)
+      // v5.5.567: only top-level sellables — hide variant children (parentId) and
+      // modifier sub-items (type 'subitem', e.g. "half and half") that cluttered the list.
+      .filter(i => !i.archived && !i.parentId && i.type !== 'subitem')
       .map(i => ({
         ...i,
         count: dailyCounts[i.id] || null,
