@@ -85,6 +85,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.581', date: '23 Jun 2026', label: 'Purchasing — Order pad (forecast ordering, auto-split by supplier)',
+    changes: [
+      'NEW: Purchasing → Order pad. A single product list with on-hand, average daily use and a forecast-based suggested quantity. Set quantities (or click “Fill from forecast”), and a basket builds across all suppliers.',
+      '“Create orders” splits the basket into one purchase order per supplier automatically — it knows each item’s supplier.',
+      'Suggested qty = your real average daily use (from sales) × days-to-cover − on hand − on order, rounded to whole packs; falls back to topping up to par when there’s no sales history yet.',
+      'Filter by supplier, search, or show only what needs ordering. Items with no supplier are flagged. Fixed: the old Purchase-orders line picker now lists items on focus (no need to guess names).',
+    ],
+  },
+  {
     version: '5.5.580', date: '23 Jun 2026', label: 'Stock on-hand shown in units (6 bottles, not 4500 ml)',
     changes: [
       'Stock on-hand now displays in your units everywhere — the item header, the items list, the valuation report and the activity feed all read “6 Bottle” / “2.5 Keg” instead of the raw ml/l.',

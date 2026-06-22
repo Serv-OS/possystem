@@ -148,15 +148,15 @@ export default function PurchaseOrders() {
 
 function ItemPicker({ items, onPick }) {
   const [q, setQ] = useState('');
+  const [focused, setFocused] = useState(false);
   const matches = useMemo(() => {
     const s = q.trim().toLowerCase();
-    if (!s) return [];
-    return items.filter(i => !i.archivedAt && i.name.toLowerCase().includes(s)).slice(0, 8);
+    return items.filter(i => !i.archivedAt && (!s || i.name.toLowerCase().includes(s))).slice(0, 10);
   }, [q, items]);
   return (
     <div style={{ position: 'relative', maxWidth: 360 }}>
-      <input value={q} onChange={e => setQ(e.target.value)} placeholder="Add stock item to order…" style={field} />
-      {matches.length > 0 && (
+      <input value={q} onChange={e => setQ(e.target.value)} onFocus={() => setFocused(true)} onBlur={() => setTimeout(() => setFocused(false), 150)} placeholder="Add stock item to order…" style={field} />
+      {focused && matches.length > 0 && (
         <div style={{ position: 'absolute', zIndex: 5, left: 0, right: 0, background: 'var(--bg2)', border: '1px solid var(--bdr)', borderRadius: 8, marginTop: 4, overflow: 'hidden', boxShadow: '0 10px 30px rgba(0,0,0,0.3)' }}>
           {matches.map(i => <div key={i.id} onClick={() => { onPick(i); setQ(''); }} style={{ padding: '9px 12px', cursor: 'pointer', fontSize: 13, color: 'var(--t1)' }}>{i.name}</div>)}
         </div>

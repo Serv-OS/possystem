@@ -153,6 +153,28 @@ export const receivePurchaseOrder = async (poId, locationId = null) => {
   return { error: null };
 };
 
+/**
+ * Create purchase orders from an order-pad basket, split by supplier (one PO per
+ * supplier). lines: [{ supplierId, inventoryItemId, description, qtyPacks, packQty,
+ * innerQty, innerUnit, unitPrice }]. Returns { data: { created }, error }.
+ */
+export const createOrdersFromBasket = async (lines, status = 'DRAFT', locationId = null) => {
+  if (isMock || !supabase) return { data: { created: 0 }, error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: null, error: new Error('No locationId') };
+  const bySupplier = {};
+  for (const l of lines) {
+    if (!l.supplierId || !(Number(l.qtyPacks) > 0)) continue;
+    (bySupplier[l.supplierId] ??= []).push(l);
+  }
+  let created = 0;
+  for (const [supplierId, group] of Object.entries(bySupplier)) {
+    const { error } = await savePurchaseOrder({ supplierId, status }, group, locationId);
+    if (!error) created++;
+  }
+  return { data: { created }, error: null };
+};
+
 // ── Invoices (scan → review → post) ───────────────────────────────────────────
 const invFromRow = (r) => ({
   id: r.id, locationId: r.location_id, supplierId: r.supplier_id, invoiceNumber: r.invoice_number,

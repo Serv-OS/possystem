@@ -34,6 +34,7 @@ import Batches from './sections/Batches';
 import Suppliers from './sections/Suppliers';
 import PurchaseOrders from './sections/PurchaseOrders';
 import Invoices from './sections/Invoices';
+import OrderPad from './sections/OrderPad';
 import SupabaseSetup from '../lib/SupabaseSetup';
 import CompanyAdmin from './sections/CompanyAdmin';
 import AIAssistantSection from './sections/AIAssistantSection';
@@ -77,6 +78,7 @@ const NAV = [
   { id:'stock-items', label:'Stock items',     icon:'📦',  group:'Configuration' },
   { id:'recipes',    label:'Recipes',         icon:'📖',  group:'Configuration' },
   { id:'batches',    label:'Batches',         icon:'🍲',  group:'Configuration' },
+  { id:'order-pad',  label:'Order pad',       icon:'🛒',  group:'Configuration' },
   { id:'suppliers',  label:'Suppliers',       icon:'🚚',  group:'Configuration' },
   { id:'purchase-orders', label:'Purchase orders', icon:'🧾', group:'Configuration' },
   { id:'invoices',   label:'Invoices',        icon:'📄',  group:'Configuration' },
@@ -125,7 +127,7 @@ const NAV_IA = [
   { label:'Floor plan', icon:'floor',     single:'floorplan' },
   { label:'Inventory',  icon:'inventory', children:[['stock-overview','Overview'],['stock-items','Stock items'],['stock-counts','Stock counts'],['wastage','Wastage'],['inventory','Daily counts'],['stock-reports','Reports']] },
   { label:'Produce',    icon:'inventory', children:[['recipes','Recipes'],['batches','Batches']] },
-  { label:'Purchasing', icon:'channels',  children:[['suppliers','Suppliers'],['purchase-orders','Purchase orders'],['invoices','Invoices']] },
+  { label:'Purchasing', icon:'channels',  children:[['order-pad','Order pad'],['suppliers','Suppliers'],['purchase-orders','Purchase orders'],['invoices','Invoices']] },
   { label:'Team',       icon:'user',      single:'staff' },
   { label:'Workforce',  icon:'team',      children:[['wf-dashboard','Dashboard'],['wf-rota','Rota'],['wf-timesheets','Timesheets'],['wf-payroll','Payroll'],['wf-timeoff','Time off & availability'],['wf-staff','Staff'],['wf-onboarding','Onboarding'],['wf-compliance','Compliance'],['wf-pay','Positions & rates'],['wf-tronc','Tronc / tips'],['wf-announce','Announcements'],['wf-settings','Workforce settings']] },
   { label:'Customers',  icon:'customers', children:[['customers','Customers'],['promotions','Promotions'],['segments','Segments'],['campaigns','Campaigns'],['quicksend','Quick send'],['workflows','Workflows'],['marketing-reports','Marketing report'],['compliance','Marketing compliance'],['wifi','WiFi'],['reviews','Reviews'],['loyalty','Loyalty'],['giftcards','Gift cards'],['messages','Messages']] },
@@ -650,6 +652,7 @@ export default function BackOfficeApp() {
           {section === 'stock-items' && <StockItems />}
           {section === 'recipes'    && <Recipes />}
           {section === 'batches'    && <Batches />}
+          {section === 'order-pad'  && <OrderPad />}
           {section === 'suppliers'  && <Suppliers />}
           {section === 'purchase-orders' && <PurchaseOrders />}
           {section === 'invoices'   && <Invoices />}
