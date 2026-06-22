@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.580', date: '23 Jun 2026', label: 'Stock on-hand shown in units (6 bottles, not 4500 ml)',
+    changes: [
+      'Stock on-hand now displays in your units everywhere — the item header, the items list, the valuation report and the activity feed all read “6 Bottle” / “2.5 Keg” instead of the raw ml/l.',
+      'It uses each item’s count unit; set the unit you want to read on-hand in as the item’s count default on the Units tab.',
+    ],
+  },
+  {
     version: '5.5.579', date: '23 Jun 2026', label: 'Stock counting — only your real units (no more ml)',
     changes: [
       'When an item has units defined, counting now shows ONLY those units (Bottle, Case…) — the maths unit (ml/g) is hidden. You never count in ml again.',

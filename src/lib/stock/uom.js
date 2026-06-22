@@ -52,6 +52,20 @@ export function fromBase(qtyBase, token, item) {
   catch { return null; }
 }
 
+/** The unit on-hand should be shown in: the count-default pack, else the base unit. */
+export function preferredDisplayToken(item) {
+  const f = (item?.formats || []).find((x) => x.isCountDefault) || null;
+  return f ? formatToken(f.id) : (item?.baseUnit || 'each');
+}
+
+/** Format a base quantity in the item's friendly display unit, e.g. "6 Bottle". */
+export function displayInUnits(qtyBase, item) {
+  const tok = preferredDisplayToken(item);
+  const v = fromBase(Number(qtyBase) || 0, tok, item);
+  if (v == null) return { qty: Math.round((Number(qtyBase) || 0) * 1000) / 1000, label: item?.baseUnit || '' };
+  return { qty: Math.round(v * 1000) / 1000, label: unitLabel(tok, item) };
+}
+
 /** Human label for a token in the context of an item. */
 export function unitLabel(token, item) {
   if (isFormatToken(token)) return (item?.formats || []).find((x) => String(x.id) === tokenToFormatId(token))?.name || '?';

@@ -30,7 +30,7 @@ import {
   setInventoryOnHand, fetchItemMovements, movementLabel,
 } from '../../lib/stock/data';
 import { fetchParLevels, upsertParLevel } from '../../lib/stock/counts';
-import { toBase, unitOptions, formatToken, unitLabel } from '../../lib/stock/uom';
+import { toBase, unitOptions, formatToken, unitLabel, displayInUnits } from '../../lib/stock/uom';
 
 const KINDS = [
   { id: 'PURCHASED', label: 'Purchased', desc: 'Bought from a supplier — cost comes from invoices/packs.' },
@@ -185,7 +185,7 @@ export default function StockItems() {
                 <div style={{ minWidth: 0, flex: 1 }}>
                   <div style={{ fontSize: 13, color: 'var(--t1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{it.name}</div>
                   <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2, display: 'flex', gap: 8 }}>
-                    <span>{it.category || (it.kind === 'MADE' ? 'Made' : 'Purchased')}</span>
+                    {(() => { const oh = displayInUnits(Number(it.onHand || 0), { baseUnit: it.baseUnit, formats: it.packaging || [] }); return <span style={{ color: 'var(--t2)' }}>{oh.qty} {oh.label}</span>; })()}
                     <span>· {fmtUnitCost(it.currentCost)}/{it.baseUnit}</span>
                   </div>
                 </div>
@@ -223,7 +223,7 @@ export default function StockItems() {
               <div style={{ display: 'flex', gap: 22, textAlign: 'right' }}>
                 <div>
                   <div style={{ fontSize: 11, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em' }}>On hand</div>
-                  <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--t1)' }}>{Number(draft.onHand || 0)}<span style={{ fontSize: 12, color: 'var(--t3)' }}> {draft.baseUnit}</span></div>
+                  {(() => { const oh = displayInUnits(Number(draft.onHand || 0), { baseUnit: draft.baseUnit, formats: draft.packaging || [] }); return <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--t1)' }}>{oh.qty}<span style={{ fontSize: 12, color: 'var(--t3)' }}> {oh.label}</span></div>; })()}
                 </div>
                 <div>
                   <div style={{ fontSize: 11, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em' }}>Current cost</div>

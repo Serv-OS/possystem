@@ -10,6 +10,7 @@ import { useStore } from '../../store';
 import { getActiveLocationSync, getLocationId } from '../../lib/supabase';
 import { money, currencySymbol } from '../../lib/currency';
 import { fetchInventoryItems, fetchSuppliers, fetchRecentMovements, movementLabel } from '../../lib/stock/data';
+import { displayInUnits } from '../../lib/stock/uom';
 import { fetchRecipes } from '../../lib/stock/recipes';
 import { fetchPurchaseOrders } from '../../lib/stock/purchasing';
 
@@ -120,11 +121,13 @@ export default function StockOverview({ setSection }) {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {d.moves.map(m => {
                 const pos = m.qtyBase >= 0;
+                const it = (d.items || []).find(x => x.id === m.inventoryItemId);
+                const disp = it ? displayInUnits(m.qtyBase, { baseUnit: it.baseUnit, formats: it.packaging || [] }) : { qty: Math.round(m.qtyBase * 1000) / 1000, label: '' };
                 return (
                   <div key={m.id} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12.5 }}>
                     <span style={{ width: 92, color: 'var(--t3)', flexShrink: 0 }}>{movementLabel(m.movementType)}</span>
                     <span style={{ flex: 1, minWidth: 0, color: 'var(--t1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{itemName(m.inventoryItemId)}</span>
-                    <span style={{ color: pos ? 'var(--grn, #16a34a)' : 'var(--red, #ef4444)', flexShrink: 0 }}>{pos ? '+' : ''}{Math.round(m.qtyBase * 1000) / 1000}</span>
+                    <span style={{ color: pos ? 'var(--grn, #16a34a)' : 'var(--red, #ef4444)', flexShrink: 0 }}>{pos ? '+' : ''}{disp.qty} {disp.label}</span>
                     <span style={{ width: 60, textAlign: 'right', color: 'var(--t3)', flexShrink: 0 }}>{m.valueDelta == null ? '' : money(m.valueDelta)}</span>
                   </div>
                 );

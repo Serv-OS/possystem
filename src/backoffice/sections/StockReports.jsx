@@ -17,6 +17,7 @@ import { toCsv, downloadCsv } from './reports/_csv';
 import { fetchInventoryItems, fetchMovementsRange, movementLabel } from '../../lib/stock/data';
 import { fetchRecipes, buildCostingCtx, costRecipeWith } from '../../lib/stock/recipes';
 import { foodCostPct, gpAmount, gpPct } from '../../lib/stock/costing';
+import { displayInUnits } from '../../lib/stock/uom';
 
 const TABS = ['Valuation', 'Recipe GP', 'Movements', 'The Gap'];
 const fmtCost = (v) => (v == null || !Number.isFinite(Number(v)) ? '—' : currencySymbol() + Number(v).toFixed(4).replace(/0+$/, '').replace(/\.$/, ''));
@@ -92,10 +93,13 @@ function ExportBtn({ rows, headers, name }) {
 }
 
 function Valuation({ items }) {
-  const rows = useMemo(() => items.filter(i => !i.archivedAt).map(i => ({
-    name: i.name, category: i.category || '', onHand: r3(i.onHand), unit: i.baseUnit,
-    cost: i.currentCost == null ? '' : i.currentCost, value: r3((Number(i.onHand) || 0) * (Number(i.currentCost) || 0)),
-  })).sort((a, b) => b.value - a.value), [items]);
+  const rows = useMemo(() => items.filter(i => !i.archivedAt).map(i => {
+    const oh = displayInUnits(Number(i.onHand) || 0, { baseUnit: i.baseUnit, formats: i.packaging || [] });
+    return {
+      name: i.name, category: i.category || '', onHand: oh.qty, unit: oh.label,
+      cost: i.currentCost == null ? '' : i.currentCost, value: r3((Number(i.onHand) || 0) * (Number(i.currentCost) || 0)),
+    };
+  }).sort((a, b) => b.value - a.value), [items]);
   const total = rows.reduce((s, r) => s + r.value, 0);
   return (
     <div>
