@@ -24,6 +24,7 @@ import EODClose from './sections/EODClose';
 import Customers from './sections/Customers';
 import Shift from './sections/Shift';
 import Inventory from './sections/Inventory';
+import StockItems from './sections/StockItems';
 import SupabaseSetup from '../lib/SupabaseSetup';
 import CompanyAdmin from './sections/CompanyAdmin';
 import AIAssistantSection from './sections/AIAssistantSection';
@@ -59,7 +60,8 @@ const NAV = [
   { id:'overview',   label:'Overview',        icon:'◈',  group:'Dashboard' },
   { id:'menu',       label:'Menu manager',    icon:'🍽',  group:'Configuration' },
   { id:'floorplan',  label:'Floor plan',      icon:'⬚',  group:'Configuration' },
-  { id:'inventory',  label:'Inventory',       icon:'📦',  group:'Configuration' },
+  { id:'inventory',  label:'Daily counts',    icon:'📦',  group:'Configuration' },
+  { id:'stock-items', label:'Stock items',     icon:'📦',  group:'Configuration' },
   { id:'profiles',   label:'Device profiles', icon:'📋',  group:'Devices' },
   { id:'devices',    label:'Devices',         icon:'📱',  group:'Devices' },
   { id:'kiosks',      label:'Kiosks',           icon:'🖥️',  group:'Devices' },
@@ -103,7 +105,7 @@ const NAV_IA = [
   { label:'Overview',   icon:'home',      single:'overview' },
   { label:'Menu',       icon:'list',      children:[['menu','Items & modifiers'],['discounts','Discounts'],['tax','Tax & VAT'],['challenge21','Challenge ID']] },
   { label:'Floor plan', icon:'floor',     single:'floorplan' },
-  { label:'Inventory',  icon:'inventory', single:'inventory' },
+  { label:'Inventory',  icon:'inventory', children:[['stock-items','Stock items'],['inventory','Daily counts']] },
   { label:'Team',       icon:'user',      single:'staff' },
   { label:'Workforce',  icon:'team',      children:[['wf-dashboard','Dashboard'],['wf-rota','Rota'],['wf-timesheets','Timesheets'],['wf-payroll','Payroll'],['wf-timeoff','Time off & availability'],['wf-staff','Staff'],['wf-onboarding','Onboarding'],['wf-compliance','Compliance'],['wf-pay','Positions & rates'],['wf-tronc','Tronc / tips'],['wf-announce','Announcements'],['wf-settings','Workforce settings']] },
   { label:'Customers',  icon:'customers', children:[['customers','Customers'],['promotions','Promotions'],['segments','Segments'],['campaigns','Campaigns'],['quicksend','Quick send'],['workflows','Workflows'],['marketing-reports','Marketing report'],['compliance','Marketing compliance'],['wifi','WiFi'],['reviews','Reviews'],['loyalty','Loyalty'],['giftcards','Gift cards'],['messages','Messages']] },
@@ -621,6 +623,7 @@ export default function BackOfficeApp() {
           {section === 'menu'       && <MenuManager />}
           {section === 'floorplan'  && <FloorPlanBuilder />}
           {section === 'inventory'  && <Inventory />}
+          {section === 'stock-items' && <StockItems />}
           {section === 'profiles'   && <DeviceProfiles />}
           {section === 'devices'    && <DeviceRegistry />}
           {section === 'kiosks'     && <KioskRegistry />}

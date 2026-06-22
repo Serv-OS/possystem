@@ -85,6 +85,16 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.562', date: '22 Jun 2026', label: 'Stock & Production — slice 1: Stock items, supplier pack→unit costing, recipe-ready costing engine',
+    changes: [
+      'NEW: Inventory → Stock items. Stock items (the things you hold, buy or make) are now modelled separately from menu products. Each item is Purchased or Made-here, with a base unit, category, allergens, storage and shelf life.',
+      'SUPPLIER PACK → UNIT COST — add per-supplier packs and what you pay, and the per-unit cost is derived automatically (e.g. a crate of 24 @ £40 → £1.6667 each). The preferred pack sets the item’s current cost, and every price change is kept in an effective-dated cost history so past reports stay accurate.',
+      'UNIT CONVERSION ENGINE — convert cleanly between pack, base, recipe and count units across count/weight/volume (UK measures). Cross-dimension cases (e.g. buy by the each, recipe in grams) use per-item bridges; same-dimension (kg↔g, L↔ml) is automatic.',
+      'PACKAGING FORMATS — define pack-of-packs (Box = 24, Sleeve = 6) per item for counting and ordering.',
+      'Under the hood: a pure, fully unit-tested costing engine (pack→unit, nested recipe roll-up with cycle detection, gross-profit) that the upcoming recipes, GP report and the stock-movement ledger all build on. This is the foundation of the full stock/production system; recipes, counts, wastage, production and purchasing follow.',
+    ],
+  },
+  {
     version: '5.5.561', date: '22 Jun 2026', label: 'New-order popup (Accept/Reject in the middle of the screen) + per-terminal order-notification toggle',
     changes: [
       'NEW-ORDER POPUP — incoming orders (online, kiosk, QR and delivery channels) now open a card in the MIDDLE of the screen instead of a small top banner. For a delivery/channel order that still needs accepting (auto-accept off) the card shows big Reject / Accept buttons that run the exact same path as the Orders Hub — print + kitchen tickets + confirm a prep time back to the channel. For everything else (or an already auto-accepted order) it shows View order (jumps to the Orders Hub) / Dismiss. Dismiss just closes the popup; the order stays in the Orders Hub.',
