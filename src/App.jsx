@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.574', date: '23 Jun 2026', label: 'Par & reorder levels per item',
+    changes: [
+      'Stock items → Stock tab: set a Par level and a Reorder point per item; a warning shows when on-hand hits the reorder point. Feeds low-stock alerts and (soon) suggested ordering.',
+    ],
+  },
+  {
     version: '5.5.573', date: '23 Jun 2026', label: 'Wastage logging',
     changes: [
       'NEW: Inventory → Wastage. Record spoilage, breakage, over-production etc. against a stock item with a reason — it comes off stock and is valued at cost.',

@@ -31,6 +31,7 @@ import {
   upsertPackagingFormat, deletePackagingFormat,
   setInventoryOnHand, fetchItemMovements, movementLabel,
 } from '../../lib/stock/data';
+import { fetchParLevels, upsertParLevel } from '../../lib/stock/counts';
 
 const KINDS = [
   { id: 'PURCHASED', label: 'Purchased', desc: 'Bought from a supplier — cost comes from invoices/packs.' },
@@ -337,18 +338,27 @@ function StockTab({ draft, locId, onChanged, showToast }) {
   const [moves, setMoves] = useState(null);
   const [count, setCount] = useState('');
   const [busy, setBusy] = useState(false);
+  const [par, setPar] = useState({ parLevel: '', reorderPoint: '' });
 
   const loadMoves = useCallback(async () => {
     if (!draft.id) return;
     const { data } = await fetchItemMovements(draft.id, locId);
     setMoves(data || []);
   }, [draft.id, locId]);
-  useEffect(() => { loadMoves(); }, [loadMoves]);
+  const loadPar = useCallback(async () => {
+    if (!draft.id) return;
+    const { data } = await fetchParLevels(locId);
+    const p = data?.[draft.id];
+    setPar({ parLevel: p?.parLevel ?? '', reorderPoint: p?.reorderPoint ?? '' });
+  }, [draft.id, locId]);
+  useEffect(() => { loadMoves(); loadPar(); }, [loadMoves, loadPar]);
 
   if (!draft.id) return <NeedSaveFirst />;
 
   const onHand = Number(draft.onHand || 0);
   const cost = draft.currentCost;
+  const savePar = async (next) => { setPar(next); await upsertParLevel(draft.id, next, locId); };
+  const belowReorder = par.reorderPoint !== '' && onHand <= Number(par.reorderPoint);
 
   const applyCount = async () => {
     if (count === '' || !(Number(count) >= 0)) { showToast?.('Enter a count (≥ 0)', 'error'); return; }
@@ -376,6 +386,17 @@ function StockTab({ draft, locId, onChanged, showToast }) {
         <div style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--t3)' }}>
           Stock value: <b style={{ color: 'var(--t1)', fontSize: 14 }}>{cost != null ? money(onHand * cost) : '—'}</b>
         </div>
+      </div>
+
+      {/* Par & reorder (drives low-stock + future suggested ordering) */}
+      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 12, marginBottom: 18, flexWrap: 'wrap' }}>
+        <Field label={`Par level (${draft.baseUnit})`}>
+          <input type="number" min="0" step="any" value={par.parLevel} onChange={e => setPar(p => ({ ...p, parLevel: e.target.value }))} onBlur={() => savePar(par)} placeholder="target" style={{ ...fieldStyle, width: 120 }} />
+        </Field>
+        <Field label={`Reorder at (${draft.baseUnit})`}>
+          <input type="number" min="0" step="any" value={par.reorderPoint} onChange={e => setPar(p => ({ ...p, reorderPoint: e.target.value }))} onBlur={() => savePar(par)} placeholder="min before reorder" style={{ ...fieldStyle, width: 140 }} />
+        </Field>
+        {belowReorder && <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--red, #ef4444)', paddingBottom: 8 }}>⚠ at/below reorder point — time to order</div>}
       </div>
 
       <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 8 }}>
