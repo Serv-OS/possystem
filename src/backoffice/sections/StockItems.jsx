@@ -513,7 +513,7 @@ function SuppliersTab({ draft, suppliers, locId, onChanged, showToast }) {
   const bridgeMissing = (r) => r.innerUnit && draft.baseUnit && r.innerUnit !== draft.baseUnit && !canConvert(r.innerUnit, draft.baseUnit, { itemConversions: bridges });
 
   const startAdd = () => {
-    setRow({ inventoryItemId: draft.id, supplierId: suppliers[0]?.id || '', supplierSku: '', packDescription: '', packQty: 1, innerQty: 1, innerUnit: draft.baseUnit, packPrice: '', isPreferred: (draft.supplierProducts || []).length === 0 });
+    setRow({ inventoryItemId: draft.id, supplierId: suppliers[0]?.id || '', supplierSku: '', packDescription: '', packQty: 1, innerQty: '', innerUnit: draft.baseUnit, packPrice: '', isPreferred: (draft.supplierProducts || []).length === 0 });
     setAdding(true);
   };
   const saveRow = async () => {
@@ -539,9 +539,9 @@ function SuppliersTab({ draft, suppliers, locId, onChanged, showToast }) {
   return (
     <div style={{ maxWidth: 760 }}>
       <p style={{ fontSize: 13, color: 'var(--t2)', marginTop: 0 }}>
-        How each supplier sells this item. Enter the pack and what you pay — the per-{draft.baseUnit} cost is derived
-        automatically (e.g. a crate of 24 @ {currencySymbol()}40 → {currencySymbol()}1.6667/each). The <b>preferred</b> pack
-        drives this item's current cost.
+        Just enter <b>what you buy and what it costs</b> — e.g. a Heineken keg is <b>54 l for £152</b>. The cost
+        per {draft.baseUnit} is worked out for you ({currencySymbol()}152 ÷ 54 = {currencySymbol()}2.81/l). The <b>preferred</b> line
+        sets this item's cost. Buy it in the same unit you set as the stock unit and there's nothing else to think about.
       </p>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 16 }}>
@@ -551,7 +551,7 @@ function SuppliersTab({ draft, suppliers, locId, onChanged, showToast }) {
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 13, color: 'var(--t1)', fontWeight: 600 }}>{supName(sp.supplierId)} {sp.supplierSku ? <span style={{ color: 'var(--t3)', fontWeight: 400 }}>· {sp.supplierSku}</span> : null}</div>
               <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>
-                {sp.packQty} × {sp.innerQty} {sp.innerUnit} @ {money(sp.packPrice)} → <b style={{ color: 'var(--t1)' }}>{fmtUnitCost(sp.baseUnitCost)}/{draft.baseUnit}</b>
+{sp.innerQty} {sp.innerUnit} for {money(sp.packPrice)} → <b style={{ color: 'var(--t1)' }}>{fmtUnitCost(sp.baseUnitCost)}/{draft.baseUnit}</b>
               </div>
             </div>
             {sp.isPreferred
@@ -577,17 +577,16 @@ function SuppliersTab({ draft, suppliers, locId, onChanged, showToast }) {
               <button onClick={addSupplier} style={{ padding: '8px 12px', borderRadius: 7, background: 'var(--bg2)', border: '1px solid var(--bdr)', color: 'var(--t1)', cursor: 'pointer', fontSize: 13 }}>Add</button>
             </div>
           </Field>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
-            <Field label="Packs"><input type="number" min="0" step="any" value={row.packQty} onChange={e => setRow(r => ({ ...r, packQty: e.target.value }))} style={fieldStyle} /></Field>
-            <Field label="Inner qty"><input type="number" min="0" step="any" value={row.innerQty} onChange={e => setRow(r => ({ ...r, innerQty: e.target.value }))} style={fieldStyle} /></Field>
-            <Field label="Inner unit"><UnitSelect value={row.innerUnit} onChange={v => setRow(r => ({ ...r, innerUnit: v }))} style={{ width: '100%' }} /></Field>
-            <Field label={`Pack price (${currencySymbol()})`}><input type="number" min="0" step="any" value={row.packPrice} onChange={e => setRow(r => ({ ...r, packPrice: e.target.value }))} style={fieldStyle} /></Field>
-          </div>
-          <Field label="Supplier SKU / pack description">
-            <div style={{ display: 'flex', gap: 8 }}>
-              <input value={row.supplierSku || ''} onChange={e => setRow(r => ({ ...r, supplierSku: e.target.value }))} placeholder="SKU" style={{ ...fieldStyle, width: 160 }} />
-              <input value={row.packDescription || ''} onChange={e => setRow(r => ({ ...r, packDescription: e.target.value }))} placeholder="e.g. crate of 24" style={fieldStyle} />
+          <Field label="How you buy it">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 13, color: 'var(--t3)' }}>1 delivery unit =</span>
+              <input type="number" min="0" step="any" value={row.innerQty} onChange={e => setRow(r => ({ ...r, innerQty: e.target.value }))} placeholder="54" style={{ ...fieldStyle, width: 90 }} />
+              <UnitSelect value={row.innerUnit} onChange={v => setRow(r => ({ ...r, innerUnit: v }))} style={{ width: 140 }} />
+              <span style={{ fontSize: 13, color: 'var(--t3)' }}>for</span>
+              <span style={{ fontSize: 13, color: 'var(--t2)' }}>{currencySymbol()}</span>
+              <input type="number" min="0" step="any" value={row.packPrice} onChange={e => setRow(r => ({ ...r, packPrice: e.target.value }))} placeholder="152" style={{ ...fieldStyle, width: 100 }} />
             </div>
+            <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 6 }}>e.g. a keg = <b>54 l for £152</b>, or a case = <b>24 each for £40</b>. (Tip: an optional note &amp; SKU can be added later.)</div>
           </Field>
           <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginTop: 4, flexWrap: 'wrap' }}>
             <div style={{ fontSize: 14, color: 'var(--t1)' }}>

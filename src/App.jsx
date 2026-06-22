@@ -85,6 +85,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.568', date: '22 Jun 2026', label: 'Stock — simpler, foolproof cost & recipe entry',
+    changes: [
+      'Supplier price is now one plain line: “1 delivery unit = 54 l for £152” → the cost per unit is worked out for you (no more packs/inner/unit boxes).',
+      'Recipe ingredients are clearer: each shows its £/unit, you just type how much one sale “uses”, and the line cost shows beside it. Removed the confusing “use %” box.',
+      'If an ingredient has no price yet, the recipe now says so in red instead of silently showing £0.00 — so costs can’t look “wrong” by accident.',
+    ],
+  },
+  {
     version: '5.5.567', date: '22 Jun 2026', label: 'Stock & Production — purchasing: suppliers, purchase orders & AI invoice scanning',
     changes: [
       'NEW: Purchasing → Suppliers — add and manage vendors (contact, payment terms, delivery days, minimum order, cut-off).',

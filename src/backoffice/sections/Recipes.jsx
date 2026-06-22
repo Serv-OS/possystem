@@ -219,16 +219,22 @@ export default function Recipes() {
                   {draft.lines.length === 0 && <div style={{ fontSize: 12, color: 'var(--t3)' }}>No ingredients yet — add stock items below.</div>}
                   {draft.lines.map((l, i) => {
                     const comp = ctx.itemsById[l.componentItemId];
-                    let lc = null;
-                    if (comp) { try { lc = (convert(Number(l.qty), l.unit, comp.baseUnit, { itemConversions: comp.itemConversions || [] }) / ((l.usablePct == null ? 100 : Number(l.usablePct)) / 100)) * componentUnitCost(l.componentItemId, ctx); } catch { lc = null; } }
+                    const noCost = comp && (comp.currentCost == null || !(comp.currentCost > 0)) && comp.kind !== 'MADE';
+                    let lc = null, convErr = false;
+                    if (comp) { try { lc = convert(Number(l.qty), l.unit, comp.baseUnit, { itemConversions: comp.itemConversions || [] }) * componentUnitCost(l.componentItemId, ctx); } catch { convErr = true; } }
                     return (
                       <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 7, padding: '8px 10px' }}>
-                        <span style={{ flex: 1, minWidth: 0, fontSize: 13, color: 'var(--t1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{itemName(l.componentItemId)}</span>
-                        <input type="number" min="0" step="any" value={l.qty} onChange={e => updLine(i, 'qty', e.target.value)} style={{ ...field, width: 70 }} />
-                        <UnitSelect value={l.unit} onChange={v => updLine(i, 'unit', v)} width={84} />
-                        <span title="Usable % (trim/yield loss)" style={{ fontSize: 11, color: 'var(--t3)' }}>use</span>
-                        <input type="number" min="1" max="100" value={l.usablePct} onChange={e => updLine(i, 'usablePct', e.target.value)} style={{ ...field, width: 56 }} />
-                        <span style={{ width: 74, textAlign: 'right', fontSize: 13, color: 'var(--t2)' }}>{lc == null ? '—' : money(lc)}</span>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 13, color: 'var(--t1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{itemName(l.componentItemId)}</div>
+                          <div style={{ fontSize: 11, color: noCost ? 'var(--red, #ef4444)' : 'var(--t3)', marginTop: 1 }}>
+                            {noCost ? '⚠ no price set — add a supplier price on this item' : (comp ? `${fmtCost(comp.currentCost)} / ${comp.baseUnit}` : '')}
+                          </div>
+                        </div>
+                        <span style={{ fontSize: 12, color: 'var(--t3)' }}>uses</span>
+                        <input type="number" min="0" step="any" value={l.qty} onChange={e => updLine(i, 'qty', e.target.value)} placeholder="qty" style={{ ...field, width: 72 }} />
+                        <UnitSelect value={l.unit} onChange={v => updLine(i, 'unit', v)} width={92} />
+                        <span style={{ fontSize: 13, color: 'var(--t3)' }}>=</span>
+                        <span style={{ width: 74, textAlign: 'right', fontSize: 13, fontWeight: 600, color: convErr ? 'var(--red, #ef4444)' : 'var(--t1)' }}>{convErr ? 'unit?' : lc == null ? '—' : money(lc)}</span>
                         <button onClick={() => rmLine(i)} style={{ background: 'transparent', border: 0, color: 'var(--t3)', cursor: 'pointer', fontSize: 16 }}>×</button>
                       </div>
                     );
