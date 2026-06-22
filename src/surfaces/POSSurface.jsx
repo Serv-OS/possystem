@@ -735,7 +735,22 @@ export default function POSSurface() {
         let _mDevId = null;
         try { _mDevId = JSON.parse(localStorage.getItem('rpos-device') || '{}')?.id || null; } catch {}
         const _mDrw = Array.isArray(cashDrawers) ? cashDrawers.find(d => d.deviceId === _mDevId) || null : null;
-        if (!_mDrw) return null;
+        // No cash drawer bound to this device: still offer till functions that don't need one (waste).
+        if (!_mDrw) return (
+          <div className="modal-back" style={{ zIndex: 99998 }} onClick={e => e.target === e.currentTarget && setShowDrawerMenu(false)}>
+            <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr2)', borderRadius:20, width:'100%', maxWidth:420, padding:'18px 20px', boxShadow:'var(--sh3)' }}>
+              <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12 }}>
+                <div style={{ fontSize:16, fontWeight:800, color:'var(--t1)' }}>Till functions</div>
+                <button onClick={() => setShowDrawerMenu(false)} style={{ background:'transparent', border:'none', fontSize:24, color:'var(--t4)', cursor:'pointer', padding:4 }}>×</button>
+              </div>
+              <button onClick={() => { setShowDrawerMenu(false); setShowWaste(true); }}
+                style={{ width:'100%', padding:'13px', borderRadius:10, border:'1.5px solid var(--bdr2)', background:'var(--bg2)', color:'var(--t1)', fontFamily:'inherit', fontWeight:800, fontSize:14, cursor:'pointer', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                <span>Record waste</span><span style={{ fontSize:10, fontWeight:500, color:'var(--t4)' }}>spoilage · breakage · spillage</span>
+              </button>
+              <div style={{ fontSize:11.5, color:'var(--t4)', marginTop:12, lineHeight:1.5 }}>No cash drawer is bound to this device, so cash functions aren’t available. Bind one in Back Office → Devices → Cash drawers.</div>
+            </div>
+          </div>
+        );
         const _mCan = staff?.role === 'Manager' || staff?.role === 'Admin' || (Array.isArray(staff?.permissions) && staff.permissions.includes('cashup'));
         const _mStatus = _mDrw.status || 'idle';
         const _float = Number(_mDrw.currentFloat || 0);
@@ -804,7 +819,7 @@ export default function POSSurface() {
               <div style={{ padding:'14px 16px', borderBottom:'1px solid var(--bdr)' }}>
                 <button onClick={() => { setShowDrawerMenu(false); setShowWaste(true); }}
                   style={{ width:'100%', padding:'13px', borderRadius:10, border:'1.5px solid var(--bdr2)', background:'var(--bg2)', color:'var(--t1)', fontFamily:'inherit', fontWeight:800, fontSize:14, cursor:'pointer', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-                  <span>Log waste</span><span style={{ fontSize:10, fontWeight:500, color:'var(--t4)' }}>spoilage · breakage · spillage</span>
+                  <span>Record waste</span><span style={{ fontSize:10, fontWeight:500, color:'var(--t4)' }}>spoilage · breakage · spillage</span>
                 </button>
               </div>
               <div style={{ flex:1, overflowY:'auto', padding:'12px 16px' }}>

@@ -85,6 +85,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.592', date: '23 Jun 2026', label: 'POS waste — search the menu + works without a cash drawer',
+    changes: [
+      'Record waste now searches the menu you know (e.g. a spilled pint, a dropped burger) instead of raw stock items — picking one deducts its recipe ingredients from stock at cost.',
+      'Waste is now reachable even when no cash drawer is bound to the device: the Till functions button shows a Record waste option.',
+      'Items with no recipe linked are flagged so you know nothing will come off stock until you link one (Back Office → Recipes). Raw-stock waste (a dropped keg/case) is still done from Back Office → Wastage.',
+    ],
+  },
+  {
     version: '5.5.591', date: '23 Jun 2026', label: 'Menu builder — items open on Details',
     changes: [
       'Opening a menu item now lands on the Details tab instead of Flow, so editing an item starts where you expect.',
