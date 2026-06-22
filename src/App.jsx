@@ -85,6 +85,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.576', date: '23 Jun 2026', label: 'Stock — Add unit confirmation + clearer errors',
+    changes: [
+      'Adding a unit now shows a clear “Unit added” confirmation (and surfaces any error instead of failing silently).',
+    ],
+  },
+  {
     version: '5.5.575', date: '23 Jun 2026', label: 'Stock — count in real units (kegs, cases, bottles)',
     changes: [
       'NEW: Stock items → Units tab. Define the units your staff actually use — Keg = 50 l, Case = 6 × Bottle, Bottle = 750 ml, 175ml glass — and mark which you count in and buy in. The base unit (ml/l/g) is just for the maths and stays out of the way.',

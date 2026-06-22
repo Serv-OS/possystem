@@ -502,16 +502,25 @@ function UnitsTab({ draft, locId, onChanged, showToast }) {
   const ofOptions = [{ value: draft.baseUnit, label: draft.baseUnit, qtyInBase: 1 }, ...formats.map(f => ({ value: String(f.id), label: f.name, qtyInBase: f.qtyInBase }))];
   const previewBase = (() => { const o = ofOptions.find(o => String(o.value) === String(row.of)); return (Number(row.qty) || 0) * (o?.qtyInBase || 0); })();
 
+  const [adding, setAdding] = useState(false);
   const add = async () => {
-    if (!row.name.trim() || !(Number(row.qty) > 0)) { showToast?.('Give the unit a name and size', 'error'); return; }
-    const o = ofOptions.find(o => String(o.value) === String(row.of));
-    const qtyInBase = (Number(row.qty)) * (o?.qtyInBase || 0);
+    if (!row.name.trim()) { showToast?.('Give the unit a name (e.g. Keg)', 'error'); return; }
+    if (!(Number(row.qty) > 0)) { showToast?.('Enter a size (e.g. 50)', 'error'); return; }
+    const o = ofOptions.find(x => String(x.value) === String(row.of));
+    const qtyInBase = Number(row.qty) * (o?.qtyInBase || 0);
     if (!(qtyInBase > 0)) { showToast?.('Invalid size', 'error'); return; }
     const parentFormatId = (o && String(o.value) !== String(draft.baseUnit)) ? o.value : null;
     const isFirst = formats.length === 0;
-    const { error } = await upsertPackagingFormat({ inventoryItemId: draft.id, name: row.name.trim(), qtyInBase, parentFormatId, isCountDefault: isFirst, isPurchaseDefault: isFirst }, locId);
-    if (error) { showToast?.(error.message, 'error'); return; }
-    setRow({ name: '', qty: '', of: draft.baseUnit }); onChanged();
+    setAdding(true);
+    try {
+      const { error } = await upsertPackagingFormat({ inventoryItemId: draft.id, name: row.name.trim(), qtyInBase, parentFormatId, isCountDefault: isFirst, isPurchaseDefault: isFirst }, locId);
+      if (error) { showToast?.('Could not add unit: ' + (error.message || error), 'error'); return; }
+      showToast?.(`Unit added: ${row.name.trim()}`, 'success');
+      setRow({ name: '', qty: '', of: draft.baseUnit });
+      onChanged();
+    } catch (e) {
+      showToast?.('Could not add unit: ' + (e?.message || e), 'error');
+    } finally { setAdding(false); }
   };
   const remove = async (id) => { await deletePackagingFormat(id, locId); onChanged(); };
   const makeDefault = async (id, kind) => { await setUnitDefault(id, draft.id, kind, locId); onChanged(); };
@@ -555,7 +564,7 @@ function UnitsTab({ draft, locId, onChanged, showToast }) {
         <select value={row.of} onChange={e => setRow(r => ({ ...r, of: e.target.value }))} style={{ ...fieldStyle, width: 150 }}>
           {ofOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
-        <button onClick={add} style={{ padding: '8px 16px', borderRadius: 7, background: 'var(--acc)', color: '#fff', border: 0, cursor: 'pointer', fontSize: 13, fontWeight: 700 }}>Add unit</button>
+        <button onClick={add} disabled={adding} style={{ padding: '8px 16px', borderRadius: 7, background: 'var(--acc)', color: '#fff', border: 0, cursor: 'pointer', fontSize: 13, fontWeight: 700, opacity: adding ? 0.6 : 1 }}>{adding ? 'Adding…' : 'Add unit'}</button>
         {previewBase > 0 && <div style={{ fontSize: 11, color: 'var(--t4)', width: '100%', marginTop: 4 }}>= {previewBase} {draft.baseUnit}</div>}
       </div>
     </div>
