@@ -17,6 +17,7 @@
  */
 
 import { convert } from './conversion.js';
+import { toBase } from './uom.js';
 
 /**
  * Derive the per-base-unit cost of a purchased item from a supplier pack.
@@ -126,7 +127,7 @@ export function computeRecipe(recipe, outputItem, ctx, stack = new Set()) {
   for (const line of recipe.lines || []) {
     const comp = ctx.itemsById?.[line.componentItemId];
     if (!comp) throw new Error(`computeRecipe: line references unknown item "${line.componentItemId}"`);
-    const qtyBase = convert(Number(line.qty), line.unit, comp.baseUnit, { itemConversions: comp.itemConversions || [] });
+    const qtyBase = toBase(Number(line.qty), line.unit, comp);
     const usable = (line.usablePct == null ? 100 : Number(line.usablePct)) / 100;
     if (!(usable > 0)) throw new Error(`computeRecipe: usablePct must be > 0 (line "${line.componentItemId}")`);
     const unitCost = componentUnitCost(line.componentItemId, ctx, stack);
@@ -135,9 +136,7 @@ export function computeRecipe(recipe, outputItem, ctx, stack = new Set()) {
   total *= 1 + (Number(recipe.wastagePct) || 0) / 100;
 
   const yieldUnit = recipe.yieldUnit || outputItem.baseUnit;
-  const yieldBase = convert(Number(recipe.yieldQty ?? 1), yieldUnit, outputItem.baseUnit, {
-    itemConversions: outputItem.itemConversions || [],
-  });
+  const yieldBase = toBase(Number(recipe.yieldQty ?? 1), yieldUnit, outputItem);
   if (!(yieldBase > 0)) throw new Error('computeRecipe: recipe yield must convert to a positive base quantity');
   return { totalCost: total, yieldBase, costPerYieldBase: total / yieldBase };
 }

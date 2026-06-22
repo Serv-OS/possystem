@@ -91,6 +91,7 @@ const convFromRow = (r) => ({
 const packFromRow = (r) => ({
   id: r.id, inventoryItemId: r.inventory_item_id, name: r.name,
   qtyInBase: Number(r.qty_in_base), parentFormatId: r.parent_format_id,
+  isCountDefault: r.is_count_default === true, isPurchaseDefault: r.is_purchase_default === true,
 });
 
 // ── units ────────────────────────────────────────────────────────────────────
@@ -232,18 +233,36 @@ export const deleteItemConversion = async (id, inventoryItemId, locationId = nul
   return res;
 };
 
-// ── packaging formats (pack-of-packs) ────────────────────────────────────────
+// ── packaging / "units you use" (named packs: Keg, Case, Bottle, glass…) ──────
 export const upsertPackagingFormat = async (pack, locationId = null) => {
   if (isMock || !supabase) return { data: null, error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: null, error: new Error('No locationId') };
+  // Only one count-default and one purchase-default per item.
+  if (pack.inventoryItemId && (pack.isCountDefault || pack.isPurchaseDefault)) {
+    const patch = {};
+    if (pack.isCountDefault) patch.is_count_default = false;
+    if (pack.isPurchaseDefault) patch.is_purchase_default = false;
+    await supabase.from('item_packaging_formats').update(patch).eq('location_id', locationId).eq('inventory_item_id', pack.inventoryItemId);
+  }
   const row = {
     ...(pack.id ? { id: pack.id } : {}),
     location_id: locationId, inventory_item_id: pack.inventoryItemId,
     name: (pack.name || '').trim(), qty_in_base: Number(pack.qtyInBase) || 0,
     parent_format_id: pack.parentFormatId || null,
+    is_count_default: pack.isCountDefault === true, is_purchase_default: pack.isPurchaseDefault === true,
   };
   return supabase.from('item_packaging_formats').upsert(row).select().maybeSingle();
+};
+
+/** Set one format as the count-default or purchase-default (clears the others). */
+export const setUnitDefault = async (formatId, inventoryItemId, kind, locationId = null) => {
+  if (isMock || !supabase) return { error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { error: new Error('No locationId') };
+  const col = kind === 'purchase' ? 'is_purchase_default' : 'is_count_default';
+  await supabase.from('item_packaging_formats').update({ [col]: false }).eq('location_id', locationId).eq('inventory_item_id', inventoryItemId);
+  return supabase.from('item_packaging_formats').update({ [col]: true }).eq('location_id', locationId).eq('id', formatId);
 };
 
 export const deletePackagingFormat = async (id, locationId = null) => {

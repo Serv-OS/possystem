@@ -85,6 +85,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.575', date: '23 Jun 2026', label: 'Stock — count in real units (kegs, cases, bottles)',
+    changes: [
+      'NEW: Stock items → Units tab. Define the units your staff actually use — Keg = 50 l, Case = 6 × Bottle, Bottle = 750 ml, 175ml glass — and mark which you count in and buy in. The base unit (ml/l/g) is just for the maths and stays out of the way.',
+      'Counting now works in those units: on the Stock tab, count “2.5 kegs” or “3 cases” and it converts behind the scenes. No more counting in litres.',
+      'A unit can be made of another (Case = 6 × Bottle), so it all nests correctly.',
+      'Next: buying in the supplier’s pack and selling by the glass use these same units (in progress).',
+    ],
+  },
+  {
     version: '5.5.574', date: '23 Jun 2026', label: 'Par & reorder levels per item',
     changes: [
       'Stock items → Stock tab: set a Par level and a Reorder point per item; a warning shows when on-hand hits the reorder point. Feeds low-stock alerts and (soon) suggested ordering.',

@@ -14,7 +14,7 @@
  *   menuRecipes: { [menuItemId]: { lines:[{componentItemId,qty,unit,usablePct}], portion, wastagePct } }
  */
 
-import { convert } from './conversion.js';
+import { toBase } from './uom.js';
 
 /** Accumulate one sold menu line's component usage (base units) into `out`. */
 export function explodeMenuItem(menuItemId, qty, ctx, out = {}) {
@@ -27,8 +27,8 @@ export function explodeMenuItem(menuItemId, qty, ctx, out = {}) {
     const comp = ctx.itemsById?.[line.componentItemId];
     if (!comp) continue;
     let qtyBase;
-    try { qtyBase = convert(Number(line.qty), line.unit, comp.baseUnit, { itemConversions: comp.itemConversions || [] }); }
-    catch { continue; } // missing conversion bridge — can't deplete safely, skip
+    try { qtyBase = toBase(Number(line.qty), line.unit, comp); }
+    catch { continue; } // can't resolve the unit — skip rather than deplete wrongly
     const usable = (line.usablePct == null ? 100 : Number(line.usablePct)) / 100;
     if (!(usable > 0)) continue;
     out[line.componentItemId] = (out[line.componentItemId] || 0) + (qtyBase / usable) * mult;

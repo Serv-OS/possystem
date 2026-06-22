@@ -121,20 +121,23 @@ export const buildCostingCtx = async (locationId = null) => {
   if (isMock || !supabase) return { itemsById: {}, recipesByOutputItem: {} };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { itemsById: {}, recipesByOutputItem: {} };
-  const [{ data: items }, { data: convs }, { data: recs }, { data: lines }] = await Promise.all([
+  const [{ data: items }, { data: convs }, { data: recs }, { data: lines }, { data: packs }] = await Promise.all([
     supabase.from('inventory_items').select('id, kind, base_unit, current_cost').eq('location_id', locationId),
     supabase.from('inventory_item_conversions').select('*').eq('location_id', locationId),
     supabase.from('recipes').select('id, output_item_id, yield_qty, yield_unit, wastage_pct, recipe_type').eq('location_id', locationId).is('archived_at', null),
     supabase.from('recipe_lines').select('*').eq('location_id', locationId).order('sort_order'),
+    supabase.from('item_packaging_formats').select('id, inventory_item_id, name, qty_in_base').eq('location_id', locationId),
   ]);
   const convByItem = {};
   (convs || []).forEach((c) => { (convByItem[c.inventory_item_id] ??= []).push({ fromQty: Number(c.from_qty), fromUnit: c.from_unit, toQty: Number(c.to_qty), toUnit: c.to_unit }); });
+  const fmtByItem = {};
+  (packs || []).forEach((p) => { (fmtByItem[p.inventory_item_id] ??= []).push({ id: p.id, name: p.name, qtyInBase: Number(p.qty_in_base) }); });
   const itemsById = {};
   (items || []).forEach((it) => {
     itemsById[it.id] = {
       id: it.id, kind: it.kind, baseUnit: it.base_unit,
       currentCost: it.current_cost == null ? null : Number(it.current_cost),
-      itemConversions: convByItem[it.id] || [],
+      itemConversions: convByItem[it.id] || [], formats: fmtByItem[it.id] || [],
     };
   });
   const linesByRecipe = {};

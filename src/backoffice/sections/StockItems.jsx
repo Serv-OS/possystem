@@ -28,10 +28,11 @@ import {
   fetchSuppliers, upsertSupplier,
   upsertSupplierProduct, deleteSupplierProduct,
   upsertItemConversion, deleteItemConversion,
-  upsertPackagingFormat, deletePackagingFormat,
+  upsertPackagingFormat, deletePackagingFormat, setUnitDefault,
   setInventoryOnHand, fetchItemMovements, movementLabel,
 } from '../../lib/stock/data';
 import { fetchParLevels, upsertParLevel } from '../../lib/stock/counts';
+import { toBase, unitOptions, formatToken } from '../../lib/stock/uom';
 
 const KINDS = [
   { id: 'PURCHASED', label: 'Purchased', desc: 'Bought from a supplier — cost comes from invoices/packs.' },
@@ -43,7 +44,7 @@ const FILTERS = [
   { id: 'MADE', label: 'Made' },
   { id: 'archived', label: 'Archived' },
 ];
-const TABS = ['General', 'Stock', 'Dimension & Measure', 'Packaging', 'Suppliers'];
+const TABS = ['General', 'Units', 'Stock', 'Suppliers', 'Dimension & Measure'];
 
 const UNIT_OPTS = Object.entries(UNITS).map(([code, u]) => ({ code, ...u }));
 const DIM_ORDER = [DIMENSIONS.COUNT, DIMENSIONS.WEIGHT, DIMENSIONS.VOLUME];
@@ -257,7 +258,7 @@ export default function StockItems() {
               {tab === 'General' && <GeneralTab draft={draft} upd={upd} onSave={saveGeneral} saving={saving} />}
               {tab === 'Stock' && <StockTab draft={draft} locId={locId} onChanged={() => reload(draft.id)} showToast={showToast} />}
               {tab === 'Dimension & Measure' && <DimensionTab draft={draft} locId={locId} onChanged={() => reload(draft.id)} showToast={showToast} />}
-              {tab === 'Packaging' && <PackagingTab draft={draft} locId={locId} onChanged={() => reload(draft.id)} showToast={showToast} />}
+              {tab === 'Units' && <UnitsTab draft={draft} locId={locId} onChanged={() => reload(draft.id)} showToast={showToast} />}
               {tab === 'Suppliers' && <SuppliersTab draft={draft} suppliers={suppliers} locId={locId} onChanged={() => reload(draft.id)} onSupplierAdded={() => reload(draft.id)} showToast={showToast} />}
             </div>
           </>
@@ -339,6 +340,7 @@ function StockTab({ draft, locId, onChanged, showToast }) {
   const [count, setCount] = useState('');
   const [busy, setBusy] = useState(false);
   const [par, setPar] = useState({ parLevel: '', reorderPoint: '' });
+  const [countUnit, setCountUnit] = useState(() => { const cd = (draft.packaging || []).find(f => f.isCountDefault); return cd ? formatToken(cd.id) : draft.baseUnit; });
 
   const loadMoves = useCallback(async () => {
     if (!draft.id) return;
@@ -360,10 +362,20 @@ function StockTab({ draft, locId, onChanged, showToast }) {
   const savePar = async (next) => { setPar(next); await upsertParLevel(draft.id, next, locId); };
   const belowReorder = par.reorderPoint !== '' && onHand <= Number(par.reorderPoint);
 
+  // Count in whatever unit the operator picks (Keg / Case / base) — convert to base.
+  const uomItem = {
+    baseUnit: draft.baseUnit,
+    itemConversions: (draft.conversions || []).map(c => ({ fromQty: c.fromQty, fromUnit: c.fromUnit, toQty: c.toQty, toUnit: c.toUnit })),
+    formats: (draft.packaging || []).map(f => ({ id: f.id, name: f.name, qtyInBase: f.qtyInBase })),
+  };
+  const countOpts = unitOptions(uomItem);
+  let countBase = null;
+  if (count !== '' && Number(count) >= 0) { try { countBase = toBase(Number(count), countUnit, uomItem); } catch { countBase = null; } }
+
   const applyCount = async () => {
-    if (count === '' || !(Number(count) >= 0)) { showToast?.('Enter a count (≥ 0)', 'error'); return; }
+    if (countBase == null || !(countBase >= 0)) { showToast?.('Enter a count', 'error'); return; }
     setBusy(true);
-    const { error } = await setInventoryOnHand(draft.id, Number(count), 'Set via Stock items', locId);
+    const { error } = await setInventoryOnHand(draft.id, countBase, 'Set via Stock items', locId);
     setBusy(false);
     if (error) { showToast?.(error.message, 'error'); return; }
     setCount(''); showToast?.('Stock updated', 'success');
@@ -377,10 +389,14 @@ function StockTab({ draft, locId, onChanged, showToast }) {
   return (
     <div style={{ maxWidth: 820 }}>
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: 12, marginBottom: 18, flexWrap: 'wrap' }}>
-        <Field label={`Set count (on hand, in ${draft.baseUnit})`}>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <input type="number" min="0" step="any" value={count} onChange={e => setCount(e.target.value)} placeholder={String(onHand)} style={{ ...fieldStyle, width: 160 }} />
+        <Field label="Set count (how much you have now)">
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <input type="number" min="0" step="any" value={count} onChange={e => setCount(e.target.value)} placeholder="0" style={{ ...fieldStyle, width: 100 }} />
+            <select value={countUnit} onChange={e => setCountUnit(e.target.value)} style={{ ...fieldStyle, width: 150 }}>
+              {countOpts.map(o => <option key={o.token} value={o.token}>{o.label}</option>)}
+            </select>
             <button onClick={applyCount} disabled={busy} style={{ padding: '8px 16px', borderRadius: 7, background: 'var(--acc)', color: '#fff', border: 0, cursor: 'pointer', fontSize: 13, fontWeight: 700, opacity: busy ? 0.6 : 1 }}>Update stock</button>
+            {countBase != null && countUnit !== draft.baseUnit && <span style={{ fontSize: 11, color: 'var(--t4)' }}>= {Math.round(countBase * 1000) / 1000} {draft.baseUnit}</span>}
           </div>
         </Field>
         <div style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--t3)' }}>
@@ -479,40 +495,74 @@ function DimensionTab({ draft, locId, onChanged, showToast }) {
 }
 
 // ── Packaging tab (pack-of-packs) ─────────────────────────────────────────────
-function PackagingTab({ draft, locId, onChanged, showToast }) {
-  const [row, setRow] = useState({ name: '', qtyInBase: '' });
+function UnitsTab({ draft, locId, onChanged, showToast }) {
+  const [row, setRow] = useState({ name: '', qty: '', of: draft.baseUnit });
   if (!draft.id) return <NeedSaveFirst />;
+  const formats = draft.packaging || [];
+  const ofOptions = [{ value: draft.baseUnit, label: draft.baseUnit, qtyInBase: 1 }, ...formats.map(f => ({ value: String(f.id), label: f.name, qtyInBase: f.qtyInBase }))];
+  const previewBase = (() => { const o = ofOptions.find(o => String(o.value) === String(row.of)); return (Number(row.qty) || 0) * (o?.qtyInBase || 0); })();
+
   const add = async () => {
-    if (!row.name.trim() || !(Number(row.qtyInBase) > 0)) { showToast?.('Name and quantity required', 'error'); return; }
-    const { error } = await upsertPackagingFormat({ inventoryItemId: draft.id, ...row }, locId);
+    if (!row.name.trim() || !(Number(row.qty) > 0)) { showToast?.('Give the unit a name and size', 'error'); return; }
+    const o = ofOptions.find(o => String(o.value) === String(row.of));
+    const qtyInBase = (Number(row.qty)) * (o?.qtyInBase || 0);
+    if (!(qtyInBase > 0)) { showToast?.('Invalid size', 'error'); return; }
+    const parentFormatId = (o && String(o.value) !== String(draft.baseUnit)) ? o.value : null;
+    const isFirst = formats.length === 0;
+    const { error } = await upsertPackagingFormat({ inventoryItemId: draft.id, name: row.name.trim(), qtyInBase, parentFormatId, isCountDefault: isFirst, isPurchaseDefault: isFirst }, locId);
     if (error) { showToast?.(error.message, 'error'); return; }
-    setRow({ name: '', qtyInBase: '' }); onChanged();
+    setRow({ name: '', qty: '', of: draft.baseUnit }); onChanged();
   };
   const remove = async (id) => { await deletePackagingFormat(id, locId); onChanged(); };
+  const makeDefault = async (id, kind) => { await setUnitDefault(id, draft.id, kind, locId); onChanged(); };
+
+  const sizeLabel = (p) => {
+    if (p.parentFormatId) {
+      const parent = formats.find(f => String(f.id) === String(p.parentFormatId));
+      if (parent && parent.qtyInBase > 0) return `${Math.round((p.qtyInBase / parent.qtyInBase) * 1000) / 1000} × ${parent.name}  (${p.qtyInBase} ${draft.baseUnit})`;
+    }
+    return `${p.qtyInBase} ${draft.baseUnit}`;
+  };
+
   return (
-    <div style={{ maxWidth: 620 }}>
+    <div style={{ maxWidth: 680 }}>
       <p style={{ fontSize: 13, color: 'var(--t2)', marginTop: 0 }}>
-        Named packs and how many <b>base units ({draft.baseUnit})</b> each holds — e.g. <b>Box = 24</b>, <b>Sleeve = 6</b>.
-        Used for counting and ordering in whole packs.
+        Define the units your staff actually use — <b>Keg</b>, <b>Case</b>, <b>Bottle</b>, <b>175ml glass</b>. You then
+        <b> buy, count and sell</b> in these; the maths happens in the background in {draft.baseUnit} (which staff never see).
+        A unit can be made of another (e.g. <b>Case = 6 × Bottle</b>).
       </p>
+
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 16 }}>
-        {(draft.packaging || []).length === 0 && <div style={{ fontSize: 12, color: 'var(--t3)' }}>No packaging formats yet.</div>}
-        {(draft.packaging || []).map(p => (
-          <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 10, background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 7, padding: '8px 12px' }}>
-            <span style={{ fontSize: 13, color: 'var(--t1)' }}>1 {p.name} = {p.qtyInBase} {draft.baseUnit}</span>
-            <button onClick={() => remove(p.id)} style={{ marginLeft: 'auto', background: 'transparent', border: 0, color: 'var(--t3)', cursor: 'pointer', fontSize: 16 }}>×</button>
+        {formats.length === 0 && <div style={{ fontSize: 12, color: 'var(--t3)' }}>No units yet — add one below (e.g. Keg = 50 l).</div>}
+        {formats.map(p => (
+          <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 10, background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 8, padding: '9px 14px' }}>
+            <span style={{ fontSize: 13, color: 'var(--t1)', fontWeight: 600, minWidth: 90 }}>1 {p.name}</span>
+            <span style={{ fontSize: 12, color: 'var(--t3)' }}>= {sizeLabel(p)}</span>
+            <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center' }}>
+              {p.isCountDefault ? <span style={badge('count')}>📋 count</span> : <button onClick={() => makeDefault(p.id, 'count')} style={ghostBtn}>set count</button>}
+              {p.isPurchaseDefault ? <span style={badge('buy')}>🛒 buy</span> : <button onClick={() => makeDefault(p.id, 'purchase')} style={ghostBtn}>set buy</button>}
+              <button onClick={() => remove(p.id)} style={{ background: 'transparent', border: 0, color: 'var(--t3)', cursor: 'pointer', fontSize: 16 }}>×</button>
+            </div>
           </div>
         ))}
       </div>
-      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
-        <input value={row.name} onChange={e => setRow(r => ({ ...r, name: e.target.value }))} placeholder="Format name (Box)" style={{ ...fieldStyle, width: 160 }} />
-        <span style={{ color: 'var(--t3)' }}>=</span>
-        <input type="number" min="0" step="any" value={row.qtyInBase} onChange={e => setRow(r => ({ ...r, qtyInBase: e.target.value }))} placeholder={`qty in ${draft.baseUnit}`} style={{ ...fieldStyle, width: 130 }} />
-        <button onClick={add} style={{ padding: '8px 16px', borderRadius: 7, background: 'var(--acc)', color: '#fff', border: 0, cursor: 'pointer', fontSize: 13, fontWeight: 700 }}>Add format</button>
+
+      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8, flexWrap: 'wrap', background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 10, padding: 14 }}>
+        <span style={{ fontSize: 13, color: 'var(--t3)', paddingBottom: 8 }}>1</span>
+        <input value={row.name} onChange={e => setRow(r => ({ ...r, name: e.target.value }))} placeholder="Keg / Case / Bottle / 175ml glass" style={{ ...fieldStyle, width: 200 }} />
+        <span style={{ fontSize: 13, color: 'var(--t3)', paddingBottom: 8 }}>=</span>
+        <input type="number" min="0" step="any" value={row.qty} onChange={e => setRow(r => ({ ...r, qty: e.target.value }))} placeholder="50" style={{ ...fieldStyle, width: 80 }} />
+        <select value={row.of} onChange={e => setRow(r => ({ ...r, of: e.target.value }))} style={{ ...fieldStyle, width: 150 }}>
+          {ofOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+        <button onClick={add} style={{ padding: '8px 16px', borderRadius: 7, background: 'var(--acc)', color: '#fff', border: 0, cursor: 'pointer', fontSize: 13, fontWeight: 700 }}>Add unit</button>
+        {previewBase > 0 && <div style={{ fontSize: 11, color: 'var(--t4)', width: '100%', marginTop: 4 }}>= {previewBase} {draft.baseUnit}</div>}
       </div>
     </div>
   );
 }
+const badge = () => ({ fontSize: 10, fontWeight: 700, color: 'var(--acc)', padding: '3px 7px', borderRadius: 20, background: 'var(--acc-d, rgba(249,115,22,0.12))' });
+const ghostBtn = { fontSize: 10, padding: '3px 7px', borderRadius: 6, background: 'var(--bg2)', border: '1px solid var(--bdr)', color: 'var(--t3)', cursor: 'pointer' };
 
 // ── Suppliers tab (pack → unit cost) ──────────────────────────────────────────
 function SuppliersTab({ draft, suppliers, locId, onChanged, showToast }) {
