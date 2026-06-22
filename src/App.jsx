@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.569', date: '22 Jun 2026', label: 'Daily counts — clearer variant names',
+    changes: [
+      'Daily counts now shows the full product on variant rows — e.g. “Heineken Half” instead of a bare “Half” — so you always know what a row belongs to.',
+      'Empty variant parent containers and modifier options are hidden; the list is sorted A–Z.',
+    ],
+  },
+  {
     version: '5.5.568', date: '22 Jun 2026', label: 'Stock — simpler, foolproof cost & recipe entry',
     changes: [
       'Supplier price is now one plain line: “1 delivery unit = 54 l for £152” → the cost per unit is worked out for you (no more packs/inner/unit boxes).',
