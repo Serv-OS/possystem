@@ -85,6 +85,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.561', date: '22 Jun 2026', label: 'New-order popup (Accept/Reject in the middle of the screen) + per-terminal order-notification toggle',
+    changes: [
+      'NEW-ORDER POPUP — incoming orders (online, kiosk, QR and delivery channels) now open a card in the MIDDLE of the screen instead of a small top banner. For a delivery/channel order that still needs accepting (auto-accept off) the card shows big Reject / Accept buttons that run the exact same path as the Orders Hub — print + kitchen tickets + confirm a prep time back to the channel. For everything else (or an already auto-accepted order) it shows View order (jumps to the Orders Hub) / Dismiss. Dismiss just closes the popup; the order stays in the Orders Hub.',
+      'The popup lists the order’s items so staff can see what’s come in at a glance. A channel cancellation shows a red “Order cancelled” card so the kitchen stops and reconciles.',
+      'Accept/Reject logic moved into the store (acceptOrderByRef / rejectOrderByRef) so the popup and the Orders Hub share one code path. The popup shows on POS / Bar / Tables / Orders — not on KDS (it has its own ticket flow; KDS still chimes).',
+      'PER-TERMINAL ORDER NOTIFICATIONS — Device Profiles now has an “Order notifications” toggle. Untick it for terminals that shouldn’t be alerted (e.g. a back prep station): no chime, no popup on any POS on that profile. The order still prints and routes exactly as before — only the alert is silenced. Defaults ON for every existing terminal. Takes effect on the POS without re-pairing (it re-reads the profile live).',
+    ],
+  },
+  {
     version: '5.5.560', date: '22 Jun 2026', label: 'Printing — much faster (master prints its own jobs instantly)',
     changes: [
       'The master device now sends kitchen tickets, receipts and the cash-drawer pulse to the printer immediately, then records the job in the background — instead of waiting on database round-trips first. Removes several seconds of delay per order.',
@@ -7108,6 +7117,7 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
                 serviceCharge: dbProfile.service_charge || null,
                 isMaster: dbProfile.is_master === true,
                 autoPrintReceiptOnClose: dbProfile.auto_print_receipt_on_close !== false,
+                orderNotifications: dbProfile.order_notifications !== false,
                 menuId: dbProfile.menu_id || null,
               };
             }
@@ -7131,6 +7141,7 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
               serviceCharge: profile.serviceCharge || null,
               isMaster: profile.isMaster === true,
               autoPrintReceiptOnClose: profile && profile.autoPrintReceiptOnClose !== false,
+              orderNotifications: !profile || profile.orderNotifications !== false,
               menuId: profile?.menuId || null,
             };
             localStorage.setItem('rpos-device-config', JSON.stringify(config));
@@ -7169,6 +7180,7 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
               quickScreenEnabled: existingConfig?.quickScreenEnabled !== false,
               serviceCharge: existingConfig?.serviceCharge || null,
               autoPrintReceiptOnClose: existingConfig?.autoPrintReceiptOnClose !== false,
+              orderNotifications: existingConfig?.orderNotifications !== false,
               menuId: existingConfig?.menuId || null,
             };
             localStorage.setItem('rpos-device-config', JSON.stringify(minConfig));
@@ -7242,6 +7254,7 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
             quickScreenEnabled: p.quick_screen_enabled !== false,
             serviceCharge: p.service_charge || null,
             autoPrintReceiptOnClose: p.auto_print_receipt_on_close !== false,
+            orderNotifications: p.order_notifications !== false,
             menuId: p.menu_id || null,
             terminalName: useStore.getState().deviceConfig?.terminalName,
           };
@@ -7335,7 +7348,7 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
         </div>
       </div>
       {toast && <Toast toast={toast} />}
-      {orderAlert && <OrderAlert alert={orderAlert} onDismiss={dismissOrderAlert} />}
+      {orderAlert && surface !== 'kds' && <OrderAlert alert={orderAlert} onDismiss={dismissOrderAlert} setSurface={setSurface} />}
       {showWhatsNew && <WhatsNewModal onClose={()=>setShowWhatsNew(false)} />}
     </div>
   );
@@ -7618,102 +7631,116 @@ function Toast({ toast }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// OrderAlert — top-of-screen banner for new orders from a customer surface
-// (kiosk / online / QR table-side). Stays on screen until dismissed via the
-// × button OR a swipe-up gesture (touch + mouse). No auto-dismiss — missing
-// a new-order alert because you blinked is worse than a cluttered screen.
-function OrderAlert({ alert, onDismiss }) {
+// OrderAlert — center-screen popup for an incoming order (v5.5.561, was a top
+// banner). A dimmed backdrop + a card in the MIDDLE of the screen so staff can
+// act on it without hunting for the Orders Hub:
+//   • Channel order still awaiting a decision (HubRise, auto-accept OFF) → big
+//     Reject / Accept buttons that run the same path as the Orders Hub.
+//   • Online / kiosk / QR (or an already auto-accepted channel order) → View order
+//     (jumps to the Orders Hub) / Dismiss.
+//   • A channel cancellation (kind:'cancel') → red card, Dismiss only.
+// Dismiss just closes the popup — the order stays in the Orders Hub. Rendered for
+// POS / Bar / Tables / Orders (KDS is excluded at the call site; it has tickets).
+function orderAlertBtn(bg) {
+  return { flex: 1, height: 54, borderRadius: 12, border: 'none', cursor: 'pointer',
+    background: bg, color: '#fff', fontSize: 17, fontWeight: 800, fontFamily: 'inherit' };
+}
+function OrderAlert({ alert, onDismiss, setSurface }) {
+  const acceptOrderByRef = useStore(s => s.acceptOrderByRef);
+  const rejectOrderByRef = useStore(s => s.rejectOrderByRef);
+  const order = useStore(s => (s.orderQueue || []).find(o => o.ref === alert.ref));
+
   const SOURCE_META = {
-    kiosk:  { icon: '📟', label: 'Kiosk',  bg: '#0ea5e9' },  // sky-500
-    online: { icon: '🌐', label: 'Online', bg: '#10b981' },  // emerald-500
-    qr:     { icon: '📱', label: 'QR Code',bg: '#a855f7' },  // purple-500
+    kiosk:  { icon: '📟', label: 'Kiosk',    bg: '#0ea5e9' },  // sky-500
+    online: { icon: '🌐', label: 'Online',   bg: '#10b981' },  // emerald-500
+    qr:     { icon: '📱', label: 'QR Code',  bg: '#a855f7' },  // purple-500
+    hubrise:{ icon: '🛵', label: 'Delivery', bg: '#e8a020' },  // amber
   };
-  const m = SOURCE_META[alert.source] || { icon: '🛎', label: alert.source || 'Order', bg: '#e8a020' };
+  const isCancel = alert.kind === 'cancel';
+  const m = isCancel
+    ? { icon: '⚠️', label: alert.who || 'Channel', bg: '#dc2626' }
+    : (SOURCE_META[alert.source] || { icon: '🛎', label: alert.source || 'Order', bg: '#e8a020' });
   const total = Number(alert.total || 0);
 
-  // Swipe-up-to-dismiss state. Track the live drag delta in style state so
-  // the banner follows the finger; if the gesture ends past the threshold
-  // (60-px upward or 25% banner height, whichever is smaller) we dismiss.
-  const [dragY, setDragY] = useState(0);
-  const startY = useRef(null);
-  const dragging = useRef(false);
+  // A channel order that the operator still has to accept/reject (auto-accept off
+  // → it arrives 'received'/'new', not yet 'prep').
+  const needsDecision = !isCancel && alert.source === 'hubrise'
+    && !['prep', 'ready', 'collected', 'cancelled'].includes(alert.status);
 
-  const onPointerDown = (e) => {
-    if (e.target.closest('[data-no-swipe]')) return; // × button has its own handler
-    startY.current = e.clientY ?? e.touches?.[0]?.clientY ?? null;
-    dragging.current = true;
+  const accept = () => { acceptOrderByRef?.(alert.ref); onDismiss(); };
+  const reject = () => {
+    if (!confirm(`Reject ${alert.who || 'this'} order ${alert.ref}? The channel will be notified.`)) return;
+    rejectOrderByRef?.(alert.ref); onDismiss();
   };
-  const onPointerMove = (e) => {
-    if (!dragging.current || startY.current == null) return;
-    const y = e.clientY ?? e.touches?.[0]?.clientY ?? null;
-    if (y == null) return;
-    const delta = Math.min(0, y - startY.current); // clamp to upward drag only
-    setDragY(delta);
-  };
-  const onPointerUp = () => {
-    if (!dragging.current) return;
-    dragging.current = false;
-    if (dragY < -60) onDismiss();
-    else setDragY(0); // snap back
-    startY.current = null;
-  };
+  const view = () => { setSurface?.('orders'); onDismiss(); };
+
+  const items = order?.items || [];
 
   return (
-    <div key={alert.key}
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-      onPointerCancel={onPointerUp}
-      style={{
-        position: 'fixed', top: 12, left: '50%',
-        transform: `translateX(-50%) translateY(${dragY}px)`,
-        zIndex: 9999, minWidth: 'min(560px, calc(100vw - 24px))',
-        maxWidth: 'calc(100vw - 24px)',
-        borderRadius: 14, overflow: 'hidden',
-        boxShadow: '0 18px 48px rgba(0,0,0,0.45), 0 4px 14px rgba(0,0,0,0.25)',
-        animation: dragging.current ? undefined : 'orderAlertIn 0.3s cubic-bezier(0.2, 0.9, 0.3, 1.4)',
-        transition: dragging.current ? 'none' : 'transform .2s ease',
-        background: m.bg, color: '#fff',
-        fontFamily: 'inherit',
-        touchAction: 'pan-x', // let the gesture drive translate, but allow horizontal scroll on children
-        cursor: 'grab',
-        userSelect: 'none',
-      }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '16px 18px' }}>
-        <div style={{
-          width: 56, height: 56, borderRadius: 14,
-          background: 'rgba(255,255,255,0.22)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: 30, flexShrink: 0,
-        }}>{m.icon}</div>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: '0.1em', textTransform: 'uppercase', opacity: 0.85 }}>
-            New {m.label} order
-          </div>
-          <div style={{ fontSize: 20, fontWeight: 900, letterSpacing: '-0.01em', lineHeight: 1.2, marginTop: 2,
-            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-          }}>
-            {alert.who || 'Guest'}
-          </div>
-          <div style={{ fontSize: 12, fontWeight: 700, opacity: 0.92, marginTop: 2 }}>
-            {alert.ref ? <>Ref <span style={{ fontFamily: 'monospace' }}>{alert.ref}</span></> : null}
-            {total > 0 && <> · {money(total)}</>}
+    <div
+      onClick={(e) => { if (e.target === e.currentTarget) onDismiss(); }}
+      style={{ position: 'fixed', inset: 0, zIndex: 9999, background: 'rgba(0,0,0,0.55)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16,
+        animation: 'fadeIn .18s ease', fontFamily: 'inherit' }}>
+      <div key={alert.key} style={{
+        width: 'min(440px, calc(100vw - 32px))', maxHeight: 'calc(100vh - 32px)',
+        background: 'var(--bg2)', color: 'var(--t1)', borderRadius: 18, overflow: 'hidden',
+        boxShadow: '0 24px 70px rgba(0,0,0,0.55)', display: 'flex', flexDirection: 'column',
+        animation: 'slideUp .26s cubic-bezier(0.2, 0.9, 0.3, 1.25)', border: '1px solid var(--bdr)' }}>
+
+        {/* Coloured header */}
+        <div style={{ background: m.bg, color: '#fff', padding: '18px 20px', display: 'flex', alignItems: 'center', gap: 14 }}>
+          <div style={{ width: 52, height: 52, borderRadius: 14, background: 'rgba(255,255,255,0.22)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28, flexShrink: 0 }}>{m.icon}</div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: '0.09em', textTransform: 'uppercase', opacity: 0.9 }}>
+              {isCancel ? 'Order cancelled' : `New ${m.label} order`}
+            </div>
+            <div style={{ fontSize: 21, fontWeight: 900, lineHeight: 1.2, marginTop: 2,
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {alert.who || 'Guest'}
+            </div>
+            <div style={{ fontSize: 12, fontWeight: 700, opacity: 0.92, marginTop: 2 }}>
+              {alert.ref ? <>Ref <span style={{ fontFamily: 'monospace' }}>{alert.ref}</span></> : null}
+              {total > 0 && <> · {money(total)}</>}
+            </div>
           </div>
         </div>
-        <button data-no-swipe onClick={onDismiss} style={{
-          width: 40, height: 40, borderRadius: '50%', border: 'none',
-          background: 'rgba(255,255,255,0.22)', color: '#fff',
-          fontSize: 22, fontWeight: 900, cursor: 'pointer', fontFamily: 'inherit',
-          flexShrink: 0,
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-        }} aria-label="Dismiss">×</button>
-      </div>
-      {/* Swipe affordance — small handle so the gesture is discoverable */}
-      <div style={{
-        height: 14, display: 'flex', alignItems: 'center', justifyContent: 'center',
-        opacity: 0.55,
-      }}>
-        <div style={{ width: 38, height: 4, borderRadius: 2, background: 'rgba(255,255,255,0.65)' }}/>
+
+        {/* Body */}
+        {!isCancel && items.length > 0 && (
+          <div style={{ padding: '14px 20px', overflowY: 'auto', borderBottom: '1px solid var(--bdr)' }}>
+            {items.slice(0, 12).map((it, i) => (
+              <div key={i} style={{ display: 'flex', gap: 10, fontSize: 13.5, padding: '3px 0', color: 'var(--t2)' }}>
+                <b style={{ color: 'var(--t1)', flexShrink: 0 }}>{it.qty || it.quantity || 1}×</b>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.name || it.menuName || 'Item'}</span>
+              </div>
+            ))}
+            {items.length > 12 && <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 4 }}>+{items.length - 12} more…</div>}
+          </div>
+        )}
+        {isCancel && (
+          <div style={{ padding: '16px 20px', fontSize: 13.5, color: 'var(--t2)', borderBottom: '1px solid var(--bdr)' }}>
+            This order was cancelled on the channel. If the kitchen has started it, stop and reconcile.
+          </div>
+        )}
+
+        {/* Actions */}
+        <div style={{ padding: 16, display: 'flex', gap: 10 }}>
+          {isCancel ? (
+            <button onClick={onDismiss} style={orderAlertBtn('#475569')}>Dismiss</button>
+          ) : needsDecision ? (
+            <>
+              <button onClick={reject} style={orderAlertBtn('#dc2626')}>Reject</button>
+              <button onClick={accept} style={orderAlertBtn('#16a34a')}>Accept</button>
+            </>
+          ) : (
+            <>
+              <button onClick={onDismiss} style={orderAlertBtn('#475569')}>Dismiss</button>
+              <button onClick={view} style={orderAlertBtn('#2563eb')}>View order</button>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );

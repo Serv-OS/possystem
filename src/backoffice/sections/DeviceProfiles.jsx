@@ -46,7 +46,7 @@ const DEFAULT_PROFILES = [
     defaultSurface:'tables', enabledOrderTypes:['dine-in','takeaway','collection'],
     assignedSection:null, hiddenFeatures:[], tableServiceEnabled:true,
     quickScreenEnabled:true, receiptPrinterId:'pr1', deviceCount:1,
-    autoPrintReceiptOnClose:true,
+    autoPrintReceiptOnClose:true, orderNotifications:true,
   },
   {
     id:'prof-2', name:'Bar terminal', color:'#e8a020',
@@ -54,7 +54,7 @@ const DEFAULT_PROFILES = [
     assignedSection:'bar', hiddenFeatures:['courses','kiosk','reports'],
     tableServiceEnabled:false, quickScreenEnabled:true,
     receiptPrinterId:'pr3', deviceCount:1,
-    autoPrintReceiptOnClose:true,
+    autoPrintReceiptOnClose:true, orderNotifications:true,
   },
   {
     id:'prof-3', name:'Server handheld', color:'#22c55e',
@@ -62,7 +62,7 @@ const DEFAULT_PROFILES = [
     assignedSection:null, hiddenFeatures:['kiosk','reports','discounts','voids'],
     tableServiceEnabled:true, quickScreenEnabled:true,
     receiptPrinterId:'pr1', deviceCount:1,
-    autoPrintReceiptOnClose:true,
+    autoPrintReceiptOnClose:true, orderNotifications:true,
   },
 ];
 
@@ -103,6 +103,7 @@ export default function DeviceProfiles() {
         tableServiceEnabled: p.table_service_enabled !== false,
         quickScreenEnabled: p.quick_screen_enabled !== false,
         autoPrintReceiptOnClose: p.auto_print_receipt_on_close !== false,
+        orderNotifications: p.order_notifications !== false,
         menuId: p.menu_id,
         deviceCount: countMap[p.id] || 0,
         serviceCharge: p.service_charge || null,
@@ -132,6 +133,7 @@ export default function DeviceProfiles() {
     table_service_enabled: p.tableServiceEnabled !== false,
     quick_screen_enabled: p.quickScreenEnabled !== false,
     auto_print_receipt_on_close: p.autoPrintReceiptOnClose !== false,
+    order_notifications: p.orderNotifications !== false,
     menu_id: p.menuId || null,
     sort_order: p.sortOrder || 0,
     service_charge: p.serviceCharge || null,
@@ -354,7 +356,7 @@ function ProfileEditor({ profile, onSave, onDelete, onClose }) {
     defaultSurface:'tables', enabledOrderTypes:['dine-in'],
     assignedSection:null, hiddenFeatures:[],
     tableServiceEnabled:true, quickScreenEnabled:true, receiptPrinterId:'pr1', menuId:null,
-    autoPrintReceiptOnClose:true,
+    autoPrintReceiptOnClose:true, orderNotifications:true,
     runnerMode:false, paymentMode:'tap_to_pay', assignedReaderId:null, customerDisplayMode:'auto',
   });
 
@@ -577,6 +579,20 @@ function ProfileEditor({ profile, onSave, onDelete, onClose }) {
               background: form.autoPrintReceiptOnClose !== false ? 'var(--grn)' : 'var(--bg4)', transition:'all .2s', flexShrink:0, position:'relative',
             }}>
               <div style={{ width:18, height:18, borderRadius:'50%', background:'#fff', position:'absolute', top:3, left: form.autoPrintReceiptOnClose !== false ? 22 : 3, transition:'left .2s', boxShadow:'0 1px 3px rgba(0,0,0,.3)' }}/>
+            </button>
+          </div>
+
+          {/* Order notifications toggle */}
+          <div style={{ marginBottom:18, display:'flex', justifyContent:'space-between', alignItems:'center', padding:'12px 14px', background:'var(--bg3)', borderRadius:10, border:'1px solid var(--bdr)' }}>
+            <div>
+              <div style={{ fontSize:13, fontWeight:600, color:'var(--t1)' }}>Order notifications</div>
+              <div style={{ fontSize:11, color:'var(--t3)', marginTop:2 }}>Show the new-order popup &amp; play the chime on this terminal when online, kiosk, QR or delivery orders arrive. Untick for terminals that shouldn't be alerted (the order still prints &amp; routes as normal).</div>
+            </div>
+            <button onClick={() => upd('orderNotifications', form.orderNotifications === false)} style={{
+              width:44, height:24, borderRadius:12, border:'none', cursor:'pointer',
+              background: form.orderNotifications !== false ? 'var(--grn)' : 'var(--bg4)', transition:'all .2s', flexShrink:0, position:'relative',
+            }}>
+              <div style={{ width:18, height:18, borderRadius:'50%', background:'#fff', position:'absolute', top:3, left: form.orderNotifications !== false ? 22 : 3, transition:'left .2s', boxShadow:'0 1px 3px rgba(0,0,0,.3)' }}/>
             </button>
           </div>
 

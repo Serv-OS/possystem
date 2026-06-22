@@ -4,7 +4,7 @@ import { calculateOrderTax } from '../lib/tax';
 import { resolveServiceCharge } from '../lib/serviceCharge';
 import { upsertMenuItem, upsertFloorTable, deleteFloorTable, insertKDSTicket, insertClosedCheck, toggle86DB, getNextOrderRefLocal, updateClosedCheckRefunds, upsertStockLevel, deleteStockLevel, decrementStockRPC, restoreStockRPC } from '../lib/db';
 import { printService } from '../lib/printer';
-import { hubrisePushStock, isHubriseConnected } from '../lib/hubrise';
+import { hubrisePushStock, isHubriseConnected, hubrisePushStatus, isHubriseAutoReceipt } from '../lib/hubrise';
 
 // ── Payment-intent normaliser ────────────────────────────────────────────────
 // v5.5.323: a check can have MULTIPLE card PaymentIntents — one per card portion
@@ -4795,6 +4795,45 @@ export const useStore = create((set, get) => ({
     set({ orderAlert: { ...alert, key: Date.now() } });
   },
   dismissOrderAlert: () => set({ orderAlert: null }),
+
+  // v5.5.561: Accept / Reject an incoming order by ref, from anywhere (the new-order
+  // popup or the Orders Hub). Looks the order up in the live queue so callers only
+  // need the ref. Mirrors OrdersHub's acceptHubrise/rejectHubrise so the logic lives
+  // in one place.
+  //   Accept → print + KDS tickets + flip to 'prep'; HubRise orders also confirm a
+  //            prep time back to the channel (+ optional dispatch receipt).
+  //   Reject → tell the channel (HubRise) and drop the order from the queue.
+  acceptOrderByRef: (ref) => {
+    const o = (get().orderQueue || []).find(x => x.ref === ref);
+    if (!o) return;
+    const locId = getActiveLocationSync();
+    get().routeKioskOrderPrints?.({
+      ref: o.ref, source: o.source || 'hubrise',
+      items: o.items || [],
+      customer: o.customer || null,
+      collectionTime: o.collectionTime || null,
+      isASAP: !!o.isASAP,
+      sentAt: Date.now(),
+    });
+    if (o.source === 'hubrise') {
+      if (isHubriseAutoReceipt(locId)) get().printHubriseReceipt?.(o);
+      get().updateQueueStatus(o.ref, 'prep');
+      hubrisePushStatus(locId, o.ref, 'accept', { prep_minutes: 20 }).catch(() => {});
+    } else {
+      get().updateQueueStatus(o.ref, 'prep');
+    }
+    get().showToast?.(`Accepted ${o.customer?.channel || o.customer?.name || 'order'} ${o.ref}`, 'success');
+  },
+  rejectOrderByRef: (ref) => {
+    const o = (get().orderQueue || []).find(x => x.ref === ref);
+    if (!o) return;
+    const locId = getActiveLocationSync();
+    if (o.source === 'hubrise') {
+      hubrisePushStatus(locId, o.ref, 'reject', { reason: 'Rejected by store' }).catch(() => {});
+    }
+    get().removeFromQueue(o.ref);
+    get().showToast?.(`Rejected ${o.ref}`, 'info');
+  },
 
   // ── Allergen pending ──────────────────────
   pendingItem: null,

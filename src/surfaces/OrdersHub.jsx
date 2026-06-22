@@ -16,7 +16,7 @@ import { syncQrTableSession } from '../lib/qrTableSession';
 import { money, currencySymbol } from '../lib/currency';
 import { ryftTab } from '../lib/payments/ryft';
 import { getActiveLocationSync } from '../lib/supabase';
-import { hubrisePushStatus, isHubriseAutoReceipt } from '../lib/hubrise';
+import { hubrisePushStatus } from '../lib/hubrise';
 
 // ── Channel definitions ────────────────────────────────────────────────────────
 const FILTER_TABS = [
@@ -62,8 +62,9 @@ function elapsed(date) {
 export default function OrdersHub() {
   const {
     tables, tabs, orderQueue,
-    updateQueueStatus, removeFromQueue, routeKioskOrderPrints, printHubriseReceipt,
+    updateQueueStatus, removeFromQueue,
     showToast, setSurface, setActiveTableId,
+    acceptOrderByRef, rejectOrderByRef,
     staff,
   } = useStore();
 
@@ -260,26 +261,12 @@ export default function OrdersHub() {
   };
 
   // HubRise accept/reject gate (before the normal prep→ready→collected flow).
-  const acceptHubrise = (o) => {
-    const locId = getActiveLocationSync();
-    // Print + create KDS tickets + flip to prep (routeKioskOrderPrints sets status→prep).
-    routeKioskOrderPrints?.({
-      ref: o.ref, source: 'hubrise',
-      items: o._raw?.items || o.items || [],
-      customer: o._raw?.customer || o.customer || null,
-      collectionTime: o.collectionTime, isASAP: o.isASAP,
-      sentAt: Date.now(),
-    });
-    if (isHubriseAutoReceipt(locId)) printHubriseReceipt?.(o._raw || o);  // dispatch receipt (order no. + customer)
-    updateQueueStatus(o.ref, 'prep');
-    hubrisePushStatus(locId, o.ref, 'accept', { prep_minutes: 20 }).catch(() => {});
-    showToast(`Accepted ${o.customer?.channel || 'order'} ${o.ref}`, 'success');
-  };
+  // Logic lives in the store (acceptOrderByRef/rejectOrderByRef) so the new-order
+  // popup can run the exact same path from any surface.
+  const acceptHubrise = (o) => acceptOrderByRef(o.ref);
   const rejectHubrise = (o) => {
     if (!confirm(`Reject ${o.customer?.channel || 'this'} order ${o.ref}? The channel will be notified.`)) return;
-    hubrisePushStatus(getActiveLocationSync(), o.ref, 'reject', { reason: 'Rejected by store' }).catch(() => {});
-    removeFromQueue(o.ref);
-    showToast(`Rejected ${o.ref}`, 'info');
+    rejectOrderByRef(o.ref);
   };
 
   // Book a completed HubRise order into closed_checks so it lands in sales history + reports

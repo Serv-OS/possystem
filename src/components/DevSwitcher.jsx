@@ -56,6 +56,7 @@ export default function DevSwitcher() {
         tableServiceEnabled: profile?.tableServiceEnabled !== false,
         quickScreenEnabled: profile?.quickScreenEnabled !== false,
         autoPrintReceiptOnClose: profile?.autoPrintReceiptOnClose !== false,
+        orderNotifications: profile?.orderNotifications !== false,
       }));
       localStorage.setItem('rpos-device-mode', 'pos');
     }

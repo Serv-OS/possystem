@@ -594,11 +594,11 @@ export default function POSSurface() {
     showToast(`${label} — sent to kitchen`, 'success');
   };
 
-  // Keep deviceConfig.autoPrintReceiptOnClose fresh from DB. The cached value
-  // may be stale if the profile was edited in Back Office but this terminal
-  // hasn't re-applied the profile. Without this, the print-decision logic
-  // reads undefined and defaults to 'print', causing surprises when staff
-  // set a profile to 'don't print'.
+  // Keep deviceConfig.autoPrintReceiptOnClose + orderNotifications fresh from DB.
+  // The cached value may be stale if the profile was edited in Back Office but this
+  // terminal hasn't re-applied the profile. Without this, the print-decision logic
+  // reads undefined and defaults to 'print', and the new-order notification gate
+  // (realtime.js) would keep alerting a terminal the operator just silenced.
   useEffect(() => {
     const sync = async () => {
       const profId = deviceConfig?.profileId;
@@ -606,18 +606,28 @@ export default function POSSurface() {
       try {
         const { data, error } = await supabase
           .from('device_profiles')
-          .select('auto_print_receipt_on_close')
+          .select('auto_print_receipt_on_close, order_notifications')
           .eq('id', profId)
           .single();
         if (error || !data) return;
-        if (deviceConfig?.autoPrintReceiptOnClose !== data.auto_print_receipt_on_close) {
-          setDeviceConfig({
+        const apcChanged = deviceConfig?.autoPrintReceiptOnClose !== data.auto_print_receipt_on_close;
+        const notifChanged = (deviceConfig?.orderNotifications !== false) !== (data.order_notifications !== false);
+        if (apcChanged || notifChanged) {
+          const next = {
             ...deviceConfig,
             autoPrintReceiptOnClose: data.auto_print_receipt_on_close,
-          });
+            orderNotifications: data.order_notifications !== false,
+          };
+          setDeviceConfig(next);
+          // realtime.js reads orderNotifications from the live store first but also
+          // falls back to this cached config — keep both in step.
+          try {
+            const ls = JSON.parse(localStorage.getItem('rpos-device-config') || '{}');
+            localStorage.setItem('rpos-device-config', JSON.stringify({ ...ls, orderNotifications: data.order_notifications !== false }));
+          } catch { /* non-fatal */ }
         }
       } catch (e) {
-        console.warn('[POSSurface] autoPrintReceiptOnClose sync failed:', e?.message || e);
+        console.warn('[POSSurface] deviceConfig sync failed:', e?.message || e);
       }
     };
     sync();

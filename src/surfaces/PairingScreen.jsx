@@ -95,6 +95,7 @@ export default function PairingScreen({ onPaired }) {
             tableServiceEnabled: profile.tableServiceEnabled !== false,
             quickScreenEnabled: profile.quickScreenEnabled !== false,
             autoPrintReceiptOnClose: true,
+            orderNotifications: profile.orderNotifications !== false,
           }));
         }
       } catch(e) { console.warn('Profile apply failed:', e); }

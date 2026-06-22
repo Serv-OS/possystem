@@ -45,6 +45,18 @@ export function startRealtime(store, locationId = LOCATION_ID) {
 
   console.info('[Realtime] Connecting to location:', locationId);
 
+  // v5.5.561: per-terminal "Order notifications" device-profile flag. Default ON
+  // (true unless explicitly false). Prefer the live store value (POSSurface keeps
+  // it fresh from the DB) and fall back to the cached localStorage config.
+  const orderNotificationsEnabled = () => {
+    try {
+      const dc = store.getState().deviceConfig;
+      if (dc && dc.orderNotifications !== undefined) return dc.orderNotifications !== false;
+      const ls = JSON.parse(localStorage.getItem('rpos-device-config') || '{}');
+      return ls.orderNotifications !== false;
+    } catch { return true; }
+  };
+
   // ── KDS tickets ────────────────────────────────────────────────────────────
   const kdsChannel = supabase
     .channel(`kds:${locationId}`)
@@ -408,12 +420,19 @@ export function startRealtime(store, locationId = LOCATION_ID) {
           : src === 'hubrise'
           ? (row.customer?.channel || 'Delivery order')
           : (row.customer?.name || (src === 'online' ? 'Online customer' : 'Walk-in'));
-        playOrderChime();
-        store.getState().showOrderAlert?.({
-          source: src, who, ref,
-          total: Number(row.total) || 0,
-          orderType: row.type || null,
-        });
+        // v5.5.561: per-terminal "Order notifications" toggle (device profile).
+        // When OFF this terminal stays silent — no chime, no popup — but it STILL
+        // routes & prints (the master auto-route block below is untouched). Prefer
+        // the live store value (kept fresh by POSSurface) over the cached localStorage.
+        if (orderNotificationsEnabled()) {
+          playOrderChime();
+          store.getState().showOrderAlert?.({
+            source: src, who, ref,
+            total: Number(row.total) || 0,
+            orderType: row.type || null,
+            status: row.status || null,   // lets the popup show Accept/Reject vs View
+          });
+        }
         // v5.5.139: ONLY the master device fires the realtime auto-route.
         // Reverting v5.5.132's broader gate because the cross-device atomic
         // claim it relied on (kitchen_routed_at IS NULL) doesn't work when
@@ -456,14 +475,18 @@ export function startRealtime(store, locationId = LOCATION_ID) {
           && payload.new?.source === 'hubrise'
           && payload.new?.status === 'cancelled'
           && payload.old?.status !== 'cancelled') {
-        playOrderChime();
-        store.getState().showOrderAlert?.({
-          source: 'hubrise',
-          who: `CANCELLED · ${payload.new.customer?.channel || 'HubRise'}`,
-          ref: payload.new.ref || '',
-          total: 0,
-          orderType: payload.new.type || null,
-        });
+        if (orderNotificationsEnabled()) {
+          playOrderChime();
+          store.getState().showOrderAlert?.({
+            source: 'hubrise',
+            kind: 'cancel',
+            who: `${payload.new.customer?.channel || 'HubRise'}`,
+            ref: payload.new.ref || '',
+            total: 0,
+            orderType: payload.new.type || null,
+            status: 'cancelled',
+          });
+        }
       }
     })
     .subscribe();
