@@ -85,6 +85,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.570', date: '23 Jun 2026', label: 'Stock — guided Overview dashboard',
+    changes: [
+      'NEW: Inventory → Overview. One page that shows your live stock value, what needs a price, recipe coverage and suppliers — plus a 5-step “set up your stock” checklist that ticks off as you go and jumps you to the right screen.',
+      '“Needs attention” flags items with no price (can’t cost) and menu items with no recipe (won’t deplete on sale), with quick links to fix them.',
+      'A live feed of recent stock movements (deliveries, sales, counts, production).',
+    ],
+  },
+  {
     version: '5.5.569', date: '22 Jun 2026', label: 'Daily counts — clearer variant names',
     changes: [
       'Daily counts now shows the full product on variant rows — e.g. “Heineken Half” instead of a bare “Half” — so you always know what a row belongs to.',

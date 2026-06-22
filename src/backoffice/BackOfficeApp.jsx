@@ -25,6 +25,7 @@ import Customers from './sections/Customers';
 import Shift from './sections/Shift';
 import Inventory from './sections/Inventory';
 import StockItems from './sections/StockItems';
+import StockOverview from './sections/StockOverview';
 import Recipes from './sections/Recipes';
 import Batches from './sections/Batches';
 import Suppliers from './sections/Suppliers';
@@ -65,6 +66,7 @@ const NAV = [
   { id:'overview',   label:'Overview',        icon:'◈',  group:'Dashboard' },
   { id:'menu',       label:'Menu manager',    icon:'🍽',  group:'Configuration' },
   { id:'floorplan',  label:'Floor plan',      icon:'⬚',  group:'Configuration' },
+  { id:'stock-overview', label:'Stock overview', icon:'📦',  group:'Configuration' },
   { id:'inventory',  label:'Daily counts',    icon:'📦',  group:'Configuration' },
   { id:'stock-items', label:'Stock items',     icon:'📦',  group:'Configuration' },
   { id:'recipes',    label:'Recipes',         icon:'📖',  group:'Configuration' },
@@ -115,7 +117,7 @@ const NAV_IA = [
   { label:'Overview',   icon:'home',      single:'overview' },
   { label:'Menu',       icon:'list',      children:[['menu','Items & modifiers'],['discounts','Discounts'],['tax','Tax & VAT'],['challenge21','Challenge ID']] },
   { label:'Floor plan', icon:'floor',     single:'floorplan' },
-  { label:'Inventory',  icon:'inventory', children:[['stock-items','Stock items'],['inventory','Daily counts']] },
+  { label:'Inventory',  icon:'inventory', children:[['stock-overview','Overview'],['stock-items','Stock items'],['inventory','Daily counts']] },
   { label:'Produce',    icon:'inventory', children:[['recipes','Recipes'],['batches','Batches']] },
   { label:'Purchasing', icon:'channels',  children:[['suppliers','Suppliers'],['purchase-orders','Purchase orders'],['invoices','Invoices']] },
   { label:'Team',       icon:'user',      single:'staff' },
@@ -635,6 +637,7 @@ export default function BackOfficeApp() {
           {section === 'menu'       && <MenuManager />}
           {section === 'floorplan'  && <FloorPlanBuilder />}
           {section === 'inventory'  && <Inventory />}
+          {section === 'stock-overview' && <StockOverview setSection={setSection} />}
           {section === 'stock-items' && <StockItems />}
           {section === 'recipes'    && <Recipes />}
           {section === 'batches'    && <Batches />}

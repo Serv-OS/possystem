@@ -293,6 +293,23 @@ export const setInventoryOnHand = async (inventoryItemId, countedQty, notes = nu
   });
 };
 
+/** Recent movements across ALL items (for the overview feed), newest first. */
+export const fetchRecentMovements = async (locationId = null, limit = 15) => {
+  if (isMock || !supabase) return { data: [], error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: [], error: null };
+  const { data, error } = await supabase.from('stock_movements')
+    .select('id, inventory_item_id, qty_base, value_delta, movement_type, occurred_at')
+    .eq('location_id', locationId).order('occurred_at', { ascending: false }).limit(limit);
+  return {
+    data: (data || []).map(r => ({
+      id: r.id, inventoryItemId: r.inventory_item_id, qtyBase: Number(r.qty_base),
+      valueDelta: r.value_delta == null ? null : Number(r.value_delta), movementType: r.movement_type, occurredAt: r.occurred_at,
+    })),
+    error,
+  };
+};
+
 /** Recent movements for one item, newest first (the reconciliation view). */
 export const fetchItemMovements = async (inventoryItemId, locationId = null, limit = 100) => {
   if (isMock || !supabase) return { data: [], error: null };
