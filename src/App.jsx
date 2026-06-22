@@ -85,6 +85,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.566', date: '22 Jun 2026', label: 'Stock & Production — production batches (make-here items)',
+    changes: [
+      'NEW: Produce → Batches. Make a prep / sub-recipe item — choose the recipe, enter how much you actually made, and the batch consumes the ingredients and adds the finished item to stock at real production cost.',
+      'Live preview before you commit: batch cost, cost per unit, and exactly what will be consumed.',
+      'Planned-vs-actual yield is recorded (yield variance), with lot code and use-by date for traceability, and full batch history.',
+      'Closes the make-here loop: made items now get replenished by production (so dishes that use a sub-recipe deplete it on sale, and you top it back up by producing a batch). Every consume/output posts to the stock ledger.',
+    ],
+  },
+  {
     version: '5.5.565', date: '22 Jun 2026', label: 'Stock & Production — slice 3b: sales now deplete recipe ingredients (theoretical COGS)',
     changes: [
       'When a check is paid, each dish with a recipe now depletes its ingredients from the stock ledger — so on-hand and stock value move with real sales, and the movement history shows a “Sale” line per ingredient.',
