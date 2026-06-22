@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.573', date: '23 Jun 2026', label: 'Wastage logging',
+    changes: [
+      'NEW: Inventory → Wastage. Record spoilage, breakage, over-production etc. against a stock item with a reason — it comes off stock and is valued at cost.',
+      'Logged waste counts as explained loss, so it doesn’t inflate the unexplained “Gap”. 30-day log with total waste value.',
+    ],
+  },
+  {
     version: '5.5.572', date: '23 Jun 2026', label: 'Stock counts — physical counts & reconciliation',
     changes: [
       'NEW: Inventory → Stock counts. Start a count, walk the shelves entering what you actually have (mobile-friendly), see live variance vs the system, then Approve to reconcile.',
