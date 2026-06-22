@@ -85,6 +85,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.572', date: '23 Jun 2026', label: 'Stock counts — physical counts & reconciliation',
+    changes: [
+      'NEW: Inventory → Stock counts. Start a count, walk the shelves entering what you actually have (mobile-friendly), see live variance vs the system, then Approve to reconcile.',
+      'Approving moves on-hand to your counted figures and records the difference to the ledger — which is what feeds “The Gap” report (unexplained loss).',
+      'Count history with the £ variance of each count.',
+    ],
+  },
+  {
     version: '5.5.571', date: '23 Jun 2026', label: 'Stock reports — valuation, recipe GP, movements & “the gap”',
     changes: [
       'NEW: Inventory → Stock reports. Four views, all exportable to CSV:',
