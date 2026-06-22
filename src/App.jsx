@@ -86,6 +86,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.596', date: '23 Jun 2026', label: 'Operations module — temperature/HACCP, deliveries, maintenance (slices 1–2)',
+    changes: [
+      'New mobile Operations app (?mode=ops): pair the tablet, staff sign in by PIN, then a compliance home, FSA-guided temperature checks (°C/°F), and goods-in delivery checks.',
+      'Out-of-range readings are blocked until a corrective action is recorded — which auto-raises a maintenance request and alerts the duty manager (in-app now, SMS/email escalation via cron).',
+      'Delivery temperature checks tie into stock ordering: accept receives the purchase order into stock; reject posts no stock.',
+      'Back Office → Operations: compliance dashboard, temperature units & thresholds admin (the single source of truth), maintenance lifecycle, and an EHO compliance calendar with CSV export.',
+    ],
+  },
+  {
     version: '5.5.595', date: '23 Jun 2026', label: 'Reporting — catering counted, waste in the P&L, mismatch fixed',
     changes: [
       'Catering now appears in "Sales by order source" on the dashboard and as a filter/label in Reports — previously catering sales were uncounted there.',

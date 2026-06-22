@@ -3,7 +3,7 @@
 // language as the floor app.
 
 import { useEffect, useMemo, useState, useCallback } from 'react';
-import { getActiveLocationSync, getLocationId } from '../../../lib/supabase';
+import { supabase, getActiveLocationSync, getLocationId } from '../../../lib/supabase';
 import { fetchTempUnits, fetchSchedules, fetchReadings, fetchCorrectiveActions, fetchMaintenance, fetchAlerts, ackAlert } from '../../../lib/ops/data';
 import { useStore } from '../../../store';
 import { hhmmToMin, runsOnDay, windowStatus, summarize, displayTemp } from '../../../lib/ops/temp';
@@ -43,6 +43,16 @@ export default function OpsOverview({ setSection }) {
     setSt({ loading: false, units: units || [], byUnit, summary: summarize(all), corr: corr || [], maint: maint || [], alerts: alerts || [] });
   }, [locId]);
   useEffect(() => { reload(); /* eslint-disable-next-line */ }, []);
+
+  // live alert push: a new breach alert refreshes the dashboard + toasts the manager
+  useEffect(() => {
+    if (!supabase || !locId) return;
+    const ch = supabase.channel(`ops-alerts-${locId}`)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'ops_alerts', filter: `location_id=eq.${locId}` },
+        (p) => { showToast?.(p.new?.title || 'New ops alert', 'error'); reload(); })
+      .subscribe();
+    return () => { try { supabase.removeChannel(ch); } catch {} };
+  }, [locId, reload, showToast]);
 
   const exceptions = useMemo(() => st.corr.length, [st.corr]);
   const openMaint = useMemo(() => st.maint.filter(m => m.status !== 'resolved' && m.status !== 'cancelled').length, [st.maint]);
