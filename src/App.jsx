@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.593', date: '23 Jun 2026', label: 'POS waste — finds every selling item + shows the stock it costs',
+    changes: [
+      'Record waste now finds every selling item (including sold-alone extras and each size), not just some — search the menu and pick what was wasted.',
+      'Before you confirm, it shows exactly what comes off stock (each ingredient, the quantity and the cost) and the total stock cost — calculated live from the recipe.',
+    ],
+  },
+  {
     version: '5.5.592', date: '23 Jun 2026', label: 'POS waste — search the menu + works without a cash drawer',
     changes: [
       'Record waste now searches the menu you know (e.g. a spilled pint, a dropped burger) instead of raw stock items — picking one deducts its recipe ingredients from stock at cost.',
