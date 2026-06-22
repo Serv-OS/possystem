@@ -85,6 +85,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.585', date: '23 Jun 2026', label: 'POS — log waste from the till',
+    changes: [
+      'Staff can now log waste straight from the POS: open the drawer/functions menu → "Log waste", search a stock item, enter the quantity in friendly units (e.g. 1 Bottle), pick a reason.',
+      'It comes off stock at cost and lands in the same ledger as Back Office wastage, so it shows as explained loss and keeps theoretical COGS / "The Gap" honest.',
+      'Waste logging is now friendly-unit aware everywhere — you can record a whole keg, case or bottle without doing the ml maths.',
+    ],
+  },
+  {
     version: '5.5.584', date: '23 Jun 2026', label: 'Daily Trading — real recipe COGS in the P&L',
     changes: [
       'The Daily Trading P&L can now use your actual recipe cost (from the stock ledger) for COGS instead of a flat % — pick "COGS basis" → Recipe cost once your recipes are linked, for a true gross profit.',

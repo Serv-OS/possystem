@@ -2,6 +2,7 @@ import { useCompact } from '../lib/useCompact';
 import { createPortal } from 'react-dom';
 import { useState, useMemo, useRef, useEffect } from 'react';
 import DrawerCashModal from '../components/DrawerCashModal';
+import PosWasteModal from '../components/PosWasteModal';
 import { useStore } from '../store';
 import { fetchMenuCategoryLinks } from '../lib/db';
 import { supabase } from '../lib/supabase';
@@ -73,6 +74,7 @@ export default function POSSurface() {
   // BUILD_TEST_1777051985417
   // v4.6.54: drawer workflow state (menu + cash actions + recent activity)
   const [showDrawerMenu, setShowDrawerMenu] = useState(false);
+  const [showWaste, setShowWaste] = useState(false);
   const [showCashIn, setShowCashIn]         = useState(false);
   const [showCashOut, setShowCashOut]       = useState(false);
   const [expectedForCashOut, setExpectedForCashOut] = useState(0);
@@ -799,6 +801,12 @@ export default function POSSurface() {
                   Cash-up in progress. Finish from Back Office &rarr; Cash drawers.
                 </div>
               )}
+              <div style={{ padding:'14px 16px', borderBottom:'1px solid var(--bdr)' }}>
+                <button onClick={() => { setShowDrawerMenu(false); setShowWaste(true); }}
+                  style={{ width:'100%', padding:'13px', borderRadius:10, border:'1.5px solid var(--bdr2)', background:'var(--bg2)', color:'var(--t1)', fontFamily:'inherit', fontWeight:800, fontSize:14, cursor:'pointer', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                  <span>Log waste</span><span style={{ fontSize:10, fontWeight:500, color:'var(--t4)' }}>spoilage · breakage · spillage</span>
+                </button>
+              </div>
               <div style={{ flex:1, overflowY:'auto', padding:'12px 16px' }}>
                 <div style={{ fontSize:10, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:8 }}>Recent activity</div>
                 {_entries.length === 0 ? (
@@ -866,6 +874,14 @@ export default function POSSurface() {
           </div>
         );
       })()}
+
+      {/* Staff-facing waste logging → stock ledger (same path as BO Wastage) */}
+      <PosWasteModal
+        open={showWaste}
+        onClose={() => setShowWaste(false)}
+        locationId={(() => { try { return JSON.parse(localStorage.getItem('rpos-device') || 'null')?.locationId || null; } catch { return null; } })()}
+        showToast={showToast}
+      />
 
       {/* v4.6.54: explicit cash-in from menu (non-locked) */}
       {showCashIn && (() => {
