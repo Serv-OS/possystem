@@ -85,6 +85,16 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.564', date: '22 Jun 2026', label: 'Stock & Production — slice 3a: recipes, sub-recipes & live recipe costing / GP',
+    changes: [
+      'NEW: Produce → Recipes. Build a recipe by searching your stock items, set quantities, units and usable % (trim/yield loss), and see the cost roll up live.',
+      'DISH recipes link a menu product to its ingredient spec and show plate cost, food-cost %, GP £ and GP % against the menu price — with a GP-target flag that turns red when a dish is below target.',
+      'PREP / sub-recipes produce a made-here stock item; their cost ÷ yield becomes that item’s unit cost on save, and any recipe that uses it re-costs automatically. Sub-recipes nest to any depth (with cycle protection).',
+      'Every recipe re-costs the moment an ingredient’s supplier price changes — costing flows pack → unit → recipe → plate in one chain.',
+      'Next: sale depletion wires recipes to the stock ledger so each sale posts its ingredient usage (theoretical COGS).',
+    ],
+  },
+  {
     version: '5.5.563', date: '22 Jun 2026', label: 'Stock & Production — slice 2: stock-movements ledger, on-hand counts & valuation',
     changes: [
       'NEW: every stock item now has a real on-hand quantity, stock value, and a full movement history — on the new Stock tab in Inventory → Stock items.',
