@@ -128,6 +128,7 @@ export default function DailyTrading({ rangeFrom, rangeTo, fmt }) {
           <div style={S.lRow}><span style={{ ...S.lLess, ...S.lHint }}>vs estimate ({cogs || '0'}%)</span><span style={{ ...S.mono, color: 'var(--t3)' }}>{money(totals.cogs_estimate)}</span></div>
         )}
         <div style={{ ...S.lRow, ...S.lSub }}><span>Gross profit</span><span style={S.mono}>{money(totals.gp_actual)}</span></div>
+        {totals.waste > 0 && <div style={S.lRow}><span style={S.lLess}>less Waste <span style={S.lHint}>— stock wasted, at cost</span></span><span style={{ ...S.mono, color: 'var(--red)' }}>−{money(totals.waste)}</span></div>}
         <div style={S.lRow}><span style={S.lLess}>less Labour</span><span style={{ ...S.mono, color: 'var(--red)' }}>−{money(totals.labour_actual)}</span></div>
         <div style={S.lRow}><span style={S.lLess}>less Overhead</span><span style={{ ...S.mono, color: 'var(--red)' }}>−{money(totals.overhead)}</span></div>
         <div style={{ ...S.lRow, ...S.lFinal, ...sign(totals.op_actual) }}><span>Operating profit</span><span style={S.mono}>{money(totals.op_actual)}</span></div>
@@ -153,7 +154,7 @@ export default function DailyTrading({ rangeFrom, rangeTo, fmt }) {
             <th style={{ ...S.th, ...S.thL }}>Day</th>
             <th style={S.th}>Forecast</th><th style={S.th}>Gross (inc VAT)</th><th style={S.th}>VAT</th><th style={S.th}>Net sales</th>
             <th style={S.th}>Labour (act)</th><th style={S.th}>Labour %</th>
-            <th style={S.th}>COGS</th><th style={S.th}>Op. profit</th>
+            <th style={S.th}>COGS</th><th style={S.th}>Waste</th><th style={S.th}>Op. profit</th>
           </tr></thead>
           <tbody>
             {rows.map(r => (
@@ -171,6 +172,7 @@ export default function DailyTrading({ rangeFrom, rangeTo, fmt }) {
                 <td style={S.td}>{money(r.labour_actual)}<span style={{ color: 'var(--t4)' }}> / {money(r.labour_theo)}</span></td>
                 <td style={{ ...S.td, ...(r.labour_pct_actual > 35 ? S.neg : null) }}>{r.labour_pct_actual != null ? `${r.labour_pct_actual}%` : '—'}</td>
                 <td style={S.td}>{money(r.cogs_actual)}</td>
+                <td style={{ ...S.td, color: r.waste > 0 ? 'var(--red)' : 'var(--t3)' }}>{money(r.waste || 0)}</td>
                 <td style={{ ...S.td, ...sign(r.op_actual) }}>{money(r.op_actual)}</td>
               </tr>
             ))}
@@ -184,11 +186,12 @@ export default function DailyTrading({ rangeFrom, rangeTo, fmt }) {
             <td style={S.td}>{money(totals.labour_actual)}</td>
             <td style={S.td}>{totals.labour_pct_actual != null ? `${totals.labour_pct_actual}%` : '—'}</td>
             <td style={S.td}>{money(totals.cogs_actual)}</td>
+            <td style={{ ...S.td, color: totals.waste > 0 ? 'var(--red)' : 'var(--t3)' }}>{money(totals.waste || 0)}</td>
             <td style={{ ...S.td, ...sign(totals.op_actual) }}>{money(totals.op_actual)}</td>
           </tr></tfoot>
         </table>
       </div>
-      <div style={S.note}>VAT is shown separately because it’s collected for HMRC — it’s never profit. Net sales (ex-VAT) are the P&amp;L basis. Type a forecast (net) and press Enter, or tap “LY” for the same weekday last year. Labour shows actual / theoretical (rota). Operating profit = net sales − COGS − labour − overhead. COGS basis is currently <b>{basis === 'recipe' ? 'recipe cost (actual ingredient cost from the stock ledger)' : `estimate (${cogs || '0'}% of sales)`}</b> — change it above.</div>
+      <div style={S.note}>VAT is shown separately because it’s collected for HMRC — it’s never profit. Net sales (ex-VAT) are the P&amp;L basis. Type a forecast (net) and press Enter, or tap “LY” for the same weekday last year. Labour shows actual / theoretical (rota). Operating profit = net sales − COGS − waste − labour − overhead. Waste is stock thrown away (from the Wastage log), valued at cost. COGS basis is currently <b>{basis === 'recipe' ? 'recipe cost (actual ingredient cost from the stock ledger)' : `estimate (${cogs || '0'}% of sales)`}</b> — change it above.</div>
     </div>
   );
 }

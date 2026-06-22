@@ -85,6 +85,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.595', date: '23 Jun 2026', label: 'Reporting — catering counted, waste in the P&L, mismatch fixed',
+    changes: [
+      'Catering now appears in "Sales by order source" on the dashboard and as a filter/label in Reports — previously catering sales were uncounted there.',
+      'Fixed the dashboard "Revenue today" vs P&L mismatch: the dashboard now counts today only (it was including future-dated catering pre-orders), so it agrees with the Daily Trading report.',
+      'The Daily Trading P&L now factors in wastage — a "less Waste" line (stock thrown away, at cost) reduces operating profit, with a Waste column per day.',
+      'Catering no longer shows as a phantom "server": its tips go to the house pool and it is excluded from the Servers performance report.',
+    ],
+  },
+  {
     version: '5.5.594', date: '23 Jun 2026', label: 'POS waste — lost-sale value + bigger, browsable picker',
     changes: [
       'Recording waste now also captures the lost sale (the revenue you forgo) alongside the stock cost — shown before you confirm and recorded against the waste. Back Office → Wastage now totals waste at cost AND lost sales.',

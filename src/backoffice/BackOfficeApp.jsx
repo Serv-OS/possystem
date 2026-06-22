@@ -844,6 +844,7 @@ const SOURCE_META = [
   { key:'kiosk',    label:'Kiosk',           color:'#a855f7' },
   { key:'online',   label:'Online ordering', color:'#22c55e' },
   { key:'qr',       label:'QR table',        color:'#e8a020' },
+  { key:'catering', label:'Catering',        color:'#14b8a6' },
   { key:'delivery', label:'Delivery apps',   color:'#ef4444', soon:true },
 ];
 const ORDER_TYPE_LABEL = { 'dine-in':'Dine-in', takeaway:'Takeaway', collection:'Collection', delivery:'Delivery', 'bar-tab':'Bar tab', counter:'Counter' };
@@ -907,10 +908,14 @@ function BOOverview({ setSection, orgCtx }) {
   // Today = since midnight local time
   // v5.5.279: scope by locationId — previously showed revenue from ALL locations
   const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
-  const todayChecks = closedChecks.filter(c =>
-    c.closedAt && new Date(c.closedAt) >= todayStart &&
-    (!locId || c.locationId === locId)
-  );
+  const tomorrowStart = new Date(todayStart); tomorrowStart.setDate(tomorrowStart.getDate() + 1);
+  // Bound to TODAY only (both ends): catering is dated to its event day, so without an
+  // upper bound a future pre-order would inflate "today" and diverge from the P&L.
+  const todayChecks = closedChecks.filter(c => {
+    if (!c.closedAt) return false;
+    const t = new Date(c.closedAt);
+    return t >= todayStart && t < tomorrowStart && (!locId || c.locationId === locId);
+  });
 
   // Open orders = active sessions with items (not yet paid)
   const activeSessions = liveSessions.filter(s => s.session?.items?.length > 0);

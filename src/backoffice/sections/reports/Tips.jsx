@@ -35,7 +35,7 @@ const MODE_TO_POLICY = { shared: 'pool', none: 'direct', tipout: 'hybrid' };
 // single server who earned the tip — so their tips must NOT be parked under a
 // phantom "server" who then keeps/excludes them. They go into a "house" bucket
 // that always feeds the pool (contributes 100%, never receives).
-const HOUSE_SOURCES = new Set(['kiosk', 'online', 'qr']);
+const HOUSE_SOURCES = new Set(['kiosk', 'online', 'qr', 'catering']);
 
 function serverTips(checks) {
   const map = {};

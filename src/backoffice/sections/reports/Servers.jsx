@@ -29,6 +29,9 @@ const SORT_COLS = [
 function rollUp(checks) {
   const map = {};
   checks.forEach(c => {
+    // Catering has no real server (server:'Catering' is a channel label) — exclude it
+    // so it doesn't masquerade as a top-performing staff member.
+    if ((c.source || '') === 'catering') return;
     const s = c.server || c.staff || 'Unknown';
     if (!map[s]) map[s] = {
       server: s, checks: 0, covers: 0, revenue: 0, tips: 0,

@@ -150,10 +150,17 @@ Deno.serve(async (req) => {
   const { data: ts } = await opsAdmin.from('wf_timesheets').select('clock_in, pay_amount, status').eq('location_id', ops).gte('clock_in', tsStart.toISOString()).lte('clock_in', tsEnd.toISOString()).limit(20000);
   for (const t of ts ?? []) { if (!['approved', 'paid'].includes(t.status)) continue; const k = ymd(new Date(t.clock_in), tz); labAct[k] = (labAct[k] || 0) + (Number(t.pay_amount) || 0); }
 
-  // actual recipe COGS from the stock ledger: sum of SALE_DEPLETION value per venue-local day.
+  // Stock-ledger costs per venue-local day: SALE_DEPLETION = recipe COGS of what sold;
+  // WASTE = stock thrown away (a separate loss that also reduces operating profit).
   const recipeCogs: Record<string, number> = {};
-  const { data: mv } = await opsAdmin.from('stock_movements').select('value_delta, occurred_at').eq('location_id', ops).eq('movement_type', 'SALE_DEPLETION').gte('occurred_at', tsStart.toISOString()).lte('occurred_at', tsEnd.toISOString()).limit(50000);
-  for (const m of mv ?? []) { const k = ymd(new Date(m.occurred_at), tz); recipeCogs[k] = (recipeCogs[k] || 0) + Math.abs(Number(m.value_delta) || 0); }
+  const wasteCost: Record<string, number> = {};
+  const { data: mv } = await opsAdmin.from('stock_movements').select('value_delta, occurred_at, movement_type').eq('location_id', ops).in('movement_type', ['SALE_DEPLETION', 'WASTE']).gte('occurred_at', tsStart.toISOString()).lte('occurred_at', tsEnd.toISOString()).limit(50000);
+  for (const m of mv ?? []) {
+    const k = ymd(new Date(m.occurred_at), tz);
+    const v = Math.abs(Number(m.value_delta) || 0);
+    if (m.movement_type === 'WASTE') wasteCost[k] = (wasteCost[k] || 0) + v;
+    else recipeCogs[k] = (recipeCogs[k] || 0) + v;
+  }
 
   const rows = days.map((d) => {
     const forecast = fc[d] ?? 0;
@@ -164,6 +171,7 @@ Deno.serve(async (req) => {
     const lastYear = lySales[shift364(d)]?.net ?? 0;
     const lt = labTheo[d] ?? 0, la = labAct[d] ?? 0;
     const recipeC = recipeCogs[d] || 0;                       // actual COGS from the stock ledger
+    const wasteC = wasteCost[d] || 0;                         // stock wasted (separate loss, actual only)
     const cogsEst = actualSales * cogsPct / 100;              // flat-% estimate (full menu coverage)
     const cogsT = forecast * cogsPct / 100;                   // theoretical always on the % basis
     const cogsA = cogsBasis === 'recipe' ? recipeC : cogsEst; // actual basis: recipe ledger or % estimate
@@ -179,10 +187,11 @@ Deno.serve(async (req) => {
       cogs_theo: r2(cogsT), cogs_actual: r2(cogsA),
       cogs_recipe: r2(recipeC), cogs_estimate: r2(cogsEst),
       cogs_pct_actual: actualSales > 0 ? r2(cogsA / actualSales * 100) : null,
+      waste: r2(wasteC),
       overhead: r2(overhead),
       gp_theo: r2(forecast - cogsT), gp_actual: r2(actualSales - cogsA),
       op_theo: r2(forecast - cogsT - lt - overhead),
-      op_actual: r2(actualSales - cogsA - la - overhead),
+      op_actual: r2(actualSales - cogsA - wasteC - la - overhead),  // waste is a real loss
     };
   });
   const sum = (k: string) => Math.round(rows.reduce((s, r) => s + (Number((r as any)[k]) || 0), 0) * 100) / 100;
@@ -191,7 +200,7 @@ Deno.serve(async (req) => {
     vat: sum('vat'), gross_sales: sum('gross_sales'),
     labour_theo: sum('labour_theo'), labour_actual: sum('labour_actual'),
     cogs_theo: sum('cogs_theo'), cogs_actual: sum('cogs_actual'),
-    cogs_recipe: sum('cogs_recipe'), cogs_estimate: sum('cogs_estimate'), overhead: sum('overhead'),
+    cogs_recipe: sum('cogs_recipe'), cogs_estimate: sum('cogs_estimate'), waste: sum('waste'), overhead: sum('overhead'),
     gp_theo: sum('gp_theo'), gp_actual: sum('gp_actual'), op_theo: sum('op_theo'), op_actual: sum('op_actual'),
     labour_pct_actual: sum('actual_sales') > 0 ? Math.round(sum('labour_actual') / sum('actual_sales') * 10000) / 100 : null,
   };
