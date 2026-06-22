@@ -24,6 +24,7 @@ import {
   fetchRecipes, upsertRecipe, replaceRecipeLines, setRecipeArchived,
   linkMenuItemRecipe, buildCostingCtx, recomputeMadeItemCost, costRecipeWith,
 } from '../../lib/stock/recipes';
+import { resolveTaxRate, netOf } from '../../lib/tax';
 
 const UNIT_OPTS = Object.entries(UNITS).map(([code, u]) => ({ code, ...u }));
 const DIM_ORDER = [DIMENSIONS.COUNT, DIMENSIONS.WEIGHT, DIMENSIONS.VOLUME];
@@ -48,6 +49,7 @@ function UnitSelect({ value, onChange, width = 110 }) {
 export default function Recipes() {
   const showToast = useStore(s => s.showToast);
   const menuItems = useStore(s => s.menuItems) || [];
+  const taxRates = useStore(s => s.taxRates) || [];
   const [locId, setLocId] = useState(getActiveLocationSync());
   const [recipes, setRecipes] = useState([]);
   const [items, setItems] = useState([]);
@@ -96,11 +98,23 @@ export default function Recipes() {
   const itemName = useCallback((id) => items.find(i => i.id === id)?.name || '—', [items]);
 
   const cost = useMemo(() => (draft ? costRecipeWith(draft, ctx) : null), [draft, ctx]);
-  const menuPrice = useMemo(() => {
-    if (!draft || draft.recipeType !== 'MENU' || !draft.menuItemId) return null;
-    const mi = menuMeta.byId[String(draft.menuItemId)];
-    return mi?.pricing?.base ?? mi?.price ?? null;
-  }, [draft, menuMeta]);
+  // ex-VAT net of a menu item's selling price — GP must be on the net, not the
+  // VAT-inclusive shelf price. Variants inherit their parent's tax rate.
+  const netSellPrice = useCallback((mi) => {
+    if (!mi) return null;
+    const gross = mi?.pricing?.base ?? mi?.price ?? null;
+    if (gross == null) return null;
+    let taxRateId = mi.taxRateId ?? mi.tax_rate_id ?? null;
+    let taxOverrides = mi.taxOverrides ?? mi.tax_overrides ?? {};
+    if (!taxRateId && mi.parentId) {
+      const p = menuMeta.byId[String(mi.parentId)];
+      if (p) { taxRateId = p.taxRateId ?? p.tax_rate_id ?? null; if (!Object.keys(taxOverrides).length) taxOverrides = p.taxOverrides ?? p.tax_overrides ?? {}; }
+    }
+    return netOf(gross, resolveTaxRate({ taxRateId, taxOverrides }, taxRates, 'dine-in'));
+  }, [taxRates, menuMeta]);
+  const menuItemForDraft = (draft && draft.recipeType === 'MENU' && draft.menuItemId) ? menuMeta.byId[String(draft.menuItemId)] : null;
+  const menuPrice = menuItemForDraft ? (menuItemForDraft?.pricing?.base ?? menuItemForDraft?.price ?? null) : null;     // gross (shelf) price
+  const menuPriceNet = useMemo(() => netSellPrice(menuItemForDraft), [menuItemForDraft, netSellPrice]);                 // ex-VAT, GP basis
 
   const selectDish = (x) => {
     setSelectedKey(String(x.m.id));
@@ -195,9 +209,9 @@ export default function Recipes() {
             <div style={{ padding: '16px 22px', borderBottom: '1px solid var(--bdr)', display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
               <div style={{ flex: 1, minWidth: 200 }}>
                 <h1 style={{ fontSize: 21, fontWeight: 600, margin: 0, color: 'var(--t1)' }}>{draft.recipeType === 'MENU' ? (menuMeta.label(menuMeta.byId[String(draft.menuItemId)] || {}) || draft.name) : (draft.name || 'New prep recipe')}</h1>
-                <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 3 }}>{draft.recipeType === 'MENU' ? `Dish recipe${menuPrice != null ? ` · sells at ${money(menuPrice)}` : ''}` : 'Prep / sub-recipe'} · {draft.lines.length} ingredient{draft.lines.length === 1 ? '' : 's'}</div>
+                <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 3 }}>{draft.recipeType === 'MENU' ? `Dish recipe${menuPrice != null ? ` · sells at ${money(menuPrice)}${menuPriceNet != null && menuPriceNet < menuPrice ? ` (${money(menuPriceNet)} ex VAT)` : ''}` : ''}` : 'Prep / sub-recipe'} · {draft.lines.length} ingredient{draft.lines.length === 1 ? '' : 's'}</div>
               </div>
-              <RecipeStats draft={draft} cost={cost} menuPrice={menuPrice} />
+              <RecipeStats draft={draft} cost={cost} menuPrice={menuPriceNet} />
               {draft.id && <button onClick={archive} style={{ padding: '8px 14px', borderRadius: 8, cursor: 'pointer', background: 'var(--bg2)', border: '1px solid var(--bdr)', color: 'var(--t2)', fontSize: 13 }}>Remove</button>}
             </div>
 

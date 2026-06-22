@@ -1,4 +1,4 @@
-import { money } from './/currency';
+import { money } from './currency.js';
 /**
  * Tax calculation engine — handles UK VAT (inclusive) and US sales tax (exclusive)
  *
@@ -92,6 +92,20 @@ export function calculateOrderTax(items = [], taxRates = [], orderType = 'dine-i
     breakdown: Object.values(breakdownMap).sort((a, b) => b.rate.rate - a.rate.rate),
     hasExclusiveTax: Object.values(breakdownMap).some(b => b.rate.type === 'exclusive'),
   };
+}
+
+/**
+ * Net (ex-tax) value of a price, given the resolved tax rate.
+ * UK inclusive VAT: the price contains the tax, so net = price ÷ (1 + rate).
+ * US exclusive tax / no rate: the price already IS the net, so return it unchanged.
+ * Used for gross-profit maths, which must always be on the ex-VAT selling price.
+ */
+export function netOf(grossPrice, taxRate) {
+  if (grossPrice == null || grossPrice === '') return null;   // no price → no net (Number(null) is 0, guard it)
+  const g = Number(grossPrice);
+  if (!Number.isFinite(g)) return null;
+  if (!taxRate || !taxRate.rate || taxRate.type !== 'inclusive') return g;
+  return g / (1 + parseFloat(taxRate.rate));
 }
 
 /**

@@ -85,6 +85,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.587', date: '23 Jun 2026', label: 'Recipe GP now on the ex-VAT price',
+    changes: [
+      'Recipe gross profit (in the recipe builder and the Recipe GP report) is now calculated on the ex-VAT net selling price, not the VAT-inclusive shelf price — so GP %, food cost % and GP £ are correct.',
+      'Variants inherit their parent item’s VAT rate; zero-rated and US (tax-exclusive) prices are handled correctly. The recipe header shows both the shelf price and the ex-VAT price it’s working from.',
+    ],
+  },
+  {
     version: '5.5.586', date: '23 Jun 2026', label: 'Order Pad v2 — delivery-day cover, safety stock, swap supplier per line',
     changes: [
       'Suggested order quantities now cover you to each supplier’s next delivery day (so what arrives lasts until the delivery after) instead of a flat number of days — set delivery days on the supplier and the Order Pad does the maths.',

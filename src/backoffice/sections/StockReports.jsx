@@ -18,6 +18,7 @@ import { fetchInventoryItems, fetchMovementsRange, movementLabel } from '../../l
 import { fetchRecipes, buildCostingCtx, costRecipeWith } from '../../lib/stock/recipes';
 import { foodCostPct, gpAmount, gpPct } from '../../lib/stock/costing';
 import { displayInUnits } from '../../lib/stock/uom';
+import { resolveTaxRate, netOf } from '../../lib/tax';
 
 const TABS = ['Valuation', 'Recipe GP', 'Movements', 'The Gap'];
 const fmtCost = (v) => (v == null || !Number.isFinite(Number(v)) ? '—' : currencySymbol() + Number(v).toFixed(4).replace(/0+$/, '').replace(/\.$/, ''));
@@ -32,6 +33,7 @@ const todayIso = () => new Date().toISOString().slice(0, 10);
 
 export default function StockReports() {
   const menuItems = useStore(s => s.menuItems) || [];
+  const taxRates = useStore(s => s.taxRates) || [];
   const [locId, setLocId] = useState(getActiveLocationSync());
   const [tab, setTab] = useState('Valuation');
   const [items, setItems] = useState([]);
@@ -71,7 +73,7 @@ export default function StockReports() {
 
       {loading && <div style={{ color: 'var(--t3)', fontSize: 13 }}>Loading…</div>}
       {!loading && tab === 'Valuation' && <Valuation items={items} />}
-      {!loading && tab === 'Recipe GP' && <RecipeGP recipes={recipes} ctx={ctx} menuItems={menuItems} />}
+      {!loading && tab === 'Recipe GP' && <RecipeGP recipes={recipes} ctx={ctx} menuItems={menuItems} taxRates={taxRates} />}
       {!loading && (tab === 'Movements' || tab === 'The Gap') && (
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 14 }}>
           <span style={{ fontSize: 12, color: 'var(--t3)' }}>From</span>
@@ -116,28 +118,42 @@ function Valuation({ items }) {
   );
 }
 
-function RecipeGP({ recipes, ctx, menuItems, }) {
+function RecipeGP({ recipes, ctx, menuItems, taxRates = [] }) {
+  const byId = useMemo(() => { const m = {}; menuItems.forEach(mi => { m[String(mi.id)] = mi; }); return m; }, [menuItems]);
+  // ex-VAT net of the shelf price — GP must be on the net. Variants inherit the parent's rate.
+  const netSell = useCallback((mi) => {
+    if (!mi) return null;
+    const gross = mi?.pricing?.base ?? mi?.price ?? null;
+    if (gross == null) return null;
+    let taxRateId = mi.taxRateId ?? mi.tax_rate_id ?? null;
+    let taxOverrides = mi.taxOverrides ?? mi.tax_overrides ?? {};
+    if (!taxRateId && mi.parentId) {
+      const p = byId[String(mi.parentId)];
+      if (p) { taxRateId = p.taxRateId ?? p.tax_rate_id ?? null; if (!Object.keys(taxOverrides).length) taxOverrides = p.taxOverrides ?? p.tax_overrides ?? {}; }
+    }
+    return netOf(gross, resolveTaxRate({ taxRateId, taxOverrides }, taxRates, 'dine-in'));
+  }, [byId, taxRates]);
   const rows = useMemo(() => recipes.filter(r => r.recipeType === 'MENU').map(r => {
     const c = costRecipeWith(r, ctx);
     const plate = c?.error ? null : c.totalCost;
-    const mi = menuItems.find(m => String(m.id) === String(r.menuItemId));
-    const price = mi?.pricing?.base ?? mi?.price ?? null;
+    const mi = byId[String(r.menuItemId)];
+    const price = netSell(mi);   // ex-VAT net selling price
     return {
-      dish: r.name, price: price == null ? '' : price, cost: plate == null ? '' : r3(plate),
+      dish: r.name, price: price == null ? '' : r3(price), cost: plate == null ? '' : r3(plate),
       foodPct: (price != null && plate != null) ? Math.round(foodCostPct(plate, price) * 10) / 10 : '',
       gp: (price != null && plate != null) ? r3(gpAmount(price, plate)) : '',
       gpPct: (price != null && plate != null) ? Math.round(gpPct(price, plate) * 10) / 10 : '',
       target: r.gpTargetPct ?? '',
     };
-  }), [recipes, ctx, menuItems]);
+  }), [recipes, ctx, byId, netSell]);
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 10 }}>
-        <ExportBtn rows={rows} headers={[{ label: 'Dish', key: 'dish' }, { label: 'Price', key: 'price' }, { label: 'Plate cost', key: 'cost' }, { label: 'Food %', key: 'foodPct' }, { label: 'GP £', key: 'gp' }, { label: 'GP %', key: 'gpPct' }, { label: 'GP target %', key: 'target' }]} name="recipe-gp" />
+        <ExportBtn rows={rows} headers={[{ label: 'Dish', key: 'dish' }, { label: 'Price (ex VAT)', key: 'price' }, { label: 'Plate cost', key: 'cost' }, { label: 'Food %', key: 'foodPct' }, { label: 'GP £', key: 'gp' }, { label: 'GP %', key: 'gpPct' }, { label: 'GP target %', key: 'target' }]} name="recipe-gp" />
       </div>
       {rows.length === 0 && <div style={{ fontSize: 13, color: 'var(--t3)' }}>No dish recipes yet.</div>}
       {rows.length > 0 && (
-        <table style={tableStyle}><thead><tr>{['Dish', 'Price', 'Plate cost', 'Food %', 'GP £', 'GP %'].map((h, i) => <th key={h} style={{ ...th, textAlign: i >= 1 ? 'right' : 'left' }}>{h}</th>)}</tr></thead>
+        <table style={tableStyle}><thead><tr>{['Dish', 'Price (ex VAT)', 'Plate cost', 'Food %', 'GP £', 'GP %'].map((h, i) => <th key={h} style={{ ...th, textAlign: i >= 1 ? 'right' : 'left' }}>{h}</th>)}</tr></thead>
           <tbody>{rows.map((r, i) => {
             const below = r.target !== '' && r.gpPct !== '' && Number(r.gpPct) < Number(r.target);
             return <tr key={i}><td style={td}>{r.dish}</td><td style={{ ...td, textAlign: 'right' }}>{r.price === '' ? '—' : money(r.price)}</td><td style={{ ...td, textAlign: 'right' }}>{r.cost === '' ? '—' : money(r.cost)}</td><td style={{ ...td, textAlign: 'right', color: 'var(--t3)' }}>{r.foodPct === '' ? '—' : r.foodPct + '%'}</td><td style={{ ...td, textAlign: 'right' }}>{r.gp === '' ? '—' : money(r.gp)}</td><td style={{ ...td, textAlign: 'right', fontWeight: 600, color: below ? 'var(--red, #ef4444)' : 'var(--grn, #16a34a)' }}>{r.gpPct === '' ? '—' : r.gpPct + '%'}</td></tr>;
