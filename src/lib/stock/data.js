@@ -253,6 +253,65 @@ export const deletePackagingFormat = async (id, locationId = null) => {
   return supabase.from('item_packaging_formats').delete().eq('location_id', locationId).eq('id', id);
 };
 
+// ── stock movements ledger (slice 2) ─────────────────────────────────────────
+const MOVEMENT_LABELS = {
+  OPENING_BALANCE: 'Opening', PURCHASE_RECEIPT: 'Delivery', SALE_DEPLETION: 'Sale',
+  WASTE: 'Waste', STOCK_COUNT_ADJ: 'Count adjust', PRODUCTION_CONSUME: 'Production (used)',
+  PRODUCTION_OUTPUT: 'Production (made)', TRANSFER_IN: 'Transfer in', TRANSFER_OUT: 'Transfer out',
+  RETURN: 'Return', MANUAL_ADJ: 'Manual adjust',
+};
+export const movementLabel = (t) => MOVEMENT_LABELS[t] || t;
+
+/** Post one ledger movement (idempotent on idempotencyKey). Returns { data:{id,on_hand,duplicate}, error }. */
+export const postStockMovement = async (m, locationId = null) => {
+  if (isMock || !supabase) return { data: null, error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: null, error: new Error('No locationId') };
+  return supabase.rpc('post_stock_movement', {
+    p_location_id: locationId,
+    p_inventory_item_id: m.inventoryItemId,
+    p_qty_base: Number(m.qtyBase),
+    p_movement_type: m.movementType,
+    p_unit_cost: m.unitCost == null ? null : Number(m.unitCost),
+    p_source_type: m.sourceType || null,
+    p_source_id: m.sourceId || null,
+    p_idempotency_key: m.idempotencyKey || null,
+    p_occurred_at: m.occurredAt || null,
+    p_created_by: m.createdBy || null,
+    p_notes: m.notes || null,
+  });
+};
+
+/** Set an item's on-hand to a counted figure (posts the delta as STOCK_COUNT_ADJ). */
+export const setInventoryOnHand = async (inventoryItemId, countedQty, notes = null, locationId = null) => {
+  if (isMock || !supabase) return { data: null, error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: null, error: new Error('No locationId') };
+  return supabase.rpc('set_inventory_on_hand', {
+    p_location_id: locationId, p_inventory_item_id: inventoryItemId,
+    p_counted_qty: Number(countedQty), p_created_by: null, p_notes: notes,
+  });
+};
+
+/** Recent movements for one item, newest first (the reconciliation view). */
+export const fetchItemMovements = async (inventoryItemId, locationId = null, limit = 100) => {
+  if (isMock || !supabase) return { data: [], error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: [], error: null };
+  const { data, error } = await supabase.from('stock_movements')
+    .select('id, qty_base, unit_cost, value_delta, movement_type, source_type, source_id, occurred_at, notes')
+    .eq('location_id', locationId).eq('inventory_item_id', inventoryItemId)
+    .order('occurred_at', { ascending: false }).limit(limit);
+  return {
+    data: (data || []).map(r => ({
+      id: r.id, qtyBase: Number(r.qty_base), unitCost: r.unit_cost == null ? null : Number(r.unit_cost),
+      valueDelta: r.value_delta == null ? null : Number(r.value_delta), movementType: r.movement_type,
+      sourceType: r.source_type, sourceId: r.source_id, occurredAt: r.occurred_at, notes: r.notes,
+    })),
+    error,
+  };
+};
+
 /**
  * Recompute a PURCHASED item's current_cost from its supplier products (preferred,
  * else cheapest derived). Appends an effective-dated item_cost_history row and

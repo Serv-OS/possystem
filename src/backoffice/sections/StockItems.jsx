@@ -29,6 +29,7 @@ import {
   upsertSupplierProduct, deleteSupplierProduct,
   upsertItemConversion, deleteItemConversion,
   upsertPackagingFormat, deletePackagingFormat,
+  setInventoryOnHand, fetchItemMovements, movementLabel,
 } from '../../lib/stock/data';
 
 const KINDS = [
@@ -41,7 +42,7 @@ const FILTERS = [
   { id: 'MADE', label: 'Made' },
   { id: 'archived', label: 'Archived' },
 ];
-const TABS = ['General', 'Dimension & Measure', 'Packaging', 'Suppliers'];
+const TABS = ['General', 'Stock', 'Dimension & Measure', 'Packaging', 'Suppliers'];
 
 const UNIT_OPTS = Object.entries(UNITS).map(([code, u]) => ({ code, ...u }));
 const DIM_ORDER = [DIMENSIONS.COUNT, DIMENSIONS.WEIGHT, DIMENSIONS.VOLUME];
@@ -219,9 +220,19 @@ export default function StockItems() {
                   {draft.archivedAt && <span style={{ color: 'var(--red, #ef4444)' }}> · archived</span>}
                 </div>
               </div>
-              <div style={{ textAlign: 'right' }}>
-                <div style={{ fontSize: 11, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em' }}>Current cost</div>
-                <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--t1)' }}>{fmtUnitCost(draft.currentCost)}<span style={{ fontSize: 12, color: 'var(--t3)' }}> /{draft.baseUnit}</span></div>
+              <div style={{ display: 'flex', gap: 22, textAlign: 'right' }}>
+                <div>
+                  <div style={{ fontSize: 11, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em' }}>On hand</div>
+                  <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--t1)' }}>{Number(draft.onHand || 0)}<span style={{ fontSize: 12, color: 'var(--t3)' }}> {draft.baseUnit}</span></div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em' }}>Current cost</div>
+                  <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--t1)' }}>{fmtUnitCost(draft.currentCost)}<span style={{ fontSize: 12, color: 'var(--t3)' }}> /{draft.baseUnit}</span></div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em' }}>Value</div>
+                  <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--t1)' }}>{draft.currentCost != null ? money(Number(draft.onHand || 0) * Number(draft.currentCost)) : '—'}</div>
+                </div>
               </div>
               {draft.id && (
                 <button onClick={toggleArchive} style={{ padding: '8px 14px', borderRadius: 8, cursor: 'pointer', background: 'var(--bg2)', border: '1px solid var(--bdr)', color: 'var(--t2)', fontSize: 13 }}>
@@ -243,6 +254,7 @@ export default function StockItems() {
 
             <div style={{ flex: 1, overflowY: 'auto', padding: '20px 22px', minHeight: 0 }}>
               {tab === 'General' && <GeneralTab draft={draft} upd={upd} onSave={saveGeneral} saving={saving} />}
+              {tab === 'Stock' && <StockTab draft={draft} locId={locId} onChanged={() => reload(draft.id)} showToast={showToast} />}
               {tab === 'Dimension & Measure' && <DimensionTab draft={draft} locId={locId} onChanged={() => reload(draft.id)} showToast={showToast} />}
               {tab === 'Packaging' && <PackagingTab draft={draft} locId={locId} onChanged={() => reload(draft.id)} showToast={showToast} />}
               {tab === 'Suppliers' && <SuppliersTab draft={draft} suppliers={suppliers} locId={locId} onChanged={() => reload(draft.id)} onSupplierAdded={() => reload(draft.id)} showToast={showToast} />}
@@ -316,6 +328,88 @@ function GeneralTab({ draft, upd, onSave, saving }) {
       <button onClick={onSave} disabled={saving} className="btn btn-acc" style={{ padding: '10px 22px', borderRadius: 8, background: 'var(--acc)', color: '#fff', border: 0, fontSize: 14, fontWeight: 700, cursor: 'pointer', opacity: saving ? 0.6 : 1 }}>
         {saving ? 'Saving…' : draft.id ? 'Save changes' : 'Create item'}
       </button>
+    </div>
+  );
+}
+
+// ── Stock tab (on-hand + set count + movement ledger / reconciliation) ────────
+function StockTab({ draft, locId, onChanged, showToast }) {
+  const [moves, setMoves] = useState(null);
+  const [count, setCount] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const loadMoves = useCallback(async () => {
+    if (!draft.id) return;
+    const { data } = await fetchItemMovements(draft.id, locId);
+    setMoves(data || []);
+  }, [draft.id, locId]);
+  useEffect(() => { loadMoves(); }, [loadMoves]);
+
+  if (!draft.id) return <NeedSaveFirst />;
+
+  const onHand = Number(draft.onHand || 0);
+  const cost = draft.currentCost;
+
+  const applyCount = async () => {
+    if (count === '' || !(Number(count) >= 0)) { showToast?.('Enter a count (≥ 0)', 'error'); return; }
+    setBusy(true);
+    const { error } = await setInventoryOnHand(draft.id, Number(count), 'Set via Stock items', locId);
+    setBusy(false);
+    if (error) { showToast?.(error.message, 'error'); return; }
+    setCount(''); showToast?.('Stock updated', 'success');
+    onChanged(); await loadMoves();
+  };
+
+  // Running balance, computed from newest → oldest (balance after newest = on-hand).
+  let running = onHand;
+  const rows = (moves || []).map((m) => { const r = { ...m, balanceAfter: running }; running -= m.qtyBase; return r; });
+
+  return (
+    <div style={{ maxWidth: 820 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 12, marginBottom: 18, flexWrap: 'wrap' }}>
+        <Field label={`Set count (on hand, in ${draft.baseUnit})`}>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input type="number" min="0" step="any" value={count} onChange={e => setCount(e.target.value)} placeholder={String(onHand)} style={{ ...fieldStyle, width: 160 }} />
+            <button onClick={applyCount} disabled={busy} style={{ padding: '8px 16px', borderRadius: 7, background: 'var(--acc)', color: '#fff', border: 0, cursor: 'pointer', fontSize: 13, fontWeight: 700, opacity: busy ? 0.6 : 1 }}>Update stock</button>
+          </div>
+        </Field>
+        <div style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--t3)' }}>
+          Stock value: <b style={{ color: 'var(--t1)', fontSize: 14 }}>{cost != null ? money(onHand * cost) : '—'}</b>
+        </div>
+      </div>
+
+      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 8 }}>
+        Movement history
+      </div>
+      {moves == null && <div style={{ fontSize: 12, color: 'var(--t3)' }}>Loading…</div>}
+      {moves && moves.length === 0 && <div style={{ fontSize: 12, color: 'var(--t3)' }}>No movements yet. Set a count above to start the ledger. Deliveries, production, waste and sales will appear here.</div>}
+      {moves && moves.length > 0 && (
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
+          <thead>
+            <tr style={{ color: 'var(--t3)', textAlign: 'left' }}>
+              {['Date', 'Type', 'Qty', 'Unit cost', 'Value', 'Balance', 'Note'].map((h, i) => (
+                <th key={h} style={{ padding: '6px 8px', borderBottom: '1px solid var(--bdr)', textAlign: i >= 2 && i <= 5 ? 'right' : 'left', fontWeight: 600 }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(m => {
+              const pos = m.qtyBase >= 0;
+              return (
+                <tr key={m.id} style={{ color: 'var(--t1)' }}>
+                  <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)', color: 'var(--t3)' }}>{new Date(m.occurredAt).toLocaleString()}</td>
+                  <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)' }}>{movementLabel(m.movementType)}</td>
+                  <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)', textAlign: 'right', color: pos ? 'var(--grn, #16a34a)' : 'var(--red, #ef4444)' }}>{pos ? '+' : ''}{m.qtyBase}</td>
+                  <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)', textAlign: 'right', color: 'var(--t3)' }}>{fmtUnitCost(m.unitCost)}</td>
+                  <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)', textAlign: 'right' }}>{m.valueDelta == null ? '—' : money(m.valueDelta)}</td>
+                  <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)', textAlign: 'right', color: 'var(--t2)' }}>{m.balanceAfter}</td>
+                  <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)', color: 'var(--t3)' }}>{m.notes || ''}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }

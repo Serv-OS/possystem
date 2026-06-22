@@ -85,6 +85,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.563', date: '22 Jun 2026', label: 'Stock & Production — slice 2: stock-movements ledger, on-hand counts & valuation',
+    changes: [
+      'NEW: every stock item now has a real on-hand quantity, stock value, and a full movement history — on the new Stock tab in Inventory → Stock items.',
+      'SET COUNT — enter a counted quantity and the system posts the difference to an append-only ledger and revalues the item. On-hand is never edited in place; it’s the running total of movements, so the history always reconciles.',
+      'MOVEMENT HISTORY — every movement for an item on one page (date, type, qty, unit cost, value, running balance). Deliveries, production, waste, transfers and sales will all flow in here as later slices land.',
+      'Foundation for true COGS and theoretical-vs-actual variance: an idempotent, cost-valued ledger with reversing-entry corrections. Sale depletion gets wired to recipes in the next slice.',
+    ],
+  },
+  {
     version: '5.5.562', date: '22 Jun 2026', label: 'Stock & Production — slice 1: Stock items, supplier pack→unit costing, recipe-ready costing engine',
     changes: [
       'NEW: Inventory → Stock items. Stock items (the things you hold, buy or make) are now modelled separately from menu products. Each item is Purchased or Made-here, with a base unit, category, allergens, storage and shelf life.',
