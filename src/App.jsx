@@ -86,6 +86,17 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.607', date: '23 Jun 2026', label: 'Operations — floor-app sense-check fixes (scroll, ring, maintenance list, alerts, checklist tiles) + calendar',
+    changes: [
+      'Floor app now scrolls (it was clipped to the viewport).',
+      'Home ring now reflects real progress across temperature checks AND checklists (was temperature-only, so it read 100% with checklists still to do); it’s green for progress and turns amber only when something is overdue.',
+      'Maintenance now shows ongoing requests (open + recently closed) with a “Raise a request” button — previously you could only log new ones.',
+      'The bell now opens Notifications (ops alerts, acknowledge inline) instead of the new-request form.',
+      'Home checklist tiles now open just their own list — Opening opens opening checks, Closing opens closing, Cleaning opens cleaning (they all opened everything before).',
+      'Back-office compliance calendar no longer shows red on days with no activity — days with no readings are neutral, breaches are red, partial days amber, today-in-progress green.',
+    ],
+  },
+  {
     version: '5.5.606', date: '23 Jun 2026', label: 'Operations — temp-unit editor reaches schedules; new units get a daily check',
     changes: [
       'Temperature units: the edit pencil now opens the full editor (thresholds + check schedule) directly — previously a single click only edited the range and you had to double-click to reach schedules. Added a “+ add schedule” shortcut on units with none.',

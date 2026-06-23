@@ -12,7 +12,7 @@ import { useEffect, useMemo, useState, useCallback } from 'react';
 import {
   opsHeartbeat, opsRegisterDevice, opsPinLogin,
   fetchTempUnits, fetchSchedules, fetchReadings, submitReading,
-  fetchExpectedDeliveries, checkDelivery, fetchAlerts, createMaintenance,
+  fetchExpectedDeliveries, checkDelivery, fetchAlerts, createMaintenance, fetchMaintenance, ackAlert,
 } from '../lib/ops/data';
 import { fetchTodayChecklists, openRun, completeTask, signOffRun } from '../lib/ops/checklists';
 import {
@@ -47,9 +47,10 @@ export default function OperationsSurface() {
   const [venueName, setVenueName] = useState('');
   const [claimCode, setClaimCode] = useState('');
   const [operator, setOperator] = useState(null);  // { id, name, role }
-  const [view, setView] = useState('home');        // home | temperature | delivery | checklists | maintenance
+  const [view, setView] = useState('home');        // home | temperature | delivery | checklists | maintenance | alerts
   const [unitView, setUnitView] = useState(null);  // a unit being logged
   const [maintPrefill, setMaintPrefill] = useState(null); // {unitName, temp} when raising off a breach
+  const [clFilter, setClFilter] = useState(null);  // checklist tile → which kind to show
 
   // dark ServOS skin for the whole surface
   useEffect(() => {
@@ -92,10 +93,11 @@ export default function OperationsSurface() {
   if (stage === 'pair') return <PairScreen code={claimCode} />;
   if (stage === 'pin') return <PinScreen loc={loc} venueName={venueName} onOk={(op) => { setOperator(op); setStage('app'); }} />;
 
+  const openView = (v, opts = {}) => { if ('clFilter' in opts) setClFilter(opts.clFilter ?? null); setView(v); };
   return (
     <AppShell loc={loc} venueName={venueName} operator={operator}
       onLogout={() => { setOperator(null); setStage('pin'); }}
-      onBell={() => { setMaintPrefill(null); setView('maintenance'); }}>
+      onBell={() => setView('alerts')}>
       {unitView ? (
         <LogUnit loc={loc} unit={unitView} operator={operator} onDone={() => setUnitView(null)} />
       ) : view === 'temperature' ? (
@@ -103,12 +105,14 @@ export default function OperationsSurface() {
       ) : view === 'delivery' ? (
         <Deliveries loc={loc} operator={operator} onBack={() => setView('home')} />
       ) : view === 'checklists' ? (
-        <Checklists loc={loc} operator={operator} onBack={() => setView('home')} />
+        <Checklists loc={loc} operator={operator} filter={clFilter} onBack={() => setView('home')} />
       ) : view === 'maintenance' ? (
-        <RaiseMaintenance loc={loc} operator={operator} prefill={maintPrefill}
+        <Maintenance loc={loc} operator={operator} prefill={maintPrefill}
           onBack={() => { setMaintPrefill(null); setView('home'); }} />
+      ) : view === 'alerts' ? (
+        <Alerts loc={loc} operator={operator} onBack={() => setView('home')} />
       ) : (
-        <Home loc={loc} venueName={venueName} operator={operator} onOpen={setView} />
+        <Home loc={loc} venueName={venueName} operator={operator} onOpen={openView} />
       )}
     </AppShell>
   );
@@ -122,7 +126,7 @@ function AppShell({ loc, venueName, operator, onLogout, onBell, children }) {
   const [alerts, setAlerts] = useState(0);
   useEffect(() => { if (loc) fetchAlerts(loc, true).then(({ data }) => setAlerts((data || []).length)); }, [loc]);
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--bg)', color: 'var(--t1)', maxWidth: 480, margin: '0 auto', padding: '0 14px 28px' }}>
+    <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden', WebkitOverflowScrolling: 'touch', background: 'var(--bg)', color: 'var(--t1)', maxWidth: 480, margin: '0 auto', padding: '0 14px 28px' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '14px 4px 12px' }}>
         <div className="sv-glass" style={{ width: 36, height: 36, borderRadius: 11, display: 'grid', placeItems: 'center', fontFamily: 'Syne, Space Grotesk, sans-serif', fontWeight: 800, color: 'var(--acc)', flexShrink: 0 }}>S</div>
         <button onClick={onLogout} title="Tap to switch user" style={{ flex: 1, minWidth: 0, textAlign: 'left', background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'inherit', fontFamily: 'inherit' }}>
@@ -229,33 +233,41 @@ function classifyChecklist(c) {
 function Home({ loc, operator, onOpen }) {
   const { summary } = useTodayStatus(loc);
   const [deliveryCount, setDeliveryCount] = useState(null);
-  const [openAlerts, setOpenAlerts] = useState(0);
+  const [openMaint, setOpenMaint] = useState(0);
   const [clKinds, setClKinds] = useState(null);   // [{key,label,icon,hue,order,due,total}]
+  const [clTasks, setClTasks] = useState({ done: 0, total: 0 });
   useEffect(() => {
     fetchExpectedDeliveries(loc).then(({ data }) => setDeliveryCount((data || []).filter(d => !d.delivery || d.delivery.status === 'pending').length));
-    fetchAlerts(loc, true).then(({ data }) => setOpenAlerts((data || []).length));
+    fetchMaintenance(loc).then(({ data }) => setOpenMaint((data || []).filter(m => !['resolved', 'cancelled'].includes(m.status)).length));
     fetchTodayChecklists(loc).then(({ data }) => {
-      const groups = {};
-      (data || []).forEach(c => {
+      const list = data || [];
+      const groups = {}; let tDone = 0, tTotal = 0;
+      list.forEach(c => {
         const k = classifyChecklist(c);
         const g = (groups[k.key] ??= { ...k, due: 0, total: 0 });
         g.due += (c.status !== 'done') ? 1 : 0; g.total += 1;
+        tDone += (c.doneCount || 0); tTotal += (c.total || 0);
       });
       setClKinds(Object.values(groups).sort((a, b) => a.order - b.order));
+      setClTasks({ done: tDone, total: tTotal });
     });
   }, [loc]);
   const clTiles = (clKinds || []).map(k => ({
     key: `cl-${k.key}`, label: k.label, icon: k.icon, hue: k.hue,
     sub: k.due === 0 ? 'All done' : `${k.total - k.due} / ${k.total} done`,
-    state: k.due === 0 ? 'done' : 'due', onClick: () => onOpen('checklists'),
+    state: k.due === 0 ? 'done' : 'due', onClick: () => onOpen('checklists', { clFilter: k.key }),
   }));
   const tiles = [
     { key: 'temperature', label: 'Temperature', icon: 'thermo', sub: `${summary.due + summary.missed} of ${summary.total} due`, state: summary.missed ? 'over' : summary.due ? 'due' : 'done', hue: AREA_HUE.Temperature, onClick: () => onOpen('temperature') },
     ...clTiles,
     { key: 'delivery', label: 'Deliveries', icon: 'inventory', sub: deliveryCount == null ? '—' : `${deliveryCount} to check`, state: deliveryCount ? 'due' : 'done', hue: AREA_HUE.Deliveries, onClick: () => onOpen('delivery') },
-    { key: 'maintenance', label: 'Maintenance', icon: 'wrench', sub: openAlerts ? `${openAlerts} open` : 'All clear', state: openAlerts ? 'over' : 'idle', hue: AREA_HUE.Maintenance, onClick: () => onOpen('maintenance') },
+    { key: 'maintenance', label: 'Maintenance', icon: 'wrench', sub: openMaint ? `${openMaint} open` : 'All clear', state: openMaint ? 'over' : 'idle', hue: AREA_HUE.Maintenance, onClick: () => onOpen('maintenance') },
   ];
-  const ring = summary.compliancePct;
+  // Overall today progress = temperature checks done + checklist tasks done, over everything due today.
+  const tempReq = summary.done + summary.due + summary.missed;
+  const reqAll = tempReq + clTasks.total;
+  const ring = reqAll > 0 ? Math.round(((summary.done + clTasks.done) / reqAll) * 100) : 100;
+  const ringOverdue = summary.missed > 0;
   return (
     <div>
       <div className="sv-glass" style={{ padding: '18px 20px', marginBottom: 14, display: 'flex', alignItems: 'center', gap: 16 }}>
@@ -263,7 +275,7 @@ function Home({ loc, operator, onOpen }) {
           <div style={{ fontSize: 19, fontWeight: 800 }}>Good {new Date().getHours() < 12 ? 'morning' : new Date().getHours() < 17 ? 'afternoon' : 'evening'}{operator?.name ? `, ${operator.name.split(' ')[0]}` : ''}</div>
           <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 3, textTransform: 'uppercase', letterSpacing: '.06em', ...mono }}>{new Date().toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short' }).toUpperCase()} · {new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}</div>
         </div>
-        <Ring pct={ring} />
+        <Ring pct={ring} overdue={ringOverdue} />
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
         {tiles.map(t => <AreaTile key={t.key} {...t} />)}
@@ -271,9 +283,10 @@ function Home({ loc, operator, onOpen }) {
     </div>
   );
 }
-function Ring({ pct }) {
+function Ring({ pct, overdue }) {
   const r = 26, c = 2 * Math.PI * r, off = c * (1 - (Number(pct) || 0) / 100);
-  const col = pct >= 90 ? 'var(--grn)' : pct >= 80 ? 'var(--orn)' : 'var(--red)';
+  // progress ring: brand green; amber only when something is actually overdue
+  const col = overdue ? 'var(--orn)' : 'var(--grn)';
   return (
     <div style={{ position: 'relative', width: 64, height: 64 }}>
       <svg width="64" height="64" style={{ transform: 'rotate(-90deg)' }}>
@@ -499,17 +512,19 @@ function DeliveryCheck({ loc, operator, row, onDone }) {
 }
 
 // ── Checklists: today's lists → run-through with sign-off ─────────────────────
-function Checklists({ loc, operator, onBack }) {
-  const [rows, setRows] = useState(null);
+const CL_KIND_LABEL = { opening: 'Opening checks', closing: 'Closing checks', cleaning: 'Cleaning', checks: 'Checklists' };
+function Checklists({ loc, operator, filter, onBack }) {
+  const [all, setAll] = useState(null);
   const [active, setActive] = useState(null);
-  const reload = useCallback(() => fetchTodayChecklists(loc).then(({ data }) => setRows(data || [])), [loc]);
+  const reload = useCallback(() => fetchTodayChecklists(loc).then(({ data }) => setAll(data || [])), [loc]);
   useEffect(() => { reload(); }, [reload]);
   if (active) return <ChecklistRun loc={loc} operator={operator} checklist={active} onDone={() => { setActive(null); reload(); }} />;
+  const rows = all == null ? null : (filter ? all.filter(c => classifyChecklist(c).key === filter) : all);
   return (
     <div>
-      <Header title="Checklists" sub="Today" onBack={onBack} />
+      <Header title={filter ? (CL_KIND_LABEL[filter] || 'Checklists') : 'Checklists'} sub="Today" onBack={onBack} />
       {rows == null && <div style={{ color: 'var(--t3)', padding: 12, ...mono }}>Loading…</div>}
-      {rows && rows.length === 0 && <div className="sv-glass" style={{ padding: 18, color: 'var(--t3)', textAlign: 'center' }}>No checklists due today.</div>}
+      {rows && rows.length === 0 && <div className="sv-glass" style={{ padding: 18, color: 'var(--t3)', textAlign: 'center' }}>No {filter ? (CL_KIND_LABEL[filter] || 'checklists').toLowerCase() : 'checklists'} due today.</div>}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {(rows || []).map(c => (
           <button key={c.id} onClick={() => setActive(c)} className="sv-tile" style={{ '--h': AREA_HUE.Checklists, display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', borderRadius: 14, cursor: 'pointer', color: 'var(--t1)', textAlign: 'left', fontFamily: 'inherit' }}>
@@ -610,6 +625,87 @@ const PILL_COL = { done: ['var(--grn-d)', 'var(--grn)', 'var(--grn-b)'], due: ['
 function Pill({ state, children }) {
   const [bg, fg, bd] = PILL_COL[state] || PILL_COL.due;
   return <span style={{ fontSize: 11, fontWeight: 700, padding: '5px 11px', borderRadius: 999, background: bg, color: fg, border: `1px solid ${bd}`, ...mono }}>{children}</span>;
+}
+
+// ── Maintenance: list ongoing requests + raise a new one ─────────────────────
+const MAINT_STATUS = { open: ['var(--red-d)', 'var(--red)'], assigned: ['var(--acc-d)', 'var(--orn)'], in_progress: ['var(--acc-d)', 'var(--acc)'], resolved: ['var(--grn-d)', 'var(--grn)'], cancelled: ['var(--inset)', 'var(--t3)'] };
+function Maintenance({ loc, operator, prefill, onBack }) {
+  const [rows, setRows] = useState(null);
+  const [raising, setRaising] = useState(!!prefill);
+  const reload = useCallback(() => fetchMaintenance(loc).then(({ data }) => setRows(data || [])), [loc]);
+  useEffect(() => { reload(); }, [reload]);
+  if (raising) return <RaiseMaintenance loc={loc} operator={operator} prefill={prefill} onBack={() => { setRaising(false); reload(); }} />;
+  const open = (rows || []).filter(m => !['resolved', 'cancelled'].includes(m.status));
+  const closed = (rows || []).filter(m => ['resolved', 'cancelled'].includes(m.status));
+  return (
+    <div>
+      <Header title="Maintenance" sub={rows == null ? '' : `${open.length} open`} onBack={onBack} />
+      <button onClick={() => setRaising(true)} className="btn btn-acc" style={{ width: '100%', padding: 13, marginBottom: 14, fontSize: 14, fontWeight: 800, borderRadius: 14, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}><Icon name="plus" size={16} /> Raise a request</button>
+      {rows == null && <div style={{ color: 'var(--t3)', padding: 12, ...mono }}>Loading…</div>}
+      {rows && open.length === 0 && <div className="sv-glass" style={{ padding: 18, color: 'var(--t3)', textAlign: 'center' }}>No open maintenance.</div>}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {open.map(m => <MaintRow key={m.id} m={m} />)}
+      </div>
+      {closed.length > 0 && (
+        <>
+          <div style={{ fontSize: 10.5, color: 'var(--t4)', textTransform: 'uppercase', letterSpacing: '.08em', margin: '18px 0 8px', ...mono }}>Recently closed</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>{closed.slice(0, 5).map(m => <MaintRow key={m.id} m={m} muted />)}</div>
+        </>
+      )}
+    </div>
+  );
+}
+function MaintRow({ m, muted }) {
+  const [bg, fg] = MAINT_STATUS[m.status] || MAINT_STATUS.open;
+  const prioCol = m.priority === 'urgent' ? 'var(--red)' : m.priority === 'high' ? 'var(--amber, var(--orn))' : 'var(--t3)';
+  return (
+    <div className="sv-glass" style={{ padding: '12px 14px', borderRadius: 14, opacity: muted ? 0.6 : 1 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <span style={{ width: 9, height: 9, borderRadius: 999, background: fg, flexShrink: 0 }} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 14, fontWeight: 700 }}>{m.title}</div>
+          <div style={{ fontSize: 11, color: 'var(--t3)', ...mono }}>{m.reporterName || '—'} · {new Date(m.createdAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}{m.assigneeName ? ` · ${m.assigneeName}` : ''}{m.source === 'temp_breach' ? ' · auto' : ''}</div>
+        </div>
+        <span style={{ fontSize: 10.5, fontWeight: 700, color: prioCol, textTransform: 'uppercase', ...mono }}>{m.priority}</span>
+        <span style={{ fontSize: 10, fontWeight: 700, color: fg, background: bg, padding: '3px 8px', borderRadius: 999, ...mono }}>{(m.status || '').replace('_', ' ')}</span>
+      </div>
+      {m.description && <div style={{ fontSize: 12, color: 'var(--t2)', marginTop: 6, paddingLeft: 19 }}>{m.description}</div>}
+    </div>
+  );
+}
+
+// ── Notifications (the bell): ops alerts, acknowledge inline ──────────────────
+function Alerts({ loc, operator, onBack }) {
+  const [rows, setRows] = useState(null);
+  const reload = useCallback(() => fetchAlerts(loc, false).then(({ data }) => setRows(data || [])), [loc]);
+  useEffect(() => { reload(); }, [reload]);
+  const ack = async (a) => { await ackAlert(a.id, 'Acknowledged', operator?.name); reload(); };
+  const unreadN = (rows || []).filter(a => a.status === 'sent').length;
+  return (
+    <div>
+      <Header title="Notifications" sub={rows == null ? '' : `${unreadN} unread`} onBack={onBack} />
+      {rows == null && <div style={{ color: 'var(--t3)', padding: 12, ...mono }}>Loading…</div>}
+      {rows && rows.length === 0 && <div className="sv-glass" style={{ padding: 18, color: 'var(--t3)', textAlign: 'center' }}>No notifications.</div>}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {(rows || []).map(a => {
+          const unread = a.status === 'sent';
+          const tone = (a.severity === 'critical' || a.type === 'temp_breach') ? 'var(--red)' : a.severity === 'major' ? 'var(--amber, var(--orn))' : 'var(--acc)';
+          return (
+            <div key={a.id} className="sv-glass" style={{ padding: '12px 14px', borderRadius: 14, borderLeft: `3px solid ${tone}`, opacity: unread ? 1 : 0.6 }}>
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 14, fontWeight: 700 }}>{a.title}</div>
+                  {a.body && <div style={{ fontSize: 12, color: 'var(--t2)', marginTop: 2 }}>{a.body}</div>}
+                  <div style={{ fontSize: 10.5, color: 'var(--t3)', marginTop: 4, ...mono }}>{new Date(a.createdAt).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}{a.acknowledgedByName ? ` · ack ${a.acknowledgedByName}` : ''}</div>
+                </div>
+                {unread && <button onClick={() => ack(a)} className="btn btn-acc" style={{ padding: '6px 12px', fontSize: 12, fontWeight: 700, borderRadius: 999, flexShrink: 0, border: 0, cursor: 'pointer', fontFamily: 'inherit' }}>Got it</button>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 // ── Raise maintenance (manual request, thumb-first) ───────────────────────────

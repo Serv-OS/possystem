@@ -65,23 +65,24 @@ export default function OpsCompliance() {
     for (let d = 1; d <= days; d++) {
       const date = new Date(month.y, month.m, d);
       const key = ymd(date);
+      const isToday = key === today;
       if (key > today) { byDay[key] = 'idle'; continue; }
       const reads = readByDay[key] || [];
-      const anyBreach = reads.some(r => !r.inRange);
-      // expected windows that day (past days fully required)
+      // No readings that day → the venue wasn't monitored (or pre-dates setup). Don't flag it
+      // as a failure — show it neutral. Only days with actual activity get a status.
+      if (reads.length === 0) { byDay[key] = 'idle'; continue; }
+      if (reads.some(r => !r.inRange)) { byDay[key] = 'coral'; continue; }   // a breach was logged
+      if (isToday) { byDay[key] = 'green'; continue; }                       // today still in progress, no breach yet
+      // a completed past day with readings but no breach: green if every scheduled window was covered, else minor (amber)
       const statuses = [];
       data.units.filter(u => !u.archivedAt).forEach(u => {
         (schedByUnit[u.id] || []).filter(s => runsOnDay(s.daysOfWeek, date)).forEach(s => {
           const wMin = hhmmToMin(s.timeOfDay) ?? 0;
           const satisfied = reads.some(r => r.tempUnitId === u.id && (() => { const rd = new Date(r.recordedAt); return rd.getHours() * 60 + rd.getMinutes() >= wMin - 5; })());
-          statuses.push(windowStatus({ windowMin: wMin, graceMin: s.graceMinutes, nowMin: 24 * 60, satisfied })); // whole past day
+          statuses.push(windowStatus({ windowMin: wMin, graceMin: s.graceMinutes, nowMin: 24 * 60, satisfied }));
         });
       });
-      const sum = summarize(statuses);
-      if (anyBreach || sum.missed > 0) byDay[key] = 'coral';
-      else if (statuses.length === 0 && reads.length === 0) byDay[key] = 'idle';
-      else if (sum.done === sum.total && sum.total > 0) byDay[key] = 'green';
-      else byDay[key] = reads.length ? 'green' : 'amber';
+      byDay[key] = summarize(statuses).missed > 0 ? 'amber' : 'green';
     }
     return byDay;
   }, [data, month]);
