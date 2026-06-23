@@ -27,8 +27,6 @@ export default function OpsTemperature() {
   const [loading, setLoading] = useState(true);
   const [dispUnit, setDispUnit] = useState('C');
   const [editing, setEditing] = useState(null);   // unit being edited in the modal (or 'new')
-  const [rowEdit, setRowEdit] = useState(null);    // inline target-range edit: { id, min, max } in the DISPLAY unit
-  const [savingRow, setSavingRow] = useState(false);
 
   const reload = useCallback(async () => {
     const loc = locId || getActiveLocationSync() || await getLocationId().catch(() => null);
@@ -37,22 +35,6 @@ export default function OpsTemperature() {
     setUnits(u || []); setScheds(s || []); setLoading(false);
   }, [locId]);
   useEffect(() => { reload(); /* eslint-disable-next-line */ }, []);
-
-  // begin inline edit, prefilled from the unit's current band (in the display unit)
-  const startRowEdit = (u) => setRowEdit({
-    id: u.id,
-    min: u.targetMinC == null ? '' : displayTemp(u.targetMinC, dispUnit).value,
-    max: u.targetMaxC == null ? '' : displayTemp(u.targetMaxC, dispUnit).value,
-  });
-  const saveRow = async (u) => {
-    if (!rowEdit || savingRow) return;
-    setSavingRow(true);
-    const { error } = await upsertTempUnit({ ...u, targetMinC: toStoredC(rowEdit.min, dispUnit), targetMaxC: toStoredC(rowEdit.max, dispUnit) }, locId);
-    setSavingRow(false);
-    if (error) { showToast?.(error.message || 'Save failed', 'error'); return; }
-    setRowEdit(null);
-    reload();
-  };
 
   const schedByUnit = useMemo(() => { const m = {}; scheds.forEach(s => { (m[s.tempUnitId] ??= []).push(s); }); return m; }, [scheds]);
 
@@ -77,7 +59,6 @@ export default function OpsTemperature() {
               {units.map(u => {
                 const rows = schedByUnit[u.id] || [];
                 const isHot = HOT_TYPES.has(u.type);
-                const isEditing = rowEdit?.id === u.id;
                 // schedule → frequency summary
                 const hourly = rows.some(r => r.frequency === 'hourly');
                 const n = rows.length;
@@ -96,24 +77,14 @@ export default function OpsTemperature() {
                     </td>
                     <td style={{ ...td, color: 'var(--t2)' }}>{TYPE_WORD[u.type] || typeDefault(u.type).label}</td>
                     <td style={{ ...td, fontFamily: 'var(--font-mono)' }}>
-                      {isEditing ? (
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                          <input type="number" step="any" value={rowEdit.min} onChange={e => setRowEdit(x => ({ ...x, min: e.target.value }))} style={{ width: 52, background: 'var(--bg0)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 7, padding: '5px 7px', fontSize: 13, outline: 'none', fontFamily: 'inherit', boxSizing: 'border-box' }} />
-                          <span style={{ color: 'var(--t3)' }}>°{dispUnit}</span>
-                          <span style={{ color: 'var(--t3)' }}>–</span>
-                          <input type="number" step="any" value={rowEdit.max} onChange={e => setRowEdit(x => ({ ...x, max: e.target.value }))} style={{ width: 52, background: 'var(--bg0)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 7, padding: '5px 7px', fontSize: 13, outline: 'none', fontFamily: 'inherit', boxSizing: 'border-box' }} />
-                          <span style={{ color: 'var(--t3)' }}>°{dispUnit}</span>
-                        </span>
-                      ) : (u.targetMinC == null ? '—' : `${displayTemp(u.targetMinC, dispUnit).value}–${displayTemp(u.targetMaxC, dispUnit).value}°${dispUnit}`)}
+                      {u.targetMinC == null ? '—' : `${displayTemp(u.targetMinC, dispUnit).value}–${displayTemp(u.targetMaxC, dispUnit).value}°${dispUnit}`}
                     </td>
-                    <td style={{ ...td, color: 'var(--t2)', fontSize: 12 }}>{sched}</td>
-                    <td style={{ ...td, color: 'var(--t2)', fontSize: 12 }}>{checklist || <span style={{ color: 'var(--t4)' }}>none</span>}</td>
+                    <td style={{ ...td, color: rows.length ? 'var(--t2)' : 'var(--t4)', fontSize: 12 }}>{sched}</td>
+                    <td style={{ ...td, color: 'var(--t2)', fontSize: 12 }}>
+                      {checklist || <button onClick={() => setEditing(u)} style={{ background: 'transparent', border: 0, color: 'var(--acc)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, padding: 0, textDecoration: 'underline' }}>+ add schedule</button>}
+                    </td>
                     <td style={{ ...td, textAlign: 'right' }}>
-                      {isEditing ? (
-                        <button onClick={() => saveRow(u)} disabled={savingRow} style={{ background: 'var(--acc)', color: '#fff', border: 0, borderRadius: 7, padding: '6px 14px', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', opacity: savingRow ? 0.6 : 1 }}>{savingRow ? 'Saving…' : 'Save'}</button>
-                      ) : (
-                        <button onClick={() => startRowEdit(u)} onDoubleClick={() => setEditing(u)} aria-label="Edit unit" title="Edit range (double-click for full settings)" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg2)', border: '1px solid var(--bdr)', borderRadius: 7, padding: 6, color: 'var(--t1)', cursor: 'pointer', fontFamily: 'inherit', lineHeight: 0 }}><Icon name="edit" size={16} /></button>
-                      )}
+                      <button onClick={() => setEditing(u)} aria-label="Edit unit" title="Edit thresholds & schedule" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg2)', border: '1px solid var(--bdr)', borderRadius: 7, padding: 6, color: 'var(--t1)', cursor: 'pointer', fontFamily: 'inherit', lineHeight: 0 }}><Icon name="edit" size={16} /></button>
                     </td>
                   </tr>
                 );
@@ -132,7 +103,8 @@ export default function OpsTemperature() {
 
 function UnitEditor({ locId, unit, schedules, dispUnit, onClose, onSaved, showToast }) {
   const [d, setD] = useState(() => unit ? { ...unit } : { name: '', type: 'fridge', area: '', targetMinC: TYPE_DEFAULTS.fridge.min, targetMaxC: TYPE_DEFAULTS.fridge.max, displayUnit: 'C', guidance: '', active: true });
-  const [rows, setRows] = useState(schedules.map(s => ({ ...s })));
+  // New units start with one daily check so they immediately appear (and are due) on the floor app.
+  const [rows, setRows] = useState(() => schedules.length ? schedules.map(s => ({ ...s })) : (unit ? [] : [{ label: 'Daily check', timeOfDay: '09:00', daysOfWeek: [], graceMinutes: 120 }]));
   const [busy, setBusy] = useState(false);
   const up = (k, v) => setD(x => ({ ...x, [k]: v }));
   const pickType = (t) => { const def = typeDefault(t); setD(x => ({ ...x, type: t, targetMinC: x.targetMinC ?? def.min, targetMaxC: x.targetMaxC ?? def.max, guidance: x.guidance || def.guidance })); };

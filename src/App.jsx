@@ -86,6 +86,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.606', date: '23 Jun 2026', label: 'Operations — temp-unit editor reaches schedules; new units get a daily check',
+    changes: [
+      'Temperature units: the edit pencil now opens the full editor (thresholds + check schedule) directly — previously a single click only edited the range and you had to double-click to reach schedules. Added a “+ add schedule” shortcut on units with none.',
+      'Adding a unit now seeds a sensible default daily check, so a new fridge immediately appears (and is due) on the floor app instead of silently having no schedule.',
+    ],
+  },
+  {
     version: '5.5.605', date: '23 Jun 2026', label: 'Operations — floor app gets an anonymous session so pairing actually works',
     changes: [
       'The mobile Operations app now establishes an anonymous Supabase session on launch (like the menu-board and POS surfaces) before it registers/heartbeats, so the device gets a stable identity. Without this the pairing code never stuck and the tablet couldn’t detect being claimed.',
