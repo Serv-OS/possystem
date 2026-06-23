@@ -86,6 +86,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.613', date: '23 Jun 2026', label: 'Bar tabs — can no longer over-order past the card pre-auth hold',
+    changes: [
+      'A card-held bar tab (e.g. £50 pre-auth) now blocks a round that would take the running total over the held amount, with a clear prompt to take payment / open a new tab. Previously you could keep ordering past the hold and then hit an error at cash-off because the overage couldn’t be captured. Applies to both the Bar surface and POS “send to tab”. Tabs without a card hold are unaffected (no cap).',
+    ],
+  },
+  {
     version: '5.5.612', date: '23 Jun 2026', label: 'Reports/Overview — delivery-app (HubRise) sales now surface under “Delivery apps”',
     changes: [
       'HubRise channel orders (Deliveroo / Uber Eats / Just Eat) already counted in sales totals and reports, but the Overview’s “Delivery apps” row was a hardcoded “Not connected” placeholder from before the integration — it now shows real delivery-app takings (HubRise sales roll up into it).',

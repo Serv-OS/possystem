@@ -2802,6 +2802,20 @@ export const useStore = create((set, get) => ({
   },
   setActiveTab: id => set({ activeTabId:id }),
   addRoundToTab: (tabId, items, note='') => {
+    // PRE-AUTH CAP: a card-held tab can only be captured up to the held amount. Block a round that
+    // would push the tab over it — otherwise closing/cashing-off errors on the un-capturable overage.
+    // (Card holds generally can't be raised, so staff take payment to close + reopen, or take a bigger
+    // deposit.) Only enforced for tabs with a real card hold (preAuthPaymentIntentId).
+    const _capTab = get().tabs.find(t => t.id === tabId);
+    if (_capTab?.preAuthPaymentIntentId) {
+      const cap = _capTab.preAuthHeldMinor != null ? _capTab.preAuthHeldMinor / 100 : (_capTab.preAuthAmount || 0);
+      const roundSub = (items || []).reduce((s, i) => s + i.price * i.qty, 0);
+      if (cap > 0 && (_capTab.total || 0) + roundSub > cap + 0.005) {
+        const remaining = Math.max(0, cap - (_capTab.total || 0));
+        get().showToast?.(`Card hold is ${money(cap)} — only ${money(remaining)} left on this tab. Take payment to close it (or open a new tab) before adding more.`, 'error');
+        return { ok: false, reason: 'preauth_limit', remaining };
+      }
+    }
     const round = { id:uid(), sentAt:Date.now(), items:items.map(i=>({...i})), subtotal:items.reduce((s,i)=>s+i.price*i.qty,0), note };
     // v4.6.11: bar rounds deplete daily counts too — previously a bar tab could
     // sell an item past its stock with no auto-86 triggered.

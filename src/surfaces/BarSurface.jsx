@@ -251,7 +251,8 @@ export default function BarSurface() {
 
   const fireRound = () => {
     if (!activeTab||!roundItems.length) return;
-    addRoundToTab(activeTab.id, roundItems, roundNote);
+    const res = addRoundToTab(activeTab.id, roundItems, roundNote);
+    if (res && res.ok === false) return;   // over the card hold — keep the round so staff can trim it or cash off
     setRoundItems([]);
     setRoundNote('');
     showToast(`Round ${activeTab.rounds.length+1} sent to bar`,'success');

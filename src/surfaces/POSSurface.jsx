@@ -1718,13 +1718,18 @@ export default function POSSurface() {
               showToast(`Bar tab "${result.tabName}" opened`, 'success');
 
             } else if (result.type === 'bar' && result.action === 'add') {
-              store.addRoundToTab(result.tabId, items);
-              store.setCustomer({ name: result.tabName });
-              store.setOrderType('dine-in');
-              store.sendToKitchen();
-              store.clearWalkIn();
-              setSurface('bar');
-              showToast(`Added to "${result.tabName}"`, 'success');
+              const addRes = store.addRoundToTab(result.tabId, items);
+              if (addRes && addRes.ok === false) {
+                // Over the tab's card hold — keep the order on the POS so staff can cash off or trim it.
+                // addRoundToTab already showed the explanatory toast.
+              } else {
+                store.setCustomer({ name: result.tabName });
+                store.setOrderType('dine-in');
+                store.sendToKitchen();
+                store.clearWalkIn();
+                setSurface('bar');
+                showToast(`Added to "${result.tabName}"`, 'success');
+              }
             }
           }}
         />
