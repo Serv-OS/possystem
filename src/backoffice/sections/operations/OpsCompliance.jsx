@@ -109,6 +109,18 @@ export default function OpsCompliance() {
     a.download = `compliance-${month.y}-${String(month.m + 1).padStart(2, '0')}.csv`; a.click();
   };
 
+  // EHO-ready PDF: opens a self-contained branded report window → user saves as PDF.
+  const exportPdf = () => {
+    const html = buildEhoHtml({
+      siteName, monthLabel, generatedAt: new Date(),
+      units: data.units, readings: data.readings, corr: data.corr,
+      runs: data.runs, maint: data.maint, checklists: data.checklists, dayStatus,
+    });
+    const w = window.open('', '_blank', 'width=920,height=1000');
+    if (!w) { alert('Allow pop-ups for this site to export the PDF.'); return; }
+    w.document.open(); w.document.write(html); w.document.close();
+  };
+
   const firstDow = (new Date(month.y, month.m, 1).getDay() + 6) % 7; // Mon-first
   const daysInMonth = new Date(month.y, month.m + 1, 0).getDate();
   const cells = [...Array(firstDow).fill(null), ...Array.from({ length: daysInMonth }, (_, i) => i + 1)];
@@ -128,7 +140,8 @@ export default function OpsCompliance() {
           <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)', minWidth: 110, textAlign: 'center', ...mono }}>{monthLabel}</span>
           <button onClick={() => setMonth(m => ({ y: m.m === 11 ? m.y + 1 : m.y, m: (m.m + 1) % 12 }))} style={pillBtn} aria-label="Next month">›</button>
         </div>
-        {/* CSV export demoted to a secondary / ghost button */}
+        {/* exports */}
+        <button onClick={exportPdf} style={{ ...ghostBtn, borderColor: 'var(--acc-b)', color: 'var(--acc)' }}>Export PDF</button>
         <button onClick={exportCsv} style={ghostBtn}>Export CSV</button>
       </div>
 
@@ -171,6 +184,88 @@ export default function OpsCompliance() {
       </div>
     </div>
   );
+}
+
+// ── EHO PDF report (self-contained branded print document) ─────────────────────
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+function buildEhoHtml({ siteName, monthLabel, generatedAt, units, readings, corr, runs, maint, checklists, dayStatus }) {
+  const uName = (id) => (units.find(u => u.id === id)?.name) || '—';
+  const clName = (id) => (checklists.find(c => c.id === id)?.name) || 'Checklist';
+  const clTotal = (id) => (checklists.find(c => c.id === id)?.tasks?.length) || 0;
+  const dDate = (iso) => new Date(iso).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
+  const dTime = (iso) => new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+
+  const dv = Object.values(dayStatus || {});
+  const compliantDays = dv.filter(v => v === 'green').length;
+  const minorDays = dv.filter(v => v === 'amber').length;
+  const breachDays = dv.filter(v => v === 'coral').length;
+  const totalReads = readings.length;
+  const inRangeN = readings.filter(r => r.inRange).length;
+  const inRangePct = totalReads ? Math.round((inRangeN / totalReads) * 100) : 100;
+  const breaches = totalReads - inRangeN;
+  const openMaint = maint.filter(m => !['resolved', 'cancelled'].includes(m.status)).length;
+
+  const kpi = (v, l, warn) => `<div class="kpi"><div class="kv" style="${warn ? 'color:#c0392b' : ''}">${v}</div><div class="kl">${l}</div></div>`;
+
+  const tempRows = [...readings].sort((a, b) => new Date(a.recordedAt) - new Date(b.recordedAt))
+    .map(r => `<tr class="${r.inRange ? '' : 'br'}"><td>${dDate(r.recordedAt)}</td><td>${dTime(r.recordedAt)}</td><td>${esc(uName(r.tempUnitId))}</td><td class="n">${esc(r.readingC)}&deg;C</td><td>${r.inRange ? 'In range' : 'BREACH'}</td><td>${esc(r.operatorName || '')}</td></tr>`).join('');
+  const corrRows = [...corr].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))
+    .map(c => `<tr><td>${dDate(c.createdAt)} ${dTime(c.createdAt)}</td><td>${esc((c.action || '').replace(/_/g, ' '))}</td><td>${esc(c.severity || '')}</td><td>${esc(c.operatorName || '')}</td><td>${c.maintenanceRequestId ? 'Yes' : '—'}</td></tr>`).join('');
+  const runRows = [...runs].sort((a, b) => String(a.runDate).localeCompare(String(b.runDate)))
+    .map(r => `<tr><td>${esc(r.runDate || '')}</td><td>${esc(clName(r.checklistId))}</td><td>${clTotal(r.checklistId)}/${clTotal(r.checklistId)}</td><td>${esc(r.completedByName || '—')}</td></tr>`).join('');
+  const maintRows = [...maint].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+    .map(m => `<tr><td>${dDate(m.createdAt)}</td><td>${esc(m.title || '')}</td><td>${esc(m.priority || '')}</td><td>${esc((m.status || '').replace(/_/g, ' '))}</td></tr>`).join('');
+
+  const section = (title, head, rows, empty) => `<h2>${title}</h2>${rows ? `<table><thead><tr>${head.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table>` : `<p class="empty">${empty}</p>`}`;
+
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Compliance report — ${esc(siteName || '')} ${esc(monthLabel)}</title>
+<style>
+  @page { size: A4; margin: 15mm; }
+  * { box-sizing: border-box; }
+  body { font: 12px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; color:#16201b; margin:0; }
+  .head { border-bottom:3px solid #15C26A; padding-bottom:12px; margin-bottom:16px; display:flex; justify-content:space-between; align-items:flex-end; }
+  .brand { font-size:13px; font-weight:800; letter-spacing:.02em; color:#0b2c1c; }
+  .brand b { color:#15C26A; }
+  h1 { font-size:19px; margin:6px 0 2px; }
+  .sub { color:#5b6660; font-size:12px; }
+  .gen { text-align:right; color:#7a847e; font-size:10.5px; }
+  .summary { display:flex; gap:10px; margin:0 0 18px; }
+  .kpi { flex:1; border:1px solid #e2e6e3; border-radius:8px; padding:10px 12px; }
+  .kv { font-size:20px; font-weight:800; }
+  .kl { font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:#7a847e; margin-top:2px; }
+  h2 { font-size:13px; margin:20px 0 8px; padding-bottom:4px; border-bottom:1px solid #d7ddd9; }
+  table { width:100%; border-collapse:collapse; font-size:11px; }
+  th,td { border:1px solid #e2e6e3; padding:4px 7px; text-align:left; }
+  th { background:#f3f6f4; font-size:10px; text-transform:uppercase; letter-spacing:.04em; color:#5b6660; }
+  td.n { text-align:right; font-variant-numeric:tabular-nums; }
+  tr.br td { background:#fdecea; color:#c0392b; font-weight:600; }
+  .empty { color:#7a847e; font-style:italic; font-size:11px; }
+  .foot { margin-top:24px; padding-top:10px; border-top:1px solid #d7ddd9; color:#7a847e; font-size:10px; }
+  thead { display:table-header-group; }
+  tr { page-break-inside:avoid; }
+</style></head>
+<body onload="window.focus();window.print();">
+  <div class="head">
+    <div>
+      <div class="brand">S<b>.</b>ervOS Operations</div>
+      <h1>Food Safety Compliance Report</h1>
+      <div class="sub">${esc(siteName || 'Site')} &middot; ${esc(monthLabel)}</div>
+    </div>
+    <div class="gen">Generated<br>${generatedAt.toLocaleString('en-GB')}</div>
+  </div>
+  <div class="summary">
+    ${kpi(`${inRangePct}%`, 'Temps in range', inRangePct < 90)}
+    ${kpi(totalReads, 'Checks logged')}
+    ${kpi(breaches, 'Breaches', breaches > 0)}
+    ${kpi(corr.length, 'Corrective actions')}
+    ${kpi(`${compliantDays}/${compliantDays + minorDays + breachDays}`, 'Compliant days', breachDays > 0)}
+  </div>
+  ${section('Temperature log', ['Date', 'Time', 'Unit', 'Reading', 'Status', 'By'], tempRows, 'No temperature readings recorded this period.')}
+  ${section('Corrective actions', ['When', 'Action', 'Severity', 'By', 'Maint. raised'], corrRows, 'No corrective actions recorded — all readings in range.')}
+  ${section('Checklist sign-offs', ['Date', 'Checklist', 'Tasks', 'Signed by'], runRows, 'No checklist sign-offs recorded this period.')}
+  ${section('Maintenance', ['Raised', 'Asset / issue', 'Priority', 'Status'], maintRows, 'No maintenance raised this period.')}
+  <div class="foot">This report was generated automatically from the ServOS Operations log. Temperature readings are recorded at the point of check with server-side range validation; out-of-range readings are flagged and require a corrective action before the check can close.</div>
+</body></html>`;
 }
 
 const pillBtn = { width: 30, height: 30, borderRadius: 999, border: 0, background: 'transparent', color: 'var(--t1)', cursor: 'pointer', fontSize: 16, fontFamily: 'inherit', display: 'flex', alignItems: 'center', justifyContent: 'center' };

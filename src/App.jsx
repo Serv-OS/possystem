@@ -86,6 +86,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.603', date: '23 Jun 2026', label: 'Operations — EHO compliance PDF export',
+    changes: [
+      'Compliance history now has an Export PDF button that produces a branded, print-ready Food Safety Compliance Report for the month: a summary band (temps-in-range %, checks logged, breaches, corrective actions, compliant days) plus full temperature log, corrective actions, checklist sign-offs and maintenance — breaches highlighted. Opens a print window to save as PDF (no new dependencies).',
+    ],
+  },
+  {
     version: '5.5.602', date: '23 Jun 2026', label: 'Operations — Alert rules editor (who gets notified + escalation)',
     changes: [
       'New Back Office → Operations → Alert rules screen: per event type (temperature breach, missed check, overdue task, maintenance, corrective) set the minimum severity, channels (in-app always + SMS/email), recipients (roles, specific people, or any email/phone), and how fast it escalates if unacknowledged.',
