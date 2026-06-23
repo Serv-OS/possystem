@@ -14,6 +14,7 @@ import {
   fetchTempUnits, fetchSchedules, fetchReadings, submitReading,
   fetchExpectedDeliveries, checkDelivery, fetchAlerts,
 } from '../lib/ops/data';
+import { fetchTodayChecklists, openRun, completeTask, signOffRun } from '../lib/ops/checklists';
 import {
   displayTemp, toStoredC, breach, typeDefault, hhmmToMin, runsOnDay, windowStatus, summarize,
 } from '../lib/ops/temp';
@@ -94,6 +95,8 @@ export default function OperationsSurface() {
         <Temperature loc={loc} onBack={() => setView('home')} onPick={(u) => setUnitView(u)} />
       ) : view === 'delivery' ? (
         <Deliveries loc={loc} operator={operator} onBack={() => setView('home')} />
+      ) : view === 'checklists' ? (
+        <Checklists loc={loc} operator={operator} onBack={() => setView('home')} />
       ) : (
         <Home loc={loc} venueName={venueName} operator={operator} onOpen={setView} />
       )}
@@ -198,14 +201,16 @@ function Home({ loc, operator, onOpen }) {
   const { units, summary } = useTodayStatus(loc);
   const [deliveryCount, setDeliveryCount] = useState(null);
   const [openAlerts, setOpenAlerts] = useState(0);
+  const [cl, setCl] = useState(null);   // { due, total }
   useEffect(() => {
     fetchExpectedDeliveries(loc).then(({ data }) => setDeliveryCount((data || []).filter(d => !d.delivery || d.delivery.status === 'pending').length));
     fetchAlerts(loc, true).then(({ data }) => setOpenAlerts((data || []).length));
+    fetchTodayChecklists(loc).then(({ data }) => { const list = data || []; setCl({ due: list.filter(c => c.status !== 'done').length, total: list.length }); });
   }, [loc]);
   const tiles = [
     { key: 'temperature', label: 'Temperature', sub: `${summary.due + summary.missed} of ${summary.total} due`, state: summary.missed ? 'over' : summary.due ? 'due' : 'done', hue: AREA_HUE.Temperature, onClick: () => onOpen('temperature') },
     { key: 'delivery', label: 'Deliveries', sub: deliveryCount == null ? '—' : `${deliveryCount} to check`, state: deliveryCount ? 'due' : 'done', hue: AREA_HUE.Deliveries, onClick: () => onOpen('delivery') },
-    { key: 'checklists', label: 'Checklists', sub: 'Coming soon', state: 'idle', hue: AREA_HUE.Checklists, onClick: () => {} },
+    { key: 'checklists', label: 'Checklists', sub: cl == null ? '—' : cl.total === 0 ? 'None today' : `${cl.due} of ${cl.total} to do`, state: cl?.due ? 'due' : 'done', hue: AREA_HUE.Checklists, onClick: () => onOpen('checklists') },
     { key: 'maintenance', label: 'Maintenance', sub: `${openAlerts} alert${openAlerts === 1 ? '' : 's'}`, state: openAlerts ? 'over' : 'idle', hue: AREA_HUE.Maintenance, onClick: () => {} },
   ];
   const ring = summary.compliancePct;
@@ -444,6 +449,87 @@ function DeliveryCheck({ loc, operator, row, onDone }) {
         <button onClick={() => decide(true)} disabled={busy || tempC == null} className="btn btn-acc" style={{ flex: 1, padding: 14, fontWeight: 800, borderRadius: 14, opacity: tempC == null ? 0.5 : 1 }}>{busy ? '…' : 'Accept → stock'}</button>
       </div>
       <div style={{ fontSize: 11, color: 'var(--t3)', textAlign: 'center', marginTop: 8, ...mono }}>Accept receives the PO into stock. Reject posts no stock.</div>
+    </div>
+  );
+}
+
+// ── Checklists: today's lists → run-through with sign-off ─────────────────────
+function Checklists({ loc, operator, onBack }) {
+  const [rows, setRows] = useState(null);
+  const [active, setActive] = useState(null);
+  const reload = useCallback(() => fetchTodayChecklists(loc).then(({ data }) => setRows(data || [])), [loc]);
+  useEffect(() => { reload(); }, [reload]);
+  if (active) return <ChecklistRun loc={loc} operator={operator} checklist={active} onDone={() => { setActive(null); reload(); }} />;
+  return (
+    <div>
+      <Header title="Checklists" sub="Today" onBack={onBack} />
+      {rows == null && <div style={{ color: 'var(--t3)', padding: 12, ...mono }}>Loading…</div>}
+      {rows && rows.length === 0 && <div className="sv-glass" style={{ padding: 18, color: 'var(--t3)', textAlign: 'center' }}>No checklists due today.</div>}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {(rows || []).map(c => (
+          <button key={c.id} onClick={() => setActive(c)} className="sv-tile" style={{ '--h': AREA_HUE.Checklists, display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', borderRadius: 14, cursor: 'pointer', color: 'var(--t1)', textAlign: 'left', fontFamily: 'inherit' }}>
+            <div style={{ width: 38, height: 38, borderRadius: 10, display: 'grid', placeItems: 'center', background: 'var(--inset)', fontSize: 17 }}>☑</div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 14, fontWeight: 700 }}>{c.name}</div>
+              <div style={{ fontSize: 11, color: 'var(--t3)', ...mono }}>{c.area} · {c.doneCount}/{c.total} done{c.timeOfDay ? ` · ${c.timeOfDay}` : ''}</div>
+            </div>
+            {c.status === 'done' ? <Pill state="done">Done</Pill> : c.status === 'missed' ? <Pill state="over">Overdue</Pill> : <Pill state="due">{c.doneCount > 0 ? 'Resume' : 'Start'}</Pill>}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+function ChecklistRun({ loc, operator, checklist, onDone }) {
+  const [run, setRun] = useState(checklist.run || null);
+  const [done, setDone] = useState(() => { const m = {}; (checklist.completions || []).forEach(c => { if (c.done) m[c.taskId] = c; }); return m; });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  useEffect(() => { if (!run) openRun(checklist.id, loc).then(({ data }) => setRun(data)); }, []);
+  const total = checklist.tasks.length;
+  const completed = Object.keys(done).length;
+  const pct = total ? Math.round((completed / total) * 100) : 0;
+
+  const toggle = async (task) => {
+    if (!run) return;
+    if (done[task.id]) { // untick
+      const n = { ...done }; delete n[task.id]; setDone(n);
+      await completeTask(run.id, task.id, { done: false, by: operator?.name, byId: operator?.id }, loc);
+    } else {
+      setDone(d => ({ ...d, [task.id]: { taskId: task.id } }));
+      await completeTask(run.id, task.id, { done: true, by: operator?.name, byId: operator?.id }, loc);
+    }
+  };
+  const sign = async () => {
+    if (completed < total) { setErr('Complete every task before signing off'); return; }
+    setBusy(true); const { error } = await signOffRun(run.id, operator?.name, operator?.id, loc); setBusy(false);
+    if (error) { setErr(error.message || 'Could not sign off'); return; }
+    onDone();
+  };
+  return (
+    <div>
+      <Header title={checklist.name} sub={checklist.area} onBack={onDone} />
+      <div className="sv-glass" style={{ padding: '12px 16px', marginBottom: 14 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'var(--t3)', marginBottom: 6, ...mono }}><span>{completed}/{total} done</span><span>{pct}%</span></div>
+        <div style={{ height: 8, borderRadius: 4, background: 'var(--inset)', overflow: 'hidden' }}><div style={{ height: '100%', width: `${pct}%`, background: 'linear-gradient(90deg,var(--grn),var(--acc2,#2FD984))', borderRadius: 4 }} /></div>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {checklist.tasks.map(t => {
+          const on = !!done[t.id];
+          return (
+            <button key={t.id} onClick={() => toggle(t)} className="sv-glass" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '14px 16px', borderRadius: 14, cursor: 'pointer', textAlign: 'left', color: 'var(--t1)', border: `1px solid ${on ? 'var(--acc-b)' : 'var(--bdr)'}`, background: on ? 'var(--acc-d)' : 'var(--glass-bg)' }}>
+              <span style={{ width: 24, height: 24, borderRadius: 999, flexShrink: 0, display: 'grid', placeItems: 'center', background: on ? 'var(--acc)' : 'transparent', border: `2px solid ${on ? 'var(--acc)' : 'var(--bdr3)'}`, color: '#06130C', fontWeight: 800, fontSize: 13 }}>{on ? '✓' : ''}</span>
+              <span style={{ flex: 1, fontWeight: 600, textDecoration: on ? 'line-through' : 'none', color: on ? 'var(--t3)' : 'var(--t1)' }}>{t.label}</span>
+              {t.evidenceRequired && <span title="photo required" style={{ fontSize: 14 }}>📷</span>}
+              {t.tempUnitId && <span title="temperature-linked" style={{ fontSize: 12, color: 'var(--uv)' }}>🌡</span>}
+            </button>
+          );
+        })}
+      </div>
+      {err && <div style={{ color: 'var(--red)', fontSize: 13, marginTop: 10 }}>{err}</div>}
+      <button onClick={sign} disabled={busy || completed < total} className="btn btn-acc" style={{ width: '100%', padding: 15, marginTop: 16, fontSize: 15, fontWeight: 800, borderRadius: 14, opacity: completed < total ? 0.5 : 1 }}>
+        {busy ? 'Signing…' : `Sign off${operator?.name ? ` — ${operator.name.split(' ')[0]}` : ''}`}
+      </button>
     </div>
   );
 }

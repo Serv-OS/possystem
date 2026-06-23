@@ -86,6 +86,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.598', date: '23 Jun 2026', label: 'Operations — task checklists (slice 4)',
+    changes: [
+      'New Checklists: build opening/closing/cleaning/QA routines in Back Office → Operations → Checklists (areas, schedule, ordered tasks, photo-required + temperature-linked flags).',
+      'Staff work through today’s checklists on the ops app — tick tasks, a progress bar fills, then sign off; resumable, with overdue flagged.',
+    ],
+  },
+  {
     version: '5.5.597', date: '23 Jun 2026', label: 'Operations — alert escalation cron',
     changes: [
       'Unacknowledged temperature/ops alerts now escalate automatically (SMS + email) on a schedule, on top of the live in-app alert — completing the manager-alert loop.',
