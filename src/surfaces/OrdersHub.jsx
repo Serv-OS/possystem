@@ -74,6 +74,7 @@ export default function OrdersHub() {
   const [showDone, setShowDone] = useState(false);
   const [tick, setTick]         = useState(0);
   const [closingTabRef, setClosingTabRef] = useState(null); // ref currently being captured
+  const [viewOrder, setViewOrder] = useState(null); // already-paid order shown read-only (no re-pay)
 
   useEffect(() => {
     const id = setInterval(() => setTick(t => t + 1), 30000);
@@ -659,6 +660,10 @@ export default function OrdersHub() {
   const openOrder = (o) => {
     if (o._kind === 'table') { setActiveTableId(o.tableId); setSurface('tables'); }
     else if (o._kind === 'tab') { setSurface('bar'); }
+    // Already paid (e.g. a catering pre-order paid online): opening it loaded it into the POS
+    // pay flow, which would take payment a SECOND time. Show it read-only instead — staff still
+    // advance it (prep/ready/collected) from its card.
+    else if (o.paid || o.customer?.paid) { setViewOrder(o); }
     else {
       // Walk-in / takeaway / delivery / counter order — load it back into the
       // walk-in slot so the POS actually shows the items. Previously this branch
@@ -816,6 +821,47 @@ export default function OrdersHub() {
           </div>
         )}
       </div>
+
+      {/* Read-only view for already-paid orders (e.g. catering pre-orders) — no re-pay. */}
+      {viewOrder && (
+        <div onClick={(e) => { if (e.target === e.currentTarget) setViewOrder(null); }} style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', display:'grid', placeItems:'center', zIndex:9999, padding:16 }}>
+          <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:16, width:'100%', maxWidth:440, maxHeight:'85vh', overflowY:'auto', padding:20 }}>
+            <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:4 }}>
+              <div style={{ fontSize:17, fontWeight:800, color:'var(--t1)', flex:1, minWidth:0 }}>{viewOrder.displayName || viewOrder.ref}</div>
+              <span style={{ fontSize:9, fontWeight:700, padding:'2px 8px', borderRadius:8, background:'#22c55e18', border:'1px solid #22c55e44', color:'#22c55e' }}>PAID</span>
+              <button onClick={() => setViewOrder(null)} style={{ background:'transparent', border:0, fontSize:22, color:'var(--t3)', cursor:'pointer', lineHeight:1 }}>×</button>
+            </div>
+            <div style={{ fontSize:12, color:'var(--t3)', marginBottom:12 }}>
+              {viewOrder.ref} · {viewOrder.source === 'catering' ? 'Catering' : viewOrder.channel}
+              {viewOrder.customer?.event_date ? ` · ${viewOrder.customer.event_date}${(viewOrder.customer?.event_time || viewOrder.collectionTime) ? ` at ${viewOrder.customer.event_time || viewOrder.collectionTime}` : ''}` : ''}
+            </div>
+            {viewOrder.customer && (viewOrder.customer.name || viewOrder.customer.phone || viewOrder.customer.address) && (
+              <div style={{ fontSize:12.5, color:'var(--t2)', marginBottom:12, lineHeight:1.5 }}>
+                {viewOrder.customer.name && <div>{viewOrder.customer.name}</div>}
+                {viewOrder.customer.phone && <div>{viewOrder.customer.phone}</div>}
+                {viewOrder.customer.address && <div>{viewOrder.customer.address}</div>}
+              </div>
+            )}
+            <div style={{ display:'flex', flexDirection:'column', gap:6, borderTop:'1px solid var(--bdr)', paddingTop:12 }}>
+              {(viewOrder.items || []).map((it, i) => (
+                <div key={i} style={{ display:'flex', justifyContent:'space-between', gap:10, fontSize:13 }}>
+                  <div style={{ color:'var(--t1)' }}>
+                    <span style={{ color:'var(--t3)' }}>{it.qty || 1}× </span>{it.name}
+                    {(it.mods || []).length > 0 && <div style={{ fontSize:11, color:'var(--t3)', paddingLeft:14 }}>{it.mods.map(m => m.name).join(', ')}</div>}
+                    {it.notes && <div style={{ fontSize:11, color:'var(--t3)', paddingLeft:14, fontStyle:'italic' }}>{it.notes}</div>}
+                  </div>
+                  <div style={{ color:'var(--t2)', whiteSpace:'nowrap' }}>{money(((it.price || 0) + (it.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0)) * (it.qty || 1))}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{ display:'flex', justifyContent:'space-between', borderTop:'1px solid var(--bdr)', marginTop:12, paddingTop:12, fontSize:15, fontWeight:800, color:'var(--t1)' }}>
+              <span>Total</span><span>{money(viewOrder.total || 0)}</span>
+            </div>
+            <div style={{ fontSize:11, color:'var(--t3)', marginTop:6 }}>Already paid{viewOrder.paymentMethod ? ` · ${viewOrder.paymentMethod}` : ''}. Advance it from its card (prep → ready → collected).</div>
+            <button onClick={() => setViewOrder(null)} style={{ width:'100%', marginTop:16, padding:12, borderRadius:10, background:'var(--bg2)', border:'1px solid var(--bdr)', color:'var(--t1)', fontWeight:700, cursor:'pointer', fontFamily:'inherit' }}>Close</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
