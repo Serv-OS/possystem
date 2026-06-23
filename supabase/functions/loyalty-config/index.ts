@@ -67,7 +67,7 @@ Deno.serve(async (req) => {
 
     // Whitelist fields that can be updated
     const allowed = [
-      'enabled', 'points_enabled', 'points_per_currency_unit', 'points_currency_value',
+      'enabled', 'points_enabled', 'stamps_enabled', 'points_per_currency_unit', 'points_currency_value',
       'points_rounding', 'points_expiry_months',
       'earn_on_gift_card_purchase', 'earn_on_staff_discount', 'earn_on_comps',
       'earn_on_delivery_fee', 'earn_on_service_charge', 'earn_on_tax',

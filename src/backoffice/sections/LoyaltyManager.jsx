@@ -173,7 +173,18 @@ export default function LoyaltyManager() {
     }
   };
 
+  // Independent on/off for the two loyalty types (points vs stamp cards).
+  const toggleField = async (field, current) => {
+    if (!config) return;
+    setEnabling(true); setEnableError('');
+    try { const res = await callLoyalty('loyalty-config', { [field]: !current }); setConfig(res.config); }
+    catch (e) { setEnableError(e?.message || 'Failed to update'); }
+    finally { setEnabling(false); }
+  };
+
   const loyaltyEnabled = !!config?.enabled;
+  const pointsOn = config?.points_enabled !== false;
+  const stampsOn = config?.stamps_enabled !== false;
 
   if (loading) return <div style={{ padding: 40, color: 'var(--t4)', fontSize: 13 }}>Loading...</div>;
 
@@ -216,6 +227,18 @@ export default function LoyaltyManager() {
         </div>
 
         {enableError && <div style={S.errorBox}>{enableError}</div>}
+
+        {/* Loyalty TYPE toggles — points and stamp cards are independent. Run either, both, or
+            (with a warning) neither. The customer/staff surfaces hide whichever is off. */}
+        {loyaltyEnabled && config && (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10, marginTop: 4, marginBottom: 12 }}>
+            <LoyTypeToggle label="Points" desc="Earn points per £ spent, redeem for rewards" on={pointsOn} disabled={enabling} onToggle={() => toggleField('points_enabled', pointsOn)} />
+            <LoyTypeToggle label="Stamp cards" desc="Collect stamps, free item when the card is full" on={stampsOn} disabled={enabling} onToggle={() => toggleField('stamps_enabled', stampsOn)} />
+          </div>
+        )}
+        {loyaltyEnabled && config && !pointsOn && !stampsOn && (
+          <div style={{ ...S.errorBox, marginBottom: 12 }}>Both points and stamp cards are off — customers won’t earn anything. Turn at least one on.</div>
+        )}
 
         {/* Customer portal link */}
         {slug && (
@@ -274,6 +297,21 @@ function ConfigStat({ label, value }) {
     <div style={{ padding: '8px 10px', background: 'var(--bg2)', borderRadius: 8, border: '1px solid var(--bdr)' }}>
       <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--t4)', textTransform: 'uppercase', marginBottom: 2 }}>{label}</div>
       <div style={{ fontWeight: 700, color: 'var(--t1)', fontSize: 12 }}>{value}</div>
+    </div>
+  );
+}
+
+// A points/stamps on-off card with a switch (the two loyalty types run independently).
+function LoyTypeToggle({ label, desc, on, disabled, onToggle }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', background: 'var(--bg2)', borderRadius: 8, border: `1px solid ${on ? 'var(--grn-b, var(--bdr))' : 'var(--bdr)'}` }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)' }}>{label}</div>
+        <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 1 }}>{desc}</div>
+      </div>
+      <button onClick={onToggle} disabled={disabled} style={{ width: 44, height: 24, borderRadius: 12, border: 'none', cursor: disabled ? 'default' : 'pointer', background: on ? 'var(--grn)' : 'var(--bdr2)', position: 'relative', transition: 'background .2s', flexShrink: 0, opacity: disabled ? 0.6 : 1 }}>
+        <div style={{ width: 18, height: 18, borderRadius: 9, background: '#fff', position: 'absolute', top: 3, left: on ? 23 : 3, transition: 'left .2s' }} />
+      </button>
     </div>
   );
 }

@@ -86,6 +86,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.615', date: '23 Jun 2026', label: 'Loyalty — points & stamp cards can run independently (points-only / stamps-only / both)',
+    changes: [
+      'Back Office → Loyalty now has separate on/off switches for Points and Stamp cards. Run points only, stamp cards only, or both — with a warning if you turn both off.',
+      'Turning Points off stops points being earned/redeemed; turning Stamp cards off stops stamps. The customer + staff screens (POS checkout, kiosk, online checkout, customer portal) automatically hide whichever type is switched off — so a stamps-only venue shows no points anywhere, and vice-versa.',
+    ],
+  },
+  {
     version: '5.5.614', date: '23 Jun 2026', label: 'Bar tabs — live "£ left on hold" indicator + one-tap "Increase hold" (step-up auth)',
     changes: [
       'A card-held tab now shows a live colour-coded badge — e.g. "£6 left" (green → amber → red as it fills, "Hold full" at the limit) — so staff see the ceiling coming, not just when a round is blocked.',

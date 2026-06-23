@@ -1137,6 +1137,14 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
     return () => { alive = false; };
   }, [pendingLoyaltyReward, loyaltyData, loyaltyApplied]);
 
+  // Loyalty now supports points and stamp cards independently. The lookup
+  // returns points_enabled / stamps_enabled; treat a missing flag as enabled
+  // (older data / unaffected venues still render points). Only hide when the
+  // flag is EXPLICITLY false. This surface has no stamp-card UI, so we only
+  // need the points gate here (hides the points banner + rewards redeem screen
+  // for a stamps-only venue).
+  const pointsEnabled = loyaltyData?.points_enabled !== false;
+
   const isBarTab = orderType==='bar-tab';
   const skipTip  = isBarTab || orderType==='takeaway' || orderType==='collection';
   const giftCredit = giftApplied?.applied ? giftApplied.applied / 100 : 0;
@@ -1319,8 +1327,9 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
                 ))}
               </div>
 
-              {/* v5.5.218: Loyalty banner — show when customer has loyalty data */}
-              {loyaltyData && loyaltyData.credit > 0 && (
+              {/* v5.5.218: Loyalty banner — show when customer has loyalty data.
+                  Points UI is gated on pointsEnabled (hidden for stamps-only venues). */}
+              {pointsEnabled && loyaltyData && loyaltyData.credit > 0 && (
                 <div style={{
                   display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12,
                   padding: '10px 14px', borderRadius: 10,
@@ -1548,7 +1557,7 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
             />
           )}
 
-          {screen==='loyalty_rewards' && loyaltyData && (
+          {screen==='loyalty_rewards' && pointsEnabled && loyaltyData && (
             <LoyaltyRewardsEntry
               customer={customer}
               loyaltyData={loyaltyData}

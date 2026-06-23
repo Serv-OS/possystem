@@ -93,7 +93,21 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   const hasLoyalty = !!(loyalty?.verified && loyalty?.loyalty);
 
   // v5.5.243: Phone → loyalty member detection
-  const [loyaltyHint, setLoyaltyHint] = useState(null); // { enrolled, points_balance, member_code }
+  const [loyaltyHint, setLoyaltyHint] = useState(null); // { enrolled, points_balance, member_code, points_enabled, stamps_enabled }
+
+  // Loyalty program mode flags (from loyalty-balance / loyalty-member-lookup).
+  // A venue can run points-only, stamp-cards-only, or both. Treat a
+  // MISSING/undefined flag as enabled — only hide a section when its flag is
+  // EXPLICITLY false. Read from the verified loyalty object first, then the
+  // phone-lookup hint, whichever is present.
+  const pointsEnabled = (loyalty?.loyalty?.points_enabled ?? loyaltyHint?.points_enabled) !== false;
+  // No stamp-card UI is rendered at checkout, but keep the flag derived so the
+  // rewards routing / progress indicator can treat a stamps-only venue as
+  // "no points rewards here".
+  // (stamps_enabled is read but unused for layout — checkout shows no stamp UI.)
+  // The rewards (points-redemption) step only applies when a member is signed
+  // in AND the venue runs points — a stamps-only venue skips straight to pay.
+  const rewardsAvailable = hasLoyalty && pointsEnabled;
   const [loyaltyHintDismissed, setLoyaltyHintDismissed] = useState(false);
   // v5.5.249: gate prompt — shown when user clicks Continue and phone is a loyalty member
   const [showLoyaltyGate, setShowLoyaltyGate] = useState(false);
@@ -401,7 +415,8 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   // Gift step → rewards (if loyalty) or pay
   const continueFromGift = async () => {
     // v5.5.243: route through rewards step if loyalty is active
-    if (hasLoyalty && !giftCoversAll) {
+    // Only when points are enabled — a stamps-only venue has no points rewards.
+    if (rewardsAvailable && !giftCoversAll) {
       setStep('rewards');
       return;
     }
@@ -420,9 +435,9 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     }
   };
 
-  // Skip gift card → rewards (if loyalty) or Stripe payment
+  // Skip gift card → rewards (if loyalty + points) or Stripe payment
   const skipGiftCard = async () => {
-    if (hasLoyalty) { setStep('rewards'); return; }
+    if (rewardsAvailable) { setStep('rewards'); return; }
     setWorking(true); setError('');
     try {
       await startPayment();
@@ -495,7 +510,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
 
   // ── Fetch available rewards when entering rewards step ─────────────────
   useEffect(() => {
-    if (step !== 'rewards' || !hasLoyalty || availableRewards) return;
+    if (step !== 'rewards' || !rewardsAvailable || availableRewards) return;
     (async () => {
       try {
         setRewardLoading(true);
@@ -513,7 +528,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         setRewardLoading(false);
       }
     })();
-  }, [step, hasLoyalty]);
+  }, [step, rewardsAvailable]);
 
   // ── Redeem a loyalty reward ───────────────────────────────────────────
   const redeemReward = async (reward) => {
@@ -824,7 +839,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
             </div>
           </div>
           <button onClick={
-            step === 'pay' ? () => { setStep(hasLoyalty ? 'rewards' : 'gift'); setPi(null); setError(''); }
+            step === 'pay' ? () => { setStep(rewardsAvailable ? 'rewards' : 'gift'); setPi(null); setError(''); }
             : step === 'rewards' ? () => { setStep('gift'); setRewardError(''); setError(''); }
             : step === 'gift' ? () => { setStep('details'); setError(''); }
             : onClose
@@ -841,7 +856,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         <div style={{ display: 'flex', gap: 6, padding: '0 24px 14px' }}>
           <div style={{ flex: 1, height: 4, borderRadius: 2, background: theme.accent }}/>
           <div style={{ flex: 1, height: 4, borderRadius: 2, background: step !== 'details' ? theme.accent : cardBdr }}/>
-          {hasLoyalty && <div style={{ flex: 1, height: 4, borderRadius: 2, background: (step === 'rewards' || step === 'pay') ? theme.accent : cardBdr }}/>}
+          {rewardsAvailable && <div style={{ flex: 1, height: 4, borderRadius: 2, background: (step === 'rewards' || step === 'pay') ? theme.accent : cardBdr }}/>}
           <div style={{ flex: 1, height: 4, borderRadius: 2, background: step === 'pay' ? theme.accent : cardBdr }}/>
         </div>
 
@@ -1156,8 +1171,8 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 13, fontWeight: 700 }}>You're a loyalty member!</div>
                 <div style={{ fontSize: 12, color: muted, marginTop: 2 }}>
-                  {loyaltyHint.points_balance != null ? `${loyaltyHint.points_balance} points available. ` : ''}
-                  Sign in to redeem rewards with your order.
+                  {pointsEnabled && loyaltyHint.points_balance != null ? `${loyaltyHint.points_balance} points available. ` : ''}
+                  {pointsEnabled ? 'Sign in to redeem rewards with your order.' : 'Sign in to apply your loyalty rewards.'}
                 </div>
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flexShrink: 0 }}>
@@ -1268,7 +1283,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
                 fontFamily: 'inherit', opacity: working ? 0.7 : 1,
                 display: 'flex', justifyContent: 'space-between', alignItems: 'center',
               }}>
-                <span>{working ? 'Processing…' : giftCoversAll ? 'Place order' : hasLoyalty ? 'Continue to rewards' : 'Continue to card payment'}</span>
+                <span>{working ? 'Processing…' : giftCoversAll ? 'Place order' : rewardsAvailable ? 'Continue to rewards' : 'Continue to card payment'}</span>
                 <span>{money((remainingMinor / 100))}</span>
               </button>
             ) : (
@@ -1279,11 +1294,11 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
                 fontFamily: 'inherit', opacity: working ? 0.7 : 1,
                 display: 'flex', justifyContent: 'space-between', alignItems: 'center',
               }}>
-                <span>{working ? 'Starting payment…' : hasLoyalty ? 'Skip to rewards' : 'Pay by card'}</span>
+                <span>{working ? 'Starting payment…' : rewardsAvailable ? 'Skip to rewards' : 'Pay by card'}</span>
                 <span>{money(subtotal)}</span>
               </button>
             )}
-            {!giftApplied && !hasLoyalty && (
+            {!giftApplied && !rewardsAvailable && (
               <div style={{ fontSize: 10, color: muted, textAlign: 'center', marginTop: 8 }}>
                 🔒 Card details next, processed securely by Stripe.
               </div>
@@ -1430,9 +1445,11 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
                     You're a loyalty member!
                   </div>
                   <div style={{ fontSize: 13, color: muted, marginTop: 8, lineHeight: 1.5 }}>
-                    {loyaltyHint?.points_balance != null
-                      ? `You have ${loyaltyHint.points_balance} points. Sign in to redeem rewards and earn points on this order.`
-                      : 'Sign in to redeem rewards and earn points on this order.'}
+                    {pointsEnabled
+                      ? (loyaltyHint?.points_balance != null
+                          ? `You have ${loyaltyHint.points_balance} points. Sign in to redeem rewards and earn points on this order.`
+                          : 'Sign in to redeem rewards and earn points on this order.')
+                      : 'Sign in to apply your loyalty rewards on this order.'}
                   </div>
                 </div>
 

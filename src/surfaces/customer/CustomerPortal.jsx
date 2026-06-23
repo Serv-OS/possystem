@@ -616,12 +616,13 @@ function RegisterScreen({ t, location, token, customer, loyalty, onComplete }) {
     }
   };
 
+  const pointsEnabled = loyalty?.points_enabled !== false;
   const welcomePoints = loyalty?.points_balance || 0;
 
   return (
     <>
       {/* Welcome hero */}
-      {welcomePoints > 0 && (
+      {pointsEnabled && welcomePoints > 0 && (
         <div style={{
           background: `linear-gradient(135deg, ${t.accent}, ${t.accentHover})`,
           borderRadius: t.radius + 4, padding: '24px 20px', marginBottom: 18,
@@ -867,12 +868,17 @@ function OtpScreen({ t, phone, otpCode, setOtpCode, loading, error, onVerify, on
 // DASHBOARD
 // ═══════════════════════════════════════════════════════════════════════════
 function Dashboard({ t, location, customer, loyalty, giftCards, stampCards, tab, setTab, onRefresh, onLogout, token, walletAvail, walletLoading, addToWallet }) {
-  const hasStamps = stampCards && stampCards.length > 0;
+  // Loyalty feature flags — a venue can run points-only, stamps-only, or both.
+  // Treat a missing/undefined flag as enabled; only hide when EXPLICITLY false.
+  const pointsEnabled = loyalty?.points_enabled !== false;
+  const stampsEnabled = loyalty?.stamps_enabled !== false;
+
+  const hasStamps = stampsEnabled && stampCards && stampCards.length > 0;
   const tabs = [
     { id: 'home', label: 'Home', icon: '🏠' },
-    { id: 'rewards', label: 'Rewards', icon: '🎁' },
+    ...(pointsEnabled ? [{ id: 'rewards', label: 'Rewards', icon: '🎁' }] : []),
     ...(hasStamps ? [{ id: 'stamps', label: 'Stamps', icon: '☕' }] : []),
-    { id: 'history', label: 'History', icon: '📋' },
+    ...(pointsEnabled ? [{ id: 'history', label: 'History', icon: '📋' }] : []),
     { id: 'cards', label: 'Gift Cards', icon: '💳' },
     { id: 'profile', label: 'Profile', icon: '👤' },
   ];
@@ -880,7 +886,7 @@ function Dashboard({ t, location, customer, loyalty, giftCards, stampCards, tab,
   return (
     <>
       {/* Points hero */}
-      {loyalty && tab === 'home' && (
+      {loyalty && pointsEnabled && tab === 'home' && (
         <PointsHero t={t} loyalty={loyalty} customer={customer} />
       )}
 
@@ -905,12 +911,12 @@ function Dashboard({ t, location, customer, loyalty, giftCards, stampCards, tab,
         ))}
       </div>
 
-      {tab === 'home' && <HomeTab t={t} loyalty={loyalty} customer={customer} giftCards={giftCards} stampCards={stampCards} setTab={setTab} walletAvail={walletAvail} walletLoading={walletLoading} addToWallet={addToWallet} />}
-      {tab === 'rewards' && <RewardsTab t={t} loyalty={loyalty} />}
-      {tab === 'stamps' && <StampCardsTab t={t} stampCards={stampCards} />}
-      {tab === 'history' && <HistoryTab t={t} loyalty={loyalty} />}
+      {tab === 'home' && <HomeTab t={t} loyalty={loyalty} customer={customer} giftCards={giftCards} stampCards={stampCards} setTab={setTab} walletAvail={walletAvail} walletLoading={walletLoading} addToWallet={addToWallet} pointsEnabled={pointsEnabled} stampsEnabled={stampsEnabled} />}
+      {tab === 'rewards' && pointsEnabled && <RewardsTab t={t} loyalty={loyalty} />}
+      {tab === 'stamps' && stampsEnabled && <StampCardsTab t={t} stampCards={stampCards} />}
+      {tab === 'history' && pointsEnabled && <HistoryTab t={t} loyalty={loyalty} />}
       {tab === 'cards' && <GiftCardsTab t={t} giftCards={giftCards} />}
-      {tab === 'profile' && <ProfileTab t={t} customer={customer} loyalty={loyalty} token={token} location={location} onRefresh={onRefresh} onLogout={onLogout} />}
+      {tab === 'profile' && <ProfileTab t={t} customer={customer} loyalty={loyalty} token={token} location={location} onRefresh={onRefresh} onLogout={onLogout} pointsEnabled={pointsEnabled} />}
     </>
   );
 }
@@ -954,11 +960,11 @@ function PointsHero({ t, loyalty, customer }) {
 }
 
 // ── Home Tab ─────────────────────────────────────────────────────────────
-function HomeTab({ t, loyalty, customer, giftCards, stampCards, setTab, walletAvail, walletLoading, addToWallet }) {
+function HomeTab({ t, loyalty, customer, giftCards, stampCards, setTab, walletAvail, walletLoading, addToWallet, pointsEnabled = true, stampsEnabled = true }) {
   const rewardsAvail = loyalty?.rewards_available?.length || 0;
   const giftActive = giftCards?.length || 0;
   const totalBalance = giftCards.reduce((s, c) => s + (c.balance || 0), 0);
-  const activeStamps = (stampCards || []).filter(sc => sc.stamps_collected > 0);
+  const activeStamps = stampsEnabled ? (stampCards || []).filter(sc => sc.stamps_collected > 0) : [];
 
   // Platform detection for showing relevant wallet button
   const isIOS = typeof navigator !== 'undefined' && /iPhone|iPad|iPod/.test(navigator.userAgent);
@@ -1008,9 +1014,9 @@ function HomeTab({ t, loyalty, customer, giftCards, stampCards, setTab, walletAv
 
       {/* Quick stats */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 16 }}>
-        <StatCard t={t} label="Total earned" value={(loyalty?.points_earned_total || 0).toLocaleString()} icon="📈" />
+        {pointsEnabled && <StatCard t={t} label="Total earned" value={(loyalty?.points_earned_total || 0).toLocaleString()} icon="📈" />}
         <StatCard t={t} label="Visits" value={loyalty?.visit_count || 0} icon="🏪" />
-        <StatCard t={t} label="Rewards ready" value={rewardsAvail} icon="🎁" onClick={() => setTab('rewards')} />
+        {pointsEnabled && <StatCard t={t} label="Rewards ready" value={rewardsAvail} icon="🎁" onClick={() => setTab('rewards')} />}
         <StatCard t={t} label="Gift cards" value={giftActive} icon="💳" onClick={() => setTab('cards')} />
       </div>
 
@@ -1037,7 +1043,7 @@ function HomeTab({ t, loyalty, customer, giftCards, stampCards, setTab, walletAv
       )}
 
       {/* Available rewards preview */}
-      {rewardsAvail > 0 && (
+      {pointsEnabled && rewardsAvail > 0 && (
         <Card t={t} style={{ marginBottom: 14 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
             <div style={{ fontSize: 14, fontWeight: 700 }}>Ready to redeem</div>
@@ -1416,7 +1422,7 @@ function GiftCardsTab({ t, giftCards }) {
 }
 
 // ── Profile Tab ──────────────────────────────────────────────────────────
-function ProfileTab({ t, customer, loyalty, token, location, onRefresh, onLogout }) {
+function ProfileTab({ t, customer, loyalty, token, location, onRefresh, onLogout, pointsEnabled = true }) {
   // Split stored name into first/last for editing
   const nameParts = (customer?.name || '').split(' ');
   const [firstName, setFirstName] = useState(nameParts[0] || '');
@@ -1551,10 +1557,10 @@ function ProfileTab({ t, customer, loyalty, token, location, onRefresh, onLogout
           <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>Membership</div>
           <InfoRow t={t} label="Member code" value={loyalty.member_code} />
           <InfoRow t={t} label="Joined" value={loyalty.enrolled_at ? new Date(loyalty.enrolled_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) : '—'} />
-          <InfoRow t={t} label="Points balance" value={(loyalty.points_balance || 0).toLocaleString()} />
-          <InfoRow t={t} label="Total earned" value={(loyalty.points_earned_total || 0).toLocaleString()} />
-          <InfoRow t={t} label="Total redeemed" value={(loyalty.points_redeemed_total || 0).toLocaleString()} />
-          {loyalty.tier && <InfoRow t={t} label="Tier" value={`${loyalty.tier.icon || '⭐'} ${loyalty.tier.name}`} />}
+          {pointsEnabled && <InfoRow t={t} label="Points balance" value={(loyalty.points_balance || 0).toLocaleString()} />}
+          {pointsEnabled && <InfoRow t={t} label="Total earned" value={(loyalty.points_earned_total || 0).toLocaleString()} />}
+          {pointsEnabled && <InfoRow t={t} label="Total redeemed" value={(loyalty.points_redeemed_total || 0).toLocaleString()} />}
+          {pointsEnabled && loyalty.tier && <InfoRow t={t} label="Tier" value={`${loyalty.tier.icon || '⭐'} ${loyalty.tier.name}`} />}
         </Card>
       )}
 

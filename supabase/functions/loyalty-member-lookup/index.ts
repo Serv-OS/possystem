@@ -184,6 +184,8 @@ Deno.serve(async (req) => {
 
     // Loyalty
     loyalty_enabled: loyaltyEnabled,
+    points_enabled: loyaltyEnabled && (config?.points_enabled !== false),
+    stamps_enabled: loyaltyEnabled && (config?.stamps_enabled !== false),
     member_code: loyaltyData?.member_code || null,
     points_balance: loyaltyData?.points_balance ?? 0,
     points_earned_total: loyaltyData?.points_earned_total ?? 0,

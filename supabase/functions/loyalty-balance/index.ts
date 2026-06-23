@@ -207,8 +207,14 @@ Deno.serve(async (req) => {
     }
   } catch {}
 
+  // Loyalty type availability (points vs stamp cards) so client surfaces hide the disabled half.
+  const { data: _cfg } = await platformAdmin.from('loyalty_config').select('enabled, points_enabled, stamps_enabled').eq('company_id', companyId).maybeSingle();
+  const _loyOn = _cfg?.enabled !== false;
+
   return json({
     enrolled: true,
+    points_enabled: _loyOn && (_cfg?.points_enabled !== false),
+    stamps_enabled: _loyOn && (_cfg?.stamps_enabled !== false),
     member_code: membership.member_code,
     points_balance: membership.points_balance,
     points_earned_total: membership.points_earned_total,

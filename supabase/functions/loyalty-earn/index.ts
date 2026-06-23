@@ -129,83 +129,79 @@ Deno.serve(async (req) => {
   // Future: evaluate loyalty_earning_rules for time/product bonuses.
   // For now, just use the base config + tier multiplier.
 
-  // ── Calculate points ───────────────────────────────────────────────────
-  const pointsEarned = calculatePoints(
-    qualifyingMinor,
-    Number(config.points_per_currency_unit) || 1,
-    tierMultiplier,
-    config.points_rounding || 'floor',
-  );
+  // ── Points + stamps can each be turned off (points-only / stamps-only / both) ──
+  const pointsOn = config.points_enabled !== false;
+  const stampsOn = config.stamps_enabled !== false;
 
-  if (pointsEarned <= 0) {
-    return json({
-      status: 'zero_points',
-      points_earned: 0,
-      balance: membership.points_balance,
-      member_code: membership.member_code,
-      is_new_member: isNew,
-    });
+  // ── Points (only when points collection is enabled) ─────────────────────
+  // When points are off (stamp-cards-only venue), or the order earns 0 points, we DON'T
+  // early-return — we fall through so stamp cards still get awarded below.
+  let pointsEarned = 0;
+  let newBalance = membership.points_balance;
+  if (pointsOn) {
+    pointsEarned = calculatePoints(
+      qualifyingMinor,
+      Number(config.points_per_currency_unit) || 1,
+      tierMultiplier,
+      config.points_rounding || 'floor',
+    );
+    if (pointsEarned > 0) {
+      const nb = await updateBalance(membership.id, pointsEarned);
+      if (nb === null) {
+        return json({ error: 'Failed to update balance — concurrent modification' }, 409);
+      }
+      newBalance = nb;
+
+      // Lifetime stats
+      await platformAdmin
+        .from('customer_loyalty')
+        .update({
+          points_earned_total: (membership.points_earned_total || 0) + pointsEarned,
+          visit_count: (membership.visit_count || 0) + 1,
+          lifetime_spend_minor: (membership.lifetime_spend_minor || 0) + qualifyingMinor,
+        })
+        .eq('id', membership.id);
+
+      // Transaction ledger
+      await opsAdmin.from('loyalty_transactions').insert({
+        customer_id,
+        company_id: companyId,
+        location_id,
+        type: 'earn',
+        points: pointsEarned,
+        balance_after: newBalance,
+        source: 'purchase',
+        channel,
+        closed_check_id,
+        idempotency_key: idempotencyKey,
+        qualifying_amount_minor: qualifyingMinor,
+        multiplier_applied: tierMultiplier,
+        tier_at_time: tierName,
+        staff_id: staff_id || null,
+      });
+
+      // Registration bonus transaction (if new member with bonus). v5.5.321: the bonus was
+      // already credited into points_balance at enrollment, so balance_after is the bonus itself.
+      if (isNew && (config.registration_bonus || 0) > 0) {
+        await opsAdmin.from('loyalty_transactions').insert({
+          customer_id,
+          company_id: companyId,
+          location_id,
+          type: 'bonus',
+          points: config.registration_bonus,
+          balance_after: config.registration_bonus,
+          source: 'welcome',
+          channel,
+          idempotency_key: `welcome:${customer_id}:${companyId}`,
+          note: 'Welcome bonus',
+        });
+      }
+    }
   }
 
-  // ── Update balance ─────────────────────────────────────────────────────
-  const newBalance = await updateBalance(membership.id, pointsEarned);
-  if (newBalance === null) {
-    return json({ error: 'Failed to update balance — concurrent modification' }, 409);
-  }
-
-  // ── Update lifetime stats ──────────────────────────────────────────────
-  await platformAdmin
-    .from('customer_loyalty')
-    .update({
-      points_earned_total: (membership.points_earned_total || 0) + pointsEarned,
-      visit_count: (membership.visit_count || 0) + 1,
-      lifetime_spend_minor: (membership.lifetime_spend_minor || 0) + qualifyingMinor,
-    })
-    .eq('id', membership.id);
-
-  // ── Write transaction ledger ───────────────────────────────────────────
-  await opsAdmin.from('loyalty_transactions').insert({
-    customer_id,
-    company_id: companyId,
-    location_id,
-    type: 'earn',
-    points: pointsEarned,
-    balance_after: newBalance,
-    source: 'purchase',
-    channel,
-    closed_check_id,
-    idempotency_key: idempotencyKey,
-    qualifying_amount_minor: qualifyingMinor,
-    multiplier_applied: tierMultiplier,
-    tier_at_time: tierName,
-    staff_id: staff_id || null,
-  });
-
-  // ── Registration bonus transaction (if new member with bonus) ──────────
-  // v5.5.321: the bonus was already credited into points_balance at enrollment
-  // (ensureMembership), so newBalance already INCLUDES it. The previous
-  // balance_after = newBalance + bonus double-counted it — the ledger then
-  // overshot the real balance by `bonus` and couldn't be reconstructed. The
-  // welcome credit happened at enrollment (before this earn), so its honest
-  // balance_after is just the bonus itself.
-  if (isNew && (config.registration_bonus || 0) > 0) {
-    await opsAdmin.from('loyalty_transactions').insert({
-      customer_id,
-      company_id: companyId,
-      location_id,
-      type: 'bonus',
-      points: config.registration_bonus,
-      balance_after: config.registration_bonus,
-      source: 'welcome',
-      channel,
-      idempotency_key: `welcome:${customer_id}:${companyId}`,
-      note: 'Welcome bonus',
-    });
-  }
-
-  // ── Stamp cards — award stamps for qualifying items ─────────────────────
+  // ── Stamp cards — award stamps for qualifying items (only when enabled) ──
   let stampsAwarded: { program_id: string; program_name: string; stamps: number; new_total: number; completed: boolean }[] = [];
-  try {
+  if (stampsOn) try {
     // Fetch active stamp card programs for this company
     const { data: programs } = await platformAdmin
       .from('stamp_card_programs')

@@ -2846,6 +2846,9 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
     })),
     stampCards: verifiedLoyalty.stampCards || [],
     giftCards: verifiedLoyalty.giftCards || [],
+    // v5.5.x: independent points / stamp-card toggles. Missing => treat as enabled.
+    pointsEnabled: verifiedLoyalty.loyalty?.points_enabled,
+    stampsEnabled: verifiedLoyalty.loyalty?.stamps_enabled,
   } : null);
   // v5.5.219: Reward redemption state
   const [redeeming, setRedeeming] = useState(null);
@@ -2899,6 +2902,10 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
           })),
           stampCards: data.stamp_cards || [],
           giftCards: data.gift_cards || [],
+          // v5.5.x: independent points / stamp-card toggles. Read from loyalty
+          // payload, falling back to the top-level response. Missing => enabled.
+          pointsEnabled: data.loyalty?.points_enabled ?? data.points_enabled,
+          stampsEnabled: data.loyalty?.stamps_enabled ?? data.stamps_enabled,
         };
         setCustomerLookup(lookup);
         // Auto-fill fields from verified customer data
@@ -2918,9 +2925,16 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
           onMarketingOptIn(true);
         }
         // Persist verified data for payment screen (gift cards etc.)
+        // v5.5.x: stamp/points toggles folded into the stored loyalty object so
+        // they survive a remount of this screen (initial customerLookup reads
+        // verifiedLoyalty.loyalty?.points_enabled / .stamps_enabled).
         onVerifiedLoyalty({
           customer: data.customer,
-          loyalty: data.loyalty,
+          loyalty: {
+            ...(data.loyalty || {}),
+            points_enabled: lookup.pointsEnabled,
+            stamps_enabled: lookup.stampsEnabled,
+          },
           stampCards: data.stamp_cards || [],
           giftCards: data.gift_cards || [],
         });
@@ -3021,6 +3035,12 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
   const showWelcome = !!(customerLookup && customerLookup.knownCustomer);
   const hasRewards = !!(customerLookup && customerLookup.rewards && customerLookup.rewards.length > 0);
   const hasCredit = !!(customerLookup && customerLookup.credit > 0);
+
+  // v5.5.x: independent points / stamp-card programs. A venue can run either,
+  // both, or neither. Treat a missing/undefined flag as TRUE (enabled) so older
+  // data and unaffected paths still render both halves. Only hide when EXACTLY false.
+  const pointsEnabled = customerLookup?.pointsEnabled !== false;
+  const stampsEnabled = customerLookup?.stampsEnabled !== false;
 
   // v5.5.219: Calculate applied loyalty credit for display
   const loyaltyCredit = loyaltyRedemption?.discount_value ? loyaltyRedemption.discount_value / 100 : 0;
@@ -3349,7 +3369,8 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
             padding: 'clamp(14px, 1.8vw, 20px)',
             marginBottom: 'clamp(20px, 2.6vw, 28px)',
           }}>
-            {/* Points balance — always show for members */}
+            {/* Points balance — show for members when points are enabled */}
+            {pointsEnabled && (
             <div style={{
               fontSize: 'clamp(13px, 1.5vw, 16px)',
               fontWeight: 700,
@@ -3367,9 +3388,10 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
                 </span>
               )}
             </div>
+            )}
 
             {/* v5.5.219: Redeemable rewards — customer can tap to redeem */}
-            {hasRewards && !loyaltyRedemption && (
+            {pointsEnabled && hasRewards && !loyaltyRedemption && (
               <div style={{ marginTop: 12 }}>
                 <div style={{
                   fontSize: 'clamp(11px, 1.3vw, 13px)',
@@ -3454,7 +3476,7 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
             )}
 
             {/* v5.5.219: Show applied reward */}
-            {loyaltyRedemption && (
+            {pointsEnabled && loyaltyRedemption && (
               <div style={{
                 marginTop: 12,
                 padding: 'clamp(10px, 1.4vw, 14px)',
@@ -3482,7 +3504,7 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
             )}
 
             {/* v5.5.264: Stamp card progress */}
-            {customerLookup.stampCards && customerLookup.stampCards.length > 0 && (
+            {stampsEnabled && customerLookup.stampCards && customerLookup.stampCards.length > 0 && (
               <div style={{ marginTop: 14 }}>
                 <div style={{
                   fontSize: 'clamp(11px, 1.3vw, 13px)',
