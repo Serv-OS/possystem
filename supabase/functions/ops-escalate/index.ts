@@ -55,8 +55,12 @@ async function resolveRecipients(locationId: string, recipients: any[]) {
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
+  // Auth: service-role bearer (internal) OR the shared run-secret the Vercel cron sends
+  // (so the cron API route never has to hold the Supabase service-role key).
+  const RUN_SECRET = Deno.env.get('OPS_ESCALATE_SECRET') ?? '';
   const auth = (req.headers.get('Authorization') ?? '').replace('Bearer ', '').trim();
-  if (auth !== SERVICE_ROLE) return json({ error: 'service role only' }, 401);
+  const runSec = req.headers.get('x-run-secret') ?? '';
+  if (auth !== SERVICE_ROLE && !(RUN_SECRET && runSec === RUN_SECRET)) return json({ error: 'unauthorized' }, 401);
 
   const now = Date.now();
   const { data: alerts } = await sb.from('ops_alerts').select('*').eq('status', 'sent').limit(500);

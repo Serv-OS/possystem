@@ -4,7 +4,8 @@
   "framework": "vite",
   "crons": [
     { "path": "/api/marketing-cron", "schedule": "0 * * * *" },
-    { "path": "/api/hubrise-cron", "schedule": "*/2 * * * *" }
+    { "path": "/api/hubrise-cron", "schedule": "*/2 * * * *" },
+    { "path": "/api/ops-cron", "schedule": "*/5 * * * *" }
   ],
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/$1" },

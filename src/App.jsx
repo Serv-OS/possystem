@@ -86,6 +86,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.597', date: '23 Jun 2026', label: 'Operations — alert escalation cron',
+    changes: [
+      'Unacknowledged temperature/ops alerts now escalate automatically (SMS + email) on a schedule, on top of the live in-app alert — completing the manager-alert loop.',
+    ],
+  },
+  {
     version: '5.5.596', date: '23 Jun 2026', label: 'Operations module — temperature/HACCP, deliveries, maintenance (slices 1–2)',
     changes: [
       'New mobile Operations app (?mode=ops): pair the tablet, staff sign in by PIN, then a compliance home, FSA-guided temperature checks (°C/°F), and goods-in delivery checks.',
