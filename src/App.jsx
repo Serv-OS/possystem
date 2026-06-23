@@ -86,6 +86,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.611', date: '23 Jun 2026', label: 'Catering — server-side release safety net (fires even with no POS device on)',
+    changes: [
+      'Added a server-side cron (catering-release edge function, every 5 min) that guarantees a catering order reaches the kitchen on its event day even if no POS/master device was running at the fire time. The POS still does the normal fully-routed fire first (a 3-minute grace lets it win); the cron only steps in for orders nothing fired, claiming each one (no duplicate tickets) and dropping it onto the kitchen display.',
+    ],
+  },
+  {
     version: '5.5.610', date: '23 Jun 2026', label: 'Catering — orders held until their event day, then auto-fire to the kitchen at the prep time (scale-safe)',
     changes: [
       'Catering pre-orders no longer hit the POS/kitchen the moment they’re placed. They’re held until their event day and fire to the kitchen (print + KDS) at the configured kitchen fire time — computed in the venue’s timezone, not the customer’s.',
