@@ -20,7 +20,9 @@ declare v ops_devices; v_code text;
 begin
   select * into v from ops_devices where device_uid = auth.uid() limit 1;
   if found then return jsonb_build_object('id', v.id, 'claim_code', v.claim_code, 'location_id', v.location_id); end if;
-  v_code := upper(substr(translate(encode(gen_random_bytes(6),'base64'), '/+=O0Il', 'XYZ'), 1, 6));
+  -- gen_random_uuid() is core Postgres (always on search_path); gen_random_bytes needs
+  -- pgcrypto which lives in the `extensions` schema (not on this fn's search_path).
+  v_code := upper(substr(replace(gen_random_uuid()::text, '-', ''), 1, 6));
   insert into ops_devices (device_uid, name, claim_code, last_seen_at)
     values (auth.uid(), coalesce(p_name,'Ops tablet'), v_code, now()) returning * into v;
   return jsonb_build_object('id', v.id, 'claim_code', v.claim_code, 'location_id', v.location_id);
@@ -108,16 +110,15 @@ begin
         p_operator_id, p_operator_name, 'closed', now())
       returning id into v_corr_id;
 
-    if v_sev in ('major','critical') then
-      insert into maintenance_requests (location_id, org_id, title, description, asset_type, asset_id,
-          priority, status, reporter_id, reporter_name, source, source_ref)
-        values (p_location_id, v_org, u.name || ' — out of safe range',
-          'Auto-raised from a ' || v_sev || ' temperature breach (' || p_reading_c || '°C).',
-          'temp_unit', p_unit_id, case when v_sev = 'critical' then 'urgent' else 'high' end,
-          'open', p_operator_id, p_operator_name, 'temp_breach', v_reading_id)
-        returning id into v_maint_id;
-      update corrective_actions set maintenance_request_id = v_maint_id where id = v_corr_id;
-    end if;
+    -- every confirmed breach auto-raises a maintenance request (callout 8); severity sets priority.
+    insert into maintenance_requests (location_id, org_id, title, description, asset_type, asset_id,
+        priority, status, reporter_id, reporter_name, source, source_ref)
+      values (p_location_id, v_org, u.name || ' — out of safe range',
+        'Auto-raised from a ' || v_sev || ' temperature breach (' || p_reading_c || '°C).',
+        'temp_unit', p_unit_id, case when v_sev = 'critical' then 'urgent' when v_sev = 'major' then 'high' else 'normal' end,
+        'open', p_operator_id, p_operator_name, 'temp_breach', v_reading_id)
+      returning id into v_maint_id;
+    update corrective_actions set maintenance_request_id = v_maint_id where id = v_corr_id;
 
     -- Nothing red passes silently: always alert the duty manager on a breach.
     insert into ops_alerts (location_id, org_id, type, severity, title, body, source_type, source_id, target_role)
