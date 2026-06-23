@@ -4,7 +4,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useStore } from '../../../store';
 import { getActiveLocationSync, getLocationId } from '../../../lib/supabase';
-import { fetchMaintenance, setMaintenanceStatus, addMaintenanceNote, createMaintenance } from '../../../lib/ops/data';
+import { fetchMaintenance, setMaintenanceStatus, addMaintenanceNote, createMaintenance, assignMaintenance, fetchOpsAssignees } from '../../../lib/ops/data';
 
 const STATUSES = ['open', 'assigned', 'in_progress', 'resolved', 'cancelled'];
 const STATUS_COL = { open: 'var(--red)', assigned: 'var(--orn)', in_progress: 'var(--blu)', resolved: 'var(--grn)', cancelled: 'var(--t4)' };
@@ -16,8 +16,10 @@ export default function OpsMaintenance() {
   const me = useStore(s => s.staff);
   const [locId, setLocId] = useState(getActiveLocationSync());
   const [rows, setRows] = useState([]);
+  const [assignees, setAssignees] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('open-ish');
+  const [prioFilter, setPrioFilter] = useState('all');
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState({ title: '', description: '', priority: 'normal' });
   const [noteFor, setNoteFor] = useState(null);
@@ -26,13 +28,16 @@ export default function OpsMaintenance() {
   const reload = useCallback(async () => {
     const loc = locId || getActiveLocationSync() || await getLocationId().catch(() => null);
     if (loc && loc !== locId) setLocId(loc);
-    const { data } = await fetchMaintenance(loc);
-    setRows(data || []); setLoading(false);
+    const [{ data }, { data: a }] = await Promise.all([fetchMaintenance(loc), fetchOpsAssignees(loc)]);
+    setRows(data || []); setAssignees(a || []); setLoading(false);
   }, [locId]);
   useEffect(() => { reload(); /* eslint-disable-next-line */ }, []);
 
-  const shown = rows.filter(r => filter === 'all' ? true : filter === 'open-ish' ? !['resolved', 'cancelled'].includes(r.status) : r.status === filter);
+  const shown = rows
+    .filter(r => filter === 'all' ? true : filter === 'open-ish' ? !['resolved', 'cancelled'].includes(r.status) : r.status === filter)
+    .filter(r => prioFilter === 'all' ? true : r.priority === prioFilter);
   const setStatus = async (r, status) => { await setMaintenanceStatus(r.id, status, me?.name, locId); reload(); };
+  const assign = async (r, staffId) => { const a = assignees.find(x => x.id === staffId); await assignMaintenance(r.id, a ? { id: a.id, name: a.name } : null, me?.name, locId); showToast?.(a ? `Assigned to ${a.name}` : 'Unassigned', 'success'); reload(); };
   const create = async () => {
     if (!draft.title.trim()) { showToast?.('Title required', 'error'); return; }
     await createMaintenance({ ...draft, reporterName: me?.name, source: 'manual' }, locId);
@@ -47,6 +52,9 @@ export default function OpsMaintenance() {
         <select style={field} value={filter} onChange={e => setFilter(e.target.value)}>
           <option value="open-ish">Open</option><option value="all">All</option>
           {STATUSES.map(s => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}
+        </select>
+        <select style={field} value={prioFilter} onChange={e => setPrioFilter(e.target.value)}>
+          <option value="all">Any priority</option>{['urgent', 'high', 'normal', 'low'].map(p => <option key={p} value={p}>{p}</option>)}
         </select>
         <button onClick={() => setAdding(a => !a)} className="btn btn-acc" style={{ padding: '9px 16px', borderRadius: 8, background: 'var(--acc)', color: '#fff', border: 0, fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>+ Raise</button>
       </div>
@@ -72,6 +80,10 @@ export default function OpsMaintenance() {
                   <div style={{ fontSize: 11.5, color: 'var(--t3)' }}>{r.reporterName || '—'} · {new Date(r.createdAt).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</div>
                 </div>
                 <span style={{ fontSize: 11, fontWeight: 700, color: PRIO_COL[r.priority] }}>{r.priority}</span>
+                <select value={r.assigneeId || ''} onChange={e => assign(r, e.target.value)} style={{ ...field, padding: '5px 8px', maxWidth: 140 }} title="Assign to">
+                  <option value="">Unassigned</option>
+                  {assignees.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                </select>
                 <select value={r.status} onChange={e => setStatus(r, e.target.value)} style={{ ...field, padding: '5px 8px' }}>{STATUSES.map(s => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}</select>
                 <button onClick={() => { setNoteFor(noteFor === r.id ? null : r.id); setNoteText(''); }} style={{ background: 'var(--bg2)', border: '1px solid var(--bdr)', borderRadius: 7, padding: '5px 10px', fontSize: 12, color: 'var(--t2)', cursor: 'pointer', fontFamily: 'inherit' }}>Note</button>
               </div>

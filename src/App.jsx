@@ -86,6 +86,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.599', date: '23 Jun 2026', label: 'Operations — maintenance assignment & notifications (slice 5)',
+    changes: [
+      'Assign a maintenance request to a staff member — they get notified (in-app + SMS/email); the reporter is notified when it’s resolved.',
+      'Filter maintenance by priority as well as status.',
+    ],
+  },
+  {
     version: '5.5.598', date: '23 Jun 2026', label: 'Operations — task checklists (slice 4)',
     changes: [
       'New Checklists: build opening/closing/cleaning/QA routines in Back Office → Operations → Checklists (areas, schedule, ordered tasks, photo-required + temperature-linked flags).',

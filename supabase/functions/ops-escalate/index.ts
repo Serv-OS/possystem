@@ -67,6 +67,17 @@ Deno.serve(async (req) => {
   let notified = 0, escalated = 0;
 
   for (const a of alerts ?? []) {
+    // Person-targeted alert (maintenance assigned / resolved) → notify that staff member once.
+    if (a.target_user_id) {
+      if ((a.escalation_step ?? 0) > 0) continue;
+      const { data: s } = await sb.from('staff_members').select('phone, email').eq('id', a.target_user_id).maybeSingle();
+      const msg = `ServOS: ${a.title}. ${a.body || ''}`;
+      if (s?.phone) await invokeFn('send-sms', { to: toE164(s.phone), message: msg, location_id: a.location_id, type: 'status_update' });
+      if (s?.email) await invokeFn('send-receipt', { location_id: a.location_id, to: s.email, subject: `ServOS — ${a.title}`, html: `<p>${msg}</p>` });
+      await sb.from('ops_alerts').update({ escalation_step: 1 }).eq('id', a.id);
+      notified++;
+      continue;
+    }
     const { data: rules } = await sb.from('ops_notification_rules')
       .select('*').eq('location_id', a.location_id).eq('active', true).eq('event_type', a.type);
     const rule = (rules || []).find((r: any) => RANK[a.severity] >= RANK[r.severity_min ?? 'major']);

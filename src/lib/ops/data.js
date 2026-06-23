@@ -200,10 +200,38 @@ export const setMaintenanceStatus = async (id, status, who, locationId = null) =
   locationId = await ensureLoc(locationId);
   const patch = { status, updated_at: nowIso() };
   if (status === 'resolved') patch.resolved_at = nowIso();
-  const { data: prev } = await supabase.from('maintenance_requests').select('status').eq('id', id).maybeSingle();
+  const { data: prev } = await supabase.from('maintenance_requests').select('status, title, reporter_id').eq('id', id).maybeSingle();
   const { error } = await supabase.from('maintenance_requests').update(patch).eq('location_id', locationId).eq('id', id);
-  if (!error) await supabase.from('maintenance_status_history').insert({ location_id: locationId, request_id: id, from_status: prev?.status || null, to_status: status, changed_by_name: who || null });
+  if (!error) {
+    await supabase.from('maintenance_status_history').insert({ location_id: locationId, request_id: id, from_status: prev?.status || null, to_status: status, changed_by_name: who || null });
+    // notify the reporter when their request is resolved
+    if (status === 'resolved' && prev?.reporter_id) await supabase.from('ops_alerts').insert({ location_id: locationId, type: 'maintenance', severity: 'minor', title: `Resolved: ${prev.title || 'maintenance'}`, body: `Marked resolved${who ? ` by ${who}` : ''}.`, source_type: 'maintenance_request', source_id: id, target_user_id: prev.reporter_id });
+  }
   return { error };
+};
+
+/** Assign a maintenance request to a person → status 'assigned' + alert the assignee. */
+export const assignMaintenance = async (id, assignee, by, locationId = null) => {
+  if (isMock || !supabase) return { error: null };
+  locationId = await ensureLoc(locationId);
+  const { data: prev } = await supabase.from('maintenance_requests').select('status, title').eq('id', id).maybeSingle();
+  const { error } = await supabase.from('maintenance_requests').update({
+    assignee_id: assignee?.id || null, assignee_name: assignee?.name || null,
+    status: (prev?.status === 'open' ? 'assigned' : prev?.status) || 'assigned', updated_at: nowIso(),
+  }).eq('location_id', locationId).eq('id', id);
+  if (error) return { error };
+  await supabase.from('maintenance_status_history').insert({ location_id: locationId, request_id: id, from_status: prev?.status || null, to_status: 'assigned', changed_by_name: by || null });
+  if (assignee?.id) await supabase.from('ops_alerts').insert({ location_id: locationId, type: 'maintenance', severity: 'major', title: `Assigned: ${prev?.title || 'maintenance'}`, body: `Assigned to ${assignee.name}${by ? ` by ${by}` : ''}.`, source_type: 'maintenance_request', source_id: id, target_role: null, target_user_id: assignee.id });
+  return { error: null };
+};
+
+/** Staff at this location, for the maintenance assignee picker. */
+export const fetchOpsAssignees = async (locationId = null) => {
+  if (isMock || !supabase) return { data: [], error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: [], error: null };
+  const { data, error } = await supabase.from('staff_members').select('id, name, role').eq('location_id', locationId).order('name');
+  return { data: (data || []).filter(s => s.name), error };
 };
 export const addMaintenanceNote = async (id, note, who, locationId = null) => {
   locationId = await ensureLoc(locationId);
