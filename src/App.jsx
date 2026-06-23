@@ -86,6 +86,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.605', date: '23 Jun 2026', label: 'Operations — floor app gets an anonymous session so pairing actually works',
+    changes: [
+      'The mobile Operations app now establishes an anonymous Supabase session on launch (like the menu-board and POS surfaces) before it registers/heartbeats, so the device gets a stable identity. Without this the pairing code never stuck and the tablet couldn’t detect being claimed.',
+    ],
+  },
+  {
     version: '5.5.604', date: '23 Jun 2026', label: 'Operations — tablet pairing (Devices) so the mobile app can be set up',
     changes: [
       'New Back Office → Operations → Devices screen: open the mobile Operations app on a tablet (?mode=ops or the Operations mode-selector card), enter the 6-character code it shows here, and the tablet is paired to this venue — then sign in with a staff PIN. Rename or unpair tablets from the same screen.',

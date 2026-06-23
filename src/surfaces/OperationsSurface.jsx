@@ -19,6 +19,7 @@ import {
   displayTemp, toStoredC, breach, typeDefault, hhmmToMin, runsOnDay, windowStatus, summarize,
 } from '../lib/ops/temp';
 import { Icon } from '../components/ServOSIcons';
+import { ensureAuthToken } from '../lib/supabase';
 
 // unit-type → glyph + category hue (the OKLCH identity scale, --h)
 const TYPE_META = {
@@ -62,6 +63,8 @@ export default function OperationsSurface() {
   useEffect(() => {
     let live = true;
     (async () => {
+      await ensureAuthToken();   // anon session → stable auth.uid() for device_uid + RLS (mirrors menu-board pairing)
+      if (!live) return;
       const { data } = await opsHeartbeat();
       if (!live) return;
       if (data?.claimed && data.location_id) { setLoc(data.location_id); setVenueName(data.name || ''); setStage('pin'); }
