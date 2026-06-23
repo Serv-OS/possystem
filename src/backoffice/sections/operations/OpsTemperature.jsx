@@ -7,8 +7,12 @@ import { useStore } from '../../../store';
 import { getActiveLocationSync, getLocationId } from '../../../lib/supabase';
 import { fetchTempUnits, upsertTempUnit, archiveTempUnit, fetchSchedules, upsertSchedule, deleteSchedule } from '../../../lib/ops/data';
 import { TYPE_DEFAULTS, typeDefault, displayTemp, toStoredC } from '../../../lib/ops/temp';
+import { Icon } from '../../../components/ServOSIcons';
 
 const TYPES = Object.entries(TYPE_DEFAULTS).map(([id, d]) => ({ id, label: d.label }));
+// type → plain English word shown in the Type column
+const TYPE_WORD = { fridge: 'Chilled', cold_hold: 'Chilled', chill_down: 'Chilled', delivery: 'Chilled', freezer: 'Frozen', hot_hold: 'Hot', cooking: 'Hot' };
+const HOT_TYPES = new Set(['hot_hold', 'cooking']);
 const DAYS = [['1', 'Mon'], ['2', 'Tue'], ['3', 'Wed'], ['4', 'Thu'], ['5', 'Fri'], ['6', 'Sat'], ['0', 'Sun']];
 const field = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 8, padding: '8px 10px', fontSize: 13, outline: 'none', boxSizing: 'border-box', fontFamily: 'inherit' };
 const lbl = { display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 5 };
@@ -22,7 +26,9 @@ export default function OpsTemperature() {
   const [scheds, setScheds] = useState([]);
   const [loading, setLoading] = useState(true);
   const [dispUnit, setDispUnit] = useState('C');
-  const [editing, setEditing] = useState(null);   // unit being edited (or 'new')
+  const [editing, setEditing] = useState(null);   // unit being edited in the modal (or 'new')
+  const [rowEdit, setRowEdit] = useState(null);    // inline target-range edit: { id, min, max } in the DISPLAY unit
+  const [savingRow, setSavingRow] = useState(false);
 
   const reload = useCallback(async () => {
     const loc = locId || getActiveLocationSync() || await getLocationId().catch(() => null);
@@ -32,6 +38,22 @@ export default function OpsTemperature() {
   }, [locId]);
   useEffect(() => { reload(); /* eslint-disable-next-line */ }, []);
 
+  // begin inline edit, prefilled from the unit's current band (in the display unit)
+  const startRowEdit = (u) => setRowEdit({
+    id: u.id,
+    min: u.targetMinC == null ? '' : displayTemp(u.targetMinC, dispUnit).value,
+    max: u.targetMaxC == null ? '' : displayTemp(u.targetMaxC, dispUnit).value,
+  });
+  const saveRow = async (u) => {
+    if (!rowEdit || savingRow) return;
+    setSavingRow(true);
+    const { error } = await upsertTempUnit({ ...u, targetMinC: toStoredC(rowEdit.min, dispUnit), targetMaxC: toStoredC(rowEdit.max, dispUnit) }, locId);
+    setSavingRow(false);
+    if (error) { showToast?.(error.message || 'Save failed', 'error'); return; }
+    setRowEdit(null);
+    reload();
+  };
+
   const schedByUnit = useMemo(() => { const m = {}; scheds.forEach(s => { (m[s.tempUnitId] ??= []).push(s); }); return m; }, [scheds]);
 
   return (
@@ -39,28 +61,60 @@ export default function OpsTemperature() {
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 4 }}>
         <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0, color: 'var(--t1)', flex: 1 }}>Temperature units</h1>
         <div className="seg" style={{ display: 'flex', gap: 2, background: 'var(--bg2)', borderRadius: 8, padding: 3 }}>
-          {['C', 'F'].map(x => <button key={x} onClick={() => setDispUnit(x)} style={{ padding: '6px 12px', borderRadius: 6, border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontWeight: 700, fontSize: 13, background: dispUnit === x ? 'var(--acc)' : 'transparent', color: dispUnit === x ? '#fff' : 'var(--t2)' }}>°{x}</button>)}
+          {['C', 'F'].map(x => <button key={x} onClick={() => setDispUnit(x)} style={{ padding: '6px 12px', borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit', fontWeight: 700, fontSize: 13, background: dispUnit === x ? 'var(--bg0)' : 'transparent', color: dispUnit === x ? 'var(--t1)' : 'var(--t2)', border: dispUnit === x ? '1px solid var(--bdr)' : '1px solid transparent' }}>°{x}</button>)}
         </div>
         <button onClick={() => setEditing('new')} className="btn btn-acc" style={{ padding: '9px 16px', borderRadius: 8, background: 'var(--acc)', color: '#fff', border: 0, fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>+ Add unit</button>
       </div>
-      <div style={{ fontSize: 13, color: 'var(--t3)', marginBottom: 16 }}>{units.length} monitored · these thresholds are what the floor app checks against.</div>
+      <div style={{ fontSize: 13, color: 'var(--t3)', marginBottom: 16 }}>{units.length} monitored · group default thresholds</div>
 
       {loading ? <div style={{ color: 'var(--t3)' }}>Loading…</div> : units.length === 0 ? (
         <div style={{ background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 12, padding: 20, color: 'var(--t3)' }}>No units yet — add your fridges, freezers, hot-holds and a delivery probe.</div>
       ) : (
         <div style={{ background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 12, overflow: 'hidden' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead><tr>{['Unit', 'Type', 'Target range', 'Schedule', ''].map((h, i) => <th key={h} style={{ ...th, textAlign: i === 4 ? 'right' : 'left' }}>{h}</th>)}</tr></thead>
+            <thead><tr>{['Unit', 'Type', 'Target range', 'Schedule', 'Checklist', ''].map((h, i) => <th key={h || i} style={{ ...th, textAlign: i === 5 ? 'right' : 'left' }}>{h}</th>)}</tr></thead>
             <tbody>
               {units.map(u => {
                 const rows = schedByUnit[u.id] || [];
+                const isHot = HOT_TYPES.has(u.type);
+                const isEditing = rowEdit?.id === u.id;
+                // schedule → frequency summary
+                const hourly = rows.some(r => r.frequency === 'hourly');
+                const n = rows.length;
+                const sched = hourly ? 'Hourly' : (n ? `${n}× daily` : '—');
+                const checklist = rows.map(r => r.label || r.timeOfDay).filter(Boolean).join(' / ');
                 return (
                   <tr key={u.id}>
-                    <td style={td}><div style={{ fontWeight: 600 }}>{u.name}</div>{u.area && <div style={{ fontSize: 11, color: 'var(--t3)' }}>{u.area}</div>}</td>
-                    <td style={{ ...td, color: 'var(--t2)' }}>{typeDefault(u.type).label}</td>
-                    <td style={{ ...td, fontFamily: 'var(--font-mono)' }}>{u.targetMinC == null ? '—' : `${displayTemp(u.targetMinC, dispUnit).value}–${displayTemp(u.targetMaxC, dispUnit).value}°${dispUnit}`}</td>
-                    <td style={{ ...td, color: 'var(--t2)', fontSize: 12 }}>{rows.length ? rows.map(r => r.label || r.timeOfDay).join(' / ') : <span style={{ color: 'var(--t4)' }}>none</span>}</td>
-                    <td style={{ ...td, textAlign: 'right' }}><button onClick={() => setEditing(u)} style={{ background: 'var(--bg2)', border: '1px solid var(--bdr)', borderRadius: 7, padding: '5px 12px', fontSize: 12, color: 'var(--t1)', cursor: 'pointer', fontFamily: 'inherit' }}>Edit</button></td>
+                    <td style={td}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{ color: isHot ? 'var(--orn)' : 'var(--blu)', display: 'inline-flex' }}><Icon name={isHot ? 'fire' : 'snow'} size={16} /></span>
+                        <div>
+                          <div style={{ fontWeight: 600 }}>{u.name}</div>
+                          {u.area && <div style={{ fontSize: 11, color: 'var(--t3)' }}>{u.area}</div>}
+                        </div>
+                      </div>
+                    </td>
+                    <td style={{ ...td, color: 'var(--t2)' }}>{TYPE_WORD[u.type] || typeDefault(u.type).label}</td>
+                    <td style={{ ...td, fontFamily: 'var(--font-mono)' }}>
+                      {isEditing ? (
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                          <input type="number" step="any" value={rowEdit.min} onChange={e => setRowEdit(x => ({ ...x, min: e.target.value }))} style={{ width: 52, background: 'var(--bg0)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 7, padding: '5px 7px', fontSize: 13, outline: 'none', fontFamily: 'inherit', boxSizing: 'border-box' }} />
+                          <span style={{ color: 'var(--t3)' }}>°{dispUnit}</span>
+                          <span style={{ color: 'var(--t3)' }}>–</span>
+                          <input type="number" step="any" value={rowEdit.max} onChange={e => setRowEdit(x => ({ ...x, max: e.target.value }))} style={{ width: 52, background: 'var(--bg0)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 7, padding: '5px 7px', fontSize: 13, outline: 'none', fontFamily: 'inherit', boxSizing: 'border-box' }} />
+                          <span style={{ color: 'var(--t3)' }}>°{dispUnit}</span>
+                        </span>
+                      ) : (u.targetMinC == null ? '—' : `${displayTemp(u.targetMinC, dispUnit).value}–${displayTemp(u.targetMaxC, dispUnit).value}°${dispUnit}`)}
+                    </td>
+                    <td style={{ ...td, color: 'var(--t2)', fontSize: 12 }}>{sched}</td>
+                    <td style={{ ...td, color: 'var(--t2)', fontSize: 12 }}>{checklist || <span style={{ color: 'var(--t4)' }}>none</span>}</td>
+                    <td style={{ ...td, textAlign: 'right' }}>
+                      {isEditing ? (
+                        <button onClick={() => saveRow(u)} disabled={savingRow} style={{ background: 'var(--acc)', color: '#fff', border: 0, borderRadius: 7, padding: '6px 14px', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', opacity: savingRow ? 0.6 : 1 }}>{savingRow ? 'Saving…' : 'Save'}</button>
+                      ) : (
+                        <button onClick={() => startRowEdit(u)} onDoubleClick={() => setEditing(u)} aria-label="Edit unit" title="Edit range (double-click for full settings)" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg2)', border: '1px solid var(--bdr)', borderRadius: 7, padding: 6, color: 'var(--t1)', cursor: 'pointer', fontFamily: 'inherit', lineHeight: 0 }}><Icon name="edit" size={16} /></button>
+                      )}
+                    </td>
                   </tr>
                 );
               })}

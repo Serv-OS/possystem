@@ -12,12 +12,13 @@ import { useEffect, useMemo, useState, useCallback } from 'react';
 import {
   opsHeartbeat, opsRegisterDevice, opsPinLogin,
   fetchTempUnits, fetchSchedules, fetchReadings, submitReading,
-  fetchExpectedDeliveries, checkDelivery, fetchAlerts,
+  fetchExpectedDeliveries, checkDelivery, fetchAlerts, createMaintenance,
 } from '../lib/ops/data';
 import { fetchTodayChecklists, openRun, completeTask, signOffRun } from '../lib/ops/checklists';
 import {
   displayTemp, toStoredC, breach, typeDefault, hhmmToMin, runsOnDay, windowStatus, summarize,
 } from '../lib/ops/temp';
+import { Icon } from '../components/ServOSIcons';
 
 // unit-type → glyph + category hue (the OKLCH identity scale, --h)
 const TYPE_META = {
@@ -45,8 +46,9 @@ export default function OperationsSurface() {
   const [venueName, setVenueName] = useState('');
   const [claimCode, setClaimCode] = useState('');
   const [operator, setOperator] = useState(null);  // { id, name, role }
-  const [view, setView] = useState('home');        // home | temperature | delivery
+  const [view, setView] = useState('home');        // home | temperature | delivery | checklists | maintenance
   const [unitView, setUnitView] = useState(null);  // a unit being logged
+  const [maintPrefill, setMaintPrefill] = useState(null); // {unitName, temp} when raising off a breach
 
   // dark ServOS skin for the whole surface
   useEffect(() => {
@@ -88,7 +90,9 @@ export default function OperationsSurface() {
   if (stage === 'pin') return <PinScreen loc={loc} venueName={venueName} onOk={(op) => { setOperator(op); setStage('app'); }} />;
 
   return (
-    <AppShell loc={loc} venueName={venueName} operator={operator} onLogout={() => { setOperator(null); setStage('pin'); }}>
+    <AppShell loc={loc} venueName={venueName} operator={operator}
+      onLogout={() => { setOperator(null); setStage('pin'); }}
+      onBell={() => { setMaintPrefill(null); setView('maintenance'); }}>
       {unitView ? (
         <LogUnit loc={loc} unit={unitView} operator={operator} onDone={() => setUnitView(null)} />
       ) : view === 'temperature' ? (
@@ -97,6 +101,9 @@ export default function OperationsSurface() {
         <Deliveries loc={loc} operator={operator} onBack={() => setView('home')} />
       ) : view === 'checklists' ? (
         <Checklists loc={loc} operator={operator} onBack={() => setView('home')} />
+      ) : view === 'maintenance' ? (
+        <RaiseMaintenance loc={loc} operator={operator} prefill={maintPrefill}
+          onBack={() => { setMaintPrefill(null); setView('home'); }} />
       ) : (
         <Home loc={loc} venueName={venueName} operator={operator} onOpen={setView} />
       )}
@@ -108,16 +115,23 @@ export default function OperationsSurface() {
 function Screen({ children }) {
   return <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 24, background: 'var(--bg)', color: 'var(--t1)' }}>{children}</div>;
 }
-function AppShell({ venueName, operator, onLogout, children }) {
+function AppShell({ loc, venueName, operator, onLogout, onBell, children }) {
+  const [alerts, setAlerts] = useState(0);
+  useEffect(() => { if (loc) fetchAlerts(loc, true).then(({ data }) => setAlerts((data || []).length)); }, [loc]);
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg)', color: 'var(--t1)', maxWidth: 480, margin: '0 auto', padding: '0 14px 28px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '14px 4px 12px' }}>
-        <div className="sv-glass" style={{ width: 34, height: 34, borderRadius: 10, display: 'grid', placeItems: 'center', fontFamily: 'Syne, Space Grotesk, sans-serif', fontWeight: 800, color: 'var(--acc)' }}>S</div>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 15, fontWeight: 800 }}>{venueName || 'ServOS Ops'}</div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '14px 4px 12px' }}>
+        <div className="sv-glass" style={{ width: 36, height: 36, borderRadius: 11, display: 'grid', placeItems: 'center', fontFamily: 'Syne, Space Grotesk, sans-serif', fontWeight: 800, color: 'var(--acc)', flexShrink: 0 }}>S</div>
+        <button onClick={onLogout} title="Tap to switch user" style={{ flex: 1, minWidth: 0, textAlign: 'left', background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'inherit', fontFamily: 'inherit' }}>
+          <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--t1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{venueName || 'ServOS Ops'}</div>
           {operator && <div style={{ fontSize: 10.5, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.08em', ...mono }}>{operator.name}</div>}
-        </div>
-        {operator && <button onClick={onLogout} className="btn btn-ghost btn-sm" style={{ padding: '6px 12px', fontSize: 12 }}>Switch</button>}
+        </button>
+        {operator && (
+          <button onClick={onBell} aria-label="Alerts" className="sv-glass" style={{ position: 'relative', width: 38, height: 38, borderRadius: 11, display: 'grid', placeItems: 'center', cursor: 'pointer', color: 'var(--t1)', border: '1px solid var(--bdr)', flexShrink: 0 }}>
+            <Icon name="bell" size={19} />
+            {alerts > 0 && <span style={{ position: 'absolute', top: 7, right: 8, width: 8, height: 8, borderRadius: 999, background: 'var(--coral, var(--red))', boxShadow: '0 0 6px var(--coral, var(--red))' }} />}
+          </button>
+        )}
       </div>
       {children}
     </div>
@@ -196,22 +210,47 @@ function useTodayStatus(loc) {
   return { ...state, reload };
 }
 
+// classify a checklist into a home-tile "kind" by its area/name keywords
+const CL_KINDS = [
+  { test: s => s.includes('clean'),                        key: 'cleaning', label: 'Cleaning',      icon: 'sparkle',   hue: 285, order: 2 },
+  { test: s => s.includes('open'),                         key: 'opening',  label: 'Opening checks', icon: 'clipboard', hue: 150, order: 1 },
+  { test: s => s.includes('clos') || s.includes('night'), key: 'closing',  label: 'Closing checks', icon: 'clipboard', hue: 40,  order: 4 },
+];
+const CL_FALLBACK = { key: 'checks', label: 'Checklists', icon: 'clipboard', hue: 150, order: 3 };
+function classifyChecklist(c) {
+  const s = `${c.area || ''} ${c.name || ''}`.toLowerCase();
+  return CL_KINDS.find(k => k.test(s)) || CL_FALLBACK;
+}
+
 // ── Home: compliance ring + area tiles ───────────────────────────────────────
 function Home({ loc, operator, onOpen }) {
-  const { units, summary } = useTodayStatus(loc);
+  const { summary } = useTodayStatus(loc);
   const [deliveryCount, setDeliveryCount] = useState(null);
   const [openAlerts, setOpenAlerts] = useState(0);
-  const [cl, setCl] = useState(null);   // { due, total }
+  const [clKinds, setClKinds] = useState(null);   // [{key,label,icon,hue,order,due,total}]
   useEffect(() => {
     fetchExpectedDeliveries(loc).then(({ data }) => setDeliveryCount((data || []).filter(d => !d.delivery || d.delivery.status === 'pending').length));
     fetchAlerts(loc, true).then(({ data }) => setOpenAlerts((data || []).length));
-    fetchTodayChecklists(loc).then(({ data }) => { const list = data || []; setCl({ due: list.filter(c => c.status !== 'done').length, total: list.length }); });
+    fetchTodayChecklists(loc).then(({ data }) => {
+      const groups = {};
+      (data || []).forEach(c => {
+        const k = classifyChecklist(c);
+        const g = (groups[k.key] ??= { ...k, due: 0, total: 0 });
+        g.due += (c.status !== 'done') ? 1 : 0; g.total += 1;
+      });
+      setClKinds(Object.values(groups).sort((a, b) => a.order - b.order));
+    });
   }, [loc]);
+  const clTiles = (clKinds || []).map(k => ({
+    key: `cl-${k.key}`, label: k.label, icon: k.icon, hue: k.hue,
+    sub: k.due === 0 ? 'All done' : `${k.total - k.due} / ${k.total} done`,
+    state: k.due === 0 ? 'done' : 'due', onClick: () => onOpen('checklists'),
+  }));
   const tiles = [
-    { key: 'temperature', label: 'Temperature', sub: `${summary.due + summary.missed} of ${summary.total} due`, state: summary.missed ? 'over' : summary.due ? 'due' : 'done', hue: AREA_HUE.Temperature, onClick: () => onOpen('temperature') },
-    { key: 'delivery', label: 'Deliveries', sub: deliveryCount == null ? '—' : `${deliveryCount} to check`, state: deliveryCount ? 'due' : 'done', hue: AREA_HUE.Deliveries, onClick: () => onOpen('delivery') },
-    { key: 'checklists', label: 'Checklists', sub: cl == null ? '—' : cl.total === 0 ? 'None today' : `${cl.due} of ${cl.total} to do`, state: cl?.due ? 'due' : 'done', hue: AREA_HUE.Checklists, onClick: () => onOpen('checklists') },
-    { key: 'maintenance', label: 'Maintenance', sub: `${openAlerts} alert${openAlerts === 1 ? '' : 's'}`, state: openAlerts ? 'over' : 'idle', hue: AREA_HUE.Maintenance, onClick: () => {} },
+    { key: 'temperature', label: 'Temperature', icon: 'thermo', sub: `${summary.due + summary.missed} of ${summary.total} due`, state: summary.missed ? 'over' : summary.due ? 'due' : 'done', hue: AREA_HUE.Temperature, onClick: () => onOpen('temperature') },
+    ...clTiles,
+    { key: 'delivery', label: 'Deliveries', icon: 'inventory', sub: deliveryCount == null ? '—' : `${deliveryCount} to check`, state: deliveryCount ? 'due' : 'done', hue: AREA_HUE.Deliveries, onClick: () => onOpen('delivery') },
+    { key: 'maintenance', label: 'Maintenance', icon: 'wrench', sub: openAlerts ? `${openAlerts} open` : 'All clear', state: openAlerts ? 'over' : 'idle', hue: AREA_HUE.Maintenance, onClick: () => onOpen('maintenance') },
   ];
   const ring = summary.compliancePct;
   return (
@@ -243,12 +282,12 @@ function Ring({ pct }) {
   );
 }
 const STATE_DOT = { done: 'var(--grn)', due: 'var(--orn)', over: 'var(--red)', idle: 'var(--t4)' };
-function AreaTile({ label, sub, state, hue, onClick }) {
+function AreaTile({ label, icon, sub, state, hue, onClick }) {
   return (
     <button onClick={onClick} className="sv-tile" style={{ '--h': hue, textAlign: 'left', padding: 16, minHeight: 96, cursor: 'pointer', color: 'var(--t1)', borderRadius: 16, position: 'relative', fontFamily: 'inherit' }}>
       <span style={{ position: 'absolute', top: 12, right: 12, width: 9, height: 9, borderRadius: 999, background: STATE_DOT[state], boxShadow: `0 0 8px ${STATE_DOT[state]}` }} />
-      <div style={{ width: 34, height: 34, borderRadius: 10, display: 'grid', placeItems: 'center', background: 'var(--inset)', fontSize: 17, marginBottom: 22 }}>
-        {label === 'Temperature' ? '🌡' : label === 'Deliveries' ? '📦' : label === 'Checklists' ? '☑' : '🛠'}
+      <div style={{ width: 34, height: 34, borderRadius: 10, display: 'grid', placeItems: 'center', background: 'oklch(0.8 0.12 var(--h) / 0.18)', color: 'oklch(0.85 0.14 var(--h))', marginBottom: 22 }}>
+        <Icon name={icon || 'list'} size={19} />
       </div>
       <div style={{ fontSize: 14, fontWeight: 800 }}>{label}</div>
       <div style={{ fontSize: 11, color: state === 'done' ? 'var(--grn)' : state === 'over' ? 'var(--red)' : 'var(--t3)', marginTop: 2, ...mono }}>{sub}</div>
@@ -262,9 +301,11 @@ function Temperature({ loc, onBack, onPick }) {
   const [unit, setUnit] = useState(localStorage.getItem('ops-temp-unit') || 'C');
   useEffect(() => { localStorage.setItem('ops-temp-unit', unit); }, [unit]);
   useEffect(() => { reload(); }, []);   // refresh on open
+  const h = new Date().getHours();
+  const roundName = h < 12 ? 'AM round' : h < 17 ? 'PM round' : 'Evening round';
   return (
     <div>
-      <Header title="Temperature checks" sub={`${summary.total} units`} right={`${summary.due + summary.missed} due`} rightState={summary.missed ? 'over' : 'due'} onBack={onBack} />
+      <Header title="Temperature checks" sub={`${roundName} · ${summary.total} units`} right={`${summary.due + summary.missed} due`} rightState={summary.missed ? 'over' : 'due'} onBack={onBack} />
       <div className="sv-glass sv-pill" style={{ display: 'flex', padding: 4, marginBottom: 12, gap: 4 }}>
         {['C', 'F'].map(u => <button key={u} onClick={() => setUnit(u)} style={{ flex: 1, padding: '8px', borderRadius: 999, border: 'none', cursor: 'pointer', fontWeight: 700, fontFamily: 'inherit', background: unit === u ? 'var(--acc)' : 'transparent', color: unit === u ? '#06130C' : 'var(--t2)' }}>°{u}</button>)}
       </div>
@@ -277,9 +318,10 @@ function Temperature({ loc, onBack, onPick }) {
           const due = st.status === 'due' || st.status === 'over';
           const rd = lr ? displayTemp(lr.readingC, unit) : null;
           const range = `${displayTemp(u.targetMinC, unit).value}–${displayTemp(u.targetMaxC, unit).value}°${unit}`;
+          const hot = u.type === 'hot_hold' || u.type === 'cooking';
           return (
             <button key={u.id} onClick={() => onPick({ ...u, _displayUnit: unit })} className="sv-tile" style={{ '--h': m.h, display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', borderRadius: 14, cursor: 'pointer', color: 'var(--t1)', textAlign: 'left', fontFamily: 'inherit' }}>
-              <div style={{ width: 38, height: 38, borderRadius: 10, display: 'grid', placeItems: 'center', background: 'var(--inset)', fontSize: 18 }}>{m.glyph}</div>
+              <div style={{ width: 38, height: 38, borderRadius: 10, display: 'grid', placeItems: 'center', background: `oklch(0.8 0.12 ${m.h} / 0.18)`, color: `oklch(0.85 0.14 ${m.h})` }}><Icon name={hot ? 'fire' : 'snow'} size={20} /></div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 14, fontWeight: 700 }}>{u.name}</div>
                 <div style={{ fontSize: 11, color: 'var(--t3)', ...mono }}>{range}{lr ? ` · ${new Date(lr.recordedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}` : ''}</div>
@@ -331,9 +373,9 @@ function LogUnit({ loc, unit, operator, onDone }) {
       <div>
         <Header title={unit.name} sub="Reading flagged" right="Blocked" rightState="over" onBack={() => setPhase('enter')} />
         <div className="sv-glass" style={{ padding: 18, marginBottom: 14, textAlign: 'center', border: '1px solid var(--red-b)', background: 'var(--red-d)' }}>
-          <div style={{ fontSize: 11, color: 'var(--red)', textTransform: 'uppercase', letterSpacing: '.1em', ...mono }}>⚠ Out of safe range</div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, fontSize: 11, color: 'var(--red)', textTransform: 'uppercase', letterSpacing: '.1em', ...mono }}><Icon name="warn" size={14} /> Out of safe range</div>
           <div style={{ fontSize: 44, fontWeight: 800, color: 'var(--red)', margin: '6px 0', textShadow: '0 0 22px rgba(255,90,74,.4)', ...mono }}>{displayTemp(readingC, dUnit).label}</div>
-          <div style={{ fontSize: 12, color: 'var(--t3)', ...mono }}>target {displayTemp(unit.targetMinC ?? def.min, dUnit).value}–{displayTemp(unit.targetMaxC ?? def.max, dUnit).value}°{dUnit} · {b.deltaC}° {b.direction}</div>
+          <div style={{ fontSize: 12, color: 'var(--t3)', ...mono }}>target {displayTemp(unit.targetMinC ?? def.min, dUnit).value}–{displayTemp(unit.targetMaxC ?? def.max, dUnit).value}°{dUnit} · {b.deltaC}° {b.direction} · {new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}</div>
         </div>
         <div style={{ fontSize: 13, color: 'var(--t2)', marginBottom: 12, lineHeight: 1.5 }}>A reading above range needs a corrective action before the check can close.</div>
         <div style={{ fontSize: 10.5, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 8, ...mono }}>Corrective action — required</div>
@@ -396,7 +438,7 @@ function Deliveries({ loc, operator, onBack }) {
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {(rows || []).map(({ po, delivery }) => (
           <button key={po.id} onClick={() => setActive({ po, delivery })} className="sv-tile" style={{ '--h': 48, display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', borderRadius: 14, cursor: 'pointer', color: 'var(--t1)', textAlign: 'left', fontFamily: 'inherit' }}>
-            <div style={{ width: 38, height: 38, borderRadius: 10, display: 'grid', placeItems: 'center', background: 'var(--inset)', fontSize: 18 }}>📦</div>
+            <div style={{ width: 38, height: 38, borderRadius: 10, display: 'grid', placeItems: 'center', background: 'oklch(0.8 0.12 48 / 0.18)', color: 'oklch(0.85 0.14 48)' }}><Icon name="inventory" size={20} /></div>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 14, fontWeight: 700 }}>{po.reference || `PO ${String(po.id).slice(0, 6)}`}</div>
               <div style={{ fontSize: 11, color: 'var(--t3)', ...mono }}>{po.lines?.length || 0} lines{po.expectedDate ? ` · ${po.expectedDate}` : ''}</div>
@@ -468,7 +510,7 @@ function Checklists({ loc, operator, onBack }) {
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {(rows || []).map(c => (
           <button key={c.id} onClick={() => setActive(c)} className="sv-tile" style={{ '--h': AREA_HUE.Checklists, display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', borderRadius: 14, cursor: 'pointer', color: 'var(--t1)', textAlign: 'left', fontFamily: 'inherit' }}>
-            <div style={{ width: 38, height: 38, borderRadius: 10, display: 'grid', placeItems: 'center', background: 'var(--inset)', fontSize: 17 }}>☑</div>
+            <div style={{ width: 38, height: 38, borderRadius: 10, display: 'grid', placeItems: 'center', background: `oklch(0.8 0.12 ${AREA_HUE.Checklists} / 0.18)`, color: `oklch(0.85 0.14 ${AREA_HUE.Checklists})` }}><Icon name="clipboard" size={19} /></div>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 14, fontWeight: 700 }}>{c.name}</div>
               <div style={{ fontSize: 11, color: 'var(--t3)', ...mono }}>{c.area} · {c.doneCount}/{c.total} done{c.timeOfDay ? ` · ${c.timeOfDay}` : ''}</div>
@@ -496,7 +538,7 @@ function ChecklistRun({ loc, operator, checklist, onDone }) {
       const n = { ...done }; delete n[task.id]; setDone(n);
       await completeTask(run.id, task.id, { done: false, by: operator?.name, byId: operator?.id }, loc);
     } else {
-      setDone(d => ({ ...d, [task.id]: { taskId: task.id } }));
+      setDone(d => ({ ...d, [task.id]: { taskId: task.id, by: operator?.name, at: new Date().toISOString() } }));
       await completeTask(run.id, task.id, { done: true, by: operator?.name, byId: operator?.id }, loc);
     }
   };
@@ -506,22 +548,36 @@ function ChecklistRun({ loc, operator, checklist, onDone }) {
     if (error) { setErr(error.message || 'Could not sign off'); return; }
     onDone();
   };
+  const cadence = (checklist.frequency || checklist.cadence || 'Daily').toUpperCase();
+  const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
   return (
     <div>
-      <Header title={checklist.name} sub={checklist.area} onBack={onDone} />
+      <Header title={checklist.name} sub={`${cadence} · ${completed} / ${total}`} right={checklist.timeOfDay || null} rightState="due" onBack={onDone} />
       <div className="sv-glass" style={{ padding: '12px 16px', marginBottom: 14 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'var(--t3)', marginBottom: 6, ...mono }}><span>{completed}/{total} done</span><span>{pct}%</span></div>
         <div style={{ height: 8, borderRadius: 4, background: 'var(--inset)', overflow: 'hidden' }}><div style={{ height: '100%', width: `${pct}%`, background: 'linear-gradient(90deg,var(--grn),var(--acc2,#2FD984))', borderRadius: 4 }} /></div>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {checklist.tasks.map(t => {
-          const on = !!done[t.id];
+          const cm = done[t.id]; const on = !!cm;
+          const overdue = !on && t.dueBy && (hhmmToMin(t.dueBy) ?? 1e9) < nowMin;
+          const at = cm && (cm.at || cm.completedAt);
+          const timeStr = at ? new Date(at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : null;
+          const meta = on ? [cm.by, timeStr].filter(Boolean).join(' · ')
+            : t.evidenceRequired ? 'Photo required'
+            : t.tempUnitId ? (t.tempUnitCount ? `Linked · ${t.tempUnitCount} units` : 'Linked')
+            : overdue ? `Was due ${t.dueBy}` : null;
+          const metaCol = overdue ? 'var(--red)' : (t.tempUnitId && !on) ? 'var(--uv)' : 'var(--t3)';
           return (
-            <button key={t.id} onClick={() => toggle(t)} className="sv-glass" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '14px 16px', borderRadius: 14, cursor: 'pointer', textAlign: 'left', color: 'var(--t1)', border: `1px solid ${on ? 'var(--acc-b)' : 'var(--bdr)'}`, background: on ? 'var(--acc-d)' : 'var(--glass-bg)' }}>
-              <span style={{ width: 24, height: 24, borderRadius: 999, flexShrink: 0, display: 'grid', placeItems: 'center', background: on ? 'var(--acc)' : 'transparent', border: `2px solid ${on ? 'var(--acc)' : 'var(--bdr3)'}`, color: '#06130C', fontWeight: 800, fontSize: 13 }}>{on ? '✓' : ''}</span>
-              <span style={{ flex: 1, fontWeight: 600, textDecoration: on ? 'line-through' : 'none', color: on ? 'var(--t3)' : 'var(--t1)' }}>{t.label}</span>
-              {t.evidenceRequired && <span title="photo required" style={{ fontSize: 14 }}>📷</span>}
-              {t.tempUnitId && <span title="temperature-linked" style={{ fontSize: 12, color: 'var(--uv)' }}>🌡</span>}
+            <button key={t.id} onClick={() => toggle(t)} className="sv-glass" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '13px 16px', borderRadius: 14, cursor: 'pointer', textAlign: 'left', color: 'var(--t1)', border: `1px solid ${on ? 'var(--acc-b)' : overdue ? 'var(--red-b)' : 'var(--bdr)'}`, background: on ? 'var(--acc-d)' : 'var(--glass-bg)' }}>
+              <span style={{ width: 24, height: 24, borderRadius: 7, flexShrink: 0, display: 'grid', placeItems: 'center', background: on ? 'var(--acc)' : 'transparent', border: `2px solid ${on ? 'var(--acc)' : overdue ? 'var(--red)' : 'var(--bdr3)'}`, color: overdue && !on ? 'var(--red)' : '#06130C' }}>
+                {on ? <Icon name="check" size={15} /> : overdue ? <Icon name="warn" size={13} /> : null}
+              </span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 600, textDecoration: on ? 'line-through' : 'none', color: on ? 'var(--t3)' : 'var(--t1)' }}>{t.label}</div>
+                {meta && <div style={{ fontSize: 11, color: metaCol, marginTop: 2, ...mono }}>{meta}</div>}
+              </div>
+              {t.evidenceRequired && <Icon name="camera" size={17} style={{ color: on ? 'var(--t4)' : 'var(--amber, var(--orn))' }} />}
             </button>
           );
         })}
@@ -551,4 +607,81 @@ const PILL_COL = { done: ['var(--grn-d)', 'var(--grn)', 'var(--grn-b)'], due: ['
 function Pill({ state, children }) {
   const [bg, fg, bd] = PILL_COL[state] || PILL_COL.due;
   return <span style={{ fontSize: 11, fontWeight: 700, padding: '5px 11px', borderRadius: 999, background: bg, color: fg, border: `1px solid ${bd}`, ...mono }}>{children}</span>;
+}
+
+// ── Raise maintenance (manual request, thumb-first) ───────────────────────────
+const MAINT_ISSUES = ['Not holding temp', 'Door seal', 'Noise', 'Leak', 'Other'];
+const MAINT_PRIOS = [['low', 'Low'], ['normal', 'Med'], ['high', 'High'], ['urgent', 'Urgent']];
+const fieldStyle = { width: '100%', padding: '12px 14px', borderRadius: 12, color: 'var(--t1)', border: '1px solid var(--bdr)', fontFamily: 'inherit', fontSize: 14, background: 'var(--glass-bg)', outline: 'none' };
+const fieldLbl = { fontSize: 10.5, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.08em', margin: '16px 0 8px', ...mono };
+function RaiseMaintenance({ loc, operator, prefill, onBack }) {
+  const [units, setUnits] = useState([]);
+  const [assetId, setAssetId] = useState('');
+  const [issue, setIssue] = useState('Not holding temp');
+  const [prio, setPrio] = useState('high');
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [okMsg, setOkMsg] = useState('');
+  useEffect(() => { fetchTempUnits(loc).then(({ data }) => setUnits(data || [])); }, [loc]);
+
+  const assetName = prefill?.unitName || units.find(u => u.id === assetId)?.name || 'General / other';
+  const submit = async () => {
+    setBusy(true); setErr('');
+    const title = `${issue} — ${assetName}`;
+    const desc = [note, prefill ? `Flagged from temp alert (${prefill.unitName} ${prefill.temp})` : ''].filter(Boolean).join(' · ');
+    const res = await createMaintenance({ title, description: desc, priority: prio, reporterName: operator?.name, source: prefill ? 'temp_breach' : 'manual' }, loc);
+    setBusy(false);
+    if (res?.error) { setErr(res.error.message || 'Could not raise request'); return; }
+    setOkMsg('Maintenance request raised'); setTimeout(onBack, 900);
+  };
+
+  return (
+    <div>
+      <Header title="Raise maintenance" sub="New request" onBack={onBack} />
+      {prefill && (
+        <div className="sv-glass" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', marginBottom: 4, border: '1px solid color-mix(in srgb, var(--uv) 45%, transparent)', background: 'color-mix(in srgb, var(--uv) 12%, transparent)' }}>
+          <span style={{ color: 'var(--uv)' }}><Icon name="thermo" size={18} /></span>
+          <div style={{ fontSize: 12.5, color: 'var(--t2)' }}>Auto-created from temp alert · <b style={{ color: 'var(--t1)' }}>{prefill.unitName} {prefill.temp}</b></div>
+        </div>
+      )}
+
+      <div style={fieldLbl}>Asset / unit</div>
+      <select value={assetId} onChange={e => setAssetId(e.target.value)} style={fieldStyle}>
+        <option value="">General / other</option>
+        {units.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+      </select>
+
+      <div style={fieldLbl}>Issue</div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+        {MAINT_ISSUES.map(i => {
+          const on = issue === i;
+          return <button key={i} onClick={() => setIssue(i)} className={on ? '' : 'sv-glass'} style={{ padding: '9px 14px', borderRadius: 999, cursor: 'pointer', fontFamily: 'inherit', fontSize: 13, fontWeight: 600, border: `1px solid ${on ? 'var(--acc-b)' : 'var(--bdr)'}`, color: on ? 'var(--acc)' : 'var(--t2)', background: on ? 'var(--acc-d)' : 'var(--glass-bg)' }}>{i}</button>;
+        })}
+      </div>
+
+      <div style={fieldLbl}>Priority</div>
+      <div className="sv-glass sv-pill" style={{ display: 'flex', padding: 4, gap: 4 }}>
+        {MAINT_PRIOS.map(([v, l]) => {
+          const on = prio === v;
+          const onBg = v === 'urgent' ? 'var(--red)' : v === 'high' ? 'var(--amber, var(--orn))' : 'var(--acc)';
+          return <button key={v} onClick={() => setPrio(v)} style={{ flex: 1, padding: '9px', borderRadius: 999, border: 'none', cursor: 'pointer', fontWeight: 700, fontFamily: 'inherit', fontSize: 13, background: on ? onBg : 'transparent', color: on ? '#06130C' : 'var(--t2)' }}>{l}</button>;
+        })}
+      </div>
+
+      <div style={fieldLbl}>Note (optional)</div>
+      <input value={note} onChange={e => setNote(e.target.value)} placeholder="Add any detail…" style={fieldStyle} />
+
+      <div style={fieldLbl}>Photo evidence</div>
+      <div style={{ border: '1.5px dashed var(--bdr3)', borderRadius: 14, padding: 22, textAlign: 'center', color: 'var(--t3)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
+        <Icon name="camera" size={22} />
+        <div style={{ fontSize: 12.5 }}>Add photo</div>
+        <div style={{ fontSize: 10, ...mono }}>COMING SOON</div>
+      </div>
+
+      {err && <div style={{ color: 'var(--red)', fontSize: 13, marginTop: 12 }}>{err}</div>}
+      {okMsg && <div style={{ color: 'var(--grn)', fontSize: 13, marginTop: 12, fontWeight: 700 }}>{okMsg}</div>}
+      <button onClick={submit} disabled={busy} className="btn btn-acc" style={{ width: '100%', padding: 15, marginTop: 16, fontSize: 15, fontWeight: 800, borderRadius: 14, opacity: busy ? 0.6 : 1 }}>{busy ? 'Raising…' : 'Raise request'}</button>
+    </div>
+  );
 }

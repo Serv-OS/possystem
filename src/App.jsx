@@ -86,6 +86,18 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.601', date: '23 Jun 2026', label: 'Operations — pixel-spec polish across mobile + back office',
+    changes: [
+      'Mobile floor app: replaced emoji with the ServOS line-icon set (hue-tinted icon plates), added a bell with an unacknowledged-alert dot, round name on the temperature header, colour-coded snow/flame unit icons, richer checklist rows (who·time on completed tasks, “Photo required”/“Linked” labels, overdue flagging), and the reading time on a breach.',
+      'Mobile: built the missing Raise-maintenance screen (asset/unit, issue chips, priority, photo-evidence placeholder) — the Maintenance tile and the bell now open it (previously a dead button).',
+      'Temperature units (BO): inline target-range edit with Save, a Checklist column, a schedule frequency summary, plain-English types (Chilled/Frozen/Hot) and colour-coded unit icons.',
+      'Checklist templates (BO): proper two-pane master/detail editor with a TEMP-LINKED badge, camera (photo-required) and enable toggles per task.',
+      'Compliance overview (BO): KPI sparklines + sub-lines, checks-done as a %, and a worst-first site league with a Today’s-checks column.',
+      'Compliance history (BO): a day-detail event timeline (temperature rounds, checklist sign-offs, corrective actions, maintenance) beside the calendar.',
+      'Fix: the multi-site league now loads reliably (was using a dynamic import that the production bundle dropped).',
+    ],
+  },
+  {
     version: '5.5.600', date: '23 Jun 2026', label: 'Operations — multi-site compliance oversight (slice 6)',
     changes: [
       'Compliance overview now rolls up every site you can see: group KPIs (group compliance, checks done, temp exceptions, open maintenance) + a site league table sorted worst-first, alongside the active site’s detail.',

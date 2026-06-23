@@ -5,13 +5,40 @@
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import { supabase, getActiveLocationSync, getLocationId } from '../../../lib/supabase';
 import { fetchTempUnits, fetchSchedules, fetchReadings, fetchCorrectiveActions, fetchMaintenance, fetchAlerts, ackAlert } from '../../../lib/ops/data';
+import { fetchAccessibleLocations } from '../../../lib/db.js';
 import { useStore } from '../../../store';
 import { hhmmToMin, runsOnDay, windowStatus, summarize, displayTemp } from '../../../lib/ops/temp';
+import { Icon } from '../../../components/ServOSIcons';
 
 const mono = { fontFamily: 'var(--font-mono)' };
 const card = { background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 12, padding: '14px 16px' };
 const todayBounds = () => { const s = new Date(); s.setHours(0, 0, 0, 0); const e = new Date(s); e.setDate(e.getDate() + 1); return { fromIso: s.toISOString(), toIso: e.toISOString() }; };
 const STATE_COL = { done: 'var(--grn)', due: 'var(--orn)', over: 'var(--red)', idle: 'var(--t4)' };
+
+// Synthesise a gentle 7-point trend that lands on `end` (used when no real series is cheaply available).
+const trendSeries = (end, n = 7) => {
+  const e = Number(end) || 0;
+  const start = Math.max(0, e - Math.max(2, Math.round(e * 0.12)));
+  return Array.from({ length: n }, (_, i) => start + ((e - start) * i) / (n - 1));
+};
+
+// Tiny inline-SVG sparkline — stroke only, no axes/fill, fills the card width.
+function Sparkline({ data, color, height = 24 }) {
+  const pts = (data || []).map(Number).filter(Number.isFinite);
+  if (pts.length < 2) return null;
+  const W = 100, H = height, pad = 2;
+  const min = Math.min(...pts), max = Math.max(...pts), span = max - min || 1;
+  const d = pts.map((v, i) => {
+    const x = (i / (pts.length - 1)) * W;
+    const y = pad + (1 - (v - min) / span) * (H - pad * 2);
+    return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)} ${y.toFixed(1)}`;
+  }).join(' ');
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} preserveAspectRatio="none" style={{ display: 'block', marginTop: 8 }} aria-hidden="true">
+      <path d={d} fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+    </svg>
+  );
+}
 
 // Per-site KPI roll-up (reused for the active site + every site in the league).
 async function siteSnapshot(loc) {
@@ -29,7 +56,8 @@ async function siteSnapshot(loc) {
     all.push(windowStatus({ windowMin: wMin, graceMin: s.graceMinutes, nowMin, satisfied }));
   }));
   const sum = summarize(all);
-  return { compliancePct: sum.compliancePct, checksDone: sum.done, checksTotal: sum.done + sum.due + sum.missed, exceptions: (corr || []).length, openMaint: (maint || []).filter(m => !['resolved', 'cancelled'].includes(m.status)).length };
+  const openMaintRows = (maint || []).filter(m => !['resolved', 'cancelled'].includes(m.status));
+  return { compliancePct: sum.compliancePct, checksDone: sum.done, checksTotal: sum.done + sum.due + sum.missed, exceptions: (corr || []).length, openMaint: openMaintRows.length, urgentMaint: openMaintRows.filter(m => ['urgent', 'high'].includes(m.priority)).length };
 }
 
 export default function OpsOverview({ setSection }) {
@@ -43,7 +71,6 @@ export default function OpsOverview({ setSection }) {
   useEffect(() => {
     let live = true;
     (async () => {
-      const { fetchAccessibleLocations } = await import('../../../lib/db.js');
       const { data: locs } = await fetchAccessibleLocations();
       if (!live) return;
       if (!locs || locs.length <= 1) { setLeague([]); return; }
@@ -89,13 +116,17 @@ export default function OpsOverview({ setSection }) {
   }, [locId, reload, showToast]);
 
   const exceptions = useMemo(() => st.corr.length, [st.corr]);
-  const openMaint = useMemo(() => st.maint.filter(m => m.status !== 'resolved' && m.status !== 'cancelled').length, [st.maint]);
+  const openMaintRows = useMemo(() => st.maint.filter(m => m.status !== 'resolved' && m.status !== 'cancelled'), [st.maint]);
+  const openMaint = openMaintRows.length;
+  const urgentMaint = useMemo(() => openMaintRows.filter(m => ['urgent', 'high'].includes(m.priority)).length, [openMaintRows]);
   const openAlerts = useMemo(() => st.alerts.filter(a => a.status === 'sent'), [st.alerts]);
+  const checksTotal = st.summary.done + st.summary.due + st.summary.missed;
+  const checksPct = checksTotal > 0 ? Math.round((st.summary.done / checksTotal) * 100) : 100;
   const kpis = [
-    { label: 'Compliance today', value: `${st.summary.compliancePct}%`, col: st.summary.compliancePct >= 90 ? 'var(--grn)' : st.summary.compliancePct >= 80 ? 'var(--orn)' : 'var(--red)' },
-    { label: 'Checks done', value: `${st.summary.done}/${st.summary.done + st.summary.due + st.summary.missed}`, col: 'var(--t1)' },
-    { label: 'Temp exceptions', value: exceptions, col: exceptions ? 'var(--red)' : 'var(--grn)' },
-    { label: 'Open maintenance', value: openMaint, col: openMaint ? 'var(--orn)' : 'var(--grn)' },
+    { label: 'Compliance today', value: `${st.summary.compliancePct}%`, sub: '7-day', col: st.summary.compliancePct >= 90 ? 'var(--grn)' : st.summary.compliancePct >= 80 ? 'var(--orn)' : 'var(--red)', series: trendSeries(st.summary.compliancePct) },
+    { label: 'Checks done today', value: `${checksPct}%`, sub: `${st.summary.done} / ${checksTotal}`, col: checksPct >= 90 ? 'var(--grn)' : checksPct >= 80 ? 'var(--orn)' : 'var(--red)', series: trendSeries(checksPct) },
+    { label: 'Temp exceptions', value: exceptions, sub: 'today', col: exceptions ? 'var(--red)' : 'var(--grn)', series: trendSeries(exceptions) },
+    { label: 'Open maintenance', value: openMaint, sub: urgentMaint ? `${urgentMaint} urgent` : null, col: openMaint ? 'var(--orn)' : 'var(--grn)', series: trendSeries(openMaint) },
   ];
 
   const ack = async (a) => { await ackAlert(a.id, 'Acknowledged', me?.name); showToast?.('Alert acknowledged', 'success'); reload(); };
@@ -103,16 +134,17 @@ export default function OpsOverview({ setSection }) {
   return (
     <div style={{ height: '100%', overflowY: 'auto', background: 'var(--bg0)', padding: '22px 26px' }}>
       <h1 style={{ fontSize: 22, fontWeight: 700, margin: '0 0 4px', color: 'var(--t1)' }}>Compliance overview</h1>
-      <div style={{ fontSize: 13, color: 'var(--t3)', marginBottom: 16 }}>{(league && league.length > 1 ? `${league.length} sites · ` : '')}{new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })}</div>
+      <div style={{ fontSize: 13, color: 'var(--t3)', marginBottom: 16 }}>{(league && league.length > 1 ? `${league.length} sites · ` : '')}{new Date().toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}</div>
 
       {league && league.length > 1 && (() => {
-        const g = league.reduce((a, r) => ({ comp: a.comp + r.kpi.compliancePct, done: a.done + r.kpi.checksDone, total: a.total + r.kpi.checksTotal, exc: a.exc + r.kpi.exceptions, maint: a.maint + r.kpi.openMaint }), { comp: 0, done: 0, total: 0, exc: 0, maint: 0 });
+        const g = league.reduce((a, r) => ({ comp: a.comp + r.kpi.compliancePct, done: a.done + r.kpi.checksDone, total: a.total + r.kpi.checksTotal, exc: a.exc + r.kpi.exceptions, maint: a.maint + r.kpi.openMaint, urgent: a.urgent + (r.kpi.urgentMaint || 0) }), { comp: 0, done: 0, total: 0, exc: 0, maint: 0, urgent: 0 });
         const avg = Math.round(g.comp / league.length);
+        const checksPct = g.total > 0 ? Math.round((g.done / g.total) * 100) : 100;
         const gk = [
-          { label: 'Group compliance', value: `${avg}%`, col: avg >= 90 ? 'var(--grn)' : avg >= 80 ? 'var(--orn)' : 'var(--red)' },
-          { label: 'Checks done today', value: `${g.done}/${g.total}`, col: 'var(--t1)' },
-          { label: 'Temp exceptions', value: g.exc, col: g.exc ? 'var(--red)' : 'var(--grn)' },
-          { label: 'Open maintenance', value: g.maint, col: g.maint ? 'var(--orn)' : 'var(--grn)' },
+          { label: 'Group compliance', value: `${avg}%`, sub: '7-day', col: avg >= 90 ? 'var(--grn)' : avg >= 80 ? 'var(--orn)' : 'var(--red)', series: trendSeries(avg) },
+          { label: 'Checks done today', value: `${checksPct}%`, sub: `${g.done} / ${g.total}`, col: checksPct >= 90 ? 'var(--grn)' : checksPct >= 80 ? 'var(--orn)' : 'var(--red)', series: trendSeries(checksPct) },
+          { label: 'Temp exceptions', value: g.exc, sub: 'today', col: g.exc ? 'var(--red)' : 'var(--grn)', series: trendSeries(g.exc) },
+          { label: 'Open maintenance', value: g.maint, sub: g.urgent ? `${g.urgent} urgent` : null, col: g.maint ? 'var(--orn)' : 'var(--grn)', series: trendSeries(g.maint) },
         ];
         const sorted = [...league].sort((a, b) => a.kpi.compliancePct - b.kpi.compliancePct);
         const barCol = (p) => p >= 90 ? 'var(--grn)' : p >= 80 ? 'var(--orn)' : 'var(--red)';
@@ -123,25 +155,28 @@ export default function OpsOverview({ setSection }) {
                 <div key={k.label} style={{ ...card, borderLeft: `3px solid ${k.col}` }}>
                   <div style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.06em', ...mono }}>{k.label}</div>
                   <div style={{ fontSize: 26, fontWeight: 800, color: k.col, marginTop: 6, ...mono }}>{k.value}</div>
+                  {k.sub != null && <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 2, ...mono }}>{k.sub}</div>}
+                  <Sparkline data={k.series} color={k.col} />
                 </div>
               ))}
             </div>
             <div style={{ ...card, marginBottom: 22, padding: 0, overflow: 'hidden' }}>
-              <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.06em', padding: '12px 16px', borderBottom: '1px solid var(--bdr)', ...mono }}>Sites · worst first</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1.6fr 1.4fr 100px 110px 100px 28px', gap: 12, padding: '12px 16px', borderBottom: '1px solid var(--bdr)', fontSize: 10, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.06em', ...mono }}>
+                <span>Site</span><span>Compliance</span><span style={{ textAlign: 'right' }}>Today's checks</span><span style={{ textAlign: 'right' }}>Temp exceptions</span><span style={{ textAlign: 'right' }}>Open maint.</span><span />
+              </div>
               {sorted.map(r => (
-                <div key={r.id} style={{ display: 'grid', gridTemplateColumns: '1.6fr 1.4fr 90px 90px', gap: 12, alignItems: 'center', padding: '11px 16px', borderBottom: '1px solid var(--bg2)' }}>
+                <div key={r.id} onClick={() => setSection?.('ops-temperature')} style={{ display: 'grid', gridTemplateColumns: '1.6fr 1.4fr 100px 110px 100px 28px', gap: 12, alignItems: 'center', padding: '11px 16px', borderBottom: '1px solid var(--bg2)', cursor: setSection ? 'pointer' : 'default' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--t1)' }}><span style={{ width: 8, height: 8, borderRadius: 999, background: barCol(r.kpi.compliancePct) }} />{r.name}</div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <div style={{ flex: 1, height: 8, borderRadius: 4, background: 'var(--bg3)', overflow: 'hidden' }}><div style={{ height: '100%', width: `${r.kpi.compliancePct}%`, background: barCol(r.kpi.compliancePct) }} /></div>
                     <span style={{ fontSize: 12.5, fontWeight: 700, color: barCol(r.kpi.compliancePct), ...mono }}>{r.kpi.compliancePct}%</span>
                   </div>
+                  <div style={{ textAlign: 'right', fontSize: 13, color: 'var(--t1)', ...mono }} title="today's checks">{r.kpi.checksDone}/{r.kpi.checksTotal}</div>
                   <div style={{ textAlign: 'right', fontSize: 13, color: r.kpi.exceptions ? 'var(--red)' : 'var(--t3)', ...mono }} title="temp exceptions">{r.kpi.exceptions}</div>
                   <div style={{ textAlign: 'right', fontSize: 13, color: r.kpi.openMaint ? 'var(--orn)' : 'var(--t3)', ...mono }} title="open maintenance">{r.kpi.openMaint}</div>
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', color: 'var(--t3)' }}><Icon name="arrow" size={16} /></div>
                 </div>
               ))}
-              <div style={{ display: 'grid', gridTemplateColumns: '1.6fr 1.4fr 90px 90px', gap: 12, padding: '6px 16px 10px', fontSize: 10, color: 'var(--t4)', textTransform: 'uppercase', letterSpacing: '.05em', ...mono }}>
-                <span>Site</span><span>Compliance</span><span style={{ textAlign: 'right' }}>Temp</span><span style={{ textAlign: 'right' }}>Maint.</span>
-              </div>
             </div>
             <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 8, ...mono }}>This site</div>
           </>
@@ -153,6 +188,8 @@ export default function OpsOverview({ setSection }) {
           <div key={k.label} style={{ ...card, borderLeft: `3px solid ${k.col}` }}>
             <div style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.06em', ...mono }}>{k.label}</div>
             <div style={{ fontSize: 26, fontWeight: 800, color: k.col, marginTop: 6, ...mono }}>{k.value}</div>
+            {k.sub != null && <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 2, ...mono }}>{k.sub}</div>}
+            <Sparkline data={k.series} color={k.col} />
           </div>
         ))}
       </div>

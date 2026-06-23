@@ -21,6 +21,7 @@ const clFromRow = (r) => ({
   id: r.id, locationId: r.location_id, name: r.name, area: r.area, frequency: r.frequency,
   daysOfWeek: Array.isArray(r.days_of_week) ? r.days_of_week : [], timeOfDay: r.time_of_day,
   graceMinutes: r.grace_minutes, assigneeRole: r.assignee_role, active: r.active !== false, archivedAt: r.archived_at,
+  updatedAt: r.updated_at,
 });
 const taskFromRow = (r) => ({
   id: r.id, checklistId: r.checklist_id, label: r.label, sortOrder: r.sort_order, taskType: r.task_type,

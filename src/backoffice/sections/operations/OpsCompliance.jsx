@@ -1,20 +1,23 @@
-// OpsCompliance — the EHO-ready compliance calendar: a month coloured by status,
-// a day drill-in (every reading, breach, corrective action + maintenance raised),
-// and a CSV export of the audit trail. (Back Office → Operations → Compliance calendar.)
+// OpsCompliance — the EHO-ready compliance history: a month coloured by status on the
+// left, a day-detail event TIMELINE on the right (every temperature round, checklist
+// sign-off, breach/corrective action + maintenance raised), and a CSV export of the
+// audit trail. (Back Office → Operations → Compliance.)
 
 import { useEffect, useMemo, useState, useCallback } from 'react';
-import { getActiveLocationSync, getLocationId } from '../../../lib/supabase';
-import { fetchTempUnits, fetchSchedules, fetchReadings, fetchCorrectiveActions } from '../../../lib/ops/data';
+import { getActiveLocationSync, getLocationId, getAvailableLocations } from '../../../lib/supabase';
+import { fetchTempUnits, fetchSchedules, fetchReadings, fetchCorrectiveActions, fetchMaintenance } from '../../../lib/ops/data';
+import { fetchRunsRange, fetchChecklists } from '../../../lib/ops/checklists';
 import { hhmmToMin, runsOnDay, windowStatus, summarize, displayTemp } from '../../../lib/ops/temp';
-
 const mono = { fontFamily: 'var(--font-mono)' };
 const ymd = (d) => { const x = new Date(d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`; };
 const DAY_COL = { green: 'var(--grn)', amber: 'var(--orn)', coral: 'var(--red)', idle: 'transparent' };
+const hhmm = (t) => new Date(t).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 
 export default function OpsCompliance() {
   const [locId, setLocId] = useState(getActiveLocationSync());
+  const [siteName, setSiteName] = useState('');
   const [month, setMonth] = useState(() => { const d = new Date(); return { y: d.getFullYear(), m: d.getMonth() }; });
-  const [data, setData] = useState({ units: [], scheds: [], readings: [], corr: [], loading: true });
+  const [data, setData] = useState({ units: [], scheds: [], readings: [], corr: [], runs: [], maint: [], checklists: [], loading: true });
   const [selDay, setSelDay] = useState(null);
 
   const monthStart = useMemo(() => new Date(month.y, month.m, 1), [month]);
@@ -23,14 +26,34 @@ export default function OpsCompliance() {
   const reload = useCallback(async () => {
     const loc = locId || getActiveLocationSync() || await getLocationId().catch(() => null);
     if (loc && loc !== locId) setLocId(loc);
-    const [{ data: units }, { data: scheds }, { data: readings }, { data: corr }] = await Promise.all([
+    const mFrom = ymd(monthStart), mTo = ymd(new Date(month.y, month.m + 1, 0));
+    const [{ data: units }, { data: scheds }, { data: readings }, { data: corr }, { data: runs }, { data: maint }, { data: checklists }] = await Promise.all([
       fetchTempUnits(loc, true), fetchSchedules(loc),
       fetchReadings(monthStart.toISOString(), monthEnd.toISOString(), loc, 5000),
       fetchCorrectiveActions(monthStart.toISOString(), monthEnd.toISOString(), loc),
+      fetchRunsRange(mFrom, mTo, loc),
+      fetchMaintenance(loc),
+      fetchChecklists(loc),
     ]);
-    setData({ units: units || [], scheds: scheds || [], readings: readings || [], corr: corr || [], loading: false });
-  }, [locId, monthStart, monthEnd]);
-  useEffect(() => { reload(); /* eslint-disable-next-line */ }, [month]);
+    setData({ units: units || [], scheds: scheds || [], readings: readings || [], corr: corr || [], runs: runs || [], maint: maint || [], checklists: checklists || [], loading: false });
+  }, [locId, monthStart, monthEnd, month]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { reload(); }, [month]);
+
+  // resolve the site name for the subtitle
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const loc = locId || getActiveLocationSync();
+      if (!loc) return;
+      try {
+        const locs = await getAvailableLocations();
+        const hit = (locs || []).find(l => l.id === loc);
+        if (alive && hit?.name) setSiteName(hit.name);
+      } catch { /* fall back gracefully to no site name */ }
+    })();
+    return () => { alive = false; };
+  }, [locId]);
 
   // per-day status
   const dayStatus = useMemo(() => {
@@ -63,6 +86,17 @@ export default function OpsCompliance() {
     return byDay;
   }, [data, month]);
 
+  // pick a default selected day so the right panel is populated on load: today if it's
+  // in the visible month, else the most recent past day in this month.
+  useEffect(() => {
+    if (selDay && selDay.startsWith(`${month.y}-${String(month.m + 1).padStart(2, '0')}`)) return;
+    const today = new Date();
+    const inThisMonth = today.getFullYear() === month.y && today.getMonth() === month.m;
+    if (inThisMonth) { setSelDay(ymd(today)); return; }
+    const days = new Date(month.y, month.m + 1, 0).getDate();
+    setSelDay(ymd(new Date(month.y, month.m, days)));
+  }, [month, selDay]);
+
   const exportCsv = () => {
     const rows = [['Date', 'Time', 'Unit', 'Reading°C', 'In range', 'Severity', 'By', 'Source']];
     data.readings.slice().reverse().forEach(r => {
@@ -79,70 +113,167 @@ export default function OpsCompliance() {
   const daysInMonth = new Date(month.y, month.m + 1, 0).getDate();
   const cells = [...Array(firstDow).fill(null), ...Array.from({ length: daysInMonth }, (_, i) => i + 1)];
   const monthLabel = monthStart.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+  const today = ymd(new Date());
 
   return (
     <div style={{ height: '100%', overflowY: 'auto', background: 'var(--bg0)', padding: '22px 26px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 16 }}>
-        <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0, color: 'var(--t1)', flex: 1 }}>Compliance calendar</h1>
-        <button onClick={() => setMonth(m => ({ y: m.m === 0 ? m.y - 1 : m.y, m: (m.m + 11) % 12 }))} style={navBtn}>‹</button>
-        <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--t1)', minWidth: 140, textAlign: 'center', ...mono }}>{monthLabel}</span>
-        <button onClick={() => setMonth(m => ({ y: m.m === 11 ? m.y + 1 : m.y, m: (m.m + 1) % 12 }))} style={navBtn}>›</button>
-        <button onClick={exportCsv} className="btn btn-acc" style={{ padding: '9px 16px', borderRadius: 8, background: 'var(--acc)', color: '#fff', border: 0, fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>Export EHO (CSV)</button>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14, marginBottom: 18 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0, color: 'var(--t1)' }}>Compliance history</h1>
+          <div style={{ fontSize: 12.5, color: 'var(--t3)', marginTop: 3 }}>{[siteName, monthLabel].filter(Boolean).join(' · ')}</div>
+        </div>
+        {/* month nav grouped into a rounded pill */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 2, padding: 3, borderRadius: 999, border: '1px solid var(--bdr)', background: 'var(--bg2)' }}>
+          <button onClick={() => setMonth(m => ({ y: m.m === 0 ? m.y - 1 : m.y, m: (m.m + 11) % 12 }))} style={pillBtn} aria-label="Previous month">‹</button>
+          <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)', minWidth: 110, textAlign: 'center', ...mono }}>{monthLabel}</span>
+          <button onClick={() => setMonth(m => ({ y: m.m === 11 ? m.y + 1 : m.y, m: (m.m + 1) % 12 }))} style={pillBtn} aria-label="Next month">›</button>
+        </div>
+        {/* CSV export demoted to a secondary / ghost button */}
+        <button onClick={exportCsv} style={ghostBtn}>Export CSV</button>
       </div>
 
-      <div style={{ background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 12, padding: 16, maxWidth: 720 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7,1fr)', gap: 6 }}>
-          {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(d => <div key={d} style={{ textAlign: 'center', fontSize: 11, color: 'var(--t3)', fontWeight: 700, ...mono }}>{d}</div>)}
-          {cells.map((d, i) => {
-            if (d == null) return <div key={i} />;
-            const key = ymd(new Date(month.y, month.m, d));
-            const status = dayStatus[key] || 'idle';
-            const sel = selDay === key;
-            return (
-              <button key={i} onClick={() => setSelDay(key)} style={{ aspectRatio: '1', borderRadius: 10, border: `1px solid ${sel ? 'var(--acc)' : 'var(--bdr)'}`, background: status === 'idle' ? 'var(--bg2)' : `color-mix(in srgb, ${DAY_COL[status]} 22%, var(--bg2))`, color: 'var(--t1)', cursor: 'pointer', fontFamily: 'inherit', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 4, padding: 4 }}>
-                <span style={{ fontSize: 13, fontWeight: 700, ...mono }}>{d}</span>
-                {status !== 'idle' && <span style={{ width: 7, height: 7, borderRadius: 999, background: DAY_COL[status] }} />}
-              </button>
-            );
-          })}
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) 360px', gap: 18, alignItems: 'start' }}>
+        {/* LEFT — calendar grid */}
+        <div style={{ background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 12, padding: 16 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7,1fr)', gap: 6 }}>
+            {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((d, i) => <div key={i} style={{ textAlign: 'center', fontSize: 11, color: 'var(--t3)', fontWeight: 700, ...mono }}>{d}</div>)}
+            {cells.map((d, i) => {
+              if (d == null) return <div key={i} />;
+              const key = ymd(new Date(month.y, month.m, d));
+              const status = dayStatus[key] || 'idle';
+              const sel = selDay === key;
+              const future = key > today;
+              return (
+                <button key={i} onClick={() => setSelDay(key)} style={{ aspectRatio: '1', borderRadius: 10, border: `1px solid ${sel ? 'var(--acc)' : 'var(--bdr)'}`, background: sel ? 'var(--acc-d)' : 'var(--bg2)', color: 'var(--t1)', cursor: 'pointer', fontFamily: 'inherit', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 4, padding: 4 }}>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: future ? 'var(--t4)' : 'var(--t1)', ...mono }}>{d}</span>
+                  {!future && status !== 'idle' && <span style={{ width: 7, height: 7, borderRadius: 999, background: DAY_COL[status] }} />}
+                </button>
+              );
+            })}
+          </div>
+          <div style={{ display: 'flex', gap: 16, marginTop: 14, fontSize: 11.5, color: 'var(--t3)' }}>
+            {[['green', 'Fully compliant'], ['amber', 'Minor exception'], ['coral', 'Failure / breach']].map(([c, l]) => <span key={c} style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ width: 9, height: 9, borderRadius: 999, background: DAY_COL[c] }} />{l}</span>)}
+          </div>
         </div>
-        <div style={{ display: 'flex', gap: 16, marginTop: 14, fontSize: 11.5, color: 'var(--t3)' }}>
-          {[['green', 'Compliant'], ['amber', 'Minor'], ['coral', 'Breach / missed']].map(([c, l]) => <span key={c} style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ width: 9, height: 9, borderRadius: 999, background: DAY_COL[c] }} />{l}</span>)}
-        </div>
-      </div>
 
-      {selDay && <DayDetail day={selDay} units={data.units} readings={data.readings.filter(r => ymd(r.recordedAt) === selDay)} corr={data.corr.filter(c => ymd(c.createdAt) === selDay)} onClose={() => setSelDay(null)} />}
+        {/* RIGHT — day detail timeline */}
+        {selDay && (
+          <DayDetail
+            day={selDay}
+            units={data.units}
+            readings={data.readings.filter(r => ymd(r.recordedAt) === selDay)}
+            corr={data.corr.filter(c => ymd(c.createdAt) === selDay)}
+            runs={data.runs.filter(r => r.runDate === selDay)}
+            maint={data.maint.filter(m => ymd(m.createdAt) === selDay)}
+            checklists={data.checklists}
+          />
+        )}
+      </div>
     </div>
   );
 }
-const navBtn = { width: 34, height: 34, borderRadius: 8, border: '1px solid var(--bdr)', background: 'var(--bg2)', color: 'var(--t1)', cursor: 'pointer', fontSize: 16, fontFamily: 'inherit' };
 
-function DayDetail({ day, units, readings, corr, onClose }) {
+const pillBtn = { width: 30, height: 30, borderRadius: 999, border: 0, background: 'transparent', color: 'var(--t1)', cursor: 'pointer', fontSize: 16, fontFamily: 'inherit', display: 'flex', alignItems: 'center', justifyContent: 'center' };
+const ghostBtn = { padding: '9px 14px', borderRadius: 8, background: 'transparent', color: 'var(--t2)', border: '1px solid var(--bdr)', fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' };
+
+// ── the day timeline ──────────────────────────────────────────────────────────
+// Builds one time-sorted list of event cards from temperature rounds (rolled up per
+// AM/PM round), checklist sign-offs, corrective actions and maintenance raised.
+function DayDetail({ day, units, readings, corr, runs, maint, checklists }) {
   const uName = (id) => units.find(u => u.id === id)?.name || '—';
+  const clName = (id) => checklists.find(c => c.id === id)?.name || 'Checklist';
+  const clTotal = (id) => (checklists.find(c => c.id === id)?.tasks?.length) || 0;
+
+  const events = useMemo(() => {
+    const out = [];
+
+    // (a) temperature rounds rolled up per AM/PM round
+    const rounds = {}; // 'AM' | 'PM' → { reads:[] }
+    readings.forEach(r => {
+      const h = new Date(r.recordedAt).getHours();
+      const round = h < 12 ? 'AM' : 'PM';
+      (rounds[round] ??= []).push(r);
+    });
+    Object.entries(rounds).forEach(([round, reads]) => {
+      const inRangeN = reads.filter(r => r.inRange).length;
+      const total = reads.length;
+      const last = reads.reduce((a, b) => new Date(a.recordedAt) > new Date(b.recordedAt) ? a : b);
+      const firstAt = reads.reduce((a, b) => new Date(a.recordedAt) < new Date(b.recordedAt) ? a : b).recordedAt;
+      out.push({
+        at: firstAt,
+        tone: inRangeN === total ? 'green' : 'coral',
+        title: `${round} temperature round`,
+        sub: `${inRangeN}/${total} in range · ${hhmm(last.recordedAt)}`,
+      });
+    });
+
+    // (b) checklist runs signed off
+    runs.forEach(r => {
+      const total = clTotal(r.checklistId);
+      out.push({
+        at: r.completedAt || (day + 'T12:00:00'),
+        tone: 'green',
+        title: clName(r.checklistId),
+        sub: `${total}/${total} · signed ${r.completedByName || '—'}`,
+      });
+    });
+
+    // (c) corrective actions
+    corr.forEach(c => {
+      const reading = readings.find(r => r.id === c.sourceId);
+      const unit = reading ? uName(reading.tempUnitId) : (c.sourceType === 'reading' ? 'Reading' : (c.sourceType || 'Unit'));
+      const temp = reading ? displayTemp(reading.readingC, 'C').label : '';
+      out.push({
+        at: c.createdAt,
+        tone: 'coral',
+        title: [unit, temp].filter(Boolean).join(' '),
+        sub: `corrective: ${(c.action || '').replace(/_/g, ' ') || '—'}`,
+      });
+    });
+
+    // (d) maintenance raised
+    maint.forEach(m => {
+      out.push({
+        at: m.createdAt,
+        tone: 'maint',
+        title: 'Maintenance raised',
+        sub: `${m.assetType || m.title || 'asset'} · assigned ${hhmm(m.createdAt)}`,
+      });
+    });
+
+    return out.sort((a, b) => new Date(a.at) - new Date(b.at));
+  }, [readings, runs, corr, maint, day]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // day summary: exceptions = breach readings + corrective actions + maintenance raised
+  const breachReads = readings.filter(r => !r.inRange).length;
+  const exceptions = corr.length || breachReads;
+  const allCorrected = exceptions > 0 && corr.length > 0 && corr.every(c => c.status === 'closed' || c.status === 'resolved' || !!c.maintenanceRequestId);
+  const plural = exceptions === 1 ? '' : 'S';
+
+  const TONE_BORDER = { green: 'var(--grn)', coral: 'var(--red)', maint: 'var(--orn)' };
+
   return (
-    <div style={{ marginTop: 16, background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 12, padding: 18, maxWidth: 720 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-        <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--t1)' }}>{new Date(day + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })}</div>
-        <button onClick={onClose} style={{ background: 'transparent', border: 0, color: 'var(--t3)', cursor: 'pointer', fontSize: 20 }}>×</button>
-      </div>
-      <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6, ...mono }}>Readings</div>
-      {readings.length === 0 ? <div style={{ fontSize: 13, color: 'var(--t3)', marginBottom: 12 }}>No readings logged.</div> : (
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, marginBottom: 14 }}>
-          <tbody>{readings.slice().reverse().map(r => (
-            <tr key={r.id}>
-              <td style={{ padding: '5px 8px', color: 'var(--t3)', ...mono }}>{new Date(r.recordedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}</td>
-              <td style={{ padding: '5px 8px', color: 'var(--t1)' }}>{uName(r.tempUnitId)}</td>
-              <td style={{ padding: '5px 8px', fontWeight: 700, color: r.inRange ? 'var(--grn)' : 'var(--red)', ...mono }}>{displayTemp(r.readingC, 'C').label}</td>
-              <td style={{ padding: '5px 8px', color: r.inRange ? 'var(--grn)' : 'var(--red)', fontSize: 11, ...mono }}>{r.inRange ? 'IN RANGE' : 'BREACH'}</td>
-              <td style={{ padding: '5px 8px', color: 'var(--t3)' }}>{r.operatorName || ''}</td>
-            </tr>
-          ))}</tbody>
-        </table>
+    <div style={{ background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 12, padding: 18 }}>
+      <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--t1)' }}>{new Date(day + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })}</div>
+      {exceptions > 0 && (
+        <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', marginTop: 4, marginBottom: 14, color: allCorrected ? 'var(--orn)' : 'var(--red)', ...mono }}>
+          {`${exceptions} EXCEPTION${plural} · ${allCorrected ? 'CORRECTED' : 'OPEN'}`}
+        </div>
       )}
-      {corr.length > 0 && <>
-        <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--red)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6, ...mono }}>Corrective actions</div>
-        {corr.map(c => <div key={c.id} style={{ fontSize: 13, color: 'var(--t1)', padding: '4px 0' }}>{c.action?.replace(/_/g, ' ')} <span style={{ color: 'var(--t3)', fontSize: 11.5 }}>· {c.operatorName || '—'} · {new Date(c.createdAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}{c.maintenanceRequestId ? ' · maintenance raised' : ''}</span></div>)}
-      </>}
+      {exceptions === 0 && <div style={{ height: 14 }} />}
+
+      {events.length === 0 ? (
+        <div style={{ fontSize: 13, color: 'var(--t3)' }}>No activity logged.</div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {events.map((e, i) => (
+            <div key={i} style={{ background: 'var(--bg2)', borderRadius: 10, borderLeft: `4px solid ${TONE_BORDER[e.tone] || 'var(--bdr2)'}`, padding: 12 }}>
+              <div style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--t1)' }}>{e.title}</div>
+              <div style={{ fontSize: 11.5, color: 'var(--t3)', marginTop: 3, ...mono }}>{e.sub}</div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
