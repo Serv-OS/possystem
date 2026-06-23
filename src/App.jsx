@@ -86,6 +86,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.614', date: '23 Jun 2026', label: 'Bar tabs — live "£ left on hold" indicator + one-tap "Increase hold" (step-up auth)',
+    changes: [
+      'A card-held tab now shows a live colour-coded badge — e.g. "£6 left" (green → amber → red as it fills, "Hold full" at the limit) — so staff see the ceiling coming, not just when a round is blocked.',
+      'New "＋ Increase hold" button raises the card authorization on the existing hold (Stripe incremental authorization — no re-tap) so a tab can keep one running bill past its original limit. Where the card/issuer doesn’t support it, it falls back cleanly to the prompt to take payment or open a new tab.',
+    ],
+  },
+  {
     version: '5.5.613', date: '23 Jun 2026', label: 'Bar tabs — can no longer over-order past the card pre-auth hold',
     changes: [
       'A card-held bar tab (e.g. £50 pre-auth) now blocks a round that would take the running total over the held amount, with a clear prompt to take payment / open a new tab. Previously you could keep ordering past the hold and then hit an error at cash-off because the overage couldn’t be captured. Applies to both the Bar surface and POS “send to tab”. Tabs without a card hold are unaffected (no cap).',

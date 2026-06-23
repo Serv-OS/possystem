@@ -162,7 +162,7 @@ const labelStyle = { display:'block', fontSize:11, fontWeight:700, color:'var(--
 
 // ─── Main Bar Surface ─────────────────────────────────────────────────────────
 export default function BarSurface() {
-  const { tabs, activeTabId, setActiveTab, openTab, addRoundToTab, updateTabNote, updateTabStatus, closeTab, voidTabRound, seedTabs, showToast, eightySixIds, allergens, setPendingItem, clearPendingItem, pendingItem, menuCategories, quickScreenIds, menuItems: storeMenuItems, modifierGroupDefs, menus, deviceConfig, staff, recordWalkInClosedCheck } = useStore();
+  const { tabs, activeTabId, setActiveTab, openTab, addRoundToTab, updateTabNote, updateTabStatus, setTabHold, closeTab, voidTabRound, seedTabs, showToast, eightySixIds, allergens, setPendingItem, clearPendingItem, pendingItem, menuCategories, quickScreenIds, menuItems: storeMenuItems, modifierGroupDefs, menus, deviceConfig, staff, recordWalkInClosedCheck } = useStore();
 
   const [showOpenModal, setShowOpenModal]   = useState(false);
   const [cat, setCat]                       = useState('all');
@@ -332,6 +332,38 @@ export default function BarSurface() {
     } catch (e) { console.warn('[bar-tab] release hold failed:', e?.message); }
   };
 
+  // v5.5.614: STEP UP a card hold — raise the pre-auth ceiling on the existing PI (Stripe
+  // incremental authorization; no re-tap). Lets a tab keep one running bill past its original
+  // hold. Falls back to the lock ("take payment / new tab") where the card doesn't support it.
+  const [holdBusy, setHoldBusy] = useState(false);
+  const increaseHold = async (tab) => {
+    if (!tab?.preAuthPaymentIntentId || holdBusy) return;
+    const cap = (tab.preAuthHeldMinor != null ? tab.preAuthHeldMinor / 100 : tab.preAuthAmount) || 0;
+    const suggested = Math.max(Math.ceil((tab.total || 0) + 20), Math.ceil(cap + 10));
+    const input = window.prompt(`Increase the card hold (currently ${money(cap)}).\nNew hold amount:`, String(suggested));
+    if (input == null) return;
+    const newAmt = parseFloat(String(input).replace(/[^0-9.]/g, ''));
+    if (!(newAmt > cap)) { showToast(`New hold must be more than ${money(cap)}`, 'error'); return; }
+    setHoldBusy(true);
+    try {
+      const token = await ensureAuthToken();
+      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-increment-authorization`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({ payment_intent_id: tab.preAuthPaymentIntentId, location_id: getActiveLocationSync(), amount_minor: Math.round(newAmt * 100) }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (j?.ok && j.amount_minor) {
+        setTabHold(tab.id, j.amount_minor);
+        showToast(`Card hold increased to ${money(j.amount_minor / 100)}`, 'success');
+      } else {
+        showToast(`Couldn't increase the hold on this card — take payment to close, or open a new tab.`, 'error');
+      }
+    } catch (e) {
+      showToast('Could not reach the card processor — try again.', 'error');
+    } finally { setHoldBusy(false); }
+  };
+
   // v5.5.324: capture the held card for (up to) the running total, then close.
   const captureHeldTab = async (tab) => {
     const totalMinor = Math.round((tab.total || 0) * 100);
@@ -481,6 +513,8 @@ export default function BarSurface() {
                         not merely the "pre-auth" intent toggle (which previously
                         showed a hold that was never actually placed). */}
                     {activeTab.preAuthPaymentIntentId&&<span style={{fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:20,background:'var(--blu-d)',color:'var(--blu)',border:'1px solid var(--blu-b)'}}>💳 Held {currencySymbol()}{(((activeTab.preAuthHeldMinor!=null?activeTab.preAuthHeldMinor/100:activeTab.preAuthAmount))||0).toFixed(0)}</span>}
+                    {activeTab.preAuthPaymentIntentId&&(()=>{ const cap=(activeTab.preAuthHeldMinor!=null?activeTab.preAuthHeldMinor/100:activeTab.preAuthAmount)||0; if(cap<=0) return null; const left=cap-(activeTab.total||0); const t = left<=0 ? {bg:'var(--red-d)',c:'var(--red)',b:'var(--red-b)'} : left<=cap*0.2 ? {bg:'var(--acc-d)',c:'var(--orn)',b:'var(--bdr2)'} : {bg:'var(--grn-d)',c:'var(--grn)',b:'var(--grn-b)'}; return <span style={{fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:20,background:t.bg,color:t.c,border:`1px solid ${t.b}`}}>{left<=0?'Hold full':`${money(left)} left`}</span>; })()}
+                    {activeTab.preAuthPaymentIntentId&&<button onClick={()=>increaseHold(activeTab)} disabled={holdBusy} title="Raise the card hold (incremental authorization — keeps one running bill)" style={{fontSize:10,fontWeight:700,padding:'2px 8px',borderRadius:20,background:'var(--bg3)',color:'var(--t1)',border:'1px solid var(--bdr)',cursor:'pointer',fontFamily:'inherit',opacity:holdBusy?0.6:1}}>{holdBusy?'…':'＋ Increase hold'}</button>}
                     {activeTab.tableId&&<span style={{fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:20,background:'var(--bg3)',color:'var(--t2)'}}>Table linked</span>}
                   </div>
                 </div>

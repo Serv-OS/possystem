@@ -2925,6 +2925,8 @@ export const useStore = create((set, get) => ({
   },
   updateTabNote: (tabId,note) => set(s=>({ tabs:s.tabs.map(t=>t.id===tabId?{...t,note}:t) })),
   updateTabStatus: (tabId,status) => set(s=>({ tabs:s.tabs.map(t=>t.id===tabId?{...t,status}:t) })),
+  // Raise the card-hold ceiling after a successful Stripe incremental authorization (step-up).
+  setTabHold: (tabId, heldMinor) => set(s=>({ tabs:s.tabs.map(t=>t.id===tabId?{...t, preAuthHeldMinor: heldMinor, preAuthAmount: heldMinor/100}:t) })),
   closeTab: tabId => {
     const st = get();
     const closing = st.tabs.find(t => t.id === tabId);
