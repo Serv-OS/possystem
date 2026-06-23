@@ -86,6 +86,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.608', date: '23 Jun 2026', label: 'HubRise — fix order status push-back (accept/prep/ready) + 86 sync from POS devices',
+    changes: [
+      'HubRise order status updates (accept / in-prep / ready / collected) now actually reach HubRise and the channel. They were silently rejected: OrdersHub runs on a paired device (anonymous session) but the status + inventory edge functions only allowed signed-in back-office users, so every push 403’d and was swallowed — orders stayed “received” on the channel.',
+      'The hubrise-order-status and hubrise-inventory-push functions now accept a paired-device session (fenced to the order’s / device’s own location); 86 toggles from the POS now sync to HubRise too.',
+    ],
+  },
+  {
     version: '5.5.607', date: '23 Jun 2026', label: 'Operations — floor-app sense-check fixes (scroll, ring, maintenance list, alerts, checklist tiles) + calendar',
     changes: [
       'Floor app now scrolls (it was clipped to the viewport).',

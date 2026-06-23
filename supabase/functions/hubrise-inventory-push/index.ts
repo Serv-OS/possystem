@@ -30,8 +30,12 @@ async function requireAccess(req: Request, loc: string): Promise<Response | null
     sb.from('user_locations').select('location_id').eq('user_id', user.id).eq('location_id', loc).maybeSingle(),
     sb.from('user_profiles').select('role').eq('id', user.id).maybeSingle(),
   ]);
-  if (!ul && prof?.role !== 'super_admin') return json({ error: 'No access to this location' }, 403);
-  return null;
+  if (ul || prof?.role === 'super_admin') return null;
+  // 86 toggles fire from POS devices (anonymous session, no user_locations row) via the
+  // store. Allow an anonymous session to push inventory for its location — the HubRise
+  // token stays server-side and the push only targets this location's connected catalog.
+  if (user.is_anonymous) return null;
+  return json({ error: 'No access to this location' }, 403);
 }
 
 Deno.serve(async (req) => {

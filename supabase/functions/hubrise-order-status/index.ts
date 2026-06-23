@@ -29,12 +29,19 @@ async function requireAccess(req: Request, loc: string): Promise<Response | null
   if (token === SERVICE_ROLE) return null;
   const { data: { user } } = await sb.auth.getUser(token);
   if (!user) return json({ error: 'Invalid token' }, 401);
+  // Back-office user with explicit access to this location (or super admin).
   const [{ data: ul }, { data: prof }] = await Promise.all([
     sb.from('user_locations').select('location_id').eq('user_id', user.id).eq('location_id', loc).maybeSingle(),
     sb.from('user_profiles').select('role').eq('id', user.id).maybeSingle(),
   ]);
-  if (!ul && prof?.role !== 'super_admin') return json({ error: 'No access to this location' }, 403);
-  return null;
+  if (ul || prof?.role === 'super_admin') return null;
+  // OrdersHub runs on a PAIRED DEVICE (anonymous Supabase session) that has no
+  // user_locations row — but it still needs to push status as staff accept/advance
+  // orders. Allow an anonymous session: the HubRise token stays server-side, and the
+  // handler re-fences to the order's own location (link.location_id === loc). This
+  // mirrors how the kiosk/online edge fns trust anonymous device sessions.
+  if (user.is_anonymous) return null;
+  return json({ error: 'No access to this location' }, 403);
 }
 
 Deno.serve(async (req) => {
@@ -53,6 +60,8 @@ Deno.serve(async (req) => {
 
   const { data: link } = await sb.from('hubrise_order_links').select('*').eq('ref', ref).maybeSingle();
   if (!link) return json({ ok: true, skipped: 'not a HubRise order' });
+  // Fence: only act on an order that genuinely belongs to the claimed location.
+  if (link.location_id !== loc) return json({ error: 'order does not belong to this location' }, 403);
 
   const hrStatus = queueToHrStatus(action, link.service_type);
   if (!hrStatus) return json({ error: `cannot map action: ${action}` }, 400);
