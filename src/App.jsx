@@ -86,6 +86,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.618', date: '23 Jun 2026', label: 'Catering — kitchen fires by prep time before each order’s event (not a fixed clock time)',
+    changes: [
+      'Catering settings: the single “Kitchen fire time” clock setting is replaced by “Prep time (minutes)”. Each order now fires into the kitchen that many minutes before its OWN event time — so four orders on the same day at different times each fire at the right moment (a 12:00 event fires before a 18:00 event), instead of all being pinned to one fixed time.',
+      'The sale still counts on the event day. Set prep time to 0 to fire exactly at the event time.',
+    ],
+  },
+  {
     version: '5.5.617', date: '23 Jun 2026', label: 'Operations — checklist photo evidence now actually captures & shows the photo',
     changes: [
       'Checklist tasks marked “photo required” now open the camera when you tap them — you can’t tick the task (or sign off the checklist) until a photo is actually captured. Previously the camera icon was decorative and the task ticked with no photo.',

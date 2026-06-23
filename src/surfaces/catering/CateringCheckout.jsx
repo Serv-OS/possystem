@@ -88,13 +88,17 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
     try { await supabase.functions.invoke('promo-redeem', { body: { action: 'redeem', code: promoApplied.code, order_id: orderRef, location_id: opsId, basket_value: subtotal, idempotency_key: `${orderRef}:${promoApplied.code}` } }); } catch { /* best-effort; discount already shown to the guest */ }
   };
   const discountLine = promoApplied ? [{ type: 'promo', code: promoApplied.code, label: promoApplied.name, amount: promoApplied.amount }] : [];
-  // A catering order is HELD until its event day: sent_at = the kitchen fire moment (event day @
-  // kitchen_fire_time, in the venue's timezone). It stays out of the live queue (QueueSync excludes
-  // future catering) and the master "release due catering" tick fires it to the kitchen at that
-  // moment via routeKioskOrderPrints (atomic kitchen_routed_at claim → fires once across devices).
-  // status stays 'received' (BO Catering orders reads kitchen_routed_at, not status, for "In kitchen").
+  // A catering order is HELD until its event day. The kitchen needs `prep_time_minutes`, so it FIRES
+  // that many minutes before the order's OWN event time (sent_at = event − prep, in the venue
+  // timezone). Each order fires relative to its own event time, so multiple same-day orders at
+  // different times each fire at the right moment. It stays out of the live queue (QueueSync excludes
+  // future catering); the master "release due catering" tick fires it via routeKioskOrderPrints
+  // (atomic kitchen_routed_at claim → once across devices). status stays 'received' (BO Catering
+  // reads kitchen_routed_at, not status, for "In kitchen"). Sales date to the event day (eventMs).
+  const prepMin = Math.max(0, Number(cfg?.prep_time_minutes) || 0);
+  const eventMs = wallTimeToInstantMs(eventDate, eventTime || '12:00', cfg?.venue_timezone);
+  const fireMs = isNaN(eventMs) ? NaN : eventMs - prepMin * 60000;
   const queueRow = (paid, pay) => {
-    const fireMs = wallTimeToInstantMs(eventDate, cfg.kitchen_fire_time || eventTime || '12:00', cfg.venue_timezone);
     return {
       ref, location_id: opsId, type: fulfilment, status: 'received', source: 'catering',
       event_date: eventDate, collection_time: eventTime, is_asap: false,
@@ -154,12 +158,10 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
       // order_queue (paid)
       await supabase.from('order_queue').insert(queueRow(true, pay));
       // closed_checks (paid, net) — mirrors the online paid-order record. Sales are dated to the
-      // PRODUCTION day (event day at the kitchen-fire time / event time), so a pre-order counts on
-      // the day it's made — not the day it was placed. Payment is still captured now.
+      // event day at the event time, so a pre-order counts on the day of the event — not the day it
+      // was placed. Payment is still captured now. (eventMs is computed once in the component body.)
       const taxBk = calculateOrderTax(cart.map((l) => ({ price: l.price + (l.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0), qty: l.qty || 1, taxRateId: l.taxRateId, taxOverrides: l.taxOverrides })), taxRates || [], fulfilment);
-      const fireT = cfg.kitchen_fire_time || eventTime || '12:00';
-      const fireMs = wallTimeToInstantMs(eventDate, fireT, cfg.venue_timezone);
-      const closedAt = isNaN(fireMs) ? new Date().toISOString() : new Date(fireMs).toISOString();
+      const closedAt = isNaN(eventMs) ? new Date().toISOString() : new Date(eventMs).toISOString();
       const closedCheck = {
         id: `chk-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`, ref, location_id: opsId, server: 'Catering', staff_id: null, covers: 1,
         order_type: fulfilment, customer: buildCustomer(pay), items: buildItems().map((i) => ({ ...i, voided: false })), discounts: discountLine,

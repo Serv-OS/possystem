@@ -2,7 +2,8 @@
 //
 // SERVER-SIDE SAFETY NET for catering scheduled firing. Catering pre-orders are held in
 // order_queue (source='catering', kitchen_routed_at NULL) with sent_at = the kitchen fire
-// instant. The POS master device normally fires them at sent_at via routeKioskOrderPrints
+// instant (the order's event time minus the venue's prep_time_minutes). The POS master
+// device normally fires them at sent_at via routeKioskOrderPrints
 // (full per-centre print + KDS, atomic kitchen_routed_at claim). THIS cron is the device-
 // independent backstop: for any catering order whose fire time passed by more than GRACE_MIN
 // and that NO device has fired (kitchen_routed_at still NULL), it atomically claims the row
