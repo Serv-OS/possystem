@@ -86,6 +86,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.616', date: '23 Jun 2026', label: 'Coffee-shop sticker printing — one ticket per item (per-printer toggle)',
+    changes: [
+      'Print routing centres have a new “One ticket per item ☕ (sticker mode)” switch. When on, that printer prints a separate docket for every item on the order — coffee-shop style, one sticker per cup — instead of a single combined ticket.',
+      'Each split ticket is numbered “ITEM 1 OF 3”, “ITEM 2 OF 3”… and quantities are expanded (qty 2 latte = two tickets). Off by default; existing combined-ticket behaviour is unchanged for every other centre.',
+    ],
+  },
+  {
     version: '5.5.615', date: '23 Jun 2026', label: 'Loyalty — points & stamp cards can run independently (points-only / stamps-only / both)',
     changes: [
       'Back Office → Loyalty now has separate on/off switches for Points and Stamp cards. Run points only, stamp cards only, or both — with a warning if you turn both off.',

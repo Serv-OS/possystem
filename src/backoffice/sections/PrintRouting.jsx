@@ -250,12 +250,13 @@ export default function PrintRouting() {
       printer: form.printerId ? printers.find(p => p.id === form.printerId) || null : null,
       kdsDeviceId: form.kdsDeviceId || null,
       printAllergens: form.printAllergens === true,
+      splitPerItem: form.splitPerItem === true,
     };
     setData(d => ({ ...d, centres:[...d.centres, centre] }));
     setRouting(r => ({ ...r, [centre.id]: emptyRouting() }));
     setSelected(centre.id);
     setShowAdd(false);
-    setForm({ name:'', icon:'🔥', type:'kitchen', printerId:'', kdsDeviceId:'', printAllergens:false });
+    setForm({ name:'', icon:'🔥', type:'kitchen', printerId:'', kdsDeviceId:'', printAllergens:false, splitPerItem:false });
   };
 
   const saveCentre = () => {
@@ -265,6 +266,7 @@ export default function PrintRouting() {
       printer: form.printerId ? printers.find(p => p.id === form.printerId) || null : null,
       kdsDeviceId: form.kdsDeviceId || null,
       printAllergens: form.printAllergens === true,
+      splitPerItem: form.splitPerItem === true,
     } : c) }));
     setEditCentre(null);
   };
@@ -281,7 +283,8 @@ export default function PrintRouting() {
     setForm({ name:c.name, icon:c.icon, type:c.type,
       printerId: c.printerId || '',
       kdsDeviceId: c.kdsDeviceId||'',
-      printAllergens: c.printAllergens === true });
+      printAllergens: c.printAllergens === true,
+      splitPerItem: c.splitPerItem === true });
     setShowAdd(false);
   };
 
@@ -366,6 +369,29 @@ export default function PrintRouting() {
           <div style={{
             width:18, height:18, borderRadius:'50%', background:'#fff',
             position:'absolute', top:3, left: form.printAllergens ? 21 : 3,
+            transition:'left .15s',
+          }}/>
+        </button>
+      </div>
+
+      <div style={{ marginBottom:14, padding:'10px 12px', background:'var(--bg3)', border:'1px solid var(--bdr)', borderRadius:8, display:'flex', alignItems:'center', justifyContent:'space-between', gap:12 }}>
+        <div style={{ minWidth:0 }}>
+          <div style={{ fontSize:13, fontWeight:600, color:'var(--t1)' }}>One ticket per item ☕ (sticker mode)</div>
+          <div style={{ fontSize:11, color:'var(--t3)', marginTop:2 }}>
+            Coffee-shop style — prints a separate docket for every item (e.g. one sticker per cup), each numbered “ITEM 1 OF 3”. Off by default.
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={()=>f('splitPerItem', !form.splitPerItem)}
+          style={{
+            width:42, height:24, borderRadius:12, cursor:'pointer', border:'none',
+            background: form.splitPerItem ? 'var(--acc)' : 'var(--bg5)',
+            position:'relative', transition:'background .15s', flexShrink:0,
+          }}>
+          <div style={{
+            width:18, height:18, borderRadius:'50%', background:'#fff',
+            position:'absolute', top:3, left: form.splitPerItem ? 21 : 3,
             transition:'left .15s',
           }}/>
         </button>

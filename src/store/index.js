@@ -4388,6 +4388,28 @@ export const useStore = create((set, get) => ({
             }) : it.mods,
           }));
 
+      // Coffee-shop "sticker" mode: when this centre is set to split each item onto its own
+      // ticket, dispatch one kitchen ticket per item UNIT (qty-expanded), each labelled
+      // "ITEM X OF Y" with a unique idempotency key. Skips the single combined ticket below.
+      if (!isFireMarker && !isTransferNotice && centre?.splitPerItem) {
+        const units = [];
+        printItems.forEach(it => { const q = Math.max(1, Math.round(it.qty || 1)); for (let n = 0; n < q; n++) units.push({ ...it, qty: 1 }); });
+        const total = units.length || 1;
+        let allOk = true; let lastJobId = null;
+        for (let i = 0; i < units.length; i++) {
+          const r = await printService.printKitchenTicket({
+            table: job.tableLabel || '', server: job.server || '', covers: job.covers || 0,
+            course: job.course || null, centreName: centre?.name || job.printerName || 'Kitchen',
+            items: [units[i]], sentAt: basePrintJob.sentAt, delivery: job.delivery || null,
+            itemLabel: `ITEM ${i + 1} OF ${total}`,
+          }, printerId, { idempotencyKey: `${idempotencyKey}-i${i}` });
+          if (!r?.ok) allOk = false; else lastJobId = r.jobId;
+        }
+        set(s => ({ printJobs: s.printJobs.map(pj => pj.id === jobId ? { ...pj, status: allOk ? 'printed' : 'retry-pending', supabaseJobId: lastJobId, splitCount: total } : pj) }));
+        if (allOk) printService.recordPrinterHealth(printerId, 'online');
+        return;
+      }
+
       const result = isFireMarker
         ? await printService.printFireCourseTicket({
             table: job.tableLabel || '',

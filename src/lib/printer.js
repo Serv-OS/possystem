@@ -244,7 +244,7 @@ export async function buildCustomerReceipt({ location, check, items, totals }) {
   return b.toBytes();
 }
 
-export function buildKitchenTicket({ table, server, covers, course, centreName, items, sentAt, delivery }) {
+export function buildKitchenTicket({ table, server, covers, course, centreName, items, sentAt, delivery, itemLabel }) {
   const b = new EscPosBuilder(42);
   const time = new Date(sentAt||Date.now()).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
 
@@ -271,6 +271,9 @@ export function buildKitchenTicket({ table, server, covers, course, centreName, 
   } else {
     b.center().line('WALK-IN').left();
   }
+
+  // Coffee-shop "sticker" mode: one ticket per item, numbered ITEM X OF Y.
+  if (itemLabel) b.center().bold(true).line(itemLabel).bold(false).left();
 
   b.normal();
 
