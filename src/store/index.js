@@ -6,6 +6,7 @@ import { upsertMenuItem, upsertFloorTable, deleteFloorTable, insertKDSTicket, in
 import { printService } from '../lib/printer';
 import { hubrisePushStock, isHubriseConnected, hubrisePushStatus, isHubriseAutoReceipt } from '../lib/hubrise';
 import { depleteForSale, reverseForSale } from '../lib/stock/deplete';
+import { STALE_ORDER_FLOOR_MS } from '../sync/staleness';
 
 // ── Payment-intent normaliser ────────────────────────────────────────────────
 // v5.5.323: a check can have MULTIPLE card PaymentIntents — one per card portion
@@ -1812,7 +1813,18 @@ export const useStore = create((set, get) => ({
   tickScheduledOrders: () => {
     const { orderQueue } = get();
     const now = Date.now();
-    const due = orderQueue.filter(o => o.status === 'scheduled' && (o.scheduledFireAt || 0) <= now);
+    // Two guards so a long-offline device never dumps a stale scheduled backlog into the kitchen:
+    //  (1) require a real scheduledFireAt > 0. After a reload it is NOT rehydrated (not persisted to
+    //      order_queue), so the old `(o.scheduledFireAt || 0) <= now` was ALWAYS TRUE → every
+    //      rehydrated scheduled order (even ones due tomorrow) fired on the first boot tick.
+    //  (2) skip anything whose fire moment passed more than STALE_ORDER_FLOOR_MS ago — it stays
+    //      'scheduled' and visible in the Orders Hub for a staff member to release manually.
+    const due = orderQueue.filter(o =>
+      o.status === 'scheduled'
+      && o.scheduledFireAt > 0
+      && o.scheduledFireAt <= now
+      && (now - o.scheduledFireAt) <= STALE_ORDER_FLOOR_MS
+    );
     if (!due.length) return;
     due.forEach(o => {
       try { get().fireScheduledOrder(o.ref); } catch (err) {
@@ -1841,6 +1853,11 @@ export const useStore = create((set, get) => ({
       // same-time batch clears in one tick (not 50/5-min). routeKioskOrderPrints' atomic
       // kitchen_routed_at claim makes each route fire exactly once across devices, and a routed
       // row drops out of the next page's `kitchen_routed_at is null` filter so the loop terminates.
+      // Lower bound: don't fetch catering whose fire moment passed more than STALE_ORDER_FLOOR_MS
+      // ago — a long-offline master must not auto-dump a stale backlog. Genuinely-due catering is
+      // still fired server-side by the catering-release cron; anything older stays visible in the
+      // Orders Hub for manual release. (The routeKioskOrderPrints backstop is the belt-and-braces.)
+      const floorIso = new Date(Date.now() - STALE_ORDER_FLOOR_MS).toISOString();
       const PAGE = 200;
       for (let i = 0; i < 10; i++) {   // safety cap ≤ 2000/tick
         const { data, error } = await supabase.from('order_queue')
@@ -1848,6 +1865,7 @@ export const useStore = create((set, get) => ({
           .eq('location_id', locId).eq('source', 'catering')
           .is('kitchen_routed_at', null).neq('status', 'collected')
           .lte('sent_at', new Date().toISOString())
+          .gte('sent_at', floorIso)
           .order('sent_at', { ascending: true })
           .limit(PAGE);
         if (error || !data?.length) break;
@@ -4506,6 +4524,23 @@ export const useStore = create((set, get) => ({
           'until', new Date(sentAtMs).toISOString(),
           `(in ${Math.round(cappedWait/60000)} min)`);
         setTimeout(() => useStore.getState().routeKioskOrderPrints?.(order), cappedWait);
+        return;
+      }
+      // STALENESS BACKSTOP — universal guard for every routing path (catering release, master
+      // backfill, late realtime event). A device offline for a long time can find a backlog of
+      // overdue orders; never auto-dump them into the live kitchen. If the fire moment passed more
+      // than STALE_ORDER_FLOOR_MS ago, skip routing WITHOUT claiming the row — it keeps
+      // kitchen_routed_at NULL and stays in the Orders Hub for staff to release manually. Nothing
+      // is lost. (order.sentAt defaults to now() for ASAP rows with no sent_at, so they're never
+      // mistaken for stale.)
+      if (!order.manualRelease && Date.now() - sentAtMs > STALE_ORDER_FLOOR_MS) {
+        console.warn('[routeKioskOrderPrints] HELD stale order', order.ref, 'fire moment',
+          new Date(sentAtMs).toISOString(), `(${Math.round((Date.now() - sentAtMs) / 60000)} min ago)`);
+        const lastToast = useStore._staleHeldToastAt || 0;
+        if (Date.now() - lastToast > 60_000) {
+          useStore._staleHeldToastAt = Date.now();
+          showToast?.('Some overdue orders were held — release them manually in Orders', 'info', 6000);
+        }
         return;
       }
       // v5.5.138/143: atomic claim with graceful fallback when the

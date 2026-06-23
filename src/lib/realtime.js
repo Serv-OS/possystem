@@ -502,9 +502,9 @@ export function startRealtime(store, locationId = LOCATION_ID) {
 
   channels = [kdsChannel, e86Channel, stockChannel, configChannel, taxChannel, sessionsChannel, checksChannel, queueChannel, tabsChannel];
 
-  // Backfill: master scans for unrouted customer-surface orders (kiosk / online / qr)
-  // that arrived while it was offline OR that were scheduled and are now due.
-  // routeKioskOrderPrints internally defers if sent_at is still in the future.
+  // Backfill: master scans for unrouted customer-surface orders (kiosk / online / qr / hubrise)
+  // that arrived while it was offline OR that were scheduled and are now due. routeKioskOrderPrints
+  // internally defers if sent_at is still in the future and HOLDS anything >2h stale (boot backstop).
   (async () => {
     try {
       let isMaster = false;
@@ -512,9 +512,9 @@ export function startRealtime(store, locationId = LOCATION_ID) {
       if (!isMaster) return;
       const { data, error } = await supabase
         .from('order_queue')
-        .select('ref, source, items, customer, sent_at')
+        .select('ref, source, items, customer, sent_at, status, collection_time, is_asap')
         .eq('location_id', locationId)
-        .in('source', ['kiosk', 'online', 'qr'])
+        .in('source', ['kiosk', 'online', 'qr', 'hubrise'])
         .is('kitchen_routed_at', null)
         .neq('status', 'collected')
         .limit(100); // bounded backfill — a bigger backlog signals a kitchen issue, not a sync job
@@ -522,12 +522,18 @@ export function startRealtime(store, locationId = LOCATION_ID) {
       if (data?.length) {
         console.log(`[Realtime] backfilling ${data.length} unrouted order(s)`);
         for (const row of data) {
+          // HubRise on manual-accept arrives as 'received' and must wait for staff Accept in the
+          // Orders Hub (which prints + confirms a prep time back to the channel). Only auto-route
+          // hubrise rows the venue auto-accepted (already 'prep') — mirrors the live INSERT handler.
+          if (row.source === 'hubrise' && row.status !== 'prep') continue;
           await store.getState().routeKioskOrderPrints?.({
             ref: row.ref,
             source: row.source,
             tableLabel: row.customer?.tableLabel || null,
             items: row.items || [],
             customer: row.customer || null,
+            collectionTime: row.collection_time || null,
+            isASAP: !!row.is_asap,
             sentAt: row.sent_at ? new Date(row.sent_at).getTime() : Date.now(),
           });
         }

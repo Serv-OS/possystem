@@ -86,6 +86,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.619', date: '23 Jun 2026', label: 'Stability — a long-offline device no longer dumps a backlog of old orders into the kitchen on boot',
+    changes: [
+      'Booting a device that had been off for a long time could fire a flood of old orders of every type into the kitchen. Root causes fixed: scheduled orders re-fired on every reboot (their fire time wasn’t preserved), and the offline write-buffer replayed stale writes that re-created completed/old orders.',
+      'Now: nothing whose kitchen-fire moment passed more than 2 hours ago is auto-fired on boot — those orders are HELD (never deleted) and stay visible in the Orders Hub to release manually. Offline writes older than 12h are held for review instead of replayed; sales taken offline are always still recorded.',
+      'Also closed a gap where a HubRise order placed while the till was offline could be missed entirely — it’s now picked up on reconnect (older than 2h is held, not auto-fired).',
+    ],
+  },
+  {
     version: '5.5.618', date: '23 Jun 2026', label: 'Catering — kitchen fires by prep time before each order’s event (not a fixed clock time)',
     changes: [
       'Catering settings: the single “Kitchen fire time” clock setting is replaced by “Prep time (minutes)”. Each order now fires into the kitchen that many minutes before its OWN event time — so four orders on the same day at different times each fire at the right moment (a 12:00 event fires before a 18:00 event), instead of all being pinned to one fixed time.',

@@ -8,6 +8,8 @@
  * automatically — they surface in the Failure Queue UI for manual retry/dismiss.
  */
 
+import { REPLAY_MAX_AGE_MS } from './staleness';
+
 const DB_NAME = 'rpos-offline';
 const STORE_NAME = 'queue';
 const DB_VERSION = 2;  // bumped for failure-tracking fields
@@ -126,7 +128,31 @@ export async function replayQueue(supabase) {
   try {
     const items = await dbGetAll();
     // Only replay items that aren't permanently failed or dismissed
-    const live = items.filter(it => !it.permanentFailure && it.status !== 'dismissed');
+    const candidates = items.filter(it => !it.permanentFailure && it.status !== 'dismissed');
+
+    // STALENESS GUARD: a device dormant for a long time must NOT replay months-old STATE writes —
+    // upserting them resurrects completed/deleted orders, re-seats cleared tables and reopens closed
+    // tabs (the reported boot-corruption). Quarantine stale state writes instead of replaying.
+    // EXCEPTION: sales records (closed_checks) are append-only + idempotent on id, so they are
+    // ALWAYS replayed — we must never lose a sale taken offline, however old. Quarantined rows are
+    // retained in IndexedDB (returned by getFailedItems) — not auto-replayed, not deleted.
+    const now = Date.now();
+    const ALWAYS_REPLAY = (it) => it.table === 'closed_checks' || it.kind === 'closed_check';
+    const live = [];
+    for (const it of candidates) {
+      const age = it.ts ? now - it.ts : 0;   // missing ts (legacy item) → treat as fresh, never quarantine
+      if (age > REPLAY_MAX_AGE_MS && !ALWAYS_REPLAY(it)) {
+        const hrs = Math.round(age / 3_600_000);
+        const patch = { ...it, permanentFailure: true, status: 'failed_stale',
+          lastError: `Not replayed: buffered ~${hrs}h ago (older than the ${Math.round(REPLAY_MAX_AGE_MS / 3_600_000)}h limit) — retained for review`,
+          lastFailedAt: now, firstFailedAt: it.firstFailedAt || now };
+        await dbPut(patch);
+        console.warn(`[OfflineQueue] Quarantined stale ${it.kind || it.table} item ${it.id} (~${hrs}h old) — not replayed (would resurrect stale state)`);
+        window.dispatchEvent(new CustomEvent('rpos-queue-permanent-failure', { detail: patch }));
+        continue;
+      }
+      live.push(it);
+    }
     if (!live.length) { _replaying = false; return; }
 
     console.log(`[OfflineQueue] Replaying ${live.length} queued write(s)`);
@@ -189,6 +215,7 @@ export async function retryItem(id) {
   if (!item) return false;
   await dbPut({
     ...item,
+    ts: Date.now(),   // refresh age so a user-initiated retry isn't immediately re-quarantined by the staleness guard
     status: 'pending',
     permanentFailure: false,
     attempts: 0,
