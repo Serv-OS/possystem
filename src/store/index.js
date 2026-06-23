@@ -1821,6 +1821,50 @@ export const useStore = create((set, get) => ({
     });
   },
 
+  // Catering pre-orders are held in the DB (NOT the live in-memory queue) until their event day,
+  // then fired to the kitchen at sent_at (the kitchen fire time). This master-only tick queries the
+  // DB directly for catering whose fire time has arrived and routes them through routeKioskOrderPrints
+  // — which has the atomic kitchen_routed_at claim, so the order fires (prints + KDS) exactly once
+  // across all devices. Decoupled from the in-memory queue so it scales to thousands of bookings.
+  // Throttled to ~5 min; piggybacks the SyncBridge 60s tick.
+  releaseDueCateringOrders: async () => {
+    if (!supabase) return;
+    let isMaster = false;
+    try { isMaster = JSON.parse(localStorage.getItem('rpos-device-config') || '{}').isMaster === true; } catch { /* default false */ }
+    if (!isMaster) return;
+    if (useStore._cateringReleaseRunning) return;   // no overlapping runs
+    useStore._cateringReleaseRunning = true;
+    const locId = getActiveLocationSync() || await getLocationId().catch(() => null);
+    if (!locId || locId === 'loc-demo') { useStore._cateringReleaseRunning = false; return; }
+    try {
+      // Drain all due catering oldest-fire-first; loop while a full page returns so a big
+      // same-time batch clears in one tick (not 50/5-min). routeKioskOrderPrints' atomic
+      // kitchen_routed_at claim makes each route fire exactly once across devices, and a routed
+      // row drops out of the next page's `kitchen_routed_at is null` filter so the loop terminates.
+      const PAGE = 200;
+      for (let i = 0; i < 10; i++) {   // safety cap ≤ 2000/tick
+        const { data, error } = await supabase.from('order_queue')
+          .select('ref, items, customer, sent_at, collection_time, is_asap')
+          .eq('location_id', locId).eq('source', 'catering')
+          .is('kitchen_routed_at', null).neq('status', 'collected')
+          .lte('sent_at', new Date().toISOString())
+          .order('sent_at', { ascending: true })
+          .limit(PAGE);
+        if (error || !data?.length) break;
+        for (const row of data) {
+          await get().routeKioskOrderPrints?.({
+            ref: row.ref, source: 'catering',
+            items: row.items || [], customer: row.customer || null,
+            collectionTime: row.collection_time || null, isASAP: !!row.is_asap,
+            sentAt: row.sent_at ? new Date(row.sent_at).getTime() : Date.now(),
+          });
+        }
+        if (data.length < PAGE) break;
+      }
+    } catch (e) { console.warn('[releaseDueCateringOrders]', e?.message); }
+    finally { useStore._cateringReleaseRunning = false; }
+  },
+
   fireCourse: (courseNum) => {
     const { activeTableId, tables } = get();
     if (!activeTableId) return;
@@ -4529,7 +4573,7 @@ export const useStore = create((set, get) => ({
       // v5.5.126: source-correct labels so the kitchen ticket / KDS card says
       // "Online OL-XXX" or "QR T5" instead of always "Kiosk". Falls back to
       // the previous "Kiosk" wording when source is unknown.
-      const SRC_LABEL = { kiosk: 'Kiosk', online: 'Online', qr: 'QR', hubrise: 'HubRise' };
+      const SRC_LABEL = { kiosk: 'Kiosk', online: 'Online', qr: 'QR', hubrise: 'HubRise', catering: 'Catering' };
       const srcLabel = SRC_LABEL[order.source] || 'Kiosk';
       const tableLabel = order.source === 'qr' && order.tableLabel
         ? `Table ${order.tableLabel}`

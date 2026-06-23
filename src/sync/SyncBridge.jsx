@@ -445,6 +445,12 @@ export default function SyncBridge({ onSyncPulse }) {
           // don't spin up a second timer.
           useStore.getState().tickScheduledOrders?.();
         } catch {}
+        try {
+          // Release catering pre-orders whose event-day fire time has arrived
+          // (master-only, throttled inside). They're held in the DB, not the
+          // live queue, so this scales to thousands of future bookings.
+          useStore.getState().releaseDueCateringOrders?.();
+        } catch {}
       }, 60_000);
       // Store timer for cleanup
       window._rposPeriodicTimer = periodicTimer;

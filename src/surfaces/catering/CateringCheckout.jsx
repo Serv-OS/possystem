@@ -16,6 +16,23 @@ import { calculateOrderTax } from '../../lib/tax';
 import { sendEmailReceipt } from '../../lib/sendReceipt';
 
 const money = (n, cur) => `${({ gbp: '£', usd: '$', eur: '€' }[cur] || '£')}${Number(n || 0).toFixed(2)}`;
+
+// Build the UTC instant for a wall-clock time in the VENUE timezone (not the customer's
+// browser). Used for the kitchen fire time (sent_at) and the sale date (closed_at) so a
+// catering order fires + reports on the venue's clock regardless of where it was placed.
+function wallTimeToInstantMs(dateStr, timeStr, tz) {
+  if (!dateStr) return NaN;
+  const [y, mo, d] = dateStr.split('-').map(Number);
+  const [h, mi] = (timeStr || '12:00').split(':').map(Number);
+  const guess = Date.UTC(y, (mo || 1) - 1, d || 1, h || 0, mi || 0, 0);
+  if (!tz) return guess;
+  try {
+    const dtf = new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const p = {}; dtf.formatToParts(new Date(guess)).forEach(x => { if (x.type !== 'literal') p[x.type] = +x.value; });
+    const seen = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second);
+    return guess - (seen - guess);   // shift the guess by the venue's offset at that wall time
+  } catch { return guess; }
+}
 const center = { maxWidth: 640, margin: '0 auto', padding: '0 16px' };
 const lbl = { display: 'block', fontSize: 12, fontWeight: 700, color: '#475569', marginBottom: 5 };
 const inp = { width: '100%', boxSizing: 'border-box', border: '1px solid #cbd5e1', borderRadius: 10, padding: '9px 12px', fontSize: 14, fontFamily: 'inherit' };
@@ -71,7 +88,21 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
     try { await supabase.functions.invoke('promo-redeem', { body: { action: 'redeem', code: promoApplied.code, order_id: orderRef, location_id: opsId, basket_value: subtotal, idempotency_key: `${orderRef}:${promoApplied.code}` } }); } catch { /* best-effort; discount already shown to the guest */ }
   };
   const discountLine = promoApplied ? [{ type: 'promo', code: promoApplied.code, label: promoApplied.name, amount: promoApplied.amount }] : [];
-  const queueRow = (paid, pay) => ({ ref, location_id: opsId, type: fulfilment, status: 'received', source: 'catering', event_date: eventDate, collection_time: eventTime, is_asap: false, paid, items: buildItems(), customer: buildCustomer(pay), total, sent_at: new Date().toISOString(), ...(paid ? { payment_method: 'card' } : {}) });
+  // A catering order is HELD until its event day: sent_at = the kitchen fire moment (event day @
+  // kitchen_fire_time, in the venue's timezone). It stays out of the live queue (QueueSync excludes
+  // future catering) and the master "release due catering" tick fires it to the kitchen at that
+  // moment via routeKioskOrderPrints (atomic kitchen_routed_at claim → fires once across devices).
+  // status stays 'received' (BO Catering orders reads kitchen_routed_at, not status, for "In kitchen").
+  const queueRow = (paid, pay) => {
+    const fireMs = wallTimeToInstantMs(eventDate, cfg.kitchen_fire_time || eventTime || '12:00', cfg.venue_timezone);
+    return {
+      ref, location_id: opsId, type: fulfilment, status: 'received', source: 'catering',
+      event_date: eventDate, collection_time: eventTime, is_asap: false,
+      paid, items: buildItems(), customer: buildCustomer(pay), total,
+      sent_at: new Date(isNaN(fireMs) ? Date.now() : fireMs).toISOString(),
+      ...(paid ? { payment_method: 'card' } : {}),
+    };
+  };
   // Snapshot everything the confirmation screen needs, so it renders the full
   // branded receipt independent of any later state change.
   const placedSnapshot = (paid, emailedTo) => ({
@@ -127,8 +158,8 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
       // the day it's made — not the day it was placed. Payment is still captured now.
       const taxBk = calculateOrderTax(cart.map((l) => ({ price: l.price + (l.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0), qty: l.qty || 1, taxRateId: l.taxRateId, taxOverrides: l.taxOverrides })), taxRates || [], fulfilment);
       const fireT = cfg.kitchen_fire_time || eventTime || '12:00';
-      const prod = new Date(`${eventDate}T${fireT}:00`);
-      const closedAt = isNaN(prod.getTime()) ? new Date().toISOString() : prod.toISOString();
+      const fireMs = wallTimeToInstantMs(eventDate, fireT, cfg.venue_timezone);
+      const closedAt = isNaN(fireMs) ? new Date().toISOString() : new Date(fireMs).toISOString();
       const closedCheck = {
         id: `chk-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`, ref, location_id: opsId, server: 'Catering', staff_id: null, covers: 1,
         order_type: fulfilment, customer: buildCustomer(pay), items: buildItems().map((i) => ({ ...i, voided: false })), discounts: discountLine,

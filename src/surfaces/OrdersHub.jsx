@@ -665,6 +665,13 @@ export default function OrdersHub() {
     // advance it (prep/ready/collected) from its card.
     else if (o.paid || o.customer?.paid) { setViewOrder(o); }
     else {
+      // A pay-later CATERING order opened for payment BEFORE its scheduled fire time would, on
+      // close, delete its order_queue row before releaseDueCateringOrders fires it → silent
+      // kitchen miss. Fire it now (idempotent: routeKioskOrderPrints' kitchen_routed_at claim
+      // dedups against the scheduled release), so the kitchen ticket is guaranteed.
+      if (o.source === 'catering') {
+        try { useStore.getState().routeKioskOrderPrints?.({ ref: o.ref, source: 'catering', items: o.items || [], customer: o.customer || null, collectionTime: o.collectionTime || null, isASAP: o.isASAP, sentAt: Date.now() }); } catch { /* best-effort */ }
+      }
       // Walk-in / takeaway / delivery / counter order — load it back into the
       // walk-in slot so the POS actually shows the items. Previously this branch
       // only called setSurface('pos') which left walkInOrder null, so the POS

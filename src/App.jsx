@@ -86,6 +86,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.610', date: '23 Jun 2026', label: 'Catering — orders held until their event day, then auto-fire to the kitchen at the prep time (scale-safe)',
+    changes: [
+      'Catering pre-orders no longer hit the POS/kitchen the moment they’re placed. They’re held until their event day and fire to the kitchen (print + KDS) at the configured kitchen fire time — computed in the venue’s timezone, not the customer’s.',
+      'Built for scale: future bookings live in the database (shown in Back Office → Catering orders) and never load into the live order queue, so thousands of upcoming orders across all venues never bloat or clog any terminal. On the event day each order is released to the kitchen exactly once across all devices (atomic claim — no duplicate tickets), oldest fire-time first.',
+      'A pay-later catering order taken to payment before its fire time still reaches the kitchen (fired on open), so it can never be lost.',
+    ],
+  },
+  {
     version: '5.5.609', date: '23 Jun 2026', label: 'Orders Hub — already-paid orders open read-only (no accidental re-charge)',
     changes: [
       'Opening an already-paid order (e.g. a catering pre-order paid online) now shows a read-only summary instead of loading it into the POS pay flow — which previously let staff take payment a second time. Staff still advance it (prep → ready → collected) from its card. Line totals in the summary include modifier prices so they reconcile with the order total.',

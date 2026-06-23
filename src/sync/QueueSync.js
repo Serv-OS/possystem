@@ -19,6 +19,14 @@ let _debounceTimer = null;
 let _lastSentQueue = {};
 let _lastSentTab = {};
 
+// Keep FUTURE catering pre-orders out of the live in-memory queue. Catering rows are long-lived
+// (open for days/weeks until their event day); loading them all into every device would bloat
+// memory and blow the 500-row boot cap. They live in the DB (surfaced by BO → Catering orders)
+// and are released into the live flow at their fire time by releaseDueCateringOrders.
+// Gate on sent_at (the venue-tz fire INSTANT, a UTC timestamptz) — NOT a local date — so the
+// visibility boundary is identical to the fire boundary and immune to per-device clock/tz skew.
+const _isFutureCatering = (row) => row?.source === 'catering' && row?.sent_at && new Date(row.sent_at).getTime() > Date.now() && row?.status !== 'collected';
+
 function queueToRow(o, locationId) {
   // v5.5.132: dropped `paid` and `payment_method` from the upsert payload.
   // Migration v5.5.57 added them but they're not applied on every venue's
@@ -172,7 +180,7 @@ export async function loadQueues() {
     // a bigger backlog means an ops cleanup gap, not a sync job. Newest first so
     // the cap keeps the relevant rows. Prevents slow boots + memory blow-up.
     const [qRes, tRes] = await Promise.all([
-      supabase.from('order_queue').select('*').eq('location_id', _locationId).neq('status', 'collected').order('created_at', { ascending: false }).limit(500),
+      supabase.from('order_queue').select('*').eq('location_id', _locationId).neq('status', 'collected').or(`source.is.null,source.neq.catering,sent_at.lte.${new Date().toISOString()}`).order('created_at', { ascending: false }).limit(500),
       supabase.from('bar_tabs').select('*').eq('location_id', _locationId).neq('status', 'closed').order('opened_at', { ascending: false }).limit(500),
     ]);
     const patch = {};
@@ -210,6 +218,13 @@ export function applyQueueRealtimeEvent(payload) {
   }
   const row = payload.new;
   if (!row?.ref) return;
+  // Don't pull a FUTURE catering pre-order into the live queue (it's released on its event day).
+  // If one is lingering from a prior state, evict it.
+  if (_isFutureCatering(row)) {
+    const next = queue.filter(o => o.ref !== row.ref);
+    if (next.length !== queue.length) useStore.setState({ orderQueue: next });
+    return;
+  }
   const incoming = rowToQueue(row);
   const ourPayload = JSON.stringify(queueToRow(incoming, row.location_id));
   if (_lastSentQueue[row.ref] === ourPayload) return;
