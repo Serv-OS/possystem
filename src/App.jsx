@@ -86,6 +86,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.604', date: '23 Jun 2026', label: 'Operations — tablet pairing (Devices) so the mobile app can be set up',
+    changes: [
+      'New Back Office → Operations → Devices screen: open the mobile Operations app on a tablet (?mode=ops or the Operations mode-selector card), enter the 6-character code it shows here, and the tablet is paired to this venue — then sign in with a staff PIN. Rename or unpair tablets from the same screen.',
+      'This closes the gap where the floor app showed a pairing code but there was no back-office screen to claim it.',
+    ],
+  },
+  {
     version: '5.5.603', date: '23 Jun 2026', label: 'Operations — EHO compliance PDF export',
     changes: [
       'Compliance history now has an Export PDF button that produces a branded, print-ready Food Safety Compliance Report for the month: a summary band (temps-in-range %, checks logged, breaches, corrective actions, compliant days) plus full temperature log, corrective actions, checklist sign-offs and maintenance — breaches highlighted. Opens a print window to save as PDF (no new dependencies).',

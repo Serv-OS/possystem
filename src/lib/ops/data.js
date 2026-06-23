@@ -88,6 +88,31 @@ async function rpc(fn, args) {
   return { data, error };
 }
 
+// ── Ops devices (Back Office pairing management) ─────────────────────────────
+// Claiming uses the SECURITY DEFINER claim_ops_device RPC (an unclaimed device has no
+// location_id, so it can only be reached by its code). Once claimed, the row is venue-
+// scoped, so rename (update) and unpair (delete) go direct — RLS passes on the existing row.
+const opsDeviceFromRow = (d) => ({ id: d.id, name: d.name, claimCode: d.claim_code, claimedAt: d.claimed_at, lastSeenAt: d.last_seen_at, active: d.active !== false });
+/** Tablets currently paired to this venue. */
+export const fetchOpsDevices = async (locationId = null) => {
+  if (isMock || !supabase) return { data: [], error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: [], error: null };
+  const { data, error } = await supabase.from('ops_devices').select('*').eq('location_id', locationId).order('claimed_at', { ascending: false, nullsFirst: false });
+  return { data: (data || []).map(opsDeviceFromRow), error };
+};
+export const renameOpsDevice = async (id, name, locationId = null) => {
+  if (isMock || !supabase) return { error: null };
+  locationId = await ensureLoc(locationId);
+  return supabase.from('ops_devices').update({ name }).eq('location_id', locationId).eq('id', id);
+};
+/** Unpair: delete the row (RLS passes on the existing venue-scoped row). The tablet re-registers with a fresh code next time it opens. */
+export const removeOpsDevice = async (id, locationId = null) => {
+  if (isMock || !supabase) return { error: null };
+  locationId = await ensureLoc(locationId);
+  return supabase.from('ops_devices').delete().eq('location_id', locationId).eq('id', id);
+};
+
 // ── temperature units (admin config = source of truth) ───────────────────────
 export const fetchTempUnits = async (locationId = null, includeArchived = false) => {
   if (isMock || !supabase) return { data: [], error: null };

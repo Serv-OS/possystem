@@ -144,7 +144,7 @@ function PairScreen({ code }) {
       <div className="sv-glass" style={{ padding: 28, textAlign: 'center', maxWidth: 340 }}>
         <div style={{ fontSize: 13, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.1em', ...mono }}>Pair this tablet</div>
         <div style={{ fontSize: 40, fontWeight: 800, letterSpacing: '.12em', margin: '14px 0', color: 'var(--acc)', ...mono }}>{code || '······'}</div>
-        <div style={{ fontSize: 13, color: 'var(--t2)', lineHeight: 1.5 }}>In Back Office → Operations → Sites, claim this device with the code above. This screen updates automatically once it's linked to a venue.</div>
+        <div style={{ fontSize: 13, color: 'var(--t2)', lineHeight: 1.5 }}>In Back Office → Operations → Devices, enter this code to pair this tablet. This screen updates automatically once it's linked to a venue.</div>
       </div>
     </Screen>
   );
