@@ -248,6 +248,57 @@ export const fetchAlerts = async (locationId = null, openOnly = false) => {
 };
 export const ackAlert = async (alertId, action, who) => rpc('ops_ack_alert', { p_alert_id: alertId, p_action: action || null, p_user_name: who || null });
 
+// ── Notification rules — drive the ops-escalate ladder (SMS/email + escalation) ──
+// recipients entries the engine understands: {role}|{phone}|{email}. A person picked
+// in the editor is stored as {userId, name, phone, email} so the engine delivers via
+// the phone/email keys (no edge-fn change needed).
+const ruleFromRow = (r) => ({
+  id: r.id, eventType: r.event_type, severityMin: r.severity_min || 'major',
+  channels: Array.isArray(r.channels) ? r.channels : ['inapp'],
+  recipients: Array.isArray(r.recipients) ? r.recipients : [],
+  escalateAfterMin: r.escalate_after_min ?? 15, active: r.active !== false,
+});
+export const fetchNotificationRules = async (locationId = null) => {
+  if (isMock || !supabase) return { data: [], error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: [], error: null };
+  const { data, error } = await supabase.from('ops_notification_rules').select('*').eq('location_id', locationId).order('event_type');
+  return { data: (data || []).map(ruleFromRow), error };
+};
+export const upsertNotificationRule = async (rule, locationId = null) => {
+  if (isMock || !supabase) return { data: null, error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: null, error: { message: 'No location' } };
+  const row = {
+    location_id: locationId,
+    event_type: rule.eventType,
+    severity_min: rule.severityMin || 'major',
+    channels: rule.channels && rule.channels.length ? rule.channels : ['inapp'],
+    recipients: rule.recipients || [],
+    escalate_after_min: Number(rule.escalateAfterMin) || 15,
+    active: rule.active !== false,
+  };
+  if (rule.id) {
+    const { error } = await supabase.from('ops_notification_rules').update(row).eq('location_id', locationId).eq('id', rule.id);
+    return { data: rule.id ? { ...rule } : null, error };
+  }
+  const { data, error } = await supabase.from('ops_notification_rules').insert(row).select().maybeSingle();
+  return { data: data ? ruleFromRow(data) : null, error };
+};
+export const deleteNotificationRule = async (id, locationId = null) => {
+  if (isMock || !supabase) return { error: null };
+  locationId = await ensureLoc(locationId);
+  return supabase.from('ops_notification_rules').delete().eq('location_id', locationId).eq('id', id);
+};
+/** Staff at this location WITH contact details, for the rule recipient picker. */
+export const fetchOpsRecipients = async (locationId = null) => {
+  if (isMock || !supabase) return { data: [], error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: [], error: null };
+  const { data, error } = await supabase.from('staff_members').select('id, name, role, phone, email').eq('location_id', locationId).order('name');
+  return { data: (data || []).filter(s => s.name), error };
+};
+
 // ── Deliveries gate (ties into stock ordering) ───────────────────────────────
 /** Open POs awaiting goods-in (SENT/PARTIAL), with any existing delivery record. */
 export const fetchExpectedDeliveries = async (locationId = null) => {

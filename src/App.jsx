@@ -86,6 +86,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.602', date: '23 Jun 2026', label: 'Operations — Alert rules editor (who gets notified + escalation)',
+    changes: [
+      'New Back Office → Operations → Alert rules screen: per event type (temperature breach, missed check, overdue task, maintenance, corrective) set the minimum severity, channels (in-app always + SMS/email), recipients (roles, specific people, or any email/phone), and how fast it escalates if unacknowledged.',
+      'These are the rules the escalation engine already reads — previously only editable in the database. No engine changes needed; recipients resolve to live staff contacts.',
+    ],
+  },
+  {
     version: '5.5.601', date: '23 Jun 2026', label: 'Operations — pixel-spec polish across mobile + back office',
     changes: [
       'Mobile floor app: replaced emoji with the ServOS line-icon set (hue-tinted icon plates), added a bell with an unacknowledged-alert dot, round name on the temperature header, colour-coded snow/flame unit icons, richer checklist rows (who·time on completed tasks, “Photo required”/“Linked” labels, overdue flagging), and the reading time on a breach.',
