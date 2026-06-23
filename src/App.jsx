@@ -86,6 +86,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.612', date: '23 Jun 2026', label: 'Reports/Overview — delivery-app (HubRise) sales now surface under “Delivery apps”',
+    changes: [
+      'HubRise channel orders (Deliveroo / Uber Eats / Just Eat) already counted in sales totals and reports, but the Overview’s “Delivery apps” row was a hardcoded “Not connected” placeholder from before the integration — it now shows real delivery-app takings (HubRise sales roll up into it).',
+      'Reports source filter now labels HubRise orders as “Delivery apps” instead of the raw value.',
+    ],
+  },
+  {
     version: '5.5.611', date: '23 Jun 2026', label: 'Catering — server-side release safety net (fires even with no POS device on)',
     changes: [
       'Added a server-side cron (catering-release edge function, every 5 min) that guarantees a catering order reaches the kitchen on its event day even if no POS/master device was running at the fire time. The POS still does the normal fully-routed fire first (a 3-minute grace lets it win); the cron only steps in for orders nothing fired, claiming each one (no duplicate tickets) and dropping it onto the kitchen display.',

@@ -212,6 +212,7 @@ export const SOURCE_LABEL = {
   qr:       '📱 QR Code',
   catering: '🍽 Catering',
   delivery: '🛵 Delivery',
+  hubrise:  '🛵 Delivery apps',
 };
 
 // v4.6.24: Classify a check timestamp into one of the configured service

@@ -867,7 +867,7 @@ const SOURCE_META = [
   { key:'online',   label:'Online ordering', color:'#22c55e' },
   { key:'qr',       label:'QR table',        color:'#e8a020' },
   { key:'catering', label:'Catering',        color:'#14b8a6' },
-  { key:'delivery', label:'Delivery apps',   color:'#ef4444', soon:true },
+  { key:'delivery', label:'Delivery apps',   color:'#ef4444' },
 ];
 const ORDER_TYPE_LABEL = { 'dine-in':'Dine-in', takeaway:'Takeaway', collection:'Collection', delivery:'Delivery', 'bar-tab':'Bar tab', counter:'Counter' };
 function payBucket(method) {
@@ -963,7 +963,10 @@ function BOOverview({ setSection, orgCtx }) {
     const sources = {}, users = {}, products = {}, methods = {}, types = {};
     let discTotal = 0, discCount = 0, tips = 0, refunds = 0;
     todayChecks.forEach(c => {
-      sources[(c.source || 'pos').toLowerCase()] = (sources[(c.source || 'pos').toLowerCase()] || 0) + (c.total || 0);
+      // HubRise channel orders (Deliveroo/Uber Eats/Just Eat) roll up under the "Delivery apps" row.
+      const _src = (c.source || 'pos').toLowerCase();
+      const _bucket = _src === 'hubrise' ? 'delivery' : _src;
+      sources[_bucket] = (sources[_bucket] || 0) + (c.total || 0);
       const u = c.server || 'Unknown';
       users[u] = (users[u] || 0) + (c.total || 0);
       const m = payBucket(c.method);
