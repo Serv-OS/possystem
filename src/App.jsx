@@ -86,6 +86,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.600', date: '23 Jun 2026', label: 'Operations — multi-site compliance oversight (slice 6)',
+    changes: [
+      'Compliance overview now rolls up every site you can see: group KPIs (group compliance, checks done, temp exceptions, open maintenance) + a site league table sorted worst-first, alongside the active site’s detail.',
+    ],
+  },
+  {
     version: '5.5.599', date: '23 Jun 2026', label: 'Operations — maintenance assignment & notifications (slice 5)',
     changes: [
       'Assign a maintenance request to a staff member — they get notified (in-app + SMS/email); the reporter is notified when it’s resolved.',
