@@ -8,13 +8,13 @@
 //
 // Thresholds/units/schedules are READ from admin config; this surface never defines them.
 
-import { useEffect, useMemo, useState, useCallback } from 'react';
+import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import {
   opsHeartbeat, opsRegisterDevice, opsPinLogin,
   fetchTempUnits, fetchSchedules, fetchReadings, submitReading,
   fetchExpectedDeliveries, checkDelivery, fetchAlerts, createMaintenance, fetchMaintenance, ackAlert,
 } from '../lib/ops/data';
-import { fetchTodayChecklists, openRun, completeTask, signOffRun } from '../lib/ops/checklists';
+import { fetchTodayChecklists, openRun, completeTask, signOffRun, uploadChecklistPhoto } from '../lib/ops/checklists';
 import {
   displayTemp, toStoredC, breach, typeDefault, hhmmToMin, runsOnDay, windowStatus, summarize,
 } from '../lib/ops/temp';
@@ -545,20 +545,51 @@ function ChecklistRun({ loc, operator, checklist, onDone }) {
   const [done, setDone] = useState(() => { const m = {}; (checklist.completions || []).forEach(c => { if (c.done) m[c.taskId] = c; }); return m; });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [uploadingId, setUploadingId] = useState(null);
+  const fileRef = useRef(null);
+  const pendingTaskRef = useRef(null);
   useEffect(() => { if (!run) openRun(checklist.id, loc).then(({ data }) => setRun(data)); }, []);
   const total = checklist.tasks.length;
-  const completed = Object.keys(done).length;
+  // A photo-required task only counts as complete once it actually carries a photo —
+  // so the progress bar AND the sign-off gate can't be satisfied without the evidence.
+  const completed = checklist.tasks.filter(t => { const cm = done[t.id]; return cm && (!t.evidenceRequired || !!cm.photoUrl); }).length;
   const pct = total ? Math.round((completed / total) * 100) : 0;
 
-  const toggle = async (task) => {
-    if (!run) return;
+  const markDone = async (task) => {
+    setDone(d => ({ ...d, [task.id]: { taskId: task.id, by: operator?.name, at: new Date().toISOString() } }));
+    await completeTask(run.id, task.id, { done: true, by: operator?.name, byId: operator?.id }, loc);
+  };
+
+  // Tap behaviour: a completed task unticks; a photo-required task that isn't done
+  // opens the camera (it can only be ticked once a photo is captured); otherwise tick.
+  const tap = async (task) => {
+    if (!run || uploadingId) return;
     if (done[task.id]) { // untick
       const n = { ...done }; delete n[task.id]; setDone(n);
       await completeTask(run.id, task.id, { done: false, by: operator?.name, byId: operator?.id }, loc);
-    } else {
-      setDone(d => ({ ...d, [task.id]: { taskId: task.id, by: operator?.name, at: new Date().toISOString() } }));
-      await completeTask(run.id, task.id, { done: true, by: operator?.name, byId: operator?.id }, loc);
+      return;
     }
+    if (task.evidenceRequired) { // require a photo before completing
+      setErr('');
+      pendingTaskRef.current = task;
+      if (fileRef.current) { fileRef.current.value = ''; fileRef.current.click(); }
+      return;
+    }
+    await markDone(task);
+  };
+
+  const onPhotoPicked = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    const task = pendingTaskRef.current;
+    pendingTaskRef.current = null;
+    if (!file || !task || !run) return;
+    setErr(''); setUploadingId(task.id);
+    const { url, error } = await uploadChecklistPhoto(file, { locationId: loc, runId: run.id, taskId: task.id });
+    if (error || !url) { setUploadingId(null); setErr(error?.message || 'Photo upload failed — check signal and try again'); return; }
+    const { error: saveErr } = await completeTask(run.id, task.id, { done: true, photoUrl: url, by: operator?.name, byId: operator?.id }, loc);
+    if (saveErr) { setUploadingId(null); setErr('Saved the photo but could not record completion — try again'); return; }
+    setDone(d => ({ ...d, [task.id]: { taskId: task.id, by: operator?.name, at: new Date().toISOString(), photoUrl: url } }));
+    setUploadingId(null);
   };
   const sign = async () => {
     if (completed < total) { setErr('Complete every task before signing off'); return; }
@@ -581,13 +612,16 @@ function ChecklistRun({ loc, operator, checklist, onDone }) {
           const overdue = !on && t.dueBy && (hhmmToMin(t.dueBy) ?? 1e9) < nowMin;
           const at = cm && (cm.at || cm.completedAt);
           const timeStr = at ? new Date(at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : null;
-          const meta = on ? [cm.by, timeStr].filter(Boolean).join(' · ')
-            : t.evidenceRequired ? 'Photo required'
+          const uploading = uploadingId === t.id;
+          const photo = cm && cm.photoUrl;
+          const meta = uploading ? 'Uploading photo…'
+            : on ? [cm.by, timeStr].filter(Boolean).join(' · ')
+            : t.evidenceRequired ? 'Tap to add photo'
             : t.tempUnitId ? (t.tempUnitCount ? `Linked · ${t.tempUnitCount} units` : 'Linked')
             : overdue ? `Was due ${t.dueBy}` : null;
-          const metaCol = overdue ? 'var(--red)' : (t.tempUnitId && !on) ? 'var(--uv)' : 'var(--t3)';
+          const metaCol = uploading ? 'var(--acc)' : overdue ? 'var(--red)' : (t.evidenceRequired && !on) ? 'var(--amber, var(--orn))' : (t.tempUnitId && !on) ? 'var(--uv)' : 'var(--t3)';
           return (
-            <button key={t.id} onClick={() => toggle(t)} className="sv-glass" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '13px 16px', borderRadius: 14, cursor: 'pointer', textAlign: 'left', color: 'var(--t1)', border: `1px solid ${on ? 'var(--acc-b)' : overdue ? 'var(--red-b)' : 'var(--bdr)'}`, background: on ? 'var(--acc-d)' : 'var(--glass-bg)' }}>
+            <button key={t.id} onClick={() => tap(t)} disabled={!!uploadingId} className="sv-glass" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '13px 16px', borderRadius: 14, cursor: uploadingId ? 'wait' : 'pointer', textAlign: 'left', color: 'var(--t1)', border: `1px solid ${on ? 'var(--acc-b)' : overdue ? 'var(--red-b)' : 'var(--bdr)'}`, background: on ? 'var(--acc-d)' : 'var(--glass-bg)', opacity: uploadingId && !uploading ? 0.55 : 1 }}>
               <span style={{ width: 24, height: 24, borderRadius: 7, flexShrink: 0, display: 'grid', placeItems: 'center', background: on ? 'var(--acc)' : 'transparent', border: `2px solid ${on ? 'var(--acc)' : overdue ? 'var(--red)' : 'var(--bdr3)'}`, color: overdue && !on ? 'var(--red)' : '#06130C' }}>
                 {on ? <Icon name="check" size={15} /> : overdue ? <Icon name="warn" size={13} /> : null}
               </span>
@@ -595,11 +629,18 @@ function ChecklistRun({ loc, operator, checklist, onDone }) {
                 <div style={{ fontWeight: 600, textDecoration: on ? 'line-through' : 'none', color: on ? 'var(--t3)' : 'var(--t1)' }}>{t.label}</div>
                 {meta && <div style={{ fontSize: 11, color: metaCol, marginTop: 2, ...mono }}>{meta}</div>}
               </div>
-              {t.evidenceRequired && <Icon name="camera" size={17} style={{ color: on ? 'var(--t4)' : 'var(--amber, var(--orn))' }} />}
+              {uploading
+                ? <span style={{ fontSize: 16, color: 'var(--acc)', flexShrink: 0 }}>⏳</span>
+                : photo
+                ? <img src={photo} alt="evidence" style={{ width: 34, height: 34, borderRadius: 8, objectFit: 'cover', flexShrink: 0, border: '1px solid var(--bdr)' }} />
+                : t.evidenceRequired
+                ? <Icon name="camera" size={17} style={{ color: on ? 'var(--t4)' : 'var(--amber, var(--orn))' }} />
+                : null}
             </button>
           );
         })}
       </div>
+      <input ref={fileRef} type="file" accept="image/*" capture="environment" onChange={onPhotoPicked} style={{ display: 'none' }} />
       {err && <div style={{ color: 'var(--red)', fontSize: 13, marginTop: 10 }}>{err}</div>}
       <button onClick={sign} disabled={busy || completed < total} className="btn btn-acc" style={{ width: '100%', padding: 15, marginTop: 16, fontSize: 15, fontWeight: 800, borderRadius: 14, opacity: completed < total ? 0.5 : 1 }}>
         {busy ? 'Signing…' : `Sign off${operator?.name ? ` — ${operator.name.split(' ')[0]}` : ''}`}

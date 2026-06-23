@@ -135,3 +135,41 @@ export const fetchRunsRange = async (fromYmd, toYmd, locationId = null) => {
   const { data, error } = await supabase.from('ops_checklist_runs').select('*').eq('location_id', locationId).gte('run_date', fromYmd).lte('run_date', toYmd).order('run_date', { ascending: false });
   return { data: (data || []).map(runFromRow), error };
 };
+
+/** Per-task completion records for one or more runs (carries photo evidence), for BO viewing. */
+export const fetchRunCompletions = async (runIds, locationId = null) => {
+  if (isMock || !supabase) return { data: [], error: null };
+  locationId = await ensureLoc(locationId);
+  const ids = (Array.isArray(runIds) ? runIds : [runIds]).filter(Boolean);
+  if (!locationId || ids.length === 0) return { data: [], error: null };
+  const { data, error } = await supabase.from('ops_task_completions')
+    .select('*').eq('location_id', locationId).in('run_id', ids);
+  return { data: (data || []).map(complFromRow), error };
+};
+
+// ── Evidence photos ──────────────────────────────────────────────────────────
+// Reuses the public 'receipt-assets' bucket. Its INSERT policy only requires
+// auth.role()='authenticated', which anonymous device sessions satisfy — so paired
+// ops tablets can upload with no extra storage policy. Path is location-prefixed
+// and timestamped so re-captures never clash.
+const EVIDENCE_BUCKET = 'receipt-assets';
+const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
+export const uploadChecklistPhoto = async (file, { locationId = null, runId, taskId } = {}) => {
+  if (isMock || !supabase) return { url: null, error: new Error('Not connected') };
+  if (!file) return { url: null, error: new Error('No file') };
+  if (file.size > MAX_PHOTO_BYTES) return { url: null, error: new Error('Photo too large — keep it under 10 MB') };
+  locationId = await ensureLoc(locationId);
+  if (!locationId || !runId || !taskId) return { url: null, error: new Error('Missing run/task/location') };
+  // Desktop browsers can't decode HEIC; capture="environment" yields JPEG anyway.
+  const ext = (file.name?.split('.').pop() || 'jpg').toLowerCase().replace('jpeg', 'jpg');
+  const safeExt = ['jpg', 'png', 'webp'].includes(ext) ? ext : 'jpg';
+  // Stable per-task path so a re-capture OVERWRITES the previous object (no orphans);
+  // the cache-busting ?t on the returned URL guarantees the new image is shown.
+  const path = `ops-evidence/${locationId}/${runId}/${taskId}.${safeExt}`;
+  const { error } = await supabase.storage.from(EVIDENCE_BUCKET).upload(path, file, {
+    upsert: true, contentType: file.type || 'image/jpeg', cacheControl: '3600',
+  });
+  if (error) return { url: null, error };
+  const { data } = supabase.storage.from(EVIDENCE_BUCKET).getPublicUrl(path);
+  return { url: `${data.publicUrl}?t=${Date.now()}`, error: null };
+};

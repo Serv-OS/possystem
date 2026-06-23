@@ -6,7 +6,7 @@
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import { getActiveLocationSync, getLocationId, getAvailableLocations } from '../../../lib/supabase';
 import { fetchTempUnits, fetchSchedules, fetchReadings, fetchCorrectiveActions, fetchMaintenance } from '../../../lib/ops/data';
-import { fetchRunsRange, fetchChecklists } from '../../../lib/ops/checklists';
+import { fetchRunsRange, fetchChecklists, fetchRunCompletions } from '../../../lib/ops/checklists';
 import { hhmmToMin, runsOnDay, windowStatus, summarize, displayTemp } from '../../../lib/ops/temp';
 const mono = { fontFamily: 'var(--font-mono)' };
 const ymd = (d) => { const x = new Date(d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`; };
@@ -280,6 +280,21 @@ function DayDetail({ day, units, readings, corr, runs, maint, checklists }) {
   const clName = (id) => checklists.find(c => c.id === id)?.name || 'Checklist';
   const clTotal = (id) => (checklists.find(c => c.id === id)?.tasks?.length) || 0;
 
+  // Photo evidence captured against this day's checklist tasks (run_id → [{photoUrl,…}]).
+  const [evidence, setEvidence] = useState({});
+  useEffect(() => {
+    const ids = (runs || []).map(r => r.id).filter(Boolean);
+    if (ids.length === 0) { setEvidence({}); return; }
+    let alive = true;
+    fetchRunCompletions(ids).then(({ data }) => {
+      if (!alive) return;
+      const m = {};
+      (data || []).forEach(c => { if (c.photoUrl) (m[c.runId] = m[c.runId] || []).push(c); });
+      setEvidence(m);
+    });
+    return () => { alive = false; };
+  }, [runs]);
+
   const events = useMemo(() => {
     const out = [];
 
@@ -306,11 +321,15 @@ function DayDetail({ day, units, readings, corr, runs, maint, checklists }) {
     // (b) checklist runs signed off
     runs.forEach(r => {
       const total = clTotal(r.checklistId);
+      const cl = checklists.find(c => c.id === r.checklistId);
+      const taskLabel = (tid) => (cl?.tasks?.find(t => t.id === tid)?.label) || 'Task';
+      const photos = (evidence[r.id] || []).map(c => ({ url: c.photoUrl, label: taskLabel(c.taskId), by: c.completedByName }));
       out.push({
         at: r.completedAt || (day + 'T12:00:00'),
         tone: 'green',
         title: clName(r.checklistId),
         sub: `${total}/${total} · signed ${r.completedByName || '—'}`,
+        photos,
       });
     });
 
@@ -338,7 +357,7 @@ function DayDetail({ day, units, readings, corr, runs, maint, checklists }) {
     });
 
     return out.sort((a, b) => new Date(a.at) - new Date(b.at));
-  }, [readings, runs, corr, maint, day]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [readings, runs, corr, maint, day, evidence]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // day summary: exceptions = breach readings + corrective actions + maintenance raised
   const breachReads = readings.filter(r => !r.inRange).length;
@@ -366,6 +385,15 @@ function DayDetail({ day, units, readings, corr, runs, maint, checklists }) {
             <div key={i} style={{ background: 'var(--bg2)', borderRadius: 10, borderLeft: `4px solid ${TONE_BORDER[e.tone] || 'var(--bdr2)'}`, padding: 12 }}>
               <div style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--t1)' }}>{e.title}</div>
               <div style={{ fontSize: 11.5, color: 'var(--t3)', marginTop: 3, ...mono }}>{e.sub}</div>
+              {e.photos && e.photos.length > 0 && (
+                <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+                  {e.photos.map((p, j) => (
+                    <a key={j} href={p.url} target="_blank" rel="noreferrer" title={`${p.label}${p.by ? ' · ' + p.by : ''}`} style={{ display: 'block' }}>
+                      <img src={p.url} alt={p.label} loading="lazy" style={{ width: 54, height: 54, borderRadius: 8, objectFit: 'cover', border: '1px solid var(--bdr)' }} />
+                    </a>
+                  ))}
+                </div>
+              )}
             </div>
           ))}
         </div>

@@ -86,6 +86,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.617', date: '23 Jun 2026', label: 'Operations — checklist photo evidence now actually captures & shows the photo',
+    changes: [
+      'Checklist tasks marked “photo required” now open the camera when you tap them — you can’t tick the task (or sign off the checklist) until a photo is actually captured. Previously the camera icon was decorative and the task ticked with no photo.',
+      'Captured photos appear as a thumbnail on the task, and managers can see them in Back Office → Operations → Compliance (tap a day → thumbnails under each checklist sign-off, click to open full size).',
+      'Hardening: a failed save no longer shows a task as done (no silent loss), re-captures overwrite cleanly, and photos over 10 MB are rejected with a clear message.',
+    ],
+  },
+  {
     version: '5.5.616', date: '23 Jun 2026', label: 'Coffee-shop sticker printing — one ticket per item (per-printer toggle)',
     changes: [
       'Print routing centres have a new “One ticket per item ☕ (sticker mode)” switch. When on, that printer prints a separate docket for every item on the order — coffee-shop style, one sticker per cup — instead of a single combined ticket.',
