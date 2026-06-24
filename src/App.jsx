@@ -87,6 +87,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.623', date: '24 Jun 2026', label: 'Fix — realtime crash on the waitlist host stand (“cannot add callbacks after subscribe”)',
+    changes: [
+      'Opening the waitlist host stand could crash with a Supabase realtime error because the live connection was started twice for the same venue. Starting realtime is now idempotent (it no-ops if already connected to that location, and cleanly reconnects if the location changes), so the host stand opens reliably.',
+    ],
+  },
+  {
     version: '5.5.622', date: '24 Jun 2026', label: 'Tables Ready — two-way SMS replies + guest self-service (QR join & live status)',
     changes: [
       'Guests can now reply to waitlist texts: “C”/“CANCEL” drops them from the queue, “OK”/“ON MY WAY” marks them on-the-way (an “On the way” chip shows on the host board), and STOP opts them out — via a secured inbound webhook.',

@@ -15,6 +15,7 @@ import { playOrderChime } from './orderChime';
 import { isHubriseAutoReceipt } from './hubrise';
 
 let channels = [];
+let _rtLocation = null;   // the location the current channel set is subscribed to (for idempotency)
 
 // v5.5.311: apply a stock_levels row to the store, keeping dailyCounts AND
 // eightySixIds in sync. Previously the POS only updated dailyCounts on a remote
@@ -43,6 +44,16 @@ export function startRealtime(store, locationId = LOCATION_ID) {
     console.info('[Realtime] Mock mode — using BroadcastChannel only');
     return () => {};
   }
+
+  // Idempotent — App's boot effect AND the waitlist/ops surfaces can both call this for the same
+  // location. Re-adding `postgres_changes` callbacks to an already-subscribed channel throws
+  // ("cannot add callbacks after subscribe()"). So: already streaming THIS location → keep it;
+  // a DIFFERENT location (or leftover channels) → tear down cleanly first, then re-subscribe.
+  if (channels.length) {
+    if (_rtLocation === locationId) return stopRealtime;
+    stopRealtime();
+  }
+  _rtLocation = locationId;
 
   console.info('[Realtime] Connecting to location:', locationId);
 
@@ -585,10 +596,8 @@ export function startRealtime(store, locationId = LOCATION_ID) {
     .subscribe();
   channels.push(menuItemsChannel);
 
-  return () => {
-    channels.forEach(ch => supabase.removeChannel(ch));
-    channels = [];
-  };
+  // Single teardown path (resets _rtLocation too) so a later startRealtime re-subscribes cleanly.
+  return stopRealtime;
 }
 
 // Mirrors SyncBridge's snake→camel mapping for a single menu_items row.
@@ -617,4 +626,5 @@ export function stopRealtime() {
   if (!supabase) return;
   channels.forEach(ch => supabase.removeChannel(ch));
   channels = [];
+  _rtLocation = null;
 }
