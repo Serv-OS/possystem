@@ -129,6 +129,10 @@ export function rowToWaitlist(r) {
     notifiedAt: r.notified_at ? new Date(r.notified_at).getTime() : null,
     readyAt: r.ready_at ? new Date(r.ready_at).getTime() : null,
     seatedAt: r.seated_at ? new Date(r.seated_at).getTime() : null,
+    // F1 two-way SMS replies (inbound-only; stamped by the inbound edge fn).
+    confirmedAt: r.confirmed_at ? new Date(r.confirmed_at).getTime() : null,
+    lastGuestReply: r.last_guest_reply || null,
+    lastReplyAt: r.last_reply_at ? new Date(r.last_reply_at).getTime() : null,
   };
 }
 

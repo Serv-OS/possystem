@@ -96,6 +96,12 @@ export function parseCustomerUrl(loc = (typeof window !== 'undefined' ? window.l
     mode = 'wifi';
   } else if (pathname === '/catering' || pathname.startsWith('/catering/')) {
     mode = 'catering';
+  } else if (pathname === '/waitlist/status' || pathname.startsWith('/waitlist/status')) {
+    // F2: guest live status page (deep-linked via the token in the surface) — must come
+    // BEFORE the bare /waitlist branch so the more specific path wins.
+    mode = 'waitlist_status';
+  } else if (pathname === '/waitlist' || pathname.startsWith('/waitlist/')) {
+    mode = 'waitlist';
   } else if (pathname.startsWith('/guest')) {
     // UniFi's external captive portal redirects to <host>/guest/s/<site>/?id=&ap=&ssid=…
     // so point UniFi's "External Portal" field straight at the venue host and it lands here.
@@ -111,6 +117,8 @@ export function parseCustomerUrl(loc = (typeof window !== 'undefined' ? window.l
     else if (surface === 'review')    mode = 'review';
     else if (surface === 'wifi')      mode = 'wifi';
     else if (surface === 'catering')  mode = 'catering';
+    else if (surface === 'waitlist_status') mode = 'waitlist_status';
+    else if (surface === 'waitlist')  mode = 'waitlist';
     else if (surface === 'online')    mode = 'online';
     else if (slug) mode = 'online'; // having a slug implies online by default
   }

@@ -87,6 +87,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.622', date: '24 Jun 2026', label: 'Tables Ready — two-way SMS replies + guest self-service (QR join & live status)',
+    changes: [
+      'Guests can now reply to waitlist texts: “C”/“CANCEL” drops them from the queue, “OK”/“ON MY WAY” marks them on-the-way (an “On the way” chip shows on the host board), and STOP opts them out — via a secured inbound webhook.',
+      'Guest self-service: a QR/web link lets walk-ins join the waitlist themselves and watch a live status page (their place in line + ETA) with “On my way” / “Cancel my spot”. Per-venue opt-in (off by default), shown in Back Office with a printable QR.',
+      'Built secure: public join/status uses unguessable 12-hour tokens that never expose the queue, anti-spam rate limits, and a fail-closed inbound webhook with Twilio signature validation. NOTE: not live until the database migrations + edge function are deployed.',
+    ],
+  },
+  {
     version: '5.5.621', date: '24 Jun 2026', label: 'Tables Ready — learning loop, Insights reporting & Liquid Glass polish',
     changes: [
       'Wait quotes now LEARN: the estimator uses real per-band turn times computed from seat→close history, so quotes improve over time (with a configurable cold-start default until enough data accrues).',
@@ -7345,7 +7353,7 @@ export default function App() {
   // customers never see the device pairing / mode selector screens.
   // Operator URLs (?mode=pos / mpos / office / admin / kiosk) take
   // precedence so an operator on the same hostname still gets their tools.
-  const CUSTOMER_MODES = ['online', 'qr', 'gift', 'gift_balance', 'gift_success', 'account', 'review', 'wifi', 'catering'];
+  const CUSTOMER_MODES = ['online', 'qr', 'gift', 'gift_balance', 'gift_success', 'account', 'review', 'wifi', 'catering', 'waitlist', 'waitlist_status'];
   const urlMode = new URLSearchParams(window.location.search).get('mode');
   // Public Workforce contract-signing page: /sign/<token>
   const signMatch = window.location.pathname.match(/^\/sign\/([A-Za-z0-9_-]{8,})/);

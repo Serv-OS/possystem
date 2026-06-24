@@ -43,6 +43,14 @@ const PILL = {
   notified: { bg: 'var(--blu-d)', fg: 'var(--uv)', bd: 'var(--blu-b)', label: 'Notified' },
   ready:    { bg: 'var(--grn-d)', fg: 'var(--grn)', bd: 'var(--grn-b)', label: 'Ready' },
 };
+
+// F1: replies the inbound edge fn already acts on (confirm → confirmed_at, cancel
+// → status). Anything else is free-text we surface verbatim so the host sees it.
+const RECOGNISED_REPLY = new Set(['on_my_way', 'confirm', 'cancel']);
+const isFreeTextReply = (r) => {
+  if (!r) return false;
+  return !RECOGNISED_REPLY.has(String(r).trim().toLowerCase());
+};
 // the one-tap forward action per status
 const NEXT = {
   waiting:  { to: STATUS.NOTIFIED, label: 'Notify', icon: 'bell', sms: 'next' },
@@ -109,12 +117,27 @@ export default function QueueCard({ entry, onSeat }) {
             {returning && (
               <span style={{ fontSize: 9.5, fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: 'var(--blu-d)', color: 'var(--uv)', border: '1px solid var(--blu-b)', textTransform: 'uppercase', letterSpacing: '.08em', ...mono }}>Returning</span>
             )}
+            {/* F1: guest replied "on my way" → confirmed_at stamped by inbound edge fn.
+                Icon + text label (not colour alone) for accessibility; signal-green state. */}
+            {entry.confirmedAt && (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 9.5, fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: 'var(--grn-d)', color: 'var(--grn)', border: '1px solid var(--grn-b)', textTransform: 'uppercase', letterSpacing: '.08em', ...mono }}>
+                <Icon name="check" size={11} /> On the way
+              </span>
+            )}
           </div>
           <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2, ...mono }}>
             {entry.phone ? fmtPhone(entry.phone) : 'No phone'}
             {entry.sectionPref ? ` · ${entry.sectionPref}` : ''}
           </div>
           {entry.notes ? <div style={{ fontSize: 11, color: 'var(--t2)', marginTop: 3, fontStyle: 'italic' }}>“{entry.notes}”</div> : null}
+          {/* F1: unrecognised free-text reply from the guest — surface it muted so the
+              host sees what they actually said (recognised on_my_way/confirm/cancel
+              are already handled by the chip / status, so not echoed here). */}
+          {isFreeTextReply(entry.lastGuestReply) && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: 'var(--t3)', marginTop: 3, ...mono }}>
+              <Icon name="note" size={11} /> <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>“{entry.lastGuestReply}”</span>
+            </div>
+          )}
         </div>
 
         {/* timer + quote */}

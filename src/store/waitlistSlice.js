@@ -122,6 +122,9 @@ function venueName(get) {
 
 // debounce handle for recompute-driven persistence
 let _recomputePersistTimer = null;
+// debounce handle for realtime-INSERT-driven re-quoting (so a burst of inbound
+// rows — e.g. several self-joins — coalesces into a single recompute pass).
+let _realtimeRequoteTimer = null;
 
 // ── the slice ─────────────────────────────────────────────────────────────────
 export function waitlistSlice(set, get) {
@@ -573,6 +576,10 @@ export function waitlistSlice(set, get) {
           const remoteIds = new Set(data.map((e) => e.id));
           const localExtras = (get().waitlist || []).filter((e) => !remoteIds.has(e.id) && isActive(e.status));
           set({ waitlist: [...data, ...localExtras] });
+          // Loaded rows may include self-joins persisted with no quote (created
+          // server-side). Re-quote the live board so every party — including a guest
+          // watching their status page — has a fresh quoted_wait_min after a load.
+          try { get().recomputeWaitlistQuotes?.(); } catch { /* no-op */ }
         }
       } catch (e) {
         console.warn('[waitlist] loadWaitlistFromDB failed:', e?.message || e);
@@ -615,9 +622,24 @@ export function waitlistSlice(set, get) {
         return;
       }
       const idx = list.findIndex((e) => e.id === incoming.id);
-      if (idx === -1) list.push(incoming);
+      const isNew = idx === -1;
+      if (isNew) list.push(incoming);
       else list[idx] = { ...list[idx], ...incoming };
       set({ waitlist: list });
+
+      // A brand-new active party (host add echoed back, or — the F2 case — a guest
+      // self-join arriving over realtime) shifts the model for everyone AND itself:
+      // self-joins are created server-side with no quote, so recompute is what fills
+      // their quoted_wait_min for the public status page. Only on genuine INSERTs of
+      // an active row; status updates already re-quote through setWaitlistStatus.
+      // Debounced so a burst of inbound rows coalesces; recompute never sends SMS,
+      // so this can't double-fire the join text.
+      if (isNew) {
+        clearTimeout(_realtimeRequoteTimer);
+        _realtimeRequoteTimer = setTimeout(() => {
+          try { get().recomputeWaitlistQuotes?.(); } catch { /* no-op */ }
+        }, 250);
+      }
     },
 
     setWaitlistConfigLocal: (cfg) => {

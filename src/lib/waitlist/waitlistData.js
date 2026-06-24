@@ -68,6 +68,7 @@ function rowToConfig(r) {
     zones:       r.zones ?? null,
     smsEnabled:  r.sms_enabled ?? true,
     sms:         r.sms_templates ?? null,   // {join,next,ready} editable bodies; null = code defaults
+    selfServiceEnabled: r.self_service_enabled ?? false,   // F2: guest QR self-join (20260623v); default off
   };
 }
 
@@ -84,6 +85,7 @@ function configToRow(cfg, locationId, orgId = null) {
     zones:         c.zones ?? null,
     sms_enabled:   c.smsEnabled ?? true,
     sms_templates: c.sms ?? null,
+    self_service_enabled: c.selfServiceEnabled ?? false,   // F2: guest QR self-join (20260623v); default off
     updated_at:    new Date().toISOString(),
   };
 }
@@ -390,4 +392,49 @@ export async function waitlistHeartbeat() {
 // waitlist_pin_login(p_location_id, p_pin) -> { ok, id?, name?, role?, permissions? }
 export async function waitlistPinLogin(locationId, pin) {
   return _callRpc('waitlist_pin_login', { p_location_id: locationId, p_pin: pin }, 'waitlistPinLogin');
+}
+
+// ── F2: guest self-service RPCs (anon-granted SECURITY DEFINER, migration 20260623v) ──
+// All four reuse _callRpc, so they're isMock-safe AND table/function-absent-safe: a
+// missing function surfaces as PGRST202 / 42883 and returns null (the host surface treats
+// null as "self-service not open / not found" and degrades softly). p_location is the OPS
+// location id (location.ops_location_id from lookupLocationBySlug).
+
+// waitlist_public_config(p_location uuid) -> { enabled, zones } | null  (null = not open)
+export async function waitlistPublicConfig(opsLocationId) {
+  return _callRpc('waitlist_public_config', { p_location: opsLocationId }, 'waitlistPublicConfig');
+}
+
+// waitlist_self_join(p_location, p_name, p_phone, p_size, p_notes, p_zone) -> { token, already }
+export async function waitlistSelfJoin({ locationId, name, phone, size, notes, zone }) {
+  return _callRpc('waitlist_self_join', {
+    p_location: locationId,
+    p_name:     name ?? null,
+    p_phone:    phone ?? null,
+    p_size:     size ?? null,
+    p_notes:    notes ?? null,
+    p_zone:     zone ?? null,
+  }, 'waitlistSelfJoin');
+}
+
+// waitlist_self_status(p_token) -> { found, status, party_name, party_size, quoted_wait_min,
+// position, confirmed_at, added_at } — map snake->camel for the surface.
+export async function waitlistSelfStatus(token) {
+  const r = await _callRpc('waitlist_self_status', { p_token: token }, 'waitlistSelfStatus');
+  if (!r) return { found: false };
+  return {
+    found:        r.found ?? false,
+    status:       r.status ?? null,
+    partyName:    r.party_name ?? null,
+    partySize:    r.party_size ?? null,
+    quotedWaitMin: r.quoted_wait_min ?? null,
+    position:     r.position ?? null,
+    confirmedAt:  r.confirmed_at ?? null,
+    addedAt:      r.added_at ?? null,
+  };
+}
+
+// waitlist_self_update(p_token, p_action in 'on_my_way'|'cancel') -> { ok, status }
+export async function waitlistSelfUpdate(token, action) {
+  return _callRpc('waitlist_self_update', { p_token: token, p_action: action }, 'waitlistSelfUpdate');
 }

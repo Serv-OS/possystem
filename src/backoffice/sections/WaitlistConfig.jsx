@@ -13,8 +13,10 @@
 // is applied. Editing any rule recomputes live quotes on save (noted to the user).
 
 import { useEffect, useMemo, useState, useCallback } from 'react';
+import QRCode from 'qrcode';
 import { useStore } from '../../store';
-import { getActiveLocationSync, getLocationId } from '../../lib/supabase';
+import { getActiveLocationSync, getLocationId, platformSupabase, isMock } from '../../lib/supabase';
+import { customerUrl, CUSTOMER_ROOT } from '../../lib/env';
 import {
   loadWaitlistConfig, saveWaitlistConfig, claimWaitlistDevice,
 } from '../../lib/waitlist/waitlistData';
@@ -73,6 +75,7 @@ function toEditor(cfg) {
     bands,
     zones: Array.isArray(c.zones) ? c.zones : null,   // null = follow floor sections
     smsEnabled: c.smsEnabled !== false,
+    selfServiceEnabled: c.selfServiceEnabled === true,   // F2: guest QR / link self-join (default OFF)
     sms: { join: sms.join || DEFAULT_SMS.join, next: sms.next || DEFAULT_SMS.next, ready: sms.ready || DEFAULT_SMS.ready },
   };
 }
@@ -88,6 +91,9 @@ export default function WaitlistConfig() {
   const [save, setSave] = useState({});
   const [code, setCode] = useState('');
   const [claiming, setClaiming] = useState(false);
+  const [slug, setSlug] = useState(null);         // venue online_slug (platform locations) — null = not set yet
+  const [linkCopied, setLinkCopied] = useState(false);
+  const [qr, setQr] = useState(null);             // QR data URI for the public join URL
 
   useEffect(() => {
     (async () => {
@@ -99,6 +105,16 @@ export default function WaitlistConfig() {
         // Learned turns may ride along on the cfg payload; fall back to empty.
         const lt = cfg?.learnedTurns || cfg?.learned || {};
         setLearned(lt && typeof lt === 'object' ? lt : {});
+        // Resolve the venue's online_slug so we can show the public join URL + QR.
+        // Best-effort: platform locations are readable by the BO client (same pattern
+        // as ReviewCard). Falls back to the ?loc= preview form when no slug is set.
+        if (!isMock && platformSupabase && id) {
+          try {
+            const { data: loc } = await platformSupabase.from('locations')
+              .select('online_slug').or(`ops_location_id.eq.${id},id.eq.${id}`).maybeSingle();
+            if (loc?.online_slug) setSlug(loc.online_slug);
+          } catch { /* slug best-effort — preview form is the fallback */ }
+        }
       } catch {
         setC(toEditor(null));
       } finally {
@@ -116,6 +132,32 @@ export default function WaitlistConfig() {
     return (locationSections || []).map((sec) => ({ id: sec.id, name: sec.label, color: sec.color }));
   }, [c, locationSections]);
 
+  // Public guest-join URL. With a slug we get the real branded host
+  // (https://<slug>.serv-os.app/waitlist); without one we fall back to a
+  // ?loc= preview against the operator host so the operator can still test it.
+  const joinUrl = useMemo(() => {
+    if (slug) return customerUrl(slug, '/waitlist');
+    if (!locId) return null;
+    const origin = typeof window !== 'undefined' ? window.location.origin : '';
+    return `${origin}/?loc=${encodeURIComponent(locId)}&surface=waitlist`;
+  }, [slug, locId]);
+
+  // Render the QR for the join URL only while self-service is on (it's the
+  // thing the operator prints / displays). Regenerates if the URL changes.
+  useEffect(() => {
+    if (!c?.selfServiceEnabled || !joinUrl) { setQr(null); return; }
+    let alive = true;
+    QRCode.toDataURL(joinUrl, { width: 480, margin: 1, errorCorrectionLevel: 'M' })
+      .then((d) => { if (alive) setQr(d); })
+      .catch(() => { if (alive) setQr(null); });
+    return () => { alive = false; };
+  }, [c?.selfServiceEnabled, joinUrl]);
+
+  const copyLink = async () => {
+    if (!joinUrl) return;
+    try { await navigator.clipboard.writeText(joinUrl); setLinkCopied(true); setTimeout(() => setLinkCopied(false), 1500); } catch { /* clipboard blocked — URL is shown for manual copy */ }
+  };
+
   const saveAll = async () => {
     if (!c) return;
     setSave({ busy: true });
@@ -128,6 +170,7 @@ export default function WaitlistConfig() {
         bands: c.bands.map((b) => ({ label: b.label, min: b.min, max: b.max, turn: Math.max(5, Number(b.turn) || 60) })),
         zones: Array.isArray(c.zones) && c.zones.length ? c.zones : null,
         smsEnabled: !!c.smsEnabled,
+        selfServiceEnabled: !!c.selfServiceEnabled,
         sms: c.sms,
       };
       const { error } = await saveWaitlistConfig(locId, payload);
@@ -308,6 +351,58 @@ export default function WaitlistConfig() {
           </div>
         ))}
         <div style={S.hint}>Merge fields fill from the party + venue at send time. Guests can reply STOP to opt out. The on/off switch and merge fields apply now; custom message wording is saved with the config once your venue's config row supports it (defaults are used until then).</div>
+      </div>
+
+      {/* ── Guest self-service (QR / link join) ── */}
+      <div style={S.card}>
+        <h2 style={S.h2}>Guest self-service</h2>
+        <div style={S.cardSub}>
+          Let walk-ins add themselves to the list from a QR code or link — they get a live status page
+          with their place in line and quoted wait, and can tap "on my way" or cancel. New self-joins land
+          straight on your host board.
+        </div>
+        <label style={{ ...S.toggle, marginBottom: 14 }}>
+          <input
+            type="checkbox"
+            checked={!!c.selfServiceEnabled}
+            onChange={(e) => set({ selfServiceEnabled: e.target.checked })}
+          />
+          Allow guests to join from a QR / link {c.selfServiceEnabled
+            ? <span style={{ ...S.pill, color: 'var(--grn)', border: '1px solid var(--grn)', marginLeft: 6 }}>ON</span>
+            : <span style={{ ...S.pill, color: 'var(--t4)', border: '1px solid var(--bdr2)', marginLeft: 6 }}>OFF</span>}
+        </label>
+
+        {c.selfServiceEnabled && (
+          <div style={{ display: 'flex', gap: 18, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+            {qr && (
+              <div style={{ flexShrink: 0, padding: 10, background: '#fff', borderRadius: 14, border: '1px solid var(--bdr2)' }}>
+                <img src={qr} alt="Waitlist join QR code" width={150} height={150} style={{ display: 'block' }} />
+              </div>
+            )}
+            <div style={{ flex: '1 1 280px', minWidth: 240 }}>
+              <label style={S.label}>Public join link</label>
+              {!slug && (
+                <div style={{ ...S.hint, color: 'var(--amber, var(--t3))', marginTop: 0, marginBottom: 8 }}>
+                  No online slug set for this venue yet — set one in <b>Location settings → Online ordering</b> to get a
+                  branded <code style={{ fontFamily: "'JetBrains Mono', var(--font-mono, ui-monospace), monospace" }}>your-venue.{CUSTOMER_ROOT}/waitlist</code> link.
+                  The preview link below works for testing in the meantime.
+                </div>
+              )}
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <code style={{ flex: '1 1 200px', minWidth: 180, fontSize: 12.5, padding: '9px 12px', borderRadius: 12, border: '1px solid var(--bdr2)', background: 'var(--bg2)', color: 'var(--t1)', fontFamily: "'JetBrains Mono', var(--font-mono, ui-monospace), monospace", wordBreak: 'break-all' }}>
+                  {joinUrl || '—'}
+                </code>
+                <button style={S.btnGhost} onClick={copyLink} disabled={!joinUrl}>
+                  {linkCopied ? '✓ Copied' : 'Copy link'}
+                </button>
+              </div>
+              <div style={S.hint}>
+                Print the QR for the host stand / door, or share the link. Guests scanning it join the
+                same live queue your host sees. Self-joins don't get the join SMS — their status page is the confirmation.
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* ── Pair a host stand ── */}

@@ -24,6 +24,7 @@ import CustomerPortal from './customer/CustomerPortal';
 import ReviewSurface from './ReviewSurface';
 import WifiSurface from './WifiSurface';
 import CateringSurface from './catering/CateringSurface';
+import WaitlistJoinSurface from './waitlist/WaitlistJoinSurface';
 
 export default function CustomerBoot({ slug, mode, tableId }) {
   const [state, setState] = useState({ loading: true, location: null, error: null });
@@ -83,6 +84,12 @@ export default function CustomerBoot({ slug, mode, tableId }) {
   // Catering ordering — has its OWN hours/lead-time (set in BO), so it bypasses the
   // venue's live opening-hours gate below. The surface self-checks the catering site is enabled.
   if (mode === 'catering')     return <CateringSurface location={loc}/>;
+
+  // F2: Tables Ready guest self-service — always available (not gated by online-ordering
+  // or opening hours). The surface self-checks waitlist_public_config (null = not open).
+  // "waitlist" = QR join form; "waitlist_status" = live status page (token-driven).
+  if (mode === 'waitlist')         return <WaitlistJoinSurface location={loc} view="join"/>;
+  if (mode === 'waitlist_status')  return <WaitlistJoinSurface location={loc} view="status"/>;
 
   // Surface enabled check
   if (mode === 'online' && !loc.online_enabled) {
