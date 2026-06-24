@@ -87,6 +87,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.629', date: '24 Jun 2026', label: 'Hardening — offline reconnect batching can never collapse two different rows into one',
+    changes: [
+      'Tightened yesterday’s batched offline replay: when several buffered writes share part of a composite key but one is missing a component, they are now kept strictly separate instead of being merged — closing a corner case where two distinct rows could have collapsed into one on reconnect. Each write is only combined with another when every key field is present and identical.',
+      'A buffered write with an unrecognised shape is now surfaced in the failure queue for review instead of being silently discarded, so nothing can vanish without a trace.',
+    ],
+  },
+  {
     version: '5.5.628', date: '24 Jun 2026', label: 'Scale — offline reconnect drains its backlog in batches, and waitlist quote recalcs save in one write',
     changes: [
       'When a device comes back online after an outage, its buffered writes now replay in batched, grouped statements instead of one network round-trip per row (which could take 1–2 minutes and block everything behind it). Order is strictly preserved, so an open-then-close or close-then-reseat done offline still ends in exactly the right state, and the “never lose a sale/table” guarantees are unchanged — a failed batch falls back to per-row replay automatically.',

@@ -137,6 +137,10 @@ async function replayItem(supabase, item) {
       for (const [k, v] of Object.entries(item.match || {})) q = q.eq(k, v);
       const { error } = await q;
       if (error) throw error;
+    } else {
+      // Unknown/corrupt type: surface it in the failure queue rather than silently dbDelete-ing it
+      // (which would lose the buffered write with no trace). The catch below records the attempt.
+      throw new Error(`OfflineQueue: unknown item type "${item.type}"`);
     }
     await dbDelete(item.id);
   } catch (e) {
@@ -230,9 +234,15 @@ export async function replayQueue(supabase) {
         // upsert statement would otherwise error). Drop the superseded queue entries.
         const byKey = new Map();
         for (const it of run.items) {
-          const kv = run.onConflict.split(',').map(c => it.payload?.[c.trim()]).join('|');
+          // Only collapse two writes when EVERY conflict-key component is present and non-null. A
+          // naive join would map {L1, table_id:null} and {L1} both to "L1|" and merge DISTINCT rows,
+          // silently dbDelete-ing one from the durable queue (it would never reach the server) — data
+          // loss. Any row with a missing/null component gets a unique key (its queue id) so it is
+          // always sent on its own; well-formed same-key rows still collapse to the freshest.
+          const parts = run.onConflict.split(',').map(c => it.payload?.[c.trim()]);
+          const kv = parts.some(v => v === undefined || v === null) ? `\u0000id:${it.id}` : parts.join("\u0000");
           const prev = byKey.get(kv);
-          if (prev) { try { await dbDelete(prev.id); } catch { /* superseded */ } }
+          if (prev) { try { await dbDelete(prev.id); } catch { /* superseded duplicate */ } }
           byKey.set(kv, it);
         }
         const fresh = [...byKey.values()];

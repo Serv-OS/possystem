@@ -147,6 +147,27 @@ async function sendOne(opts: RunOpts, org: string, campaignId: string, channel: 
   return { ok: !!j.ok, status: j.status || (res.ok ? 'sent' : 'failed'), message_id: j.message_id };
 }
 
+// Bounded-concurrency map: run `fn` over `items` with at most `concurrency` in flight. A blast used
+// to dispatch strictly one recipient at a time — each await is a marketing-send round trip to
+// Resend/Twilio (~200-800ms) — so a large audience (≈600+) overran the edge-function wall-clock
+// limit and the run aborted mid-list. Each recipient is fully independent (its own race-safe claim
+// row, its own idempotent send keyed per campaign+customer+channel), so a small pool is safe and
+// raises the per-invocation ceiling ~Nx. Kept conservative to stay well under provider burst limits.
+const SEND_CONCURRENCY = 6;
+async function mapPool<T>(items: T[], concurrency: number, fn: (item: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  const n = Math.max(1, Math.min(concurrency, items.length));
+  // next++ is synchronous (no await between the read and the increment) so each worker claims a
+  // distinct index — no double-processing despite the shared cursor.
+  const workers = Array.from({ length: n }, async () => {
+    while (next < items.length) {
+      const idx = next++;
+      await fn(items[idx]);
+    }
+  });
+  await Promise.all(workers);
+}
+
 export async function runCampaign(sb: SB, campaign: any, opts: RunOpts): Promise<RunSummary> {
   const org = campaign.org_id;
   const { rule, runKey, dedupeKey } = triggerContext(campaign, opts.today);
@@ -210,7 +231,9 @@ export async function runCampaign(sb: SB, campaign: any, opts: RunOpts): Promise
 
     const channels: ('email' | 'sms')[] = campaign.channel === 'both' ? ['email', 'sms'] : [campaign.channel];
 
-    for (const customerId of ids) {
+    // Dispatch recipients with bounded concurrency (was strictly sequential — see mapPool). Each
+    // iteration's claim→send→update is independent and race-safe, so the pool can't double-send.
+    await mapPool(ids, SEND_CONCURRENCY, async (customerId) => {
       // 3. Claim the send FIRST → never twice. On conflict, reclaim only an ORPHANED row: a failed
       // attempt, or a 'pending' older than 5 min (a crashed run). A FRESH 'pending' means a concurrent
       // run owns it → skip (no double-send). A terminal success (sent/partial/skipped) is never resent.
@@ -229,7 +252,7 @@ export async function runCampaign(sb: SB, campaign: any, opts: RunOpts): Promise
         if (ex && (ex.status === 'failed' || stalePending)) {
           claimedId = ex.id; reuseCode = ex.promo_code || null;   // reuse an already-issued code (no leak on retry)
           await sb.from('campaign_sends').update({ run_id: runId, status: 'pending', error: null }).eq('id', claimedId);
-        } else { summary.skipped++; continue; }
+        } else { summary.skipped++; return; }
       }
 
       try {
@@ -266,7 +289,7 @@ export async function runCampaign(sb: SB, campaign: any, opts: RunOpts): Promise
         try { await sb.from('campaign_sends').update({ status: 'failed', error: String(e instanceof Error ? e.message : e).slice(0, 400) }).eq('id', claimedId); } catch (_e2) { /* swallow; reclaimable */ }
         summary.failed++;
       }
-    }
+    });
 
     summary.status = 'done';
     await sb.from('campaign_runs').update({ status: 'done', candidates: summary.candidates, sent: summary.sent, skipped: summary.skipped, failed: summary.failed, finished_at: new Date().toISOString() }).eq('id', runId);
