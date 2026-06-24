@@ -87,6 +87,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.633', date: '24 Jun 2026', label: 'Fix — QR table tabs key their floor session by the real table, not its label',
+    changes: [
+      'A QR tab could save its table session against the table’s label or a non-standard id instead of the actual floor-plan table, creating a “ghost” session that appeared on neither the POS floor plan nor the waitlist Floor (and left orphaned rows other devices couldn’t match). QR tabs now always resolve to the real floor table, so a QR-occupied table shows correctly everywhere. Old ghost sessions on the demo venue were cleared out.',
+    ],
+  },
+  {
     version: '5.5.632', date: '24 Jun 2026', label: 'Fix — waitlist Floor reads table occupancy exactly like the POS',
     changes: [
       'The waitlist Floor view now decides whether a table is free or seated using the same sources and keys as the POS itself — the live session table plus the device’s local session backup/snapshot that cover writes still in flight — instead of its own separate matching. In one browser the waitlist Floor now matches the POS Floor exactly, so it no longer shows an occupied table as “Open” (or vice-versa).',

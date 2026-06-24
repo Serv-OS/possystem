@@ -20,7 +20,22 @@ import { supabase } from './supabase';
 export async function syncQrTableSession(locationId, tableId) {
   if (!supabase || !locationId || !tableId) return;
   try {
-    // All open QR rounds at this table — by jsonb path on customer.tableId.
+    // Resolve the QR-provided tableId to the CANONICAL floor table id (floor_tables.id) before we
+    // touch active_sessions. QR URLs/tabs sometimes carry a table LABEL ("T2") or a non-canonical id;
+    // writing that verbatim created active_sessions rows that matched no floor table, so neither the
+    // POS floor plan nor the waitlist Floor (both key by floor id) could show them — they just became
+    // orphaned junk. We still read the QR rounds by the original stashed value (that's how they're
+    // keyed in order_queue), but the active_sessions row is always keyed by the floor id.
+    let floorId = String(tableId);
+    try {
+      const { data: ft } = await supabase.from('floor_tables').select('id,label').eq('location_id', locationId);
+      const want = String(tableId).trim().toLowerCase();
+      const match = (ft || []).find((f) => String(f.id) === String(tableId))
+                 || (ft || []).find((f) => String(f.label ?? '').trim().toLowerCase() === want);
+      if (match) floorId = String(match.id);
+    } catch { /* fall back to the raw tableId if the lookup fails */ }
+
+    // All open QR rounds at this table — by jsonb path on customer.tableId (the original stashed value).
     const { data: rows, error } = await supabase
       .from('order_queue')
       .select('ref, items, customer, total, sent_at')
@@ -43,10 +58,10 @@ export async function syncQrTableSession(locationId, tableId) {
       // QR-managed (source='qr' on the session jsonb).
       const { data: existing } = await supabase
         .from('active_sessions').select('session')
-        .eq('location_id', locationId).eq('table_id', tableId).maybeSingle();
+        .eq('location_id', locationId).eq('table_id', floorId).maybeSingle();
       if (existing?.session?.source === 'qr') {
         await supabase.from('active_sessions')
-          .delete().eq('location_id', locationId).eq('table_id', tableId);
+          .delete().eq('location_id', locationId).eq('table_id', floorId);
       }
       return;
     }
@@ -72,7 +87,7 @@ export async function syncQrTableSession(locationId, tableId) {
 
     await supabase.from('active_sessions').upsert({
       location_id: locationId,
-      table_id: tableId,
+      table_id: floorId,
       session,
       updated_at: new Date().toISOString(),
     }, { onConflict: 'location_id,table_id' });
