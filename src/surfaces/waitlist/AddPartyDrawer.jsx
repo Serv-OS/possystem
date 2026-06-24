@@ -116,7 +116,7 @@ export default function AddPartyDrawer({ loc, operator, onClose }) {
             <div style={{ fontSize: 18, fontWeight: 800 }}>Add a party</div>
             <div style={{ fontSize: 11, color: 'var(--t3)', ...mono }}>Look them up, then quote a wait</div>
           </div>
-          <button onClick={onClose} className="sv-glass" style={{ width: 38, height: 38, borderRadius: 11, display: 'grid', placeItems: 'center', cursor: 'pointer', color: 'var(--t1)', border: '1px solid var(--bdr)' }}><Icon name="close" size={17} /></button>
+          <button onClick={onClose} aria-label="Close" className="sv-glass" style={{ width: 44, height: 44, borderRadius: 12, display: 'grid', placeItems: 'center', cursor: 'pointer', color: 'var(--t1)', border: '1px solid var(--bdr)' }}><Icon name="close" size={18} /></button>
         </div>
 
         {/* phone-first */}
@@ -134,8 +134,8 @@ export default function AddPartyDrawer({ loc, operator, onClose }) {
         {/* CRM result */}
         {looking && <div style={{ fontSize: 11.5, color: 'var(--t3)', marginTop: 8, ...mono }}>Looking up…</div>}
         {guest && !looking && (
-          <div style={{ marginTop: 10, padding: '12px 14px', borderRadius: 14, background: 'rgba(124,92,255,0.10)', border: '1px solid rgba(124,92,255,0.30)', display: 'flex', alignItems: 'center', gap: 12 }}>
-            <div style={{ width: 38, height: 38, borderRadius: 11, display: 'grid', placeItems: 'center', background: 'rgba(124,92,255,0.18)', color: 'var(--uv)', flexShrink: 0 }}><Icon name="user" size={19} /></div>
+          <div style={{ marginTop: 10, padding: '12px 14px', borderRadius: 14, background: 'var(--blu-d)', border: '1px solid var(--blu-b)', display: 'flex', alignItems: 'center', gap: 12 }}>
+            <div style={{ width: 38, height: 38, borderRadius: 11, display: 'grid', placeItems: 'center', background: 'var(--blu-d)', color: 'var(--uv)', flexShrink: 0 }}><Icon name="user" size={19} /></div>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--uv-glow, var(--uv))' }}>{guest.name || 'Returning guest'}</div>
               <div style={{ fontSize: 10.5, color: 'var(--t3)', ...mono }}>
@@ -164,7 +164,7 @@ export default function AddPartyDrawer({ loc, operator, onClose }) {
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <Stepper onClick={() => setSize(s => Math.max(1, s - 1))} icon="minus" disabled={size <= 1} />
           <div style={{ flex: 1, textAlign: 'center' }}>
-            <span style={{ fontFamily: 'Syne, Space Grotesk, sans-serif', fontSize: 38, fontWeight: 800, color: 'var(--t1)' }}>{size}</span>
+            <span style={{ fontFamily: 'var(--font-display)', fontSize: 38, fontWeight: 800, color: 'var(--t1)' }}>{size}</span>
             <span style={{ fontSize: 11, color: 'var(--t3)', marginLeft: 8, ...mono }}>band {bandFor(size, bands).label}</span>
           </div>
           <Stepper onClick={() => setSize(s => Math.min(20, s + 1))} icon="plus" disabled={size >= 20} />
@@ -195,7 +195,7 @@ export default function AddPartyDrawer({ loc, operator, onClose }) {
           <div style={{ flex: '0 0 auto', textAlign: 'center' }}>
             <div style={{ fontSize: 9.5, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.1em', ...mono }}>Quote</div>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
-              <span style={{ fontFamily: 'Syne, Space Grotesk, sans-serif', fontSize: 34, fontWeight: 800, color: 'var(--uv)', textShadow: '0 0 22px rgba(124,92,255,0.4)' }}>{quote}</span>
+              <span style={{ fontFamily: 'var(--font-display)', fontSize: 34, fontWeight: 800, color: 'var(--uv)', textShadow: '0 0 22px var(--blu-b)' }}>{quote}</span>
               <span style={{ fontSize: 12, color: 'var(--t3)', ...mono }}>min</span>
             </div>
           </div>

@@ -189,6 +189,120 @@ export async function recordQuoteAccuracy({ entryId, locationId, band, quoted, a
   }
 }
 
+// ── learning loop: historical dwell time + quote accuracy ────────────────────────
+// These feed src/lib/waitlist/learning.js (computeTurnStats / quoteAccuracy). All three
+// are isMock-safe AND table-absent-safe: closed_checks.seated_at is added by the 20260623t
+// migration, and turn_time_stats / quote_accuracy are created by it. Until applied (or on
+// older venues) a missing column/relation surfaces as PGRST/42xxx and we return empty/null.
+
+// Lookback window for learning — recent enough to track the venue's CURRENT pace, deep
+// enough to clear the minSamples gate per band. ~60 days.
+const LEARNING_LOOKBACK_DAYS = 60;
+
+// Load recent dine-in closed checks that have a seated_at (so seat->close turn time exists).
+// Returns [{ seatedAt(ms), closedAt(ms), covers }] — exactly the shape computeTurnStats wants.
+// Rows missing either timestamp are dropped here; learning.turnMinutes also re-guards them.
+export async function loadClosedChecksForLearning(locationId) {
+  if (isMock || !supabase) return { data: [] };
+  if (!locationId || locationId === 'loc-demo') return { data: [] };
+  try {
+    const sinceIso = new Date(Date.now() - LEARNING_LOOKBACK_DAYS * 24 * 60 * 60 * 1000).toISOString();
+    const { data, error } = await supabase
+      .from('closed_checks')
+      .select('seated_at,closed_at,covers')
+      .eq('location_id', locationId)
+      .eq('order_type', 'dine-in')
+      .not('seated_at', 'is', null)
+      .gte('closed_at', sinceIso)
+      .order('closed_at', { ascending: false })
+      .limit(5000);
+    if (error) {
+      if (!warnAbsentOr(error, 'loadClosedChecksForLearning')) {
+        console.warn('[waitlistData] loadClosedChecksForLearning failed:', error.message);
+      }
+      return { data: [] };
+    }
+    const checks = (data || [])
+      .map((r) => ({
+        seatedAt: r.seated_at ? new Date(r.seated_at).getTime() : null,
+        closedAt: r.closed_at ? new Date(r.closed_at).getTime() : null,
+        covers: r.covers ?? null,
+      }))
+      .filter((c) => c.seatedAt != null && c.closedAt != null);
+    return { data: checks };
+  } catch (e) {
+    if (!warnAbsentOr(e, 'loadClosedChecksForLearning')) console.warn('[waitlistData] loadClosedChecksForLearning threw:', e?.message || e);
+    return { data: [] };
+  }
+}
+
+// Load the recorded quoted-vs-actual rows for accuracy scoring (learning.quoteAccuracy).
+// Returns [{ quoted, actual, band }] in camelCase.
+export async function loadQuoteAccuracyRows(locationId) {
+  if (isMock || !supabase) return { data: [] };
+  if (!locationId || locationId === 'loc-demo') return { data: [] };
+  try {
+    const { data, error } = await supabase
+      .from('quote_accuracy')
+      .select('quoted_wait_min,actual_wait_min,party_band')
+      .eq('location_id', locationId)
+      .order('recorded_at', { ascending: false })
+      .limit(2000);
+    if (error) {
+      if (!warnAbsentOr(error, 'loadQuoteAccuracyRows')) {
+        console.warn('[waitlistData] loadQuoteAccuracyRows failed:', error.message);
+      }
+      return { data: [] };
+    }
+    const rows = (data || []).map((r) => ({
+      quoted: r.quoted_wait_min ?? null,
+      actual: r.actual_wait_min ?? null,
+      band: r.party_band ?? null,
+    }));
+    return { data: rows };
+  } catch (e) {
+    if (!warnAbsentOr(e, 'loadQuoteAccuracyRows')) console.warn('[waitlistData] loadQuoteAccuracyRows threw:', e?.message || e);
+    return { data: [] };
+  }
+}
+
+// Best-effort persist of the learned per-band averages so Insights (and other devices)
+// can read them without recomputing. statsByBand = { '1-2': {avgTurn, n}, ... } (the
+// computeTurnStats output). One row per band per location (upsert on location_id+party_band
+// with section_id null for the venue-wide model). Silently no-ops if the relation is absent.
+export async function upsertTurnTimeStats(locationId, statsByBand) {
+  if (isMock || !supabase) return { error: null };
+  if (!locationId || locationId === 'loc-demo') return { error: null };
+  const entries = Object.entries(statsByBand || {});
+  if (!entries.length) return { error: null };
+  try {
+    const nowIso = new Date().toISOString();
+    const rows = entries.map(([band, s]) => ({
+      location_id: locationId,
+      section_id: null,
+      party_band: band,
+      avg_turn_min: s?.avgTurn ?? null,
+      sample_count: s?.n ?? 0,
+      updated_at: nowIso,
+    }));
+    // This is a fresh snapshot of the in-memory learned model (one row per band, venue-wide).
+    // Replace-per-location (delete then insert) so the table never accumulates duplicate band
+    // rows across boots — no unique index needed, and Insights reads a clean one-row-per-band set.
+    await supabase.from('turn_time_stats').delete().eq('location_id', locationId).is('section_id', null);
+    const { error } = await supabase.from('turn_time_stats').insert(rows);
+    if (error) {
+      if (!warnAbsentOr(error, 'upsertTurnTimeStats')) {
+        console.warn('[waitlistData] upsertTurnTimeStats failed:', error.message);
+      }
+      return { error };
+    }
+    return { error: null };
+  } catch (e) {
+    if (!warnAbsentOr(e, 'upsertTurnTimeStats')) console.warn('[waitlistData] upsertTurnTimeStats threw:', e?.message || e);
+    return { error: e };
+  }
+}
+
 // ── per-venue config ────────────────────────────────────────────────────────────
 
 // Load the venue config row (or null — code defaults apply). camelCase out.

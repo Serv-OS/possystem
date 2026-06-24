@@ -17,12 +17,12 @@ import { Icon } from '../../components/ServOSIcons';
 const mono = { fontFamily: 'var(--font-mono)' };
 
 const TABLE_STATE = {
-  available: { dot: 'var(--grn)', label: 'Open', col: 'var(--grn)' },
-  open:      { dot: 'var(--orn)', label: 'Seated', col: 'var(--orn)' },     // store "open" = an active dine-in session
-  occupied:  { dot: 'var(--orn)', label: 'Seated', col: 'var(--orn)' },
-  clearing:  { dot: 'var(--amber, var(--orn))', label: 'Clearing', col: 'var(--amber, var(--orn))' },
-  reserved:  { dot: 'var(--uv)', label: 'Reserved', col: 'var(--uv)' },
-  sent:      { dot: 'var(--orn)', label: 'Seated', col: 'var(--orn)' },
+  available: { dot: 'var(--grn)', label: 'Open', col: 'var(--grn)', icon: 'check' },
+  open:      { dot: 'var(--orn)', label: 'Seated', col: 'var(--orn)', icon: 'dinein' },     // store "open" = an active dine-in session
+  occupied:  { dot: 'var(--orn)', label: 'Seated', col: 'var(--orn)', icon: 'dinein' },
+  clearing:  { dot: 'var(--amber, var(--orn))', label: 'Clearing', col: 'var(--amber, var(--orn))', icon: 'snow' },
+  reserved:  { dot: 'var(--uv)', label: 'Reserved', col: 'var(--uv)', icon: 'clock' },
+  sent:      { dot: 'var(--orn)', label: 'Seated', col: 'var(--orn)', icon: 'dinein' },
 };
 const isFree = (t) => t.status === 'available';
 
@@ -81,7 +81,10 @@ export default function FloorView({ loc, onSeatEntry }) {
                     className="sv-tile"
                     style={{ '--h': free ? 150 : 30, position: 'relative', padding: 14, borderRadius: 14, textAlign: 'left', cursor: free ? 'pointer' : 'default', opacity: free ? 1 : 0.62, color: 'var(--t1)', fontFamily: 'inherit', minHeight: 92 }}
                   >
-                    <span style={{ position: 'absolute', top: 11, right: 11, width: 9, height: 9, borderRadius: 999, background: meta.dot, boxShadow: `0 0 8px ${meta.dot}` }} />
+                    {/* status chip: icon + colour, not colour alone */}
+                    <span aria-label={meta.label} title={meta.label} style={{ position: 'absolute', top: 9, right: 9, width: 18, height: 18, borderRadius: 999, display: 'grid', placeItems: 'center', background: meta.dot, color: 'var(--ink, #0F1211)', boxShadow: `0 0 8px ${meta.dot}` }}>
+                      <Icon name={meta.icon} size={11} />
+                    </span>
                     <div style={{ fontSize: 15, fontWeight: 800 }}>{t.label}</div>
                     <div style={{ fontSize: 10.5, color: 'var(--t3)', marginTop: 2, ...mono }}>{t.maxCovers} seats</div>
                     <div style={{ fontSize: 11, fontWeight: 700, color: meta.col, marginTop: 10, ...mono }}>
@@ -117,7 +120,7 @@ function SeatPicker({ table, candidates, onPick, onClose }) {
             <div style={{ fontSize: 17, fontWeight: 800 }}>Seat at {table.label}</div>
             <div style={{ fontSize: 11, color: 'var(--t3)', ...mono }}>{table.maxCovers} seats · {table.section || 'main'}</div>
           </div>
-          <button onClick={onClose} className="sv-glass" style={{ width: 38, height: 38, borderRadius: 11, display: 'grid', placeItems: 'center', cursor: 'pointer', color: 'var(--t1)', border: '1px solid var(--bdr)' }}><Icon name="close" size={17} /></button>
+          <button onClick={onClose} aria-label="Close" className="sv-glass" style={{ width: 44, height: 44, borderRadius: 12, display: 'grid', placeItems: 'center', cursor: 'pointer', color: 'var(--t1)', border: '1px solid var(--bdr)' }}><Icon name="close" size={18} /></button>
         </div>
         {candidates.length === 0 ? (
           <div style={{ padding: '22px 8px', textAlign: 'center', color: 'var(--t3)', fontSize: 13, ...mono }}>No waiting party fits this table.</div>
@@ -128,7 +131,7 @@ function SeatPicker({ table, candidates, onPick, onClose }) {
               return (
                 <button key={e.id} onClick={() => onPick(e)} className="sv-tile" style={{ '--h': returning ? 280 : 150, display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', borderRadius: 13, cursor: 'pointer', color: 'var(--t1)', textAlign: 'left', fontFamily: 'inherit' }}>
                   <div style={{ width: 40, height: 40, borderRadius: 11, display: 'grid', placeItems: 'center', background: 'var(--inset)', flexShrink: 0 }}>
-                    <span style={{ fontFamily: 'Syne, Space Grotesk, sans-serif', fontSize: 18, fontWeight: 800, color: returning ? 'var(--uv)' : 'var(--grn)' }}>{e.size}</span>
+                    <span style={{ fontFamily: 'var(--font-display)', fontSize: 18, fontWeight: 800, color: returning ? 'var(--uv)' : 'var(--grn)' }}>{e.size}</span>
                   </div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 14.5, fontWeight: 800 }}>{e.name || 'Guest'}{i === 0 ? <span style={{ fontSize: 9.5, color: 'var(--grn)', marginLeft: 8, fontWeight: 700, ...mono }}>BEST FIT</span> : null}</div>

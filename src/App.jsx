@@ -87,6 +87,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.621', date: '24 Jun 2026', label: 'Tables Ready — learning loop, Insights reporting & Liquid Glass polish',
+    changes: [
+      'Wait quotes now LEARN: the estimator uses real per-band turn times computed from seat→close history, so quotes improve over time (with a configurable cold-start default until enough data accrues).',
+      'New Insights view (Back Office → Reports → Tables Ready): parties added/seated, average wait, quote accuracy within ±5 min, no-show rate, average party size, waits-by-hour, learned turn times, and CSV export.',
+      'Host-stand polish: design-token typography/colour, larger tap targets, and status shown by icon + label (not colour alone) for one-handed use.',
+    ],
+  },
+  {
     version: '5.5.620', date: '24 Jun 2026', label: 'Tables Ready (NEW) — walk-in waitlist & live table-queue (slices 1–2; behind ?mode=waitlist, awaiting DB migration)',
     changes: [
       'New front-of-house host-stand surface (Tables Ready): capture a walk-in party (name, size, phone) in seconds, auto-look-up the guest in the CRM, get a smart data-driven wait quote, run a live queue board, and text guests (you’re-next / table-ready) — seating them as tables free up. Reuses the existing CRM, floor/tables and SMS modules; never duplicates them.',

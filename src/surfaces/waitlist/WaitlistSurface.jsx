@@ -172,7 +172,7 @@ function AppShell({ venueName, operator, view, onView, onLogout, onAdd, children
     <div style={{ height: '100%', minHeight: '100vh', overflowY: 'auto', overflowX: 'hidden', WebkitOverflowScrolling: 'touch', background: 'var(--bg)', color: 'var(--t1)', maxWidth: 1100, margin: '0 auto', padding: '0 16px 110px' }}>
       {/* header row */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '16px 4px 14px' }}>
-        <div className="sv-glass" style={{ width: 38, height: 38, borderRadius: 12, display: 'grid', placeItems: 'center', fontFamily: 'Syne, Space Grotesk, sans-serif', fontWeight: 800, color: 'var(--acc)', flexShrink: 0 }}>S</div>
+        <div className="sv-glass" style={{ width: 38, height: 38, borderRadius: 12, display: 'grid', placeItems: 'center', fontFamily: 'var(--font-display)', fontWeight: 800, color: 'var(--acc)', flexShrink: 0 }}>S</div>
         <button onClick={onLogout} title="Tap to switch user" style={{ flex: 1, minWidth: 0, textAlign: 'left', background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'inherit', fontFamily: 'inherit' }}>
           <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--t1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{venueName || 'Tables Ready'}</div>
           <div style={{ fontSize: 10.5, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.08em', ...mono }}>
@@ -216,7 +216,7 @@ function HeroStat({ label, value, unit, accent = 'acc', big = false }) {
     <div className="sv-glass" style={{ padding: '14px 16px', borderRadius: 18, textAlign: 'left' }}>
       <div style={{ fontSize: 10, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.1em', ...mono }}>{label}</div>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, marginTop: 4 }}>
-        <span style={{ fontFamily: 'Syne, Space Grotesk, sans-serif', fontSize: big ? 40 : 30, fontWeight: 800, lineHeight: 1, color: col, textShadow: accent === 'uv' ? '0 0 24px rgba(124,92,255,0.45)' : 'none' }}>{value}</span>
+        <span style={{ fontFamily: 'var(--font-display)', fontSize: big ? 40 : 30, fontWeight: 800, lineHeight: 1, color: col, textShadow: accent === 'uv' ? '0 0 24px var(--blu-b)' : 'none' }}>{value}</span>
         <span style={{ fontSize: 11, color: 'var(--t3)', ...mono }}>{unit}</span>
       </div>
     </div>

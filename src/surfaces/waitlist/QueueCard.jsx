@@ -40,7 +40,7 @@ function fmtPhone(p) {
 
 const PILL = {
   waiting:  { bg: 'var(--acc-d)', fg: 'var(--acc)', bd: 'var(--acc-b)', label: 'Waiting' },
-  notified: { bg: 'rgba(124,92,255,0.13)', fg: 'var(--uv)', bd: 'rgba(124,92,255,0.32)', label: 'Notified' },
+  notified: { bg: 'var(--blu-d)', fg: 'var(--uv)', bd: 'var(--blu-b)', label: 'Notified' },
   ready:    { bg: 'var(--grn-d)', fg: 'var(--grn)', bd: 'var(--grn-b)', label: 'Ready' },
 };
 // the one-tap forward action per status
@@ -76,6 +76,13 @@ export default function QueueCard({ entry, onSeat }) {
     if (elapsed >= quoted) timerCol = 'var(--red)';
     else if (elapsed >= quoted - 5) timerCol = 'var(--amber, var(--orn))';
   }
+  // accessibility: don't rely on timer colour alone — derive a tiny text cue too.
+  // amber "approaching" → "~Xm left", red "over" → "Xm over", green → none.
+  let timerCue = null;
+  if (quoted != null) {
+    if (elapsed >= quoted) timerCue = { text: `${elapsed - quoted}m over`, icon: 'warn', col: 'var(--red)' };
+    else if (elapsed >= quoted - 5) timerCue = { text: `~${quoted - elapsed}m left`, icon: 'bell', col: 'var(--amber, var(--orn))' };
+  }
   const pill = PILL[entry.status] || PILL.waiting;
   const next = NEXT[entry.status] || NEXT.waiting;
   const returning = !!entry.customerId || !!entry.returning;
@@ -92,7 +99,7 @@ export default function QueueCard({ entry, onSeat }) {
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
         {/* size chip */}
         <div className="sv-tile" style={{ '--h': returning ? 280 : 150, width: 46, height: 46, borderRadius: 13, display: 'grid', placeItems: 'center', flexShrink: 0 }}>
-          <span style={{ fontFamily: 'Syne, Space Grotesk, sans-serif', fontSize: 20, fontWeight: 800, color: returning ? 'var(--uv)' : 'var(--grn)' }}>{entry.size}</span>
+          <span style={{ fontFamily: 'var(--font-display)', fontSize: 20, fontWeight: 800, color: returning ? 'var(--uv)' : 'var(--grn)' }}>{entry.size}</span>
         </div>
 
         {/* identity */}
@@ -100,7 +107,7 @@ export default function QueueCard({ entry, onSeat }) {
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <span style={{ fontSize: 15.5, fontWeight: 800, color: 'var(--t1)', overflow: 'hidden', textOverflow: 'ellipsis' }}>{entry.name || 'Guest'}</span>
             {returning && (
-              <span style={{ fontSize: 9.5, fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: 'rgba(124,92,255,0.14)', color: 'var(--uv)', border: '1px solid rgba(124,92,255,0.32)', textTransform: 'uppercase', letterSpacing: '.08em', ...mono }}>Returning</span>
+              <span style={{ fontSize: 9.5, fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: 'var(--blu-d)', color: 'var(--uv)', border: '1px solid var(--blu-b)', textTransform: 'uppercase', letterSpacing: '.08em', ...mono }}>Returning</span>
             )}
           </div>
           <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2, ...mono }}>
@@ -112,10 +119,15 @@ export default function QueueCard({ entry, onSeat }) {
 
         {/* timer + quote */}
         <div style={{ textAlign: 'right', flexShrink: 0 }}>
-          <div style={{ fontFamily: 'Syne, Space Grotesk, sans-serif', fontSize: 22, fontWeight: 800, color: timerCol, lineHeight: 1 }}>{mmss(entry.addedAt)}</div>
+          <div style={{ fontFamily: 'var(--font-display)', fontSize: 22, fontWeight: 800, color: timerCol, lineHeight: 1 }}>{mmss(entry.addedAt)}</div>
           <div style={{ fontSize: 10, color: 'var(--t3)', marginTop: 3, ...mono }}>
             {quoted != null ? `quoted ${quoted}m` : 'no quote'}
           </div>
+          {timerCue && (
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 3, marginTop: 4, fontSize: 9.5, fontWeight: 700, color: timerCue.col, ...mono }}>
+              <Icon name={timerCue.icon} size={10} /> {timerCue.text}
+            </div>
+          )}
         </div>
       </div>
 
@@ -130,9 +142,9 @@ export default function QueueCard({ entry, onSeat }) {
           <Icon name={next.icon} size={15} /> {next.label}
         </button>
         <div ref={menuRef} style={{ position: 'relative' }}>
-          <button onClick={() => setMenu(m => !m)} aria-label="More" className="sv-glass" style={{ width: 38, height: 38, borderRadius: 11, display: 'grid', placeItems: 'center', cursor: 'pointer', color: 'var(--t2)', border: '1px solid var(--bdr)', fontSize: 20, fontWeight: 800, ...mono }}>⋯</button>
+          <button onClick={() => setMenu(m => !m)} aria-label="More" className="sv-glass" style={{ width: 44, height: 44, borderRadius: 12, display: 'grid', placeItems: 'center', cursor: 'pointer', color: 'var(--t2)', border: '1px solid var(--bdr)', fontSize: 20, fontWeight: 800, ...mono }}>⋯</button>
           {menu && (
-            <div className="sv-glass" style={{ position: 'absolute', right: 0, bottom: 46, zIndex: 30, minWidth: 196, padding: 6, borderRadius: 14, display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <div className="sv-glass" style={{ position: 'absolute', right: 0, bottom: 52, zIndex: 30, minWidth: 196, padding: 6, borderRadius: 14, display: 'flex', flexDirection: 'column', gap: 2 }}>
               <KebabItem icon="dinein" onClick={() => act(() => onSeat?.(entry))}>Seat now</KebabItem>
               {entry.phone && (entry.status === STATUS.NOTIFIED || entry.status === STATUS.READY) && (
                 <KebabItem icon="bell" onClick={() => act(() => sendSMS?.(entry, entry.status === STATUS.READY ? 'ready' : 'next'))}>Re-send SMS</KebabItem>

@@ -25,10 +25,10 @@ import {
 // ── styles (matches CateringSettings card/form language) ──────────────────────
 const S = {
   wrap: { height: '100%', overflowY: 'auto', padding: '22px 26px' },
-  h1: { fontSize: 22, fontWeight: 800, color: 'var(--t1)', margin: 0, letterSpacing: '-.01em', fontFamily: "'Syne', inherit" },
+  h1: { fontSize: 22, fontWeight: 800, color: 'var(--t1)', margin: 0, letterSpacing: '-.01em', fontFamily: 'var(--font-display)' },
   sub: { fontSize: 13, color: 'var(--t3)', marginTop: 4, marginBottom: 18, maxWidth: 720 },
   card: { border: '1px solid var(--bdr)', borderRadius: 18, background: 'var(--bg1)', padding: 18, marginBottom: 16, maxWidth: 780 },
-  h2: { fontSize: 15.5, fontWeight: 800, color: 'var(--t1)', margin: '0 0 4px', fontFamily: "'Syne', inherit" },
+  h2: { fontSize: 15.5, fontWeight: 800, color: 'var(--t1)', margin: '0 0 4px', fontFamily: 'var(--font-display)' },
   cardSub: { fontSize: 12, color: 'var(--t3)', margin: '0 0 14px' },
   label: { display: 'block', fontSize: 11, fontWeight: 800, color: 'var(--t3)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '.04em', fontFamily: "'JetBrains Mono', var(--font-mono, ui-monospace), monospace" },
   input: { width: '100%', boxSizing: 'border-box', border: '1px solid var(--bdr2)', borderRadius: 12, padding: '9px 12px', fontSize: 13.5, fontFamily: 'inherit', color: 'var(--t1)', background: 'var(--bg2)', outline: 'none' },
@@ -42,7 +42,7 @@ const S = {
   empty: { textAlign: 'center', padding: '60px 20px', color: 'var(--t3)', fontSize: 14 },
   toggle: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600, color: 'var(--t2)', cursor: 'pointer' },
   sliderVal: { fontFamily: "'JetBrains Mono', var(--font-mono, ui-monospace), monospace", fontWeight: 800, fontSize: 14, color: 'var(--t1)', minWidth: 64, textAlign: 'right' },
-  stepBtn: { width: 30, height: 30, borderRadius: 999, border: '1px solid var(--bdr2)', background: 'var(--bg2)', color: 'var(--t1)', fontSize: 16, cursor: 'pointer', fontFamily: 'inherit', lineHeight: 1, display: 'grid', placeItems: 'center' },
+  stepBtn: { width: 44, height: 44, borderRadius: 999, border: '1px solid var(--bdr2)', background: 'var(--bg2)', color: 'var(--t1)', fontSize: 18, cursor: 'pointer', fontFamily: 'inherit', lineHeight: 1, display: 'grid', placeItems: 'center' },
   pill: { fontSize: 10.5, fontWeight: 800, padding: '2px 9px', borderRadius: 999, fontFamily: "'JetBrains Mono', var(--font-mono, ui-monospace), monospace", letterSpacing: '.03em' },
   chip: { fontSize: 11, fontWeight: 700, padding: '3px 9px', borderRadius: 999, border: '1px solid var(--bdr2)', background: 'var(--bg2)', color: 'var(--uv)', cursor: 'pointer', fontFamily: "'JetBrains Mono', var(--font-mono, ui-monospace), monospace" },
   ta: { width: '100%', boxSizing: 'border-box', border: '1px solid var(--bdr2)', borderRadius: 12, padding: '9px 12px', fontSize: 13, fontFamily: 'inherit', color: 'var(--t1)', background: 'var(--bg2)', outline: 'none', resize: 'vertical', minHeight: 60, lineHeight: 1.5 },

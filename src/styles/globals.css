@@ -493,6 +493,7 @@ button { font-family: inherit; }
   --sh-acc:0 0 20px rgba(21,194,106,0.25);
 
   --font-mono:'JetBrains Mono','SF Mono',Menlo,Consolas,monospace;
+  --font-display:'Syne','Space Grotesk',sans-serif;
   font-family:'Space Grotesk', system-ui, -apple-system, sans-serif;
 }
 

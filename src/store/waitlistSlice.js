@@ -29,6 +29,12 @@ import {
 } from '../lib/waitlist/waitlist.js';
 
 import {
+  computeTurnStats,
+  mergeLearnedBands,
+  quoteAccuracy,
+} from '../lib/waitlist/learning.js';
+
+import {
   loadWaitlist,
   upsertWaitlistEntry,
   insertWaitlistEvent,
@@ -39,6 +45,9 @@ import {
   claimWaitlistDevice,
   waitlistHeartbeat,
   waitlistPinLogin,
+  loadClosedChecksForLearning,
+  loadQuoteAccuracyRows,
+  upsertTurnTimeStats,
 } from '../lib/waitlist/waitlistData.js';
 
 import { fetchCustomerByPhone, normalisePhone } from '../lib/customerLookup.js';
@@ -83,9 +92,14 @@ async function resolveOrgId(get, set, locId) {
 }
 
 // Active-config view: per-venue overrides if loaded, else the code defaults.
+// Bands are returned ALREADY MERGED with the learned per-band turn times so the estimator
+// automatically quotes off the venue's real dwell time once turn_time_stats has seeded
+// (mergeLearnedBands replaces `turn` only where a band has enough learned samples; otherwise
+// the config/code seed stands). waitlistLearnedTurns is null until refreshWaitlistLearning runs.
 function cfgView(get) {
   const cfg = get().waitlistConfig;
-  const bands = (cfg && Array.isArray(cfg.bands) && cfg.bands.length) ? cfg.bands : DEFAULT_BANDS;
+  const configBands = (cfg && Array.isArray(cfg.bands) && cfg.bands.length) ? cfg.bands : DEFAULT_BANDS;
+  const bands = mergeLearnedBands(configBands, get().waitlistLearnedTurns);
   const rules = {
     buffer: cfg?.buffer ?? DEFAULT_QUOTE_RULES.buffer,
     roundTo: cfg?.roundTo ?? DEFAULT_QUOTE_RULES.roundTo,
@@ -135,6 +149,11 @@ export function waitlistSlice(set, get) {
     // ── state ────────────────────────────────────────────────────────────────
     waitlist: [],
     waitlistConfig: null,
+    // Learned per-band turn times (computeTurnStats output) — null until the learning
+    // loop runs. cfgView() merges these onto the config bands so the estimator uses them
+    // automatically. waitlistAccuracy is the quoted-vs-actual scorecard for Insights.
+    waitlistLearnedTurns: null,   // { '1-2': {avgTurn, n}, ... } | null
+    waitlistAccuracy: null,       // { withinPct, mae, n } | null
 
     // ── floor view: store tables -> estimator table shape ─────────────────────
     // EXCLUDE merged child seats (t.parentId) — they double-count capacity.
@@ -493,6 +512,56 @@ export function waitlistSlice(set, get) {
       }
     },
 
+    // ── learning loop ───────────────────────────────────────────────────────────
+    // Refresh the learned turn-time model + the quote-accuracy scorecard from the DB.
+    // 1) load recent dine-in closed checks (seat->close) -> computeTurnStats -> set
+    //    waitlistLearnedTurns (cfgView merges these so EVERY future quote uses them).
+    // 2) load quote_accuracy rows -> quoteAccuracy -> set waitlistAccuracy (for Insights).
+    // 3) best-effort cache the learned model into turn_time_stats for other devices.
+    // Fully mock / table-absent safe — the data layer returns empty/null and we no-op.
+    refreshWaitlistLearning: async (locationId) => {
+      const locId = isRealLoc(locationId) ? locationId : await resolveLocationId();
+      if (!locId) return;
+
+      // 1) learned turn times from historical dwell
+      let stats = null;
+      try {
+        const { data: checks } = await loadClosedChecksForLearning(locId);
+        if (Array.isArray(checks) && checks.length) {
+          // Learn against the operator's CONFIGURED bands (pre-merge) so band boundaries
+          // match what the estimator quotes with.
+          const cfg = get().waitlistConfig;
+          const configBands = (cfg && Array.isArray(cfg.bands) && cfg.bands.length) ? cfg.bands : DEFAULT_BANDS;
+          stats = computeTurnStats(checks, { bands: configBands });
+          set({ waitlistLearnedTurns: Object.keys(stats).length ? stats : null });
+        }
+      } catch (e) {
+        console.warn('[waitlist] refreshWaitlistLearning (turns) failed:', e?.message || e);
+      }
+
+      // 2) quote-accuracy scorecard
+      try {
+        const { data: rows } = await loadQuoteAccuracyRows(locId);
+        if (Array.isArray(rows) && rows.length) {
+          set({ waitlistAccuracy: quoteAccuracy(rows) });
+        }
+      } catch (e) {
+        console.warn('[waitlist] refreshWaitlistLearning (accuracy) failed:', e?.message || e);
+      }
+
+      // 3) best-effort cache the learned model for other devices / Insights
+      if (stats && Object.keys(stats).length) {
+        try {
+          await upsertTurnTimeStats(locId, stats);
+        } catch (e) {
+          console.warn('[waitlist] upsertTurnTimeStats failed:', e?.message || e);
+        }
+      }
+
+      // Learned turns can shift every quote — recompute the live board.
+      try { get().recomputeWaitlistQuotes?.(); } catch { /* no-op */ }
+    },
+
     // ── DB boot / config ──────────────────────────────────────────────────────
     loadWaitlistFromDB: async (locationId) => {
       const locId = isRealLoc(locationId) ? locationId : await resolveLocationId();
@@ -513,6 +582,13 @@ export function waitlistSlice(set, get) {
         if (cfg) set({ waitlistConfig: cfg });
       } catch (e) {
         console.warn('[waitlist] loadWaitlistConfig failed:', e?.message || e);
+      }
+      // Refresh the learning model on boot so quotes use the venue's real dwell time
+      // (and Insights has its accuracy scorecard) without waiting for a manual trigger.
+      try {
+        await get().refreshWaitlistLearning?.(locId);
+      } catch (e) {
+        console.warn('[waitlist] refreshWaitlistLearning (boot) failed:', e?.message || e);
       }
     },
 

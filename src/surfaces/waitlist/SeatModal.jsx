@@ -37,7 +37,7 @@ export default function SeatModal({ entry, operator, onClose }) {
       <div onClick={e => e.stopPropagation()} className="sv-glass" style={{ width: '100%', maxWidth: 520, borderRadius: '22px 22px 0 0', padding: '20px 18px 26px', maxHeight: '86vh', overflowY: 'auto' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
           <div style={{ width: 46, height: 46, borderRadius: 13, display: 'grid', placeItems: 'center', background: 'var(--inset)', flexShrink: 0 }}>
-            <span style={{ fontFamily: 'Syne, Space Grotesk, sans-serif', fontSize: 20, fontWeight: 800, color: 'var(--grn)' }}>{entry.size}</span>
+            <span style={{ fontFamily: 'var(--font-display)', fontSize: 20, fontWeight: 800, color: 'var(--grn)' }}>{entry.size}</span>
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 17, fontWeight: 800 }}>Seat {entry.name || 'Guest'}</div>
@@ -45,7 +45,7 @@ export default function SeatModal({ entry, operator, onClose }) {
               party of {entry.size} · band {bandFor(entry.size).label}{entry.sectionPref ? ` · prefers ${entry.sectionPref}` : ''}
             </div>
           </div>
-          <button onClick={onClose} className="sv-glass" style={{ width: 38, height: 38, borderRadius: 11, display: 'grid', placeItems: 'center', cursor: 'pointer', color: 'var(--t1)', border: '1px solid var(--bdr)' }}><Icon name="close" size={17} /></button>
+          <button onClick={onClose} aria-label="Close" className="sv-glass" style={{ width: 44, height: 44, borderRadius: 12, display: 'grid', placeItems: 'center', cursor: 'pointer', color: 'var(--t1)', border: '1px solid var(--bdr)' }}><Icon name="close" size={18} /></button>
         </div>
 
         <div style={{ fontSize: 10.5, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 8, ...mono }}>

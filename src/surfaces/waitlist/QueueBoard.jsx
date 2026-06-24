@@ -57,7 +57,7 @@ export default function QueueBoard({ loc, operator, onSeat }) {
         {strip.map(b => (
           <div key={b.label} className="sv-tile" style={{ '--h': 150, padding: '12px 12px', borderRadius: 14, textAlign: 'center' }}>
             <div style={{ fontSize: 10, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.1em', ...mono }}>{b.label}</div>
-            <div style={{ fontFamily: 'Syne, Space Grotesk, sans-serif', fontSize: 26, fontWeight: 800, color: 'var(--uv)', lineHeight: 1.1, marginTop: 4 }}>
+            <div style={{ fontFamily: 'var(--font-display)', fontSize: 26, fontWeight: 800, color: 'var(--uv)', lineHeight: 1.1, marginTop: 4 }}>
               {b.quote}<span style={{ fontSize: 12, color: 'var(--t3)', fontFamily: 'var(--font-mono)', fontWeight: 600 }}>m</span>
             </div>
             <div style={{ fontSize: 10, marginTop: 3, color: b.openTables > 0 ? 'var(--grn)' : 'var(--t4)', ...mono }}>
