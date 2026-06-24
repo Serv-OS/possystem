@@ -20,9 +20,43 @@ import {
   foodCostPct,
   gpAmount,
   gpPct,
+  lineAppliesToOrderType,
 } from './costing.js';
 
 const near = (a, b, eps = 1e-6) => assert.ok(Math.abs(a - b) <= eps, `expected ${a} ≈ ${b}`);
+
+// ── Per-order-type recipe lines ──────────────────────────────────────────────
+
+test('lineAppliesToOrderType: untagged → all; tagged → restricted; no context → dine-in', () => {
+  assert.equal(lineAppliesToOrderType({ orderTypes: null }, 'takeaway'), true);
+  assert.equal(lineAppliesToOrderType({ orderTypes: [] }, 'takeaway'), true);
+  assert.equal(lineAppliesToOrderType({ orderTypes: ['takeaway', 'collection', 'delivery'] }, 'takeaway'), true);
+  assert.equal(lineAppliesToOrderType({ orderTypes: ['takeaway'] }, 'dine-in'), false);
+  assert.equal(lineAppliesToOrderType({ orderTypes: ['takeaway'] }, null), false);   // no context defaults to dine-in
+  assert.equal(lineAppliesToOrderType({ orderTypes: ['dine-in'] }, null), true);
+  // non-canonical spellings normalise: kiosk 'dineIn', counter/bar → dine-in
+  assert.equal(lineAppliesToOrderType({ orderTypes: ['dine-in'] }, 'dineIn'), true);
+  assert.equal(lineAppliesToOrderType({ orderTypes: ['dine-in'] }, 'bar'), true);
+  assert.equal(lineAppliesToOrderType({ orderTypes: ['takeaway'] }, 'counter'), false);
+});
+
+test('recipeCost scopes plate cost by order type (latte: dine-in mug vs takeaway cup)', () => {
+  const ctx = { itemsById: {
+    espresso: { id: 'espresso', kind: 'PURCHASED', baseUnit: 'g', currentCost: 15 / 1000, itemConversions: [] }, // £15/kg
+    milk:     { id: 'milk', kind: 'PURCHASED', baseUnit: 'ml', currentCost: 2.85 / 1000, itemConversions: [] },   // £2.85/l
+    cup:      { id: 'cup', kind: 'PURCHASED', baseUnit: 'each', currentCost: 0.06, itemConversions: [] },
+  } };
+  const recipe = { yieldQty: 1, yieldUnit: 'each', wastagePct: 0, lines: [
+    { componentItemId: 'espresso', qty: 27, unit: 'g', usablePct: 100 },
+    { componentItemId: 'milk', qty: 240, unit: 'ml', usablePct: 100 },
+    { componentItemId: 'cup', qty: 1, unit: 'each', usablePct: 100, orderTypes: ['takeaway', 'collection', 'delivery'] },
+  ] };
+  const dineIn = recipeCost(recipe, ctx, 'dine-in').totalCost;
+  near(dineIn, 27 * 0.015 + 240 * 0.00285);   // 0.405 + 0.684 = 1.089 (matches the £1.09 screenshot)
+  near(recipeCost(recipe, ctx, 'takeaway').totalCost, dineIn + 0.06);
+  near(recipeCost(recipe, ctx, 'delivery').totalCost, dineIn + 0.06);
+  near(recipeCost(recipe, ctx).totalCost, dineIn);   // no order type → base/dine-in (no cup)
+});
 
 // ── Unit conversion ─────────────────────────────────────────────────────────
 

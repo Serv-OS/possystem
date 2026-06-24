@@ -20,6 +20,37 @@ import { convert } from './conversion.js';
 import { toBase } from './uom.js';
 
 /**
+ * Canonical order types a recipe line can be scoped to. Matches closed_checks.order_type and the
+ * per-menu price-tier dimension. A line with no order_types (null/[]) applies to ALL of them.
+ */
+export const RECIPE_ORDER_TYPES = ['dine-in', 'takeaway', 'collection', 'delivery'];
+export const ORDER_TYPE_LABELS = { 'dine-in': 'Dine-in', takeaway: 'Takeaway', collection: 'Collection', delivery: 'Delivery' };
+
+// Map the various order-type spellings seen across the app onto the 4 canonical recipe types.
+// counter/bar collapse to dine-in (they already persist as dine-in on closed_checks); kiosk's
+// 'dineIn' / HubRise 'eat_in' also fold to dine-in. Guards against a caller silently under-depleting
+// packaging because it passed a non-canonical value.
+const ORDER_TYPE_ALIASES = { dinein: 'dine-in', eatin: 'dine-in', counter: 'dine-in', bar: 'dine-in' };
+export function normaliseOrderType(orderType) {
+  if (!orderType) return 'dine-in';
+  const lower = String(orderType).trim().toLowerCase();
+  return ORDER_TYPE_ALIASES[lower.replace(/[\s_-]/g, '')] || lower;
+}
+
+/**
+ * Does a recipe line apply for a given order type?
+ *   • untagged line (order_types null/[]) → applies to EVERY order type (shared base recipe)
+ *   • tagged line → applies only to the listed types
+ * With no order-type context we default to 'dine-in' (the base), so costing/depletion of a
+ * legacy or untyped sale never double-counts order-type-specific packaging.
+ */
+export function lineAppliesToOrderType(line, orderType) {
+  const ot = line?.orderTypes;
+  if (!Array.isArray(ot) || ot.length === 0) return true;
+  return ot.includes(normaliseOrderType(orderType));
+}
+
+/**
  * Derive the per-base-unit cost of a purchased item from a supplier pack.
  *
  * Worked example (from the brief): a crate of 24 cans @ £40, base unit "each":
@@ -121,10 +152,15 @@ export function componentUnitCost(itemId, ctx, stack = new Set()) {
  * @param {Set<string>} [stack]
  * @returns {{ totalCost:number, yieldBase:number, costPerYieldBase:number }}
  */
-export function computeRecipe(recipe, outputItem, ctx, stack = new Set()) {
+export function computeRecipe(recipe, outputItem, ctx, stack = new Set(), orderType = null) {
   if (!ctx.memo) ctx.memo = new Map();
   let total = 0;
   for (const line of recipe.lines || []) {
+    // Order-type scoping: skip lines that don't apply to this order type (e.g. a disposable cup
+    // tagged takeaway/collection/delivery is excluded from the dine-in plate cost). Untagged lines
+    // apply to all. Only the top-level dish recipe is filtered; nested PREP roll-ups pass no order
+    // type (their untagged lines always apply), so a prep's cost is order-type-agnostic.
+    if (!lineAppliesToOrderType(line, orderType)) continue;
     const comp = ctx.itemsById?.[line.componentItemId];
     if (!comp) throw new Error(`computeRecipe: line references unknown item "${line.componentItemId}"`);
     const qtyBase = toBase(Number(line.qty), line.unit, comp);
@@ -150,14 +186,14 @@ export function computeRecipe(recipe, outputItem, ctx, stack = new Set()) {
  * @param {CostingCtx} ctx
  * @returns {{ totalCost:number, yieldBase:number, costPerYieldBase:number }}
  */
-export function recipeCost(recipe, ctx) {
+export function recipeCost(recipe, ctx, orderType = null) {
   if (!ctx.memo) ctx.memo = new Map();
   const outputItem = recipe.outputItemId
     ? ctx.itemsById?.[recipe.outputItemId]
     : (recipe.output || { baseUnit: recipe.yieldUnit || 'each', itemConversions: [] });
   if (!outputItem) throw new Error(`recipeCost: unknown output item "${recipe.outputItemId}"`);
   const stack = new Set(recipe.outputItemId ? [recipe.outputItemId] : []);
-  return computeRecipe(recipe, outputItem, ctx, stack);
+  return computeRecipe(recipe, outputItem, ctx, stack, orderType);
 }
 
 // ── Gross-profit helpers (against NET / ex-VAT selling price) ────────────────

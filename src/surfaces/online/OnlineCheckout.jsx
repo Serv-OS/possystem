@@ -666,7 +666,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         const { error: ccErr } = await supabase.from('closed_checks').insert(closedCheck);
         if (ccErr) console.warn('[OnlineCheckout] closed_checks insert failed:', ccErr.message);
         // v5.5.583: deplete recipe ingredients from the stock ledger (server-side, online is anonymous). Fire-and-forget.
-        depleteForSaleServer({ id: closedCheck.id, items: cart.map(l => ({ itemId: l.itemId, qty: l.qty })) });
+        depleteForSaleServer({ id: closedCheck.id, items: cart.map(l => ({ itemId: l.itemId, qty: l.qty })), orderType });
       } catch (e) {
         console.warn('[OnlineCheckout] closed_checks write threw:', e?.message);
       }
@@ -783,7 +783,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         const { error: ccErr } = await supabase.from('closed_checks').insert(closedCheck);
         if (ccErr) console.warn('[OnlineCheckout] closed_checks insert failed:', ccErr.message);
         // v5.5.583: deplete recipe ingredients from the stock ledger (server-side, online is anonymous). Fire-and-forget.
-        depleteForSaleServer({ id: closedCheck.id, items: cart.map(l => ({ itemId: l.itemId, qty: l.qty })) });
+        depleteForSaleServer({ id: closedCheck.id, items: cart.map(l => ({ itemId: l.itemId, qty: l.qty })), orderType });
       } catch (e) {
         console.warn('[OnlineCheckout] closed_checks write threw:', e?.message);
       }

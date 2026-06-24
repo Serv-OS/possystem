@@ -33,7 +33,8 @@ export async function depleteForSaleServer(check, { reverse = false } = {}) {
     if (!items.length) return;
     const checkId = check?.id || check?.ref;
     if (!checkId) return;
-    await supabase.functions.invoke('stock-deplete', { body: { location_id: loc, check_id: String(checkId), items, reverse } });
+    // order_type scopes which recipe lines deplete (e.g. a takeaway cup). Default to dine-in/base.
+    await supabase.functions.invoke('stock-deplete', { body: { location_id: loc, check_id: String(checkId), items, reverse, order_type: check?.orderType || 'dine-in' } });
   } catch (e) { console.warn('[stock] depleteForSaleServer failed:', e?.message); }
 }
 
@@ -61,7 +62,9 @@ export async function depleteForSale(check) {
     if (!items.length) return;
     const ctx = await ctxFor(loc);
     if (!hasRecipes(ctx)) return;
-    const agg = explodeBasket(items.map((it) => ({ itemId: it.itemId, qty: Number(it.qty) || 1 })), ctx);
+    // Scope depletion to the sale's order type so order-type-specific lines (e.g. a disposable cup
+    // for takeaway/collection/delivery) deplete only for those orders. Default to dine-in/base.
+    const agg = explodeBasket(items.map((it) => ({ itemId: it.itemId, qty: Number(it.qty) || 1 })), ctx, check?.orderType || 'dine-in');
     const key = keyOf(check);
     if (!key) return;
     for (const [invId, qtyBase] of Object.entries(agg)) {
@@ -86,7 +89,8 @@ export async function reverseForSale(check, refundItems, refundId) {
     if (!lines.length) return;
     const ctx = await ctxFor(loc);
     if (!hasRecipes(ctx)) return;
-    const agg = explodeBasket(lines, ctx);
+    // Reverse against the same order-type scope used at sale, so a refunded takeaway returns its cup.
+    const agg = explodeBasket(lines, ctx, check?.orderType || 'dine-in');
     const key = keyOf(check);
     const rid = refundId || 'r';
     if (!key) return;

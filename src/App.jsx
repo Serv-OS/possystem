@@ -87,6 +87,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.631', date: '24 Jun 2026', label: 'Recipes — cost & GP per order type (account for takeaway/delivery packaging)',
+    changes: [
+      'A dish’s recipe can now differ by order type. Open a dish recipe and pick an order type (Dine-in / Takeaway / Collection / Delivery) to add items that apply only to it — e.g. a disposable cup for takeaway, collection and delivery while dine-in stays in a reusable mug. Each order type shows its own plate cost and GP%, so you see the true margin per channel.',
+      'Use the “Applies to” control on any ingredient to share it across every order type (the default) or scope it to specific ones. Existing recipes are unchanged — every current ingredient applies to all order types.',
+      'When a dish sells, stock now depletes the right packaging for that order type: a takeaway latte takes a cup, a dine-in latte doesn’t. (Kiosk/online channels pick this up once the stock-deplete function is redeployed.)',
+    ],
+  },
+  {
     version: '5.5.630', date: '24 Jun 2026', label: 'Fix — waitlist Floor no longer shows an occupied POS table as “Open”',
     changes: [
       'The waitlist Floor view could show a table that already had a live order from the POS as “Open” (seatable) for a while, then flip it to “Seated” — risking a double-seat. It now matches a table to its open order even when the POS saved that order under a merged/second-seat key (e.g. “…-2”), under the table’s label, or in a different letter case, so an occupied table reads as Seated straight away.',

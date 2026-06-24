@@ -67,7 +67,7 @@ async function buildCtx(sb: any, loc: string) {
     sb.from('item_packaging_formats').select('id, inventory_item_id, qty_in_base').eq('location_id', loc),
     sb.from('menu_item_recipes').select('menu_item_id, recipe_id, portion').eq('location_id', loc),
     sb.from('recipes').select('id, wastage_pct').eq('location_id', loc).is('archived_at', null),
-    sb.from('recipe_lines').select('recipe_id, component_item_id, qty, unit, usable_pct').eq('location_id', loc),
+    sb.from('recipe_lines').select('recipe_id, component_item_id, qty, unit, usable_pct, order_types').eq('location_id', loc),
   ]);
   const convBy: Record<string, any[]> = {};
   (convs.data || []).forEach((c: any) => { (convBy[c.inventory_item_id] ??= []).push({ fromQty: Number(c.from_qty), fromUnit: c.from_unit, toQty: Number(c.to_qty), toUnit: c.to_unit }); });
@@ -78,13 +78,27 @@ async function buildCtx(sb: any, loc: string) {
   const wastageBy: Record<string, number> = {};
   (recipes.data || []).forEach((r: any) => { wastageBy[r.id] = Number(r.wastage_pct) || 0; });
   const linesBy: Record<string, any[]> = {};
-  (lines.data || []).forEach((l: any) => { (linesBy[l.recipe_id] ??= []).push({ componentItemId: l.component_item_id, qty: Number(l.qty), unit: l.unit, usablePct: l.usable_pct == null ? 100 : Number(l.usable_pct) }); });
+  (lines.data || []).forEach((l: any) => { (linesBy[l.recipe_id] ??= []).push({ componentItemId: l.component_item_id, qty: Number(l.qty), unit: l.unit, usablePct: l.usable_pct == null ? 100 : Number(l.usable_pct), orderTypes: Array.isArray(l.order_types) && l.order_types.length ? l.order_types : null }); });
   const menuRecipes: Record<string, any> = {};
   (links.data || []).forEach((k: any) => { menuRecipes[String(k.menu_item_id)] = { lines: linesBy[k.recipe_id] || [], portion: Number(k.portion) || 1, wastagePct: wastageBy[k.recipe_id] || 0 }; });
   return { itemsById, menuRecipes };
 }
 
-function explode(items: { itemId: string; qty: number }[], ctx: any): Record<string, number> {
+// A line with no order_types (null/[]) applies to every order type; a tagged line only to the
+// listed types. No order type → default to dine-in/base (mirror src/lib/stock/costing.js).
+const ORDER_TYPE_ALIASES: Record<string, string> = { dinein: 'dine-in', eatin: 'dine-in', counter: 'dine-in', bar: 'dine-in' };
+function normaliseOrderType(orderType: string | null): string {
+  if (!orderType) return 'dine-in';
+  const lower = String(orderType).trim().toLowerCase();
+  return ORDER_TYPE_ALIASES[lower.replace(/[\s_-]/g, '')] || lower;
+}
+function lineAppliesToOrderType(line: any, orderType: string | null): boolean {
+  const ot = line?.orderTypes;
+  if (!Array.isArray(ot) || ot.length === 0) return true;
+  return ot.includes(normaliseOrderType(orderType));
+}
+
+function explode(items: { itemId: string; qty: number }[], ctx: any, orderType: string | null = null): Record<string, number> {
   const out: Record<string, number> = {};
   for (const it of items) {
     const mr = ctx.menuRecipes[String(it.itemId)];
@@ -93,6 +107,7 @@ function explode(items: { itemId: string; qty: number }[], ctx: any): Record<str
     if (n <= 0) continue;
     const mult = n * (Number(mr.portion) || 1) * (1 + (Number(mr.wastagePct) || 0) / 100);
     for (const line of mr.lines || []) {
+      if (!lineAppliesToOrderType(line, orderType)) continue;
       const comp = ctx.itemsById[line.componentItemId];
       if (!comp) continue;
       let qtyBase: number;
@@ -114,13 +129,14 @@ Deno.serve(async (req) => {
   const checkId = String(body?.check_id || '');
   const items = Array.isArray(body?.items) ? body.items : [];
   const reverse = body?.reverse === true;
+  const orderType = body?.order_type ? String(body.order_type) : null;   // scopes order-type-specific lines (e.g. takeaway cup)
   if (!loc || !checkId || !items.length) return json({ error: 'location_id, check_id, items required' }, 400);
 
   const sb = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { autoRefreshToken: false, persistSession: false } });
   try {
     const ctx = await buildCtx(sb, loc);
     if (!Object.keys(ctx.menuRecipes).length) return json({ ok: true, depleted: 0, note: 'no recipes' });
-    const agg = explode(items.map((i: any) => ({ itemId: i.itemId, qty: Number(i.qty) || 1 })), ctx);
+    const agg = explode(items.map((i: any) => ({ itemId: i.itemId, qty: Number(i.qty) || 1 })), ctx, orderType);
     let posted = 0;
     for (const [invId, qtyBase] of Object.entries(agg)) {
       if (!(qtyBase > 0)) continue;

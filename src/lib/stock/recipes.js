@@ -36,6 +36,8 @@ const lineFromRow = (r) => ({
   id: r.id, recipeId: r.recipe_id, componentItemId: r.component_item_id,
   qty: Number(r.qty), unit: r.unit, usablePct: r.usable_pct == null ? 100 : Number(r.usable_pct),
   sortOrder: r.sort_order || 0, note: r.note,
+  // null/[] = applies to all order types; an array restricts the line to those types.
+  orderTypes: Array.isArray(r.order_types) && r.order_types.length ? r.order_types : null,
 });
 
 /** All recipes for a location, each with lines[] and (for MENU) menuItemId/portion. */
@@ -90,6 +92,8 @@ export const replaceRecipeLines = async (recipeId, lines, locationId = null) => 
     location_id: locationId, recipe_id: recipeId, component_item_id: l.componentItemId,
     qty: Number(l.qty), unit: l.unit, usable_pct: l.usablePct == null ? 100 : Number(l.usablePct),
     sort_order: i, note: l.note || null,
+    // null = applies to all order types (the shared base); an array scopes it to those types.
+    order_types: Array.isArray(l.orderTypes) && l.orderTypes.length ? l.orderTypes : null,
   }));
   if (!rows.length) return { error: null };
   return supabase.from('recipe_lines').insert(rows);
@@ -197,7 +201,7 @@ export const buildDepletionCtx = async (locationId = null) => {
   const [{ data: links }, { data: recs }, { data: lines }] = await Promise.all([
     supabase.from('menu_item_recipes').select('menu_item_id, recipe_id, portion').eq('location_id', locationId),
     supabase.from('recipes').select('id, wastage_pct').eq('location_id', locationId).is('archived_at', null),
-    supabase.from('recipe_lines').select('recipe_id, component_item_id, qty, unit, usable_pct').eq('location_id', locationId).order('sort_order'),
+    supabase.from('recipe_lines').select('recipe_id, component_item_id, qty, unit, usable_pct, order_types').eq('location_id', locationId).order('sort_order'),
   ]);
   const wastageByRecipe = {};
   (recs || []).forEach((r) => { wastageByRecipe[r.id] = Number(r.wastage_pct) || 0; });
@@ -206,6 +210,7 @@ export const buildDepletionCtx = async (locationId = null) => {
     (linesByRecipe[l.recipe_id] ??= []).push({
       componentItemId: l.component_item_id, qty: Number(l.qty), unit: l.unit,
       usablePct: l.usable_pct == null ? 100 : Number(l.usable_pct),
+      orderTypes: Array.isArray(l.order_types) && l.order_types.length ? l.order_types : null,
     });
   });
   const menuRecipes = {};
@@ -218,15 +223,18 @@ export const buildDepletionCtx = async (locationId = null) => {
   return { ...base, menuRecipes };
 };
 
-/** Cost a recipe given its lines + an output descriptor. Pure-engine wrapper for the UI. */
-export const costRecipeWith = (recipe, ctx) => {
+/**
+ * Cost a recipe given its lines + an output descriptor. Pure-engine wrapper for the UI.
+ * `orderType` (optional) scopes which lines count — null = the base (dine-in) recipe.
+ */
+export const costRecipeWith = (recipe, ctx, orderType = null) => {
   const outputItem = recipe.outputItemId
     ? ctx.itemsById[recipe.outputItemId]
     : { baseUnit: recipe.yieldUnit || 'each', itemConversions: [] };
   try {
     return computeRecipe(
       { yieldQty: recipe.yieldQty, yieldUnit: recipe.yieldUnit, wastagePct: recipe.wastagePct, lines: recipe.lines },
-      outputItem, ctx, new Set(recipe.outputItemId ? [recipe.outputItemId] : []),
+      outputItem, ctx, new Set(recipe.outputItemId ? [recipe.outputItemId] : []), orderType,
     );
   } catch (e) { return { error: e.message }; }
 };

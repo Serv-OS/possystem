@@ -59,3 +59,42 @@ test('wastage% inflates consumption', () => {
   const c2 = { ...ctx, menuRecipes: { ...ctx.menuRecipes, pizza: { ...ctx.menuRecipes.pizza, wastagePct: 10 } } };
   near(explodeMenuItem('pizza', 1, c2).mozzarella, 137.5); // 125 × 1.1
 });
+
+// ── Per-order-type lines (reusable mug vs disposable cup) ────────────────────
+const otCtx = {
+  itemsById: {
+    espresso: { baseUnit: 'g', itemConversions: [] },
+    milk: { baseUnit: 'ml', itemConversions: [] },
+    cup: { baseUnit: 'each', itemConversions: [] },
+  },
+  menuRecipes: {
+    latte: { portion: 1, wastagePct: 0, lines: [
+      { componentItemId: 'espresso', qty: 27, unit: 'g', usablePct: 100 },               // untagged → all types
+      { componentItemId: 'milk', qty: 240, unit: 'ml', usablePct: 100 },                 // untagged → all types
+      { componentItemId: 'cup', qty: 1, unit: 'each', usablePct: 100, orderTypes: ['takeaway', 'collection', 'delivery'] }, // packaging
+    ] },
+  },
+};
+
+test('dine-in latte depletes no cup (reusable mug)', () => {
+  const out = explodeMenuItem('latte', 1, otCtx, {}, 'dine-in');
+  near(out.espresso, 27); near(out.milk, 240);
+  assert.equal(out.cup, undefined);
+});
+
+test('takeaway / collection / delivery latte deplete the cup', () => {
+  near(explodeMenuItem('latte', 1, otCtx, {}, 'takeaway').cup, 1);
+  near(explodeMenuItem('latte', 1, otCtx, {}, 'collection').cup, 1);
+  near(explodeMenuItem('latte', 1, otCtx, {}, 'delivery').cup, 1);
+});
+
+test('no order type defaults to dine-in/base (no cup)', () => {
+  const out = explodeMenuItem('latte', 1, otCtx);   // orderType omitted
+  assert.equal(out.cup, undefined);
+  near(out.milk, 240);
+});
+
+test('explodeBasket threads order type through to lines', () => {
+  const out = explodeBasket([{ itemId: 'latte', qty: 2 }], otCtx, 'takeaway');
+  near(out.cup, 2); near(out.milk, 480);
+});

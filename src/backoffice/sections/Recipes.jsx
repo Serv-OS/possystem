@@ -17,7 +17,7 @@ import { useStore } from '../../store';
 import { getActiveLocationSync, getLocationId } from '../../lib/supabase';
 import { money, currencySymbol } from '../../lib/currency';
 import { UNITS, DIMENSIONS } from '../../lib/stock/units';
-import { componentUnitCost, foodCostPct, gpAmount, gpPct } from '../../lib/stock/costing';
+import { componentUnitCost, foodCostPct, gpAmount, gpPct, RECIPE_ORDER_TYPES, ORDER_TYPE_LABELS, lineAppliesToOrderType } from '../../lib/stock/costing';
 import { toBase, unitOptions } from '../../lib/stock/uom';
 import { fetchInventoryItems } from '../../lib/stock/data';
 import {
@@ -30,6 +30,10 @@ const UNIT_OPTS = Object.entries(UNITS).map(([code, u]) => ({ code, ...u }));
 const DIM_ORDER = [DIMENSIONS.COUNT, DIMENSIONS.WEIGHT, DIMENSIONS.VOLUME];
 const field = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '8px 10px', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
 const lbl = { display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 5 };
+// Order-type selector card styles (per-order-type recipe editing).
+const otCard = (active) => ({ textAlign: 'left', minWidth: 116, padding: '7px 12px', borderRadius: 9, cursor: 'pointer', background: active ? 'var(--bg2)' : 'var(--bg1)', border: '1px solid ' + (active ? 'var(--acc)' : 'var(--bdr)'), boxShadow: active ? '0 0 0 1px var(--acc) inset' : 'none' });
+const otCardTop = { fontSize: 12, fontWeight: 700, color: 'var(--t1)' };
+const otCardSub = { fontSize: 11, marginTop: 2, color: 'var(--t3)' };
 const fmtCost = (v) => (v == null || !Number.isFinite(Number(v)) ? '—' : currencySymbol() + Number(v).toFixed(4).replace(/0+$/, '').replace(/\.$/, ''));
 // Standard units in the same dimension as an item's base unit (so a litre item also offers ml/cl/pt).
 const sameDimGlobals = (baseUnit) => { const dim = UNITS[baseUnit]?.dimension; return UNIT_OPTS.filter(u => u.dimension === dim).map(u => u.code); };
@@ -60,6 +64,9 @@ export default function Recipes() {
   const [selectedKey, setSelectedKey] = useState(null);  // dishes: menuItemId · prep: recipeId
   const [draft, setDraft] = useState(null);
   const [saving, setSaving] = useState(false);
+  // Which order type the dish editor is showing/editing. 'all' = the shared base recipe (every
+  // line); a specific type = base lines + that type's own lines (e.g. its takeaway cup). MENU only.
+  const [otView, setOtView] = useState('all');
 
   const reload = useCallback(async (keep) => {
     const loc = locId || getActiveLocationSync() || await getLocationId().catch(() => null);
@@ -98,6 +105,13 @@ export default function Recipes() {
   const itemName = useCallback((id) => items.find(i => i.id === id)?.name || '—', [items]);
 
   const cost = useMemo(() => (draft ? costRecipeWith(draft, ctx) : null), [draft, ctx]);
+  // Per-order-type cost for a dish (so the bar can show GP for each type and the metrics follow the
+  // selected view). Lines tagged for other types are excluded; untagged lines count for all.
+  const costByType = useMemo(() => {
+    const out = {};
+    if (draft && draft.recipeType === 'MENU') for (const ot of RECIPE_ORDER_TYPES) out[ot] = costRecipeWith(draft, ctx, ot);
+    return out;
+  }, [draft, ctx]);
   // ex-VAT net of a menu item's selling price — GP must be on the net, not the
   // VAT-inclusive shelf price. Variants inherit their parent's tax rate.
   const netSellPrice = useCallback((mi) => {
@@ -117,15 +131,18 @@ export default function Recipes() {
   const menuPriceNet = useMemo(() => netSellPrice(menuItemForDraft), [menuItemForDraft, netSellPrice]);                 // ex-VAT, GP basis
 
   const selectDish = (x) => {
+    setOtView('all');
     setSelectedKey(String(x.m.id));
     setDraft(x.recipe ? structuredClone(x.recipe)
       : { recipeType: 'MENU', menuItemId: String(x.m.id), name: x.label, portion: 1, yieldQty: 1, yieldUnit: 'each', wastagePct: 0, gpTargetPct: '', method: '', lines: [] });
   };
-  const selectPrep = (r) => { setSelectedKey(r.id); setDraft(structuredClone(r)); };
-  const newPrep = () => { setSelectedKey(null); setDraft({ recipeType: 'PREP', name: '', outputItemId: null, yieldQty: 1, yieldUnit: 'each', wastagePct: 0, method: '', lines: [] }); };
+  const selectPrep = (r) => { setOtView('all'); setSelectedKey(r.id); setDraft(structuredClone(r)); };
+  const newPrep = () => { setOtView('all'); setSelectedKey(null); setDraft({ recipeType: 'PREP', name: '', outputItemId: null, yieldQty: 1, yieldUnit: 'each', wastagePct: 0, method: '', lines: [] }); };
 
   const upd = (k, v) => setDraft(d => ({ ...d, [k]: v }));
-  const addLine = (invItem) => setDraft(d => ({ ...d, lines: [...d.lines, { componentItemId: invItem.id, qty: 1, unit: invItem.baseUnit, usablePct: 100 }] }));
+  // New lines added while viewing a specific order type are scoped to that type (e.g. add the cup
+  // in the "Takeaway" view → it applies to takeaway only; widen it later via the line's chip).
+  const addLine = (invItem) => setDraft(d => ({ ...d, lines: [...d.lines, { componentItemId: invItem.id, qty: 1, unit: invItem.baseUnit, usablePct: 100, orderTypes: (d.recipeType === 'MENU' && otView !== 'all') ? [otView] : null }] }));
   const updLine = (i, k, v) => setDraft(d => ({ ...d, lines: d.lines.map((l, j) => j === i ? { ...l, [k]: v } : l) }));
   const rmLine = (i) => setDraft(d => ({ ...d, lines: d.lines.filter((_, j) => j !== i) }));
 
@@ -211,7 +228,7 @@ export default function Recipes() {
                 <h1 style={{ fontSize: 21, fontWeight: 600, margin: 0, color: 'var(--t1)' }}>{draft.recipeType === 'MENU' ? (menuMeta.label(menuMeta.byId[String(draft.menuItemId)] || {}) || draft.name) : (draft.name || 'New prep recipe')}</h1>
                 <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 3 }}>{draft.recipeType === 'MENU' ? `Dish recipe${menuPrice != null ? ` · sells at ${money(menuPrice)}${menuPriceNet != null && menuPriceNet < menuPrice ? ` (${money(menuPriceNet)} ex VAT)` : ''}` : ''}` : 'Prep / sub-recipe'} · {draft.lines.length} ingredient{draft.lines.length === 1 ? '' : 's'}</div>
               </div>
-              <RecipeStats draft={draft} cost={cost} menuPrice={menuPriceNet} />
+              <RecipeStats draft={draft} cost={draft.recipeType === 'MENU' ? (costByType[otView === 'all' ? 'dine-in' : otView] || cost) : cost} menuPrice={menuPriceNet} viewType={otView} />
               {draft.id && <button onClick={archive} style={{ padding: '8px 14px', borderRadius: 8, cursor: 'pointer', background: 'var(--bg2)', border: '1px solid var(--bdr)', color: 'var(--t2)', fontSize: 13 }}>Remove</button>}
             </div>
 
@@ -236,35 +253,89 @@ export default function Recipes() {
                   </>
                 )}
 
-                <label style={lbl}>Ingredients</label>
+                {draft.recipeType === 'MENU' && (
+                  <div style={{ marginBottom: 16 }}>
+                    <label style={lbl}>Order type</label>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      <button onClick={() => setOtView('all')} style={otCard(otView === 'all')}>
+                        <div style={otCardTop}>All order types</div>
+                        <div style={otCardSub}>Edit the base recipe</div>
+                      </button>
+                      {RECIPE_ORDER_TYPES.map(ot => {
+                        const c = costByType[ot];
+                        const plate = c && !c.error ? c.totalCost : null;
+                        const gp = (plate != null && menuPriceNet != null) ? gpPct(menuPriceNet, plate) : null;
+                        const tgt = draft.gpTargetPct === '' || draft.gpTargetPct == null ? null : Number(draft.gpTargetPct);
+                        const below = gp != null && tgt != null && gp < tgt;
+                        const extra = (draft.lines || []).filter(l => Array.isArray(l.orderTypes) && l.orderTypes.includes(ot)).length;
+                        return (
+                          <button key={ot} onClick={() => setOtView(ot)} style={otCard(otView === ot)}>
+                            <div style={otCardTop}>{ORDER_TYPE_LABELS[ot]}{extra ? ` · +${extra}` : ''}</div>
+                            <div style={{ ...otCardSub, color: gp == null ? 'var(--t3)' : (below ? 'var(--red, #ef4444)' : 'var(--grn, #16a34a)') }}>
+                              {gp == null ? '—' : `GP ${gp.toFixed(1)}%`}{plate != null ? ` · ${money(plate)}` : ''}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 7 }}>
+                      {otView === 'all'
+                        ? 'Editing the base recipe — these items apply to every order type. Pick an order type above to add items just for it (e.g. a disposable cup for takeaway).'
+                        : `Showing ${ORDER_TYPE_LABELS[otView]}: shared base items plus any added just for ${ORDER_TYPE_LABELS[otView]}. New items you add here apply to ${ORDER_TYPE_LABELS[otView]} only — widen them with the “Applies to” control.`}
+                    </div>
+                  </div>
+                )}
+
+                <label style={lbl}>Ingredients{draft.recipeType === 'MENU' && otView !== 'all' ? ` · ${ORDER_TYPE_LABELS[otView]}` : ''}</label>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 10 }}>
-                  {draft.lines.length === 0 && <div style={{ fontSize: 12, color: 'var(--t3)' }}>No ingredients yet — add stock items below (e.g. the Heineken keg, used 0.5 pt).</div>}
-                  {draft.lines.map((l, i) => {
+                  {(() => {
+                    // In a specific order-type view, show base (untagged) lines + lines scoped to that
+                    // type; in "all" view show everything. Keep each line's ORIGINAL index for edits.
+                    const visible = draft.lines
+                      .map((l, i) => ({ l, i }))
+                      .filter(({ l }) => draft.recipeType !== 'MENU' || otView === 'all' || lineAppliesToOrderType(l, otView));
+                    if (visible.length === 0) {
+                      return <div style={{ fontSize: 12, color: 'var(--t3)' }}>{draft.lines.length === 0
+                        ? 'No ingredients yet — add stock items below (e.g. the Heineken keg, used 0.5 pt).'
+                        : `No items for ${ORDER_TYPE_LABELS[otView] || 'this order type'} yet — add one below (e.g. a disposable cup).`}</div>;
+                    }
+                    return visible.map(({ l, i }) => {
                     const comp = ctx.itemsById[l.componentItemId];
                     const noCost = comp && (comp.currentCost == null || !(comp.currentCost > 0)) && comp.kind !== 'MADE';
                     let lc = null, convErr = false;
                     if (comp) { try { lc = toBase(Number(l.qty), l.unit, comp) * componentUnitCost(l.componentItemId, ctx); } catch { convErr = true; } }
+                    const scoped = draft.recipeType === 'MENU' && Array.isArray(l.orderTypes) && l.orderTypes.length;
                     return (
-                      <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 7, padding: '8px 10px' }}>
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontSize: 13, color: 'var(--t1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{itemName(l.componentItemId)}</div>
-                          <div style={{ fontSize: 11, color: noCost ? 'var(--red, #ef4444)' : 'var(--t3)', marginTop: 1 }}>
-                            {noCost ? '⚠ no price set — add a supplier price on this item' : (comp ? `${fmtCost(comp.currentCost)} / ${comp.baseUnit}` : '')}
+                      <div key={i} style={{ background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 7, padding: '8px 10px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: 13, color: 'var(--t1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{itemName(l.componentItemId)}</div>
+                            <div style={{ fontSize: 11, color: noCost ? 'var(--red, #ef4444)' : 'var(--t3)', marginTop: 1 }}>
+                              {noCost ? '⚠ no price set — add a supplier price on this item' : (comp ? `${fmtCost(comp.currentCost)} / ${comp.baseUnit}` : '')}
+                            </div>
                           </div>
+                          <span style={{ fontSize: 12, color: 'var(--t3)' }}>uses</span>
+                          <input type="number" min="0" step="any" value={l.qty} onChange={e => updLine(i, 'qty', e.target.value)} placeholder="qty" style={{ ...field, width: 72 }} />
+                          {comp
+                            ? <select value={l.unit} onChange={e => updLine(i, 'unit', e.target.value)} style={{ ...field, width: 128 }}>
+                                {unitOptions(comp, sameDimGlobals(comp.baseUnit)).map(o => <option key={o.token} value={o.token}>{o.label}</option>)}
+                              </select>
+                            : <UnitSelect value={l.unit} onChange={v => updLine(i, 'unit', v)} width={92} />}
+                          <span style={{ fontSize: 13, color: 'var(--t3)' }}>=</span>
+                          <span style={{ width: 74, textAlign: 'right', fontSize: 13, fontWeight: 600, color: convErr ? 'var(--red, #ef4444)' : 'var(--t1)' }}>{convErr ? 'unit?' : lc == null ? '—' : money(lc)}</span>
+                          <button onClick={() => rmLine(i)} style={{ background: 'transparent', border: 0, color: 'var(--t3)', cursor: 'pointer', fontSize: 16 }}>×</button>
                         </div>
-                        <span style={{ fontSize: 12, color: 'var(--t3)' }}>uses</span>
-                        <input type="number" min="0" step="any" value={l.qty} onChange={e => updLine(i, 'qty', e.target.value)} placeholder="qty" style={{ ...field, width: 72 }} />
-                        {comp
-                          ? <select value={l.unit} onChange={e => updLine(i, 'unit', e.target.value)} style={{ ...field, width: 128 }}>
-                              {unitOptions(comp, sameDimGlobals(comp.baseUnit)).map(o => <option key={o.token} value={o.token}>{o.label}</option>)}
-                            </select>
-                          : <UnitSelect value={l.unit} onChange={v => updLine(i, 'unit', v)} width={92} />}
-                        <span style={{ fontSize: 13, color: 'var(--t3)' }}>=</span>
-                        <span style={{ width: 74, textAlign: 'right', fontSize: 13, fontWeight: 600, color: convErr ? 'var(--red, #ef4444)' : 'var(--t1)' }}>{convErr ? 'unit?' : lc == null ? '—' : money(lc)}</span>
-                        <button onClick={() => rmLine(i)} style={{ background: 'transparent', border: 0, color: 'var(--t3)', cursor: 'pointer', fontSize: 16 }}>×</button>
+                        {draft.recipeType === 'MENU' && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 7, paddingTop: 7, borderTop: '1px dashed var(--bdr)' }}>
+                            <span style={{ fontSize: 11, color: 'var(--t3)' }}>Applies to</span>
+                            <AppliesTo value={l.orderTypes} onChange={(v) => updLine(i, 'orderTypes', v)} />
+                            {!scoped && <span style={{ fontSize: 11, color: 'var(--t4)' }}>shared across every order type</span>}
+                          </div>
+                        )}
                       </div>
                     );
-                  })}
+                    });
+                  })()}
                 </div>
                 <IngredientPicker items={items} onPick={addLine} />
 
@@ -282,7 +353,7 @@ export default function Recipes() {
   );
 }
 
-function RecipeStats({ draft, cost, menuPrice }) {
+function RecipeStats({ draft, cost, menuPrice, viewType }) {
   if (cost?.error) return <div style={{ fontSize: 12, color: 'var(--red, #ef4444)', maxWidth: 220, textAlign: 'right' }}>{cost.error}</div>;
   const plate = draft.recipeType === 'MENU' ? cost?.totalCost : cost?.costPerYieldBase;
   const stat = (label, val, color) => (
@@ -296,11 +367,50 @@ function RecipeStats({ draft, cost, menuPrice }) {
   const target = draft.gpTargetPct === '' || draft.gpTargetPct == null ? null : Number(draft.gpTargetPct);
   const below = gp != null && target != null && gp < target;
   return (
-    <div style={{ display: 'flex', gap: 20, textAlign: 'right' }}>
-      {stat('Plate cost', plate == null ? '—' : money(plate))}
-      {stat('Food cost', price != null && plate != null ? (foodCostPct(plate, price)?.toFixed(1) + '%') : '—')}
-      {stat('GP', price != null && plate != null ? money(gpAmount(price, plate)) : '—')}
-      {stat('GP %', gp == null ? '—' : gp.toFixed(1) + '%', below ? 'var(--red, #ef4444)' : 'var(--grn, #16a34a)')}
+    <div style={{ textAlign: 'right' }}>
+      <div style={{ display: 'flex', gap: 20 }}>
+        {stat('Plate cost', plate == null ? '—' : money(plate))}
+        {stat('Food cost', price != null && plate != null ? (foodCostPct(plate, price)?.toFixed(1) + '%') : '—')}
+        {stat('GP', price != null && plate != null ? money(gpAmount(price, plate)) : '—')}
+        {stat('GP %', gp == null ? '—' : gp.toFixed(1) + '%', below ? 'var(--red, #ef4444)' : 'var(--grn, #16a34a)')}
+      </div>
+      <div style={{ fontSize: 10, color: 'var(--t3)', marginTop: 3, textTransform: 'uppercase', letterSpacing: '.04em' }}>
+        {viewType && viewType !== 'all' ? `for ${ORDER_TYPE_LABELS[viewType] || viewType}` : 'base · all order types'}
+      </div>
+    </div>
+  );
+}
+
+// "Applies to" selector for a recipe line — which order types it counts toward. No selection (or
+// all four) = the shared base recipe (stored as null), so the line applies to every order type.
+function AppliesTo({ value, onChange }) {
+  const [open, setOpen] = useState(false);
+  const sel = Array.isArray(value) && value.length ? value : null;
+  const summary = !sel ? 'All order types' : sel.map(t => ORDER_TYPE_LABELS[t] || t).join(', ');
+  const toggle = (t) => {
+    const cur = new Set(sel || []);
+    if (cur.has(t)) cur.delete(t); else cur.add(t);
+    const arr = RECIPE_ORDER_TYPES.filter(x => cur.has(x));   // canonical order
+    onChange(arr.length === 0 || arr.length === RECIPE_ORDER_TYPES.length ? null : arr);
+  };
+  const row = (active, onClick, label) => (
+    <button onClick={onClick} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px', fontSize: 12, background: active ? 'var(--bg3)' : 'transparent', color: 'var(--t1)', border: 0, borderTop: '1px solid var(--bdr)', cursor: 'pointer' }}>{active ? '✓ ' : '   '}{label}</button>
+  );
+  return (
+    <div style={{ position: 'relative' }}>
+      <button onClick={() => setOpen(o => !o)} title="Choose which order types this ingredient applies to"
+        style={{ fontSize: 11, fontWeight: 600, padding: '3px 9px', borderRadius: 20, cursor: 'pointer', border: '1px solid ' + (sel ? 'var(--acc)' : 'var(--bdr)'), background: 'var(--bg2)', color: sel ? 'var(--acc)' : 'var(--t2)' }}>
+        {sel ? '🏷 ' : ''}{summary} ▾
+      </button>
+      {open && (
+        <>
+          <div onClick={() => setOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 9 }} />
+          <div style={{ position: 'absolute', zIndex: 10, top: '100%', left: 0, marginTop: 4, background: 'var(--bg2)', border: '1px solid var(--bdr)', borderRadius: 8, boxShadow: '0 10px 30px rgba(0,0,0,0.3)', overflow: 'hidden', minWidth: 180 }}>
+            <button onClick={() => { onChange(null); setOpen(false); }} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px', fontSize: 12, fontWeight: 600, background: !sel ? 'var(--bg3)' : 'transparent', color: 'var(--t1)', border: 0, cursor: 'pointer' }}>{!sel ? '✓ ' : '   '}All order types</button>
+            {RECIPE_ORDER_TYPES.map(t => row(!!sel?.includes(t), () => toggle(t), ORDER_TYPE_LABELS[t]))}
+          </div>
+        </>
+      )}
     </div>
   );
 }
