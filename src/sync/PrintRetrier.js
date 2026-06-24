@@ -132,9 +132,10 @@ async function processFailedJobs() {
     return;
   }
 
-  for (const job of candidates) {
-    await processRetry(job);
-  }
+  // Scale: dispatch the candidate batch concurrently — a slow/declining printer must not block
+  // every other failed ticket behind it. Each job is guarded by its own atomic 'failed'->claim,
+  // so parallelism can't double-dispatch (only one device/loop wins each job).
+  await Promise.allSettled(candidates.map(job => processRetry(job)));
 }
 
 async function processRetry(job) {

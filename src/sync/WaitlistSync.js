@@ -25,7 +25,7 @@ import { useStore } from '../store';
 import { waitlistToRow, isActive, STATUS } from '../lib/waitlist/waitlist';
 import {
   loadWaitlist,
-  upsertWaitlistEntry,
+  upsertWaitlistEntries,
 } from '../lib/waitlist/waitlistData';
 
 let _locationId = null;
@@ -75,6 +75,7 @@ export async function flushWaitlist() {
   const waitlist = state.waitlist || [];
 
   const liveIds = new Set();
+  const dirty = [];   // entries changed since last flush — batched into one upsert below
   for (const e of waitlist) {
     if (!e?.id) continue;
     // Persist every entry currently held in memory. The store keeps an entry in
@@ -85,7 +86,7 @@ export async function flushWaitlist() {
     const payload = sig(e);
     if (_lastSent[e.id] === payload) continue;
     _lastSent[e.id] = payload;
-    // Durable path (survives reload / offline) + fast direct path while online.
+    // Durable path stays per-row (offline replay attribution); the live network write is batched.
     queueWrite({
       type: 'upsert',
       table: 'waitlist_entries',
@@ -93,15 +94,14 @@ export async function flushWaitlist() {
       onConflict: 'id',
       kind: 'waitlist_entry',
       label: `Waitlist: ${e.name || 'Guest'} (party ${e.size || 1})`,
-    }).then(() => {
-      if (isOnline()) {
-        // table-absent-safe: upsertWaitlistEntry catches a missing relation and
-        // returns { error } without throwing.
-        Promise.resolve(upsertWaitlistEntry(e, _locationId, _orgId))
-          .then((res) => { if (res?.error) console.warn('[WaitlistSync] entry upsert:', res.error.message || res.error); })
-          .catch((err) => console.warn('[WaitlistSync] entry upsert threw:', err?.message || err));
-      }
     });
+    dirty.push(e);
+  }
+  // One batched upsert for every changed entry (was one round-trip per entry). table-absent-safe.
+  if (isOnline() && dirty.length) {
+    Promise.resolve(upsertWaitlistEntries(dirty, _locationId, _orgId))
+      .then((res) => { if (res?.error) console.warn('[WaitlistSync] batch upsert:', res.error.message || res.error); })
+      .catch((err) => console.warn('[WaitlistSync] batch upsert threw:', err?.message || err));
   }
 
   // Entries that have left the in-memory board: mark 'cleared' so a stale realtime

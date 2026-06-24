@@ -40,7 +40,17 @@ export async function flushSessions() {
   const occupied = tables.filter(t => t.session && t.status !== 'available');
   let writesIssued = 0, skipped = 0;
 
-  // Upsert each occupied table
+  // Scale: collect changed sessions and fire ONE batched upsert (and one batched delete below)
+  // instead of a network round-trip per table — a 200-table venue otherwise emits ~200 upserts
+  // per debounced flush. The durable per-row queueWrite stays (offline replay attribution); the
+  // localStorage backup is read once and written once. All guards (echo-suppress, grace period,
+  // delete instrumentation) are unchanged. Idempotent on (location_id,table_id).
+  let _backup = {};
+  try { _backup = JSON.parse(localStorage.getItem('rpos-session-backup') || '{}'); } catch { _backup = {}; }
+  let _backupDirty = false;
+  const upsertRows = [];
+
+  // Upsert each occupied table (collect — single write issued after the delete pass)
   for (const t of occupied) {
     delete _clearedAt[t.id]; // v5.5.283: clear grace period if table re-occupied
     const payload = JSON.stringify(t.session);
@@ -48,41 +58,10 @@ export async function flushSessions() {
     _lastSent[t.id] = payload;
     writesIssued++;
 
-    // Write to localStorage backup immediately (instant, never fails)
-    try {
-      const backup = JSON.parse(localStorage.getItem('rpos-session-backup') || '{}');
-      backup[t.id] = t.session;
-      localStorage.setItem('rpos-session-backup', JSON.stringify(backup));
-    } catch {}
-
-    // Queue write — works offline, replays when back online
-    queueWrite({
-      type: 'upsert',
-      table: 'active_sessions',
-      payload: {
-        location_id: _locationId,
-        table_id: t.id,
-        session: t.session,
-        updated_at: new Date().toISOString(),
-      },
-      onConflict: 'location_id,table_id',
-    }).then(() => {
-      // If online, also write directly for immediate sync
-      if (isOnline()) {
-        Promise.resolve(supabase.from('active_sessions').upsert({
-          location_id: _locationId,
-          table_id: t.id,
-          session: t.session,
-          updated_at: new Date().toISOString(),
-        }, { onConflict: 'location_id,table_id' })).then(res => {
-          if (res?.error) {
-            console.warn('[SessionSync] upsert returned error for table', t.id, '—', res.error.message || res.error);
-          } else {
-            console.log('[SessionSync] ✓ wrote table', t.label || t.id, 'to active_sessions (' + (t.session?.items?.length || 0) + ' items)');
-          }
-        }).catch(e => console.warn('[SessionSync] upsert threw for table', t.id, '—', e?.message || e));
-      }
-    });
+    _backup[t.id] = t.session; _backupDirty = true;   // batched backup (written once below)
+    const row = { location_id: _locationId, table_id: t.id, session: t.session, updated_at: new Date().toISOString() };
+    queueWrite({ type: 'upsert', table: 'active_sessions', payload: row, onConflict: 'location_id,table_id' });
+    upsertRows.push(row);
   }
 
   // Clear sessions for tables that are now available (order complete/cleared)
@@ -121,6 +100,7 @@ export async function flushSessions() {
     }
   }
 
+  const toDelete = [];
   for (const tid of availableIds) {
     if (_lastSent[tid] !== 'cleared') {
       // v5.5.283: Grace period — don't delete within 3s of first noticing
@@ -135,26 +115,25 @@ export async function flushSessions() {
       }
       delete _clearedAt[tid];
       _lastSent[tid] = 'cleared';
-      // Remove from localStorage backup too
-      try {
-        const backup = JSON.parse(localStorage.getItem('rpos-session-backup') || '{}');
-        delete backup[tid];
-        localStorage.setItem('rpos-session-backup', JSON.stringify(backup));
-      } catch {}
+      if (_backup[tid] !== undefined) { delete _backup[tid]; _backupDirty = true; }   // batched backup removal
+      queueWrite({ type: 'delete', table: 'active_sessions', match: { location_id: _locationId, table_id: tid } });
+      toDelete.push(tid);
+    }
+  }
 
-      queueWrite({
-        type: 'delete',
-        table: 'active_sessions',
-        match: { location_id: _locationId, table_id: tid },
-      });
-      if (isOnline()) {
-        Promise.resolve(
-          supabase.from('active_sessions')
-            .delete().eq('location_id', _locationId).eq('table_id', tid)
-        ).then(res => {
-          if (res?.error) console.warn('[SessionSync] delete returned error for table', tid, '—', res.error.message || res.error);
-        }).catch(e => console.warn('[SessionSync] delete threw for table', tid, '—', e?.message || e));
-      }
+  // ── one backup write + one batched upsert + one batched delete (was per-row) ──
+  if (_backupDirty) { try { localStorage.setItem('rpos-session-backup', JSON.stringify(_backup)); } catch {} }
+  if (isOnline()) {
+    if (upsertRows.length) {
+      Promise.resolve(supabase.from('active_sessions').upsert(upsertRows, { onConflict: 'location_id,table_id' }))
+        .then(res => { if (res?.error) console.warn('[SessionSync] batch upsert error —', res.error.message || res.error);
+                       else console.log('[SessionSync] ✓ wrote ' + upsertRows.length + ' session(s) to active_sessions'); })
+        .catch(e => console.warn('[SessionSync] batch upsert threw —', e?.message || e));
+    }
+    if (toDelete.length) {
+      Promise.resolve(supabase.from('active_sessions').delete().eq('location_id', _locationId).in('table_id', toDelete))
+        .then(res => { if (res?.error) console.warn('[SessionSync] batch delete error —', res.error.message || res.error); })
+        .catch(e => console.warn('[SessionSync] batch delete threw —', e?.message || e));
     }
   }
   // v4.5.0: summary line so we can see at a glance whether the flush actually fired

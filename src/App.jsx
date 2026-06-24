@@ -87,6 +87,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.627', date: '24 Jun 2026', label: 'Scale — sync writes are batched (no more one-request-per-row), so busy venues + bursts stay fast',
+    changes: [
+      'Cross-device sync (tables, orders, bar tabs, waitlist) now sends one batched write per flush instead of a separate network request per row — a busy 200-table venue or a catering wave no longer fans out into hundreds of requests. Offline durability and all the “never lose a table/order” safeguards are unchanged.',
+      'Failed kitchen-ticket reprints now dispatch in parallel rather than one-behind-another, so a single slow printer can’t hold up the rest.',
+    ],
+  },
+  {
     version: '5.5.626', date: '24 Jun 2026', label: 'Fix — waitlist Floor now reflects tables occupied under a label-keyed session',
     changes: [
       'The waitlist Floor view could show a table as “Open” when it was actually seated, if its session had been saved against the table label rather than its id. It now matches occupancy by either, so those tables show as Seated correctly.',

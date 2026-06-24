@@ -116,6 +116,14 @@ export async function flushQueues() {
   const queue = state.orderQueue || [];
   const tabs = state.tabs || [];
 
+  // Scale: collect changed rows and fire ONE batched write per table instead of one network
+  // round-trip per row (a busy venue / catering wave could otherwise emit hundreds per flush).
+  // The durable per-row queueWrite stays (offline safety + per-item replay attribution); only the
+  // live direct write is batched. Echo-suppression (_lastSent) is unchanged — it just decides
+  // which rows enter the arrays. Both paths are idempotent on the conflict key.
+  const online = isOnline();
+  const queueUpserts = [], queueDeletes = [], tabUpserts = [], tabDeletes = [];
+
   const activeQueueRefs = new Set();
   for (const o of queue) {
     if (!o?.ref) continue;
@@ -125,20 +133,15 @@ export async function flushQueues() {
     const payload = JSON.stringify(row);
     if (_lastSentQueue[o.ref] === payload) continue;
     _lastSentQueue[o.ref] = payload;
-    queueWrite({ type: 'upsert', table: 'order_queue', payload: row, onConflict: 'ref' }).then(() => {
-      if (isOnline()) {
-        Promise.resolve(supabase.from('order_queue').upsert(row, { onConflict: 'ref' })).catch(e => console.warn('[QueueSync] order_queue upsert:', e.message));
-      }
-    });
+    queueWrite({ type: 'upsert', table: 'order_queue', payload: row, onConflict: 'ref' });
+    queueUpserts.push(row);
   }
   for (const ref of Object.keys(_lastSentQueue)) {
     if (activeQueueRefs.has(ref)) continue;
     if (_lastSentQueue[ref] === 'cleared') continue;
     _lastSentQueue[ref] = 'cleared';
     queueWrite({ type: 'delete', table: 'order_queue', match: { ref } });
-    if (isOnline()) {
-      Promise.resolve(supabase.from('order_queue').delete().eq('ref', ref)).catch(e => console.warn('[QueueSync] order_queue delete:', e.message));
-    }
+    queueDeletes.push(ref);
   }
 
   const activeTabIds = new Set();
@@ -149,20 +152,22 @@ export async function flushQueues() {
     const payload = JSON.stringify(row);
     if (_lastSentTab[t.id] === payload) continue;
     _lastSentTab[t.id] = payload;
-    queueWrite({ type: 'upsert', table: 'bar_tabs', payload: row, onConflict: 'id' }).then(() => {
-      if (isOnline()) {
-        Promise.resolve(supabase.from('bar_tabs').upsert(row, { onConflict: 'id' })).catch(e => console.warn('[QueueSync] bar_tabs upsert:', e.message));
-      }
-    });
+    queueWrite({ type: 'upsert', table: 'bar_tabs', payload: row, onConflict: 'id' });
+    tabUpserts.push(row);
   }
   for (const id of Object.keys(_lastSentTab)) {
     if (activeTabIds.has(id)) continue;
     if (_lastSentTab[id] === 'cleared') continue;
     _lastSentTab[id] = 'cleared';
     queueWrite({ type: 'delete', table: 'bar_tabs', match: { id } });
-    if (isOnline()) {
-      Promise.resolve(supabase.from('bar_tabs').delete().eq('id', id)).catch(e => console.warn('[QueueSync] bar_tabs delete:', e.message));
-    }
+    tabDeletes.push(id);
+  }
+
+  if (online) {
+    if (queueUpserts.length) Promise.resolve(supabase.from('order_queue').upsert(queueUpserts, { onConflict: 'ref' })).catch(e => console.warn('[QueueSync] order_queue batch upsert:', e.message));
+    if (queueDeletes.length) Promise.resolve(supabase.from('order_queue').delete().in('ref', queueDeletes)).catch(e => console.warn('[QueueSync] order_queue batch delete:', e.message));
+    if (tabUpserts.length) Promise.resolve(supabase.from('bar_tabs').upsert(tabUpserts, { onConflict: 'id' })).catch(e => console.warn('[QueueSync] bar_tabs batch upsert:', e.message));
+    if (tabDeletes.length) Promise.resolve(supabase.from('bar_tabs').delete().in('id', tabDeletes)).catch(e => console.warn('[QueueSync] bar_tabs batch delete:', e.message));
   }
 }
 

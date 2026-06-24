@@ -141,6 +141,25 @@ export async function upsertWaitlistEntry(entry, locationId, orgId) {
   }
 }
 
+// Batch upsert (scale): one statement for many entries instead of one round-trip each.
+// Same camel->snake map + table-absent safety as the single version.
+export async function upsertWaitlistEntries(entries, locationId, orgId) {
+  if (isMock || !supabase) return { error: null };
+  if (!locationId || locationId === 'loc-demo') return { error: new Error('No locationId') };
+  const rows = (entries || []).map((e) => waitlistToRow(e, locationId, orgId));
+  if (!rows.length) return { error: null };
+  try {
+    const { error } = await supabase.from('waitlist_entries').upsert(rows, { onConflict: 'id' });
+    if (error && !warnAbsentOr(error, 'upsertWaitlistEntries')) {
+      console.warn('[waitlistData] upsertWaitlistEntries failed:', error.message);
+    }
+    return { error: error || null };
+  } catch (e) {
+    if (!warnAbsentOr(e, 'upsertWaitlistEntries')) console.warn('[waitlistData] upsertWaitlistEntries threw:', e?.message || e);
+    return { error: e };
+  }
+}
+
 // Append a lifecycle event to the audit ledger (waitlist_status_events).
 export async function insertWaitlistEvent({ entryId, locationId, from, to, actor }) {
   if (isMock || !supabase) return { error: null };
