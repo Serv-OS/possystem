@@ -87,6 +87,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.625', date: '24 Jun 2026', label: 'Fix — waitlist returning-guest card showed “[object Object]” next to points',
+    changes: [
+      'The returning-guest card on the waitlist add-party screen printed “[object Object]” beside the points balance — it was rendering the whole loyalty tier object instead of its name. It now shows the tier name (e.g. “· Gold”).',
+    ],
+  },
+  {
     version: '5.5.624', date: '24 Jun 2026', label: 'Tables Ready — seating now carries the guest to the table (loyalty) + dark/light toggle on the host stand',
     changes: [
       'When you seat a waitlist party at a table, the guest (name + phone + CRM link) now travels onto that table’s order — so the dine-in checkout automatically triggers the loyalty flow from their phone, or uses their existing membership. Their saved allergens are applied too.',

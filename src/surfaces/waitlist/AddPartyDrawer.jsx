@@ -141,7 +141,8 @@ export default function AddPartyDrawer({ loc, operator, onClose }) {
               <div style={{ fontSize: 10.5, color: 'var(--t3)', ...mono }}>
                 Returning guest
                 {Number.isFinite(guest.credit) && guest.credit > 0 ? ` · ${guest.credit} pts` : ''}
-                {guest.tier ? ` · ${guest.tier}` : ''}
+                {/* tier can be an object {name,color,icon,...} or a plain string — render its name. */}
+                {(() => { const t = guest.tier; const n = typeof t === 'string' ? t : t?.name; return n ? ` · ${n}` : ''; })()}
               </div>
               {guest.allergens?.length ? (
                 <div style={{ fontSize: 10.5, color: 'var(--amber, var(--orn))', marginTop: 3, ...mono }}>Allergens: {guest.allergens.join(', ')}</div>
