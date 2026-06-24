@@ -87,6 +87,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.630', date: '24 Jun 2026', label: 'Fix — waitlist Floor no longer shows an occupied POS table as “Open”',
+    changes: [
+      'The waitlist Floor view could show a table that already had a live order from the POS as “Open” (seatable) for a while, then flip it to “Seated” — risking a double-seat. It now matches a table to its open order even when the POS saved that order under a merged/second-seat key (e.g. “…-2”), under the table’s label, or in a different letter case, so an occupied table reads as Seated straight away.',
+    ],
+  },
+  {
     version: '5.5.629', date: '24 Jun 2026', label: 'Hardening — offline reconnect batching can never collapse two different rows into one',
     changes: [
       'Tightened yesterday’s batched offline replay: when several buffered writes share part of a composite key but one is missing a component, they are now kept strictly separate instead of being merged — closing a corner case where two distinct rows could have collapsed into one on reconnect. Each write is only combined with another when every key field is present and identical.',

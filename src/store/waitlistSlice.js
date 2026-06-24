@@ -188,18 +188,29 @@ export function waitlistSlice(set, get) {
           supabase.from('active_sessions').select('table_id,session').eq('location_id', locId),
         ]);
         if (!Array.isArray(floor)) return;
-        // active_sessions.table_id is normally the floor table id, but legacy/other write paths
-        // have keyed it by the table LABEL (e.g. "T2") too. Index by both so the waitlist Floor
-        // reflects occupancy however the session was written.
-        const sessionMap = {};
-        (sessions || []).forEach((r) => { if (r.table_id && r.session) sessionMap[r.table_id] = r.session; });
+        // Reconcile active_sessions → floor tables ROBUSTLY. The POS keys active_sessions.table_id
+        // inconsistently: usually the floor table id, but observed in the wild also as (a) the table
+        // LABEL ("T2"), (b) a different CASE ("t4" for label "T4"), and (c) a merged/second-seat
+        // suffix "<floorId>-2". Matching only on exact id/label made an OCCUPIED table render as
+        // "Open" (seatable) on the Floor — a host could double-seat it — until a later realtime/poll
+        // flipped it to "Seated" ("appears on the waitlist, then disappears as taken"). Match on the
+        // exact id, the id-with-seat-suffix, and the case-insensitive label (exact or suffixed).
+        const norm = (s) => String(s ?? '').trim().toLowerCase();
+        const sessionRows = (sessions || []).filter((r) => r.table_id && r.session);
+        const findSession = (t) => {
+          const nl = norm(t.label);
+          let r = sessionRows.find((s) => String(s.table_id) === t.id);                      // exact floor id
+          if (!r) r = sessionRows.find((s) => String(s.table_id).startsWith(t.id + '-'));    // merged/second-seat "<id>-N"
+          if (!r && nl) r = sessionRows.find((s) => norm(s.table_id) === nl || norm(s.table_id).startsWith(nl + '-')); // label, any case
+          return r ? r.session : null;
+        };
         // Preserve a session we just seated locally if the DB poll hasn't caught up yet — never
         // clobber a table seated in the last 3 min (its active_sessions flush may be in flight).
         const existingById = Object.fromEntries((get().tables || []).map((t) => [t.id, t]));
         const RECENT_SEAT_MS = 3 * 60 * 1000;
         const tables = floor.map((t) => {
           const inMem = existingById[t.id];
-          let session = sessionMap[t.id] || sessionMap[t.label] || null;
+          let session = findSession(t);
           if (!session && inMem?.session?.seatedAt && (Date.now() - inMem.session.seatedAt) < RECENT_SEAT_MS) {
             session = inMem.session;
           }
