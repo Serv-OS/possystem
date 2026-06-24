@@ -87,6 +87,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.635', date: '24 Jun 2026', label: 'Critical fix — waitlist host stand no longer wipes the POS’s open tables',
+    changes: [
+      'A device now only removes a table’s saved session from the shared database if it was the device that opened that table. The waitlist host stand ran the table-sync routine whenever it seated a party and was deleting the session rows for every table it didn’t know about — including tables seated on the POS — so an occupied table disappeared from the database and showed as “Open” on the waitlist (and on any second device). Normal table clears still remove the session exactly as before. Reload both the POS and the host stand to pick this up, then re-seat the affected tables.',
+    ],
+  },
+  {
     version: '5.5.634', date: '24 Jun 2026', label: 'Waitlist — clearer control of guest messaging & branding',
     changes: [
       'Waitlist text messages (on join / you’re next / table ready) are edited in Channels → Tables Ready → Text messages, and what you see there is now exactly what gets sent — the old hidden fallback wording that differed from the editor is gone. Added a {position} merge field and removed a misleading note that implied wording couldn’t be saved.',

@@ -102,7 +102,16 @@ export async function flushSessions() {
 
   const toDelete = [];
   for (const tid of availableIds) {
-    if (_lastSent[tid] !== 'cleared') {
+    // Only clear a row THIS device actually wrote a session for. _lastSent[tid] is set when we
+    // upsert a table's session (and by loadSessions / the realtime handler on a full POS). If it's
+    // undefined, this device never owned that table — deleting it would wipe ANOTHER device's live
+    // session. This was the cross-device data-loss bug: the waitlist host stand (whose store.tables
+    // is just a 30s poll snapshot, _lastSent empty) ran flushSessions on every seat and deleted the
+    // POS's occupied tables, so an occupied table vanished from the shared active_sessions table and
+    // every other device showed it as open. This now matches the willActuallyDelete instrumentation
+    // filter above ('cleared' means we already deleted it).
+    const prevSent = _lastSent[tid];
+    if (prevSent && prevSent !== 'cleared') {
       // v5.5.283: Grace period — don't delete within 3s of first noticing
       // the table is available. This prevents cascading data loss where a
       // momentary session clear (from a realtime event race) becomes permanent.
