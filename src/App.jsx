@@ -25,6 +25,7 @@ import TimeClockSurface from './surfaces/TimeClockSurface';
 import OwnerSurface from './surfaces/OwnerSurface';
 import MenuBoardSurface from './surfaces/MenuBoardSurface';
 import OperationsSurface from './surfaces/OperationsSurface';
+import WaitlistSurface from './surfaces/waitlist/WaitlistSurface';
 import OnboardingSignSurface from './surfaces/OnboardingSignSurface';
 import RyftTestSurface from './surfaces/RyftTestSurface';
 import CustomerBoot from './surfaces/CustomerBoot';
@@ -85,6 +86,14 @@ import { ServOSIcon } from './components/ServOSBrand';
 import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
+  {
+    version: '5.5.620', date: '24 Jun 2026', label: 'Tables Ready (NEW) — walk-in waitlist & live table-queue (slices 1–2; behind ?mode=waitlist, awaiting DB migration)',
+    changes: [
+      'New front-of-house host-stand surface (Tables Ready): capture a walk-in party (name, size, phone) in seconds, auto-look-up the guest in the CRM, get a smart data-driven wait quote, run a live queue board, and text guests (you’re-next / table-ready) — seating them as tables free up. Reuses the existing CRM, floor/tables and SMS modules; never duplicates them.',
+      'Data-driven estimator (unit-tested) quotes by party-size band, current queue depth and live table availability, and learns real turn times over time (new closed_checks.seated_at records seat→close duration). Secure, tenant-isolated schema with device pairing + server-side Host-role PIN login.',
+      'Back Office → Channels → Tables Ready (quote rules, party-size bands, SMS templates, host-stand pairing) and Reports → Tables Ready (KPIs, quote accuracy, learned turn times). NOTE: not live until the database migration is applied.',
+    ],
+  },
   {
     version: '5.5.619', date: '23 Jun 2026', label: 'Stability — a long-offline device no longer dumps a backlog of old orders into the kitchen on boot',
     changes: [
@@ -7361,6 +7370,7 @@ export default function App() {
       onSelectClock={() => { localStorage.setItem('rpos-device-mode', 'clock'); window.location.href = '?mode=clock'; }}
       onSelectMenuBoard={() => { localStorage.setItem('rpos-device-mode', 'menuboard'); window.location.href = '?mode=menuboard'; }}
       onSelectOps={() => { localStorage.setItem('rpos-device-mode', 'ops'); window.location.href = '?mode=ops'; }}
+      onSelectWaitlist={() => { localStorage.setItem('rpos-device-mode', 'waitlist'); window.location.href = '?mode=waitlist'; }}
       onSelectBackOffice={() => { localStorage.setItem('rpos-device-mode', 'backoffice'); window.location.href = '?mode=office'; }}
       onSelectAdmin={() => { localStorage.setItem('rpos-device-mode', 'admin'); window.location.href = '?mode=admin'; }}
     />
@@ -7390,6 +7400,7 @@ export default function App() {
   // Operations — mobile food-safety/ops surface (temperature, deliveries, maintenance).
   // Pairs itself via ops_devices (claim-code + heartbeat) then staff PIN; no rpos-device.
   if (deviceMode === 'ops') return <OperationsSurface />;
+  if (deviceMode === 'waitlist') return <WaitlistSurface />;
 
   // Back office mode — go to email login (no pairing needed)
   if (deviceMode === 'backoffice' || deviceMode === 'office') return <><SyncBridge onSyncPulse={handleSyncPulse}/><BackOfficeApp /></>;

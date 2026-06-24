@@ -2,8 +2,8 @@ import { useState, useEffect } from 'react';
 import { useStore } from '../../store';
 import { supabase, isMock } from '../../lib/supabase';
 
-const ROLES = ['Manager','Server','Bartender','Cashier','Kitchen'];
-const ROLE_COLORS = { Manager:'#e8a020', Server:'#3b82f6', Bartender:'#22c55e', Cashier:'#a855f7', Kitchen:'#ef4444' };
+const ROLES = ['Manager','Server','Bartender','Cashier','Kitchen','Host'];
+const ROLE_COLORS = { Manager:'#e8a020', Server:'#3b82f6', Bartender:'#22c55e', Cashier:'#a855f7', Kitchen:'#ef4444', Host:'#7C5CFF' };
 const PERM_GROUPS = [
   { group:'Orders',     perms:[{id:'void',label:'Void items'},{id:'discount',label:'Apply discounts'},{id:'priceOverride',label:'Override price'}] },
   { group:'Payments',   perms:[{id:'refund',label:'Process refunds'},{id:'cashup',label:'Cash up drawer'},{id:'openDrawer',label:'Open cash drawer'}] },
@@ -15,6 +15,7 @@ const ROLE_DEFAULTS = {
   Bartender: ['void','openDrawer'],
   Cashier:   ['cashup','openDrawer'],
   Kitchen:   [],
+  Host:      ['waitlist'],
 };
 
 const inp = { background:'var(--bg3)', border:'1.5px solid var(--bdr2)', borderRadius:9, padding:'8px 11px', color:'var(--t1)', fontSize:13, fontFamily:'inherit', outline:'none', width:'100%', boxSizing:'border-box' };

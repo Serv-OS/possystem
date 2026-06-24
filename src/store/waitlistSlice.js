@@ -1,0 +1,603 @@
+// src/store/waitlistSlice.js
+//
+// Tables Ready — the store adapter for the walk-in waitlist / live table-queue.
+// A factory spread into the single Zustand store. ALL estimation maths, the
+// status lifecycle, and the row mappers live in ../lib/waitlist/waitlist.js
+// (pure + unit-tested); this file owns ONLY the store wiring: optimistic state,
+// CRM linkage, table-floor coupling (seatTable/clearTable), SMS dispatch, and
+// table-absent-safe persistence via the data layer.
+//
+// Conventions honoured:
+//  - camelCase in the store; the data layer owns snake_case mapping (waitlistToRow).
+//  - STATIC imports only (dynamic import() silently fails in the Vite bundle).
+//  - Always resolve a real locationId before any DB write (loc-demo trap guarded).
+//  - Every DB call is table-absent-safe: the data layer swallows a missing
+//    relation and returns {error}/empty, so nothing here throws at boot.
+
+import {
+  estimate,
+  bandFor,
+  STATUS,
+  isActive,
+  canTransition,
+  currentAverageWait,
+  rowToWaitlist,
+  waitlistToRow,
+  actualWaitMin,
+  DEFAULT_BANDS,
+  DEFAULT_QUOTE_RULES,
+} from '../lib/waitlist/waitlist.js';
+
+import {
+  loadWaitlist,
+  upsertWaitlistEntry,
+  insertWaitlistEvent,
+  recordQuoteAccuracy,
+  loadWaitlistConfig,
+  saveWaitlistConfig,
+  registerWaitlistDevice,
+  claimWaitlistDevice,
+  waitlistHeartbeat,
+  waitlistPinLogin,
+} from '../lib/waitlist/waitlistData.js';
+
+import { fetchCustomerByPhone, normalisePhone } from '../lib/customerLookup.js';
+import { scheduleFlush as scheduleSessionFlush } from '../sync/SessionSync.js';
+
+import {
+  supabase,
+  isMock,
+  getActiveLocationSync,
+  getLocationId,
+  ensureAuthToken,
+  platformSupabase,
+} from '../lib/supabase.js';
+
+// ── internal helpers (module-scoped, not exposed on the store) ────────────────
+
+const LOC_DEMO = 'loc-demo';
+const isRealLoc = (id) => !!id && id !== LOC_DEMO;
+
+// Resolve a real locationId (sync-first, async fallback). Mirrors upsertCustomer.
+async function resolveLocationId() {
+  const sync = getActiveLocationSync();
+  if (isRealLoc(sync)) return sync;
+  const resolved = await getLocationId().catch(() => null);
+  return isRealLoc(resolved) ? resolved : null;
+}
+
+// Resolve org_id for the active location, caching it on the store like the rest
+// of the codebase (get()._cachedOrgId). Best-effort; null is tolerated.
+async function resolveOrgId(get, set, locId) {
+  const cached = get()._cachedOrgId;
+  if (cached) return cached;
+  if (!supabase || !isRealLoc(locId)) return null;
+  try {
+    const { data: loc } = await supabase.from('locations').select('org_id').eq('id', locId).single();
+    const orgId = loc?.org_id || null;
+    if (orgId) set({ _cachedOrgId: orgId });
+    return orgId;
+  } catch {
+    return null;
+  }
+}
+
+// Active-config view: per-venue overrides if loaded, else the code defaults.
+function cfgView(get) {
+  const cfg = get().waitlistConfig;
+  const bands = (cfg && Array.isArray(cfg.bands) && cfg.bands.length) ? cfg.bands : DEFAULT_BANDS;
+  const rules = {
+    buffer: cfg?.buffer ?? DEFAULT_QUOTE_RULES.buffer,
+    roundTo: cfg?.roundTo ?? DEFAULT_QUOTE_RULES.roundTo,
+    maxQuote: cfg?.maxQuote ?? DEFAULT_QUOTE_RULES.maxQuote,
+    defaultTurn: cfg?.defaultTurn ?? DEFAULT_QUOTE_RULES.defaultTurn,
+  };
+  return { bands, rules, smsEnabled: cfg?.smsEnabled !== false, sms: cfg?.sms ?? null };
+}
+
+// Best-effort resolution of the venue display name for SMS copy.
+function venueName(get) {
+  try {
+    const id = get().currentLocationId;
+    const loc = (get().locations || []).find((l) => l.id === id);
+    return loc?.name || get().locationConfig?.name || 'us';
+  } catch {
+    return 'us';
+  }
+}
+
+// debounce handle for recompute-driven persistence
+let _recomputePersistTimer = null;
+
+// ── the slice ─────────────────────────────────────────────────────────────────
+export function waitlistSlice(set, get) {
+  // Persist one entry to the DB (upsert + lifecycle event). Best-effort: a DB
+  // blip never blocks the optimistic UI. The data layer is table-absent-safe.
+  const persistEntry = async (entry, eventTo, actor) => {
+    const locId = await resolveLocationId();
+    if (!locId) return; // never write with loc-demo / unresolved
+    const orgId = await resolveOrgId(get, set, locId);
+    try {
+      await upsertWaitlistEntry(entry, locId, orgId);
+    } catch (e) {
+      console.warn('[waitlist] upsertWaitlistEntry failed:', e?.message || e);
+    }
+    if (eventTo) {
+      try {
+        await insertWaitlistEvent({ entryId: entry.id, locationId: locId, from: null, to: eventTo, actor: actor || null });
+      } catch (e) {
+        console.warn('[waitlist] insertWaitlistEvent failed:', e?.message || e);
+      }
+    }
+  };
+
+  return {
+    // ── state ────────────────────────────────────────────────────────────────
+    waitlist: [],
+    waitlistConfig: null,
+
+    // ── floor view: store tables -> estimator table shape ─────────────────────
+    // EXCLUDE merged child seats (t.parentId) — they double-count capacity.
+    // status mapping: available->open, clearing->clearing, everything else->seated.
+    waitlistTablesView: () => {
+      const tables = get().tables || [];
+      return tables
+        .filter((t) => !t.parentId)
+        .map((t) => ({
+          cap: t.maxCovers,
+          status: t.status === 'available' ? 'open' : t.status === 'clearing' ? 'clearing' : 'seated',
+          section: t.section,
+        }));
+    },
+
+    // Standalone floor loader for the host stand. The waitlist surface renders WITHOUT
+    // SyncBridge (like Operations), so store.tables would otherwise be empty and the
+    // estimator/Floor view would be blind. This loads floor_tables + active_sessions and
+    // populates store.tables in the exact shape waitlistTablesView/FloorView expect. Live
+    // table turns then flow via startRealtime()'s sessions channel; we also recompute quotes.
+    loadWaitlistFloor: async (locationId) => {
+      if (isMock || !supabase) return;
+      const locId = isRealLoc(locationId) ? locationId : await resolveLocationId();
+      if (!isRealLoc(locId)) return;
+      try {
+        const [{ data: floor }, { data: sessions }] = await Promise.all([
+          supabase.from('floor_tables').select('*').eq('location_id', locId),
+          supabase.from('active_sessions').select('table_id,session').eq('location_id', locId),
+        ]);
+        if (!Array.isArray(floor)) return;
+        const sessionMap = {};
+        (sessions || []).forEach((r) => { if (r.table_id && r.session) sessionMap[r.table_id] = r.session; });
+        // Preserve a session we just seated locally if the DB poll hasn't caught up yet — never
+        // clobber a table seated in the last 3 min (its active_sessions flush may be in flight).
+        const existingById = Object.fromEntries((get().tables || []).map((t) => [t.id, t]));
+        const RECENT_SEAT_MS = 3 * 60 * 1000;
+        const tables = floor.map((t) => {
+          const inMem = existingById[t.id];
+          let session = sessionMap[t.id] || null;
+          if (!session && inMem?.session?.seatedAt && (Date.now() - inMem.session.seatedAt) < RECENT_SEAT_MS) {
+            session = inMem.session;
+          }
+          return {
+            ...t,
+            maxCovers: t.max_covers ?? t.maxCovers ?? 4,
+            sortOrder: t.sort_order ?? t.sortOrder ?? 0,
+            section: t.section ?? t.zone ?? null,
+            parentId: t.parent_id ?? t.parentId ?? null,
+            locationId: t.location_id ?? locId,
+            status: session ? 'occupied' : 'available',
+            session,
+          };
+        });
+        set({ tables });
+        get().recomputeWaitlistQuotes?.();
+      } catch (e) {
+        console.warn('[waitlist] loadWaitlistFloor failed (non-fatal):', e?.message || e);
+      }
+    },
+
+    // ── CRM lookup ────────────────────────────────────────────────────────────
+    // Returns a CRM card { customerId, name, ... } or null. Tolerates mock /
+    // missing CRM. Used by the host "add party" sheet to pre-fill + flag returning.
+    lookupGuestByPhone: async (phone) => {
+      const phoneN = normalisePhone(phone);
+      if (!phoneN) return null;
+      try {
+        const locId = await resolveLocationId();
+        const card = await fetchCustomerByPhone(phoneN, locId || undefined);
+        return card || null;
+      } catch (e) {
+        console.warn('[waitlist] lookupGuestByPhone failed:', e?.message || e);
+        return null;
+      }
+    },
+
+    // ── add a party to the queue ──────────────────────────────────────────────
+    addParty: async ({ name, phone, size, sectionPref, notes, customer, customerId } = {}) => {
+      const now = Date.now();
+      const { bands, rules } = cfgView(get);
+
+      // Link or create the CRM customer (best-effort; the queue works without it).
+      let linkedId = customerId || customer?.customerId || null;
+      const phoneN = phone ? normalisePhone(phone) : null;
+      if (!linkedId && phoneN && !isMock) {
+        try {
+          linkedId = await get().upsertCustomer({ name, phone: phoneN, allergens: customer?.allergens });
+        } catch (e) {
+          console.warn('[waitlist] upsertCustomer (addParty) failed:', e?.message || e);
+        }
+      }
+
+      // First quote — estimate over the LIVE floor + the parties already waiting.
+      const tablesView = get().waitlistTablesView();
+      const otherActive = (get().waitlist || []).filter((e) => isActive(e.status)).map((e) => ({ size: e.size, status: e.status }));
+      const quote = estimate({ size: size || 1, sectionPref: sectionPref || null, tables: tablesView, waiting: otherActive, bands, rules });
+
+      const entry = {
+        id: `wl-${now}`,
+        locationId: getActiveLocationSync() || null,
+        customerId: linkedId || null,
+        customer: customer || (linkedId ? { customerId: linkedId, name, phone: phoneN } : null),
+        name: name || 'Guest',
+        phone: phoneN || null,
+        size: size || 1,
+        quoted: quote,
+        firstQuote: quote,
+        status: STATUS.WAITING,
+        sectionPref: sectionPref || null,
+        notes: notes || '',
+        seatedTableId: null,
+        source: 'host',
+        returning: !!linkedId,
+        addedAt: now,
+        quotedAt: now,
+        notifiedAt: null,
+        readyAt: null,
+        seatedAt: null,
+      };
+
+      // Optimistic set first — the board updates instantly.
+      set((s) => ({ waitlist: [...(s.waitlist || []), entry] }));
+
+      // Persist (upsert + 'waiting' lifecycle event). Best-effort.
+      await persistEntry(entry, STATUS.WAITING, get().staff?.name);
+
+      // Join-confirmation SMS with their quote (transactional; sendWaitlistSMS guards phone + smsEnabled).
+      get().sendWaitlistSMS?.(entry, 'join');
+
+      // Adding a party shifts everyone's quote — recompute the rest.
+      get().recomputeWaitlistQuotes();
+
+      return entry;
+    },
+
+    // ── lifecycle transition (the single funnel for status changes) ───────────
+    setWaitlistStatus: async (id, toStatus, opts = {}) => {
+      const entry = (get().waitlist || []).find((e) => e.id === id);
+      if (!entry) return;
+      const from = entry.status;
+      if (!canTransition(from, toStatus)) {
+        console.warn(`[waitlist] illegal transition ${from} -> ${toStatus} for ${id}`);
+        return;
+      }
+
+      const now = Date.now();
+      const patch = { status: toStatus };
+      if (toStatus === STATUS.NOTIFIED && !entry.notifiedAt) patch.notifiedAt = now;
+      if (toStatus === STATUS.READY && !entry.readyAt) patch.readyAt = now;
+      if (toStatus === STATUS.SEATED && !entry.seatedAt) patch.seatedAt = now;
+      if (toStatus === STATUS.SEATED && opts.tableId) patch.seatedTableId = opts.tableId;
+
+      const updated = { ...entry, ...patch };
+
+      // Optimistic set.
+      set((s) => ({ waitlist: (s.waitlist || []).map((e) => (e.id === id ? updated : e)) }));
+
+      // Persist row + lifecycle event.
+      await persistEntry(updated, toStatus, opts.actor || get().staff?.name);
+
+      // ── side effects ────────────────────────────────────────────────────────
+      if (toStatus === STATUS.SEATED && opts.tableId) {
+        // Couple to the floor: seat the real table with the party's covers.
+        try {
+          get().seatTable?.(opts.tableId, { covers: updated.size, server: get().staff?.name });
+          // The host stand renders WITHOUT SyncBridge, so seatTable's in-memory session would
+          // never reach active_sessions and the 30s floor poll would flip the table back to free.
+          // Persist it now so the seat sticks (honours "tables MUST never be lost").
+          scheduleSessionFlush();
+        } catch (e) {
+          console.warn('[waitlist] seatTable failed:', e?.message || e);
+        }
+        // Close the learning loop: quoted vs actual.
+        const actual = actualWaitMin(updated);
+        if (actual != null) {
+          const locId = await resolveLocationId();
+          if (locId) {
+            try {
+              await recordQuoteAccuracy({
+                entryId: updated.id,
+                locationId: locId,
+                band: bandFor(updated.size, cfgView(get).bands).label,
+                quoted: updated.firstQuote ?? updated.quoted,
+                actual,
+              });
+            } catch (e) {
+              console.warn('[waitlist] recordQuoteAccuracy failed:', e?.message || e);
+            }
+          }
+        }
+        // Seating frees a slot in the model — re-quote the rest.
+        get().recomputeWaitlistQuotes();
+      }
+
+      // Notify SMS on the guest-facing transitions.
+      if (toStatus === STATUS.NOTIFIED) {
+        get().sendWaitlistSMS?.(updated, 'next');
+      } else if (toStatus === STATUS.READY) {
+        get().sendWaitlistSMS?.(updated, 'ready');
+      }
+    },
+
+    // ── convenience wrappers over setWaitlistStatus ───────────────────────────
+    seatWaitlistParty: async (id, tableId = null) => {
+      return get().setWaitlistStatus(id, STATUS.SEATED, tableId ? { tableId } : {});
+    },
+
+    cancelWaitlistParty: async (id, toStatus = STATUS.CANCELLED) => {
+      return get().setWaitlistStatus(id, toStatus);
+    },
+
+    // Re-add a no-show / walked-away / cancelled party to the back of the queue.
+    reAddParty: async (id) => {
+      const entry = (get().waitlist || []).find((e) => e.id === id);
+      if (!entry) return null;
+      if (!canTransition(entry.status, STATUS.WAITING)) {
+        console.warn(`[waitlist] cannot re-add from ${entry.status}`);
+        return null;
+      }
+      const now = Date.now();
+      const { bands, rules } = cfgView(get);
+      const tablesView = get().waitlistTablesView();
+      const otherActive = (get().waitlist || [])
+        .filter((e) => e.id !== id && isActive(e.status))
+        .map((e) => ({ size: e.size, status: e.status }));
+      const quote = estimate({ size: entry.size, sectionPref: entry.sectionPref, tables: tablesView, waiting: otherActive, bands, rules });
+
+      const updated = {
+        ...entry,
+        status: STATUS.WAITING,
+        quoted: quote,
+        firstQuote: quote,
+        addedAt: now,
+        quotedAt: now,
+        notifiedAt: null,
+        readyAt: null,
+        seatedAt: null,
+        seatedTableId: null,
+      };
+      set((s) => ({ waitlist: (s.waitlist || []).map((e) => (e.id === id ? updated : e)) }));
+      await persistEntry(updated, STATUS.WAITING, get().staff?.name);
+      get().recomputeWaitlistQuotes();
+      return updated;
+    },
+
+    // ── live re-quoting ───────────────────────────────────────────────────────
+    // Recompute `quoted` for every ACTIVE party against the live floor view and
+    // the OTHER active parties. Shallow-set; debounced persistence of the rows
+    // whose quote actually changed (keeps the DB warm without write storms).
+    recomputeWaitlistQuotes: () => {
+      const list = get().waitlist || [];
+      if (!list.length) return;
+      const { bands, rules } = cfgView(get);
+      const tablesView = get().waitlistTablesView();
+
+      const changed = [];
+      const next = list.map((e) => {
+        if (!isActive(e.status)) return e;
+        const others = list
+          .filter((o) => o.id !== e.id && isActive(o.status))
+          .map((o) => ({ size: o.size, status: o.status }));
+        const q = estimate({ size: e.size, sectionPref: e.sectionPref, tables: tablesView, waiting: others, bands, rules });
+        if (q === e.quoted) return e;
+        const updated = { ...e, quoted: q, quotedAt: Date.now() };
+        changed.push(updated);
+        return updated;
+      });
+
+      if (!changed.length) return;
+      set({ waitlist: next });
+
+      // Debounced persist of the changed quotes only.
+      clearTimeout(_recomputePersistTimer);
+      _recomputePersistTimer = setTimeout(async () => {
+        const locId = await resolveLocationId();
+        if (!locId) return;
+        const orgId = await resolveOrgId(get, set, locId);
+        for (const e of changed) {
+          // Re-read latest before persist so we don't clobber a fresher status.
+          const fresh = (get().waitlist || []).find((x) => x.id === e.id);
+          if (!fresh || !isActive(fresh.status)) continue;
+          try {
+            await upsertWaitlistEntry(fresh, locId, orgId);
+          } catch (err) {
+            console.warn('[waitlist] recompute persist failed:', err?.message || err);
+          }
+        }
+      }, 800);
+    },
+
+    // ── SMS dispatch ──────────────────────────────────────────────────────────
+    // kind: 'join' | 'next' | 'ready'. Best-effort; the send-sms edge fn handles
+    // the sms_messages audit row. Skipped silently in mock / without a phone /
+    // when SMS is disabled in config.
+    sendWaitlistSMS: async (entry, kind) => {
+      if (isMock || !supabase) return;
+      if (!entry?.phone) return;
+      const { smsEnabled } = cfgView(get);
+      if (!smsEnabled) return;
+
+      const phone = normalisePhone(entry.phone);
+      if (!phone) return;
+
+      const locId = await resolveLocationId();
+      if (!locId) return;
+      const orgId = await resolveOrgId(get, set, locId);
+
+      // Honour a prior STOP — these are transactional, but we never text a guest who opted out.
+      if (orgId) {
+        try {
+          const { data: supp } = await supabase.from('marketing_suppressions')
+            .select('id').eq('org_id', orgId).eq('channel', 'sms').eq('address', phone).maybeSingle();
+          if (supp) { console.info('[waitlist] SMS suppressed (prior STOP):', phone); return; }
+        } catch { /* suppression table issues — fall through; send-sms is the backstop */ }
+      }
+
+      const venue = venueName(get);
+      const first = (entry.name || 'there').split(' ')[0];
+      const q = entry.quoted ?? entry.firstQuote;
+      // Position in the live queue (1-based, by arrival) for the {position} merge tag.
+      const active = (get().waitlist || []).filter((e) => isActive(e.status)).sort((a, b) => (a.addedAt || 0) - (b.addedAt || 0));
+      const pos = Math.max(1, active.findIndex((e) => e.id === entry.id) + 1);
+
+      // Operator-editable per-venue templates (cfg.sms[kind]); fall back to built-in copy.
+      const fill = (tpl) => String(tpl)
+        .replace(/\{name\}|\{guest_name\}/g, first)
+        .replace(/\{venue\}/g, venue || 'us')
+        .replace(/\{size\}|\{party_size\}/g, String(entry.size || ''))
+        .replace(/\{quote\}|\{quoted_wait\}/g, q != null ? String(q) : '')
+        .replace(/\{position\}/g, String(pos));
+      const tpl = cfgView(get).sms?.[kind];
+      const fallback = kind === 'join'
+        ? `Hi ${first}, you're on the waitlist at ${venue}${q ? ` — about ${q} min` : ''}. We'll text when your table's nearly ready.`
+        : kind === 'next'
+        ? `Hi ${first}, you're next at ${venue} — please head back to the host stand.`
+        : `Hi ${first}, your table at ${venue} is ready! Please see the host.`;
+      let message = (tpl && String(tpl).trim()) ? fill(tpl) : fallback;
+      // Always carry the opt-out line (compliance) even if an operator template omitted it.
+      if (!/\bstop\b/i.test(message)) message += ' Reply STOP to opt out.';
+
+      try {
+        const token = await ensureAuthToken();
+        await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-sms`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+          body: JSON.stringify({
+            to: phone,
+            message,
+            location_id: locId,
+            type: 'waitlist',
+            reference_id: entry.id,
+          }),
+        }).catch(() => {});
+      } catch (e) {
+        console.warn('[waitlist] sendWaitlistSMS failed (non-fatal):', e?.message || e);
+      }
+    },
+
+    // ── DB boot / config ──────────────────────────────────────────────────────
+    loadWaitlistFromDB: async (locationId) => {
+      const locId = isRealLoc(locationId) ? locationId : await resolveLocationId();
+      if (!locId) return;
+      try {
+        const { data } = await loadWaitlist(locId);
+        if (Array.isArray(data)) {
+          // Merge: keep any optimistic local entries not yet in the DB result.
+          const remoteIds = new Set(data.map((e) => e.id));
+          const localExtras = (get().waitlist || []).filter((e) => !remoteIds.has(e.id) && isActive(e.status));
+          set({ waitlist: [...data, ...localExtras] });
+        }
+      } catch (e) {
+        console.warn('[waitlist] loadWaitlistFromDB failed:', e?.message || e);
+      }
+      try {
+        const { data: cfg } = await loadWaitlistConfig(locId);
+        if (cfg) set({ waitlistConfig: cfg });
+      } catch (e) {
+        console.warn('[waitlist] loadWaitlistConfig failed:', e?.message || e);
+      }
+    },
+
+    // Apply a realtime payload from WaitlistSync (echo-suppression lives in the
+    // sync layer; this just reconciles the in-memory list by id).
+    applyWaitlistRealtime: (payload) => {
+      if (!payload) return;
+      const list = [...(get().waitlist || [])];
+      if (payload.eventType === 'DELETE') {
+        const id = payload.old?.id;
+        if (!id) return;
+        const next = list.filter((e) => e.id !== id);
+        if (next.length !== list.length) set({ waitlist: next });
+        return;
+      }
+      const row = payload.new;
+      if (!row?.id) return;
+      const incoming = rowToWaitlist(row);
+      if (!incoming) return;
+      // Drop rows that have left the active queue (seated/completed/etc.).
+      if (!isActive(incoming.status)) {
+        const next = list.filter((e) => e.id !== incoming.id);
+        if (next.length !== list.length) set({ waitlist: next });
+        return;
+      }
+      const idx = list.findIndex((e) => e.id === incoming.id);
+      if (idx === -1) list.push(incoming);
+      else list[idx] = { ...list[idx], ...incoming };
+      set({ waitlist: list });
+    },
+
+    setWaitlistConfigLocal: (cfg) => {
+      set({ waitlistConfig: { ...(get().waitlistConfig || {}), ...(cfg || {}) } });
+    },
+
+    saveWaitlistConfigDB: async () => {
+      const cfg = get().waitlistConfig;
+      if (!cfg) return;
+      const locId = await resolveLocationId();
+      if (!locId) return;
+      try {
+        await saveWaitlistConfig(locId, cfg);
+      } catch (e) {
+        console.warn('[waitlist] saveWaitlistConfigDB failed:', e?.message || e);
+      }
+      // A config change (bands/buffer) can move every quote — recompute.
+      get().recomputeWaitlistQuotes();
+    },
+
+    // ── paired host-stand device lifecycle (thin RPC wrappers via data layer) ──
+    registerWaitlistDevice: async (name) => {
+      try {
+        return await registerWaitlistDevice(name);
+      } catch (e) {
+        console.warn('[waitlist] registerWaitlistDevice failed:', e?.message || e);
+        return null;
+      }
+    },
+    claimWaitlistDevice: async (code, locationId) => {
+      try {
+        return await claimWaitlistDevice(code, locationId);
+      } catch (e) {
+        console.warn('[waitlist] claimWaitlistDevice failed:', e?.message || e);
+        return null;
+      }
+    },
+    waitlistHeartbeat: async () => {
+      try {
+        return await waitlistHeartbeat();
+      } catch {
+        return null;
+      }
+    },
+    waitlistPinLogin: async (locationId, pin) => {
+      try {
+        return await waitlistPinLogin(locationId, pin);
+      } catch (e) {
+        console.warn('[waitlist] waitlistPinLogin failed:', e?.message || e);
+        return null;
+      }
+    },
+
+    // ── derived helper for the board header (avg wait now) ────────────────────
+    waitlistAverageWait: () => currentAverageWait(get().waitlist || []),
+  };
+}
+
+export default waitlistSlice;

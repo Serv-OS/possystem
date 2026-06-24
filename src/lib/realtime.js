@@ -10,6 +10,7 @@
 
 import { supabase, isMock, LOCATION_ID } from './supabase';
 import { applyQueueRealtimeEvent, applyTabRealtimeEvent } from '../sync/QueueSync';
+import { applyWaitlistRealtimeEvent } from '../sync/WaitlistSync';
 import { playOrderChime } from './orderChime';
 import { isHubriseAutoReceipt } from './hubrise';
 
@@ -500,7 +501,16 @@ export function startRealtime(store, locationId = LOCATION_ID) {
     })
     .subscribe();
 
-  channels = [kdsChannel, e86Channel, stockChannel, configChannel, taxChannel, sessionsChannel, checksChannel, queueChannel, tabsChannel];
+  // ── Tables Ready — live waitlist board across devices ───────────────────────
+  const waitlistChannel = supabase
+    .channel(`waitlist_entries:${locationId}`)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'waitlist_entries', filter: `location_id=eq.${locationId}` }, (payload) => {
+      if (payload.eventType === 'DELETE' && payload.old?.location_id && payload.old.location_id !== locationId) return;
+      applyWaitlistRealtimeEvent(payload);
+    })
+    .subscribe();
+
+  channels = [kdsChannel, e86Channel, stockChannel, configChannel, taxChannel, sessionsChannel, checksChannel, queueChannel, tabsChannel, waitlistChannel];
 
   // Backfill: master scans for unrouted customer-surface orders (kiosk / online / qr / hubrise)
   // that arrived while it was offline OR that were scheduled and are now due. routeKioskOrderPrints

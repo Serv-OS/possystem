@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { useStore } from '../store';
 import { subscribeToSessions, scheduleFlush, teardown as teardownSessions } from './SessionSync';
 import { loadQueues, scheduleQueueFlush, teardownQueueSync } from './QueueSync';
+import { loadWaitlistSync, scheduleWaitlistFlush, teardownWaitlistSync } from './WaitlistSync';
 import { initOfflineQueue } from './OfflineQueue';
 import { isMock, supabase, getActiveLocationSync } from '../lib/supabase';
 import { startSessionReconciler, stopSessionReconciler } from './SessionReconciler';
@@ -668,6 +669,12 @@ export default function SyncBridge({ onSyncPulse }) {
 
     if (!isMock) loadQueues();
 
+    // Tables Ready — live waitlist board syncs across devices the same way the order queue does.
+    const unsubWaitlist = !isMock ? useStore.subscribe((state, prev) => {
+      if (state.waitlist !== prev.waitlist) scheduleWaitlistFlush();
+    }) : () => {};
+    if (!isMock) loadWaitlistSync();
+
     const unsub = useStore.subscribe((state, prev) => {
       if (isApplyingRef.current) return;
       const changed = {};
@@ -706,7 +713,7 @@ export default function SyncBridge({ onSyncPulse }) {
       }, 80);
     });
 
-    return () => { clearTimeout(timer); channelInstance?.close(); channelInstance = null; unsub(); unsubSessions(); unsubQueues(); stopSessionReconciler(); if (!isMock) { teardownSessions(); teardownQueueSync(); } };
+    return () => { clearTimeout(timer); channelInstance?.close(); channelInstance = null; unsub(); unsubSessions(); unsubQueues(); unsubWaitlist(); stopSessionReconciler(); if (!isMock) { teardownSessions(); teardownQueueSync(); teardownWaitlistSync(); } };
   }, []);
 
   return null;

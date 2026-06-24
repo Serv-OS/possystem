@@ -7,6 +7,7 @@ import { printService } from '../lib/printer';
 import { hubrisePushStock, isHubriseConnected, hubrisePushStatus, isHubriseAutoReceipt } from '../lib/hubrise';
 import { depleteForSale, reverseForSale } from '../lib/stock/deplete';
 import { STALE_ORDER_FLOOR_MS } from '../sync/staleness';
+import { waitlistSlice } from './waitlistSlice';
 
 // ── Payment-intent normaliser ────────────────────────────────────────────────
 // v5.5.323: a check can have MULTIPLE card PaymentIntents — one per card portion
@@ -193,6 +194,8 @@ const _savedBO = (() => {
 })();
 
 export const useStore = create((set, get) => ({
+  // Tables Ready — walk-in waitlist / live table-queue (slice in ./waitlistSlice.js).
+  ...waitlistSlice(set, get),
 
   // ── Location integrity (v5.5.238) ─────────
   // Stamps which location the in-memory data belongs to. SyncBridge sets this
@@ -3839,6 +3842,7 @@ export const useStore = create((set, get) => ({
       paymentIntents: derivePaymentIntents(paymentInfo),  // v5.5.323: all card legs (split portions) for multi-card refund
       loyaltyRedemption: paymentInfo.loyaltyRedemption || null,  // v5.5.315: link redeem→check for refund restore
       closedAt:   Date.now(),
+      seatedAt:   session.seatedAt || null,   // Tables Ready: seat→close turn time feeds the waitlist estimator's learning loop
       status:     'paid',
       refunds:    [],
       taxBreakdown,

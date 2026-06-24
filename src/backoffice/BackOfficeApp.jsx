@@ -33,6 +33,8 @@ import OpsCompliance from './sections/operations/OpsCompliance';
 import OpsChecklists from './sections/operations/OpsChecklists';
 import OpsNotifications from './sections/operations/OpsNotifications';
 import OpsDevices from './sections/operations/OpsDevices';
+import WaitlistConfig from './sections/WaitlistConfig';
+import WaitlistInsights from './sections/WaitlistInsights';
 import StockReports from './sections/StockReports';
 import StockCounts from './sections/StockCounts';
 import Wastage from './sections/Wastage';
@@ -146,9 +148,9 @@ const NAV_IA = [
   { label:'Team',       icon:'user',      single:'staff' },
   { label:'Workforce',  icon:'team',      children:[['wf-dashboard','Dashboard'],['wf-rota','Rota'],['wf-timesheets','Timesheets'],['wf-payroll','Payroll'],['wf-timeoff','Time off & availability'],['wf-staff','Staff'],['wf-onboarding','Onboarding'],['wf-compliance','Compliance'],['wf-pay','Positions & rates'],['wf-tronc','Tronc / tips'],['wf-announce','Announcements'],['wf-settings','Workforce settings']] },
   { label:'Customers',  icon:'customers', children:[['customers','Customers'],['promotions','Promotions'],['segments','Segments'],['campaigns','Campaigns'],['quicksend','Quick send'],['workflows','Workflows'],['marketing-reports','Marketing report'],['compliance','Marketing compliance'],['wifi','WiFi'],['reviews','Reviews'],['loyalty','Loyalty'],['giftcards','Gift cards'],['messages','Messages']] },
-  { label:'Channels',   icon:'channels',  children:[['online','Online ordering'],['catering','Catering ordering'],['catering-orders','Catering orders'],['hubrise','Delivery channels'],['menu-appearance','Menu appearance'],['kiosks','Kiosks'],['menuboards','Menu boards']] },
+  { label:'Channels',   icon:'channels',  children:[['online','Online ordering'],['catering','Catering ordering'],['catering-orders','Catering orders'],['hubrise','Delivery channels'],['waitlist','Tables Ready'],['menu-appearance','Menu appearance'],['kiosks','Kiosks'],['menuboards','Menu boards']] },
   { label:'Hardware',   icon:'hardware',  children:[['devices','Terminals'],['profiles','Device profiles'],['printers','Printers'],['printing','Production printing'],['cardreaders','Card readers'],['cashdrawers','Cash drawers'],['network','Network & sync']] },
-  { label:'Reports',    icon:'reports',   children:[['reports','Sales reports'],['shift','Shifts'],['eod','Close day'],['pettycash','Petty cash']] },
+  { label:'Reports',    icon:'reports',   children:[['reports','Sales reports'],['shift','Shifts'],['eod','Close day'],['pettycash','Petty cash'],['waitlist-insights','Tables Ready']] },
   { label:'Settings',   icon:'settings',  children:[['location','Location settings'],['receipt','Receipt'],['sending-domain','Email domain'],['ai','AI assistant']] },
 ];
 
@@ -674,6 +676,8 @@ export default function BackOfficeApp() {
           {section === 'ops-notifications' && <OpsNotifications />}
           {section === 'ops-compliance'  && <OpsCompliance />}
           {section === 'ops-devices'     && <OpsDevices />}
+          {section === 'waitlist'          && <WaitlistConfig />}
+          {section === 'waitlist-insights' && <WaitlistInsights />}
           {section === 'order-pad'  && <OrderPad />}
           {section === 'suppliers'  && <Suppliers />}
           {section === 'purchase-orders' && <PurchaseOrders />}

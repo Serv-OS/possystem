@@ -24,7 +24,7 @@ function Card({ icon, title, desc, note, accent, onClick }) {
   );
 }
 
-export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelectAdmin, onSelectMPOS, onSelectClock, onSelectMenuBoard, onSelectOps }) {
+export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelectAdmin, onSelectMPOS, onSelectClock, onSelectMenuBoard, onSelectOps, onSelectWaitlist }) {
   return (
     <div style={{
       minHeight: '100vh',
@@ -89,6 +89,14 @@ export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelect
           note="Pairs to a location, then staff sign in by PIN"
           accent="#15C26A"
           onClick={onSelectOps}
+        />
+        <Card
+          icon="🪑"
+          title="Tables Ready"
+          desc="Front-of-house walk-in waitlist — capture a party, get a smart wait quote, text guests when their table's ready, and seat them as tables free up."
+          note="Pairs to a location, then staff sign in by PIN"
+          accent="#7C5CFF"
+          onClick={onSelectWaitlist}
         />
       </div>
 

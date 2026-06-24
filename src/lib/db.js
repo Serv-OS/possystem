@@ -439,6 +439,7 @@ export const insertClosedCheck = async (check, locationId = null) => {
     drawer_id:    check.drawerId || null,   // v4.6.37
     shift_id:     check.shiftId  || null,   // v4.6.37
     closed_at:    check.closedAt ? new Date(check.closedAt).toISOString() : new Date().toISOString(),
+    seated_at:    check.seatedAt ? new Date(check.seatedAt).toISOString() : null,   // Tables Ready: seat->close turn time feeds the waitlist estimator's learning loop
     status:       check.status || 'paid',
     refunds:      check.refunds || [],
     table_id:     check.tableId || null,
