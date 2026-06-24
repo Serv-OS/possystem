@@ -37,6 +37,7 @@ import {
 import {
   loadWaitlist,
   upsertWaitlistEntry,
+  upsertWaitlistEntries,
   insertWaitlistEvent,
   recordQuoteAccuracy,
   loadWaitlistConfig,
@@ -446,15 +447,17 @@ export function waitlistSlice(set, get) {
         const locId = await resolveLocationId();
         if (!locId) return;
         const orgId = await resolveOrgId(get, set, locId);
-        for (const e of changed) {
-          // Re-read latest before persist so we don't clobber a fresher status.
-          const fresh = (get().waitlist || []).find((x) => x.id === e.id);
-          if (!fresh || !isActive(fresh.status)) continue;
-          try {
-            await upsertWaitlistEntry(fresh, locId, orgId);
-          } catch (err) {
-            console.warn('[waitlist] recompute persist failed:', err?.message || err);
-          }
+        // Re-read latest (don't clobber a fresher status) and persist all changed quotes in ONE
+        // batched upsert instead of a round-trip per party (a 40-party queue was 40 serial writes).
+        const wl = get().waitlist || [];
+        const freshChanged = changed
+          .map((e) => wl.find((x) => x.id === e.id))
+          .filter((fresh) => fresh && isActive(fresh.status));
+        if (!freshChanged.length) return;
+        try {
+          await upsertWaitlistEntries(freshChanged, locId, orgId);
+        } catch (err) {
+          console.warn('[waitlist] recompute persist failed:', err?.message || err);
         }
       }, 800);
     },

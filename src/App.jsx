@@ -87,6 +87,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.628', date: '24 Jun 2026', label: 'Scale — offline reconnect drains its backlog in batches, and waitlist quote recalcs save in one write',
+    changes: [
+      'When a device comes back online after an outage, its buffered writes now replay in batched, grouped statements instead of one network round-trip per row (which could take 1–2 minutes and block everything behind it). Order is strictly preserved, so an open-then-close or close-then-reseat done offline still ends in exactly the right state, and the “never lose a sale/table” guarantees are unchanged — a failed batch falls back to per-row replay automatically.',
+      'Recalculating waitlist wait-time estimates now persists all changed parties in a single write rather than one per party, so a long queue updates without a burst of requests.',
+    ],
+  },
+  {
     version: '5.5.627', date: '24 Jun 2026', label: 'Scale — sync writes are batched (no more one-request-per-row), so busy venues + bursts stay fast',
     changes: [
       'Cross-device sync (tables, orders, bar tabs, waitlist) now sends one batched write per flush instead of a separate network request per row — a busy 200-table venue or a catering wave no longer fans out into hundreds of requests. Offline durability and all the “never lose a table/order” safeguards are unchanged.',

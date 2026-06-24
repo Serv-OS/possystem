@@ -121,6 +121,40 @@ export async function queueWrite(op) {
 // ── Replay queue when back online ─────────────────────────────────────────────
 let _replaying = false;
 
+// Replay ONE buffered write with the original per-item error attribution (attempts →
+// retry_pending → permanent after MAX_AUTO_RETRIES). Used directly for deletes and as the
+// per-item fallback when a batched statement errors.
+async function replayItem(supabase, item) {
+  try {
+    if (item.type === 'upsert') {
+      const { error } = await supabase.from(item.table).upsert(item.payload, { onConflict: item.onConflict || 'id' });
+      if (error) throw error;
+    } else if (item.type === 'insert') {
+      const { error } = await supabase.from(item.table).insert(item.payload);
+      if (error) throw error;
+    } else if (item.type === 'delete') {
+      let q = supabase.from(item.table).delete();
+      for (const [k, v] of Object.entries(item.match || {})) q = q.eq(k, v);
+      const { error } = await q;
+      if (error) throw error;
+    }
+    await dbDelete(item.id);
+  } catch (e) {
+    const attempts = (item.attempts || 0) + 1;
+    const patch = { ...item, attempts, lastError: e.message, lastFailedAt: Date.now(), firstFailedAt: item.firstFailedAt || Date.now() };
+    if (attempts >= MAX_AUTO_RETRIES) {
+      patch.permanentFailure = true;
+      patch.status = 'failed_permanent';
+      console.warn(`[OfflineQueue] Item ${item.id} (${item.kind || item.table}) permanently failed after ${attempts} attempts:`, e.message);
+      window.dispatchEvent(new CustomEvent('rpos-queue-permanent-failure', { detail: patch }));
+    } else {
+      patch.status = 'retry_pending';
+      console.warn(`[OfflineQueue] Item ${item.id} failed (attempt ${attempts}/${MAX_AUTO_RETRIES}):`, e.message);
+    }
+    await dbPut(patch);
+  }
+}
+
 export async function replayQueue(supabase) {
   if (_replaying) return;
   _replaying = true;
@@ -157,46 +191,69 @@ export async function replayQueue(supabase) {
 
     console.log(`[OfflineQueue] Replaying ${live.length} queued write(s)`);
 
+    // Scale: a reconnect after a busy/offline period can buffer hundreds of writes. The old loop did
+    // one serial round-trip per row (45-120s, blocking everything behind one global lock). We now
+    // batch them — but ORDER MUST BE PRESERVED: a queued upsert(T5) then delete(T5) (open-then-close
+    // a table offline) must end deleted, and a delete(T5) then upsert(T5) (close-then-reseat) must
+    // end seated. So we batch maximal CONSECUTIVE runs of the same (type, table, conflict-key) and
+    // run the runs SEQUENTIALLY in queue order. dbGetAll() returns in autoIncrement (chronological)
+    // order, so array order == queue order. This collapses the dominant per-row cost into per-run
+    // batches while guaranteeing the same end state as the old serial replay.
+    // Two-tier safety: a batch error falls back to per-item replay (replayItem), preserving the exact
+    // attempt / permanent-failure attribution.
+    const opKind = (it) =>
+      it.type === 'upsert' ? `u|${it.table}|${it.onConflict || 'id'}`
+      : it.type === 'insert' ? `i|${it.table}`
+      : `d|${it.table}`;
+
+    const runs = [];
     for (const item of live) {
-      try {
-        if (item.type === 'upsert') {
-          const { error } = await supabase
-            .from(item.table)
-            .upsert(item.payload, { onConflict: item.onConflict || 'id' });
-          if (error) throw error;
-        } else if (item.type === 'insert') {
-          const { error } = await supabase.from(item.table).insert(item.payload);
-          if (error) throw error;
-        } else if (item.type === 'delete') {
-          let q = supabase.from(item.table).delete();
-          for (const [k, v] of Object.entries(item.match || {})) q = q.eq(k, v);
-          const { error } = await q;
-          if (error) throw error;
+      const k = opKind(item);
+      const last = runs[runs.length - 1];
+      if (last && last.k === k) last.items.push(item);
+      else runs.push({ k, type: item.type, table: item.table, onConflict: item.onConflict || 'id', items: [item] });
+    }
+
+    for (const run of runs) {
+      if (run.type === 'delete') {
+        // Deletes within a run are mutually independent (different keys) or idempotent (same key
+        // twice) — safe to fire concurrently. Varied match shapes make a single batched delete unsafe.
+        await Promise.allSettled(run.items.map(it => replayItem(supabase, it)));
+        continue;
+      }
+
+      if (run.items.length === 1) { await replayItem(supabase, run.items[0]); continue; }
+
+      if (run.type === 'upsert') {
+        // Collapse to the freshest write per conflict-key within this consecutive run (a row changed
+        // N times back-to-back = N queued rows; only the last matters, and a duplicate key in one
+        // upsert statement would otherwise error). Drop the superseded queue entries.
+        const byKey = new Map();
+        for (const it of run.items) {
+          const kv = run.onConflict.split(',').map(c => it.payload?.[c.trim()]).join('|');
+          const prev = byKey.get(kv);
+          if (prev) { try { await dbDelete(prev.id); } catch { /* superseded */ } }
+          byKey.set(kv, it);
         }
-        // Success — remove from queue
-        await dbDelete(item.id);
-      } catch (e) {
-        // Failure — increment attempts, track error, possibly mark permanent
-        const attempts = (item.attempts || 0) + 1;
-        const patch = {
-          ...item,
-          attempts,
-          lastError: e.message,
-          lastFailedAt: Date.now(),
-          firstFailedAt: item.firstFailedAt || Date.now(),
-        };
-        if (attempts >= MAX_AUTO_RETRIES) {
-          patch.permanentFailure = true;
-          patch.status = 'failed_permanent';
-          console.warn(`[OfflineQueue] Item ${item.id} (${item.kind || item.table}) permanently failed after ${attempts} attempts:`, e.message);
-          // Surface to UI
-          window.dispatchEvent(new CustomEvent('rpos-queue-permanent-failure', { detail: patch }));
-        } else {
-          patch.status = 'retry_pending';
-          console.warn(`[OfflineQueue] Item ${item.id} failed (attempt ${attempts}/${MAX_AUTO_RETRIES}):`, e.message);
+        const fresh = [...byKey.values()];
+        if (fresh.length === 1) { await replayItem(supabase, fresh[0]); continue; }
+        try {
+          const { error } = await supabase.from(run.table).upsert(fresh.map(i => i.payload), { onConflict: run.onConflict });
+          if (error) throw error;
+          await Promise.allSettled(fresh.map(i => dbDelete(i.id)));
+        } catch (e) {
+          console.warn(`[OfflineQueue] batch upsert ${run.table} x${fresh.length} failed — per-item fallback:`, e?.message || e);
+          await Promise.allSettled(fresh.map(i => replayItem(supabase, i)));
         }
-        await dbPut(patch);
-        // Don't break the loop for this item — other items might succeed
+      } else { // insert
+        try {
+          const { error } = await supabase.from(run.table).insert(run.items.map(i => i.payload));
+          if (error) throw error;
+          await Promise.allSettled(run.items.map(i => dbDelete(i.id)));
+        } catch (e) {
+          console.warn(`[OfflineQueue] batch insert ${run.table} x${run.items.length} failed — per-item fallback:`, e?.message || e);
+          await Promise.allSettled(run.items.map(i => replayItem(supabase, i)));
+        }
       }
     }
   } finally {
