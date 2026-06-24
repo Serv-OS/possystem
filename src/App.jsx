@@ -87,6 +87,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.632', date: '24 Jun 2026', label: 'Fix — waitlist Floor reads table occupancy exactly like the POS',
+    changes: [
+      'The waitlist Floor view now decides whether a table is free or seated using the same sources and keys as the POS itself — the live session table plus the device’s local session backup/snapshot that cover writes still in flight — instead of its own separate matching. In one browser the waitlist Floor now matches the POS Floor exactly, so it no longer shows an occupied table as “Open” (or vice-versa).',
+    ],
+  },
+  {
     version: '5.5.631', date: '24 Jun 2026', label: 'Recipes — cost & GP per order type (account for takeaway/delivery packaging)',
     changes: [
       'A dish’s recipe can now differ by order type. Open a dish recipe and pick an order type (Dine-in / Takeaway / Collection / Delivery) to add items that apply only to it — e.g. a disposable cup for takeaway, collection and delivery while dine-in stays in a reusable mug. Each order type shows its own plate cost and GP%, so you see the true margin per channel.',

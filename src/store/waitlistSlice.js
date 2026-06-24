@@ -188,29 +188,32 @@ export function waitlistSlice(set, get) {
           supabase.from('active_sessions').select('table_id,session').eq('location_id', locId),
         ]);
         if (!Array.isArray(floor)) return;
-        // Reconcile active_sessions → floor tables ROBUSTLY. The POS keys active_sessions.table_id
-        // inconsistently: usually the floor table id, but observed in the wild also as (a) the table
-        // LABEL ("T2"), (b) a different CASE ("t4" for label "T4"), and (c) a merged/second-seat
-        // suffix "<floorId>-2". Matching only on exact id/label made an OCCUPIED table render as
-        // "Open" (seatable) on the Floor — a host could double-seat it — until a later realtime/poll
-        // flipped it to "Seated" ("appears on the waitlist, then disappears as taken"). Match on the
-        // exact id, the id-with-seat-suffix, and the case-insensitive label (exact or suffixed).
-        const norm = (s) => String(s ?? '').trim().toLowerCase();
-        const sessionRows = (sessions || []).filter((r) => r.table_id && r.session);
-        const findSession = (t) => {
-          const nl = norm(t.label);
-          let r = sessionRows.find((s) => String(s.table_id) === t.id);                      // exact floor id
-          if (!r) r = sessionRows.find((s) => String(s.table_id).startsWith(t.id + '-'));    // merged/second-seat "<id>-N"
-          if (!r && nl) r = sessionRows.find((s) => norm(s.table_id) === nl || norm(s.table_id).startsWith(nl + '-')); // label, any case
-          return r ? r.session : null;
-        };
+        // Resolve table occupancy IDENTICALLY to the POS (SyncBridge.jsx hydration) so the waitlist
+        // Floor and the POS Floor never disagree. The POS keys a table's session by the floor table
+        // id and reads three sources in order: active_sessions, then the device-local backup
+        // (rpos-session-backup) and emergency snapshot (rpos-session-snapshot) — which the POS writes
+        // on every change and which rescue sessions whose active_sessions write silently failed
+        // (a long-standing issue) and are shared across ?mode= surfaces in one browser. A previous
+        // version of this loader used its OWN fuzzy id/label matching against active_sessions only;
+        // that diverged from the POS and showed occupied tables as "Open" (and vice-versa). Mirror
+        // the POS exactly: same key (t.id), same fallback chain.
+        const sessionMap = {};
+        (sessions || []).forEach((r) => { if (r.table_id && r.session) sessionMap[r.table_id] = r.session; });
+        try {
+          const lsBackup = JSON.parse(localStorage.getItem('rpos-session-backup') || '{}');
+          Object.entries(lsBackup).forEach(([tid, sess]) => { if (sess && !sessionMap[tid]) sessionMap[tid] = sess; });
+        } catch { /* ignore */ }
+        try {
+          const snap = JSON.parse(localStorage.getItem('rpos-session-snapshot') || '{}');
+          if (snap?.sessions) Object.entries(snap.sessions).forEach(([tid, sess]) => { if (sess && !sessionMap[tid]) sessionMap[tid] = sess; });
+        } catch { /* ignore */ }
         // Preserve a session we just seated locally if the DB poll hasn't caught up yet — never
         // clobber a table seated in the last 3 min (its active_sessions flush may be in flight).
         const existingById = Object.fromEntries((get().tables || []).map((t) => [t.id, t]));
         const RECENT_SEAT_MS = 3 * 60 * 1000;
         const tables = floor.map((t) => {
           const inMem = existingById[t.id];
-          let session = findSession(t);
+          let session = sessionMap[t.id] || null;
           if (!session && inMem?.session?.seatedAt && (Date.now() - inMem.session.seatedAt) < RECENT_SEAT_MS) {
             session = inMem.session;
           }
