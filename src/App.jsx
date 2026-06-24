@@ -87,6 +87,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.634', date: '24 Jun 2026', label: 'Waitlist — clearer control of guest messaging & branding',
+    changes: [
+      'Waitlist text messages (on join / you’re next / table ready) are edited in Channels → Tables Ready → Text messages, and what you see there is now exactly what gets sent — the old hidden fallback wording that differed from the editor is gone. Added a {position} merge field and removed a misleading note that implied wording couldn’t be saved.',
+      'The guest join/status pages now use the brand colour you set in Menu appearance (they previously ignored it and used a fixed green). A new Branding panel on the Tables Ready settings shows your current logo, colour and venue name and links straight to Menu appearance, so it’s obvious where the waitlist’s look is controlled — it’s shared with your online storefront.',
+    ],
+  },
+  {
     version: '5.5.633', date: '24 Jun 2026', label: 'Fix — QR table tabs key their floor session by the real table, not its label',
     changes: [
       'A QR tab could save its table session against the table’s label or a non-standard id instead of the actual floor-plan table, creating a “ghost” session that appeared on neither the POS floor plan nor the waitlist Floor (and left orphaned rows other devices couldn’t match). QR tabs now always resolve to the real floor table, so a QR-occupied table shows correctly everywhere. Old ghost sessions on the demo venue were cleared out.',

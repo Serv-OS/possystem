@@ -33,6 +33,7 @@ import {
   mergeLearnedBands,
   quoteAccuracy,
 } from '../lib/waitlist/learning.js';
+import { WAITLIST_SMS_DEFAULTS } from '../lib/waitlist/messages.js';
 
 import {
   loadWaitlist,
@@ -517,11 +518,9 @@ export function waitlistSlice(set, get) {
         .replace(/\{quote\}|\{quoted_wait\}/g, q != null ? String(q) : '')
         .replace(/\{position\}/g, String(pos));
       const tpl = cfgView(get).sms?.[kind];
-      const fallback = kind === 'join'
-        ? `Hi ${first}, you're on the waitlist at ${venue}${q ? ` — about ${q} min` : ''}. We'll text when your table's nearly ready.`
-        : kind === 'next'
-        ? `Hi ${first}, you're next at ${venue} — please head back to the host stand.`
-        : `Hi ${first}, your table at ${venue} is ready! Please see the host.`;
+      // Fallback uses the SAME shared default templates the BO editor shows (run through fill()),
+      // so an un-configured venue sends exactly what the operator would see/edit — no divergence.
+      const fallback = fill(WAITLIST_SMS_DEFAULTS[kind] || WAITLIST_SMS_DEFAULTS.ready);
       let message = (tpl && String(tpl).trim()) ? fill(tpl) : fallback;
       // Always carry the opt-out line (compliance) even if an operator template omitted it.
       if (!/\bstop\b/i.test(message)) message += ' Reply STOP to opt out.';

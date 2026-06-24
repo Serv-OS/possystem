@@ -23,6 +23,7 @@ import {
 import {
   DEFAULT_BANDS, DEFAULT_QUOTE_RULES, clamp,
 } from '../../lib/waitlist/waitlist';
+import { WAITLIST_SMS_DEFAULTS as DEFAULT_SMS, WAITLIST_MERGE_FIELDS as MERGE_FIELDS } from '../../lib/waitlist/messages';
 
 // ── styles (matches CateringSettings card/form language) ──────────────────────
 const S = {
@@ -51,13 +52,8 @@ const S = {
   codeInput: { width: 190, border: '1px solid var(--bdr2)', borderRadius: 12, padding: '10px 12px', fontSize: 16, letterSpacing: '.18em', fontWeight: 800, fontFamily: "'JetBrains Mono', var(--font-mono, ui-monospace), monospace", textTransform: 'uppercase', color: 'var(--t1)', background: 'var(--bg2)', outline: 'none' },
 };
 
-// Default SMS bodies the host fires (kept inline + editable per venue).
-const DEFAULT_SMS = {
-  join: 'Hi {name}, you’re on the list at {venue} — party of {size}. Estimated wait ~{quote} min. We’ll text when your table is ready.',
-  next: '{name}, you’re next at {venue}! Please start heading back — your table for {size} is almost ready.',
-  ready: '{name}, your table is ready at {venue}! Please see the host. We’ll hold it for a few minutes.',
-};
-const MERGE_FIELDS = ['{name}', '{venue}', '{size}', '{quote}'];
+// DEFAULT_SMS + MERGE_FIELDS now come from src/lib/waitlist/messages.js — the SAME source the
+// runtime SMS fallback uses, so the editor always shows exactly what gets sent.
 
 // camelCase config <-> editor working copy. The data layer already returns
 // camelCase (cfg: {buffer,roundTo,maxQuote,defaultTurn,bands,zones,smsEnabled}).
@@ -80,7 +76,7 @@ function toEditor(cfg) {
   };
 }
 
-export default function WaitlistConfig() {
+export default function WaitlistConfig({ setSection }) {
   const showToast = useStore((s) => s.showToast);
   const locationSections = useStore((s) => s.locationSections) || [];
 
@@ -94,6 +90,7 @@ export default function WaitlistConfig() {
   const [slug, setSlug] = useState(null);         // venue online_slug (platform locations) — null = not set yet
   const [linkCopied, setLinkCopied] = useState(false);
   const [qr, setQr] = useState(null);             // QR data URI for the public join URL
+  const [brand, setBrand] = useState(null);       // { name, logoUrl, brandColor } from online_branding (the shared storefront theme)
 
   useEffect(() => {
     (async () => {
@@ -111,9 +108,14 @@ export default function WaitlistConfig() {
         if (!isMock && platformSupabase && id) {
           try {
             const { data: loc } = await platformSupabase.from('locations')
-              .select('online_slug').or(`ops_location_id.eq.${id},id.eq.${id}`).maybeSingle();
+              .select('online_slug, name, online_branding').or(`ops_location_id.eq.${id},id.eq.${id}`).maybeSingle();
             if (loc?.online_slug) setSlug(loc.online_slug);
-          } catch { /* slug best-effort — preview form is the fallback */ }
+            // The guest waitlist page brands itself from the SHARED storefront theme (online_branding,
+            // edited in Menu appearance). Surface it here so the operator knows where it comes from.
+            // Resolve colour the SAME way the guest page does (brand_color → accent → primary → green).
+            const ob = loc?.online_branding || {};
+            setBrand({ name: loc?.name || null, logoUrl: ob.logo_url || null, brandColor: ob.brand_color || ob.accent_color || ob.primary_color || '#15C36B' });
+          } catch { /* slug + brand best-effort — preview form is the fallback */ }
         }
       } catch {
         setC(toEditor(null));
@@ -350,7 +352,35 @@ export default function WaitlistConfig() {
             </div>
           </div>
         ))}
-        <div style={S.hint}>Merge fields fill from the party + venue at send time. Guests can reply STOP to opt out. The on/off switch and merge fields apply now; custom message wording is saved with the config once your venue's config row supports it (defaults are used until then).</div>
+        <div style={S.hint}>Merge fields fill from the party + venue at send time. Your wording is saved per venue and is exactly what guests receive — edit it freely. Every message auto-appends a "Reply STOP to opt out" line for compliance. Texts come from your shared business number; the venue name comes from the <b>{'{venue}'}</b> field.</div>
+      </div>
+
+      {/* ── Branding (shared storefront theme) ── */}
+      <div style={S.card}>
+        <h2 style={S.h2}>Branding</h2>
+        <div style={S.cardSub}>
+          Your guests' join page, live status page and the look of your texts use your <b>storefront brand</b> — the
+          same logo, colour and name as your online ordering page. There's nothing waitlist-specific to set: change it
+          once in <b>Menu appearance</b> and it applies everywhere a guest sees you.
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+          <div style={{ width: 64, height: 64, borderRadius: 14, border: '1px solid var(--bdr2)', background: '#fff', display: 'grid', placeItems: 'center', overflow: 'hidden', flexShrink: 0 }}>
+            {brand?.logoUrl
+              ? <img src={brand.logoUrl} alt="Venue logo" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />
+              : <span style={{ fontSize: 10.5, color: '#9aa2ad', fontWeight: 700, textAlign: 'center', lineHeight: 1.3 }}>No<br />logo</span>}
+          </div>
+          <div style={{ minWidth: 150 }}>
+            <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--t1)' }}>{brand?.name || 'Your venue'}</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 7 }}>
+              <span style={{ width: 18, height: 18, borderRadius: 5, background: brand?.brandColor || 'var(--t4)', border: '1px solid var(--bdr2)' }} />
+              <span style={{ fontSize: 12, color: 'var(--t3)', fontFamily: "'JetBrains Mono', var(--font-mono, ui-monospace), monospace" }}>{brand?.brandColor || '—'}</span>
+            </div>
+          </div>
+          {setSection && (
+            <button style={{ ...S.btnGhost, marginLeft: 'auto' }} onClick={() => setSection('menu-appearance')}>Open Menu appearance →</button>
+          )}
+        </div>
+        <div style={S.hint}>The host-stand tablet keeps the dark operator theme; this brand is what guests see on the join/status pages.</div>
       </div>
 
       {/* ── Guest self-service (QR / link join) ── */}

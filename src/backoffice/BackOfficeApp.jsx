@@ -676,7 +676,7 @@ export default function BackOfficeApp() {
           {section === 'ops-notifications' && <OpsNotifications />}
           {section === 'ops-compliance'  && <OpsCompliance />}
           {section === 'ops-devices'     && <OpsDevices />}
-          {section === 'waitlist'          && <WaitlistConfig />}
+          {section === 'waitlist'          && <WaitlistConfig setSection={setSection} />}
           {section === 'waitlist-insights' && <WaitlistInsights />}
           {section === 'order-pad'  && <OrderPad />}
           {section === 'suppliers'  && <Suppliers />}

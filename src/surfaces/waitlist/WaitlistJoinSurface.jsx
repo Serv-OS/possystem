@@ -57,7 +57,10 @@ export default function WaitlistJoinSurface({ location, view = 'join' }) {
   const opsId = location.ops_location_id || location.id;
   const brand = location.online_branding || {};
   const venueName = location.name || 'us';
-  const accent = brand.accent_color || brand.primary_color || FALLBACK_ACCENT;
+  // Prefer the canonical Menu-appearance brand colour (brand_color); fall back to the older
+  // accent_color/primary_color keys, then the green default. Previously this read only the older
+  // keys, so changing the brand colour in Menu appearance had no effect on the waitlist page.
+  const accent = brand.brand_color || brand.accent_color || brand.primary_color || FALLBACK_ACCENT;
   const logo = brand.logo_url || null;
   const slug = useMemo(readSlug, []);
 
