@@ -87,6 +87,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.624', date: '24 Jun 2026', label: 'Tables Ready — seating now carries the guest to the table (loyalty) + dark/light toggle on the host stand',
+    changes: [
+      'When you seat a waitlist party at a table, the guest (name + phone + CRM link) now travels onto that table’s order — so the dine-in checkout automatically triggers the loyalty flow from their phone, or uses their existing membership. Their saved allergens are applied too.',
+      'The host stand now has a sun/moon toggle in the top bar to switch between dark and light mode (defaults to dark; your choice is remembered on that device).',
+    ],
+  },
+  {
     version: '5.5.623', date: '24 Jun 2026', label: 'Fix — realtime crash on the waitlist host stand (“cannot add callbacks after subscribe”)',
     changes: [
       'Opening the waitlist host stand could crash with a Supabase realtime error because the live connection was started twice for the same venue. Starting realtime is now idempotent (it no-ops if already connected to that location, and cleanly reconnects if the location changes), so the host stand opens reliably.',

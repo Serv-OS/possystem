@@ -319,9 +319,18 @@ export function waitlistSlice(set, get) {
 
       // ── side effects ────────────────────────────────────────────────────────
       if (toStatus === STATUS.SEATED && opts.tableId) {
-        // Couple to the floor: seat the real table with the party's covers.
+        // Couple to the floor: seat the real table with the party's covers AND carry the guest
+        // across — so the dine-in checkout can trigger the loyalty flow from their phone (or use
+        // their existing membership). Mirrors how a reservation's customer flows onto the session.
+        const seatCustomer = (updated.customer || updated.customerId || updated.phone) ? {
+          customerId: updated.customerId || updated.customer?.customerId || null,
+          name: updated.name || updated.customer?.name || 'Guest',
+          phone: updated.phone || updated.customer?.phone || null,
+          allergens: updated.customer?.allergens || [],
+          marketingOptIn: updated.customer?.marketingOptIn,
+        } : null;
         try {
-          get().seatTable?.(opts.tableId, { covers: updated.size, server: get().staff?.name });
+          get().seatTable?.(opts.tableId, { covers: updated.size, server: get().staff?.name, customer: seatCustomer });
           // The host stand renders WITHOUT SyncBridge, so seatTable's in-memory session would
           // never reach active_sessions and the 30s floor poll would flip the table back to free.
           // Persist it now so the seat sticks (honours "tables MUST never be lost").

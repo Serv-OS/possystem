@@ -931,25 +931,28 @@ export const useStore = create((set, get) => ({
   _updateTable: (id, patch) => set(s => ({ tables: s.tables.map(t => t.id===id ? { ...t, ...patch } : t) })),
 
   // Seat a table: create session, go to POS
-  seatTable: (tableId, { covers, server }) => {
+  seatTable: (tableId, { covers, server, customer } = {}) => {
     // v4.6.67: pull the existing reservation's customer (if any) into the session
-    // so the dine-in flow attributes loyalty automatically.
+    // so the dine-in flow attributes loyalty automatically. v5.5.x: an explicit
+    // `customer` (e.g. from Tables Ready seating a waitlist party) takes precedence —
+    // this carries the guest's phone/profile onto the table so checkout can trigger
+    // the loyalty flow (or use their existing membership) automatically.
     const tbl = get().tables.find(t => t.id === tableId);
-    const reservedCustomer = tbl?.reservation?.customer || null;
+    const seatCustomer = customer || tbl?.reservation?.customer || null;
     const session = {
       id: `ORD-${++_orderNum}`,
       items: [], firedCourses: [],
       sentAt: null, covers, server,
       seatedAt: Date.now(), note: '', orderNote: '',
       subtotal: 0, total: 0,
-      customer: reservedCustomer,
+      customer: seatCustomer,
     };
     get()._updateTable(tableId, { status:'open', session, reservation:null });
     set({ activeTableId:tableId, surface:'pos', orderType:'dine-in' });
     // Auto-apply the customer's stored allergens (if any) on next visit.
-    if (reservedCustomer?.allergens?.length) {
-      set({ allergens: [...reservedCustomer.allergens] });
-      get().showToast?.(`Allergen filter applied — ${reservedCustomer.name} is allergic to ${reservedCustomer.allergens.join(', ')}`, 'info');
+    if (seatCustomer?.allergens?.length) {
+      set({ allergens: [...seatCustomer.allergens] });
+      get().showToast?.(`Allergen filter applied — ${seatCustomer.name} is allergic to ${seatCustomer.allergens.join(', ')}`, 'info');
     }
   },
 

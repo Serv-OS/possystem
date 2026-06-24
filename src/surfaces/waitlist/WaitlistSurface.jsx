@@ -43,17 +43,27 @@ export default function WaitlistSurface() {
   const [view, setView] = useState('queue');        // queue | floor
   const [addOpen, setAddOpen] = useState(false);
   const [seatTarget, setSeatTarget] = useState(null); // a waitlist entry being seated
+  // Dark by default (Liquid Glass); the host can switch to light for bright daylight. Persisted per device.
+  const [dark, setDark] = useState(() => { try { return localStorage.getItem('rpos-waitlist-theme') !== 'light'; } catch { return true; } });
 
-  // ── dark ServOS skin for the whole surface ──────────────────────────────────
+  // ── apply the ServOS skin once (capture + restore the app's original on unmount) ──
+  const origThemeRef = useRef(null);
   useEffect(() => {
     const el = document.documentElement;
-    const prevSkin = el.getAttribute('data-skin'), prevTheme = el.getAttribute('data-theme');
-    el.setAttribute('data-skin', 'servos'); el.removeAttribute('data-theme');
+    origThemeRef.current = { skin: el.getAttribute('data-skin'), theme: el.getAttribute('data-theme') };
+    el.setAttribute('data-skin', 'servos');
     return () => {
-      if (prevSkin) el.setAttribute('data-skin', prevSkin); else el.removeAttribute('data-skin');
-      if (prevTheme) el.setAttribute('data-theme', prevTheme);
+      const o = origThemeRef.current || {};
+      if (o.skin) el.setAttribute('data-skin', o.skin); else el.removeAttribute('data-skin');
+      if (o.theme) el.setAttribute('data-theme', o.theme); else el.removeAttribute('data-theme');
     };
   }, []);
+  // ── dark/light toggle: servos is dark by default; data-theme="light" flips it. ──
+  useEffect(() => {
+    const el = document.documentElement;
+    if (dark) el.removeAttribute('data-theme'); else el.setAttribute('data-theme', 'light');
+    try { localStorage.setItem('rpos-waitlist-theme', dark ? 'dark' : 'light'); } catch { /* ignore */ }
+  }, [dark]);
 
   // ── boot: heartbeat → claimed? → PIN : pair ─────────────────────────────────
   useEffect(() => {
@@ -124,6 +134,8 @@ export default function WaitlistSurface() {
       operator={operator}
       view={view}
       onView={setView}
+      dark={dark}
+      onToggleTheme={() => setDark(d => !d)}
       onLogout={() => { setOperator(null); setStage('pin'); }}
       onAdd={() => setAddOpen(true)}
     >
@@ -160,7 +172,7 @@ function Screen({ children }) {
 
 // Top bar: live hero stats (avg wait now in UV, waiting count, tables open) +
 // Queue/Floor toggle + the big "Add party" CTA. Stats read live from the store.
-function AppShell({ venueName, operator, view, onView, onLogout, onAdd, children }) {
+function AppShell({ venueName, operator, view, onView, dark, onToggleTheme, onLogout, onAdd, children }) {
   const waitlist = useStore(s => s.waitlist) || [];
   const tables = useStore(s => s.tables) || [];
 
@@ -179,6 +191,13 @@ function AppShell({ venueName, operator, view, onView, onLogout, onAdd, children
             {operator?.name ? operator.name : 'Host stand'} · {new Date().toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short' }).toUpperCase()}
           </div>
         </button>
+        <button
+          onClick={onToggleTheme}
+          title={dark ? 'Switch to light mode' : 'Switch to dark mode'}
+          aria-label={dark ? 'Switch to light mode' : 'Switch to dark mode'}
+          className="sv-glass"
+          style={{ width: 38, height: 38, borderRadius: 12, display: 'grid', placeItems: 'center', cursor: 'pointer', fontSize: 17, color: 'var(--t2)', flexShrink: 0, border: 'none' }}
+        >{dark ? '☀️' : '🌙'}</button>
       </div>
 
       {/* hero stat strip */}
