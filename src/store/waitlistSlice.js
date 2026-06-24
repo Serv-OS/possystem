@@ -187,6 +187,9 @@ export function waitlistSlice(set, get) {
           supabase.from('active_sessions').select('table_id,session').eq('location_id', locId),
         ]);
         if (!Array.isArray(floor)) return;
+        // active_sessions.table_id is normally the floor table id, but legacy/other write paths
+        // have keyed it by the table LABEL (e.g. "T2") too. Index by both so the waitlist Floor
+        // reflects occupancy however the session was written.
         const sessionMap = {};
         (sessions || []).forEach((r) => { if (r.table_id && r.session) sessionMap[r.table_id] = r.session; });
         // Preserve a session we just seated locally if the DB poll hasn't caught up yet — never
@@ -195,7 +198,7 @@ export function waitlistSlice(set, get) {
         const RECENT_SEAT_MS = 3 * 60 * 1000;
         const tables = floor.map((t) => {
           const inMem = existingById[t.id];
-          let session = sessionMap[t.id] || null;
+          let session = sessionMap[t.id] || sessionMap[t.label] || null;
           if (!session && inMem?.session?.seatedAt && (Date.now() - inMem.session.seatedAt) < RECENT_SEAT_MS) {
             session = inMem.session;
           }

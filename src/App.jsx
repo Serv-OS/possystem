@@ -87,6 +87,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.626', date: '24 Jun 2026', label: 'Fix — waitlist Floor now reflects tables occupied under a label-keyed session',
+    changes: [
+      'The waitlist Floor view could show a table as “Open” when it was actually seated, if its session had been saved against the table label rather than its id. It now matches occupancy by either, so those tables show as Seated correctly.',
+    ],
+  },
+  {
     version: '5.5.625', date: '24 Jun 2026', label: 'Fix — waitlist returning-guest card showed “[object Object]” next to points',
     changes: [
       'The returning-guest card on the waitlist add-party screen printed “[object Object]” beside the points balance — it was rendering the whole loyalty tier object instead of its name. It now shows the tier name (e.g. “· Gold”).',
