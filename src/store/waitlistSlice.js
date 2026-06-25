@@ -122,6 +122,13 @@ function venueName(get) {
   }
 }
 
+// Guard: ids we JUST transitioned to a TERMINAL status (seated / cancelled / no-show / …).
+// A stale realtime echo still carrying the older ACTIVE row must not resurrect a party we
+// just seated — that was the "seated the table but kept them in the queue with a Seat button"
+// bug. Mirrors SessionSync's _lastSent='cleared' guard for table sessions.
+const _recentlyTerminal = {};        // id -> timestamp
+const TERMINAL_GUARD_MS = 90 * 1000; // ignore stale active echoes for 90s after seating/clearing
+
 // debounce handle for recompute-driven persistence
 let _recomputePersistTimer = null;
 // debounce handle for realtime-INSERT-driven re-quoting (so a burst of inbound
@@ -333,6 +340,14 @@ export function waitlistSlice(set, get) {
       // Optimistic set.
       set((s) => ({ waitlist: (s.waitlist || []).map((e) => (e.id === id ? updated : e)) }));
 
+      // Terminal transition (seated/cancelled/etc.): guard against a stale ACTIVE realtime echo
+      // re-adding this party to the board for the next 90s (the "seated but stayed in the queue"
+      // bug), and drop it from the live list now so the Seat button can't linger.
+      if (!isActive(toStatus)) {
+        _recentlyTerminal[id] = Date.now();
+        set((s) => ({ waitlist: (s.waitlist || []).filter((e) => e.id !== id) }));
+      }
+
       // Persist row + lifecycle event.
       await persistEntry(updated, toStatus, opts.actor || get().staff?.name);
 
@@ -402,6 +417,7 @@ export function waitlistSlice(set, get) {
     reAddParty: async (id) => {
       const entry = (get().waitlist || []).find((e) => e.id === id);
       if (!entry) return null;
+      delete _recentlyTerminal[id]; // deliberate re-add — lift the terminal guard so it shows again
       if (!canTransition(entry.status, STATUS.WAITING)) {
         console.warn(`[waitlist] cannot re-add from ${entry.status}`);
         return null;
@@ -647,10 +663,14 @@ export function waitlistSlice(set, get) {
       if (!incoming) return;
       // Drop rows that have left the active queue (seated/completed/etc.).
       if (!isActive(incoming.status)) {
+        delete _recentlyTerminal[incoming.id]; // terminal status confirmed remotely — guard no longer needed
         const next = list.filter((e) => e.id !== incoming.id);
         if (next.length !== list.length) set({ waitlist: next });
         return;
       }
+      // Guard: we just seated/cancelled this party locally — ignore a stale ACTIVE echo that
+      // would resurrect it on the board (the persist's own echo, or an in-flight older write).
+      if (_recentlyTerminal[incoming.id] && (Date.now() - _recentlyTerminal[incoming.id]) < TERMINAL_GUARD_MS) return;
       const idx = list.findIndex((e) => e.id === incoming.id);
       const isNew = idx === -1;
       if (isNew) list.push(incoming);

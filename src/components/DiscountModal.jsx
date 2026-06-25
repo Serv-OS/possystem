@@ -20,7 +20,14 @@ export default function DiscountModal({ items, subtotal, onConfirm, onCancel }) 
   const { staffMembers, staff: currentUser, discountPresets } = useStore();
   // Use DB-driven presets if available, otherwise fall back to hardcoded defaults
   const PRESETS = discountPresets?.length
-    ? discountPresets.map(d => ({ id: d.id, label: d.label || d.name, type: d.type, value: d.value, requiresManager: d.requiresManager ?? false }))
+    ? discountPresets.map(d => ({
+        id: d.id, label: d.label || d.name, type: d.type, value: d.value,
+        requiresManager: d.requiresManager ?? false,
+        // v5.5.641: carry scope + categoryIds so a category-scoped preset auto-targets
+        // the matching items instead of asking the operator to pick them by hand.
+        scope: d.scope || 'global',
+        categoryIds: d.categoryIds || d.category_ids || [],
+      }))
     : FALLBACK_PRESETS;
   const mgrs = managersFrom(staffMembers);
   const managerLoggedIn = currentUser?.role === 'Manager';
@@ -49,33 +56,48 @@ export default function DiscountModal({ items, subtotal, onConfirm, onCancel }) 
 
   const canAdvance = selected && (selected!=='custom' || (parseFloat(customVal)>0));
 
-  const handleAdvance = () => {
-    if (needPin) { setStep('pin'); return; }
+  // Items that belong to the selected preset's category scope (auto-target — Bug fix:
+  // a category-scoped preset should know its own items, not ask the operator to pick).
+  const itemInCats = (item, cats) => !!cats?.length && (cats.includes(item.cat) || (Array.isArray(item.cats) && item.cats.some(c => cats.includes(c))));
+  const categoryUids = (preset?.scope === 'category' && preset.categoryIds?.length)
+    ? items.filter(i => !i.voided && itemInCats(i, preset.categoryIds)).map(i => i.uid)
+    : null;
+
+  // Build + emit the discount. Manager is passed explicitly so the auto-apply-after-PIN
+  // path doesn't read the not-yet-committed manager state.
+  const buildDiscount = (scopeVal, uids, mgr) => {
+    const activeItems = scopeVal==='check'
+      ? items.filter(i=>!i.voided)
+      : items.filter(i=>uids.includes(i.uid)&&!i.voided);
+    const base = scopeVal==='check' ? subtotal : activeItems.reduce((s,i)=>s+i.price*i.qty, 0);
+    const amount = calcAmount(base);
+    const label  = selected==='custom'
+      ? `Custom ${customType==='percent'?customVal+'%':money(parseFloat(customVal))}`
+      : preset.label;
+    const type   = selected==='custom' ? customType : preset.type;
+    const value  = selected==='custom' ? parseFloat(customVal)||0 : preset.value;
+    onConfirm({
+      id:`disc-${Date.now()}`, label, type, value, scope: scopeVal,
+      itemUids: scopeVal==='items' ? activeItems.map(i=>i.uid) : null,
+      amount, manager: mgr,
+    });
+  };
+
+  // After the amount (+ any manager auth) is chosen: a category-scoped preset AUTO-APPLIES
+  // to its matching items with no manual picking; everything else goes to the apply step.
+  const proceedAfterAuth = (mgr) => {
+    if (categoryUids && categoryUids.length) { buildDiscount('items', categoryUids, mgr); return; }
+    // Category preset but nothing in the basket matches → show step 2 (don't silently apply £0).
+    if (preset?.scope === 'category') { setScope('items'); setItemSel([]); }
     setStep('apply');
   };
 
-  const handleApply = () => {
-    const activeItems = scope==='check'
-      ? items.filter(i=>!i.voided)
-      : items.filter(i=>itemSel.includes(i.uid)&&!i.voided);
-
-    const base = scope==='check'
-      ? subtotal
-      : activeItems.reduce((s,i)=>s+i.price*i.qty, 0);
-
-    const amount  = calcAmount(base);
-    const label   = selected==='custom'
-      ? `Custom ${customType==='percent'?customVal+'%':money(parseFloat(customVal))}`
-      : preset.label;
-    const type    = selected==='custom' ? customType : preset.type;
-    const value   = selected==='custom' ? parseFloat(customVal)||0 : preset.value;
-
-    onConfirm({
-      id:`disc-${Date.now()}`, label, type, value, scope,
-      itemUids: scope==='items' ? activeItems.map(i=>i.uid) : null,
-      amount, manager,
-    });
+  const handleAdvance = () => {
+    if (needPin) { setStep('pin'); return; }
+    proceedAfterAuth(manager);
   };
+
+  const handleApply = () => buildDiscount(scope, itemSel, manager);
 
   const toggleItem = (uid) =>
     setItemSel(s => s.includes(uid) ? s.filter(x=>x!==uid) : [...s, uid]);
@@ -86,7 +108,7 @@ export default function DiscountModal({ items, subtotal, onConfirm, onCancel }) 
     setPin(next);
     if (next.length===4) {
       const m = mgrs.find(x=>x.pin===next);
-      if (m) { setManager(m); setPinErr(''); setTimeout(()=>setStep('apply'),200); }
+      if (m) { setManager(m); setPinErr(''); setTimeout(()=>proceedAfterAuth(m),200); }
       else   { setPinErr('Incorrect manager PIN'); setTimeout(()=>setPin(''),600); }
     }
   };
@@ -141,7 +163,7 @@ export default function DiscountModal({ items, subtotal, onConfirm, onCancel }) 
               <div style={{display:'flex',gap:8}}>
                 <button className="btn btn-ghost" style={{flex:1}} onClick={onCancel}>Cancel</button>
                 <button className="btn btn-acc" style={{flex:2,height:44}} disabled={!canAdvance} onClick={handleAdvance}>
-                  Next — choose items →
+                  {categoryUids?.length ? `Apply to ${categoryUids.length} item${categoryUids.length!==1?'s':''} →` : 'Next — choose items →'}
                 </button>
               </div>
             </>

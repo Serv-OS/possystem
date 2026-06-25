@@ -88,6 +88,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.641', date: '25 Jun 2026', label: 'Fixes — category discount presets auto-apply to the right items; waitlist seating no longer leaves the party in the queue',
+    changes: [
+      'Discount preset fix: a preset scoped to a category (e.g. “20% off Desserts”) now AUTO-APPLIES to the matching items in the basket the moment you choose it — no more being asked to pick the items by hand. The button reads “Apply to N items”. Whole-check and custom discounts are unchanged; if nothing in the basket matches the category you still get the manual picker.',
+      'Tables Ready fix: seating a party (e.g. Peter Roberts at B1) now reliably removes them from the queue. A stale live-sync echo could re-add a just-seated party to the board with the Seat button still showing — a 90-second guard now stops that, mirroring the safeguard used for table sessions. Any entry already stuck before this update can be cleared from the host stand (tap the party → Remove).',
+    ],
+  },
+  {
     version: '5.5.640', date: '25 Jun 2026', label: 'Auto-discounts now actually apply at checkout — across POS, kiosk, online & QR, with scheduling & expiry',
     changes: [
       'Auto-discount rules (Buy-X-get-Y and bundle/meal-deals) were being saved but never applied — the discount engine was built but nothing called it at checkout. They now evaluate live against the cart and apply automatically on all four channels (POS till, self-service kiosk, online ordering and QR table ordering), with the saving shown on the order and recorded on the receipt + in reports.',
