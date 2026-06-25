@@ -72,8 +72,8 @@ alter table delivery_surcharges enable row level security;
 create index if not exists delivery_surcharges_loc_idx on delivery_surcharges (location_id, created_at desc);
 create index if not exists delivery_surcharges_ref_idx on delivery_surcharges (order_ref);
 
--- 4) Dispatched deliveries + live tracking state.
-create table if not exists deliveries (
+-- 4) Dispatched courier_deliveries + live tracking state.
+create table if not exists courier_deliveries (
   id                uuid primary key default gen_random_uuid(),
   location_id       text not null,
   order_ref         text,
@@ -91,9 +91,9 @@ create table if not exists deliveries (
   created_at        timestamptz not null default now(),
   updated_at        timestamptz not null default now()
 );
-alter table deliveries enable row level security;
-create index if not exists deliveries_loc_idx on deliveries (location_id, created_at desc);
-create unique index if not exists deliveries_uber_id_idx on deliveries (uber_delivery_id) where uber_delivery_id is not null;
+alter table courier_deliveries enable row level security;
+create index if not exists courier_deliveries_loc_idx on courier_deliveries (location_id, created_at desc);
+create unique index if not exists courier_deliveries_uber_id_idx on courier_deliveries (uber_delivery_id) where uber_delivery_id is not null;
 
 -- 5) Webhook audit + idempotency. event_id UNIQUE is what makes at-least-once safe.
 create table if not exists delivery_status_events (
@@ -108,7 +108,7 @@ alter table delivery_status_events enable row level security;
 
 -- 6) Actual Uber charges per delivery (reconciliation vs surcharged).
 create table if not exists delivery_costs_actual (
-  delivery_id      uuid primary key references deliveries(id) on delete cascade,
+  delivery_id      uuid primary key references courier_deliveries(id) on delete cascade,
   location_id      text,
   base_minor       integer not null default 0,
   distance_minor   integer not null default 0,
@@ -124,7 +124,7 @@ alter table delivery_costs_actual enable row level security;
 -- ── Rollback (run manually to reverse) ──────────────────────────────────────
 -- drop table if exists delivery_costs_actual;
 -- drop table if exists delivery_status_events;
--- drop table if exists deliveries;
+-- drop table if exists courier_deliveries;
 -- drop table if exists delivery_surcharges;
 -- drop table if exists delivery_quotes;
 -- drop table if exists venue_uber_config;

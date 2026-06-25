@@ -199,7 +199,7 @@ Deno.serve(async (req) => {
           const hrOrder = body?.hubrise_order || {};
           const created = await createHubriseOrder(conn.access_token, conn.hubrise_location_id, hrOrder);
           const hubriseRef = created?.id || created?.order_id || null;
-          const { data: row } = await sb.from('deliveries').insert({
+          const { data: row } = await sb.from('courier_deliveries').insert({
             location_id: loc, order_ref: orderRef, dispatch_backend: 'hubrise_bridge', status: 'pending', hubrise_ref: hubriseRef,
           }).select('id').maybeSingle();
           return json({ ok: true, backend: 'hubrise_bridge', deliveryRowId: row?.id || null, hubriseRef });
@@ -225,7 +225,7 @@ Deno.serve(async (req) => {
         const resp = await createDelivery({ env, token, customerId, manifest });
         const p = parseDeliveryResp(resp);
         const status = mapUberStatus(p.rawStatus);
-        const { data: row } = await sb.from('deliveries').insert({
+        const { data: row } = await sb.from('courier_deliveries').insert({
           location_id: loc, order_ref: orderRef, dispatch_backend: 'uber_api',
           uber_delivery_id: p.id, status, tracking_url: p.trackingUrl,
           courier_name: p.courierName, courier_phone: p.courierPhone, last_lat: p.lat, last_lng: p.lng,
@@ -248,7 +248,7 @@ Deno.serve(async (req) => {
         const token = await getAccessToken(env, ENV_CLIENT_ID, ENV_CLIENT_SECRET);
         const p = parseDeliveryResp(await getDelivery(env, token, customerId, id));
         const status = mapUberStatus(p.rawStatus);
-        await sb.from('deliveries').update({ status, tracking_url: p.trackingUrl, courier_name: p.courierName, courier_phone: p.courierPhone, last_lat: p.lat, last_lng: p.lng, updated_at: new Date().toISOString() }).eq('uber_delivery_id', id);
+        await sb.from('courier_deliveries').update({ status, tracking_url: p.trackingUrl, courier_name: p.courierName, courier_phone: p.courierPhone, last_lat: p.lat, last_lng: p.lng, updated_at: new Date().toISOString() }).eq('uber_delivery_id', id);
         return json({ ok: true, status, trackingUrl: p.trackingUrl, courierName: p.courierName, lat: p.lat, lng: p.lng });
       } catch (e) {
         return json({ ok: false, reason: 'lookup_failed', error: String((e as Error)?.message || e) });
@@ -259,7 +259,7 @@ Deno.serve(async (req) => {
     if (action === 'list_deliveries') {
       const acc = await requireAccess(req, loc); if (!acc.ok) return acc.res;
       const limit = Math.min(200, Number(body?.limit) || 50);
-      const { data } = await sb.from('deliveries').select('*').eq('location_id', loc).order('created_at', { ascending: false }).limit(limit);
+      const { data } = await sb.from('courier_deliveries').select('*').eq('location_id', loc).order('created_at', { ascending: false }).limit(limit);
       return json({ ok: true, deliveries: data || [] });
     }
 
@@ -268,7 +268,7 @@ Deno.serve(async (req) => {
     if (action === 'cancel_delivery') {
       const acc = await requireAccess(req, loc); if (!acc.ok) return acc.res;
       const id = body?.delivery_row_id;
-      const { data: del } = await sb.from('deliveries').select('*').eq('id', id).eq('location_id', loc).maybeSingle();
+      const { data: del } = await sb.from('courier_deliveries').select('*').eq('id', id).eq('location_id', loc).maybeSingle();
       if (!del) return json({ ok: false, reason: 'not_found' });
       const { data: cfg } = await sb.from('venue_uber_config').select('*').eq('location_id', loc).maybeSingle();
       try {
@@ -285,7 +285,7 @@ Deno.serve(async (req) => {
             await cancelDelivery(env, token, customerId, del.uber_delivery_id);
           }
         }
-        await sb.from('deliveries').update({ status: 'canceled', updated_at: new Date().toISOString() }).eq('id', id);
+        await sb.from('courier_deliveries').update({ status: 'canceled', updated_at: new Date().toISOString() }).eq('id', id);
         return json({ ok: true });
       } catch (e) {
         return json({ ok: false, reason: 'cancel_failed', error: String((e as Error)?.message || e) });

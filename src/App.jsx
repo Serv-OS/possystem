@@ -88,6 +88,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.651', date: '25 Jun 2026', label: 'Delivery — backend deployed; fix table-name clash with Operations',
+    changes: [
+      'Deployed the delivery backend (migration + edge functions) so the Delivery (Uber Direct) settings screen saves. Fixed an internal clash where the new courier-delivery table collided with the Operations goods-in “deliveries” table — the courier table is now “courier_deliveries” (no impact on Operations, which was left untouched).',
+    ],
+  },
+  {
     version: '5.5.650', date: '25 Jun 2026', label: 'Delivery — margin reconciliation + Uber/HubRise account setup guide (slice 7, owner-gated)',
     changes: [
       'The Deliveries board now shows a 30-day reconciliation summary: number of deliveries, what customers were charged for delivery, the actual Uber cost, and your delivery margin (actual where known, otherwise estimated from the quote). Actual courier costs are captured automatically when a delivery completes.',

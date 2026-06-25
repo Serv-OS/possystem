@@ -49,7 +49,7 @@ Deno.serve(async (req) => {
     if (p.courierPhone) patch.courier_phone = p.courierPhone;
     if (p.lat != null) patch.last_lat = p.lat;
     if (p.lng != null) patch.last_lng = p.lng;
-    const { data: del } = await sb.from('deliveries').update(patch).eq('uber_delivery_id', deliveryId).select('id, location_id').maybeSingle();
+    const { data: del } = await sb.from('courier_deliveries').update(patch).eq('uber_delivery_id', deliveryId).select('id, location_id').maybeSingle();
 
     // Reconciliation: on a terminal state, record the ACTUAL Uber cost against the delivery.
     if (del?.id && (status === 'delivered' || status === 'canceled' || status === 'returned')) {
