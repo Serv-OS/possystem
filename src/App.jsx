@@ -26,6 +26,7 @@ import OwnerSurface from './surfaces/OwnerSurface';
 import MenuBoardSurface from './surfaces/MenuBoardSurface';
 import OperationsSurface from './surfaces/OperationsSurface';
 import WaitlistSurface from './surfaces/waitlist/WaitlistSurface';
+import KioskAutoUpdate from './components/KioskAutoUpdate';
 import OnboardingSignSurface from './surfaces/OnboardingSignSurface';
 import RyftTestSurface from './surfaces/RyftTestSurface';
 import CustomerBoot from './surfaces/CustomerBoot';
@@ -86,6 +87,12 @@ import { ServOSIcon } from './components/ServOSBrand';
 import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
+  {
+    version: '5.5.638', date: '25 Jun 2026', label: 'Kiosk screens auto-update — locked tablets pick up new builds on their own',
+    changes: [
+      'Unattended screens (waitlist host stand, KDS, menu board, Operations tablet, Time Clock) now quietly check for a newer deployed build and reload themselves when one is live — so a locked tablet can no longer get stuck on an old version (which is exactly what made the waitlist look broken for so long). Tills, back office and the customer kiosk are left alone, so nothing reloads mid-order or mid-task.',
+    ],
+  },
   {
     version: '5.5.637', date: '24 Jun 2026', label: 'Loyalty sign-in codes now sent via Twilio Verify (better deliverability)',
     changes: [
@@ -7508,12 +7515,12 @@ export default function App() {
   // Digital menu board — read-only Android-TV display. Resolves its own location,
   // renders one menu_boards "screen" with the auto-fit/auto-balance engine, live
   // over Realtime. No SyncBridge (like customer-display).
-  if (deviceMode === 'menuboard') return <MenuBoardSurface />;
+  if (deviceMode === 'menuboard') return <><KioskAutoUpdate /><MenuBoardSurface /></>;
 
   // Operations — mobile food-safety/ops surface (temperature, deliveries, maintenance).
   // Pairs itself via ops_devices (claim-code + heartbeat) then staff PIN; no rpos-device.
-  if (deviceMode === 'ops') return <OperationsSurface />;
-  if (deviceMode === 'waitlist') return <WaitlistSurface />;
+  if (deviceMode === 'ops') return <><KioskAutoUpdate /><OperationsSurface /></>;
+  if (deviceMode === 'waitlist') return <><KioskAutoUpdate /><WaitlistSurface /></>;
 
   // Back office mode — go to email login (no pairing needed)
   if (deviceMode === 'backoffice' || deviceMode === 'office') return <><SyncBridge onSyncPulse={handleSyncPulse}/><BackOfficeApp /></>;
@@ -7529,7 +7536,7 @@ export default function App() {
 
   // Time Clock — dedicated second-tablet surface for staff to clock in/out + breaks.
   // Pairs to a location like a POS; punches write server-side via workforce-clock.
-  if (deviceMode === 'clock') return <TimeClockSurface />;
+  if (deviceMode === 'clock') return <><KioskAutoUpdate /><TimeClockSurface /></>;
 
   // Validate device against Supabase (checks if admin removed it)
   // Uses a component so hooks work properly
@@ -7882,11 +7889,11 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
   const pairedDeviceType = pairedDevice?.type;
   if (pairedDeviceType === 'kds') {
     // KDS devices always show KDS surface regardless of URL mode
-    return <><SyncBridge onSyncPulse={handleSyncPulse}/><KDSSurface /></>;
+    return <><KioskAutoUpdate /><SyncBridge onSyncPulse={handleSyncPulse}/><KDSSurface /></>;
   }
   // For non-KDS devices, also check deviceConfig (set during pairing)
   if (deviceConfig?.defaultSurface === 'kds' && !deviceConfig?.profileName?.toLowerCase().includes('counter') && !deviceConfig?.profileName?.toLowerCase().includes('bar') && !deviceConfig?.profileName?.toLowerCase().includes('server')) {
-    return <><SyncBridge onSyncPulse={handleSyncPulse}/><KDSSurface /></>;
+    return <><KioskAutoUpdate /><SyncBridge onSyncPulse={handleSyncPulse}/><KDSSurface /></>;
   }
 
   if (!staff) return <><SyncBridge onSyncPulse={handleSyncPulse}/><PINScreen /></>;
