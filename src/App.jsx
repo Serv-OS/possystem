@@ -87,6 +87,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.637', date: '24 Jun 2026', label: 'Loyalty sign-in codes now sent via Twilio Verify (better deliverability)',
+    changes: [
+      'Loyalty login codes are now generated, sent and checked by Twilio Verify instead of our own SMS — Verify uses managed, branded delivery routes with its own anti-fraud, which fixes the carrier/fraud delivery blocks (e.g. error 30453) that were stopping codes arriving. The sign-in experience is unchanged (request a code, enter the 6 digits). Activates once the Verify service is configured and the function is deployed.',
+    ],
+  },
+  {
     version: '5.5.636', date: '24 Jun 2026', label: 'Fix — waitlist host stand saves only the table it seats (stops POS tables vanishing)',
     changes: [
       'Follow-up to the previous fix: when the host stand seated a walk-in it ran the full floor-sync off its own periodic snapshot of the floor, which could re-save and then later delete other tables — wiping sessions that were open on the POS, so an occupied table stayed on the POS but disappeared from the waitlist after a while. The host stand now persists only the single table it just seated and never touches any other table. Reload the host stand to pick this up.',

@@ -1,0 +1,89 @@
+// supabase/functions/_shared/twilio-verify.ts
+//
+// Twilio Verify (start / check) — the single home for ALL OTP delivery + validation.
+//
+// Replaces self-rolled OTP (generate a 6-digit code → store it → send via send-sms → compare):
+// Twilio Verify generates the code, sends it over a managed/branded route with its OWN anti-fraud
+// and rate-limiting, and validates it — so we never store or compare codes, and deliverability is
+// far better than raw A2P SMS (which was hitting carrier/fraud blocks like error 30453).
+//
+// Secrets (TWILIO_ACCOUNT_SID + TWILIO_AUTH_TOKEN are already set for send-sms; project-wide):
+//   TWILIO_ACCOUNT_SID
+//   TWILIO_AUTH_TOKEN
+//   TWILIO_VERIFY_SERVICE_SID   ← NEW: create a Verify Service in the Twilio console and set this.
+
+const SID = Deno.env.get('TWILIO_ACCOUNT_SID') ?? '';
+const TOKEN = Deno.env.get('TWILIO_AUTH_TOKEN') ?? '';
+const VERIFY_SERVICE_SID = Deno.env.get('TWILIO_VERIFY_SERVICE_SID') ?? '';
+
+export function verifyConfigured(): boolean {
+  return !!(SID && TOKEN && VERIFY_SERVICE_SID);
+}
+
+function authHeader(): string {
+  return 'Basic ' + btoa(`${SID}:${TOKEN}`);
+}
+
+export interface VerifyResult {
+  ok: boolean;
+  status?: string;   // Twilio status: 'pending' | 'approved' | 'canceled' | 'expired' | ...
+  error?: string;
+  // our normalised error code: 'not_configured' | 'rate_limited' | 'max_attempts' | 'invalid' | 'send_failed'
+  code?: string;
+  httpStatus?: number;
+}
+
+// Start a verification — Twilio sends the code over `channel` to `to`.
+// `friendlyName` overrides {{friendly_name}} in Twilio's default template, so the SMS reads
+// "Your <venue> verification code is 123456" without needing a custom approved template.
+export async function startVerification(
+  to: string,
+  opts: { channel?: string; friendlyName?: string } = {},
+): Promise<VerifyResult> {
+  if (!verifyConfigured()) return { ok: false, error: 'Verify not configured', code: 'not_configured' };
+  const form = new URLSearchParams();
+  form.append('To', to);
+  form.append('Channel', opts.channel || 'sms');
+  if (opts.friendlyName) form.append('CustomFriendlyName', opts.friendlyName.slice(0, 30));
+  try {
+    const res = await fetch(`https://verify.twilio.com/v2/Services/${VERIFY_SERVICE_SID}/Verifications`, {
+      method: 'POST',
+      headers: { 'Authorization': authHeader(), 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: form.toString(),
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const tw = Number((j as { code?: number })?.code);
+      // 60203 = max send attempts reached for this number; 429 = rate limited.
+      const code = (res.status === 429 || tw === 60203) ? 'rate_limited' : 'send_failed';
+      return { ok: false, status: (j as { status?: string })?.status, error: (j as { message?: string })?.message || `Twilio HTTP ${res.status}`, code, httpStatus: res.status };
+    }
+    return { ok: true, status: (j as { status?: string })?.status };
+  } catch (e) {
+    return { ok: false, error: (e as Error)?.message || String(e), code: 'send_failed' };
+  }
+}
+
+// Check a code. ok===true (status 'approved') means the code was correct. Twilio enforces expiry
+// and per-verification attempt limits itself (404 once expired/consumed, 429 on too many checks).
+export async function checkVerification(to: string, codeInput: string): Promise<VerifyResult> {
+  if (!verifyConfigured()) return { ok: false, error: 'Verify not configured', code: 'not_configured' };
+  const form = new URLSearchParams();
+  form.append('To', to);
+  form.append('Code', codeInput);
+  try {
+    const res = await fetch(`https://verify.twilio.com/v2/Services/${VERIFY_SERVICE_SID}/VerificationCheck`, {
+      method: 'POST',
+      headers: { 'Authorization': authHeader(), 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: form.toString(),
+    });
+    const j = await res.json().catch(() => ({}));
+    if (res.status === 404) return { ok: false, status: 'expired', error: 'Code expired or already used — request a new one.', code: 'invalid', httpStatus: 404 };
+    if (res.status === 429) return { ok: false, status: 'too_many', error: 'Too many attempts. Request a new code.', code: 'max_attempts', httpStatus: 429 };
+    if (!res.ok) return { ok: false, error: (j as { message?: string })?.message || `Twilio HTTP ${res.status}`, code: 'invalid', httpStatus: res.status };
+    const status = (j as { status?: string })?.status;
+    return { ok: status === 'approved', status };
+  } catch (e) {
+    return { ok: false, error: (e as Error)?.message || String(e), code: 'invalid' };
+  }
+}

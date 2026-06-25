@@ -5,20 +5,22 @@
 //
 // POST action=send:
 //   { action: 'send', phone: '+447931...', company_id: 'uuid' }
-//   → generates 6-digit OTP, stores in loyalty_otp_codes, sends via SMS
+//   → starts a Twilio Verify verification (Twilio generates + sends the code over SMS)
 //   → returns { sent: true }
 //
 // POST action=verify:
 //   { action: 'verify', phone: '+447931...', company_id: 'uuid', code: '123456' }
-//   → checks code, marks used, returns customer + loyalty data
+//   → checks the code via Twilio Verify, then returns customer + loyalty data
 //   → returns { verified: true, token: '<session_token>', customer: {...}, loyalty: {...} }
 //
-// OTP codes expire after 5 minutes. Max 3 active codes per phone.
-// A "session token" is a signed HMAC of (customer_id + timestamp) — lightweight,
-// no Supabase auth needed. The portal sends this token on subsequent requests.
+// Code generation, delivery, expiry, and per-verification attempt limits are all handled by
+// Twilio Verify (see _shared/twilio-verify.ts) — we no longer generate/store/compare codes. This
+// fixes raw-A2P deliverability blocks (e.g. carrier/fraud error 30453).
+// A "session token" is a signed HMAC of (customer_id + timestamp) — lightweight, no Supabase auth
+// needed. The portal sends this token on subsequent requests (refresh / update_profile).
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { resolveAndRender } from '../_shared/template-resolver.ts';
+import { startVerification, checkVerification, verifyConfigured } from '../_shared/twilio-verify.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -43,13 +45,9 @@ const platformAdmin = createClient(
 );
 
 const OPS_URL = Deno.env.get('SUPABASE_URL') ?? '';
-const OPS_SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const OTP_SECRET = Deno.env.get('OTP_HMAC_SECRET') ?? Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? 'fallback-secret';
-const OTP_EXPIRY_MS = 5 * 60 * 1000; // 5 minutes
-// v5.5.325: max wrong verify attempts per code before it locks. With the 45s
-// send cooldown this bounds an attacker to ~MAX guesses per code — a 6-digit
-// code is otherwise brute-forceable within its 5-minute window.
-const MAX_VERIFY_ATTEMPTS = 5;
+// OTP code generation/expiry/attempt-limits now live in Twilio Verify (see _shared/twilio-verify.ts).
+// The session token below is still ours (HMAC of customer+company), used post-verification.
 
 // ── HMAC session token ──────────────────────────────────────────────────
 async function createSessionToken(customerId: string, companyId: string): Promise<string> {
@@ -127,156 +125,52 @@ Deno.serve(async (req) => {
 
   // ── ACTION: SEND OTP ────────────────────────────────────────────────
   if (action === 'send') {
-    // v5.5.318: send cooldown — without it, anyone could trigger unlimited SMS
-    // to a victim's number (cost + abuse). Reject if a code was sent to this
-    // phone+company within the last 45s.
-    try {
-      const { data: recent } = await platformAdmin
-        .from('loyalty_otp_codes')
-        .select('created_at')
-        .eq('phone', phone)
-        .eq('company_id', companyId)
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (recent?.created_at && (Date.now() - new Date(recent.created_at).getTime()) < 45_000) {
-        return json({ error: 'A code was just sent. Please wait a moment before requesting another.' }, 429);
-      }
-    } catch { /* if the check fails, fall through and send (fail-open for availability) */ }
-
-    // Generate 6-digit code
-    const code = String(Math.floor(100000 + Math.random() * 900000));
-    const expiresAt = new Date(Date.now() + OTP_EXPIRY_MS).toISOString();
-
-    // Store in platform DB
-    await platformAdmin.from('loyalty_otp_codes').insert({
-      phone,
-      company_id: companyId,
-      code,
-      expires_at: expiresAt,
-    });
-
-    // Clean up old codes for this phone (keep last 3)
-    const { data: old } = await platformAdmin
-      .from('loyalty_otp_codes')
-      .select('id')
-      .eq('phone', phone)
-      .eq('company_id', companyId)
-      .order('created_at', { ascending: false });
-    if (old && old.length > 3) {
-      const idsToDelete = old.slice(3).map((r: any) => r.id);
-      await platformAdmin.from('loyalty_otp_codes').delete().in('id', idsToDelete);
+    // Twilio Verify generates the code, sends it over a managed/branded route with its own
+    // anti-fraud + rate-limiting, and validates it on `verify`. We no longer generate, store, or
+    // SMS the code ourselves — this fixes raw-A2P deliverability blocks (e.g. error 30453) and
+    // removes the loyalty_otp_codes storage + brute-force handling (Twilio owns expiry/attempts).
+    if (!verifyConfigured()) {
+      console.error('[loyalty-otp] Twilio Verify not configured (need TWILIO_VERIFY_SERVICE_SID)');
+      return json({ error: 'Verification is not configured for this venue yet.' }, 500);
     }
 
-    // Resolve company name for the SMS
+    // Resolve the venue name so the code SMS reads "Your <venue> verification code is ...".
     let companyName = 'our venue';
     try {
-      const { data: co } = await platformAdmin
-        .from('companies')
-        .select('name')
-        .eq('id', companyId)
-        .maybeSingle();
+      const { data: co } = await platformAdmin.from('companies').select('name').eq('id', companyId).maybeSingle();
       if (co?.name) companyName = co.name;
-    } catch {}
+    } catch { /* friendly name is best-effort */ }
 
-    // Resolve location_id for send-sms audit trail
-    let locationId: string | null = null;
-    try {
-      const { data: loc } = await platformAdmin
-        .from('locations')
-        .select('ops_location_id')
-        .eq('company_id', companyId)
-        .limit(1)
-        .maybeSingle();
-      locationId = loc?.ops_location_id || null;
-    } catch {}
-
-    // v5.5.293: Resolve OTP message from custom template or default
-    const rendered = await resolveAndRender(companyId, 'loyalty_otp', 'sms', {
-      venue_name: companyName,
-      otp_code: code,
-    });
-    const otpMessage = rendered?.body || `Your ${companyName} verification code is: ${code}. Valid for 5 minutes.`;
-
-    // Send SMS via send-sms edge function
-    try {
-      const smsRes = await fetch(`${OPS_URL}/functions/v1/send-sms`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${OPS_SERVICE_KEY}`,
-        },
-        body: JSON.stringify({
-          to: phone,
-          message: otpMessage,
-          location_id: locationId || companyId, // fallback to companyId if no ops location found
-          type: 'otp',
-          reference_id: companyId,
-        }),
-      });
-      if (!smsRes.ok) {
-        const smsErr = await smsRes.json().catch(() => ({}));
-        console.error('[loyalty-otp] SMS send failed:', smsErr);
-        return json({ error: `Failed to send verification code: ${(smsErr as any)?.error || 'SMS service error'}` }, 500);
+    const r = await startVerification(phone!, { channel: 'sms', friendlyName: companyName });
+    if (!r.ok) {
+      if (r.code === 'rate_limited') {
+        return json({ error: 'A code was just sent. Please wait a moment before requesting another.' }, 429);
       }
-    } catch (e) {
-      console.error('[loyalty-otp] SMS send threw:', e);
+      console.error('[loyalty-otp] Verify start failed:', r.error);
       return json({ error: 'Failed to send verification code' }, 500);
     }
-
     return json({ sent: true });
   }
 
   // ── ACTION: VERIFY OTP ──────────────────────────────────────────────
   if (action === 'verify') {
     const code = String(body.code || '').trim();
-    if (!code || code.length !== 6) return json({ error: 'Invalid code' }, 400);
-
-    // v5.5.325: fetch the active (unused, unexpired) codes for this phone — NOT
-    // filtered by the submitted code — so we can enforce a per-code attempt cap.
-    // Without it, the 6-digit code is brute-forceable inside its 5-min window.
-    const now = new Date().toISOString();
-    const { data: activeCodes } = await platformAdmin
-      .from('loyalty_otp_codes')
-      .select('id, code, attempts')
-      .eq('phone', phone)
-      .eq('company_id', companyId)
-      .eq('used', false)
-      .gte('expires_at', now)
-      .order('created_at', { ascending: false })
-      .limit(5);
-
-    if (!activeCodes || activeCodes.length === 0) {
-      return json({ error: 'Invalid or expired code' }, 401);
+    if (!code || code.length < 4) return json({ error: 'Invalid code' }, 400);
+    if (!verifyConfigured()) {
+      return json({ error: 'Verification is not configured for this venue yet.' }, 500);
     }
 
-    // Lock check is on the most-recent code (the one the customer should be
-    // using). Once it hits the cap they must request a new code (itself rate-
-    // limited by the 45s send cooldown) — so guesses are bounded per window.
-    const latest = activeCodes[0];
-    if ((latest.attempts || 0) >= MAX_VERIFY_ATTEMPTS) {
-      return json({ error: 'Too many incorrect attempts. Request a new code.', code: 'otp_locked' }, 429);
-    }
-
-    // Match against ANY active code (handles a late-arriving older SMS).
-    const otpRow = activeCodes.find((c: any) => c.code === code);
-    if (!otpRow) {
-      // Wrong code → burn one attempt against the most-recent code.
-      const newAttempts = (latest.attempts || 0) + 1;
-      await platformAdmin.from('loyalty_otp_codes')
-        .update({ attempts: newAttempts })
-        .eq('id', latest.id);
-      if (newAttempts >= MAX_VERIFY_ATTEMPTS) {
+    // Twilio Verify validates the code. Twilio owns the code's expiry AND the per-verification
+    // attempt limit (it returns 404 once expired/consumed, 429 on too many checks), so the old
+    // loyalty_otp_codes lookup + brute-force/attempt handling is no longer needed.
+    const vr = await checkVerification(phone!, code);
+    if (!vr.ok) {
+      if (vr.code === 'max_attempts') {
         return json({ error: 'Too many incorrect attempts. Request a new code.', code: 'otp_locked' }, 429);
       }
-      const remaining = MAX_VERIFY_ATTEMPTS - newAttempts;
-      return json({ error: `Invalid or expired code. ${remaining} attempt${remaining === 1 ? '' : 's'} left.` }, 401);
+      return json({ error: vr.error || 'Invalid or expired code' }, 401);
     }
-
-    // Correct code — consume it.
-    await platformAdmin.from('loyalty_otp_codes')
-      .update({ used: true })
-      .eq('id', otpRow.id);
+    // Approved — fall through to resolve org / customer / loyalty and mint the session token.
 
     // ── Resolve org + find/create customer ────────────────────────────
     // org_id lives on the OPS locations table, not platform. Resolve via
