@@ -286,7 +286,11 @@ export default function POSSurface() {
   const activeTable = activeTableId ? tables.find(t=>t.id===activeTableId) : null;
   const session = activeTable?.session;
   const items = getPOSItems();
-  const { subtotal, service, total, itemCount, checkDiscount, discountedSub, serviceChargeWaived, serviceChargeApplicable } = getPOSTotals();
+  const { subtotal, service, total, itemCount, checkDiscount, discountedSub, serviceChargeWaived, serviceChargeApplicable, autoDiscounts = [] } = getPOSTotals();
+  // Manual portion of the check discount = total check discount minus the auto-discount savings,
+  // so we can show each auto-promo on its own line and the staff discount (if any) separately.
+  const autoDiscountTotal = autoDiscounts.reduce((s, d) => s + (d.value || 0), 0);
+  const manualCheckDiscount = Math.max(0, checkDiscount - autoDiscountTotal);
   const orderNote = getPOSOrderNote();
 
   // v5.5.188: cache the per-reader customer display setting on boot.
@@ -1110,8 +1114,18 @@ export default function POSSurface() {
                   <span>{itemCount} item{itemCount!==1?'s':''}</span>
                   <span style={{fontFamily:'var(--font-mono)'}}>{money(subtotal)}</span>
                 </div>
-                {checkDiscount>0&&<div style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'var(--grn)',marginBottom:3}}>
-                  <span>Discount</span><span style={{fontFamily:'var(--font-mono)'}}>−{money(checkDiscount)}</span>
+                {/* Auto-discount promos (BOGO / bundle / scheduled) — one line each, tagged AUTO */}
+                {autoDiscounts.map((ad,i)=>(
+                  <div key={ad.id||i} style={{display:'flex',justifyContent:'space-between',alignItems:'center',fontSize:12,color:'var(--grn)',marginBottom:3}}>
+                    <span style={{display:'flex',alignItems:'center',gap:5,minWidth:0}}>
+                      <span style={{fontSize:9,fontWeight:800,letterSpacing:'.04em',color:'var(--grn)',border:'1px solid var(--grn-b)',background:'var(--grn-d)',borderRadius:4,padding:'0 4px',flexShrink:0}}>AUTO</span>
+                      <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{ad.label}</span>
+                    </span>
+                    <span style={{fontFamily:'var(--font-mono)',flexShrink:0}}>−{money(ad.value)}</span>
+                  </div>
+                ))}
+                {manualCheckDiscount>0&&<div style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'var(--grn)',marginBottom:3}}>
+                  <span>Discount</span><span style={{fontFamily:'var(--font-mono)'}}>−{money(manualCheckDiscount)}</span>
                 </div>}
                 {/* Service charge — only dine-in, from device profile, tap to remove/restore */}
                 {serviceChargeApplicable && (

@@ -23,6 +23,9 @@ import RyftPaymentForm from '../../components/RyftPaymentForm';
 import { readRyftStoredCard } from '../../lib/payments/ryft';
 import { attributeOnlineOrder } from '../../lib/customerLookup';
 import { calculateOrderTax } from '../../lib/tax';
+import { fetchActiveDiscountRules } from '../../lib/db';
+import { evaluateAutoDiscounts, toAppliedDiscount } from '../../lib/discountEngine';
+import { buildScheduleCtx } from '../../lib/locationTime';
 import { stashTab } from '../../lib/qrTabStorage';
 import { syncQrTableSession } from '../../lib/qrTableSession';
 import { money, currencySymbol, stripeCurrency } from '../../lib/currency';
@@ -89,19 +92,44 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
     return s + unit * (l.qty || 1);
   }, 0), [cart]);
 
+  // Auto-discount rules — fetched live (QR runs customer-side, no SyncBridge). Raw DB rows go
+  // straight into the engine (it reads snake_case). Channel 'qr'; schedule/expiry in location tz.
+  const [autoRules, setAutoRules] = useState([]);
+  useEffect(() => {
+    let live = true;
+    fetchActiveDiscountRules(opsLocationId)
+      .then(({ data }) => { if (live && Array.isArray(data)) setAutoRules(data); })
+      .catch(() => {});
+    return () => { live = false; };
+  }, [opsLocationId]);
+
+  const autoDiscounts = useMemo(() => {
+    const items = cart.map((l, i) => ({
+      uid: l.key || l.uid || l.id || `l${i}`,
+      cat: l.cat || null,
+      cats: l.cats || null,
+      price: l.price + (l.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0),
+      qty: l.qty || 1,
+      name: l.name || l.item?.name || 'Item',
+    }));
+    return evaluateAutoDiscounts(items, autoRules, 'qr', buildScheduleCtx(location.timezone)).map(toAppliedDiscount);
+  }, [cart, autoRules, location.timezone]);
+  const autoDiscountTotal = +autoDiscounts.reduce((s, d) => s + (d.value || 0), 0).toFixed(2);
+  const discountedSubtotal = Math.max(0, +(subtotal - autoDiscountTotal).toFixed(2));
+
   const serviceCharge = useMemo(() =>
-    serviceChargePct > 0 ? +(subtotal * serviceChargePct / 100).toFixed(2) : 0,
-    [subtotal, serviceChargePct]);
+    serviceChargePct > 0 ? +(discountedSubtotal * serviceChargePct / 100).toFixed(2) : 0,
+    [discountedSubtotal, serviceChargePct]);
 
   const tipAmount = useMemo(() => {
     if (tipMode === 'custom') return Math.max(0, Number(customTip) || 0);
     if (tipMode === '0') return 0;
-    return +(subtotal * Number(tipMode) / 100).toFixed(2);
-  }, [tipMode, customTip, subtotal]);
+    return +(discountedSubtotal * Number(tipMode) / 100).toFixed(2);
+  }, [tipMode, customTip, discountedSubtotal]);
 
   const total = useMemo(
-    () => +(subtotal + serviceCharge + tipAmount).toFixed(2),
-    [subtotal, serviceCharge, tipAmount]
+    () => +(discountedSubtotal + serviceCharge + tipAmount).toFixed(2),
+    [discountedSubtotal, serviceCharge, tipAmount]
   );
 
   // v5.5.154: UK VAT breakdown over the gross subtotal — items only.
@@ -404,7 +432,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
             order_type: 'dine-in',
             customer: customerWithPayment,
             items: items.map(i => ({ ...i, voided: false })),
-            discounts: [],
+            discounts: autoDiscounts,
             subtotal,
             service: serviceCharge,
             tip: tipAmount,
@@ -682,6 +710,13 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
               );
             })}
             <SummaryLine label="Subtotal" value={subtotal} muted={muted}/>
+            {/* Auto-discount promos (BOGO / bundle / scheduled) */}
+            {autoDiscounts.map((ad, i) => (
+              <div key={ad.id || i} style={{ display: 'flex', justifyContent: 'space-between', padding: '2px 0', fontSize: 13, color: '#16a34a', fontWeight: 700 }}>
+                <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ad.label}</span>
+                <span>−{money(ad.value)}</span>
+              </div>
+            ))}
             {/* v5.5.154: UK VAT breakdown — required on every customer-
                 facing total for compliance. Inclusive: shown as "incl."
                 on top of the subtotal which already contains the tax. */}

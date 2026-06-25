@@ -2,6 +2,8 @@ import { create } from 'zustand';
 import { supabase, platformSupabase, isMock, getLocationId, ensureAuthToken, getActiveLocationSync } from '../lib/supabase';
 import { calculateOrderTax } from '../lib/tax';
 import { resolveServiceCharge } from '../lib/serviceCharge';
+import { evaluateAutoDiscounts, toAppliedDiscount } from '../lib/discountEngine';
+import { buildScheduleCtx } from '../lib/locationTime';
 import { upsertMenuItem, upsertFloorTable, deleteFloorTable, insertKDSTicket, insertClosedCheck, toggle86DB, getNextOrderRefLocal, updateClosedCheckRefunds, upsertStockLevel, deleteStockLevel, decrementStockRPC, restoreStockRPC } from '../lib/db';
 import { printService } from '../lib/printer';
 import { hubrisePushStock, isHubriseConnected, hubrisePushStatus, isHubriseAutoReceipt } from '../lib/hubrise';
@@ -2059,8 +2061,15 @@ export const useStore = create((set, get) => ({
       if (!i.discount) return s + base;
       return s + (i.discount.type==='percent' ? base*(1-i.discount.value/100) : Math.max(0,base-i.discount.value));
     }, 0);
-    // Check-level discounts
-    const checkDiscount = checkDiscounts.reduce((s,d) => s + (d.type==='percent'?subtotal*d.value/100:d.value), 0);
+    // Auto-discount rules (BOGO / bundle / scheduled) — evaluated live against the cart and folded
+    // in beside any manual check discounts. toAppliedDiscount emits the SAME {type:'amount',value}
+    // shape manual discounts use, so the reducer below + receipts/reports need no change. Channel
+    // 'pos'; each rule is gated by its schedule/expiry in location-local time.
+    const autoDiscounts = evaluateAutoDiscounts(items, get().discountRules, 'pos', buildScheduleCtx(get().locationConfig?.timezone))
+      .map(toAppliedDiscount);
+    const allCheckDiscounts = [...checkDiscounts, ...autoDiscounts];
+    // Check-level discounts (manual + auto)
+    const checkDiscount = allCheckDiscounts.reduce((s,d) => s + (d.type==='percent'?subtotal*d.value/100:d.value), 0);
     const discountedSub = Math.max(0, subtotal - checkDiscount);
 
     // Service charge — from device profile config, dine-in only, respects waived flag
@@ -2069,6 +2078,8 @@ export const useStore = create((set, get) => ({
 
     return {
       subtotal, checkDiscount, discountedSub, service,
+      autoDiscounts,                      // applied auto-discount lines (display + receipt)
+      checkDiscounts: allCheckDiscounts,  // manual + auto merged (POS renders each line)
       serviceChargeWaived,
       serviceChargeApplicable: orderType === 'dine-in' && (deviceConfig?.serviceCharge?.enabled !== false),
       total: discountedSub + service,
@@ -3832,7 +3843,12 @@ export const useStore = create((set, get) => ({
       covers:     session.covers || 1,
       orderType:  'dine-in',
       items:      session.items.filter(i => !i.voided).map(i => ({ ...i })),
-      discounts:  [...(session.discounts || []), ...promoDiscountEntry(paymentInfo.promoRedemption)],
+      // Persist applied auto-discounts (re-evaluated at close, location-local) alongside any
+      // manual discounts + promo, in the SAME shape — so EOD/sales/tax reports + receipts pick
+      // them up unchanged. The charged total already reflects them via getPOSTotals → paymentInfo.grand.
+      discounts:  [...(session.discounts || []),
+                   ...evaluateAutoDiscounts(session.items.filter(i=>!i.voided), get().discountRules, 'pos', buildScheduleCtx(get().locationConfig?.timezone)).map(toAppliedDiscount),
+                   ...promoDiscountEntry(paymentInfo.promoRedemption)],
       subtotal:   session.subtotal || 0,
       service:    (session.subtotal || 0) * 0.125,
       tip:        paymentInfo.tip || 0,
@@ -3955,7 +3971,9 @@ export const useStore = create((set, get) => ({
       orderType,
       customer,
       items: walkInOrder.items.filter(i => !i.voided).map(i => ({ ...i })),
-      discounts: [...(walkInOrder.discounts || []), ...promoDiscountEntry(paymentInfo.promoRedemption)],
+      discounts: [...(walkInOrder.discounts || []),
+                  ...evaluateAutoDiscounts(walkInOrder.items.filter(i=>!i.voided), get().discountRules, 'pos', buildScheduleCtx(get().locationConfig?.timezone)).map(toAppliedDiscount),
+                  ...promoDiscountEntry(paymentInfo.promoRedemption)],
       subtotal,
       service: 0,
       tip: paymentInfo.tip || 0,

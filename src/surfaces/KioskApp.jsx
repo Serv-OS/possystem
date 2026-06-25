@@ -21,7 +21,9 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { supabase, platformSupabase, getLocationId, ensureAuthToken } from '../lib/supabase';
 import { useStore } from '../store';
-import { decrementStockRPC } from '../lib/db';
+import { decrementStockRPC, fetchActiveDiscountRules } from '../lib/db';
+import { evaluateAutoDiscounts, toAppliedDiscount } from '../lib/discountEngine';
+import { buildScheduleCtx } from '../lib/locationTime';
 import { depleteForSaleServer } from '../lib/stock/deplete';
 import KioskProductModal from './KioskProductModal';
 import { t, setLang, useKioskLang, LANGUAGES, getLanguageMeta } from '../lib/i18n';
@@ -208,16 +210,29 @@ export default function KioskApp({ kioskId, onUnpair }) {
 
   // v5.5.265: Resolve companyId for OTP + gift card flows
   const [companyId, setCompanyId] = useState(null);
+  const [kioskTz, setKioskTz] = useState('Europe/London');
   useEffect(() => {
     if (!locationId || !platformSupabase) return;
     platformSupabase
       .from('locations')
-      .select('company_id')
+      .select('company_id, timezone')
       .or(`ops_location_id.eq.${locationId},id.eq.${locationId}`)
       .limit(1)
       .maybeSingle()
-      .then(({ data }) => { if (data?.company_id) setCompanyId(data.company_id); })
+      .then(({ data }) => { if (data?.company_id) setCompanyId(data.company_id); if (data?.timezone) setKioskTz(data.timezone); })
       .catch(() => {});
+  }, [locationId]);
+
+  // Auto-discount rules — fetched live (kiosk runs anonymously, no store.discountRules). Raw DB rows
+  // feed the engine directly (it reads snake_case). Channel 'kiosk'; schedule/expiry in location tz.
+  const [autoRules, setAutoRules] = useState([]);
+  useEffect(() => {
+    if (!locationId) return;
+    let live = true;
+    fetchActiveDiscountRules(locationId)
+      .then(({ data }) => { if (live && Array.isArray(data)) setAutoRules(data); })
+      .catch(() => {});
+    return () => { live = false; };
   }, [locationId]);
 
   // ─── Cart + flow state ───
@@ -454,7 +469,23 @@ export default function KioskApp({ kioskId, onUnpair }) {
 
   // ─── Cart totals ───
   const subtotal = useMemo(() => cart.reduce((a, l) => a + l.lineTotal, 0), [cart]);
-  const total = useMemo(() => subtotal + tip, [subtotal, tip]);
+  // Auto-discounts (BOGO / bundle / scheduled). Kiosk cart lines nest the menu row under l.item,
+  // so map cat/cats from there; unit price is l.linePrice (item + mods). Applied before tip + before
+  // loyalty/gift credit (grandTotal subtracts those next).
+  const autoDiscounts = useMemo(() => {
+    const items = cart.map((l, i) => ({
+      uid: l.key || `l${i}`,
+      cat: l.item?.cat || null,
+      cats: l.item?.cats || null,
+      price: l.linePrice,
+      qty: l.qty || 1,
+      name: l.name || l.item?.name || 'Item',
+    }));
+    return evaluateAutoDiscounts(items, autoRules, 'kiosk', buildScheduleCtx(kioskTz)).map(toAppliedDiscount);
+  }, [cart, autoRules, kioskTz]);
+  const autoDiscountTotal = +autoDiscounts.reduce((s, d) => s + (d.value || 0), 0).toFixed(2);
+  const discountedSubtotal = Math.max(0, +(subtotal - autoDiscountTotal).toFixed(2));
+  const total = useMemo(() => discountedSubtotal + tip, [discountedSubtotal, tip]);
   const cartItemCount = useMemo(() => cart.reduce((a, l) => a + l.qty, 0), [cart]);
 
   // v5.5.285: Count total usage of each item (by itemId) across the cart,
@@ -628,6 +659,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
         location_id: locationId,
         ref: num,
         items: itemsPayload,
+        discounts: autoDiscounts,
         subtotal: subtotal,
         tip: tip,
         tax: 0,

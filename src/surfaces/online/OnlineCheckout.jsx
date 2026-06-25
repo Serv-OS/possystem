@@ -18,7 +18,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { supabase, platformSupabase } from '../../lib/supabase';
-import { decrementStockRPC } from '../../lib/db';
+import { decrementStockRPC, fetchActiveDiscountRules } from '../../lib/db';
+import { evaluateAutoDiscounts, toAppliedDiscount } from '../../lib/discountEngine';
+import { buildScheduleCtx } from '../../lib/locationTime';
 import { depleteForSaleServer } from '../../lib/stock/deplete';
 import { getStripeForAccount, createPaymentIntent } from '../../lib/stripeClient';
 import { getLocationProcessor } from '../../lib/payments/processor';
@@ -150,6 +152,31 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     return s + unit * (l.qty || 1);
   }, 0), [cart]);
 
+  // Auto-discount rules — fetched live (online runs anonymously, no SyncBridge). Raw DB rows
+  // feed the engine directly (it reads snake_case). Channel 'online'; schedule/expiry in location tz.
+  // Discounts apply to the GOODS first (before gift card + loyalty reward) — discount, then tender.
+  const [autoRules, setAutoRules] = useState([]);
+  useEffect(() => {
+    let live = true;
+    fetchActiveDiscountRules(opsLocationId)
+      .then(({ data }) => { if (live && Array.isArray(data)) setAutoRules(data); })
+      .catch(() => {});
+    return () => { live = false; };
+  }, [opsLocationId]);
+
+  const autoDiscounts = useMemo(() => {
+    const items = cart.map((l, i) => ({
+      uid: l.uid || l.key || l.id || `l${i}`,
+      cat: l.cat || null,
+      cats: l.cats || null,
+      price: l.price + (l.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0),
+      qty: l.qty || 1,
+      name: l.name || 'Item',
+    }));
+    return evaluateAutoDiscounts(items, autoRules, 'online', buildScheduleCtx(tz)).map(toAppliedDiscount);
+  }, [cart, autoRules, tz]);
+  const autoDiscountMinor = Math.round(autoDiscounts.reduce((s, d) => s + (d.value || 0), 0) * 100);
+
   // v5.5.154: UK VAT breakdown — required on customer-facing receipts/totals.
   const taxBreakdown = useMemo(() => calculateOrderTax(
     cart.map(l => ({
@@ -162,13 +189,15 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     orderType || 'collection',
   ), [cart, taxRates, orderType]);
 
-  // v5.5.243: Combined deduction calculation (gift card + loyalty reward)
+  // v5.5.243: Combined deduction calculation (auto-discount → gift card → loyalty reward)
   const giftAppliedMinor = giftApplied?.applied || 0;
   const rewardDiscountMinor = rewardApplied?.discount_value || 0;
   const subtotalMinor = Math.round(subtotal * 100);
-  const remainingMinor = Math.max(0, subtotalMinor - giftAppliedMinor - rewardDiscountMinor);
-  const fullyPaid = (giftAppliedMinor + rewardDiscountMinor) >= subtotalMinor;
-  const giftCoversAll = giftAppliedMinor >= subtotalMinor; // keep for gift-only path
+  // Auto-discounts reduce the goods first; gift/loyalty then apply to the discounted bill.
+  const discountedSubtotalMinor = Math.max(0, subtotalMinor - autoDiscountMinor);
+  const remainingMinor = Math.max(0, discountedSubtotalMinor - giftAppliedMinor - rewardDiscountMinor);
+  const fullyPaid = (giftAppliedMinor + rewardDiscountMinor) >= discountedSubtotalMinor;
+  const giftCoversAll = giftAppliedMinor >= discountedSubtotalMinor; // keep for gift-only path
 
   // Build collection slots — every 15 min between (now + leadMin) and the
   // next close time, snapped to :00 / :15 / :30 / :45.
@@ -635,7 +664,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           order_type: orderType,
           customer,
           items: items.map(i => ({ ...i, voided: false })),
-          discounts: [],
+          discounts: autoDiscounts,
           subtotal,
           service: 0,
           tip: 0,
@@ -742,7 +771,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           order_type: orderType,
           customer,
           items: items.map(i => ({ ...i, voided: false })),
-          discounts: [],
+          discounts: autoDiscounts,
           subtotal,
           service: 0,
           tip: 0,
@@ -834,6 +863,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
             </div>
             <div style={{ fontSize: 12, color: muted, marginTop: 2 }}>
               {isDelivery ? 'Delivery' : 'Collection'} · {cart.length} item{cart.length === 1 ? '' : 's'} · {money(subtotal)}
+              {autoDiscountMinor > 0 ? ` · Offers -${money((autoDiscountMinor / 100))}` : ''}
               {giftApplied ? ` · Gift card -${money((giftApplied.applied / 100))}` : ''}
               {rewardApplied ? ` · Reward -${money((rewardApplied.discount_value / 100))}` : ''}
             </div>

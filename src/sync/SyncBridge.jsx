@@ -317,6 +317,7 @@ export default function SyncBridge({ onSyncPulse }) {
                 rewardQty: r.reward_qty,
                 rewardCategoryIds: r.reward_category_ids || [],
                 channels: r.channels || { pos: true, online: true, qr: true, kiosk: true },
+                schedule: r.schedule || null,   // day/time-window/expiry gate (discountEngine.isRuleActiveNow)
                 priority: r.priority ?? 0, sortOrder: r.sort_order ?? 0,
               }));
             } catch (e) { console.warn('[SyncBridge] discount load error:', e?.message); }

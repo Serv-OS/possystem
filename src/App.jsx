@@ -88,6 +88,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.640', date: '25 Jun 2026', label: 'Auto-discounts now actually apply at checkout — across POS, kiosk, online & QR, with scheduling & expiry',
+    changes: [
+      'Auto-discount rules (Buy-X-get-Y and bundle/meal-deals) were being saved but never applied — the discount engine was built but nothing called it at checkout. They now evaluate live against the cart and apply automatically on all four channels (POS till, self-service kiosk, online ordering and QR table ordering), with the saving shown on the order and recorded on the receipt + in reports.',
+      'NEW — schedule each offer: choose the days of the week and an optional time-of-day window (e.g. a lunch deal Mon–Fri 11:00–15:00), plus an optional start date and an EXPIRY date after which the offer automatically stops. All evaluated in the venue’s local time. Set it under Discounts → Auto-discount rules → “When it applies”. Leave blank to run all day, every day, forever.',
+      'Stacking is safe: multiple offers can apply to one order but a single item is never discounted twice (higher-priority rule wins), and a manually-applied staff discount always takes precedence on the item it’s on. Reload the tills to pick this up.',
+      'Note: “Buy 2 … get 1” offers need the trigger + reward quantity in the basket to fire (e.g. “Buy 2 pizzas get 1 at 20%” needs 3 pizzas) — exactly as the rule description reads.',
+    ],
+  },
+  {
     version: '5.5.639', date: '25 Jun 2026', label: 'Critical fix — open tables can no longer silently vanish from the waitlist (durable self-heal)',
     changes: [
       'Root cause of the recurring "all tables lost on the waitlist": a till\'s saved table-session could be deleted from the shared database out-of-band (a stale offline-queued delete replaying on reconnect, or a cross-device delete sweep), and the till would then NEVER re-save it — because it remembered it had already written that session. The host stand (which has no local copy) honestly showed the empty database, so occupied tables looked free. Adding an item changed the session and forced a re-write, which is why a table briefly "came back" when you touched it.',

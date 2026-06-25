@@ -37,9 +37,34 @@ const EMPTY_RULE = {
   triggerGroups: [{ categoryIds: [], qty: 1 }],
   rewardType:'percent', rewardValue:'', rewardQty:1, rewardCategoryIds:[],
   channels:{ pos:true, online:true, qr:true, kiosk:true },
+  // When it applies. Empty = always on. days: ISO weekday 1=Mon..7=Sun.
+  // windows: [{start:'HH:MM', end:'HH:MM'}]. startsAt/expiresAt: 'YYYY-MM-DD' (inclusive).
+  schedule:{ days:[], windows:[], startsAt:'', expiresAt:'' },
 };
 
 const EMPTY_TRIGGER_GROUP = { categoryIds: [], qty: 1 };
+// ISO weekday order for the day picker (1=Mon .. 7=Sun), matches discountEngine.isRuleActiveNow.
+const DOW = [[1,'Mon'],[2,'Tue'],[3,'Wed'],[4,'Thu'],[5,'Fri'],[6,'Sat'],[7,'Sun']];
+const normaliseSchedule = (s) => ({
+  days: Array.isArray(s?.days) ? s.days : [],
+  windows: Array.isArray(s?.windows) ? s.windows : [],
+  startsAt: s?.startsAt || '',
+  expiresAt: s?.expiresAt || '',
+});
+// Human one-liner for the rule card (empty string when the rule is always-on).
+const scheduleSummary = (s) => {
+  if (!s) return '';
+  const map = { 1:'Mon', 2:'Tue', 3:'Wed', 4:'Thu', 5:'Fri', 6:'Sat', 7:'Sun' };
+  const parts = [];
+  if (Array.isArray(s.days) && s.days.length && s.days.length < 7) {
+    parts.push(s.days.slice().sort((a,b)=>a-b).map(d => map[d]).join(', '));
+  }
+  const w = (s.windows || [])[0];
+  if (w?.start && w?.end) parts.push(`${w.start}–${w.end}`);
+  if (s.startsAt) parts.push(`from ${s.startsAt}`);
+  if (s.expiresAt) parts.push(`until ${s.expiresAt}`);
+  return parts.join(' · ');
+};
 
 const CHANNEL_LABELS = { pos:'POS', online:'Online ordering', qr:'QR code ordering', kiosk:'Kiosk' };
 
@@ -176,8 +201,18 @@ function RuleForm({ rule, categories, onSave, onCancel }) {
     triggerQty: rule?.triggerQty ?? 2,
     rewardQty: rule?.rewardQty ?? 1,
     triggerGroups: rule?.triggerGroups?.length ? rule.triggerGroups : [{ ...EMPTY_TRIGGER_GROUP }],
+    schedule: normaliseSchedule(rule?.schedule),
   });
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }));
+  // Schedule helpers (day toggles + a single optional time window + start/expiry dates)
+  const sched = form.schedule || normaliseSchedule(null);
+  const setSched = (patch) => f('schedule', { ...sched, ...patch });
+  const toggleDay = (d) => setSched({ days: sched.days.includes(d) ? sched.days.filter(x => x !== d) : [...sched.days, d].sort((a,b)=>a-b) });
+  const win = sched.windows[0] || { start:'', end:'' };
+  const setWindow = (patch) => {
+    const next = { ...win, ...patch };
+    setSched({ windows: (next.start || next.end) ? [next] : [] });
+  };
   const [saving, setSaving] = useState(false);
   const [sameRewardCats, setSameRewardCats] = useState(
     !rule?.rewardCategoryIds?.length || JSON.stringify(rule?.rewardCategoryIds) === JSON.stringify(rule?.triggerCategoryIds)
@@ -203,12 +238,19 @@ function RuleForm({ rule, categories, onSave, onCancel }) {
   const handleSave = async () => {
     if (!form.name.trim()) return;
     setSaving(true);
+    // Clean the schedule: drop blank windows; store null when nothing is set ("always on").
+    const cleanWindows = (sched.windows || []).filter(w => w && w.start && w.end);
+    const hasSchedule = (sched.days?.length > 0) || cleanWindows.length > 0 || sched.startsAt || sched.expiresAt;
+    const schedulePayload = hasSchedule
+      ? { days: sched.days || [], windows: cleanWindows, startsAt: sched.startsAt || null, expiresAt: sched.expiresAt || null }
+      : null;
     const payload = {
       ...form,
       rewardValue: parseFloat(form.rewardValue) || 0,
       triggerQty: parseInt(form.triggerQty) || 2,
       rewardQty: parseInt(form.rewardQty) || 1,
       rewardCategoryIds: sameRewardCats ? [] : form.rewardCategoryIds,
+      schedule: schedulePayload,
       // For bundle type, set reward type to fixed_price automatically
       ...(isBundle ? { rewardType: 'fixed_price', rewardQty: 0 } : {}),
       // Only include triggerGroups for bundle type
@@ -376,6 +418,49 @@ function RuleForm({ rule, categories, onSave, onCancel }) {
         </div>
       )}
 
+      {/* When it applies — days, time window, start + expiry */}
+      <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:10, padding:14, marginBottom:14 }}>
+        <div style={{ fontSize:12, fontWeight:700, color:'var(--t1)', marginBottom:4 }}>When it applies</div>
+        <div style={{ fontSize:11, color:'var(--t3)', marginBottom:12 }}>Leave everything blank to run all day, every day, with no end date.</div>
+
+        <label style={S.label}>Days</label>
+        <div style={{ display:'flex', gap:6, flexWrap:'wrap', marginBottom:14 }}>
+          {DOW.map(([d, label]) => (
+            <button key={d} type="button" onClick={() => toggleDay(d)} style={{
+              padding:'6px 12px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', fontSize:12, fontWeight:600,
+              border:`1.5px solid ${sched.days.includes(d) ? 'var(--acc)' : 'var(--bdr)'}`,
+              background: sched.days.includes(d) ? 'var(--acc-d)' : 'var(--bg3)',
+              color: sched.days.includes(d) ? 'var(--acc)' : 'var(--t3)',
+            }}>{label}</button>
+          ))}
+          {sched.days.length > 0 && (
+            <button type="button" onClick={() => setSched({ days: [] })} style={{ padding:'6px 10px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:600, border:'1px solid var(--bdr)', background:'var(--bg3)', color:'var(--t3)' }}>Every day</button>
+          )}
+        </div>
+
+        <label style={S.label}>Time of day (optional)</label>
+        <div style={{ display:'flex', gap:8, alignItems:'center', marginBottom:14 }}>
+          <input type="time" style={{ ...S.input, width:130 }} value={win.start} onChange={e => setWindow({ start: e.target.value })} />
+          <span style={{ color:'var(--t3)', fontSize:12 }}>to</span>
+          <input type="time" style={{ ...S.input, width:130 }} value={win.end} onChange={e => setWindow({ end: e.target.value })} />
+          {(win.start || win.end) && (
+            <button type="button" onClick={() => setSched({ windows: [] })} style={{ padding:'6px 10px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', fontSize:11, border:'1px solid var(--bdr)', background:'var(--bg3)', color:'var(--t3)' }}>Clear</button>
+          )}
+        </div>
+
+        <div style={{ display:'flex', gap:14, flexWrap:'wrap' }}>
+          <div>
+            <label style={S.label}>Starts (optional)</label>
+            <input type="date" style={{ ...S.input, width:170 }} value={sched.startsAt} onChange={e => setSched({ startsAt: e.target.value })} />
+          </div>
+          <div>
+            <label style={S.label}>Expires (optional)</label>
+            <input type="date" style={{ ...S.input, width:170 }} value={sched.expiresAt} onChange={e => setSched({ expiresAt: e.target.value })} />
+          </div>
+        </div>
+        {sched.expiresAt && <div style={{ fontSize:11, color:'var(--t3)', marginTop:6 }}>Stops applying after {sched.expiresAt} (inclusive, venue time).</div>}
+      </div>
+
       {/* Channel targeting */}
       <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:10, padding:14, marginBottom:14 }}>
         <div style={{ fontSize:12, fontWeight:700, color:'var(--t1)', marginBottom:10 }}>Active on channels</div>
@@ -445,6 +530,7 @@ export default function DiscountManager() {
           rewardCategoryIds: r.reward_category_ids || [],
           channels: r.channels || { pos:true, online:true, qr:true, kiosk:true },
           triggerGroups: r.trigger_groups || null,
+          schedule: r.schedule || null,
           priority: r.priority ?? 0, sortOrder: r.sort_order ?? 0,
         })));
       } catch (e) { console.error('[DiscountManager] load error:', e); }
@@ -513,6 +599,7 @@ export default function DiscountManager() {
         rewardCategoryIds: r.reward_category_ids || [],
         channels: r.channels || { pos:true, online:true, qr:true, kiosk:true },
         triggerGroups: r.trigger_groups || null,
+        schedule: r.schedule || null,
         priority: r.priority ?? 0, sortOrder: r.sort_order ?? 0,
       }));
       setRules(mapped);
@@ -682,6 +769,12 @@ export default function DiscountManager() {
                         </>
                       )}
                     </div>
+                    {scheduleSummary(rule.schedule) && (
+                      <div style={{ fontSize:11, color:'var(--t3)', marginBottom:6, display:'flex', alignItems:'center', gap:6, flexWrap:'wrap' }}>
+                        <span style={{ fontSize:9, fontWeight:800, color:'var(--acc)', border:'1px solid var(--acc-b)', background:'var(--acc-d)', borderRadius:4, padding:'1px 5px' }}>⏰ SCHEDULED</span>
+                        <span>{scheduleSummary(rule.schedule)}</span>
+                      </div>
+                    )}
                     <div style={{ display:'flex', gap:4 }}>
                       {Object.entries(CHANNEL_LABELS).map(([key, label]) => (
                         <span key={key} style={{
