@@ -26,6 +26,8 @@ import { getStripeForAccount, createPaymentIntent } from '../../lib/stripeClient
 import { getLocationProcessor } from '../../lib/payments/processor';
 import RyftPaymentForm from '../../components/RyftPaymentForm';
 import { attributeOnlineOrder } from '../../lib/customerLookup';
+import { getDeliveryQuote, recordDeliverySurcharge } from '../../lib/delivery/quoteService';
+import { dispatchDelivery } from '../../lib/delivery/dispatch';
 import { getDayWindows } from '../../lib/openingHours';
 import { calculateOrderTax } from '../../lib/tax';
 import { money, stripeCurrency } from '../../lib/currency';
@@ -195,9 +197,24 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   const subtotalMinor = Math.round(subtotal * 100);
   // Auto-discounts reduce the goods first; gift/loyalty then apply to the discounted bill.
   const discountedSubtotalMinor = Math.max(0, subtotalMinor - autoDiscountMinor);
-  const remainingMinor = Math.max(0, discountedSubtotalMinor - giftAppliedMinor - rewardDiscountMinor);
-  const fullyPaid = (giftAppliedMinor + rewardDiscountMinor) >= discountedSubtotalMinor;
-  const giftCoversAll = giftAppliedMinor >= discountedSubtotalMinor; // keep for gift-only path
+  // v5.5.648: live delivery quote (Uber Direct, or the configured fee for HubRise-bridge
+  // venues) — fold the customer fee into the amount payable so it's charged + shown.
+  const [deliveryQuote, setDeliveryQuote] = useState(null);
+  const _delivAddrKey = orderType === 'delivery' ? `${address1}|${postcode}` : '';
+  useEffect(() => {
+    if (orderType !== 'delivery' || !address1.trim() || !postcode.trim()) { setDeliveryQuote(null); return; }
+    let live = true;
+    const t = setTimeout(async () => {
+      const q = await getDeliveryQuote({ opsLocationId, dropoff: { line1: address1.trim(), postcode: postcode.trim().toUpperCase() }, orderSubtotalMinor: discountedSubtotalMinor });
+      if (live) setDeliveryQuote(q);
+    }, 500);
+    return () => { live = false; clearTimeout(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orderType, _delivAddrKey, discountedSubtotalMinor, opsLocationId]);
+  const deliveryFeeMinor = (orderType === 'delivery' && deliveryQuote?.available) ? (deliveryQuote.customerFeeMinor || 0) : 0;
+  const remainingMinor = Math.max(0, discountedSubtotalMinor - giftAppliedMinor - rewardDiscountMinor) + deliveryFeeMinor;
+  const fullyPaid = remainingMinor <= 0;
+  const giftCoversAll = giftAppliedMinor >= discountedSubtotalMinor && deliveryFeeMinor === 0; // gift-only (no-card) path
 
   // Build collection slots — every 15 min between (now + leadMin) and the
   // next close time, snapped to :00 / :15 / :30 / :45.
@@ -220,9 +237,12 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     if (!/^\+?[0-9 ]{7,}$/.test(phone)) return false;
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return false;
     if (isDelivery && (!address1.trim() || !postcode.trim())) return false;
+    // v5.5.648: block delivery checkout if we have a quote result and it's not deliverable
+    // (out of range / not available). null = still quoting; don't block on that.
+    if (isDelivery && deliveryQuote && !deliveryQuote.available) return false;
     if (timeMode === 'scheduled' && !slot) return false;
     return true;
-  }, [name, phone, email, address1, postcode, isDelivery, timeMode, slot]);
+  }, [name, phone, email, address1, postcode, isDelivery, timeMode, slot, deliveryQuote]);
 
   // Compose order ref + customer + items + collection ISO once details are valid.
   // Used by both the createPaymentIntent description/metadata and the
@@ -238,6 +258,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       phone: phone.replace(/\s+/g, ''),
       email: email.trim(),
       ...(isDelivery ? { address: { line1: address1.trim(), postcode: postcode.trim().toUpperCase() } } : {}),
+      ...(deliveryFeeMinor > 0 ? { delivery_fee: deliveryFeeMinor / 100 } : {}),
       ...(notes.trim() ? { notes: notes.trim() } : {}),
     };
     // v5.5.128: include cat / cats / parentId on the queued items so the
@@ -831,6 +852,15 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
 
       // v5.5.287: Decrement stock for each item in the order
       decrementOnlineStock(cart, opsLocationId);
+
+      // v5.5.648: delivery surcharge log + courier dispatch (edge fn routes by venue
+      // dispatch_backend: Uber API or HubRise Bridge). Fire-and-forget — never blocks
+      // the customer's confirmation.
+      if (isDelivery && deliveryQuote?.available) {
+        const dq = { ...deliveryQuote, dropoff: customer.address };
+        recordDeliverySurcharge({ opsLocationId, orderRef: ref, quote: dq }).catch(() => {});
+        dispatchDelivery({ opsLocationId, order: { ref, items, total: subtotal + deliveryFeeMinor / 100, customer }, quote: dq }).catch(() => {});
+      }
 
       onPlaced?.({ ref, collectionAt, total: subtotal, paymentIntent });
     } catch (e) {

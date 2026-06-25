@@ -15,6 +15,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { getAccessToken, getQuote, geocodePostcode, haversineMiles, createDelivery, getDelivery, parseDeliveryResp, mapUberStatus } from '../_shared/uber.ts';
+import { createOrder as createHubriseOrder } from '../_shared/hubrise.ts';
 
 const e164 = (raw: string) => {
   const s = String(raw || '').replace(/[\s()-]/g, '');
@@ -122,6 +123,14 @@ Deno.serve(async (req) => {
         return json({ ok: true, available: false, reason: 'out_of_radius', distanceMiles, radiusMiles, policy, currency });
       }
 
+      // HubRise Bridge dispatch can't quote live (the Bridge has no pre-order estimate) —
+      // the customer fee is a CONFIGURED fee. Use fallback_fee_minor as the cost basis +
+      // apply the surcharge policy. Set a flat policy (or fallback fee) for Bridge venues.
+      if (cfg.dispatch_backend === 'hubrise_bridge') {
+        const feeMinor = cfg.fallback_fee_minor != null ? cfg.fallback_fee_minor : 0;
+        return json({ ok: true, available: true, fallback: true, configured: true, raw: { fee: feeMinor, currency }, dropoff, distanceMiles, withinRadius: true, policy, currency, radiusMiles });
+      }
+
       const clientId = ENV_CLIENT_ID, clientSecret = ENV_CLIENT_SECRET;
       const customerId = cfg.uber_customer_id || ENV_CUSTOMER_ID;
       const env = (cfg.env || ENV_DEFAULT) as 'sandbox' | 'prod';
@@ -177,13 +186,25 @@ Deno.serve(async (req) => {
       const orderRef = body?.order_ref || null;
       const manifest = body?.manifest || {};
 
-      // HubRise Bridge backend — deferred (requires pushing the order into HubRise first).
-      // Record a pending delivery so the staff board shows it; real dispatch lands later.
+      // HubRise Bridge backend — push the order INTO HubRise; the Bridge (connected in the
+      // HubRise back office) then dispatches it to Uber and syncs status back through the
+      // existing hubrise order pipeline. Requires the venue to be HubRise-connected.
       if (cfg.dispatch_backend === 'hubrise_bridge') {
-        const { data: row } = await sb.from('deliveries').insert({
-          location_id: loc, order_ref: orderRef, dispatch_backend: 'hubrise_bridge', status: 'pending',
-        }).select('id').maybeSingle();
-        return json({ ok: true, deferred: 'hubrise_bridge', deliveryRowId: row?.id || null, message: 'HubRise Bridge dispatch not yet wired (needs order push to HubRise).' });
+        const { data: conn } = await sb.from('hubrise_connections').select('access_token, hubrise_location_id, status').eq('location_id', loc).maybeSingle();
+        if (!conn?.access_token || !conn?.hubrise_location_id) {
+          return json({ ok: false, reason: 'hubrise_not_connected', message: 'Connect this venue to HubRise (with the Uber Direct Bridge enabled) to dispatch.' });
+        }
+        try {
+          const hrOrder = body?.hubrise_order || {};
+          const created = await createHubriseOrder(conn.access_token, conn.hubrise_location_id, hrOrder);
+          const hubriseRef = created?.id || created?.order_id || null;
+          const { data: row } = await sb.from('deliveries').insert({
+            location_id: loc, order_ref: orderRef, dispatch_backend: 'hubrise_bridge', status: 'pending', hubrise_ref: hubriseRef,
+          }).select('id').maybeSingle();
+          return json({ ok: true, backend: 'hubrise_bridge', deliveryRowId: row?.id || null, hubriseRef });
+        } catch (e) {
+          return json({ ok: false, reason: 'hubrise_push_failed', error: String((e as Error)?.message || e) });
+        }
       }
 
       // Fill pickup from server-side config (never trusted from the client).

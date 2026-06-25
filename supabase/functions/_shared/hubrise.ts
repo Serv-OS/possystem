@@ -141,6 +141,12 @@ export function putInventory(token: string, catalogId: string, entries: unknown[
 export function getOrder(token: string, hubriseLocationId: string, orderId: string) {
   return hr(token, 'GET', `/locations/${hubriseLocationId}/orders/${orderId}`);
 }
+// v5.5.648: push a locally-originated order INTO HubRise so the Uber Direct Bridge can
+// dispatch it. ServOS otherwise only RECEIVES HubRise orders — this is the one place we
+// create one. The Bridge (connected in the HubRise back office) picks it up + dispatches.
+export function createOrder(token: string, hubriseLocationId: string, body: Record<string, unknown>) {
+  return hr(token, 'POST', `/locations/${hubriseLocationId}/orders`, body);
+}
 export function patchOrder(token: string, hubriseLocationId: string, orderId: string, body: Record<string, unknown>) {
   return hr(token, 'PATCH', `/locations/${hubriseLocationId}/orders/${orderId}`, body);
 }

@@ -88,6 +88,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.648', date: '25 Jun 2026', label: 'Delivery — dispatch via HubRise Bridge + online ordering surcharge (slice 5, owner-gated)',
+    changes: [
+      'Online ordering now does address-based delivery the same way the POS does: enter a delivery address at checkout and the live fee is added to the total before payment, with out-of-range orders blocked (offer collection). Same shared engine, so quoting + surcharging behave identically on POS and online.',
+      'Dispatch can now run through HubRise: a confirmed delivery order is pushed into HubRise so the Uber Direct Bridge dispatches the courier and syncs status back — no separate Uber account needed. Choose “HubRise Bridge” as the dispatch backend per venue; the customer fee is your configured fee (the Bridge can’t quote live), and the true Uber cost reconciles from the delivery sync. Still owner-gated (needs the venue connected to HubRise with the Bridge enabled).',
+    ],
+  },
+  {
     version: '5.5.647', date: '25 Jun 2026', label: 'Uber Direct delivery — courier dispatch + live tracking webhook (slice 4, owner-gated)',
     changes: [
       'Confirmed delivery orders now dispatch an Uber courier automatically: on payment the order is sent to Uber Direct (Create Delivery), a tracking record is stored, and the customer/staff get a tracking link + live status. A signed webhook (HMAC-verified, idempotent) feeds courier position + status changes (finding a courier → heading to you → out for delivery → delivered) back in real time.',
