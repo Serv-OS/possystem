@@ -1124,7 +1124,7 @@ function LoyaltyRewardsEntry({ customer, loyaltyData, items = [], total, onAppli
 }
 
 // ─── Main checkout modal ──────────────────────────────────────────────────────
-export default function CheckoutModal({ items, subtotal, service, total, orderType, covers, tableId, tabName, customer, onClose, onComplete }) {
+export default function CheckoutModal({ items, subtotal, service, deliveryFee = 0, total, orderType, covers, tableId, tabName, customer, onClose, onComplete }) {
   const compact = useCompact();
   const { taxRates, deviceConfig, myDrawer, pendingLoyaltyReward, setPendingLoyaltyReward } = useStore();
   // v4.6.50: resolve the drawer bound to this POS terminal. If the POS has
@@ -1449,6 +1449,13 @@ export default function CheckoutModal({ items, subtotal, service, total, orderTy
                     No service charge
                   </div>
                 ) : null}
+                {/* v5.5.646: delivery surcharge line (Uber Direct) */}
+                {deliveryFee > 0 && (
+                  <div style={{ display:'flex', justifyContent:'space-between', fontSize:13, color:'var(--t3)', marginBottom:5 }}>
+                    <span>Delivery</span>
+                    <span style={{ fontFamily:'var(--font-mono)' }}>{money(deliveryFee)}</span>
+                  </div>
+                )}
                 <div style={{ height:1, background:'var(--bdr)', margin:'8px 0' }}/>
                 <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
                   <span style={{ fontSize:15, fontWeight:600, color:'var(--t2)' }}>{(giftApplied || loyaltyApplied || promoApplied) ? 'Subtotal' : 'Total due'}</span>

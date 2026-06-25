@@ -88,6 +88,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.646', date: '25 Jun 2026', label: 'Uber Direct delivery — address-based quoting & surcharging (slices 1–3, owner-gated)',
+    changes: [
+      'NEW Uber Direct delivery foundation: enter a delivery address and the POS fetches a live courier fee + ETA and adds it to the bill automatically, under a per-venue surcharge policy. Set it up in Back Office → Channels → “Delivery (Uber Direct)”: enable, pickup address, radius, and the surcharge policy (pass-through / mark-up / subsidise / flat, with cap, free-over-£X and minimum-order), with a live “a £4.80 Uber cost → customer pays £X” preview.',
+      'Quoting always uses the Uber Direct API (the only way to price by address before payment); geocoding uses the free UK postcodes.io (no Google fees). Out-of-range, not-configured and Uber-unavailable all fall back gracefully (offer collection, or a configurable estimated fee). Money is pennies-correct and unit-tested; the true Uber cost and the customer fee are tracked separately for honest margin reporting.',
+      'Scope this release: POS phone/counter delivery orders end-to-end (address → quote → surcharge → confirm), plus the shared engine + per-venue settings. Online, catering, courier dispatch, live tracking, SMS and reconciliation are the next slices. Inert until the owner applies the migration, sets the Uber credentials and enables a venue.',
+    ],
+  },
+  {
     version: '5.5.645', date: '25 Jun 2026', label: 'Training mode — practise on a till with nothing committed',
     changes: [
       'NEW per-terminal Training Mode. Turn it on for a device profile in Back Office → Device Profiles (🎓 Training mode). Any till on that profile works exactly as normal but commits NOTHING: no orders or closed checks, no card charges (Stripe or Ryft — payment is simulated), no stock or “86” changes, no loyalty/gift/promo/CRM updates, no kitchen tickets or receipts, no cash-drawer pulse, no emails or texts to customers. Perfect for onboarding new staff on a real till while the rest of the venue keeps trading live.',

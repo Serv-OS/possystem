@@ -9,6 +9,7 @@ import { printService } from '../lib/printer';
 import { hubrisePushStock, isHubriseConnected, hubrisePushStatus, isHubriseAutoReceipt } from '../lib/hubrise';
 import { depleteForSale, reverseForSale } from '../lib/stock/deplete';
 import { setTrainingMode as applyTrainingFlag, isTrainingMode } from '../lib/trainingMode';
+import { getDeliveryQuote, recordDeliverySurcharge } from '../lib/delivery/quoteService';
 import { STALE_ORDER_FLOOR_MS } from '../sync/staleness';
 import { waitlistSlice } from './waitlistSlice';
 
@@ -2131,13 +2132,21 @@ export const useStore = create((set, get) => ({
     const serviceRate = resolveServiceCharge({ deviceConfig, orderType, covers, waived: serviceChargeWaived });
     const service = discountedSub * serviceRate;
 
+    // v5.5.646: address-based delivery surcharge (Uber Direct). The accepted quote is held
+    // on store.deliveryQuote (set by quoteDelivery()); only fold it in for delivery orders.
+    // customerFeeMinor is the policy-adjusted customer fee in pennies → £ here.
+    const dq = get().deliveryQuote;
+    const deliveryFee = (orderType === 'delivery' && dq?.available) ? (dq.customerFeeMinor || 0) / 100 : 0;
+
     return {
       subtotal, checkDiscount, discountedSub, service,
       autoDiscounts,                      // applied auto-discount lines (display + receipt)
       checkDiscounts: allCheckDiscounts,  // manual + auto merged (POS renders each line)
       serviceChargeWaived,
       serviceChargeApplicable: orderType === 'dine-in' && (deviceConfig?.serviceCharge?.enabled !== false),
-      total: discountedSub + service,
+      deliveryFee,                        // customer-facing delivery surcharge (£)
+      deliveryQuote: orderType === 'delivery' ? (dq || null) : null,
+      total: discountedSub + service + deliveryFee,
       itemCount: items.filter(i=>!i.voided).reduce((s,i)=>s+i.qty,0),
     };
   },
@@ -2186,11 +2195,33 @@ export const useStore = create((set, get) => ({
     const walkInOrder = s.walkInOrder?.items
       ? { ...s.walkInOrder, items: repriceItems(s.walkInOrder.items) }
       : s.walkInOrder;
-    return { orderType:t, tables, walkInOrder };
+    // v5.5.646: leaving delivery clears any held Uber Direct quote so a stale fee can't ride along.
+    return { orderType:t, tables, walkInOrder, ...(t !== 'delivery' ? { deliveryQuote: null } : {}) };
   }),
   customer: null,
   setCustomer: c => set({ customer:c }),
   clearCustomer: () => set({ customer:null, pendingLoyaltyReward:null }),
+
+  // ── Delivery (Uber Direct) — address-based quote + surcharge ───────────────
+  // deliveryQuote holds the latest DeliveryQuoteService result for the current
+  // walk-in delivery order: { available, customerFeeMinor, trueCostMinor, etaMinutes,
+  // quoteId, reason, ... }. getPOSTotals folds customerFeeMinor into the bill when
+  // orderType==='delivery' && available. quoteDelivery() refreshes it from the address.
+  deliveryQuote: null,
+  setDeliveryQuote: (q) => set({ deliveryQuote: q }),
+  clearDeliveryQuote: () => set({ deliveryQuote: null }),
+  quoteDelivery: async () => {
+    const { orderType, customer } = get();
+    if (orderType !== 'delivery') { set({ deliveryQuote: null }); return null; }
+    const addr = customer?.address;
+    const dropoff = typeof addr === 'string' ? { line1: addr } : (addr || {});
+    if (!dropoff.postcode && dropoff.lat == null && !dropoff.line1) { set({ deliveryQuote: null }); return null; }
+    const opsLocationId = getActiveLocationSync();
+    const subtotalMinor = Math.round((get().getPOSTotals().discountedSub || 0) * 100);
+    const q = await getDeliveryQuote({ opsLocationId, dropoff, orderSubtotalMinor: subtotalMinor });
+    set({ deliveryQuote: q });
+    return q;
+  },
   // v5.5.349: a loyalty reward the customer chose on the customer display, staged
   // until checkout (points are only deducted when CheckoutModal applies it).
   pendingLoyaltyReward: null,
@@ -4068,6 +4099,14 @@ export const useStore = create((set, get) => ({
       status: 'paid',
       refunds: [],
     };
+    // v5.5.646: delivery surcharge — stamp the customer-facing fee onto the record
+    // (mirrors catering's customer.delivery_fee) so receipts/reports show it. The
+    // grand total already includes it (getPOSTotals folds deliveryFee).
+    const _dq = get().deliveryQuote;
+    if (orderType === 'delivery' && _dq?.available) {
+      record.customer = { ...(customer || {}), delivery_fee: (_dq.customerFeeMinor || 0) / 100 };
+      record.deliveryFee = (_dq.customerFeeMinor || 0) / 100;
+    }
     // Single set: append to closedChecks AND, if this came from the queue, drop
     // the stale entry so the order stops showing as open. Previously only the
     // closedCheck was written — queue entry persisted, so 'cash off' left the
@@ -4095,6 +4134,11 @@ export const useStore = create((set, get) => ({
     }
     insertClosedCheck(record);
     depleteForSale(record);   // v5.5.565: recipe → stock ledger depletion (fire-and-forget)
+    // v5.5.646: log delivery quote + surcharge (margin reporting) + clear the held quote.
+    if (orderType === 'delivery' && _dq?.available) {
+      recordDeliverySurcharge({ opsLocationId: record.locationId, orderRef: record.ref, quote: _dq }).catch(() => {});
+      set({ deliveryQuote: null });
+    }
     if (paymentInfo.promoRedemption) get().redeemPromoCode?.(paymentInfo.promoRedemption, record, customer);
     // v5.5.163: Challenge 21 — alcohol counter + prompt
     get().triggerChallenge21Check?.(record);

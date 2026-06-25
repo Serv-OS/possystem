@@ -1,0 +1,167 @@
+// supabase/functions/uber-direct/index.ts
+//
+// Uber Direct control plane for ServOS. POST { action }:
+//   quote            -> live delivery quote for a dropoff address (the surcharge source).
+//                       Geocodes (postcodes.io, free) → radius check → Uber quote. Returns
+//                       the raw quote + coords + the venue's surcharge policy; the client
+//                       normalises + computes the customer fee (src/lib/delivery/*). Graceful
+//                       fallback (out_of_radius / not_configured+fallback fee / unavailable).
+//   get_config       -> non-secret per-venue config for the Back Office.
+//   set_config       -> upsert venue_uber_config (BO user with location access).
+//   record_surcharge -> on order confirm, log delivery_quotes + delivery_surcharges (margin).
+//
+// Creds (UBER_DIRECT_*) live in env, never in the DB or the browser (mirrors hubrise-*).
+// Deployed --no-verify-jwt; this fn does its own auth.
+
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { getAccessToken, getQuote, geocodePostcode, haversineMiles } from '../_shared/uber.ts';
+
+const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
+const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
+
+const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
+const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+const ENV_CLIENT_ID = Deno.env.get('UBER_DIRECT_CLIENT_ID') ?? '';
+const ENV_CLIENT_SECRET = Deno.env.get('UBER_DIRECT_CLIENT_SECRET') ?? '';
+const ENV_CUSTOMER_ID = Deno.env.get('UBER_DIRECT_CUSTOMER_ID') ?? '';
+const ENV_DEFAULT = (Deno.env.get('UBER_DIRECT_ENV') ?? 'sandbox') as 'sandbox' | 'prod';
+const sb = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { autoRefreshToken: false, persistSession: false } });
+
+const NON_SECRET = [
+  'location_id', 'enabled', 'uber_customer_id', 'pickup_address', 'pickup_contact',
+  'radius_miles', 'dispatch_backend', 'surcharge_policy', 'fallback_fee_minor', 'sms_tracking', 'env',
+];
+const pickNonSecret = (row: any) => {
+  const out: Record<string, unknown> = {};
+  if (!row) return out;
+  for (const k of NON_SECRET) out[k] = row[k];
+  return out;
+};
+
+async function requireToken(req: Request): Promise<{ ok: true; userId: string } | { ok: false; res: Response }> {
+  const token = (req.headers.get('Authorization') || '').replace('Bearer ', '').trim();
+  if (!token) return { ok: false, res: json({ error: 'Unauthorized' }, 401) };
+  if (token === SERVICE_ROLE) return { ok: true, userId: 'service' };
+  const { data: { user } } = await sb.auth.getUser(token);
+  if (!user) return { ok: false, res: json({ error: 'Invalid token' }, 401) };
+  return { ok: true, userId: user.id };
+}
+
+async function requireAccess(req: Request, locationId: string): Promise<{ ok: true; userId: string } | { ok: false; res: Response }> {
+  const t = await requireToken(req);
+  if (!t.ok) return t;
+  if (t.userId === 'service') return t;
+  const [{ data: ul }, { data: prof }] = await Promise.all([
+    sb.from('user_locations').select('location_id').eq('user_id', t.userId).eq('location_id', locationId).maybeSingle(),
+    sb.from('user_profiles').select('role').eq('id', t.userId).maybeSingle(),
+  ]);
+  if (!ul && prof?.role !== 'super_admin') return { ok: false, res: json({ error: 'No access to this location' }, 403) };
+  return t;
+}
+
+Deno.serve(async (req) => {
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
+  if (req.method !== 'POST') return json({ error: 'POST only' }, 405);
+
+  let body: any;
+  try { body = await req.json(); } catch { return json({ error: 'Bad JSON' }, 400); }
+  const action = body?.action;
+  const loc = body?.ops_location_id;
+  if (!action) return json({ error: 'action required' }, 400);
+
+  try {
+    // ── BO: read config ──────────────────────────────────────────────────────
+    if (action === 'get_config') {
+      const acc = await requireAccess(req, loc); if (!acc.ok) return acc.res;
+      const { data } = await sb.from('venue_uber_config').select('*').eq('location_id', loc).maybeSingle();
+      return json({ ok: true, config: pickNonSecret(data) });
+    }
+
+    // ── BO: write config ─────────────────────────────────────────────────────
+    if (action === 'set_config') {
+      const acc = await requireAccess(req, loc); if (!acc.ok) return acc.res;
+      const patch = body?.patch || {};
+      const allowed: Record<string, unknown> = { location_id: loc, updated_at: new Date().toISOString(), updated_by: acc.userId === 'service' ? null : acc.userId };
+      for (const k of NON_SECRET) if (k !== 'location_id' && k in patch) allowed[k] = patch[k];
+      const { error } = await sb.from('venue_uber_config').upsert(allowed, { onConflict: 'location_id' });
+      if (error) return json({ error: error.message }, 500);
+      const { data } = await sb.from('venue_uber_config').select('*').eq('location_id', loc).maybeSingle();
+      return json({ ok: true, config: pickNonSecret(data) });
+    }
+
+    // ── POS/online/catering: live quote ──────────────────────────────────────
+    if (action === 'quote') {
+      const t = await requireToken(req); if (!t.ok) return t.res;
+      const { data: cfg } = await sb.from('venue_uber_config').select('*').eq('location_id', loc).maybeSingle();
+      if (!cfg || !cfg.enabled) return json({ ok: true, available: false, reason: 'disabled' });
+
+      const policy = cfg.surcharge_policy || { mode: 'pass_through' };
+      const radiusMiles = Number(cfg.radius_miles ?? 3);
+      const currency = (cfg.pickup_address?.country === 'US' ? 'USD' : 'GBP');
+
+      // Resolve dropoff coordinates (use supplied lat/lng, else geocode the postcode — free).
+      let dropoff = { ...(body?.dropoff || {}) };
+      if (dropoff.lat == null || dropoff.lng == null) {
+        const geo = dropoff.postcode ? await geocodePostcode(dropoff.postcode) : null;
+        if (geo) { dropoff.lat = geo.lat; dropoff.lng = geo.lng; }
+      }
+      const pickup = cfg.pickup_address || {};
+      const distanceMiles = (pickup.lat != null && dropoff.lat != null) ? haversineMiles(pickup, dropoff) : null;
+      const withinRadius = distanceMiles != null ? distanceMiles <= radiusMiles : null;
+
+      if (withinRadius === false) {
+        return json({ ok: true, available: false, reason: 'out_of_radius', distanceMiles, radiusMiles, policy, currency });
+      }
+
+      const clientId = ENV_CLIENT_ID, clientSecret = ENV_CLIENT_SECRET;
+      const customerId = cfg.uber_customer_id || ENV_CUSTOMER_ID;
+      const env = (cfg.env || ENV_DEFAULT) as 'sandbox' | 'prod';
+
+      // No creds yet (build-now, go-live owner-gated) → use the configured fallback fee if set.
+      if (!clientId || !clientSecret || !customerId) {
+        if (cfg.fallback_fee_minor != null) {
+          return json({ ok: true, available: true, fallback: true, raw: { fee: cfg.fallback_fee_minor, currency }, dropoff, distanceMiles, withinRadius: true, policy, currency, radiusMiles });
+        }
+        return json({ ok: true, available: false, reason: 'not_configured', policy, currency });
+      }
+
+      try {
+        const token = await getAccessToken(env, clientId, clientSecret);
+        const raw = await getQuote({ env, token, customerId, pickup, dropoff });
+        return json({ ok: true, available: true, raw, dropoff, distanceMiles, withinRadius: true, policy, currency, radiusMiles });
+      } catch (e) {
+        // Uber slow/unavailable → graceful fallback (configurable estimated fee), flagged.
+        if (cfg.fallback_fee_minor != null) {
+          return json({ ok: true, available: true, fallback: true, raw: { fee: cfg.fallback_fee_minor, currency }, dropoff, distanceMiles, withinRadius: true, policy, currency, radiusMiles, error: String((e as Error)?.message || e) });
+        }
+        return json({ ok: true, available: false, reason: 'quote_failed', error: String((e as Error)?.message || e), policy, currency });
+      }
+    }
+
+    // ── On order confirm: log the quote + the surcharge (margin reporting) ────
+    if (action === 'record_surcharge') {
+      const t = await requireToken(req); if (!t.ok) return t.res;
+      const s = body?.surcharge || {};
+      const orderRef = body?.order_ref || null;
+      const currency = s.currency || 'GBP';
+      await sb.from('delivery_quotes').insert({
+        location_id: loc, order_ref: orderRef, quote_id: s.quoteId || null,
+        dropoff_address: body?.dropoff || null, dropoff_lat: body?.dropoff?.lat ?? null, dropoff_lng: body?.dropoff?.lng ?? null,
+        distance_miles: s.distanceMiles ?? null, within_radius: s.withinRadius ?? null,
+        uber_fee_minor: s.trueCostMinor ?? null, currency, eta_minutes: s.etaMinutes ?? null,
+        expires_at: s.expiresAtMs ? new Date(s.expiresAtMs).toISOString() : null,
+      });
+      const { error } = await sb.from('delivery_surcharges').insert({
+        location_id: loc, order_ref: orderRef, quote_id: s.quoteId || null,
+        customer_fee_minor: s.customerFeeMinor ?? 0, true_cost_minor: s.trueCostMinor ?? 0,
+        margin_minor: (s.customerFeeMinor ?? 0) - (s.trueCostMinor ?? 0), policy_applied: s.policyApplied || null, currency,
+      });
+      if (error) return json({ error: error.message }, 500);
+      return json({ ok: true });
+    }
+
+    return json({ error: `unknown action: ${action}` }, 400);
+  } catch (e) {
+    return json({ error: String((e as Error)?.message || e) }, 500);
+  }
+});

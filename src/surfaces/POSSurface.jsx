@@ -49,7 +49,7 @@ export default function POSSurface() {
     cashDrawers, myDrawer, needsCashIn,
     cashInDrawer, cashOutDrawer, computeExpectedCash, currentDrawerSession,
     loadCurrentDrawerSession,
-    getPOSItems, getPOSTotals, getPOSOrderNote,
+    getPOSItems, getPOSTotals, getPOSOrderNote, quoteDelivery,
     activeTableId, tables, clearTable, clearDraftItems, clearWalkIn, setActiveTableId, recordWalkInClosed,
     orderType, setOrderType, customer, setCustomer, setAllergens, clearCustomer,
     orderQueue, updateQueueStatus, removeFromQueue, showToast,
@@ -287,7 +287,16 @@ export default function POSSurface() {
   const activeTable = activeTableId ? tables.find(t=>t.id===activeTableId) : null;
   const session = activeTable?.session;
   const items = getPOSItems();
-  const { subtotal, service, total, itemCount, checkDiscount, discountedSub, serviceChargeWaived, serviceChargeApplicable, autoDiscounts = [] } = getPOSTotals();
+  const { subtotal, service, total, itemCount, checkDiscount, discountedSub, serviceChargeWaived, serviceChargeApplicable, autoDiscounts = [], deliveryFee = 0, deliveryQuote = null } = getPOSTotals();
+  // v5.5.646: auto-fetch an Uber Direct delivery quote when a delivery order has an
+  // address + items, so the surcharge is on the bill BEFORE checkout. Debounced; the
+  // resolved quote lands on store.deliveryQuote and getPOSTotals folds it into total.
+  const _addrKey = orderType === 'delivery' ? JSON.stringify(customer?.address || null) : '';
+  useEffect(() => {
+    if (orderType !== 'delivery' || !customer?.address || items.length === 0) return;
+    const t = setTimeout(() => { quoteDelivery?.(); }, 450);
+    return () => clearTimeout(t);
+  }, [orderType, _addrKey, subtotal, items.length]);
   // Manual portion of the check discount = total check discount minus the auto-discount savings,
   // so we can show each auto-promo on its own line and the staff discount (if any) separately.
   const autoDiscountTotal = autoDiscounts.reduce((s, d) => s + (d.value || 0), 0);
@@ -1158,6 +1167,20 @@ export default function POSSurface() {
                     </div>
                   ) : null
                 )}
+                {/* v5.5.646: delivery surcharge (Uber Direct) — delivery orders only */}
+                {orderType === 'delivery' && deliveryQuote && (
+                  deliveryQuote.available ? (
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',fontSize:12,color:'var(--t3)',marginBottom:3,padding:'2px 0'}}>
+                      <span>Delivery{deliveryQuote.freeDelivery ? ' (free)' : ''}{deliveryQuote.etaMinutes != null ? ` · ~${deliveryQuote.etaMinutes} min` : ''}{deliveryQuote.fallback ? ' · est.' : ''}</span>
+                      <span style={{fontFamily:'var(--font-mono)'}}>{money(deliveryFee)}</span>
+                    </div>
+                  ) : (
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',fontSize:11,color:'var(--red)',marginBottom:3,padding:'2px 0'}}>
+                      <span>Delivery unavailable{deliveryQuote.reason === 'out_of_radius' ? ' — out of range' : deliveryQuote.reason === 'not_configured' ? ' — not set up' : deliveryQuote.reason === 'disabled' ? '' : ''}</span>
+                      <span style={{fontSize:10,color:'var(--t4)'}}>offer collection</span>
+                    </div>
+                  )
+                )}
                 {/* Tax breakdown — shown below service charge */}
                 {taxRates?.length > 0 && items.length > 0 && (() => {
                   try {
@@ -1573,7 +1596,7 @@ export default function POSSurface() {
       {/* Modals */}
       {pendingItem&&<AllergenModal item={pendingItem} activeAllergens={allergens} onConfirm={()=>{const i=pendingItem;clearPendingItem();openFlow(i);}} onCancel={clearPendingItem}/>}
       {modalItem&&modalItem.type==='pizza'&&<ProductModal key={modalItem.id} item={modalItem} activeAllergens={allergens} onConfirm={(item,mods,cfg,opts)=>{addItem(item,mods,cfg,opts);setModalItem(null);showToast(`${opts.displayName||item.name} added`,'success');}} onCancel={()=>setModalItem(null)}/>}
-      {showCheckout&&<CheckoutModal items={items} subtotal={subtotal} service={service} total={total} orderType={orderType} covers={covers} tableId={activeTableId} seatList={seatList} customer={customer} onClose={()=>setShowCheckout(false)} onComplete={handlePayComplete}/>}
+      {showCheckout&&<CheckoutModal items={items} subtotal={subtotal} service={service} deliveryFee={deliveryFee} total={total} orderType={orderType} covers={covers} tableId={activeTableId} seatList={seatList} customer={customer} onClose={()=>setShowCheckout(false)} onComplete={handlePayComplete}/>}
       {showCustomerModal&&<CustomerModal orderType={pendingOrderType||orderType} existing={customer} onConfirm={c=>{setShowCustomerModal(false);setCustomer(c);if(pendingOrderType&&pendingOrderType!=='dine-in'){setOrderType(pendingOrderType);}setPendingOrderType(null);if(activeTableId){const t=tables.find(x=>x.id===activeTableId);if(t)saveTableSession(activeTableId,{...t.session,customer:c});}showToast(`${c.name} attached to order`,'success');}} onCancel={()=>{setShowCustomerModal(false);if(!customer)setOrderType('dine-in');}}/>}
 
       {/* Void modal */}
