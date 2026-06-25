@@ -4140,9 +4140,12 @@ export const useStore = create((set, get) => ({
     // Both skipped in training (no real surcharge row, no real courier).
     if (orderType === 'delivery' && _dq?.available && !isTrainingMode()) {
       recordDeliverySurcharge({ opsLocationId: record.locationId, orderRef: record.ref, quote: _dq }).catch(() => {});
-      dispatchDelivery({ opsLocationId: record.locationId, order: record, quote: _dq })
-        .then((res) => { if (res?.trackingUrl) sendDeliveryTrackingSMS({ opsLocationId: record.locationId, phone: record.customer?.phone, trackingUrl: res.trackingUrl, ref: record.ref }); })
-        .catch(() => {});
+      // Only dispatch a courier in 'uber' mode. Self-delivery just fires to the POS/kitchen.
+      if (_dq.dispatchable) {
+        dispatchDelivery({ opsLocationId: record.locationId, order: record, quote: _dq })
+          .then((res) => { if (res?.trackingUrl) sendDeliveryTrackingSMS({ opsLocationId: record.locationId, phone: record.customer?.phone, trackingUrl: res.trackingUrl, ref: record.ref }); })
+          .catch(() => {});
+      }
       set({ deliveryQuote: null });
     } else if (orderType === 'delivery') {
       set({ deliveryQuote: null });

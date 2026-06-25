@@ -52,6 +52,8 @@ export async function getDeliveryQuote({ opsLocationId, dropoff, orderSubtotalMi
   return {
     available: true,
     fallback: !!resp.fallback,
+    mode: resp.mode || 'uber',          // 'self' (fire to POS) | 'uber' (courier)
+    dispatchable: !!resp.dispatchable,  // true only when a courier should be dispatched
     quoteId: q.quoteId,
     trueCostMinor: sc.trueCostMinor,
     customerFeeMinor: sc.customerFeeMinor,

@@ -88,6 +88,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.652', date: '25 Jun 2026', label: 'Delivery — clear “self-delivery vs Uber courier” choice + obvious setup',
+    changes: [
+      'NEW headline choice on the Delivery settings screen: “I deliver it myself” (the order just fires to your POS/kitchen — no courier, no Uber/HubRise account needed) vs “Uber Direct courier” (a courier is dispatched with live tracking). Set your delivery charge once here and it applies to POS, online and catering. The Uber/HubRise account setup steps now only appear when you pick the courier option.',
+      'Fixed the confusing Online Ordering “Allow delivery” note (it said fees were “coming in a future commit”). It now points you to Channels → Delivery (Uber Direct), where the fee + fulfilment are set and added to the customer’s total automatically. Default mode is self-delivery, so turning delivery on never dispatches a courier or charges Uber unexpectedly.',
+    ],
+  },
+  {
     version: '5.5.651', date: '25 Jun 2026', label: 'Delivery — backend deployed; fix table-name clash with Operations',
     changes: [
       'Deployed the delivery backend (migration + edge functions) so the Delivery (Uber Direct) settings screen saves. Fixed an internal clash where the new courier-delivery table collided with the Operations goods-in “deliveries” table — the courier table is now “courier_deliveries” (no impact on Operations, which was left untouched).',

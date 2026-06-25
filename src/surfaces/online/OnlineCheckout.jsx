@@ -859,7 +859,10 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       if (isDelivery && deliveryQuote?.available) {
         const dq = { ...deliveryQuote, dropoff: customer.address };
         recordDeliverySurcharge({ opsLocationId, orderRef: ref, quote: dq }).catch(() => {});
-        dispatchDelivery({ opsLocationId, order: { ref, items, total: subtotal + deliveryFeeMinor / 100, customer }, quote: dq }).catch(() => {});
+        // Only dispatch a courier in 'uber' mode; self-delivery just fires to the kitchen.
+        if (deliveryQuote.dispatchable) {
+          dispatchDelivery({ opsLocationId, order: { ref, items, total: subtotal + deliveryFeeMinor / 100, customer }, quote: dq }).catch(() => {});
+        }
       }
 
       onPlaced?.({ ref, collectionAt, total: subtotal, paymentIntent });

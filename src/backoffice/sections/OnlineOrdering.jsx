@@ -415,7 +415,7 @@ export default function OnlineOrdering({ setSection }) {
         <div style={{ marginTop:14, display:'flex', alignItems:'center', justifyContent:'space-between', gap:10, padding:'10px 0' }}>
           <div style={{ flex:1 }}>
             <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)' }}>Allow delivery</div>
-            <div style={{ fontSize:11, color:'var(--t4)', marginTop:2 }}>Show the Delivery option alongside Collection. Delivery zones / fees come in a future commit.</div>
+            <div style={{ fontSize:11, color:'var(--t4)', marginTop:2 }}>Show Delivery alongside Collection at checkout. The delivery fee + fulfilment (self-delivery, or Uber Direct courier) are set in <b>Channels → Delivery (Uber Direct)</b> — the fee is added to the customer's total automatically.</div>
           </div>
           <Toggle on={deliveryOn} onChange={setDeliveryOn}/>
         </div>

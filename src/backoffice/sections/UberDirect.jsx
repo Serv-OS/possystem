@@ -35,8 +35,8 @@ const toMinor = (pounds) => (pounds === '' || pounds == null ? null : Math.round
 const toPounds = (minor) => (minor == null ? '' : (Number(minor) / 100).toString());
 
 const DEFAULT = {
-  enabled: false, radius_miles: 3, dispatch_backend: 'uber_api', env: 'sandbox',
-  sms_tracking: true, fallback_fee_minor: null,
+  enabled: false, delivery_mode: 'self', radius_miles: 3, dispatch_backend: 'uber_api', env: 'sandbox',
+  sms_tracking: true, flat_fee_minor: null, fallback_fee_minor: null,
   pickup_address: { line1: '', city: '', postcode: '', country: 'GB', lat: null, lng: null },
   pickup_contact: { name: '', phone: '' },
   surcharge_policy: { mode: 'pass_through', markupPct: 0, markupFixedMinor: 0, subsidiseMinor: 0, subsidisePct: 0, flatMinor: 0, capMinor: null, freeOverMinor: null, minOrderMinor: null },
@@ -87,7 +87,8 @@ export default function UberDirect() {
         <p style={S.sub}>Quote the delivery fee from the customer's address at order time, surcharge it under your policy, and dispatch an Uber courier. Used identically across POS, online and catering.</p>
       </div>
 
-      {/* Before you start — accounts are set up directly with Uber + HubRise (not via ServOS) */}
+      {/* Before you start — only when using the Uber Direct courier (mode === 'uber') */}
+      {form.delivery_mode === 'uber' && (
       <div style={{ ...S.card, borderColor: '#B45309', background: 'rgba(180,83,9,0.06)' }}>
         <h2 style={S.h2}>Before you start — set up your own Uber Direct + HubRise accounts</h2>
         <p style={{ fontSize: 13, color: 'var(--t2)', lineHeight: 1.55, margin: '0 0 12px' }}>
@@ -112,6 +113,7 @@ export default function UberDirect() {
           your venue and Uber/HubRise.
         </p>
       </div>
+      )}
 
       {/* Enable */}
       <div style={S.card}>
@@ -122,6 +124,33 @@ export default function UberDirect() {
           </div>
           <div style={S.toggle(form.enabled)} onClick={() => set('enabled', !form.enabled)}><div style={S.knob(form.enabled)} /></div>
         </div>
+      </div>
+
+      {/* Fulfilment mode — the headline choice: self-delivery vs Uber Direct courier */}
+      <div style={S.card}>
+        <h2 style={S.h2}>How are deliveries fulfilled?</h2>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          {[
+            ['self', '🚶 I deliver it myself', "The order just fires to your POS / kitchen. You arrange the delivery. No courier dispatch, no Uber/HubRise account needed."],
+            ['uber', '🚗 Uber Direct courier', 'A courier is dispatched automatically (via HubRise Bridge or the Uber Direct API), with live status + a tracking link.'],
+          ].map(([val, title, desc]) => (
+            <div key={val} onClick={() => set('delivery_mode', val)} style={{
+              flex: '1 1 240px', cursor: 'pointer', borderRadius: 12, padding: '14px 16px',
+              border: `2px solid ${form.delivery_mode === val ? 'var(--acc)' : 'var(--bdr)'}`,
+              background: form.delivery_mode === val ? 'var(--acc-d, rgba(232,160,32,.08))' : 'var(--bg3)',
+            }}>
+              <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--t1)' }}>{title}</div>
+              <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 4, lineHeight: 1.5 }}>{desc}</div>
+            </div>
+          ))}
+        </div>
+        <div style={{ ...S.row, marginTop: 14 }}>
+          <div style={S.col}>
+            <label style={S.label}>{form.delivery_mode === 'self' ? 'Your delivery charge (£)' : 'Your delivery charge (£) — used when there is no live Uber quote'}</label>
+            <input type="number" step="0.01" style={S.input} value={toPounds(form.flat_fee_minor)} onChange={(e) => set('flat_fee_minor', toMinor(e.target.value))} placeholder="0.00 = free" />
+          </div>
+        </div>
+        <div style={{ ...S.infoNote, marginTop: 10 }}>This same setting drives delivery on the POS, online ordering and catering — set it once here.</div>
       </div>
 
       {/* Pickup */}
@@ -180,7 +209,8 @@ export default function UberDirect() {
         </div>
       </div>
 
-      {/* Dispatch + fallback + tracking */}
+      {/* Dispatch + fallback + tracking — only for the Uber Direct courier mode */}
+      {form.delivery_mode === 'uber' && (
       <div style={S.card}>
         <h2 style={S.h2}>Dispatch & fallback</h2>
         <div style={S.row}>
@@ -206,6 +236,7 @@ export default function UberDirect() {
         </div>
         <div style={{ ...S.infoNote, marginTop: 12 }}>Uber API keys (client id/secret) and the webhook signing key are set securely on the server (Supabase edge-function secrets), never here.</div>
       </div>
+      )}
 
       <div>
         <button style={S.btn} disabled={saving} onClick={save}>{saving ? 'Saving…' : 'Save settings'}</button>

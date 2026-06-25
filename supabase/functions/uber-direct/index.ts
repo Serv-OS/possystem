@@ -39,8 +39,8 @@ const ENV_DEFAULT = (Deno.env.get('UBER_DIRECT_ENV') ?? 'sandbox') as 'sandbox' 
 const sb = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { autoRefreshToken: false, persistSession: false } });
 
 const NON_SECRET = [
-  'location_id', 'enabled', 'uber_customer_id', 'pickup_address', 'pickup_contact',
-  'radius_miles', 'dispatch_backend', 'surcharge_policy', 'fallback_fee_minor', 'sms_tracking', 'env',
+  'location_id', 'enabled', 'delivery_mode', 'uber_customer_id', 'pickup_address', 'pickup_contact',
+  'radius_miles', 'dispatch_backend', 'surcharge_policy', 'flat_fee_minor', 'fallback_fee_minor', 'sms_tracking', 'env',
 ];
 const pickNonSecret = (row: any) => {
   const out: Record<string, unknown> = {};
@@ -124,22 +124,31 @@ Deno.serve(async (req) => {
         return json({ ok: true, available: false, reason: 'out_of_radius', distanceMiles, radiusMiles, policy, currency });
       }
 
-      // HubRise Bridge dispatch can't quote live (the Bridge has no pre-order estimate) —
-      // the customer fee is a CONFIGURED fee. Use fallback_fee_minor as the cost basis +
-      // apply the surcharge policy. Set a flat policy (or fallback fee) for Bridge venues.
+      // The venue's own delivery charge (used when there's no live Uber quote): self-delivery
+      // and the HubRise-Bridge path. flat_fee_minor is preferred; fallback_fee_minor kept for
+      // back-compat; 0 = free.
+      const configuredFeeMinor = cfg.flat_fee_minor != null ? cfg.flat_fee_minor : (cfg.fallback_fee_minor != null ? cfg.fallback_fee_minor : 0);
+
+      // SELF-DELIVERY — the venue delivers; the order just fires to the POS/kitchen. Charge the
+      // configured flat fee (0 = free). No Uber call, no courier dispatch.
+      if (cfg.delivery_mode !== 'uber') {
+        return json({ ok: true, available: true, mode: 'self', dispatchable: false, self: true, raw: { fee: configuredFeeMinor, currency }, dropoff, distanceMiles, withinRadius: true, policy, currency, radiusMiles });
+      }
+
+      // ── mode === 'uber' (courier dispatch) ───────────────────────────────────
+      // HubRise Bridge can't quote live → the customer fee is the configured flat fee.
       if (cfg.dispatch_backend === 'hubrise_bridge') {
-        const feeMinor = cfg.fallback_fee_minor != null ? cfg.fallback_fee_minor : 0;
-        return json({ ok: true, available: true, fallback: true, configured: true, raw: { fee: feeMinor, currency }, dropoff, distanceMiles, withinRadius: true, policy, currency, radiusMiles });
+        return json({ ok: true, available: true, mode: 'uber', dispatchable: true, fallback: true, configured: true, raw: { fee: configuredFeeMinor, currency }, dropoff, distanceMiles, withinRadius: true, policy, currency, radiusMiles });
       }
 
       const clientId = ENV_CLIENT_ID, clientSecret = ENV_CLIENT_SECRET;
       const customerId = cfg.uber_customer_id || ENV_CUSTOMER_ID;
       const env = (cfg.env || ENV_DEFAULT) as 'sandbox' | 'prod';
 
-      // No creds yet (build-now, go-live owner-gated) → use the configured fallback fee if set.
+      // No Uber creds yet (build-now, go-live owner-gated) → use the configured fallback fee if set.
       if (!clientId || !clientSecret || !customerId) {
-        if (cfg.fallback_fee_minor != null) {
-          return json({ ok: true, available: true, fallback: true, raw: { fee: cfg.fallback_fee_minor, currency }, dropoff, distanceMiles, withinRadius: true, policy, currency, radiusMiles });
+        if (cfg.flat_fee_minor != null || cfg.fallback_fee_minor != null) {
+          return json({ ok: true, available: true, mode: 'uber', dispatchable: true, fallback: true, raw: { fee: configuredFeeMinor, currency }, dropoff, distanceMiles, withinRadius: true, policy, currency, radiusMiles });
         }
         return json({ ok: true, available: false, reason: 'not_configured', policy, currency });
       }
@@ -147,11 +156,11 @@ Deno.serve(async (req) => {
       try {
         const token = await getAccessToken(env, clientId, clientSecret);
         const raw = await getQuote({ env, token, customerId, pickup, dropoff });
-        return json({ ok: true, available: true, raw, dropoff, distanceMiles, withinRadius: true, policy, currency, radiusMiles });
+        return json({ ok: true, available: true, mode: 'uber', dispatchable: true, raw, dropoff, distanceMiles, withinRadius: true, policy, currency, radiusMiles });
       } catch (e) {
         // Uber slow/unavailable → graceful fallback (configurable estimated fee), flagged.
-        if (cfg.fallback_fee_minor != null) {
-          return json({ ok: true, available: true, fallback: true, raw: { fee: cfg.fallback_fee_minor, currency }, dropoff, distanceMiles, withinRadius: true, policy, currency, radiusMiles, error: String((e as Error)?.message || e) });
+        if (cfg.flat_fee_minor != null || cfg.fallback_fee_minor != null) {
+          return json({ ok: true, available: true, mode: 'uber', dispatchable: true, fallback: true, raw: { fee: configuredFeeMinor, currency }, dropoff, distanceMiles, withinRadius: true, policy, currency, radiusMiles, error: String((e as Error)?.message || e) });
         }
         return json({ ok: true, available: false, reason: 'quote_failed', error: String((e as Error)?.message || e), policy, currency });
       }
