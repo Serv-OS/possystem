@@ -10,7 +10,7 @@ import { hubrisePushStock, isHubriseConnected, hubrisePushStatus, isHubriseAutoR
 import { depleteForSale, reverseForSale } from '../lib/stock/deplete';
 import { setTrainingMode as applyTrainingFlag, isTrainingMode } from '../lib/trainingMode';
 import { getDeliveryQuote, recordDeliverySurcharge } from '../lib/delivery/quoteService';
-import { dispatchDelivery } from '../lib/delivery/dispatch';
+import { dispatchDelivery, sendDeliveryTrackingSMS } from '../lib/delivery/dispatch';
 import { STALE_ORDER_FLOOR_MS } from '../sync/staleness';
 import { waitlistSlice } from './waitlistSlice';
 
@@ -4140,7 +4140,9 @@ export const useStore = create((set, get) => ({
     // Both skipped in training (no real surcharge row, no real courier).
     if (orderType === 'delivery' && _dq?.available && !isTrainingMode()) {
       recordDeliverySurcharge({ opsLocationId: record.locationId, orderRef: record.ref, quote: _dq }).catch(() => {});
-      dispatchDelivery({ opsLocationId: record.locationId, order: record, quote: _dq }).catch(() => {});
+      dispatchDelivery({ opsLocationId: record.locationId, order: record, quote: _dq })
+        .then((res) => { if (res?.trackingUrl) sendDeliveryTrackingSMS({ opsLocationId: record.locationId, phone: record.customer?.phone, trackingUrl: res.trackingUrl, ref: record.ref }); })
+        .catch(() => {});
       set({ deliveryQuote: null });
     } else if (orderType === 'delivery') {
       set({ deliveryQuote: null });

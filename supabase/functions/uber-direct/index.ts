@@ -15,7 +15,8 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { getAccessToken, getQuote, geocodePostcode, haversineMiles, createDelivery, getDelivery, parseDeliveryResp, mapUberStatus } from '../_shared/uber.ts';
-import { createOrder as createHubriseOrder } from '../_shared/hubrise.ts';
+import { createOrder as createHubriseOrder, patchOrder as patchHubriseOrder } from '../_shared/hubrise.ts';
+import { cancelDelivery } from '../_shared/uber.ts';
 
 const e164 = (raw: string) => {
   const s = String(raw || '').replace(/[\s()-]/g, '');
@@ -251,6 +252,43 @@ Deno.serve(async (req) => {
         return json({ ok: true, status, trackingUrl: p.trackingUrl, courierName: p.courierName, lat: p.lat, lng: p.lng });
       } catch (e) {
         return json({ ok: false, reason: 'lookup_failed', error: String((e as Error)?.message || e) });
+      }
+    }
+
+    // ── Staff delivery board: list recent deliveries for the venue. ──────────
+    if (action === 'list_deliveries') {
+      const acc = await requireAccess(req, loc); if (!acc.ok) return acc.res;
+      const limit = Math.min(200, Number(body?.limit) || 50);
+      const { data } = await sb.from('deliveries').select('*').eq('location_id', loc).order('created_at', { ascending: false }).limit(limit);
+      return json({ ok: true, deliveries: data || [] });
+    }
+
+    // ── Cancel a delivery (routes by backend). Note: a courier-accepted cancel may
+    //    incur the merchant's contracted cancellation fee (reconciled separately). ──
+    if (action === 'cancel_delivery') {
+      const acc = await requireAccess(req, loc); if (!acc.ok) return acc.res;
+      const id = body?.delivery_row_id;
+      const { data: del } = await sb.from('deliveries').select('*').eq('id', id).eq('location_id', loc).maybeSingle();
+      if (!del) return json({ ok: false, reason: 'not_found' });
+      const { data: cfg } = await sb.from('venue_uber_config').select('*').eq('location_id', loc).maybeSingle();
+      try {
+        if (del.dispatch_backend === 'hubrise_bridge') {
+          const { data: conn } = await sb.from('hubrise_connections').select('access_token, hubrise_location_id').eq('location_id', loc).maybeSingle();
+          if (conn?.access_token && conn?.hubrise_location_id && del.hubrise_ref) {
+            await patchHubriseOrder(conn.access_token, conn.hubrise_location_id, del.hubrise_ref, { status: 'cancelled' });
+          }
+        } else if (del.uber_delivery_id) {
+          const customerId = cfg?.uber_customer_id || ENV_CUSTOMER_ID;
+          const env = (cfg?.env || ENV_DEFAULT) as 'sandbox' | 'prod';
+          if (ENV_CLIENT_ID && ENV_CLIENT_SECRET && customerId) {
+            const token = await getAccessToken(env, ENV_CLIENT_ID, ENV_CLIENT_SECRET);
+            await cancelDelivery(env, token, customerId, del.uber_delivery_id);
+          }
+        }
+        await sb.from('deliveries').update({ status: 'canceled', updated_at: new Date().toISOString() }).eq('id', id);
+        return json({ ok: true });
+      } catch (e) {
+        return json({ ok: false, reason: 'cancel_failed', error: String((e as Error)?.message || e) });
       }
     }
 

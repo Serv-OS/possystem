@@ -4,7 +4,7 @@
  * dispatch_backend (uber_api → Create Delivery; hubrise_bridge → deferred seam) and
  * holds the creds. Returns { ok, deliveryId, trackingUrl, status, deferred?, reason? }.
  */
-import { buildManifest } from './manifest.js';
+import { buildManifest, toE164 } from './manifest.js';
 import { buildHubriseOrder } from './hubriseOrder.js';
 
 async function invoke(action, payload) {
@@ -33,4 +33,15 @@ export async function dispatchDelivery({ opsLocationId, order, quote }, deps = {
 export async function fetchDeliveryStatus({ opsLocationId, uberDeliveryId }, deps = {}) {
   const send = deps.invoke || invoke;
   return send('get_delivery', { ops_location_id: opsLocationId, uber_delivery_id: uberDeliveryId });
+}
+
+/** Text the customer a courier tracking link (best-effort; Uber/HubRise may also notify). */
+export async function sendDeliveryTrackingSMS({ opsLocationId, phone, trackingUrl, ref }) {
+  const { supabase } = await import('../supabase.js');
+  if (!supabase || !phone || !trackingUrl) return;
+  try {
+    await supabase.functions.invoke('send-sms', {
+      body: { to: toE164(phone), message: `Your order ${ref || ''} is on its way — track it here: ${trackingUrl}`.replace(/\s+/g, ' ').trim(), location_id: opsLocationId, type: 'delivery_tracking' },
+    });
+  } catch { /* best-effort */ }
 }

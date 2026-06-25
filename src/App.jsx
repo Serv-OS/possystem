@@ -88,6 +88,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.649', date: '25 Jun 2026', label: 'Delivery — staff live board + courier cancel + customer tracking text (slice 6, owner-gated)',
+    changes: [
+      'NEW staff “Deliveries (live)” board in Back Office → Channels: every dispatched delivery with its live status (finding a courier → out for delivery → delivered), courier name, ETA and a one-tap tracking link, refreshing automatically. Active deliveries can be cancelled from here (routes to Uber or HubRise depending on the venue’s dispatch backend).',
+      'When a courier is dispatched and a tracking link is available, the customer is texted it automatically (reusing the SMS module). All owner-gated — nothing fires until delivery is set up and a venue is live.',
+    ],
+  },
+  {
     version: '5.5.648', date: '25 Jun 2026', label: 'Delivery — dispatch via HubRise Bridge + online ordering surcharge (slice 5, owner-gated)',
     changes: [
       'Online ordering now does address-based delivery the same way the POS does: enter a delivery address at checkout and the live fee is added to the total before payment, with out-of-range orders blocked (offer collection). Same shared engine, so quoting + surcharging behave identically on POS and online.',
