@@ -13,6 +13,7 @@
 import { supabase, getLocationId } from '../lib/supabase';
 import { queueWrite, isOnline } from './OfflineQueue';
 import { useStore } from '../store';
+import { isTrainingMode } from '../lib/trainingMode';
 
 let _locationId = null;
 let _debounceTimer = null;
@@ -110,6 +111,8 @@ function rowToTab(row) {
 }
 
 export async function flushQueues() {
+  // TRAINING MODE: never publish walk-in orders / bar tabs to order_queue / bar_tabs.
+  if (isTrainingMode()) return;
   if (!_locationId) _locationId = await getLocationId().catch(() => null);
   if (!_locationId) return;
   const state = useStore.getState();

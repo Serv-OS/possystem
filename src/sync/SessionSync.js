@@ -11,6 +11,7 @@
 import { supabase, getLocationId } from '../lib/supabase';
 import { queueWrite, isOnline } from './OfflineQueue';
 import { useStore } from '../store';
+import { isTrainingMode } from '../lib/trainingMode';
 
 let _locationId = null;
 let _debounceTimer = null;
@@ -21,6 +22,9 @@ let _graceTimer = null;
 
 // ── Write ─────────────────────────────────────────────────────────────────────
 export async function flushSessions() {
+  // TRAINING MODE: a training till keeps its tables in-memory only — never publish
+  // sessions to active_sessions (no cross-device leak, no stale rows left behind).
+  if (isTrainingMode()) return;
   // v4.5.0: log every entry + every short-circuit. Silent failures here cost us a real
   // order on 25 Apr 2026 (active_sessions writes were never firing for hours and we
   // had no visibility because the function returned silently).

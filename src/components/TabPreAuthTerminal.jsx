@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { getActiveLocationSync, ensureAuthToken } from '../lib/supabase';
 import { resolvePlatformLocationId, getAssignedNetworkReader } from '../lib/networkReader';
 import { money, stripeCurrency } from '../lib/currency';
+import { isTrainingMode } from '../lib/trainingMode';
 
 // ─── v5.5.324: Bar-tab card pre-authorisation ──────────────────────────────
 // Places a manual-capture HOLD on the customer's card via the Stripe Terminal
@@ -35,6 +36,14 @@ export default function TabPreAuthTerminal({ amountMinor, guestName, onAuthorize
     let cancelled = false;
     (async () => {
       try {
+        // TRAINING MODE: never place a real card hold. Simulate an authorised hold
+        // so the tab opens; capture is separately gated in BarSurface.captureHeldTab.
+        if (isTrainingMode()) {
+          setState('success');
+          setStatusMsg('TRAINING — hold simulated, no card charged');
+          setTimeout(() => onAuthorized?.({ paymentIntentId: 'pi_training_hold', stripeAccount: null, heldMinor: amountMinor }), 600);
+          return;
+        }
         const opsLocationId = getActiveLocationSync();
         if (!opsLocationId) { setState('error'); setErrorMsg('Location not resolved'); return; }
         const platformId = await resolvePlatformLocationId(opsLocationId);

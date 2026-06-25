@@ -22,6 +22,7 @@
 import { getLocationId, isMock } from '../lib/supabase';
 import { queueWrite, isOnline } from './OfflineQueue';
 import { useStore } from '../store';
+import { isTrainingMode } from '../lib/trainingMode';
 import { waitlistToRow, isActive, STATUS } from '../lib/waitlist/waitlist';
 import {
   loadWaitlist,
@@ -67,6 +68,8 @@ async function _resolveOrg() {
 // ── optimistic debounced flush ──────────────────────────────────────────────
 export async function flushWaitlist() {
   if (isMock) return;
+  // TRAINING MODE: don't write training waitlist parties to the shared queue.
+  if (isTrainingMode()) return;
   if (!_locationId) _locationId = await getLocationId().catch(() => null);
   if (!_locationId || _locationId === 'loc-demo') return;
   await _resolveOrg();

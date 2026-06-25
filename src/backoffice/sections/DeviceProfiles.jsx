@@ -108,6 +108,8 @@ export default function DeviceProfiles() {
         deviceCount: countMap[p.id] || 0,
         serviceCharge: p.service_charge || null,
         isMaster: p.is_master || false,
+        trainingMode: p.training_mode === true,   // v5.5.645: per-device training
+
         // v5.5.60 MPOS-only fields
         runnerMode: p.runner_mode === true,
         paymentMode: p.payment_mode || 'tap_to_pay',
@@ -138,6 +140,8 @@ export default function DeviceProfiles() {
     sort_order: p.sortOrder || 0,
     service_charge: p.serviceCharge || null,
     is_master: p.isMaster || false,
+    training_mode: p.trainingMode === true,   // v5.5.645: per-device training
+
     // v5.5.60 MPOS-only fields
     runner_mode: p.runnerMode === true,
     payment_mode: p.paymentMode || 'tap_to_pay',
@@ -290,6 +294,7 @@ export default function DeviceProfiles() {
 
                 {/* Config summary */}
                 <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+                  {prof.trainingMode && <ConfigRow label="Training mode" value="🎓 ON — nothing committed" valueColor="#B45309"/>}
                   <ConfigRow label="Default screen" value={SURFACES.find(s => s.id === prof.defaultSurface)?.label}/>
                   <ConfigRow label="Order types" value={orderTypes.map(t => ORDER_TYPES.find(o => o.id === t)?.icon + ' ' + ORDER_TYPES.find(o => o.id === t)?.label).join(' · ') || 'None'}/>
                   <ConfigRow label="Table service" value={prof.tableServiceEnabled ? '✓ Enabled' : '✕ Disabled'} valueColor={prof.tableServiceEnabled ? 'var(--grn)' : 'var(--red)'}/>
@@ -358,6 +363,7 @@ function ProfileEditor({ profile, onSave, onDelete, onClose }) {
     tableServiceEnabled:true, quickScreenEnabled:true, receiptPrinterId:'pr1', menuId:null,
     autoPrintReceiptOnClose:true, orderNotifications:true,
     runnerMode:false, paymentMode:'tap_to_pay', assignedReaderId:null, customerDisplayMode:'auto',
+    trainingMode:false,
   });
 
   const upd = (key, val) => setForm(f => ({ ...f, [key]: val }));
@@ -715,6 +721,24 @@ function ProfileEditor({ profile, onSave, onDelete, onClose }) {
             </div>
             <div style={{ width:36, height:20, borderRadius:10, background: form.isMaster ? '#ca8a04' : 'var(--bdr2)', position:'relative', flexShrink:0, transition:'background .2s' }}>
               <div style={{ position:'absolute', top:2, left: form.isMaster ? 18 : 2, width:16, height:16, borderRadius:'50%', background:'#fff', transition:'left .2s' }}/>
+            </div>
+          </div>
+        </div>
+
+        {/* Training Mode toggle — terminals on this profile commit NOTHING (no orders,
+            payments, stock, receipts or kitchen tickets). For staff onboarding. */}
+        <div style={{ margin:'0 20px 16px', padding:'14px 16px', borderRadius:12,
+          background: form.trainingMode ? 'rgba(180,83,9,0.12)' : 'var(--bg3)',
+          border: `1.5px solid ${form.trainingMode ? '#B45309' : 'var(--bdr)'}`,
+          cursor:'pointer', transition:'all .2s' }}
+          onClick={() => upd('trainingMode', !form.trainingMode)}>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+            <div>
+              <div style={{ fontSize:13, fontWeight:700, color: form.trainingMode ? '#B45309' : 'var(--t1)' }}>🎓 Training mode</div>
+              <div style={{ fontSize:11, color:'var(--t4)', marginTop:2 }}>Terminals on this profile work normally but commit NOTHING — no orders, card charges, stock changes, receipts or kitchen tickets. A banner shows on screen. For staff training.</div>
+            </div>
+            <div style={{ width:36, height:20, borderRadius:10, background: form.trainingMode ? '#B45309' : 'var(--bdr2)', position:'relative', flexShrink:0, transition:'background .2s' }}>
+              <div style={{ position:'absolute', top:2, left: form.trainingMode ? 18 : 2, width:16, height:16, borderRadius:'50%', background:'#fff', transition:'left .2s' }}/>
             </div>
           </div>
         </div>

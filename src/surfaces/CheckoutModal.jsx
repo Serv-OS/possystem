@@ -15,6 +15,7 @@ import { fetchCustomerByPhone } from '../lib/customerLookup';
 import { redeemLoyaltyReward } from '../lib/loyaltyRedeem';
 import { money, currencySymbol, stripeCurrency, getActiveCurrencyCode } from '../lib/currency';
 import { publishDisplay, displayUsesScreen } from '../lib/customerDisplay';
+import { isTrainingMode } from '../lib/trainingMode';
 // (readerDisplay imports removed — cancel now lets the natural cart-change effect refresh the reader after onBack)
 
 // ─── Tip picker ───────────────────────────────────────────────────────────────
@@ -240,6 +241,18 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
     setRestState('starting');
     setRestStatusMsg('Pushing cart to reader…');
     setErrorMsg(null);
+
+    // TRAINING MODE: never reach a real processor (Stripe reader OR Ryft terminal).
+    // Simulate an instant approval so the rest of the (in-memory) close flow runs
+    // exactly as normal. amountReceived = grand so the parent derives the picked tip
+    // correctly (amountReceived − total). This is the single payment safety gate.
+    if (isTrainingMode()) {
+      const minor = Math.round(grand * 100);
+      setPiResult({ status: 'succeeded', paymentIntentId: 'pi_training', amount: minor, amountReceived: minor, processor: 'training', training: true });
+      setRestStatusMsg('TRAINING — no card charged');
+      setRestState('success');
+      return;
+    }
 
     // Ryft locations take the terminal payment via Ryft's in-person API.
     if (processor === 'ryft') return runRyftTerminalFlow();
@@ -731,6 +744,21 @@ function GiftCardEntry({ totalMinor, giftAlreadyApplied, onApplied, onBack, tabl
 
       const idempotencyKey = `pos:${tableId || 'walkin'}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
 
+      // TRAINING MODE: never deduct a real gift-card balance. The lookup above is
+      // read-only; here we mock the redemption so the UI applies it in-memory only.
+      if (isTrainingMode()) {
+        onApplied({
+          card_id: cardInfo.card_id || 'gift_training',
+          code_last4: cardInfo.code_last4,
+          applied: redeemAmount,
+          remaining_balance: Math.max(0, cardInfo.balance - redeemAmount),
+          idempotency_key: idempotencyKey,
+          currency: cardInfo.currency || 'gbp',
+        });
+        setLoading(false);
+        return;
+      }
+
       const { data: session } = await supabase.auth.getSession();
       const token = session?.session?.access_token;
       const res = await fetch(`${GIFT_FUNCTIONS_URL}/gift-redeem`, {
@@ -920,6 +948,23 @@ function LoyaltyRewardsEntry({ customer, loyaltyData, items = [], total, onAppli
   const redeem = async (reward) => {
     setRedeeming(reward.id);
     setError('');
+    // TRAINING MODE: apply the reward's discount in-memory but NEVER deduct real
+    // loyalty points (no loyalty-redeem call). Mirrors the discount math below.
+    if (isTrainingMode()) {
+      const rv = reward.value || {};
+      let discountMinor = 0;
+      if (reward.type === 'discount_fixed') discountMinor = rv.amount_minor || 0;
+      else if (reward.type === 'discount_percent') discountMinor = Math.round(total * 100 * (rv.percent || 0) / 100);
+      else if (reward.type === 'free_item') {
+        const eligibleIds = new Set((rv.eligible_items || []).map(ei => ei.id));
+        const matching = (items || []).filter(i => !i.voided && eligibleIds.has(i.itemId));
+        if (matching.length > 0) discountMinor = Math.round(matching.reduce((a, b) => (a.price < b.price ? a : b)).price * 100);
+      }
+      discountMinor = Math.min(discountMinor, Math.round(total * 100));
+      onApplied({ reward_id: reward.id, reward_name: reward.label, points_deducted: reward.pointsCost || 0, discount_type: reward.type, discount_value: discountMinor, idempotency_key: null, balance_after: null });
+      setRedeeming(null);
+      return;
+    }
     try {
       const token = await ensureAuthToken();
       if (!token) throw new Error('Not authenticated');

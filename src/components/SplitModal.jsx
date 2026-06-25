@@ -6,6 +6,7 @@ import {
   getAssignedNetworkReader,
 } from '../lib/networkReader';
 import { money, currencySymbol, stripeCurrency } from '../lib/currency';
+import { isTrainingMode } from '../lib/trainingMode';
 
 // ─── v5.5.291: Card terminal for split portions ─────────────────────────────
 // Sends the portion amount to the Stripe Terminal reader — same REST flow as
@@ -26,6 +27,15 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
     let cancelled = false;
     (async () => {
       try {
+        // TRAINING MODE: never charge a real card for a split portion. Simulate an
+        // instant approval so the split flow completes in-memory (the closed_check
+        // is separately gated in db.js).
+        if (isTrainingMode()) {
+          setState('success');
+          setStatusMsg('TRAINING — no card charged');
+          setTimeout(() => onComplete('card', 'pi_training_split', 0), 600);
+          return;
+        }
         const opsLocationId = getActiveLocationSync();
         if (!opsLocationId) { setState('error'); setErrorMsg('Location not resolved'); return; }
         const platformId = await resolvePlatformLocationId(opsLocationId);

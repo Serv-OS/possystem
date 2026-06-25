@@ -20,6 +20,7 @@ import VoidModal from '../components/VoidModal';
 import DiscountModal from '../components/DiscountModal';
 import { ReceiptModal, ReprintModal } from '../components/ReceiptModal';
 import { printService } from '../lib/printer';
+import { isTrainingMode } from '../lib/trainingMode';
 import CheckHistory from '../components/CheckHistory';
 import ItemInfoModal from '../components/ItemInfoModal';
 import OrderReviewModal from '../components/OrderReviewModal';
@@ -714,10 +715,15 @@ export default function POSSurface() {
       const freshRef = closedChecks[0]?.ref
         || ('#' + Date.now().toString().slice(-4));
       receiptSnapshot.check.ref = freshRef;
-      console.info('[PayComplete] dispatching auto-print with ref=', freshRef);
-      printService.printReceipt(receiptSnapshot).catch(err => {
-        console.warn('[Print] Auto-print on close failed:', err?.message || err);
-      });
+      // TRAINING MODE: don't auto-print a physical customer receipt on close.
+      if (isTrainingMode()) {
+        console.info('[PayComplete] training mode — auto-print suppressed');
+      } else {
+        console.info('[PayComplete] dispatching auto-print with ref=', freshRef);
+        printService.printReceipt(receiptSnapshot).catch(err => {
+          console.warn('[Print] Auto-print on close failed:', err?.message || err);
+        });
+      }
     } else {
       console.info('[PayComplete] no receiptSnapshot — auto-print skipped');
     }

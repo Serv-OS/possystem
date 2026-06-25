@@ -12,6 +12,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useStore } from '../store';
 import { supabase } from '../lib/supabase';
+import { isTrainingMode } from '../lib/trainingMode';
 import { syncQrTableSession } from '../lib/qrTableSession';
 import { money, currencySymbol } from '../lib/currency';
 import { ryftTab } from '../lib/payments/ryft';
@@ -247,15 +248,17 @@ export default function OrdersHub() {
     const idx   = flow.indexOf(o.status);
     if (idx < 0 || idx >= flow.length - 1) return;
     const next  = flow[idx + 1];
-    updateQueueStatus(o.ref, next);
+    updateQueueStatus(o.ref, next);   // in-memory only in training (flushQueues is gated)
+    const training = isTrainingMode();
     // HubRise channel orders: mirror each advance to HubRise (server-side PATCH).
-    if (o.source === 'hubrise') {
+    // Suppressed in training so a training till never pushes a real channel status.
+    if (o.source === 'hubrise' && !training) {
       const action = next === 'prep' ? 'prep' : next === 'ready' ? 'ready' : next === 'collected' ? 'collected' : null;
       if (action) hubrisePushStatus(getActiveLocationSync(), o.ref, action).catch(() => {});
     }
     if (next === 'ready')     showToast(`${o.displayName} — ready!`, 'success');
     if (next === 'collected') {
-      if (o.source === 'hubrise') bookHubriseSale(o);   // record the sale in history/reports
+      if (o.source === 'hubrise' && !training) bookHubriseSale(o);   // record the sale in history/reports
       showToast(`${o.ref} collected`, 'info');
       setTimeout(() => removeFromQueue(o.ref), 8000);
     }
@@ -301,6 +304,9 @@ export default function OrdersHub() {
   // the full bill.
   const forceCloseQrTab = async (tab) => {
     if (closingTabRef) return;
+    // TRAINING MODE: these are REAL customer tabs (synced in). Never capture a card
+    // or write closed_checks/order_queue from a training till — block with a notice.
+    if (isTrainingMode()) { showToast('Training mode — live tabs are not charged or closed here', 'info'); return; }
     // Route by processor. Default missing processor → stripe (tabs opened
     // before dual-processor). Ryft holds are addressed by payment_session_id;
     // the ryft-tab edge fn resolves the merchant account from location_id.
@@ -556,6 +562,7 @@ export default function OrdersHub() {
   // covers the manual force-close from the operator queue).
   const forceCloseTab = async (o) => {
     if (closingTabRef) return;
+    if (isTrainingMode()) { showToast('Training mode — live tabs are not charged or closed here', 'info'); return; }
     const pi = o.customer?.payment_intent_id;
     const acct = o.customer?.stripe_account;
     if (!pi || !acct) {

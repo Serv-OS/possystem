@@ -27,6 +27,7 @@ import {
   DEFAULT_BANDS,
   DEFAULT_QUOTE_RULES,
 } from '../lib/waitlist/waitlist.js';
+import { isTrainingMode } from '../lib/trainingMode.js';
 
 import {
   computeTurnStats,
@@ -501,6 +502,7 @@ export function waitlistSlice(set, get) {
     // when SMS is disabled in config.
     sendWaitlistSMS: async (entry, kind) => {
       if (isMock || !supabase) return;
+      if (isTrainingMode()) { console.log('[training] waitlist SMS suppressed →', entry?.phone); return; }
       if (!entry?.phone) return;
       const { smsEnabled } = cfgView(get);
       if (!smsEnabled) return;

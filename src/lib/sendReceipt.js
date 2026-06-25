@@ -7,6 +7,7 @@
 // VAT breakdown) is always auto-generated to ensure legal compliance.
 
 import { supabase, ensureAuthToken } from './supabase';
+import { isTrainingMode } from './trainingMode';
 import { loadLocationBranding } from './receiptBranding';
 import { money } from './currency';  // v5.5.326: shared multi-currency formatter
 const FUNC_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/message-templates`;
@@ -55,6 +56,8 @@ async function resolveReceiptTemplate(locationId, mergeData, token) {
  */
 export async function sendEmailReceipt({ to, locationId, check, locationLabel, branding }) {
   if (!to || !locationId || !check) return { ok:false, error:'missing args' };
+  // TRAINING MODE: never send a real receipt email to a customer.
+  if (isTrainingMode()) { console.log('[training] receipt email suppressed →', to); return { ok:true, id:'training', training:true }; }
 
   // Load receipt branding if not provided
   if (!branding && locationId) {

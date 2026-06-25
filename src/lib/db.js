@@ -10,6 +10,7 @@
 
 import { supabase, isMock, getLocationId, getActiveLocationSync } from './supabase';
 import { getTodayStartFallback } from './locationTime';
+import { isTrainingMode } from './trainingMode';
 
 // ── Order number generation (v5.5.8) ─────────────────────────────────────────
 // Replaces three pre-existing colliding ref generators (kiosk Date.now() % 1000,
@@ -283,6 +284,8 @@ export const fetch86List = async (locationId = null) => {
 
 export const toggle86DB = async (itemId, is86, locationId = null) => {
   if (isMock) return { data: null, error: null };
+  // TRAINING MODE: never write a real 86 mark (would hide a live item for everyone).
+  if (isTrainingMode()) return { data: null, error: null };
   // v5.5.143: ALWAYS resolve real locationId before writing. The schema has
   // `location_id text not null default 'loc-demo'`, so a null caller-arg
   // silently writes 'loc-demo' — fetch86List then filters by the real
@@ -322,6 +325,8 @@ export const fetchKDSTickets = async (locationId = null) => {
 
 export const insertKDSTicket = async (ticket, locationId = null) => {
   if (isMock) return { data: null, error: null };
+  // TRAINING MODE: don't fire a real kitchen ticket to the KDS / DB.
+  if (isTrainingMode()) return { data: null, error: null };
   if (!locationId || locationId === 'loc-demo') locationId = await getLocationId();
   if (!locationId || locationId === 'loc-demo') return { data: null, error: new Error('No location') };
   // Map camelCase store ticket to snake_case DB columns
@@ -403,6 +408,10 @@ export const fetchKDSTicketsRange = async (locationId = null, fromDate, toDate, 
 // ── Closed checks ─────────────────────────────────────────────────────────────
 export const insertClosedCheck = async (check, locationId = null) => {
   if (isMock) return { data: null, error: null };
+  // TRAINING MODE: never persist a closed check. The store keeps it in-memory so
+  // the receipt / "paid" UI still works; nothing reaches localStorage, the offline
+  // queue, or Supabase. Single choke point for POS/MPOS/bar/walk-in closes.
+  if (isTrainingMode()) return { data: null, error: null };
   // Always resolve real location — NEVER fall back to LOCATION_ID ('loc-demo')
   if (!locationId || locationId === 'loc-demo') {
     locationId = await getLocationId().catch(() => null);
@@ -1300,6 +1309,8 @@ export const fetchStockLevels = async (locationId = null) => {
 
 export const upsertStockLevel = async (itemId, par, remaining = null, locationId = null) => {
   if (isMock) return { data: null, error: null };
+  // TRAINING MODE: don't overwrite real daily stock counts / par levels.
+  if (isTrainingMode()) return { data: null, error: null };
   if (!locationId || locationId === 'loc-demo') locationId = await getLocationId().catch(() => null);
   if (!locationId || locationId === 'loc-demo') {
     console.error('[upsertStockLevel] could not resolve locationId');
@@ -1316,6 +1327,8 @@ export const upsertStockLevel = async (itemId, par, remaining = null, locationId
 
 export const deleteStockLevel = async (itemId, locationId = null) => {
   if (isMock) return { data: null, error: null };
+  // TRAINING MODE: don't delete real stock-level tracking.
+  if (isTrainingMode()) return { data: null, error: null };
   if (!locationId || locationId === 'loc-demo') locationId = await getLocationId().catch(() => null);
   if (!locationId || locationId === 'loc-demo') return { data: null, error: new Error('No locationId') };
   return supabase.from('stock_levels').delete().eq('location_id', locationId).eq('item_id', itemId);
@@ -1323,6 +1336,8 @@ export const deleteStockLevel = async (itemId, locationId = null) => {
 
 export const decrementStockRPC = async (itemId, qty = 1, locationId = null) => {
   if (isMock) return { data: { tracked: false }, error: null };
+  // TRAINING MODE: never move real stock. Covers POS, kiosk and online paths.
+  if (isTrainingMode()) return { data: { tracked: false }, error: null };
   if (!locationId || locationId === 'loc-demo') locationId = await getLocationId().catch(() => null);
   if (!locationId || locationId === 'loc-demo') return { data: { tracked: false }, error: null };
   return supabase.rpc('decrement_stock', { p_location_id: locationId, p_item_id: itemId, p_qty: qty });
@@ -1330,6 +1345,8 @@ export const decrementStockRPC = async (itemId, qty = 1, locationId = null) => {
 
 export const restoreStockRPC = async (itemId, qty = 1, locationId = null) => {
   if (isMock) return { data: { tracked: false }, error: null };
+  // TRAINING MODE: nothing was decremented, so don't touch real stock.
+  if (isTrainingMode()) return { data: { tracked: false }, error: null };
   if (!locationId || locationId === 'loc-demo') locationId = await getLocationId().catch(() => null);
   if (!locationId || locationId === 'loc-demo') return { data: { tracked: false }, error: null };
   return supabase.rpc('restore_stock', { p_location_id: locationId, p_item_id: itemId, p_qty: qty });

@@ -20,6 +20,7 @@ import { getActiveLocationSync, supabase, ensureAuthToken } from '../../lib/supa
 import { Sx, money } from './MShellStyles';
 import { stripeCurrency } from '../../lib/currency';
 import { tapToPayAvailable, tapInit, tapCollect, tapCancel } from '../../lib/tapToPay';
+import { isTrainingMode } from '../../lib/trainingMode';
 
 export default function MCardFlow({ payment, onCancel, onApproved }) {
   const { deviceConfig, walkInOrder, activeTableId, tables } = useStore();
@@ -42,6 +43,14 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
 
   const runFlow = async () => {
     try {
+      // TRAINING MODE: never reach a real processor (Tap to Pay or reader).
+      // Simulate an instant approval so the MPOS close flow runs in-memory.
+      if (isTrainingMode()) {
+        setStatusMsg('TRAINING — no card charged');
+        setPhase('approved');
+        onApproved?.({ method:'card', paymentIntentId:`training_${Date.now()}`, tip: payment.tip, grand, simulated:true, training:true });
+        return;
+      }
       // Native Tap to Pay takes priority when the MPOS app injected the bridge,
       // unless this device is explicitly pinned to a hardware (network) reader.
       if (paymentMode !== 'assigned_reader' && tapToPayAvailable()) {

@@ -88,6 +88,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.645', date: '25 Jun 2026', label: 'Training mode — practise on a till with nothing committed',
+    changes: [
+      'NEW per-terminal Training Mode. Turn it on for a device profile in Back Office → Device Profiles (🎓 Training mode). Any till on that profile works exactly as normal but commits NOTHING: no orders or closed checks, no card charges (Stripe or Ryft — payment is simulated), no stock or “86” changes, no loyalty/gift/promo/CRM updates, no kitchen tickets or receipts, no cash-drawer pulse, no emails or texts to customers. Perfect for onboarding new staff on a real till while the rest of the venue keeps trading live.',
+      'A bold “TRAINING MODE — nothing is saved” banner shows across every POS screen so a training till can never be mistaken for a live one. The toggle applies instantly (no reload) and is per-device, so one terminal can train while the counter, bar and kiosk trade normally.',
+    ],
+  },
+  {
     version: '5.5.644', date: '25 Jun 2026', label: 'Safety — remove the table “Force close”; POS “Clear” no longer wipes a live table order',
     changes: [
       'REMOVED the “Force close” button from an occupied table on the floor plan. It cleared the table with no payment, wiping the whole order — a real way to lose a table and its orders in one tap. To clear an occupied table, go through “Take payment” → checkout, where a comp/void is recorded and auditable. (The “Close table” option on an empty, just-seated table is unchanged.)',
@@ -7590,6 +7597,29 @@ export default function App() {
   return <ValidatedPOSApp pairedDevice={pairedDevice} staff={staff} surface={surface} setSurface={setSurface} toast={toast} shift={shift} theme={theme} setTheme={setTheme} syncPulse={syncPulse} handleSyncPulse={handleSyncPulse} showWhatsNew={showWhatsNew} setShowWhatsNew={setShowWhatsNew} deviceConfig={deviceConfig} />;
 }
 
+// v5.5.645: persistent Training Mode banner. Shown on every POS surface whenever
+// this device's profile has training_mode on. Deliberately loud + theme-independent
+// so staff can never mistake a training till for a live one. Reads the store flag
+// kept in lock-step with the module singleton that gates every commit path.
+function TrainingModeBanner() {
+  const on = useStore(s => s.trainingMode);
+  if (!on) return null;
+  return (
+    <div role="status" aria-live="polite" style={{
+      flexShrink: 0,
+      background: 'repeating-linear-gradient(135deg, #B45309 0 18px, #92400E 18px 36px)',
+      color: '#FFF7ED', fontWeight: 800, fontSize: 13, letterSpacing: '.02em',
+      padding: '9px 16px', textAlign: 'center',
+      borderBottom: '2px solid #FCD34D',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
+      textShadow: '0 1px 2px rgba(0,0,0,.35)',
+    }}>
+      <span style={{ width: 9, height: 9, borderRadius: '50%', background: '#FCD34D', boxShadow: '0 0 0 3px rgba(252,211,77,.35)', flexShrink: 0 }} />
+      <span>TRAINING MODE — nothing is saved. No orders, payments, stock, receipts or kitchen tickets are committed.</span>
+    </div>
+  );
+}
+
 function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shift, theme, setTheme, syncPulse, handleSyncPulse, showWhatsNew, setShowWhatsNew, deviceConfig }) {
   const [deviceValid, setDeviceValid] = useState(null); // null=checking, true=ok, false=revoked
   const [masterOffline, setMasterOffline] = useState(false);
@@ -7749,6 +7779,7 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
                 autoPrintReceiptOnClose: dbProfile.auto_print_receipt_on_close !== false,
                 orderNotifications: dbProfile.order_notifications !== false,
                 menuId: dbProfile.menu_id || null,
+                trainingMode: dbProfile.training_mode === true,   // v5.5.645: per-device training
               };
             }
           } catch {}
@@ -7773,6 +7804,7 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
               autoPrintReceiptOnClose: profile && profile.autoPrintReceiptOnClose !== false,
               orderNotifications: !profile || profile.orderNotifications !== false,
               menuId: profile?.menuId || null,
+              trainingMode: profile?.trainingMode === true,   // v5.5.645: per-device training
             };
             localStorage.setItem('rpos-device-config', JSON.stringify(config));
             useStore.getState().setDeviceConfig(config);
@@ -7812,6 +7844,7 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
               autoPrintReceiptOnClose: existingConfig?.autoPrintReceiptOnClose !== false,
               orderNotifications: existingConfig?.orderNotifications !== false,
               menuId: existingConfig?.menuId || null,
+              trainingMode: existingConfig?.trainingMode === true,   // v5.5.645: preserve training flag on fallback
             };
             localStorage.setItem('rpos-device-config', JSON.stringify(minConfig));
             useStore.getState().setDeviceConfig(minConfig);
@@ -7886,11 +7919,12 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
             autoPrintReceiptOnClose: p.auto_print_receipt_on_close !== false,
             orderNotifications: p.order_notifications !== false,
             menuId: p.menu_id || null,
+            trainingMode: p.training_mode === true,   // v5.5.645: per-device training, live via realtime
             terminalName: useStore.getState().deviceConfig?.terminalName,
           };
           localStorage.setItem('rpos-device-config', JSON.stringify(config));
           useStore.getState().setDeviceConfig(config);
-          useStore.getState().showToast('Device profile updated', 'info');
+          useStore.getState().showToast(p.training_mode === true ? 'Training mode ON — nothing will be saved' : 'Device profile updated', 'info');
         })
         .subscribe();
     };
@@ -7962,6 +7996,7 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
       
       <ShiftBar version={VERSION} onWhatsNew={()=>setShowWhatsNew(true)} theme={theme} onToggleTheme={()=>setTheme(theme==='dark'?'light':'dark')} syncPulse={syncPulse}/>
       <ConfigSyncBanner />
+      <TrainingModeBanner />
       {/* v5.5.356 ServOS: floating panels — padding + gap so the rail and
           surface panels sit as separate rounded glass cards over the scene */}
       <div style={{ display:'flex', flex:1, overflow:'hidden', gap:14, padding:16 }}>

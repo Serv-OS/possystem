@@ -8,6 +8,7 @@ import { upsertMenuItem, upsertFloorTable, deleteFloorTable, insertKDSTicket, in
 import { printService } from '../lib/printer';
 import { hubrisePushStock, isHubriseConnected, hubrisePushStatus, isHubriseAutoReceipt } from '../lib/hubrise';
 import { depleteForSale, reverseForSale } from '../lib/stock/deplete';
+import { setTrainingMode as applyTrainingFlag, isTrainingMode } from '../lib/trainingMode';
 import { STALE_ORDER_FLOOR_MS } from '../sync/staleness';
 import { waitlistSlice } from './waitlistSlice';
 
@@ -404,6 +405,18 @@ export const useStore = create((set, get) => ({
       return null;
     } catch { return null; }
   })(),
+  // v5.5.645: per-device Training Mode. Initialised from the cached device config at
+  // module load (so a training till is gated before App's profile fetch completes)
+  // and kept authoritative by setDeviceConfig (boot + device_profiles realtime).
+  trainingMode: (() => {
+    try {
+      const raw = sessionStorage.getItem('rpos-terminal-config') || localStorage.getItem('rpos-device-config');
+      const cfg = raw ? JSON.parse(raw) : null;
+      const on = !!cfg?.trainingMode;
+      applyTrainingFlag(on);   // seed the module singleton read by db.js / sync gates
+      return on;
+    } catch { return false; }
+  })(),
   setDeviceConfig: (config) => {
     // Always backfill serviceCharge from stored profiles if the config is missing it
     let finalConfig = config;
@@ -415,9 +428,17 @@ export const useStore = create((set, get) => ({
       } catch {}
     }
     try { sessionStorage.setItem('rpos-terminal-config', JSON.stringify(finalConfig)); } catch {}
-    set({ deviceConfig: finalConfig });
+    // v5.5.645: per-device Training Mode rides the device profile. Mirror it into the
+    // module singleton (read by db.js / sync / surfaces gates) AND the React state
+    // (drives the banner). setDeviceConfig is the single funnel for boot + realtime.
+    const training = !!finalConfig?.trainingMode;
+    applyTrainingFlag(training);
+    set({ deviceConfig: finalConfig, trainingMode: training });
     if (finalConfig?.defaultSurface) set({ surface: finalConfig.defaultSurface });
   },
+  // v5.5.645: explicit setter (used at boot + by any manual override). Keeps the
+  // module singleton and the React state in lock-step.
+  setTrainingMode: (on) => { applyTrainingFlag(!!on); set({ trainingMode: !!on }); },
   clearDeviceConfig: () => {
     try { sessionStorage.removeItem('rpos-terminal-config'); } catch {}
     set({ deviceConfig: null });
@@ -1953,6 +1974,7 @@ export const useStore = create((set, get) => ({
     import('../lib/supabase.js').then(async ({ supabase, getLocationId, getActiveLocationSync }) => {
       try {
         if (!supabase) return;
+        if (isTrainingMode()) return;   // TRAINING MODE: no real kds_tickets fired_courses write
         const locId = getActiveLocationSync() || await getLocationId();
         if (!locId) return;
         const { data: tickets } = await supabase
@@ -2312,6 +2334,7 @@ export const useStore = create((set, get) => ({
   // if a different operator types a different name, the existing one stands.
   upsertCustomer: async (c) => {
     if (isMock || !supabase) return null;
+    if (isTrainingMode()) return null;   // TRAINING MODE: don't create a real CRM customer record
     try {
       const locId = getActiveLocationSync() || await getLocationId();
       if (!locId) {
@@ -2389,6 +2412,8 @@ export const useStore = create((set, get) => ({
   // on customer_locations and inserts a customer_orders row. Returns customer_id.
   attributeOrderToCustomer: async ({ customer, orderRecord }) => {
     if (isMock || !supabase) return null;
+    // TRAINING MODE: never create/update a real CRM customer or earn loyalty points.
+    if (isTrainingMode()) return null;
     if (!customer?.phone || !orderRecord) {
       console.warn('[attributeOrderToCustomer] skipped — missing customer.phone or orderRecord');
       return null;
@@ -3182,6 +3207,7 @@ export const useStore = create((set, get) => ({
   // cash_drawers.status='open'+opening_float, writes float_in movement.
   cashInDrawer: async (drawerId, { openingFloat, denominations = null, notes = '' } = {}) => {
     if (isMock || !supabase) return null;
+    if (isTrainingMode()) return null;   // TRAINING MODE: no real drawer_sessions / cash row
     try {
       const locId = getActiveLocationSync() || await getLocationId();
       if (!locId) { get().showToast?.('No location', 'error'); return null; }
@@ -3291,6 +3317,7 @@ export const useStore = create((set, get) => ({
   // and if all drawers are now idle, auto-closes the shift.
   cashOutDrawer: async (drawerId, { declaredCash, denominations = null, notes = '' } = {}) => {
     if (isMock || !supabase) return null;
+    if (isTrainingMode()) return null;   // TRAINING MODE: no real drawer_sessions cash-out write
     try {
       // Find the open session for this drawer (don't trust currentDrawerSession — might be another device's drawer)
       const { data: sessions } = await supabase
@@ -3445,6 +3472,13 @@ export const useStore = create((set, get) => ({
     // If one is already open, just return it (idempotent).
     if (get().currentShift?.status === 'open') return get().currentShift;
     if (isMock || !supabase) return null;
+    // TRAINING MODE: open a LOCAL in-memory shift so the POS works normally, but
+    // never write a shifts row.
+    if (isTrainingMode()) {
+      const shift = { id: `shift-training-${Date.now()}`, locationId: getActiveLocationSync() || null, openedAt: new Date().toISOString(), openedByStaffId: staffId || get().staff?.id || null, status: 'open', training: true };
+      set({ currentShift: shift });
+      return shift;
+    }
     try {
       const locId = getActiveLocationSync() || await getLocationId();
       if (!locId) return null;
@@ -3535,6 +3569,8 @@ export const useStore = create((set, get) => ({
       }
     }
     if (isMock || !supabase) return null;
+    // TRAINING MODE: the open shift is local-only — clear it without a shifts write.
+    if (isTrainingMode()) { set({ currentShift: null }); return true; }
     try {
       const patch = {
         status: auto ? 'auto_closed' : 'closed',
@@ -3639,6 +3675,9 @@ export const useStore = create((set, get) => ({
   // is configured) AND log to the petty cash ledger. Swallow print failures —
   // the drawer pulse is best-effort and should never block a payment flow.
   openCashDrawer: ({ reason = 'Manual open', amount = 0, type = 'drawer_open', ref = null, note = '', force = false, drawerId = null } = {}) => {
+    // TRAINING MODE: don't pulse the physical drawer or write a petty_cash / cash
+    // movement row — keeps the cash ledger + EOD reconciliation clean.
+    if (isTrainingMode()) return;
     // v4.6.32: permission gate. 'force' is passed by the automatic cash-sale
     // firing path — no permission check needed there (the sale itself was
     // already authorised). Manual opens from the POS or the petty cash page
@@ -3709,6 +3748,7 @@ export const useStore = create((set, get) => ({
   // above which still populates pettyCashEntries) and Supabase (this function).
   insertCashMovement: async ({ type, amount, drawerId = null, shiftId = null, sessionId = null, fromDrawerId = null, toDrawerId = null, reason = '', note = '', ref = null, staffId = null, staffName = '' }) => {
     if (isMock || !supabase) return null;
+    if (isTrainingMode()) return null;   // TRAINING MODE: no real cash_movements row
     // v4.6.39: if no shiftId was passed, default to the currently open shift.
     // v4.6.40: also default session_id to the currentDrawerSession when the caller
     // didn't specify. This is what links every cash-sale to the session it occurred in.
@@ -3800,6 +3840,8 @@ export const useStore = create((set, get) => ({
   triggerChallenge21Check: async (record) => {
     try {
       if (isMock || !platformSupabase) return;
+      if (isTrainingMode()) return;   // TRAINING MODE: don't log to the alcohol audit counter
+
       let cfg = get().challenge21Config;
       if (!cfg) { await get().loadChallenge21Config(); cfg = get().challenge21Config; }
       if (!cfg?.enabled) return;
@@ -3931,6 +3973,7 @@ export const useStore = create((set, get) => ({
   // order id. Fire-and-forget: validate already confirmed eligibility at apply time; never blocks a sale.
   redeemPromoCode: (promo, record, customer) => {
     if (!promo?.code || !supabase || !record?.id) return;
+    if (isTrainingMode()) return;   // TRAINING MODE: don't consume a one-time / limited promo code
     const { staff } = get();
     let locId = getActiveLocationSync(); if (!locId) { try { locId = localStorage.getItem('rpos-active-location') || null; } catch {} }
     supabase.functions.invoke('promo-redeem', { body: {
@@ -4083,6 +4126,9 @@ export const useStore = create((set, get) => ({
         return { ...chk, refunds: allRefunds, status };
       }),
     }));
+    // TRAINING MODE: the refund shows in-memory but NOTHING external fires — no
+    // closed_checks update, no card reversal (Stripe/Ryft), no gift/loyalty refund.
+    if (isTrainingMode()) return;
     // Persist to Supabase so other POS devices at the location see this refund
     // via the realtime UPDATE listener (lib/realtime.js). Fire-and-forget — the
     // local mutation already happened so UX stays snappy; if the network call
@@ -4406,6 +4452,9 @@ export const useStore = create((set, get) => ({
   // existing OfflineQueue + Node agent pick it up when connectivity returns.
   printJobs: [],
   routePrintJob: async (job) => {
+    // TRAINING MODE: no real kitchen tickets / fire markers / transfer dockets — and
+    // no print_jobs row. Suppresses physical prints so the kitchen isn't confused.
+    if (isTrainingMode()) return;
     // job shape: { centreId, printerName, tableLabel, items, type, server, covers, course }
     //
     // v4.3.0 — DURABLE-FIRST dispatch.
@@ -4887,6 +4936,8 @@ export const useStore = create((set, get) => ({
   // Print a customer receipt (called from close-check flow, ReceiptModal, etc.)
   // Safe to call even if no receipt printer is configured — falls back to browser print.
   printCustomerReceipt: async ({ location, check, items, totals }, printerId = null) => {
+    // TRAINING MODE: don't print a physical customer receipt.
+    if (isTrainingMode()) return { ok: true, transport: 'training' };
     try {
       const result = await printService.printReceipt({ location, check, items, totals }, printerId);
       if (result?.ok && result.transport !== 'browser' && printerId) {

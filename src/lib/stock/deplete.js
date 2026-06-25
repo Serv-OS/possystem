@@ -13,6 +13,7 @@
  */
 
 import { supabase, isMock, getActiveLocationSync } from '../supabase';
+import { isTrainingMode } from '../trainingMode';
 import { buildDepletionCtx } from './recipes.js';
 import { postStockMovement } from './data.js';
 import { explodeBasket } from './explode.js';
@@ -25,6 +26,7 @@ import { explodeBasket } from './explode.js';
 export async function depleteForSaleServer(check, { reverse = false } = {}) {
   try {
     if (isMock || !supabase) return;
+    if (isTrainingMode()) return;   // TRAINING MODE: no recipe-COGS ledger movements
     const loc = getActiveLocationSync();
     if (!loc) return;
     const items = (check?.items || [])
@@ -56,6 +58,7 @@ const hasRecipes = (ctx) => ctx && ctx.menuRecipes && Object.keys(ctx.menuRecipe
 /** Deplete the stock items consumed by a closed check (theoretical COGS). */
 export async function depleteForSale(check) {
   try {
+    if (isTrainingMode()) return;   // TRAINING MODE: no recipe-COGS ledger movements
     const loc = getActiveLocationSync();
     if (!loc) return;
     const items = (check?.items || []).filter((it) => !it.voided && it.itemId);
@@ -80,6 +83,7 @@ export async function depleteForSale(check) {
 /** Reverse depletion for refunded items (post RETURN movements), keyed per refund. */
 export async function reverseForSale(check, refundItems, refundId) {
   try {
+    if (isTrainingMode()) return;   // TRAINING MODE: no recipe-COGS reversal movements
     const loc = getActiveLocationSync();
     if (!loc) return;
     const lines = (refundItems || [])

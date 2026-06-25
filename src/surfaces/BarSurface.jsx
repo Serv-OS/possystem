@@ -7,6 +7,7 @@ import CheckoutModal from './CheckoutModal';
 import TabPreAuthTerminal from '../components/TabPreAuthTerminal';
 import { getNextOrderRefLocal } from '../lib/db';
 import { getActiveLocationSync, ensureAuthToken } from '../lib/supabase';
+import { isTrainingMode } from '../lib/trainingMode';
 import { money, currencySymbol } from '../lib/currency';
 
 const CAT_META = {
@@ -372,20 +373,27 @@ export default function BarSurface() {
     if (captureMinor <= 0) { setHoldCloseErr('Nothing to charge'); setHoldCloseState('error'); return; }
     setHoldCloseState('capturing'); setHoldCloseErr(null);
     try {
-      // /api/stripe-capture is the same Vercel endpoint the QR tab flow uses;
-      // it clamps to the actual amount_capturable on the connected account.
-      const res = await fetch('/api/stripe-capture', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          paymentIntentId: tab.preAuthPaymentIntentId,
-          stripeAccount: tab.preAuthStripeAccount,
-          amountToCapture: captureMinor,
-        }),
-      });
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
-      const capturedMinor = Number.isFinite(j.amount) ? j.amount : captureMinor;
+      let capturedMinor;
+      if (isTrainingMode()) {
+        // TRAINING MODE: never capture a real pre-auth. Simulate a full capture so
+        // the tab closes in-memory (the closed_check itself is gated in db.js).
+        capturedMinor = captureMinor;
+      } else {
+        // /api/stripe-capture is the same Vercel endpoint the QR tab flow uses;
+        // it clamps to the actual amount_capturable on the connected account.
+        const res = await fetch('/api/stripe-capture', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            paymentIntentId: tab.preAuthPaymentIntentId,
+            stripeAccount: tab.preAuthStripeAccount,
+            amountToCapture: captureMinor,
+          }),
+        });
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
+        capturedMinor = Number.isFinite(j.amount) ? j.amount : captureMinor;
+      }
       recordTabClosedCheck(tab, {
         method: 'card',
         grand: tab.total || 0,
