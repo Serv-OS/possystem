@@ -88,6 +88,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.650', date: '25 Jun 2026', label: 'Delivery — margin reconciliation + Uber/HubRise account setup guide (slice 7, owner-gated)',
+    changes: [
+      'The Deliveries board now shows a 30-day reconciliation summary: number of deliveries, what customers were charged for delivery, the actual Uber cost, and your delivery margin (actual where known, otherwise estimated from the quote). Actual courier costs are captured automatically when a delivery completes.',
+      'Added a clear “Before you start” guide on the Delivery settings screen with the sign-up links: the venue sets up its own Uber Direct account (Uber bills the venue per delivery), its own HubRise account, and enables HubRise’s free Uber Direct Bridge — these accounts and charges are with Uber/HubRise directly and are outside ServOS’s billing and control. (Refunding a delivery fee on a failed delivery uses the existing order refund in Transactions.)',
+    ],
+  },
+  {
     version: '5.5.649', date: '25 Jun 2026', label: 'Delivery — staff live board + courier cancel + customer tracking text (slice 6, owner-gated)',
     changes: [
       'NEW staff “Deliveries (live)” board in Back Office → Channels: every dispatched delivery with its live status (finding a courier → out for delivery → delivered), courier name, ETA and a one-tap tracking link, refreshing automatically. Active deliveries can be cancelled from here (routes to Uber or HubRise depending on the venue’s dispatch backend).',

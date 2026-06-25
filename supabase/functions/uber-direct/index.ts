@@ -292,6 +292,29 @@ Deno.serve(async (req) => {
       }
     }
 
+    // ── Reconciliation: charged-vs-actual delivery margin for the venue. ─────
+    if (action === 'delivery_report') {
+      const acc = await requireAccess(req, loc); if (!acc.ok) return acc.res;
+      const sinceIso = body?.since || new Date(Date.now() - 30 * 86400_000).toISOString();
+      const [{ data: sur }, { data: costs }] = await Promise.all([
+        sb.from('delivery_surcharges').select('customer_fee_minor, true_cost_minor, margin_minor').eq('location_id', loc).gte('created_at', sinceIso),
+        sb.from('delivery_costs_actual').select('total_minor').eq('location_id', loc).gte('recorded_at', sinceIso),
+      ]);
+      const sum = (rows: any[], k: string) => (rows || []).reduce((s, r) => s + (Number(r[k]) || 0), 0);
+      const customerTotalMinor = sum(sur, 'customer_fee_minor');
+      const quotedCostMinor = sum(sur, 'true_cost_minor');
+      const actualCostMinor = sum(costs, 'total_minor');
+      return json({ ok: true, report: {
+        since: sinceIso,
+        count: (sur || []).length,
+        customerTotalMinor,                 // what customers paid for delivery
+        quotedCostMinor,                    // Uber cost we quoted at order time
+        actualCostMinor,                    // actual Uber cost (from terminal webhooks)
+        quotedMarginMinor: customerTotalMinor - quotedCostMinor,
+        actualMarginMinor: actualCostMinor ? customerTotalMinor - actualCostMinor : null,
+      } });
+    }
+
     return json({ error: `unknown action: ${action}` }, 400);
   } catch (e) {
     return json({ error: String((e as Error)?.message || e) }, 500);

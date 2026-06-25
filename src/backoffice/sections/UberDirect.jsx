@@ -27,6 +27,7 @@ const S = {
   toggle: (on) => ({ width: 44, height: 24, borderRadius: 12, background: on ? 'var(--grn, #22c55e)' : 'var(--bdr2)', position: 'relative', cursor: 'pointer', transition: 'background .2s', flexShrink: 0 }),
   knob: (on) => ({ position: 'absolute', top: 3, left: on ? 23 : 3, width: 18, height: 18, borderRadius: '50%', background: '#fff', transition: 'left .2s' }),
   infoNote: { fontSize: 12, color: 'var(--t4)', background: 'var(--bg3)', borderRadius: 9, padding: '9px 12px', lineHeight: 1.5 },
+  linkA: { color: 'var(--acc)', fontWeight: 700, textDecoration: 'none' },
 };
 
 // £ <-> minor helpers for the money fields (stored as minor units in the policy).
@@ -84,6 +85,32 @@ export default function UberDirect() {
       <div>
         <h1 style={S.h1}>Delivery (Uber Direct)</h1>
         <p style={S.sub}>Quote the delivery fee from the customer's address at order time, surcharge it under your policy, and dispatch an Uber courier. Used identically across POS, online and catering.</p>
+      </div>
+
+      {/* Before you start — accounts are set up directly with Uber + HubRise (not via ServOS) */}
+      <div style={{ ...S.card, borderColor: '#B45309', background: 'rgba(180,83,9,0.06)' }}>
+        <h2 style={S.h2}>Before you start — set up your own Uber Direct + HubRise accounts</h2>
+        <p style={{ fontSize: 13, color: 'var(--t2)', lineHeight: 1.55, margin: '0 0 12px' }}>
+          Couriers are provided by <b>Uber Direct</b> and dispatched via <b>HubRise</b>. You set these up
+          directly with each provider — they are <b>outside ServOS's billing and control</b>: Uber Direct
+          charges your venue per delivery under your own Uber contract, and HubRise's Uber Direct Bridge is free.
+          ServOS only quotes the fee, surcharges your order, and hands the order over.
+        </p>
+        <ol style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: 'var(--t2)', lineHeight: 1.7 }}>
+          <li><b>Create an Uber Direct account</b> (merchant contract — Uber bills you for deliveries):{' '}
+            <a style={S.linkA} href="https://www.uber.com/gb/en/deliver/direct/" target="_blank" rel="noreferrer">uber.com/deliver/direct ↗</a></li>
+          <li><b>Create a HubRise account</b>:{' '}
+            <a style={S.linkA} href="https://www.hubrise.com/" target="_blank" rel="noreferrer">hubrise.com ↗</a></li>
+          <li><b>Enable the free Uber Direct Bridge</b> app inside HubRise, and connect it to your Uber Direct account:{' '}
+            <a style={S.linkA} href="https://www.hubrise.com/apps/uber-direct" target="_blank" rel="noreferrer">hubrise.com/apps/uber-direct ↗</a></li>
+          <li><b>Connect this venue to HubRise</b> in ServOS: Back Office → Channels → <b>Delivery channels</b>.</li>
+          <li>Come back here, turn delivery on, set your pickup address, radius and the delivery fee below.</li>
+        </ol>
+        <p style={{ fontSize: 12, color: 'var(--t4)', margin: '12px 0 0' }}>
+          Note: the HubRise Bridge dispatches the courier and Uber bills you directly. ServOS does not resell,
+          mark up, or take payment for the Uber/HubRise services — those accounts and any charges are between
+          your venue and Uber/HubRise.
+        </p>
       </div>
 
       {/* Enable */}

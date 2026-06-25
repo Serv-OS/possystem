@@ -8,7 +8,7 @@
 // Deployed --no-verify-jwt; does its own signature auth. Mirrors hubrise-webhook.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { verifyUberSignature, parseDeliveryResp, mapUberStatus } from '../_shared/uber.ts';
+import { verifyUberSignature, parseDeliveryResp, mapUberStatus, parseDeliveryCost } from '../_shared/uber.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -49,7 +49,19 @@ Deno.serve(async (req) => {
     if (p.courierPhone) patch.courier_phone = p.courierPhone;
     if (p.lat != null) patch.last_lat = p.lat;
     if (p.lng != null) patch.last_lng = p.lng;
-    await sb.from('deliveries').update(patch).eq('uber_delivery_id', deliveryId);
+    const { data: del } = await sb.from('deliveries').update(patch).eq('uber_delivery_id', deliveryId).select('id, location_id').maybeSingle();
+
+    // Reconciliation: on a terminal state, record the ACTUAL Uber cost against the delivery.
+    if (del?.id && (status === 'delivered' || status === 'canceled' || status === 'returned')) {
+      const cost = parseDeliveryCost(evt);
+      if (cost) {
+        await sb.from('delivery_costs_actual').upsert({
+          delivery_id: del.id, location_id: del.location_id,
+          base_minor: cost.totalMinor, total_minor: cost.totalMinor, currency: cost.currency,
+          recorded_at: new Date().toISOString(),
+        }, { onConflict: 'delivery_id' });
+      }
+    }
   }
 
   return new Response('ok', { status: 200 });

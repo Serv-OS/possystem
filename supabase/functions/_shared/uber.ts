@@ -180,6 +180,20 @@ export function mapUberStatus(raw: string | null): string {
   return STATUS_MAP[String(raw).toLowerCase().trim()] || 'pending';
 }
 
+/** Extract the ACTUAL Uber cost (what the merchant is billed) from a delivery payload, in
+ * minor units. Tolerant of both families: top-level fee, or delivery_fee.total, or the sum
+ * of fee line_items. Returns { totalMinor, currency } or null if not present. */
+export function parseDeliveryCost(r: any): { totalMinor: number; currency: string } | null {
+  const d = r?.data || r || {};
+  let totalMinor: number | null = null;
+  if (Number.isFinite(Number(d.fee))) totalMinor = Number(d.fee);
+  else if (d.delivery_fee && Number.isFinite(Number(d.delivery_fee.total))) totalMinor = Number(d.delivery_fee.total);
+  else if (Array.isArray(d.delivery_fee?.line_items)) totalMinor = d.delivery_fee.line_items.reduce((s: number, li: any) => s + (Number(li.total) || 0), 0);
+  if (totalMinor == null || !Number.isFinite(totalMinor)) return null;
+  const currency = (d.currency || d.currency_code || d.delivery_fee?.currency_code || 'GBP').toUpperCase();
+  return { totalMinor: Math.round(totalMinor), currency };
+}
+
 // ── Webhook signature (x-uber-signature: HMAC-SHA256 hex over the raw body) ────
 async function hmacHex(secret: string, body: string): Promise<string> {
   const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);

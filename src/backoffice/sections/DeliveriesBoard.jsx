@@ -7,8 +7,9 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { getActiveLocationSync } from '../../lib/supabase';
-import { listDeliveries, cancelDelivery } from '../../lib/delivery/deliveryConfig';
+import { listDeliveries, cancelDelivery, deliveryReport } from '../../lib/delivery/deliveryConfig';
 import { statusLabel, isTerminalStatus } from '../../lib/delivery/status';
+import { money } from '../../lib/currency';
 
 const S = {
   wrap: { maxWidth: 900 },
@@ -26,13 +27,15 @@ const S = {
 export default function DeliveriesBoard() {
   const [locId] = useState(() => getActiveLocationSync());
   const [rows, setRows] = useState(null);
+  const [report, setReport] = useState(null);
   const [busy, setBusy] = useState(null);
 
   const load = useCallback(async () => {
     if (!locId) return;
-    const r = await listDeliveries(locId, 50);
+    const [r, rep] = await Promise.all([listDeliveries(locId, 50), deliveryReport(locId)]);
     if (r?.deliveries) setRows(r.deliveries);
     else if (!rows) setRows([]);
+    if (rep?.report) setReport(rep.report);
   }, [locId, rows]);
 
   useEffect(() => {
@@ -55,6 +58,21 @@ export default function DeliveriesBoard() {
     <div style={S.wrap}>
       <h1 style={{ fontSize: 20, fontWeight: 800, color: 'var(--t1)', margin: '0 0 4px' }}>Deliveries (live)</h1>
       <p style={{ fontSize: 13, color: 'var(--t3)', margin: '0 0 16px' }}>Couriers dispatched for delivery orders. Status updates live from Uber / HubRise.</p>
+      {report && (
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
+          {[
+            ['Deliveries (30d)', String(report.count)],
+            ['Charged to customers', money((report.customerTotalMinor || 0) / 100)],
+            ['Actual Uber cost', report.actualCostMinor ? money(report.actualCostMinor / 100) : '—'],
+            ['Margin', report.actualMarginMinor != null ? money(report.actualMarginMinor / 100) : money((report.quotedMarginMinor || 0) / 100) + ' (est.)'],
+          ].map(([k, v]) => (
+            <div key={k} style={{ flex: '1 1 150px', background: 'var(--bg2)', border: '1px solid var(--bdr)', borderRadius: 12, padding: '12px 14px' }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em' }}>{k}</div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: 'var(--t1)', marginTop: 4 }}>{v}</div>
+            </div>
+          ))}
+        </div>
+      )}
       <div style={S.card}>
         <div style={{ ...S.row, ...S.head }}>
           <div>Order</div><div>Status</div><div>Courier</div><div>ETA</div><div></div>
