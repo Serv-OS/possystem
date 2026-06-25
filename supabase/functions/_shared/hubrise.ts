@@ -13,8 +13,10 @@ export const HUBRISE_MANAGER = 'https://manager.hubrise.com/oauth2/v1';
 // Scope we request. HubRise requires ONE right per resource (listing a resource twice —
 // e.g. orders.read AND orders.write — is rejected: "Resource type 'orders' specified more
 // than once"). `write` includes read, so orders.write covers receiving + updating orders,
-// catalog.write covers menu + inventory, customer_list.read reads the embedded customer.
-export const HUBRISE_SCOPE = 'location[orders.write,catalog.write,customer_list.read]';
+// catalog.write covers menu + inventory. customer_list.WRITE (not .read) per HubRise's
+// guidance — future-proofs the connection so we can write the Customer List later without a
+// re-consent; write includes read, so it still covers reading the embedded order customer.
+export const HUBRISE_SCOPE = 'location[orders.write,catalog.write,customer_list.write]';
 
 export class HubRiseError extends Error {
   status: number;
@@ -90,12 +92,13 @@ export const getLocations = (token: string) => hr(token, 'GET', '/locations/');
 
 // ── Callbacks ────────────────────────────────────────────────────────────────
 
-/** Register a callback. url=null creates a PASSIVE callback (event log to poll). */
+// HubRise has exactly ONE callback per connection (no id). Per HubRise's guidance we only ever
+// POST /callback (set the single config) right after obtaining the token — there is no need to
+// GET it. (No GET /callback / GET /callbacks helper on purpose.)
+/** Register the connection's single callback. url=null makes it PASSIVE (event log to poll). */
 export function createCallback(token: string, url: string | null, events: Record<string, string[]>) {
   return hr(token, 'POST', '/callback', { url, events });
 }
-export const listCallbacks = (token: string) => hr(token, 'GET', '/callbacks');
-export const deleteCallback = (token: string, id: string) => hr(token, 'DELETE', `/callbacks/${id}`);
 
 // Passive event log (durable replay / backfill)
 export const listEvents = (token: string) => hr(token, 'GET', '/callback/events');

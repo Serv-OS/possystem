@@ -88,6 +88,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.642', date: '25 Jun 2026', label: 'HubRise integration — refinements from HubRise’s integration review',
+    changes: [
+      'Catalog images are no longer re-uploaded on every menu publish — already-uploaded images are reused, only new/changed ones upload (faster publishes, no duplicate images). A “force” option re-uploads everything if you’ve swapped images.',
+      'Stock/86 state is now re-pushed to the delivery channels immediately after every menu publish, so out-of-stock items are correct the moment a new menu goes live.',
+      'Connection scope upgraded to customer_list.write (future-proofs the link for customer features) and the connection setup tidied to HubRise’s recommended workflow. Note: an already-connected venue must Disconnect + Reconnect once to pick up the new scope.',
+    ],
+  },
+  {
     version: '5.5.641', date: '25 Jun 2026', label: 'Fixes — category discount presets auto-apply to the right items; waitlist seating no longer leaves the party in the queue',
     changes: [
       'Discount preset fix: a preset scoped to a category (e.g. “20% off Desserts”) now AUTO-APPLIES to the matching items in the basket the moment you choose it — no more being asked to pick the items by hand. The button reads “Apply to N items”. Whole-check and custom discounts are unchanged; if nothing in the basket matches the category you still get the manual picker.',

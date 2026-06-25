@@ -8,8 +8,9 @@
 // POST { ops_location_id }. Auth: signed-in user with location access, or service role.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { createLocationCatalog, putCatalog, uploadCatalogImage } from '../_shared/hubrise.ts';
+import { createLocationCatalog, putCatalog, uploadCatalogImage, getCatalog } from '../_shared/hubrise.ts';
 import { buildCatalog } from '../_shared/hubrise-map.ts';
+import { resyncInventory } from '../_shared/hubrise-ingest.ts';
 
 const EMPTY_CATALOG = { variants: [], categories: [], products: [], option_lists: [], deals: [], discounts: [], charges: [] };
 
@@ -45,8 +46,10 @@ async function requireAccess(req: Request, loc: string): Promise<Response | null
   return null;
 }
 
-/** Pull the venue's menu and publish it. Shared so the reconcile cron can call it too. */
-export async function pushCatalog(loc: string): Promise<{ catalogId: string; products: number; images: number }> {
+/** Pull the venue's menu and publish it. Shared so the reconcile cron can call it too.
+ *  force=true re-uploads every image even if one already exists (use when an operator
+ *  has changed product images); default reuses already-uploaded image ids. */
+export async function pushCatalog(loc: string, force = false): Promise<{ catalogId: string; products: number; images: number; imagesReused: number }> {
   const { data: conn } = await sb.from('hubrise_connections').select('*').eq('location_id', loc).maybeSingle();
   if (!conn?.access_token) throw new Error('not connected');
   const token = conn.access_token;
@@ -99,17 +102,36 @@ export async function pushCatalog(loc: string): Promise<{ catalogId: string; pro
       }).eq('location_id', loc);
     }
 
-    // Upload product images (HubRise needs uploaded image ids, not URLs). Products only,
-    // in-scope, online, with an image; oversized/failed uploads are skipped silently.
+    // Product images: HubRise needs uploaded image ids, not URLs. Per HubRise's catalog-update
+    // guidance, REUSE images already uploaded on the previous catalog rather than re-uploading
+    // every push. We read the current catalog's products (ref == our item id) and reuse their
+    // existing image_id; only items that gained an image (or `force`) actually upload bytes.
+    // (No GET /inventory or GET /callback — only this GET /catalogs/:id, which is allowed.)
+    const existingImageIdByRef: Record<string, string> = {};
+    if (!force) {
+      try {
+        const cur = await getCatalog(token, catalogId!);
+        for (const p of (cur?.data?.products || [])) {
+          const ref = p?.ref != null ? String(p.ref) : null;
+          const imgId = Array.isArray(p?.image_ids) ? p.image_ids[0] : null;
+          if (ref && imgId) existingImageIdByRef[ref] = imgId;
+        }
+      } catch { /* first push / no catalog yet — upload everything */ }
+    }
+
     const imageIdByItem: Record<string, string> = {};
+    let imagesReused = 0;
     for (const it of (items || [])) {
       // Match buildCatalog.publishable — incl. sold-alone sub-items (donuts) so their images upload too.
       if (it.parent_id || it.archived || it.sold_alone === false) continue;
       if (it.visibility && it.visibility.online === false) continue;
       if (publishIds && !publishIds.has(String(it.id))) continue;
       if (!it.image) continue;
+      const ref = String(it.id);
+      const existing = existingImageIdByRef[ref];
+      if (existing) { imageIdByItem[ref] = existing; imagesReused++; continue; } // reuse — no re-upload
       const id = await uploadImageFromUrl(token, catalogId!, String(it.image));
-      if (id) imageIdByItem[String(it.id)] = id;
+      if (id) imageIdByItem[ref] = id;
     }
 
     const data = buildCatalog({
@@ -123,7 +145,15 @@ export async function pushCatalog(loc: string): Promise<{ catalogId: string; pro
       hubrise_catalog_name: name, catalog_pushed_at: new Date().toISOString(),
       catalog_push_error: null, updated_at: new Date().toISOString(),
     }).eq('location_id', loc);
-    return { catalogId: catalogId!, products: data.products.length, images: Object.keys(imageIdByItem).length };
+
+    // HubRise guidance: PUT /inventory immediately after every catalog update, so the 86/stock
+    // state re-applies against the just-published refs (a stock ref only sticks once its catalog
+    // entry exists — pushing the catalog first then re-asserting inventory is the correct order).
+    // Best-effort: a stock blip must not fail the catalog publish.
+    try { await resyncInventory(sb, loc); }
+    catch (e) { console.warn('[hubrise-catalog-push] post-publish inventory resync failed:', e instanceof Error ? e.message : e); }
+
+    return { catalogId: catalogId!, products: data.products.length, images: Object.keys(imageIdByItem).length, imagesReused };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     await sb.from('hubrise_connections').update({ catalog_push_error: msg, updated_at: new Date().toISOString() }).eq('location_id', loc);
@@ -144,7 +174,7 @@ Deno.serve(async (req) => {
   if (denied) return denied;
 
   try {
-    const out = await pushCatalog(loc);
+    const out = await pushCatalog(loc, !!body?.force);  // force=true re-uploads all images
     return json({ ok: true, ...out });
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : String(e) }, 500);

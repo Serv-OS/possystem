@@ -75,6 +75,9 @@ Deno.serve(async (req) => {
   if (hrStatus === 'accepted') {
     const prep = Number.isFinite(body?.prep_minutes) ? Math.max(0, Math.round(body.prep_minutes)) : 20;
     confirmedTime = new Date(Date.now() + prep * 60_000).toISOString();
+    // confirmed_time is sent in UTC (HubRise converts to the channel's local zone). Log a
+    // human-readable "now + prep" alongside the UTC value for readability (per HubRise guidance).
+    console.log(`[hubrise-order-status] ${ref} accepted — confirmed_time ${confirmedTime} (now +${prep}m)`);
   }
 
   try {
