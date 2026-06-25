@@ -155,6 +155,41 @@ export function scheduleFlush() {
   _debounceTimer = setTimeout(flushSessions, 600);
 }
 
+// Persist ONE table's session to active_sessions WITHOUT the full sync sweep.
+//
+// Used by the waitlist host stand when it seats a party. The host stand renders without SyncBridge
+// and its store.tables is a 30s poll snapshot of the floor — so it must NEVER run the global
+// flushSessions(), which writes AND deletes EVERY table from that partial/stale view and was wiping
+// POS-seated tables (a cross-device "tables never lost" violation). This upserts only the given
+// table and never deletes anything, so the host stand can add a seat without ever touching another
+// device's tables.
+export async function flushSingleSession(tableId) {
+  if (!tableId) return;
+  if (!_locationId) {
+    try { _locationId = await getLocationId(); } catch { return; }
+  }
+  if (!_locationId) return;
+  const t = (useStore.getState().tables || []).find((x) => x.id === tableId);
+  if (!t || !t.session) return;
+
+  _lastSent[t.id] = JSON.stringify(t.session);
+  try {
+    const backup = JSON.parse(localStorage.getItem('rpos-session-backup') || '{}');
+    backup[t.id] = t.session;
+    localStorage.setItem('rpos-session-backup', JSON.stringify(backup));
+  } catch { /* backup best-effort */ }
+
+  const row = { location_id: _locationId, table_id: t.id, session: t.session, updated_at: new Date().toISOString() };
+  queueWrite({ type: 'upsert', table: 'active_sessions', payload: row, onConflict: 'location_id,table_id' });
+  if (isOnline()) {
+    try {
+      const { error } = await supabase.from('active_sessions').upsert(row, { onConflict: 'location_id,table_id' });
+      if (error) console.warn('[SessionSync] flushSingleSession upsert error —', error.message || error);
+      else console.log('[SessionSync] ✓ persisted single session for table', t.label || t.id);
+    } catch (e) { console.warn('[SessionSync] flushSingleSession threw —', e?.message || e); }
+  }
+}
+
 // ── Load on boot ──────────────────────────────────────────────────────────────
 export async function loadSessions() {
   if (!_locationId) _locationId = await getLocationId().catch(() => null);

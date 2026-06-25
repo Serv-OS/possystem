@@ -87,6 +87,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.636', date: '24 Jun 2026', label: 'Fix — waitlist host stand saves only the table it seats (stops POS tables vanishing)',
+    changes: [
+      'Follow-up to the previous fix: when the host stand seated a walk-in it ran the full floor-sync off its own periodic snapshot of the floor, which could re-save and then later delete other tables — wiping sessions that were open on the POS, so an occupied table stayed on the POS but disappeared from the waitlist after a while. The host stand now persists only the single table it just seated and never touches any other table. Reload the host stand to pick this up.',
+    ],
+  },
+  {
     version: '5.5.635', date: '24 Jun 2026', label: 'Critical fix — waitlist host stand no longer wipes the POS’s open tables',
     changes: [
       'A device now only removes a table’s saved session from the shared database if it was the device that opened that table. The waitlist host stand ran the table-sync routine whenever it seated a party and was deleting the session rows for every table it didn’t know about — including tables seated on the POS — so an occupied table disappeared from the database and showed as “Open” on the waitlist (and on any second device). Normal table clears still remove the session exactly as before. Reload both the POS and the host stand to pick this up, then re-seat the affected tables.',

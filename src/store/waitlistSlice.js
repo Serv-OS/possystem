@@ -53,7 +53,7 @@ import {
 } from '../lib/waitlist/waitlistData.js';
 
 import { fetchCustomerByPhone, normalisePhone } from '../lib/customerLookup.js';
-import { scheduleFlush as scheduleSessionFlush } from '../sync/SessionSync.js';
+import { flushSingleSession } from '../sync/SessionSync.js';
 
 import {
   supabase,
@@ -352,8 +352,10 @@ export function waitlistSlice(set, get) {
           get().seatTable?.(opts.tableId, { covers: updated.size, server: get().staff?.name, customer: seatCustomer });
           // The host stand renders WITHOUT SyncBridge, so seatTable's in-memory session would
           // never reach active_sessions and the 30s floor poll would flip the table back to free.
-          // Persist it now so the seat sticks (honours "tables MUST never be lost").
-          scheduleSessionFlush();
+          // Persist JUST this table (flushSingleSession) — NOT the global flushSessions, which from
+          // the host stand's poll-snapshot view would write/delete every other table and wipe
+          // POS-seated ones. Honours "tables MUST never be lost" without clobbering other devices.
+          flushSingleSession(opts.tableId);
         } catch (e) {
           console.warn('[waitlist] seatTable failed:', e?.message || e);
         }
