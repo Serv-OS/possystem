@@ -121,10 +121,14 @@ function publicStatus(c: any) {
     connected: c.status === 'connected',
     status: c.status,
     account_name: c.account_name,
+    hubrise_account_id: c.hubrise_account_id,                 // expose id+name for ALL FOUR resources
     hubrise_location_name: c.hubrise_location_name,
     hubrise_location_id: c.hubrise_location_id,
     catalog_id: c.hubrise_catalog_id,
     catalog_name: c.hubrise_catalog_name,
+    hubrise_customer_list_id: c.hubrise_customer_list_id,     // customer list — required by the integration sheet
+    hubrise_customer_list_name: c.hubrise_customer_list_name || null,
+    manager_url: 'https://manager.hubrise.com',               // link target for the BO "Manage in HubRise"
     currency: c.currency,
     callbacks_registered_at: c.callbacks_registered_at,
     catalog_pushed_at: c.catalog_pushed_at,

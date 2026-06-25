@@ -88,6 +88,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.643', date: '25 Jun 2026', label: 'HubRise — close the certification gaps (connection display, refs export, order decoding)',
+    changes: [
+      'HubRise settings now show all four linked resources (account, location, catalog and customer list) with their ids, plus a “Manage in HubRise” link to the HubRise back office, and a one-click “Download catalog refs (CSV)” so you can look up any product/option/category’s HubRise reference.',
+      'Inbound delivery-channel orders now decode more fields: delivery GPS coordinates, phone access code, marketing preferences, and any charges (delivery fee etc.) and discounts on the order — and the requested time now shows in the venue’s local time rather than a raw timestamp. Customer phone numbers are normalised to international (E.164) format.',
+      'These complete HubRise’s POS certification checklist. (Edge functions redeployed; connection display works on the next status refresh.)',
+    ],
+  },
+  {
     version: '5.5.642', date: '25 Jun 2026', label: 'HubRise integration — refinements from HubRise’s integration review',
     changes: [
       'Catalog images are no longer re-uploaded on every menu publish — already-uploaded images are reused, only new/changed ones upload (faster publishes, no duplicate images). A “force” option re-uploads everything if you’ve swapped images.',

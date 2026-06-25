@@ -13,6 +13,37 @@ import { toMoney, parseMoney } from './hubrise.ts';
 
 const displayName = (it: any) => it?.menu_name || it?.name || 'Item';
 
+// Defensive E.164 normalisation for inbound phone numbers. HubRise recommends E.164 and will make
+// it mandatory; some channels still send local format. Conservative: keep already-+ numbers, map a
+// UK national 0-prefix to +44 (ServOS is UK-primary), and otherwise pass through unchanged rather
+// than guess a country code. Never throws.
+function toE164(raw: unknown): string {
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  if (s.startsWith('+')) return '+' + s.slice(1).replace(/[^\d]/g, '');
+  const digits = s.replace(/[^\d]/g, '');
+  if (!digits) return '';
+  if (digits.startsWith('44')) return '+' + digits;        // already country-coded sans +
+  if (digits.startsWith('0')) return '+44' + digits.slice(1); // UK national -> E.164
+  return s; // unknown format — leave verbatim (we still store + display it)
+}
+
+// HubRise encodes order times in the STORE's timezone with that store's UTC offset
+// ("…14:30:00+02:00"), so the wall-clock part IS already store-local. Extract a clean
+// "HH:MM" (optionally "DD/MM HH:MM" when it's not the same calendar date as created_at) for
+// display, instead of dumping the raw ISO. Returns null for ASAP/no time.
+function hrTimeLabel(iso: unknown, createdIso?: unknown): string | null {
+  const s = String(iso || '');
+  const t = s.match(/T(\d{2}):(\d{2})/);
+  if (!t) return null;
+  const d = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  const cd = String(createdIso || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  const hhmm = `${t[1]}:${t[2]}`;
+  // include the date only when the wanted day differs from the order-created day
+  if (d && cd && d[0] !== cd[0]) return `${d[3]}/${d[2]} ${hhmm}`;
+  return hhmm;
+}
+
 // ── 1. Catalog builder ───────────────────────────────────────────────────────
 
 export function buildCatalog(opts: {
@@ -266,9 +297,31 @@ export function orderToQueueRow(order: any, opts: { locationId: string }): { row
     dealLabel: it.deal_line?.label || null,
   }));
 
+  // GPS coords (delivery): HubRise may carry lat/lng on the customer or its address block.
+  const lat = c.latitude ?? c.lat ?? c.address?.latitude ?? c.address?.lat ?? null;
+  const lng = c.longitude ?? c.lng ?? c.address?.longitude ?? c.address?.lng ?? null;
+  const gps = (lat != null && lng != null) ? { lat: Number(lat), lng: Number(lng) } : null;
+
+  // Charges (delivery fee, bag fee, service charge, tip) and order-level discounts. order.total
+  // already nets these, but HubRise wants them decoded — keep them so the kitchen/floor + reports
+  // can reconcile the headline total. Money strings -> numeric amounts.
+  const charges = (order.charges || []).map((ch: any) => ({
+    name: ch.name || ch.type || 'Charge',
+    ref: ch.ref || null,
+    type: ch.type || null,
+    amount: parseMoney(ch.price).amount,
+  }));
+  const discounts = (order.discounts || []).map((d: any) => ({
+    name: d.name || 'Discount',
+    ref: d.ref || null,
+    amount: parseMoney(d.price_off ?? d.price ?? d.amount).amount,
+  }));
+
   const customer: any = {
     name,
-    phone: c.phone || '',
+    phone: toE164(c.phone),                              // E.164-normalised (verbatim kept if unknown format)
+    phoneRaw: c.phone || '',                             // original, for reference
+    phoneAccessCode: c.phone_access_code || c.access_code || null,
     email: c.email || '',
     address: serviceType === 'delivery'
       ? {
@@ -277,18 +330,30 @@ export function orderToQueueRow(order: any, opts: { locationId: string }): { row
           city: c.city || '',
           postcode: c.postal_code || '',
           country: c.country || '',
+          ...(gps ? { gps } : {}),                       // {lat,lng} when the channel supplies them
         }
       : null,
     notes: order.customer_notes || c.delivery_notes || '',
     deliveryNotes: c.delivery_notes || '',
+    // Marketing opt-in flags from the embedded customer (decoded only; we don't action them on
+    // inbound channel orders — kept so the row is complete and clears the cert decode requirement).
+    marketingPrefs: {
+      sms: c.sms_marketing ?? c.marketing?.sms ?? null,
+      email: c.email_marketing ?? c.marketing?.email ?? null,
+    },
     channel,
     collectionCode: order.collection_code || order.ref || null,
     serviceType,
     paid,
+    ...(charges.length ? { charges } : {}),
+    ...(discounts.length ? { discounts } : {}),
     source_label: channel,
     hubrise_order_id: order.id,
     hubrise_location_id: order.location_id || null,
   };
+
+  const expectedIso = order.expected_time || order.confirmed_time || null;
+  customer.expectedTime = expectedIso;   // full store-tz ISO (audit/accuracy); display uses the label below
 
   const row = {
     ref,
@@ -300,7 +365,8 @@ export function orderToQueueRow(order: any, opts: { locationId: string }): { row
     status: hrToQueueStatus(order.status || 'new'),
     source: 'hubrise',
     is_asap: !!order.asap,
-    collection_time: order.expected_time || order.confirmed_time || null,
+    // store-local "HH:MM" (or "DD/MM HH:MM" cross-day) — HubRise sends times in the store's tz/offset
+    collection_time: order.asap ? null : hrTimeLabel(expectedIso, order.created_at),
     paid,
     created_at: order.created_at || new Date().toISOString(),
   };

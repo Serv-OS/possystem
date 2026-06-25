@@ -35,6 +35,19 @@ const S = {
 
 const fmt = (t) => (t ? new Date(t).toLocaleString() : '—');
 
+// A connection-resource row: name on top, the HubRise id (= our internal id) beneath in mono.
+function Res({ k, name, id, fallback }) {
+  return (
+    <div style={S.kv}>
+      <span style={S.k}>{k}</span>
+      <span style={{ ...S.v, display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
+        <span>{name || fallback || '—'}</span>
+        {id ? <span style={{ fontSize: 11, color: 'var(--t4)', fontWeight: 500, fontFamily: 'var(--font-mono, monospace)' }}>{id}</span> : null}
+      </span>
+    </div>
+  );
+}
+
 export default function HubRise() {
   const [locId, setLocId] = useState(null);
   const [venueName, setVenueName] = useState('');
@@ -53,6 +66,35 @@ export default function HubRise() {
       setHubriseAutoReceipt(id, r?.status?.auto_print_receipt !== false);
     } catch (e) { setMsg({ kind: 'err', text: e.message }); }
   }, []);
+
+  // Export every catalog ref code (name → HubRise ref) as CSV. The HubRise ref of a product /
+  // category / option IS its internal ServOS id (so an inbound order's sku_ref maps straight back);
+  // this lets the operator find/verify any ref — the integration sheet's "view ref codes" + the
+  // demo checklist's "find/export refs" requirement.
+  const exportRefs = useCallback(async () => {
+    if (!locId) return;
+    setBusy('refs');
+    try {
+      const [{ data: cats }, { data: items }, { data: groups }] = await Promise.all([
+        supabase.from('menu_categories').select('id,name,label').eq('location_id', locId),
+        supabase.from('menu_items').select('id,name,menu_name,parent_id,archived').eq('location_id', locId),
+        supabase.from('modifier_groups').select('id,name,options').eq('location_id', locId),
+      ]);
+      const rows = [['Type', 'Name', 'HubRise ref']];
+      (cats || []).forEach((c) => rows.push(['Category', c.label || c.name || '', c.id]));
+      (items || []).filter((it) => !it.archived).forEach((it) => rows.push([it.parent_id ? 'SKU / variant' : 'Product', it.menu_name || it.name || '', it.id]));
+      (groups || []).forEach((g) => {
+        rows.push(['Option list', g.name || '', g.id]);
+        (g.options || []).forEach((o) => rows.push(['Option', o.name || '', o.itemId || o.id]));
+      });
+      const csv = rows.map((r) => r.map((x) => `"${String(x ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
+      const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob); a.download = `hubrise-catalog-refs.csv`; a.click(); URL.revokeObjectURL(a.href);
+      setMsg({ kind: 'ok', text: `Exported ${rows.length - 1} catalog ref codes.` });
+    } catch (e) { setMsg({ kind: 'err', text: e.message }); }
+    setBusy('');
+  }, [locId]);
 
   useEffect(() => {
     (async () => {
@@ -119,11 +161,16 @@ export default function HubRise() {
 
         {connected ? (
           <>
-            <div style={S.kv}><span style={S.k}>HubRise account</span><span style={S.v}>{status.account_name || '—'}</span></div>
-            <div style={S.kv}><span style={S.k}>Location</span><span style={S.v}>{status.hubrise_location_name || status.hubrise_location_id || '—'}</span></div>
+            {/* All four HubRise resources shown with name + id (required by the integration sheet). */}
+            <Res k="HubRise account" name={status.account_name} id={status.hubrise_account_id} />
+            <Res k="Location" name={status.hubrise_location_name} id={status.hubrise_location_id} />
+            <Res k="Catalog" name={status.catalog_name} id={status.catalog_id} fallback={status.catalog_id ? 'published' : 'not published'} />
+            <Res k="Customer list" name={status.hubrise_customer_list_name} id={status.hubrise_customer_list_id} fallback={status.hubrise_customer_list_id ? 'linked' : 'not linked'} />
             <div style={S.kv}><span style={S.k}>Currency</span><span style={S.v}>{status.currency || '—'}</span></div>
             <div style={S.kv}><span style={S.k}>Order callbacks</span><span style={S.v}>{status.callbacks_registered_at ? `registered ${fmt(status.callbacks_registered_at)}` : 'not registered'}</span></div>
             <div style={{ ...S.row, marginTop: 14 }}>
+              <a href={status.manager_url || 'https://manager.hubrise.com'} target="_blank" rel="noopener noreferrer"
+                 style={{ ...S.btnGhost, textDecoration: 'none', display: 'inline-block' }}>Manage in HubRise ↗</a>
               <button style={S.btnGhost} disabled={busy === 'reg'} onClick={() => run('reg', () => hubriseRegister(locId), 'Order callbacks re-registered.')}>
                 {busy === 'reg' ? '…' : 'Re-register callbacks'}
               </button>
@@ -199,6 +246,9 @@ export default function HubRise() {
             </button>
             <button style={S.btnGhost} disabled={busy === 'stk'} onClick={() => run('stk', () => hubriseResyncStock(locId), 'Stock resynced to HubRise.')}>
               {busy === 'stk' ? 'Syncing…' : 'Resync stock'}
+            </button>
+            <button style={S.btnGhost} disabled={busy === 'refs'} onClick={exportRefs}>
+              {busy === 'refs' ? 'Exporting…' : 'Download catalog refs (CSV)'}
             </button>
           </div>
           <div style={{ ...S.sub, marginTop: 10 }}>
