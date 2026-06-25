@@ -945,7 +945,11 @@ export default function TablesSurface() {
                     )}
                     <button className="btn btn-ghost btn-full" style={{ borderColor:'var(--grn-b)', color:'var(--grn)' }}
                       onClick={()=>handleAction('open_pos')}>Take payment</button>
-                    <button className="btn btn-ghost btn-full" onClick={()=>handleAction('close')}>Force close</button>
+                    {/* v5.5.644: "Force close" removed — it called clearTable with no
+                        payment, wiping an occupied table's whole order (lost tables &
+                        orders). To clear an occupied table go through Take payment →
+                        checkout (comp/void there is auditable). 'close' stays for the
+                        empty-seated ('open') table path only. */}
                   </>
                 );
               })()}

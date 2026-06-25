@@ -88,6 +88,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.644', date: '25 Jun 2026', label: 'Safety — remove the table “Force close”; POS “Clear” no longer wipes a live table order',
+    changes: [
+      'REMOVED the “Force close” button from an occupied table on the floor plan. It cleared the table with no payment, wiping the whole order — a real way to lose a table and its orders in one tap. To clear an occupied table, go through “Take payment” → checkout, where a comp/void is recorded and auditable. (The “Close table” option on an empty, just-seated table is unchanged.)',
+      'FIXED the POS “Clear” button (the small Clear next to the order): on a table it used to wipe the entire order, including food already sent to the kitchen. It now removes only the un-sent draft you’re building; sent items and the table session are kept (use a void to remove a sent item). Walk-in / takeaway carts still clear fully as before. Daily stock counts are restored for any discarded draft lines.',
+    ],
+  },
+  {
     version: '5.5.643', date: '25 Jun 2026', label: 'HubRise — close the certification gaps (connection display, refs export, order decoding)',
     changes: [
       'HubRise settings now show all four linked resources (account, location, catalog and customer list) with their ids, plus a “Manage in HubRise” link to the HubRise back office, and a one-click “Download catalog refs (CSV)” so you can look up any product/option/category’s HubRise reference.',

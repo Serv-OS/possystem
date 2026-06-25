@@ -49,7 +49,7 @@ export default function POSSurface() {
     cashInDrawer, cashOutDrawer, computeExpectedCash, currentDrawerSession,
     loadCurrentDrawerSession,
     getPOSItems, getPOSTotals, getPOSOrderNote,
-    activeTableId, tables, clearTable, clearWalkIn, setActiveTableId, recordWalkInClosed,
+    activeTableId, tables, clearTable, clearDraftItems, clearWalkIn, setActiveTableId, recordWalkInClosed,
     orderType, setOrderType, customer, setCustomer, setAllergens, clearCustomer,
     orderQueue, updateQueueStatus, removeFromQueue, showToast,
     pendingItem, setPendingItem, clearPendingItem,
@@ -1041,8 +1041,12 @@ export default function POSSurface() {
                   color:namesOnly?'var(--acc)':'var(--t4)',transition:'all .12s'}}
               >≡ Names</button>
             )}
+            {/* v5.5.644: on a TABLE, "Clear" now drops only the unsent draft
+                (clearDraftItems) — sent items + the table session survive. It no
+                longer wipes a whole occupied table's order. Walk-in carts still
+                clear fully. */}
             {items.length>0&&(
-              <button onClick={()=>activeTableId?clearTable(activeTableId):clearWalkIn()} style={{fontSize:11,fontWeight:700,color:'var(--t4)',cursor:'pointer',background:'none',border:'none',fontFamily:'inherit',padding:0,transition:'color .12s'}}
+              <button onClick={()=>activeTableId?clearDraftItems(activeTableId):clearWalkIn()} style={{fontSize:11,fontWeight:700,color:'var(--t4)',cursor:'pointer',background:'none',border:'none',fontFamily:'inherit',padding:0,transition:'color .12s'}}
                 onMouseEnter={e=>e.currentTarget.style.color='var(--red)'}
                 onMouseLeave={e=>e.currentTarget.style.color='var(--t4)'}>Clear</button>
             )}

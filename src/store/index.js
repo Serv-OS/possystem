@@ -1373,6 +1373,39 @@ export const useStore = create((set, get) => ({
     }
   },
 
+  // v5.5.644: clear ONLY the unsent draft (status 'pending', not voided) on a
+  // table. Sent items and the table session are preserved. This replaces the old
+  // POS "Clear → clearTable" path, which wiped a whole occupied table's order
+  // (incl. already-sent food) with no payment — a data-loss / lost-table risk.
+  // To remove a SENT item you must void it (auditable); to discard the draft you
+  // built but haven't fired, use this. Daily counts are restored per discarded
+  // line + its modifier sub-items, mirroring removeItem.
+  clearDraftItems: (tableId) => {
+    const table = get().tables.find(t => t.id === tableId);
+    const draft = (table?.session?.items || []).filter(i => i.status === 'pending' && !i.voided);
+    if (!draft.length) return;
+    draft.forEach(removed => {
+      get().decrementDailyCount(removed.itemId, -(removed.qty || 1));
+      (removed.mods || []).forEach(mod => {
+        if (mod.itemId) get().decrementDailyCount(mod.itemId, -((mod.qty || 1) * (removed.qty || 1)));
+      });
+    });
+    set(s => ({
+      tables: s.tables.map(t => {
+        if (t.id !== tableId || !t.session) return t;
+        const items = t.session.items.filter(i => !(i.status === 'pending' && !i.voided));
+        const subtotal = items.reduce((sum, i) => sum + i.price * i.qty, 0);
+        const hasSent = items.some(i => i.status === 'sent' && !i.voided);
+        // If nothing fired remains, the table is just "seated" again (open), not occupied.
+        return {
+          ...t,
+          status: (t.status === 'occupied' && !hasSent) ? 'open' : t.status,
+          session: { ...t.session, items, subtotal, total: subtotal * 1.125 },
+        };
+      }),
+    }));
+  },
+
   updateItemQty: (itemUid, delta) => {
     const { activeTableId } = get();
     // v4.6.11: compute actual qty change first so we can adjust inventory.
