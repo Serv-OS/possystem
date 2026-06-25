@@ -88,6 +88,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.647', date: '25 Jun 2026', label: 'Uber Direct delivery — courier dispatch + live tracking webhook (slice 4, owner-gated)',
+    changes: [
+      'Confirmed delivery orders now dispatch an Uber courier automatically: on payment the order is sent to Uber Direct (Create Delivery), a tracking record is stored, and the customer/staff get a tracking link + live status. A signed webhook (HMAC-verified, idempotent) feeds courier position + status changes (finding a courier → heading to you → out for delivery → delivered) back in real time.',
+      'Built on a dispatch abstraction so a venue can later switch fulfilment to the HubRise Bridge (stubbed this release — it needs orders pushed into HubRise first). Training-mode tills never dispatch a real courier. Still owner-gated: dispatch only fires once the Uber credentials, webhook signing key and a connected venue are live.',
+    ],
+  },
+  {
     version: '5.5.646', date: '25 Jun 2026', label: 'Uber Direct delivery — address-based quoting & surcharging (slices 1–3, owner-gated)',
     changes: [
       'NEW Uber Direct delivery foundation: enter a delivery address and the POS fetches a live courier fee + ETA and adds it to the bill automatically, under a per-venue surcharge policy. Set it up in Back Office → Channels → “Delivery (Uber Direct)”: enable, pickup address, radius, and the surcharge policy (pass-through / mark-up / subsidise / flat, with cap, free-over-£X and minimum-order), with a live “a £4.80 Uber cost → customer pays £X” preview.',

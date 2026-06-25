@@ -10,6 +10,7 @@ import { hubrisePushStock, isHubriseConnected, hubrisePushStatus, isHubriseAutoR
 import { depleteForSale, reverseForSale } from '../lib/stock/deplete';
 import { setTrainingMode as applyTrainingFlag, isTrainingMode } from '../lib/trainingMode';
 import { getDeliveryQuote, recordDeliverySurcharge } from '../lib/delivery/quoteService';
+import { dispatchDelivery } from '../lib/delivery/dispatch';
 import { STALE_ORDER_FLOOR_MS } from '../sync/staleness';
 import { waitlistSlice } from './waitlistSlice';
 
@@ -4135,8 +4136,13 @@ export const useStore = create((set, get) => ({
     insertClosedCheck(record);
     depleteForSale(record);   // v5.5.565: recipe → stock ledger depletion (fire-and-forget)
     // v5.5.646: log delivery quote + surcharge (margin reporting) + clear the held quote.
-    if (orderType === 'delivery' && _dq?.available) {
+    // v5.5.647: also dispatch the courier (edge fn routes by venue dispatch_backend).
+    // Both skipped in training (no real surcharge row, no real courier).
+    if (orderType === 'delivery' && _dq?.available && !isTrainingMode()) {
       recordDeliverySurcharge({ opsLocationId: record.locationId, orderRef: record.ref, quote: _dq }).catch(() => {});
+      dispatchDelivery({ opsLocationId: record.locationId, order: record, quote: _dq }).catch(() => {});
+      set({ deliveryQuote: null });
+    } else if (orderType === 'delivery') {
       set({ deliveryQuote: null });
     }
     if (paymentInfo.promoRedemption) get().redeemPromoCode?.(paymentInfo.promoRedemption, record, customer);

@@ -14,7 +14,16 @@
 // Deployed --no-verify-jwt; this fn does its own auth.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { getAccessToken, getQuote, geocodePostcode, haversineMiles } from '../_shared/uber.ts';
+import { getAccessToken, getQuote, geocodePostcode, haversineMiles, createDelivery, getDelivery, parseDeliveryResp, mapUberStatus } from '../_shared/uber.ts';
+
+const e164 = (raw: string) => {
+  const s = String(raw || '').replace(/[\s()-]/g, '');
+  if (!s) return '';
+  if (s.startsWith('+')) return s;
+  if (s.startsWith('0')) return '+44' + s.slice(1);
+  if (s.startsWith('44')) return '+' + s;
+  return s;
+};
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -158,6 +167,70 @@ Deno.serve(async (req) => {
       });
       if (error) return json({ error: error.message }, 500);
       return json({ ok: true });
+    }
+
+    // ── Dispatch a courier (slice 4). Routes by venue dispatch_backend. ───────
+    if (action === 'create_delivery') {
+      const t = await requireToken(req); if (!t.ok) return t.res;
+      const { data: cfg } = await sb.from('venue_uber_config').select('*').eq('location_id', loc).maybeSingle();
+      if (!cfg || !cfg.enabled) return json({ ok: false, reason: 'disabled' });
+      const orderRef = body?.order_ref || null;
+      const manifest = body?.manifest || {};
+
+      // HubRise Bridge backend — deferred (requires pushing the order into HubRise first).
+      // Record a pending delivery so the staff board shows it; real dispatch lands later.
+      if (cfg.dispatch_backend === 'hubrise_bridge') {
+        const { data: row } = await sb.from('deliveries').insert({
+          location_id: loc, order_ref: orderRef, dispatch_backend: 'hubrise_bridge', status: 'pending',
+        }).select('id').maybeSingle();
+        return json({ ok: true, deferred: 'hubrise_bridge', deliveryRowId: row?.id || null, message: 'HubRise Bridge dispatch not yet wired (needs order push to HubRise).' });
+      }
+
+      // Fill pickup from server-side config (never trusted from the client).
+      manifest.pickup = {
+        name: cfg.pickup_contact?.name || 'Restaurant',
+        phone: e164(cfg.pickup_contact?.phone || ''),
+        address: cfg.pickup_address || null,
+        instructions: cfg.pickup_contact?.instructions || '',
+      };
+
+      const customerId = cfg.uber_customer_id || ENV_CUSTOMER_ID;
+      const env = (cfg.env || ENV_DEFAULT) as 'sandbox' | 'prod';
+      if (!ENV_CLIENT_ID || !ENV_CLIENT_SECRET || !customerId) return json({ ok: false, reason: 'not_configured' });
+
+      try {
+        const token = await getAccessToken(env, ENV_CLIENT_ID, ENV_CLIENT_SECRET);
+        const resp = await createDelivery({ env, token, customerId, manifest });
+        const p = parseDeliveryResp(resp);
+        const status = mapUberStatus(p.rawStatus);
+        const { data: row } = await sb.from('deliveries').insert({
+          location_id: loc, order_ref: orderRef, dispatch_backend: 'uber_api',
+          uber_delivery_id: p.id, status, tracking_url: p.trackingUrl,
+          courier_name: p.courierName, courier_phone: p.courierPhone, last_lat: p.lat, last_lng: p.lng,
+        }).select('id').maybeSingle();
+        return json({ ok: true, deliveryRowId: row?.id || null, deliveryId: p.id, trackingUrl: p.trackingUrl, status });
+      } catch (e) {
+        return json({ ok: false, reason: 'dispatch_failed', error: String((e as Error)?.message || e) });
+      }
+    }
+
+    // ── Poll a delivery's status (staff board fallback to the webhook). ───────
+    if (action === 'get_delivery') {
+      const t = await requireToken(req); if (!t.ok) return t.res;
+      const { data: cfg } = await sb.from('venue_uber_config').select('*').eq('location_id', loc).maybeSingle();
+      const customerId = cfg?.uber_customer_id || ENV_CUSTOMER_ID;
+      const env = (cfg?.env || ENV_DEFAULT) as 'sandbox' | 'prod';
+      const id = body?.uber_delivery_id;
+      if (!ENV_CLIENT_ID || !ENV_CLIENT_SECRET || !customerId || !id) return json({ ok: false, reason: 'not_configured' });
+      try {
+        const token = await getAccessToken(env, ENV_CLIENT_ID, ENV_CLIENT_SECRET);
+        const p = parseDeliveryResp(await getDelivery(env, token, customerId, id));
+        const status = mapUberStatus(p.rawStatus);
+        await sb.from('deliveries').update({ status, tracking_url: p.trackingUrl, courier_name: p.courierName, courier_phone: p.courierPhone, last_lat: p.lat, last_lng: p.lng, updated_at: new Date().toISOString() }).eq('uber_delivery_id', id);
+        return json({ ok: true, status, trackingUrl: p.trackingUrl, courierName: p.courierName, lat: p.lat, lng: p.lng });
+      } catch (e) {
+        return json({ ok: false, reason: 'lookup_failed', error: String((e as Error)?.message || e) });
+      }
     }
 
     return json({ error: `unknown action: ${action}` }, 400);

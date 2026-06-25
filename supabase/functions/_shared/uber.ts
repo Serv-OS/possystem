@@ -119,17 +119,65 @@ export async function getQuote(opts: {
   return uberFetch(env, token, 'POST', UBER_PATHS.quote(customerId), body);
 }
 
-// ── Create delivery (slice 4 dispatch; included for completeness) ─────────────
+// ── Create delivery (dispatch) ────────────────────────────────────────────────
+// Translates the normalised ServOS manifest (src/lib/delivery/manifest.js shape) into
+// Uber's classic create-delivery body. NOTE: lock the exact field names against the live
+// Uber Direct dashboard in sandbox — both endpoint families exist; this is best-effort.
 export async function createDelivery(opts: {
-  env: 'sandbox' | 'prod'; token: string; customerId: string; manifest: Record<string, unknown>;
+  env: 'sandbox' | 'prod'; token: string; customerId: string; manifest: any;
 }): Promise<any> {
-  return uberFetch(opts.env, opts.token, 'POST', UBER_PATHS.create(opts.customerId), opts.manifest);
+  const m = opts.manifest || {};
+  const body: Record<string, unknown> = {
+    quote_id: m.quote_id ?? undefined,
+    manifest_reference: m.manifest_reference ?? undefined,
+    manifest_total_value: m.manifest_total_value ?? undefined,
+    manifest_items: (m.items || []).map((i: any) => ({ name: i.name, quantity: i.quantity, size: 'small' })),
+    pickup_name: m.pickup?.name,
+    pickup_phone_number: m.pickup?.phone,
+    pickup_address: addrString(m.pickup?.address),
+    pickup_notes: m.pickup?.instructions || undefined,
+    dropoff_name: m.dropoff?.name,
+    dropoff_phone_number: m.dropoff?.phone,
+    dropoff_address: addrString(m.dropoff?.address),
+    dropoff_notes: m.dropoff?.instructions || undefined,
+  };
+  if (m.pickup?.address?.lat != null) { body.pickup_latitude = m.pickup.address.lat; body.pickup_longitude = m.pickup.address.lng; }
+  if (m.dropoff?.address?.lat != null) { body.dropoff_latitude = m.dropoff.address.lat; body.dropoff_longitude = m.dropoff.address.lng; }
+  return uberFetch(opts.env, opts.token, 'POST', UBER_PATHS.create(opts.customerId), body);
 }
 export async function getDelivery(env: 'sandbox' | 'prod', token: string, customerId: string, id: string): Promise<any> {
   return uberFetch(env, token, 'GET', UBER_PATHS.get(customerId, id));
 }
 export async function cancelDelivery(env: 'sandbox' | 'prod', token: string, customerId: string, id: string): Promise<any> {
   return uberFetch(env, token, 'POST', UBER_PATHS.cancel(customerId, id), {});
+}
+
+/** Extract the bits ServOS stores from a create/get/webhook delivery payload (tolerant). */
+export function parseDeliveryResp(r: any): { id: string | null; trackingUrl: string | null; rawStatus: string | null; courierName: string | null; courierPhone: string | null; lat: number | null; lng: number | null } {
+  const d = r?.data || r || {};
+  const trip = Array.isArray(d.courier_trips) ? d.courier_trips[0] : null;
+  const courier = d.courier || trip?.courier || null;
+  return {
+    id: d.id || d.delivery_id || d.order_id || null,
+    trackingUrl: d.tracking_url || d.order_tracking_url || null,
+    rawStatus: d.status || d.order_status || trip?.status?.status_code || trip?.status || null,
+    courierName: courier?.name || courier?.contact?.first_name || null,
+    courierPhone: courier?.phone_number || courier?.contact?.phone || null,
+    lat: courier?.location?.lat ?? courier?.location?.latitude ?? null,
+    lng: courier?.location?.lng ?? courier?.location?.longitude ?? null,
+  };
+}
+
+const STATUS_MAP: Record<string, string> = {
+  pending: 'pending', pickup: 'pickup', pickup_complete: 'dropoff', dropoff: 'dropoff',
+  delivered: 'delivered', completed: 'delivered', canceled: 'canceled', cancelled: 'canceled',
+  returned: 'returned', failed: 'canceled', scheduled: 'pending', active: 'pickup',
+  en_route_to_pickup: 'pickup', arrived_at_pickup: 'pickup', en_route_to_dropoff: 'dropoff', arrived_at_dropoff: 'dropoff',
+};
+/** Uber status → ServOS lifecycle (server-side mirror of src/lib/delivery/status.js). */
+export function mapUberStatus(raw: string | null): string {
+  if (!raw) return 'pending';
+  return STATUS_MAP[String(raw).toLowerCase().trim()] || 'pending';
 }
 
 // ── Webhook signature (x-uber-signature: HMAC-SHA256 hex over the raw body) ────
