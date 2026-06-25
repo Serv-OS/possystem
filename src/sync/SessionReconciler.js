@@ -9,6 +9,13 @@
 
 import { supabase, getLocationId } from '../lib/supabase';
 import { useStore } from '../store';
+import { reassertSession } from './SessionSync';
+
+// v5.5.639: a table held occupied locally but missing from the DB poll is re-published only if its
+// session is genuinely LIVE — has items, is the active table, or was seated within the business day.
+// This stops the self-heal from resurrecting a legitimately-closed or long-stale (asleep-device)
+// session. Mirrors the "keep" guards in realtime.js's DELETE handler.
+const SELF_HEAL_MAX_AGE_MS = 12 * 60 * 60 * 1000; // 12h — never auto-revive a session older than a day
 
 let _timer = null;
 let _locationId = null;
@@ -47,6 +54,7 @@ export async function startSessionReconciler() {
       let changed = false;
       const now = Date.now();
       const GRACE_MS = 30_000; // 30s grace period for new sessions before we trust Supabase
+      const healIds = []; // v5.5.639: tables to re-publish to the DB (occupied locally, missing remotely)
 
       const newTables = tables.map(t => {
         const inSupabase = supabaseOpen.has(t.id);
@@ -63,6 +71,22 @@ export async function startSessionReconciler() {
           // Table is open in store but NOT in Supabase — another device closed it
           changed = true;
           return { ...t, session: null, status: 'available' };
+        }
+
+        // v5.5.639 SELF-HEAL: the inverse of the (rightly) dead wipe branch. The table is occupied
+        // on THIS device but its active_sessions row is gone (stale OfflineQueue delete replay,
+        // cross-device delete sweep, or any out-of-band removal). Instead of wiping local (data
+        // loss), re-publish OUR live session so the shared source of truth reconverges — the
+        // waitlist host stand and every other device then see the table as occupied again. This is
+        // the durable cross-device repair that makes "tables MUST never be lost" actually hold.
+        // Gate on a genuinely-live session so a legitimately-closed/empty/stale one is never revived.
+        if (inStore && !inSupabase) {
+          const sess = t.session;
+          const live = !!sess && (
+            (sess.items?.length > 0) || isActive ||
+            (sess.seatedAt && (now - sess.seatedAt) < SELF_HEAL_MAX_AGE_MS)
+          );
+          if (live) healIds.push(t.id);
         }
 
         if (!inStore && inSupabase) {
@@ -98,6 +122,14 @@ export async function startSessionReconciler() {
         const backup = {};
         newTables.filter(t => t.session).forEach(t => { backup[t.id] = t.session; });
         try { localStorage.setItem('rpos-session-backup', JSON.stringify(backup)); } catch {}
+      }
+
+      // v5.5.639: re-publish any locally-occupied table whose DB row vanished. reassertSession drops
+      // the SessionSync _lastSent latch and schedules a flush, so flushSessions re-upserts the row
+      // (the debounce coalesces multiple heals into one batched write). Does NOT touch local tables.
+      if (healIds.length) {
+        console.warn(`[SessionReconciler] self-heal: re-publishing ${healIds.length} occupied table(s) missing from active_sessions:`, healIds.join(', '));
+        healIds.forEach(id => reassertSession(id));
       }
     } catch {}
   };

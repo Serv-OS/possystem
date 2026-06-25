@@ -155,6 +155,23 @@ export function scheduleFlush() {
   _debounceTimer = setTimeout(flushSessions, 600);
 }
 
+// v5.5.639 SELF-HEAL — re-publish a still-occupied table whose active_sessions row was
+// removed OUT-OF-BAND (a stale OfflineQueue delete replay, a cross-device delete sweep, or any
+// server-side removal). flushSessions' line ~57 skip — `if (_lastSent[t.id] === payload) continue`
+// — otherwise NEVER re-writes that row, because this device's in-memory session is byte-identical
+// to what it last sent. The row stays absent from the shared active_sessions that the waitlist host
+// stand (and every other device) reads, so an occupied table silently disappears from the floor —
+// the recurring "tables lost on the waitlist" bug. Dropping the _lastSent key (NOT setting it to
+// 'cleared', which would suppress the write) forces the next flush to re-upsert the table.
+// Called by SessionReconciler (10s poll) and realtime.js's DELETE handler whenever the DB says a
+// table is gone but this device still holds its live session. The CALLERS gate on a genuinely-live
+// session, so this never resurrects a legitimately-closed/empty table.
+export function reassertSession(tableId) {
+  if (!tableId) return;
+  delete _lastSent[tableId];
+  scheduleFlush();
+}
+
 // Persist ONE table's session to active_sessions WITHOUT the full sync sweep.
 //
 // Used by the waitlist host stand when it seats a party. The host stand renders without SyncBridge
@@ -253,13 +270,16 @@ export async function subscribeToSessions() {
         // v5.5.283: same guards as realtime.js DELETE handler — never clear
         // the active table or sessions newer than the deleted row
         const curState = useStore.getState();
-        if (tid === curState.activeTableId) return;
+        // v5.5.639: on every "keep" path the shared row was deleted out-of-band while we still hold
+        // a live session — re-publish it (reassertSession drops the _lastSent latch + flushes) so the
+        // row reconverges instead of staying absent forever.
+        if (tid === curState.activeTableId) { reassertSession(tid); return; }
         const localTable = tables[idx];
         if (localTable?.session) {
           const localSeated = localTable.session.seatedAt || 0;
           const deletedSeated = payload.old?.session?.seatedAt || 0;
-          if (deletedSeated && localSeated > deletedSeated) return;
-          if (!deletedSeated && localTable.session.items?.length > 0) return;
+          if (deletedSeated && localSeated > deletedSeated) { reassertSession(tid); return; }
+          if (!deletedSeated && localTable.session.items?.length > 0) { reassertSession(tid); return; }
         }
         tables[idx] = { ...tables[idx], session: null, status: 'available' };
         useStore.setState({ tables });

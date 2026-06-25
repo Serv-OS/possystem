@@ -176,8 +176,31 @@ export async function replayQueue(supabase) {
     // retained in IndexedDB (returned by getFailedItems) — not auto-replayed, not deleted.
     const now = Date.now();
     const ALWAYS_REPLAY = (it) => it.table === 'closed_checks' || it.kind === 'closed_check';
+    // v5.5.639: an active_sessions DELETE is a STATE mutation, not append-only. A stale one replayed
+    // on reconnect/boot blind-deletes whatever now occupies (location,table) — the queued match
+    // carries no session identity, so it wipes a table that was RE-SEATED since (root cause of the
+    // recurring "tables lost on the waitlist"). The live delete fires instantly while online, so a
+    // queued session-delete still pending after a short window failed to send and is no longer safe to
+    // apply blind. Quarantine it fast; a ts-less one counts as stale. The self-heal reconciler
+    // re-publishes the rare table that genuinely still needed clearing.
+    const SESSION_DELETE_MAX_AGE_MS = 2 * 60 * 1000;
+    const isSessionDelete = (it) => it.type === 'delete' && it.table === 'active_sessions';
     const live = [];
     for (const it of candidates) {
+      if (isSessionDelete(it)) {
+        const dage = it.ts ? now - it.ts : Infinity;   // ts-less session-delete → treat as stale
+        if (dage > SESSION_DELETE_MAX_AGE_MS) {
+          const patch = { ...it, permanentFailure: true, status: 'failed_stale',
+            lastError: `Not replayed: stale active_sessions delete (~${Math.round(dage / 1000)}s old) — would risk wiping a re-seated table`,
+            lastFailedAt: now, firstFailedAt: it.firstFailedAt || now };
+          await dbPut(patch);
+          console.warn(`[OfflineQueue] Quarantined stale active_sessions delete for table ${it.match?.table_id} (~${Math.round(dage / 1000)}s old)`);
+          window.dispatchEvent(new CustomEvent('rpos-queue-permanent-failure', { detail: patch }));
+          continue;
+        }
+        live.push(it);
+        continue;
+      }
       const age = it.ts ? now - it.ts : 0;   // missing ts (legacy item) → treat as fresh, never quarantine
       if (age > REPLAY_MAX_AGE_MS && !ALWAYS_REPLAY(it)) {
         const hrs = Math.round(age / 3_600_000);

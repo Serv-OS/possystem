@@ -88,6 +88,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.639', date: '25 Jun 2026', label: 'Critical fix — open tables can no longer silently vanish from the waitlist (durable self-heal)',
+    changes: [
+      'Root cause of the recurring "all tables lost on the waitlist": a till\'s saved table-session could be deleted from the shared database out-of-band (a stale offline-queued delete replaying on reconnect, or a cross-device delete sweep), and the till would then NEVER re-save it — because it remembered it had already written that session. The host stand (which has no local copy) honestly showed the empty database, so occupied tables looked free. Adding an item changed the session and forced a re-write, which is why a table briefly "came back" when you touched it.',
+      'Fix is additive, not another delete guard: every till now RE-PUBLISHES any table it still holds open if that table goes missing from the shared database — within ~10s via the session reconciler, and instantly when it receives a delete it should ignore. So occupancy reconverges to the real floor-plan state and can no longer drift out of the database. The waitlist Floor keeps following the live tables.',
+      'Also hardened the offline write queue: a stale "close table" delete can no longer replay later and wipe a table that has since been re-seated (it is quarantined after 2 minutes instead of applied blind). Reload the tills to pick this up.',
+    ],
+  },
+  {
     version: '5.5.638', date: '25 Jun 2026', label: 'Kiosk screens auto-update — locked tablets pick up new builds on their own',
     changes: [
       'Unattended screens (waitlist host stand, KDS, menu board, Operations tablet, Time Clock) now quietly check for a newer deployed build and reload themselves when one is live — so a locked tablet can no longer get stuck on an old version (which is exactly what made the waitlist look broken for so long). Tills, back office and the customer kiosk are left alone, so nothing reloads mid-order or mid-task.',

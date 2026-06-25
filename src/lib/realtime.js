@@ -11,6 +11,7 @@
 import { supabase, isMock, LOCATION_ID } from './supabase';
 import { applyQueueRealtimeEvent, applyTabRealtimeEvent } from '../sync/QueueSync';
 import { applyWaitlistRealtimeEvent } from '../sync/WaitlistSync';
+import { reassertSession } from '../sync/SessionSync';
 import { playOrderChime } from './orderChime';
 import { isHubriseAutoReceipt } from './hubrise';
 
@@ -287,18 +288,24 @@ export function startRealtime(store, locationId = LOCATION_ID) {
       const tid = row?.table_id;
       if (!tid) return;
       const state = store.getState();
+      const localTable = (state.tables || []).find(t => t.id === tid);
       // v5.5.283 Guard 1: never clear the table this device is actively editing
-      if (tid === state.activeTableId) return;
+      if (tid === state.activeTableId) {
+        // v5.5.639: the shared row was deleted out-of-band but we keep our live session — re-publish
+        // it so active_sessions reconverges (otherwise the SessionSync _lastSent latch never re-writes
+        // it and the table silently vanishes from the waitlist/other devices).
+        if (localTable?.session) reassertSession(tid);
+        return;
+      }
       // v5.5.283 Guard 2: if local session is newer than what was deleted, keep it.
       // Protects re-seated tables from stale DELETE events.
-      const localTable = (state.tables || []).find(t => t.id === tid);
       if (localTable?.session) {
         const localSeated = localTable.session.seatedAt || 0;
         const deletedSeated = row?.session?.seatedAt || 0;
-        if (deletedSeated && localSeated > deletedSeated) return;
+        if (deletedSeated && localSeated > deletedSeated) { reassertSession(tid); return; }
         // Fallback when REPLICA IDENTITY doesn't include session:
         // preserve sessions that have items (active orders)
-        if (!deletedSeated && localTable.session.items?.length > 0) return;
+        if (!deletedSeated && localTable.session.items?.length > 0) { reassertSession(tid); return; }
       }
       store.setState(s => ({
         tables: s.tables.map(t =>
