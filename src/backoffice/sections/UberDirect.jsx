@@ -244,13 +244,13 @@ export default function UberDirect() {
       {form.delivery_mode === 'uber' && (form.dispatch_backend === 'uber_api' || form.dispatch_backend === 'stuart') && (
       <div style={S.card}>
         <h2 style={S.h2}>Live courier pricing</h2>
-        <p style={{ fontSize: 12.5, color: 'var(--t3)', margin: '0 0 12px', lineHeight: 1.5 }}>How Uber's live delivery cost becomes the customer's fee. This only applies to the live Uber Direct API quote — HubRise Bridge and self-delivery use your flat delivery charge above.</p>
+        <p style={{ fontSize: 12.5, color: 'var(--t3)', margin: '0 0 12px', lineHeight: 1.5 }}>How the courier's live cost becomes the customer's fee. This applies to a live courier quote (Stuart or the Uber Direct API) — HubRise Bridge and self-delivery use your flat delivery charge above.</p>
         <div style={S.row}>
           <div style={S.col}>
             <label style={S.label}>Mode</label>
             <select style={S.input} value={p.mode} onChange={(e) => setPolicy('mode', e.target.value)}>
-              <option value="pass_through">Pass-through (charge Uber's fee)</option>
-              <option value="markup">Mark-up (+ on Uber's fee)</option>
+              <option value="pass_through">Pass-through (charge the courier's fee)</option>
+              <option value="markup">Mark-up (+ on the courier's fee)</option>
               <option value="subsidise">Subsidise (absorb part)</option>
               <option value="flat">Flat fee</option>
             </select>
@@ -269,8 +269,8 @@ export default function UberDirect() {
           <div style={S.col}><label style={S.label}>Cap customer fee (£, blank = none)</label><MoneyField style={S.input} valueMinor={p.capMinor} onMinor={(m) => setPolicy('capMinor', m)} placeholder="none" /></div>
         </div>
         <div style={{ ...S.infoNote, marginTop: 12, background: '#22c55e14', color: 'var(--t2)' }}>
-          Preview: a <b>{money(SAMPLE / 100)}</b> Uber cost → customer pays <b>{preview.freeDelivery ? 'Free' : money(preview.customerFeeMinor / 100)}</b>
-          {' '}(your margin {money(preview.marginMinor / 100)}). The live fee always comes from Uber at order time.
+          Preview: a <b>{money(SAMPLE / 100)}</b> courier cost → customer pays <b>{preview.freeDelivery ? 'Free' : money(preview.customerFeeMinor / 100)}</b>
+          {' '}(your margin {money(preview.marginMinor / 100)}). The live fee always comes from the courier at order time.
         </div>
       </div>
       )}

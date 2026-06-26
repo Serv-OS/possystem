@@ -120,7 +120,7 @@ export default function DeliveriesBoard() {
             </div>
 
             <div style={{ fontSize: 12.5, color: 'var(--t2)', lineHeight: 1.6, marginBottom: 12 }}>
-              <div><b>Fulfilment:</b> {sel.dispatch_backend === 'hubrise_bridge' ? 'Uber courier via HubRise' : 'Uber Direct API'}</div>
+              <div><b>Fulfilment:</b> {sel.dispatch_backend === 'stuart' ? 'Stuart courier' : sel.dispatch_backend === 'hubrise_bridge' ? 'Uber courier via HubRise' : 'Uber Direct API'}</div>
               {sel.courier_name && <div><b>Courier:</b> {sel.courier_name}{sel.courier_phone ? ` · ${sel.courier_phone}` : ''}</div>}
               {sel.eta && <div><b>ETA:</b> {fmtTime(sel.eta)}</div>}
               {sel.tracking_url && <div><a style={S.link} href={sel.tracking_url} target="_blank" rel="noreferrer">Track courier ↗</a></div>}
