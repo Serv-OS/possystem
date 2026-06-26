@@ -47,11 +47,14 @@ export async function getDeliveryQuote({ opsLocationId, dropoff, orderSubtotalMi
   const q = normalizeUberQuote(resp.raw, now);
   if (!q) return { available: false, reason: 'no_quote' };
 
-  const sc = computeSurcharge({ uberFeeMinor: q.feeMinor, policy: resp.policy, orderSubtotalMinor });
+  // `configured` = no live courier cost (self / HubRise Bridge / scheduled / fallback): the
+  // venue's flat fee IS the customer price, so the markup policy is not applied to it.
+  const sc = computeSurcharge({ uberFeeMinor: q.feeMinor, policy: resp.policy, orderSubtotalMinor, configured: !!resp.configured });
 
   return {
     available: true,
     fallback: !!resp.fallback,
+    configured: !!resp.configured,
     mode: resp.mode || 'uber',          // 'self' (fire to POS) | 'uber' (courier)
     dispatchable: !!resp.dispatchable,  // true only when a courier should be dispatched
     quoteId: q.quoteId,
@@ -65,6 +68,7 @@ export async function getDeliveryQuote({ opsLocationId, dropoff, orderSubtotalMi
     radiusMiles: resp.radiusMiles,
     freeDelivery: sc.freeDelivery,
     belowMinimum: sc.belowMinimum,
+    minOrderMinor: resp.policy?.minOrderMinor ?? null,
     policyApplied: sc.policyApplied,
     dropoff: resp.dropoff || dropoff,
   };

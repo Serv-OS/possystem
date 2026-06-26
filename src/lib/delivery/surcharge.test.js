@@ -71,6 +71,33 @@ test('minimum order value is flagged but does not itself change the fee', () => 
   assert.equal(r2.belowMinimum, false);
 });
 
+test('configured (self / HubRise Bridge): flat fee is charged as-is, markup NOT applied', () => {
+  // A markup policy must NOT inflate the merchant's own configured fee (no live courier cost).
+  const r = computeSurcharge({ uberFeeMinor: 500, configured: true, policy: { mode: 'markup', markupPct: 20, markupFixedMinor: 100 } });
+  assert.equal(r.customerFeeMinor, 500);
+  assert.equal(r.trueCostMinor, 500);
+  assert.equal(r.marginMinor, 0);
+  assert.equal(r.policyApplied, 'configured');
+  assert.equal(r.freeDelivery, false);
+});
+
+test('configured: a £0 configured fee is free delivery', () => {
+  const r = computeSurcharge({ uberFeeMinor: 0, configured: true, policy: { mode: 'markup', markupPct: 20 } });
+  assert.equal(r.customerFeeMinor, 0);
+  assert.equal(r.freeDelivery, true);
+  assert.equal(r.policyApplied, 'configured');
+});
+
+test('configured: free-over still waives the fee, min-order still flags', () => {
+  const free = computeSurcharge({ uberFeeMinor: 500, configured: true, orderSubtotalMinor: 5000, policy: { freeOverMinor: 4000 } });
+  assert.equal(free.customerFeeMinor, 0);
+  assert.equal(free.freeDelivery, true);
+  assert.equal(free.policyApplied, 'free_over');
+  const below = computeSurcharge({ uberFeeMinor: 500, configured: true, orderSubtotalMinor: 1200, policy: { minOrderMinor: 1500 } });
+  assert.equal(below.belowMinimum, true);
+  assert.equal(below.customerFeeMinor, 500);   // still shows the fee so the UI can say "spend £X more"
+});
+
 test('garbage / missing inputs degrade safely to zero, never NaN', () => {
   const r = computeSurcharge({ uberFeeMinor: undefined });
   assert.equal(r.customerFeeMinor, 0);

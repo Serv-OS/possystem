@@ -135,7 +135,7 @@ Deno.serve(async (req) => {
       // SELF-DELIVERY — the venue delivers; the order just fires to the POS/kitchen. Charge the
       // configured flat fee (0 = free). No Uber call, no courier dispatch.
       if (cfg.delivery_mode !== 'uber') {
-        return json({ ok: true, available: true, mode: 'self', dispatchable: false, self: true, raw: { fee: configuredFeeMinor, currency }, dropoff, distanceMiles, withinRadius: true, policy, currency, radiusMiles });
+        return json({ ok: true, available: true, mode: 'self', dispatchable: false, self: true, configured: true, raw: { fee: configuredFeeMinor, currency }, dropoff, distanceMiles, withinRadius: true, policy, currency, radiusMiles });
       }
 
       // ── mode === 'uber' (courier dispatch) ───────────────────────────────────
@@ -143,7 +143,7 @@ Deno.serve(async (req) => {
       // configured fee now, dispatch the courier at FIRE time. dispatchable:false = don't
       // dispatch at order time (the catering release path dispatches later).
       if (body?.scheduled) {
-        return json({ ok: true, available: true, mode: 'uber', dispatchable: false, scheduled: true, fallback: true, raw: { fee: configuredFeeMinor, currency }, dropoff, distanceMiles, withinRadius: true, policy, currency, radiusMiles });
+        return json({ ok: true, available: true, mode: 'uber', dispatchable: false, scheduled: true, fallback: true, configured: true, raw: { fee: configuredFeeMinor, currency }, dropoff, distanceMiles, withinRadius: true, policy, currency, radiusMiles });
       }
 
       // HubRise Bridge can't quote live → the customer fee is the configured flat fee.
@@ -158,7 +158,7 @@ Deno.serve(async (req) => {
       // No Uber creds yet (build-now, go-live owner-gated) → use the configured fallback fee if set.
       if (!clientId || !clientSecret || !customerId) {
         if (cfg.flat_fee_minor != null || cfg.fallback_fee_minor != null) {
-          return json({ ok: true, available: true, mode: 'uber', dispatchable: true, fallback: true, raw: { fee: configuredFeeMinor, currency }, dropoff, distanceMiles, withinRadius: true, policy, currency, radiusMiles });
+          return json({ ok: true, available: true, mode: 'uber', dispatchable: true, fallback: true, configured: true, raw: { fee: configuredFeeMinor, currency }, dropoff, distanceMiles, withinRadius: true, policy, currency, radiusMiles });
         }
         return json({ ok: true, available: false, reason: 'not_configured', policy, currency });
       }
@@ -170,7 +170,7 @@ Deno.serve(async (req) => {
       } catch (e) {
         // Uber slow/unavailable → graceful fallback (configurable estimated fee), flagged.
         if (cfg.flat_fee_minor != null || cfg.fallback_fee_minor != null) {
-          return json({ ok: true, available: true, mode: 'uber', dispatchable: true, fallback: true, raw: { fee: configuredFeeMinor, currency }, dropoff, distanceMiles, withinRadius: true, policy, currency, radiusMiles, error: String((e as Error)?.message || e) });
+          return json({ ok: true, available: true, mode: 'uber', dispatchable: true, fallback: true, configured: true, raw: { fee: configuredFeeMinor, currency }, dropoff, distanceMiles, withinRadius: true, policy, currency, radiusMiles, error: String((e as Error)?.message || e) });
         }
         return json({ ok: true, available: false, reason: 'quote_failed', error: String((e as Error)?.message || e), policy, currency });
       }
@@ -236,6 +236,25 @@ Deno.serve(async (req) => {
       const limit = Math.min(200, Number(body?.limit) || 50);
       const { data } = await sb.from('courier_deliveries').select('*').eq('location_id', loc).order('created_at', { ascending: false }).limit(limit);
       return json({ ok: true, deliveries: data || [] });
+    }
+
+    // ── Staff delivery board: full detail for one delivery (order + quote + surcharge +
+    //    status timeline). Joins server-side so the BO makes a single call. ──────────
+    if (action === 'get_delivery_detail') {
+      const acc = await requireAccess(req, loc); if (!acc.ok) return acc.res;
+      const id = body?.id || null;
+      const reqRef = body?.order_ref || null;
+      let del = null;
+      if (id) { const { data } = await sb.from('courier_deliveries').select('*').eq('location_id', loc).eq('id', id).maybeSingle(); del = data; }
+      else if (reqRef) { const { data } = await sb.from('courier_deliveries').select('*').eq('location_id', loc).eq('order_ref', reqRef).order('created_at', { ascending: false }).limit(1).maybeSingle(); del = data; }
+      const ref = reqRef || del?.order_ref || null;
+      const [orderRes, quoteRes, surchargeRes, eventsRes] = await Promise.all([
+        ref ? sb.from('order_queue').select('ref, type, status, total, customer, items, created_at').eq('location_id', loc).eq('ref', ref).maybeSingle() : Promise.resolve({ data: null }),
+        ref ? sb.from('delivery_quotes').select('*').eq('location_id', loc).eq('order_ref', ref).order('created_at', { ascending: false }).limit(1).maybeSingle() : Promise.resolve({ data: null }),
+        ref ? sb.from('delivery_surcharges').select('*').eq('location_id', loc).eq('order_ref', ref).order('created_at', { ascending: false }).limit(1).maybeSingle() : Promise.resolve({ data: null }),
+        ref ? sb.from('delivery_status_events').select('*').eq('location_id', loc).eq('order_ref', ref).order('created_at', { ascending: true }) : Promise.resolve({ data: [] }),
+      ]);
+      return json({ ok: true, delivery: del, order: orderRes.data || null, quote: quoteRes.data || null, surcharge: surchargeRes.data || null, events: eventsRes.data || [] });
     }
 
     // ── Cancel a delivery (routes by backend). Note: a courier-accepted cancel may

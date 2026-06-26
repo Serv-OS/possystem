@@ -104,6 +104,9 @@ export async function dispatchCourier(sb: any, { loc, cfg, order, quote }: { loc
       if (!conn?.access_token || !conn?.hubrise_location_id) return await fail('hubrise_not_connected');
       const created = await createHubriseOrder(conn.access_token, conn.hubrise_location_id, buildHubriseOrderServer(order, quote, quote?.currency || 'GBP'));
       const hubriseRef = created?.id || created?.order_id || null;
+      // v5.5.657: a missing ref means HubRise didn't actually accept the order — mark the row
+      // 'failed' (visible on the board / retryable) instead of silently parking it as 'pending'.
+      if (!hubriseRef) return await fail('hubrise_order_creation_failed', { error: 'HubRise returned no order ref' });
       if (rowId) await sb.from('courier_deliveries').update({ hubrise_ref: hubriseRef, status: 'pending', updated_at: new Date().toISOString() }).eq('id', rowId);
       return { ok: true, backend: 'hubrise_bridge', deliveryRowId: rowId, hubriseRef };
     }

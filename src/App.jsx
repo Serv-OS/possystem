@@ -88,6 +88,18 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.657', date: '26 Jun 2026', label: 'Delivery end-to-end fixes — fees, receipts, addresses, min-order, live board',
+    changes: [
+      'Fixed delivery fees coming through as £0: when you use an Uber courier via the HubRise Bridge there is no live price, so your delivery charge now has to be set (the Delivery setup blocks saving with it left blank, and explains why). Your set delivery charge is now charged exactly as entered — the live-courier mark-up only applies to a real live Uber quote, not to a flat fee you set yourself.',
+      'The delivery fee now shows to the customer at online checkout, is saved on the order, sent to the POS/kitchen, printed on the kitchen ticket and the customer receipt, and the order total now includes it everywhere.',
+      'Taking a delivery order on the POS now asks for the delivery address (it previously had nowhere to enter one, so POS delivery couldn’t be quoted or dispatched).',
+      'Order details now show the delivery address, fulfilment (self vs courier) and fee correctly (previously the address could show as a blank/garbled line).',
+      'Minimum order for delivery is now enforced on online, POS and catering — orders below it can’t check out, and the customer is told how much more to spend.',
+      'Back Office → Deliveries (live): click any delivery to see the full detail — customer, address, items, delivery charged vs your cost + margin, courier + tracking, and the live status timeline.',
+      'Hardened courier dispatch: if HubRise doesn’t accept the order it’s now marked failed (and visible on the board) instead of silently sitting as pending.',
+    ],
+  },
+  {
     version: '5.5.656', date: '26 Jun 2026', label: 'Catering delivery fee — one source of truth (platform Delivery setup)',
     changes: [
       'Removed the separate catering delivery fee, range and per-mile fields that lived under Catering settings — they duplicated (and could disagree with) the platform delivery setup. The delivery charge, range and fulfilment (self-delivery or an Uber Direct courier) are now set in exactly one place: Channels → Delivery (Uber Direct), and apply to catering automatically. Catering settings now just shows the on/off toggle for offering delivery, with a pointer to that screen.',

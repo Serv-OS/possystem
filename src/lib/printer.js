@@ -185,6 +185,9 @@ export async function buildCustomerReceipt({ location, check, items, totals }) {
   if(totals.subtotal!==totals.grand) b.twoCol('Subtotal',`\xA3${totals.subtotal.toFixed(2)}`);
   if(totals.service>0) b.twoCol('Service (12.5%)',`\xA3${totals.service.toFixed(2)}`);
   if(totals.tip>0) b.twoCol('Tip',`\xA3${totals.tip.toFixed(2)}`);
+  // v5.5.657: delivery fee line (online/POS/catering delivery orders)
+  const _delFee = Number(check?.customer?.delivery_fee ?? check?.delivery?.deliveryFee ?? check?.deliveryFee ?? 0) || 0;
+  if(_delFee>0) b.twoCol('Delivery',`\xA3${_delFee.toFixed(2)}`);
 
   // Tax breakdown
   if(totals.taxBreakdown?.breakdown?.length) {
@@ -296,6 +299,7 @@ export function buildKitchenTicket({ table, server, covers, course, centreName, 
       const a = delivery.address;
       [a.line1, a.line2, [a.city, a.postcode].filter(Boolean).join(' ')].filter(Boolean).forEach(l => b.line(l));
     }
+    if (delivery.deliveryFee != null && Number(delivery.deliveryFee) > 0) b.fontB().line(`Delivery fee: \xA3${Number(delivery.deliveryFee).toFixed(2)}`).fontA();
     if (delivery.notes) b.red().bold(true).underline(true).line(delivery.notes).underline(false).bold(false).black();
     b.divider();
   }

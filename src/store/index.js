@@ -4115,7 +4115,7 @@ export const useStore = create((set, get) => ({
     // grand total already includes it (getPOSTotals folds deliveryFee).
     const _dq = get().deliveryQuote;
     if (orderType === 'delivery' && _dq?.available) {
-      record.customer = { ...(customer || {}), delivery_fee: (_dq.customerFeeMinor || 0) / 100 };
+      record.customer = { ...(customer || {}), delivery_fee: (_dq.customerFeeMinor || 0) / 100, delivery_mode: _dq.mode || 'self' };
       record.deliveryFee = (_dq.customerFeeMinor || 0) / 100;
     }
     // Single set: append to closedChecks AND, if this came from the queue, drop
@@ -4826,18 +4826,28 @@ export const useStore = create((set, get) => ({
       const serverName = order.customer?.name || `${srcLabel} ${order.ref}`;
       const sentAt = order.sentAt || Date.now();
 
-      // HubRise delivery-channel context printed on each centre's kitchen ticket.
-      const deliveryBlock = order.source === 'hubrise' ? {
-        channel: order.customer?.channel,
-        serviceType: order.customer?.serviceType || order.type,
-        paid: order.customer?.paid,
-        collectionCode: order.customer?.collectionCode,
+      // Delivery / collection context printed on each centre's kitchen ticket.
+      // v5.5.657: build this for ALL delivery/collection orders (online, kiosk, QR,
+      // catering, HubRise) — previously only HubRise, so online/catering delivery
+      // tickets printed with no customer, address, or fee. Address is passed as the
+      // {line1,postcode,...} object the kitchen-ticket builder expects.
+      const _svcType = order.customer?.serviceType || order.type;
+      const _isDeliveryish = _svcType === 'delivery' || _svcType === 'collection' || order.source === 'hubrise';
+      const deliveryBlock = _isDeliveryish ? {
+        channel: order.customer?.channel || (order.source && order.source !== 'hubrise' ? srcLabel : null),
+        serviceType: _svcType,
+        paid: order.customer?.paid != null ? order.customer.paid : (order.source !== 'hubrise'),  // online/kiosk/catering are pre-paid
+        collectionCode: order.customer?.collectionCode || null,
         name: order.customer?.name,
         phone: order.customer?.phone,
         address: order.customer?.address,
         notes: order.customer?.notes,
-        expected: order.isASAP ? 'ASAP'
-          : (order.collectionTime ? new Date(order.collectionTime).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : null),
+        deliveryFee: order.customer?.delivery_fee != null ? Number(order.customer.delivery_fee) : null,
+        expected: order.isASAP ? 'ASAP' : (() => {
+          const ct = order.collectionTime; if (!ct) return null;
+          const d = new Date(ct);
+          return isNaN(d.getTime()) ? String(ct) : d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+        })(),
       } : null;
 
       // Per-centre KDS tickets. v5.5.132: status MUST be 'pending' — that's

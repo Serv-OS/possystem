@@ -66,6 +66,12 @@ export default function UberDirect() {
   const setPolicy = (k, v) => setForm((f) => ({ ...f, surcharge_policy: { ...f.surcharge_policy, [k]: v } }));
 
   const save = async () => {
+    // HubRise Bridge has no live quote — a delivery charge MUST be set (0 = free is fine,
+    // blank is not), otherwise every delivery would silently charge £0.
+    if (form.enabled && form.delivery_mode === 'uber' && form.dispatch_backend === 'hubrise_bridge' && form.flat_fee_minor == null) {
+      setMsg({ err: true, t: 'Set your delivery charge first — HubRise Bridge has no live price, so deliveries would be £0 until you set it (enter 0 for genuinely free delivery).' });
+      return;
+    }
     setSaving(true); setMsg(null);
     const r = await setVenueUberConfig(locId, form);
     setSaving(false);
@@ -146,11 +152,18 @@ export default function UberDirect() {
         </div>
         <div style={{ ...S.row, marginTop: 14 }}>
           <div style={S.col}>
-            <label style={S.label}>{form.delivery_mode === 'self' ? 'Your delivery charge (£)' : 'Your delivery charge (£) — used when there is no live Uber quote'}</label>
+            <label style={S.label}>{
+              form.delivery_mode === 'self' ? 'Your delivery charge (£)'
+              : form.dispatch_backend === 'hubrise_bridge' ? 'Your delivery charge (£) — HubRise Bridge has no live price, so this is charged on every delivery'
+              : 'Your delivery charge (£) — fallback if the live Uber quote fails'
+            }</label>
             <input type="number" step="0.01" style={S.input} value={toPounds(form.flat_fee_minor)} onChange={(e) => set('flat_fee_minor', toMinor(e.target.value))} placeholder="0.00 = free" />
           </div>
         </div>
-        <div style={{ ...S.infoNote, marginTop: 10 }}>This same setting drives delivery on the POS, online ordering and catering — set it once here.</div>
+        {form.delivery_mode === 'uber' && form.dispatch_backend === 'hubrise_bridge' && form.flat_fee_minor == null && (
+          <div style={S.note(true)}>⚠ HubRise Bridge can't fetch a live delivery price — set your delivery charge above (enter <b>0</b> only if delivery is genuinely free). Until this is set, delivery is charged at £0.</div>
+        )}
+        <div style={{ ...S.infoNote, marginTop: 10 }}>This same setting drives delivery on the POS, online ordering and catering — set it once here.{form.delivery_mode === 'uber' && form.dispatch_backend === 'uber_api' ? ' On the Uber Direct API the live quote (priced under your policy below) is used instead, with this as the fallback.' : ''}</div>
       </div>
 
       {/* Pickup */}
@@ -175,9 +188,23 @@ export default function UberDirect() {
         <div style={{ ...S.infoNote, marginTop: 10 }}>Tip: set the venue lat/long for exact-door radius checks. Otherwise the customer's postcode is geocoded for free (no Google fees).</div>
       </div>
 
-      {/* Surcharge policy */}
+      {/* Delivery rules — apply in EVERY mode (self, HubRise Bridge, Uber API) */}
       <div style={S.card}>
-        <h2 style={S.h2}>Surcharge policy</h2>
+        <h2 style={S.h2}>Delivery rules</h2>
+        <div style={S.row}>
+          <div style={S.col}><label style={S.label}>Minimum order for delivery (£, blank = none)</label><input type="number" step="0.01" style={S.input} value={toPounds(p.minOrderMinor)} onChange={(e) => setPolicy('minOrderMinor', toMinor(e.target.value))} /></div>
+          <div style={S.col}><label style={S.label}>Free delivery over (£, blank = none)</label><input type="number" step="0.01" style={S.input} value={toPounds(p.freeOverMinor)} onChange={(e) => setPolicy('freeOverMinor', toMinor(e.target.value))} /></div>
+        </div>
+        <div style={{ ...S.infoNote, marginTop: 10 }}>Orders below the minimum can't choose delivery — the customer is shown how much more to spend. "Free delivery over" waives the fee on big baskets. Both apply on POS, online and catering.</div>
+      </div>
+
+      {/* Live courier pricing — ONLY when quoting Uber live (Uber Direct API). On self-delivery
+          and HubRise Bridge there is no live courier cost, so the flat delivery charge above is
+          exactly what the customer pays. */}
+      {form.delivery_mode === 'uber' && form.dispatch_backend === 'uber_api' && (
+      <div style={S.card}>
+        <h2 style={S.h2}>Live courier pricing</h2>
+        <p style={{ fontSize: 12.5, color: 'var(--t3)', margin: '0 0 12px', lineHeight: 1.5 }}>How Uber's live delivery cost becomes the customer's fee. This only applies to the live Uber Direct API quote — HubRise Bridge and self-delivery use your flat delivery charge above.</p>
         <div style={S.row}>
           <div style={S.col}>
             <label style={S.label}>Mode</label>
@@ -200,14 +227,13 @@ export default function UberDirect() {
         </div>
         <div style={{ ...S.row, marginTop: 10 }}>
           <div style={S.col}><label style={S.label}>Cap customer fee (£, blank = none)</label><input type="number" step="0.01" style={S.input} value={toPounds(p.capMinor)} onChange={(e) => setPolicy('capMinor', toMinor(e.target.value))} /></div>
-          <div style={S.col}><label style={S.label}>Free delivery over (£, blank = none)</label><input type="number" step="0.01" style={S.input} value={toPounds(p.freeOverMinor)} onChange={(e) => setPolicy('freeOverMinor', toMinor(e.target.value))} /></div>
-          <div style={S.col}><label style={S.label}>Minimum order (£, blank = none)</label><input type="number" step="0.01" style={S.input} value={toPounds(p.minOrderMinor)} onChange={(e) => setPolicy('minOrderMinor', toMinor(e.target.value))} /></div>
         </div>
         <div style={{ ...S.infoNote, marginTop: 12, background: '#22c55e14', color: 'var(--t2)' }}>
           Preview: a <b>{money(SAMPLE / 100)}</b> Uber cost → customer pays <b>{preview.freeDelivery ? 'Free' : money(preview.customerFeeMinor / 100)}</b>
           {' '}(your margin {money(preview.marginMinor / 100)}). The live fee always comes from Uber at order time.
         </div>
       </div>
+      )}
 
       {/* Dispatch + fallback + tracking — only for the Uber Direct courier mode */}
       {form.delivery_mode === 'uber' && (
@@ -221,6 +247,7 @@ export default function UberDirect() {
               <option value="hubrise_bridge">HubRise Bridge</option>
             </select>
           </div>
+          {form.dispatch_backend === 'uber_api' && <>
           <div style={S.col}>
             <label style={S.label}>Environment</label>
             <select style={S.input} value={form.env} onChange={(e) => set('env', e.target.value)}>
@@ -229,6 +256,7 @@ export default function UberDirect() {
             </select>
           </div>
           <div style={S.col}><label style={S.label}>Fallback fee if Uber down (£, blank = block)</label><input type="number" step="0.01" style={S.input} value={toPounds(form.fallback_fee_minor)} onChange={(e) => set('fallback_fee_minor', toMinor(e.target.value))} /></div>
+          </>}
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 14 }}>
           <div style={{ fontSize: 13, color: 'var(--t2)' }}>Text the customer a tracking link</div>

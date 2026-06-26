@@ -1181,6 +1181,11 @@ export default function POSSurface() {
                     </div>
                   )
                 )}
+                {orderType === 'delivery' && deliveryQuote?.available && deliveryQuote.belowMinimum && (
+                  <div style={{fontSize:11,color:'var(--red)',marginBottom:3,padding:'2px 0'}}>
+                    Below the {deliveryQuote.minOrderMinor != null ? money(deliveryQuote.minOrderMinor/100) : ''} delivery minimum
+                  </div>
+                )}
                 {/* Tax breakdown — shown below service charge */}
                 {taxRates?.length > 0 && items.length > 0 && (() => {
                   try {
@@ -1271,6 +1276,12 @@ export default function POSSurface() {
             )}
             <button className="btn btn-acc" style={{flex:1.4,height:compact?34:40,opacity:items.length===0?.3:1,fontSize:compact?12:14,fontWeight:800,letterSpacing:.01}} onClick={()=>{
               if (!items.length) return;
+              // v5.5.657: delivery gates — can't take payment for an undeliverable address or
+              // an order below the delivery minimum.
+              if (orderType === 'delivery' && deliveryQuote) {
+                if (!deliveryQuote.available) { showToast('Delivery unavailable for this address — switch to collection or takeaway.', 'error'); return; }
+                if (deliveryQuote.belowMinimum) { showToast(`Minimum delivery order is ${deliveryQuote.minOrderMinor != null ? money(deliveryQuote.minOrderMinor/100) : 'higher'} — add more items or change the order type.`, 'error'); return; }
+              }
               const hasAllergens = items.some(i=>!i.voided&&i.allergens?.length);
               if (hasAllergens) setShowAllergenGate(true);
               else setShowCheckout(true);

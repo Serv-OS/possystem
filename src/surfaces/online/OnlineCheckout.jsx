@@ -240,6 +240,8 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     // v5.5.648: block delivery checkout if we have a quote result and it's not deliverable
     // (out of range / not available). null = still quoting; don't block on that.
     if (isDelivery && deliveryQuote && !deliveryQuote.available) return false;
+    // v5.5.657: enforce the delivery minimum order value.
+    if (isDelivery && deliveryQuote && deliveryQuote.belowMinimum) return false;
     if (timeMode === 'scheduled' && !slot) return false;
     return true;
   }, [name, phone, email, address1, postcode, isDelivery, timeMode, slot, deliveryQuote]);
@@ -258,7 +260,9 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       phone: phone.replace(/\s+/g, ''),
       email: email.trim(),
       ...(isDelivery ? { address: { line1: address1.trim(), postcode: postcode.trim().toUpperCase() } } : {}),
-      ...(deliveryFeeMinor > 0 ? { delivery_fee: deliveryFeeMinor / 100 } : {}),
+      // v5.5.657: always record the delivery fee + mode for delivery orders (even £0), so the
+      // ticket/receipt/reports show them and downstream routing knows self vs courier.
+      ...(isDelivery && deliveryQuote?.available ? { delivery_fee: deliveryFeeMinor / 100, delivery_mode: deliveryQuote.mode || 'self' } : {}),
       ...(notes.trim() ? { notes: notes.trim() } : {}),
     };
     // v5.5.128: include cat / cats / parentId on the queued items so the
@@ -307,6 +311,15 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   // dismissed the hint, or the phone isn't a member — proceed straight through.
   const continueToGift = async () => {
     if (!valid) {
+      if (isDelivery && deliveryQuote && !deliveryQuote.available) {
+        setError(deliveryQuote.reason === 'out_of_radius' ? 'Sorry, your address is outside our delivery area — please choose collection.' : 'Delivery isn’t available for this address — please choose collection.');
+        return;
+      }
+      if (isDelivery && deliveryQuote?.belowMinimum) {
+        const min = deliveryQuote.minOrderMinor != null ? money(deliveryQuote.minOrderMinor / 100) : '';
+        setError(`Minimum order for delivery is ${min}. Add more to your basket or switch to collection.`);
+        return;
+      }
       const missing = [];
       if (!name.trim()) missing.push('name');
       if (!/^\+?[0-9 ]{7,}$/.test(phone)) missing.push('phone number');
@@ -662,7 +675,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         status: 'prep',
         source: 'online',
         items, customer,
-        total: subtotal,
+        total: subtotal + deliveryFeeMinor / 100,   // v5.5.657: include the delivery fee so the queue/kitchen total matches what was charged
         sent_at: sentAt.toISOString(),
         collection_time: collectionTimeLabel,
         is_asap: timeMode === 'asap',
@@ -765,7 +778,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         status: 'prep',
         source: 'online',
         items, customer,
-        total: subtotal,
+        total: subtotal + deliveryFeeMinor / 100,   // v5.5.657: include the delivery fee so the queue/kitchen total matches what was charged
         sent_at: sentAt.toISOString(),
         collection_time: collectionTimeLabel,
         is_asap: timeMode === 'asap',
@@ -899,6 +912,8 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
               {autoDiscountMinor > 0 ? ` · Offers -${money((autoDiscountMinor / 100))}` : ''}
               {giftApplied ? ` · Gift card -${money((giftApplied.applied / 100))}` : ''}
               {rewardApplied ? ` · Reward -${money((rewardApplied.discount_value / 100))}` : ''}
+              {deliveryFeeMinor > 0 ? ` · Delivery +${money((deliveryFeeMinor / 100))}` : (isDelivery && deliveryQuote?.available && deliveryQuote.freeDelivery ? ' · Delivery free' : '')}
+              {isDelivery && deliveryQuote?.belowMinimum ? ` · Min order ${deliveryQuote.minOrderMinor != null ? money(deliveryQuote.minOrderMinor / 100) : ''}` : ''}
             </div>
           </div>
           <button onClick={

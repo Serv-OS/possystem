@@ -7,6 +7,10 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
   const [phone, setPhone]     = useState(existing?.phone || '');
   const [email, setEmail]     = useState(existing?.email || '');
   const [notes, setNotes]     = useState(existing?.notes || '');
+  // v5.5.657: delivery address (POS phone-order delivery). Without these the delivery
+  // quote never fires and the order goes out with no address.
+  const [addr1, setAddr1]       = useState(existing?.address?.line1 || '');
+  const [postcode, setPostcode] = useState(existing?.address?.postcode || '');
   // v4.6.61: when editing, default to non-ASAP if a collectionTime is already set,
   // so the user sees their existing time pre-selected on the slot grid.
   const [isASAP, setIsASAP]   = useState(existing ? !!existing.isASAP : true);
@@ -25,6 +29,7 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
 
   const slots = getCollectionSlots();
   const isCollection = orderType === 'collection';
+  const isDelivery = orderType === 'delivery';
 
   // Live phone/name search
   // v5.5.280: phone search starts at 6 digits (was 3) to reduce DB load at scale.
@@ -58,12 +63,16 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
 
   const selectCustomer = (c) => {
     setName(c.name); setPhone(c.phone); setEmail(c.email || '');
+    if (c.address) { setAddr1(c.address.line1 || ''); setPostcode(c.address.postcode || ''); }
     setResults([]); setSearched(false);
   };
 
   const handleConfirm = async () => {
     if (!name.trim() || !phone.trim()) {
       showToast('Name and phone number are required', 'error'); return;
+    }
+    if (isDelivery && (!addr1.trim() || !postcode.trim())) {
+      showToast('Delivery address and postcode are required', 'error'); return;
     }
     // v5.5.248: before creating, check if this phone already exists in the DB.
     // If it does, auto-populate from the existing profile to prevent duplicates.
@@ -93,6 +102,7 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
       isASAP,
       collectionTime: isASAP ? slots[0]?.label : slots[slotIdx]?.label,
       collectionISO:  isASAP ? slots[0]?.value  : slots[slotIdx]?.value,
+      ...(isDelivery ? { address: { line1: addr1.trim(), postcode: postcode.trim().toUpperCase() } } : {}),
     };
     addToHistory(customer);
     onConfirm(customer);
@@ -116,10 +126,10 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom: 20 }}>
           <div>
             <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--t1)' }}>
-              {orderType === 'collection' ? '📦 Collection order' : orderType === 'dine-in' ? '👤 Add customer to table' : '🥡 Takeaway order'}
+              {orderType === 'collection' ? '📦 Collection order' : orderType === 'dine-in' ? '👤 Add customer to table' : isDelivery ? '🚗 Delivery order' : '🥡 Takeaway order'}
             </div>
             <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 3 }}>
-              {existing ? 'Editing customer details — update only what you need' : (orderType === 'collection' ? 'Customer collects from the counter' : orderType === 'dine-in' ? 'Attach a customer so this visit counts toward their loyalty' : 'Order to be taken away now')}
+              {existing ? 'Editing customer details — update only what you need' : (orderType === 'collection' ? 'Customer collects from the counter' : orderType === 'dine-in' ? 'Attach a customer so this visit counts toward their loyalty' : isDelivery ? 'Delivery to the customer’s address' : 'Order to be taken away now')}
             </div>
           </div>
           <button onClick={onCancel} style={{ background:'none', border:'none', color:'var(--t3)', cursor:'pointer', fontSize:22, lineHeight:1 }}>×</button>
@@ -176,6 +186,20 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
             </label>
             <input style={inputStyle} type="email" placeholder="email@example.com" value={email} onChange={e => setEmail(e.target.value)}/>
           </div>
+          {isDelivery && (<>
+          <div>
+            <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t2)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>
+              Delivery address <span style={{ color: 'var(--red)' }}>*</span>
+            </label>
+            <input style={inputStyle} placeholder="Street, building, number" value={addr1} onChange={e => setAddr1(e.target.value)}/>
+          </div>
+          <div>
+            <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t2)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>
+              Postcode <span style={{ color: 'var(--red)' }}>*</span>
+            </label>
+            <input style={inputStyle} placeholder="e.g. HD4 7PT" value={postcode} onChange={e => setPostcode(e.target.value)}/>
+          </div>
+          </>)}
         </div>
 
         {/* Collection time — only for collection orders */}
@@ -243,7 +267,7 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
         <div style={{ display: 'flex', gap: 8 }}>
           <button className="btn btn-ghost" style={{ flex: 1 }} onClick={onCancel}>Cancel</button>
           <button className="btn btn-acc" style={{ flex: 2, height: 46, fontSize: 15 }} onClick={handleConfirm}>
-            {orderType === 'dine-in' ? 'Attach to table' : ('Confirm ' + (orderType === 'collection' ? 'collection' : 'takeaway') + ' →')}
+            {orderType === 'dine-in' ? 'Attach to table' : isDelivery ? 'Confirm delivery →' : ('Confirm ' + (orderType === 'collection' ? 'collection' : 'takeaway') + ' →')}
           </button>
         </div>
       </div>

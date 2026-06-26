@@ -48,12 +48,17 @@ const nonNeg = (n) => Math.max(0, int(n));
  * @param {number} args.uberFeeMinor        live Uber Direct cost in pennies (the true cost)
  * @param {object} [args.policy]            venue surcharge policy (see shape above)
  * @param {number} [args.orderSubtotalMinor] order subtotal in pennies (for free-over / min-order)
+ * @param {boolean} [args.configured]       true when there is NO live courier cost (self-delivery
+ *                                          or HubRise Bridge): uberFeeMinor is the merchant's own
+ *                                          configured fee and IS the customer price — markup/
+ *                                          subsidise/cap do not apply (they only make sense against
+ *                                          a live Uber quote). free-over + min-order still apply.
  * @returns {{
  *   customerFeeMinor:number, trueCostMinor:number, marginMinor:number,
  *   policyApplied:string, freeDelivery:boolean, belowMinimum:boolean
  * }}
  */
-export function computeSurcharge({ uberFeeMinor, policy, orderSubtotalMinor = 0 }) {
+export function computeSurcharge({ uberFeeMinor, policy, orderSubtotalMinor = 0, configured = false }) {
   const p = { ...DEFAULT_SURCHARGE_POLICY, ...(policy || {}) };
   const trueCostMinor = nonNeg(uberFeeMinor);
   const subtotal = int(orderSubtotalMinor);
@@ -70,6 +75,21 @@ export function computeSurcharge({ uberFeeMinor, policy, orderSubtotalMinor = 0 
       marginMinor: -trueCostMinor,
       policyApplied: 'free_over',
       freeDelivery: true,
+      belowMinimum,
+    };
+  }
+
+  // Configured-fee modes (self-delivery / HubRise Bridge) — no live courier cost exists, so
+  // the merchant's configured fee IS the customer price. Marking it up by a percentage meant
+  // for a live courier cost would silently overcharge, so we charge it as-is.
+  if (configured) {
+    const fee = nonNeg(uberFeeMinor);
+    return {
+      customerFeeMinor: fee,
+      trueCostMinor: fee,
+      marginMinor: 0,
+      policyApplied: 'configured',
+      freeDelivery: fee === 0,
       belowMinimum,
     };
   }

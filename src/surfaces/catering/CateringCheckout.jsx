@@ -77,7 +77,8 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
   const discount = promoApplied?.amount || 0;
   const total = Math.max(0, +(subtotal + deliveryFee + tip - discount).toFixed(2));
   const totalMinor = Math.round(total * 100);
-  const valid = name.trim() && /^\+?[0-9 ]{7,}$/.test(phone) && (!isDelivery || (addr1.trim() && postcode.trim())) && (payMode === 'later' || email.trim());
+  const belowMin = isDelivery && deliveryQuote?.belowMinimum;   // v5.5.657: enforce delivery minimum
+  const valid = name.trim() && /^\+?[0-9 ]{7,}$/.test(phone) && (!isDelivery || (addr1.trim() && postcode.trim())) && (payMode === 'later' || email.trim()) && !belowMin;
 
   const ref = useMemo(() => `CA-${Math.random().toString(36).slice(2, 7).toUpperCase()}`, []);
   const buildItems = () => cart.map((l) => ({ itemId: l.itemId, name: l.name, price: l.price, qty: l.qty || 1, mods: l.mods || [], notes: l.notes || '', cat: l.cat || null, cats: l.cats || null, parentId: l.parentId || null, kitchenName: l.kitchenName || null, status: 'received', fired: false, course: 1 }));
@@ -143,7 +144,7 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
 
   // ── PAY LATER ──────────────────────────────────────────────────────
   const placeLater = async () => {
-    if (!valid) { setErr('Please complete the required fields.'); return; }
+    if (!valid) { setErr(belowMin ? `Minimum order for delivery is ${deliveryQuote?.minOrderMinor != null ? money(deliveryQuote.minOrderMinor / 100, cur) : 'higher'} — add more items or choose collection.` : 'Please complete the required fields.'); return; }
     setBusy(true); setErr('');
     try {
       await ensureAuthToken();
@@ -157,7 +158,7 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
 
   // ── PAY NOW (card) ─────────────────────────────────────────────────
   const startPayNow = async () => {
-    if (!valid) { setErr('Please complete the required fields.'); return; }
+    if (!valid) { setErr(belowMin ? `Minimum order for delivery is ${deliveryQuote?.minOrderMinor != null ? money(deliveryQuote.minOrderMinor / 100, cur) : 'higher'} — add more items or choose collection.` : 'Please complete the required fields.'); return; }
     setErr('');
     if (processor === 'ryft') { setStep('pay'); return; }
     setBusy(true);

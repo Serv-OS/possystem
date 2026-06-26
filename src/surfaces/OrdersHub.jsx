@@ -853,7 +853,13 @@ export default function OrdersHub() {
               <div style={{ fontSize:12.5, color:'var(--t2)', marginBottom:12, lineHeight:1.5 }}>
                 {viewOrder.customer.name && <div>{viewOrder.customer.name}</div>}
                 {viewOrder.customer.phone && <div>{viewOrder.customer.phone}</div>}
-                {viewOrder.customer.address && <div>{viewOrder.customer.address}</div>}
+                {/* v5.5.657: address can be a {line1,postcode} object (online/catering) or a string — render safely */}
+                {viewOrder.customer.address && <div>{typeof viewOrder.customer.address === 'string' ? viewOrder.customer.address : [viewOrder.customer.address.line1, viewOrder.customer.address.line2, viewOrder.customer.address.city, viewOrder.customer.address.postcode].filter(Boolean).join(', ')}</div>}
+                {(viewOrder.type === 'delivery' || viewOrder.customer.delivery_fee != null) && (
+                  <div style={{ color:'var(--t3)', marginTop:2 }}>
+                    🚗 Delivery{viewOrder.customer.delivery_mode ? ` · ${viewOrder.customer.delivery_mode === 'uber' ? 'Courier' : 'Self-delivery'}` : ''}{viewOrder.customer.delivery_fee != null ? ` · fee ${money(Number(viewOrder.customer.delivery_fee))}` : ''}
+                  </div>
+                )}
               </div>
             )}
             <div style={{ display:'flex', flexDirection:'column', gap:6, borderTop:'1px solid var(--bdr)', paddingTop:12 }}>

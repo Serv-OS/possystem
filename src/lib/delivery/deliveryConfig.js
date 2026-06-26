@@ -14,5 +14,6 @@ async function call(action, payload) {
 export const getVenueUberConfig = (opsLocationId) => call('get_config', { ops_location_id: opsLocationId });
 export const setVenueUberConfig = (opsLocationId, patch) => call('set_config', { ops_location_id: opsLocationId, patch });
 export const listDeliveries = (opsLocationId, limit = 50) => call('list_deliveries', { ops_location_id: opsLocationId, limit });
+export const getDeliveryDetail = (opsLocationId, { id, orderRef } = {}) => call('get_delivery_detail', { ops_location_id: opsLocationId, id, order_ref: orderRef });
 export const cancelDelivery = (opsLocationId, deliveryRowId) => call('cancel_delivery', { ops_location_id: opsLocationId, delivery_row_id: deliveryRowId });
 export const deliveryReport = (opsLocationId, since) => call('delivery_report', { ops_location_id: opsLocationId, since });
