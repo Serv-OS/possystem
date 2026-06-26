@@ -121,7 +121,9 @@ Deno.serve(async (req) => {
       const distanceMiles = (pickup.lat != null && dropoff.lat != null) ? haversineMiles(pickup, dropoff) : null;
       const withinRadius = distanceMiles != null ? distanceMiles <= radiusMiles : null;
 
-      if (withinRadius === false) {
+      // Out-of-radius blocks live/immediate orders (POS/online). Scheduled catering is bespoke +
+      // operator-managed, so it isn't radius-blocked — it still gets the configured fee.
+      if (withinRadius === false && !body?.scheduled) {
         return json({ ok: true, available: false, reason: 'out_of_radius', distanceMiles, radiusMiles, policy, currency });
       }
 

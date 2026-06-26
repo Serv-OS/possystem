@@ -88,6 +88,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.656', date: '26 Jun 2026', label: 'Catering delivery fee — one source of truth (platform Delivery setup)',
+    changes: [
+      'Removed the separate catering delivery fee, range and per-mile fields that lived under Catering settings — they duplicated (and could disagree with) the platform delivery setup. The delivery charge, range and fulfilment (self-delivery or an Uber Direct courier) are now set in exactly one place: Channels → Delivery (Uber Direct), and apply to catering automatically. Catering settings now just shows the on/off toggle for offering delivery, with a pointer to that screen.',
+      'Catering checkout takes the delivery fee straight from that shared setup (no more legacy catering flat-fee fallback), so the price the customer sees always matches your platform delivery configuration.',
+      'Bespoke catering deliveries are no longer blocked by the everyday delivery radius — a scheduled catering order can be quoted to an address outside your normal POS/online delivery range.',
+    ],
+  },
+  {
     version: '5.5.655', date: '25 Jun 2026', label: 'Delivery — DB-enforced one-courier-per-order (reserve-then-act)',
     changes: [
       'Hardened courier dispatch so a courier truly can’t be double-booked: the system now reserves the order in the database (a unique constraint) before calling Uber/HubRise, then records the result. Even if a dispatch succeeds but the follow-up write is interrupted, a retry can’t send a second courier.',

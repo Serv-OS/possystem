@@ -36,7 +36,7 @@ const BLANK = (locId) => ({
   hours: {}, closures: [], lead_time_min_days: '', lead_time_max_days: '', prep_time_minutes: '',
   order_minimum: '', tips_enabled: false, tip_default_pct: '',
   takeout_enabled: false, takeout_dining_option: 'collection',
-  delivery_enabled: false, delivery_dining_option: 'delivery', delivery_radius_miles: '', delivery_fee: '', delivery_fee_per_mile: '',
+  delivery_enabled: false, delivery_dining_option: 'delivery',
   menu_ids: [], item_limits: {}, allow_tax_exempt: false, allow_promo: false, allow_pay_later: false,
   capacity_mode: 'count', capacity_per_day: '', capacity_overrides: {},
 });
@@ -50,7 +50,6 @@ function fromRow(r) {
     order_minimum: major(r.order_minimum_minor), tips_enabled: r.tips_enabled, tip_default_pct: r.tip_default_pct ?? '',
     takeout_enabled: r.takeout_enabled, takeout_dining_option: r.takeout_dining_option || 'collection',
     delivery_enabled: r.delivery_enabled, delivery_dining_option: r.delivery_dining_option || 'delivery',
-    delivery_radius_miles: r.delivery_radius_miles ?? '', delivery_fee: major(r.delivery_fee_minor), delivery_fee_per_mile: major(r.delivery_fee_per_mile_minor),
     menu_ids: r.menu_ids || [], item_limits: r.item_limits || {}, allow_tax_exempt: r.allow_tax_exempt, allow_promo: r.allow_promo, allow_pay_later: r.allow_pay_later,
     capacity_mode: r.capacity_mode || 'count', capacity_per_day: r.capacity_mode === 'value' ? major(r.capacity_per_day) : (r.capacity_per_day ?? ''), capacity_overrides: r.capacity_overrides || {},
   };
@@ -65,7 +64,6 @@ function toRow(s) {
     order_minimum_minor: minor(s.order_minimum), tips_enabled: !!s.tips_enabled, tip_default_pct: num(s.tip_default_pct),
     takeout_enabled: !!s.takeout_enabled, takeout_dining_option: s.takeout_dining_option || null,
     delivery_enabled: !!s.delivery_enabled, delivery_dining_option: s.delivery_dining_option || null,
-    delivery_radius_miles: num(s.delivery_radius_miles), delivery_fee_minor: minor(s.delivery_fee), delivery_fee_per_mile_minor: minor(s.delivery_fee_per_mile),
     menu_ids: s.menu_ids && s.menu_ids.length ? s.menu_ids : null, item_limits: s.item_limits && Object.keys(s.item_limits).length ? s.item_limits : null,
     allow_tax_exempt: !!s.allow_tax_exempt, allow_promo: !!s.allow_promo, allow_pay_later: !!s.allow_pay_later,
     capacity_mode: s.capacity_mode || null, capacity_per_day: s.capacity_mode === 'value' ? minor(s.capacity_per_day) : num(s.capacity_per_day),
@@ -233,15 +231,7 @@ export default function CateringSettings() {
         <label style={{ ...S.toggle, margin: '12px 0 10px' }}><input type="checkbox" checked={s.delivery_enabled} onChange={(e) => set({ delivery_enabled: e.target.checked })} /> Delivery</label>
         {s.delivery_enabled && (
           <div style={{ paddingLeft: 24 }}>
-            <div style={S.row2}>
-              <div style={S.field}><label style={S.label}>Order type</label><select style={S.input} value={s.delivery_dining_option} onChange={(e) => set({ delivery_dining_option: e.target.value })}><option value="delivery">Delivery</option></select></div>
-              <div style={S.field}><label style={S.label}>Delivery radius (miles)</label><input type="number" min={0} step="0.5" style={S.input} value={s.delivery_radius_miles} onChange={(e) => set({ delivery_radius_miles: e.target.value })} /></div>
-            </div>
-            <div style={S.row2}>
-              <div style={S.field}><label style={S.label}>Flat delivery fee ({cur})</label><input type="number" min={0} step="0.01" style={S.input} value={s.delivery_fee} onChange={(e) => set({ delivery_fee: e.target.value })} /></div>
-              <div style={S.field}><label style={S.label}>Or per-mile fee ({cur})</label><input type="number" min={0} step="0.01" style={S.input} value={s.delivery_fee_per_mile} onChange={(e) => set({ delivery_fee_per_mile: e.target.value })} /></div>
-            </div>
-            <div style={S.hint}>Set a flat fee or a per-mile fee — leave the other blank.</div>
+            <div style={S.hint}>The delivery <b>charge, range and fulfilment</b> (self-delivery, or an Uber Direct courier) are set once in <b>Channels → Delivery (Uber Direct)</b> and apply to catering automatically — so there's no separate catering delivery fee to keep in sync. Catering events are charged your configured fee, and a courier (if you use one) is dispatched on the event day.</div>
           </div>
         )}
       </div>

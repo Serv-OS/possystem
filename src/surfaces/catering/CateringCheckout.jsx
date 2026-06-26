@@ -56,10 +56,11 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
   useEffect(() => { getLocationProcessor(platformLocationId).then(setProcessor).catch(() => {}); }, [platformLocationId]);
 
   const isDelivery = fulfilment === 'delivery';
-  // v5.5.653: catering delivery now uses the SHARED delivery engine — same self/courier mode +
-  // configured fee as POS/online. A catering event is in the FUTURE, so we use the configured
-  // fee (scheduled=true; no live quote) and dispatch the courier at FIRE time, not now. Falls
-  // back to the legacy catering flat fee (cfg.delivery_fee_minor) if the engine isn't set up.
+  // v5.5.656: catering delivery is driven ENTIRELY by the platform Delivery (Uber Direct) setup —
+  // same self/courier mode + configured fee as POS/online (one source of truth; no separate
+  // catering delivery fee). A catering event is in the FUTURE, so we use the configured fee
+  // (scheduled=true; no live quote) and dispatch the courier at FIRE time. £0 = delivery not set
+  // up on the platform yet (the catering settings screen points the operator there).
   const [deliveryQuote, setDeliveryQuote] = useState(null);
   useEffect(() => {
     if (!isDelivery || !addr1.trim() || !postcode.trim()) { setDeliveryQuote(null); return; }
@@ -71,8 +72,7 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
     return () => { live = false; clearTimeout(t); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isDelivery, addr1, postcode, subtotal, opsId]);
-  const engineFeeMinor = (isDelivery && deliveryQuote?.available) ? (deliveryQuote.customerFeeMinor || 0) : null;
-  const deliveryFee = isDelivery ? ((engineFeeMinor != null ? engineFeeMinor : (cfg.delivery_fee_minor || 0)) / 100) : 0;
+  const deliveryFee = isDelivery && deliveryQuote?.available ? (deliveryQuote.customerFeeMinor || 0) / 100 : 0;
   const tip = useMemo(() => (cfg.tips_enabled && tipPct ? +(subtotal * tipPct / 100).toFixed(2) : 0), [cfg.tips_enabled, tipPct, subtotal]);
   const discount = promoApplied?.amount || 0;
   const total = Math.max(0, +(subtotal + deliveryFee + tip - discount).toFixed(2));
