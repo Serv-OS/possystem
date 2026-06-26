@@ -88,6 +88,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.662', date: '26 Jun 2026', label: 'Uber Direct — one-click venue connect (platform onboarding, no API keys)',
+    changes: [
+      'Delivery via the Uber Direct courier no longer needs each venue to create an Uber developer account or copy API keys. ServOS connects the venue under our platform account with a single "Connect this venue to Uber Direct" button (Channels → Delivery), which creates the venue\'s Uber Direct account behind the scenes and stores its ID automatically.',
+      'You can email the venue manager an invite to manage their own billing in Uber. Sandbox testing needs no card; a card is only required to go live in production.',
+      'Under the hood: switched own-delivery dispatch to the Uber Direct API directly (HubRise stays for inbound 3rd-party orders), using Uber\'s Organizations API so one platform integration serves all venues. Build-now; go-live needs the platform credentials set on the server.',
+    ],
+  },
+  {
     version: '5.5.661', date: '26 Jun 2026', label: 'Delivery minimum-order shown as a clear banner (online + catering)',
     changes: [
       'When a delivery order is below your minimum, the customer now sees a prominent amber banner — "Minimum order for delivery is £X. Add £Y more, or switch to collection." — right under the delivery address, on both online ordering and catering. Previously the minimum was only a small note plus a block at checkout.',

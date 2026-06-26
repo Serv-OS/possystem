@@ -16,7 +16,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { getAccessToken, getQuote, geocodePostcode, haversineMiles, createDelivery, getDelivery, parseDeliveryResp, mapUberStatus } from '../_shared/uber.ts';
 import { createOrder as createHubriseOrder, patchOrder as patchHubriseOrder } from '../_shared/hubrise.ts';
-import { cancelDelivery } from '../_shared/uber.ts';
+import { cancelDelivery, createOrganization, getOrganization, inviteOrgMember, parseOrgResp, UBER_ORG_SCOPE } from '../_shared/uber.ts';
 import { dispatchCourier } from '../_shared/delivery-dispatch.ts';
 
 const e164 = (raw: string) => {
@@ -36,6 +36,9 @@ const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const ENV_CLIENT_ID = Deno.env.get('UBER_DIRECT_CLIENT_ID') ?? '';
 const ENV_CLIENT_SECRET = Deno.env.get('UBER_DIRECT_CLIENT_SECRET') ?? '';
 const ENV_CUSTOMER_ID = Deno.env.get('UBER_DIRECT_CUSTOMER_ID') ?? '';
+// Platform "root" org id — sub-orgs (one per venue) are created beneath it via the
+// Organizations API. This is the ServOS platform account's own customer_id/org id.
+const ENV_PARENT_ORG_ID = Deno.env.get('UBER_DIRECT_PARENT_ORG_ID') ?? ENV_CUSTOMER_ID;
 const ENV_DEFAULT = (Deno.env.get('UBER_DIRECT_ENV') ?? 'sandbox') as 'sandbox' | 'prod';
 const sb = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { autoRefreshToken: false, persistSession: false } });
 
@@ -99,6 +102,97 @@ Deno.serve(async (req) => {
       if (error) return json({ error: error.message }, 500);
       const { data } = await sb.from('venue_uber_config').select('*').eq('location_id', loc).maybeSingle();
       return json({ ok: true, config: pickNonSecret(data) });
+    }
+
+    // ── Platform onboarding: create an Uber Direct SUB-ORG for this venue (Organizations API).
+    //    One platform root account (ENV creds + ENV_PARENT_ORG_ID) → a sub-org per venue. The
+    //    returned organization_id IS the venue's customer_id for quotes/deliveries, so the
+    //    merchant never touches API keys. Body may override name/email/merchant_type/billing_type.
+    //    (Exact enum values for merchant_type / billing_type / contract_type are locked in sandbox.)
+    if (action === 'onboard_org') {
+      const acc = await requireAccess(req, loc); if (!acc.ok) return acc.res;
+      if (!ENV_CLIENT_ID || !ENV_CLIENT_SECRET) return json({ ok: false, reason: 'platform_not_configured', error: 'Uber Direct platform credentials are not set on the server.' });
+      if (!ENV_PARENT_ORG_ID) return json({ ok: false, reason: 'no_parent_org', error: 'No platform parent org id (UBER_DIRECT_PARENT_ORG_ID) is set on the server.' });
+      const { data: cfg } = await sb.from('venue_uber_config').select('*').eq('location_id', loc).maybeSingle();
+      if (cfg?.uber_customer_id) return json({ ok: true, already: true, customer_id: cfg.uber_customer_id });
+      const env = (cfg?.env || ENV_DEFAULT) as 'sandbox' | 'prod';
+      const pa = cfg?.pickup_address || {};
+      const pc = cfg?.pickup_contact || {};
+      const poc: Record<string, unknown> = {
+        first_name: body?.first_name || (pc.name || '').split(' ')[0] || 'Manager',
+        last_name: body?.last_name || (pc.name || '').split(' ').slice(1).join(' ') || 'Manager',
+      };
+      if (body?.email) poc.email = body.email;
+      if (pc.phone) poc.phone_details = { phone_number: e164(pc.phone) };
+      const orgBody = {
+        info: {
+          name: body?.name || pc.name || 'Venue',
+          merchant_type: body?.merchant_type || 'MERCHANT_TYPE_RESTAURANT',
+          billing_type: body?.billing_type || 'BILLING_TYPE_DECENTRALIZED',
+          address: {
+            street_address: [pa.line1, pa.line2].filter(Boolean),
+            city: pa.city || '',
+            state: pa.state || '',
+            zip_code: pa.postcode || '',
+            country: pa.country || 'GB',
+          },
+          point_of_contact: poc,
+        },
+        hierarchy_info: { parent_organization_id: ENV_PARENT_ORG_ID },
+      };
+      try {
+        const token = await getAccessToken(env, ENV_CLIENT_ID, ENV_CLIENT_SECRET, UBER_ORG_SCOPE);
+        const resp = await createOrganization(env, token, orgBody);
+        const parsed = parseOrgResp(resp);
+        if (!parsed.orgId) return json({ ok: false, reason: 'no_org_id', raw: resp });
+        // Persist the new customer_id + flip the venue onto the Uber courier (API) backend.
+        await sb.from('venue_uber_config').upsert({
+          location_id: loc, uber_customer_id: parsed.orgId,
+          delivery_mode: 'uber', dispatch_backend: 'uber_api', env,
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'location_id' });
+        // Best-effort: email the merchant an invite to manage their own org (billing etc.).
+        let invited = false;
+        if (body?.email) {
+          try { await inviteOrgMember(env, token, parsed.orgId, { user_details: { email: body.email }, roles: ['ROLE_ADMIN'] }); invited = true; } catch (_e) { /* non-fatal */ }
+        }
+        return json({ ok: true, customer_id: parsed.orgId, name: parsed.name, invited });
+      } catch (e) {
+        return json({ ok: false, reason: 'org_create_failed', error: String((e as Error)?.message || e) });
+      }
+    }
+
+    // ── BO: live org status (onboarded? billing active?) for a venue. ──────────
+    if (action === 'org_status') {
+      const acc = await requireAccess(req, loc); if (!acc.ok) return acc.res;
+      const { data: cfg } = await sb.from('venue_uber_config').select('*').eq('location_id', loc).maybeSingle();
+      if (!cfg?.uber_customer_id) return json({ ok: true, onboarded: false });
+      if (!ENV_CLIENT_ID || !ENV_CLIENT_SECRET) return json({ ok: true, onboarded: true, customer_id: cfg.uber_customer_id });
+      const env = (cfg?.env || ENV_DEFAULT) as 'sandbox' | 'prod';
+      try {
+        const token = await getAccessToken(env, ENV_CLIENT_ID, ENV_CLIENT_SECRET, UBER_ORG_SCOPE);
+        const parsed = parseOrgResp(await getOrganization(env, token, cfg.uber_customer_id));
+        return json({ ok: true, onboarded: true, customer_id: cfg.uber_customer_id, name: parsed.name, billingStatus: parsed.billingStatus });
+      } catch (e) {
+        return json({ ok: true, onboarded: true, customer_id: cfg.uber_customer_id, error: String((e as Error)?.message || e) });
+      }
+    }
+
+    // ── BO: (re)send the merchant an invite to manage their org. ───────────────
+    if (action === 'invite_org_member') {
+      const acc = await requireAccess(req, loc); if (!acc.ok) return acc.res;
+      const email = body?.email;
+      if (!email) return json({ ok: false, reason: 'email_required' });
+      const { data: cfg } = await sb.from('venue_uber_config').select('*').eq('location_id', loc).maybeSingle();
+      if (!cfg?.uber_customer_id) return json({ ok: false, reason: 'not_onboarded' });
+      const env = (cfg?.env || ENV_DEFAULT) as 'sandbox' | 'prod';
+      try {
+        const token = await getAccessToken(env, ENV_CLIENT_ID, ENV_CLIENT_SECRET, UBER_ORG_SCOPE);
+        await inviteOrgMember(env, token, cfg.uber_customer_id, { user_details: { email }, roles: [body?.role || 'ROLE_ADMIN'] });
+        return json({ ok: true });
+      } catch (e) {
+        return json({ ok: false, reason: 'invite_failed', error: String((e as Error)?.message || e) });
+      }
     }
 
     // ── POS/online/catering: live quote ──────────────────────────────────────

@@ -11,17 +11,30 @@
 // the live Uber Direct dashboard in sandbox without touching callers.
 
 const HOSTS = {
-  sandbox: { auth: 'https://sandbox-login.uber.com/oauth/v2/token', api: 'https://sandbox-api.uber.com' },
-  prod:    { auth: 'https://auth.uber.com/oauth/v2/token',          api: 'https://api.uber.com' },
+  // Uber Direct TEST ("sandbox") uses the SAME hosts as production — test vs live is a property
+  // of the CREDENTIALS / account ("Test mode" toggle in the Direct dashboard), NOT a different
+  // URL. Verified against developer.uber.com/docs/deliveries/get-started (Jun 2026): the test
+  // examples call auth.uber.com + api.uber.com and return live_mode:false.
+  sandbox: { auth: 'https://auth.uber.com/oauth/v2/token', api: 'https://api.uber.com' },
+  prod:    { auth: 'https://auth.uber.com/oauth/v2/token', api: 'https://api.uber.com' },
 };
 
-export const UBER_SCOPE = 'eats.deliveries';
+export const UBER_SCOPE = 'eats.deliveries';        // quotes + deliveries
+export const UBER_ORG_SCOPE = 'direct.organizations'; // Organizations API (platform onboarding)
 
 export const UBER_PATHS = {
   quote:  (cid: string) => `/v1/customers/${cid}/delivery_quotes`,
   create: (cid: string) => `/v1/customers/${cid}/deliveries`,
   get:    (cid: string, id: string) => `/v1/customers/${cid}/deliveries/${id}`,
   cancel: (cid: string, id: string) => `/v1/customers/${cid}/deliveries/${id}/cancel`,
+};
+
+// Organizations API — one platform "root" account creates a sub-org per merchant; the returned
+// organization_id IS that merchant's customer_id for the delivery endpoints above.
+export const UBER_ORG_PATHS = {
+  create: () => `/v1/direct/organizations`,
+  get:    (id: string) => `/v1/direct/organizations/${id}`,
+  invite: (id: string) => `/v1/direct/organizations/${id}/memberships/invite`,
 };
 
 export class UberError extends Error {
@@ -36,8 +49,8 @@ export class UberError extends Error {
 type Cached = { token: string; expMs: number };
 const _tokens = new Map<string, Cached>();
 
-export async function getAccessToken(env: 'sandbox' | 'prod', clientId: string, clientSecret: string): Promise<string> {
-  const key = `${env}:${clientId}`;
+export async function getAccessToken(env: 'sandbox' | 'prod', clientId: string, clientSecret: string, scope: string = UBER_SCOPE): Promise<string> {
+  const key = `${env}:${clientId}:${scope}`;
   const hit = _tokens.get(key);
   if (hit && hit.expMs - Date.now() > 60_000) return hit.token;
 
@@ -45,7 +58,7 @@ export async function getAccessToken(env: 'sandbox' | 'prod', clientId: string, 
     client_id: clientId,
     client_secret: clientSecret,
     grant_type: 'client_credentials',
-    scope: UBER_SCOPE,
+    scope,
   });
   const res = await fetch(HOSTS[env].auth, {
     method: 'POST',
@@ -150,6 +163,30 @@ export async function getDelivery(env: 'sandbox' | 'prod', token: string, custom
 }
 export async function cancelDelivery(env: 'sandbox' | 'prod', token: string, customerId: string, id: string): Promise<any> {
   return uberFetch(env, token, 'POST', UBER_PATHS.cancel(customerId, id), {});
+}
+
+// ── Organizations API (platform onboarding) ──────────────────────────────────
+// Needs a token minted with UBER_ORG_SCOPE. createOrganization creates a sub-org under the
+// platform's root (parent_organization_id); the response's organization_id becomes the
+// merchant's customer_id for quotes/deliveries.
+export async function createOrganization(env: 'sandbox' | 'prod', token: string, body: unknown): Promise<any> {
+  return uberFetch(env, token, 'POST', UBER_ORG_PATHS.create(), body);
+}
+export async function getOrganization(env: 'sandbox' | 'prod', token: string, orgId: string): Promise<any> {
+  return uberFetch(env, token, 'GET', UBER_ORG_PATHS.get(orgId));
+}
+export async function inviteOrgMember(env: 'sandbox' | 'prod', token: string, orgId: string, body: unknown): Promise<any> {
+  return uberFetch(env, token, 'POST', UBER_ORG_PATHS.invite(orgId), body);
+}
+
+/** Pull the org id (= customer_id) from a create/get organization response (tolerant). */
+export function parseOrgResp(r: any): { orgId: string | null; name: string | null; billingStatus: string | null } {
+  const d = r?.data || r || {};
+  return {
+    orgId: d.organization_id || d.id || null,
+    name: d.info?.name || d.name || null,
+    billingStatus: d.billing_info?.billing_status || null,
+  };
 }
 
 /** Extract the bits ServOS stores from a create/get/webhook delivery payload (tolerant). */

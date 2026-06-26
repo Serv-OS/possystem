@@ -8,7 +8,7 @@
 
 import { useEffect, useState } from 'react';
 import { getActiveLocationSync } from '../../lib/supabase';
-import { getVenueUberConfig, setVenueUberConfig } from '../../lib/delivery/deliveryConfig';
+import { getVenueUberConfig, setVenueUberConfig, onboardVenueOrg, inviteVenueOrgMember } from '../../lib/delivery/deliveryConfig';
 import { computeSurcharge } from '../../lib/delivery/surcharge';
 import { money } from '../../lib/currency';
 import MoneyField from '../../components/MoneyField';
@@ -65,6 +65,27 @@ export default function UberDirect() {
   const setAddr = (k, v) => setForm((f) => ({ ...f, pickup_address: { ...f.pickup_address, [k]: v } }));
   const setContact = (k, v) => setForm((f) => ({ ...f, pickup_contact: { ...f.pickup_contact, [k]: v } }));
   const setPolicy = (k, v) => setForm((f) => ({ ...f, surcharge_policy: { ...f.surcharge_policy, [k]: v } }));
+
+  // Platform onboarding (Organizations API): ServOS creates this venue's Uber Direct sub-org
+  // under our root account; the merchant never copies API keys.
+  const [onb, setOnb] = useState({ name: '', email: '', busy: false, msg: null });
+  const connected = !!form.uber_customer_id;
+  const connectVenue = async () => {
+    setOnb((o) => ({ ...o, busy: true, msg: null }));
+    const r = await onboardVenueOrg(locId, { name: onb.name || form.pickup_contact?.name || undefined, email: onb.email || undefined });
+    if (r?.ok) {
+      setForm((f) => ({ ...f, uber_customer_id: r.customer_id, delivery_mode: 'uber', dispatch_backend: 'uber_api' }));
+      setOnb((o) => ({ ...o, busy: false, msg: { err: false, t: r.already ? 'This venue is already connected.' : `Connected ✓ — customer ID ${r.customer_id}${r.invited ? ' · invite emailed' : ''}` } }));
+    } else {
+      setOnb((o) => ({ ...o, busy: false, msg: { err: true, t: r?.error || r?.reason || 'Could not connect to Uber Direct.' } }));
+    }
+  };
+  const resendInvite = async () => {
+    if (!onb.email) { setOnb((o) => ({ ...o, msg: { err: true, t: 'Enter the manager email to invite.' } })); return; }
+    setOnb((o) => ({ ...o, busy: true, msg: null }));
+    const r = await inviteVenueOrgMember(locId, onb.email);
+    setOnb((o) => ({ ...o, busy: false, msg: r?.ok ? { err: false, t: 'Invite emailed.' } : { err: true, t: r?.error || 'Could not send invite.' } }));
+  };
 
   const save = async () => {
     // HubRise Bridge has no live quote — a delivery charge MUST be set (0 = free is fine,
@@ -263,7 +284,39 @@ export default function UberDirect() {
           <div style={{ fontSize: 13, color: 'var(--t2)' }}>Text the customer a tracking link</div>
           <div style={S.toggle(form.sms_tracking)} onClick={() => set('sms_tracking', !form.sms_tracking)}><div style={S.knob(form.sms_tracking)} /></div>
         </div>
-        <div style={{ ...S.infoNote, marginTop: 12 }}>Uber API keys (client id/secret) and the webhook signing key are set securely on the server (Supabase edge-function secrets), never here.</div>
+        <div style={{ ...S.infoNote, marginTop: 12 }}>No API keys to enter here — ServOS connects this venue to Uber Direct for you (below). The platform credentials live securely on the server.</div>
+      </div>
+      )}
+
+      {/* Connect this venue to Uber Direct — platform onboarding via the Organizations API.
+          Only for the Uber Direct API courier path; ServOS creates the venue's sub-org. */}
+      {form.delivery_mode === 'uber' && form.dispatch_backend === 'uber_api' && (
+      <div style={{ ...S.card, borderColor: connected ? '#16a34a66' : 'var(--acc)' }}>
+        <h2 style={S.h2}>{connected ? '✓ Connected to Uber Direct' : 'Connect this venue to Uber Direct'}</h2>
+        {connected ? (
+          <>
+            <div style={{ fontSize: 13, color: 'var(--t2)', lineHeight: 1.55 }}>
+              This venue has an Uber Direct account — couriers dispatch automatically with live tracking. Customer ID <code style={{ color: 'var(--acc)' }}>{form.uber_customer_id}</code>.
+            </div>
+            <div style={{ ...S.row, marginTop: 12 }}>
+              <div style={S.col}><label style={S.label}>Manager email — to manage billing in Uber</label><input style={S.input} value={onb.email} onChange={(e) => setOnb((o) => ({ ...o, email: e.target.value }))} placeholder="manager@venue.com" /></div>
+              <div style={{ display: 'flex', alignItems: 'flex-end' }}><button style={{ ...S.btn, background: 'var(--bg3)', color: 'var(--t1)', border: '1px solid var(--bdr2)' }} disabled={onb.busy} onClick={resendInvite}>{onb.busy ? '…' : 'Send invite'}</button></div>
+            </div>
+            <div style={{ ...S.infoNote, marginTop: 10 }}>The venue must add a card in Uber Direct (via the invite) before going live in production; sandbox needs no card.</div>
+          </>
+        ) : (
+          <>
+            <p style={{ fontSize: 13, color: 'var(--t2)', lineHeight: 1.55, margin: '0 0 12px' }}>
+              ServOS sets up this venue's Uber Direct account under our platform — <b>no API keys to copy</b>. Check the <b>pickup address</b> above is correct first, then connect. To go live in production the venue adds billing in Uber (we'll email an invite); sandbox needs no card.
+            </p>
+            <div style={S.row}>
+              <div style={S.col}><label style={S.label}>Venue / business name</label><input style={S.input} value={onb.name} onChange={(e) => setOnb((o) => ({ ...o, name: e.target.value }))} placeholder={form.pickup_contact?.name || 'Your venue name'} /></div>
+              <div style={S.col}><label style={S.label}>Manager email (optional — sends an invite)</label><input style={S.input} value={onb.email} onChange={(e) => setOnb((o) => ({ ...o, email: e.target.value }))} placeholder="manager@venue.com" /></div>
+            </div>
+            <button style={{ ...S.btn, marginTop: 12 }} disabled={onb.busy} onClick={connectVenue}>{onb.busy ? 'Connecting…' : 'Create Uber Direct account for this venue'}</button>
+          </>
+        )}
+        {onb.msg && <div style={S.note(onb.msg.err)}>{onb.msg.t}</div>}
       </div>
       )}
 
