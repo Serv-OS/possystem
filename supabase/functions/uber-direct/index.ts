@@ -17,6 +17,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { getAccessToken, getQuote, geocodePostcode, haversineMiles, createDelivery, getDelivery, parseDeliveryResp, mapUberStatus } from '../_shared/uber.ts';
 import { createOrder as createHubriseOrder, patchOrder as patchHubriseOrder } from '../_shared/hubrise.ts';
 import { cancelDelivery } from '../_shared/uber.ts';
+import { dispatchCourier } from '../_shared/delivery-dispatch.ts';
 
 const e164 = (raw: string) => {
   const s = String(raw || '').replace(/[\s()-]/g, '');
@@ -200,56 +201,12 @@ Deno.serve(async (req) => {
       const t = await requireToken(req); if (!t.ok) return t.res;
       const { data: cfg } = await sb.from('venue_uber_config').select('*').eq('location_id', loc).maybeSingle();
       if (!cfg || !cfg.enabled) return json({ ok: false, reason: 'disabled' });
-      const orderRef = body?.order_ref || null;
-      const manifest = body?.manifest || {};
-
-      // HubRise Bridge backend — push the order INTO HubRise; the Bridge (connected in the
-      // HubRise back office) then dispatches it to Uber and syncs status back through the
-      // existing hubrise order pipeline. Requires the venue to be HubRise-connected.
-      if (cfg.dispatch_backend === 'hubrise_bridge') {
-        const { data: conn } = await sb.from('hubrise_connections').select('access_token, hubrise_location_id, status').eq('location_id', loc).maybeSingle();
-        if (!conn?.access_token || !conn?.hubrise_location_id) {
-          return json({ ok: false, reason: 'hubrise_not_connected', message: 'Connect this venue to HubRise (with the Uber Direct Bridge enabled) to dispatch.' });
-        }
-        try {
-          const hrOrder = body?.hubrise_order || {};
-          const created = await createHubriseOrder(conn.access_token, conn.hubrise_location_id, hrOrder);
-          const hubriseRef = created?.id || created?.order_id || null;
-          const { data: row } = await sb.from('courier_deliveries').insert({
-            location_id: loc, order_ref: orderRef, dispatch_backend: 'hubrise_bridge', status: 'pending', hubrise_ref: hubriseRef,
-          }).select('id').maybeSingle();
-          return json({ ok: true, backend: 'hubrise_bridge', deliveryRowId: row?.id || null, hubriseRef });
-        } catch (e) {
-          return json({ ok: false, reason: 'hubrise_push_failed', error: String((e as Error)?.message || e) });
-        }
-      }
-
-      // Fill pickup from server-side config (never trusted from the client).
-      manifest.pickup = {
-        name: cfg.pickup_contact?.name || 'Restaurant',
-        phone: e164(cfg.pickup_contact?.phone || ''),
-        address: cfg.pickup_address || null,
-        instructions: cfg.pickup_contact?.instructions || '',
-      };
-
-      const customerId = cfg.uber_customer_id || ENV_CUSTOMER_ID;
-      const env = (cfg.env || ENV_DEFAULT) as 'sandbox' | 'prod';
-      if (!ENV_CLIENT_ID || !ENV_CLIENT_SECRET || !customerId) return json({ ok: false, reason: 'not_configured' });
-
-      try {
-        const token = await getAccessToken(env, ENV_CLIENT_ID, ENV_CLIENT_SECRET);
-        const resp = await createDelivery({ env, token, customerId, manifest });
-        const p = parseDeliveryResp(resp);
-        const status = mapUberStatus(p.rawStatus);
-        const { data: row } = await sb.from('courier_deliveries').insert({
-          location_id: loc, order_ref: orderRef, dispatch_backend: 'uber_api',
-          uber_delivery_id: p.id, status, tracking_url: p.trackingUrl,
-          courier_name: p.courierName, courier_phone: p.courierPhone, last_lat: p.lat, last_lng: p.lng,
-        }).select('id').maybeSingle();
-        return json({ ok: true, deliveryRowId: row?.id || null, deliveryId: p.id, trackingUrl: p.trackingUrl, status });
-      } catch (e) {
-        return json({ ok: false, reason: 'dispatch_failed', error: String((e as Error)?.message || e) });
-      }
+      // Build + dispatch server-side via the single idempotent path (shared with the catering
+      // fire-time cron). The client sends the raw order + accepted quote; pickup + bodies are
+      // built server-side from config. Idempotent on order_ref → safe to call more than once.
+      const order = body?.order || { ref: body?.order_ref || null };
+      const quote = body?.quote || {};
+      return json(await dispatchCourier(sb, { loc, cfg, order, quote }));
     }
 
     // ── Poll a delivery's status (staff board fallback to the webhook). ───────

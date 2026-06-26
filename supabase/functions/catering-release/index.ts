@@ -17,6 +17,7 @@
 // Auth: service-role bearer, OR x-run-secret == CATERING_RELEASE_SECRET (the Vercel cron path).
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { dispatchCourier } from '../_shared/delivery-dispatch.ts';
 
 const URL = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -38,7 +39,7 @@ Deno.serve(async (req) => {
   const cutoff = new Date(Date.now() - GRACE_MIN * 60_000).toISOString();
   // Due (fire time + grace passed), not yet fired by any device, not finished. Oldest first.
   const { data, error } = await sb.from('order_queue')
-    .select('ref, location_id, items, customer, sent_at')
+    .select('ref, location_id, type, total, items, customer, sent_at')
     .eq('source', 'catering').is('kitchen_routed_at', null).neq('status', 'collected')
     .lte('sent_at', cutoff)
     .order('sent_at', { ascending: true })
@@ -53,6 +54,21 @@ Deno.serve(async (req) => {
       .eq('ref', row.ref).eq('location_id', row.location_id).is('kitchen_routed_at', null)
       .select('ref');
     if (claim.error || !claim.data?.length) continue;   // a device just claimed it — leave the routed fire to them
+
+    // v5.5.654: BULLETPROOF fire-time courier dispatch. We won the claim, so no POS device fired
+    // this order → no device will dispatch the courier either. If it's an uber-mode delivery,
+    // dispatch server-side now (idempotent on order_ref, so a device that comes online won't
+    // double-send). Self-delivery just gets the KDS ticket below. Independent of KDS success.
+    if (row.type === 'delivery' && row.customer?.delivery_mode === 'uber') {
+      try {
+        const { data: cfg } = await sb.from('venue_uber_config').select('*').eq('location_id', row.location_id).maybeSingle();
+        if (cfg?.enabled) {
+          const quote = { customerFeeMinor: Math.round(Number(row.customer.delivery_fee || 0) * 100), dropoff: row.customer.address || null, currency: 'GBP', quoteId: null };
+          await dispatchCourier(sb, { loc: row.location_id, cfg, order: { ref: row.ref, items: row.items || [], total: row.total, customer: row.customer }, quote });
+        }
+      } catch (e) { console.warn('[catering-release] courier dispatch', row.ref, (e as Error)?.message); }
+    }
+
     // Consolidated KDS ticket (all items, centre_id null → shows on the all-items KDS view).
     const who = row.customer?.name || 'Catering';
     const { error: kErr } = await sb.from('kds_tickets').insert({

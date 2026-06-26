@@ -4,8 +4,7 @@
  * dispatch_backend (uber_api → Create Delivery; hubrise_bridge → deferred seam) and
  * holds the creds. Returns { ok, deliveryId, trackingUrl, status, deferred?, reason? }.
  */
-import { buildManifest, toE164 } from './manifest.js';
-import { buildHubriseOrder } from './hubriseOrder.js';
+import { toE164 } from './manifest.js';
 
 async function invoke(action, payload) {
   const { supabase } = await import('../supabase.js');
@@ -24,9 +23,9 @@ async function invoke(action, payload) {
  */
 export async function dispatchDelivery({ opsLocationId, order, quote }, deps = {}) {
   const send = deps.invoke || invoke;
-  const manifest = buildManifest({ order, quote, pickup: {} });
-  const hubriseOrder = buildHubriseOrder({ order, quote, currency: quote?.currency || 'GBP' });
-  return send('create_delivery', { ops_location_id: opsLocationId, order_ref: order?.ref || null, manifest, hubrise_order: hubriseOrder });
+  // Send the raw order + accepted quote; the edge fn builds the manifest / HubRise order
+  // server-side and dispatches idempotently (same path the catering fire-time cron uses).
+  return send('create_delivery', { ops_location_id: opsLocationId, order_ref: order?.ref || null, order, quote });
 }
 
 /** Poll a delivery's live status (staff board fallback to the webhook). */

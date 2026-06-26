@@ -88,6 +88,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.654', date: '25 Jun 2026', label: 'Delivery dispatch made bulletproof — server-side fire-time courier, no double-sends',
+    changes: [
+      'Courier dispatch is now fully reliable for scheduled (catering) orders even if no till is switched on: the server-side catering release cron dispatches the courier itself at fire-time, so it no longer depends on a POS device being online. All dispatch (POS, online and catering) now runs through one server-side path.',
+      'Made dispatch idempotent — a courier is only ever requested once per order, so the device path, the cron and any retry can never double-book (or double-charge) a courier.',
+    ],
+  },
+  {
     version: '5.5.653', date: '25 Jun 2026', label: 'Catering delivery now uses the shared delivery setup (self or Uber courier)',
     changes: [
       'Catering delivery is now driven by the same Channels → Delivery (Uber Direct) setup as POS and online — one place sets your delivery charge and whether you deliver yourself or use an Uber courier. The catering delivery fee comes from there (falling back to the old catering flat fee if the new setup isn’t configured).',
