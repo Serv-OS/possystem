@@ -116,10 +116,14 @@ export async function dispatchCourier(sb: any, { loc, cfg, order, quote }: { loc
     }
 
     // stuart — create a Stuart job; store the job id in uber_delivery_id (the provider delivery id).
+    // Per-location Stuart account (this venue's own creds), falling back to the platform creds in
+    // env (used by our test venue until it connects its own).
     if (cfg.dispatch_backend === 'stuart') {
       const senv = (cfg.env || STUART_ENV) as 'sandbox' | 'prod';
-      if (!STUART_ID || !STUART_SECRET) return await fail('not_configured');
-      const stoken = await getStuartToken(senv, STUART_ID, STUART_SECRET);
+      const sid = cfg.stuart_client_id || STUART_ID;
+      const ssecret = cfg.stuart_client_secret || STUART_SECRET;
+      if (!sid || !ssecret) return await fail('not_configured');
+      const stoken = await getStuartToken(senv, sid, ssecret);
       const resp = await createStuartJob(senv, stoken, buildStuartJob(order, quote, cfg));
       const sp = parseStuartJob(resp);
       if (!sp.id) return await fail('stuart_job_failed', { error: 'Stuart returned no job id' });

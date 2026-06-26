@@ -1,9 +1,9 @@
 // src/backoffice/sections/DeliveriesBoard.jsx
 //
-// Back Office → Channels → "Deliveries (live)". Staff board of Uber Direct / HubRise-Bridge
-// deliveries for the venue: live status, courier, tracking link, ETA, with a cancel action.
+// Back Office → Channels → "Deliveries (live)". Staff board of dispatched courier deliveries
+// for the venue: live status, courier, tracking link, ETA, with a cancel action.
 // Reads via the uber-direct edge fn (deliveries is service-role-only). 20s poll; status is
-// fed live by the uber-webhook (Uber API) or the HubRise order sync (Bridge).
+// fed live by the stuart-webhook (legacy rows: uber-webhook / HubRise order sync).
 
 import { useEffect, useState, useCallback } from 'react';
 import { getActiveLocationSync } from '../../lib/supabase';
@@ -69,13 +69,13 @@ export default function DeliveriesBoard() {
   return (
     <div style={S.wrap}>
       <h1 style={{ fontSize: 20, fontWeight: 800, color: 'var(--t1)', margin: '0 0 4px' }}>Deliveries (live)</h1>
-      <p style={{ fontSize: 13, color: 'var(--t3)', margin: '0 0 16px' }}>Couriers dispatched for delivery orders. Status updates live from Uber / HubRise.</p>
+      <p style={{ fontSize: 13, color: 'var(--t3)', margin: '0 0 16px' }}>Couriers dispatched for delivery orders. Status updates live from the courier.</p>
       {report && (
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
           {[
             ['Deliveries (30d)', String(report.count)],
             ['Charged to customers', money((report.customerTotalMinor || 0) / 100)],
-            ['Actual Uber cost', report.actualCostMinor ? money(report.actualCostMinor / 100) : '—'],
+            ['Actual courier cost', report.actualCostMinor ? money(report.actualCostMinor / 100) : '—'],
             ['Margin', report.actualMarginMinor != null ? money(report.actualMarginMinor / 100) : money((report.quotedMarginMinor || 0) / 100) + ' (est.)'],
           ].map(([k, v]) => (
             <div key={k} style={{ flex: '1 1 150px', background: 'var(--bg2)', border: '1px solid var(--bdr)', borderRadius: 12, padding: '12px 14px' }}>
@@ -100,7 +100,7 @@ export default function DeliveriesBoard() {
               <span style={S.pill(d.status)}>{statusLabel(d.status)}</span>
               {d.tracking_url ? <a style={{ ...S.link, marginLeft: 8, fontSize: 12 }} href={d.tracking_url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>Track ↗</a> : null}
             </div>
-            <div style={{ color: 'var(--t2)' }}>{d.courier_name || (d.dispatch_backend === 'hubrise_bridge' ? 'via HubRise' : '—')}</div>
+            <div style={{ color: 'var(--t2)' }}>{d.courier_name || '—'}</div>
             <div style={{ color: 'var(--t3)' }}>{d.eta ? new Date(d.eta).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}</div>
             <div style={{ textAlign: 'right' }}>
               {!isTerminalStatus(d.status) && <button style={S.btn} disabled={busy === d.id} onClick={(e) => { e.stopPropagation(); onCancel(d.id); }}>{busy === d.id ? '…' : 'Cancel'}</button>}
@@ -120,7 +120,7 @@ export default function DeliveriesBoard() {
             </div>
 
             <div style={{ fontSize: 12.5, color: 'var(--t2)', lineHeight: 1.6, marginBottom: 12 }}>
-              <div><b>Fulfilment:</b> {sel.dispatch_backend === 'stuart' ? 'Stuart courier' : sel.dispatch_backend === 'hubrise_bridge' ? 'Uber courier via HubRise' : 'Uber Direct API'}</div>
+              <div><b>Fulfilment:</b> {sel.dispatch_backend === 'stuart' ? 'Stuart courier' : sel.dispatch_backend === 'hubrise_bridge' ? 'Courier (HubRise — legacy)' : 'Courier (API — legacy)'}</div>
               {sel.courier_name && <div><b>Courier:</b> {sel.courier_name}{sel.courier_phone ? ` · ${sel.courier_phone}` : ''}</div>}
               {sel.eta && <div><b>ETA:</b> {fmtTime(sel.eta)}</div>}
               {sel.tracking_url && <div><a style={S.link} href={sel.tracking_url} target="_blank" rel="noreferrer">Track courier ↗</a></div>}

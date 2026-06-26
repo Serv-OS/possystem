@@ -16,8 +16,17 @@ export const setVenueUberConfig = (opsLocationId, patch) => call('set_config', {
 export const listDeliveries = (opsLocationId, limit = 50) => call('list_deliveries', { ops_location_id: opsLocationId, limit });
 export const getDeliveryDetail = (opsLocationId, { id, orderRef } = {}) => call('get_delivery_detail', { ops_location_id: opsLocationId, id, order_ref: orderRef });
 
+// Per-location Stuart account: connect this venue's OWN Stuart credentials (verified server-side
+// before saving; the secret is never returned), test the connection, or disconnect.
+export const setStuartCreds = (opsLocationId, { clientId, clientSecret, env } = {}) =>
+  call('set_stuart_creds', { ops_location_id: opsLocationId, client_id: clientId, client_secret: clientSecret, env });
+export const testStuart = (opsLocationId) => call('test_stuart', { ops_location_id: opsLocationId });
+export const disconnectStuart = (opsLocationId) => call('disconnect_stuart', { ops_location_id: opsLocationId });
+
 // Platform onboarding (Organizations API): create a per-venue Uber Direct sub-org (returns its
 // customer_id), check its status, and (re)invite the merchant to manage their own org.
+// Parked: Uber Direct is gated in the UK; the Delivery screen uses Stuart. Kept for when an
+// Uber Direct partnership lands. Not surfaced in the BO.
 export const onboardVenueOrg = (opsLocationId, info = {}) => call('onboard_org', { ops_location_id: opsLocationId, ...info });
 export const getVenueOrgStatus = (opsLocationId) => call('org_status', { ops_location_id: opsLocationId });
 export const inviteVenueOrgMember = (opsLocationId, email, role) => call('invite_org_member', { ops_location_id: opsLocationId, email, role });

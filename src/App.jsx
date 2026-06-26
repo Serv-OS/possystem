@@ -88,6 +88,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.669', date: '26 Jun 2026', label: 'Delivery — per-location Stuart accounts (connect from Back Office); Uber Direct + HubRise Bridge retired',
+    changes: [
+      'Stuart is now connected PER LOCATION, not once for the whole system. Each venue uses its own Stuart account: Back Office → Channels → Delivery now has a "Connect this venue to Stuart" card where you paste this location\'s Stuart Client ID + Secret (sandbox or production). The keys are verified live before saving, stored securely server-side, and never shown again — the screen only ever shows whether Stuart is connected, with Test connection / Disconnect actions.',
+      'Removed Uber Direct and the HubRise Bridge as delivery courier options — the only courier backend offered now is Stuart (Uber Direct is gated in the UK). The "before you start — Uber Direct + HubRise accounts" panel, the "Connect to Uber Direct" card and the dispatch-backend dropdown are gone; courier mode is simply "Stuart courier". (HubRise stays for inbound 3rd-party orders under Channels → 3rd Party orders — that is unaffected.)',
+      'Quoting, dispatch and cancellation now use each venue\'s own Stuart credentials (falling back to the shared ServOS test account only where a venue hasn\'t connected its own yet), so courier costs are billed to the right location.',
+      'Fixed an underlying constraint that would have blocked saving a Stuart delivery setup (the database only allowed the old Uber/HubRise backends).',
+    ],
+  },
+  {
     version: '5.5.668', date: '26 Jun 2026', label: 'Delivery copy audit — provider-neutral wording (no stray "Uber")',
     changes: [
       'Swept the Delivery settings for leftover Uber-specific wording now that Stuart is the default courier: the pricing "Mode" dropdown and preview now say "the courier\'s fee / courier cost" (not "Uber\'s fee"), the live-pricing note covers Stuart + Uber Direct, and the live Deliveries board labels Stuart deliveries as "Stuart courier". The Uber/HubRise account-setup panel only appears if you specifically choose the Uber Direct API or HubRise backend.',

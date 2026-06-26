@@ -55,6 +55,8 @@ const pickNonSecret = (row: any) => {
   const out: Record<string, unknown> = {};
   if (!row) return out;
   for (const k of NON_SECRET) out[k] = row[k];
+  // Per-location Stuart account: expose only whether it's connected, NEVER the creds.
+  out.stuart_connected = !!(row.stuart_client_id && row.stuart_client_secret);
   return out;
 };
 
@@ -200,6 +202,57 @@ Deno.serve(async (req) => {
       }
     }
 
+    // ── BO: connect THIS venue's own Stuart account (per-location, not platform-wide).
+    //    Each location signs up its own Stuart account and pastes its Client ID + Secret
+    //    here. We verify the creds by fetching a token, then store them (service-role only;
+    //    never returned to the browser) and flip the venue onto the Stuart courier backend. ─
+    if (action === 'set_stuart_creds') {
+      const acc = await requireAccess(req, loc); if (!acc.ok) return acc.res;
+      const id = String(body?.client_id || '').trim();
+      const secret = String(body?.client_secret || '').trim();
+      if (!id || !secret) return json({ ok: false, error: 'Enter both the Stuart Client ID and Client Secret.' });
+      const senv = (body?.env === 'prod' ? 'prod' : 'sandbox') as 'sandbox' | 'prod';
+      // Verify before saving — a bad key is caught here, not at the first delivery.
+      try {
+        await getStuartToken(senv, id, secret);
+      } catch (e) {
+        return json({ ok: false, reason: 'auth_failed', error: 'Stuart rejected those credentials — check the Client ID/Secret and the sandbox/production toggle. (' + String((e as Error)?.message || e) + ')' });
+      }
+      const { error } = await sb.from('venue_uber_config').upsert({
+        location_id: loc, stuart_client_id: id, stuart_client_secret: secret, env: senv,
+        dispatch_backend: 'stuart',
+        updated_at: new Date().toISOString(), updated_by: acc.userId === 'service' ? null : acc.userId,
+      }, { onConflict: 'location_id' });
+      if (error) return json({ ok: false, error: error.message }, 500);
+      return json({ ok: true, stuart_connected: true, env: senv });
+    }
+
+    // ── BO: test the venue's connected Stuart account (re-fetch a token). ──────
+    if (action === 'test_stuart') {
+      const acc = await requireAccess(req, loc); if (!acc.ok) return acc.res;
+      const { data: cfg } = await sb.from('venue_uber_config').select('stuart_client_id, stuart_client_secret, env').eq('location_id', loc).maybeSingle();
+      const id = cfg?.stuart_client_id || ENV_STUART_ID;
+      const secret = cfg?.stuart_client_secret || ENV_STUART_SECRET;
+      if (!id || !secret) return json({ ok: false, reason: 'not_connected', error: 'No Stuart account is connected for this venue.' });
+      const senv = (cfg?.env || ENV_STUART_DEFAULT) as 'sandbox' | 'prod';
+      try {
+        await getStuartToken(senv, id, secret);
+        return json({ ok: true, env: senv, platform: !cfg?.stuart_client_id });
+      } catch (e) {
+        return json({ ok: false, reason: 'auth_failed', error: String((e as Error)?.message || e) });
+      }
+    }
+
+    // ── BO: disconnect this venue's Stuart account (clear its creds). ──────────
+    if (action === 'disconnect_stuart') {
+      const acc = await requireAccess(req, loc); if (!acc.ok) return acc.res;
+      const { error } = await sb.from('venue_uber_config').update({
+        stuart_client_id: null, stuart_client_secret: null, updated_at: new Date().toISOString(),
+      }).eq('location_id', loc);
+      if (error) return json({ ok: false, error: error.message }, 500);
+      return json({ ok: true, stuart_connected: false });
+    }
+
     // ── POS/online/catering: live quote ──────────────────────────────────────
     if (action === 'quote') {
       const t = await requireToken(req); if (!t.ok) return t.res;
@@ -255,14 +308,18 @@ Deno.serve(async (req) => {
       // if creds are missing or Stuart is unavailable.
       if (cfg.dispatch_backend === 'stuart') {
         const senv = (cfg.env || ENV_STUART_DEFAULT) as 'sandbox' | 'prod';
-        if (!ENV_STUART_ID || !ENV_STUART_SECRET) {
+        // Per-location Stuart account (this venue's own creds), falling back to the
+        // platform creds in env (used by our test venue until it connects its own).
+        const sid = cfg.stuart_client_id || ENV_STUART_ID;
+        const ssecret = cfg.stuart_client_secret || ENV_STUART_SECRET;
+        if (!sid || !ssecret) {
           if (cfg.flat_fee_minor != null || cfg.fallback_fee_minor != null) {
             return json({ ok: true, available: true, mode: 'uber', dispatchable: true, fallback: true, configured: true, raw: { fee: configuredFeeMinor, currency }, dropoff, distanceMiles, withinRadius: true, policy, currency, radiusMiles });
           }
           return json({ ok: true, available: false, reason: 'not_configured', policy, currency });
         }
         try {
-          const stoken = await getStuartToken(senv, ENV_STUART_ID, ENV_STUART_SECRET);
+          const stoken = await getStuartToken(senv, sid, ssecret);
           const pricing = await getStuartPricing({ env: senv, token: stoken, pickup, dropoff });
           const raw = normaliseStuartPricing(pricing);
           if (!raw) throw new Error('no_price');
@@ -397,8 +454,10 @@ Deno.serve(async (req) => {
           }
         } else if (del.dispatch_backend === 'stuart') {
           const senv = (cfg?.env || ENV_STUART_DEFAULT) as 'sandbox' | 'prod';
-          if (ENV_STUART_ID && ENV_STUART_SECRET && del.uber_delivery_id) {
-            const stoken = await getStuartToken(senv, ENV_STUART_ID, ENV_STUART_SECRET);
+          const sid = cfg?.stuart_client_id || ENV_STUART_ID;
+          const ssecret = cfg?.stuart_client_secret || ENV_STUART_SECRET;
+          if (sid && ssecret && del.uber_delivery_id) {
+            const stoken = await getStuartToken(senv, sid, ssecret);
             await cancelStuartJob(senv, stoken, del.uber_delivery_id);
           }
         } else if (del.uber_delivery_id) {
