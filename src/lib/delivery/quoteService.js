@@ -29,13 +29,13 @@ async function defaultInvoke(action, payload) {
  *   policyApplied?:string, dropoff?:object
  * }}
  */
-export async function getDeliveryQuote({ opsLocationId, dropoff, orderSubtotalMinor = 0 }, deps = {}) {
+export async function getDeliveryQuote({ opsLocationId, dropoff, orderSubtotalMinor = 0, scheduled = false }, deps = {}) {
   const invoke = deps.invoke || defaultInvoke;
   const now = deps.now || Date.now();
 
   let resp;
   try {
-    resp = await invoke('quote', { ops_location_id: opsLocationId, dropoff, order_subtotal_minor: orderSubtotalMinor });
+    resp = await invoke('quote', { ops_location_id: opsLocationId, dropoff, order_subtotal_minor: orderSubtotalMinor, scheduled });
   } catch (e) {
     return { available: false, reason: 'transport_error', error: String(e?.message || e) };
   }

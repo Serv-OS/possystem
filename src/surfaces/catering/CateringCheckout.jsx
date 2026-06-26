@@ -14,6 +14,7 @@ import { getLocationProcessor } from '../../lib/payments/processor';
 import RyftPaymentForm from '../../components/RyftPaymentForm';
 import { calculateOrderTax } from '../../lib/tax';
 import { sendEmailReceipt } from '../../lib/sendReceipt';
+import { getDeliveryQuote, recordDeliverySurcharge } from '../../lib/delivery/quoteService';
 
 const money = (n, cur) => `${({ gbp: '£', usd: '$', eur: '€' }[cur] || '£')}${Number(n || 0).toFixed(2)}`;
 
@@ -55,7 +56,23 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
   useEffect(() => { getLocationProcessor(platformLocationId).then(setProcessor).catch(() => {}); }, [platformLocationId]);
 
   const isDelivery = fulfilment === 'delivery';
-  const deliveryFee = isDelivery ? (cfg.delivery_fee_minor ? cfg.delivery_fee_minor / 100 : 0) : 0;
+  // v5.5.653: catering delivery now uses the SHARED delivery engine — same self/courier mode +
+  // configured fee as POS/online. A catering event is in the FUTURE, so we use the configured
+  // fee (scheduled=true; no live quote) and dispatch the courier at FIRE time, not now. Falls
+  // back to the legacy catering flat fee (cfg.delivery_fee_minor) if the engine isn't set up.
+  const [deliveryQuote, setDeliveryQuote] = useState(null);
+  useEffect(() => {
+    if (!isDelivery || !addr1.trim() || !postcode.trim()) { setDeliveryQuote(null); return; }
+    let live = true;
+    const t = setTimeout(async () => {
+      const q = await getDeliveryQuote({ opsLocationId: opsId, dropoff: { line1: addr1.trim(), postcode: postcode.trim().toUpperCase() }, orderSubtotalMinor: Math.round(subtotal * 100), scheduled: true });
+      if (live) setDeliveryQuote(q);
+    }, 500);
+    return () => { live = false; clearTimeout(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isDelivery, addr1, postcode, subtotal, opsId]);
+  const engineFeeMinor = (isDelivery && deliveryQuote?.available) ? (deliveryQuote.customerFeeMinor || 0) : null;
+  const deliveryFee = isDelivery ? ((engineFeeMinor != null ? engineFeeMinor : (cfg.delivery_fee_minor || 0)) / 100) : 0;
   const tip = useMemo(() => (cfg.tips_enabled && tipPct ? +(subtotal * tipPct / 100).toFixed(2) : 0), [cfg.tips_enabled, tipPct, subtotal]);
   const discount = promoApplied?.amount || 0;
   const total = Math.max(0, +(subtotal + deliveryFee + tip - discount).toFixed(2));
@@ -70,6 +87,7 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
     fulfilment, event_date: eventDate, event_time: eventTime,
     ...(notes.trim() ? { notes: notes.trim() } : {}), ...(taxId.trim() ? { tax_id: taxId.trim() } : {}),
     ...(promoApplied ? { promo_code: promoApplied.code, promo_discount: promoApplied.amount } : {}), ...(tip ? { tip } : {}), ...(deliveryFee ? { delivery_fee: deliveryFee } : {}),
+    ...(isDelivery && deliveryQuote?.mode ? { delivery_mode: deliveryQuote.mode } : {}),   // fire-time dispatch reads this
     ...pay,
   });
   const promoReason = (r, min) => ({ not_found: "That code isn't valid.", expired: 'That code has expired.', already_used: 'That code has already been used.', voided: 'That code is no longer valid.', inactive: "That offer isn't active.", not_yet_active: "That offer hasn't started yet.", wrong_venue: "That code isn't valid here.", usage_limit: 'That code has reached its limit.', customer_required: 'That code is linked to an account — order signed in to use it.', customer_mismatch: 'That code is linked to a different account.', min_spend: `Spend at least ${money(min || 0, cur)} to use this code.` }[r] || "That code can't be used.");
@@ -88,6 +106,12 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
     try { await supabase.functions.invoke('promo-redeem', { body: { action: 'redeem', code: promoApplied.code, order_id: orderRef, location_id: opsId, basket_value: subtotal, idempotency_key: `${orderRef}:${promoApplied.code}` } }); } catch { /* best-effort; discount already shown to the guest */ }
   };
   const discountLine = promoApplied ? [{ type: 'promo', code: promoApplied.code, label: promoApplied.name, amount: promoApplied.amount }] : [];
+  // v5.5.653: log the delivery quote + surcharge for margin reporting (best-effort). The
+  // courier itself is dispatched at FIRE time (releaseDueCateringOrders), not now.
+  const logDeliverySurcharge = () => {
+    if (!isDelivery || !deliveryQuote?.available) return;
+    recordDeliverySurcharge({ opsLocationId: opsId, orderRef: ref, quote: { ...deliveryQuote, dropoff: { line1: addr1.trim(), postcode: postcode.trim().toUpperCase() } } }).catch(() => {});
+  };
   // A catering order is HELD until its event day. The kitchen needs `prep_time_minutes`, so it FIRES
   // that many minutes before the order's OWN event time (sent_at = event − prep, in the venue
   // timezone). Each order fires relative to its own event time, so multiple same-day orders at
@@ -126,6 +150,7 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
       const { error } = await supabase.from('order_queue').insert(queueRow(false, { pay_later: true }));
       if (error) throw error;
       await redeemPromo(ref);
+      logDeliverySurcharge();
       setPlaced(placedSnapshot(false, null));
     } catch (e) { setErr(e?.message || 'Could not place the order.'); } finally { setBusy(false); }
   };
@@ -157,6 +182,7 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
       const pay = { payment_intent_id: payId, processor, pay_later: false };
       // order_queue (paid)
       await supabase.from('order_queue').insert(queueRow(true, pay));
+      logDeliverySurcharge();
       // closed_checks (paid, net) — mirrors the online paid-order record. Sales are dated to the
       // event day at the event time, so a pre-order counts on the day of the event — not the day it
       // was placed. Payment is still captured now. (eventMs is computed once in the component body.)

@@ -88,6 +88,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.653', date: '25 Jun 2026', label: 'Catering delivery now uses the shared delivery setup (self or Uber courier)',
+    changes: [
+      'Catering delivery is now driven by the same Channels → Delivery (Uber Direct) setup as POS and online — one place sets your delivery charge and whether you deliver yourself or use an Uber courier. The catering delivery fee comes from there (falling back to the old catering flat fee if the new setup isn’t configured).',
+      'Because catering is for a future date, the customer is charged your configured delivery fee at order time, and — if you use the Uber courier option — the courier is dispatched automatically at the order’s fire-time on the event day (with a tracking text), not when the order is placed. Self-delivery catering orders just fire to the kitchen as before.',
+    ],
+  },
+  {
     version: '5.5.652', date: '25 Jun 2026', label: 'Delivery — clear “self-delivery vs Uber courier” choice + obvious setup',
     changes: [
       'NEW headline choice on the Delivery settings screen: “I deliver it myself” (the order just fires to your POS/kitchen — no courier, no Uber/HubRise account needed) vs “Uber Direct courier” (a courier is dispatched with live tracking). Set your delivery charge once here and it applies to POS, online and catering. The Uber/HubRise account setup steps now only appear when you pick the courier option.',

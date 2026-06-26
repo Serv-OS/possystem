@@ -136,6 +136,13 @@ Deno.serve(async (req) => {
       }
 
       // ── mode === 'uber' (courier dispatch) ───────────────────────────────────
+      // Scheduled (catering / future event) → no live quote (it'd be stale); charge the
+      // configured fee now, dispatch the courier at FIRE time. dispatchable:false = don't
+      // dispatch at order time (the catering release path dispatches later).
+      if (body?.scheduled) {
+        return json({ ok: true, available: true, mode: 'uber', dispatchable: false, scheduled: true, fallback: true, raw: { fee: configuredFeeMinor, currency }, dropoff, distanceMiles, withinRadius: true, policy, currency, radiusMiles });
+      }
+
       // HubRise Bridge can't quote live → the customer fee is the configured flat fee.
       if (cfg.dispatch_backend === 'hubrise_bridge') {
         return json({ ok: true, available: true, mode: 'uber', dispatchable: true, fallback: true, configured: true, raw: { fee: configuredFeeMinor, currency }, dropoff, distanceMiles, withinRadius: true, policy, currency, radiusMiles });

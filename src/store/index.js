@@ -1925,7 +1925,7 @@ export const useStore = create((set, get) => ({
       const PAGE = 200;
       for (let i = 0; i < 10; i++) {   // safety cap ≤ 2000/tick
         const { data, error } = await supabase.from('order_queue')
-          .select('ref, items, customer, sent_at, collection_time, is_asap')
+          .select('ref, type, total, items, customer, sent_at, collection_time, is_asap')
           .eq('location_id', locId).eq('source', 'catering')
           .is('kitchen_routed_at', null).neq('status', 'collected')
           .lte('sent_at', new Date().toISOString())
@@ -1940,6 +1940,16 @@ export const useStore = create((set, get) => ({
             collectionTime: row.collection_time || null, isASAP: !!row.is_asap,
             sentAt: row.sent_at ? new Date(row.sent_at).getTime() : Date.now(),
           });
+          // v5.5.653: FIRE-TIME courier dispatch — a catering delivery order set to 'uber' mode
+          // dispatches its courier now (event day), not at order time. Master-only (this fn is
+          // master-gated) + each row routes once (kitchen_routed_at), so no double dispatch.
+          // Self-delivery orders just fire to the kitchen above (no dispatch).
+          if (row.type === 'delivery' && row.customer?.delivery_mode === 'uber' && !isTrainingMode()) {
+            const quote = { customerFeeMinor: Math.round(Number(row.customer.delivery_fee || 0) * 100), dropoff: row.customer.address || null, currency: 'GBP', dispatchable: true, quoteId: null };
+            dispatchDelivery({ opsLocationId: locId, order: { ref: row.ref, items: row.items || [], total: row.total, customer: row.customer }, quote })
+              .then((res) => { if (res?.trackingUrl) sendDeliveryTrackingSMS({ opsLocationId: locId, phone: row.customer?.phone, trackingUrl: res.trackingUrl, ref: row.ref }); })
+              .catch(() => {});
+          }
         }
         if (data.length < PAGE) break;
       }
