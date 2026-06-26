@@ -88,6 +88,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.666', date: '26 Jun 2026', label: 'Delivery settings reworded for Stuart (no Uber/HubRise account needed)',
+    changes: [
+      'The Delivery settings screen now reads for Stuart, the default courier: a clear "How delivery works with Stuart" explainer (nothing to sign up for, no API keys — just set pickup address, radius and pricing), and the old "set up your own Uber Direct + HubRise accounts" wording no longer shows when Stuart is selected.',
+    ],
+  },
+  {
     version: '5.5.665', date: '26 Jun 2026', label: 'Precise delivery address capture (autocomplete) so couriers find the door',
     changes: [
       'Delivery address fields now offer address autocomplete — the customer (or staff) starts typing and picks their exact address, which captures precise coordinates. This is passed straight to the courier (Stuart / Uber Direct), fixing the "can\'t find / wrong address" failures that come from free-typed addresses.',

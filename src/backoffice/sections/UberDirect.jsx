@@ -112,7 +112,7 @@ export default function UberDirect() {
     <div style={S.wrap}>
       <div>
         <h1 style={S.h1}>Delivery</h1>
-        <p style={S.sub}>Quote the delivery fee from the customer's address at order time, surcharge it under your policy, and dispatch an Uber courier. Used identically across POS, online and catering.</p>
+        <p style={S.sub}>Quote the delivery fee from the customer's address at order time, surcharge it under your policy, and dispatch a courier (Stuart in the UK, or Uber Direct). Used identically across POS, online and catering.</p>
       </div>
 
       {/* Before you start — Uber/HubRise account setup. Not shown for Stuart (platform-managed). */}
@@ -143,11 +143,29 @@ export default function UberDirect() {
       </div>
       )}
 
+      {/* How Stuart works — shown when the Stuart courier backend is selected. No merchant signup. */}
+      {form.delivery_mode === 'uber' && form.dispatch_backend === 'stuart' && (
+      <div style={{ ...S.card, borderColor: '#1D9E75', background: 'rgba(29,158,117,0.06)' }}>
+        <h2 style={S.h2}>How delivery works with Stuart</h2>
+        <p style={{ fontSize: 13, color: 'var(--t2)', lineHeight: 1.55, margin: '0 0 10px' }}>
+          Deliveries are carried out by <b>Stuart</b> couriers through ServOS — <b>there's no account for you to create and no API keys to enter</b>. You only set three things below: your <b>pickup address</b>, your <b>delivery radius</b>, and your <b>delivery charge / pricing</b>.
+        </p>
+        <ol style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: 'var(--t2)', lineHeight: 1.7 }}>
+          <li>Set your <b>pickup address</b> (where the courier collects) and your <b>radius</b>.</li>
+          <li>Set how you charge for delivery under <b>Delivery rules</b> + <b>Live courier pricing</b> below.</li>
+          <li>Turn delivery <b>on</b> — that's it. At order time we fetch Stuart's live price + ETA, add your charge, and dispatch a courier with live tracking.</li>
+        </ol>
+        <p style={{ fontSize: 12, color: 'var(--t4)', margin: '10px 0 0' }}>
+          Stuart operates in major UK cities. If a customer's address is outside Stuart's coverage, they're shown that delivery isn't available (and can choose collection). Stuart's courier charges are billed through the ServOS platform account.
+        </p>
+      </div>
+      )}
+
       {/* Enable */}
       <div style={S.card}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div>
-            <div style={{ fontWeight: 800, color: 'var(--t1)', fontSize: 14 }}>Enable Uber Direct delivery</div>
+            <div style={{ fontWeight: 800, color: 'var(--t1)', fontSize: 14 }}>Enable delivery</div>
             <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>Off = delivery orders won't be quoted/surcharged here.</div>
           </div>
           <div style={S.toggle(form.enabled)} onClick={() => set('enabled', !form.enabled)}><div style={S.knob(form.enabled)} /></div>
@@ -159,8 +177,8 @@ export default function UberDirect() {
         <h2 style={S.h2}>How are deliveries fulfilled?</h2>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
           {[
-            ['self', '🚶 I deliver it myself', "The order just fires to your POS / kitchen. You arrange the delivery. No courier dispatch, no Uber/HubRise account needed."],
-            ['uber', '🚗 Uber Direct courier', 'A courier is dispatched automatically (via HubRise Bridge or the Uber Direct API), with live status + a tracking link.'],
+            ['self', '🚶 I deliver it myself', 'The order just fires to your POS / kitchen. You arrange the delivery. No courier dispatch, no account needed.'],
+            ['uber', '🚗 Courier (Stuart / Uber)', 'A courier is dispatched automatically with a live price + ETA and a tracking link. Choose the provider (Stuart, Uber Direct, or HubRise) under “Dispatch backend” below.'],
           ].map(([val, title, desc]) => (
             <div key={val} onClick={() => set('delivery_mode', val)} style={{
               flex: '1 1 240px', cursor: 'pointer', borderRadius: 12, padding: '14px 16px',
