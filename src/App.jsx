@@ -88,6 +88,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.665', date: '26 Jun 2026', label: 'Precise delivery address capture (autocomplete) so couriers find the door',
+    changes: [
+      'Delivery address fields now offer address autocomplete — the customer (or staff) starts typing and picks their exact address, which captures precise coordinates. This is passed straight to the courier (Stuart / Uber Direct), fixing the "can\'t find / wrong address" failures that come from free-typed addresses.',
+      'Added on online ordering, the POS phone-order customer screen, and catering. It needs a Mapbox token (free) set as VITE_MAPBOX_TOKEN — until then the fields stay as normal text entry, so nothing breaks.',
+    ],
+  },
+  {
     version: '5.5.664', date: '26 Jun 2026', label: 'Stuart pricing verified against sandbox — charges the tax-inclusive courier cost',
     changes: [
       'Verified Stuart live pricing against the sandbox: the delivery cost now uses Stuart\'s tax-inclusive amount (what you actually pay the courier), so your surcharge/markup is applied to the real cost — not the ex-VAT figure.',

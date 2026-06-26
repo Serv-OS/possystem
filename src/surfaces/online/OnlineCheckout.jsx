@@ -25,6 +25,7 @@ import { depleteForSaleServer } from '../../lib/stock/deplete';
 import { getStripeForAccount, createPaymentIntent } from '../../lib/stripeClient';
 import { getLocationProcessor } from '../../lib/payments/processor';
 import RyftPaymentForm from '../../components/RyftPaymentForm';
+import AddressAutocomplete from '../../components/AddressAutocomplete';
 import { attributeOnlineOrder } from '../../lib/customerLookup';
 import { getDeliveryQuote, recordDeliverySurcharge } from '../../lib/delivery/quoteService';
 import { dispatchDelivery } from '../../lib/delivery/dispatch';
@@ -200,12 +201,13 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   // v5.5.648: live delivery quote (Uber Direct, or the configured fee for HubRise-bridge
   // venues) — fold the customer fee into the amount payable so it's charged + shown.
   const [deliveryQuote, setDeliveryQuote] = useState(null);
+  const [deliveryGeo, setDeliveryGeo] = useState(null);   // precise coords from address autocomplete
   const _delivAddrKey = orderType === 'delivery' ? `${address1}|${postcode}` : '';
   useEffect(() => {
     if (orderType !== 'delivery' || !address1.trim() || !postcode.trim()) { setDeliveryQuote(null); return; }
     let live = true;
     const t = setTimeout(async () => {
-      const q = await getDeliveryQuote({ opsLocationId, dropoff: { line1: address1.trim(), postcode: postcode.trim().toUpperCase() }, orderSubtotalMinor: discountedSubtotalMinor });
+      const q = await getDeliveryQuote({ opsLocationId, dropoff: { line1: address1.trim(), postcode: postcode.trim().toUpperCase(), ...(deliveryGeo ? { lat: deliveryGeo.lat, lng: deliveryGeo.lng } : {}) }, orderSubtotalMinor: discountedSubtotalMinor });
       if (live) setDeliveryQuote(q);
     }, 500);
     return () => { live = false; clearTimeout(t); };
@@ -260,7 +262,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       phone: phone.replace(/\s+/g, ''),
       email: email.trim(),
       paid: true,   // v5.5.658: online orders are paid before they hit the queue — stamp it so the POS opens them READ-ONLY (never re-charges). Survives in the order_queue.customer jsonb.
-      ...(isDelivery ? { address: { line1: address1.trim(), postcode: postcode.trim().toUpperCase() } } : {}),
+      ...(isDelivery ? { address: { line1: address1.trim(), postcode: postcode.trim().toUpperCase(), ...(deliveryGeo ? { lat: deliveryGeo.lat, lng: deliveryGeo.lng } : {}) } } : {}),
       // v5.5.657: always record the delivery fee + mode for delivery orders (even £0), so the
       // ticket/receipt/reports show them and downstream routing knows self vs courier.
       ...(isDelivery && deliveryQuote?.available ? { delivery_fee: deliveryFeeMinor / 100, delivery_mode: deliveryQuote.mode || 'self' } : {}),
@@ -1291,8 +1293,18 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
 
           {isDelivery && (
             <>
-              <Field label="Delivery address" value={address1} onChange={setAddress1} placeholder="House / flat number, street" theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
-              <Field label="Postcode" value={postcode} onChange={setPostcode} placeholder="SW1A 1AA" theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: theme.isLight ? '#6b6b70' : '#a0a0a8', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 6 }}>Delivery address</div>
+                <AddressAutocomplete
+                  value={address1}
+                  onChangeText={(t) => { setAddress1(t); setDeliveryGeo(null); }}
+                  onSelect={(a) => { setAddress1(a.line1 || a.label); if (a.postcode) setPostcode(a.postcode); setDeliveryGeo(a.lat != null ? { lat: a.lat, lng: a.lng } : null); }}
+                  proximity={(location && Number.isFinite(location.lat) && Number.isFinite(location.lng)) ? { lat: location.lat, lng: location.lng } : undefined}
+                  placeholder="Start typing your address…"
+                  inputStyle={{ width: '100%', padding: '12px 14px', borderRadius: 10, background: inputBg, color: theme.fg, border: `1.5px solid ${cardBdr}`, fontSize: 14, fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }}
+                />
+              </div>
+              <Field label="Postcode" value={postcode} onChange={(v) => { setPostcode(v); setDeliveryGeo(null); }} placeholder="SW1A 1AA" theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
             </>
           )}
           {isDelivery && deliveryQuote?.belowMinimum && (

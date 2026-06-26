@@ -15,6 +15,7 @@ import RyftPaymentForm from '../../components/RyftPaymentForm';
 import { calculateOrderTax } from '../../lib/tax';
 import { sendEmailReceipt } from '../../lib/sendReceipt';
 import { getDeliveryQuote, recordDeliverySurcharge } from '../../lib/delivery/quoteService';
+import AddressAutocomplete from '../../components/AddressAutocomplete';
 
 const money = (n, cur) => `${({ gbp: '£', usd: '$', eur: '€' }[cur] || '£')}${Number(n || 0).toFixed(2)}`;
 
@@ -42,7 +43,7 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
   const opsId = location.ops_location_id || location.id;
   const platformLocationId = location.id;
   const [name, setName] = useState(''); const [phone, setPhone] = useState(''); const [email, setEmail] = useState('');
-  const [addr1, setAddr1] = useState(''); const [postcode, setPostcode] = useState('');
+  const [addr1, setAddr1] = useState(''); const [postcode, setPostcode] = useState(''); const [addrGeo, setAddrGeo] = useState(null);
   const [taxId, setTaxId] = useState(''); const [promo, setPromo] = useState(''); const [notes, setNotes] = useState('');
   const [tipPct, setTipPct] = useState(0);
   const [promoApplied, setPromoApplied] = useState(null);  // { code, amount, name }
@@ -84,7 +85,7 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
   const buildItems = () => cart.map((l) => ({ itemId: l.itemId, name: l.name, price: l.price, qty: l.qty || 1, mods: l.mods || [], notes: l.notes || '', cat: l.cat || null, cats: l.cats || null, parentId: l.parentId || null, kitchenName: l.kitchenName || null, status: 'received', fired: false, course: 1 }));
   const buildCustomer = (pay) => ({
     name: name.trim(), phone: phone.replace(/\s+/g, ''), email: email.trim() || null,
-    ...(isDelivery ? { address: { line1: addr1.trim(), postcode: postcode.trim().toUpperCase() } } : {}),
+    ...(isDelivery ? { address: { line1: addr1.trim(), postcode: postcode.trim().toUpperCase(), ...(addrGeo ? { lat: addrGeo.lat, lng: addrGeo.lng } : {}) } } : {}),
     fulfilment, event_date: eventDate, event_time: eventTime,
     ...(notes.trim() ? { notes: notes.trim() } : {}), ...(taxId.trim() ? { tax_id: taxId.trim() } : {}),
     ...(promoApplied ? { promo_code: promoApplied.code, promo_discount: promoApplied.amount } : {}), ...(tip ? { tip } : {}), ...(deliveryFee ? { delivery_fee: deliveryFee } : {}),
@@ -316,7 +317,7 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
             <div style={{ marginTop: 12 }}><label style={lbl}>Email {payMode === 'now' ? '*' : <span style={{ color: '#94a3b8', fontWeight: 500 }}>for your confirmation</span>}</label><input style={inp} type="email" value={email} onChange={(e) => setEmail(e.target.value)} /></div>
             {isDelivery && (
               <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12, marginTop: 12 }}>
-                <div><label style={lbl}>Delivery address *</label><input style={inp} value={addr1} onChange={(e) => setAddr1(e.target.value)} /></div>
+                <div><label style={lbl}>Delivery address *</label><AddressAutocomplete value={addr1} inputStyle={inp} placeholder="Start typing the delivery address…" onChangeText={(t) => { setAddr1(t); setAddrGeo(null); }} onSelect={(a) => { setAddr1(a.line1 || a.label); if (a.postcode) setPostcode(a.postcode); setAddrGeo(a.lat != null ? { lat: a.lat, lng: a.lng } : null); }} /></div>
                 <div><label style={lbl}>Postcode *</label><input style={inp} value={postcode} onChange={(e) => setPostcode(e.target.value)} /></div>
               </div>
             )}

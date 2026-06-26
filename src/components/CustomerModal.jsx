@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useStore, getCollectionSlots } from '../store';
+import AddressAutocomplete from './AddressAutocomplete';
 
 export default function CustomerModal({ orderType, existing, onConfirm, onCancel }) {
   const { searchCustomers, searchCustomersLive, addToHistory, showToast } = useStore();
@@ -11,6 +12,7 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
   // quote never fires and the order goes out with no address.
   const [addr1, setAddr1]       = useState(existing?.address?.line1 || '');
   const [postcode, setPostcode] = useState(existing?.address?.postcode || '');
+  const [addrGeo, setAddrGeo]   = useState(existing?.address?.lat != null ? { lat: existing.address.lat, lng: existing.address.lng } : null);
   // v4.6.61: when editing, default to non-ASAP if a collectionTime is already set,
   // so the user sees their existing time pre-selected on the slot grid.
   const [isASAP, setIsASAP]   = useState(existing ? !!existing.isASAP : true);
@@ -63,7 +65,7 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
 
   const selectCustomer = (c) => {
     setName(c.name); setPhone(c.phone); setEmail(c.email || '');
-    if (c.address) { setAddr1(c.address.line1 || ''); setPostcode(c.address.postcode || ''); }
+    if (c.address) { setAddr1(c.address.line1 || ''); setPostcode(c.address.postcode || ''); setAddrGeo(c.address.lat != null ? { lat: c.address.lat, lng: c.address.lng } : null); }
     setResults([]); setSearched(false);
   };
 
@@ -102,7 +104,7 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
       isASAP,
       collectionTime: isASAP ? slots[0]?.label : slots[slotIdx]?.label,
       collectionISO:  isASAP ? slots[0]?.value  : slots[slotIdx]?.value,
-      ...(isDelivery ? { address: { line1: addr1.trim(), postcode: postcode.trim().toUpperCase() } } : {}),
+      ...(isDelivery ? { address: { line1: addr1.trim(), postcode: postcode.trim().toUpperCase(), ...(addrGeo ? { lat: addrGeo.lat, lng: addrGeo.lng } : {}) } } : {}),
     };
     addToHistory(customer);
     onConfirm(customer);
@@ -191,7 +193,9 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
             <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t2)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>
               Delivery address <span style={{ color: 'var(--red)' }}>*</span>
             </label>
-            <input style={inputStyle} placeholder="Street, building, number" value={addr1} onChange={e => setAddr1(e.target.value)}/>
+            <AddressAutocomplete value={addr1} inputStyle={inputStyle} placeholder="Start typing the delivery address…"
+              onChangeText={(t) => { setAddr1(t); setAddrGeo(null); }}
+              onSelect={(a) => { setAddr1(a.line1 || a.label); if (a.postcode) setPostcode(a.postcode); setAddrGeo(a.lat != null ? { lat: a.lat, lng: a.lng } : null); }}/>
           </div>
           <div>
             <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t2)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>
