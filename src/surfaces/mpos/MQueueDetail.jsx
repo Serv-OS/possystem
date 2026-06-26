@@ -36,10 +36,17 @@ export default function MQueueDetail({ order, onBack }) {
   const subtotal = items.reduce((s, i) => s + (Number(i.price) || 0) * (Number(i.qty) || 0), 0);
   const status = live.status || 'received';
   const pill = STATUS_PILL[status] || STATUS_PILL.received;
+  // v5.5.659: an order still owing money must be charged before it can be marked collected.
+  // Online/kiosk are prepaid by channel; everything else needs a paid flag.
+  const paid = !!(live.paid || live.customer?.paid || ['online', 'kiosk'].includes(live.source));
 
   const advance = () => {
     const next = nextStatus(status);
     if (!next) return;
+    if (next === 'collected' && !paid) {
+      showToast?.('Take payment for this order before marking it collected', 'error');
+      return;
+    }
     updateQueueStatus(live.ref, next);
     if (next === 'ready') showToast?.(`${live.customer?.name || live.ref} ready for handoff`, 'success');
     if (next === 'collected') {
@@ -150,7 +157,7 @@ export default function MQueueDetail({ order, onBack }) {
       {/* Bottom action bar */}
       <div style={Sx.bottom}>
         {advanceLabel ? (
-          <button onClick={advance} style={Sx.btnPrim}>{advanceLabel}</button>
+          <button onClick={advance} style={Sx.btnPrim}>{(nextStatus(status) === 'collected' && !paid) ? '💳 Take payment to collect' : advanceLabel}</button>
         ) : (
           <div style={{ padding:10, borderRadius:10, background:'var(--bg3)', color:'var(--t3)', fontSize:12, textAlign:'center', fontWeight:700 }}>
             Order complete · removing from queue shortly

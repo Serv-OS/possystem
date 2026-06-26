@@ -50,6 +50,13 @@ const Q_STATUS = {
 };
 const DONE_STATUSES = ['collected', 'paid', 'cancelled'];
 
+// v5.5.659: an order counts as paid (no money outstanding) if it carries a paid flag, OR it came
+// from a channel that is ALWAYS prepaid before it reaches the queue (online/kiosk). Anything else —
+// catering pay-later, an unpaid walk-in/phone order, an unpaid (test/cash) HubRise order — still
+// owes money, so it must be CHARGED before it can be marked collected (never silently cleared).
+const PREPAID_CHANNELS = ['online', 'kiosk'];
+const isOrderPaid = (o) => !!(o?.paid || o?.customer?.paid || PREPAID_CHANNELS.includes(o?.source));
+
 function elapsed(date) {
   if (!date) return '';
   const s = Math.floor((Date.now() - new Date(date)) / 1000);
@@ -249,6 +256,14 @@ export default function OrdersHub() {
     const idx   = flow.indexOf(o.status);
     if (idx < 0 || idx >= flow.length - 1) return;
     const next  = flow[idx + 1];
+    // v5.5.659: never let an order with money still owing be "marked collected" (which clears it
+    // with no payment taken). Route to the POS pay flow instead — once paid + closed, it leaves
+    // the queue. Paid / prepaid-channel orders advance to collected as before.
+    if (next === 'collected' && !isOrderPaid(o)) {
+      showToast(`Take payment for ${o.ref} before marking collected`, 'info');
+      openOrder(o);
+      return;
+    }
     updateQueueStatus(o.ref, next);   // in-memory only in training (flushQueues is gated)
     const training = isTrainingMode();
     // HubRise channel orders: mirror each advance to HubRise (server-side PATCH).
@@ -1131,11 +1146,17 @@ function OrderCardInner({ order, onAdvance, onAccept, onReject, onOpen, onForceC
               </button>
             </>
           )}
-          {!isOpenTab && canAdvance && (
-            <button onClick={onAdvance} style={{ padding:'4px 12px', borderRadius:7, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:11, fontWeight:700 }}>
-              {NEXT[order.status]}
-            </button>
-          )}
+          {!isOpenTab && canAdvance && (() => {
+            // v5.5.659: the final step on an order that still owes money is "Charge", not
+            // "Mark collected" — it opens the order for payment (advance() routes it there).
+            const chargeStep = order.status === 'ready' && !isOrderPaid(order);
+            return (
+              <button onClick={onAdvance} style={{ padding:'4px 12px', borderRadius:7, cursor:'pointer', fontFamily:'inherit',
+                background: chargeStep ? '#16a34a' : 'var(--acc)', border:'none', color: chargeStep ? '#fff' : '#0b0c10', fontSize:11, fontWeight:800 }}>
+                {chargeStep ? `Charge ${money(order.total)} →` : NEXT[order.status]}
+              </button>
+            );
+          })()}
         </div>
       </div>
     </div>

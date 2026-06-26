@@ -88,6 +88,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.659', date: '26 Jun 2026', label: 'Unpaid orders must be charged before they can be marked collected',
+    changes: [
+      'An order that still owes money can no longer be cleared with "Mark collected" (which took no payment and made it vanish). On the final step its button now reads "Charge £X" and opens the order for payment — once paid, it leaves the queue. Already-paid and prepaid online/kiosk orders still mark collected as before.',
+      'Same guard added on the mobile POS order screen: an unpaid order shows "Take payment to collect" and won’t clear until it’s been charged.',
+    ],
+  },
+  {
     version: '5.5.658', date: '26 Jun 2026', label: 'Fix POS white-screen on online/HubRise orders + stop re-charging already-paid orders',
     changes: [
       'Fixed a crash where opening certain online/HubRise orders (whose delivery address is structured) would white-screen the POS with an "App Error". This was also why an online order sometimes wouldn’t print until the app was force-quit — the crash silently shut down the live order + print connections; restarting brought them back and the order printed. Addresses are now always displayed safely.',
