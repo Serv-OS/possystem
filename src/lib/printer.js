@@ -14,6 +14,7 @@
 import { supabase, getLocationId } from './supabase';
 import { loadLocationBranding, mergeBrandingIntoLocation, invalidateBrandingCache } from './receiptBranding';
 import { money } from './currency.js';
+import { consolidateReceiptLines } from './receiptLines.js';
 
 // ─── ESC/POS builder ──────────────────────────────────────────────────────────
 const ESC = 0x1b, GS = 0x1d, LF = 0x0a;
@@ -172,7 +173,7 @@ export async function buildCustomerReceipt({ location, check, items, totals }) {
 
   b.divider().bold(true).line('ITEMS').bold(false);
 
-  (items||[]).filter(i=>!i.voided).forEach(item=>{
+  consolidateReceiptLines(items).forEach(item=>{
     const linePrice=`\xA3${(item.price*item.qty).toFixed(2)}`;
     const nameStr=item.qty>1?`${item.qty}x ${item.name}`:item.name;
     b.twoCol(nameStr.substring(0,42-linePrice.length-1), linePrice);
@@ -428,7 +429,7 @@ export function buildTestPage() {
 // ─── HTML fallback builders ───────────────────────────────────────────────────
 function buildReceiptHtml({ location, check, items, totals }) {
   const now = new Date();
-  const rows = (items||[]).filter(i=>!i.voided).map(item=>{
+  const rows = consolidateReceiptLines(items).map(item=>{
     const modLines = Array.isArray(item.mods) ? item.mods : (item.mods ? item.mods.split(' · ') : []);
     return `
     <div class="row"><span>${item.qty>1?`${item.qty}\xD7 `:''}${item.name}</span><span>\xA3${(item.price*item.qty).toFixed(2)}</span></div>

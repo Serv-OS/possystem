@@ -88,6 +88,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.675', date: '26 Jun 2026', label: 'Receipts — combine identical items into one “N× product” line',
+    changes: [
+      'Receipts now merge identical items into a single line with a quantity, no matter when each was punched in — e.g. three cappuccinos added at different times print as “3× Cappucino” instead of three separate lines. Lines only merge when they’re exactly the same (same item, price, modifiers and notes); anything different stays on its own line. Applies to the printed receipt and the browser/PDF receipt.',
+    ],
+  },
+  {
     version: '5.5.674', date: '26 Jun 2026', label: 'POS — allergen confirmation screen now scrolls on big orders',
     changes: [
       'Fixed the allergen check on large orders: with many allergens the screen grew taller than the till and the “proceed” button was pushed off-screen with no way to scroll. The allergen list now scrolls inside the dialog and the Back/Proceed buttons are pinned at the bottom, always reachable.',
