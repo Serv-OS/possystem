@@ -88,6 +88,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.673', date: '26 Jun 2026', label: 'Delivery — live Stuart status now flows back to the order (POS, tracker, Deliveries board) + venue name to courier',
+    changes: [
+      'Fixed the big one: Stuart status updates now flow back into ServOS. We poll Stuart for the live job status and write it onto the order, so the POS order panel, the customer tracker and the Deliveries-live board all show the real state (finding a courier → heading to the venue → out for delivery → delivered) instead of being stuck on “finding a courier”. (Works across each venue’s own Stuart account, no webhook setup needed.)',
+      'The venue’s business name is now sent to Stuart so the courier knows exactly where to collect — set it in Back Office → Channels → Delivery → “Business name (shown to the courier)”. A business name on the customer’s address is passed through to the drop-off too.',
+    ],
+  },
+  {
     version: '5.5.672', date: '26 Jun 2026', label: 'Delivery — branded order tracker with live Stuart map + ETA; Back Office pickup address validation',
     changes: [
       'The online order confirmation/tracker is now branded — it shows your logo and venue name, not a generic screen.',

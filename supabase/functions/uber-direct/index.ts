@@ -17,7 +17,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { getAccessToken, getQuote, geocodePostcode, haversineMiles, createDelivery, getDelivery, parseDeliveryResp, mapUberStatus } from '../_shared/uber.ts';
 import { createOrder as createHubriseOrder, patchOrder as patchHubriseOrder } from '../_shared/hubrise.ts';
 import { cancelDelivery, createOrganization, getOrganization, inviteOrgMember, parseOrgResp, UBER_ORG_SCOPE } from '../_shared/uber.ts';
-import { getStuartToken, getStuartPricing, normaliseStuartPricing, cancelStuartJob, classifyStuartError } from '../_shared/stuart.ts';
+import { getStuartToken, getStuartPricing, normaliseStuartPricing, cancelStuartJob, classifyStuartError, getStuartJob, parseStuartJob, mapStuartStatus } from '../_shared/stuart.ts';
 import { dispatchCourier } from '../_shared/delivery-dispatch.ts';
 
 const e164 = (raw: string) => {
@@ -79,6 +79,34 @@ async function requireAccess(req: Request, locationId: string): Promise<{ ok: tr
   ]);
   if (!ul && prof?.role !== 'super_admin') return { ok: false, res: json({ error: 'No access to this location' }, 403) };
   return t;
+}
+
+// Stuart pushes status via webhook, but webhook registration is per-account/manual — so we ALSO
+// poll Stuart's job and write the live status back. Reliable across per-location accounts with no
+// dashboard setup. Throttled (skip if updated <10s ago) so customer-tracker polling can't hammer
+// the Stuart API. Terminal states are never re-polled. Returns the (possibly updated) row.
+const STUART_TERMINAL = new Set(['delivered', 'canceled', 'returned']);
+async function refreshStuartRow(row: any, cfg: any): Promise<any> {
+  try {
+    if (!row || row.dispatch_backend !== 'stuart' || !row.uber_delivery_id) return row;
+    if (STUART_TERMINAL.has(row.status)) return row;
+    if (row.updated_at && (Date.now() - new Date(row.updated_at).getTime()) < 10_000) return row;
+    const senv = (cfg?.stuart_env || cfg?.env || ENV_STUART_DEFAULT) as 'sandbox' | 'prod';
+    const sid = cfg?.stuart_client_id || ENV_STUART_ID;
+    const ssecret = cfg?.stuart_client_secret || ENV_STUART_SECRET;
+    if (!sid || !ssecret) return row;
+    const stoken = await getStuartToken(senv, sid, ssecret);
+    const sp = parseStuartJob(await getStuartJob(senv, stoken, row.uber_delivery_id));
+    const status = mapStuartStatus(sp.rawStatus);
+    const patch: Record<string, unknown> = { status, updated_at: new Date().toISOString() };
+    if (sp.trackingUrl) patch.tracking_url = sp.trackingUrl;
+    if (sp.courierName) patch.courier_name = sp.courierName;
+    if (sp.courierPhone) patch.courier_phone = sp.courierPhone;
+    if (sp.lat != null) patch.last_lat = sp.lat;
+    if (sp.lng != null) patch.last_lng = sp.lng;
+    await sb.from('courier_deliveries').update(patch).eq('id', row.id);
+    return { ...row, ...patch };
+  } catch { return row; }
 }
 
 Deno.serve(async (req) => {
@@ -394,11 +422,15 @@ Deno.serve(async (req) => {
       const t = await requireToken(req); if (!t.ok) return t.res;
       const ref = body?.order_ref;
       if (!ref || !loc) return json({ ok: false, reason: 'no_ref' });
-      const { data: del } = await sb.from('courier_deliveries')
-        .select('status, tracking_url, eta, courier_name, dispatch_backend')
+      let { data: del } = await sb.from('courier_deliveries')
+        .select('*')
         .eq('location_id', loc).eq('order_ref', ref)
         .order('created_at', { ascending: false }).limit(1).maybeSingle();
       if (!del) return json({ ok: true, dispatched: false });
+      if (del.dispatch_backend === 'stuart' && !STUART_TERMINAL.has(del.status)) {
+        const { data: cfg } = await sb.from('venue_uber_config').select('*').eq('location_id', loc).maybeSingle();
+        del = await refreshStuartRow(del, cfg);
+      }
       return json({
         ok: true, dispatched: true,
         status: del.status, trackingUrl: del.tracking_url, eta: del.eta,
@@ -443,7 +475,16 @@ Deno.serve(async (req) => {
       const acc = await requireAccess(req, loc); if (!acc.ok) return acc.res;
       const limit = Math.min(200, Number(body?.limit) || 50);
       const { data } = await sb.from('courier_deliveries').select('*').eq('location_id', loc).order('created_at', { ascending: false }).limit(limit);
-      return json({ ok: true, deliveries: data || [] });
+      let rows = data || [];
+      // Poll Stuart for any non-terminal Stuart rows so the live board reflects reality.
+      const stale = rows.filter((r: any) => r.dispatch_backend === 'stuart' && !STUART_TERMINAL.has(r.status));
+      if (stale.length) {
+        const { data: cfg } = await sb.from('venue_uber_config').select('*').eq('location_id', loc).maybeSingle();
+        const refreshed = await Promise.all(stale.map((r: any) => refreshStuartRow(r, cfg)));
+        const byId = new Map(refreshed.map((r: any) => [r.id, r]));
+        rows = rows.map((r: any) => byId.get(r.id) || r);
+      }
+      return json({ ok: true, deliveries: rows });
     }
 
     // ── Staff delivery board: full detail for one delivery (order + quote + surcharge +
@@ -455,6 +496,11 @@ Deno.serve(async (req) => {
       let del = null;
       if (id) { const { data } = await sb.from('courier_deliveries').select('*').eq('location_id', loc).eq('id', id).maybeSingle(); del = data; }
       else if (reqRef) { const { data } = await sb.from('courier_deliveries').select('*').eq('location_id', loc).eq('order_ref', reqRef).order('created_at', { ascending: false }).limit(1).maybeSingle(); del = data; }
+      // Poll Stuart for live status so the POS panel / board reflect reality without manual webhooks.
+      if (del?.dispatch_backend === 'stuart' && !STUART_TERMINAL.has(del.status)) {
+        const { data: cfg } = await sb.from('venue_uber_config').select('*').eq('location_id', loc).maybeSingle();
+        del = await refreshStuartRow(del, cfg);
+      }
       const ref = reqRef || del?.order_ref || null;
       const [orderRes, quoteRes, surchargeRes, eventsRes] = await Promise.all([
         ref ? sb.from('order_queue').select('ref, type, status, total, customer, items, created_at').eq('location_id', loc).eq('ref', ref).maybeSingle() : Promise.resolve({ data: null }),

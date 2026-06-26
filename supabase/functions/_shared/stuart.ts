@@ -81,15 +81,20 @@ export function buildStuartJob(order: any, quote: any, cfg: any) {
       ...(cfg?.stuart_transport_type ? { transport_type: cfg.stuart_transport_type } : {}),
       pickups: [{
         address: addrStr(cfg?.pickup_address),
-        comment: pc.instructions || '',
-        contact: { firstname: pc.name || 'Restaurant', phone: e164(pc.phone || ''), company: pc.name || '' },
+        // Lead with the venue name in the pickup comment AND set company, so the courier knows
+        // exactly which business to collect from (no confusion on shared/commercial addresses).
+        comment: [pc.company || pc.name, pc.instructions].filter(Boolean).join(' — ') || '',
+        contact: { firstname: pc.name || pc.company || 'Restaurant', phone: e164(pc.phone || ''), company: pc.company || pc.name || '' },
       }],
       dropoffs: [{
         package_type: cfg?.stuart_package_type || 'small',
         client_reference: order?.ref || null,
         address: addrStr(quote?.dropoff || cust.address),
         comment: cust.notes || '',
-        contact: { firstname: full[0] || 'Customer', lastname: full.slice(1).join(' '), phone: e164(cust.phone) },
+        contact: {
+          firstname: full[0] || 'Customer', lastname: full.slice(1).join(' '), phone: e164(cust.phone),
+          ...((cust.address && cust.address.company) || cust.company ? { company: (cust.address && cust.address.company) || cust.company } : {}),
+        },
       }],
     },
   };

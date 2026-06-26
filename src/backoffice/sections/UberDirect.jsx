@@ -261,6 +261,9 @@ export default function UberDirect() {
           <div style={S.col}><label style={S.label}>Longitude (optional)</label><input style={S.input} value={form.pickup_address.lng ?? ''} onChange={(e) => setAddr('lng', e.target.value === '' ? null : Number(e.target.value))} /></div>
         </div>
         <div style={{ ...S.row, marginTop: 10 }}>
+          <div style={S.col}><label style={S.label}>Business name (shown to the courier)</label><input style={S.input} value={form.pickup_contact.company || ''} onChange={(e) => setContact('company', e.target.value)} placeholder={form.pickup_contact.name || 'Your venue name'} /></div>
+        </div>
+        <div style={{ ...S.row, marginTop: 10 }}>
           <div style={S.col}><label style={S.label}>Contact name</label><input style={S.input} value={form.pickup_contact.name || ''} onChange={(e) => setContact('name', e.target.value)} /></div>
           <div style={S.col}><label style={S.label}>Contact phone</label><input style={S.input} value={form.pickup_contact.phone || ''} onChange={(e) => setContact('phone', e.target.value)} /></div>
         </div>
