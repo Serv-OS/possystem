@@ -88,6 +88,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.672', date: '26 Jun 2026', label: 'Delivery — branded order tracker with live Stuart map + ETA; Back Office pickup address validation',
+    changes: [
+      'The online order confirmation/tracker is now branded — it shows your logo and venue name, not a generic screen.',
+      'Live delivery tracking for customers: a courier delivery order now shows the live Stuart status (finding a courier → heading to the kitchen → on its way → delivered), the estimated delivery time, the driver’s name, and an embedded live tracking map — right on the confirmation screen, updating automatically.',
+      'Back Office → Channels → Delivery: the venue pickup address now uses the same address autocomplete as the customer side, so it captures exact coordinates and can’t drift out of sync with what couriers are given.',
+      'Note: courier scheduled-pickup timing (collect at end of prep time) is being finalised against Stuart’s scheduling API and lands next, along with catering collection-time messaging and a live Deliveries board on the POS.',
+    ],
+  },
+  {
     version: '5.5.671', date: '26 Jun 2026', label: 'Critical fixes — online orders now save to history/reports + Stuart dispatch',
     changes: [
       'MAJOR FIX: online orders were never saved to history, reports or end-of-day. A single wrong column name in the online checkout (“loyalty_reward” instead of “loyalty”) made the database reject the whole sale record, silently — so every online order was missing from Transactions, the sales reports and EOD (the order still reached the kitchen queue, so it was easy to miss). Now fixed; online orders appear in history and reports like any other.',

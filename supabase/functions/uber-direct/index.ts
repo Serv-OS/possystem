@@ -387,6 +387,25 @@ Deno.serve(async (req) => {
       return json({ ok: true });
     }
 
+    // ── Customer-facing live tracking for the online order tracker. Anon-callable
+    //    (the customer has an anonymous session). Returns ONLY public-safe fields —
+    //    courier status, tracking URL, ETA, courier first name — never internal data. ──
+    if (action === 'track_order') {
+      const t = await requireToken(req); if (!t.ok) return t.res;
+      const ref = body?.order_ref;
+      if (!ref || !loc) return json({ ok: false, reason: 'no_ref' });
+      const { data: del } = await sb.from('courier_deliveries')
+        .select('status, tracking_url, eta, courier_name, dispatch_backend')
+        .eq('location_id', loc).eq('order_ref', ref)
+        .order('created_at', { ascending: false }).limit(1).maybeSingle();
+      if (!del) return json({ ok: true, dispatched: false });
+      return json({
+        ok: true, dispatched: true,
+        status: del.status, trackingUrl: del.tracking_url, eta: del.eta,
+        courierFirstName: (del.courier_name || '').trim().split(/\s+/)[0] || null,
+      });
+    }
+
     // ── Dispatch a courier (slice 4). Routes by venue dispatch_backend. ───────
     if (action === 'create_delivery') {
       const t = await requireToken(req); if (!t.ok) return t.res;

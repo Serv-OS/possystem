@@ -34,6 +34,13 @@ export async function fetchDeliveryStatus({ opsLocationId, uberDeliveryId }, dep
   return send('get_delivery', { ops_location_id: opsLocationId, uber_delivery_id: uberDeliveryId });
 }
 
+/** Customer-facing live courier tracking for the online order tracker (anon-safe). Returns
+ *  { dispatched, status, trackingUrl, eta, courierFirstName }. */
+export async function trackDelivery({ opsLocationId, orderRef }, deps = {}) {
+  const send = deps.invoke || invoke;
+  return send('track_order', { ops_location_id: opsLocationId, order_ref: orderRef });
+}
+
 /** Text the customer a courier tracking link (best-effort; Uber/HubRise may also notify). */
 export async function sendDeliveryTrackingSMS({ opsLocationId, phone, trackingUrl, ref }) {
   const { supabase } = await import('../supabase.js');

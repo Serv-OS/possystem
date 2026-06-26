@@ -19,6 +19,7 @@ import { getVenueUberConfig, setVenueUberConfig, setStuartCreds, testStuart, dis
 import { computeSurcharge } from '../../lib/delivery/surcharge';
 import { money } from '../../lib/currency';
 import MoneyField from '../../components/MoneyField';
+import AddressAutocomplete from '../../components/AddressAutocomplete';
 
 const S = {
   wrap: { maxWidth: 760, display: 'flex', flexDirection: 'column', gap: 16 },
@@ -236,9 +237,24 @@ export default function UberDirect() {
       <div style={S.card}>
         <h2 style={S.h2}>Pickup (your venue)</h2>
         <div style={S.row}>
-          <div style={S.col}><label style={S.label}>Address line 1</label><input style={S.input} value={form.pickup_address.line1 || ''} onChange={(e) => setAddr('line1', e.target.value)} /></div>
+          <div style={S.col}>
+            <label style={S.label}>Address line 1</label>
+            <AddressAutocomplete
+              value={form.pickup_address.line1 || ''} inputStyle={S.input}
+              placeholder="Start typing the venue address…"
+              onChangeText={(v) => setAddr('line1', v)}
+              onSelect={(a) => setForm((f) => ({ ...f, pickup_address: {
+                ...f.pickup_address,
+                line1: a.line1 || f.pickup_address.line1,
+                city: a.city || f.pickup_address.city,
+                postcode: a.postcode || f.pickup_address.postcode,
+                lat: a.lat ?? f.pickup_address.lat,
+                lng: a.lng ?? f.pickup_address.lng,
+              } }))} />
+          </div>
           <div style={S.col}><label style={S.label}>City</label><input style={S.input} value={form.pickup_address.city || ''} onChange={(e) => setAddr('city', e.target.value)} /></div>
         </div>
+        <div style={{ ...S.infoNote, marginTop: 8 }}>Pick your address from the suggestions so the courier gets exact coordinates — this matches how customers enter their delivery address (no mismatch).</div>
         <div style={{ ...S.row, marginTop: 10 }}>
           <div style={S.col}><label style={S.label}>Postcode</label><input style={S.input} value={form.pickup_address.postcode || ''} onChange={(e) => setAddr('postcode', e.target.value)} /></div>
           <div style={S.col}><label style={S.label}>Latitude (optional)</label><input style={S.input} value={form.pickup_address.lat ?? ''} onChange={(e) => setAddr('lat', e.target.value === '' ? null : Number(e.target.value))} /></div>

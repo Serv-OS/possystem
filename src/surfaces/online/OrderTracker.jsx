@@ -7,6 +7,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { money } from '../../lib/currency';
+import { trackDelivery } from '../../lib/delivery/dispatch';
 
 const STEPS = [
   { key: 'received', label: 'Received',  icon: '📥', desc: 'We\'ve got your order.' },
@@ -19,6 +20,7 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose }) {
   const [order, setOrder] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
+  const [courier, setCourier] = useState(null); // live Stuart courier status for delivery orders
 
   // v5.5.128: realtime channel + 5s polling fallback (was 20s — too slow if
   // the realtime channel fails RLS auth or the customer's network drops the
@@ -80,8 +82,33 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose }) {
     };
   }, [orderRef]);
 
+  // Live courier tracking for COURIER delivery orders (Stuart). Polls the anon-safe track_order
+  // edge action for status + ETA + the live tracking-map URL.
+  const orderType = order?.type || null;
+  const deliveryMode = order?.customer?.delivery_mode || null;
+  const isCourier = orderType === 'delivery' && deliveryMode === 'uber';
+  useEffect(() => {
+    if (!isCourier || !orderRef || !locationId) return;
+    let live = true;
+    const load = async () => {
+      const r = await trackDelivery({ opsLocationId: locationId, orderRef });
+      if (live && r?.ok) setCourier(r);
+    };
+    load();
+    const id = setInterval(load, 15_000);
+    return () => { live = false; clearInterval(id); };
+  }, [isCourier, orderRef, locationId]);
+
   const status = order?.status || 'received';
   const currentIdx = Math.max(0, STEPS.findIndex(s => s.key === status));
+  const isDelivery = orderType === 'delivery' || deliveryMode != null;
+  const fmtEta = (iso) => { if (!iso) return null; const d = new Date(iso); return isNaN(d.getTime()) ? null : d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }); };
+  const COURIER_LABEL = {
+    dispatching: ['Finding a courier…', '🔍'], pending: ['Finding a courier…', '🔍'],
+    pickup: ['Courier heading to the kitchen', '🛵'], dropoff: ['On its way to you', '🛵'],
+    delivered: ['Delivered', '✅'], canceled: ['Delivery canceled', '⚠️'],
+    returned: ['Returned to venue', '↩️'], failed: ['Arranging your courier', '⏳'],
+  };
   const cardBdr = theme.isLight ? '#ececef' : '#2a2a30';
   const muted   = theme.isLight ? '#6b6b70' : '#a0a0a8';
   const inputBg = theme.isLight ? '#f5f5f7' : '#1f1f24';
@@ -92,12 +119,19 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose }) {
       overflowY: 'auto',
       fontFamily: '-apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif',
     }}>
-      <div style={{ maxWidth: 600, margin: '0 auto', padding: '32px 22px 60px' }}>
-        <div style={{ textAlign: 'center', marginBottom: 28 }}>
+      <div style={{ maxWidth: 600, margin: '0 auto', padding: '24px 22px 60px' }}>
+        {/* Brand header — logo plate + venue name, so the confirmation/tracker carries the
+            storefront's branding (not a generic screen). */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, marginBottom: 20 }}>
+          {theme.logo
+            ? <img src={theme.logo} alt={theme.name} style={{ height: 44, width: 'auto', maxWidth: 180, objectFit: 'contain', borderRadius: 8 }} />
+            : <div style={{ fontSize: 20, fontWeight: 900, color: theme.fg }}>{theme.name}</div>}
+        </div>
+        <div style={{ textAlign: 'center', marginBottom: 24 }}>
           <div style={{ fontSize: 48, marginBottom: 8 }}>✅</div>
-          <div style={{ fontSize: 28, fontWeight: 900, letterSpacing: '-0.025em' }}>Payment confirmed</div>
+          <div style={{ fontSize: 28, fontWeight: 900, letterSpacing: '-0.025em' }}>Order confirmed</div>
           <div style={{ fontSize: 13, color: muted, marginTop: 6 }}>
-            Order ref <span style={{ fontFamily: 'monospace', fontWeight: 700, color: theme.fg }}>{orderRef}</span>
+            {theme.name} · ref <span style={{ fontFamily: 'monospace', fontWeight: 700, color: theme.fg }}>{orderRef}</span>
           </div>
         </div>
 
@@ -150,6 +184,37 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose }) {
           })}
         </div>
 
+        {/* Live courier card (Stuart) — status + ETA + live tracking map. Only for courier
+            delivery orders, once the order exists. */}
+        {isCourier && (() => {
+          const [clabel, cicon] = COURIER_LABEL[courier?.status] || ['Preparing your delivery', '🛵'];
+          const etaTxt = fmtEta(courier?.eta);
+          return (
+            <div style={{ background: inputBg, border: `1px solid ${cardBdr}`, borderRadius: 16, padding: 18, marginBottom: 16 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{ fontSize: 22 }}>{cicon}</div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 15, fontWeight: 800, color: theme.fg }}>{clabel}</div>
+                  <div style={{ fontSize: 12, color: muted, marginTop: 2 }}>
+                    {etaTxt ? <>Estimated delivery around <b style={{ color: theme.fg }}>{etaTxt}</b></>
+                      : (courier?.dispatched ? 'A courier is being assigned — we’ll text you a tracking link.' : 'We’ll arrange a courier once your order is being prepared.')}
+                    {courier?.courierFirstName ? ` · ${courier.courierFirstName} is your driver` : ''}
+                  </div>
+                </div>
+              </div>
+              {/* Live tracking map — Stuart's shareable tracking page embedded. */}
+              {courier?.trackingUrl && (
+                <div style={{ marginTop: 14, borderRadius: 12, overflow: 'hidden', border: `1px solid ${cardBdr}` }}>
+                  <iframe title="Live delivery tracking" src={courier.trackingUrl} style={{ width: '100%', height: 280, border: 0, display: 'block' }} loading="lazy" />
+                </div>
+              )}
+              {courier?.trackingUrl && (
+                <a href={courier.trackingUrl} target="_blank" rel="noreferrer" style={{ display: 'inline-block', marginTop: 10, fontSize: 13, fontWeight: 800, color: theme.accent, textDecoration: 'none' }}>Open full tracking map ↗</a>
+              )}
+            </div>
+          );
+        })()}
+
         {/* Order summary */}
         {/* Shareable link — customers can bookmark this and come back any time. */}
         {order && <ShareLink order={order} theme={theme} cardBdr={cardBdr} muted={muted} inputBg={inputBg}/>}
@@ -179,8 +244,10 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose }) {
             {order.collection_time && (
               <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 10, background: `${theme.accent}15`, border: `1px solid ${cardBdr}`, fontSize: 12 }}>
                 {order.is_asap
-                  ? <>⚡ <b>ASAP</b> — we'll start preparing right away.</>
-                  : <>🗓 Collection at <b>{order.collection_time}</b></>}
+                  ? <>⚡ <b>ASAP</b> — we'll start preparing right away.{isDelivery ? ' Your courier is arranged once it’s ready.' : ''}</>
+                  : (isDelivery
+                      ? <>🗓 {orderType === 'delivery' ? 'Delivery' : 'Collection'} for <b>{order.collection_time}</b></>
+                      : <>🗓 Collection at <b>{order.collection_time}</b></>)}
               </div>
             )}
           </div>
