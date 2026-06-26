@@ -88,6 +88,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.674', date: '26 Jun 2026', label: 'POS — allergen confirmation screen now scrolls on big orders',
+    changes: [
+      'Fixed the allergen check on large orders: with many allergens the screen grew taller than the till and the “proceed” button was pushed off-screen with no way to scroll. The allergen list now scrolls inside the dialog and the Back/Proceed buttons are pinned at the bottom, always reachable.',
+    ],
+  },
+  {
     version: '5.5.673', date: '26 Jun 2026', label: 'Delivery — live Stuart status now flows back to the order (POS, tracker, Deliveries board) + venue name to courier',
     changes: [
       'Fixed the big one: Stuart status updates now flow back into ServOS. We poll Stuart for the live job status and write it onto the order, so the POS order panel, the customer tracker and the Deliveries-live board all show the real state (finding a courier → heading to the venue → out for delivery → delivered) instead of being stuck on “finding a courier”. (Works across each venue’s own Stuart account, no webhook setup needed.)',
