@@ -32,7 +32,10 @@ export function mapStuartStatus(raw) {
 export function normaliseStuartPricing(resp) {
   if (!resp || typeof resp !== 'object') return null;
   const p = resp.pricing && typeof resp.pricing === 'object' ? resp.pricing : resp;
-  const amt = p.amount ?? p.amount_tax_included ?? p.price_tax_included ?? p.price ?? null;
+  // The merchant's real cost is the WITH-TAX amount (Stuart's live pricing returns amount
+  // [ex-VAT] + amount_with_tax). Prefer the tax-inclusive figure so the surcharge engine marks
+  // up the true cash cost. Verified against the live sandbox (Jun 2026).
+  const amt = p.amount_with_tax ?? p.amount_tax_included ?? p.price_tax_included ?? p.amount ?? p.price ?? null;
   if (amt == null) return null;            // Number(null) === 0 (finite!) — guard explicitly
   const n = Number(amt);
   if (!Number.isFinite(n)) return null;

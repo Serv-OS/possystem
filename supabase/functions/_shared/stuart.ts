@@ -100,7 +100,9 @@ export function buildStuartJob(order: any, quote: any, cfg: any) {
 export function normaliseStuartPricing(resp: any): { fee: number; currency: string } | null {
   if (!resp || typeof resp !== 'object') return null;
   const p = resp.pricing && typeof resp.pricing === 'object' ? resp.pricing : resp;
-  const amt = p.amount ?? p.amount_tax_included ?? p.price_tax_included ?? p.price ?? null;
+  // Prefer the tax-inclusive figure (the merchant's real cash cost). Verified against the live
+  // sandbox: pricing returns { amount [ex-VAT], amount_with_tax, currency }.
+  const amt = p.amount_with_tax ?? p.amount_tax_included ?? p.price_tax_included ?? p.amount ?? p.price ?? null;
   if (amt == null) return null;            // Number(null) === 0 (finite!) — guard explicitly
   const n = Number(amt);
   if (!Number.isFinite(n)) return null;
@@ -153,7 +155,8 @@ export function parseStuartJob(r: any): { id: string | null; trackingUrl: string
 export function parseStuartCost(r: any): { totalMinor: number; currency: string } | null {
   const d = r?.data || r || {};
   const job = d.job || d;
-  const amt = job?.pricing?.price_tax_included ?? job?.pricing?.amount ?? job?.pricing?.price ?? null;
+  const amt = job?.pricing?.amount_with_tax ?? job?.pricing?.price_tax_included ?? job?.pricing?.amount_tax_included ?? job?.pricing?.amount ?? job?.pricing?.price ?? null;
+  if (amt == null) return null;
   const n = Number(amt);
   if (!Number.isFinite(n)) return null;
   return { totalMinor: Math.round(n * 100), currency: String(job?.pricing?.currency || job?.currency || 'GBP').toUpperCase() };

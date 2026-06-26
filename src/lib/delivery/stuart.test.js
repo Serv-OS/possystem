@@ -28,6 +28,8 @@ test('normaliseStuartPricing: pounds → minor, like the Uber-classic shape', ()
   assert.deepEqual(normaliseStuartPricing({ amount_tax_included: 6.499, currency: 'gbp' }), { fee: 650, currency: 'GBP' });
   // nested pricing object
   assert.deepEqual(normaliseStuartPricing({ pricing: { amount: 4 }, currency: 'EUR' }), { fee: 400, currency: 'EUR' });
+  // real sandbox shape — prefer the WITH-TAX amount (merchant's true cost), not ex-VAT
+  assert.deepEqual(normaliseStuartPricing({ amount: 6.19, amount_with_tax: 7.43, currency: 'GBP' }), { fee: 743, currency: 'GBP' });
   // unusable
   assert.equal(normaliseStuartPricing({ foo: 1 }), null);
   assert.equal(normaliseStuartPricing(null), null);

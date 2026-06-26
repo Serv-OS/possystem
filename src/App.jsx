@@ -88,6 +88,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.664', date: '26 Jun 2026', label: 'Stuart pricing verified against sandbox — charges the tax-inclusive courier cost',
+    changes: [
+      'Verified Stuart live pricing against the sandbox: the delivery cost now uses Stuart\'s tax-inclusive amount (what you actually pay the courier), so your surcharge/markup is applied to the real cost — not the ex-VAT figure.',
+    ],
+  },
+  {
     version: '5.5.663', date: '26 Jun 2026', label: 'Stuart couriers added as a delivery option (self-serve, live quotes)',
     changes: [
       'Added Stuart (UK courier network) as a delivery dispatch option alongside Uber Direct and HubRise. Unlike Uber Direct (which gates account approval), Stuart is self-serve, so it can be set up and tested immediately — and it returns a live price + ETA at order time, priced under your existing surcharge policy.',
