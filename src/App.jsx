@@ -88,6 +88,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.667', date: '26 Jun 2026', label: 'Address autocomplete ready (activates with the Mapbox token)',
+    changes: [
+      'The precise address autocomplete (online ordering, POS phone-order screen, catering) activates as soon as the Mapbox token is set as VITE_MAPBOX_TOKEN in the hosting env — verified working against Mapbox (exact UK address + postcode + coordinates). Until set, the fields stay as plain text (no regression). The token is kept in the hosting env, not the code repo.',
+    ],
+  },
+  {
     version: '5.5.666', date: '26 Jun 2026', label: 'Delivery settings reworded for Stuart (no Uber/HubRise account needed)',
     changes: [
       'The Delivery settings screen now reads for Stuart, the default courier: a clear "How delivery works with Stuart" explainer (nothing to sign up for, no API keys — just set pickup address, radius and pricing), and the old "set up your own Uber Direct + HubRise accounts" wording no longer shows when Stuart is selected.',

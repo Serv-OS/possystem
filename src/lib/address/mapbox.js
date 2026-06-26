@@ -8,10 +8,13 @@
  * callers fall back to plain address fields (no regression).
  */
 
-/** The platform Mapbox public token (set in Vercel env). '' when unset → autocomplete disabled. */
+// Platform Mapbox PUBLIC token (pk.*). A VITE_MAPBOX_TOKEN env var overrides this built-in default,
+// so you can rotate / move it to Vercel later without a code change. NOTE: a pk.* token is exposed
+// in the client bundle by design — protect it with URL restrictions in the Mapbox dashboard.
+const BUILTIN_MAPBOX_TOKEN = '__MAPBOX_PUBLIC_TOKEN__';
 export function mapboxToken() {
-  try { return (import.meta && import.meta.env && import.meta.env.VITE_MAPBOX_TOKEN) || ''; }
-  catch { return ''; }
+  try { const env = import.meta && import.meta.env && import.meta.env.VITE_MAPBOX_TOKEN; if (env) return env; } catch { /* not Vite */ }
+  return BUILTIN_MAPBOX_TOKEN.startsWith('pk.') ? BUILTIN_MAPBOX_TOKEN : '';
 }
 
 /** Normalise one Mapbox v6 feature → { id, label, line1, city, postcode, lat, lng }. Pure. */
