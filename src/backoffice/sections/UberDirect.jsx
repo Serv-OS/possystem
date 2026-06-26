@@ -11,6 +11,7 @@ import { getActiveLocationSync } from '../../lib/supabase';
 import { getVenueUberConfig, setVenueUberConfig } from '../../lib/delivery/deliveryConfig';
 import { computeSurcharge } from '../../lib/delivery/surcharge';
 import { money } from '../../lib/currency';
+import MoneyField from '../../components/MoneyField';
 
 const S = {
   wrap: { maxWidth: 760, display: 'flex', flexDirection: 'column', gap: 16 },
@@ -89,7 +90,7 @@ export default function UberDirect() {
   return (
     <div style={S.wrap}>
       <div>
-        <h1 style={S.h1}>Delivery (Uber Direct)</h1>
+        <h1 style={S.h1}>Delivery</h1>
         <p style={S.sub}>Quote the delivery fee from the customer's address at order time, surcharge it under your policy, and dispatch an Uber courier. Used identically across POS, online and catering.</p>
       </div>
 
@@ -110,7 +111,7 @@ export default function UberDirect() {
             <a style={S.linkA} href="https://www.hubrise.com/" target="_blank" rel="noreferrer">hubrise.com ↗</a></li>
           <li><b>Enable the free Uber Direct Bridge</b> app inside HubRise, and connect it to your Uber Direct account:{' '}
             <a style={S.linkA} href="https://www.hubrise.com/apps/uber-direct" target="_blank" rel="noreferrer">hubrise.com/apps/uber-direct ↗</a></li>
-          <li><b>Connect this venue to HubRise</b> in ServOS: Back Office → Channels → <b>Delivery channels</b>.</li>
+          <li><b>Connect this venue to HubRise</b> in ServOS: Back Office → Channels → <b>3rd Party orders</b>.</li>
           <li>Come back here, turn delivery on, set your pickup address, radius and the delivery fee below.</li>
         </ol>
         <p style={{ fontSize: 12, color: 'var(--t4)', margin: '12px 0 0' }}>
@@ -157,7 +158,7 @@ export default function UberDirect() {
               : form.dispatch_backend === 'hubrise_bridge' ? 'Your delivery charge (£) — HubRise Bridge has no live price, so this is charged on every delivery'
               : 'Your delivery charge (£) — fallback if the live Uber quote fails'
             }</label>
-            <input type="number" step="0.01" style={S.input} value={toPounds(form.flat_fee_minor)} onChange={(e) => set('flat_fee_minor', toMinor(e.target.value))} placeholder="0.00 = free" />
+            <MoneyField style={S.input} valueMinor={form.flat_fee_minor} onMinor={(m) => set('flat_fee_minor', m)} placeholder="0.00 = free" />
           </div>
         </div>
         {form.delivery_mode === 'uber' && form.dispatch_backend === 'hubrise_bridge' && form.flat_fee_minor == null && (
@@ -192,8 +193,8 @@ export default function UberDirect() {
       <div style={S.card}>
         <h2 style={S.h2}>Delivery rules</h2>
         <div style={S.row}>
-          <div style={S.col}><label style={S.label}>Minimum order for delivery (£, blank = none)</label><input type="number" step="0.01" style={S.input} value={toPounds(p.minOrderMinor)} onChange={(e) => setPolicy('minOrderMinor', toMinor(e.target.value))} /></div>
-          <div style={S.col}><label style={S.label}>Free delivery over (£, blank = none)</label><input type="number" step="0.01" style={S.input} value={toPounds(p.freeOverMinor)} onChange={(e) => setPolicy('freeOverMinor', toMinor(e.target.value))} /></div>
+          <div style={S.col}><label style={S.label}>Minimum order for delivery (£, blank = none)</label><MoneyField style={S.input} valueMinor={p.minOrderMinor} onMinor={(m) => setPolicy('minOrderMinor', m)} placeholder="none" /></div>
+          <div style={S.col}><label style={S.label}>Free delivery over (£, blank = none)</label><MoneyField style={S.input} valueMinor={p.freeOverMinor} onMinor={(m) => setPolicy('freeOverMinor', m)} placeholder="none" /></div>
         </div>
         <div style={{ ...S.infoNote, marginTop: 10 }}>Orders below the minimum can't choose delivery — the customer is shown how much more to spend. "Free delivery over" waives the fee on big baskets. Both apply on POS, online and catering.</div>
       </div>
@@ -217,16 +218,16 @@ export default function UberDirect() {
           </div>
           {p.mode === 'markup' && <>
             <div style={S.col}><label style={S.label}>Mark-up %</label><input type="number" style={S.input} value={p.markupPct || 0} onChange={(e) => setPolicy('markupPct', Number(e.target.value))} /></div>
-            <div style={S.col}><label style={S.label}>Mark-up fixed (£)</label><input type="number" step="0.01" style={S.input} value={toPounds(p.markupFixedMinor)} onChange={(e) => setPolicy('markupFixedMinor', toMinor(e.target.value) || 0)} /></div>
+            <div style={S.col}><label style={S.label}>Mark-up fixed (£)</label><MoneyField style={S.input} valueMinor={p.markupFixedMinor} onMinor={(m) => setPolicy('markupFixedMinor', m || 0)} /></div>
           </>}
           {p.mode === 'subsidise' && <>
-            <div style={S.col}><label style={S.label}>Absorb fixed (£)</label><input type="number" step="0.01" style={S.input} value={toPounds(p.subsidiseMinor)} onChange={(e) => setPolicy('subsidiseMinor', toMinor(e.target.value) || 0)} /></div>
+            <div style={S.col}><label style={S.label}>Absorb fixed (£)</label><MoneyField style={S.input} valueMinor={p.subsidiseMinor} onMinor={(m) => setPolicy('subsidiseMinor', m || 0)} /></div>
             <div style={S.col}><label style={S.label}>Absorb %</label><input type="number" style={S.input} value={p.subsidisePct || 0} onChange={(e) => setPolicy('subsidisePct', Number(e.target.value))} /></div>
           </>}
-          {p.mode === 'flat' && <div style={S.col}><label style={S.label}>Flat fee (£)</label><input type="number" step="0.01" style={S.input} value={toPounds(p.flatMinor)} onChange={(e) => setPolicy('flatMinor', toMinor(e.target.value) || 0)} /></div>}
+          {p.mode === 'flat' && <div style={S.col}><label style={S.label}>Flat fee (£)</label><MoneyField style={S.input} valueMinor={p.flatMinor} onMinor={(m) => setPolicy('flatMinor', m || 0)} /></div>}
         </div>
         <div style={{ ...S.row, marginTop: 10 }}>
-          <div style={S.col}><label style={S.label}>Cap customer fee (£, blank = none)</label><input type="number" step="0.01" style={S.input} value={toPounds(p.capMinor)} onChange={(e) => setPolicy('capMinor', toMinor(e.target.value))} /></div>
+          <div style={S.col}><label style={S.label}>Cap customer fee (£, blank = none)</label><MoneyField style={S.input} valueMinor={p.capMinor} onMinor={(m) => setPolicy('capMinor', m)} placeholder="none" /></div>
         </div>
         <div style={{ ...S.infoNote, marginTop: 12, background: '#22c55e14', color: 'var(--t2)' }}>
           Preview: a <b>{money(SAMPLE / 100)}</b> Uber cost → customer pays <b>{preview.freeDelivery ? 'Free' : money(preview.customerFeeMinor / 100)}</b>
@@ -255,7 +256,7 @@ export default function UberDirect() {
               <option value="prod">Production</option>
             </select>
           </div>
-          <div style={S.col}><label style={S.label}>Fallback fee if Uber down (£, blank = block)</label><input type="number" step="0.01" style={S.input} value={toPounds(form.fallback_fee_minor)} onChange={(e) => set('fallback_fee_minor', toMinor(e.target.value))} /></div>
+          <div style={S.col}><label style={S.label}>Fallback fee if Uber down (£, blank = block)</label><MoneyField style={S.input} valueMinor={form.fallback_fee_minor} onMinor={(m) => set('fallback_fee_minor', m)} placeholder="block" /></div>
           </>}
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 14 }}>

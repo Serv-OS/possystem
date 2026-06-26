@@ -533,7 +533,23 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   // v5.5.243: Shared Stripe PI creation (used by multiple paths)
   // Dispatch to the location's processor. Ryft is card-not-present here —
   // RyftPaymentForm creates its own session, so we just advance to the pay step.
+  // v5.5.660: hard delivery gate, evaluated at the LAST step before any payment/placement.
+  // The valid() gate only governs the details→gift button; a fast customer could reach pay
+  // before the debounced quote resolved, slipping a below-minimum / out-of-range delivery
+  // order through. Returns an error string to block, or null to allow.
+  const deliveryGateError = () => {
+    if (!isDelivery) return null;
+    if (!deliveryQuote) return 'Checking delivery for your address — one moment, then try again.';
+    if (!deliveryQuote.available) return deliveryQuote.reason === 'out_of_radius'
+      ? 'Sorry, your address is outside our delivery area — please choose collection.'
+      : 'Delivery isn’t available for this address — please choose collection.';
+    if (deliveryQuote.belowMinimum) return `Minimum order for delivery is ${deliveryQuote.minOrderMinor != null ? money(deliveryQuote.minOrderMinor / 100) : ''}. Add more to your basket or choose collection.`;
+    return null;
+  };
+
   const startPayment = async () => {
+    const gate = deliveryGateError();
+    if (gate) { setError(gate); setStep('details'); return; }
     if (processor === 'ryft') { setError(''); setStep('pay'); return; }
     return startStripePayment();
   };
@@ -664,6 +680,8 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
 
   // ── Gift-only payment (no Stripe) ─────────────────────────────────────
   const onGiftOnlyPayment = async () => {
+    const gate = deliveryGateError();
+    if (gate) { setError(gate); setStep('details'); return; }
     try {
       const { ref, collectionAt, sentAt, customer, items } = orderShape;
       const collectionTimeLabel = collectionAt.toLocaleTimeString('en-GB', {

@@ -88,6 +88,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.660', date: '26 Jun 2026', label: 'Delivery minimum-order now enforced at payment + tidier delivery settings & money fields',
+    changes: [
+      'Online delivery orders below your minimum order value are now reliably blocked right up to the payment step (previously a quick checkout could slip past before the delivery quote had loaded). The customer is told the minimum and how much more to add.',
+      'Renamed the Back Office menus: "Delivery (Uber Direct)" is now just "Delivery", and "Delivery channels" is now "3rd Party orders".',
+      'Fixed the money boxes on the Delivery settings screen: they now accept decimals (e.g. 3.50), start blank instead of with a 0, and no longer jump the cursor or drop the decimal point as you type.',
+    ],
+  },
+  {
     version: '5.5.659', date: '26 Jun 2026', label: 'Unpaid orders must be charged before they can be marked collected',
     changes: [
       'An order that still owes money can no longer be cleared with "Mark collected" (which took no payment and made it vanish). On the final step its button now reads "Charge £X" and opens the order for payment — once paid, it leaves the queue. Already-paid and prepaid online/kiosk orders still mark collected as before.',

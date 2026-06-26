@@ -231,7 +231,7 @@ export default function CateringSettings() {
         <label style={{ ...S.toggle, margin: '12px 0 10px' }}><input type="checkbox" checked={s.delivery_enabled} onChange={(e) => set({ delivery_enabled: e.target.checked })} /> Delivery</label>
         {s.delivery_enabled && (
           <div style={{ paddingLeft: 24 }}>
-            <div style={S.hint}>The delivery <b>charge, range and fulfilment</b> (self-delivery, or an Uber Direct courier) are set once in <b>Channels → Delivery (Uber Direct)</b> and apply to catering automatically — so there's no separate catering delivery fee to keep in sync. Catering events are charged your configured fee, and a courier (if you use one) is dispatched on the event day.</div>
+            <div style={S.hint}>The delivery <b>charge, range and fulfilment</b> (self-delivery, or a courier) are set once in <b>Channels → Delivery</b> and apply to catering automatically — so there's no separate catering delivery fee to keep in sync. Catering events are charged your configured fee, and a courier (if you use one) is dispatched on the event day.</div>
           </div>
         )}
       </div>

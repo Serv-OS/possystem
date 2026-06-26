@@ -142,7 +142,7 @@ export default function HubRise() {
   return (
     <div style={S.wrap}>
       <div>
-        <h1 style={S.h1}>🔗 Delivery channels — HubRise</h1>
+        <h1 style={S.h1}>🔗 3rd Party orders — HubRise</h1>
         <div style={S.sub}>
           Connect this venue to HubRise to receive Deliveroo / Uber Eats / Just Eat and HubRise
           online orders straight into the Orders Hub + kitchen, publish your menu to those channels,
