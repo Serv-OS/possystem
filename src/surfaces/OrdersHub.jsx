@@ -13,6 +13,7 @@ import { useState, useMemo, useEffect } from 'react';
 import { useStore } from '../store';
 import { supabase } from '../lib/supabase';
 import { isTrainingMode } from '../lib/trainingMode';
+import CardErrorBoundary from '../components/CardErrorBoundary';
 import { syncQrTableSession } from '../lib/qrTableSession';
 import { money, currencySymbol } from '../lib/currency';
 import { ryftTab } from '../lib/payments/ryft';
@@ -670,7 +671,11 @@ export default function OrdersHub() {
     // Already paid (e.g. a catering pre-order paid online): opening it loaded it into the POS
     // pay flow, which would take payment a SECOND time. Show it read-only instead — staff still
     // advance it (prep/ready/collected) from its card.
-    else if (o.paid || o.customer?.paid) { setViewOrder(o); }
+    // v5.5.658: also treat online/kiosk as paid by channel — those are ALWAYS prepaid before they
+    // reach the queue, so even if the paid flag is missing (older rows / column absent on a venue)
+    // they must never re-open into the editable pay flow. Catering (can be pay-later), QR (open
+    // tabs) and HubRise (test/manual orders) stay flag-driven so genuinely unpaid ones remain payable.
+    else if (o.paid || o.customer?.paid || ['online', 'kiosk'].includes(o.source)) { setViewOrder(o); }
     else {
       // A pay-later CATERING order opened for payment BEFORE its scheduled fire time would, on
       // close, delete its order_queue row before releaseDueCateringOrders fires it → silent
@@ -986,7 +991,17 @@ function Section({ title, icon, color, count, children }) {
 }
 
 // ── Order card ────────────────────────────────────────────────────────────────
-function OrderCard({ order, onAdvance, onAccept, onReject, onOpen, onForceClose, closingTab }) {
+// v5.5.658: each card is isolated in an error boundary so one malformed order can't throw
+// during render and white-screen the whole Orders surface (which also tears down printing).
+function OrderCard(props) {
+  return (
+    <CardErrorBoundary label={`Order ${props.order?.ref || ''}`}>
+      <OrderCardInner {...props} />
+    </CardErrorBoundary>
+  );
+}
+
+function OrderCardInner({ order, onAdvance, onAccept, onReject, onOpen, onForceClose, closingTab }) {
   // v5.5.150: QR open-tab detection. Customer set tab_open=true at tab
   // creation; we surface a "Close & charge" button so the operator can
   // capture the pre-auth at end-of-meal.

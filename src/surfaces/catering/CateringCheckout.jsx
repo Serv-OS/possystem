@@ -180,7 +180,9 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
     try {
       await ensureAuthToken();
       const payId = paymentIntent?.id || null;
-      const pay = { payment_intent_id: payId, processor, pay_later: false };
+      // v5.5.658: stamp paid into the customer jsonb too (not just the top-level column, which the
+      // POS sync path can drop) so a paid catering order always opens READ-ONLY in the POS.
+      const pay = { payment_intent_id: payId, processor, pay_later: false, paid: true };
       // order_queue (paid)
       await supabase.from('order_queue').insert(queueRow(true, pay));
       logDeliverySurcharge();

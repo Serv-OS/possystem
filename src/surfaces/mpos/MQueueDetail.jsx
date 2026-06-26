@@ -86,7 +86,7 @@ export default function MQueueDetail({ order, onBack }) {
               <Row label="Phone"><a href={`tel:${live.customer.phone}`} style={{ color:'var(--acc)', textDecoration:'none', fontWeight:700 }}>{live.customer.phone}</a></Row>
             )}
             {live.customer?.address && (
-              <Row label="Address">{live.customer.address}</Row>
+              <Row label="Address">{typeof live.customer.address === 'string' ? live.customer.address : [live.customer.address.line1, live.customer.address.line2, live.customer.address.city, live.customer.address.postcode].filter(Boolean).join(', ')}</Row>
             )}
             {(live.collectionTime || live.isASAP) && (
               <Row label="Collection">{live.isASAP ? '⚡ ASAP' : `⏰ ${live.collectionTime}`}</Row>

@@ -259,6 +259,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       name: name.trim(),
       phone: phone.replace(/\s+/g, ''),
       email: email.trim(),
+      paid: true,   // v5.5.658: online orders are paid before they hit the queue — stamp it so the POS opens them READ-ONLY (never re-charges). Survives in the order_queue.customer jsonb.
       ...(isDelivery ? { address: { line1: address1.trim(), postcode: postcode.trim().toUpperCase() } } : {}),
       // v5.5.657: always record the delivery fee + mode for delivery orders (even £0), so the
       // ticket/receipt/reports show them and downstream routing knows self vs courier.

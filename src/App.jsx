@@ -88,6 +88,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.658', date: '26 Jun 2026', label: 'Fix POS white-screen on online/HubRise orders + stop re-charging already-paid orders',
+    changes: [
+      'Fixed a crash where opening certain online/HubRise orders (whose delivery address is structured) would white-screen the POS with an "App Error". This was also why an online order sometimes wouldn’t print until the app was force-quit — the crash silently shut down the live order + print connections; restarting brought them back and the order printed. Addresses are now always displayed safely.',
+      'Each order card is now isolated, so a single unusual order can never take down the whole Orders screen (and stop printing) again — at worst that one card shows a small placeholder.',
+      'Stopped already-paid orders being charged a second time: online orders now carry a paid marker, paid catering orders carry it too, and online/kiosk orders always open read-only in the POS. As a final safety net, the payment screen refuses to take payment on an order that’s already paid.',
+    ],
+  },
+  {
     version: '5.5.657', date: '26 Jun 2026', label: 'Delivery end-to-end fixes — fees, receipts, addresses, min-order, live board',
     changes: [
       'Fixed delivery fees coming through as £0: when you use an Uber courier via the HubRise Bridge there is no live price, so your delivery charge now has to be set (the Delivery setup blocks saving with it left blank, and explains why). Your set delivery charge is now charged exactly as entered — the live-courier mark-up only applies to a real live Uber quote, not to a flat fee you set yourself.',

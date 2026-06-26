@@ -1143,6 +1143,16 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   // toggle is true (legacy). When toggle is false the checkbox lands unchecked.
   const [printReceipt, setPrintReceipt] = useState(deviceConfig?.autoPrintReceiptOnClose !== false);
 
+  // v5.5.658: defence-in-depth against a duplicate charge. OrdersHub opens already-paid
+  // orders read-only, but if ANY path loads a paid order into checkout, refuse to take payment.
+  useEffect(() => {
+    if (customer?.paid) {
+      try { useStore.getState().showToast?.('This order has already been paid — opening read-only.', 'error'); } catch {}
+      onClose?.();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // v5.5.193: gift card partial payment state
   const [giftApplied, setGiftApplied] = useState(null);
   // giftApplied: { card_id, code_last4, applied, remaining_balance, idempotency_key, currency }
