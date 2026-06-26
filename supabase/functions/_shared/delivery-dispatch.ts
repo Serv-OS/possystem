@@ -10,7 +10,7 @@
 
 import { getAccessToken, createDelivery, parseDeliveryResp, mapUberStatus } from './uber.ts';
 import { createOrder as createHubriseOrder } from './hubrise.ts';
-import { getStuartToken, buildStuartJob, createStuartJob, parseStuartJob, mapStuartStatus } from './stuart.ts';
+import { getStuartToken, buildStuartJob, createStuartJob, parseStuartJob, mapStuartStatus, classifyStuartError } from './stuart.ts';
 
 const ENV = (Deno.env.get('UBER_DIRECT_ENV') ?? 'sandbox') as 'sandbox' | 'prod';
 const CLIENT_ID = Deno.env.get('UBER_DIRECT_CLIENT_ID') ?? '';
@@ -87,10 +87,30 @@ export async function dispatchCourier(sb: any, { loc, cfg, order, quote }: { loc
       .insert({ location_id: loc, order_ref: orderRef, dispatch_backend: cfg.dispatch_backend || 'uber_api', status: 'dispatching' })
       .select('id').maybeSingle();
     if (ins.error) {
-      const { data: ex } = await sb.from('courier_deliveries').select('id, tracking_url').eq('location_id', loc).eq('order_ref', orderRef).maybeSingle();
-      return { ok: true, skipped: true, deliveryRowId: ex?.id || null, trackingUrl: ex?.tracking_url || null };
+      // ONLY a unique-violation (23505) means the order_ref is already claimed → idempotent path.
+      // Any other insert error (e.g. a CHECK rejection on dispatch_backend) is a REAL failure and
+      // must NOT be silently treated as "already dispatched" — surface it.
+      const isDup = ins.error.code === '23505' || /duplicate key|already exists|unique constraint/i.test(ins.error.message || '');
+      if (!isDup) return { ok: false, reason: 'reserve_failed', error: ins.error.message };
+      const { data: ex } = await sb.from('courier_deliveries').select('id, status, tracking_url').eq('location_id', loc).eq('order_ref', orderRef).maybeSingle();
+      // RETRY: a previous attempt that FAILED left no courier behind — re-claim and try again
+      // (manual "Send to courier" / retry). Use an ATOMIC compare-and-swap (.eq status 'failed' +
+      // .select) so two concurrent retries can't both proceed and book two couriers. Any non-failed
+      // row means a courier exists or is being found → skip (the double-dispatch guarantee).
+      if (ex && ex.status === 'failed') {
+        const claim = await sb.from('courier_deliveries')
+          .update({ status: 'dispatching', dispatch_backend: cfg.dispatch_backend || 'uber_api', updated_at: new Date().toISOString() })
+          .eq('id', ex.id).eq('status', 'failed').select('id');
+        if (claim.error || !claim.data?.length) {
+          return { ok: true, skipped: true, deliveryRowId: ex.id, trackingUrl: ex.tracking_url || null, status: 'dispatching' };
+        }
+        rowId = ex.id;
+      } else {
+        return { ok: true, skipped: true, deliveryRowId: ex?.id || null, trackingUrl: ex?.tracking_url || null, status: ex?.status || null };
+      }
+    } else {
+      rowId = ins.data?.id || null;
     }
-    rowId = ins.data?.id || null;
   }
 
   // Release the reservation on a CONFIG problem (so a corrected retry can run); mark 'failed' on
@@ -119,12 +139,20 @@ export async function dispatchCourier(sb: any, { loc, cfg, order, quote }: { loc
     // Per-location Stuart account (this venue's own creds), falling back to the platform creds in
     // env (used by our test venue until it connects its own).
     if (cfg.dispatch_backend === 'stuart') {
-      const senv = (cfg.env || STUART_ENV) as 'sandbox' | 'prod';
+      const senv = (cfg.stuart_env || cfg.env || STUART_ENV) as 'sandbox' | 'prod';
       const sid = cfg.stuart_client_id || STUART_ID;
       const ssecret = cfg.stuart_client_secret || STUART_SECRET;
       if (!sid || !ssecret) return await fail('not_configured');
       const stoken = await getStuartToken(senv, sid, ssecret);
-      const resp = await createStuartJob(senv, stoken, buildStuartJob(order, quote, cfg));
+      let resp: any;
+      try {
+        resp = await createStuartJob(senv, stoken, buildStuartJob(order, quote, cfg));
+      } catch (e) {
+        // Surface a deterministic "can't deliver to/from here" as out_of_coverage so the POS shows
+        // a clear message (and staff arrange collection / self-delivery) rather than a vague fail.
+        const reason = classifyStuartError(e) === 'out_of_coverage' ? 'out_of_coverage' : 'dispatch_failed';
+        return await fail(reason, { error: String((e as Error)?.message || e) });
+      }
       const sp = parseStuartJob(resp);
       if (!sp.id) return await fail('stuart_job_failed', { error: 'Stuart returned no job id' });
       if (rowId) await sb.from('courier_deliveries').update({

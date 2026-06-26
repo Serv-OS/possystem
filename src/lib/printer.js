@@ -442,8 +442,9 @@ function buildReceiptHtml({ location, check, items, totals }) {
     <div class="row"><span>Server: ${check?.server}</span><span>${check?.tableLabel||check?.orderType}</span></div>
     <div class="divider"></div>${rows}
     <div class="divider"></div>
-    ${totals.service>0?`<div class="row"><span>Subtotal</span><span>\xA3${totals.subtotal?.toFixed(2)}</span></div>`:''}
+    ${(totals.service>0||totals.delivery>0)?`<div class="row"><span>Subtotal</span><span>\xA3${totals.subtotal?.toFixed(2)}</span></div>`:''}
     ${totals.service>0?`<div class="row"><span>Service</span><span>\xA3${totals.service?.toFixed(2)}</span></div>`:''}
+    ${totals.delivery>0?`<div class="row"><span>Delivery</span><span>\xA3${totals.delivery?.toFixed(2)}</span></div>`:''}
     ${totals.tip>0?`<div class="row"><span>Tip</span><span>\xA3${totals.tip?.toFixed(2)}</span></div>`:''}
     <div class="row bold big"><span>TOTAL</span><span>\xA3${totals.grand?.toFixed(2)}</span></div>
     ${totals.taxBreakdown?.breakdown?.filter(b=>b.tax>0).map(b => {

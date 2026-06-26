@@ -17,7 +17,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { getAccessToken, getQuote, geocodePostcode, haversineMiles, createDelivery, getDelivery, parseDeliveryResp, mapUberStatus } from '../_shared/uber.ts';
 import { createOrder as createHubriseOrder, patchOrder as patchHubriseOrder } from '../_shared/hubrise.ts';
 import { cancelDelivery, createOrganization, getOrganization, inviteOrgMember, parseOrgResp, UBER_ORG_SCOPE } from '../_shared/uber.ts';
-import { getStuartToken, getStuartPricing, normaliseStuartPricing, cancelStuartJob } from '../_shared/stuart.ts';
+import { getStuartToken, getStuartPricing, normaliseStuartPricing, cancelStuartJob, classifyStuartError } from '../_shared/stuart.ts';
 import { dispatchCourier } from '../_shared/delivery-dispatch.ts';
 
 const e164 = (raw: string) => {
@@ -219,7 +219,8 @@ Deno.serve(async (req) => {
         return json({ ok: false, reason: 'auth_failed', error: 'Stuart rejected those credentials — check the Client ID/Secret and the sandbox/production toggle. (' + String((e as Error)?.message || e) + ')' });
       }
       const { error } = await sb.from('venue_uber_config').upsert({
-        location_id: loc, stuart_client_id: id, stuart_client_secret: secret, env: senv,
+        location_id: loc, stuart_client_id: id, stuart_client_secret: secret,
+        stuart_env: senv, env: senv,   // stuart_env is authoritative for Stuart; env kept in sync for the BO display
         dispatch_backend: 'stuart',
         updated_at: new Date().toISOString(), updated_by: acc.userId === 'service' ? null : acc.userId,
       }, { onConflict: 'location_id' });
@@ -230,11 +231,11 @@ Deno.serve(async (req) => {
     // ── BO: test the venue's connected Stuart account (re-fetch a token). ──────
     if (action === 'test_stuart') {
       const acc = await requireAccess(req, loc); if (!acc.ok) return acc.res;
-      const { data: cfg } = await sb.from('venue_uber_config').select('stuart_client_id, stuart_client_secret, env').eq('location_id', loc).maybeSingle();
+      const { data: cfg } = await sb.from('venue_uber_config').select('stuart_client_id, stuart_client_secret, stuart_env, env').eq('location_id', loc).maybeSingle();
       const id = cfg?.stuart_client_id || ENV_STUART_ID;
       const secret = cfg?.stuart_client_secret || ENV_STUART_SECRET;
       if (!id || !secret) return json({ ok: false, reason: 'not_connected', error: 'No Stuart account is connected for this venue.' });
-      const senv = (cfg?.env || ENV_STUART_DEFAULT) as 'sandbox' | 'prod';
+      const senv = (cfg?.stuart_env || cfg?.env || ENV_STUART_DEFAULT) as 'sandbox' | 'prod';
       try {
         await getStuartToken(senv, id, secret);
         return json({ ok: true, env: senv, platform: !cfg?.stuart_client_id });
@@ -307,7 +308,7 @@ Deno.serve(async (req) => {
       // applies to Stuart's real cost (like the Uber API path). Falls back to the configured fee
       // if creds are missing or Stuart is unavailable.
       if (cfg.dispatch_backend === 'stuart') {
-        const senv = (cfg.env || ENV_STUART_DEFAULT) as 'sandbox' | 'prod';
+        const senv = (cfg.stuart_env || cfg.env || ENV_STUART_DEFAULT) as 'sandbox' | 'prod';
         // Per-location Stuart account (this venue's own creds), falling back to the
         // platform creds in env (used by our test venue until it connects its own).
         const sid = cfg.stuart_client_id || ENV_STUART_ID;
@@ -325,10 +326,17 @@ Deno.serve(async (req) => {
           if (!raw) throw new Error('no_price');
           return json({ ok: true, available: true, mode: 'uber', dispatchable: true, raw, dropoff, distanceMiles, withinRadius: true, policy, currency: raw.currency || currency, radiusMiles });
         } catch (e) {
+          const kind = classifyStuartError(e);
+          // DETERMINISTIC "Stuart can't deliver to/from this address" → delivery unavailable.
+          // Do NOT silently fall back to a flat fee + accept an order no courier will collect.
+          if (kind === 'out_of_coverage') {
+            return json({ ok: true, available: false, reason: 'out_of_coverage', error: String((e as Error)?.message || e), policy, currency });
+          }
+          // TRANSIENT (Stuart slow/unreachable) → graceful fallback to the configured fee, flagged.
           if (cfg.flat_fee_minor != null || cfg.fallback_fee_minor != null) {
             return json({ ok: true, available: true, mode: 'uber', dispatchable: true, fallback: true, configured: true, raw: { fee: configuredFeeMinor, currency }, dropoff, distanceMiles, withinRadius: true, policy, currency, radiusMiles, error: String((e as Error)?.message || e) });
           }
-          return json({ ok: true, available: false, reason: 'quote_failed', error: String((e as Error)?.message || e), policy, currency });
+          return json({ ok: true, available: false, reason: kind === 'auth' ? 'stuart_auth_failed' : 'quote_failed', error: String((e as Error)?.message || e), policy, currency });
         }
       }
 
@@ -453,7 +461,7 @@ Deno.serve(async (req) => {
             await patchHubriseOrder(conn.access_token, conn.hubrise_location_id, del.hubrise_ref, { status: 'cancelled' });
           }
         } else if (del.dispatch_backend === 'stuart') {
-          const senv = (cfg?.env || ENV_STUART_DEFAULT) as 'sandbox' | 'prod';
+          const senv = (cfg?.stuart_env || cfg?.env || ENV_STUART_DEFAULT) as 'sandbox' | 'prod';
           const sid = cfg?.stuart_client_id || ENV_STUART_ID;
           const ssecret = cfg?.stuart_client_secret || ENV_STUART_SECRET;
           if (sid && ssecret && del.uber_delivery_id) {

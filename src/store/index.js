@@ -5008,6 +5008,48 @@ export const useStore = create((set, get) => ({
     } catch (e) { console.warn('[hubrise] receipt print failed:', e?.message); }
   },
 
+  // v5.5.670: on-request customer-receipt reprint for ANY queue order (online / kiosk / QR /
+  // catering / HubRise / walk-in). Same builder as printHubriseReceipt but source-neutral and
+  // training-gated. Used by the Orders Hub "Print receipt" button so staff can print on demand
+  // even when the order profile is set to not auto-print.
+  reprintOrderReceipt: async (order) => {
+    if (isTrainingMode()) { get().showToast?.('Training mode — receipt not printed.', 'info'); return { ok: true, transport: 'training' }; }
+    try {
+      if (!order) return { ok: false, error: 'no order' };
+      const c = order.customer || {};
+      const items = (order.items || []).map(i => ({ ...i, voided: false }));
+      const subtotal = items.reduce((s, it) => s + (Number(it.qty) || 1) * ((Number(it.price) || 0) + (it.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0)), 0);
+      const total = Number(order.total) || subtotal;
+      const a = c.address || {};
+      const addr = typeof a === 'string' ? [a] : [a.line1, a.line2, [a.city, a.postcode].filter(Boolean).join(' '), a.country].filter(Boolean);
+      const SRC = { online: 'Online', kiosk: 'Kiosk', qr: 'QR', catering: 'Catering', hubrise: c.channel || 'HubRise' };
+      const svcType = c.serviceType || order.type;
+      const deliveryFee = c.delivery_fee != null ? Number(c.delivery_fee) : 0;
+      const tip = Number(c.tip) || 0;
+      const check = {
+        ref: c.collectionCode || order.ref,
+        server: c.channel || SRC[order.source] || 'Order',
+        orderType: svcType === 'delivery' ? 'Delivery' : svcType === 'collection' ? 'Collection' : 'Order',
+        method: (c.paid || order.paid) ? (order.paymentMethod || 'card') : null,
+        deliveryFee: deliveryFee || 0,   // so the receipt builder prints a Delivery line (printer.js)
+        delivery: (svcType === 'delivery' || svcType === 'collection' || c.delivery_fee != null) ? {
+          channel: c.channel || SRC[order.source] || null, serviceType: svcType, paid: !!(c.paid || order.paid),
+          name: c.name, phone: c.phone, address: addr, notes: c.notes, deliveryFee: deliveryFee || 0,
+          expected: order.isASAP ? 'ASAP' : (order.collectionTime ? new Date(order.collectionTime).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : null),
+        } : null,
+      };
+      // service = whatever's left after subtotal + delivery + tip (keeps a catering tip out of the
+      // service line). Pennies-safe + never negative.
+      const totals = { subtotal, service: Math.max(0, +((total - subtotal - deliveryFee - tip).toFixed(2))), delivery: deliveryFee || 0, tip, grand: total };
+      const result = await printService.printReceipt({ check, items, totals });
+      get().showToast?.(result?.ok ? 'Receipt sent to printer' : `Receipt print failed${result?.error ? ': ' + result.error : ''}`, result?.ok ? 'success' : 'error');
+      return result || { ok: false };
+    } catch (e) {
+      get().showToast?.(`Receipt print failed: ${e?.message || e}`, 'error');
+      return { ok: false, error: String(e?.message || e) };
+    }
+  },
+
   // Print a customer receipt (called from close-check flow, ReceiptModal, etc.)
   // Safe to call even if no receipt printer is configured — falls back to browser print.
   printCustomerReceipt: async ({ location, check, items, totals }, printerId = null) => {

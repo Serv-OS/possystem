@@ -315,7 +315,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   const continueToGift = async () => {
     if (!valid) {
       if (isDelivery && deliveryQuote && !deliveryQuote.available) {
-        setError(deliveryQuote.reason === 'out_of_radius' ? 'Sorry, your address is outside our delivery area — please choose collection.' : 'Delivery isn’t available for this address — please choose collection.');
+        setError((deliveryQuote.reason === 'out_of_radius' || deliveryQuote.reason === 'out_of_coverage') ? 'Sorry, your address is outside our delivery area — please choose collection.' : 'Delivery isn’t available for this address — please choose collection.');
         return;
       }
       if (isDelivery && deliveryQuote?.belowMinimum) {
@@ -542,7 +542,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   const deliveryGateError = () => {
     if (!isDelivery) return null;
     if (!deliveryQuote) return 'Checking delivery for your address — one moment, then try again.';
-    if (!deliveryQuote.available) return deliveryQuote.reason === 'out_of_radius'
+    if (!deliveryQuote.available) return (deliveryQuote.reason === 'out_of_radius' || deliveryQuote.reason === 'out_of_coverage')
       ? 'Sorry, your address is outside our delivery area — please choose collection.'
       : 'Delivery isn’t available for this address — please choose collection.';
     if (deliveryQuote.belowMinimum) return `Minimum order for delivery is ${deliveryQuote.minOrderMinor != null ? money(deliveryQuote.minOrderMinor / 100) : ''}. Add more to your basket or choose collection.`;
@@ -739,7 +739,10 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
             idempotency_key: giftApplied.idempotency_key,
             amount: giftApplied.applied,
           } : null,
-          loyalty_reward: rewardApplied ? {
+          // v5.5.671: the column is `loyalty` (NOT loyalty_reward) — the wrong key made Postgres
+          // reject the WHOLE insert ("column loyalty_reward does not exist"), silently caught, so
+          // NO online order ever reached closed_checks (history / reports / EOD). Fixed.
+          loyalty: rewardApplied ? {
             reward_id: rewardApplied.reward_id,
             reward_name: rewardApplied.reward_name,
             points_deducted: rewardApplied.points_deducted,
@@ -856,7 +859,10 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
             idempotency_key: giftApplied.idempotency_key,
             amount: giftApplied.applied,
           } : null,
-          loyalty_reward: rewardApplied ? {
+          // v5.5.671: the column is `loyalty` (NOT loyalty_reward) — the wrong key made Postgres
+          // reject the WHOLE insert ("column loyalty_reward does not exist"), silently caught, so
+          // NO online order ever reached closed_checks (history / reports / EOD). Fixed.
+          loyalty: rewardApplied ? {
             reward_id: rewardApplied.reward_id,
             reward_name: rewardApplied.reward_name,
             points_deducted: rewardApplied.points_deducted,

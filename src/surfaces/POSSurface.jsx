@@ -1176,7 +1176,7 @@ export default function POSSurface() {
                     </div>
                   ) : (
                     <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',fontSize:11,color:'var(--red)',marginBottom:3,padding:'2px 0'}}>
-                      <span>Delivery unavailable{deliveryQuote.reason === 'out_of_radius' ? ' — out of range' : deliveryQuote.reason === 'not_configured' ? ' — not set up' : deliveryQuote.reason === 'disabled' ? '' : ''}</span>
+                      <span>Delivery unavailable{deliveryQuote.reason === 'out_of_radius' ? ' — out of range' : deliveryQuote.reason === 'out_of_coverage' ? ' — outside courier area' : deliveryQuote.reason === 'not_configured' ? ' — not set up' : deliveryQuote.reason === 'disabled' ? '' : ''}</span>
                       <span style={{fontSize:10,color:'var(--t4)'}}>offer collection</span>
                     </div>
                   )

@@ -19,6 +19,8 @@ import { money, currencySymbol } from '../lib/currency';
 import { ryftTab } from '../lib/payments/ryft';
 import { getActiveLocationSync } from '../lib/supabase';
 import { hubrisePushStatus } from '../lib/hubrise';
+import { getDeliveryDetail } from '../lib/delivery/deliveryConfig';
+import { dispatchDelivery, sendDeliveryTrackingSMS } from '../lib/delivery/dispatch';
 
 // ── Channel definitions ────────────────────────────────────────────────────────
 const FILTER_TABS = [
@@ -74,6 +76,7 @@ export default function OrdersHub() {
     updateQueueStatus, removeFromQueue,
     showToast, setSurface, setActiveTableId,
     acceptOrderByRef, rejectOrderByRef,
+    reprintOrderReceipt,
     staff,
   } = useStore();
 
@@ -84,11 +87,60 @@ export default function OrdersHub() {
   const [tick, setTick]         = useState(0);
   const [closingTabRef, setClosingTabRef] = useState(null); // ref currently being captured
   const [viewOrder, setViewOrder] = useState(null); // already-paid order shown read-only (no re-pay)
+  const [delDetail, setDelDetail] = useState(null);  // { delivery, ... } courier status for viewOrder
+  const [delBusy, setDelBusy]     = useState(false);  // dispatching / printing in progress
+  const [printBusy, setPrintBusy] = useState(false);
 
   useEffect(() => {
     const id = setInterval(() => setTick(t => t + 1), 30000);
     return () => clearInterval(id);
   }, []);
+
+  // Courier status for the order currently open in the read-only drawer. Only for courier
+  // delivery orders (delivery_mode 'uber'). Refreshes when the drawer opens + every 20s.
+  // Queue orders carry the order type on `channel` (set from o.type) and the raw row on `_raw`;
+  // `viewOrder.type` is not populated here. Detect a courier delivery from the reliable fields.
+  const viewIsCourier = !!viewOrder
+    && (viewOrder.channel === 'delivery' || viewOrder._raw?.type === 'delivery' || viewOrder.type === 'delivery' || viewOrder.customer?.serviceType === 'delivery')
+    && viewOrder.customer?.delivery_mode === 'uber';
+  useEffect(() => {
+    if (!viewIsCourier || !viewOrder?.ref) { setDelDetail(null); return; }
+    let live = true;
+    const load = async () => {
+      const r = await getDeliveryDetail(getActiveLocationSync(), { orderRef: viewOrder.ref });
+      if (live && r?.ok) setDelDetail(r);
+    };
+    load();
+    const id = setInterval(load, 20000);
+    return () => { live = false; clearInterval(id); };
+  }, [viewIsCourier, viewOrder?.ref]);
+
+  // Manually dispatch (or retry) a Stuart courier for the open delivery order.
+  const sendToCourier = async () => {
+    if (!viewOrder) return;
+    if (isTrainingMode()) { showToast('Training mode — courier not dispatched.', 'info'); return; }
+    setDelBusy(true);
+    const locId = getActiveLocationSync();
+    const c = viewOrder.customer || {};
+    const quote = { dropoff: c.address || null, currency: 'GBP', dispatchable: true,
+      customerFeeMinor: c.delivery_fee != null ? Math.round(Number(c.delivery_fee) * 100) : 0, quoteId: null };
+    const order = { ref: viewOrder.ref, items: viewOrder.items || [], total: viewOrder.total, customer: c };
+    const res = await dispatchDelivery({ opsLocationId: locId, order, quote }).catch((e) => ({ ok: false, error: String(e?.message || e) }));
+    if (res?.ok && res.trackingUrl) sendDeliveryTrackingSMS({ opsLocationId: locId, phone: c.phone, trackingUrl: res.trackingUrl, ref: viewOrder.ref });
+    if (res?.ok && !res.skipped) showToast('Courier requested from Stuart', 'success');
+    else if (res?.skipped) showToast('Already sent to a courier', 'info');
+    else showToast(res?.reason === 'out_of_coverage' ? 'Stuart can’t deliver to this address (out of coverage)' : `Courier dispatch failed${res?.error ? ': ' + res.error : ''}`, 'error');
+    const r = await getDeliveryDetail(locId, { orderRef: viewOrder.ref });
+    if (r?.ok) setDelDetail(r);
+    setDelBusy(false);
+  };
+
+  const printReceipt = async () => {
+    if (!viewOrder) return;
+    setPrintBusy(true);
+    await reprintOrderReceipt?.(viewOrder);
+    setPrintBusy(false);
+  };
 
   // ── Build unified order pool ──────────────────────────────────────────────
   const allOrders = useMemo(() => {
@@ -897,8 +949,42 @@ export default function OrdersHub() {
             <div style={{ display:'flex', justifyContent:'space-between', borderTop:'1px solid var(--bdr)', marginTop:12, paddingTop:12, fontSize:15, fontWeight:800, color:'var(--t1)' }}>
               <span>Total</span><span>{money(viewOrder.total || 0)}</span>
             </div>
-            <div style={{ fontSize:11, color:'var(--t3)', marginTop:6 }}>Already paid{viewOrder.paymentMethod ? ` · ${viewOrder.paymentMethod}` : ''}. Advance it from its card (prep → ready → collected).</div>
-            <button onClick={() => setViewOrder(null)} style={{ width:'100%', marginTop:16, padding:12, borderRadius:10, background:'var(--bg2)', border:'1px solid var(--bdr)', color:'var(--t1)', fontWeight:700, cursor:'pointer', fontFamily:'inherit' }}>Close</button>
+
+            {/* Courier (Stuart) status + dispatch control — only for courier delivery orders. */}
+            {viewIsCourier && (() => {
+              const d = delDetail?.delivery || null;
+              const st = d?.status || null;
+              const MAP = {
+                dispatching: ['Finding a courier…', '#f59e0b'], pending: ['Finding a courier…', '#f59e0b'],
+                pickup: ['Courier heading to venue', '#3b82f6'], dropoff: ['Out for delivery', '#3b82f6'],
+                delivered: ['Delivered', '#22c55e'], canceled: ['Canceled', '#888780'],
+                returned: ['Returned', '#ef4444'], failed: ['Dispatch failed', '#ef4444'],
+              };
+              const [label, color] = MAP[st] || ['Not sent to a courier yet', '#888780'];
+              const terminalBad = st === 'failed' || st === 'canceled' || !st;
+              return (
+                <div style={{ marginTop:12, padding:'12px 14px', borderRadius:12, background:'var(--bg2)', border:'1px solid var(--bdr)' }}>
+                  <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                    <span style={{ fontSize:12, fontWeight:800, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.05em' }}>Stuart courier</span>
+                    <span style={{ marginLeft:'auto', fontSize:11, fontWeight:800, padding:'3px 10px', borderRadius:12, background:`${color}22`, color }}>{label}</span>
+                  </div>
+                  {d?.courier_name && <div style={{ fontSize:12.5, color:'var(--t2)', marginTop:6 }}>👤 {d.courier_name}{d.courier_phone ? ` · ${d.courier_phone}` : ''}</div>}
+                  {d?.eta && <div style={{ fontSize:12.5, color:'var(--t2)', marginTop:2 }}>⏱ ETA {new Date(d.eta).toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit' })}</div>}
+                  {d?.tracking_url && <a href={d.tracking_url} target="_blank" rel="noreferrer" style={{ display:'inline-block', marginTop:6, fontSize:12.5, color:'var(--acc)', fontWeight:700, textDecoration:'none' }}>Track courier ↗</a>}
+                  {terminalBad && (
+                    <button onClick={sendToCourier} disabled={delBusy} style={{ width:'100%', marginTop:10, padding:10, borderRadius:9, background:'var(--acc)', border:'none', color:'#0b0c10', fontWeight:800, cursor: delBusy?'wait':'pointer', fontFamily:'inherit', opacity: delBusy?0.6:1 }}>
+                      {delBusy ? 'Sending…' : st === 'failed' ? '↻ Retry — send to Stuart' : '🚗 Send to Stuart courier'}
+                    </button>
+                  )}
+                </div>
+              );
+            })()}
+
+            <div style={{ display:'flex', gap:8, marginTop:14 }}>
+              <button onClick={printReceipt} disabled={printBusy} style={{ flex:1, padding:11, borderRadius:10, background:'var(--bg2)', border:'1px solid var(--bdr)', color:'var(--t1)', fontWeight:700, cursor: printBusy?'wait':'pointer', fontFamily:'inherit', opacity: printBusy?0.6:1 }}>{printBusy ? 'Printing…' : '🧾 Print receipt'}</button>
+            </div>
+            <div style={{ fontSize:11, color:'var(--t3)', marginTop:8 }}>Already paid{viewOrder.paymentMethod ? ` · ${viewOrder.paymentMethod}` : ''}. Advance it from its card (prep → ready → collected).</div>
+            <button onClick={() => { setViewOrder(null); setDelDetail(null); }} style={{ width:'100%', marginTop:12, padding:12, borderRadius:10, background:'var(--bg2)', border:'1px solid var(--bdr)', color:'var(--t1)', fontWeight:700, cursor:'pointer', fontFamily:'inherit' }}>Close</button>
           </div>
         </div>
       )}

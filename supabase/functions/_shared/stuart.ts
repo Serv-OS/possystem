@@ -109,6 +109,35 @@ export function normaliseStuartPricing(resp: any): { fee: number; currency: stri
   return { fee: Math.max(0, Math.round(n * 100)), currency: String(resp.currency || p.currency || 'GBP').toUpperCase() };
 }
 
+/**
+ * Classify a Stuart error so callers can tell a DETERMINISTIC "we can't deliver there"
+ * (don't silently accept the order at a flat fee) from a TRANSIENT outage (fall back to the
+ * configured fee so the order can still go through). Returns:
+ *   'out_of_coverage' — address outside Stuart's network / no courier serviceable (block delivery)
+ *   'auth'            — bad credentials (config problem; surface it)
+ *   'transient'       — network/5xx/unknown (safe to fall back to the configured fee)
+ */
+export function classifyStuartError(e: unknown): 'out_of_coverage' | 'auth' | 'transient' {
+  const se = e as StuartError;
+  const status = typeof se?.status === 'number' ? se.status : 0;
+  if (status === 401 || status === 403) return 'auth';
+  const body: any = se?.body;
+  // Match on the STRUCTURED error code/message only — NOT the whole stringified body (a field name
+  // like "delivery_zone_id" must not be mistaken for a coverage error).
+  const code = String((body && typeof body === 'object' ? (body.error || body.code || body.message) : body) || '').toUpperCase();
+  if (/OUT_OF_RANGE|OUT OF RANGE|OUT_OF_AREA|NO_COURIER|UNSERVICEABLE|NOT_SERVICEABLE|OUT_OF_ZONE|NO_ZONE|ZONE_NOT_(COVERED|SERVICED)|DISTANCE_TOO|TOO_FAR/.test(code)) return 'out_of_coverage';
+  // Stuart returns unserviceable / invalid-address rejections from /v2/jobs/pricing and /v2/jobs as
+  // HTTP 422 RECORD_INVALID, with the per-field detail under body.data
+  // (e.g. {"job.dropoffs[0].address":["..."]}). Treat an address/zone/distance field validation as
+  // out-of-coverage (block delivery), not a transient outage (which would silently flat-fee it).
+  if (status === 422 && body && typeof body === 'object' && body.data && typeof body.data === 'object') {
+    const fields = Object.keys(body.data).join(' ').toUpperCase();
+    if (/ADDRESS|ZONE|PICKUP|DROPOFF|DISTANCE|LATITUDE|LONGITUDE|COORDINATE/.test(fields)) return 'out_of_coverage';
+  }
+  // Everything else (5xx, network, 429, unknown) → transient-safe (fall back to the configured fee).
+  return 'transient';
+}
+
 export async function createStuartJob(env: 'sandbox' | 'prod', token: string, jobBody: unknown): Promise<any> {
   return stuartFetch(env, token, 'POST', '/v2/jobs', jobBody);
 }

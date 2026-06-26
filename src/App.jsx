@@ -88,6 +88,27 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.671', date: '26 Jun 2026', label: 'Critical fixes — online orders now save to history/reports + Stuart dispatch',
+    changes: [
+      'MAJOR FIX: online orders were never saved to history, reports or end-of-day. A single wrong column name in the online checkout (“loyalty_reward” instead of “loyalty”) made the database reject the whole sale record, silently — so every online order was missing from Transactions, the sales reports and EOD (the order still reached the kitchen queue, so it was easy to miss). Now fixed; online orders appear in history and reports like any other.',
+      'Fixed the real reason Stuart orders weren’t dispatching: the courier-deliveries table still only permitted the old Uber/HubRise backends, so every Stuart dispatch failed a database check and silently reported success without booking a courier. The constraint is widened and the dispatch path now treats a genuine insert failure as a failure (not “already sent”).',
+      'Fixed the POS courier panel not appearing on delivery orders (it keyed off a field that isn’t set on queue orders) — the live status, tracking link and “Send to Stuart courier” button now show correctly.',
+      'Manual courier retry is now race-safe (an atomic claim), so two staff taps can’t book two couriers for one order.',
+      'Out-of-coverage detection hardened: Stuart’s 422 “invalid address” rejections are now correctly treated as out-of-area (offer collection), and we no longer mis-read unrelated errors as out-of-area.',
+      'Reprinted receipts now show the Delivery fee line (and keep a catering tip on its own line, not under Service). Stuart now uses its own environment setting, independent of the legacy Uber one.',
+    ],
+  },
+  {
+    version: '5.5.670', date: '26 Jun 2026', label: 'Delivery — POS courier status + manual “Send to Stuart” + receipt reprint; honest out-of-coverage handling',
+    changes: [
+      'Orders Hub: open a paid delivery order and you now see the live Stuart courier status (finding a courier → heading to the venue → out for delivery → delivered), the courier name/ETA and a tracking link, refreshing automatically — so staff can see if a courier is on the way.',
+      'Manual dispatch + retry: a “Send to Stuart courier” button on the delivery order lets staff dispatch a courier on demand, and retry if a previous attempt failed — so an order that didn’t auto-dispatch can be sent without re-keying it.',
+      'Print receipt on request: a “Print receipt” button on any order in the Orders Hub, so you can reprint even when the order profile is set not to auto-print (training tills still never print a real receipt).',
+      'Fixed a real bug: when a courier address is outside Stuart’s coverage, delivery is now correctly shown as unavailable (offer collection) instead of silently charging your flat fallback fee and accepting an order no courier would collect. Genuine Stuart outages still fall back to your fee so orders can go through.',
+      'Note on coverage: Stuart serves major UK cities (London, Manchester, Leeds, Birmingham, etc.). If your venue postcode is outside its network, live quotes return out-of-range — pick a covered pickup area to test.',
+    ],
+  },
+  {
     version: '5.5.669', date: '26 Jun 2026', label: 'Delivery — per-location Stuart accounts (connect from Back Office); Uber Direct + HubRise Bridge retired',
     changes: [
       'Stuart is now connected PER LOCATION, not once for the whole system. Each venue uses its own Stuart account: Back Office → Channels → Delivery now has a "Connect this venue to Stuart" card where you paste this location\'s Stuart Client ID + Secret (sandbox or production). The keys are verified live before saving, stored securely server-side, and never shown again — the screen only ever shows whether Stuart is connected, with Test connection / Disconnect actions.',
