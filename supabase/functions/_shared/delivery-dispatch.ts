@@ -66,43 +66,62 @@ export function buildManifestServer(order: any, quote: any, cfg: any) {
 }
 
 /**
- * Dispatch a courier for one order, IDEMPOTENTLY (skips if courier_deliveries already has a row
- * for this order_ref). Routes by cfg.dispatch_backend. Returns a result the caller can act on
- * (e.g. send a tracking SMS). Throws nothing fatal — returns {ok:false,reason} on problems.
+ * Dispatch a courier for one order, IDEMPOTENTLY, using RESERVE-THEN-ACT: claim the order_ref by
+ * inserting the courier_deliveries row FIRST (the unique index courier_deliveries_order_ref_uidx
+ * makes the claim atomic), THEN call Uber/HubRise, THEN fill in the result. A duplicate claim →
+ * skip. This closes the "external dispatch succeeded but the row insert failed → retry double-
+ * sends" window. Returns a result the caller can act on (e.g. a tracking SMS). Never throws.
  */
 export async function dispatchCourier(sb: any, { loc, cfg, order, quote }: { loc: string; cfg: any; order: any; quote: any }) {
   const orderRef = order?.ref || null;
-  // Idempotency: a row for this order means it's already been dispatched.
+
+  // 1) Reserve the order_ref (atomic via the unique index). A conflict means someone already
+  //    claimed/dispatched it → skip (return the existing row).
+  let rowId: string | null = null;
   if (orderRef) {
-    const { data: existing } = await sb.from('courier_deliveries').select('id, tracking_url').eq('location_id', loc).eq('order_ref', orderRef).maybeSingle();
-    if (existing) return { ok: true, skipped: true, deliveryRowId: existing.id, trackingUrl: existing.tracking_url || null };
+    const ins = await sb.from('courier_deliveries')
+      .insert({ location_id: loc, order_ref: orderRef, dispatch_backend: cfg.dispatch_backend || 'uber_api', status: 'dispatching' })
+      .select('id').maybeSingle();
+    if (ins.error) {
+      const { data: ex } = await sb.from('courier_deliveries').select('id, tracking_url').eq('location_id', loc).eq('order_ref', orderRef).maybeSingle();
+      return { ok: true, skipped: true, deliveryRowId: ex?.id || null, trackingUrl: ex?.tracking_url || null };
+    }
+    rowId = ins.data?.id || null;
   }
 
+  // Release the reservation on a CONFIG problem (so a corrected retry can run); mark 'failed' on
+  // a transient dispatch error (visible on the board; retryable).
+  const fail = async (reason: string, extra: Record<string, unknown> = {}) => {
+    if (rowId && (reason === 'not_configured' || reason === 'hubrise_not_connected')) await sb.from('courier_deliveries').delete().eq('id', rowId);
+    else if (rowId) await sb.from('courier_deliveries').update({ status: 'failed', updated_at: new Date().toISOString() }).eq('id', rowId);
+    return { ok: false, reason, ...extra };
+  };
+
   try {
+    // 2) Dispatch + 3) fill in the result on the reserved row.
     if (cfg.dispatch_backend === 'hubrise_bridge') {
       const { data: conn } = await sb.from('hubrise_connections').select('access_token, hubrise_location_id').eq('location_id', loc).maybeSingle();
-      if (!conn?.access_token || !conn?.hubrise_location_id) return { ok: false, reason: 'hubrise_not_connected' };
+      if (!conn?.access_token || !conn?.hubrise_location_id) return await fail('hubrise_not_connected');
       const created = await createHubriseOrder(conn.access_token, conn.hubrise_location_id, buildHubriseOrderServer(order, quote, quote?.currency || 'GBP'));
       const hubriseRef = created?.id || created?.order_id || null;
-      const { data: row } = await sb.from('courier_deliveries').insert({ location_id: loc, order_ref: orderRef, dispatch_backend: 'hubrise_bridge', status: 'pending', hubrise_ref: hubriseRef }).select('id').maybeSingle();
-      return { ok: true, backend: 'hubrise_bridge', deliveryRowId: row?.id || null, hubriseRef };
+      if (rowId) await sb.from('courier_deliveries').update({ hubrise_ref: hubriseRef, status: 'pending', updated_at: new Date().toISOString() }).eq('id', rowId);
+      return { ok: true, backend: 'hubrise_bridge', deliveryRowId: rowId, hubriseRef };
     }
 
     // uber_api
     const customerId = cfg.uber_customer_id || ENV_CUSTOMER_ID;
     const env = (cfg.env || ENV) as 'sandbox' | 'prod';
-    if (!CLIENT_ID || !CLIENT_SECRET || !customerId) return { ok: false, reason: 'not_configured' };
+    if (!CLIENT_ID || !CLIENT_SECRET || !customerId) return await fail('not_configured');
     const token = await getAccessToken(env, CLIENT_ID, CLIENT_SECRET);
     const resp = await createDelivery({ env, token, customerId, manifest: buildManifestServer(order, quote, cfg) });
     const p = parseDeliveryResp(resp);
     const status = mapUberStatus(p.rawStatus);
-    const { data: row } = await sb.from('courier_deliveries').insert({
-      location_id: loc, order_ref: orderRef, dispatch_backend: 'uber_api',
+    if (rowId) await sb.from('courier_deliveries').update({
       uber_delivery_id: p.id, status, tracking_url: p.trackingUrl,
-      courier_name: p.courierName, courier_phone: p.courierPhone, last_lat: p.lat, last_lng: p.lng,
-    }).select('id').maybeSingle();
-    return { ok: true, deliveryRowId: row?.id || null, deliveryId: p.id, trackingUrl: p.trackingUrl, status };
+      courier_name: p.courierName, courier_phone: p.courierPhone, last_lat: p.lat, last_lng: p.lng, updated_at: new Date().toISOString(),
+    }).eq('id', rowId);
+    return { ok: true, deliveryRowId: rowId, deliveryId: p.id, trackingUrl: p.trackingUrl, status };
   } catch (e) {
-    return { ok: false, reason: 'dispatch_failed', error: String((e as Error)?.message || e) };
+    return await fail('dispatch_failed', { error: String((e as Error)?.message || e) });
   }
 }

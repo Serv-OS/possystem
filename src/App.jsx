@@ -88,6 +88,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.655', date: '25 Jun 2026', label: 'Delivery — DB-enforced one-courier-per-order (reserve-then-act)',
+    changes: [
+      'Hardened courier dispatch so a courier truly can’t be double-booked: the system now reserves the order in the database (a unique constraint) before calling Uber/HubRise, then records the result. Even if a dispatch succeeds but the follow-up write is interrupted, a retry can’t send a second courier.',
+    ],
+  },
+  {
     version: '5.5.654', date: '25 Jun 2026', label: 'Delivery dispatch made bulletproof — server-side fire-time courier, no double-sends',
     changes: [
       'Courier dispatch is now fully reliable for scheduled (catering) orders even if no till is switched on: the server-side catering release cron dispatches the courier itself at fire-time, so it no longer depends on a POS device being online. All dispatch (POS, online and catering) now runs through one server-side path.',
