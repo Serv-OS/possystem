@@ -17,6 +17,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { getAccessToken, getQuote, geocodePostcode, haversineMiles, createDelivery, getDelivery, parseDeliveryResp, mapUberStatus } from '../_shared/uber.ts';
 import { createOrder as createHubriseOrder, patchOrder as patchHubriseOrder } from '../_shared/hubrise.ts';
 import { cancelDelivery, createOrganization, getOrganization, inviteOrgMember, parseOrgResp, UBER_ORG_SCOPE } from '../_shared/uber.ts';
+import { getStuartToken, getStuartPricing, normaliseStuartPricing, cancelStuartJob } from '../_shared/stuart.ts';
 import { dispatchCourier } from '../_shared/delivery-dispatch.ts';
 
 const e164 = (raw: string) => {
@@ -40,6 +41,10 @@ const ENV_CUSTOMER_ID = Deno.env.get('UBER_DIRECT_CUSTOMER_ID') ?? '';
 // Organizations API. This is the ServOS platform account's own customer_id/org id.
 const ENV_PARENT_ORG_ID = Deno.env.get('UBER_DIRECT_PARENT_ORG_ID') ?? ENV_CUSTOMER_ID;
 const ENV_DEFAULT = (Deno.env.get('UBER_DIRECT_ENV') ?? 'sandbox') as 'sandbox' | 'prod';
+// Stuart courier (UK) — self-serve alternative; platform-level creds set by us.
+const ENV_STUART_ID = Deno.env.get('STUART_CLIENT_ID') ?? '';
+const ENV_STUART_SECRET = Deno.env.get('STUART_CLIENT_SECRET') ?? '';
+const ENV_STUART_DEFAULT = (Deno.env.get('STUART_ENV') ?? ENV_DEFAULT) as 'sandbox' | 'prod';
 const sb = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { autoRefreshToken: false, persistSession: false } });
 
 const NON_SECRET = [
@@ -245,6 +250,31 @@ Deno.serve(async (req) => {
         return json({ ok: true, available: true, mode: 'uber', dispatchable: true, fallback: true, configured: true, raw: { fee: configuredFeeMinor, currency }, dropoff, distanceMiles, withinRadius: true, policy, currency, radiusMiles });
       }
 
+      // STUART courier (UK) — LIVE pricing quote. NOT configured → the surcharge markup policy
+      // applies to Stuart's real cost (like the Uber API path). Falls back to the configured fee
+      // if creds are missing or Stuart is unavailable.
+      if (cfg.dispatch_backend === 'stuart') {
+        const senv = (cfg.env || ENV_STUART_DEFAULT) as 'sandbox' | 'prod';
+        if (!ENV_STUART_ID || !ENV_STUART_SECRET) {
+          if (cfg.flat_fee_minor != null || cfg.fallback_fee_minor != null) {
+            return json({ ok: true, available: true, mode: 'uber', dispatchable: true, fallback: true, configured: true, raw: { fee: configuredFeeMinor, currency }, dropoff, distanceMiles, withinRadius: true, policy, currency, radiusMiles });
+          }
+          return json({ ok: true, available: false, reason: 'not_configured', policy, currency });
+        }
+        try {
+          const stoken = await getStuartToken(senv, ENV_STUART_ID, ENV_STUART_SECRET);
+          const pricing = await getStuartPricing({ env: senv, token: stoken, pickup, dropoff });
+          const raw = normaliseStuartPricing(pricing);
+          if (!raw) throw new Error('no_price');
+          return json({ ok: true, available: true, mode: 'uber', dispatchable: true, raw, dropoff, distanceMiles, withinRadius: true, policy, currency: raw.currency || currency, radiusMiles });
+        } catch (e) {
+          if (cfg.flat_fee_minor != null || cfg.fallback_fee_minor != null) {
+            return json({ ok: true, available: true, mode: 'uber', dispatchable: true, fallback: true, configured: true, raw: { fee: configuredFeeMinor, currency }, dropoff, distanceMiles, withinRadius: true, policy, currency, radiusMiles, error: String((e as Error)?.message || e) });
+          }
+          return json({ ok: true, available: false, reason: 'quote_failed', error: String((e as Error)?.message || e), policy, currency });
+        }
+      }
+
       const clientId = ENV_CLIENT_ID, clientSecret = ENV_CLIENT_SECRET;
       const customerId = cfg.uber_customer_id || ENV_CUSTOMER_ID;
       const env = (cfg.env || ENV_DEFAULT) as 'sandbox' | 'prod';
@@ -364,6 +394,12 @@ Deno.serve(async (req) => {
           const { data: conn } = await sb.from('hubrise_connections').select('access_token, hubrise_location_id').eq('location_id', loc).maybeSingle();
           if (conn?.access_token && conn?.hubrise_location_id && del.hubrise_ref) {
             await patchHubriseOrder(conn.access_token, conn.hubrise_location_id, del.hubrise_ref, { status: 'cancelled' });
+          }
+        } else if (del.dispatch_backend === 'stuart') {
+          const senv = (cfg?.env || ENV_STUART_DEFAULT) as 'sandbox' | 'prod';
+          if (ENV_STUART_ID && ENV_STUART_SECRET && del.uber_delivery_id) {
+            const stoken = await getStuartToken(senv, ENV_STUART_ID, ENV_STUART_SECRET);
+            await cancelStuartJob(senv, stoken, del.uber_delivery_id);
           }
         } else if (del.uber_delivery_id) {
           const customerId = cfg?.uber_customer_id || ENV_CUSTOMER_ID;

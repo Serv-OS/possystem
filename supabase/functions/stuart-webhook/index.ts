@@ -1,0 +1,66 @@
+// supabase/functions/stuart-webhook/index.ts
+//
+// Stuart courier webhook receiver. Stuart posts job/delivery status updates to the URL you
+// register in the Stuart dashboard. We secure the endpoint with a shared secret on the URL
+// (?key=<STUART_WEBHOOK_SECRET>), dedup on a synthesized event id (delivery_status_events.event_id
+// UNIQUE → at-least-once safe), update the matching courier_deliveries row (matched by the Stuart
+// job id stored in uber_delivery_id), and record the actual cost on a terminal state.
+//
+// Deployed --no-verify-jwt; does its own auth. Mirrors uber-webhook.
+
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { parseStuartJob, mapStuartStatus, parseStuartCost, verifyStuartKey } from '../_shared/stuart.ts';
+
+const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
+const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+const WEBHOOK_SECRET = Deno.env.get('STUART_WEBHOOK_SECRET') ?? '';
+const sb = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { autoRefreshToken: false, persistSession: false } });
+
+Deno.serve(async (req) => {
+  if (req.method === 'OPTIONS') return new Response('ok');
+  if (req.method !== 'POST') return new Response('ok', { status: 200 });
+
+  // Shared-secret auth via the registered URL's ?key= param.
+  if (!verifyStuartKey(req.url, WEBHOOK_SECRET)) return new Response('unauthorized', { status: 401 });
+
+  const raw = await req.text();
+  let evt: any;
+  try { evt = JSON.parse(raw); } catch { return new Response('bad json', { status: 400 }); }
+
+  const p = parseStuartJob(evt);
+  const status = mapStuartStatus(p.rawStatus);
+  const jobId = p.id;
+  // Stuart events have no guaranteed stable id → synthesize one (job id + status + time bucket).
+  const eventId = evt?.id || evt?.event_id || `stuart:${jobId || 'evt'}:${p.rawStatus || 'x'}:${evt?.data?.updated_at || evt?.updated_at || Date.now()}`;
+
+  // Idempotency: first writer wins.
+  const { data: inserted } = await sb.from('delivery_status_events')
+    .upsert({ event_id: String(eventId), delivery_id: null, location_id: null, status, payload: evt, received_at: new Date().toISOString() }, { onConflict: 'event_id', ignoreDuplicates: true })
+    .select('event_id');
+  if (!inserted || inserted.length === 0) return new Response('ok (dup)', { status: 200 });
+
+  if (jobId) {
+    const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
+    if (p.rawStatus) patch.status = status;
+    if (p.trackingUrl) patch.tracking_url = p.trackingUrl;
+    if (p.courierName) patch.courier_name = p.courierName;
+    if (p.courierPhone) patch.courier_phone = p.courierPhone;
+    if (p.lat != null) patch.last_lat = p.lat;
+    if (p.lng != null) patch.last_lng = p.lng;
+    const { data: del } = await sb.from('courier_deliveries')
+      .update(patch).eq('uber_delivery_id', jobId).eq('dispatch_backend', 'stuart').select('id, location_id').maybeSingle();
+
+    if (del?.id && (status === 'delivered' || status === 'canceled' || status === 'returned')) {
+      const cost = parseStuartCost(evt);
+      if (cost) {
+        await sb.from('delivery_costs_actual').upsert({
+          delivery_id: del.id, location_id: del.location_id,
+          base_minor: cost.totalMinor, total_minor: cost.totalMinor, currency: cost.currency,
+          recorded_at: new Date().toISOString(),
+        }, { onConflict: 'delivery_id' });
+      }
+    }
+  }
+
+  return new Response('ok', { status: 200 });
+});

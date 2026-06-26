@@ -88,6 +88,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.663', date: '26 Jun 2026', label: 'Stuart couriers added as a delivery option (self-serve, live quotes)',
+    changes: [
+      'Added Stuart (UK courier network) as a delivery dispatch option alongside Uber Direct and HubRise. Unlike Uber Direct (which gates account approval), Stuart is self-serve, so it can be set up and tested immediately — and it returns a live price + ETA at order time, priced under your existing surcharge policy.',
+      'Choose it in Channels → Delivery → "How are deliveries fulfilled?" = courier → Dispatch backend = "Stuart courier (UK)". No per-venue API keys — couriers run on the platform Stuart account. Everything downstream (quote, surcharge, minimum order, receipts, live tracking, the deliveries board) works exactly as before.',
+    ],
+  },
+  {
     version: '5.5.662', date: '26 Jun 2026', label: 'Uber Direct — one-click venue connect (platform onboarding, no API keys)',
     changes: [
       'Delivery via the Uber Direct courier no longer needs each venue to create an Uber developer account or copy API keys. ServOS connects the venue under our platform account with a single "Connect this venue to Uber Direct" button (Channels → Delivery), which creates the venue\'s Uber Direct account behind the scenes and stores its ID automatically.',

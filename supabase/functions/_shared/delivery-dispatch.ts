@@ -10,11 +10,15 @@
 
 import { getAccessToken, createDelivery, parseDeliveryResp, mapUberStatus } from './uber.ts';
 import { createOrder as createHubriseOrder } from './hubrise.ts';
+import { getStuartToken, buildStuartJob, createStuartJob, parseStuartJob, mapStuartStatus } from './stuart.ts';
 
 const ENV = (Deno.env.get('UBER_DIRECT_ENV') ?? 'sandbox') as 'sandbox' | 'prod';
 const CLIENT_ID = Deno.env.get('UBER_DIRECT_CLIENT_ID') ?? '';
 const CLIENT_SECRET = Deno.env.get('UBER_DIRECT_CLIENT_SECRET') ?? '';
 const ENV_CUSTOMER_ID = Deno.env.get('UBER_DIRECT_CUSTOMER_ID') ?? '';
+const STUART_ID = Deno.env.get('STUART_CLIENT_ID') ?? '';
+const STUART_SECRET = Deno.env.get('STUART_CLIENT_SECRET') ?? '';
+const STUART_ENV = (Deno.env.get('STUART_ENV') ?? ENV) as 'sandbox' | 'prod';
 
 function e164(raw: string): string {
   const s = String(raw || '').replace(/[\s()-]/g, '');
@@ -109,6 +113,21 @@ export async function dispatchCourier(sb: any, { loc, cfg, order, quote }: { loc
       if (!hubriseRef) return await fail('hubrise_order_creation_failed', { error: 'HubRise returned no order ref' });
       if (rowId) await sb.from('courier_deliveries').update({ hubrise_ref: hubriseRef, status: 'pending', updated_at: new Date().toISOString() }).eq('id', rowId);
       return { ok: true, backend: 'hubrise_bridge', deliveryRowId: rowId, hubriseRef };
+    }
+
+    // stuart — create a Stuart job; store the job id in uber_delivery_id (the provider delivery id).
+    if (cfg.dispatch_backend === 'stuart') {
+      const senv = (cfg.env || STUART_ENV) as 'sandbox' | 'prod';
+      if (!STUART_ID || !STUART_SECRET) return await fail('not_configured');
+      const stoken = await getStuartToken(senv, STUART_ID, STUART_SECRET);
+      const resp = await createStuartJob(senv, stoken, buildStuartJob(order, quote, cfg));
+      const sp = parseStuartJob(resp);
+      if (!sp.id) return await fail('stuart_job_failed', { error: 'Stuart returned no job id' });
+      if (rowId) await sb.from('courier_deliveries').update({
+        uber_delivery_id: sp.id, status: mapStuartStatus(sp.rawStatus), tracking_url: sp.trackingUrl,
+        courier_name: sp.courierName, courier_phone: sp.courierPhone, last_lat: sp.lat, last_lng: sp.lng, updated_at: new Date().toISOString(),
+      }).eq('id', rowId);
+      return { ok: true, backend: 'stuart', deliveryRowId: rowId, deliveryId: sp.id, trackingUrl: sp.trackingUrl, status: mapStuartStatus(sp.rawStatus) };
     }
 
     // uber_api

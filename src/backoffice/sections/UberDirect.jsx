@@ -36,7 +36,7 @@ const toMinor = (pounds) => (pounds === '' || pounds == null ? null : Math.round
 const toPounds = (minor) => (minor == null ? '' : (Number(minor) / 100).toString());
 
 const DEFAULT = {
-  enabled: false, delivery_mode: 'self', radius_miles: 3, dispatch_backend: 'uber_api', env: 'sandbox',
+  enabled: false, delivery_mode: 'self', radius_miles: 3, dispatch_backend: 'stuart', env: 'sandbox',
   sms_tracking: true, flat_fee_minor: null, fallback_fee_minor: null,
   pickup_address: { line1: '', city: '', postcode: '', country: 'GB', lat: null, lng: null },
   pickup_contact: { name: '', phone: '' },
@@ -115,8 +115,8 @@ export default function UberDirect() {
         <p style={S.sub}>Quote the delivery fee from the customer's address at order time, surcharge it under your policy, and dispatch an Uber courier. Used identically across POS, online and catering.</p>
       </div>
 
-      {/* Before you start — only when using the Uber Direct courier (mode === 'uber') */}
-      {form.delivery_mode === 'uber' && (
+      {/* Before you start — Uber/HubRise account setup. Not shown for Stuart (platform-managed). */}
+      {form.delivery_mode === 'uber' && form.dispatch_backend !== 'stuart' && (
       <div style={{ ...S.card, borderColor: '#B45309', background: 'rgba(180,83,9,0.06)' }}>
         <h2 style={S.h2}>Before you start — set up your own Uber Direct + HubRise accounts</h2>
         <p style={{ fontSize: 13, color: 'var(--t2)', lineHeight: 1.55, margin: '0 0 12px' }}>
@@ -177,7 +177,7 @@ export default function UberDirect() {
             <label style={S.label}>{
               form.delivery_mode === 'self' ? 'Your delivery charge (£)'
               : form.dispatch_backend === 'hubrise_bridge' ? 'Your delivery charge (£) — HubRise Bridge has no live price, so this is charged on every delivery'
-              : 'Your delivery charge (£) — fallback if the live Uber quote fails'
+              : 'Your delivery charge (£) — fallback if the live courier quote fails'
             }</label>
             <MoneyField style={S.input} valueMinor={form.flat_fee_minor} onMinor={(m) => set('flat_fee_minor', m)} placeholder="0.00 = free" />
           </div>
@@ -185,7 +185,7 @@ export default function UberDirect() {
         {form.delivery_mode === 'uber' && form.dispatch_backend === 'hubrise_bridge' && form.flat_fee_minor == null && (
           <div style={S.note(true)}>⚠ HubRise Bridge can't fetch a live delivery price — set your delivery charge above (enter <b>0</b> only if delivery is genuinely free). Until this is set, delivery is charged at £0.</div>
         )}
-        <div style={{ ...S.infoNote, marginTop: 10 }}>This same setting drives delivery on the POS, online ordering and catering — set it once here.{form.delivery_mode === 'uber' && form.dispatch_backend === 'uber_api' ? ' On the Uber Direct API the live quote (priced under your policy below) is used instead, with this as the fallback.' : ''}</div>
+        <div style={{ ...S.infoNote, marginTop: 10 }}>This same setting drives delivery on the POS, online ordering and catering — set it once here.{form.delivery_mode === 'uber' && (form.dispatch_backend === 'uber_api' || form.dispatch_backend === 'stuart') ? ' With a live courier quote (Uber Direct API / Stuart) that price is used instead, priced under your policy below, with this as the fallback.' : ''}</div>
       </div>
 
       {/* Pickup */}
@@ -223,7 +223,7 @@ export default function UberDirect() {
       {/* Live courier pricing — ONLY when quoting Uber live (Uber Direct API). On self-delivery
           and HubRise Bridge there is no live courier cost, so the flat delivery charge above is
           exactly what the customer pays. */}
-      {form.delivery_mode === 'uber' && form.dispatch_backend === 'uber_api' && (
+      {form.delivery_mode === 'uber' && (form.dispatch_backend === 'uber_api' || form.dispatch_backend === 'stuart') && (
       <div style={S.card}>
         <h2 style={S.h2}>Live courier pricing</h2>
         <p style={{ fontSize: 12.5, color: 'var(--t3)', margin: '0 0 12px', lineHeight: 1.5 }}>How Uber's live delivery cost becomes the customer's fee. This only applies to the live Uber Direct API quote — HubRise Bridge and self-delivery use your flat delivery charge above.</p>
@@ -265,11 +265,12 @@ export default function UberDirect() {
           <div style={S.col}>
             <label style={S.label}>Dispatch backend</label>
             <select style={S.input} value={form.dispatch_backend} onChange={(e) => set('dispatch_backend', e.target.value)}>
-              <option value="uber_api">Uber Direct API (recommended)</option>
+              <option value="stuart">Stuart courier (UK) — self-serve, live quotes</option>
+              <option value="uber_api">Uber Direct API</option>
               <option value="hubrise_bridge">HubRise Bridge</option>
             </select>
           </div>
-          {form.dispatch_backend === 'uber_api' && <>
+          {(form.dispatch_backend === 'uber_api' || form.dispatch_backend === 'stuart') && <>
           <div style={S.col}>
             <label style={S.label}>Environment</label>
             <select style={S.input} value={form.env} onChange={(e) => set('env', e.target.value)}>
@@ -277,14 +278,17 @@ export default function UberDirect() {
               <option value="prod">Production</option>
             </select>
           </div>
-          <div style={S.col}><label style={S.label}>Fallback fee if Uber down (£, blank = block)</label><MoneyField style={S.input} valueMinor={form.fallback_fee_minor} onMinor={(m) => set('fallback_fee_minor', m)} placeholder="block" /></div>
+          <div style={S.col}><label style={S.label}>Fallback fee if the courier is down (£, blank = block)</label><MoneyField style={S.input} valueMinor={form.fallback_fee_minor} onMinor={(m) => set('fallback_fee_minor', m)} placeholder="block" /></div>
           </>}
         </div>
+        {form.dispatch_backend === 'stuart' && (
+          <div style={{ ...S.infoNote, marginTop: 10 }}>Stuart couriers are dispatched on your platform Stuart account — <b>no per-venue setup or API keys</b>. Live price + ETA are fetched at order time and priced under your policy above. (UK coverage.)</div>
+        )}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 14 }}>
           <div style={{ fontSize: 13, color: 'var(--t2)' }}>Text the customer a tracking link</div>
           <div style={S.toggle(form.sms_tracking)} onClick={() => set('sms_tracking', !form.sms_tracking)}><div style={S.knob(form.sms_tracking)} /></div>
         </div>
-        <div style={{ ...S.infoNote, marginTop: 12 }}>No API keys to enter here — ServOS connects this venue to Uber Direct for you (below). The platform credentials live securely on the server.</div>
+        {form.dispatch_backend === 'uber_api' && <div style={{ ...S.infoNote, marginTop: 12 }}>No API keys to enter here — ServOS connects this venue to Uber Direct for you (below). The platform credentials live securely on the server.</div>}
       </div>
       )}
 
