@@ -1295,6 +1295,12 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
               <Field label="Postcode" value={postcode} onChange={setPostcode} placeholder="SW1A 1AA" theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
             </>
           )}
+          {isDelivery && deliveryQuote?.belowMinimum && (
+            <div style={{ background: '#fffbeb', border: '1.5px solid #f59e0b', borderRadius: 12, padding: '12px 14px', color: '#92400e', fontSize: 13.5, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 10, margin: '4px 0' }}>
+              <span style={{ fontSize: 18 }}>⚠️</span>
+              <span>Minimum order for delivery is {deliveryQuote.minOrderMinor != null ? money(deliveryQuote.minOrderMinor / 100) : ''}. Add {money(Math.max(0, ((deliveryQuote.minOrderMinor || 0) - discountedSubtotalMinor) / 100))} more, or switch to collection.</span>
+            </div>
+          )}
           <Field label="Notes (optional)" value={notes} onChange={setNotes} placeholder="Buzzer / leave at door / dietary…" theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
 
           {/* 2. When? */}

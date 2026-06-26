@@ -320,6 +320,12 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
                 <div><label style={lbl}>Postcode *</label><input style={inp} value={postcode} onChange={(e) => setPostcode(e.target.value)} /></div>
               </div>
             )}
+            {belowMin && (
+              <div style={{ marginTop: 12, background: '#fffbeb', border: '1.5px solid #f59e0b', borderRadius: 12, padding: '12px 14px', color: '#92400e', fontSize: 13.5, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ fontSize: 18 }}>⚠️</span>
+                <span>Minimum order for delivery is {deliveryQuote?.minOrderMinor != null ? money(deliveryQuote.minOrderMinor / 100, cur) : ''}. Add {money(Math.max(0, (deliveryQuote?.minOrderMinor || 0) / 100 - subtotal), cur)} more to your order, or choose collection.</span>
+              </div>
+            )}
             {cfg.allow_tax_exempt && <div style={{ marginTop: 12 }}><label style={lbl}>Tax / VAT number <span style={{ color: '#94a3b8', fontWeight: 500 }}>optional</span></label><input style={inp} value={taxId} onChange={(e) => setTaxId(e.target.value)} /></div>}
             {cfg.allow_promo && (
               <div style={{ marginTop: 12 }}>

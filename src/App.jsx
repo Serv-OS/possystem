@@ -88,6 +88,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.661', date: '26 Jun 2026', label: 'Delivery minimum-order shown as a clear banner (online + catering)',
+    changes: [
+      'When a delivery order is below your minimum, the customer now sees a prominent amber banner — "Minimum order for delivery is £X. Add £Y more, or switch to collection." — right under the delivery address, on both online ordering and catering. Previously the minimum was only a small note plus a block at checkout.',
+    ],
+  },
+  {
     version: '5.5.660', date: '26 Jun 2026', label: 'Delivery minimum-order now enforced at payment + tidier delivery settings & money fields',
     changes: [
       'Online delivery orders below your minimum order value are now reliably blocked right up to the payment step (previously a quick checkout could slip past before the delivery quote had loaded). The customer is told the minimum and how much more to add.',
