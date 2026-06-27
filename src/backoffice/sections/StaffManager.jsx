@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useStore } from '../../store';
 import { supabase, isMock } from '../../lib/supabase';
+import { nfcAvailable, scanCardOnce } from '../../lib/nfc';
 
 const ROLES = ['Manager','Server','Bartender','Cashier','Kitchen','Host'];
 const ROLE_COLORS = { Manager:'#e8a020', Server:'#3b82f6', Bartender:'#22c55e', Cashier:'#a855f7', Kitchen:'#ef4444', Host:'#7C5CFF' };
@@ -61,7 +62,7 @@ export default function StaffManager() {
       // Defensive: if column missing (pre-migration), drop it from the SELECT.
       let { data: rows, error } = await supabase
         .from('staff_members')
-        .select('id, name, role, pin, color, initials, permissions, active, auth_user_id')
+        .select('id, name, role, pin, color, initials, permissions, active, auth_user_id, nfc_card_id')
         .eq('location_id', locationId).eq('active', true);
       if (error && /auth_user_id|column.*not.*exist|PGRST204/i.test(error.message || '')) {
         console.warn('[StaffManager] auth_user_id column missing — falling back. Run supabase/migrations/20260430_staff_auth_link.sql to enable BO access linking.');
@@ -77,6 +78,7 @@ export default function StaffManager() {
           permissions: Array.isArray(r.permissions) ? r.permissions : (ROLE_DEFAULTS[r.role] || []),
           active: r.active,
           authUserId: r.auth_user_id || null,
+          nfcCardId: r.nfc_card_id || null,
         })) });
         // Bulk-fetch profiles for any linked auth users
         const linkedIds = rows.map(r => r.auth_user_id).filter(Boolean);
@@ -119,6 +121,7 @@ export default function StaffManager() {
     }
   };
   const [selId, setSelId]     = useState(null);
+  const [scanningCard, setScanningCard] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
   const [showPin, setShowPin] = useState(null);
   const [pinInput, setPinInput] = useState('');
@@ -166,6 +169,20 @@ export default function StaffManager() {
         showToast(`Save failed: ${e.message}`, 'error');
       }
     })();
+  };
+
+  // Assign an NFC card by tapping it on a reader (works when BO runs on a till). Card UIDs are
+  // global, so the assigned card works on any till. Persists via the generic save() path.
+  const scanCard = async (id) => {
+    if (scanningCard) return;
+    setScanningCard(true);
+    const r = await scanCardOnce();
+    setScanningCard(false);
+    if (!r.ok) { showToast(r.error === 'timeout' ? 'No card detected — try again' : 'Card scanning isn’t available on this device', 'error'); return; }
+    const taken = staffMembers.find(s => s.id !== id && s.nfcCardId && s.nfcCardId === r.cardId);
+    if (taken) { showToast(`That card is already assigned to ${taken.name}`, 'error'); return; }
+    save(id, { nfc_card_id: r.cardId });
+    showToast('Card assigned', 'success');
   };
 
   const addMember = () => {
@@ -425,6 +442,28 @@ export default function StaffManager() {
                 )}
               </div>
               {sel.pin && <div style={{ display:'flex', gap:6 }}>{Array(4).fill(null).map((_,i)=><div key={i} style={{ width:16, height:16, borderRadius:'50%', background:'var(--t3)' }}/>)}</div>}
+            </div>
+
+            {/* NFC staff card — tap-to-sign-in. Assign by tapping a card on a till (reader present);
+                the card then works on ANY till. PIN stays as the fallback. */}
+            <div style={{ marginBottom:20, padding:'12px 14px', background:'var(--bg2)', borderRadius:12, border:'1px solid var(--bdr)' }}>
+              <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+                <div style={{ flex:1 }}>
+                  <div style={{ fontSize:12, fontWeight:700, color:'var(--t1)', marginBottom:2 }}>NFC card</div>
+                  <div style={{ fontSize:10, color:'var(--t3)' }}>Tap a card/fob to sign in — works on any till. {nfcAvailable() ? 'Tap a card to assign it.' : 'Open Back Office on a till with a reader to assign cards.'}</div>
+                </div>
+                {sel.nfcCardId ? (
+                  <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+                    <span style={{ fontSize:12, color:'var(--grn)', fontWeight:700 }}>✓ Card set</span>
+                    {nfcAvailable() && <button onClick={()=>scanCard(sel.id)} disabled={scanningCard} style={{ padding:'4px 10px', borderRadius:7, cursor:scanningCard?'wait':'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr2)', color:'var(--t2)', fontSize:11, fontWeight:600 }}>{scanningCard?'Tap card…':'Replace'}</button>}
+                    <button onClick={()=>save(sel.id,{nfc_card_id:null})} style={{ padding:'4px 10px', borderRadius:7, cursor:'pointer', fontFamily:'inherit', background:'var(--red-d)', border:'1px solid var(--red-b)', color:'var(--red)', fontSize:11, fontWeight:600 }}>Remove</button>
+                  </div>
+                ) : (
+                  nfcAvailable()
+                    ? <button onClick={()=>scanCard(sel.id)} disabled={scanningCard} style={{ padding:'6px 14px', borderRadius:8, cursor:scanningCard?'wait':'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:12, fontWeight:700 }}>{scanningCard?'Tap card now…':'Scan card'}</button>
+                    : <span style={{ fontSize:11, color:'var(--t4)' }}>No reader here</span>
+                )}
+              </div>
             </div>
 
             {/* v5.5.17: Back-office access card. Lets the operator give a

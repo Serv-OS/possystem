@@ -10,12 +10,14 @@ import android.view.Display;
 import android.webkit.*;
 import co.posup.rpos.printer.PrinterBridge;
 import co.posup.rpos.biometric.BiometricBridge;
+import co.posup.rpos.nfc.NfcBridge;
 
 public class MainActivity extends Activity {
     private static final String POS_URL = "https://possystem-liard.vercel.app/?mode=pos";
     private WebView webView;
     private PrinterBridge printerBridge;
     private BiometricBridge biometricBridge;
+    private NfcBridge nfcBridge;
     private UpdateChecker updateChecker;
     private DisplayManager displayManager;
     private CustomerDisplayPresentation customerPresentation;
@@ -50,6 +52,11 @@ public class MainActivity extends Activity {
         // (see docs/FINGERPRINT-INTEGRATION.md). Absent on non-Sunmi → web falls back to PIN.
         biometricBridge = new BiometricBridge(webView, this);
         webView.addJavascriptInterface(biometricBridge, "RposBiometric");
+
+        // NFC staff cards — exposes window.RposNfc. Reads card/fob UIDs via standard NfcAdapter
+        // reader mode (no vendor SDK). Absent on non-NFC devices → web falls back to PIN.
+        nfcBridge = new NfcBridge(webView, this);
+        webView.addJavascriptInterface(nfcBridge, "RposNfc");
 
         WebSettings s = webView.getSettings();
         s.setJavaScriptEnabled(true);

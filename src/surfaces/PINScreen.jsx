@@ -3,6 +3,7 @@ import { useStore } from '../store';
 import { supabase, isMock } from '../lib/supabase';
 import { ServOSIcon, ServOSWordmark } from '../components/ServOSBrand';
 import { biometricCaps, biometricIdentify } from '../lib/biometric';
+import { nfcAvailable, onNfcTap, normalizeCardId } from '../lib/nfc';
 
 export default function PINScreen() {
   const { login, staffMembers } = useStore();
@@ -32,6 +33,7 @@ export default function PINScreen() {
         if (data?.length) {
           const mapped = data.map(r => ({
             id: r.id, name: r.name, role: r.role, pin: r.pin,
+            nfcCardId: r.nfc_card_id || null,
             color: r.color || '#3b82f6',
             initials: r.initials || r.name.slice(0, 2).toUpperCase(),
             permissions: Array.isArray(r.permissions) ? r.permissions : [],
@@ -49,6 +51,20 @@ export default function PINScreen() {
   }, []);
 
   const staff = loadedStaff ?? staffMembers ?? [];
+
+  // ─── NFC card sign-in: tap → match card UID to a staff member → log them in ─────────
+  // Card UIDs are global, so a card works on any till. PIN stays as the fallback.
+  const nfcOn = nfcAvailable();
+  useEffect(() => {
+    if (!loadedStaff || !nfcOn) return;
+    const stop = onNfcTap((cardId) => {
+      const match = (loadedStaff || []).find(s => s.nfcCardId && normalizeCardId(s.nfcCardId) === cardId);
+      if (match) { login(match); return; }
+      setShake(true); setErrorMsg('Card not recognised — use your PIN');
+      setTimeout(() => setShake(false), 600);
+    });
+    return stop;
+  }, [loadedStaff, nfcOn]);
 
   // ─── PIN-only login: match PIN against all active staff ─────────────────
   const KEYS = ['1','2','3','4','5','6','7','8','9','','0','⌫'];
@@ -109,7 +125,7 @@ export default function PINScreen() {
           {loadedStaff === null
             ? 'Loading staff…'
             : staff.length
-              ? 'Enter your PIN to clock in'
+              ? (nfcOn ? '💳 Tap your card, or enter your PIN' : 'Enter your PIN to clock in')
               : 'No staff configured — go to Back Office → Staff'}
         </div>
       </div>

@@ -88,6 +88,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.686', date: '27 Jun 2026', label: 'Staff NFC cards — tap to sign in on any till',
+    changes: [
+      'NEW: staff can tap an NFC card/fob on the till to sign in instead of typing a PIN. The card’s ID is global, so one card works on any of your tills. PIN stays as the fallback — cards are an addition, never a replacement.',
+      'Assign cards in Back Office → Staff: open a staff member, tap their card on a till that has an NFC reader → it’s saved and works everywhere. Remove or replace a card anytime.',
+      'Built on standard Android NFC (no special SDK), so it works on the Sunmi reader. The card sign-in only appears on tills with a reader; everywhere else it’s invisible and PIN is used.',
+    ],
+  },
+  {
     version: '5.5.685', date: '27 Jun 2026', label: 'Staff fingerprint sign-in (Sunmi D3 Pro) — foundation',
     changes: [
       'Added fingerprint sign-in support for Sunmi D3 Pro tills: a "Sign in with fingerprint" option appears on the staff PIN screen when the device supports it, logging the matching staff member straight in (PIN always remains available). On any non-fingerprint device it’s invisible — nothing changes.',
