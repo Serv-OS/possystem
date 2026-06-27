@@ -143,7 +143,13 @@ export default function StaffManager() {
   const sel = staffMembers.find(s => s.id === selId);
 
   const save = (id, patch) => {
-    updateStaffMember(id, patch);
+    // The store keeps some fields camelCase but the DB columns are snake_case. Mirror the snake-case
+    // patch onto the camelCase the UI reads, so the change shows immediately (toggle moves, card
+    // status updates). The DB still receives the snake-case `patch` below.
+    const localPatch = { ...patch };
+    if ('auth_method' in patch) localPatch.authMethod = patch.auth_method;
+    if ('nfc_card_id' in patch) localPatch.nfcCardId = patch.nfc_card_id;
+    updateStaffMember(id, localPatch);
     markBOChange();
 
     // Persist patch to Supabase (real mode only). Fire-and-forget but

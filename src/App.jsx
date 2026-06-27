@@ -88,6 +88,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.689', date: '27 Jun 2026', label: 'Fix — Back Office “Sign-in method” PIN/Card toggle now switches',
+    changes: [
+      'Fixed the PIN/Card sign-in-method buttons in Back Office → Staff not toggling (and the card status not refreshing after assigning) — a save now updates the on-screen value immediately, not just the database.',
+    ],
+  },
+  {
     version: '5.5.688', date: '27 Jun 2026', label: 'Secure sign-in — set each staff member to PIN or Card (stops shared PINs)',
     changes: [
       'Each staff member now has a sign-in method: PIN or Card (Back Office → Staff → Sign-in method). A “Card” staff member CANNOT sign in with a PIN — even a shared one — so identity is tied to their physical card. PIN staff are unchanged.',
