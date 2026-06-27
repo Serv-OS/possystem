@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useStore } from '../../store';
 import { supabase, isMock } from '../../lib/supabase';
-import { nfcAvailable, scanCardOnce } from '../../lib/nfc';
+import { nfcAvailable, scanCardOnce, normalizeCardId } from '../../lib/nfc';
 
 const ROLES = ['Manager','Server','Bartender','Cashier','Kitchen','Host'];
 const ROLE_COLORS = { Manager:'#e8a020', Server:'#3b82f6', Bartender:'#22c55e', Cashier:'#a855f7', Kitchen:'#ef4444', Host:'#7C5CFF' };
@@ -62,7 +62,7 @@ export default function StaffManager() {
       // Defensive: if column missing (pre-migration), drop it from the SELECT.
       let { data: rows, error } = await supabase
         .from('staff_members')
-        .select('id, name, role, pin, color, initials, permissions, active, auth_user_id, nfc_card_id')
+        .select('id, name, role, pin, color, initials, permissions, active, auth_user_id, nfc_card_id, auth_method')
         .eq('location_id', locationId).eq('active', true);
       if (error && /auth_user_id|column.*not.*exist|PGRST204/i.test(error.message || '')) {
         console.warn('[StaffManager] auth_user_id column missing — falling back. Run supabase/migrations/20260430_staff_auth_link.sql to enable BO access linking.');
@@ -79,6 +79,7 @@ export default function StaffManager() {
           active: r.active,
           authUserId: r.auth_user_id || null,
           nfcCardId: r.nfc_card_id || null,
+          authMethod: r.auth_method || 'pin',
         })) });
         // Bulk-fetch profiles for any linked auth users
         const linkedIds = rows.map(r => r.auth_user_id).filter(Boolean);
@@ -122,6 +123,7 @@ export default function StaffManager() {
   };
   const [selId, setSelId]     = useState(null);
   const [scanningCard, setScanningCard] = useState(false);
+  const [cardEntry, setCardEntry] = useState(''); // Back-Office USB-reader capture box
   const [showAdd, setShowAdd] = useState(false);
   const [showPin, setShowPin] = useState(null);
   const [pinInput, setPinInput] = useState('');
@@ -182,6 +184,17 @@ export default function StaffManager() {
     const taken = staffMembers.find(s => s.id !== id && s.nfcCardId && s.nfcCardId === r.cardId);
     if (taken) { showToast(`That card is already assigned to ${taken.name}`, 'error'); return; }
     save(id, { nfc_card_id: r.cardId });
+    showToast('Card assigned', 'success');
+  };
+
+  // Back-Office enrolment: a USB NFC reader (keyboard-wedge) types the card UID into the box; save it.
+  const saveCardEntry = (id) => {
+    const cid = normalizeCardId(cardEntry);
+    if (!cid) { showToast('Tap a card on the reader, or type its ID first', 'error'); return; }
+    const taken = staffMembers.find(s => s.id !== id && s.nfcCardId && s.nfcCardId === cid);
+    if (taken) { showToast(`That card is already assigned to ${taken.name}`, 'error'); return; }
+    save(id, { nfc_card_id: cid });
+    setCardEntry('');
     showToast('Card assigned', 'success');
   };
 
@@ -444,26 +457,38 @@ export default function StaffManager() {
               {sel.pin && <div style={{ display:'flex', gap:6 }}>{Array(4).fill(null).map((_,i)=><div key={i} style={{ width:16, height:16, borderRadius:'50%', background:'var(--t3)' }}/>)}</div>}
             </div>
 
-            {/* NFC staff card — tap-to-sign-in. Assign by tapping a card on a till (reader present);
-                the card then works on ANY till. PIN stays as the fallback. */}
+            {/* Sign-in method — PIN or Card (enforced at the till). A 'Card' staff is refused a PIN
+                (manager override aside) — that's the security win. Assign cards here with a USB NFC
+                reader: tap a card and its ID fills the box, then Save. Card works on any till. */}
             <div style={{ marginBottom:20, padding:'12px 14px', background:'var(--bg2)', borderRadius:12, border:'1px solid var(--bdr)' }}>
-              <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-                <div style={{ flex:1 }}>
-                  <div style={{ fontSize:12, fontWeight:700, color:'var(--t1)', marginBottom:2 }}>NFC card</div>
-                  <div style={{ fontSize:10, color:'var(--t3)' }}>Tap a card/fob to sign in — works on any till. {nfcAvailable() ? 'Tap a card to assign it.' : 'Open Back Office on a till with a reader to assign cards.'}</div>
-                </div>
-                {sel.nfcCardId ? (
-                  <div style={{ display:'flex', gap:6, alignItems:'center' }}>
-                    <span style={{ fontSize:12, color:'var(--grn)', fontWeight:700 }}>✓ Card set</span>
-                    {nfcAvailable() && <button onClick={()=>scanCard(sel.id)} disabled={scanningCard} style={{ padding:'4px 10px', borderRadius:7, cursor:scanningCard?'wait':'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr2)', color:'var(--t2)', fontSize:11, fontWeight:600 }}>{scanningCard?'Tap card…':'Replace'}</button>}
-                    <button onClick={()=>save(sel.id,{nfc_card_id:null})} style={{ padding:'4px 10px', borderRadius:7, cursor:'pointer', fontFamily:'inherit', background:'var(--red-d)', border:'1px solid var(--red-b)', color:'var(--red)', fontSize:11, fontWeight:600 }}>Remove</button>
-                  </div>
-                ) : (
-                  nfcAvailable()
-                    ? <button onClick={()=>scanCard(sel.id)} disabled={scanningCard} style={{ padding:'6px 14px', borderRadius:8, cursor:scanningCard?'wait':'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:12, fontWeight:700 }}>{scanningCard?'Tap card now…':'Scan card'}</button>
-                    : <span style={{ fontSize:11, color:'var(--t4)' }}>No reader here</span>
-                )}
+              <div style={{ fontSize:12, fontWeight:700, color:'var(--t1)', marginBottom:2 }}>Sign-in method</div>
+              <div style={{ fontSize:10, color:'var(--t3)', marginBottom:10 }}>How this person signs in at the till. Card = more secure (a shared PIN won’t sign them in).</div>
+              <div style={{ display:'flex', gap:8, marginBottom: (sel.authMethod==='card') ? 12 : 0 }}>
+                {['pin','card'].map(m => (
+                  <button key={m} onClick={()=>save(sel.id,{auth_method:m})} style={{
+                    flex:1, padding:'8px 0', borderRadius:9, cursor:'pointer', fontFamily:'inherit', fontSize:12, fontWeight:700,
+                    border:`1.5px solid ${(sel.authMethod||'pin')===m ? 'var(--acc)' : 'var(--bdr)'}`,
+                    background:(sel.authMethod||'pin')===m ? 'var(--acc-d, rgba(232,160,32,.10))' : 'transparent',
+                    color:(sel.authMethod||'pin')===m ? 'var(--acc)' : 'var(--t3)',
+                  }}>{m==='pin' ? '🔢 PIN' : '💳 Card'}</button>
+                ))}
               </div>
+              {sel.authMethod==='card' && (
+                <div>
+                  <div style={{ fontSize:11, marginBottom:8, color: sel.nfcCardId ? 'var(--grn)' : 'var(--red)', fontWeight:700 }}>
+                    {sel.nfcCardId ? '✓ Card assigned' : '⚠ No card yet — assign one below, or they can’t sign in'}
+                  </div>
+                  <div style={{ display:'flex', gap:6 }}>
+                    <input value={cardEntry} onChange={e=>setCardEntry(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter') saveCardEntry(sel.id); }}
+                      placeholder="Tap card on the USB reader, or type the ID"
+                      style={{ flex:1, padding:'8px 10px', borderRadius:8, border:'1px solid var(--bdr2)', background:'var(--bg3)', color:'var(--t1)', fontSize:12, fontFamily:'inherit' }}/>
+                    <button onClick={()=>saveCardEntry(sel.id)} style={{ padding:'8px 12px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:12, fontWeight:700 }}>Save card</button>
+                    {nfcAvailable() && <button onClick={()=>scanCard(sel.id)} disabled={scanningCard} style={{ padding:'8px 10px', borderRadius:8, cursor:scanningCard?'wait':'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr2)', color:'var(--t2)', fontSize:11, fontWeight:600 }}>{scanningCard?'Tap…':'Scan'}</button>}
+                    {sel.nfcCardId && <button onClick={()=>save(sel.id,{nfc_card_id:null})} style={{ padding:'8px 10px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', background:'var(--red-d)', border:'1px solid var(--red-b)', color:'var(--red)', fontSize:11, fontWeight:600 }}>Remove</button>}
+                  </div>
+                  <div style={{ fontSize:10, color:'var(--t4)', marginTop:6 }}>Use a 13.56MHz USB NFC reader on this computer — tap a card, its ID fills the box, then Save.</div>
+                </div>
+              )}
             </div>
 
             {/* v5.5.17: Back-office access card. Lets the operator give a

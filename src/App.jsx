@@ -88,6 +88,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.688', date: '27 Jun 2026', label: 'Secure sign-in — set each staff member to PIN or Card (stops shared PINs)',
+    changes: [
+      'Each staff member now has a sign-in method: PIN or Card (Back Office → Staff → Sign-in method). A “Card” staff member CANNOT sign in with a PIN — even a shared one — so identity is tied to their physical card. PIN staff are unchanged.',
+      'Lost or forgotten card? On the till tap “Can’t sign in? Manager override”, a manager authenticates (their own card/PIN), and that person gets a one-off PIN sign-in — logged with who approved it.',
+      'Assign cards in Back Office with a USB NFC reader: tap a card and its ID fills the box, then Save. The card works on any till. (Replaces the on-till card setup, since Back Office runs on the computer.)',
+      'Every sign-in is now recorded (who, method, device, any override) for accountability. Foundation for fingerprint sign-in later.',
+    ],
+  },
+  {
     version: '5.5.687', date: '27 Jun 2026', label: 'Staff NFC cards — self-link on the till (no Back Office reader needed)',
     changes: [
       'Staff link their own card at the till: tap a new (unknown) card → it asks for your PIN → enter it → the card is linked to you and you’re signed in. Next time, just tap. No card reader needed in Back Office (which runs on the computer).',
