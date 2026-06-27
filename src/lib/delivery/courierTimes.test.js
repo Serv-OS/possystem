@@ -17,6 +17,7 @@ test('phase derives from columns, not just status', () => {
   assert.equal(courierPhase({ status: 'delivered', delivered_at: T(-1) }), 'done');
   assert.equal(courierPhase({ status: 'failed' }), 'terminal_bad');
   assert.equal(courierPhase({ status: 'canceled' }), 'terminal_bad');
+  assert.equal(courierPhase({ status: 'scheduled', eta: T(120) }), 'scheduled'); // future-booked, not "finding now"
 });
 
 test('legs: pending → expected (eta) → actual (picked/delivered)', () => {

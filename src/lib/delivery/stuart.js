@@ -12,7 +12,7 @@
 
 /** Stuart job/delivery status → ServOS canonical lifecycle (matches src/lib/delivery/status.js). */
 const STUART_STATUS = {
-  new: 'pending', searching: 'pending', scheduled: 'pending', pending: 'pending',
+  new: 'pending', searching: 'pending', scheduled: 'scheduled', pending: 'pending',
   in_progress: 'pickup', picking: 'pickup', almost_picking: 'pickup', waiting_at_pickup: 'pickup',
   delivering: 'dropoff', almost_delivering: 'dropoff', waiting_at_dropoff: 'dropoff',
   delivered: 'delivered', finished: 'delivered',

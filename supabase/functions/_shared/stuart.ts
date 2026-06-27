@@ -163,7 +163,7 @@ export async function cancelStuartJob(env: 'sandbox' | 'prod', token: string, id
 
 // ── Status map (mirror of src/lib/delivery/stuart.js) ─────────────────────────
 const STUART_STATUS: Record<string, string> = {
-  new: 'pending', searching: 'pending', scheduled: 'pending', pending: 'pending',
+  new: 'pending', searching: 'pending', scheduled: 'scheduled', pending: 'pending',
   in_progress: 'pickup', picking: 'pickup', almost_picking: 'pickup', waiting_at_pickup: 'pickup',
   delivering: 'dropoff', almost_delivering: 'dropoff', waiting_at_dropoff: 'dropoff',
   delivered: 'delivered', finished: 'delivered',

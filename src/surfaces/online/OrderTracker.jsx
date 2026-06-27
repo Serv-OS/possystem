@@ -105,6 +105,7 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose }) {
   const isDelivery = orderType === 'delivery' || deliveryMode != null;
   const fmtEta = (iso) => { if (!iso) return null; const d = new Date(iso); return isNaN(d.getTime()) ? null : d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }); };
   const COURIER_LABEL = {
+    scheduled: ['Scheduled delivery', '🗓'],
     dispatching: ['Finding a courier…', '🔍'], pending: ['Finding a courier…', '🔍'],
     pickup: ['Courier heading to the kitchen', '🛵'], dropoff: ['On its way to you', '🛵'],
     delivered: ['Delivered', '✅'], canceled: ['Delivery canceled', '⚠️'],
@@ -207,6 +208,7 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose }) {
           let hero;
           if (phase === 'done') hero = <>Delivered{deliveredTxt ? <> at <b style={{ color: theme.fg }}>{deliveredTxt}</b></> : ''} — enjoy! 🎉</>;
           else if (badState) hero = <>There’s a problem with this delivery — please contact us and we’ll sort it.</>;
+          else if (phase === 'scheduled') hero = <>Scheduled for later{dropTxt ? <> — arriving around <b style={{ color: theme.fg }}>{dropTxt}</b></> : ''}. Your courier is booked; we’ll confirm closer to the time.</>;
           else if (late.known && !late.onTime) hero = <span style={{ color: '#b45309', fontWeight: 700 }}>Running a little behind — your driver is on the way.</span>;
           else if (dropTxt) hero = <>Arriving by <b style={{ color: theme.fg }}>{dropTxt}</b>{courier?.courierFirstName ? ` · ${courier.courierFirstName} is your driver` : ''}</>;
           else hero = <>A courier is being assigned — we’ll text you a tracking link.</>;

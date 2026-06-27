@@ -28,6 +28,7 @@ export function courierPhase(d) {
   const st = d.status;
   if (TERMINAL_BAD.has(st)) return 'terminal_bad';
   if (pick(d, 'delivered_at', 'deliveredAt') || st === 'delivered') return 'done';
+  if (st === 'scheduled') return 'scheduled';   // booked for a future pickup — not "finding now"
   if (pick(d, 'picked_at', 'pickedAt')) return 'collected';
   if (pick(d, 'eta', 'eta') || pick(d, 'pickup_eta', 'pickupEta') || st === 'pickup' || st === 'dropoff') return 'assigned';
   return 'awaiting_courier';

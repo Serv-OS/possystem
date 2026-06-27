@@ -970,8 +970,11 @@ export default function OrdersHub() {
               const phase = courierPhase(d);
               const legs = courierLegs(d);
               const late = courierLateness(d);
-              const label = hasRow ? statusLabel(st) : 'Not sent to a courier yet';
-              const color = hasRow ? statusColor(st) : '#888780';
+              // A scheduled-for-later order whose courier is dispatched automatically nearer the time
+              // (catering / future slot) shouldn't read "not sent" before its row exists.
+              const isScheduledOrder = viewOrder.isASAP === false || viewOrder._raw?.is_asap === false || !!viewOrder.customer?.event_date;
+              const label = hasRow ? statusLabel(st) : (isScheduledOrder ? 'Scheduled' : 'Not sent to a courier yet');
+              const color = hasRow ? statusColor(st) : (isScheduledOrder ? '#a855f7' : '#888780');
               const canSend = !hasRow || st === 'failed';        // never re-dispatch a canceled order
               const readyTime = viewOrder.collectionTime || viewOrder._raw?.collection_time || null;
               const legRow = (leg) => (
@@ -1002,9 +1005,12 @@ export default function OrdersHub() {
                   {hasRow && d?.tracking_url && phase !== 'terminal_bad' && (
                     <CourierTrackingQR trackingUrl={d.tracking_url} courierName={d.courier_name} courierPhone={d.courier_phone} muted="var(--t3)" fg="var(--t1)" />
                   )}
+                  {!hasRow && isScheduledOrder && (
+                    <div style={{ fontSize:11.5, color:'var(--t3)', marginTop:8 }}>🗓 Scheduled{readyTime ? ` for ${readyTime}` : ''} — a courier is arranged automatically nearer the time.</div>
+                  )}
                   {canSend && (
-                    <button onClick={sendToCourier} disabled={delBusy} style={{ width:'100%', marginTop:10, padding:10, borderRadius:9, background:'var(--acc)', border:'none', color:'#0b0c10', fontWeight:800, cursor: delBusy?'wait':'pointer', fontFamily:'inherit', opacity: delBusy?0.6:1 }}>
-                      {delBusy ? 'Sending…' : st === 'failed' ? '↻ Retry — send to Stuart' : '🚗 Send to Stuart courier'}
+                    <button onClick={sendToCourier} disabled={delBusy} style={{ width:'100%', marginTop:10, padding:10, borderRadius:9, background: (!hasRow && isScheduledOrder) ? 'var(--bg3)' : 'var(--acc)', border: (!hasRow && isScheduledOrder) ? '1px solid var(--bdr2)' : 'none', color: (!hasRow && isScheduledOrder) ? 'var(--t1)' : '#0b0c10', fontWeight:800, cursor: delBusy?'wait':'pointer', fontFamily:'inherit', opacity: delBusy?0.6:1 }}>
+                      {delBusy ? 'Sending…' : st === 'failed' ? '↻ Retry — send to Stuart' : (!hasRow && isScheduledOrder) ? '🚗 Send to courier now' : '🚗 Send to Stuart courier'}
                     </button>
                   )}
                 </div>

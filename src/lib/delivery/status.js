@@ -43,6 +43,7 @@ export function isTerminalStatus(s) {
 /** Human label for staff/customer display. */
 export function statusLabel(s) {
   switch (s) {
+    case 'scheduled': return 'Scheduled';
     case 'dispatching': return 'Finding a courier';
     case 'pending':   return 'Finding a courier';
     case 'pickup':    return 'Courier heading to venue';
@@ -58,6 +59,7 @@ export function statusLabel(s) {
 /** Accent colour for a status (chips, left bars). Shared so card/board/tracker can't drift. */
 export function statusColor(s) {
   switch (s) {
+    case 'scheduled': return '#a855f7';
     case 'dispatching':
     case 'pending':   return '#f59e0b';
     case 'pickup':
@@ -73,6 +75,7 @@ export function statusColor(s) {
 /** Emoji glyph for a status. */
 export function statusIcon(s) {
   switch (s) {
+    case 'scheduled': return '🗓';
     case 'dispatching':
     case 'pending':   return '🔍';
     case 'pickup':

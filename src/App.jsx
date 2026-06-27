@@ -88,6 +88,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.682', date: '27 Jun 2026', label: 'Delivery — scheduled orders show “Scheduled”, not “Finding a courier”',
+    changes: [
+      'Fixed scheduled delivery orders mislabelled as “Finding a courier”: a courier booked for a future time (Stuart scheduled job) now shows as “Scheduled” (with the booked time) on the POS card, the Deliveries tab and the customer tracker — instead of looking like we’re searching for a driver right now.',
+      'Catering / future orders that haven’t dispatched yet read “Scheduled — a courier is arranged automatically nearer the time” on the POS, with a manual “Send to courier now” override, rather than “Not sent to a courier yet”.',
+    ],
+  },
+  {
     version: '5.5.681', date: '27 Jun 2026', label: 'Delivery info flow — expected/actual times everywhere + scan-to-track QR (works on the till)',
     changes: [
       'The POS order card and the Deliveries tab now show the full courier time flow: expected pickup, expected delivery, and the actual delivered time (with a “running late” flag), plus the kitchen-ready time so staff can time the food. Expected times show with a “~”, actual times with a green ✓ — never a fake clock before a courier is assigned.',
