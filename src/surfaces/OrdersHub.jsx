@@ -932,6 +932,15 @@ export default function OrdersHub() {
                     🚗 Delivery{viewOrder.customer.delivery_mode ? ` · ${viewOrder.customer.delivery_mode === 'uber' ? 'Courier' : 'Self-delivery'}` : ''}{viewOrder.customer.delivery_fee != null ? ` · fee ${money(Number(viewOrder.customer.delivery_fee))}` : ''}
                   </div>
                 )}
+                {/* Expected collection / delivery time so staff know when it's needed. */}
+                {(() => {
+                  const raw = viewOrder._raw || {};
+                  const ct = viewOrder.collectionTime || raw.collection_time || null;
+                  const asap = viewOrder.isASAP ?? raw.is_asap;
+                  if (!ct && !asap) return null;
+                  const isDel = viewOrder.channel === 'delivery' || raw.type === 'delivery' || viewOrder.customer.delivery_mode != null;
+                  return <div style={{ color:'var(--t3)', marginTop:2 }}>🕒 {isDel ? 'Deliver' : 'Collect'}: {asap ? `ASAP${ct ? ` (ready ~${ct})` : ''}` : (ct || '—')}</div>;
+                })()}
               </div>
             )}
             <div style={{ display:'flex', flexDirection:'column', gap:6, borderTop:'1px solid var(--bdr)', paddingTop:12 }}>

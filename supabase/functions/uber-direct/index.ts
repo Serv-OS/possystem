@@ -104,6 +104,7 @@ async function refreshStuartRow(row: any, cfg: any): Promise<any> {
     if (sp.courierPhone) patch.courier_phone = sp.courierPhone;
     if (sp.lat != null) patch.last_lat = sp.lat;
     if (sp.lng != null) patch.last_lng = sp.lng;
+    if (sp.etaDropoff) { const d = new Date(sp.etaDropoff); if (!isNaN(d.getTime())) patch.eta = d.toISOString(); }
     await sb.from('courier_deliveries').update(patch).eq('id', row.id);
     return { ...row, ...patch };
   } catch { return row; }
@@ -472,7 +473,8 @@ Deno.serve(async (req) => {
 
     // ── Staff delivery board: list recent deliveries for the venue. ──────────
     if (action === 'list_deliveries') {
-      const acc = await requireAccess(req, loc); if (!acc.ok) return acc.res;
+      // requireToken: also used by the POS (anon device session) for a live deliveries board.
+      const t = await requireToken(req); if (!t.ok) return t.res;
       const limit = Math.min(200, Number(body?.limit) || 50);
       const { data } = await sb.from('courier_deliveries').select('*').eq('location_id', loc).order('created_at', { ascending: false }).limit(limit);
       let rows = data || [];
@@ -490,7 +492,10 @@ Deno.serve(async (req) => {
     // ── Staff delivery board: full detail for one delivery (order + quote + surcharge +
     //    status timeline). Joins server-side so the BO makes a single call. ──────────
     if (action === 'get_delivery_detail') {
-      const acc = await requireAccess(req, loc); if (!acc.ok) return acc.res;
+      // requireToken (not requireAccess): the POS runs as an ANONYMOUS device session (no
+      // user_locations row), so requireAccess 403s it and the till can never read courier status.
+      // Scoped to the passed location_id (same posture as quote / track_order / create_delivery).
+      const t = await requireToken(req); if (!t.ok) return t.res;
       const id = body?.id || null;
       const reqRef = body?.order_ref || null;
       let del = null;

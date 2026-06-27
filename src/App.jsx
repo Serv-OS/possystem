@@ -88,6 +88,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.676', date: '26 Jun 2026', label: 'Delivery — POS can finally read courier status (the real fix) + expected times',
+    changes: [
+      'Found and fixed the real reason the POS never showed courier status (and the “Send to courier” button stayed even after sending): the till runs as a paired-device session, and the courier-status lookups required a full back-office login, so the till was silently refused and always fell back to “not sent”. The status reads now accept the till session — so the POS order shows the live Stuart status (finding a courier → heading to venue → out for delivery → delivered) and the Send button only appears when it genuinely hasn’t been sent. (Server-side fix — takes effect without updating the tills.)',
+      'Expected delivery time now flows through: we read Stuart’s drop-off ETA once a courier is assigned and show it on the customer tracker and the POS.',
+      'Expected collection / delivery time is now shown on the POS order (e.g. “Deliver: ASAP (ready ~18:40)” or “Collect: 18:30”), so staff can see when each order is needed.',
+    ],
+  },
+  {
     version: '5.5.675', date: '26 Jun 2026', label: 'Receipts — combine identical items into one “N× product” line',
     changes: [
       'Receipts now merge identical items into a single line with a quantity, no matter when each was punched in — e.g. three cappuccinos added at different times print as “3× Cappucino” instead of three separate lines. Lines only merge when they’re exactly the same (same item, price, modifiers and notes); anything different stays on its own line. Applies to the printed receipt and the browser/PDF receipt.',

@@ -169,19 +169,22 @@ export function mapStuartStatus(raw: string | null): string {
 }
 
 /** Extract id / tracking / status / driver from a Stuart job payload (tolerant). */
-export function parseStuartJob(r: any): { id: string | null; trackingUrl: string | null; rawStatus: string | null; courierName: string | null; courierPhone: string | null; lat: number | null; lng: number | null } {
+export function parseStuartJob(r: any): { id: string | null; trackingUrl: string | null; rawStatus: string | null; courierName: string | null; courierPhone: string | null; lat: number | null; lng: number | null; etaDropoff: string | null } {
   const d = r?.data || r || {};
   const job = d.job || d;
   const delivery = Array.isArray(job.deliveries) ? job.deliveries[0] : (d.delivery || null);
   const driver = delivery?.driver || job.driver || null;
+  // Stuart dropoff ETA (populates once a courier is assigned): deliveries[0].eta.dropoff.
+  const etaDropoff = delivery?.eta?.dropoff || delivery?.dropoff_eta || job?.dropoff_at || null;
   return {
     id: job.id != null ? String(job.id) : (delivery?.id != null ? String(delivery.id) : null),
-    trackingUrl: delivery?.tracking_url || job.tracking_url || null,
+    trackingUrl: delivery?.tracking_url || delivery?.client_tracking_url || job.tracking_url || null,
     rawStatus: delivery?.status || job.status || null,
     courierName: driver ? ([driver.firstname, driver.lastname].filter(Boolean).join(' ') || driver.name || null) : null,
     courierPhone: driver?.phone || null,
     lat: driver?.latitude ?? driver?.location?.latitude ?? null,
     lng: driver?.longitude ?? driver?.location?.longitude ?? null,
+    etaDropoff: etaDropoff || null,
   };
 }
 
