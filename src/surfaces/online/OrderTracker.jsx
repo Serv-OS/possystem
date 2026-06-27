@@ -197,8 +197,10 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose }) {
         {/* Live courier card (Stuart) — status + ETA + live tracking map. Only for courier
             delivery orders, once the order exists. */}
         {isCourier && (() => {
-          const [clabel, cicon] = COURIER_LABEL[courier?.status] || ['Preparing your delivery', '🛵'];
           const phase = courierPhase(courier);
+          const badStateEarly = phase === 'terminal_bad';
+          // Title must match the hero — a 'failed'/canceled state reads as a problem, not "arranging".
+          const [clabel, cicon] = badStateEarly ? ['Delivery problem', '⚠️'] : (COURIER_LABEL[courier?.status] || ['Preparing your delivery', '🛵']);
           const late = courierLateness(courier);
           const dropTxt = fmtEta(courier?.eta);
           const pickedTxt = fmtEta(courier?.pickedAt);
@@ -227,7 +229,7 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose }) {
                   {pickedTxt && <div style={{ color: '#16a34a', fontWeight: 700 }}>✓ Collected from the kitchen · {pickedTxt}</div>}
                   {phase === 'done'
                     ? <div style={{ color: '#16a34a', fontWeight: 700 }}>✓ Delivered · {deliveredTxt}</div>
-                    : (dropTxt && <div>~ Estimated to you · {dropTxt}</div>)}
+                    : (dropTxt && !(late.known && !late.onTime)) ? <div>~ Estimated to you · {dropTxt}</div> : null}
                 </div>
               )}
               {/* Call the driver (real browser → tel: works). */}

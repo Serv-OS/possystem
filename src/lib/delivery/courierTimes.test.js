@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { courierPhase, courierLegs, courierLateness } from './courierTimes.js';
+import { courierPhase, courierLegs, courierLateness, fmtTime } from './courierTimes.js';
 
 const T = (min) => new Date(Date.now() + min * 60000).toISOString();
 
@@ -54,4 +54,21 @@ test('lateness: unknown without eta; clamped >= 0; grace; uses delivered_at when
   // delivered 20 min after eta → late
   const lateDelivered = courierLateness({ eta: T(-30), delivered_at: T(-10) });
   assert.equal(lateDelivered.lateMins, 20); assert.equal(lateDelivered.onTime, false);
+});
+
+test('lateness: terminal-bad never reports late; corrupt delivered_at never yields NaN', () => {
+  const canceled = courierLateness({ status: 'canceled', eta: T(-40) });
+  assert.equal(canceled.known, false); assert.equal(canceled.lateMins, 0); assert.equal(canceled.onTime, true);
+  const failed = courierLateness({ status: 'failed', eta: T(-40) });
+  assert.equal(failed.lateMins, 0);
+  const corrupt = courierLateness({ eta: T(-10), delivered_at: 'not-a-date' });
+  assert.ok(Number.isFinite(corrupt.lateMins));   // must not be NaN
+  assert.equal(corrupt.delivered, false);
+});
+
+test('fmtTime: null/garbage → null; valid ISO → HH:MM', () => {
+  assert.equal(fmtTime(null), null);
+  assert.equal(fmtTime('garbage'), null);
+  assert.equal(fmtTime(''), null);
+  assert.match(fmtTime(new Date('2026-06-27T14:05:00Z').toISOString()), /\d\d:\d\d/);
 });

@@ -48,14 +48,18 @@ export function courierLegs(d) {
 /** Lateness vs the dropoff ETA. known=false when no ETA yet. Clamped >= 0; onTime within grace. */
 export function courierLateness(d, nowMs) {
   const now = nowMs == null ? Date.now() : nowMs;
+  // Canceled/returned/failed: lateness is meaningless (and would climb forever). Mirror courierPhase.
+  if (d && TERMINAL_BAD.has(d.status)) return { lateMins: 0, onTime: true, known: false, delivered: false };
   const dropEta = pick(d, 'eta', 'eta');
   if (!dropEta) return { lateMins: 0, onTime: true, known: false, delivered: false };
   const etaMs = new Date(dropEta).getTime();
   if (isNaN(etaMs)) return { lateMins: 0, onTime: true, known: false, delivered: false };
   const deliveredAt = pick(d, 'delivered_at', 'deliveredAt');
-  const refMs = deliveredAt ? new Date(deliveredAt).getTime() : now;
+  const dMs = deliveredAt ? new Date(deliveredAt).getTime() : NaN;
+  const validDelivered = !isNaN(dMs);                       // a corrupt delivered_at must not poison the maths
+  const refMs = validDelivered ? dMs : now;
   const lateMins = Math.max(0, Math.round((refMs - etaMs) / 60000));
-  return { lateMins, onTime: lateMins <= LATE_GRACE_MIN, known: true, delivered: !!deliveredAt };
+  return { lateMins, onTime: lateMins <= LATE_GRACE_MIN, known: true, delivered: validDelivered };
 }
 
 export { LATE_GRACE_MIN };

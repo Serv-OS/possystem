@@ -17,7 +17,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { getAccessToken, getQuote, geocodePostcode, haversineMiles, createDelivery, getDelivery, parseDeliveryResp, mapUberStatus } from '../_shared/uber.ts';
 import { createOrder as createHubriseOrder, patchOrder as patchHubriseOrder } from '../_shared/hubrise.ts';
 import { cancelDelivery, createOrganization, getOrganization, inviteOrgMember, parseOrgResp, UBER_ORG_SCOPE } from '../_shared/uber.ts';
-import { getStuartToken, getStuartPricing, normaliseStuartPricing, cancelStuartJob, classifyStuartError, getStuartJob, parseStuartJob, mapStuartStatus } from '../_shared/stuart.ts';
+import { getStuartToken, getStuartPricing, normaliseStuartPricing, cancelStuartJob, classifyStuartError, getStuartJob, parseStuartJob, mapStuartStatus, parseStuartCost } from '../_shared/stuart.ts';
 import { dispatchCourier } from '../_shared/delivery-dispatch.ts';
 
 const e164 = (raw: string) => {
@@ -96,7 +96,8 @@ async function refreshStuartRow(row: any, cfg: any): Promise<any> {
     const ssecret = cfg?.stuart_client_secret || ENV_STUART_SECRET;
     if (!sid || !ssecret) return row;
     const stoken = await getStuartToken(senv, sid, ssecret);
-    const sp = parseStuartJob(await getStuartJob(senv, stoken, row.uber_delivery_id));
+    const job = await getStuartJob(senv, stoken, row.uber_delivery_id);
+    const sp = parseStuartJob(job);
     const status = mapStuartStatus(sp.rawStatus);
     const patch: Record<string, unknown> = { status, updated_at: new Date().toISOString() };
     if (sp.trackingUrl) patch.tracking_url = sp.trackingUrl;
@@ -110,6 +111,18 @@ async function refreshStuartRow(row: any, cfg: any): Promise<any> {
     const pAt = iso(sp.pickedAt); if (pAt) patch.picked_at = pAt;
     const dAt = iso(sp.deliveredAt); if (dAt) patch.delivered_at = dAt;
     await sb.from('courier_deliveries').update(patch).eq('id', row.id);
+    // Reconciliation: when polling sees a terminal state, record the ACTUAL courier cost too
+    // (mirrors stuart-webhook) so the margin report works for venues without a webhook registered.
+    if (STUART_TERMINAL.has(status)) {
+      const cost = parseStuartCost(job);
+      if (cost) {
+        await sb.from('delivery_costs_actual').upsert({
+          delivery_id: row.id, location_id: row.location_id,
+          base_minor: cost.totalMinor, total_minor: cost.totalMinor, currency: cost.currency,
+          recorded_at: new Date().toISOString(),
+        }, { onConflict: 'delivery_id' });
+      }
+    }
     return { ...row, ...patch };
   } catch { return row; }
 }

@@ -88,6 +88,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.683', date: '27 Jun 2026', label: 'Delivery — status sync hardening (from automated review)',
+    changes: [
+      'Courier status can no longer go backwards: a late or out-of-order update from Stuart won’t flip a “Delivered” order back to “out for delivery”.',
+      'Actual courier cost is now recorded even without a webhook (captured when we poll a completed delivery), so the delivery margin report is accurate.',
+      'Hardened the time logic: a canceled/failed delivery never shows a climbing “late” counter, a corrupt timestamp can’t break the maths, and a failed delivery shows a clear “Delivery problem” (not a reassuring label). Stuart webhook de-duplication no longer relies on the clock.',
+    ],
+  },
+  {
     version: '5.5.682', date: '27 Jun 2026', label: 'Delivery — scheduled orders show “Scheduled”, not “Finding a courier”',
     changes: [
       'Fixed scheduled delivery orders mislabelled as “Finding a courier”: a courier booked for a future time (Stuart scheduled job) now shows as “Scheduled” (with the booked time) on the POS card, the Deliveries tab and the customer tracker — instead of looking like we’re searching for a driver right now.',

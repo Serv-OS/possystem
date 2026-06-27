@@ -30,8 +30,10 @@ Deno.serve(async (req) => {
   const p = parseStuartJob(evt);
   const status = mapStuartStatus(p.rawStatus);
   const jobId = p.id;
-  // Stuart events have no guaranteed stable id → synthesize one (job id + status + time bucket).
-  const eventId = evt?.id || evt?.event_id || `stuart:${jobId || 'evt'}:${p.rawStatus || 'x'}:${evt?.data?.updated_at || evt?.updated_at || Date.now()}`;
+  // Stuart events have no guaranteed stable id → synthesize one from STABLE payload fields
+  // (never Date.now(), which would defeat dedup and insert a new row on every retry).
+  const stamp = evt?.data?.updated_at || evt?.updated_at || p.deliveredAt || p.pickedAt || p.etaDropoff || p.rawStatus || 'x';
+  const eventId = evt?.id || evt?.event_id || `stuart:${jobId || 'evt'}:${p.rawStatus || 'x'}:${stamp}`;
 
   // Idempotency: first writer wins.
   const { data: inserted } = await sb.from('delivery_status_events')
@@ -54,8 +56,12 @@ Deno.serve(async (req) => {
     const etaP = iso(p.etaPickup); if (etaP) patch.pickup_eta = etaP;
     const pAt = iso(p.pickedAt); if (pAt) patch.picked_at = pAt;
     const dAt = iso(p.deliveredAt); if (dAt) patch.delivered_at = dAt;
-    const { data: del } = await sb.from('courier_deliveries')
-      .update(patch).eq('uber_delivery_id', jobId).eq('dispatch_backend', 'stuart').select('id, location_id').maybeSingle();
+    // Monotonic status: an out-of-order / at-least-once event must never regress a TERMINAL row
+    // (delivered/canceled/returned) back to an in-flight status. A terminal event may still land.
+    let upd = sb.from('courier_deliveries').update(patch).eq('uber_delivery_id', jobId).eq('dispatch_backend', 'stuart');
+    const newTerminal = status === 'delivered' || status === 'canceled' || status === 'returned';
+    if (!newTerminal) upd = upd.not('status', 'in', '(delivered,canceled,returned)');
+    const { data: del } = await upd.select('id, location_id').maybeSingle();
 
     if (del?.id && (status === 'delivered' || status === 'canceled' || status === 'returned')) {
       const cost = parseStuartCost(evt);
