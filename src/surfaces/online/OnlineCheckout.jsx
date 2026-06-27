@@ -29,6 +29,7 @@ import AddressAutocomplete from '../../components/AddressAutocomplete';
 import { attributeOnlineOrder } from '../../lib/customerLookup';
 import { getDeliveryQuote, recordDeliverySurcharge } from '../../lib/delivery/quoteService';
 import { dispatchDelivery } from '../../lib/delivery/dispatch';
+import { sendEmailReceipt } from '../../lib/sendReceipt';
 import { getDayWindows } from '../../lib/openingHours';
 import { calculateOrderTax } from '../../lib/tax';
 import { money, stripeCurrency } from '../../lib/currency';
@@ -680,6 +681,34 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     setRewardError('');
   };
 
+  // Email + SMS the customer their order confirmation / receipt (best-effort; never blocks the
+  // on-screen confirmation). Reuses the same receipt pipeline as catering/POS. The just-inserted
+  // closed_checks row clears the send-receipt tenant fence via check_id.
+  const sendOrderConfirmation = (closedCheck) => {
+    try {
+      const { ref, customer, items } = orderShape;
+      const total = subtotal + deliveryFeeMinor / 100;
+      const toEmail = (customer?.email || '').trim();
+      if (toEmail) {
+        sendEmailReceipt({
+          to: toEmail, locationId: opsLocationId, locationLabel: location?.name,
+          check: {
+            id: closedCheck.id, ref, items, customer, closedAt: Date.now(), total,
+            service: 0, tip: 0, taxAmount: taxBreakdown?.totalTax || 0, taxBreakdown,
+            method: closedCheck.method || 'card', server: 'Online',
+          },
+        }).catch(() => {});
+      }
+      const toPhone = (customer?.phone || '').trim();
+      if (toPhone && supabase) {
+        supabase.functions.invoke('send-sms', {
+          body: { to: toPhone, location_id: opsLocationId, type: 'order_confirmation',
+            message: `Thanks for ordering with ${location?.name || 'us'}! Order ${ref} is confirmed — we'll let you know when it's ready.` },
+        }).catch(() => {});
+      }
+    } catch { /* best-effort */ }
+  };
+
   // ── Gift-only payment (no Stripe) ─────────────────────────────────────
   const onGiftOnlyPayment = async () => {
     const gate = deliveryGateError();
@@ -754,6 +783,8 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         if (ccErr) console.warn('[OnlineCheckout] closed_checks insert failed:', ccErr.message);
         // v5.5.583: deplete recipe ingredients from the stock ledger (server-side, online is anonymous). Fire-and-forget.
         depleteForSaleServer({ id: closedCheck.id, items: cart.map(l => ({ itemId: l.itemId, qty: l.qty })), orderType });
+        // v5.5.677: email + SMS the customer their confirmation/receipt (gift-only path).
+        sendOrderConfirmation(closedCheck);
       } catch (e) {
         console.warn('[OnlineCheckout] closed_checks write threw:', e?.message);
       }
@@ -874,6 +905,8 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         if (ccErr) console.warn('[OnlineCheckout] closed_checks insert failed:', ccErr.message);
         // v5.5.583: deplete recipe ingredients from the stock ledger (server-side, online is anonymous). Fire-and-forget.
         depleteForSaleServer({ id: closedCheck.id, items: cart.map(l => ({ itemId: l.itemId, qty: l.qty })), orderType });
+        // v5.5.677: email + SMS the customer their confirmation/receipt (was never wired for online).
+        sendOrderConfirmation(closedCheck);
       } catch (e) {
         console.warn('[OnlineCheckout] closed_checks write threw:', e?.message);
       }

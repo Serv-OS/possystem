@@ -88,6 +88,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.677', date: '26 Jun 2026', label: 'Online — confirmation email + SMS now send; order tracker uses your Menu Appearance branding',
+    changes: [
+      'Online orders now send the customer a confirmation: an emailed receipt (the full VAT receipt, using your receipt branding + Digital Receipt template) and a confirmation SMS. This was built but had never been wired into online checkout, so nothing was going out — now fixed on both the card and gift-card payment paths.',
+      'Fixed the order confirmation / tracker branding: it was reading the wrong colour field, so it ignored your Menu Appearance brand colour and fell back to the default orange. It now uses your Menu Appearance theme — brand colour, header photo (or a brand-colour banner), and your logo on a plate shaped to your logo setting — so the confirmation screen looks like your storefront.',
+    ],
+  },
+  {
     version: '5.5.676', date: '26 Jun 2026', label: 'Delivery — POS can finally read courier status (the real fix) + expected times',
     changes: [
       'Found and fixed the real reason the POS never showed courier status (and the “Send to courier” button stayed even after sending): the till runs as a paired-device session, and the courier-status lookups required a full back-office login, so the till was silently refused and always fell back to “not sent”. The status reads now accept the till session — so the POS order shows the live Stuart status (finding a courier → heading to venue → out for delivery → delivered) and the Send button only appears when it genuinely hasn’t been sent. (Server-side fix — takes effect without updating the tills.)',

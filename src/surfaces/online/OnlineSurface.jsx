@@ -321,11 +321,14 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   }, [opsLocationId, onlineMenuId]);
 
   const theme = useMemo(() => ({
-    accent: branding?.accent_color || FALLBACK_ACCENT,
+    // Menu Appearance saves the brand colour as `brand_color` — prefer it (accent_color is legacy).
+    accent: branding?.brand_color || branding?.accent_color || FALLBACK_ACCENT,
     bg:     branding?.background    || FALLBACK_BG,
     fg:     branding?.foreground    || FALLBACK_FG,
     logo:   branding?.logo_url      || null,
     hero:   branding?.hero_url      || null,
+    logoShape: branding?.logo_shape || 'rounded',
+    headerStyle: branding?.header_style || 'cinematic',
     name:   location.name           || 'Restaurant',
     isLight: isLightBackground(branding?.background || FALLBACK_BG),
   }), [branding, location.name]);

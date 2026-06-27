@@ -120,18 +120,26 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose }) {
       fontFamily: '-apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif',
     }}>
       <div style={{ maxWidth: 600, margin: '0 auto', padding: '24px 22px 60px' }}>
-        {/* Brand header — logo plate + venue name, so the confirmation/tracker carries the
-            storefront's branding (not a generic screen). */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, marginBottom: 20 }}>
-          {theme.logo
-            ? <img src={theme.logo} alt={theme.name} style={{ height: 44, width: 'auto', maxWidth: 180, objectFit: 'contain', borderRadius: 8 }} />
-            : <div style={{ fontSize: 20, fontWeight: 900, color: theme.fg }}>{theme.name}</div>}
+        {/* Branded hero header — mirrors the storefront's Menu Appearance theme: hero photo (or a
+            brand-colour gradient) with the logo on a plate shaped per logo_shape + the venue name. */}
+        <div style={{
+          position: 'relative', borderRadius: 18, overflow: 'hidden', marginBottom: 20, minHeight: 140,
+          background: theme.hero ? `center/cover no-repeat url(${theme.hero})` : `linear-gradient(135deg, ${theme.accent}, ${theme.accent}bb)`,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}>
+          {theme.hero && <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.34)' }} />}
+          <div style={{ position: 'relative', textAlign: 'center', padding: '24px 16px' }}>
+            {theme.logo
+              ? <img src={theme.logo} alt={theme.name} style={{ height: 60, width: theme.logoShape === 'circle' ? 60 : 'auto', maxWidth: 200, objectFit: theme.logoShape === 'circle' ? 'cover' : 'contain', background: '#fff', padding: theme.logoShape === 'circle' ? 0 : 7, borderRadius: theme.logoShape === 'circle' ? '50%' : 12, boxShadow: '0 2px 12px rgba(0,0,0,.2)' }} />
+              : <div style={{ fontSize: 26, fontWeight: 900, color: '#fff', textShadow: '0 1px 4px rgba(0,0,0,.4)' }}>{theme.name}</div>}
+            {theme.logo && <div style={{ fontSize: 15, fontWeight: 800, color: '#fff', marginTop: 8, textShadow: '0 1px 4px rgba(0,0,0,.5)' }}>{theme.name}</div>}
+          </div>
         </div>
         <div style={{ textAlign: 'center', marginBottom: 24 }}>
-          <div style={{ fontSize: 48, marginBottom: 8 }}>✅</div>
-          <div style={{ fontSize: 28, fontWeight: 900, letterSpacing: '-0.025em' }}>Order confirmed</div>
+          <div style={{ fontSize: 40, marginBottom: 6 }}>✅</div>
+          <div style={{ fontSize: 26, fontWeight: 900, letterSpacing: '-0.025em', color: theme.fg }}>Order confirmed</div>
           <div style={{ fontSize: 13, color: muted, marginTop: 6 }}>
-            {theme.name} · ref <span style={{ fontFamily: 'monospace', fontWeight: 700, color: theme.fg }}>{orderRef}</span>
+            ref <span style={{ fontFamily: 'monospace', fontWeight: 700, color: theme.fg }}>{orderRef}</span>
           </div>
         </div>
 
