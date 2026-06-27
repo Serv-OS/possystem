@@ -8,6 +8,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { money } from '../../lib/currency';
 import { trackDelivery } from '../../lib/delivery/dispatch';
+import { courierPhase, courierLegs, courierLateness } from '../../lib/delivery/courierTimes';
 
 const STEPS = [
   { key: 'received', label: 'Received',  icon: '📥', desc: 'We\'ve got your order.' },
@@ -196,27 +197,48 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose }) {
             delivery orders, once the order exists. */}
         {isCourier && (() => {
           const [clabel, cicon] = COURIER_LABEL[courier?.status] || ['Preparing your delivery', '🛵'];
-          const etaTxt = fmtEta(courier?.eta);
+          const phase = courierPhase(courier);
+          const late = courierLateness(courier);
+          const dropTxt = fmtEta(courier?.eta);
+          const pickedTxt = fmtEta(courier?.pickedAt);
+          const deliveredTxt = fmtEta(courier?.deliveredAt);
+          const badState = phase === 'terminal_bad';
+          // One honest "arrival promise" hero: window/assigning → firm ETA → running-behind → delivered.
+          let hero;
+          if (phase === 'done') hero = <>Delivered{deliveredTxt ? <> at <b style={{ color: theme.fg }}>{deliveredTxt}</b></> : ''} — enjoy! 🎉</>;
+          else if (badState) hero = <>There’s a problem with this delivery — please contact us and we’ll sort it.</>;
+          else if (late.known && !late.onTime) hero = <span style={{ color: '#b45309', fontWeight: 700 }}>Running a little behind — your driver is on the way.</span>;
+          else if (dropTxt) hero = <>Arriving by <b style={{ color: theme.fg }}>{dropTxt}</b>{courier?.courierFirstName ? ` · ${courier.courierFirstName} is your driver` : ''}</>;
+          else hero = <>A courier is being assigned — we’ll text you a tracking link.</>;
           return (
             <div style={{ background: inputBg, border: `1px solid ${cardBdr}`, borderRadius: 16, padding: 18, marginBottom: 16 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <div style={{ fontSize: 22 }}>{cicon}</div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 15, fontWeight: 800, color: theme.fg }}>{clabel}</div>
-                  <div style={{ fontSize: 12, color: muted, marginTop: 2 }}>
-                    {etaTxt ? <>Estimated delivery around <b style={{ color: theme.fg }}>{etaTxt}</b></>
-                      : (courier?.dispatched ? 'A courier is being assigned — we’ll text you a tracking link.' : 'We’ll arrange a courier once your order is being prepared.')}
-                    {courier?.courierFirstName ? ` · ${courier.courierFirstName} is your driver` : ''}
-                  </div>
+                  <div style={{ fontSize: 12, color: muted, marginTop: 2 }}>{hero}</div>
                 </div>
               </div>
-              {/* Live tracking map — Stuart's shareable tracking page embedded. */}
-              {courier?.trackingUrl && (
+              {/* Mini timeline — collected / estimated / delivered, only what's known. */}
+              {!badState && (pickedTxt || dropTxt || deliveredTxt) && (
+                <div style={{ marginTop: 10, fontSize: 12, color: muted, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  {pickedTxt && <div style={{ color: '#16a34a', fontWeight: 700 }}>✓ Collected from the kitchen · {pickedTxt}</div>}
+                  {phase === 'done'
+                    ? <div style={{ color: '#16a34a', fontWeight: 700 }}>✓ Delivered · {deliveredTxt}</div>
+                    : (dropTxt && <div>~ Estimated to you · {dropTxt}</div>)}
+                </div>
+              )}
+              {/* Call the driver (real browser → tel: works). */}
+              {courier?.courierPhone && !badState && phase !== 'done' && (
+                <a href={`tel:${courier.courierPhone}`} style={{ display: 'inline-block', marginTop: 10, fontSize: 13, fontWeight: 800, color: theme.accent, textDecoration: 'none' }}>📞 Call your driver</a>
+              )}
+              {/* Live tracking map — Stuart's shareable tracking page embedded (browser only). */}
+              {courier?.trackingUrl && !badState && (
                 <div style={{ marginTop: 14, borderRadius: 12, overflow: 'hidden', border: `1px solid ${cardBdr}` }}>
                   <iframe title="Live delivery tracking" src={courier.trackingUrl} style={{ width: '100%', height: 280, border: 0, display: 'block' }} loading="lazy" />
                 </div>
               )}
-              {courier?.trackingUrl && (
+              {courier?.trackingUrl && !badState && (
                 <a href={courier.trackingUrl} target="_blank" rel="noreferrer" style={{ display: 'inline-block', marginTop: 10, fontSize: 13, fontWeight: 800, color: theme.accent, textDecoration: 'none' }}>Open full tracking map ↗</a>
               )}
             </div>

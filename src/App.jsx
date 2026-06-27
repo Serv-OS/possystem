@@ -88,6 +88,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.681', date: '27 Jun 2026', label: 'Delivery info flow — expected/actual times everywhere + scan-to-track QR (works on the till)',
+    changes: [
+      'The POS order card and the Deliveries tab now show the full courier time flow: expected pickup, expected delivery, and the actual delivered time (with a “running late” flag), plus the kitchen-ready time so staff can time the food. Expected times show with a “~”, actual times with a green ✓ — never a fake clock before a courier is assigned.',
+      'Fixed the dead “Track” button on the till: the Sunmi app can’t open external links, so we now show a scannable QR — tap a delivery and scan the code with a phone to open the live map in a browser. The courier’s name and phone are shown for calling.',
+      'Customer tracker improved: one clear arrival line (a window while a courier is being found, a firm time once assigned, “running behind” if late, and the delivered time when done), a collected→delivered mini-timeline, and a one-tap “Call your driver” button.',
+      'All three surfaces now read from one shared, tested time helper so they always tell the same story.',
+    ],
+  },
+  {
     version: '5.5.680', date: '27 Jun 2026', label: 'Online checkout fixes — ASAP no longer scheduled; delivery fee shown in the summary',
     changes: [
       'Fixed ASAP orders being scheduled for later: an ASAP order now dispatches the courier immediately (Stuart finds a driver now). Only orders where the customer picks a future time are scheduled for that time.',

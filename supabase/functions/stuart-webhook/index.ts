@@ -47,6 +47,13 @@ Deno.serve(async (req) => {
     if (p.courierPhone) patch.courier_phone = p.courierPhone;
     if (p.lat != null) patch.last_lat = p.lat;
     if (p.lng != null) patch.last_lng = p.lng;
+    // Persist the time flow (the webhook is the primary real-time signal — without this,
+    // delivered_at is NULL right when the order completes and no one is polling).
+    const iso = (v: string | null) => { if (!v) return null; const d = new Date(v); return isNaN(d.getTime()) ? null : d.toISOString(); };
+    const etaD = iso(p.etaDropoff); if (etaD) patch.eta = etaD;
+    const etaP = iso(p.etaPickup); if (etaP) patch.pickup_eta = etaP;
+    const pAt = iso(p.pickedAt); if (pAt) patch.picked_at = pAt;
+    const dAt = iso(p.deliveredAt); if (dAt) patch.delivered_at = dAt;
     const { data: del } = await sb.from('courier_deliveries')
       .update(patch).eq('uber_delivery_id', jobId).eq('dispatch_backend', 'stuart').select('id, location_id').maybeSingle();
 

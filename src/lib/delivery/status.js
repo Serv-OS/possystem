@@ -43,12 +43,44 @@ export function isTerminalStatus(s) {
 /** Human label for staff/customer display. */
 export function statusLabel(s) {
   switch (s) {
+    case 'dispatching': return 'Finding a courier';
     case 'pending':   return 'Finding a courier';
-    case 'pickup':    return 'Courier heading to you';
+    case 'pickup':    return 'Courier heading to venue';
     case 'dropoff':   return 'Out for delivery';
     case 'delivered': return 'Delivered';
     case 'canceled':  return 'Canceled';
     case 'returned':  return 'Returned';
+    case 'failed':    return 'Dispatch failed';
     default:          return 'Pending';
+  }
+}
+
+/** Accent colour for a status (chips, left bars). Shared so card/board/tracker can't drift. */
+export function statusColor(s) {
+  switch (s) {
+    case 'dispatching':
+    case 'pending':   return '#f59e0b';
+    case 'pickup':
+    case 'dropoff':   return '#3b82f6';
+    case 'delivered': return '#22c55e';
+    case 'canceled':  return '#888780';
+    case 'returned':  return '#ef4444';
+    case 'failed':    return '#ef4444';
+    default:          return '#888780';
+  }
+}
+
+/** Emoji glyph for a status. */
+export function statusIcon(s) {
+  switch (s) {
+    case 'dispatching':
+    case 'pending':   return '🔍';
+    case 'pickup':
+    case 'dropoff':   return '🛵';
+    case 'delivered': return '✅';
+    case 'canceled':  return '⚠️';
+    case 'returned':  return '↩️';
+    case 'failed':    return '⏳';
+    default:          return '🛵';
   }
 }

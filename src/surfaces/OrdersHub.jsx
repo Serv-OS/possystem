@@ -21,6 +21,9 @@ import { getActiveLocationSync } from '../lib/supabase';
 import { hubrisePushStatus } from '../lib/hubrise';
 import { getDeliveryDetail } from '../lib/delivery/deliveryConfig';
 import { dispatchDelivery, sendDeliveryTrackingSMS } from '../lib/delivery/dispatch';
+import { statusLabel, statusColor, statusIcon } from '../lib/delivery/status';
+import { courierPhase, courierLegs, courierLateness } from '../lib/delivery/courierTimes';
+import CourierTrackingQR from '../components/CourierTrackingQR';
 
 // ── Channel definitions ────────────────────────────────────────────────────────
 const FILTER_TABS = [
@@ -959,28 +962,47 @@ export default function OrdersHub() {
               <span>Total</span><span>{money(viewOrder.total || 0)}</span>
             </div>
 
-            {/* Courier (Stuart) status + dispatch control — only for courier delivery orders. */}
+            {/* Courier (Stuart): expected→actual time ladder + live status + native-safe QR. */}
             {viewIsCourier && (() => {
               const d = delDetail?.delivery || null;
+              const hasRow = !!d;
               const st = d?.status || null;
-              const MAP = {
-                dispatching: ['Finding a courier…', '#f59e0b'], pending: ['Finding a courier…', '#f59e0b'],
-                pickup: ['Courier heading to venue', '#3b82f6'], dropoff: ['Out for delivery', '#3b82f6'],
-                delivered: ['Delivered', '#22c55e'], canceled: ['Canceled', '#888780'],
-                returned: ['Returned', '#ef4444'], failed: ['Dispatch failed', '#ef4444'],
-              };
-              const [label, color] = MAP[st] || ['Not sent to a courier yet', '#888780'];
-              const terminalBad = st === 'failed' || st === 'canceled' || !st;
+              const phase = courierPhase(d);
+              const legs = courierLegs(d);
+              const late = courierLateness(d);
+              const label = hasRow ? statusLabel(st) : 'Not sent to a courier yet';
+              const color = hasRow ? statusColor(st) : '#888780';
+              const canSend = !hasRow || st === 'failed';        // never re-dispatch a canceled order
+              const readyTime = viewOrder.collectionTime || viewOrder._raw?.collection_time || null;
+              const legRow = (leg) => (
+                <div style={{ display:'flex', justifyContent:'space-between', fontSize:12.5, padding:'2px 0' }}>
+                  <span style={{ color:'var(--t3)' }}>{leg.label}</span>
+                  {leg.kind === 'pending'
+                    ? <span style={{ color:'var(--t4)' }}>—</span>
+                    : leg.kind === 'expected'
+                      ? <span style={{ color:'var(--t3)', fontStyle:'italic' }}>~{leg.time}</span>
+                      : <span style={{ color:'#16a34a', fontWeight:700 }}>✓ {leg.time}</span>}
+                </div>
+              );
               return (
                 <div style={{ marginTop:12, padding:'12px 14px', borderRadius:12, background:'var(--bg2)', border:'1px solid var(--bdr)' }}>
                   <div style={{ display:'flex', alignItems:'center', gap:8 }}>
                     <span style={{ fontSize:12, fontWeight:800, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.05em' }}>Stuart courier</span>
-                    <span style={{ marginLeft:'auto', fontSize:11, fontWeight:800, padding:'3px 10px', borderRadius:12, background:`${color}22`, color }}>{label}</span>
+                    <span style={{ marginLeft:'auto', fontSize:11, fontWeight:800, padding:'3px 10px', borderRadius:12, background:`${color}22`, color }}>{hasRow ? `${statusIcon(st)} ` : ''}{label}</span>
                   </div>
-                  {d?.courier_name && <div style={{ fontSize:12.5, color:'var(--t2)', marginTop:6 }}>👤 {d.courier_name}{d.courier_phone ? ` · ${d.courier_phone}` : ''}</div>}
-                  {d?.eta && <div style={{ fontSize:12.5, color:'var(--t2)', marginTop:2 }}>⏱ ETA {new Date(d.eta).toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit' })}</div>}
-                  {d?.tracking_url && <a href={d.tracking_url} target="_blank" rel="noreferrer" style={{ display:'inline-block', marginTop:6, fontSize:12.5, color:'var(--acc)', fontWeight:700, textDecoration:'none' }}>Track courier ↗</a>}
-                  {terminalBad && (
+                  {hasRow && phase !== 'terminal_bad' && (
+                    <div style={{ marginTop:8, borderTop:'1px solid var(--bdr)', paddingTop:8 }}>
+                      {legRow(legs.pickup)}
+                      {legRow(legs.dropoff)}
+                      {readyTime && <div style={{ fontSize:11, color:'var(--t4)', marginTop:4 }}>Kitchen ready ~{readyTime}</div>}
+                      {late.known && !late.onTime && phase !== 'done' && <div style={{ fontSize:11.5, color:'#ef4444', fontWeight:700, marginTop:4 }}>⚠ Running ~{late.lateMins} min late</div>}
+                      {phase === 'done' && <div style={{ fontSize:11.5, color:'#16a34a', fontWeight:700, marginTop:4 }}>Delivered{legs.dropoff.time ? ` ${legs.dropoff.time}` : ''}{late.known ? (late.onTime ? ' · on time' : ` · ${late.lateMins} min late`) : ''}</div>}
+                    </div>
+                  )}
+                  {hasRow && d?.tracking_url && phase !== 'terminal_bad' && (
+                    <CourierTrackingQR trackingUrl={d.tracking_url} courierName={d.courier_name} courierPhone={d.courier_phone} muted="var(--t3)" fg="var(--t1)" />
+                  )}
+                  {canSend && (
                     <button onClick={sendToCourier} disabled={delBusy} style={{ width:'100%', marginTop:10, padding:10, borderRadius:9, background:'var(--acc)', border:'none', color:'#0b0c10', fontWeight:800, cursor: delBusy?'wait':'pointer', fontFamily:'inherit', opacity: delBusy?0.6:1 }}>
                       {delBusy ? 'Sending…' : st === 'failed' ? '↻ Retry — send to Stuart' : '🚗 Send to Stuart courier'}
                     </button>

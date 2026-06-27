@@ -176,13 +176,13 @@ export function mapStuartStatus(raw: string | null): string {
 }
 
 /** Extract id / tracking / status / driver from a Stuart job payload (tolerant). */
-export function parseStuartJob(r: any): { id: string | null; trackingUrl: string | null; rawStatus: string | null; courierName: string | null; courierPhone: string | null; lat: number | null; lng: number | null; etaDropoff: string | null } {
+export function parseStuartJob(r: any): { id: string | null; trackingUrl: string | null; rawStatus: string | null; courierName: string | null; courierPhone: string | null; lat: number | null; lng: number | null; etaPickup: string | null; etaDropoff: string | null; pickedAt: string | null; deliveredAt: string | null } {
   const d = r?.data || r || {};
   const job = d.job || d;
   const delivery = Array.isArray(job.deliveries) ? job.deliveries[0] : (d.delivery || null);
   const driver = delivery?.driver || job.driver || null;
-  // Stuart dropoff ETA (populates once a courier is assigned): deliveries[0].eta.dropoff.
-  const etaDropoff = delivery?.eta?.dropoff || delivery?.dropoff_eta || job?.dropoff_at || null;
+  // Stuart times (populate as the courier progresses): deliveries[0].eta.{pickup,dropoff},
+  // picked_at (actual collection), delivered_at (actual delivery).
   return {
     id: job.id != null ? String(job.id) : (delivery?.id != null ? String(delivery.id) : null),
     trackingUrl: delivery?.tracking_url || delivery?.client_tracking_url || job.tracking_url || null,
@@ -191,7 +191,10 @@ export function parseStuartJob(r: any): { id: string | null; trackingUrl: string
     courierPhone: driver?.phone || null,
     lat: driver?.latitude ?? driver?.location?.latitude ?? null,
     lng: driver?.longitude ?? driver?.location?.longitude ?? null,
-    etaDropoff: etaDropoff || null,
+    etaPickup: delivery?.eta?.pickup || delivery?.pickup_eta || job?.pickup_at || null,
+    etaDropoff: delivery?.eta?.dropoff || delivery?.dropoff_eta || job?.dropoff_at || null,
+    pickedAt: delivery?.picked_at || job?.picked_at || null,
+    deliveredAt: delivery?.delivered_at || job?.ended_at || null,
   };
 }
 

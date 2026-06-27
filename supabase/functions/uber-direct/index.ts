@@ -104,7 +104,11 @@ async function refreshStuartRow(row: any, cfg: any): Promise<any> {
     if (sp.courierPhone) patch.courier_phone = sp.courierPhone;
     if (sp.lat != null) patch.last_lat = sp.lat;
     if (sp.lng != null) patch.last_lng = sp.lng;
-    if (sp.etaDropoff) { const d = new Date(sp.etaDropoff); if (!isNaN(d.getTime())) patch.eta = d.toISOString(); }
+    const iso = (v: string | null) => { if (!v) return null; const d = new Date(v); return isNaN(d.getTime()) ? null : d.toISOString(); };
+    const etaD = iso(sp.etaDropoff); if (etaD) patch.eta = etaD;
+    const etaP = iso(sp.etaPickup); if (etaP) patch.pickup_eta = etaP;
+    const pAt = iso(sp.pickedAt); if (pAt) patch.picked_at = pAt;
+    const dAt = iso(sp.deliveredAt); if (dAt) patch.delivered_at = dAt;
     await sb.from('courier_deliveries').update(patch).eq('id', row.id);
     return { ...row, ...patch };
   } catch { return row; }
@@ -434,8 +438,10 @@ Deno.serve(async (req) => {
       }
       return json({
         ok: true, dispatched: true,
-        status: del.status, trackingUrl: del.tracking_url, eta: del.eta,
+        status: del.status, trackingUrl: del.tracking_url,
+        eta: del.eta, pickupEta: del.pickup_eta, pickedAt: del.picked_at, deliveredAt: del.delivered_at,
         courierFirstName: (del.courier_name || '').trim().split(/\s+/)[0] || null,
+        courierPhone: del.courier_phone || null,
       });
     }
 
