@@ -88,6 +88,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.687', date: '27 Jun 2026', label: 'Staff NFC cards — self-link on the till (no Back Office reader needed)',
+    changes: [
+      'Staff link their own card at the till: tap a new (unknown) card → it asks for your PIN → enter it → the card is linked to you and you’re signed in. Next time, just tap. No card reader needed in Back Office (which runs on the computer).',
+      'Back Office still shows whether a staff member has a card and can remove/replace it.',
+    ],
+  },
+  {
     version: '5.5.686', date: '27 Jun 2026', label: 'Staff NFC cards — tap to sign in on any till',
     changes: [
       'NEW: staff can tap an NFC card/fob on the till to sign in instead of typing a PIN. The card’s ID is global, so one card works on any of your tills. PIN stays as the fallback — cards are an addition, never a replacement.',

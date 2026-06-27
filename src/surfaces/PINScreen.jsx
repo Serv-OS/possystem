@@ -16,6 +16,9 @@ export default function PINScreen() {
   // route is a GDPR requirement). Off-device / no bridge → caps all false → nothing renders.
   const [caps] = useState(() => biometricCaps());
   const [bioBusy, setBioBusy] = useState(false);
+  // Self-link: tapping an UNKNOWN card stashes its id; the next correct PIN links the card to that
+  // staff member (so they can just tap next time). No reader needed in Back Office on the Mac.
+  const [pendingCardId, setPendingCardId] = useState(null);
 
   // Load staff from Supabase using the paired device's locationId
   useEffect(() => {
@@ -59,9 +62,10 @@ export default function PINScreen() {
     if (!loadedStaff || !nfcOn) return;
     const stop = onNfcTap((cardId) => {
       const match = (loadedStaff || []).find(s => s.nfcCardId && normalizeCardId(s.nfcCardId) === cardId);
-      if (match) { login(match); return; }
-      setShake(true); setErrorMsg('Card not recognised — use your PIN');
-      setTimeout(() => setShake(false), 600);
+      if (match) { setPendingCardId(null); login(match); return; }
+      // Unknown card → invite the staff member to link it by entering their PIN next.
+      setPendingCardId(cardId);
+      setErrorMsg('New card — enter your PIN to link it to you');
     });
     return stop;
   }, [loadedStaff, nfcOn]);
@@ -80,7 +84,8 @@ export default function PINScreen() {
         // Look up which staff member has this PIN
         const match = staff.find(s => s.pin && s.pin === next);
         if (match) {
-          login(match);
+          if (pendingCardId) { linkCardThenLogin(match, pendingCardId); }
+          else login(match);
         } else {
           setShake(true);
           setErrorMsg('PIN not recognised');
@@ -105,6 +110,18 @@ export default function PINScreen() {
       setErrorMsg('Fingerprint not recognised — use your PIN');
     }
     if (r?.error !== 'canceled') { setShake(true); setTimeout(() => setShake(false), 600); }
+  };
+
+  // Link a freshly-tapped card to the staff member whose PIN was just entered, then sign them in.
+  // Best-effort persist (the unique index guards against a double-assigned card); always logs in.
+  const linkCardThenLogin = async (member, cardId) => {
+    try {
+      if (!isMock && supabase && member.id && !String(member.id).startsWith('s-')) {
+        await supabase.from('staff_members').update({ nfc_card_id: cardId }).eq('id', member.id);
+      }
+    } catch (e) { /* card may already be taken — still sign in */ }
+    setPendingCardId(null);
+    login(member);
   };
 
   // Count staff with PINs vs without
