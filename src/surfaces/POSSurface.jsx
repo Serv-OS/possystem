@@ -22,6 +22,7 @@ import { ReceiptModal, ReprintModal } from '../components/ReceiptModal';
 import { printService } from '../lib/printer';
 import { isTrainingMode } from '../lib/trainingMode';
 import CheckHistory from '../components/CheckHistory';
+import DeliveriesPanel from '../components/DeliveriesPanel';
 import ItemInfoModal from '../components/ItemInfoModal';
 import OrderReviewModal from '../components/OrderReviewModal';
 import OrderTypeModal from '../components/OrderTypeModal';
@@ -1359,7 +1360,7 @@ export default function POSSurface() {
 
         {/* Tab bar */}
         <div style={{padding:'0 14px',borderBottom:'1px solid var(--glass-border)',background:'transparent',flexShrink:0,display:'flex',alignItems:'center',gap:0}}>
-          {[['menu','Menu'],['history','History']].map(([t,l])=>{
+          {[['menu','Menu'],['history','History'],['deliveries','Deliveries']].map(([t,l])=>{
             const isActive = rightTab===t;
             const badge = t==='orders' ? orderQueue.filter(o=>o.status!=='collected').length : 0;
             return (
@@ -1602,6 +1603,9 @@ export default function POSSurface() {
 
         {/* ── History tab ── */}
         {rightTab==='history'&&<CheckHistory/>}
+
+        {/* ── Deliveries (live courier board) tab ── */}
+        {rightTab==='deliveries'&&<DeliveriesPanel/>}
       </div>
 
       {/* Modals */}

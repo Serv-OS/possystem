@@ -88,6 +88,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.678', date: '26 Jun 2026', label: 'POS Deliveries board + delivery info in Transactions',
+    changes: [
+      'NEW “Deliveries” tab on the POS (next to History) — front-of-house staff see every dispatched courier live: order ref, status (finding a courier → heading to venue → out for delivery → delivered), courier name, ETA and a tracking link, refreshing automatically.',
+      'Transactions now show delivery info on the order: customer phone, delivery address, fulfilment (courier / self-delivery) and the delivery fee — so the full order information is there for delivery and collection orders.',
+    ],
+  },
+  {
     version: '5.5.677', date: '26 Jun 2026', label: 'Online — confirmation email + SMS now send; order tracker uses your Menu Appearance branding',
     changes: [
       'Online orders now send the customer a confirmation: an emailed receipt (the full VAT receipt, using your receipt branding + Digital Receipt template) and a confirmation SMS. This was built but had never been wired into online checkout, so nothing was going out — now fixed on both the card and gift-card payment paths.',

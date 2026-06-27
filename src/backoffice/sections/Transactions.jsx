@@ -441,6 +441,22 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
                               {c.tableLabel && <div><strong>Table:</strong> {c.tableLabel}</div>}
                               {c.orderType && <div><strong>Order type:</strong> {c.orderType}</div>}
                               {c.covers > 0 && <div><strong>Covers:</strong> {c.covers}</div>}
+                              {/* Delivery / collection customer info — fee, address, fulfilment. */}
+                              {(() => {
+                                const cust = typeof c.customer === 'object' ? (c.customer || {}) : {};
+                                const addr = cust.address;
+                                const addrStr = !addr ? '' : (typeof addr === 'string' ? addr : [addr.line1, addr.line2, addr.city, addr.postcode].filter(Boolean).join(', '));
+                                const isDeliveryish = /deliver/i.test(c.orderType || '') || cust.delivery_fee != null || cust.delivery_mode || addrStr;
+                                if (!isDeliveryish) return null;
+                                return (
+                                  <>
+                                    {cust.phone && <div><strong>Phone:</strong> {cust.phone}</div>}
+                                    {addrStr && <div><strong>Address:</strong> {addrStr}</div>}
+                                    {cust.delivery_mode && <div><strong>Fulfilment:</strong> {cust.delivery_mode === 'uber' ? 'Courier' : 'Self-delivery'}</div>}
+                                    {cust.delivery_fee != null && <div><strong>Delivery fee:</strong> {fmt(Number(cust.delivery_fee))}</div>}
+                                  </>
+                                );
+                              })()}
                               {c.staffId && <div><strong>Staff ID:</strong> {c.staffId}</div>}
                               <div><strong>Check ID:</strong> <span style={{ fontFamily: 'var(--font-mono, ui-monospace, monospace)', fontSize: 11 }}>{c.id}</span></div>
                             </div>
