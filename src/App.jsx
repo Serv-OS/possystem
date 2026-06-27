@@ -88,6 +88,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.680', date: '27 Jun 2026', label: 'Online checkout fixes — ASAP no longer scheduled; delivery fee shown in the summary',
+    changes: [
+      'Fixed ASAP orders being scheduled for later: an ASAP order now dispatches the courier immediately (Stuart finds a driver now). Only orders where the customer picks a future time are scheduled for that time.',
+      'The delivery charge is now shown as its own line in the checkout order summary at every step, and the total adds up (items + delivery), so the customer always sees the delivery price before paying.',
+    ],
+  },
+  {
     version: '5.5.679', date: '26 Jun 2026', label: 'Delivery — scheduled courier pickup (collect when ready) + business address search + catering timing note',
     changes: [
       'Couriers are now scheduled to collect when the food is ready, not the moment the order is placed: online delivery orders with a real prep/lead time book the Stuart courier for the ready time, so the driver doesn’t turn up too early. (Short ASAP orders still dispatch immediately.)',

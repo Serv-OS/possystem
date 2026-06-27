@@ -934,9 +934,10 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         recordDeliverySurcharge({ opsLocationId, orderRef: ref, quote: dq }).catch(() => {});
         // Only dispatch a courier in 'uber' mode; self-delivery just fires to the kitchen.
         if (deliveryQuote.dispatchable) {
-          // pickupAt = the food-ready/collection time so Stuart schedules the courier to collect
-          // when it's ready (not too early) for orders with a real prep/lead time.
-          dispatchDelivery({ opsLocationId, order: { ref, items, total: subtotal + deliveryFeeMinor / 100, customer, pickupAt: collectionAt ? collectionAt.toISOString() : null }, quote: dq }).catch(() => {});
+          // pickupAt = the food-ready time, but ONLY for SCHEDULED orders (a future slot) so Stuart
+          // collects then. ASAP orders dispatch IMMEDIATELY (Stuart finds a courier now) — never
+          // scheduled to a future time, which surprised staff ("ASAP got scheduled for later").
+          dispatchDelivery({ opsLocationId, order: { ref, items, total: subtotal + deliveryFeeMinor / 100, customer, pickupAt: (timeMode === 'asap' || !collectionAt) ? null : collectionAt.toISOString() }, quote: dq }).catch(() => {});
         }
       }
 
@@ -1153,6 +1154,11 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
                 <span style={{ fontWeight: 700 }}>-{money((giftApplied.applied / 100))}</span>
               </div>
             )}
+            {deliveryFeeMinor > 0 && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 13 }}>
+                <span>Delivery</span><span style={{ fontWeight: 700 }}>{money(deliveryFeeMinor / 100)}</span>
+              </div>
+            )}
             <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0 0', borderTop: `1px solid ${cardBdr}`, marginTop: 8 }}>
               <span style={{ fontSize: 14, fontWeight: 800 }}>{giftApplied ? 'Remaining' : 'Total'}</span>
               <span style={{ fontSize: 18, fontWeight: 900 }}>{money((remainingMinor / 100))}</span>
@@ -1284,6 +1290,11 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
                 <span style={{ fontWeight: 700 }}>-{money((rewardApplied.discount_value / 100))}</span>
               </div>
             )}
+            {deliveryFeeMinor > 0 && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 13 }}>
+                <span>Delivery</span><span style={{ fontWeight: 700 }}>{money(deliveryFeeMinor / 100)}</span>
+              </div>
+            )}
             <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0 0', borderTop: `1px solid ${cardBdr}`, marginTop: 8 }}>
               <span style={{ fontSize: 14, fontWeight: 800 }}>{(giftApplied || rewardApplied) ? 'Remaining' : 'Total'}</span>
               <span style={{ fontSize: 18, fontWeight: 900 }}>{money((remainingMinor / 100))}</span>
@@ -1393,9 +1404,14 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
                 <span>{money(b.tax)}</span>
               </div>
             ))}
+            {deliveryFeeMinor > 0 && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 13 }}>
+                <span>Delivery</span><span style={{ fontWeight: 700 }}>{money(deliveryFeeMinor / 100)}</span>
+              </div>
+            )}
             <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0 0', borderTop: `1px solid ${cardBdr}`, marginTop: 8 }}>
               <span style={{ fontSize: 14, fontWeight: 800 }}>Total</span>
-              <span style={{ fontSize: 18, fontWeight: 900 }}>{money(subtotal)}</span>
+              <span style={{ fontSize: 18, fontWeight: 900 }}>{money(subtotal + deliveryFeeMinor / 100)}</span>
             </div>
           </div>
         </div>
