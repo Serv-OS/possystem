@@ -88,6 +88,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.684', date: '27 Jun 2026', label: 'Docs — technical documentation set added (/docs)',
+    changes: [
+      'Added a due-diligence-grade documentation set under /docs: the technology & vendor register, a technical due-diligence overview, the engineering methodology, and architecture/topology diagrams. No application changes.',
+    ],
+  },
+  {
     version: '5.5.683', date: '27 Jun 2026', label: 'Delivery — status sync hardening (from automated review)',
     changes: [
       'Courier status can no longer go backwards: a late or out-of-order update from Stuart won’t flip a “Delivered” order back to “out for delivery”.',
