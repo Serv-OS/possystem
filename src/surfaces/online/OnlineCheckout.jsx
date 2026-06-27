@@ -934,7 +934,9 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         recordDeliverySurcharge({ opsLocationId, orderRef: ref, quote: dq }).catch(() => {});
         // Only dispatch a courier in 'uber' mode; self-delivery just fires to the kitchen.
         if (deliveryQuote.dispatchable) {
-          dispatchDelivery({ opsLocationId, order: { ref, items, total: subtotal + deliveryFeeMinor / 100, customer }, quote: dq }).catch(() => {});
+          // pickupAt = the food-ready/collection time so Stuart schedules the courier to collect
+          // when it's ready (not too early) for orders with a real prep/lead time.
+          dispatchDelivery({ opsLocationId, order: { ref, items, total: subtotal + deliveryFeeMinor / 100, customer, pickupAt: collectionAt ? collectionAt.toISOString() : null }, quote: dq }).catch(() => {});
         }
       }
 

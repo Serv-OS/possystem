@@ -88,6 +88,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.679', date: '26 Jun 2026', label: 'Delivery — scheduled courier pickup (collect when ready) + business address search + catering timing note',
+    changes: [
+      'Couriers are now scheduled to collect when the food is ready, not the moment the order is placed: online delivery orders with a real prep/lead time book the Stuart courier for the ready time, so the driver doesn’t turn up too early. (Short ASAP orders still dispatch immediately.)',
+      'Address search now finds businesses, not just street addresses — start typing a place or business name and pick it (powered by Mapbox’s place search; it still falls back to address-only search if needed, and free typing always works). Applies to the customer delivery address and the Back Office pickup address.',
+      'Catering: the chosen time is clarified as the kitchen-ready time, with a note that delivery adds travel on top — so customers order far enough ahead.',
+    ],
+  },
+  {
     version: '5.5.678', date: '26 Jun 2026', label: 'POS Deliveries board + delivery info in Transactions',
     changes: [
       'NEW “Deliveries” tab on the POS (next to History) — front-of-house staff see every dispatched courier live: order ref, status (finding a courier → heading to venue → out for delivery → delivered), courier name, ETA and a tracking link, refreshing automatically.',

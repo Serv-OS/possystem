@@ -295,6 +295,11 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
         <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14, padding: 16, marginBottom: 14 }}>
           <div style={{ fontWeight: 800, marginBottom: 4 }}>{isDelivery ? 'Delivery' : 'Collection'} · {eventDate} at {eventTime}</div>
           <div style={{ fontSize: 13, color: '#475569' }}>{cart.reduce((n, l) => n + (l.qty || 1), 0)} items · subtotal {money(subtotal, cur)}{deliveryFee ? ` · delivery ${money(deliveryFee, cur)}` : ''}{tip ? ` · tip ${money(tip, cur)}` : ''}{discount ? ` · promo −${money(discount, cur)}` : ''} · <b>total {money(total, cur)}</b></div>
+          {isDelivery && (
+            <div style={{ fontSize: 12, color: '#92400e', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: '8px 10px', marginTop: 10, lineHeight: 1.5 }}>
+              ⏱ <b>{eventTime}</b> is when your order is ready to leave the kitchen. Delivery adds travel time on top — please choose a time that allows for the courier to reach you.
+            </div>
+          )}
         </div>
 
         {step === 'pay' ? (

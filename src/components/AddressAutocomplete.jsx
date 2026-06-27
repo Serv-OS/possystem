@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { searchAddresses, mapboxToken } from '../lib/address/mapbox';
+import { searchAddresses, searchPlaces, retrievePlace, newSessionToken, mapboxToken } from '../lib/address/mapbox';
 
 /**
  * AddressAutocomplete — a single text input that suggests precise, geocodable addresses as you
@@ -20,6 +20,8 @@ export default function AddressAutocomplete({
   const [active, setActive] = useState(-1);
   const boxRef = useRef(null);
   const skipRef = useRef(false); // don't re-search the text we just set from a selection
+  const sessionRef = useRef(null);
+  if (!sessionRef.current) sessionRef.current = newSessionToken();
 
   useEffect(() => {
     if (!token) return;
@@ -28,8 +30,11 @@ export default function AddressAutocomplete({
     if (q.trim().length < 3) { setSugg([]); setOpen(false); return; }
     let live = true;
     const t = setTimeout(async () => {
-      const r = await searchAddresses(q, { country, proximity });
+      // Search Box first (finds businesses/POIs + addresses); fall back to geocoding (addresses
+      // only) if it returns nothing, so there's no regression where Search Box isn't enabled.
+      let r = await searchPlaces(q, { country, proximity, sessionToken: sessionRef.current });
       if (!live) return;
+      if (!r.length) { r = await searchAddresses(q, { country, proximity }); if (!live) return; }
       setSugg(r); setOpen(r.length > 0); setActive(-1);
     }, 280);
     return () => { live = false; clearTimeout(t); };
@@ -42,11 +47,19 @@ export default function AddressAutocomplete({
     return () => document.removeEventListener('mousedown', h);
   }, []);
 
-  const choose = (a) => {
+  const choose = async (a) => {
     skipRef.current = true;
-    onSelect?.(a);
-    onChangeText?.(a.line1 || a.label);
-    setSugg([]); setOpen(false); setActive(-1);
+    setOpen(false); setActive(-1); setSugg([]);
+    let resolved = a;
+    if (a.needsRetrieve) {
+      // Search Box suggestion → fetch coords + structured address. Each retrieve ends the Mapbox
+      // session, so rotate the token afterwards.
+      const full = await retrievePlace(a.id, { token, sessionToken: sessionRef.current });
+      sessionRef.current = newSessionToken();
+      if (full) resolved = full;
+    }
+    onSelect?.(resolved);
+    onChangeText?.(resolved.line1 || resolved.full || resolved.label || a.label || '');
   };
 
   return (

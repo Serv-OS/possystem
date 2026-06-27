@@ -71,13 +71,20 @@ export async function getStuartPricing(opts: { env: 'sandbox' | 'prod'; token: s
   return stuartFetch(opts.env, opts.token, 'POST', '/v2/jobs/pricing', { job });
 }
 
-/** Build the Stuart create-job body from a ServOS order + quote + venue pickup config. */
+/** Build the Stuart create-job body from a ServOS order + quote + venue pickup config.
+ *  If order.pickupAt (ISO) is far enough in the future, the job is SCHEDULED for that time
+ *  (job.pickup_at) so the courier collects when the food is ready — not too early. Stuart needs a
+ *  little lead for scheduled jobs, so anything under ~15 min ahead dispatches immediately. */
+const STUART_SCHEDULE_FLOOR_MS = 15 * 60_000;
 export function buildStuartJob(order: any, quote: any, cfg: any) {
   const cust = order?.customer || {};
   const pc = cfg?.pickup_contact || {};
   const full = String(cust.name || '').trim().split(/\s+/);
+  const pickupAt = order?.pickupAt ? new Date(order.pickupAt) : null;
+  const scheduled = pickupAt && !isNaN(pickupAt.getTime()) && (pickupAt.getTime() - Date.now() > STUART_SCHEDULE_FLOOR_MS);
   return {
     job: {
+      ...(scheduled ? { pickup_at: pickupAt.toISOString() } : {}),
       ...(cfg?.stuart_transport_type ? { transport_type: cfg.stuart_transport_type } : {}),
       pickups: [{
         address: addrStr(cfg?.pickup_address),
