@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useStore } from '../store';
 import { supabase, isMock } from '../lib/supabase';
 import { ServOSIcon, ServOSWordmark } from '../components/ServOSBrand';
+import { biometricCaps, biometricIdentify } from '../lib/biometric';
 
 export default function PINScreen() {
   const { login, staffMembers } = useStore();
@@ -9,6 +10,11 @@ export default function PINScreen() {
   const [pin, setPin] = useState('');
   const [shake, setShake] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+  // Fingerprint (Sunmi D3 Pro): only shown when the native bridge reports 1:N identify support.
+  // PIN stays fully available — biometrics is an addition, never a replacement (and a non-biometric
+  // route is a GDPR requirement). Off-device / no bridge → caps all false → nothing renders.
+  const [caps] = useState(() => biometricCaps());
+  const [bioBusy, setBioBusy] = useState(false);
 
   // Load staff from Supabase using the paired device's locationId
   useEffect(() => {
@@ -69,6 +75,22 @@ export default function PINScreen() {
     }
   };
 
+  // Fingerprint sign-in (1:N identify): tap → native returns the matching staff id → log them in.
+  const scanFingerprint = async () => {
+    if (bioBusy) return;
+    setBioBusy(true); setErrorMsg('');
+    const r = await biometricIdentify().catch(() => ({ ok: false }));
+    setBioBusy(false);
+    if (r?.ok && r.staffRef) {
+      const match = staff.find(s => String(s.id) === String(r.staffRef));
+      if (match) { login(match); return; }
+      setErrorMsg('Fingerprint isn’t linked to a staff member yet');
+    } else if (r?.error !== 'canceled') {
+      setErrorMsg('Fingerprint not recognised — use your PIN');
+    }
+    if (r?.error !== 'canceled') { setShake(true); setTimeout(() => setShake(false), 600); }
+  };
+
   // Count staff with PINs vs without
   const staffWithPin = staff.filter(s => s.pin);
   const staffNoPin = staff.filter(s => !s.pin);
@@ -110,6 +132,17 @@ export default function PINScreen() {
           {/* Error message */}
           {errorMsg && (
             <div style={{ fontSize: 12, color: 'var(--red)', fontWeight: 600, minHeight: 18 }}>{errorMsg}</div>
+          )}
+
+          {/* Fingerprint sign-in — only when the device's bridge supports 1:N identify (Sunmi D3 Pro). */}
+          {caps.identify && (
+            <button onClick={scanFingerprint} disabled={bioBusy} style={{
+              display: 'flex', alignItems: 'center', gap: 10, padding: '10px 18px', borderRadius: 12,
+              background: bioBusy ? 'var(--bg3)' : 'var(--acc)', color: bioBusy ? 'var(--t2)' : '#0b0c10',
+              border: 'none', fontSize: 14, fontWeight: 800, cursor: bioBusy ? 'wait' : 'pointer', fontFamily: 'inherit',
+            }}>
+              <span style={{ fontSize: 20 }}>👆</span>{bioBusy ? 'Scanning…' : 'Sign in with fingerprint'}
+            </button>
           )}
 
           {/* Numpad */}

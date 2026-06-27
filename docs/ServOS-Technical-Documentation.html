@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ServOS — Technical Documentation</title>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
+</script>
+<style>
+  :root { --ink:#16181d; --muted:#5b6470; --line:#e3e6ea; --accent:#E8742C; --bg:#fff; --soft:#f7f8fa; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
+         color: var(--ink); background: var(--bg); line-height: 1.55; margin: 0; }
+  .page { max-width: 880px; margin: 0 auto; padding: 56px 40px 96px; }
+  h1 { font-size: 30px; margin: 0 0 4px; letter-spacing: -0.02em; }
+  h2 { font-size: 21px; margin: 44px 0 12px; padding-top: 18px; border-top: 2px solid var(--line); letter-spacing: -0.01em; }
+  h3 { font-size: 16px; margin: 26px 0 8px; }
+  p, li { font-size: 14px; }
+  .sub { color: var(--muted); font-size: 14px; margin: 0 0 8px; }
+  .cover { padding: 28px 0 8px; border-bottom: 3px solid var(--accent); margin-bottom: 8px; }
+  .pill { display:inline-block; font-size:11px; font-weight:700; color:#fff; background:var(--accent); border-radius:20px; padding:3px 11px; vertical-align:middle; }
+  table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { background: var(--soft); font-weight: 700; font-size: 12px; }
+  code { background: var(--soft); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; font-size: 12.5px; }
+  pre.code { background: var(--soft); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; font-size: 12.5px; overflow-x: auto; }
+  .mermaid { background: var(--soft); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin: 16px 0; text-align: center; }
+  .toc { background: var(--soft); border: 1px solid var(--line); border-radius: 10px; padding: 14px 20px; }
+  .toc a { color: var(--ink); text-decoration: none; }
+  .toc a:hover { color: var(--accent); }
+  .note { background: #fff8f1; border: 1px solid #f6d9bd; border-radius: 8px; padding: 10px 14px; font-size: 13px; }
+  .sev-high { color: #c0392b; font-weight: 700; }
+  .sev-med  { color: #b8860b; font-weight: 700; }
+  .sev-low  { color: #2e7d32; font-weight: 700; }
+  footer { color: var(--muted); font-size: 12px; margin-top: 40px; border-top: 1px solid var(--line); padding-top: 14px; }
+  @media print { h2 { page-break-before: auto; } .mermaid, table { page-break-inside: avoid; } .noprint { display:none; } }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="cover">
+    <h1>ServOS — Technical Documentation</h1>
+    <p class="sub">Restaurant OS · multi-tenant hospitality POS &amp; operations platform &nbsp; <span class="pill">Confidential</span></p>
+    <p class="sub">Prepared for operations &amp; technical due diligence · 27 June 2026</p>
+  </div>
+
+  <div class="note noprint">📄 <b>To save as PDF:</b> press <b>⌘P</b> (Mac) / <b>Ctrl-P</b> (Windows) → Destination <b>“Save as PDF”</b>. The diagrams below render automatically (needs internet the first time).</div>
+
+  <div class="toc">
+    <b>Contents</b>
+    <ol>
+      <li><a href="#stack">Technology &amp; vendor register</a></li>
+      <li><a href="#dd">Technical due diligence</a></li>
+      <li><a href="#method">Engineering methodology</a></li>
+      <li><a href="#topo">Topology &amp; architecture diagrams</a></li>
+    </ol>
+  </div>
+
+  <!-- ============ 1. TECH STACK ============ -->
+  <h2 id="stack">1 · Technology &amp; vendor register</h2>
+  <p class="sub">Every third-party service the platform depends on, its role, account ownership and operational criticality.</p>
+  <table>
+    <tr><th>Layer</th><th>Vendor</th><th>Role</th><th>Account</th><th>Criticality</th></tr>
+    <tr><td>Database &amp; backend</td><td>Supabase</td><td>Postgres + RLS, Realtime, Storage, Edge Functions, Auth</td><td>Supabase org (2 projects)</td><td>Critical</td></tr>
+    <tr><td>Hosting / deployment</td><td>Vercel</td><td>Frontend hosting, branch environments, serverless AI proxy</td><td>“Peter Roberts’ projects” → <code>possystem</code></td><td>Critical</td></tr>
+    <tr><td>Version control / CI</td><td>GitHub</td><td>Source control, secret-scan push protection, CI trigger</td><td><code>Serv-OS/possystem</code></td><td>High</td></tr>
+    <tr><td>Email</td><td>Resend</td><td>Transactional email — receipts, confirmations, e-sign</td><td>peter@serv-os.app</td><td>High</td></tr>
+    <tr><td>SMS</td><td>Twilio</td><td>OTP, receipts, order/courier tracking, waitlist, marketing</td><td>peter@serv-os.app</td><td>High</td></tr>
+    <tr><td>Payments (in-person)</td><td>Stripe Terminal</td><td>Card-present on POS / kiosk readers</td><td>Stripe (per-merchant)</td><td>Critical (revenue)</td></tr>
+    <tr><td>Payments (online / 2nd)</td><td>Stripe Checkout / Ryft</td><td>Online card + dual-processor</td><td>Stripe / Ryft (per-merchant)</td><td>Critical (revenue)</td></tr>
+    <tr><td>3rd-party orders (3PO)</td><td>HubRise</td><td>Inbound Deliveroo / Uber Eats / Just Eat + catalog/86 sync</td><td>HubRise (per-merchant)</td><td>Medium</td></tr>
+    <tr><td>Own-delivery courier</td><td>Stuart</td><td>Self-delivery last-mile — quote, dispatch, tracking; per-location accounts</td><td>Stuart (per-venue)</td><td>Medium</td></tr>
+    <tr><td>Address / geocoding</td><td>Mapbox (+ postcodes.io)</td><td>Address + business autocomplete with coordinates for couriers</td><td>Mapbox (<code>servosapp</code>)</td><td>Low</td></tr>
+    <tr><td>AI</td><td>Anthropic (Claude)</td><td>In-app shift assistant, proxied server-side</td><td>API key (Vercel env)</td><td>Low</td></tr>
+    <tr><td>Mobile runtime</td><td>Android WebView (Sunmi)</td><td>Native APK wrapper + printer/reader bridges; self-update</td><td>Sideloaded APK</td><td>High</td></tr>
+  </table>
+
+  <h3>Supabase — two-database split</h3>
+  <table>
+    <tr><th></th><th>Ops DB</th><th>Platform DB</th></tr>
+    <tr><td>Purpose</td><td>All POS operational data (orders, menu, sessions, stock, workforce, delivery, payments)</td><td>Cross-company identity, users &amp; roles, gift cards, loyalty</td></tr>
+    <tr><td>Edge Functions</td><td>Hosted here (60+)</td><td>—</td></tr>
+    <tr><td>Auth</td><td>Back-office users + device pairing (POS) + anonymous (kiosk/online/QR)</td><td>Platform admins</td></tr>
+  </table>
+
+  <h3>Environments (Vercel)</h3>
+  <table>
+    <tr><th>Environment</th><th>Branch</th><th>Domains</th><th>Status</th></tr>
+    <tr><td>dev (custom)</td><td><code>develop</code></td><td>dev.serv-os.app · possystem-liard.vercel.app · dev.pos-up.com</td><td>Active working/QA line</td></tr>
+    <tr><td>production</td><td><code>main</code></td><td>app.serv-os.app</td><td>Cut-over pending</td></tr>
+  </table>
+  <p class="note">Secrets are never committed (GitHub push-protection enforced); server secrets live in Supabase Edge Function secrets and Vercel env only. <b>Pre-funding:</b> migrate vendor accounts from the founder identity to a company-owned org with 2FA + least-privilege.</p>
+
+  <!-- ============ 2. DUE DILIGENCE ============ -->
+  <h2 id="dd">2 · Technical due diligence</h2>
+
+  <h3>2.1 Executive summary</h3>
+  <p>ServOS is a multi-tenant, multi-device SaaS point-of-sale and operations platform for hospitality. A single React codebase (~100k+ lines) serves ~17 product surfaces — counter POS, bar, table service, kitchen display, self-service kiosk, mobile POS, time clock, online ordering, QR table ordering, loyalty portal, gift cards, digital menu boards, owner app, AI assistant, review manager — backed by Supabase and deployed on Vercel. It covers the full hospitality lifecycle: menu, ordering, payments, KDS, stock/costing, workforce/payroll, HACCP/operations, delivery (own-courier + aggregators), CRM/loyalty and reporting.</p>
+
+  <h3>2.2 Architecture</h3>
+  <p>A client-heavy SPA with a serverless backend. The React app renders a surface chosen by URL; state lives in a single store with multi-device coordination via BroadcastChannel + Supabase Realtime. The backend is Supabase — Postgres (system of record), Realtime, Storage, Auth and 60+ Deno Edge Functions that hold all third-party secrets and enforce tenant-aware authorisation (each function does its own auth: token + location-access checks). A native Android WebView APK wraps the app for Sunmi hardware with printer/reader bridges and self-updates from Storage. POS devices buffer writes in a durable offline queue and replay on reconnect, so a venue keeps trading through network loss with no data loss.</p>
+
+  <h3>2.3 Multi-tenancy &amp; data</h3>
+  <p>Every operational row is scoped to a <code>location_id</code>. Isolation is defence-in-depth: (1) Postgres Row-Level Security on operational tables, with sensitive tables (delivery, aggregator, workforce PII) service-role-only and reachable only via edge functions; (2) edge-function authorisation — <code>requireToken</code> for operational reads the device needs, <code>requireAccess</code> (back-office user or super-admin) for management/mutations, always filtered by the caller’s location; (3) a client tenant fence that pins the active location. Two databases separate operational data from cross-company identity. Sales are immutable closed-check records; workforce audit and ledgers are append-only and hash-chained.</p>
+
+  <h3>2.4 Integrations</h3>
+  <table>
+    <tr><th>Integration</th><th>Direction</th><th>Mechanism</th></tr>
+    <tr><td>Stripe / Ryft</td><td>Out</td><td>Terminal SDK + Checkout + API/webhooks; refunds &amp; disputes route by stored processor</td></tr>
+    <tr><td>HubRise</td><td>In</td><td>Signed webhook, idempotent on event id; catalog/86 push</td></tr>
+    <tr><td>Stuart</td><td>Out</td><td>OAuth2; live quote → dispatch → status; webhook + server-side polling fallback; per-location accounts</td></tr>
+    <tr><td>Resend / Twilio</td><td>Out</td><td>Edge functions; template merge; best-effort, never block a sale</td></tr>
+    <tr><td>Mapbox / Anthropic</td><td>Out</td><td>Geocoding + POI search; AI via serverless proxy</td></tr>
+  </table>
+  <p>All credentials live server-side (edge env or per-tenant service-role-only columns, never returned to the browser); inbound webhooks verify a signature/secret and dedupe; outbound side-effects never block the customer’s payment; provider seams (<code>dispatch_backend</code>, <code>processor</code>) allow swapping vendors without UI change.</p>
+
+  <h3>2.5 Payments &amp; PCI</h3>
+  <p>Card data is never handled by ServOS code — Stripe Terminal and Stripe/Ryft hosted/SDK flows tokenise on the processor; the platform stores only references (intent/session ids, amounts, processor last-4). This keeps PCI scope to the SAQ-A / A-EP class rather than handling card numbers. Money is computed in minor units and is unit-tested for penny-correctness (service charge, discounts, delivery surcharge, tronc/payroll).</p>
+
+  <h3>2.6 Scalability &amp; reliability</h3>
+  <p>Stateless frontend on Vercel’s CDN; managed Postgres + Realtime. Concurrency hardening shipped: hot-path indexes, batched sync/print/replay, and reserve-then-act idempotency on courier dispatch (a unique index makes double-dispatch impossible across client + cron + retries). Offline-first POS: durable write queue, session reconciler, master/child heartbeat, print retry.</p>
+
+  <h3>2.7 Deployment &amp; release management</h3>
+  <p>GitHub source with secret-scanning push protection. Push to <code>develop</code> builds the dev environment (active QA line); <code>main</code> is production. Edge functions deploy via the Supabase CLI; schema via reversible, numbered SQL migrations applied through the Management API on per-change authorisation. Every deploy bumps a single version source and adds an in-product changelog entry — an auditable, human-readable history of every production change.</p>
+
+  <h3>2.8 Risk register &amp; remediation (honest assessment)</h3>
+  <table>
+    <tr><th>#</th><th>Area</th><th>Risk</th><th>Sev.</th><th>Remediation</th></tr>
+    <tr><td>R1</td><td>Security — RLS</td><td>Known pre-existing gap in POS-core table RLS; not all operational tables fully tenant-fenced at the DB layer (edge-fn fencing mitigates primary access paths).</td><td class="sev-high">High</td><td>Full RLS pass + automated cross-tenant tests + pen-test before scale. Disclose in DD.</td></tr>
+    <tr><td>R2</td><td>No TypeScript</td><td>Manual type discipline; runtime type bugs possible.</td><td class="sev-med">Med</td><td>Incremental TS on shared libs/edge fns; expand unit suite.</td></tr>
+    <tr><td>R3</td><td>Test depth</td><td>Strong pure-logic unit tests; no end-to-end framework — UI relies on manual QA.</td><td class="sev-med">Med</td><td>Playwright e2e on critical flows; CI gate.</td></tr>
+    <tr><td>R4</td><td>Account ownership</td><td>Vendor accounts under one founder identity; manual secret rotation.</td><td class="sev-med">Med</td><td>Company-owned orgs, 2FA, least-privilege, secret manager + rotation policy.</td></tr>
+    <tr><td>R5</td><td>Prod cut-over</td><td>Production branch trails the active dev line.</td><td class="sev-low">Low/Med</td><td>Execute staging→prod cut-over; align native-app targets.</td></tr>
+    <tr><td>R6</td><td>Single-cloud</td><td>Hard dependency on Supabase + Vercel.</td><td class="sev-low">Low</td><td>Document RTO/RPO; portability via standard Postgres + static build.</td></tr>
+    <tr><td>R7</td><td>Compliance</td><td>UK VAT ✓, allergen confirmation + audit ✓; GDPR DSAR (export/erase) tooling partial.</td><td class="sev-med">Med</td><td>Build DSAR export/erasure; retention policy; processor DPA register.</td></tr>
+  </table>
+
+  <h3>2.9 Compliance &amp; domain correctness (strengths)</h3>
+  <ul>
+    <li><b>UK VAT</b> — per-rate tax with breakdowns on receipts; P&amp;L on ex-VAT net sales; VAT treated as a liability.</li>
+    <li><b>Allergens</b> — EU/UK FIC (“Natasha’s Law”) confirmation gate on declared-allergen orders, recorded to the order audit trail.</li>
+    <li><b>Payroll/tronc</b> — server-side, penny-exact, tamper-evident (hash-chained), statutory holiday accrual; aligned to the UK Tipping Act / HMRC E24.</li>
+    <li><b>Age verification</b> — Challenge 21/25 with audit log.</li>
+  </ul>
+
+  <!-- ============ 3. METHODOLOGY ============ -->
+  <h2 id="method">3 · Engineering methodology</h2>
+  <ul>
+    <li><b>Development model</b> — trunk-style on <code>develop</code> (auto-deploys to the dev QA line); features delivered as small, reversible, end-to-end vertical slices (schema → data layer → edge function → UI → tests). Large features ship “build-now, go-live owner-gated”. Reuse-first.</li>
+    <li><b>Release process (every deploy)</b> — version bump + plain-English changelog → build &amp; tests green → push (Vercel) + edge-function deploy + numbered reversible migration (authorised). Edge functions that write new columns deploy after their migration.</li>
+    <li><b>Database change management</b> — numbered reversible migrations with rollback blocks; additive-first; new sensitive tables are service-role-only by default; migrations applied only with explicit per-change authorisation.</li>
+    <li><b>Testing &amp; quality</b> — 150+ unit tests over pure business logic (tax, service charge, discounts, delivery surcharge/quote, courier time/lateness, waitlist, ops/HACCP, tronc/payroll); money pennies-correct. Substantial changes go through an automated adversarial multi-agent review (independent reviewers → verification of each finding) before deploy — which has caught real defects pre-production. Per-device <b>training mode</b> commits nothing (safe staff training on the live build).</li>
+    <li><b>Conventions &amp; invariants</b> — camelCase JS / snake_case SQL mapped both ways; static imports only; always resolve the real <code>location_id</code> before any write; never render an order object directly (serialise); new “complete order” paths must take payment first if money is owed.</li>
+    <li><b>Knowledge base</b> — persistent in-repo docs (CLAUDE.md, DECISIONS.md, INVARIANTS.md, CURRENT_WORK.md) capture architecture, decisions, invariants and gotchas, read at the start of every work session.</li>
+  </ul>
+
+  <!-- ============ 4. TOPOLOGY ============ -->
+  <h2 id="topo">4 · Topology &amp; architecture diagrams</h2>
+
+  <h3>4.1 System context</h3>
+  <pre class="mermaid">
+flowchart TB
+  subgraph Clients["Clients / devices"]
+    POS["POS (Sunmi APK)"]
+    KIOSK["Kiosk / MPOS"]
+    BO["Back Office"]
+    CUST["Online / QR customers"]
+  end
+  subgraph Vercel["Vercel"]
+    SPA["React SPA (one build, ~17 surfaces)"]
+    AIPROXY["AI proxy route"]
+  end
+  subgraph Supabase["Supabase"]
+    OPS["Postgres + RLS (Ops + Platform DB)"]
+    EF["Edge Functions (60+) - secrets, tenant auth"]
+    RT["Realtime / Storage"]
+  end
+  subgraph Ext["External services"]
+    PAY["Stripe / Ryft"]
+    HUBRISE["HubRise (3PO in)"]
+    STUART["Stuart (courier)"]
+    COMMS["Resend / Twilio / Mapbox / Anthropic"]
+  end
+  POS & KIOSK & BO & CUST --> SPA
+  SPA --> OPS & RT
+  SPA --> EF
+  SPA --> AIPROXY --> COMMS
+  EF --> OPS
+  EF --> PAY & STUART & COMMS
+  HUBRISE -->|webhook| EF
+  STUART -->|status webhook| EF
+  PAY -->|payment webhook| EF
+  </pre>
+
+  <h3>4.2 Deployment &amp; promotion</h3>
+  <pre class="mermaid">
+flowchart LR
+  DEVR["Developer"] -->|push| GH["GitHub (push-protection)"]
+  GH -->|develop| DEV["Vercel - dev env (QA line)"]
+  GH -->|main| PROD["Vercel - production"]
+  DEVR -->|CLI| EFD["Edge Functions"]
+  DEVR -->|Management API, authorised| MIG["DB migrations (reversible)"]
+  APK["Sunmi APK"] -->|self-update| STO["Supabase Storage"]
+  </pre>
+
+  <h3>4.3 Order → payment → fulfilment</h3>
+  <pre class="mermaid">
+sequenceDiagram
+  participant C as Customer/staff
+  participant SPA as React SPA
+  participant EF as Edge Functions
+  participant DB as Ops DB
+  participant PAY as Stripe/Ryft
+  participant COUR as Stuart/HubRise
+  C->>SPA: Build order (+ address)
+  SPA->>EF: quote delivery (geocode + courier price)
+  EF->>COUR: live price + ETA
+  EF-->>SPA: fee + ETA
+  C->>SPA: Pay
+  SPA->>PAY: tokenised payment (card never touches ServOS)
+  PAY-->>SPA: success
+  SPA->>DB: closed_checks (sale) + order_queue (kitchen)
+  SPA->>EF: dispatch courier (idempotent)
+  EF->>COUR: create job
+  COUR-->>EF: status webhook / polled
+  EF->>EF: Resend receipt + Twilio confirmation
+  SPA-->>C: branded tracker (live map, ETA)
+  </pre>
+
+  <h3>4.4 Trust boundary &amp; multi-tenancy</h3>
+  <pre class="mermaid">
+flowchart TB
+  UI["Browser/device (untrusted)<br/>pinned location_id"]
+  RT1["requireToken (operational reads)"]
+  RA["requireAccess (BO user / super-admin)"]
+  RLS["RLS tables (filtered by location_id)"]
+  SR["Service-role-only tables<br/>(delivery, aggregator, workforce PII)"]
+  UI -->|JWT| RT1 --> RLS
+  UI -->|JWT| RA --> SR
+  UI -.->|direct, RLS-fenced| RLS
+  UI -. blocked .-x SR
+  </pre>
+
+  <footer>
+    ServOS — Restaurant OS · Confidential. Generated 27 June 2026. Source of truth: <code>Serv-OS/possystem</code> repository, <code>/docs</code>.
+  </footer>
+
+</div>
+</body>
+</html>

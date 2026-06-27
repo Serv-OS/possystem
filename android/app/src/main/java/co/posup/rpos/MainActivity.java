@@ -9,11 +9,13 @@ import android.hardware.display.DisplayManager;
 import android.view.Display;
 import android.webkit.*;
 import co.posup.rpos.printer.PrinterBridge;
+import co.posup.rpos.biometric.BiometricBridge;
 
 public class MainActivity extends Activity {
     private static final String POS_URL = "https://possystem-liard.vercel.app/?mode=pos";
     private WebView webView;
     private PrinterBridge printerBridge;
+    private BiometricBridge biometricBridge;
     private UpdateChecker updateChecker;
     private DisplayManager displayManager;
     private CustomerDisplayPresentation customerPresentation;
@@ -42,6 +44,12 @@ public class MainActivity extends Activity {
         // (Stripe Terminal SDK removed in v5.5.58 — payments are pure REST against the WisePOS E.)
         printerBridge = new PrinterBridge(webView);
         webView.addJavascriptInterface(printerBridge, "RposPrinter");
+
+        // Fingerprint (Sunmi D3 Pro) — exposes window.RposBiometric. verify() works now via the
+        // framework BiometricPrompt; 1:N enroll/identify light up once the Sunmi SDK is wired
+        // (see docs/FINGERPRINT-INTEGRATION.md). Absent on non-Sunmi → web falls back to PIN.
+        biometricBridge = new BiometricBridge(webView, this);
+        webView.addJavascriptInterface(biometricBridge, "RposBiometric");
 
         WebSettings s = webView.getSettings();
         s.setJavaScriptEnabled(true);

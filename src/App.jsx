@@ -88,6 +88,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.685', date: '27 Jun 2026', label: 'Staff fingerprint sign-in (Sunmi D3 Pro) — foundation',
+    changes: [
+      'Added fingerprint sign-in support for Sunmi D3 Pro tills: a "Sign in with fingerprint" option appears on the staff PIN screen when the device supports it, logging the matching staff member straight in (PIN always remains available). On any non-fingerprint device it’s invisible — nothing changes.',
+      'Under the hood: a native fingerprint bridge in the Android app + the web wiring + a unit-tested capability layer. Confirming the device-enrolled user works now; full per-staff fingerprint login lights up once Sunmi’s fingerprint SDK is added (see docs/FINGERPRINT-INTEGRATION.md). Fingerprints are handled as special-category data — consent + PIN fallback required.',
+    ],
+  },
+  {
     version: '5.5.684', date: '27 Jun 2026', label: 'Docs — technical documentation set added (/docs)',
     changes: [
       'Added a due-diligence-grade documentation set under /docs: the technology & vendor register, a technical due-diligence overview, the engineering methodology, and architecture/topology diagrams. No application changes.',
