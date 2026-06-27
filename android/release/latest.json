@@ -1,7 +1,7 @@
 {
-  "versionCode": 10,
-  "versionName": "1.9",
+  "versionCode": 11,
+  "versionName": "2.0",
   "apkUrl": "https://tbetcegmszzotrwdtqhi.supabase.co/storage/v1/object/public/app-releases/app.apk",
   "mandatory": false,
-  "notes": "New S. POS app icon + name."
+  "notes": "Tap-to-sign-in: NFC staff cards (tap a card to log in on any till) + fingerprint groundwork."
 }
