@@ -12,6 +12,7 @@
 import { useEffect, useState } from 'react';
 import { opsHeartbeat, opsRegisterDevice, opsPinLogin } from '../lib/ops/data';
 import { ensureAuthToken } from '../lib/supabase';
+import { fetchManagerSnapshot } from '../lib/manager/data';
 import { roleFlags, TABS } from '../lib/manager/access';
 import CardErrorBoundary from '../components/CardErrorBoundary';
 import { Icon } from '../components/ServOSIcons';
@@ -31,6 +32,8 @@ export default function ManagerSurface() {
   const [operator, setOperator] = useState(null); // { id, name, role, permissions }
   const [tab, setTab] = useState('home');
   const [dark, setDark] = useState(() => localStorage.getItem('mgr-theme') !== 'light');
+  const [snap, setSnap] = useState(null);     // one shared snapshot for every tab
+  const [snapErr, setSnapErr] = useState('');
 
   // ServOS glass skin for the whole surface; dark default, per-device light toggle.
   useEffect(() => {
@@ -65,6 +68,19 @@ export default function ManagerSurface() {
     return () => clearInterval(t);
   }, [stage]);
 
+  // one shared snapshot poll for all tabs — instant tab switches, a single network call
+  useEffect(() => {
+    if (stage !== 'app' || !loc) return;
+    let live = true;
+    const load = () => fetchManagerSnapshot(loc).then((r) => {
+      if (!live) return;
+      if (r?.ok) { setSnap(r); setSnapErr(''); } else setSnapErr(r?.error || 'Could not load');
+    });
+    load();
+    const t = setInterval(load, 30000);
+    return () => { live = false; clearInterval(t); };
+  }, [stage, loc]);
+
   if (stage === 'boot') return <Screen><div style={{ color: 'var(--t3)', ...mono }}>Starting…</div></Screen>;
   if (stage === 'pair') return <PairScreen code={claimCode} />;
   if (stage === 'pin') return <PinScreen loc={loc} venueName={venueName} onOk={(op) => { setOperator(op); setStage('app'); }} />;
@@ -73,7 +89,8 @@ export default function ManagerSurface() {
   const visibleTabs = TABS.filter((t) => flags[t.flag]);
   // If the active tab isn't allowed for this role, fall back to the first visible one.
   const activeTab = visibleTabs.some((t) => t.key === tab) ? tab : (visibleTabs[0]?.key || 'home');
-  const ctx = { loc, venueName, operator, flags, setTab, dark, toggleTheme: () => { const n = !dark; setDark(n); localStorage.setItem('mgr-theme', n ? 'dark' : 'light'); } };
+  const refreshSnap = () => { if (loc) fetchManagerSnapshot(loc).then((r) => { if (r?.ok) { setSnap(r); setSnapErr(''); } else setSnapErr(r?.error || 'Could not load'); }); };
+  const ctx = { loc, venueName, operator, flags, setTab, snap, snapErr, refreshSnap, dark, toggleTheme: () => { const n = !dark; setDark(n); localStorage.setItem('mgr-theme', n ? 'dark' : 'light'); } };
 
   return (
     <Shell ctx={ctx} tabs={visibleTabs} active={activeTab} onTab={setTab}

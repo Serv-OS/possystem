@@ -89,6 +89,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.694', date: '28 Jun 2026', label: 'ServOS Manager — live Home “at a glance” + instant tab switches',
+    changes: [
+      'Home is now a live landing: today’s net sales (ex-VAT) plus a pulse row — open tables, who’s on shift, and items to order — each tapping straight to its tab. Everything respects your role.',
+      'All tabs now share one snapshot, so switching between Home / Reports / Team / Kitchen is instant (no reload) and the app makes a single call instead of four.',
+    ],
+  },
+  {
     version: '5.5.693', date: '28 Jun 2026', label: 'ServOS Manager — live Kitchen (stock to order) + hardened snapshot fence',
     changes: [
       'Kitchen tab is live: tracked stock below par or reorder point, grouped by supplier so you can raise one order each — with how many on hand, the par, and the shortfall. Raising the PO and recording batch cooks land next (they write stock/prep records).',

@@ -1,23 +1,14 @@
 // ManagerReports — today's takings (ex-VAT) + the live floor with the tested stalled rule.
 // Single venue (multi-site stays in Back Office). Read-only for supervisors.
-import { useEffect, useState } from 'react';
-import { fetchManagerSnapshot } from '../../lib/manager/data';
+// Reads the shared snapshot from ctx (ManagerSurface polls once for every tab).
+import { useState } from 'react';
 import { classifyFloor } from '../../lib/manager/floor';
 import { money } from '../../lib/currency';
 import { Header, Hero, Stat, SectionTitle, mono } from './ui';
 
 export default function ManagerReports({ ctx }) {
-  const { loc, flags } = ctx;
-  const [snap, setSnap] = useState(null);
-  const [err, setErr] = useState('');
+  const { flags, snap, snapErr: err } = ctx;
   const [nudged, setNudged] = useState({});
-  useEffect(() => {
-    let live = true;
-    const load = () => fetchManagerSnapshot(loc).then((r) => { if (!live) return; if (r?.ok) { setSnap(r); setErr(''); } else setErr(r?.error || 'Could not load'); });
-    load();
-    const t = setInterval(load, 30000);   // live-ish refresh
-    return () => { live = false; clearInterval(t); };
-  }, [loc]);
 
   const m = snap?.money;
   const floor = snap ? classifyFloor(snap.floor) : null;

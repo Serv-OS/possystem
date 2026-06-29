@@ -1,24 +1,13 @@
 // ManagerTeam — live: who's on, no-shows, breaks due, live labour £ (team.js engine). Approvals
 // (timesheets/time-off) are management WRITES — they need a requireAccess edge action + operator
 // verification; shown here as the next step (no fake actions).
-import { useEffect, useState } from 'react';
-import { fetchManagerSnapshot } from '../../lib/manager/data';
 import { onShiftNow, noShows, breaksDue, liveLabourMinor } from '../../lib/manager/team';
 import { money } from '../../lib/currency';
 import { Header, Stat, SectionTitle, mono } from './ui';
 import { Icon } from '../../components/ServOSIcons';
 
 export default function ManagerTeam({ ctx }) {
-  const { loc, flags } = ctx;
-  const [snap, setSnap] = useState(null);
-  const [err, setErr] = useState('');
-  useEffect(() => {
-    let live = true;
-    const load = () => fetchManagerSnapshot(loc).then((r) => { if (!live) return; if (r?.ok) { setSnap(r); setErr(''); } else setErr(r?.error || 'Could not load'); });
-    load();
-    const t = setInterval(load, 30000);
-    return () => { live = false; clearInterval(t); };
-  }, [loc]);
+  const { flags, snap, snapErr: err } = ctx;
 
   const team = snap?.team;
   const on = team ? onShiftNow(team.punches) : [];

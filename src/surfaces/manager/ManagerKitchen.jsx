@@ -2,23 +2,12 @@
 // Read-only (greenfield stock: inventory_items + par_levels, via manager-snapshot). The pure decisions
 // live in src/lib/manager/kitchen.js. Raising a PO + recording batch cooks (prep_schedule) are WRITES
 // → next slice. This is NOT the live KDS ticket rail — that stays as-is.
-import { useEffect, useState } from 'react';
-import { fetchManagerSnapshot } from '../../lib/manager/data';
 import { belowPar, bySupplier } from '../../lib/manager/kitchen';
 import { Header, Stat, SectionTitle, mono } from './ui';
 import { Icon } from '../../components/ServOSIcons';
 
 export default function ManagerKitchen({ ctx }) {
-  const { loc } = ctx;
-  const [snap, setSnap] = useState(null);
-  const [err, setErr] = useState('');
-  useEffect(() => {
-    let live = true;
-    const load = () => fetchManagerSnapshot(loc).then((r) => { if (!live) return; if (r?.ok) { setSnap(r); setErr(''); } else setErr(r?.error || 'Could not load'); });
-    load();
-    const t = setInterval(load, 60000);   // stock moves slowly — refresh once a minute
-    return () => { live = false; clearInterval(t); };
-  }, [loc]);
+  const { snap, snapErr: err } = ctx;
 
   const items = snap?.kitchen?.items || [];
   const short = belowPar(items);
