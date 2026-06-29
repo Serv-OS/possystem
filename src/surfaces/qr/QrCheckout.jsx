@@ -81,6 +81,15 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
   const configuredPreAuth = Number(location.qr_tab_pre_auth_amount ?? 0);
   const tabPreAuthAmount = Math.max(configuredPreAuth, MIN_PRE_AUTH);
 
+  // v5.5.716: a 4-digit table code shown to the tab opener. Other phones must enter it to add to /
+  // settle this tab (validated against customer.tab_join_code in OnlineSurface), so a passer-by who
+  // just scans the printed QR can't order against someone else's tab. Re-used when adding a round to
+  // an existing tab; a fresh code per newly-opened tab.
+  const [tabJoinCode] = useState(() =>
+    existingTab?.tab_join_code
+    || existingTab?.rounds?.[0]?.customer?.tab_join_code
+    || String(1000 + Math.floor(Math.random() * 9000)));
+
   const [working, setWorking] = useState(false);
   const [error, setError]     = useState('');
 
@@ -202,6 +211,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
         ...(existingTab?.rounds?.[0]?.customer || {}),
         // Override per-round: a new ref per round, but keep tab_open until close
         tab_open: true,
+        tab_join_code: existingTab?.rounds?.[0]?.customer?.tab_join_code || tabJoinCode,
         round_ref: ref,
       };
       const queueRow = {
@@ -380,6 +390,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
         ...(tabMode ? {
           tab_open: true,
           tab_opened_at: new Date().toISOString(),
+          tab_join_code: tabJoinCode,   // v5.5.716: gate other phones joining this tab
           pre_auth_amount: tabPreAuthAmount,
           tab_running_total: total,
           // v5.5.151: snapshot the venue's surcharge config at tab-open time
@@ -479,6 +490,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
           stashTab(location.online_slug, tableId, {
             tab_ref: ref,
             payment_intent_id: payId,
+            tab_join_code: tabJoinCode,   // v5.5.716: so the opener can re-share it from the resume screen
             processor,
             stripe_account: pi?.stripe_account || null,
             // Ryft: the session + stored-card ids the close path needs (the
@@ -501,7 +513,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
       if (tableId) {
         syncQrTableSession(opsLocationId, tableId).catch(() => {});
       }
-      onPlaced?.({ ref, total, paymentIntent });
+      onPlaced?.({ ref, total, paymentIntent, joinCode: isOpenTab ? tabJoinCode : null });
     } catch (e) {
       console.error('[QrCheckout] post-payment write failed:', e);
       setError('Payment succeeded but we could not save the order. Show this to staff. Ref ' + orderShape.ref + '.');

@@ -90,6 +90,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.716', date: '30 Jun 2026', label: 'QR tabs — “join with a code” so only your table can add to your tab',
+    changes: [
+      'Opening a QR tab now shows a 4-digit table code. Anyone else scanning that table must enter it before they can add to (or settle) the tab — so a passer-by can’t order against your bill.',
+      'The phone that opened the tab still picks up silently — no code needed for them. The code is shown on your tab screen so you can share it with your table.',
+    ],
+  },
+  {
     version: '5.5.715', date: '30 Jun 2026', label: 'QR tabs — close from Orders Hub only (fixes missing-from-history + double-charge risk)',
     changes: [
       'A QR table tab now refuses to be closed from the floor plan — it sends you to Orders Hub → Open QR tabs, which is the only place that captures the customer’s held card and saves the sale to History.',

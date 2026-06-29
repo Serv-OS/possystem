@@ -15,13 +15,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { isItemEightySixed } from '../../lib/itemAvailability';
-import { getStashedTab, clearStashedTab } from '../../lib/qrTabStorage';
+import { getStashedTab, clearStashedTab, stashTab } from '../../lib/qrTabStorage';
 import OnlineCart from './OnlineCart';
 import OnlineCheckout from './OnlineCheckout';
 import OnlineItemSheet from './OnlineItemSheet';
 import OrderTracker from './OrderTracker';
 import QrCheckout from '../qr/QrCheckout';
 import TabResumeScreen from '../qr/TabResumeScreen';
+import JoinTabScreen from '../qr/JoinTabScreen';
 import { money } from '../../lib/currency';
 import MenuHeader from '../menu/MenuHeader';
 import { readTheme, deriveVars, DISPLAY_FONT } from '../menu/menuTheme';
@@ -59,6 +60,9 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   // the tab even when the original phone isn't around.
   const [tableTabs, setTableTabs]     = useState([]);
   const [pickedTableTab, setPickedTableTab] = useState(null);
+  // v5.5.716: this device passed the join-code gate (or is the tab opener) for the table's open tab.
+  const [joined, setJoined] = useState(false);
+  const [justOpenedCode, setJustOpenedCode] = useState(null); // show the opener their code after opening
   const [branding, setBranding]     = useState(null);
   const [instGroupDefs, setInstGroupDefs] = useState([]); // from config_pushes snapshot — there's no instruction_groups DB table
   const [loading, setLoading]       = useState(true);
@@ -131,12 +135,14 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
               tab_ref: r.customer?.tab_ref || r.ref,
               table_label: r.customer?.tableLabel || tableLabel || tableId,
               pre_auth_amount: Number(r.customer?.pre_auth_amount || 0),
+              tab_join_code: r.customer?.tab_join_code || null,   // v5.5.716: join-code gate
               opened_at: r.customer?.tab_opened_at || r.created_at,
               rounds: [],
               total: 0,
             };
             byPi[pi].rounds.push(r);
             byPi[pi].total += Number(r.total || 0);
+            if (!byPi[pi].tab_join_code && r.customer?.tab_join_code) byPi[pi].tab_join_code = r.customer.tab_join_code;
           });
           setTableTabs(Object.values(byPi));
         }
@@ -422,6 +428,31 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   const [confirmedTable, setConfirmedTable] = useState(tableLabel || tableId || '');
   const effectiveTableLabel = tableConfirmed ? (confirmedTable || tableLabel || tableId) : null;
 
+  // v5.5.716: adopt an existing open tab on THIS device — used by the opener (silent) and by another
+  // phone after it passes the join-code gate. Mirrors the resume wiring + stashes the tab so this
+  // device can keep adding silently afterwards.
+  const enterTab = (tab) => {
+    setPickedTableTab(tab);
+    setResumeTab({
+      payment_intent_id: tab.payment_intent_id, stripe_account: tab.stripe_account,
+      processor: tab.processor || 'stripe', payment_session_id: tab.payment_session_id || null,
+      ryft_customer_id: tab.ryft_customer_id || null, ryft_payment_method_id: tab.ryft_payment_method_id || null,
+      tab_ref: tab.tab_ref, table_label: tab.table_label, pre_auth_amount: tab.pre_auth_amount,
+      tab_join_code: tab.tab_join_code || null,
+    });
+    setResumeRounds(tab.rounds || []);
+    setResumeChecked(true); setTableConfirmed(true); setJoined(true);
+    try {
+      stashTab(location.online_slug, tableId, {
+        tab_ref: tab.tab_ref, payment_intent_id: tab.payment_intent_id, tab_join_code: tab.tab_join_code || null,
+        processor: tab.processor || 'stripe', stripe_account: tab.stripe_account || null,
+        payment_session_id: tab.payment_session_id || null, ryft_customer_id: tab.ryft_customer_id || null,
+        ryft_payment_method_id: tab.ryft_payment_method_id || null,
+        table_label: tab.table_label, pre_auth_amount: tab.pre_auth_amount, joined: true,
+      });
+    } catch { /* best effort */ }
+  };
+
   if (isQr && !tableConfirmed) {
     return (
       <ScrollShell theme={theme} vars={vars}>
@@ -432,26 +463,41 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           mode={qrTableMode}
           openTabs={tableTabs}
           onSettleTab={(tab) => {
-            // v5.5.159: jump straight to TabResumeScreen for the picked tab.
-            setPickedTableTab(tab);
-            setResumeTab({
-              payment_intent_id: tab.payment_intent_id,
-              stripe_account: tab.stripe_account,
-              // Carry the processor + Ryft ids so TabResumeScreen closes a Ryft
-              // tab through ryft-tab (not /api/stripe-capture).
-              processor: tab.processor || 'stripe',
-              payment_session_id: tab.payment_session_id || null,
-              ryft_customer_id: tab.ryft_customer_id || null,
-              ryft_payment_method_id: tab.ryft_payment_method_id || null,
-              tab_ref: tab.tab_ref,
-              table_label: tab.table_label,
-              pre_auth_amount: tab.pre_auth_amount,
-            });
-            setResumeRounds(tab.rounds || []);
-            setResumeChecked(true);
-            setTableConfirmed(true);
+            // v5.5.716: only the OPENER (device holds the matching stash) settles silently. Any other
+            // phone must pass the join-code gate first — route it there by confirming the table; the
+            // gate (below) then requires the code before showing the tab.
+            const stashed = getStashedTab(location.online_slug, tableId);
+            if (stashed?.payment_intent_id && stashed.payment_intent_id === tab.payment_intent_id) {
+              enterTab(tab);
+            } else {
+              setPickedTableTab(tab);
+              setTableConfirmed(true);
+            }
           }}
           onConfirm={(label) => { setConfirmedTable(label); setTableConfirmed(true); }}/>
+      </ScrollShell>
+    );
+  }
+
+  // v5.5.716: join-code gate. An open tab exists on this table and this device is NEITHER the opener
+  // (no matching stash → resumeTab stays null) NOR already joined this session → it must enter the
+  // table code before it can add to or settle the tab. Closes the hole where any scanner of the printed
+  // QR could pile onto / close someone else's tab.
+  const openTabAtTable = pickedTableTab || tableTabs[0] || null;
+  if (isQr && resumeChecked && tableConfirmed && openTabAtTable && !resumeTab && !joined) {
+    return (
+      <ScrollShell theme={theme} vars={vars}>
+        <JoinTabScreen
+          theme={theme}
+          tableLabel={effectiveTableLabel}
+          hasCode={!!openTabAtTable.tab_join_code}
+          onJoin={(code) => {
+            if (openTabAtTable.tab_join_code && String(code) === String(openTabAtTable.tab_join_code)) {
+              enterTab(openTabAtTable);
+              return true;
+            }
+            return false;
+          }}/>
       </ScrollShell>
     );
   }
@@ -490,8 +536,16 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   // If we're tracking a paid order, that's the only thing on screen.
   if (trackerRef) {
     return (
-      <OrderTracker orderRef={trackerRef} locationId={opsLocationId} theme={theme}
-        onClose={() => { setTrackerRef(null); if (!isQr) setOrderType(null); }}/>
+      <>
+        {justOpenedCode && (
+          <div style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 50, background: theme.accent, color: '#fff', padding: '12px 16px', textAlign: 'center', fontSize: 13.5, fontWeight: 700, lineHeight: 1.5 }}>
+            Tab open · Table code <span style={{ fontFamily: 'var(--font-mono, monospace)', letterSpacing: '0.15em', fontSize: 16 }}>{justOpenedCode}</span> — share it so others at your table can add to this tab
+            <button onClick={() => setJustOpenedCode(null)} style={{ marginLeft: 10, background: 'rgba(255,255,255,.25)', border: 'none', borderRadius: 7, color: '#fff', padding: '3px 10px', cursor: 'pointer', fontWeight: 700 }}>Got it</button>
+          </div>
+        )}
+        <OrderTracker orderRef={trackerRef} locationId={opsLocationId} theme={theme}
+          onClose={() => { setTrackerRef(null); if (!isQr) setOrderType(null); }}/>
+      </>
     );
   }
 
@@ -776,6 +830,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           onPlaced={(info) => {
             setShowCheckout(false);
             setCart([]);
+            if (info.joinCode) setJustOpenedCode(info.joinCode);   // v5.5.716: show the opener their share code
             setTrackerRef(info.ref);
           }}/>
       )}

@@ -185,6 +185,15 @@ export default function TabResumeScreen({
           Your tab at Table <b style={{ color: theme.fg }}>{tab.table_label || tableLabel || tableId}</b> is still open.
         </div>
 
+        {/* v5.5.716: shareable table code — others at the table enter this to add to the tab */}
+        {tab.tab_join_code && (
+          <div style={{ marginTop: 16, padding: '12px 16px', background: inputBg, border: `1px dashed ${cardBdr}`, borderRadius: 14 }}>
+            <span style={{ fontSize: 12.5, color: muted }}>Table code </span>
+            <b style={{ fontSize: 20, letterSpacing: '0.18em', fontFamily: 'var(--font-mono, monospace)', color: theme.fg }}>{tab.tab_join_code}</b>
+            <div style={{ fontSize: 11.5, color: muted, marginTop: 3 }}>Share it so others at your table can add to this tab</div>
+          </div>
+        )}
+
         {/* Running total + rounds */}
         <div style={{
           marginTop: 24, padding: '20px 22px',
