@@ -33,15 +33,17 @@ function clockOutOf(dateIso, start, finish) {
 // Decimal hours → "1h05m" (matches the Manager app), signed for variance. Avoids the decimal-hours
 // trap where 1.08h (= 65 min) reads like "1h08m".
 const hm = (h) => { const m = Math.round((Number(h) || 0) * 60), sgn = m < 0 ? '-' : '', a = Math.abs(m); return `${sgn}${Math.floor(a / 60)}h${String(a % 60).padStart(2, '0')}m`; };
-// A stored stamp is EITHER an absolute instant (the Time Clock writes UTC via toISOString → has a 'Z')
-// OR a naive venue-local wall-clock string (manual timesheets via stamp() → no tz). Render both in
-// VENUE time: absolute stamps convert to the venue tz; naive stamps are already local, shown as-is.
-// (Plain slice(11,16) printed the raw UTC hour for clocked rows — off by the venue's UTC offset.)
-const hasTzDesignator = (str) => { const t = String(str).slice(String(str).indexOf('T') + 1); return /[Zz]/.test(t) || /[+-]\d{2}:?\d{2}$/.test(t); };
+// A stored stamp is EITHER an absolute instant (the Time Clock writes a timestamptz — supabase-js
+// returns it WITH a tz offset, e.g. "2026-06-29T22:48:32.349+00") OR a naive venue-local wall-clock
+// string written by stamp() for MANUAL timesheets, which is EXACTLY "YYYY-MM-DDTHH:MM:SS" (no offset,
+// no millis). We detect the naive form precisely and render everything else in VENUE time. (A
+// "does it look like it has a tz" regex was fragile — a short +00 offset slipped through and the
+// instant got sliced as if it were already local, printing the raw UTC hour.)
+const isNaiveLocal = (str) => /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(String(str));
 function localParts(stampStr, tz) {
   if (!stampStr) return { date: null, hm: '' };
   const str = String(stampStr);
-  if (!hasTzDesignator(str)) return { date: str.slice(0, 10), hm: str.slice(11, 16) };
+  if (isNaiveLocal(str)) return { date: str.slice(0, 10), hm: str.slice(11, 16) };
   const d = new Date(str); const z = tz || 'Europe/London';
   const dp = new Intl.DateTimeFormat('en-CA', { timeZone: z, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(d);
   const g = t => dp.find(p => p.type === t)?.value;

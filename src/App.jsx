@@ -90,6 +90,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.713', date: '29 Jun 2026', label: 'Back Office Timesheets — fix the clock time still showing an hour off',
+    changes: [
+      'Clock-in / clock-out now show the correct venue time. The previous fix missed a quirk in how the database returns the time’s timezone, so it kept showing the UTC hour (an hour behind in summer).',
+      'Reload the Back Office tab and the Time Clock tablet to pick this up — clock-in time should now match the Manager app exactly.',
+    ],
+  },
+  {
     version: '5.5.712', date: '29 Jun 2026', label: 'Activity feed — incoming orders now show (kiosk, QR, online, catering)',
     changes: [
       'New orders from the kiosk, QR codes, online ordering and catering now appear in the activity bell, with the amount and customer name.',
