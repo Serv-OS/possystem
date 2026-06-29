@@ -28,8 +28,8 @@ async function requireManager(req: Request, loc: string): Promise<{ ok: true } |
   if (token === SERVICE_ROLE) return { ok: true };
   const { data: { user } } = await sb.auth.getUser(token);
   if (!user) return { ok: false, res: json({ error: 'invalid session' }, 401) };
-  // Paired device claimed to this location?
-  const { data: dev } = await sb.from('ops_devices').select('id').eq('device_uid', user.id).eq('location_id', loc).not('claimed_at', 'is', null).maybeSingle();
+  // Paired device claimed to this location (and not decommissioned)?
+  const { data: dev } = await sb.from('ops_devices').select('id').eq('device_uid', user.id).eq('location_id', loc).eq('active', true).not('claimed_at', 'is', null).maybeSingle();
   if (dev) return { ok: true };
   // BO user with access, or super admin?
   const [{ data: ul }, { data: prof }] = await Promise.all([
@@ -130,9 +130,43 @@ Deno.serve(async (req) => {
     const ratesMinor: Record<string, number> = {};
     for (const t of tsRows ?? []) if (t.effective_rate != null) ratesMinor[t.staff_id] = Math.round(Number(t.effective_rate) * 100);
 
+    // ── Kitchen: stock items below par/reorder, for one PO per supplier (read-only). Greenfield stock
+    //    system (inventory_items + par_levels); only items WITH a par row are "managed" → kept. The
+    //    client (kitchen.js belowPar/bySupplier) decides what's short. Isolated: a stock read failure
+    //    must never break takings/floor/team, so default to []. ──
+    let kitchenItems: any[] = [];
+    try {
+      const { data: pars } = await sb.from('par_levels')
+        .select('inventory_item_id, par_level, reorder_point').eq('location_id', loc).limit(5000);
+      const ids = (pars ?? []).map((p: any) => p.inventory_item_id).filter(Boolean);
+      if (ids.length) {
+        const [{ data: invs }, { data: sups }] = await Promise.all([
+          sb.from('inventory_items').select('id, name, on_hand, default_supplier_id')
+            .eq('location_id', loc).in('id', ids).is('archived_at', null),
+          sb.from('suppliers').select('id, name').eq('location_id', loc).limit(2000),
+        ]);
+        const supName: Record<string, string> = {};
+        for (const s of sups ?? []) supName[s.id] = s.name;
+        const parBy: Record<string, any> = {};
+        for (const p of pars ?? []) parBy[p.inventory_item_id] = p;
+        kitchenItems = (invs ?? []).map((i: any) => {
+          const p = parBy[i.id] || {};
+          return {
+            itemId: i.id, name: i.name,
+            onHand: Number(i.on_hand) || 0,
+            par: p.par_level != null ? Number(p.par_level) : null,
+            reorderPoint: p.reorder_point != null ? Number(p.reorder_point) : null,
+            supplier: i.default_supplier_id ? (supName[i.default_supplier_id] || null) : null,
+            eightySixed: false,
+          };
+        });
+      }
+    } catch { kitchenItems = []; }
+
     return json({
       ok: true, location_id: loc, venueName: locRow?.name || '', tz,
       money, floor, team: { punches, shifts: teamShifts, ratesMinor },
+      kitchen: { items: kitchenItems },
       generated_at: new Date().toISOString(),
     });
   } catch (e) {

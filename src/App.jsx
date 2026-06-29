@@ -89,6 +89,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.693', date: '28 Jun 2026', label: 'ServOS Manager — live Kitchen (stock to order) + hardened snapshot fence',
+    changes: [
+      'Kitchen tab is live: tracked stock below par or reorder point, grouped by supplier so you can raise one order each — with how many on hand, the par, and the shortfall. Raising the PO and recording batch cooks land next (they write stock/prep records).',
+      'Security: the manager-snapshot fence now also requires the paired device to be active, so a decommissioned till can’t pull takings.',
+    ],
+  },
+  {
     version: '5.5.692', date: '27 Jun 2026', label: 'ServOS Manager — live Reports + Team (takings, floor, who’s on)',
     changes: [
       'Reports tab is live: today’s net sales (ex-VAT) vs forecast, orders, avg check, tips and labour %, plus the live floor — dining / seated-no-order / held / stalled — with a “nudge” on stalled tables.',
