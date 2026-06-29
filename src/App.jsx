@@ -89,6 +89,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.700', date: '29 Jun 2026', label: 'Install fix — “Add to Home Screen” now opens the right surface',
+    changes: [
+      'Saving a surface URL as an app (Add to Home Screen / Install) now opens THAT surface, not POS. Each mode (Manager, Ops, KDS, Clock, Menu board, Host, Kiosk…) installs as its own app with its own name, icon label and orientation.',
+      'Done with a per-mode web manifest generated from the ?mode= in the URL (distinct id/start_url/name), so installing from /?mode=manager launches in Manager mode on both iOS and Android.',
+      'Note: any app icons you saved BEFORE this update still point at POS — delete and re-add them from the correct ?mode= URL.',
+    ],
+  },
+  {
     version: '5.5.699', date: '29 Jun 2026', label: 'ServOS Manager — Kitchen batch cooks (scheduled prep) + Back Office prep schedule',
     changes: [
       'Kitchen tab now shows today’s batch cooks — what to prep, by when — with overdue flagged in red and a one-tap “Record” to log each as done (who + when).',
