@@ -124,6 +124,9 @@ function Shell({ ctx, tabs, active, onTab, onLogout, children }) {
         <button onClick={ctx.toggleTheme} aria-label="Theme" className="sv-glass" style={{ width: 38, height: 38, borderRadius: 11, display: 'grid', placeItems: 'center', cursor: 'pointer', color: 'var(--t1)', border: '1px solid var(--bdr)', flexShrink: 0 }}>
           {ctx.dark ? '☾' : '☀'}
         </button>
+        <button onClick={onLogout} aria-label="Sign out" title="Sign out" className="sv-glass" style={{ width: 38, height: 38, borderRadius: 11, display: 'grid', placeItems: 'center', cursor: 'pointer', color: 'var(--red)', border: '1px solid var(--bdr)', flexShrink: 0 }}>
+          <Icon name="signout" size={18} />
+        </button>
       </div>
       {children}
       <TabBar tabs={tabs} active={active} onTab={onTab} />

@@ -69,7 +69,7 @@ Deno.serve(async (req) => {
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
 
   let body: any; try { body = await req.json(); } catch { return json({ error: 'bad json' }, 400); }
-  const { action, ops_location_id: loc, pin, target_id, decision, heal } = body || {};
+  const { action, ops_location_id: loc, pin, target_id, decision, edit } = body || {};
   if (!loc) return json({ error: 'ops_location_id required' }, 400);
   if (!action || !target_id) return json({ error: 'action and target_id required' }, 400);
 
@@ -80,15 +80,33 @@ Deno.serve(async (req) => {
 
   try {
     if (action === 'timesheet.approve') {
-      const { data: ts } = await sb.from('wf_timesheets').select('id, location_id, org_id, status, clock_in, clock_out').eq('id', target_id).maybeSingle();
+      const { data: ts } = await sb.from('wf_timesheets')
+        .select('id, location_id, org_id, status, clock_in, clock_out, break_taken, scheduled_hours, effective_rate')
+        .eq('id', target_id).maybeSingle();
       if (!ts || ts.location_id !== loc) return json({ error: 'timesheet not found for this location' }, 404);
-      const patch: any = { status: 'approved', approved_by: op.id, approved_at: nowIso() };
-      // re-stamp clock times only if the row was missing them (older generated rows) — mirrors wfData heal.
-      if (heal?.clockIn && !ts.clock_in) patch.clock_in = heal.clockIn;
-      if (heal?.clockOut && !ts.clock_out) patch.clock_out = heal.clockOut;
+      const round2 = (n: number) => Math.round(n * 100) / 100;
+      const patch: any = { status: 'approved', approved_by: op.id, approved_at: nowIso(), updated_at: nowIso() };
+      const before = { status: ts.status, clock_in: ts.clock_in, clock_out: ts.clock_out, break_taken: ts.break_taken };
+      // Optional manager edit (adjust start / end / break). Recompute hours + pay EXACTLY as clock-out
+      // does (actual = grossHrs − break; pay = rate × actual; round2) so the record stays penny-correct.
+      if (edit && (edit.clockIn || edit.clockOut || edit.breakMins != null)) {
+        const clockIn = edit.clockIn || ts.clock_in;
+        const clockOut = edit.clockOut || ts.clock_out;
+        const breakTaken = edit.breakMins != null ? Math.max(0, Math.round(Number(edit.breakMins) || 0)) : (ts.break_taken || 0);
+        patch.clock_in = clockIn; patch.clock_out = clockOut; patch.break_taken = breakTaken; patch.break_open_at = null;
+        if (clockIn && clockOut) {
+          const grossHrs = (new Date(clockOut).getTime() - new Date(clockIn).getTime()) / 3600000;
+          const actual = round2(Math.max(0, grossHrs - breakTaken / 60));
+          const scheduled = ts.scheduled_hours != null ? Number(ts.scheduled_hours) : null;
+          patch.actual_hours = actual;
+          patch.variance = scheduled != null ? round2(actual - scheduled) : null;
+          patch.pay_amount = round2(actual * (ts.effective_rate != null ? Number(ts.effective_rate) : 0));
+        }
+      }
       const { error } = await sb.from('wf_timesheets').update(patch).eq('id', target_id).eq('location_id', loc);
       if (error) return json({ error: error.message }, 400);
-      await audit(loc, ts.org_id, op.id, op.name, 'timesheet.approve', 'wf_timesheets', target_id, { status: ts.status }, { status: 'approved' });
+      const after = { status: 'approved', clock_in: patch.clock_in ?? ts.clock_in, clock_out: patch.clock_out ?? ts.clock_out, break_taken: patch.break_taken ?? ts.break_taken };
+      await audit(loc, ts.org_id, op.id, op.name, edit ? 'timesheet.edit_approve' : 'timesheet.approve', 'wf_timesheets', target_id, before, after);
       return json({ ok: true });
     }
 

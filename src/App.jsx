@@ -89,6 +89,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.703', date: '29 Jun 2026', label: 'Manager — edit a timesheet before approving + a sign-out button',
+    changes: [
+      'Team approvals: tap a pending timesheet → Edit to fix the start time, end time or break (great for a forgotten clock-out), with a live worked-hours + pay preview, then Save & approve. Pay is recomputed exactly like clock-out, PIN-secured, and logged to the audit trail.',
+      'Times show and rebuild in the venue’s timezone, so they’re correct even if you’re viewing from elsewhere.',
+      'Added a sign-out button to the Manager header — for shared devices, sign out back to the PIN screen for the next person.',
+    ],
+  },
+  {
     version: '5.5.702', date: '29 Jun 2026', label: 'Fix — long modifier names no longer overlap the price / quantity buttons',
     changes: [
       'Modifier and variant tiles now wrap long names cleanly instead of running over the price or the +/− buttons (e.g. “Sugar Free Caramel”, “white chocolate syrup”).',
