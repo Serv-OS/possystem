@@ -1068,6 +1068,14 @@ export const useStore = create((set, get) => ({
 
   // Open an already-seated table (go to its POS)
   openTableInPOS: (tableId) => {
+    // A QR open-tab carries a held card pre-auth that ONLY OrdersHub force-close can capture. Opening
+    // it in the POS to take a fresh payment would DOUBLE-charge (new charge + uncaptured hold) and the
+    // close would write a source-less, un-cleaned check. Redirect to Orders Hub instead.
+    const t = get().tables.find(x => x.id === tableId);
+    if (t?.session?.source === 'qr') {
+      get().showToast('QR tab — close it from Orders Hub → Open QR tabs (captures the card hold + saves to history)', 'info');
+      return;
+    }
     set({ activeTableId:tableId, surface:'pos', orderType:'dine-in' });
   },
 
@@ -1093,6 +1101,15 @@ export const useStore = create((set, get) => ({
 
   // Close / clear a table after payment
   clearTable: (tableId, paymentInfo = {}) => {
+    // QR open-tabs MUST be closed via OrdersHub force-close (captures the held pre-auth, writes a
+    // source='qr' closed_check, marks the order_queue rounds collected + clears the session). The
+    // floor-plan close path (recordClosedCheck) is QR-blind — it would lose the capture, write a
+    // source-less check and orphan the queue/session. Block it and point the operator to Orders Hub.
+    const qrTable = get().tables.find(t => t.id === tableId);
+    if (qrTable?.session?.source === 'qr') {
+      get().showToast('QR tab — close it from Orders Hub → Open QR tabs (captures the card hold + saves to history)', 'info');
+      return;
+    }
     get().recordClosedCheck(tableId, paymentInfo);
     const table = get().tables.find(t => t.id === tableId);
 

@@ -90,6 +90,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.715', date: '30 Jun 2026', label: 'QR tabs — close from Orders Hub only (fixes missing-from-history + double-charge risk)',
+    changes: [
+      'A QR table tab now refuses to be closed from the floor plan — it sends you to Orders Hub → Open QR tabs, which is the only place that captures the customer’s held card and saves the sale to History.',
+      'Before this, closing a QR table from the floor plan could lose it from History, leave the card hold uncaptured, and (via POS checkout) even take a second payment.',
+    ],
+  },
+  {
     version: '5.5.714', date: '30 Jun 2026', label: 'Manager app — “On shift now” no longer drops staff who clocked in before midnight',
     changes: [
       'Someone still clocked in showed as “Nobody clocked in” once the clock passed midnight, because their shift was tagged to yesterday. The live team now lists anyone still on shift, whatever day they started.',
