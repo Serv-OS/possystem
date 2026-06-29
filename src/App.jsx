@@ -90,6 +90,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.710', date: '29 Jun 2026', label: 'Activity feed — panel no longer hidden behind the screen + dismiss / mark all read',
+    changes: [
+      'The activity panel was opening behind the floor plan (trapped in the glass-panel layers) — it now renders over everything as a proper slide-over.',
+      'Each item can be dismissed (✕, or “Done” for things needing action), and “Mark all read” clears the lot. The bell badge shows how many are still waiting.',
+    ],
+  },
+  {
     version: '5.5.709', date: '29 Jun 2026', label: 'Activity feed — fix empty panel (location now resolves reliably)',
     changes: [
       'The feed panel could show empty even when there were events — it now resolves the till’s location reliably (retries until ready, like the rest of the app), so your nudges/orders/changes actually appear.',
