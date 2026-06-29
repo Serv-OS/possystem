@@ -90,6 +90,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.709', date: '29 Jun 2026', label: 'Activity feed — fix empty panel (location now resolves reliably)',
+    changes: [
+      'The feed panel could show empty even when there were events — it now resolves the till’s location reliably (retries until ready, like the rest of the app), so your nudges/orders/changes actually appear.',
+      'Reminder: menu/price changes log when you Push to POS from a Back Office that’s on this build.',
+    ],
+  },
+  {
     version: '5.5.708', date: '29 Jun 2026', label: 'Activity feed — one timeline on the POS (orders, nudges, menu changes, ops)',
     changes: [
       'New activity bell in the POS top bar opens a slide-over feed of everything that matters: orders coming in (kiosk/QR/online/catering), manager nudges, menu & price pushes, and ops signals (temperature breaches, maintenance raised).',

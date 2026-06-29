@@ -26,18 +26,27 @@ const agoOf = (iso) => {
 };
 
 export default function ActivityFeed() {
-  const [loc, setLoc] = useState(getActiveLocationSync());
+  const [loc, setLoc] = useState(() => { const l = getActiveLocationSync(); return (l && l !== 'loc-demo') ? l : null; });
   const [events, setEvents] = useState([]);
   const [open, setOpen] = useState(false);
   const [seen, setSeen] = useState(() => { try { return Number(localStorage.getItem('rpos-activity-seen') || 0); } catch { return 0; } });
   const operator = useStore(s => s.staff?.name || null);
 
-  // resolve the real location once
+  // Resolve the real location, retrying until it's ready (mirrors App.jsx's boot loop). A single
+  // attempt could land before the paired-device loc resolves and get stuck on null/'loc-demo',
+  // leaving the feed empty even though events exist.
   useEffect(() => {
+    if (loc) return undefined;
     let live = true;
-    (async () => { const l = loc || getActiveLocationSync() || await getLocationId().catch(() => null); if (live && l && l !== loc) setLoc(l); })();
-    return () => { live = false; };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    const tryResolve = async () => {
+      let l = getActiveLocationSync();
+      if (!l || l === 'loc-demo') l = await getLocationId().catch(() => null);
+      if (live && l && l !== 'loc-demo') setLoc(l);
+    };
+    tryResolve();
+    const t = setInterval(tryResolve, 3000);
+    return () => { live = false; clearInterval(t); };
+  }, [loc]);
 
   // load recent + live updates
   useEffect(() => {
