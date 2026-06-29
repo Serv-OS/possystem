@@ -225,7 +225,21 @@ export default function CustomerDisplaySurface() {
                   <div style={{ minWidth: 40, fontSize: 22, fontWeight: 800, color: brand, fontVariantNumeric: 'tabular-nums' }}>{qty}×</div>
                   <div style={{ flex: 1 }}>
                     <div style={{ fontSize: 22, fontWeight: 600 }}>{it.name || it.displayName || 'Item'}</div>
-                    {mods.length > 0 && <div style={{ marginTop: 3, fontSize: 15, color: C.dim }}>{mods.map(m => m.label || m).filter(Boolean).join(' · ')}</div>}
+                    {mods.length > 0 && (
+                      <div style={{ marginTop: 4 }}>
+                        {mods.map((m, mi) => {
+                          const label = typeof m === 'string' ? m : m.label;
+                          if (!label) return null;
+                          const p = Number(m && m.price) || 0;
+                          return (
+                            <div key={mi} style={{ display: 'flex', justifyContent: 'space-between', gap: 14, fontSize: 15, color: C.dim, lineHeight: 1.55 }}>
+                              <span>{label}</span>
+                              {p > 0 && <span style={{ fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>+{money(p)}</span>}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                     {it.notes && <div style={{ marginTop: 2, fontSize: 14, fontStyle: 'italic', color: C.faint }}>“{it.notes}”</div>}
                   </div>
                   <div style={{ fontSize: 22, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{money(line)}</div>

@@ -358,7 +358,7 @@ export default function POSSurface() {
         name: i.menuName || i.name || 'Item',
         qty,
         lineTotal: Math.max(0, unit * qty),
-        mods: (i.mods || []).map(m => ({ label: m.label })),
+        mods: (i.mods || []).map(m => ({ label: m.label, price: Number(m.price) || 0 })),
         notes: i.notes || '',
       };
     });

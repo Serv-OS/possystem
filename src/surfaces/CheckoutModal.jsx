@@ -196,7 +196,7 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
       const qty = Math.max(1, Number(it.qty) || 1);
       return { uid: it.uid, name: it.menuName || it.name || 'Item', qty,
         lineTotal: Math.max(0, ((Number(it.price) || 0) + unitMods) * qty),
-        mods: (it.mods || []).map(m => ({ label: m.label })), notes: it.notes || '' };
+        mods: (it.mods || []).map(m => ({ label: m.label, price: Number(m.price) || 0 })), notes: it.notes || '' };
     });
     const cartTotal = di.reduce((s, it) => s + (Number(it.lineTotal) || 0), 0);
     publishDisplay(di.length

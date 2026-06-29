@@ -89,6 +89,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.701', date: '29 Jun 2026', label: 'Customer display — modifiers listed one per line with their charge',
+    changes: [
+      'The customer-facing display now lists each modifier on its own line with the amount it added (e.g. “White chocolate syrup  +£0.50”), instead of one long run of dots. Free modifiers (milk, hot/iced) show with no price.',
+      'The POS now sends each modifier’s price to the display (it was being dropped), from both the live cart and the card screen.',
+    ],
+  },
+  {
     version: '5.5.700', date: '29 Jun 2026', label: 'Install fix — “Add to Home Screen” now opens the right surface',
     changes: [
       'Saving a surface URL as an app (Add to Home Screen / Install) now opens THAT surface, not POS. Each mode (Manager, Ops, KDS, Clock, Menu board, Host, Kiosk…) installs as its own app with its own name, icon label and orientation.',
