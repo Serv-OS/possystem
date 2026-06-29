@@ -10,7 +10,7 @@ export default function ManagerReports({ ctx }) {
         'Net sales today (ex-VAT) vs forecast, orders, avg check, labour %',
         'Open tables: dining · held · seated-no-order · stalled',
         'Stalled tables with a one-tap “nudge server”',
-        ctx.flags.multi_venue === 'all' ? 'Every venue in your group' : 'Your venue',
+        'This venue (multi-site reporting stays in Back Office)',
       ]} />
     </div>
   );

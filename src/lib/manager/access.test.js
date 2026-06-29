@@ -3,17 +3,15 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { roleFlags, TABS } from './access.js';
 
-test('owner: every tab + all venues', () => {
+test('owner: every tab (single venue)', () => {
   const f = roleFlags('owner');
   assert.equal(f.reports_view, true);
   assert.equal(f.team_approvals, true);
-  assert.equal(f.multi_venue, 'all');
   assert.equal(TABS.filter((t) => f[t.flag]).length, 5);
 });
-test('manager: every tab, own venues', () => {
+test('manager: every tab', () => {
   const f = roleFlags('Manager');           // case-insensitive
   assert.equal(f.team_approvals, true);
-  assert.equal(f.multi_venue, 'mine');
   assert.equal(TABS.filter((t) => f[t.flag]).length, 5);
 });
 test('supervisor: reports read-only, no approvals', () => {

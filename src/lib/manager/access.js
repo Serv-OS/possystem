@@ -7,11 +7,13 @@
 // gate for management actions — these flags only decide which tabs/cards render.
 
 // Role presets. reports_view: 'full' | 'view' | false.
+// SINGLE-VENUE app: this runs ONE venue (the paired location). Multi-site rollups deliberately live
+// in the (more complex) web Back Office — there is no venue switcher or cross-location aggregation here.
 const PRESETS = {
-  owner:      { reports_view: 'full', team_live: true,  team_approvals: true,  ops_checks: true, kitchen: true, multi_venue: 'all'  },
-  manager:    { reports_view: 'full', team_live: true,  team_approvals: true,  ops_checks: true, kitchen: true, multi_venue: 'mine' },
-  supervisor: { reports_view: 'view', team_live: true,  team_approvals: false, ops_checks: true, kitchen: true, multi_venue: 'mine' },
-  staff:      { reports_view: false,  team_live: false, team_approvals: false, ops_checks: true, kitchen: true, multi_venue: 'none' },
+  owner:      { reports_view: 'full', team_live: true,  team_approvals: true,  ops_checks: true, kitchen: true },
+  manager:    { reports_view: 'full', team_live: true,  team_approvals: true,  ops_checks: true, kitchen: true },
+  supervisor: { reports_view: 'view', team_live: true,  team_approvals: false, ops_checks: true, kitchen: true },
+  staff:      { reports_view: false,  team_live: false, team_approvals: false, ops_checks: true, kitchen: true },
 };
 
 // Per-person permission keys (staff_members.permissions[]) that widen a flag, regardless of role.
@@ -35,7 +37,6 @@ export function roleFlags(role, permissions = []) {
     team_approvals: preset.team_approvals || has('team_approvals'),
     ops_checks: preset.ops_checks || has('ops_checks'),
     kitchen: preset.kitchen || has('kitchen'),
-    multi_venue: preset.multi_venue,
   };
 }
 

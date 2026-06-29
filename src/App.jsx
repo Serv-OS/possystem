@@ -89,6 +89,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.691', date: '27 Jun 2026', label: 'ServOS Manager — scoped to a single venue (multi-site stays in Back Office)',
+    changes: [
+      'The Manager app is for running one venue. Multi-site reporting/rollups deliberately stay in the (more powerful) web Back Office, so the app stays simple. Removed the cross-venue concept from the role model.',
+    ],
+  },
+  {
     version: '5.5.690', date: '27 Jun 2026', label: 'ServOS Manager (NEW) — owner + ops in one role-adaptive phone app (foundation)',
     changes: [
       'NEW manager app at ?mode=manager: pair the phone (Back Office → Devices), sign in with your PIN, and get a role-adaptive console — Home, Reports, Team, Ops and Kitchen on a floating tab bar, with the liquid-glass look. Owners/managers see everything; supervisors and staff see progressively less (driven by role).',

@@ -29,7 +29,7 @@ The owner app + ops tablet merged into one **role-adaptive phone app** (Capacito
 2. **Team approvals** — `requireAccess` edge actions for approve-timesheet / decide-time-off reusing `wfData` (writes append-only `wf_audit`, feeds tronc/payroll). Anomaly flags via `timesheets.js`; coverage warning + 12.07% accrual via `labour.js`.
 3. **Kitchen** — `requireToken` stock read (below-par + 86 via `kitchen.js`) + **NEW additive `prep_schedule` table** (no batch-cook table exists; see stock-prep map) for batch cooks; raise-PO reuses existing `purchase_orders`.
 4. **Role flags through Back Office** — extend `StaffManager` PERM_GROUPS with the manager_* keys (`access.js` already honours them); enforce server-side in the snapshot/approval fns.
-5. **Multi-venue for owners** — single-location only today. Owner "all venues" needs a user identity (BO login link) — design decision pending (the paired+PIN device is one location).
+5. **Multi-venue — OUT OF SCOPE (decided).** The Manager app runs **one venue** (the paired location); no venue switcher, no cross-location rollups. An owner with multiple sites uses the (more complex) web Back Office. `multi_venue` removed from `access.js` (v5.5.691).
 6. **Capacitor packaging** (iOS + Android store builds, push for no-shows/approvals, secure token storage, biometric unlock) — native, needs tooling + Apple/Play accounts; Sunmi POS APK path untouched.
 
 **Reuse map** (full): workflow `wh82a4sfc` output — `tasks/wh82a4sfc.output`. **Guardrails:** out-of-scope = payments/checkout, POS core, KDS, courier/delivery seam, broad RLS pass — stop & ask.
