@@ -89,6 +89,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.705', date: '29 Jun 2026', label: 'Fix — Nudge now actually reaches the POS tills',
+    changes: [
+      'The Nudge ping wasn’t arriving: the sender used a throwaway channel that tore down before the message flushed. Now it uses a persistent broadcast channel (matching the customer-display one that works), so the toast + chime land on the tills.',
+      'For the ping to show, the till must be on this version and online (it’s a live message, nothing stored).',
+    ],
+  },
+  {
     version: '5.5.704', date: '29 Jun 2026', label: 'Manager — stalled tables show their name + Nudge now pings the tills',
     changes: [
       'Reports → Stalled now shows the real table name (T2, B3, …) instead of the internal id.',

@@ -609,6 +609,7 @@ export function startRealtime(store, locationId = LOCATION_ID) {
     .on('broadcast', { event: 'nudge' }, (m) => {
       try {
         const p = m.payload || {};
+        console.info('[nudge] received', p);
         const bits = [p.table || 'A table', p.covers ? `${p.covers} covers` : null, p.waitMins ? `waiting ${p.waitMins}m` : null].filter(Boolean).join(' · ');
         store.getState().showToast?.(`${bits} needs attention${p.by ? ` — ${p.by}` : ''}`, 'error');
         playOrderChime();
