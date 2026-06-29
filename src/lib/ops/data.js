@@ -11,6 +11,7 @@
 import { supabase, isMock, getLocationId, getActiveLocationSync } from '../supabase';
 import { fetchPurchaseOrders, receivePurchaseOrder } from '../stock/purchasing.js';
 import { isTrainingMode } from '../trainingMode';
+import { logActivity } from '../activity';
 
 const nowIso = () => new Date().toISOString();
 async function ensureLoc(locationId) {
@@ -177,6 +178,11 @@ export const submitReading = async ({ unitId, readingC, scheduleId, operatorId, 
     p_delivery_id: deliveryId || null,
   });
   if (error) return { data: null, error };
+  if (data && data.in_range === false) {
+    // Surface the breach in the POS activity feed (urgent). The RPC already auto-raised the
+    // corrective/maintenance/alert; this is the visible timeline entry. Best-effort.
+    try { logActivity(locationId, { kind: 'ops', severity: 'urgent', title: 'Temperature breach', body: corrective?.description ? `Corrective: ${corrective.description}` : 'Reading out of safe range', actorName: operatorName, refType: 'temp_unit', refId: unitId }); } catch { /* feed best-effort */ }
+  }
   return {
     data: { readingId: data?.reading_id, inRange: data?.in_range, severity: data?.severity,
       correctiveId: data?.corrective_id, maintenanceId: data?.maintenance_id, alertId: data?.alert_id },
@@ -226,6 +232,9 @@ export const createMaintenance = async (m, locationId = null) => {
     status: 'open', reporter_id: m.reporterId || null, reporter_name: m.reporterName || null,
     source: m.source || 'manual', photo_url: m.photoUrl || null,
   }).select().maybeSingle();
+  if (!error && data) {
+    try { logActivity(locationId, { kind: 'ops', severity: 'action', title: `Maintenance: ${(m.title || 'request').trim()}`, body: `${m.priority || 'normal'} priority${m.source === 'temp_breach' ? ' · auto from temp breach' : ''}`, actorName: m.reporterName, refType: 'maintenance', refId: data.id }); } catch { /* feed best-effort */ }
+  }
   return { data: data ? maintFromRow(data) : null, error };
 };
 export const setMaintenanceStatus = async (id, status, who, locationId = null) => {

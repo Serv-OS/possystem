@@ -9,6 +9,7 @@
  */
 
 import { supabase, isMock, getLocationId, getActiveLocationSync } from './supabase';
+import { logActivity } from './activity';
 import { getTodayStartFallback } from './locationTime';
 import { isTrainingMode } from './trainingMode';
 
@@ -586,6 +587,7 @@ export const insertConfigPush = async (push, locationId = null) => {
   }
   const result = await supabase.from('config_pushes').insert({ ...push, location_id: locationId });
   if (result.error) console.error('[DB] config_pushes insert failed:', result.error.message);
+  else { try { logActivity(locationId, { kind: 'menu', severity: 'info', title: 'Menu & prices updated', body: 'Published to the tills' }); } catch { /* feed best-effort */ } }
   return result;
 };
 

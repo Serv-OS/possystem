@@ -603,23 +603,23 @@ export function startRealtime(store, locationId = LOCATION_ID) {
     .subscribe();
   channels.push(menuItemsChannel);
 
-  // ── Manager "nudge" → toast + chime on the tills (DB-backed via pos_nudges, like KDS/sessions) ──
-  const nudgeChannel = supabase
-    .channel(`pos_nudges:${locationId}`)
+  // ── Activity feed → toast + chime on the tills for action/urgent items (nudges, alerts, …) ──
+  // (The bell/panel UI subscribes separately for the full feed; this is just the live alert.)
+  const activityChannel = supabase
+    .channel(`activity:${locationId}`)
     .on('postgres_changes', {
-      event: 'INSERT', schema: 'public', table: 'pos_nudges', filter: `location_id=eq.${locationId}`,
-    }, ({ new: n }) => {
+      event: 'INSERT', schema: 'public', table: 'activity_events', filter: `location_id=eq.${locationId}`,
+    }, ({ new: a }) => {
       try {
-        // Only react to fresh nudges (ignore any backfill/old row on (re)connect).
-        if (n.created_at && Date.now() - new Date(n.created_at).getTime() > 60000) return;
-        console.info('[nudge] received', n);
-        const bits = [n.table_label || 'A table', n.covers ? `${n.covers} covers` : null, n.wait_mins ? `waiting ${n.wait_mins}m` : null].filter(Boolean).join(' · ');
-        store.getState().showToast?.(`${bits} needs attention${n.by_name ? ` — ${n.by_name}` : ''}`, 'error');
+        if (a.severity !== 'action' && a.severity !== 'urgent') return;          // info items: feed only, no toast
+        if (a.created_at && Date.now() - new Date(a.created_at).getTime() > 60000) return; // ignore backfill on reconnect
+        const msg = [a.title, a.body].filter(Boolean).join(' · ');
+        store.getState().showToast?.(`${msg}${a.actor_name ? ` — ${a.actor_name}` : ''}`, a.severity === 'urgent' ? 'error' : 'info');
         playOrderChime();
       } catch { /* noop */ }
     })
     .subscribe();
-  channels.push(nudgeChannel);
+  channels.push(activityChannel);
 
   // Single teardown path (resets _rtLocation too) so a later startRealtime re-subscribes cleanly.
   return stopRealtime;

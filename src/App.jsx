@@ -79,6 +79,7 @@ import DeviceSetup from './surfaces/DeviceSetup';
 import StatusDrawer from './components/StatusDrawer';
 import SyncBridge from './sync/SyncBridge';
 import MasterOfflineModal from './components/MasterOfflineModal';
+import ActivityFeed from './components/ActivityFeed';
 import ConfigSyncBanner from './components/ConfigSyncBanner';
 import OrdersHub from './surfaces/OrdersHub';
 import useSupabaseInit from './lib/useSupabaseInit';
@@ -88,6 +89,14 @@ import { ServOSIcon } from './components/ServOSBrand';
 import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
+  {
+    version: '5.5.708', date: '29 Jun 2026', label: 'Activity feed — one timeline on the POS (orders, nudges, menu changes, ops)',
+    changes: [
+      'New activity bell in the POS top bar opens a slide-over feed of everything that matters: orders coming in (kiosk/QR/online/catering), manager nudges, menu & price pushes, and ops signals (temperature breaches, maintenance raised).',
+      '“Needs action” items (nudges, breaches) are highlighted and clear with a tap of Done; the bell shows an unread/needs-action count. Action items still chime on the tills.',
+      'Durable + shared across tills (activity_events). Orders are captured by a safe, guarded database trigger, so this can never affect order-taking.',
+    ],
+  },
   {
     version: '5.5.707', date: '29 Jun 2026', label: 'Back Office Timesheets — clock in/out shown, edit behind an Edit button',
     changes: [
@@ -8585,6 +8594,9 @@ function ShiftBar({ version, onWhatsNew, theme, onToggleTheme, syncPulse }) {
           <Icon name="moon" size={15} />
         </button>
       </div>
+
+      {/* Activity feed bell — orders / nudges / menu changes / ops, with a slide-over timeline */}
+      <ActivityFeed />
 
       {/* Orders badge */}
       <button onClick={() => setSurface('orders')} style={{

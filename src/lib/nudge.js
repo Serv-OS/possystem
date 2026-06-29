@@ -1,20 +1,18 @@
 // src/lib/nudge.js — manager → tills "nudge" for a stalled table.
-// DB-backed (reliable): the Manager app INSERTs a pos_nudges row; the tills pick it up via
-// postgres_changes in lib/realtime.js (the same realtime they already use for KDS/sessions) and pop a
-// toast + chime. No broadcast timing race. RLS on pos_nudges is permissive (matches kds_tickets), so
-// the anonymous manager device can insert and the anonymous till can read it.
-import { supabase, isMock } from './supabase';
+// Now a first-class ACTIVITY EVENT (kind=nudge, severity=action): the Manager app logs it to
+// activity_events; the tills pick it up over postgres_changes (lib/realtime.js) → toast + chime AND
+// it sits in the activity feed until acknowledged. Reliable (no broadcast race), durable, one timeline.
+import { logActivity } from './activity';
 
 /** Ping the tills about a stalled table. payload: { table, covers, waitMins, by }. */
 export async function sendNudge(locationId, payload = {}) {
-  if (isMock || !supabase || !locationId) return { ok: false, error: 'offline' };
-  const { error } = await supabase.from('pos_nudges').insert({
-    location_id: locationId,
-    table_label: payload.table || null,
-    covers: payload.covers != null ? Number(payload.covers) : null,
-    wait_mins: payload.waitMins != null ? Math.round(Number(payload.waitMins)) : null,
-    by_name: payload.by || null,
+  if (!locationId) return { ok: false, error: 'offline' };
+  const bits = [payload.covers ? `${payload.covers} covers` : null, payload.waitMins ? `waiting ${payload.waitMins}m` : null].filter(Boolean).join(' · ');
+  return logActivity(locationId, {
+    kind: 'nudge', severity: 'action',
+    title: `${payload.table || 'A table'} needs attention`,
+    body: bits || null,
+    refType: 'table', refId: payload.table || null,
+    actorName: payload.by || null,
   });
-  if (error) { console.warn('[nudge] send failed', error.message); return { ok: false, error: error.message }; }
-  return { ok: true };
 }
