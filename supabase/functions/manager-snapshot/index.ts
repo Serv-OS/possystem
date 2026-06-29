@@ -61,14 +61,18 @@ Deno.serve(async (req) => {
     const today = ymd(now, tz);
     const startIso = new Date(now.getTime() - 36 * 3600 * 1000).toISOString(); // pad ±tz; filter to `today` below
 
-    const [{ data: checks }, { data: fc }, { data: tsRows }, { data: shifts }, { data: staff }, { data: sess }] = await Promise.all([
+    const [{ data: checks }, { data: fc }, { data: tsRows }, { data: shifts }, { data: staff }, { data: sess }, { data: ftables }] = await Promise.all([
       sb.from('closed_checks').select('subtotal, total, tip, status, voided, closed_at').eq('location_id', loc).gte('closed_at', startIso).limit(20000),
       sb.from('wf_sales_forecast').select('forecast_date, amount').eq('location_id', loc).eq('forecast_date', today).maybeSingle(),
       sb.from('wf_timesheets').select('staff_id, clock_in, clock_out, break_taken, break_open_at, pay_amount, status, effective_rate').eq('location_id', loc).gte('clock_in', startIso).limit(5000),
       sb.from('wf_shifts').select('staff_id, role_key, shift_date, start_time, finish_time, status').eq('location_id', loc).eq('shift_date', today).limit(2000),
       sb.from('wf_staff').select('id, name').eq('location_id', loc).limit(2000),
       sb.from('active_sessions').select('table_id, session').eq('location_id', loc).limit(2000),
+      sb.from('floor_tables').select('id, label').eq('location_id', loc).limit(2000),
     ]);
+    // table_id on a session IS the floor_tables.id → resolve the friendly label ("T2", "B3", …).
+    const tableLabel: Record<string, string> = {};
+    for (const f of ftables ?? []) if (f?.id) tableLabel[f.id] = f.label;
 
     // ── Money (today, venue-local) — net = subtotal (ex-VAT), exclude voided ──
     let net = 0, gross = 0, orders = 0, tips = 0;
@@ -100,7 +104,7 @@ Deno.serve(async (req) => {
       const hasOrder = !!s.sentAt || items.some((i: any) => i.status === 'sent' || i.fired);
       return {
         id: row.table_id || s.id || null,
-        label: row.table_id || 'Table',
+        label: tableLabel[row.table_id] || s.label || 'Table',
         covers: Number(s.covers) || null,
         seatedAtMs: ms(s.seatedAt),
         lastFiredAtMs: ms(s.sentAt),

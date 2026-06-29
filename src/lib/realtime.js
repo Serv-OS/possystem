@@ -603,6 +603,20 @@ export function startRealtime(store, locationId = LOCATION_ID) {
     .subscribe();
   channels.push(menuItemsChannel);
 
+  // ── Manager "nudge" → toast + chime on the tills (a stalled-table ping from the Manager app) ──
+  const nudgeChannel = supabase
+    .channel(`nudge:${locationId}`, { config: { broadcast: { self: false } } })
+    .on('broadcast', { event: 'nudge' }, (m) => {
+      try {
+        const p = m.payload || {};
+        const bits = [p.table || 'A table', p.covers ? `${p.covers} covers` : null, p.waitMins ? `waiting ${p.waitMins}m` : null].filter(Boolean).join(' · ');
+        store.getState().showToast?.(`${bits} needs attention${p.by ? ` — ${p.by}` : ''}`, 'error');
+        playOrderChime();
+      } catch { /* noop */ }
+    })
+    .subscribe();
+  channels.push(nudgeChannel);
+
   // Single teardown path (resets _rtLocation too) so a later startRealtime re-subscribes cleanly.
   return stopRealtime;
 }

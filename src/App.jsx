@@ -89,6 +89,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.704', date: '29 Jun 2026', label: 'Manager — stalled tables show their name + Nudge now pings the tills',
+    changes: [
+      'Reports → Stalled now shows the real table name (T2, B3, …) instead of the internal id.',
+      'Nudge is wired: tapping it on a stalled table pops a toast + chime on every POS till at the venue — e.g. “T2 · 2 covers · waiting 12m needs attention — Peter”. Live ping, nothing saved.',
+    ],
+  },
+  {
     version: '5.5.703', date: '29 Jun 2026', label: 'Manager — edit a timesheet before approving + a sign-out button',
     changes: [
       'Team approvals: tap a pending timesheet → Edit to fix the start time, end time or break (great for a forgotten clock-out), with a live worked-hours + pay preview, then Save & approve. Pay is recomputed exactly like clock-out, PIN-secured, and logged to the audit trail.',

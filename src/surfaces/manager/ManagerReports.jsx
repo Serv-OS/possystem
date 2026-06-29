@@ -3,12 +3,17 @@
 // Reads the shared snapshot from ctx (ManagerSurface polls once for every tab).
 import { useState } from 'react';
 import { classifyFloor } from '../../lib/manager/floor';
+import { sendNudge } from '../../lib/nudge';
 import { money } from '../../lib/currency';
 import { Header, Hero, Stat, SectionTitle, mono } from './ui';
 
 export default function ManagerReports({ ctx }) {
-  const { flags, snap, snapErr: err } = ctx;
+  const { flags, snap, snapErr: err, loc, operator } = ctx;
   const [nudged, setNudged] = useState({});
+  const nudge = (s) => {
+    sendNudge(loc, { table: s.label, covers: s.covers, waitMins: s.waitMins, by: operator?.name });
+    setNudged((n) => ({ ...n, [s.id]: true }));
+  };
 
   const m = snap?.money;
   const floor = snap ? classifyFloor(snap.floor) : null;
@@ -57,7 +62,7 @@ export default function ManagerReports({ ctx }) {
                       <div style={{ fontSize: 11, color: 'var(--red)', ...mono }}>waiting {s.waitMins}m{s.server ? ` · ${s.server}` : ''}</div>
                     </div>
                     {!flags.reports_readonly && (
-                      <button onClick={() => setNudged((n) => ({ ...n, [s.id]: true }))} disabled={!!nudged[s.id]} className="sv-glass"
+                      <button onClick={() => nudge(s)} disabled={!!nudged[s.id]} className="sv-glass"
                         style={{ padding: '8px 14px', borderRadius: 999, border: '1px solid var(--bdr)', cursor: nudged[s.id] ? 'default' : 'pointer', color: nudged[s.id] ? 'var(--grn)' : 'var(--acc)', fontWeight: 800, fontSize: 12.5, fontFamily: 'inherit' }}>
                         {nudged[s.id] ? '✓ Nudged' : 'Nudge'}
                       </button>
