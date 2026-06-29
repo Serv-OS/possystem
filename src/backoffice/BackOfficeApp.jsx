@@ -33,6 +33,7 @@ import OpsCompliance from './sections/operations/OpsCompliance';
 import OpsChecklists from './sections/operations/OpsChecklists';
 import OpsNotifications from './sections/operations/OpsNotifications';
 import OpsDevices from './sections/operations/OpsDevices';
+import OpsPrepSchedule from './sections/operations/OpsPrepSchedule';
 import WaitlistConfig from './sections/WaitlistConfig';
 import WaitlistInsights from './sections/WaitlistInsights';
 import StockReports from './sections/StockReports';
@@ -92,6 +93,7 @@ const NAV = [
   { id:'ops-overview',    label:'Compliance overview', icon:'🌡', group:'Operations' },
   { id:'ops-temperature', label:'Temperature units',   icon:'🌡', group:'Operations' },
   { id:'ops-checklists',  label:'Checklists',          icon:'☑', group:'Operations' },
+  { id:'ops-prep',        label:'Prep schedule',       icon:'🍳', group:'Operations' },
   { id:'ops-maintenance', label:'Maintenance',         icon:'🛠', group:'Operations' },
   { id:'ops-notifications', label:'Alert rules',       icon:'🔔', group:'Operations' },
   { id:'ops-compliance',  label:'Compliance calendar', icon:'📅', group:'Operations' },
@@ -146,7 +148,7 @@ const NAV_IA = [
   { label:'Inventory',  icon:'inventory', children:[['stock-overview','Overview'],['stock-items','Stock items'],['stock-counts','Stock counts'],['wastage','Wastage'],['inventory','Daily counts'],['stock-reports','Reports']] },
   { label:'Produce',    icon:'inventory', children:[['recipes','Recipes'],['batches','Batches']] },
   { label:'Purchasing', icon:'channels',  children:[['order-pad','Order pad'],['suppliers','Suppliers'],['purchase-orders','Purchase orders'],['invoices','Invoices']] },
-  { label:'Operations', icon:'inventory', children:[['ops-overview','Compliance'],['ops-temperature','Temperature'],['ops-checklists','Checklists'],['ops-maintenance','Maintenance'],['ops-notifications','Alert rules'],['ops-compliance','Calendar'],['ops-devices','Devices']] },
+  { label:'Operations', icon:'inventory', children:[['ops-overview','Compliance'],['ops-temperature','Temperature'],['ops-checklists','Checklists'],['ops-prep','Prep schedule'],['ops-maintenance','Maintenance'],['ops-notifications','Alert rules'],['ops-compliance','Calendar'],['ops-devices','Devices']] },
   { label:'Team',       icon:'user',      single:'staff' },
   { label:'Workforce',  icon:'team',      children:[['wf-dashboard','Dashboard'],['wf-rota','Rota'],['wf-timesheets','Timesheets'],['wf-payroll','Payroll'],['wf-timeoff','Time off & availability'],['wf-staff','Staff'],['wf-onboarding','Onboarding'],['wf-compliance','Compliance'],['wf-pay','Positions & rates'],['wf-tronc','Tronc / tips'],['wf-announce','Announcements'],['wf-settings','Workforce settings']] },
   { label:'Customers',  icon:'customers', children:[['customers','Customers'],['promotions','Promotions'],['segments','Segments'],['campaigns','Campaigns'],['quicksend','Quick send'],['workflows','Workflows'],['marketing-reports','Marketing report'],['compliance','Marketing compliance'],['wifi','WiFi'],['reviews','Reviews'],['loyalty','Loyalty'],['giftcards','Gift cards'],['messages','Messages']] },
@@ -674,6 +676,7 @@ export default function BackOfficeApp() {
           {section === 'ops-overview'    && <OpsOverview setSection={setSection} />}
           {section === 'ops-temperature' && <OpsTemperature />}
           {section === 'ops-checklists'  && <OpsChecklists />}
+          {section === 'ops-prep'        && <OpsPrepSchedule />}
           {section === 'ops-maintenance' && <OpsMaintenance />}
           {section === 'ops-notifications' && <OpsNotifications />}
           {section === 'ops-compliance'  && <OpsCompliance />}

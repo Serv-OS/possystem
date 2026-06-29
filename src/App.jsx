@@ -89,6 +89,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.699', date: '29 Jun 2026', label: 'ServOS Manager — Kitchen batch cooks (scheduled prep) + Back Office prep schedule',
+    changes: [
+      'Kitchen tab now shows today’s batch cooks — what to prep, by when — with overdue flagged in red and a one-tap “Record” to log each as done (who + when).',
+      'New Back Office → Operations → Prep schedule: set up your recurring batch cooks (name, batch size, due-by time, which days).',
+      'Adds two tables (prep_schedule, prep_log); recording is training-mode-safe and location-fenced. Completes the four Manager-app functions: role access, Home, Reports, Team approvals, Ops, and Kitchen (order + incoming + batch cooks).',
+    ],
+  },
+  {
     version: '5.5.698', date: '29 Jun 2026', label: 'ServOS Manager — Team approvals (timesheets + time off), PIN-secured',
     changes: [
       'Team tab can now approve timesheets (with a “no break logged” flag) and approve/decline time-off requests, straight from the app — matching your Approvals mockup.',

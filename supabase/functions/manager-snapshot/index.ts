@@ -228,10 +228,39 @@ Deno.serve(async (req) => {
       }
     } catch { kitchenDeliveries = []; }
 
+    // ── Kitchen batch cooks: today's scheduled prep (prep_schedule for today's weekday) + any completion
+    //    (prep_log for today). The client builds dueAtMs in its own (venue-local) tz, so we pass the raw
+    //    dueDate+dueTime rather than an absolute ms. Isolated: missing tables/failures default to []. ──
+    let kitchenBatches: any[] = [];
+    try {
+      const dow = new Date(today + 'T00:00:00Z').getUTCDay();   // 0=Sun..6=Sat for the venue-local date
+      const { data: scheds } = await sb.from('prep_schedule')
+        .select('id, name, qty, unit, due_time, days_of_week, active, sort_order')
+        .eq('location_id', loc).eq('active', true).order('sort_order').limit(500);
+      const todays = (scheds ?? []).filter((s: any) => !Array.isArray(s.days_of_week) || s.days_of_week.length === 0 || s.days_of_week.includes(dow));
+      if (todays.length) {
+        const { data: logs } = await sb.from('prep_log')
+          .select('schedule_id, actual_qty, recorded_at, recorded_by_name').eq('location_id', loc).eq('prep_date', today).limit(1000);
+        const logBy: Record<string, any> = {};
+        for (const l of logs ?? []) if (l.schedule_id) logBy[l.schedule_id] = l;
+        kitchenBatches = todays.map((s: any) => {
+          const l = logBy[s.id];
+          return {
+            id: s.id, scheduleId: s.id, name: s.name,
+            plannedQty: s.qty != null ? Number(s.qty) : null, unit: s.unit || null,
+            dueDate: today, dueTime: s.due_time ? String(s.due_time).slice(0, 5) : null,
+            completedAtMs: l ? ms(l.recorded_at) : null,
+            actualQty: l?.actual_qty != null ? Number(l.actual_qty) : null,
+            assignee: l?.recorded_by_name || null,
+          };
+        });
+      }
+    } catch { kitchenBatches = []; }
+
     return json({
       ok: true, location_id: loc, venueName: locRow?.name || '', tz,
       money, floor, team: { punches, shifts: teamShifts, ratesMinor, pendingTimesheets, pendingTimeOff },
-      kitchen: { items: kitchenItems, deliveries: kitchenDeliveries },
+      kitchen: { items: kitchenItems, deliveries: kitchenDeliveries, batches: kitchenBatches },
       ops,
       generated_at: new Date().toISOString(),
     });
