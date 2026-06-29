@@ -90,6 +90,16 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.711', date: '29 Jun 2026', label: 'Back Office Timesheets — show real venue time + match the Manager app’s hours format',
+    changes: [
+      'Clock-in / clock-out times now show in your venue’s local time (they were showing an hour off — the raw UTC time — for rows that came from the Time Clock).',
+      'Hours now read as “1h05m” (like the Manager app) instead of “1.08h” — same length of time, but no longer looks like 1 hour 8 minutes.',
+      'Break times, the edit panel and totals all use venue time + the same h/m format, so Back Office and the Manager app always agree.',
+      'Time Clock tablet now shows clock-in time in venue time too (was the device’s local time).',
+      'You can now Edit older timesheets that had no date — a date box appears so you can set it, instead of a confusing “enter a start and end time” error.',
+    ],
+  },
+  {
     version: '5.5.710', date: '29 Jun 2026', label: 'Activity feed — panel no longer hidden behind the screen + dismiss / mark all read',
     changes: [
       'The activity panel was opening behind the floor plan (trapped in the glass-panel layers) — it now renders over everything as a proper slide-over.',

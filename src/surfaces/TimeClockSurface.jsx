@@ -9,10 +9,13 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useStore } from '../store';
 import { supabase, isMock, getActiveLocationSync } from '../lib/supabase';
+import { getLocationConfig } from '../lib/locationTime';
 import { Icon } from '../components/ServOSIcons';
 
 const KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '', '0', '⌫'];
-const fmtTime = iso => iso ? new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : '';
+// Punches are stored UTC (the edge fn uses toISOString) — render in the VENUE tz, not the device's
+// browser tz, so an off-tz tablet still shows the correct local clock-in time.
+const fmtTime = (iso, tz) => iso ? new Intl.DateTimeFormat('en-GB', { timeZone: tz || 'Europe/London', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(iso)) : '';
 const hoursSince = iso => iso ? Math.max(0, (Date.now() - new Date(iso).getTime()) / 3600000) : 0;
 const fmtHrs = h => `${Math.floor(h)}h ${Math.round((h % 1) * 60)}m`;
 
@@ -55,6 +58,8 @@ export default function TimeClockSurface() {
   const [flash, setFlash] = useState(null);      // confirmation message
   const [, force] = useState(0);
   const locationId = getActiveLocationSync();
+  const [tz, setTz] = useState('Europe/London');
+  useEffect(() => { let alive = true; getLocationConfig(locationId).then(c => { if (alive && c?.timezone) setTz(c.timezone); }).catch(() => {}); return () => { alive = false; }; }, [locationId]);
   const venueName = (() => { try { return JSON.parse(localStorage.getItem('rpos-device') || 'null')?.name; } catch { return null; } })();
   const resetTimer = useRef(null);
 
@@ -154,7 +159,7 @@ export default function TimeClockSurface() {
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: 9, marginTop: 18, padding: '9px 16px', borderRadius: 999, background: 'var(--inset)', border: '1px solid var(--inset-border)' }}>
             <span style={{ width: 9, height: 9, borderRadius: '50%', background: `var(--${tone === 't3' ? 't4' : tone})`, boxShadow: tone !== 't3' ? `0 0 9px var(--${tone})` : 'none' }} />
             <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--t1)' }}>{stateLabel}</span>
-            {onShift && <span style={{ fontSize: 12, color: 'var(--t3)' }}>· since {fmtTime(s.since)} · {fmtHrs(elapsed)}</span>}
+            {onShift && <span style={{ fontSize: 12, color: 'var(--t3)' }}>· since {fmtTime(s.since, tz)} · {fmtHrs(elapsed)}</span>}
           </div>
 
           <div style={{ display: 'grid', gap: 12, marginTop: 30 }}>

@@ -16,6 +16,7 @@ import { Card, EmptyState, Badge, RoleChip, money, th, td, inputStyle, labelStyl
 import * as wf from '../../../staff/wfData';
 import { hoursOf, resolveRate, statutoryBreakMins } from '../../../staff/labour';
 import { buildWeek, addWeeks, payPeriod, shiftPayPeriod, weekRangeLabel } from '../../../staff/wfWeek';
+import { getLocationConfig } from '../../../lib/locationTime';
 
 const VAR_TOL = 0.17; // ≈ ±10 min — beyond this we flag the variance.
 const round2 = n => Math.round((Number(n) || 0) * 100) / 100;
@@ -29,9 +30,24 @@ function clockOutOf(dateIso, start, finish) {
   const next = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   return stamp(next, finish);
 }
-const isoOfTs = t => t.clockIn ? String(t.clockIn).slice(0, 10) : null;
-// "HH:MM" from a stored wall-clock stamp (no timezone conversion — it's already local).
-const hhmmOf = s => (s ? String(s).slice(11, 16) : '');
+// Decimal hours → "1h05m" (matches the Manager app), signed for variance. Avoids the decimal-hours
+// trap where 1.08h (= 65 min) reads like "1h08m".
+const hm = (h) => { const m = Math.round((Number(h) || 0) * 60), sgn = m < 0 ? '-' : '', a = Math.abs(m); return `${sgn}${Math.floor(a / 60)}h${String(a % 60).padStart(2, '0')}m`; };
+// A stored stamp is EITHER an absolute instant (the Time Clock writes UTC via toISOString → has a 'Z')
+// OR a naive venue-local wall-clock string (manual timesheets via stamp() → no tz). Render both in
+// VENUE time: absolute stamps convert to the venue tz; naive stamps are already local, shown as-is.
+// (Plain slice(11,16) printed the raw UTC hour for clocked rows — off by the venue's UTC offset.)
+const hasTzDesignator = (str) => { const t = String(str).slice(String(str).indexOf('T') + 1); return /[Zz]/.test(t) || /[+-]\d{2}:?\d{2}$/.test(t); };
+function localParts(stampStr, tz) {
+  if (!stampStr) return { date: null, hm: '' };
+  const str = String(stampStr);
+  if (!hasTzDesignator(str)) return { date: str.slice(0, 10), hm: str.slice(11, 16) };
+  const d = new Date(str); const z = tz || 'Europe/London';
+  const dp = new Intl.DateTimeFormat('en-CA', { timeZone: z, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(d);
+  const g = t => dp.find(p => p.type === t)?.value;
+  return { date: `${g('year')}-${g('month')}-${g('day')}`, hm: new Intl.DateTimeFormat('en-GB', { timeZone: z, hour: '2-digit', minute: '2-digit', hour12: false }).format(d) };
+}
+const clockHM = (stampStr, tz) => localParts(stampStr, tz).hm;
 
 export default function WfTimesheets({ ctx, staff, roles, sections, settings, week, showToast }) {
   const [shifts, setShifts] = useState([]);
@@ -40,6 +56,9 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
   const [adding, setAdding] = useState(false);
   const [editId, setEditId] = useState(null);          // timesheet id open in the inline editor
   const [eform, setEform] = useState({ start: '', end: '', breakMins: '0', paid: false, date: null });
+  // Venue timezone — clock punches are stored UTC, so display/edit must convert to venue-local.
+  const [tz, setTz] = useState('Europe/London');
+  useEffect(() => { let alive = true; getLocationConfig(ctx?.locationId).then(c => { if (alive && c?.timezone) setTz(c.timezone); }).catch(() => {}); return () => { alive = false; }; }, [ctx?.locationId]);
 
   // ── range filter: by week or by pay period ────────────────────────────────
   const payCfg = useMemo(() => ({
@@ -110,7 +129,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
     });
     (sheets || []).forEach(ts => {
       if (ts.shiftId && shiftIds.has(ts.shiftId)) return;          // already joined above
-      const iso = isoOfTs(ts);
+      const iso = ts.clockIn ? localParts(ts.clockIn, tz).date : null;   // venue-local date (UTC stamps shift the day near midnight)
       const inRange = iso && iso >= range.from && iso <= range.to;
       const undated = !iso;                                        // legacy generated rows
       if (!inRange && !undated) return;
@@ -130,7 +149,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
       });
     });
     return out.sort((a, b) => String(a.date || '9999').localeCompare(String(b.date || '9999')) || String(staffMap[a.staffId]?.name || '').localeCompare(String(staffMap[b.staffId]?.name || '')));
-  }, [shifts, sheets, tsByShift, staffMap, roles, range.from, range.to]);
+  }, [shifts, sheets, tsByShift, staffMap, roles, range.from, range.to, tz]);
 
   // Status filter: pending also shows rota-only rows (a shift still needing a
   // timesheet IS pending work); approved/paid show only matching timesheets.
@@ -173,11 +192,16 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
   // Open the inline editor for a pending row, seeded from its current times.
   function openEdit(r) {
     if (!r.ts || r.ts.status !== 'pending') return;
-    const date = r.date || (r.ts.clockIn ? String(r.ts.clockIn).slice(0, 10) : null);
+    const ip = localParts(r.ts.clockIn, tz);
+    const op = localParts(r.ts.clockOut, tz);
+    // Undated legacy rows have no date — fall back to today so the editor can save (the date input
+    // below lets the manager correct it). Without this, editCalc() returned null → misleading
+    // "Enter a start and end time" even with times filled in.
+    const date = r.date || ip.date || new Date().toISOString().slice(0, 10);
     setEditId(r.ts.id);
     setEform({
-      start: hhmmOf(r.ts.clockIn) || r.shift?.start || '09:00',
-      end: hhmmOf(r.ts.clockOut) || r.shift?.finish || '17:00',
+      start: ip.hm || r.shift?.start || '09:00',
+      end: op.hm || r.shift?.finish || '17:00',
       breakMins: String(r.breakMins || 0),
       paid: !!r.paidBreak,
       date,
@@ -238,9 +262,9 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
 
   function VarianceCell({ variance }) {
     if (variance == null) return <span style={{ color: 'var(--t4)' }}>—</span>;
-    if (Math.abs(variance) <= VAR_TOL) return <span style={{ color: 'var(--t3)' }} className="mono">0.00h</span>;
+    if (Math.abs(variance) <= VAR_TOL) return <span style={{ color: 'var(--t3)' }}>on time</span>;
     const over = variance > 0;
-    return <Badge tone={over ? 'amber' : 'red'}>{over ? '+' : ''}{variance.toFixed(2)}h {over ? 'over' : 'under'}</Badge>;
+    return <Badge tone={over ? 'amber' : 'red'}>{over ? '+' : ''}{hm(variance)} {over ? 'over' : 'under'}</Badge>;
   }
 
   if (loading) return <LoadingCard label="Loading timesheets…" />;
@@ -336,19 +360,19 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
                       <td style={td}>
                         {r.shift ? (<>
                           <span className="mono">{r.shift.start}–{r.shift.finish}</span>
-                          <div style={{ fontSize: 11, color: 'var(--t3)' }}>{r.scheduled?.toFixed(2)}h</div>
-                        </>) : r.scheduled != null ? <span className="mono">{r.scheduled.toFixed(2)}h</span> : <span style={{ color: 'var(--t4)' }}>—</span>}
+                          <div style={{ fontSize: 11, color: 'var(--t3)' }}>{hm(r.scheduled)}</div>
+                        </>) : r.scheduled != null ? <span className="mono">{hm(r.scheduled)}</span> : <span style={{ color: 'var(--t4)' }}>—</span>}
                       </td>
                       <td style={td}>
                         {!r.ts ? <span style={{ color: 'var(--t4)' }}>—</span>
                           : (r.ts.clockIn || r.ts.clockOut)
-                            ? <span className="mono">{hhmmOf(r.ts.clockIn) || '—'} → {hhmmOf(r.ts.clockOut) || '—'}</span>
+                            ? <span className="mono">{clockHM(r.ts.clockIn, tz) || '—'} → {clockHM(r.ts.clockOut, tz) || '—'}</span>
                             : <span style={{ color: 'var(--t4)', fontSize: 12 }}>no times</span>}
                       </td>
                       <td style={td}>
-                        {r.ts ? <span className="mono">{(r.actual ?? 0).toFixed(2)}h</span> : <span style={{ color: 'var(--t4)' }}>—</span>}
+                        {r.ts ? <span className="mono">{hm(r.actual ?? 0)}</span> : <span style={{ color: 'var(--t4)' }}>—</span>}
                       </td>
-                      <td style={td}><BreakCell r={r} staffMap={staffMap} /></td>
+                      <td style={td}><BreakCell r={r} staffMap={staffMap} tz={tz} /></td>
                       <td style={td}><VarianceCell variance={r.ts ? r.variance : null} /></td>
                       <td style={{ ...td, textAlign: 'right' }}>
                         {r.ts ? <span className="mono" style={{ fontWeight: 600 }}>{money(r.pay, 2)}</span> : <span style={{ color: 'var(--t4)' }}>—</span>}
@@ -375,6 +399,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
                       <tr>
                         <td colSpan={11} style={{ ...td, background: 'var(--bg2)' }}>
                           <div style={{ display: 'flex', alignItems: 'flex-end', gap: 14, flexWrap: 'wrap' }}>
+                            {!r.date && <div><label style={labelStyle}>Date</label><input type="date" style={{ ...inputStyle, width: 150 }} value={eform.date || ''} onChange={e => setEform(f => ({ ...f, date: e.target.value }))} /></div>}
                             <div><label style={labelStyle}>Start</label><input type="time" style={{ ...inputStyle, width: 130 }} value={eform.start} onChange={e => setEform(f => ({ ...f, start: e.target.value }))} /></div>
                             <div><label style={labelStyle}>End</label><input type="time" style={{ ...inputStyle, width: 130 }} value={eform.end} onChange={e => setEform(f => ({ ...f, end: e.target.value }))} /></div>
                             <div><label style={labelStyle}>Break (min)</label><input type="number" min="0" step="5" style={{ ...inputStyle, width: 110 }} value={eform.breakMins} onChange={e => setEform(f => ({ ...f, breakMins: e.target.value }))} /></div>
@@ -382,7 +407,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
                               <input type="checkbox" checked={eform.paid} onChange={e => setEform(f => ({ ...f, paid: e.target.checked }))} /> break paid
                             </label>
                             <div style={{ marginBottom: 9, fontSize: 12.5, color: 'var(--t3)' }} className="mono">
-                              {pv ? <>worked <b style={{ color: 'var(--t1)' }}>{pv.actual.toFixed(2)}h</b> · pay <b style={{ color: 'var(--t1)' }}>{money(pv.pay, 2)}</b></> : 'enter start & end'}
+                              {pv ? <>worked <b style={{ color: 'var(--t1)' }}>{hm(pv.actual)}</b> · pay <b style={{ color: 'var(--t1)' }}>{money(pv.pay, 2)}</b></> : 'enter start & end'}
                             </div>
                             <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, marginBottom: 4 }}>
                               <button className="btn btn-ghost btn-sm" onClick={() => setEditId(null)}>Cancel</button>
@@ -399,7 +424,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
             <tfoot>
               <tr>
                 <td style={{ ...td, fontWeight: 700, borderBottom: 'none' }} colSpan={5}>Totals (timesheets)</td>
-                <td style={{ ...td, borderBottom: 'none' }}><span className="mono" style={{ fontWeight: 700 }}>{totals.hours.toFixed(2)}h</span></td>
+                <td style={{ ...td, borderBottom: 'none' }}><span className="mono" style={{ fontWeight: 700 }}>{hm(totals.hours)}</span></td>
                 <td style={{ ...td, borderBottom: 'none' }} colSpan={2} />
                 <td style={{ ...td, textAlign: 'right', fontWeight: 700, borderBottom: 'none' }}><span className="mono">{money(totals.pay, 2)}</span></td>
                 <td style={{ ...td, borderBottom: 'none' }} colSpan={2} />
@@ -429,7 +454,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
               }, ctx.locationId, ctx.orgId);
               setSheets(prev => [ts, ...prev]);
               setAdding(false);
-              showToast?.(`Timesheet added — ${hrs.toFixed(2)}h`, 'success');
+              showToast?.(`Timesheet added — ${hm(hrs)}`, 'success');
             } catch (e) { showToast?.('Could not add: ' + e.message, 'error'); }
           }}
         />
@@ -442,13 +467,13 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
 // segments), whether it's paid, and a UK Working Time Regulations check —
 // 20 mins due over 6h worked (30 mins over 4.5h for under-18s). Editing the
 // break is done via the row's Edit panel.
-function BreakCell({ r, staffMap }) {
+function BreakCell({ r, staffMap, tz }) {
   if (!r.ts) return <span style={{ color: 'var(--t4)' }}>{r.breakMins ? `${r.breakMins}m planned` : '—'}</span>;
   const dob = staffMap[r.staffId]?.dob || null;
   const due = statutoryBreakMins(r.actual ?? 0, dob);
   const short = due > 0 && (r.breakMins || 0) < due;
   const segs = (r.breaks || []).map(b => {
-    const t = x => new Date(x).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+    const t = x => new Intl.DateTimeFormat('en-GB', { timeZone: tz || 'Europe/London', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(x));
     return b.start && b.end ? `${t(b.start)}–${t(b.end)}` : null;
   }).filter(Boolean);
   return (
