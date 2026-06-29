@@ -1,32 +1,20 @@
 // src/lib/nudge.js — manager → tills "nudge" for a stalled table.
-// One-way Supabase realtime broadcast on `nudge:<locationId>`. The tills subscribe in lib/realtime.js
-// (startRealtime) and pop a toast + chime. No DB write — a transient "go check this table" ping.
-//
-// Mirrors the PROVEN customerDisplay broadcast pattern exactly: a PERSISTENT channel (subscribed once,
-// reused) with { broadcast: { self:false, ack:false } }, flushing the latest payload on join. The old
-// create-subscribe-send-remove-after-800ms approach raced the teardown against the send and dropped it.
+// DB-backed (reliable): the Manager app INSERTs a pos_nudges row; the tills pick it up via
+// postgres_changes in lib/realtime.js (the same realtime they already use for KDS/sessions) and pop a
+// toast + chime. No broadcast timing race. RLS on pos_nudges is permissive (matches kds_tickets), so
+// the anonymous manager device can insert and the anonymous till can read it.
 import { supabase, isMock } from './supabase';
 
-const _pub = { channel: null, loc: null, joined: false, pending: null };
-
-function _flush() {
-  if (!_pub.channel || _pub.pending == null) return;
-  try { _pub.channel.send({ type: 'broadcast', event: 'nudge', payload: _pub.pending }); } catch { /* offline */ }
-  _pub.pending = null;
-}
-
-function _ensure(locationId) {
-  if (_pub.channel && _pub.loc === locationId) return;
-  if (_pub.channel) { try { supabase.removeChannel(_pub.channel); } catch { /* noop */ } }
-  _pub.loc = locationId; _pub.joined = false;
-  _pub.channel = supabase.channel(`nudge:${locationId}`, { config: { broadcast: { self: false, ack: false } } });
-  _pub.channel.subscribe((status) => { if (status === 'SUBSCRIBED') { _pub.joined = true; _flush(); } });
-}
-
 /** Ping the tills about a stalled table. payload: { table, covers, waitMins, by }. */
-export function sendNudge(locationId, payload = {}) {
-  if (isMock || !supabase || !locationId) return;
-  _ensure(locationId);
-  _pub.pending = payload;          // keep only the latest; flushed now if joined, else on SUBSCRIBED
-  if (_pub.joined) _flush();
+export async function sendNudge(locationId, payload = {}) {
+  if (isMock || !supabase || !locationId) return { ok: false, error: 'offline' };
+  const { error } = await supabase.from('pos_nudges').insert({
+    location_id: locationId,
+    table_label: payload.table || null,
+    covers: payload.covers != null ? Number(payload.covers) : null,
+    wait_mins: payload.waitMins != null ? Math.round(Number(payload.waitMins)) : null,
+    by_name: payload.by || null,
+  });
+  if (error) { console.warn('[nudge] send failed', error.message); return { ok: false, error: error.message }; }
+  return { ok: true };
 }

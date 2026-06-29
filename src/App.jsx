@@ -89,6 +89,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.706', date: '29 Jun 2026', label: 'Nudge — now DB-backed (reliable) so it lands on the tills like a new order',
+    changes: [
+      'Nudge no longer relies on a live broadcast (which could miss). The Manager app writes a small record and the till picks it up over the SAME realtime it uses for new KDS orders → toast + chime. Works reliably and even if a device was briefly offline.',
+      'Heads-up: the till must be on this build for the ping to land — update/relaunch the POS app on the till you’re testing.',
+    ],
+  },
+  {
     version: '5.5.705', date: '29 Jun 2026', label: 'Fix — Nudge now actually reaches the POS tills',
     changes: [
       'The Nudge ping wasn’t arriving: the sender used a throwaway channel that tore down before the message flushed. Now it uses a persistent broadcast channel (matching the customer-display one that works), so the toast + chime land on the tills.',

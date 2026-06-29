@@ -603,15 +603,18 @@ export function startRealtime(store, locationId = LOCATION_ID) {
     .subscribe();
   channels.push(menuItemsChannel);
 
-  // ── Manager "nudge" → toast + chime on the tills (a stalled-table ping from the Manager app) ──
+  // ── Manager "nudge" → toast + chime on the tills (DB-backed via pos_nudges, like KDS/sessions) ──
   const nudgeChannel = supabase
-    .channel(`nudge:${locationId}`, { config: { broadcast: { self: false } } })
-    .on('broadcast', { event: 'nudge' }, (m) => {
+    .channel(`pos_nudges:${locationId}`)
+    .on('postgres_changes', {
+      event: 'INSERT', schema: 'public', table: 'pos_nudges', filter: `location_id=eq.${locationId}`,
+    }, ({ new: n }) => {
       try {
-        const p = m.payload || {};
-        console.info('[nudge] received', p);
-        const bits = [p.table || 'A table', p.covers ? `${p.covers} covers` : null, p.waitMins ? `waiting ${p.waitMins}m` : null].filter(Boolean).join(' · ');
-        store.getState().showToast?.(`${bits} needs attention${p.by ? ` — ${p.by}` : ''}`, 'error');
+        // Only react to fresh nudges (ignore any backfill/old row on (re)connect).
+        if (n.created_at && Date.now() - new Date(n.created_at).getTime() > 60000) return;
+        console.info('[nudge] received', n);
+        const bits = [n.table_label || 'A table', n.covers ? `${n.covers} covers` : null, n.wait_mins ? `waiting ${n.wait_mins}m` : null].filter(Boolean).join(' · ');
+        store.getState().showToast?.(`${bits} needs attention${n.by_name ? ` — ${n.by_name}` : ''}`, 'error');
         playOrderChime();
       } catch { /* noop */ }
     })
