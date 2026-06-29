@@ -117,8 +117,13 @@ Deno.serve(async (req) => {
     // ── Team (timesheets + today's shifts → team.js input shape) ──
     const nameOf: Record<string, string> = {};
     for (const m of staff ?? []) nameOf[m.id] = m.name;
+    // "On shift now" must include anyone STILL clocked in (clock_out null) even if they clocked in
+    // before midnight venue-time — otherwise a late/overnight shift vanishes the moment the venue
+    // date rolls over (clocked in 23:48, it's now 00:12 → punch date != today). Today's completed
+    // punches stay in for the day's team view. (tsRows is already bounded to clock_in within ~36h,
+    // so a forgotten clock-out can't linger forever.)
     const punches = (tsRows ?? [])
-      .filter((t: any) => t.clock_in && ymd(new Date(t.clock_in), tz) === today)
+      .filter((t: any) => t.clock_in && (t.clock_out == null || ymd(new Date(t.clock_in), tz) === today))
       .map((t: any) => ({
         staffId: t.staff_id, name: nameOf[t.staff_id] || 'Staff',
         inMs: ms(t.clock_in), outMs: ms(t.clock_out),

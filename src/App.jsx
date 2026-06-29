@@ -90,6 +90,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.714', date: '30 Jun 2026', label: 'Manager app — “On shift now” no longer drops staff who clocked in before midnight',
+    changes: [
+      'Someone still clocked in showed as “Nobody clocked in” once the clock passed midnight, because their shift was tagged to yesterday. The live team now lists anyone still on shift, whatever day they started.',
+    ],
+  },
+  {
     version: '5.5.713', date: '29 Jun 2026', label: 'Back Office Timesheets — fix the clock time still showing an hour off',
     changes: [
       'Clock-in / clock-out now show the correct venue time. The previous fix missed a quirk in how the database returns the time’s timezone, so it kept showing the UTC hour (an hour behind in summer).',
