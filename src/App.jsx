@@ -89,6 +89,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.692', date: '27 Jun 2026', label: 'ServOS Manager — live Reports + Team (takings, floor, who’s on)',
+    changes: [
+      'Reports tab is live: today’s net sales (ex-VAT) vs forecast, orders, avg check, tips and labour %, plus the live floor — dining / seated-no-order / held / stalled — with a “nudge” on stalled tables.',
+      'Team tab is live: who’s on shift now, no-shows, breaks due and live labour £, computed from clock-ins and the rota. Approvals (timesheets + time off) land next (they write to the audit trail).',
+      'Powered by a new single-venue manager-snapshot data endpoint (today’s money mirrors the owner app exactly — net is ex-VAT, VAT is never profit).',
+    ],
+  },
+  {
     version: '5.5.691', date: '27 Jun 2026', label: 'ServOS Manager — scoped to a single venue (multi-site stays in Back Office)',
     changes: [
       'The Manager app is for running one venue. Multi-site reporting/rollups deliberately stay in the (more powerful) web Back Office, so the app stays simple. Removed the cross-venue concept from the role model.',
