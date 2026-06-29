@@ -1,0 +1,110 @@
+// supabase/functions/manager-approve/index.ts
+//
+// Write actions for the ServOS Manager app (?mode=manager) that a PAIRED, ANONYMOUS device can't do
+// directly (wf_* tables are RLS-fenced to Back Office users). Service-role writes, DOUBLE-fenced:
+//   1) the DEVICE/caller must be authorized for the location — a claimed+active ops_device, OR a BO
+//      user with user_locations, OR a super_admin (mirrors manager-snapshot's requireManager).
+//   2) the ACTING OPERATOR is resolved SERVER-SIDE from the supplied PIN (re-matched against
+//      staff_members for this location — never a client-supplied id) and must be approval-capable
+//      — role Manager/Owner OR the manager_approvals permission.
+// The PIN binds the approval to an accountable person on a shared device. Every action records that
+// person as approver + appends a wf_audit row. Financial compute (tronc/accrual/payroll) stays in
+// workforce-compute; this only flips approval state.
+//
+//   POST { action, ops_location_id, pin, target_id, decision?, heal? }   (token in Authorization)
+//   actions: 'timesheet.approve' | 'timeoff.decide' (decision: 'approved' | 'denied')
+
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+
+const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
+const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
+
+const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+const sb = createClient(Deno.env.get('SUPABASE_URL') ?? '', SERVICE_ROLE, { auth: { autoRefreshToken: false, persistSession: false } });
+const nowIso = () => new Date().toISOString();
+
+// Device/caller authorized for this location? (same fence as manager-snapshot)
+async function deviceAuthorized(req: Request, loc: string): Promise<boolean> {
+  const token = (req.headers.get('Authorization') ?? '').replace('Bearer ', '').trim();
+  if (!token) return false;
+  if (token === SERVICE_ROLE) return true;
+  const { data: { user } } = await sb.auth.getUser(token);
+  if (!user) return false;
+  const { data: dev } = await sb.from('ops_devices').select('id').eq('device_uid', user.id).eq('location_id', loc).eq('active', true).not('claimed_at', 'is', null).maybeSingle();
+  if (dev) return true;
+  const [{ data: ul }, { data: prof }] = await Promise.all([
+    sb.from('user_locations').select('location_id').eq('user_id', user.id).eq('location_id', loc).maybeSingle(),
+    sb.from('user_profiles').select('role').eq('id', user.id).maybeSingle(),
+  ]);
+  return !!(ul || prof?.role === 'super_admin');
+}
+
+// Resolve the acting operator by PIN, SERVER-SIDE — never trust a client-supplied operator id. The
+// shared paired device authenticates only the device; the approver's identity must be proven by their
+// PIN at the moment of approval (the PIN is matched against staff_members for this location). Service
+// role bypasses RLS so we read directly (the ops_pin_login RPC needs auth.uid(), which is null here).
+async function resolveOperator(loc: string, pin: string): Promise<{ id: string; name?: string; role?: string; permissions?: string[] } | null> {
+  if (!pin) return null;
+  // Prefer an active row (active!==false treats NULL as active, matching ops_pin_login's coalesce) so a
+  // stale inactive duplicate can't shadow a live PIN. PINs are effectively unique per location in practice.
+  const { data: rows } = await sb.from('staff_members').select('id, name, role, permissions, active').eq('location_id', loc).eq('pin', String(pin)).limit(5);
+  const op: any = (rows || []).find((r: any) => r.active !== false) || null;
+  return op;
+}
+function canApprove(op: { role?: string; permissions?: string[] }): boolean {
+  const role = String(op.role || '').toLowerCase();
+  const perms = Array.isArray(op.permissions) ? op.permissions : [];
+  return role === 'manager' || role === 'owner' || perms.includes('manager_approvals');
+}
+
+async function audit(loc: string, orgId: string | null, operatorId: string, name: string | undefined, action: string, entity: string, entityId: string, before: unknown, after: unknown) {
+  await sb.from('wf_audit').insert({
+    location_id: loc, org_id: orgId, actor_id: operatorId, actor_name: name || null,
+    action, entity, entity_id: entityId, before, after,
+  });
+}
+
+Deno.serve(async (req) => {
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
+  if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
+
+  let body: any; try { body = await req.json(); } catch { return json({ error: 'bad json' }, 400); }
+  const { action, ops_location_id: loc, pin, target_id, decision, heal } = body || {};
+  if (!loc) return json({ error: 'ops_location_id required' }, 400);
+  if (!action || !target_id) return json({ error: 'action and target_id required' }, 400);
+
+  if (!(await deviceAuthorized(req, loc))) return json({ error: 'no access to this location' }, 403);
+  const op = await resolveOperator(loc, pin);
+  if (!op) return json({ error: 'PIN not recognised' }, 403);
+  if (!canApprove(op)) return json({ error: 'not allowed to approve' }, 403);
+
+  try {
+    if (action === 'timesheet.approve') {
+      const { data: ts } = await sb.from('wf_timesheets').select('id, location_id, org_id, status, clock_in, clock_out').eq('id', target_id).maybeSingle();
+      if (!ts || ts.location_id !== loc) return json({ error: 'timesheet not found for this location' }, 404);
+      const patch: any = { status: 'approved', approved_by: op.id, approved_at: nowIso() };
+      // re-stamp clock times only if the row was missing them (older generated rows) — mirrors wfData heal.
+      if (heal?.clockIn && !ts.clock_in) patch.clock_in = heal.clockIn;
+      if (heal?.clockOut && !ts.clock_out) patch.clock_out = heal.clockOut;
+      const { error } = await sb.from('wf_timesheets').update(patch).eq('id', target_id).eq('location_id', loc);
+      if (error) return json({ error: error.message }, 400);
+      await audit(loc, ts.org_id, op.id, op.name, 'timesheet.approve', 'wf_timesheets', target_id, { status: ts.status }, { status: 'approved' });
+      return json({ ok: true });
+    }
+
+    if (action === 'timeoff.decide') {
+      const status = decision === 'approved' ? 'approved' : decision === 'denied' ? 'denied' : null;
+      if (!status) return json({ error: 'decision must be approved or denied' }, 400);
+      const { data: lv } = await sb.from('wf_time_off').select('id, location_id, org_id, status').eq('id', target_id).maybeSingle();
+      if (!lv || lv.location_id !== loc) return json({ error: 'time-off request not found for this location' }, 404);
+      const { error } = await sb.from('wf_time_off').update({ status, decided_by: op.id, decided_at: nowIso() }).eq('id', target_id).eq('location_id', loc);
+      if (error) return json({ error: error.message }, 400);
+      await audit(loc, lv.org_id, op.id, op.name, `timeoff.${status}`, 'wf_time_off', target_id, { status: lv.status }, { status });
+      return json({ ok: true });
+    }
+
+    return json({ error: 'unknown action' }, 400);
+  } catch (e) {
+    return json({ error: String((e as Error)?.message || e) }, 500);
+  }
+});

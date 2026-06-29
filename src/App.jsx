@@ -89,6 +89,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.698', date: '29 Jun 2026', label: 'ServOS Manager — Team approvals (timesheets + time off), PIN-secured',
+    changes: [
+      'Team tab can now approve timesheets (with a “no break logged” flag) and approve/decline time-off requests, straight from the app — matching your Approvals mockup.',
+      'Secured: approvals require the manager’s PIN, re-checked on the server every time, and only Manager/Owner (or anyone you’ve ticked “Approvals” for) can approve. Each decision is written to the tamper-evident audit trail under the real person’s name, and feeds payroll/tronc.',
+      'The approvals list comes from the shared snapshot (pending timesheets + time off); the Approvals section stays locked until a manager PIN is entered.',
+    ],
+  },
+  {
     version: '5.5.697', date: '29 Jun 2026', label: 'ServOS Manager — Home bento + Kitchen incoming + Back Office role tick-boxes',
     changes: [
       'Home is now a balanced dashboard: takings hero (ex-VAT) with orders/labour/open/on-floor, a “needs you now” bar (stalled tables, no-shows, breaks, ops alerts), and a live 2×2 status bento (Floor · Team · Ops · Kitchen) — each tile role-gated and tapping to its tab.',

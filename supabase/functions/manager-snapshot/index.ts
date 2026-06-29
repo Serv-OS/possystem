@@ -130,6 +130,29 @@ Deno.serve(async (req) => {
     const ratesMinor: Record<string, number> = {};
     for (const t of tsRows ?? []) if (t.effective_rate != null) ratesMinor[t.staff_id] = Math.round(Number(t.effective_rate) * 100);
 
+    // ── Approvals inbox (pending) — completed-but-unapproved timesheets (last 14d) + pending time-off.
+    //    Surfaced for the Team tab's approvals (the UI gates display on the team_approvals flag; writes
+    //    go through the manager-approve edge fn). Isolated: never break the rest of the snapshot. ──
+    let pendingTimesheets: any[] = [], pendingTimeOff: any[] = [];
+    try {
+      const since = new Date(now.getTime() - 14 * 24 * 3600 * 1000).toISOString();
+      const [{ data: pts }, { data: pto }] = await Promise.all([
+        sb.from('wf_timesheets').select('id, staff_id, clock_in, clock_out, break_taken, status')
+          .eq('location_id', loc).gte('clock_in', since).not('clock_out', 'is', null)
+          .not('status', 'in', '(approved,paid)').order('clock_in', { ascending: false }).limit(200),
+        sb.from('wf_time_off').select('id, staff_id, type, start_date, end_date, days, note, status')
+          .eq('location_id', loc).eq('status', 'pending').order('start_date', { ascending: true }).limit(200),
+      ]);
+      pendingTimesheets = (pts ?? []).map((t: any) => ({
+        id: t.id, staffId: t.staff_id, name: nameOf[t.staff_id] || 'Staff',
+        inMs: ms(t.clock_in), outMs: ms(t.clock_out), breakMins: Number(t.break_taken) || 0, status: t.status,
+      }));
+      pendingTimeOff = (pto ?? []).map((l: any) => ({
+        id: l.id, staffId: l.staff_id, name: nameOf[l.staff_id] || 'Staff', type: l.type,
+        startDate: l.start_date, endDate: l.end_date, days: Number(l.days) || 0, note: l.note || null,
+      }));
+    } catch { pendingTimesheets = []; pendingTimeOff = []; }
+
     // ── Kitchen: stock items below par/reorder, for one PO per supplier (read-only). Greenfield stock
     //    system (inventory_items + par_levels); only items WITH a par row are "managed" → kept. The
     //    client (kitchen.js belowPar/bySupplier) decides what's short. Isolated: a stock read failure
@@ -207,7 +230,7 @@ Deno.serve(async (req) => {
 
     return json({
       ok: true, location_id: loc, venueName: locRow?.name || '', tz,
-      money, floor, team: { punches, shifts: teamShifts, ratesMinor },
+      money, floor, team: { punches, shifts: teamShifts, ratesMinor, pendingTimesheets, pendingTimeOff },
       kitchen: { items: kitchenItems, deliveries: kitchenDeliveries },
       ops,
       generated_at: new Date().toISOString(),
