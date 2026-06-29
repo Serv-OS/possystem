@@ -89,6 +89,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.707', date: '29 Jun 2026', label: 'Back Office Timesheets — clock in/out shown, edit behind an Edit button',
+    changes: [
+      'Timesheets now read like the Manager app: each row shows clock-in → clock-out and actual hours, instead of always-on input boxes.',
+      'To change a pending row you click Edit → adjust start / end / break (with a live worked-hours + pay preview) → Save. Pay recomputes exactly as before. Approve still locks it.',
+    ],
+  },
+  {
     version: '5.5.706', date: '29 Jun 2026', label: 'Nudge — now DB-backed (reliable) so it lands on the tills like a new order',
     changes: [
       'Nudge no longer relies on a live broadcast (which could miss). The Manager app writes a small record and the till picks it up over the SAME realtime it uses for new KDS orders → toast + chime. Works reliably and even if a device was briefly offline.',

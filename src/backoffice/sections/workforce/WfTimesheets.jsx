@@ -2,17 +2,15 @@
 //
 // WORKFORCE → Timesheets. A timesheet exists for hours actually worked — it
 // comes from the TIME CLOCK (staff clocking in/out) or is ADDED MANUALLY by a
-// manager (per rota shift, or free-standing). There is NO bulk auto-generate:
-// that used to create one per published shift with no clock times, which (a)
-// looked like "random timesheets" and (b) was invisible to every per-day wage
-// calc and payroll query — they all key on clock_in.
+// manager (per rota shift, or free-standing). There is NO bulk auto-generate.
 //
-// Filter by WEEK or by PAY PERIOD (the venue's configured period — the same
-// dates Run payroll uses). Rows are editable until approved; any row can be
-// deleted. Approving a legacy row with no clock times re-stamps them from its
-// shift so it starts counting in actual wages / labour % / payroll.
+// Rows are READ-ONLY by default (clock-in → clock-out + actual hours, like the
+// Manager app); to change a pending row you click EDIT, which opens an inline
+// panel (start / end / break) and recomputes hours + pay on Save. Approving a
+// legacy row with no clock times re-stamps them from its shift so it starts
+// counting in actual wages / labour % / payroll.
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, Fragment } from 'react';
 import { Icon } from '../../../components/ServOSIcons';
 import { Card, EmptyState, Badge, RoleChip, money, th, td, inputStyle, labelStyle, LoadingCard } from '../../../staff/wfUi';
 import * as wf from '../../../staff/wfData';
@@ -22,7 +20,7 @@ import { buildWeek, addWeeks, payPeriod, shiftPayPeriod, weekRangeLabel } from '
 const VAR_TOL = 0.17; // ≈ ±10 min — beyond this we flag the variance.
 const round2 = n => Math.round((Number(n) || 0) * 100) / 100;
 
-// Local "YYYY-MM-DDTHH:MM:00" — shift times are venue-local wall clock.
+// Local "YYYY-MM-DDTHH:MM:00" — clock/shift times are venue-local wall clock.
 const stamp = (dateIso, hhmm) => `${dateIso}T${hhmm || '00:00'}:00`;
 // clock_out from a shift, rolling overnight finishes to the next day.
 function clockOutOf(dateIso, start, finish) {
@@ -32,13 +30,16 @@ function clockOutOf(dateIso, start, finish) {
   return stamp(next, finish);
 }
 const isoOfTs = t => t.clockIn ? String(t.clockIn).slice(0, 10) : null;
+// "HH:MM" from a stored wall-clock stamp (no timezone conversion — it's already local).
+const hhmmOf = s => (s ? String(s).slice(11, 16) : '');
 
 export default function WfTimesheets({ ctx, staff, roles, sections, settings, week, showToast }) {
   const [shifts, setShifts] = useState([]);
   const [sheets, setSheets] = useState([]);
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
-  const [drafts, setDrafts] = useState({}); // per-timesheet edited actual hours
+  const [editId, setEditId] = useState(null);          // timesheet id open in the inline editor
+  const [eform, setEform] = useState({ start: '', end: '', breakMins: '0', paid: false, date: null });
 
   // ── range filter: by week or by pay period ────────────────────────────────
   const payCfg = useMemo(() => ({
@@ -86,10 +87,6 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
   }
 
   // ── rows in range ──────────────────────────────────────────────────────────
-  // (a) one per published shift (with its timesheet, if any);
-  // (b) shiftless timesheets (Time Clock / manual) whose clock-in date is in range;
-  // (c) "undated" legacy timesheets (no clock_in, shift outside range or gone) —
-  //     always shown so they can be fixed or deleted, never silently hidden.
   const rows = useMemo(() => {
     const shiftIds = new Set((shifts || []).map(s => s.id));
     // Paid hours = net worked hours + any PAID break minutes (UK: the 20-min
@@ -98,10 +95,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
     const out = (shifts || []).map(shift => {
       const ts = tsByShift[shift.id] || null;
       const scheduled = round2(shift.computedHours ?? hoursOf(shift.start, shift.finish) - (shift.breakMins || 0) / 60);
-      const draft = ts ? drafts[ts.id] : null;
-      const actual = ts
-        ? (ts.status !== 'pending' ? round2(ts.actualHours) : draft != null ? round2(parseFloat(draft) || 0) : round2(ts.actualHours))
-        : null;
+      const actual = ts ? round2(ts.actualHours) : null;
       const { rate, source } = rateFor(shift.staffId, shift.roleKey);
       return {
         key: `sh-${shift.id}`, kind: 'shift', shift, ts,
@@ -120,8 +114,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
       const inRange = iso && iso >= range.from && iso <= range.to;
       const undated = !iso;                                        // legacy generated rows
       if (!inRange && !undated) return;
-      const draft = drafts[ts.id];
-      const actual = ts.status !== 'pending' ? round2(ts.actualHours) : draft != null ? round2(parseFloat(draft) || 0) : round2(ts.actualHours);
+      const actual = round2(ts.actualHours);
       const { rate, source } = rateFor(ts.staffId, staffMap[ts.staffId]?.role);
       const eff = ts.effectiveRate != null ? Number(ts.effectiveRate) : rate;
       out.push({
@@ -137,7 +130,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
       });
     });
     return out.sort((a, b) => String(a.date || '9999').localeCompare(String(b.date || '9999')) || String(staffMap[a.staffId]?.name || '').localeCompare(String(staffMap[b.staffId]?.name || '')));
-  }, [shifts, sheets, tsByShift, drafts, staffMap, roles, range.from, range.to]);
+  }, [shifts, sheets, tsByShift, staffMap, roles, range.from, range.to]);
 
   // Status filter: pending also shows rota-only rows (a shift still needing a
   // timesheet IS pending work); approved/paid show only matching timesheets.
@@ -157,7 +150,6 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
   const undatedCount = rows.filter(r => r.kind === 'undated').length;
 
   // ── actions ────────────────────────────────────────────────────────────────
-  // Venue policy: are breaks paid by default? (Workforce settings.)
   const paidBreaksDefault = !!settings?.settings?.paidBreaks;
 
   // Manual add for one rota shift — clock times stamped from the shift.
@@ -174,59 +166,55 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
         status: 'pending',
       }, ctx.locationId, ctx.orgId);
       setSheets(prev => [ts, ...prev]);
-      showToast?.('Timesheet added from the shift — adjust hours then approve', 'success');
+      showToast?.('Timesheet added from the shift — Edit to adjust, then approve', 'success');
     } catch (e) { showToast?.('Could not add: ' + e.message, 'error'); }
   }
 
-  async function saveActual(r) {
+  // Open the inline editor for a pending row, seeded from its current times.
+  function openEdit(r) {
     if (!r.ts || r.ts.status !== 'pending') return;
-    const patch = {
-      ...r.ts,
-      actualHours: r.actual, variance: r.variance, payAmount: r.pay,
-      effectiveRate: r.rate, rateSource: r.rateSource,
-      // Heal legacy rows: stamp clock times from the shift so the row counts
-      // in per-day wages and payroll (both key on clock_in).
-      ...(!r.ts.clockIn && r.shift ? { clockIn: stamp(r.shift.date, r.shift.start), clockOut: clockOutOf(r.shift.date, r.shift.start, r.shift.finish) } : {}),
-    };
-    setSheets(prev => prev.map(t => t.id === r.ts.id ? { ...t, ...patch } : t));
-    setDrafts(d => ({ ...d, [r.ts.id]: null }));
-    try {
-      const saved = await wf.saveTimesheet(patch, ctx.locationId, ctx.orgId);
-      setSheets(prev => prev.map(t => t.id === r.ts.id ? saved : t));
-    } catch (e) { showToast?.('Could not save hours: ' + e.message, 'error'); reload(); }
+    const date = r.date || (r.ts.clockIn ? String(r.ts.clockIn).slice(0, 10) : null);
+    setEditId(r.ts.id);
+    setEform({
+      start: hhmmOf(r.ts.clockIn) || r.shift?.start || '09:00',
+      end: hhmmOf(r.ts.clockOut) || r.shift?.finish || '17:00',
+      breakMins: String(r.breakMins || 0),
+      paid: !!r.paidBreak,
+      date,
+    });
   }
-
-  // Change the break (minutes and/or paid flag). On rows with both clock
-  // stamps, worked hours are re-derived (gross − break); pay = worked + paid
-  // break minutes.
-  async function saveBreak(r, minsRaw, paidOverride) {
-    if (!r.ts || r.ts.status !== 'pending') return;
-    const mins = Math.max(0, Math.round(Number(minsRaw) || 0));
-    const paid = paidOverride != null ? paidOverride : r.paidBreak;
-    let actual = r.actual ?? 0;
-    if (r.ts.clockIn && r.ts.clockOut) {
-      const gross = (new Date(r.ts.clockOut) - new Date(r.ts.clockIn)) / 3600000;
-      actual = round2(Math.max(0, gross - mins / 60));
-    }
-    const paidMins = paid ? mins : 0;
+  // Derive worked hours + pay from the current edit form (mirrors the server: gross − break;
+  // pay = (worked + paid-break) × rate). Returns null until both times are set.
+  function editCalc(r) {
+    const date = eform.date || r.date;
+    if (!date || !eform.start || !eform.end) return null;
+    const clockIn = stamp(date, eform.start);
+    const clockOut = (eform.end > eform.start) ? stamp(date, eform.end) : clockOutOf(date, eform.start, eform.end);
+    const mins = Math.max(0, Math.round(Number(eform.breakMins) || 0));
+    const actual = round2(Math.max(0, (new Date(clockOut) - new Date(clockIn)) / 3600000 - mins / 60));
+    const paidMins = eform.paid ? mins : 0;
+    return { clockIn, clockOut, mins, paidMins, actual, pay: round2((actual + paidMins / 60) * r.rate) };
+  }
+  async function saveEdit(r) {
+    const c = editCalc(r);
+    if (!c) { showToast?.('Enter a start and end time', 'error'); return; }
+    const sched = r.scheduled != null ? r.scheduled : (r.ts.scheduledHours != null ? round2(r.ts.scheduledHours) : null);
     const patch = {
       ...r.ts,
-      breakTaken: mins, paidBreakMins: paidMins,
-      actualHours: actual,
-      variance: r.scheduled != null ? round2(actual - r.scheduled) : r.ts.variance,
-      payAmount: round2((actual + paidMins / 60) * r.rate),
-      effectiveRate: r.rate, rateSource: r.rateSource,
+      clockIn: c.clockIn, clockOut: c.clockOut, breakTaken: c.mins, paidBreakMins: c.paidMins,
+      actualHours: c.actual, variance: sched != null ? round2(c.actual - sched) : null,
+      payAmount: c.pay, effectiveRate: r.rate, rateSource: r.rateSource,
     };
     setSheets(prev => prev.map(t => t.id === r.ts.id ? { ...t, ...patch } : t));
+    setEditId(null);
     try {
       const saved = await wf.saveTimesheet(patch, ctx.locationId, ctx.orgId);
       setSheets(prev => prev.map(t => t.id === r.ts.id ? saved : t));
-    } catch (e) { showToast?.('Could not save break: ' + e.message, 'error'); reload(); }
+    } catch (e) { showToast?.('Could not save: ' + e.message, 'error'); reload(); }
   }
 
   async function approve(r) {
     if (!r.ts || r.ts.status !== 'pending') return;
-    if (drafts[r.ts.id] != null) await saveActual(r);
     const heal = !r.ts.clockIn && r.shift
       ? { clockIn: stamp(r.shift.date, r.shift.start), clockOut: clockOutOf(r.shift.date, r.shift.start, r.shift.finish) }
       : {};
@@ -263,7 +251,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
         <div>
           <div style={{ fontSize: 16, fontWeight: 700 }}>Timesheets</div>
           <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>
-            From the Time Clock, or added manually. Approve to lock pay; approved rows feed Payroll and the rota's actual wage.
+            From the Time Clock, or added manually. Click Edit to adjust a pending row; Approve to lock pay (approved rows feed Payroll and the rota’s actual wage).
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -294,7 +282,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 12px', borderRadius: 10, background: 'rgba(245,166,35,.10)', border: '1px solid var(--amber)', marginBottom: 14 }}>
           <span style={{ color: 'var(--amber)', marginTop: 1 }}><Icon name="warn" size={15} /></span>
           <div style={{ fontSize: 12.5, color: 'var(--t2)', lineHeight: 1.55 }}>
-            <b>{undatedCount} timesheet{undatedCount === 1 ? '' : 's'} with no clock times</b> (created by the old bulk-generate). They don't count in wages or payroll — delete them (✕), or approve the ones tied to a shift to stamp their times and bring them in.
+            <b>{undatedCount} timesheet{undatedCount === 1 ? '' : 's'} with no clock times</b> (created by the old bulk-generate). They don't count in wages or payroll — delete them (✕), or Edit/Approve the ones tied to a shift to stamp their times and bring them in.
           </div>
         </div>
       )}
@@ -307,15 +295,16 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
         />
       ) : (
         <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 760 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 820 }}>
             <thead>
               <tr>
                 <th style={th}>Staff</th>
                 <th style={th}>Role</th>
                 <th style={th}>Source</th>
                 <th style={th}>Scheduled</th>
-                <th style={{ ...th, width: 110 }}>Actual hrs</th>
-                <th style={{ ...th, width: 130 }}>Break</th>
+                <th style={{ ...th, width: 170 }}>Clock in → out</th>
+                <th style={{ ...th, width: 90 }}>Actual</th>
+                <th style={{ ...th, width: 120 }}>Break</th>
                 <th style={th}>Variance</th>
                 <th style={{ ...th, textAlign: 'right' }}>Pay</th>
                 <th style={{ ...th, textAlign: 'right' }}>Status</th>
@@ -327,69 +316,89 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
                 const s = staffMap[r.staffId];
                 const locked = r.ts && r.ts.status !== 'pending';
                 const paid = r.ts && r.ts.status === 'paid';
-                const draftVal = r.ts ? drafts[r.ts.id] : null;
+                const editing = r.ts && editId === r.ts.id;
+                const pv = editing ? editCalc(r) : null;
                 return (
-                  <tr key={r.key} style={locked ? { opacity: 0.85 } : null}>
-                    <td style={td}>
-                      <div style={{ fontWeight: 600 }}>{s?.name || 'Unknown'}</div>
-                      <div style={{ fontSize: 11, color: 'var(--t3)' }}>{r.date ? new Date(r.date + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }) : 'No date'}</div>
-                    </td>
-                    <td style={td}><RoleChip role={r.roleKey || s?.role} roles={roles.map} /></td>
-                    <td style={td}>
-                      {r.kind === 'clock' ? <Badge tone="blue">Clock</Badge>
-                        : r.kind === 'undated' ? <Badge tone="amber">No times</Badge>
-                          : r.ts?.clockIn ? <Badge tone="grey">Shift</Badge>
-                            : r.ts ? <Badge tone="amber">No times</Badge>
-                              : <span style={{ color: 'var(--t4)', fontSize: 12 }}>Rota only</span>}
-                    </td>
-                    <td style={td}>
-                      {r.shift ? (<>
-                        <span className="mono">{r.shift.start}–{r.shift.finish}</span>
-                        <div style={{ fontSize: 11, color: 'var(--t3)' }}>{r.scheduled?.toFixed(2)}h</div>
-                      </>) : r.scheduled != null ? <span className="mono">{r.scheduled.toFixed(2)}h</span> : <span style={{ color: 'var(--t4)' }}>—</span>}
-                    </td>
-                    <td style={td}>
-                      {!r.ts ? (
-                        <span style={{ color: 'var(--t4)' }}>—</span>
-                      ) : locked ? (
-                        <span className="mono">{(r.actual ?? 0).toFixed(2)}</span>
-                      ) : (
-                        <input
-                          type="number" step="0.25" min="0"
-                          value={draftVal != null ? draftVal : (r.actual ?? 0)}
-                          onChange={e => setDrafts(d => ({ ...d, [r.ts.id]: e.target.value }))}
-                          onBlur={() => draftVal != null && saveActual(r)}
-                          style={{ width: 84, background: 'var(--bg3)', border: '1.5px solid var(--bdr2)', borderRadius: 8, padding: '6px 8px', height: 34, fontSize: 13, color: 'var(--t1)', fontFamily: 'var(--font-mono)', outline: 'none' }}
-                        />
-                      )}
-                    </td>
-                    <td style={td}><BreakCell r={r} staffMap={staffMap} onSave={saveBreak} /></td>
-                    <td style={td}><VarianceCell variance={r.ts ? r.variance : null} /></td>
-                    <td style={{ ...td, textAlign: 'right' }}>
-                      {r.ts ? <span className="mono" style={{ fontWeight: 600 }}>{money(r.pay, 2)}</span> : <span style={{ color: 'var(--t4)' }}>—</span>}
-                    </td>
-                    <td style={{ ...td, textAlign: 'right' }}>
-                      {!r.ts ? (
-                        <button className="btn btn-ghost btn-xs" onClick={() => addForShift(r)} title="Add a timesheet for this shift (times from the rota)"><Icon name="plus" size={12} /> Add</button>
-                      ) : paid ? (
-                        <Badge tone="blue"><Icon name="check" size={11} /> Paid</Badge>
-                      ) : locked ? (
-                        <Badge tone="green"><Icon name="check" size={11} /> Approved</Badge>
-                      ) : (
-                        <button className="btn btn-ghost btn-xs" onClick={() => approve(r)}><Icon name="check" size={13} /> Approve</button>
-                      )}
-                    </td>
-                    <td style={{ ...td, textAlign: 'right' }}>
-                      {r.ts && r.ts.status !== 'paid' && <button className="btn btn-ghost btn-xs" style={{ color: 'var(--t4)' }} title="Delete timesheet" onClick={() => remove(r)}><Icon name="close" size={12} /></button>}
-                    </td>
-                  </tr>
+                  <Fragment key={r.key}>
+                    <tr style={locked ? { opacity: 0.85 } : null}>
+                      <td style={td}>
+                        <div style={{ fontWeight: 600 }}>{s?.name || 'Unknown'}</div>
+                        <div style={{ fontSize: 11, color: 'var(--t3)' }}>{r.date ? new Date(r.date + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }) : 'No date'}</div>
+                      </td>
+                      <td style={td}><RoleChip role={r.roleKey || s?.role} roles={roles.map} /></td>
+                      <td style={td}>
+                        {r.kind === 'clock' ? <Badge tone="blue">Clock</Badge>
+                          : r.kind === 'undated' ? <Badge tone="amber">No times</Badge>
+                            : r.ts?.clockIn ? <Badge tone="grey">Shift</Badge>
+                              : r.ts ? <Badge tone="amber">No times</Badge>
+                                : <span style={{ color: 'var(--t4)', fontSize: 12 }}>Rota only</span>}
+                      </td>
+                      <td style={td}>
+                        {r.shift ? (<>
+                          <span className="mono">{r.shift.start}–{r.shift.finish}</span>
+                          <div style={{ fontSize: 11, color: 'var(--t3)' }}>{r.scheduled?.toFixed(2)}h</div>
+                        </>) : r.scheduled != null ? <span className="mono">{r.scheduled.toFixed(2)}h</span> : <span style={{ color: 'var(--t4)' }}>—</span>}
+                      </td>
+                      <td style={td}>
+                        {!r.ts ? <span style={{ color: 'var(--t4)' }}>—</span>
+                          : (r.ts.clockIn || r.ts.clockOut)
+                            ? <span className="mono">{hhmmOf(r.ts.clockIn) || '—'} → {hhmmOf(r.ts.clockOut) || '—'}</span>
+                            : <span style={{ color: 'var(--t4)', fontSize: 12 }}>no times</span>}
+                      </td>
+                      <td style={td}>
+                        {r.ts ? <span className="mono">{(r.actual ?? 0).toFixed(2)}h</span> : <span style={{ color: 'var(--t4)' }}>—</span>}
+                      </td>
+                      <td style={td}><BreakCell r={r} staffMap={staffMap} /></td>
+                      <td style={td}><VarianceCell variance={r.ts ? r.variance : null} /></td>
+                      <td style={{ ...td, textAlign: 'right' }}>
+                        {r.ts ? <span className="mono" style={{ fontWeight: 600 }}>{money(r.pay, 2)}</span> : <span style={{ color: 'var(--t4)' }}>—</span>}
+                      </td>
+                      <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                        {!r.ts ? (
+                          <button className="btn btn-ghost btn-xs" onClick={() => addForShift(r)} title="Add a timesheet for this shift (times from the rota)"><Icon name="plus" size={12} /> Add</button>
+                        ) : paid ? (
+                          <Badge tone="blue"><Icon name="check" size={11} /> Paid</Badge>
+                        ) : locked ? (
+                          <Badge tone="green"><Icon name="check" size={11} /> Approved</Badge>
+                        ) : (
+                          <span style={{ display: 'inline-flex', gap: 6 }}>
+                            <button className="btn btn-ghost btn-xs" onClick={() => (editing ? setEditId(null) : openEdit(r))}><Icon name="edit" size={12} /> {editing ? 'Close' : 'Edit'}</button>
+                            <button className="btn btn-ghost btn-xs" onClick={() => approve(r)}><Icon name="check" size={13} /> Approve</button>
+                          </span>
+                        )}
+                      </td>
+                      <td style={{ ...td, textAlign: 'right' }}>
+                        {r.ts && r.ts.status !== 'paid' && <button className="btn btn-ghost btn-xs" style={{ color: 'var(--t4)' }} title="Delete timesheet" onClick={() => remove(r)}><Icon name="close" size={12} /></button>}
+                      </td>
+                    </tr>
+                    {editing && (
+                      <tr>
+                        <td colSpan={11} style={{ ...td, background: 'var(--bg2)' }}>
+                          <div style={{ display: 'flex', alignItems: 'flex-end', gap: 14, flexWrap: 'wrap' }}>
+                            <div><label style={labelStyle}>Start</label><input type="time" style={{ ...inputStyle, width: 130 }} value={eform.start} onChange={e => setEform(f => ({ ...f, start: e.target.value }))} /></div>
+                            <div><label style={labelStyle}>End</label><input type="time" style={{ ...inputStyle, width: 130 }} value={eform.end} onChange={e => setEform(f => ({ ...f, end: e.target.value }))} /></div>
+                            <div><label style={labelStyle}>Break (min)</label><input type="number" min="0" step="5" style={{ ...inputStyle, width: 110 }} value={eform.breakMins} onChange={e => setEform(f => ({ ...f, breakMins: e.target.value }))} /></div>
+                            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: 'var(--t2)', cursor: 'pointer', marginBottom: 9 }} title="Paid break: these minutes are paid on top of worked hours (venue policy)">
+                              <input type="checkbox" checked={eform.paid} onChange={e => setEform(f => ({ ...f, paid: e.target.checked }))} /> break paid
+                            </label>
+                            <div style={{ marginBottom: 9, fontSize: 12.5, color: 'var(--t3)' }} className="mono">
+                              {pv ? <>worked <b style={{ color: 'var(--t1)' }}>{pv.actual.toFixed(2)}h</b> · pay <b style={{ color: 'var(--t1)' }}>{money(pv.pay, 2)}</b></> : 'enter start & end'}
+                            </div>
+                            <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, marginBottom: 4 }}>
+                              <button className="btn btn-ghost btn-sm" onClick={() => setEditId(null)}>Cancel</button>
+                              <button className="btn btn-acc btn-sm" onClick={() => saveEdit(r)}><Icon name="check" size={13} /> Save</button>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 );
               })}
             </tbody>
             <tfoot>
               <tr>
-                <td style={{ ...td, fontWeight: 700, borderBottom: 'none' }} colSpan={3}>Totals (timesheets)</td>
-                <td style={{ ...td, borderBottom: 'none' }} />
+                <td style={{ ...td, fontWeight: 700, borderBottom: 'none' }} colSpan={5}>Totals (timesheets)</td>
                 <td style={{ ...td, borderBottom: 'none' }}><span className="mono" style={{ fontWeight: 700 }}>{totals.hours.toFixed(2)}h</span></td>
                 <td style={{ ...td, borderBottom: 'none' }} colSpan={2} />
                 <td style={{ ...td, textAlign: 'right', fontWeight: 700, borderBottom: 'none' }}><span className="mono">{money(totals.pay, 2)}</span></td>
@@ -429,14 +438,12 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
   );
 }
 
-// Break detail: total minutes (editable until approved), when each break ran
-// (from the Time Clock's recorded segments), whether it's paid, and a UK
-// Working Time Regulations check — 20 mins due over 6h worked (30 mins over
-// 4.5h for under-18s, from their date of birth).
-function BreakCell({ r, staffMap, onSave }) {
-  const [draft, setDraft] = useState(null);
+// Break detail (READ-ONLY): total minutes, when each break ran (Time Clock
+// segments), whether it's paid, and a UK Working Time Regulations check —
+// 20 mins due over 6h worked (30 mins over 4.5h for under-18s). Editing the
+// break is done via the row's Edit panel.
+function BreakCell({ r, staffMap }) {
   if (!r.ts) return <span style={{ color: 'var(--t4)' }}>{r.breakMins ? `${r.breakMins}m planned` : '—'}</span>;
-  const approved = r.ts.status !== 'pending';
   const dob = staffMap[r.staffId]?.dob || null;
   const due = statutoryBreakMins(r.actual ?? 0, dob);
   const short = due > 0 && (r.breakMins || 0) < due;
@@ -447,24 +454,8 @@ function BreakCell({ r, staffMap, onSave }) {
   return (
     <div title={segs.length ? `Breaks: ${segs.join(', ')}` : 'No break segments recorded'}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        {approved ? (
-          <span className="mono">{r.breakMins || 0}m</span>
-        ) : (
-          <input
-            type="number" min="0" step="5"
-            value={draft != null ? draft : (r.breakMins || 0)}
-            onChange={e => setDraft(e.target.value)}
-            onBlur={() => { if (draft != null) { onSave(r, draft); setDraft(null); } }}
-            style={{ width: 56, background: 'var(--bg3)', border: '1.5px solid var(--bdr2)', borderRadius: 8, padding: '4px 6px', height: 30, fontSize: 12.5, color: 'var(--t1)', fontFamily: 'var(--font-mono)', outline: 'none' }}
-          />
-        )}
-        {!approved && (
-          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 10.5, color: 'var(--t3)', cursor: 'pointer' }} title="Paid break: these minutes are paid on top of worked hours (venue policy — UK law doesn't require the statutory break to be paid)">
-            <input type="checkbox" checked={r.paidBreak} onChange={e => onSave(r, draft != null ? draft : r.breakMins, e.target.checked)} />
-            paid
-          </label>
-        )}
-        {approved && r.paidBreak && <Badge tone="green">paid</Badge>}
+        <span className="mono">{r.breakMins || 0}m</span>
+        {r.paidBreak && <Badge tone="green">paid</Badge>}
       </div>
       {segs.length > 0 && <div style={{ fontSize: 10, color: 'var(--t4)', marginTop: 2, fontFamily: 'var(--font-mono)' }}>{segs.join(' · ')}</div>}
       {short && <div style={{ marginTop: 3 }}><Badge tone="red">{due}m break due (WTR)</Badge></div>}
