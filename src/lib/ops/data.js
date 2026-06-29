@@ -10,6 +10,7 @@
 
 import { supabase, isMock, getLocationId, getActiveLocationSync } from '../supabase';
 import { fetchPurchaseOrders, receivePurchaseOrder } from '../stock/purchasing.js';
+import { isTrainingMode } from '../trainingMode';
 
 const nowIso = () => new Date().toISOString();
 async function ensureLoc(locationId) {
@@ -161,6 +162,11 @@ export const deleteSchedule = async (id, locationId = null) => {
  *  On a breach the RPC REQUIRES corrective.action or it rejects. */
 export const submitReading = async ({ unitId, readingC, scheduleId, operatorId, operatorName, source, notes, corrective, deliveryId }, locationId = null) => {
   if (isMock || !supabase) return { data: { inRange: true }, error: null };
+  // TRAINING MODE: never commit a reading. ops_submit_reading is the head of the
+  // breach → corrective → auto-maintenance → alert chain, so a training reading
+  // would raise live maintenance requests and fire real alerts. Hand back the same
+  // in-range no-op the mock path uses so the UI flows.
+  if (isTrainingMode()) return { data: { inRange: true }, error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: null, error: new Error('No locationId') };
   const { data, error } = await supabase.rpc('ops_submit_reading', {
@@ -210,6 +216,8 @@ export const fetchMaintenance = async (locationId = null, status = null) => {
 };
 export const createMaintenance = async (m, locationId = null) => {
   if (isMock || !supabase) return { data: null, error: null };
+  // TRAINING MODE: don't raise a real maintenance request.
+  if (isTrainingMode()) return { data: null, error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: null, error: new Error('No locationId') };
   const { data, error } = await supabase.from('maintenance_requests').insert({
@@ -222,6 +230,8 @@ export const createMaintenance = async (m, locationId = null) => {
 };
 export const setMaintenanceStatus = async (id, status, who, locationId = null) => {
   if (isMock || !supabase) return { error: null };
+  // TRAINING MODE: don't mutate a live request, write status history, or fire a resolved alert.
+  if (isTrainingMode()) return { error: null };
   locationId = await ensureLoc(locationId);
   const patch = { status, updated_at: nowIso() };
   if (status === 'resolved') patch.resolved_at = nowIso();
@@ -238,6 +248,8 @@ export const setMaintenanceStatus = async (id, status, who, locationId = null) =
 /** Assign a maintenance request to a person → status 'assigned' + alert the assignee. */
 export const assignMaintenance = async (id, assignee, by, locationId = null) => {
   if (isMock || !supabase) return { error: null };
+  // TRAINING MODE: don't assign a live request, write history, or alert the assignee.
+  if (isTrainingMode()) return { error: null };
   locationId = await ensureLoc(locationId);
   const { data: prev } = await supabase.from('maintenance_requests').select('status, title').eq('id', id).maybeSingle();
   const { error } = await supabase.from('maintenance_requests').update({
@@ -259,6 +271,8 @@ export const fetchOpsAssignees = async (locationId = null) => {
   return { data: (data || []).filter(s => s.name), error };
 };
 export const addMaintenanceNote = async (id, note, who, locationId = null) => {
+  // TRAINING MODE: don't write a note onto a live maintenance request.
+  if (isTrainingMode()) return { error: null };
   locationId = await ensureLoc(locationId);
   return supabase.from('maintenance_notes').insert({ location_id: locationId, request_id: id, note, author_name: who || null });
 };
@@ -271,7 +285,11 @@ export const fetchAlerts = async (locationId = null, openOnly = false) => {
   const { data, error } = await q.order('created_at', { ascending: false }).limit(200);
   return { data: (data || []).map(alertFromRow), error };
 };
-export const ackAlert = async (alertId, action, who) => rpc('ops_ack_alert', { p_alert_id: alertId, p_action: action || null, p_user_name: who || null });
+export const ackAlert = async (alertId, action, who) => {
+  // TRAINING MODE: don't acknowledge a live alert. Mirror rpc()'s benign no-op.
+  if (isTrainingMode()) return { data: null, error: null };
+  return rpc('ops_ack_alert', { p_alert_id: alertId, p_action: action || null, p_user_name: who || null });
+};
 
 // ── Notification rules — drive the ops-escalate ladder (SMS/email + escalation) ──
 // recipients entries the engine understands: {role}|{phone}|{email}. A person picked
@@ -343,6 +361,9 @@ export const fetchExpectedDeliveries = async (locationId = null) => {
  *  and set the delivery to accepted/rejected. On accept, receive the PO into stock. */
 export const checkDelivery = async ({ poId, supplierId, deliveryUnitId, temperatureC, accept, operatorId, operatorName, corrective, rejectionReason }, locationId = null) => {
   if (isMock || !supabase) return { data: null, error: null };
+  // TRAINING MODE: never record a delivery, log its reading, or receive a PO into
+  // live stock. This path mutates real stock levels and can raise breach alerts.
+  if (isTrainingMode()) return { data: null, error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: null, error: new Error('No locationId') };
 

@@ -7,6 +7,7 @@
 
 import { supabase, isMock, getLocationId, getActiveLocationSync } from '../supabase';
 import { runsOnDay, hhmmToMin, windowStatus } from './temp.js';
+import { isTrainingMode } from '../trainingMode';
 
 const nowIso = () => new Date().toISOString();
 const ymd = (d) => { const x = new Date(d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`; };
@@ -103,6 +104,12 @@ export const fetchTodayChecklists = async (locationId = null) => {
 /** Open (or fetch) today's run for a checklist. */
 export const openRun = async (checklistId, locationId = null) => {
   if (isMock || !supabase) return { data: null, error: null };
+  // TRAINING MODE: never open a real run. Hand back a fake in-memory run that
+  // CARRIES AN id, so ChecklistRun can call completeTask(run.id,…) /
+  // signOffRun(run.id,…) / uploadChecklistPhoto({runId:run.id,…}) without
+  // crashing on run.id — those then no-op too. (Returning null here, like the
+  // mock path, would leave run=null and crash sign-off.)
+  if (isTrainingMode()) return { data: { id: 'training-run', checklistId, runDate: ymd(new Date()), status: 'open', completedByName: null, completedAt: null }, error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: null, error: new Error('No locationId') };
   const today = ymd(new Date());
@@ -113,6 +120,8 @@ export const openRun = async (checklistId, locationId = null) => {
 };
 export const completeTask = async (runId, taskId, { done = true, valueText, photoUrl, by, byId }, locationId = null) => {
   if (isMock || !supabase) return { error: null };
+  // TRAINING MODE: don't record a real task completion.
+  if (isTrainingMode()) return { error: null };
   locationId = await ensureLoc(locationId);
   return supabase.from('ops_task_completions').upsert({
     location_id: locationId, run_id: runId, task_id: taskId, done, value_text: valueText || null,
@@ -121,6 +130,8 @@ export const completeTask = async (runId, taskId, { done = true, valueText, phot
 };
 export const signOffRun = async (runId, by, byId, locationId = null) => {
   if (isMock || !supabase) return { error: null };
+  // TRAINING MODE: don't sign off (or write an ops_audit row for) a live run.
+  if (isTrainingMode()) return { error: null };
   locationId = await ensureLoc(locationId);
   const { error } = await supabase.from('ops_checklist_runs').update({ status: 'complete', completed_by: byId || null, completed_by_name: by || null, completed_at: nowIso() }).eq('location_id', locationId).eq('id', runId);
   if (!error) await supabase.from('ops_audit').insert({ location_id: locationId, actor_id: byId || null, actor_name: by || null, action: 'checklist_signoff', entity_type: 'ops_checklist_run', entity_id: runId });
@@ -156,6 +167,10 @@ const EVIDENCE_BUCKET = 'receipt-assets';
 const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
 export const uploadChecklistPhoto = async (file, { locationId = null, runId, taskId } = {}) => {
   if (isMock || !supabase) return { url: null, error: new Error('Not connected') };
+  // TRAINING MODE: never upload evidence to the live storage bucket. Mirror the
+  // mock benign-return shape ({url:null, error}) so onPhotoPicked surfaces it
+  // gracefully rather than writing a real object.
+  if (isTrainingMode()) return { url: null, error: new Error('Training mode — evidence not saved') };
   if (!file) return { url: null, error: new Error('No file') };
   if (file.size > MAX_PHOTO_BYTES) return { url: null, error: new Error('Photo too large — keep it under 10 MB') };
   locationId = await ensureLoc(locationId);

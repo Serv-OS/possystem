@@ -89,6 +89,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.696', date: '29 Jun 2026', label: 'Training mode now gates Operations writes (defence-in-depth)',
+    changes: [
+      'Training mode now covers Operations too: on a training-flagged device, temperature readings, delivery checks, maintenance (raise/assign/status/notes), alert acknowledgements and checklist runs/sign-offs/photo evidence all behave normally on screen but commit NOTHING — no live maintenance requests, no real alerts, no POs received into stock, no audit rows.',
+      'Defence-in-depth: Ops tablets pair via ops_devices (not device_profiles), so this never fired before — but the “gate any new commit path” invariant now holds even if Ops ever runs on a training-flagged device.',
+      'No schema changes, no UI changes. Adds isTrainingMode() early-return guards to the ops data layer, mirroring how db.js already gates POS commits.',
+    ],
+  },
+  {
     version: '5.5.695', date: '28 Jun 2026', label: 'ServOS Manager — Ops folded in (full temps/checklists/deliveries/maintenance, one surface)',
     changes: [
       'The Manager app’s Ops tab is now the FULL Operations experience — temperature rounds (with the breach → corrective → auto-maintenance flow), opening/closing/cleaning checklists with photo sign-off, goods-in delivery checks and maintenance — not just a read-only view. One app to run the venue.',
