@@ -1,22 +1,26 @@
-// ManagerKitchen — live stock to order: items below par / reorder, grouped by supplier (one PO each).
-// Read-only (greenfield stock: inventory_items + par_levels, via manager-snapshot). The pure decisions
-// live in src/lib/manager/kitchen.js. Raising a PO + recording batch cooks (prep_schedule) are WRITES
-// → next slice. This is NOT the live KDS ticket rail — that stays as-is.
+// ManagerKitchen — live stock to order (items below par/reorder, grouped by supplier for one PO each)
+// + incoming deliveries (open POs awaiting goods-in). Read-only, via manager-snapshot. The pure
+// decisions live in src/lib/manager/kitchen.js. Raising a PO + recording scheduled batch cooks are
+// WRITES → next slices. The goods-in CHECK itself lives in the Ops tab → Deliveries. NOT the KDS rail.
 import { belowPar, bySupplier } from '../../lib/manager/kitchen';
 import { Header, Stat, SectionTitle, mono } from './ui';
 import { Icon } from '../../components/ServOSIcons';
+
+const DEL_PILL = { pending: ['Expected', 'var(--orn)'], accepted: ['Arrived', 'var(--grn)'], rejected: ['Rejected', 'var(--red)'] };
+const shortDate = (s) => { if (!s) return null; const d = new Date(s); return Number.isFinite(d.getTime()) ? d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) : null; };
 
 export default function ManagerKitchen({ ctx }) {
   const { snap, snapErr: err } = ctx;
 
   const items = snap?.kitchen?.items || [];
+  const incoming = snap?.kitchen?.deliveries || [];
   const short = belowPar(items);
   const groups = bySupplier(items);
   const supplierNames = Object.keys(groups).sort((a, b) => (a === 'Unassigned' ? 1 : b === 'Unassigned' ? -1 : a.localeCompare(b)));
 
   return (
     <div>
-      <Header title="Kitchen" sub="Stock to order" />
+      <Header title="Kitchen" sub="Stock + deliveries" />
       {!snap && !err && <div style={{ color: 'var(--t3)', padding: 16, ...mono }}>Loading…</div>}
       {err && <div className="sv-glass" style={{ padding: 16, marginTop: 12, color: 'var(--t3)', fontSize: 13 }}>Couldn’t load stock ({err}).</div>}
 
@@ -24,7 +28,7 @@ export default function ManagerKitchen({ ctx }) {
         <>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 12 }}>
             <Stat label="To order" value={short.length} tone={short.length ? 'var(--red)' : 'var(--grn)'} />
-            <Stat label="Suppliers" value={supplierNames.length} />
+            <Stat label="Incoming" value={incoming.length} tone={incoming.length ? 'var(--orn)' : 'var(--t1)'} />
           </div>
 
           {short.length === 0 && (
@@ -55,10 +59,35 @@ export default function ManagerKitchen({ ctx }) {
             </div>
           ))}
 
+          {incoming.length > 0 && (
+            <>
+              <SectionTitle right={`${incoming.length} ${incoming.length === 1 ? 'order' : 'orders'}`}>On order · incoming</SectionTitle>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {incoming.map((d) => {
+                  const [pillLabel, pillCol] = DEL_PILL[d.status] || DEL_PILL.pending;
+                  const eta = shortDate(d.expectedDate);
+                  return (
+                    <div key={d.id} className="sv-glass" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', borderRadius: 14 }}>
+                      <Icon name="delivery" size={16} style={{ color: 'var(--t3)', flexShrink: 0 }} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 14, fontWeight: 700 }}>{d.supplier || d.reference || 'Purchase order'}</div>
+                        <div style={{ fontSize: 11, color: 'var(--t3)', ...mono }}>
+                          {d.lines} line{d.lines === 1 ? '' : 's'}{eta ? ` · ETA ${eta}` : ''}
+                        </div>
+                      </div>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: pillCol, ...mono }}>{pillLabel}</span>
+                    </div>
+                  );
+                })}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 8, lineHeight: 1.5, ...mono }}>Check goods in from the Ops tab → Deliveries.</div>
+            </>
+          )}
+
           <div className="sv-glass" style={{ padding: 16, marginTop: 16 }}>
             <div style={{ fontSize: 13, fontWeight: 800 }}>Raise PO + batch cooks — next</div>
             <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 4, lineHeight: 1.5 }}>
-              Sending a purchase order per supplier and ticking off today’s batch cooks land next — they write to stock and prep records, so they go through the secure write path.
+              Sending a purchase order per supplier and ticking off scheduled batch cooks land next — they write to stock and prep records, so they go through the secure write path.
             </div>
           </div>
         </>

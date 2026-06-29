@@ -163,10 +163,53 @@ Deno.serve(async (req) => {
       }
     } catch { kitchenItems = []; }
 
+    // ── Ops: cheap headline counts for the Home tile (full detail lives in the Ops tab). Isolated. ──
+    let ops = { openMaintenance: 0, activeAlerts: 0 };
+    try {
+      const [{ data: maint }, { data: al }] = await Promise.all([
+        sb.from('maintenance_requests').select('status').eq('location_id', loc).limit(2000),
+        sb.from('ops_alerts').select('id').eq('location_id', loc).eq('status', 'sent').limit(2000),
+      ]);
+      ops = {
+        openMaintenance: (maint ?? []).filter((m: any) => !['resolved', 'cancelled'].includes(String(m.status))).length,
+        activeAlerts: (al ?? []).length,
+      };
+    } catch { ops = { openMaintenance: 0, activeAlerts: 0 }; }
+
+    // ── Kitchen incoming: open POs (SENT/PARTIAL) awaiting goods-in, with any delivery status. Read-only
+    //    summary for the Kitchen tab; the actual goods-in check happens in Ops → Deliveries. Isolated. ──
+    let kitchenDeliveries: any[] = [];
+    try {
+      const { data: pos } = await sb.from('purchase_orders')
+        .select('id, reference, supplier_id, expected_date, status').eq('location_id', loc)
+        .in('status', ['SENT', 'PARTIAL']).order('expected_date', { ascending: true }).limit(500);
+      if ((pos ?? []).length) {
+        const poIds = (pos ?? []).map((p: any) => p.id);
+        const [{ data: dels }, { data: lines }, { data: sups }] = await Promise.all([
+          sb.from('deliveries').select('po_id, status').eq('location_id', loc).in('po_id', poIds).limit(2000),
+          sb.from('po_lines').select('po_id').in('po_id', poIds).limit(20000),
+          sb.from('suppliers').select('id, name').eq('location_id', loc).limit(2000),
+        ]);
+        const delByPo: Record<string, string> = {};
+        for (const d of dels ?? []) if (d.po_id && !delByPo[d.po_id]) delByPo[d.po_id] = d.status;
+        const lineBy: Record<string, number> = {};
+        for (const l of lines ?? []) lineBy[l.po_id] = (lineBy[l.po_id] || 0) + 1;
+        const supName: Record<string, string> = {};
+        for (const s of sups ?? []) supName[s.id] = s.name;
+        kitchenDeliveries = (pos ?? []).map((p: any) => ({
+          id: p.id, reference: p.reference || null,
+          supplier: p.supplier_id ? (supName[p.supplier_id] || null) : null,
+          lines: lineBy[p.id] || 0, expectedDate: p.expected_date || null,
+          status: delByPo[p.id] || 'pending',   // pending | accepted | rejected
+        }));
+      }
+    } catch { kitchenDeliveries = []; }
+
     return json({
       ok: true, location_id: loc, venueName: locRow?.name || '', tz,
       money, floor, team: { punches, shifts: teamShifts, ratesMinor },
-      kitchen: { items: kitchenItems },
+      kitchen: { items: kitchenItems, deliveries: kitchenDeliveries },
+      ops,
       generated_at: new Date().toISOString(),
     });
   } catch (e) {

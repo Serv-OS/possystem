@@ -89,6 +89,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.697', date: '29 Jun 2026', label: 'ServOS Manager — Home bento + Kitchen incoming + Back Office role tick-boxes',
+    changes: [
+      'Home is now a balanced dashboard: takings hero (ex-VAT) with orders/labour/open/on-floor, a “needs you now” bar (stalled tables, no-shows, breaks, ops alerts), and a live 2×2 status bento (Floor · Team · Ops · Kitchen) — each tile role-gated and tapping to its tab.',
+      'Kitchen tab now shows “on order · incoming” — open purchase orders awaiting goods-in (supplier, lines, ETA, status) alongside what’s below par. (The goods-in check still happens in Ops → Deliveries.)',
+      'Back Office → Staff has a new “Manager app” permission group: tick boxes to widen which Manager-app tabs a specific person sees on top of their role — e.g. let a senior server approve timesheets.',
+    ],
+  },
+  {
     version: '5.5.696', date: '29 Jun 2026', label: 'Training mode now gates Operations writes (defence-in-depth)',
     changes: [
       'Training mode now covers Operations too: on a training-flagged device, temperature readings, delivery checks, maintenance (raise/assign/status/notes), alert acknowledgements and checklist runs/sign-offs/photo evidence all behave normally on screen but commit NOTHING — no live maintenance requests, no real alerts, no POs received into stock, no audit rows.',

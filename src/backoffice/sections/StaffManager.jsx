@@ -9,6 +9,16 @@ const PERM_GROUPS = [
   { group:'Orders',     perms:[{id:'void',label:'Void items'},{id:'discount',label:'Apply discounts'},{id:'priceOverride',label:'Override price'}] },
   { group:'Payments',   perms:[{id:'refund',label:'Process refunds'},{id:'cashup',label:'Cash up drawer'},{id:'openDrawer',label:'Open cash drawer'}] },
   { group:'Management', perms:[{id:'reports',label:'View reports'},{id:'eod',label:'End of day close'},{id:'menu86',label:'86 menu items'},{id:'staff',label:'Manage staff'}] },
+  // Manager phone app (?mode=manager) — these WIDEN which tabs this person sees on top of their role
+  // preset (owner/manager already see everything; tick a box to give a supervisor/server more). Keys
+  // must match PERM_TO_FLAG in src/lib/manager/access.js.
+  { group:'Manager app', perms:[
+    {id:'manager_reports',   label:'Reports & takings'},
+    {id:'manager_team',      label:'Team — who’s on'},
+    {id:'manager_approvals', label:'Approvals (timesheets & time off)'},
+    {id:'manager_ops',       label:'Operations checks'},
+    {id:'manager_kitchen',   label:'Kitchen — stock & prep'},
+  ] },
 ];
 const ROLE_DEFAULTS = {
   Manager:   ['void','discount','priceOverride','refund','cashup','openDrawer','reports','eod','menu86','staff'],
