@@ -336,13 +336,13 @@ function VariantsModal({ item, activeAllergens, onConfirm, onCancel }) {
                     return (
                       <button key={opt.id} onClick={()=>toggleSingle(group.id,opt)}
                         style={{ display:'flex', alignItems:'center', gap:9, padding:'9px 12px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', border:`1.5px solid ${isSel?'var(--acc)':'var(--bdr)'}`, background:isSel?'var(--acc-d)':'var(--bg3)', justifyContent:'space-between' }}>
-                        <div style={{ display:'flex', alignItems:'center', gap:9 }}>
+                        <div style={{ display:'flex', alignItems:'center', gap:9, flex:1, minWidth:0 }}>
                           <div style={{ width:16,height:16,borderRadius:'50%',border:`2px solid ${isSel?'var(--acc)':'var(--bdr2)'}`,background:isSel?'var(--acc)':'transparent',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>
                             {isSel&&<div style={{ width:5,height:5,borderRadius:'50%',background:'#0b0c10' }}/>}
                           </div>
-                          <span style={{ fontSize:13, fontWeight:isSel?700:400, color:isSel?'var(--acc)':'var(--t1)' }}>{opt.label||opt.name}</span>
+                          <span style={{ fontSize:13, fontWeight:isSel?700:400, minWidth:0, overflowWrap:'anywhere', color:isSel?'var(--acc)':'var(--t1)' }}>{opt.label||opt.name}</span>
                         </div>
-                        <span style={{ fontSize:12, color:isSel?'var(--acc)':'var(--t3)' }}>{opt.price>0?`+${money(opt.price)}`:isSel?'✓':''}</span>
+                        <span style={{ fontSize:12, flexShrink:0, color:isSel?'var(--acc)':'var(--t3)' }}>{opt.price>0?`+${money(opt.price)}`:isSel?'✓':''}</span>
                       </button>
                     );
                   } else {
@@ -351,8 +351,8 @@ function VariantsModal({ item, activeAllergens, onConfirm, onCancel }) {
                     const atMax=selCount>=maxSel;
                     return (
                       <div key={opt.id} style={{ display:'flex', alignItems:'center', gap:8, padding:'9px 12px', borderRadius:9, border:`1.5px solid ${qtyOpt>0?'var(--acc)':'var(--bdr)'}`, background:qtyOpt>0?'var(--acc-d)':'var(--bg3)' }}>
-                        <span style={{ flex:1, fontSize:13, fontWeight:qtyOpt>0?700:400, color:qtyOpt>0?'var(--acc)':'var(--t1)' }}>{opt.label||opt.name}</span>
-                        <span style={{ fontSize:12, color:qtyOpt>0?'var(--acc)':'var(--t3)', marginRight:6 }}>{opt.price>0?`+${money(opt.price)}`:'free'}</span>
+                        <span style={{ flex:1, minWidth:0, overflowWrap:'anywhere', fontSize:13, fontWeight:qtyOpt>0?700:400, color:qtyOpt>0?'var(--acc)':'var(--t1)' }}>{opt.label||opt.name}</span>
+                        <span style={{ fontSize:12, flexShrink:0, color:qtyOpt>0?'var(--acc)':'var(--t3)', marginRight:6 }}>{opt.price>0?`+${money(opt.price)}`:'free'}</span>
                         {qtyOpt>0&&<button onClick={()=>removeMulti(group.id,instances[instances.length-1]._uid)} style={{ width:26,height:26,borderRadius:6,border:'1.5px solid var(--acc-b)',background:'var(--bg1)',color:'var(--acc)',cursor:'pointer',fontSize:14,display:'flex',alignItems:'center',justifyContent:'center' }}>−</button>}
                         {qtyOpt>0&&<span style={{ fontSize:12, fontWeight:800, color:'var(--acc)', minWidth:14, textAlign:'center' }}>{qtyOpt}</span>}
                         <button onClick={()=>!atMax&&addMulti(group.id,opt)} disabled={atMax} style={{ width:26,height:26,borderRadius:6,border:`1.5px solid ${atMax?'var(--bdr)':'var(--acc)'}`,background:atMax?'var(--bg2)':'var(--acc)',color:atMax?'var(--t4)':'#0b0c10',cursor:atMax?'not-allowed':'pointer',fontSize:14,display:'flex',alignItems:'center',justifyContent:'center',opacity:atMax?.4:1 }}>+</button>
@@ -552,13 +552,13 @@ function ModifiersModal({ item, activeAllergens, onConfirm, onCancel }) {
                   return (
                     <button key={opt.id} onClick={() => toggleSingle(group.id, opt)}
                       style={{ padding:'11px 14px', borderRadius:10, cursor:'pointer', border:`1.5px solid ${isSelected?'var(--acc)':'var(--bdr)'}`, background:isSelected?'var(--acc-d)':'var(--bg3)', display:'flex', alignItems:'center', justifyContent:'space-between', transition:'all .12s', fontFamily:'inherit' }}>
-                      <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                      <div style={{ display:'flex', alignItems:'center', gap:8, flex:1, minWidth:0 }}>
                         <div style={{ width:18, height:18, borderRadius:'50%', border:`2px solid ${isSelected?'var(--acc)':'var(--bdr2)'}`, background:isSelected?'var(--acc)':'transparent', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
                           {isSelected && <div style={{ width:6, height:6, borderRadius:'50%', background:'#0e0f14' }}/>}
                         </div>
-                        <span style={{ fontSize:14, fontWeight:500, color:isSelected?'var(--acc)':'var(--t1)' }}>{opt.label||opt.name}</span>
+                        <span style={{ fontSize:14, fontWeight:500, minWidth:0, overflowWrap:'anywhere', color:isSelected?'var(--acc)':'var(--t1)' }}>{opt.label||opt.name}</span>
                       </div>
-                      <span style={{ fontSize:13, fontWeight:600, color:isSelected?'var(--acc)':'var(--t3)' }}>
+                      <span style={{ fontSize:13, fontWeight:600, flexShrink:0, color:isSelected?'var(--acc)':'var(--t3)' }}>
                         {opt.price > 0 ? `+${money(opt.price)}` : isSelected ? '✓' : ''}
                       </span>
                     </button>
@@ -570,8 +570,8 @@ function ModifiersModal({ item, activeAllergens, onConfirm, onCancel }) {
                   const atMax = selectedCount >= maxSel;
                   return (
                     <div key={opt.id} style={{ display:'flex', alignItems:'center', gap:8, padding:'10px 14px', borderRadius:10, border:`1.5px solid ${qty>0?'var(--acc)':'var(--bdr)'}`, background:qty>0?'var(--acc-d)':'var(--bg3)', transition:'all .12s' }}>
-                      <span style={{ fontSize:14, fontWeight:500, color:qty>0?'var(--acc)':'var(--t1)', flex:1 }}>{opt.label||opt.name}</span>
-                      <span style={{ fontSize:13, color:qty>0?'var(--acc)':'var(--t3)', marginRight:8 }}>
+                      <span style={{ fontSize:14, fontWeight:500, color:qty>0?'var(--acc)':'var(--t1)', flex:1, minWidth:0, overflowWrap:'anywhere' }}>{opt.label||opt.name}</span>
+                      <span style={{ fontSize:13, flexShrink:0, color:qty>0?'var(--acc)':'var(--t3)', marginRight:8 }}>
                         {opt.price > 0 ? `+${money(opt.price)}` : 'free'}
                       </span>
                       <div style={{ display:'flex', alignItems:'center', gap:6 }}>

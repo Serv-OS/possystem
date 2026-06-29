@@ -89,6 +89,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.702', date: '29 Jun 2026', label: 'Fix — long modifier names no longer overlap the price / quantity buttons',
+    changes: [
+      'Modifier and variant tiles now wrap long names cleanly instead of running over the price or the +/− buttons (e.g. “Sugar Free Caramel”, “white chocolate syrup”).',
+      'Fixed across every order screen: POS item builder, Bar, MPOS, the product/variant modal and online ordering. The POS syrup tiles also got a touch more width.',
+    ],
+  },
+  {
     version: '5.5.701', date: '29 Jun 2026', label: 'Customer display — modifiers listed one per line with their charge',
     changes: [
       'The customer-facing display now lists each modifier on its own line with the amount it added (e.g. “White chocolate syrup  +£0.50”), instead of one long run of dots. Free modifiers (milk, hot/iced) show with no price.',

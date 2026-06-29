@@ -342,7 +342,7 @@ export default function MItemDetail({ item, onClose, onAdded }) {
                             {isSelected && <span style={{ color:'#0b0c10', fontSize:14, fontWeight:800, lineHeight:1 }}>✓</span>}
                           </div>
                         )}
-                        <span style={{ flex:1, fontSize:13, fontWeight:600, textDecoration: is86 ? 'line-through' : 'none' }}>
+                        <span style={{ flex:1, minWidth:0, overflowWrap:'anywhere', fontSize:13, fontWeight:600, textDecoration: is86 ? 'line-through' : 'none' }}>
                           {opt.name}
                           {is86 && <span style={{ color:'var(--red)', marginLeft:8, fontWeight:800, fontSize:11 }}>Sold out</span>}
                           {!is86 && isMultiSelect && optQty > 1 && <span style={{ color:'var(--acc)', marginLeft:8, fontWeight:800 }}>× {optQty}</span>}
@@ -442,9 +442,9 @@ function NestedSubGroup({ parentName, subGroupDef, picks, onToggle }) {
               }}>
                 {selected && <span style={{ color:'#0b0c10', fontSize:11, fontWeight:800, lineHeight:1 }}>✓</span>}
               </div>
-              <span style={{ flex:1, fontSize:12, color:'var(--t1)', fontWeight:600 }}>{subOpt.name}</span>
+              <span style={{ flex:1, minWidth:0, overflowWrap:'anywhere', fontSize:12, color:'var(--t1)', fontWeight:600 }}>{subOpt.name}</span>
               {subOpt.price > 0 && (
-                <span style={{ fontSize:11, color:'var(--t3)', fontFamily:'var(--font-mono)' }}>+{money(subOpt.price)}</span>
+                <span style={{ fontSize:11, color:'var(--t3)', fontFamily:'var(--font-mono)', flexShrink:0 }}>+{money(subOpt.price)}</span>
               )}
             </button>
           );

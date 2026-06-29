@@ -661,10 +661,10 @@ function OptionRow({ label, priceDelta, absolutePrice, checked, onClick, mode, t
       fontWeight: checked ? 800 : 600,
     }}>
       <Indicator checked={checked} mode={mode} accent={theme.accent} cardBdr={cardBdr}/>
-      <span style={{ flex: 1, fontSize: 14, fontWeight: 600, textDecoration: is86 ? 'line-through' : 'none' }}>{label}</span>
+      <span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere', fontSize: 14, fontWeight: 600, textDecoration: is86 ? 'line-through' : 'none' }}>{label}</span>
       {is86
-        ? <span style={{ fontSize: 11, fontWeight: 800, color: '#dc2626' }}>Sold out</span>
-        : (priceLabel && <span style={{ fontSize: 13, fontWeight: 700, color: priceColor }}>{priceLabel}</span>)}
+        ? <span style={{ fontSize: 11, fontWeight: 800, color: '#dc2626', flexShrink: 0 }}>Sold out</span>
+        : (priceLabel && <span style={{ fontSize: 13, fontWeight: 700, color: priceColor, flexShrink: 0 }}>{priceLabel}</span>)}
     </button>
   );
 }
@@ -746,13 +746,13 @@ function QtyOptionRow({ option, count, canAdd, onInc, onDec, theme, cardBdr, inp
       color: theme.fg, fontFamily: 'inherit',
       opacity: is86 ? 0.55 : 1, filter: is86 ? 'grayscale(0.6)' : undefined,
     }}>
-      <span style={{ flex: 1, fontSize: 14, fontWeight: 600, textDecoration: is86 ? 'line-through' : 'none' }}>{option.name || option.label}</span>
+      <span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere', fontSize: 14, fontWeight: 600, textDecoration: is86 ? 'line-through' : 'none' }}>{option.name || option.label}</span>
       {is86
-        ? <span style={{ fontSize: 11, fontWeight: 800, color: '#dc2626' }}>Sold out</span>
+        ? <span style={{ fontSize: 11, fontWeight: 800, color: '#dc2626', flexShrink: 0 }}>Sold out</span>
         : (px > 0 && (
-          <span style={{ fontSize: 12, fontWeight: 700, opacity: 0.7 }}>+{money(px)}</span>
+          <span style={{ fontSize: 12, fontWeight: 700, opacity: 0.7, flexShrink: 0 }}>+{money(px)}</span>
         ))}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
         <button onClick={onDec} disabled={count === 0} style={{
           width: 30, height: 30, borderRadius: '50%', border: 'none',
           background: count === 0 ? `${theme.fg}10` : theme.fg,

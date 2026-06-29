@@ -910,8 +910,8 @@ function QuickItemBuilder({ item, menuItems=[], modifierGroupDefs=[], onConfirm,
           <div style={{ fontSize:11,fontWeight:700,color:'var(--t2)',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:8 }}>{item.variantLabel||'Size'}</div>
           {variantChildren.map(v=>(
             <button key={v.id} onClick={()=>setSelectedVariant(v)} style={{ display:'flex',alignItems:'center',justifyContent:'space-between',width:'100%',padding:'10px 14px',borderRadius:10,cursor:'pointer',fontFamily:'inherit',marginBottom:6,border:`1.5px solid ${selectedVariant?.id===v.id?'var(--acc)':'var(--bdr)'}`,background:selectedVariant?.id===v.id?'var(--acc-d)':'var(--bg3)',color:selectedVariant?.id===v.id?'var(--acc)':'var(--t1)',textAlign:'left' }}>
-              <span style={{ fontSize:13,fontWeight:500 }}>{v.menuName||v.name}</span>
-              <span style={{ fontSize:14,fontWeight:700,fontFamily:'DM Mono,monospace' }}>{money((v.pricing?.base??v.price??0))}</span>
+              <span style={{ fontSize:13,fontWeight:500,flex:1,minWidth:0,overflowWrap:'anywhere' }}>{v.menuName||v.name}</span>
+              <span style={{ fontSize:14,fontWeight:700,flexShrink:0,marginLeft:10,fontFamily:'DM Mono,monospace' }}>{money((v.pricing?.base??v.price??0))}</span>
             </button>
           ))}
         </div>
@@ -929,8 +929,8 @@ function QuickItemBuilder({ item, menuItems=[], modifierGroupDefs=[], onConfirm,
             const toggle=()=>setSelections(s=>group.max>1?{...s,[group.id]:isSel?(cur||[]).filter(o=>o.id!==opt.id):[...(cur||[]),opt]}:{...s,[group.id]:isSel?null:opt});
             return(
               <button key={opt.id} onClick={toggle} style={{ display:'flex',alignItems:'center',justifyContent:'space-between',width:'100%',padding:'9px 12px',borderRadius:9,cursor:'pointer',fontFamily:'inherit',marginBottom:5,border:`1.5px solid ${isSel?'var(--acc)':'var(--bdr)'}`,background:isSel?'var(--acc-d)':'var(--bg3)' }}>
-                <span style={{ fontSize:13,fontWeight:500,color:isSel?'var(--acc)':'var(--t1)' }}>{opt.name||opt.label}</span>
-                {(opt.price||0)>0&&<span style={{ fontSize:12,fontWeight:600,color:isSel?'var(--acc)':'var(--t3)' }}>+{money(opt.price)}</span>}
+                <span style={{ fontSize:13,fontWeight:500,flex:1,minWidth:0,overflowWrap:'anywhere',color:isSel?'var(--acc)':'var(--t1)' }}>{opt.name||opt.label}</span>
+                {(opt.price||0)>0&&<span style={{ fontSize:12,fontWeight:600,flexShrink:0,marginLeft:10,color:isSel?'var(--acc)':'var(--t3)' }}>+{money(opt.price)}</span>}
               </button>
             );
           })}

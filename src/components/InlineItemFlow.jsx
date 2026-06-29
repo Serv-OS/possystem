@@ -544,7 +544,7 @@ function ModifierStep({ modGroups, instGroups, allModDefs, menuItems, eightySixI
               </div>
             ) : (
               /* STANDARD MODE: checkbox (multi) or radio (single) */
-              <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(150px,1fr))', gap:8 }}>
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(172px,1fr))', gap:8 }}>
                 {(group.options || []).map(opt => {
                   const id = opt.id || opt.label || opt.name;
                   const optQty = isMulti
@@ -570,49 +570,47 @@ function ModifierStep({ modGroups, instGroups, allModDefs, menuItems, eightySixI
                           }
                         }}
                         style={{
-                          width:'100%', display:'flex', alignItems:'center', justifyContent:'space-between',
-                          padding: optImage ? '8px 14px' : '12px 14px',
+                          width:'100%', display:'flex', alignItems:'center', gap:10,
+                          padding: optImage ? '8px 14px' : '10px 14px',
+                          // reserve the right edge for the absolute qty stepper so a long name never runs under it
+                          paddingRight: isSel && isMulti ? 56 : 14,
                           borderRadius:12,
                           cursor: optDisabled ? 'not-allowed' : 'pointer',
                           fontFamily:'inherit', textAlign:'left', transition:'all .1s',
                           border:`2px solid ${opt86 ? 'var(--red-b)' : isSel ? 'var(--acc)' : 'var(--bdr)'}`,
                           background: opt86 ? 'var(--bg5)' : isSel ? 'var(--acc-d)' : 'var(--bg2)',
                           opacity: optDisabled ? 0.4 : 1,
-                          paddingRight: isSel && isMulti ? 40 : 14,
                         }}>
-                        <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-                          {optImage && (
-                            <div style={{ width:40, height:40, borderRadius:8, overflow:'hidden', flexShrink:0, border:`1px solid ${isSel?'var(--acc)':'var(--bdr)'}` }}>
-                              <img src={optImage} alt={opt.name||opt.label} style={{ width:'100%', height:'100%', objectFit:'cover' }} />
-                            </div>
-                          )}
-                          <div style={{ width:18, height:18, borderRadius: isMulti ? 4 : '50%', border:`2px solid ${opt86 ? 'var(--red-b)' : isSel ? 'var(--acc)' : 'var(--bdr2)'}`, background: opt86 ? 'var(--red-d)' : isSel ? 'var(--acc)' : 'transparent', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
-                            {opt86 ? <span style={{ fontSize:10, lineHeight:1 }}>🚫</span> : isSel && <div style={{ width:6, height:6, borderRadius: isMulti ? 2 : '50%', background:'#0b0c10' }}/>}
+                        {optImage && (
+                          <div style={{ width:40, height:40, borderRadius:8, overflow:'hidden', flexShrink:0, border:`1px solid ${isSel?'var(--acc)':'var(--bdr)'}` }}>
+                            <img src={optImage} alt={opt.name||opt.label} style={{ width:'100%', height:'100%', objectFit:'cover' }} />
                           </div>
-                          <div style={{ display:'flex', flexDirection:'column' }}>
-                            <div style={{ display:'flex', alignItems:'center', gap:5 }}>
-                              <span style={{ fontSize:13, fontWeight: isSel ? 700 : 400, color: opt86 ? 'var(--t4)' : isSel ? 'var(--acc)' : 'var(--t1)', textDecoration: opt86 ? 'line-through' : 'none' }}>
-                                {opt.name || opt.label}
-                              </span>
-                              {opt86 && <span style={{ fontSize:9, fontWeight:800, padding:'1px 5px', borderRadius:4, background:'var(--red-d)', color:'var(--red)', border:'1px solid var(--red-b)' }}>86'd</span>}
-                              {optStock && !opt86 && optStock.remaining <= 3 && (
-                                <span style={{ fontSize:9, fontWeight:700, padding:'1px 5px', borderRadius:4, background:'var(--wrn-d,#fff3cd)', color:'var(--wrn,#856404)', border:'1px solid var(--wrn-b,#ffc107)' }}>{optStock.remaining} left</span>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                        {(opt.price || 0) > 0 && (
-                          <span style={{ fontSize:12, fontWeight:700, color: isSel ? 'var(--acc)' : 'var(--t3)', fontFamily:'var(--font-mono)', flexShrink:0 }}>
-                            +{money(opt.price)}
-                          </span>
                         )}
+                        <div style={{ width:18, height:18, borderRadius: isMulti ? 4 : '50%', border:`2px solid ${opt86 ? 'var(--red-b)' : isSel ? 'var(--acc)' : 'var(--bdr2)'}`, background: opt86 ? 'var(--red-d)' : isSel ? 'var(--acc)' : 'transparent', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+                          {opt86 ? <span style={{ fontSize:10, lineHeight:1 }}>🚫</span> : isSel && <div style={{ width:6, height:6, borderRadius: isMulti ? 2 : '50%', background:'#0b0c10' }}/>}
+                        </div>
+                        {/* Name + price stacked; flex:1 + minWidth:0 lets a long name wrap instead of colliding */}
+                        <div style={{ flex:1, minWidth:0 }}>
+                          <div style={{ display:'flex', alignItems:'center', gap:5, flexWrap:'wrap' }}>
+                            <span style={{ fontSize:13, fontWeight: isSel ? 700 : 400, lineHeight:1.25, wordBreak:'break-word', color: opt86 ? 'var(--t4)' : isSel ? 'var(--acc)' : 'var(--t1)', textDecoration: opt86 ? 'line-through' : 'none' }}>
+                              {opt.name || opt.label}
+                            </span>
+                            {opt86 && <span style={{ fontSize:9, fontWeight:800, padding:'1px 5px', borderRadius:4, background:'var(--red-d)', color:'var(--red)', border:'1px solid var(--red-b)' }}>86'd</span>}
+                            {optStock && !opt86 && optStock.remaining <= 3 && (
+                              <span style={{ fontSize:9, fontWeight:700, padding:'1px 5px', borderRadius:4, background:'var(--wrn-d,#fff3cd)', color:'var(--wrn,#856404)', border:'1px solid var(--wrn-b,#ffc107)' }}>{optStock.remaining} left</span>
+                            )}
+                          </div>
+                          {(opt.price || 0) > 0 && (
+                            <div style={{ fontSize:11, fontWeight:600, marginTop:2, color: isSel ? 'var(--acc)' : 'var(--t3)', fontFamily:'var(--font-mono)' }}>+{money(opt.price)}</div>
+                          )}
+                        </div>
                       </button>
-                      {/* Qty badge + minus for multi */}
+                      {/* Qty badge + minus for multi — absolute, with paddingRight above keeping content clear */}
                       {isSel && isMulti && (
                         <div style={{ position:'absolute', right:8, top:'50%', transform:'translateY(-50%)', display:'flex', alignItems:'center', gap:3 }}>
                           <button
                             onClick={e => { e.stopPropagation(); const all=(cur||[]).filter(o=>(o.id||o.label)===id); onRemoveMulti(group.id, all[all.length-1]?._uid); }}
-                            style={{ width:22, height:22, borderRadius:6, border:'1.5px solid var(--acc)', background:'var(--acc-d)', color:'var(--acc)', cursor:'pointer', fontFamily:'inherit', fontSize:15, fontWeight:800, display:'flex', alignItems:'center', justifyContent:'center', lineHeight:1 }}>−</button>
+                            style={{ width:24, height:24, borderRadius:6, border:'1.5px solid var(--acc)', background:'var(--acc-d)', color:'var(--acc)', cursor:'pointer', fontFamily:'inherit', fontSize:15, fontWeight:800, display:'flex', alignItems:'center', justifyContent:'center', lineHeight:1, flexShrink:0 }}>−</button>
                           <span style={{ fontSize:13, fontWeight:900, color:'var(--acc)', minWidth:16, textAlign:'center' }}>{optQty}</span>
                         </div>
                       )}
