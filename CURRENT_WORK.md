@@ -1,6 +1,6 @@
 # Serv OS / RPOS — session handoff
 
-> **Current build: v5.5.474** · live: https://possystem-liard.vercel.app · dev: https://dev.serv-os.app · repo: **Serv-OS/possystem** (branch `develop`, Vercel auto-deploys).
+> **Current build: v5.5.690** · live: https://possystem-liard.vercel.app · dev: https://dev.serv-os.app · repo: **Serv-OS/possystem** (branch `develop`, Vercel auto-deploys).
 > Multi-tenant hospitality POS (React 19 + Vite, Zustand, Supabase; no TypeScript, no tests). First customer is UK / GBP.
 > **Pillars:** don't break working functionality · resolve the real `locationId` before any DB write (never `loc-demo`) · CSS vars not hardcoded colours · bump `src/lib/version.js` + add a `CHANGELOG` entry in `src/App.jsx` on every web deploy · money is `numeric`, never float.
 
@@ -15,6 +15,24 @@ A SaaS restaurant/bar POS with many device "surfaces" off one codebase (URL `?mo
 ---
 
 ## Recent arc (this block of sessions)
+
+### ServOS Manager app — NEW surface `?mode=manager` (v5.5.690) — FOUNDATION shipped, slices remain
+The owner app + ops tablet merged into one **role-adaptive phone app** (Capacitor store build later; separate from the Sunmi POS APK). Build prompt: `ServOS Manager - Claude Code prompt.md`; design: `ServOS Manager - design spec.html` (reuse the existing `[data-skin=servos]` glass system — confirmed, no new CSS).
+
+**Done (additive, shipped, 194 tests green):**
+- **Pure engine + tests** in `src/lib/manager/`: `floor.js` (open-table states + the configurable **stalled** rule), `team.js` (on-shift / no-show / break-due / live labour pennies), `timesheets.js` (anomaly flags), `kitchen.js` (below-par + 86 + batch status), `access.js` (role→tab flags per §3 presets + per-person permission overrides). Each `*.test.js`.
+- **Surface** `src/surfaces/ManagerSurface.jsx` + `src/surfaces/manager/*` — mirrors `OperationsSurface` boot (pairs via **ops_devices** claim-code + heartbeat → staff PIN via `opsPinLogin`), floating bottom tab bar (Home/Reports/Team/Ops/Kitchen) gated by role, dark/light toggle, `CardErrorBoundary`. **Home** (real nav) + **Ops** (real, read-only, reuses `lib/ops/data`) live; **Reports/Team/Kitchen** are honest `SoonPanel` scaffolds.
+- Wired: `App.jsx` dispatch (`deviceMode==='manager'` → `<KioskAutoUpdate/><ManagerSurface/>`) + import; ModeSelector "Manager" card.
+
+**NEXT slices (in order):**
+1. **`manager-snapshot` edge fn** (`requireToken`, single paired location) — the key unlock. Paired device is anon (no `user_locations`), so it CANNOT call the BO-gated `owner-snapshot`. New fn returns the paired venue's today money (net **ex-VAT** from `closed_checks`, orders, tips, avg check, labour% from `wf_timesheets`) + open-table states (`active_sessions.session` jsonb → `floor.js`) + team live (`wf_timesheets`/`wf_shifts` → `team.js`). **Mirror owner-snapshot's money maths exactly** (VAT = liability; pennies) and adversarially review it. Then wire `ManagerReports` + `ManagerTeam`.
+2. **Team approvals** — `requireAccess` edge actions for approve-timesheet / decide-time-off reusing `wfData` (writes append-only `wf_audit`, feeds tronc/payroll). Anomaly flags via `timesheets.js`; coverage warning + 12.07% accrual via `labour.js`.
+3. **Kitchen** — `requireToken` stock read (below-par + 86 via `kitchen.js`) + **NEW additive `prep_schedule` table** (no batch-cook table exists; see stock-prep map) for batch cooks; raise-PO reuses existing `purchase_orders`.
+4. **Role flags through Back Office** — extend `StaffManager` PERM_GROUPS with the manager_* keys (`access.js` already honours them); enforce server-side in the snapshot/approval fns.
+5. **Multi-venue for owners** — single-location only today. Owner "all venues" needs a user identity (BO login link) — design decision pending (the paired+PIN device is one location).
+6. **Capacitor packaging** (iOS + Android store builds, push for no-shows/approvals, secure token storage, biometric unlock) — native, needs tooling + Apple/Play accounts; Sunmi POS APK path untouched.
+
+**Reuse map** (full): workflow `wh82a4sfc` output — `tasks/wh82a4sfc.output`. **Guardrails:** out-of-scope = payments/checkout, POS core, KDS, courier/delivery seam, broad RLS pass — stop & ask.
 
 ### 0. MPOS Android app (NEW, v5.5.474) + phone Tap-to-Pay verdict
 **Android MPOS app shipped as an order-taker.** The `:mpos` Gradle module (own `applicationId co.posup.rpos.mpos`, own CI `build-mpos.yml`) is a thin WebView → `?mode=mpos`, same "one module per device app" pattern as `:app`/`:menuboard`. Card payments use the surface's existing flows (assigned WisePOS/Ryft reader, or simulated). **No native Tap to Pay on Android** — the customer is standardising on **Ryft, which has no Android SoftPOS**. Doc: `android/MPOS_TAP_TO_PAY.md`. Pending: its own app icon (the "S. MPOS" mark) — placeholder icons in place until the asset file is dropped.
