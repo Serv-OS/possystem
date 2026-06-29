@@ -26,6 +26,7 @@ import OwnerSurface from './surfaces/OwnerSurface';
 import MenuBoardSurface from './surfaces/MenuBoardSurface';
 import OperationsSurface from './surfaces/OperationsSurface';
 import WaitlistSurface from './surfaces/waitlist/WaitlistSurface';
+import ManagerSurface from './surfaces/ManagerSurface';
 import KioskAutoUpdate from './components/KioskAutoUpdate';
 import OnboardingSignSurface from './surfaces/OnboardingSignSurface';
 import RyftTestSurface from './surfaces/RyftTestSurface';
@@ -87,6 +88,14 @@ import { ServOSIcon } from './components/ServOSBrand';
 import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
+  {
+    version: '5.5.690', date: '27 Jun 2026', label: 'ServOS Manager (NEW) — owner + ops in one role-adaptive phone app (foundation)',
+    changes: [
+      'NEW manager app at ?mode=manager: pair the phone (Back Office → Devices), sign in with your PIN, and get a role-adaptive console — Home, Reports, Team, Ops and Kitchen on a floating tab bar, with the liquid-glass look. Owners/managers see everything; supervisors and staff see progressively less (driven by role).',
+      'Live now: Home + a read-only Ops tab (compliance, deliveries to check, open maintenance and alerts — reusing the Operations engine). Reports, Team and Kitchen tabs are scaffolded; their live data lands in the next updates.',
+      'Foundation only — purely additive. Every existing surface (POS, KDS, kiosk, Ops, online, etc.) is unchanged. The decision logic (stalled tables, no-shows, breaks due, timesheet anomalies, batch-cooks, role gating) ships unit-tested.',
+    ],
+  },
   {
     version: '5.5.689', date: '27 Jun 2026', label: 'Fix — Back Office “Sign-in method” PIN/Card toggle now switches',
     changes: [
@@ -7871,6 +7880,7 @@ export default function App() {
       onSelectMenuBoard={() => { localStorage.setItem('rpos-device-mode', 'menuboard'); window.location.href = '?mode=menuboard'; }}
       onSelectOps={() => { localStorage.setItem('rpos-device-mode', 'ops'); window.location.href = '?mode=ops'; }}
       onSelectWaitlist={() => { localStorage.setItem('rpos-device-mode', 'waitlist'); window.location.href = '?mode=waitlist'; }}
+      onSelectManager={() => { localStorage.setItem('rpos-device-mode', 'manager'); window.location.href = '?mode=manager'; }}
       onSelectBackOffice={() => { localStorage.setItem('rpos-device-mode', 'backoffice'); window.location.href = '?mode=office'; }}
       onSelectAdmin={() => { localStorage.setItem('rpos-device-mode', 'admin'); window.location.href = '?mode=admin'; }}
     />
@@ -7901,6 +7911,11 @@ export default function App() {
   // Pairs itself via ops_devices (claim-code + heartbeat) then staff PIN; no rpos-device.
   if (deviceMode === 'ops') return <><KioskAutoUpdate /><OperationsSurface /></>;
   if (deviceMode === 'waitlist') return <><KioskAutoUpdate /><WaitlistSurface /></>;
+
+  // ServOS Manager — owner app + ops tablet merged into one role-adaptive phone app. Pairs itself
+  // (ops_devices claim-code + heartbeat) then staff PIN; role gates the bottom tabs. Read-only-ish
+  // manager console (no SyncBridge); standalone store-distributed build.
+  if (deviceMode === 'manager') return <><KioskAutoUpdate /><ManagerSurface /></>;
 
   // Back office mode — go to email login (no pairing needed)
   if (deviceMode === 'backoffice' || deviceMode === 'office') return <><SyncBridge onSyncPulse={handleSyncPulse}/><BackOfficeApp /></>;

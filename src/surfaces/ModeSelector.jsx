@@ -24,7 +24,7 @@ function Card({ icon, title, desc, note, accent, onClick }) {
   );
 }
 
-export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelectAdmin, onSelectMPOS, onSelectClock, onSelectMenuBoard, onSelectOps, onSelectWaitlist }) {
+export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelectAdmin, onSelectMPOS, onSelectClock, onSelectMenuBoard, onSelectOps, onSelectWaitlist, onSelectManager }) {
   return (
     <div style={{
       minHeight: '100vh',
@@ -98,6 +98,14 @@ export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelect
           accent="#7C5CFF"
           onClick={onSelectWaitlist}
         />
+        {onSelectManager && <Card
+          icon="📲"
+          title="Manager"
+          desc="The owner app + ops tablet in one phone — takings, the live floor, team & approvals, ops checks and kitchen, adapting to who signs in."
+          note="Pairs to a location, then staff sign in by PIN"
+          accent="#15C26A"
+          onClick={onSelectManager}
+        />}
       </div>
 
       {/* Internal admin — subtle */}
