@@ -23,6 +23,29 @@ export async function logActivity(locationId, { kind = 'system', severity = 'inf
   return { ok: true };
 }
 
+const ORDER_SRC = { qr: 'QR', kiosk: 'Kiosk', online: 'Online', catering: 'Catering', pos: 'POS', phone: 'Phone' };
+/**
+ * Log an INCOMING customer order to the feed. Pass the order_queue row (or an equivalent
+ * {source,total,ref,customer}). Client-side on purpose: an AFTER INSERT trigger on order_queue
+ * silently no-ops when the row arrives via an upsert (the conflict path runs as UPDATE), so the
+ * proven logActivity path is used at each channel instead. severity 'info' — the existing order
+ * alert already chimes; the feed is the durable log.
+ */
+export function logOrderActivity(locationId, row = {}) {
+  if (!locationId) return { ok: false };
+  const label = ORDER_SRC[row.source] || 'New';
+  const cust = row.customer || null;
+  const name = cust && (cust.name || cust.firstName || cust.first_name) ? String(cust.name || cust.firstName || cust.first_name) : null;
+  const total = row.total != null ? Number(row.total) : null;
+  const bits = [];
+  if (total != null && !Number.isNaN(total)) bits.push('£' + total.toFixed(2));
+  if (name) bits.push(name);
+  return logActivity(locationId, {
+    kind: 'order', severity: 'info', title: `${label} order`,
+    body: bits.join(' · ') || null, refType: 'order', refId: row.ref || null,
+  });
+}
+
 /** Most recent events for a location (newest first). */
 export async function fetchRecentActivity(locationId, limit = 60) {
   if (isMock || !supabase || !locationId) return [];

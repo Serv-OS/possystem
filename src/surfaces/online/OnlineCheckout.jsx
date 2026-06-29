@@ -19,6 +19,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { supabase, platformSupabase } from '../../lib/supabase';
 import { decrementStockRPC, fetchActiveDiscountRules } from '../../lib/db';
+import { logOrderActivity } from '../../lib/activity';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../../lib/discountEngine';
 import { buildScheduleCtx } from '../../lib/locationTime';
 import { depleteForSaleServer } from '../../lib/stock/deplete';
@@ -736,6 +737,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         setError('Could not save the order. Contact the venue with ref ' + ref + '.');
         return;
       }
+      try { logOrderActivity(opsLocationId, queueRow); } catch { /* feed best-effort */ }
 
       try {
         const closedCheck = {
@@ -844,6 +846,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         setError('Payment succeeded but we could not save the order. Contact the venue with ref ' + ref + '.');
         return;
       }
+      try { logOrderActivity(opsLocationId, queueRow); } catch { /* feed best-effort */ }
 
       // v5.5.127: also write to closed_checks so the paid online order shows
       // up in History / EOD / Payments reports identically to in-store paid

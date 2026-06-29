@@ -9,6 +9,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { supabase, ensureAuthToken } from '../../lib/supabase';
+import { logOrderActivity } from '../../lib/activity';
 import { getStripeForAccount, createPaymentIntent } from '../../lib/stripeClient';
 import { getLocationProcessor } from '../../lib/payments/processor';
 import RyftPaymentForm from '../../components/RyftPaymentForm';
@@ -149,8 +150,10 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
     setBusy(true); setErr('');
     try {
       await ensureAuthToken();
-      const { error } = await supabase.from('order_queue').insert(queueRow(false, { pay_later: true }));
+      const cateringRow = queueRow(false, { pay_later: true });
+      const { error } = await supabase.from('order_queue').insert(cateringRow);
       if (error) throw error;
+      try { logOrderActivity(opsId, cateringRow); } catch { /* feed best-effort */ }
       await redeemPromo(ref);
       logDeliverySurcharge();
       setPlaced(placedSnapshot(false, null));
@@ -185,7 +188,9 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
       // POS sync path can drop) so a paid catering order always opens READ-ONLY in the POS.
       const pay = { payment_intent_id: payId, processor, pay_later: false, paid: true };
       // order_queue (paid)
-      await supabase.from('order_queue').insert(queueRow(true, pay));
+      const cateringPaidRow = queueRow(true, pay);
+      await supabase.from('order_queue').insert(cateringPaidRow);
+      try { logOrderActivity(opsId, cateringPaidRow); } catch { /* feed best-effort */ }
       logDeliverySurcharge();
       // closed_checks (paid, net) — mirrors the online paid-order record. Sales are dated to the
       // event day at the event time, so a pre-order counts on the day of the event — not the day it

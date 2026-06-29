@@ -90,6 +90,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.712', date: '29 Jun 2026', label: 'Activity feed — incoming orders now show (kiosk, QR, online, catering)',
+    changes: [
+      'New orders from the kiosk, QR codes, online ordering and catering now appear in the activity bell, with the amount and customer name.',
+      'These are logged the moment the order is saved (the same reliable path as nudges) instead of via a database trigger that wasn’t firing.',
+      'Reminder: menu/price changes appear when you Push to POS from a Back Office that’s reloaded onto this build — reloading the till alone doesn’t update Back Office.',
+    ],
+  },
+  {
     version: '5.5.711', date: '29 Jun 2026', label: 'Back Office Timesheets — show real venue time + match the Manager app’s hours format',
     changes: [
       'Clock-in / clock-out times now show in your venue’s local time (they were showing an hour off — the raw UTC time — for rows that came from the Time Clock).',

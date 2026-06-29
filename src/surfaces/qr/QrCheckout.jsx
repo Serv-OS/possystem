@@ -17,6 +17,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { supabase } from '../../lib/supabase';
+import { logOrderActivity } from '../../lib/activity';
 import { getStripeForAccount, createPaymentIntent } from '../../lib/stripeClient';
 import { getLocationProcessor } from '../../lib/payments/processor';
 import RyftPaymentForm from '../../components/RyftPaymentForm';
@@ -218,6 +219,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
       };
       const { error: qErr } = await supabase.from('order_queue').insert(queueRow);
       if (qErr) throw qErr;
+      try { logOrderActivity(opsLocationId, queueRow); } catch { /* feed best-effort */ }
       // v5.5.157: refresh the floor-plan table session so the new round
       // shows up on TablesSurface alongside any other open QR rounds.
       syncQrTableSession(opsLocationId, tableId).catch(() => {});
@@ -416,6 +418,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
           : `Payment succeeded but we could not save the order. Please show this to staff. Ref ${ref}.`);
         return;
       }
+      try { logOrderActivity(opsLocationId, queueRow); } catch { /* feed best-effort */ }
 
       // 2. closed_checks — only on PAY-NOW orders. For open-tab the bill
       // isn't paid yet (status is requires_capture in Stripe) — closed_checks

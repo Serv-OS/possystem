@@ -22,6 +22,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { supabase, platformSupabase, getLocationId, ensureAuthToken } from '../lib/supabase';
 import { useStore } from '../store';
 import { decrementStockRPC, fetchActiveDiscountRules } from '../lib/db';
+import { logOrderActivity } from '../lib/activity';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../lib/discountEngine';
 import { buildScheduleCtx } from '../lib/locationTime';
 import { depleteForSaleServer } from '../lib/stock/deplete';
@@ -757,6 +758,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
         payment_method: (loyaltyCredit > 0 || giftCardCredit > 0) ? 'split' : 'card-external',
       });
       if (e3) console.warn('[kiosk] order_queue insert failed:', e3);
+      else { try { logOrderActivity(locationId, { source: 'kiosk', total: grandTotal, ref: num, customer: { name: (nameOverride ?? customerName) || null } }); } catch { /* feed best-effort */ } }
       // 4. Heartbeat
       await supabase.from('devices').update({ last_seen: new Date().toISOString() }).eq('id', kioskId);
       // 5. v5.5.287: Decrement stock for each item + modifier in the order.
