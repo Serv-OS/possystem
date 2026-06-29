@@ -47,10 +47,6 @@ export default function OperationsSurface() {
   const [venueName, setVenueName] = useState('');
   const [claimCode, setClaimCode] = useState('');
   const [operator, setOperator] = useState(null);  // { id, name, role }
-  const [view, setView] = useState('home');        // home | temperature | delivery | checklists | maintenance | alerts
-  const [unitView, setUnitView] = useState(null);  // a unit being logged
-  const [maintPrefill, setMaintPrefill] = useState(null); // {unitName, temp} when raising off a breach
-  const [clFilter, setClFilter] = useState(null);  // checklist tile → which kind to show
 
   // dark ServOS skin for the whole surface
   useEffect(() => {
@@ -93,27 +89,47 @@ export default function OperationsSurface() {
   if (stage === 'pair') return <PairScreen code={claimCode} />;
   if (stage === 'pin') return <PinScreen loc={loc} venueName={venueName} onOk={(op) => { setOperator(op); setStage('app'); }} />;
 
+  return (
+    <OpsContent loc={loc} venueName={venueName} operator={operator}
+      onLogout={() => { setOperator(null); setStage('pin'); }} chrome />
+  );
+}
+
+// ── post-auth content — SHARED by the standalone ?mode=ops surface AND the Manager app's Ops tab ──
+// chrome=true: wrap in AppShell (own header + alerts bell) — the standalone tablet.
+// chrome=false: render the views bare — the Manager app's own Shell provides the header + tab bar;
+// alerts are reached via a bell on the Ops Home card instead. Same writes either way (the data layer
+// is location-fenced server-side); pass {loc, operator} from whichever surface hosts it.
+export function OpsContent({ loc, venueName, operator, onLogout, chrome = true }) {
+  const [view, setView] = useState('home');        // home | temperature | delivery | checklists | maintenance | alerts
+  const [unitView, setUnitView] = useState(null);  // a unit being logged
+  const [maintPrefill, setMaintPrefill] = useState(null); // {unitName, temp} when raising off a breach
+  const [clFilter, setClFilter] = useState(null);  // checklist tile → which kind to show
   const openView = (v, opts = {}) => { if ('clFilter' in opts) setClFilter(opts.clFilter ?? null); setView(v); };
+
+  const body = unitView ? (
+    <LogUnit loc={loc} unit={unitView} operator={operator} onDone={() => setUnitView(null)} />
+  ) : view === 'temperature' ? (
+    <Temperature loc={loc} onBack={() => setView('home')} onPick={(u) => setUnitView(u)} />
+  ) : view === 'delivery' ? (
+    <Deliveries loc={loc} operator={operator} onBack={() => setView('home')} />
+  ) : view === 'checklists' ? (
+    <Checklists loc={loc} operator={operator} filter={clFilter} onBack={() => setView('home')} />
+  ) : view === 'maintenance' ? (
+    <Maintenance loc={loc} operator={operator} prefill={maintPrefill}
+      onBack={() => { setMaintPrefill(null); setView('home'); }} />
+  ) : view === 'alerts' ? (
+    <Alerts loc={loc} operator={operator} onBack={() => setView('home')} />
+  ) : (
+    <Home loc={loc} venueName={venueName} operator={operator} onOpen={openView}
+      onBell={chrome ? null : () => setView('alerts')} />
+  );
+
+  if (!chrome) return body;
   return (
     <AppShell loc={loc} venueName={venueName} operator={operator}
-      onLogout={() => { setOperator(null); setStage('pin'); }}
-      onBell={() => setView('alerts')}>
-      {unitView ? (
-        <LogUnit loc={loc} unit={unitView} operator={operator} onDone={() => setUnitView(null)} />
-      ) : view === 'temperature' ? (
-        <Temperature loc={loc} onBack={() => setView('home')} onPick={(u) => setUnitView(u)} />
-      ) : view === 'delivery' ? (
-        <Deliveries loc={loc} operator={operator} onBack={() => setView('home')} />
-      ) : view === 'checklists' ? (
-        <Checklists loc={loc} operator={operator} filter={clFilter} onBack={() => setView('home')} />
-      ) : view === 'maintenance' ? (
-        <Maintenance loc={loc} operator={operator} prefill={maintPrefill}
-          onBack={() => { setMaintPrefill(null); setView('home'); }} />
-      ) : view === 'alerts' ? (
-        <Alerts loc={loc} operator={operator} onBack={() => setView('home')} />
-      ) : (
-        <Home loc={loc} venueName={venueName} operator={operator} onOpen={openView} />
-      )}
+      onLogout={onLogout} onBell={() => setView('alerts')}>
+      {body}
     </AppShell>
   );
 }
@@ -230,13 +246,15 @@ function classifyChecklist(c) {
 }
 
 // ── Home: compliance ring + area tiles ───────────────────────────────────────
-function Home({ loc, operator, onOpen }) {
+function Home({ loc, operator, onOpen, onBell }) {
   const { summary } = useTodayStatus(loc);
   const [deliveryCount, setDeliveryCount] = useState(null);
   const [openMaint, setOpenMaint] = useState(0);
+  const [openAlerts, setOpenAlerts] = useState(0);
   const [clKinds, setClKinds] = useState(null);   // [{key,label,icon,hue,order,due,total}]
   const [clTasks, setClTasks] = useState({ done: 0, total: 0 });
   useEffect(() => {
+    if (onBell) fetchAlerts(loc, true).then(({ data }) => setOpenAlerts((data || []).length));   // bell badge (embedded only)
     fetchExpectedDeliveries(loc).then(({ data }) => setDeliveryCount((data || []).filter(d => !d.delivery || d.delivery.status === 'pending').length));
     fetchMaintenance(loc).then(({ data }) => setOpenMaint((data || []).filter(m => !['resolved', 'cancelled'].includes(m.status)).length));
     fetchTodayChecklists(loc).then(({ data }) => {
@@ -275,6 +293,12 @@ function Home({ loc, operator, onOpen }) {
           <div style={{ fontSize: 19, fontWeight: 800 }}>Good {new Date().getHours() < 12 ? 'morning' : new Date().getHours() < 17 ? 'afternoon' : 'evening'}{operator?.name ? `, ${operator.name.split(' ')[0]}` : ''}</div>
           <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 3, textTransform: 'uppercase', letterSpacing: '.06em', ...mono }}>{new Date().toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short' }).toUpperCase()} · {new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}</div>
         </div>
+        {onBell && (
+          <button onClick={onBell} aria-label="Alerts" className="sv-glass" style={{ position: 'relative', width: 38, height: 38, borderRadius: 11, display: 'grid', placeItems: 'center', cursor: 'pointer', color: 'var(--t1)', border: '1px solid var(--bdr)', flexShrink: 0 }}>
+            <Icon name="bell" size={18} />
+            {openAlerts > 0 && <span style={{ position: 'absolute', top: 7, right: 8, width: 8, height: 8, borderRadius: 999, background: 'var(--coral, var(--red))', boxShadow: '0 0 6px var(--coral, var(--red))' }} />}
+          </button>
+        )}
         <Ring pct={ring} overdue={ringOverdue} />
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>

@@ -89,6 +89,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.695', date: '28 Jun 2026', label: 'ServOS Manager — Ops folded in (full temps/checklists/deliveries/maintenance, one surface)',
+    changes: [
+      'The Manager app’s Ops tab is now the FULL Operations experience — temperature rounds (with the breach → corrective → auto-maintenance flow), opening/closing/cleaning checklists with photo sign-off, goods-in delivery checks and maintenance — not just a read-only view. One app to run the venue.',
+      'Ops is now one shared codebase: the standalone Ops tablet (?mode=ops) and the Manager Ops tab render the exact same screens, so there’s a single thing to maintain. Existing Ops tablets keep working unchanged.',
+      'A staff PIN in the Manager app shows only Home · Ops · Kitchen — so a kitchen device behaves like the old Ops tablet.',
+    ],
+  },
+  {
     version: '5.5.694', date: '28 Jun 2026', label: 'ServOS Manager — live Home “at a glance” + instant tab switches',
     changes: [
       'Home is now a live landing: today’s net sales (ex-VAT) plus a pulse row — open tables, who’s on shift, and items to order — each tapping straight to its tab. Everything respects your role.',
