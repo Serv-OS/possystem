@@ -193,6 +193,10 @@ export async function saveStaff(member, locationId, orgId) {
   // NI number: only write when the form actually carried the field (avoid
   // wiping it from save paths that don't know about it).
   if (member.niNumber !== undefined) row.ni_number = member.niNumber || null;
+  // Per-staff pay-rate override: same "only when present" guard. Without this the override was NEVER
+  // persisted, so resolveRate always fell back to the position's default rate (the "default takes over"
+  // bug). '' / null clears it (→ back to the position default on purpose).
+  if (member.rateOverride !== undefined) row.rate_override = (member.rateOverride === '' || member.rateOverride == null) ? null : Number(member.rateOverride);
   const real = member.id && !String(member.id).startsWith('tmp-') && !String(member.id).startsWith('wf-');
   if (real) row.id = member.id;
   const q = real ? supabase.from('wf_staff').upsert(row, { onConflict: 'id' }) : supabase.from('wf_staff').insert(row);

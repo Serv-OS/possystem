@@ -118,25 +118,42 @@ Deno.serve(async (req) => {
       if (!week_start) return json({ error: 'week_start required' }, 400);
       const poolNum = Number(pool) || 0;
       const weekEnd = (() => { const d = new Date(week_start + 'T00:00:00'); d.setDate(d.getDate() + 6); return d.toISOString().slice(0, 10); })();
+      const weekEndExcl = (() => { const d = new Date(week_start + 'T00:00:00'); d.setDate(d.getDate() + 7); return d.toISOString().slice(0, 10); })();
 
-      // Immutability check + shifts + roles are independent → fetch in parallel.
-      const [{ data: existing }, { data: shifts }, { data: roles }] = await Promise.all([
+      // Immutability check + shifts + roles + (fallback) timesheets/staff — independent → in parallel.
+      const [{ data: existing }, { data: shifts }, { data: roles }, { data: tsheets }, { data: staffRows }] = await Promise.all([
         admin.from('wf_tronc_runs').select('id, status').eq('location_id', location_id).eq('week_start', week_start).maybeSingle(),
         admin.from('wf_shifts').select('staff_id, computed_hours, role_key')
           .eq('location_id', location_id).gte('shift_date', week_start).lte('shift_date', weekEnd).eq('status', 'published'),
         admin.from('wf_roles').select('key, tronc_weight').eq('location_id', location_id),
+        admin.from('wf_timesheets').select('staff_id, actual_hours')
+          .eq('location_id', location_id).in('status', ['approved', 'paid']).gte('clock_in', week_start).lt('clock_in', weekEndExcl),
+        admin.from('wf_staff').select('id, role_key').eq('location_id', location_id),
       ]);
       if (existing && existing.status !== 'draft') return json({ error: `a ${existing.status} tronc run already exists for this week` }, 409);
       if (existing) await admin.from('wf_tronc_runs').delete().eq('id', existing.id).eq('status', 'draft'); // draft → replace (lines cascade)
-      if (!shifts || !shifts.length) return json({ error: 'no published shifts for this week — publish the rota first' }, 400);
       const pts: Record<string, number> = {}; (roles ?? []).forEach((r: any) => { pts[r.key] = Number(r.tronc_weight ?? 1); });
+      const staffRole: Record<string, string> = {}; (staffRows ?? []).forEach((s: any) => { staffRole[s.id] = s.role_key; });
 
+      // Distribute over PUBLISHED rota hours. If there's no published rota for the week, fall back to
+      // ACTUAL worked hours from approved timesheets — so a venue that clocks staff in without publishing
+      // a rota can still share tips (previously this just errored "publish the rota first").
       const byStaff: Record<string, { hours: number; role: string }> = {};
-      shifts.forEach((s: any) => {
-        const b = byStaff[s.staff_id] ?? (byStaff[s.staff_id] = { hours: 0, role: s.role_key });
-        b.hours += Number(s.computed_hours || 0);
-      });
-      const rows = Object.entries(byStaff).map(([staff_id, v]) => ({ staff_id, hours: round2(v.hours), points: pts[v.role] ?? 1 }));
+      if (shifts && shifts.length) {
+        shifts.forEach((s: any) => {
+          const b = byStaff[s.staff_id] ?? (byStaff[s.staff_id] = { hours: 0, role: s.role_key });
+          b.hours += Number(s.computed_hours || 0);
+        });
+      } else if (tsheets && tsheets.length) {
+        tsheets.forEach((t: any) => {
+          const b = byStaff[t.staff_id] ?? (byStaff[t.staff_id] = { hours: 0, role: staffRole[t.staff_id] || '' });
+          b.hours += Number(t.actual_hours || 0);
+        });
+      }
+      const rows = Object.entries(byStaff)
+        .map(([staff_id, v]) => ({ staff_id, hours: round2(v.hours), points: pts[v.role] ?? 1 }))
+        .filter((r) => r.hours > 0);
+      if (!rows.length) return json({ error: 'No staff hours for this week — there’s no one to share the tips across. Publish the rota or approve some timesheets for this week first, then run it again.' }, 400);
 
       const res = allocate(poolNum, rows);
       const { data: run, error: runErr } = await admin.from('wf_tronc_runs').insert({

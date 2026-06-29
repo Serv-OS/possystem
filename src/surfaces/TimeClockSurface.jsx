@@ -117,7 +117,8 @@ export default function TimeClockSurface() {
     try {
       const r = await callClock(action, pin);
       const name = (r.staff?.name || '').split(' ')[0];
-      const now = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+      // Show the punch time in the VENUE tz, not the device's (the punch is server-stamped UTC).
+      const now = fmtTime(r.since || new Date().toISOString(), tz);
       const msg = action === 'in' ? `Clocked in at ${now} — have a great shift, ${name}!`
         : action === 'out' ? `Clocked out at ${now} — ${fmtHrs(r.actualHours || 0)} worked. See you soon, ${name}!`
         : action === 'break_start' ? `Break started at ${now}. Enjoy, ${name}.`
@@ -247,7 +248,7 @@ function Shell({ venue, children }) {
         </div>
       </div>
       <div style={{ position: 'absolute', top: 24, right: 26, fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--t3)' }}>
-        {new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
+        {fmtTime(new Date().toISOString(), tz)}
       </div>
       {children}
     </div>

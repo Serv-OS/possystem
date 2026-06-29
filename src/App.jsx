@@ -90,6 +90,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.717', date: '30 Jun 2026', label: 'Fixes — Time Clock time, staff pay-rate override, and tronc distribution',
+    changes: [
+      'Time Clock: the “Clocked in at …” message + the on-screen clock now show venue time, not the tablet’s own time.',
+      'Staff pay rate: a per-person rate override now saves and sticks (it was silently dropped, so the position’s default always took over).',
+      'Tips/Tronc: you can now distribute by actual clocked hours when no rota was published for the week, and you get a clear “no staff hours this week” message instead of nothing happening.',
+    ],
+  },
+  {
     version: '5.5.716', date: '30 Jun 2026', label: 'QR tabs — “join with a code” so only your table can add to your tab',
     changes: [
       'Opening a QR tab now shows a 4-digit table code. Anyone else scanning that table must enter it before they can add to (or settle) the tab — so a passer-by can’t order against your bill.',
