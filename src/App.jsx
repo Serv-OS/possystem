@@ -90,6 +90,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.718', date: '30 Jun 2026', label: 'Hotfix — Time Clock crash (App Error)',
+    changes: [
+      'Fixed an App Error that stopped the Time Clock loading (the on-screen clock referenced the venue timezone in a spot that didn’t have it). The Time Clock opens normally again.',
+    ],
+  },
+  {
     version: '5.5.717', date: '30 Jun 2026', label: 'Fixes — Time Clock time, staff pay-rate override, and tronc distribution',
     changes: [
       'Time Clock: the “Clocked in at …” message + the on-screen clock now show venue time, not the tablet’s own time.',

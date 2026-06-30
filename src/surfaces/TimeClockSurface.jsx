@@ -132,7 +132,7 @@ export default function TimeClockSurface() {
   // ── Confirmation flash ──
   if (flash) {
     return (
-      <Shell venue={venueName}>
+      <Shell venue={venueName} tz={tz}>
         <div style={{ textAlign: 'center', maxWidth: 460 }}>
           <div style={{ width: 92, height: 92, borderRadius: '50%', margin: '0 auto 24px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: flash.tone === 'out' ? 'var(--inset)' : 'var(--grn-d)', border: `1px solid ${flash.tone === 'out' ? 'var(--inset-border)' : 'var(--grn-b)'}` }}>
             <Icon name={flash.tone === 'out' ? 'check' : 'check'} size={44} stroke={2} />
@@ -152,7 +152,7 @@ export default function TimeClockSurface() {
     const tone = s.state === 'break' ? 'amber' : s.state === 'in' ? 'grn' : 't3';
     const stateLabel = s.state === 'break' ? 'On break' : s.state === 'in' ? 'On shift' : 'Clocked out';
     return (
-      <Shell venue={venueName}>
+      <Shell venue={venueName} tz={tz}>
         <div style={{ width: '100%', maxWidth: 520, textAlign: 'center' }}>
           <div style={{ width: 76, height: 76, borderRadius: '50%', margin: '0 auto 16px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 26, fontWeight: 800, background: (s.staff?.color || '#15C26A') + '22', border: `2px solid ${(s.staff?.color || '#15C26A')}66`, color: s.staff?.color || 'var(--t1)' }}>{s.staff?.initials}</div>
           <div style={{ fontSize: 26, fontWeight: 700, color: 'var(--t1)' }}>{s.staff?.name}</div>
@@ -199,7 +199,7 @@ export default function TimeClockSurface() {
 
   // ── PIN pad ──
   return (
-    <Shell venue={venueName}>
+    <Shell venue={venueName} tz={tz}>
       <div style={{ textAlign: 'center', animation: shake ? 'shake .45s' : 'none' }}>
         <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--t1)' }}>Enter your PIN</div>
         <div style={{ fontSize: 14, color: 'var(--t3)', marginTop: 4 }}>to clock in, take a break, or clock out</div>
@@ -237,7 +237,7 @@ function BigBtn({ icon, label, tone, onClick, busy }) {
   );
 }
 
-function Shell({ venue, children }) {
+function Shell({ venue, tz, children }) {
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 24, position: 'relative' }}>
       <div style={{ position: 'absolute', top: 22, left: 24, display: 'flex', alignItems: 'center', gap: 10 }}>
