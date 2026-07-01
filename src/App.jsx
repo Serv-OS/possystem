@@ -90,6 +90,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.721', date: '1 Jul 2026', label: 'iPhone “Add to Home Screen” now saves the right app (Manager, Ops, Clock…)',
+    changes: [
+      'Saving dev.serv-os.app/?mode=manager (or ops, clock, waitlist…) to an iPhone home screen was opening the POS instead — iPhones ignore the dynamic app manifest we generated. Each mode now has a real manifest file, so the saved icon opens the surface you saved, with its own name and orientation.',
+      'Re-add the icon on the iPhone to pick this up (remove the old one first).',
+    ],
+  },
+  {
     version: '5.5.720', date: '1 Jul 2026', label: 'HOTFIX — install this over 719: payment completion crash + card-block polish',
     changes: [
       'CRITICAL: v5.5.719 could crash the checkout the moment a payment finished (card/cash/gift) — caught by our own review before any till updated. If a till is on 719, update it now.',

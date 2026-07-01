@@ -8,39 +8,28 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="Serv OS">
     <!-- Per-mode install manifest: when you "Add to Home Screen" from ?mode=manager (or ops/kds/clock/…)
-         the installed app must launch in THAT mode, not the static start_url. We rewrite the manifest
-         (distinct id/name/start_url/orientation per mode) at load so each saved icon opens its surface. -->
+         the installed app must launch in THAT mode, not the static start_url. We point the manifest link
+         at a REAL per-mode file (public/manifest-<mode>.json — distinct id/name/start_url/orientation).
+         v5.5.721: was a blob: URL, which iOS Safari IGNORES (fell back to /manifest.json → ?mode=pos);
+         static files work on both iOS and Android. -->
     <script>
       (function () {
         try {
           var mode = (new URLSearchParams(location.search).get('mode') || 'pos').toLowerCase();
           if (mode === 'backoffice') mode = 'office';
           var M = {
-            pos: ['Serv OS POS', 'landscape'], mpos: ['Serv OS MPOS', 'portrait'],
-            kds: ['Serv OS KDS', 'landscape'], bar: ['Serv OS Bar', 'landscape'],
-            tables: ['Serv OS Tables', 'landscape'], kiosk: ['Serv OS Kiosk', 'portrait'],
-            clock: ['Serv OS Clock', 'portrait'], orders: ['Serv OS Orders', 'landscape'],
-            menuboard: ['Serv OS Menu', 'landscape'], ops: ['Serv OS Ops', 'portrait'],
-            waitlist: ['Serv OS Host', 'portrait'], manager: ['Serv OS Manager', 'portrait'],
-            owner: ['Serv OS Owner', 'portrait'], office: ['Serv OS Office', 'any']
+            pos: 'Serv OS POS', mpos: 'Serv OS MPOS', kds: 'Serv OS KDS', bar: 'Serv OS Bar',
+            tables: 'Serv OS Tables', kiosk: 'Serv OS Kiosk', clock: 'Serv OS Clock',
+            orders: 'Serv OS Orders', menuboard: 'Serv OS Menu', ops: 'Serv OS Ops',
+            waitlist: 'Serv OS Host', manager: 'Serv OS Manager', owner: 'Serv OS Owner',
+            office: 'Serv OS Office'
           };
-          var cfg = M[mode] || M.pos;
-          var startUrl = '/?mode=' + mode;
-          var manifest = {
-            name: cfg[0], short_name: cfg[0].replace('Serv OS ', '') || 'Serv OS',
-            description: 'The operating system for hospitality',
-            id: startUrl, start_url: startUrl, scope: '/', display: 'standalone', orientation: cfg[1],
-            background_color: '#0f1117', theme_color: '#15C36B', categories: ['business', 'productivity'],
-            icons: [72, 96, 128, 144, 152, 192, 384, 512].map(function (s) {
-              return { src: '/icons/icon-' + s + 'x' + s + '.png', sizes: s + 'x' + s, type: 'image/png', purpose: (s === 192 || s === 512) ? 'any maskable' : 'any' };
-            })
-          };
-          var href = URL.createObjectURL(new Blob([JSON.stringify(manifest)], { type: 'application/manifest+json' }));
+          if (!M[mode]) mode = 'pos';
           var link = document.querySelector('link[rel="manifest"]');
-          if (link) link.href = href;
+          if (link) link.href = '/manifest-' + mode + '.json';
           var title = document.querySelector('meta[name="apple-mobile-web-app-title"]');
-          if (title) title.setAttribute('content', cfg[0]);
-          document.title = cfg[0];
+          if (title) title.setAttribute('content', M[mode]);
+          document.title = M[mode];
         } catch (e) { /* keep the static manifest fallback */ }
       })();
     </script>
