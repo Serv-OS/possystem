@@ -677,7 +677,7 @@ export default function POSSurface() {
       const ref = 'PENDING';
       return {
         location,
-        check: { ref, server, tableLabel, orderType, covers, method: paymentInfo.method, customer },
+        check: { ref, server, tableLabel, orderType, covers, method: paymentInfo.method, customer, processor: paymentInfo.processor || null, cardReceipt: paymentInfo.cardReceipt || null },
         items: nonVoided,
         totals: { subtotal, service, tip, grand, taxBreakdown },
       };

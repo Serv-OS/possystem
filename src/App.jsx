@@ -90,6 +90,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.719', date: '1 Jul 2026', label: 'Card receipts — card scheme details now print at the bottom (UK rules)',
+    changes: [
+      'Card payments now print the card details block UK card-scheme rules expect: card type + last 4 digits (never more), how it was read (contactless/chip), verification, authorisation code and the chip AID — at the bottom of the receipt, above your footer message.',
+      'Works for both processors: Stripe reader payments and Ryft terminal payments.',
+      'On every receipt type — till print, browser print, and emailed receipts (HTML + plain text). Cash receipts are unchanged.',
+      'The details are saved with the sale, so re-prints and re-sent receipts from Transactions include them too.',
+    ],
+  },
+  {
     version: '5.5.718', date: '30 Jun 2026', label: 'Hotfix — Time Clock crash (App Error)',
     changes: [
       'Fixed an App Error that stopped the Time Clock loading (the on-screen clock referenced the venue timezone in a spot that didn’t have it). The Time Clock opens normally again.',

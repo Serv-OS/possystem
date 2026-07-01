@@ -10,6 +10,7 @@ import { supabase, ensureAuthToken } from './supabase';
 import { isTrainingMode } from './trainingMode';
 import { loadLocationBranding } from './receiptBranding';
 import { money } from './currency';  // v5.5.326: shared multi-currency formatter
+import { cardReceiptLines } from './cardReceipt';  // v5.5.719: card-scheme block (masked PAN/auth/CVM)
 const FUNC_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/message-templates`;
 
 /**
@@ -300,6 +301,17 @@ function buildReceiptHtml({ check, locationLabel, branding, greetingText }) {
         <div style="${S.row}"><span style="${S.muted}">Payment method</span><span style="font-weight:700;text-transform:capitalize;">${escapeHtml(check.method)}</span></div>
         <div style="${S.row}margin-top:2px;"><span style="${S.muted}">Status</span><span style="font-weight:700;color:#16a34a;">Paid</span></div>
       </div>` : ''}
+
+      <!-- Card-scheme block (masked PAN / scheme / auth code / entry / CVM / AID) -->
+      ${(() => {
+        const cl = cardReceiptLines(check);
+        if (!cl.length) return '';
+        return `
+      <div style="${S.dividerDash}margin-top:8px;padding-top:8px;font-size:11px;${S.muted}">
+        ${cl.map(([l, v]) => `<div style="${S.row}"><span>${escapeHtml(l)}</span><span style="${S.mono}">${escapeHtml(String(v))}</span></div>`).join('')}
+        <div style="text-align:center;margin-top:6px;font-size:10px;">Please retain this receipt</div>
+      </div>`;
+      })()}
     </div>
 
     <!-- Footer -->
@@ -394,6 +406,7 @@ function buildReceiptText({ check, locationLabel, branding }) {
 
   lines.push('');
   if (check.method) lines.push(pad('Paid by', check.method));
+  for (const [l, v] of cardReceiptLines(check)) lines.push(pad(l, String(v)));   // card-scheme block
   lines.push('');
   if (footerMsg) lines.push(footerMsg);
   lines.push(`${dateStr} ${timeStr}${check.ref ? ` · Ref ${check.ref}` : ''}`);

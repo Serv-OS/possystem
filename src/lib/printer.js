@@ -15,6 +15,7 @@ import { supabase, getLocationId } from './supabase';
 import { loadLocationBranding, mergeBrandingIntoLocation, invalidateBrandingCache } from './receiptBranding';
 import { money } from './currency.js';
 import { consolidateReceiptLines } from './receiptLines.js';
+import { cardReceiptLines } from './cardReceipt.js';
 
 // ─── ESC/POS builder ──────────────────────────────────────────────────────────
 const ESC = 0x1b, GS = 0x1d, LF = 0x0a;
@@ -216,6 +217,14 @@ export async function buildCustomerReceipt({ location, check, items, totals }) {
    .normal();
 
   if(check?.method) b.divider().twoCol('Payment',check.method.toUpperCase()).twoCol('Status','PAID');
+
+  // ── Card-scheme block (UK receipt rules: masked PAN, scheme, auth code, entry/CVM, AID) ──
+  const cardLines = cardReceiptLines(check);
+  if (cardLines.length) {
+    b.divider();
+    for (const [label, value] of cardLines) b.twoCol(label, String(value));
+    b.line('Please retain this receipt');
+  }
 
   // ── Footer message ─────────────────────────────────────────────────────
   const footerMsg = footer?.message || location?.receiptFooter || 'Thank you for dining with us!';
@@ -453,6 +462,12 @@ function buildReceiptHtml({ location, check, items, totals }) {
       const label = b.rate.type==='exclusive' ? `${b.rate.name} (${pct}%)` : `of which ${b.rate.name} (${pct}%)`;
       return `<div class="row" style="font-size:10px;color:#666"><span>${label}</span><span>\xA3${b.tax.toFixed(2)}</span></div>`;
     }).join('') || ''}
+    ${(() => {
+      // Card-scheme block (masked PAN / scheme / auth code / entry / CVM / AID)
+      const cl = cardReceiptLines(check);
+      if (!cl.length) return '';
+      return `<div class="divider"></div>${cl.map(([l, v]) => `<div class="row"><span>${l}</span><span>${v}</span></div>`).join('')}<div class="center" style="font-size:10px">Please retain this receipt</div>`;
+    })()}
     <div class="divider"></div>
     <div class="center">${location?.receiptFooter||'Thank you for dining with us!'}</div>
   `;

@@ -20,6 +20,15 @@ import { waitlistSlice } from './waitlistSlice';
 // [{ id, amountMinor }] stored on the closed check, so refundCheck can refund
 // every card leg back to its own card. Falls back to the legacy single-id field
 // (single-card POS flow) so that path is byte-for-byte unchanged.
+// v5.5.719: persist the card-scheme receipt block on the payment leg it belongs to (single-card
+// payments → the only leg). payment_intents is jsonb, so the card object rides into closed_checks
+// with no migration and re-prints/emails from history can render it.
+function attachCardToIntents(intents, cardReceipt) {
+  if (!cardReceipt) return intents;
+  if (!intents || !intents.length) return intents;
+  return [{ ...intents[0], card: cardReceipt }, ...intents.slice(1)];
+}
+
 function derivePaymentIntents(paymentInfo = {}) {
   const list = Array.isArray(paymentInfo.paymentIntents) ? paymentInfo.paymentIntents : null;
   if (list && list.length) {
@@ -3992,7 +4001,8 @@ export const useStore = create((set, get) => ({
       giftCard:   paymentInfo.giftCard || null,                  // v5.5.217: gift card reversal on refund
       stripePaymentIntentId: paymentInfo.stripePaymentIntentId || paymentInfo.paymentIntentId || null,  // v5.5.301: for card refunds
       processor:  paymentInfo.processor || 'stripe',             // which processor took the payment (refund routes by this)
-      paymentIntents: derivePaymentIntents(paymentInfo),  // v5.5.323: all card legs (split portions) for multi-card refund
+      paymentIntents: attachCardToIntents(derivePaymentIntents(paymentInfo), paymentInfo.cardReceipt),  // v5.5.323 legs + v5.5.719 card block persisted on the leg
+      cardReceipt: paymentInfo.cardReceipt || null,              // v5.5.719: card-scheme receipt block (brand/last4/auth/AID/CVM) for the printed receipt
       loyaltyRedemption: paymentInfo.loyaltyRedemption || null,  // v5.5.315: link redeem→check for refund restore
       closedAt:   Date.now(),
       seatedAt:   session.seatedAt || null,   // Tables Ready: seat→close turn time feeds the waitlist estimator's learning loop
@@ -4119,7 +4129,8 @@ export const useStore = create((set, get) => ({
       giftCard: paymentInfo.giftCard || null,                                        // v5.5.217
       stripePaymentIntentId: paymentInfo.stripePaymentIntentId || paymentInfo.paymentIntentId || null,              // v5.5.301
       processor: paymentInfo.processor || 'stripe',                                  // refund routes by this
-      paymentIntents: derivePaymentIntents(paymentInfo),                             // v5.5.323: multi-card refund
+      paymentIntents: attachCardToIntents(derivePaymentIntents(paymentInfo), paymentInfo.cardReceipt),  // v5.5.323 legs + v5.5.719 card block
+      cardReceipt: paymentInfo.cardReceipt || null,                                  // v5.5.719: card-scheme receipt block
       loyaltyRedemption: paymentInfo.loyaltyRedemption || null,                      // v5.5.315
       drawerId: get().myDrawer?.()?.id || null,                                   // v4.6.37
       shiftId:  get().currentShift?.id || null,                                   // v4.6.37

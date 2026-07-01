@@ -41,11 +41,30 @@ Deno.serve(async (req) => {
   if (!res.ok) return json({ error: res.data?.message || `Ryft error (${res.status})`, ryft: res.data }, 502);
 
   const status = res.data?.status ?? 'PendingPayment';
+
+  // Card receipt block (UK card-scheme receipt requirements) — best-effort extraction from the
+  // Ryft PaymentSession. Field paths differ across Ryft API versions, so probe the known spots;
+  // every field is nullable and a missing one never blocks the poll.
+  let card: Record<string, unknown> | null = null;
+  try {
+    const d = res.data ?? {};
+    const pm = d.paymentMethod ?? {};
+    const c = pm.card ?? d.card ?? {};
+    const tx = d.lastPaymentTransaction ?? d.transaction ?? {};
+    const brand = c.scheme ?? c.brand ?? pm.scheme ?? null;
+    const last4 = c.last4 ?? c.lastFour ?? null;
+    const authCode = tx.approvalCode ?? tx.authorizationCode ?? d.approvalCode ?? d.authorizationCode ?? null;
+    if (brand || last4 || authCode) {
+      card = { brand, last4, auth_code: authCode, read_method: d.entryMode ?? tx.entryMode ?? null, aid: null, application_name: null, cvm: null, account_type: null };
+    }
+  } catch { /* receipt block is best-effort */ }
+
   return json({
     state: stateOf(status),
     status,
     amount: res.data?.amount ?? null,
     currency: res.data?.currency ?? null,
     sessionId: res.data?.id ?? body.payment_session_id,
+    card,
   });
 });

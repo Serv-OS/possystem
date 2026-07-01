@@ -48,7 +48,7 @@ export async function chargeRyftTerminal({ locationId, posDeviceId, amountMinor,
     await new Promise(r => setTimeout(r, pollMs));
     const s = await invoke('ryft-terminal-poll', { payment_session_id: paymentSessionId, account_id: accountId });
     onProgress?.(s.state, s.status);
-    if (s.state === 'succeeded') return { paymentSessionId, terminalId, accountId, status: s.status };
+    if (s.state === 'succeeded') return { paymentSessionId, terminalId, accountId, status: s.status, card: s.card || null };  // card = receipt block (scheme/last4/auth code)
     if (s.state === 'failed') throw new Error('Card declined or cancelled on the terminal');
   }
   // Timed out — try to cancel the dangling action.

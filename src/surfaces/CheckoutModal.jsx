@@ -226,7 +226,7 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
       });
       setRestState('success');
       setRestStatusMsg('Payment approved');
-      setPiResult({ status: 'succeeded', paymentIntentId: result.paymentSessionId, amount: Math.round(grand * 100), amountReceived: Math.round(grand * 100), processor: 'ryft' });
+      setPiResult({ status: 'succeeded', paymentIntentId: result.paymentSessionId, amount: Math.round(grand * 100), amountReceived: Math.round(grand * 100), processor: 'ryft', card: result.card || null });
     } catch (e) {
       if (e.message === 'cancelled') return;             // user cancelled — handled by cancelRestFlow
       setRestState('error');
@@ -355,6 +355,7 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
               amount: j.amount,
               amountReceived: j.amount_received,
               applicationFee: j.application_fee_amount,
+              card: j.card || null,   // card-scheme receipt block (brand/last4/auth code/AID/CVM)
             });
           } else {
             setRestState('error');
@@ -1238,7 +1239,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   const hasTax = taxBreakdown?.breakdown?.length > 0;
   const hasExclusive = taxBreakdown?.hasExclusiveTax;
 
-  const complete = (method, tip=tipAmt, tendered=null, stripePaymentIntentId=null) => {
+  const complete = (method, tip=tipAmt, tendered=null, stripePaymentIntentId=null, cardReceipt=null) => {
     const hasGift = !!giftApplied;
     const hasLoyalty = !!loyaltyApplied;
     let finalMethod = method;
@@ -1256,6 +1257,8 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
       loyaltyRedemption: loyaltyApplied || undefined,
       promoRedemption: promoApplied || undefined,
       stripePaymentIntentId,
+      processor: piResult?.processor || processor || 'stripe',
+      cardReceipt,   // card-scheme receipt block (brand/last4/auth code/AID/CVM) — printed at the receipt bottom
     });
   };
 
@@ -1605,7 +1608,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                 const receivedMinor = pi?.amountReceived ?? null;
                 const receivedGbp   = receivedMinor != null ? receivedMinor / 100 : null;
                 const realTip = receivedGbp != null ? Math.max(0, +(receivedGbp - total).toFixed(2)) : 0;
-                complete('card', realTip, null, pi?.paymentIntentId || null);
+                complete('card', realTip, null, pi?.paymentIntentId || null, pi?.card || null);
               }}
               onBack={()=>setScreen('review')}
             />

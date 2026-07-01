@@ -50,10 +50,12 @@ Deno.serve(async (req) => {
     .select('stripe_account_id').eq('location_id', location_id).maybeSingle();
   if (!msa?.stripe_account_id) return json({ error: 'Merchant Stripe account not linked' }, 400);
 
-  // Fetch PaymentIntent
+  // Fetch PaymentIntent — latest_charge expanded so a SUCCEEDED payment can return the
+  // card-present receipt fields (scheme, last4, auth code, AID, CVM). UK card-scheme rules
+  // require these on the printed receipt; Stripe exposes them exactly for that purpose.
   let pi: Stripe.PaymentIntent;
   try {
-    pi = await stripe.paymentIntents.retrieve(payment_intent_id, { stripeAccount: msa.stripe_account_id });
+    pi = await stripe.paymentIntents.retrieve(payment_intent_id, { expand: ['latest_charge'] }, { stripeAccount: msa.stripe_account_id });
   } catch (e) {
     return json({ error: `Stripe could not fetch PI: ${(e as Error).message}` }, 400);
   }
@@ -72,11 +74,32 @@ Deno.serve(async (req) => {
     }
   }
 
+  // Card-present receipt block (UK card-scheme receipt requirements). Only present once the
+  // charge exists (success). Every field is best-effort — a missing field never blocks the poll.
+  let card: Record<string, unknown> | null = null;
+  try {
+    const ch = (typeof pi.latest_charge === 'object' ? pi.latest_charge : null) as Stripe.Charge | null;
+    const cp = ch?.payment_method_details?.card_present as Stripe.Charge.PaymentMethodDetails.CardPresent | undefined;
+    if (cp) {
+      card = {
+        brand: cp.brand ?? null,                                        // visa | mastercard | amex …
+        last4: cp.last4 ?? null,
+        read_method: cp.read_method ?? null,                            // contactless_emv | contact_emv | …
+        auth_code: cp.receipt?.authorization_code ?? null,
+        aid: cp.receipt?.dedicated_file_name ?? null,                   // EMV AID
+        application_name: cp.receipt?.application_preferred_name ?? null,
+        cvm: cp.receipt?.cardholder_verification_method ?? null,        // none | offline_pin | online_pin | signature
+        account_type: cp.receipt?.account_type ?? null,
+      };
+    }
+  } catch { /* receipt block is best-effort */ }
+
   return json({
     payment_intent_id: pi.id,
     payment_intent_status: pi.status,           // requires_payment_method | requires_confirmation | requires_action | processing | requires_capture | canceled | succeeded
     amount: pi.amount,
     amount_received: pi.amount_received,
+    card,
     application_fee_amount: pi.application_fee_amount ?? 0,
     last_payment_error: pi.last_payment_error?.message ?? null,
     reader_action: readerAction ? {
