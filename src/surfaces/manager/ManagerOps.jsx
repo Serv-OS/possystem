@@ -9,6 +9,6 @@
 import { OpsContent } from '../OperationsSurface';
 
 export default function ManagerOps({ ctx }) {
-  const { loc, venueName, operator } = ctx;
-  return <OpsContent loc={loc} venueName={venueName} operator={operator} chrome={false} />;
+  const { loc, venueName, operator, opsJump } = ctx;
+  return <OpsContent loc={loc} venueName={venueName} operator={operator} chrome={false} jump={opsJump} />;
 }

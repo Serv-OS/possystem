@@ -31,6 +31,9 @@ export default function ManagerSurface() {
   const [claimCode, setClaimCode] = useState('');
   const [operator, setOperator] = useState(null); // { id, name, role, permissions }
   const [tab, setTab] = useState('home');
+  // Deep-link into the Ops tab (e.g. Home's "needs you now" → straight to the Alerts view).
+  // {view, k} — k changes per jump so OpsContent's effect re-fires even for the same view.
+  const [opsJump, setOpsJump] = useState(null);
   const [dark, setDark] = useState(() => localStorage.getItem('mgr-theme') !== 'light');
   const [snap, setSnap] = useState(null);     // one shared snapshot for every tab
   const [snapErr, setSnapErr] = useState('');
@@ -90,7 +93,10 @@ export default function ManagerSurface() {
   // If the active tab isn't allowed for this role, fall back to the first visible one.
   const activeTab = visibleTabs.some((t) => t.key === tab) ? tab : (visibleTabs[0]?.key || 'home');
   const refreshSnap = () => { if (loc) fetchManagerSnapshot(loc).then((r) => { if (r?.ok) { setSnap(r); setSnapErr(''); } else setSnapErr(r?.error || 'Could not load'); }); };
-  const ctx = { loc, venueName, operator, flags, setTab, snap, snapErr, refreshSnap, dark, toggleTheme: () => { const n = !dark; setDark(n); localStorage.setItem('mgr-theme', n ? 'dark' : 'light'); } };
+  const ctx = { loc, venueName, operator, flags, setTab, snap, snapErr, refreshSnap, dark,
+    opsJump,
+    goOps: (view) => { setOpsJump({ view, k: Date.now() }); setTab('ops'); },
+    toggleTheme: () => { const n = !dark; setDark(n); localStorage.setItem('mgr-theme', n ? 'dark' : 'light'); } };
 
   return (
     <Shell ctx={ctx} tabs={visibleTabs} active={activeTab} onTab={setTab}

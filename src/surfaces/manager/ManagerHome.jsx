@@ -52,12 +52,15 @@ export default function ManagerHome({ ctx }) {
   const opsMaint = snap?.ops?.openMaintenance || 0;
   const opsAlerts = snap?.ops?.activeAlerts || 0;
 
-  // "Need you now" — the few things genuinely worth interrupting for, right now.
+  // "Need you now" — the few things genuinely worth interrupting for, right now. Each entry knows
+  // WHERE to take you (the bar used to hardcode reports/team, so tapping "3 ops alerts" landed on a
+  // screen with nothing relevant). Ops alerts deep-link straight to the Ops alerts view.
+  const goOpsAlerts = () => (ctx.goOps ? ctx.goOps('alerts') : setTab('ops'));
   const needNow = [];
-  if (flags.reports_view && floor?.stalled.length) needNow.push(`${floor.stalled.length} table${floor.stalled.length > 1 ? 's' : ''} stalled`);
-  if (flags.team_live && noshow.length) needNow.push(`${noshow.length} no-show${noshow.length > 1 ? 's' : ''}`);
-  if (flags.team_live && breaks.length) needNow.push(`${breaks.length} break${breaks.length > 1 ? 's' : ''} due`);
-  if (flags.ops_checks && opsAlerts) needNow.push(`${opsAlerts} ops alert${opsAlerts > 1 ? 's' : ''}`);
+  if (flags.reports_view && floor?.stalled.length) needNow.push({ label: `${floor.stalled.length} table${floor.stalled.length > 1 ? 's' : ''} stalled`, go: () => setTab('reports') });
+  if (flags.team_live && noshow.length) needNow.push({ label: `${noshow.length} no-show${noshow.length > 1 ? 's' : ''}`, go: () => setTab('team') });
+  if (flags.team_live && breaks.length) needNow.push({ label: `${breaks.length} break${breaks.length > 1 ? 's' : ''} due`, go: () => setTab('team') });
+  if (flags.ops_checks && opsAlerts) needNow.push({ label: `${opsAlerts} ops alert${opsAlerts > 1 ? 's' : ''}`, go: goOpsAlerts });
 
   return (
     <div>
@@ -94,11 +97,11 @@ export default function ManagerHome({ ctx }) {
 
       {/* need you now */}
       {needNow.length > 0 && (
-        <button onClick={() => setTab(floor?.stalled.length ? 'reports' : 'team')} className="sv-glass" style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', marginTop: 10, borderRadius: 14, border: '1px solid var(--red-b)', background: 'var(--red-d)', cursor: 'pointer', color: 'var(--t1)', textAlign: 'left', fontFamily: 'inherit' }}>
+        <button onClick={() => needNow[0].go()} className="sv-glass" style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', marginTop: 10, borderRadius: 14, border: '1px solid var(--red-b)', background: 'var(--red-d)', cursor: 'pointer', color: 'var(--t1)', textAlign: 'left', fontFamily: 'inherit' }}>
           <span style={{ width: 8, height: 8, borderRadius: 999, background: 'var(--red)', boxShadow: '0 0 8px var(--red)', flexShrink: 0 }} />
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--red)' }}>{needNow.length} need{needNow.length === 1 ? 's' : ''} you now</div>
-            <div style={{ fontSize: 11, color: 'var(--t2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', ...mono }}>{needNow.join(' · ')}</div>
+            <div style={{ fontSize: 11, color: 'var(--t2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', ...mono }}>{needNow.map(n => n.label).join(' · ')}</div>
           </div>
           <span style={{ color: 'var(--t4)', fontSize: 18 }}>›</span>
         </button>
@@ -122,7 +125,7 @@ export default function ManagerHome({ ctx }) {
           <StatusTile icon="clipboard" label={opsMaint === 1 ? 'open job' : 'open jobs'} value={opsMaint}
             sub={opsAlerts ? `${opsAlerts} alert${opsAlerts > 1 ? 's' : ''}` : opsMaint ? 'maintenance' : 'all clear'}
             state={opsAlerts ? 'bad' : opsMaint ? 'warn' : 'good'}
-            onClick={() => setTab('ops')} />
+            onClick={() => (opsAlerts ? goOpsAlerts() : setTab('ops'))} />
         )}
         {flags.kitchen && (
           <StatusTile icon="fire" label="to order" value={toOrder}

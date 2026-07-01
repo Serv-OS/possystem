@@ -100,12 +100,17 @@ export default function OperationsSurface() {
 // chrome=false: render the views bare — the Manager app's own Shell provides the header + tab bar;
 // alerts are reached via a bell on the Ops Home card instead. Same writes either way (the data layer
 // is location-fenced server-side); pass {loc, operator} from whichever surface hosts it.
-export function OpsContent({ loc, venueName, operator, onLogout, chrome = true }) {
+export function OpsContent({ loc, venueName, operator, onLogout, chrome = true, jump = null }) {
   const [view, setView] = useState('home');        // home | temperature | delivery | checklists | maintenance | alerts
   const [unitView, setUnitView] = useState(null);  // a unit being logged
   const [maintPrefill, setMaintPrefill] = useState(null); // {unitName, temp} when raising off a breach
   const [clFilter, setClFilter] = useState(null);  // checklist tile → which kind to show
   const openView = (v, opts = {}) => { if ('clFilter' in opts) setClFilter(opts.clFilter ?? null); setView(v); };
+  // Host-surface deep-link (Manager Home "needs you now" → straight to Alerts). jump.k changes per
+  // request so the same view can be jumped to twice; unknown views are ignored.
+  useEffect(() => {
+    if (jump?.view && ['home', 'temperature', 'delivery', 'checklists', 'maintenance', 'alerts'].includes(jump.view)) { setUnitView(null); setView(jump.view); }
+  }, [jump?.k]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   const body = unitView ? (
     <LogUnit loc={loc} unit={unitView} operator={operator} onDone={() => setUnitView(null)} />

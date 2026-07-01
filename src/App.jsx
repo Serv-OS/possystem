@@ -90,6 +90,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.723', date: '1 Jul 2026', label: 'Manager app — “needs you now” alert now takes you to the actual alerts',
+    changes: [
+      'Tapping the red “needs you now” bar always went to Reports or Team — so ops alerts led to a screen with nothing on it. It now goes to whatever actually needs you: ops alerts jump straight into Ops → Alerts, no-shows/breaks to Team, stalled tables to Reports.',
+      'The Ops tile on the home screen also jumps straight to the alerts when any are live.',
+    ],
+  },
+  {
     version: '5.5.722', date: '1 Jul 2026', label: 'iPhone “Add to Home Screen” — second fix (Safari was grabbing the default manifest first)',
     changes: [
       'iPhones were still saving the POS: Safari locks onto the FIRST app manifest it sees in the page, before our per-mode switch ran. The default manifest link is gone — the page now creates only the correct per-mode one, so Safari can’t grab the wrong file.',
