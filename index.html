@@ -2,18 +2,18 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="manifest" href="/manifest.json">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="Serv OS">
-    <!-- Per-mode install manifest: when you "Add to Home Screen" from ?mode=manager (or ops/kds/clock/…)
-         the installed app must launch in THAT mode, not the static start_url. We point the manifest link
-         at a REAL per-mode file (public/manifest-<mode>.json — distinct id/name/start_url/orientation).
-         v5.5.721: was a blob: URL, which iOS Safari IGNORES (fell back to /manifest.json → ?mode=pos);
-         static files work on both iOS and Android. -->
+    <!-- Per-mode install manifest: "Add to Home Screen" from ?mode=manager (or ops/kds/clock/…) must
+         launch THAT mode. There is deliberately NO static <link rel="manifest"> — iOS Safari latches
+         the FIRST manifest link it parses (v5.5.721 swapped the href after the fact and iPhones still
+         installed the POS), so the script below synchronously CREATES the link pointing at the real
+         per-mode file (public/manifest-<mode>.json — distinct id/start_url/name/orientation). -->
     <script>
       (function () {
+        var href = '/manifest.json';
         try {
           var mode = (new URLSearchParams(location.search).get('mode') || 'pos').toLowerCase();
           if (mode === 'backoffice') mode = 'office';
@@ -25,12 +25,14 @@
             office: 'Serv OS Office'
           };
           if (!M[mode]) mode = 'pos';
-          var link = document.querySelector('link[rel="manifest"]');
-          if (link) link.href = '/manifest-' + mode + '.json';
+          href = '/manifest-' + mode + '.json';
           var title = document.querySelector('meta[name="apple-mobile-web-app-title"]');
           if (title) title.setAttribute('content', M[mode]);
           document.title = M[mode];
-        } catch (e) { /* keep the static manifest fallback */ }
+        } catch (e) { /* fall through to the default manifest */ }
+        var link = document.createElement('link');
+        link.rel = 'manifest'; link.href = href;
+        document.head.appendChild(link);
       })();
     </script>
     <link rel="apple-touch-icon" href="/apple-touch-icon.png">

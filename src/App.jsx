@@ -90,6 +90,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.722', date: '1 Jul 2026', label: 'iPhone “Add to Home Screen” — second fix (Safari was grabbing the default manifest first)',
+    changes: [
+      'iPhones were still saving the POS: Safari locks onto the FIRST app manifest it sees in the page, before our per-mode switch ran. The default manifest link is gone — the page now creates only the correct per-mode one, so Safari can’t grab the wrong file.',
+      'On the iPhone: delete the old icon, fully close Safari, reopen dev.serv-os.app/?mode=manager, then Add to Home Screen.',
+    ],
+  },
+  {
     version: '5.5.721', date: '1 Jul 2026', label: 'iPhone “Add to Home Screen” now saves the right app (Manager, Ops, Clock…)',
     changes: [
       'Saving dev.serv-os.app/?mode=manager (or ops, clock, waitlist…) to an iPhone home screen was opening the POS instead — iPhones ignore the dynamic app manifest we generated. Each mode now has a real manifest file, so the saved icon opens the surface you saved, with its own name and orientation.',
