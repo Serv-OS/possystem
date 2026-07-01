@@ -124,6 +124,11 @@ export async function reconcilePendingChecks() {
         gift_card:    check.giftCard || null,
         loyalty:      check.loyalty || null,
         source:       check.source || null,
+        // v5.5.720: offline-replay was dropping the payment identity — refunds route by processor +
+        // payment_intents[].id, and the card-scheme receipt block rides payment_intents[0].card.
+        stripe_payment_intent_id: check.stripePaymentIntentId || null,
+        payment_intents: check.paymentIntents || null,
+        processor:    check.processor || 'stripe',
       };
       const { error } = await supabase.from('closed_checks').insert(row);
       if (!error) {

@@ -463,10 +463,12 @@ function buildReceiptHtml({ location, check, items, totals }) {
       return `<div class="row" style="font-size:10px;color:#666"><span>${label}</span><span>\xA3${b.tax.toFixed(2)}</span></div>`;
     }).join('') || ''}
     ${(() => {
-      // Card-scheme block (masked PAN / scheme / auth code / entry / CVM / AID)
+      // Card-scheme block (masked PAN / scheme / auth code / entry / CVM / AID). Values are
+      // card-supplied (EMV app name etc.) — escape them, unlike the operator-controlled copy.
+      const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       const cl = cardReceiptLines(check);
       if (!cl.length) return '';
-      return `<div class="divider"></div>${cl.map(([l, v]) => `<div class="row"><span>${l}</span><span>${v}</span></div>`).join('')}<div class="center" style="font-size:10px">Please retain this receipt</div>`;
+      return `<div class="divider"></div>${cl.map(([l, v]) => `<div class="row"><span>${esc(l)}</span><span>${esc(v)}</span></div>`).join('')}<div class="center" style="font-size:10px">Please retain this receipt</div>`;
     })()}
     <div class="divider"></div>
     <div class="center">${location?.receiptFooter||'Thank you for dining with us!'}</div>

@@ -1239,7 +1239,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   const hasTax = taxBreakdown?.breakdown?.length > 0;
   const hasExclusive = taxBreakdown?.hasExclusiveTax;
 
-  const complete = (method, tip=tipAmt, tendered=null, stripePaymentIntentId=null, cardReceipt=null) => {
+  const complete = (method, tip=tipAmt, tendered=null, stripePaymentIntentId=null, cardReceipt=null, cardProcessor=null) => {
     const hasGift = !!giftApplied;
     const hasLoyalty = !!loyaltyApplied;
     let finalMethod = method;
@@ -1257,7 +1257,9 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
       loyaltyRedemption: loyaltyApplied || undefined,
       promoRedemption: promoApplied || undefined,
       stripePaymentIntentId,
-      processor: piResult?.processor || processor || 'stripe',
+      // NOTE: piResult/processor are CardTerminal state — NOT in scope here. The processor rides
+      // in as a parameter from the card call site (the pi the reader flow hands back).
+      processor: cardProcessor || 'stripe',
       cardReceipt,   // card-scheme receipt block (brand/last4/auth code/AID/CVM) — printed at the receipt bottom
     });
   };
@@ -1608,7 +1610,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                 const receivedMinor = pi?.amountReceived ?? null;
                 const receivedGbp   = receivedMinor != null ? receivedMinor / 100 : null;
                 const realTip = receivedGbp != null ? Math.max(0, +(receivedGbp - total).toFixed(2)) : 0;
-                complete('card', realTip, null, pi?.paymentIntentId || null, pi?.card || null);
+                complete('card', realTip, null, pi?.paymentIntentId || null, pi?.card || null, pi?.processor || 'stripe');
               }}
               onBack={()=>setScreen('review')}
             />

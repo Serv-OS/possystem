@@ -401,6 +401,10 @@ export default function CheckHistory(){
           covers: selectedCheck.covers,
           method: selectedCheck.method,
           customer: selectedCheck.customer,
+          // v5.5.720: carry the card-scheme block into re-prints (in-memory checks stamp
+          // cardReceipt; DB-loaded checks carry it on paymentIntents[0].card)
+          cardReceipt: selectedCheck.cardReceipt || null,
+          paymentIntents: selectedCheck.paymentIntents || selectedCheck.payment_intents || null,
         },
         items: nonVoided,
         totals: {

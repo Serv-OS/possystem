@@ -47,6 +47,13 @@ test('summary one-liner', () => {
   assert.equal(cardReceiptSummary({ cardReceipt: stripeCard }), 'Visa **** 4242 · Contactless · Auth 123456');
 });
 
+test('brand "unknown" is suppressed (BRAND_LABEL null mapping), last4 still prints', () => {
+  const c = cardReceiptOf({ cardReceipt: { brand: 'unknown', last4: '1234' } });
+  assert.equal(c.brand, null);
+  assert.equal(c.last4, '1234');
+  assert.deepEqual(cardReceiptLines({ cardReceipt: { brand: 'unknown', last4: '1234' } })[0], ['Card', '**** 1234']);
+});
+
 test('unknown enum values fall back to readable title case, not raw codes', () => {
   const c = cardReceiptOf({ cardReceipt: { brand: 'visa', last4: '1111', read_method: 'some_new_method', cvm: 'offline_pin' } });
   assert.equal(c.readMethod, 'Some New Method');

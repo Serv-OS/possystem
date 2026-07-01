@@ -47,9 +47,12 @@ export function cardReceiptOf(check) {
 
 function normalise(c) {
   const brandRaw = c.brand ?? c.scheme ?? null;
+  const brandKey = brandRaw ? String(brandRaw).toLowerCase() : null;
   const last4 = c.last4 ?? c.lastFour ?? null;
   const out = {
-    brand: brandRaw ? (BRAND_LABEL[String(brandRaw).toLowerCase()] ?? titleCase(brandRaw)) : null,
+    // Key-presence check (not ??): BRAND_LABEL maps unknown→null to SUPPRESS the label — `??`
+    // would defeat that and print "Unknown" on the receipt.
+    brand: brandKey ? (Object.hasOwn(BRAND_LABEL, brandKey) ? BRAND_LABEL[brandKey] : titleCase(brandRaw)) : null,
     last4: last4 ? String(last4).replace(/\D/g, '').slice(-4) || null : null,   // PCI: last 4 ONLY
     authCode: c.auth_code ?? c.authCode ?? null,
     aid: c.aid ?? null,

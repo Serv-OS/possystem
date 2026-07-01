@@ -90,6 +90,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.720', date: '1 Jul 2026', label: 'HOTFIX — install this over 719: payment completion crash + card-block polish',
+    changes: [
+      'CRITICAL: v5.5.719 could crash the checkout the moment a payment finished (card/cash/gift) — caught by our own review before any till updated. If a till is on 719, update it now.',
+      'History re-prints now include the card details block; offline-replayed sales keep their payment identity (refunds + card block intact).',
+      'Card block polish: unknown card brands no longer print as “Unknown”; browser-print receipts safely escape card-supplied text.',
+    ],
+  },
+  {
     version: '5.5.719', date: '1 Jul 2026', label: 'Card receipts — card scheme details now print at the bottom (UK rules)',
     changes: [
       'Card payments now print the card details block UK card-scheme rules expect: card type + last 4 digits (never more), how it was read (contactless/chip), verification, authorisation code and the chip AID — at the bottom of the receipt, above your footer message.',
