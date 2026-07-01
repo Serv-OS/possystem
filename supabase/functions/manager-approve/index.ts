@@ -47,7 +47,7 @@ async function resolveOperator(loc: string, pin: string): Promise<{ id: string; 
   if (!pin) return null;
   // Prefer an active row (active!==false treats NULL as active, matching ops_pin_login's coalesce) so a
   // stale inactive duplicate can't shadow a live PIN. PINs are effectively unique per location in practice.
-  const { data: rows } = await sb.from('staff_members').select('id, name, role, permissions, active').eq('location_id', loc).eq('pin', String(pin)).limit(5);
+  const { data: rows } = await sb.from('staff_members').select('id, name, role, permissions, active, org_id').eq('location_id', loc).eq('pin', String(pin)).limit(5);
   const op: any = (rows || []).find((r: any) => r.active !== false) || null;
   return op;
 }
@@ -71,7 +71,9 @@ Deno.serve(async (req) => {
   let body: any; try { body = await req.json(); } catch { return json({ error: 'bad json' }, 400); }
   const { action, ops_location_id: loc, pin, target_id, decision, edit } = body || {};
   if (!loc) return json({ error: 'ops_location_id required' }, 400);
-  if (!action || !target_id) return json({ error: 'action and target_id required' }, 400);
+  if (!action) return json({ error: 'action required' }, 400);
+  // po.raise creates a NEW entity (no target); the approve/decide actions operate on one.
+  if (action !== 'po.raise' && !target_id) return json({ error: 'action and target_id required' }, 400);
 
   if (!(await deviceAuthorized(req, loc))) return json({ error: 'no access to this location' }, 403);
   const op = await resolveOperator(loc, pin);
@@ -119,6 +121,42 @@ Deno.serve(async (req) => {
       if (error) return json({ error: error.message }, 400);
       await audit(loc, lv.org_id, op.id, op.name, `timeoff.${status}`, 'wf_time_off', target_id, { status: lv.status }, { status });
       return json({ ok: true });
+    }
+
+    // Raise a purchase order per supplier from the Manager Kitchen tab. Writes the SAME
+    // purchase_orders/po_lines shape as the BO Order Pad (service-role, loc-fenced, PIN-verified,
+    // audited) — goods-in / costs / invoice OCR all flow through the existing stock system.
+    // unit_price stays 0 at raise time (the Manager flow has no price data; receiving fills costs).
+    if (action === 'po.raise') {
+      const supplierId = body.supplier_id || null;
+      const lines = (Array.isArray(body.lines) ? body.lines : [])
+        .filter((l: any) => l && (l.inventory_item_id || l.description) && Number(l.qty) > 0)
+        .slice(0, 200);
+      if (!lines.length) return json({ error: 'no lines to order' }, 400);
+      const reference = 'MGR-' + Date.now().toString(36).toUpperCase();
+      const { data: po, error: poErr } = await sb.from('purchase_orders').insert({
+        location_id: loc, supplier_id: supplierId, reference, status: 'SENT',
+        ordered_at: nowIso(), updated_at: nowIso(),
+        expected_date: body.expected_date || null,
+        notes: `Raised from the Manager app by ${op.name || 'manager'}`,
+        subtotal: 0, tax: 0,
+      }).select().single();
+      if (poErr) return json({ error: poErr.message }, 400);
+      const lrows = lines.map((l: any, i: number) => ({
+        location_id: loc, po_id: po.id, inventory_item_id: l.inventory_item_id || null,
+        description: l.description || null, qty_packs: Number(l.qty) || 0, pack_qty: 1, inner_qty: 1,
+        inner_unit: 'each', unit_price: 0, qty_received: 0, sort_order: i,
+      }));
+      const { error: lErr } = await sb.from('po_lines').insert(lrows);
+      if (lErr) { await sb.from('purchase_orders').delete().eq('id', po.id); return json({ error: lErr.message }, 400); }
+      // wf_audit.org_id is NOT NULL — resolve it from the operator's staff row (fallback: locations).
+      let orgId = (op as any).org_id || null;
+      if (!orgId) { const { data: locRow } = await sb.from('locations').select('org_id').eq('id', loc).maybeSingle(); orgId = locRow?.org_id || null; }
+      if (orgId) {
+        await audit(loc, orgId, op.id, op.name, 'po.raise', 'purchase_orders', po.id, null,
+          { reference, supplier_id: supplierId, supplier_name: body.supplier_name || null, lines: lrows.length });
+      }
+      return json({ ok: true, po_id: po.id, reference });
     }
 
     return json({ error: 'unknown action' }, 400);

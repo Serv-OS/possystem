@@ -90,6 +90,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.724', date: '1 Jul 2026', label: 'Manager app — Raise PO from your phone (per supplier)',
+    changes: [
+      'The Kitchen tab’s below-par list now has a “Raise PO” button per supplier: quantities pre-filled from the par gap (adjust or drop lines), enter your manager PIN, send.',
+      'The order lands in the same purchasing system as Back Office (status SENT) — it shows under “On order · incoming”, goods-in checks it in via Ops → Deliveries, and costs fill in at receiving/invoice.',
+      'Secure write path: the device must be paired to the venue, the PIN is verified server-side, and every raised order is written to the audit trail with who raised it.',
+    ],
+  },
+  {
     version: '5.5.723', date: '1 Jul 2026', label: 'Manager app — “needs you now” alert now takes you to the actual alerts',
     changes: [
       'Tapping the red “needs you now” bar always went to Reports or Team — so ops alerts led to a screen with nothing on it. It now goes to whatever actually needs you: ops alerts jump straight into Ops → Alerts, no-shows/breaks to Team, stalled tables to Reports.',

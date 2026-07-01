@@ -5,6 +5,7 @@
 import { useState } from 'react';
 import { belowPar, bySupplier, groupBatches } from '../../lib/manager/kitchen';
 import { recordPrep } from '../../lib/prep';
+import { managerRaisePO } from '../../lib/manager/data';
 import { Header, Stat, SectionTitle, mono } from './ui';
 import { Icon } from '../../components/ServOSIcons';
 
@@ -17,6 +18,31 @@ export default function ManagerKitchen({ ctx }) {
   const { snap, snapErr: err, loc, operator, refreshSnap } = ctx;
   const [recording, setRecording] = useState(null);
   const [recErr, setRecErr] = useState('');
+  // Raise PO (per supplier) — secure write path: manager-approve po.raise (device fence + PIN + audit).
+  const [poFor, setPoFor] = useState(null);      // supplier group whose order sheet is open
+  const [poQty, setPoQty] = useState({});        // itemId -> qty (0 = removed from this order)
+  const [poPin, setPoPin] = useState('');        // manager PIN, validated server-side, cached for the session
+  const [poEntry, setPoEntry] = useState('');
+  const [poErr, setPoErr] = useState('');
+  const [poBusy, setPoBusy] = useState(false);
+  const [poDone, setPoDone] = useState({});      // supplier -> PO reference (raised this session)
+
+  const openPoSheet = (sup, lines) => {
+    setPoFor(sup); setPoErr('');
+    setPoQty(Object.fromEntries(lines.map((i) => [i.itemId, Math.max(1, Math.ceil(i.shortfall || 0) || 1)])));
+  };
+  const stepQty = (id, d) => setPoQty((q) => ({ ...q, [id]: Math.max(0, (Number(q[id]) || 0) + d) }));
+  const submitPO = async (sup, lines) => {
+    const order = lines.filter((i) => (Number(poQty[i.itemId]) || 0) > 0)
+      .map((i) => ({ inventory_item_id: i.itemId, description: i.name, qty: Number(poQty[i.itemId]) }));
+    if (!order.length) { setPoErr('Nothing left on this order — set a quantity.'); return; }
+    setPoBusy(true); setPoErr('');
+    const r = await managerRaisePO(loc, poPin, { supplierId: lines[0]?.supplierId || null, supplierName: sup, lines: order });
+    setPoBusy(false);
+    if (r?.ok) { setPoDone((d) => ({ ...d, [sup]: r.reference })); setPoFor(null); refreshSnap?.(); }
+    else if (/pin|not allowed|approve/i.test(r?.error || '')) { setPoPin(''); setPoEntry(''); setPoErr(r?.error || 'PIN not recognised'); }
+    else setPoErr(r?.error || 'Could not raise the order');
+  };
 
   const items = snap?.kitchen?.items || [];
   const incoming = snap?.kitchen?.deliveries || [];
@@ -100,6 +126,54 @@ export default function ManagerKitchen({ ctx }) {
                     {i.shortfall > 0 && <span style={{ fontSize: 12.5, fontWeight: 800, color: 'var(--orn)', ...mono }}>+{i.shortfall}</span>}
                   </div>
                 ))}
+
+                {/* Raise PO — per supplier. Sheet: qty per line (default = the par gap) → PIN → send. */}
+                {poDone[sup] ? (
+                  <div className="sv-glass" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', borderRadius: 14, border: '1px solid var(--grn-b)' }}>
+                    <Icon name="check" size={15} style={{ color: 'var(--grn)', flexShrink: 0 }} />
+                    <div style={{ fontSize: 12.5, color: 'var(--grn)', fontWeight: 700 }}>Order {poDone[sup]} raised — it’ll show under “On order · incoming”.</div>
+                  </div>
+                ) : poFor === sup ? (
+                  <div className="sv-glass" style={{ padding: 14, borderRadius: 14, border: '1px solid var(--acc-b, var(--bdr))' }}>
+                    <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 10 }}>Order from {sup}</div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      {groups[sup].map((i) => {
+                        const q = Number(poQty[i.itemId]) || 0;
+                        return (
+                          <div key={i.itemId} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                            <div style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: 600, textDecoration: q === 0 ? 'line-through' : 'none', color: q === 0 ? 'var(--t4)' : 'var(--t1)' }}>{i.name}</div>
+                            <button onClick={() => stepQty(i.itemId, -1)} className="sv-glass" style={{ width: 32, height: 32, borderRadius: 10, border: '1px solid var(--bdr)', cursor: 'pointer', color: 'var(--t2)', fontSize: 16, fontWeight: 800, fontFamily: 'inherit' }}>−</button>
+                            <span style={{ width: 28, textAlign: 'center', fontSize: 14, fontWeight: 800, ...mono }}>{q}</span>
+                            <button onClick={() => stepQty(i.itemId, 1)} className="sv-glass" style={{ width: 32, height: 32, borderRadius: 10, border: '1px solid var(--bdr)', cursor: 'pointer', color: 'var(--t2)', fontSize: 16, fontWeight: 800, fontFamily: 'inherit' }}>+</button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {!poPin && (
+                      <div style={{ marginTop: 12 }}>
+                        <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--t2)', marginBottom: 6 }}>Manager PIN to send</div>
+                        <input value={poEntry} type="password" inputMode="numeric" placeholder="PIN"
+                          onChange={(e) => { setPoErr(''); setPoEntry(e.target.value.replace(/\D/g, '').slice(0, 6)); }}
+                          onKeyDown={(e) => { if (e.key === 'Enter' && poEntry.length >= 4) setPoPin(poEntry); }}
+                          style={{ width: 130, padding: '10px 12px', borderRadius: 11, border: '1px solid var(--bdr)', background: 'var(--inset, transparent)', color: 'var(--t1)', fontSize: 16, letterSpacing: '0.3em', fontFamily: 'var(--font-mono)', outline: 'none' }} />
+                        <button onClick={() => poEntry.length >= 4 && setPoPin(poEntry)} className="sv-glass" style={{ marginLeft: 8, padding: '10px 16px', borderRadius: 11, border: '1px solid var(--bdr)', cursor: 'pointer', color: 'var(--t1)', fontWeight: 800, fontSize: 13, fontFamily: 'inherit' }}>Unlock</button>
+                      </div>
+                    )}
+                    {poErr && <div style={{ fontSize: 12, color: 'var(--red)', marginTop: 8 }}>{poErr}</div>}
+                    <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                      <button onClick={() => setPoFor(null)} className="sv-glass" style={{ flex: 1, padding: '12px 0', borderRadius: 12, border: '1px solid var(--bdr)', cursor: 'pointer', color: 'var(--t2)', fontWeight: 800, fontSize: 13, fontFamily: 'inherit' }}>Cancel</button>
+                      <button onClick={() => submitPO(sup, groups[sup])} disabled={poBusy || !poPin} className="sv-glass"
+                        style={{ flex: 2, padding: '12px 0', borderRadius: 12, border: '1px solid var(--grn-b)', cursor: poBusy || !poPin ? 'default' : 'pointer', color: poPin ? 'var(--grn)' : 'var(--t4)', fontWeight: 800, fontSize: 13, fontFamily: 'inherit' }}>
+                        {poBusy ? 'Sending…' : `Send order (${groups[sup].filter((i) => (Number(poQty[i.itemId]) || 0) > 0).length} lines)`}
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button onClick={() => openPoSheet(sup, groups[sup])} className="sv-glass"
+                    style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '12px 0', borderRadius: 12, border: '1px solid var(--grn-b)', cursor: 'pointer', color: 'var(--grn)', fontWeight: 800, fontSize: 13, fontFamily: 'inherit' }}>
+                    <Icon name="delivery" size={14} /> Raise PO — {sup}
+                  </button>
+                )}
               </div>
             </div>
           ))}
@@ -141,12 +215,14 @@ export default function ManagerKitchen({ ctx }) {
             </>
           )}
 
-          <div className="sv-glass" style={{ padding: 16, marginTop: 16 }}>
-            <div style={{ fontSize: 13, fontWeight: 800 }}>Raise PO — next</div>
-            <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 4, lineHeight: 1.5 }}>
-              Sending a purchase order per supplier lands next — it writes to stock, so it goes through the secure write path. Set up the prep list in Back Office → Operations → Prep schedule.
+          {batchTotal === 0 && (
+            <div className="sv-glass" style={{ padding: 16, marginTop: 16 }}>
+              <div style={{ fontSize: 13, fontWeight: 800 }}>Batch cooks</div>
+              <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 4, lineHeight: 1.5 }}>
+                Nothing scheduled for today. Set up the prep list in Back Office → Operations → Prep schedule.
+              </div>
             </div>
-          </div>
+          )}
         </>
       )}
     </div>

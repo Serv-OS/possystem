@@ -189,6 +189,7 @@ Deno.serve(async (req) => {
             par: p.par_level != null ? Number(p.par_level) : null,
             reorderPoint: p.reorder_point != null ? Number(p.reorder_point) : null,
             supplier: i.default_supplier_id ? (supName[i.default_supplier_id] || null) : null,
+            supplierId: i.default_supplier_id || null,   // po.raise needs the id, not just the display name
             eightySixed: false,
           };
         });

@@ -23,3 +23,15 @@ export async function managerApprove(opsLocationId, pin, action, targetId, extra
   if (error) return { ok: false, error: error.message };
   return data;
 }
+
+/** Raise a purchase order for one supplier's below-par lines (Manager Kitchen tab). Same secure
+ *  write path as approvals: device fence + server-verified PIN + wf_audit. lines:
+ *  [{inventory_item_id, description, qty}]. Returns { ok, po_id, reference }. */
+export async function managerRaisePO(opsLocationId, pin, { supplierId = null, supplierName = null, lines = [] } = {}) {
+  if (!supabase || !opsLocationId) return { ok: false, error: 'offline' };
+  const { data, error } = await supabase.functions.invoke('manager-approve', {
+    body: { action: 'po.raise', ops_location_id: opsLocationId, pin: String(pin || ''), supplier_id: supplierId, supplier_name: supplierName, lines },
+  });
+  if (error) return { ok: false, error: error.message };
+  return data;
+}
