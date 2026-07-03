@@ -90,6 +90,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.725', date: '1 Jul 2026', label: 'Catering — allergy filter added (was missing)',
+    changes: [
+      'The catering ordering site now has the same “Allergies” filter as online ordering: customers pick allergens to avoid and items containing them are hidden. Each item card also shows a ⚠ allergen tag.',
+      'Only appears when your catering menu items carry allergen tags.',
+    ],
+  },
+  {
     version: '5.5.724', date: '1 Jul 2026', label: 'Manager app — Raise PO from your phone (per supplier)',
     changes: [
       'The Kitchen tab’s below-par list now has a “Raise PO” button per supplier: quantities pre-filled from the par gap (adjust or drop lines), enter your manager PIN, send.',

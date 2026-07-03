@@ -38,6 +38,8 @@ export default function CateringSurface({ location }) {
   const [cart, setCart] = useState([]);
   const [openItem, setOpenItem] = useState(null);
   const [showCart, setShowCart] = useState(false);
+  const [activeAllergens, setActiveAllergens] = useState([]);   // customer-picked allergens to hide
+  const [showAllergyPicker, setShowAllergyPicker] = useState(false);
   const [fulfilment, setFulfilment] = useState(null);   // 'collection' | 'delivery'
   const [eventDate, setEventDate] = useState('');
   const [eventTime, setEventTime] = useState('');
@@ -102,7 +104,18 @@ export default function CateringSurface({ location }) {
 
   const subtotal = useMemo(() => cart.reduce((s, l) => s + (l.price + (l.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0)) * (l.qty || 1), 0), [cart]);
 
-  const itemsForCat = (catId) => items.filter((i) => (i.cat === catId || (Array.isArray(i.cats) && i.cats.includes(catId))) && !i.parent_id);
+  // Allergen vocabulary across the catering menu (for the filter chips).
+  const knownAllergens = useMemo(() => {
+    const set = new Set();
+    (items || []).forEach((i) => (i.allergens || []).forEach((a) => a && set.add(a)));
+    return [...set].sort();
+  }, [items]);
+
+  // Hide items containing any picked allergen (mirrors online/kiosk). Applied everywhere itemsForCat
+  // is used — the sticky category nav + the section render — so a fully-filtered category disappears.
+  const itemsForCat = (catId) => items.filter((i) =>
+    (i.cat === catId || (Array.isArray(i.cats) && i.cats.includes(catId))) && !i.parent_id &&
+    !(activeAllergens.length && (i.allergens || []).some((a) => activeAllergens.includes(a))));
   const limitFor = (id) => (cfg?.item_limits || {})[id] || {};
   const is86 = (id) => eightySix.includes(id) || limitFor(id).max === 0;   // max 0 = operator-hidden (86)
   const addToCart = (item, mods, qty, notes = '') => {
@@ -236,6 +249,25 @@ export default function CateringSurface({ location }) {
           {atCapacity && nextDate && <button onClick={() => setEventDate(nextDate)} style={{ ...pill, marginTop: 8, fontSize: 12.5, borderColor: theme.brand, color: theme.brand }}>Next available: {new Date(nextDate + 'T00:00:00').toLocaleDateString('en-GB')} — use this date</button>}
         </div>
 
+        {/* Allergy filter — only when the menu carries allergen tags */}
+        {knownAllergens.length > 0 && (
+          <div style={{ marginBottom: 16 }}>
+            <button onClick={() => setShowAllergyPicker(true)}
+              style={{ ...pill, display: 'inline-flex', alignItems: 'center', gap: 8,
+                background: activeAllergens.length ? '#fef2f2' : '#fff',
+                color: activeAllergens.length ? '#dc2626' : '#0f172a',
+                borderColor: activeAllergens.length ? '#fca5a5' : '#cbd5e1' }}>
+              <span aria-hidden>⚠</span>
+              {activeAllergens.length ? `${activeAllergens.length} allergy filter${activeAllergens.length === 1 ? '' : 's'}` : 'Allergies'}
+            </button>
+            {activeAllergens.length > 0 && (
+              <div style={{ marginTop: 8, fontSize: 12.5, color: '#b45309', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 10, padding: '8px 12px', lineHeight: 1.5 }}>
+                Showing items free from <b>{activeAllergens.join(', ')}</b>. Items containing those are hidden — always confirm with us for a severe allergy.
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Menu */}
         {cats.length === 0 && <div style={{ color: '#64748b' }}>No catering menu items yet.</div>}
         {cats.map((cat) => {
@@ -259,6 +291,11 @@ export default function CateringSurface({ location }) {
                       <div style={{ padding: 14 }}>
                         <div style={{ fontWeight: 700 }}>{item.menu_name || item.name}</div>
                         {item.description && <div style={{ fontSize: 12.5, color: '#64748b', marginTop: 3 }}>{item.description}</div>}
+                        {(item.allergens || []).length > 0 && (
+                          <div title={`Contains: ${item.allergens.join(', ')}`} style={{ marginTop: 6, fontSize: 11, fontWeight: 700, color: '#b45309' }}>
+                            ⚠ {item.allergens.length === 1 ? item.allergens[0] : `${item.allergens.length} allergens`}
+                          </div>
+                        )}
                         <div style={{ marginTop: 8, fontWeight: 800, color: theme.brand }}>{sold ? 'Sold out' : money(Number(item.pricing?.base ?? item.price ?? 0), cur)}{!sold && limText && <span style={{ fontSize: 11.5, fontWeight: 600, color: '#94a3b8', marginLeft: 8 }}>{limText}</span>}</div>
                       </div>
                     </button>
@@ -292,6 +329,43 @@ export default function CateringSurface({ location }) {
           onUpdateQty={(uid, q) => setCart((c) => c.map((l) => (l.uid === uid ? { ...l, qty: Math.max(1, q) } : l)))}
           onCheckout={goCheckout} />
       )}
+      {showAllergyPicker && (
+        <AllergyPicker theme={theme} all={knownAllergens} active={activeAllergens}
+          onClose={() => setShowAllergyPicker(false)}
+          onSave={(next) => { setActiveAllergens(next); setShowAllergyPicker(false); }} />
+      )}
+    </div>
+  );
+}
+
+// Compact allergen picker — hide items containing any picked allergen. Mirrors the online/kiosk flow.
+function AllergyPicker({ theme, all, active, onClose, onSave }) {
+  const [sel, setSel] = useState(active || []);
+  const toggle = (a) => setSel((s) => (s.includes(a) ? s.filter((x) => x !== a) : [...s, a]));
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.45)', zIndex: 50, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', width: 'min(560px,100%)', borderRadius: '18px 18px 0 0', padding: 20, maxHeight: '80vh', overflowY: 'auto' }}>
+        <div style={{ fontFamily: DISPLAY_FONT, fontWeight: 700, fontSize: 20 }}>Allergies</div>
+        <div style={{ fontSize: 13, color: '#64748b', marginTop: 6, lineHeight: 1.5 }}>
+          We’ll hide items containing anything you pick. <b>Always confirm with us</b> for a severe allergy — cross-contamination is possible.
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 16 }}>
+          {all.length === 0 && <div style={{ fontSize: 13, color: '#94a3b8' }}>No allergen tags on this menu yet.</div>}
+          {all.map((a) => {
+            const on = sel.includes(a);
+            return (
+              <button key={a} onClick={() => toggle(a)} style={{ padding: '9px 14px', borderRadius: 99, cursor: 'pointer', fontSize: 13.5, fontWeight: 700, fontFamily: 'inherit', textTransform: 'capitalize',
+                background: on ? '#fef2f2' : '#fff', color: on ? '#dc2626' : '#334155', border: `1.5px solid ${on ? '#fca5a5' : '#e2e8f0'}` }}>
+                {on ? '✓ ' : ''}{a}
+              </button>
+            );
+          })}
+        </div>
+        <div style={{ display: 'flex', gap: 10, marginTop: 20 }}>
+          {sel.length > 0 && <button onClick={() => setSel([])} style={{ ...pill, flex: 1 }}>Clear</button>}
+          <button onClick={() => onSave(sel)} style={{ ...btnPrimary(theme), flex: 2 }}>{sel.length ? `Hide ${sel.length} allergen${sel.length === 1 ? '' : 's'}` : 'Done'}</button>
+        </div>
+      </div>
     </div>
   );
 }
