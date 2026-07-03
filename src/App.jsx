@@ -90,6 +90,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.726', date: '1 Jul 2026', label: 'Raise PO — hardening (tenant fence + protect item costs)',
+    changes: [
+      'Manager-raised POs are now checked so their supplier + items definitely belong to your venue (defence in depth on the secure write path).',
+      'Receiving a PO with no price yet no longer wipes an item’s cost to £0 — the stock comes in and the cost is kept until the real price arrives on the invoice. This protects your COGS/margin figures.',
+    ],
+  },
+  {
     version: '5.5.725', date: '1 Jul 2026', label: 'Catering — allergy filter added (was missing)',
     changes: [
       'The catering ordering site now has the same “Allergies” filter as online ordering: customers pick allergens to avoid and items containing them are hidden. Each item card also shows a ⚠ allergen tag.',

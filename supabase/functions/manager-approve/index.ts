@@ -133,6 +133,21 @@ Deno.serve(async (req) => {
         .filter((l: any) => l && (l.inventory_item_id || l.description) && Number(l.qty) > 0)
         .slice(0, 200);
       if (!lines.length) return json({ error: 'no lines to order' }, 400);
+
+      // TENANT FENCE: the service-role client bypasses RLS, and the FKs to suppliers/inventory_items
+      // are NOT location-composite — so we MUST verify every referenced row belongs to THIS location
+      // before inserting, else a manager at venue A could write a PO against venue B's supplier/items.
+      if (supplierId) {
+        const { data: sup } = await sb.from('suppliers').select('id').eq('id', supplierId).eq('location_id', loc).maybeSingle();
+        if (!sup) return json({ error: 'supplier not found for this location' }, 400);
+      }
+      const itemIds = [...new Set(lines.map((l: any) => l.inventory_item_id).filter(Boolean))] as string[];
+      if (itemIds.length) {
+        const { data: owned } = await sb.from('inventory_items').select('id').eq('location_id', loc).in('id', itemIds);
+        const ownedSet = new Set((owned ?? []).map((r: any) => r.id));
+        if (itemIds.some((id) => !ownedSet.has(id))) return json({ error: 'one or more items are not from this location' }, 400);
+      }
+
       const reference = 'MGR-' + Date.now().toString(36).toUpperCase();
       const { data: po, error: poErr } = await sb.from('purchase_orders').insert({
         location_id: loc, supplier_id: supplierId, reference, status: 'SENT',
@@ -141,14 +156,15 @@ Deno.serve(async (req) => {
         notes: `Raised from the Manager app by ${op.name || 'manager'}`,
         subtotal: 0, tax: 0,
       }).select().single();
-      if (poErr) return json({ error: poErr.message }, 400);
+      // Generic error (don't echo the DB message — a verbatim FK error is a cross-tenant existence oracle).
+      if (poErr || !po) { console.error('[po.raise] po insert', poErr?.message); return json({ error: 'could not raise the order' }, 400); }
       const lrows = lines.map((l: any, i: number) => ({
         location_id: loc, po_id: po.id, inventory_item_id: l.inventory_item_id || null,
         description: l.description || null, qty_packs: Number(l.qty) || 0, pack_qty: 1, inner_qty: 1,
         inner_unit: 'each', unit_price: 0, qty_received: 0, sort_order: i,
       }));
       const { error: lErr } = await sb.from('po_lines').insert(lrows);
-      if (lErr) { await sb.from('purchase_orders').delete().eq('id', po.id); return json({ error: lErr.message }, 400); }
+      if (lErr) { await sb.from('purchase_orders').delete().eq('id', po.id); console.error('[po.raise] lines insert', lErr.message); return json({ error: 'could not raise the order' }, 400); }
       // wf_audit.org_id is NOT NULL — resolve it from the operator's staff row (fallback: locations).
       let orgId = (op as any).org_id || null;
       if (!orgId) { const { data: locRow } = await sb.from('locations').select('org_id').eq('id', loc).maybeSingle(); orgId = locRow?.org_id || null; }

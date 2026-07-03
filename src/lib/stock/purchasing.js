@@ -48,11 +48,19 @@ async function itemMap(locationId, ids) {
  */
 async function applyReceipt(locationId, item, itemId, recvBase, unitCostPerBase, sourceType, sourceId, idemKey) {
   if (!(recvBase > 0)) return;
+  // v5.5.726: a ZERO/missing unit cost must NOT re-cost the item. A manager-raised PO (or any
+  // un-priced line) has no price until the invoice — zeroing current_cost corrupts COGS
+  // (LAST_COST → 0) or dilutes the moving average toward 0. Value the movement at the item's KNOWN
+  // current cost so stock valuation stays sensible, move the stock in, but leave current_cost alone;
+  // the invoice / receiving price fills the real cost later.
+  const priced = unitCostPerBase > 0;
+  const movementCost = priced ? unitCostPerBase : (Number(item.currentCost) || 0);
   const res = await postStockMovement({
-    inventoryItemId: itemId, qtyBase: recvBase, unitCost: unitCostPerBase, movementType: 'PURCHASE_RECEIPT',
+    inventoryItemId: itemId, qtyBase: recvBase, unitCost: movementCost, movementType: 'PURCHASE_RECEIPT',
     sourceType, sourceId, idempotencyKey: idemKey,
   }, locationId);
   if (res?.data?.duplicate) return; // already received — don't re-cost
+  if (!priced) { item.onHand += recvBase; return; }   // stock in, cost untouched
   const newAvg = item.costMethod === 'LAST_COST'
     ? unitCostPerBase
     : movingAverageCost({ onHandQty: item.onHand, currentAvg: item.currentCost, receivedQty: recvBase, receivedUnitCost: unitCostPerBase });
