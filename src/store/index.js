@@ -226,6 +226,19 @@ export const useStore = create((set, get) => ({
   login:  s => set({ staff:s }),
   logout: () => set({ staff:null, activeTableId:null, orderType:'dine-in', customer:null }),
 
+  // v5.5.731: per-device auto sign-out policy (deviceConfig.signout). trigger 'pay' = a check was
+  // cashed off; 'send' = an order went to the kitchen. Short delay so the confirmation shows first.
+  // The idle-timeout trigger lives in the <AutoSignout> component (needs DOM activity listeners).
+  maybeAutoSignout: (trigger) => {
+    const { deviceConfig, staff } = get();
+    const so = deviceConfig?.signout;
+    if (!staff || !so) return;
+    if ((trigger === 'pay' && so.onPay) || (trigger === 'send' && so.onSend)) {
+      const who = staff.name?.split(' ')[0] || '';
+      setTimeout(() => { if (get().staff) { get().logout(); get().showToast?.(`Signed out ${who}`.trim(), 'info'); } }, 1400);
+    }
+  },
+
   // ── Navigation ────────────────────────────
   surface: (() => {
     // Apply defaultSurface from device config on startup
@@ -1736,6 +1749,7 @@ export const useStore = create((set, get) => ({
       }));
       newTickets.forEach(t => insertKDSTicket(t));
       get().showToast('Sent to kitchen','success');
+      get().maybeAutoSignout('send');   // v5.5.731 per-device sign-out-on-send
     } else {
       const order = get().walkInOrder;
       if (!order?.items?.length) return;
@@ -4035,6 +4049,7 @@ export const useStore = create((set, get) => ({
         force: true,
       });
     }
+    get().maybeAutoSignout('pay');   // v5.5.731 per-device sign-out-on-payment
     return record;
   },
 
@@ -4191,6 +4206,7 @@ export const useStore = create((set, get) => ({
     if (paymentInfo.promoRedemption) get().redeemPromoCode?.(paymentInfo.promoRedemption, record, customer);
     // v5.5.163: Challenge 21 — alcohol counter + prompt
     get().triggerChallenge21Check?.(record);
+    get().maybeAutoSignout('pay');   // v5.5.731 per-device sign-out-on-payment (walk-in path)
     return record;
   },
 

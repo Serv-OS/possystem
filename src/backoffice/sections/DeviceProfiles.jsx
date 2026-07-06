@@ -109,6 +109,10 @@ export default function DeviceProfiles() {
         serviceCharge: p.service_charge || null,
         isMaster: p.is_master || false,
         trainingMode: p.training_mode === true,   // v5.5.645: per-device training
+        // v5.5.731: auto sign-out policy
+        signoutIdleSeconds: p.signout_idle_seconds || 0,
+        signoutOnPay: p.signout_on_pay === true,
+        signoutOnSend: p.signout_on_send === true,
 
         // v5.5.60 MPOS-only fields
         runnerMode: p.runner_mode === true,
@@ -141,6 +145,10 @@ export default function DeviceProfiles() {
     service_charge: p.serviceCharge || null,
     is_master: p.isMaster || false,
     training_mode: p.trainingMode === true,   // v5.5.645: per-device training
+    // v5.5.731: auto sign-out policy
+    signout_idle_seconds: Number(p.signoutIdleSeconds) || 0,
+    signout_on_pay: p.signoutOnPay === true,
+    signout_on_send: p.signoutOnSend === true,
 
     // v5.5.60 MPOS-only fields
     runner_mode: p.runnerMode === true,
@@ -364,6 +372,7 @@ function ProfileEditor({ profile, onSave, onDelete, onClose }) {
     autoPrintReceiptOnClose:true, orderNotifications:true,
     runnerMode:false, paymentMode:'tap_to_pay', assignedReaderId:null, customerDisplayMode:'auto',
     trainingMode:false,
+    signoutIdleSeconds:0, signoutOnPay:false, signoutOnSend:false,
   });
 
   const upd = (key, val) => setForm(f => ({ ...f, [key]: val }));
@@ -586,6 +595,34 @@ function ProfileEditor({ profile, onSave, onDelete, onClose }) {
             }}>
               <div style={{ width:18, height:18, borderRadius:'50%', background:'#fff', position:'absolute', top:3, left: form.autoPrintReceiptOnClose !== false ? 22 : 3, transition:'left .2s', boxShadow:'0 1px 3px rgba(0,0,0,.3)' }}/>
             </button>
+          </div>
+
+          {/* v5.5.731: Sign-out behaviour — how a logged-in staff member is signed out on this device.
+              Manual (tap another card / user-icon logout) always works; these are the automatic triggers. */}
+          <div style={{ marginBottom:18, padding:'14px', background:'var(--bg3)', borderRadius:10, border:'1px solid var(--bdr)' }}>
+            <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)', marginBottom:2 }}>Sign-out behaviour</div>
+            <div style={{ fontSize:11, color:'var(--t3)', marginBottom:12 }}>How the signed-in staff member is signed out. Tapping another card or the logout icon always works — these add automatic sign-out.</div>
+
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
+              <div style={{ fontSize:12.5, fontWeight:600, color:'var(--t1)' }}>After inactivity</div>
+              <select value={form.signoutIdleSeconds || 0} onChange={e => upd('signoutIdleSeconds', Number(e.target.value))}
+                style={{ background:'var(--bg4)', border:'1.5px solid var(--bdr2)', borderRadius:8, padding:'6px 10px', color:'var(--t1)', fontSize:12.5, fontFamily:'inherit', cursor:'pointer' }}>
+                {[[0,'Off'],[15,'15 seconds'],[30,'30 seconds'],[45,'45 seconds'],[60,'1 minute'],[90,'1½ minutes'],[120,'2 minutes'],[180,'3 minutes'],[300,'5 minutes']].map(([v,l]) => <option key={v} value={v}>{l}</option>)}
+              </select>
+            </div>
+
+            {[['signoutOnPay','After taking payment','Sign out once a payment / check is cashed off'],
+              ['signoutOnSend','After sending an order','Sign out once an order is sent to the kitchen']].map(([key,label,desc]) => (
+              <div key={key} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginTop:10 }}>
+                <div>
+                  <div style={{ fontSize:12.5, fontWeight:600, color:'var(--t1)' }}>{label}</div>
+                  <div style={{ fontSize:11, color:'var(--t3)', marginTop:1 }}>{desc}</div>
+                </div>
+                <button onClick={() => upd(key, !form[key])} style={{ width:44, height:24, borderRadius:12, border:'none', cursor:'pointer', background: form[key] ? 'var(--grn)' : 'var(--bg4)', transition:'all .2s', flexShrink:0, position:'relative' }}>
+                  <div style={{ width:18, height:18, borderRadius:'50%', background:'#fff', position:'absolute', top:3, left: form[key] ? 22 : 3, transition:'left .2s', boxShadow:'0 1px 3px rgba(0,0,0,.3)' }}/>
+                </button>
+              </div>
+            ))}
           </div>
 
           {/* Order notifications toggle */}

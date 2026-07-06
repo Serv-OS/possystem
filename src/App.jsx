@@ -94,6 +94,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.731', date: '6 Jul 2026', label: 'Auto sign-out — a shared till can now sign the operator out on its own',
+    changes: [
+      'New “Sign-out behaviour” setting per device (Back Office → Device profiles). Choose any mix of: after a set idle time (15-second steps, from 15s up to 5 min), after taking payment, and/or after sending an order to the kitchen.',
+      'Idle sign-out: any tap, key or scroll resets the timer, so a till only signs out when it’s genuinely been left. Set to “Off” to keep the current behaviour (stay signed in).',
+      'Pay / send sign-out: after the on-screen confirmation shows, the till signs the operator out and is ready for the next person to tap their card — ideal for a busy shared counter.',
+      'Manual sign-out (tap another person’s card, or the user-icon → log out) works exactly as before; these new options are additions, not replacements.',
+    ],
+  },
+  {
     version: '5.5.730', date: '2 Jul 2026', label: 'Back Office — staff now correctly show as “Card” with the card assigned',
     changes: [
       'Fixed the Staff screen always showing “PIN” with no card even when a card was saved. A background column this venue doesn’t have was making the staff list fall back to a version that left off the card + method. The card and “Card” method now display correctly (your saved data was always fine — the POS already worked).',
@@ -8420,6 +8429,9 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
                 orderNotifications: dbProfile.order_notifications !== false,
                 menuId: dbProfile.menu_id || null,
                 trainingMode: dbProfile.training_mode === true,   // v5.5.645: per-device training
+                signoutIdleSeconds: dbProfile.signout_idle_seconds || 0,   // v5.5.731 auto sign-out
+                signoutOnPay: dbProfile.signout_on_pay === true,
+                signoutOnSend: dbProfile.signout_on_send === true,
               };
             }
           } catch {}
@@ -8445,6 +8457,12 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
               orderNotifications: !profile || profile.orderNotifications !== false,
               menuId: profile?.menuId || null,
               trainingMode: profile?.trainingMode === true,   // v5.5.645: per-device training
+              // v5.5.731: auto sign-out policy — how this device signs the operator out
+              signout: {
+                idleSeconds: Number(profile?.signoutIdleSeconds) || 0,
+                onPay: profile?.signoutOnPay === true,
+                onSend: profile?.signoutOnSend === true,
+              },
             };
             localStorage.setItem('rpos-device-config', JSON.stringify(config));
             useStore.getState().setDeviceConfig(config);
@@ -8635,6 +8653,7 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
       )}
       
       <CardUserSwitch />
+      <AutoSignout />
       <ShiftBar version={VERSION} onWhatsNew={()=>setShowWhatsNew(true)} theme={theme} onToggleTheme={()=>setTheme(theme==='dark'?'light':'dark')} syncPulse={syncPulse}/>
       <ConfigSyncBanner />
       <TrainingModeBanner />
@@ -8700,6 +8719,31 @@ function CardUserSwitch() {
     showToast?.(`Switched to ${r.staff.name}`);
   };
   useCardScan(onCard, !!staff);
+  return null;
+}
+
+// Idle auto sign-out (per device profile). After N seconds with no activity the operator is signed
+// out so a shared till doesn't sit open on one person. Any tap / key / scroll resets the timer. The
+// pay/send sign-out triggers live in the store (maybeAutoSignout); this handles the idle one.
+function AutoSignout() {
+  const staff = useStore(s => s.staff);
+  const idleSeconds = useStore(s => s.deviceConfig?.signout?.idleSeconds || 0);
+  const logout = useStore(s => s.logout);
+  const showToast = useStore(s => s.showToast);
+  useEffect(() => {
+    if (!staff || !idleSeconds || idleSeconds < 5) return undefined;
+    let timer = null;
+    const reset = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (useStore.getState().staff) { logout(); showToast?.('Signed out — inactive', 'info'); }
+      }, idleSeconds * 1000);
+    };
+    const evs = ['pointerdown', 'keydown', 'wheel', 'touchstart'];
+    evs.forEach(e => window.addEventListener(e, reset, { passive: true }));
+    reset();   // arm on sign-in
+    return () => { if (timer) clearTimeout(timer); evs.forEach(e => window.removeEventListener(e, reset)); };
+  }, [staff, idleSeconds, logout, showToast]);
   return null;
 }
 
