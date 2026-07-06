@@ -239,6 +239,14 @@ export const useStore = create((set, get) => ({
     }
   },
 
+  // v5.5.731: a re-entrant guard that stops the idle auto-sign-out from firing mid-transaction.
+  // Any open payment surface (CheckoutModal, CardTerminal collect) holds this while mounted, so a
+  // customer taking >15s to tap the reader — which is NOT POS DOM activity — can never sign the
+  // operator out and orphan the charge. The idle timer re-arms instead of logging out while held.
+  _signoutBlock: 0,
+  blockSignout: () => set(s => ({ _signoutBlock: (s._signoutBlock || 0) + 1 })),
+  unblockSignout: () => set(s => ({ _signoutBlock: Math.max(0, (s._signoutBlock || 0) - 1) })),
+
   // ── Navigation ────────────────────────────
   surface: (() => {
     // Apply defaultSurface from device config on startup

@@ -3,6 +3,7 @@ import { getActiveLocationSync, ensureAuthToken } from '../lib/supabase';
 import { resolvePlatformLocationId, getAssignedNetworkReader } from '../lib/networkReader';
 import { money, stripeCurrency } from '../lib/currency';
 import { isTrainingMode } from '../lib/trainingMode';
+import { useStore } from '../store';
 
 // ─── v5.5.324: Bar-tab card pre-authorisation ──────────────────────────────
 // Places a manual-capture HOLD on the customer's card via the Stripe Terminal
@@ -29,6 +30,15 @@ export default function TabPreAuthTerminal({ amountMinor, guestName, onAuthorize
   const readerIdRef = useRef(null);
   const platformLocRef = useRef(null);
   const startedRef = useRef(false);
+
+  // v5.5.731: hold the auto-sign-out guard while a card hold is being taken on the reader — the
+  // customer tapping their card is not POS activity, so an idle timeout must not sign the operator
+  // out and abandon the pre-auth mid-flow.
+  useEffect(() => {
+    const { blockSignout, unblockSignout } = useStore.getState();
+    blockSignout?.();
+    return () => unblockSignout?.();
+  }, []);
 
   const pounds = (m) => `${money(((m || 0) / 100))}`;
 

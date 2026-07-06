@@ -1128,6 +1128,13 @@ function LoyaltyRewardsEntry({ customer, loyaltyData, items = [], total, onAppli
 export default function CheckoutModal({ items, subtotal, service, deliveryFee = 0, total, orderType, covers, tableId, tabName, customer, onClose, onComplete }) {
   const compact = useCompact();
   const { taxRates, deviceConfig, myDrawer, pendingLoyaltyReward, setPendingLoyaltyReward } = useStore();
+  // v5.5.731: while checkout is open, hold the auto-sign-out guard so an idle timeout can't sign the
+  // operator out mid-transaction (e.g. customer taking >15s to tap the reader = no POS activity).
+  useEffect(() => {
+    const { blockSignout, unblockSignout } = useStore.getState();
+    blockSignout?.();
+    return () => unblockSignout?.();
+  }, []);
   // v4.6.50: resolve the drawer bound to this POS terminal. If the POS has
   // no drawer configured at all, cash payments shouldn't be offered —
   // nowhere to put the cash. Drawer status (open/idle) is not gated here.

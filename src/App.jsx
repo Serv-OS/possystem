@@ -94,6 +94,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.732', date: '6 Jul 2026', label: 'Auto sign-out never interrupts a payment',
+    changes: [
+      'Safety guard for the new idle sign-out: while a payment is being taken (checkout open, or a card / bar-tab hold on the reader) the idle timer will not sign the operator out — even a customer taking a while to tap their card. It waits until the payment is finished, so a transaction can never be abandoned or a charge left orphaned.',
+    ],
+  },
+  {
     version: '5.5.731', date: '6 Jul 2026', label: 'Auto sign-out — a shared till can now sign the operator out on its own',
     changes: [
       'New “Sign-out behaviour” setting per device (Back Office → Device profiles). Choose any mix of: after a set idle time (15-second steps, from 15s up to 5 min), after taking payment, and/or after sending an order to the kitchen.',
@@ -8733,16 +8739,20 @@ function AutoSignout() {
   useEffect(() => {
     if (!staff || !idleSeconds || idleSeconds < 5) return undefined;
     let timer = null;
-    const reset = () => {
+    const arm = () => {
       if (timer) clearTimeout(timer);
-      timer = setTimeout(() => {
-        if (useStore.getState().staff) { logout(); showToast?.('Signed out — inactive', 'info'); }
-      }, idleSeconds * 1000);
+      timer = setTimeout(fire, idleSeconds * 1000);
+    };
+    const fire = () => {
+      // Never sign out mid-transaction — an open payment surface holds _signoutBlock. Re-arm and
+      // re-check next tick so a genuinely-idle till still logs out once the payment finishes.
+      if (useStore.getState()._signoutBlock > 0) { arm(); return; }
+      if (useStore.getState().staff) { logout(); showToast?.('Signed out — inactive', 'info'); }
     };
     const evs = ['pointerdown', 'keydown', 'wheel', 'touchstart'];
-    evs.forEach(e => window.addEventListener(e, reset, { passive: true }));
-    reset();   // arm on sign-in
-    return () => { if (timer) clearTimeout(timer); evs.forEach(e => window.removeEventListener(e, reset)); };
+    evs.forEach(e => window.addEventListener(e, arm, { passive: true }));
+    arm();   // arm on sign-in
+    return () => { if (timer) clearTimeout(timer); evs.forEach(e => window.removeEventListener(e, arm)); };
   }, [staff, idleSeconds, logout, showToast]);
   return null;
 }
