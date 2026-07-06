@@ -6,6 +6,7 @@ import { biometricCaps, biometricIdentify } from '../lib/biometric';
 import { nfcAvailable } from '../lib/nfc';
 import { useCardScan } from '../lib/useCardScan';
 import { logSignIn } from '../lib/signInAudit';
+import { loadStaffRoster } from '../lib/staffRoster';
 import { resolveSignIn, canOverride } from '../lib/staffAuth';
 
 const KEYS = ['1','2','3','4','5','6','7','8','9','','0','⌫'];
@@ -60,9 +61,14 @@ export default function PINScreen() {
   const fail = (msg) => { setShake(true); setErrorMsg(msg); setPin(''); setTimeout(() => setShake(false), 600); };
 
   // ─── Card sign-in (native tap OR USB keyboard-wedge reader → match → sign in). Paused while the
-  //     override modal is open (it owns its own card entry). ──
-  useCardScan((cardId) => {
-    const r = resolveSignIn(loadedStaff, { cardId });
+  //     override modal is open (it owns its own card entry). A miss re-fetches the roster once and
+  //     retries, so a card enrolled in Back Office moments ago works without reloading the till. ──
+  useCardScan(async (cardId) => {
+    let r = resolveSignIn(loadedStaff, { cardId });
+    if (!r.ok) {
+      const fresh = await loadStaffRoster().catch(() => []);
+      if (fresh.length) { setLoadedStaff(fresh); useStore.setState({ staffMembers: fresh }); r = resolveSignIn(fresh, { cardId }); }
+    }
     if (r.ok) doLogin(r.staff, 'card'); else fail('Card not recognised — try again');
   }, !!loadedStaff && !showOverride);
 

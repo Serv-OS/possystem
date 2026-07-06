@@ -18,6 +18,7 @@ import { useStore } from './store';
 import { useCardScan } from './lib/useCardScan';
 import { resolveSignIn } from './lib/staffAuth';
 import { logSignIn } from './lib/signInAudit';
+import { loadStaffRoster } from './lib/staffRoster';
 import PINScreen from './surfaces/PINScreen';
 import POSSurface from './surfaces/POSSurface';
 import BarSurface from './surfaces/BarSurface';
@@ -92,6 +93,13 @@ import { ServOSIcon } from './components/ServOSBrand';
 import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
+  {
+    version: '5.5.729', date: '2 Jul 2026', label: 'Card switch fix — a second staff card now switches to the right person',
+    changes: [
+      'Fixed the card swap only ever recognising one person: while a till stayed logged in it was checking an old copy of the staff list, so a card enrolled afterwards wasn’t found. It now checks the live staff list (and re-checks instantly if a card was just set up), so each card signs in / switches to its own owner.',
+      'If a person still shows “PIN” in Back Office after setting them to Card, hard-refresh the Back Office tab — the setting is saved, the tab was just showing an old copy.',
+    ],
+  },
   {
     version: '5.5.728', date: '1 Jul 2026', label: 'Fast user-switch — tap your card to swap the logged-in staff instantly',
     changes: [
@@ -8657,21 +8665,35 @@ const NAV = [
 ];
 
 // Fast user-switch: while a staff member is signed in on the till, another can tap their card (native
-// NFC or USB reader) to swap the active operator instantly — no logout. Ignores unknown cards + the
-// current user's own card, and never eats typed input (the hook guards inputs). Renders nothing.
+// NFC or USB reader) to swap the active operator instantly — no logout. Matches against a FRESH staff
+// roster (the store's list goes stale — cards can be enrolled mid-shift while this till stays logged
+// in — which is why a second card used to "stick to one user"); a miss re-fetches once and retries so
+// a just-enrolled card works immediately. Ignores unknown cards + the current user's own card, and
+// never eats typed input (the hook guards inputs). Renders nothing.
 function CardUserSwitch() {
   const staff = useStore(s => s.staff);
-  const staffMembers = useStore(s => s.staffMembers);
   const login = useStore(s => s.login);
   const showToast = useStore(s => s.showToast);
-  useCardScan((cardId) => {
-    const r = resolveSignIn(staffMembers, { cardId });
-    if (!r.ok) return;                                              // unknown card while working → ignore quietly
+  const rosterRef = useRef([]);
+  useEffect(() => {   // warm the roster on mount (also kept current by the miss-retry below)
+    let alive = true;
+    loadStaffRoster().then(r => { if (alive && r.length) rosterRef.current = r; }).catch(() => {});
+    return () => { alive = false; };
+  }, []);
+  const onCard = async (cardId) => {
+    let r = resolveSignIn(rosterRef.current, { cardId });
+    if (!r.ok) {                                    // maybe a just-enrolled card → re-fetch once + retry
+      const fresh = await loadStaffRoster().catch(() => []);
+      if (fresh.length) rosterRef.current = fresh;
+      r = resolveSignIn(rosterRef.current, { cardId });
+    }
+    if (!r.ok) return;                              // genuinely unknown card → ignore quietly
     if (staff && String(r.staff.id) === String(staff.id)) return;   // already this operator
     login(r.staff);
     try { logSignIn(r.staff.id, 'card'); } catch { /* best-effort */ }
     showToast?.(`Switched to ${r.staff.name}`);
-  }, !!staff);
+  };
+  useCardScan(onCard, !!staff);
   return null;
 }
 
