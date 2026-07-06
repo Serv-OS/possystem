@@ -94,6 +94,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.730', date: '2 Jul 2026', label: 'Back Office — staff now correctly show as “Card” with the card assigned',
+    changes: [
+      'Fixed the Staff screen always showing “PIN” with no card even when a card was saved. A background column this venue doesn’t have was making the staff list fall back to a version that left off the card + method. The card and “Card” method now display correctly (your saved data was always fine — the POS already worked).',
+    ],
+  },
+  {
     version: '5.5.729', date: '2 Jul 2026', label: 'Card switch fix — a second staff card now switches to the right person',
     changes: [
       'Fixed the card swap only ever recognising one person: while a till stayed logged in it was checking an old copy of the staff list, so a card enrolled afterwards wasn’t found. It now checks the live staff list (and re-checks instantly if a card was just set up), so each card signs in / switches to its own owner.',

@@ -76,9 +76,11 @@ export default function StaffManager() {
         .eq('location_id', locationId).eq('active', true);
       if (error && /auth_user_id|column.*not.*exist|PGRST204/i.test(error.message || '')) {
         console.warn('[StaffManager] auth_user_id column missing — falling back. Run supabase/migrations/20260430_staff_auth_link.sql to enable BO access linking.');
+        // v5.5.730: keep nfc_card_id + auth_method in the fallback — dropping them made every staff
+        // show as PIN with no card in the BO (only auth_user_id is the actually-missing column).
         ({ data: rows } = await supabase
           .from('staff_members')
-          .select('id, name, role, pin, color, initials, permissions, active')
+          .select('id, name, role, pin, color, initials, permissions, active, nfc_card_id, auth_method')
           .eq('location_id', locationId).eq('active', true));
       }
       if (rows?.length) {
