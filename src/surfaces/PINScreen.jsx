@@ -3,7 +3,7 @@ import { useStore } from '../store';
 import { supabase, isMock } from '../lib/supabase';
 import { ServOSIcon, ServOSWordmark } from '../components/ServOSBrand';
 import { biometricCaps, biometricIdentify } from '../lib/biometric';
-import { nfcAvailable, onNfcTap } from '../lib/nfc';
+import { nfcAvailable, onNfcTap, normalizeCardId } from '../lib/nfc';
 import { resolveSignIn, canOverride } from '../lib/staffAuth';
 
 const KEYS = ['1','2','3','4','5','6','7','8','9','','0','⌫'];
@@ -67,6 +67,9 @@ export default function PINScreen() {
 
   const staff = loadedStaff ?? staffMembers ?? [];
   const nfcOn = nfcAvailable();
+  // A USB reader can't be detected (it's just a keyboard) — so show the card prompt whenever any staff
+  // are set up for cards, not only when a native NFC reader reports in.
+  const hasCards = staff.some(s => s.nfcCardId || s.authMethod === 'card');
 
   const doLogin = (member, method, approvedBy) => { logSignIn(member.id, method, approvedBy); login(member); };
   const fail = (msg) => { setShake(true); setErrorMsg(msg); setPin(''); setTimeout(() => setShake(false), 600); };
@@ -81,6 +84,32 @@ export default function PINScreen() {
     });
     return stop;
   }, [loadedStaff, nfcOn, showOverride]);
+
+  // ─── USB NFC reader (keyboard-wedge) sign-in. The Sunmi D3 Pro's on-glass NFC is SDK-gated payment
+  //     NFC our bridge can't read, so a plug-in USB reader is the reliable staff-card path — it "types"
+  //     the card UID as a fast keystroke burst ending in Enter. We buffer the burst (idle-flush too) and
+  //     match it like a tap. Works on ANY device with a USB reader; harmless where none is attached. ──
+  useEffect(() => {
+    if (!loadedStaff || showOverride) return undefined;
+    let buf = '', timer = null;
+    const flush = () => {
+      const raw = buf; buf = '';
+      if (timer) { clearTimeout(timer); timer = null; }
+      if (raw.length < 4) return;                       // ignore stray single keys
+      const r = resolveSignIn(loadedStaff, { cardId: normalizeCardId(raw) });
+      if (r.ok) doLogin(r.staff, 'card'); else fail('Card not recognised — try again');
+    };
+    const onKey = (e) => {
+      if (e.key === 'Enter') { if (buf.length >= 4) { e.preventDefault(); flush(); } else { buf = ''; } return; }
+      if (e.key && e.key.length === 1 && /[0-9A-Za-z:\-]/.test(e.key)) {
+        buf += e.key;
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(flush, 200);                  // ~end of the reader's keystroke burst
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => { window.removeEventListener('keydown', onKey); if (timer) clearTimeout(timer); };
+  }, [loadedStaff, showOverride]);
 
   // ─── PIN entry — enforces per-staff method (a card-staff's PIN is refused, unless overridden) ──
   const tapPin = (k) => {
@@ -128,7 +157,7 @@ export default function PINScreen() {
         <ServOSWordmark fontSize={24} />
         <div style={{ fontSize: 13, color: 'var(--t3)', marginTop: 6 }}>
           {loadedStaff === null ? 'Loading staff…'
-            : staff.length ? (nfcOn ? '💳 Tap your card, or enter your PIN' : 'Enter your PIN to sign in')
+            : staff.length ? ((nfcOn || hasCards) ? '💳 Tap your card, or enter your PIN' : 'Enter your PIN to sign in')
             : 'No staff configured — go to Back Office → Staff'}
         </div>
       </div>

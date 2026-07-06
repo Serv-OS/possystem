@@ -90,6 +90,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.727', date: '1 Jul 2026', label: 'Staff card login — now works with a plug-in USB NFC reader',
+    changes: [
+      'The POS login screen now accepts a USB NFC reader (plug it into the till’s USB port) — staff tap their card and sign straight in. The login prompt “💳 Tap your card” now shows whenever any staff are set up for cards.',
+      'Why: the Sunmi D3 Pro’s built-in NFC is a Tap-on-Glass PAYMENT reader (behind Sunmi’s own software), which the login can’t read — a small USB NFC reader is the reliable staff-card option, and works on any till.',
+    ],
+  },
+  {
     version: '5.5.726', date: '1 Jul 2026', label: 'Raise PO — hardening (tenant fence + protect item costs)',
     changes: [
       'Manager-raised POs are now checked so their supplier + items definitely belong to your venue (defence in depth on the secure write path).',
