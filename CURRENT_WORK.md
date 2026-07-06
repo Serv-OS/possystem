@@ -16,6 +16,15 @@ A SaaS restaurant/bar POS with many device "surfaces" off one codebase (URL `?mo
 
 ## Recent arc (this block of sessions)
 
+### Per-device auto sign-out policy (v5.5.731 + v5.5.732 guard) — SHIPPED
+Peter: "program user behavior … sit on a device profile level. How do users log out: Manually (scan another card / user-icon logout), Timed (15-second increments of no activity), or by cashing off / clicking send on an order." Manual card-swap already existed (`CardUserSwitch`). Added the other two triggers, configurable per device profile.
+- **Migration** `supabase/migrations/20260702_signout_policy.sql` (APPLIED): `device_profiles += signout_idle_seconds int / signout_on_pay bool / signout_on_send bool` (all default off → existing tills unchanged).
+- **BO** `DeviceProfiles.jsx`: DB↔profile map both ways + new-form defaults + a "Sign-out behaviour" editor (idle `<select>` Off…5min in 15s steps + on-pay / on-send toggles).
+- **Boot** `App.jsx` config builder threads `deviceConfig.signout = {idleSeconds,onPay,onSend}`.
+- **Idle trigger** = `<AutoSignout>` component in the POS staff shell (next to `<CardUserSwitch>`): pointerdown/keydown/wheel/touchstart re-arm the timer; on fire it `logout()` + toast. Guarded ≥5s.
+- **Pay/send trigger** = store `maybeAutoSignout('pay'|'send')` — 1.4s after the confirmation toast, re-checks `staff`, then `logout()`. Hooked after "Sent to kitchen" (send) + in `recordClosedCheck` and the walk-in pay path (pay).
+- **v5.5.732 payment-safety guard (important):** a re-entrant store counter `_signoutBlock` + `blockSignout()/unblockSignout()`. `CheckoutModal` and `TabPreAuthTerminal` hold it while mounted, so a customer taking >15s to tap the reader (NOT POS DOM activity) can't trip the idle timer, unmount checkout, and orphan a charge. While held, the idle timer **re-arms instead of logging out** → a genuinely-idle till still signs out once the payment finishes. `maybeAutoSignout` is intentionally NOT blocked (it fires only after the payment completes).
+
 ### ServOS Manager app — NEW surface `?mode=manager` (v5.5.694) — ALL 5 TABS LIVE (read); writes deferred
 The owner app + ops tablet merged into one **role-adaptive phone app** (Capacitor store build later; separate from the Sunmi POS APK). Build prompt: `ServOS Manager - Claude Code prompt.md`; design: `ServOS Manager - design spec.html` (reuse the existing `[data-skin=servos]` glass system — confirmed, no new CSS).
 
