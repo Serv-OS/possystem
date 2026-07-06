@@ -15,6 +15,9 @@ import { enforceTenantFence } from './lib/supabase';
 enforceTenantFence();
 
 import { useStore } from './store';
+import { useCardScan } from './lib/useCardScan';
+import { resolveSignIn } from './lib/staffAuth';
+import { logSignIn } from './lib/signInAudit';
 import PINScreen from './surfaces/PINScreen';
 import POSSurface from './surfaces/POSSurface';
 import BarSurface from './surfaces/BarSurface';
@@ -89,6 +92,13 @@ import { ServOSIcon } from './components/ServOSBrand';
 import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
+  {
+    version: '5.5.728', date: '1 Jul 2026', label: 'Fast user-switch — tap your card to swap the logged-in staff instantly',
+    changes: [
+      'While someone’s already signed in on the till, another staff member can just tap their card (USB reader or built-in NFC) and it switches straight to them — no need to log out first. A “Switched to …” toast confirms it.',
+      'It never disturbs what’s on screen (same table/order) and ignores unknown cards + typing in any box.',
+    ],
+  },
   {
     version: '5.5.727', date: '1 Jul 2026', label: 'Staff card login — now works with a plug-in USB NFC reader',
     changes: [
@@ -8610,6 +8620,7 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
         />
       )}
       
+      <CardUserSwitch />
       <ShiftBar version={VERSION} onWhatsNew={()=>setShowWhatsNew(true)} theme={theme} onToggleTheme={()=>setTheme(theme==='dark'?'light':'dark')} syncPulse={syncPulse}/>
       <ConfigSyncBanner />
       <TrainingModeBanner />
@@ -8644,6 +8655,25 @@ const NAV = [
   // icon = ServOS line-icon name (see components/ServOSIcons.jsx); was emoji.
   // KDS is NOT in the nav — KDS devices are separate terminals that boot straight to KDS surface
 ];
+
+// Fast user-switch: while a staff member is signed in on the till, another can tap their card (native
+// NFC or USB reader) to swap the active operator instantly — no logout. Ignores unknown cards + the
+// current user's own card, and never eats typed input (the hook guards inputs). Renders nothing.
+function CardUserSwitch() {
+  const staff = useStore(s => s.staff);
+  const staffMembers = useStore(s => s.staffMembers);
+  const login = useStore(s => s.login);
+  const showToast = useStore(s => s.showToast);
+  useCardScan((cardId) => {
+    const r = resolveSignIn(staffMembers, { cardId });
+    if (!r.ok) return;                                              // unknown card while working → ignore quietly
+    if (staff && String(r.staff.id) === String(staff.id)) return;   // already this operator
+    login(r.staff);
+    try { logSignIn(r.staff.id, 'card'); } catch { /* best-effort */ }
+    showToast?.(`Switched to ${r.staff.name}`);
+  }, !!staff);
+  return null;
+}
 
 function ShiftBar({ version, onWhatsNew, theme, onToggleTheme, syncPulse }) {
   const { deviceConfig, setSurface, orderQueue, tables, tabs, closedChecks, shift } = useStore();

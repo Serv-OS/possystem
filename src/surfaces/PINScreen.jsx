@@ -3,27 +3,12 @@ import { useStore } from '../store';
 import { supabase, isMock } from '../lib/supabase';
 import { ServOSIcon, ServOSWordmark } from '../components/ServOSBrand';
 import { biometricCaps, biometricIdentify } from '../lib/biometric';
-import { nfcAvailable, onNfcTap, normalizeCardId } from '../lib/nfc';
+import { nfcAvailable } from '../lib/nfc';
+import { useCardScan } from '../lib/useCardScan';
+import { logSignIn } from '../lib/signInAudit';
 import { resolveSignIn, canOverride } from '../lib/staffAuth';
 
 const KEYS = ['1','2','3','4','5','6','7','8','9','','0','⌫'];
-
-// Append-only sign-in audit (who signed in, how, approved by whom). Best-effort.
-function logSignIn(staffId, method, approvedBy) {
-  if (isMock || !supabase) return;
-  try {
-    const paired = JSON.parse(localStorage.getItem('rpos-device') || 'null');
-    const location_id = paired?.locationId;
-    if (!location_id) return;
-    supabase.from('staff_auth_events').insert({
-      location_id,
-      staff_id: staffId ? String(staffId) : null,
-      method,
-      device_id: paired?.deviceId || paired?.id || null,
-      approved_by: approvedBy ? String(approvedBy) : null,
-    }).then(() => {}, () => {});
-  } catch { /* best-effort */ }
-}
 
 export default function PINScreen() {
   const { login, staffMembers } = useStore();
@@ -74,42 +59,12 @@ export default function PINScreen() {
   const doLogin = (member, method, approvedBy) => { logSignIn(member.id, method, approvedBy); login(member); };
   const fail = (msg) => { setShake(true); setErrorMsg(msg); setPin(''); setTimeout(() => setShake(false), 600); };
 
-  // ─── NFC card sign-in (tap → match → sign in). Paused while the override modal is open. ──
-  useEffect(() => {
-    if (!loadedStaff || !nfcOn || showOverride) return;
-    const stop = onNfcTap((cardId) => {
-      const r = resolveSignIn(loadedStaff, { cardId });
-      if (r.ok) { doLogin(r.staff, 'card'); return; }
-      fail('Card not recognised — try again');
-    });
-    return stop;
-  }, [loadedStaff, nfcOn, showOverride]);
-
-  // ─── USB NFC reader (keyboard-wedge) sign-in. The Sunmi D3 Pro's on-glass NFC is SDK-gated payment
-  //     NFC our bridge can't read, so a plug-in USB reader is the reliable staff-card path — it "types"
-  //     the card UID as a fast keystroke burst ending in Enter. We buffer the burst (idle-flush too) and
-  //     match it like a tap. Works on ANY device with a USB reader; harmless where none is attached. ──
-  useEffect(() => {
-    if (!loadedStaff || showOverride) return undefined;
-    let buf = '', timer = null;
-    const flush = () => {
-      const raw = buf; buf = '';
-      if (timer) { clearTimeout(timer); timer = null; }
-      if (raw.length < 4) return;                       // ignore stray single keys
-      const r = resolveSignIn(loadedStaff, { cardId: normalizeCardId(raw) });
-      if (r.ok) doLogin(r.staff, 'card'); else fail('Card not recognised — try again');
-    };
-    const onKey = (e) => {
-      if (e.key === 'Enter') { if (buf.length >= 4) { e.preventDefault(); flush(); } else { buf = ''; } return; }
-      if (e.key && e.key.length === 1 && /[0-9A-Za-z:\-]/.test(e.key)) {
-        buf += e.key;
-        if (timer) clearTimeout(timer);
-        timer = setTimeout(flush, 200);                  // ~end of the reader's keystroke burst
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => { window.removeEventListener('keydown', onKey); if (timer) clearTimeout(timer); };
-  }, [loadedStaff, showOverride]);
+  // ─── Card sign-in (native tap OR USB keyboard-wedge reader → match → sign in). Paused while the
+  //     override modal is open (it owns its own card entry). ──
+  useCardScan((cardId) => {
+    const r = resolveSignIn(loadedStaff, { cardId });
+    if (r.ok) doLogin(r.staff, 'card'); else fail('Card not recognised — try again');
+  }, !!loadedStaff && !showOverride);
 
   // ─── PIN entry — enforces per-staff method (a card-staff's PIN is refused, unless overridden) ──
   const tapPin = (k) => {
@@ -212,7 +167,7 @@ export default function PINScreen() {
       )}
 
       {showOverride && (
-        <OverrideModal staff={staff} nfcOn={nfcOn}
+        <OverrideModal staff={staff}
           onClose={() => setShowOverride(false)}
           onArm={(mgr) => { setOverrideBy(mgr); setShowOverride(false); setErrorMsg(''); }} />
       )}
@@ -239,7 +194,7 @@ function Numpad({ onKey }) {
 
 // ─── Manager override — a manager authenticates (their own card or PIN) to arm a one-off PIN sign-in
 //     for a card-staff who's lost their card. Only managers (canOverride) can arm it. ─────────────
-function OverrideModal({ staff, nfcOn, onClose, onArm }) {
+function OverrideModal({ staff, onClose, onArm }) {
   const [pin, setPin] = useState('');
   const [err, setErr] = useState('');
 
@@ -250,12 +205,8 @@ function OverrideModal({ staff, nfcOn, onClose, onArm }) {
     onArm(r.staff);
   };
 
-  // Manager can tap their card to authorise (when a reader is present).
-  useEffect(() => {
-    if (!nfcOn) return;
-    const stop = onNfcTap((cardId) => tryAuth({ cardId }));
-    return stop;
-  }, [nfcOn]);
+  // Manager can tap their card (native OR USB reader) to authorise the override.
+  useCardScan((cardId) => tryAuth({ cardId }), true);
 
   const onKey = (k) => {
     if (k === '⌫') { setPin(p => p.slice(0, -1)); setErr(''); return; }
@@ -270,7 +221,7 @@ function OverrideModal({ staff, nfcOn, onClose, onArm }) {
       <div style={{ background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 16, padding: 24, width: '100%', maxWidth: 340, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14 }}>
         <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--t1)', textAlign: 'center' }}>Manager override</div>
         <div style={{ fontSize: 12, color: 'var(--t3)', textAlign: 'center', lineHeight: 1.5 }}>
-          {nfcOn ? 'Manager: tap your card or enter your PIN' : 'Manager: enter your PIN'} to allow a one-off sign-in.
+          Manager: tap your card or enter your PIN to allow a one-off sign-in.
         </div>
         <div style={{ display: 'flex', gap: 10 }}>
           {[0, 1, 2, 3].map(i => <div key={i} style={{ width: 14, height: 14, borderRadius: '50%', border: '2px solid var(--bdr3)', background: i < pin.length ? 'var(--acc)' : 'transparent' }} />)}
