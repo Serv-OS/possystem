@@ -94,6 +94,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.733', date: '6 Jul 2026', label: 'Activity feed only flags a price change when a price actually changed',
+    changes: [
+      'Pushing to POS no longer posts “Menu & prices updated” every time. The feed now compares what you pushed against the last push and posts a note ONLY when a price actually moved — e.g. “2 prices updated — Latte £3.20 → £3.50”. A plain re-push, or adding/removing/renaming an item with no price change, stays silent.',
+      'Catches every kind of price: the item price, per-order-type prices (dine-in / takeaway / collection / delivery), size/variant prices, per-menu or delivery-platform prices, and modifier add-on prices (e.g. “Extra cheese +£1.50 → +£2.00”).',
+    ],
+  },
+  {
     version: '5.5.732', date: '6 Jul 2026', label: 'Auto sign-out never interrupts a payment',
     changes: [
       'Safety guard for the new idle sign-out: while a payment is being taken (checkout open, or a card / bar-tab hold on the reader) the idle timer will not sign the operator out — even a customer taking a while to tap their card. It waits until the payment is finished, so a transaction can never be abandoned or a charge left orphaned.',

@@ -12,6 +12,8 @@ import { supabase, isMock, getLocationId, getActiveLocationSync } from './supaba
 import { logActivity } from './activity';
 import { getTodayStartFallback } from './locationTime';
 import { isTrainingMode } from './trainingMode';
+import { describeMenuChange } from './menuDiff';
+import { money } from './currency';
 
 // ── Order number generation (v5.5.8) ─────────────────────────────────────────
 // Replaces three pre-existing colliding ref generators (kiosk Date.now() % 1000,
@@ -585,9 +587,25 @@ export const insertConfigPush = async (push, locationId = null) => {
     console.error('[insertConfigPush] could not resolve locationId — push SKIPPED');
     return { data: null, error: new Error('No locationId') };
   }
+  // v5.5.733: read the previous snapshot BEFORE inserting the new one, so we can diff and only post
+  // an activity note when a price ACTUALLY changed — pushing to POS is not itself a price change.
+  let prevSnapshot = null;
+  try {
+    const { data: prevRow } = await supabase
+      .from('config_pushes').select('snapshot')
+      .eq('location_id', locationId)
+      .order('created_at', { ascending: false }).limit(1).maybeSingle();
+    prevSnapshot = prevRow?.snapshot || null;
+  } catch { /* no prior push / read blocked — treated as first push (silent) */ }
+
   const result = await supabase.from('config_pushes').insert({ ...push, location_id: locationId });
   if (result.error) console.error('[DB] config_pushes insert failed:', result.error.message);
-  else { try { logActivity(locationId, { kind: 'menu', severity: 'info', title: 'Menu & prices updated', body: 'Published to the tills' }); } catch { /* feed best-effort */ } }
+  else {
+    try {
+      const evt = describeMenuChange(prevSnapshot, push?.snapshot, money);
+      if (evt) logActivity(locationId, { kind: 'menu', severity: 'info', title: evt.title, body: evt.body });
+    } catch { /* feed best-effort */ }
+  }
   return result;
 };
 
