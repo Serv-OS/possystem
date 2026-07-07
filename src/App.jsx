@@ -94,6 +94,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.736', date: '7 Jul 2026', label: 'Loyalty portal — clearer message when a verification code can’t be sent',
+    changes: [
+      'When the loyalty portal can’t text a verification code, it now says WHY in plain English (e.g. an invalid number, or a network we can’t text) instead of a generic “Failed to send verification code”.',
+      'Behind the scenes the exact Twilio reason is now returned + logged, so a send failure can be diagnosed at a glance (was previously an opaque error).',
+    ],
+  },
+  {
     version: '5.5.735', date: '7 Jul 2026', label: 'AI assistant wired across the system — it can answer far more, in detail',
     changes: [
       'The shift assistant can now answer stock & 86 questions it used to miss — e.g. "is the donut 86’d?", "how many left?", "what’s sold out right now?", "tell me everything about the glazed donut" (price, allergens, sizes, modifiers, stock, 86 status).',

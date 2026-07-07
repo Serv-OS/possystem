@@ -146,8 +146,15 @@ Deno.serve(async (req) => {
       if (r.code === 'rate_limited') {
         return json({ error: 'A code was just sent. Please wait a moment before requesting another.' }, 429);
       }
-      console.error('[loyalty-otp] Verify start failed:', r.error);
-      return json({ error: 'Failed to send verification code' }, 500);
+      // Surface WHY it failed. The Twilio message carries no secrets; it's logged AND returned in a
+      // `detail` field so the failure is diagnosable (previously this was an opaque 500). The
+      // customer-facing text stays friendly, with a clearer hint for the two most common causes.
+      console.error('[loyalty-otp] Verify start failed:', { httpStatus: r.httpStatus, twilioCode: r.twilioCode, error: r.error, to: phone });
+      let msg = 'We couldn’t send the code right now. Please try again shortly.';
+      if (r.twilioCode === 60200) msg = 'That phone number doesn’t look valid — check it and try again.';
+      else if (r.twilioCode === 60410 || r.twilioCode === 60605) msg = 'We can’t text that number right now (it may be a landline or unsupported network).';
+      else if (r.httpStatus === 404 || r.twilioCode === 20404) msg = 'Text verification isn’t set up correctly for this venue yet.';
+      return json({ error: msg, detail: r.error || null, twilio_code: r.twilioCode ?? null, twilio_http: r.httpStatus ?? null }, 500);
     }
     return json({ sent: true });
   }

@@ -31,6 +31,7 @@ export interface VerifyResult {
   // our normalised error code: 'not_configured' | 'rate_limited' | 'max_attempts' | 'invalid' | 'send_failed'
   code?: string;
   httpStatus?: number;
+  twilioCode?: number;   // Twilio's numeric error code (e.g. 60200 invalid To, 60410 blocked, 20404 bad service SID)
 }
 
 // Start a verification — Twilio sends the code over `channel` to `to`.
@@ -56,7 +57,7 @@ export async function startVerification(
       const tw = Number((j as { code?: number })?.code);
       // 60203 = max send attempts reached for this number; 429 = rate limited.
       const code = (res.status === 429 || tw === 60203) ? 'rate_limited' : 'send_failed';
-      return { ok: false, status: (j as { status?: string })?.status, error: (j as { message?: string })?.message || `Twilio HTTP ${res.status}`, code, httpStatus: res.status };
+      return { ok: false, status: (j as { status?: string })?.status, error: (j as { message?: string })?.message || `Twilio HTTP ${res.status}`, code, httpStatus: res.status, twilioCode: Number.isFinite(tw) ? tw : undefined };
     }
     return { ok: true, status: (j as { status?: string })?.status };
   } catch (e) {
