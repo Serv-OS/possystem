@@ -4,6 +4,7 @@ import { calculateOrderTax } from '../lib/tax';
 import { resolveServiceCharge } from '../lib/serviceCharge';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../lib/discountEngine';
 import { buildScheduleCtx } from '../lib/locationTime';
+import { operatorSwitchPatch, logoutPatch } from '../lib/cartHold';
 import { upsertMenuItem, upsertFloorTable, deleteFloorTable, insertKDSTicket, insertClosedCheck, toggle86DB, getNextOrderRefLocal, updateClosedCheckRefunds, upsertStockLevel, deleteStockLevel, decrementStockRPC, restoreStockRPC } from '../lib/db';
 import { printService } from '../lib/printer';
 import { hubrisePushStock, isHubriseConnected, hubrisePushStatus, isHubriseAutoReceipt } from '../lib/hubrise';
@@ -136,6 +137,7 @@ let _itemUid = 1;
 const uid = () => `i${_itemUid++}`;
 let _orderNum = 1000;
 let _tabNum   = 1;
+let _autoSignoutTimer = null;   // v5.5.734: pending auto-sign-out timeout, cancelled on any login/logout
 
 const CAT_COURSE = { starters:1, mains:2, pizza:2, sides:2, desserts:3, drinks:0, cocktails:0, quick:1 };
 
@@ -223,8 +225,28 @@ export const useStore = create((set, get) => ({
   addStaffMember:    s    => set(st => ({ staffMembers: [...st.staffMembers, { ...s, id:`s-${Date.now()}` }] })),
   updateStaffMember: (id,patch) => set(st => ({ staffMembers: st.staffMembers.map(s => s.id===id ? {...s,...patch} : s) })),
   removeStaffMember: id  => set(st => ({ staffMembers: st.staffMembers.filter(s => s.id!==id) })),
-  login:  s => set({ staff:s }),
-  logout: () => set({ staff:null, activeTableId:null, orderType:'dine-in', customer:null }),
+  // v5.5.734: per-operator counter checkout on a shared till. When the operator changes, the
+  // outgoing person's in-progress COUNTER order (walkInOrder + its context) is PARKED under their
+  // staff id, and the incoming person gets THEIR parked order back — or a clean, empty checkout.
+  // So one user can add items and walk away without sending/paying, another can sign in and ring up
+  // their own sale, and the first user's order is waiting for them when they sign back in. Table
+  // orders are NOT touched — those live on the table (tables[].session). Pure logic + tests in
+  // lib/cartHold.js. Holds are in-memory (like walkInOrder itself — ephemeral until sent/paid).
+  heldOrders: {},   // { [staffId]: { walkInOrder, customer, orderType, pendingLoyaltyReward, deliveryQuote, parkedAt } }
+
+  login: (newStaff) => {
+    if (_autoSignoutTimer) { clearTimeout(_autoSignoutTimer); _autoSignoutTimer = null; }   // cancel a stale pay/send sign-out
+    const { patch, restored } = operatorSwitchPatch(get(), newStaff, Date.now());
+    set(patch);
+    if (restored && restored.count) {
+      get().showToast?.(`Your held order is back — ${restored.count} item${restored.count === 1 ? '' : 's'}`, 'info');
+    }
+  },
+
+  logout: () => {
+    if (_autoSignoutTimer) { clearTimeout(_autoSignoutTimer); _autoSignoutTimer = null; }
+    set(logoutPatch(get(), Date.now()));
+  },
 
   // v5.5.731: per-device auto sign-out policy (deviceConfig.signout). trigger 'pay' = a check was
   // cashed off; 'send' = an order went to the kitchen. Short delay so the confirmation shows first.
@@ -235,7 +257,13 @@ export const useStore = create((set, get) => ({
     if (!staff || !so) return;
     if ((trigger === 'pay' && so.onPay) || (trigger === 'send' && so.onSend)) {
       const who = staff.name?.split(' ')[0] || '';
-      setTimeout(() => { if (get().staff) { get().logout(); get().showToast?.(`Signed out ${who}`.trim(), 'info'); } }, 1400);
+      const sid = staff.id;   // v5.5.734: only sign out if it's STILL this operator — a card-swap in
+      if (_autoSignoutTimer) clearTimeout(_autoSignoutTimer);   // the 1.4s window must not sign the NEW
+      _autoSignoutTimer = setTimeout(() => {                    // operator out; and a new pay/send supersedes.
+        _autoSignoutTimer = null;
+        const now = get().staff;
+        if (now && String(now.id) === String(sid)) { get().logout(); get().showToast?.(`Signed out ${who}`.trim(), 'info'); }
+      }, 1400);
     }
   },
 

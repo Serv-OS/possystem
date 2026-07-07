@@ -94,6 +94,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.734', date: '6 Jul 2026', label: 'Menu loads from cache on sign-in (no more category flicker) + per-user checkout',
+    changes: [
+      'Fixed the category buttons shuffling and settling every time you signed in. The till was re-loading and re-sorting the whole menu from the database on each login, briefly fighting the pushed version. The menu now comes from the cached Push-to-POS snapshot and is only refreshed when you Push to POS again — so it loads instantly and stays put.',
+      'Per-user checkout on a shared till: sign in, add items, and if you step away, the next person can tap their card / enter their PIN and get a clean, empty checkout — your order is parked and handed back to you the moment you sign in again (“Your held order is back — 3 items”). Table orders are unaffected; they stay on the table.',
+      'Safety: you can’t switch user in the middle of taking a payment (it waits until the payment finishes), a sent-but-unpaid order is kept in the Orders Hub (never double-charged), and the auto sign-out only ever signs out the person who triggered it — never the next user.',
+    ],
+  },
+  {
     version: '5.5.733', date: '6 Jul 2026', label: 'Activity feed only flags a price change when a price actually changed',
     changes: [
       'Pushing to POS no longer posts “Menu & prices updated” every time. The feed now compares what you pushed against the last push and posts a note ONLY when a price actually moved — e.g. “2 prices updated — Latte £3.20 → £3.50”. A plain re-push, or adding/removing/renaming an item with no price change, stays silent.',
@@ -8727,6 +8735,9 @@ function CardUserSwitch() {
     }
     if (!r.ok) return;                              // genuinely unknown card → ignore quietly
     if (staff && String(r.staff.id) === String(staff.id)) return;   // already this operator
+    // v5.5.734: don't switch operator mid-transaction. A checkout / card hold holds _signoutBlock;
+    // swapping now would null the live cart and orphan the in-flight payment (charged, unrecorded).
+    if (useStore.getState()._signoutBlock > 0) { showToast?.('Finish the current payment first', 'info'); return; }
     login(r.staff);
     try { logSignIn(r.staff.id, 'card'); } catch { /* best-effort */ }
     showToast?.(`Switched to ${r.staff.name}`);

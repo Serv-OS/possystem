@@ -128,6 +128,16 @@ export default function SyncBridge({ onSyncPulse }) {
             useStore.getState().applyConfigUpdate();
           }
 
+          // v5.5.734: the pushed config snapshot is the AUTHORITATIVE cache for menu data. Below we
+          // ALSO fetch menu items/categories/menus/modifier-groups straight from the DB — but if the
+          // snapshot already provided them we must NOT re-apply the DB copy, because SyncBridge
+          // remounts on every login (it's rendered in both the PIN-screen and signed-in branches),
+          // so re-writing the menu with a DB-ordered copy made the category bar visibly reflow
+          // ("move then move back") on every sign-in. The snapshot wins; the DB read is a fallback
+          // only when nothing was pushed (fresh install). A new Push to POS refreshes it via realtime.
+          const snap = data?.snapshot || null;
+          const snapHas = (k) => Array.isArray(snap?.[k]) && snap[k].length > 0;
+
           // Load floor plan + active sessions atomically — never set session:null then restore
           const { supabase: sb, getLocationId } = await import('../lib/supabase.js');
           const [floorRes, itemsRes, catsRes, menusRes, sessionsRes, profilesRes, modGroupsRes, e86Res, stockRes] = await Promise.all([
@@ -237,7 +247,7 @@ export default function SyncBridge({ onSyncPulse }) {
             });
             patch.tables = tables;
           }
-          if (itemsRes.data?.length) patch.menuItems = itemsRes.data.map(item => ({
+          if (itemsRes.data?.length && !snapHas('menuItems')) patch.menuItems = itemsRes.data.map(item => ({
             ...item,
             price: item.pricing?.base ?? item.price ?? 0,
             menuName: item.menu_name ?? item.menuName ?? item.name ?? 'Item',
@@ -322,7 +332,7 @@ export default function SyncBridge({ onSyncPulse }) {
               }));
             } catch (e) { console.warn('[SyncBridge] discount load error:', e?.message); }
           }
-          if (catsRes.data?.length) patch.menuCategories = catsRes.data.map(cat => ({
+          if (catsRes.data?.length && !snapHas('menuCategories')) patch.menuCategories = catsRes.data.map(cat => ({
             ...cat,
             parentId: cat.parent_id ?? cat.parentId ?? null,
             menuId: cat.menu_id ?? cat.menuId,
@@ -335,8 +345,8 @@ export default function SyncBridge({ onSyncPulse }) {
             spacerSlots: cat.spacer_slots ?? cat.spacerSlots ?? [],
             isSpecial: cat.is_special ?? cat.isSpecial ?? false,  // v5.5.316: map so POS/bar/inventory hide special cats
           }));
-          if (menusRes.data?.length) patch.menus = menusRes.data;
-          if (modGroupsRes.data?.length) patch.modifierGroupDefs = modGroupsRes.data.map(g => ({
+          if (menusRes.data?.length && !snapHas('menus')) patch.menus = menusRes.data;
+          if (modGroupsRes.data?.length && !snapHas('modifierGroupDefs')) patch.modifierGroupDefs = modGroupsRes.data.map(g => ({
             id: g.id, name: g.name,
             min: g.min ?? 0, max: g.max ?? 1,
             selectionType: g.selection_type ?? 'single',
