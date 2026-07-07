@@ -94,6 +94,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.737', date: '7 Jul 2026', label: 'Loyalty portal — verification codes send again (Twilio fix)',
+    changes: [
+      'FIXED: loyalty portal sign-in was failing for everyone with “Failed to send verification code”. Root cause: the code SMS was asking Twilio to use a custom “Your <venue>…” sender name that this Twilio Verify service doesn’t permit (Twilio error 60204), so Twilio rejected every send.',
+      'The verification now sends on Twilio’s standard template (and quietly stops asking for the custom name once a service rejects it), so codes go through. Requires no Twilio config change.',
+    ],
+  },
+  {
     version: '5.5.736', date: '7 Jul 2026', label: 'Loyalty portal — clearer message when a verification code can’t be sent',
     changes: [
       'When the loyalty portal can’t text a verification code, it now says WHY in plain English (e.g. an invalid number, or a network we can’t text) instead of a generic “Failed to send verification code”.',

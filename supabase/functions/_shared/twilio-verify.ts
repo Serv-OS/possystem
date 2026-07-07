@@ -34,32 +34,50 @@ export interface VerifyResult {
   twilioCode?: number;   // Twilio's numeric error code (e.g. 60200 invalid To, 60410 blocked, 20404 bad service SID)
 }
 
+// Some Verify Services reject the CustomFriendlyName parameter (Twilio error 60204 "Custom friendly
+// name not allowed" — e.g. when the service uses a custom message template). That param is only a
+// nicety ("Your <venue> verification code is …"); getting the code DELIVERED matters far more. So we
+// remember, per warm instance, once a service has rejected it and stop sending it.
+let friendlyNameBlocked = false;
+
 // Start a verification — Twilio sends the code over `channel` to `to`.
-// `friendlyName` overrides {{friendly_name}} in Twilio's default template, so the SMS reads
-// "Your <venue> verification code is 123456" without needing a custom approved template.
+// `friendlyName` overrides {{friendly_name}} in Twilio's default template so the SMS reads
+// "Your <venue> verification code is 123456" — but only when the service permits it (see above).
 export async function startVerification(
   to: string,
   opts: { channel?: string; friendlyName?: string } = {},
 ): Promise<VerifyResult> {
   if (!verifyConfigured()) return { ok: false, error: 'Verify not configured', code: 'not_configured' };
-  const form = new URLSearchParams();
-  form.append('To', to);
-  form.append('Channel', opts.channel || 'sms');
-  if (opts.friendlyName) form.append('CustomFriendlyName', opts.friendlyName.slice(0, 30));
-  try {
+
+  const post = async (withFriendly: boolean) => {
+    const form = new URLSearchParams();
+    form.append('To', to);
+    form.append('Channel', opts.channel || 'sms');
+    if (withFriendly && opts.friendlyName) form.append('CustomFriendlyName', opts.friendlyName.slice(0, 30));
     const res = await fetch(`https://verify.twilio.com/v2/Services/${VERIFY_SERVICE_SID}/Verifications`, {
       method: 'POST',
       headers: { 'Authorization': authHeader(), 'Content-Type': 'application/x-www-form-urlencoded' },
       body: form.toString(),
     });
     const j = await res.json().catch(() => ({}));
+    return { res, j: j as { code?: number; message?: string; status?: string } };
+  };
+
+  try {
+    const useFriendly = !friendlyNameBlocked && !!opts.friendlyName;
+    let { res, j } = await post(useFriendly);
+    // Custom friendly name rejected → this service doesn't allow it. Remember + retry without it.
+    if (!res.ok && Number(j?.code) === 60204 && useFriendly) {
+      friendlyNameBlocked = true;
+      ({ res, j } = await post(false));
+    }
     if (!res.ok) {
-      const tw = Number((j as { code?: number })?.code);
+      const tw = Number(j?.code);
       // 60203 = max send attempts reached for this number; 429 = rate limited.
       const code = (res.status === 429 || tw === 60203) ? 'rate_limited' : 'send_failed';
-      return { ok: false, status: (j as { status?: string })?.status, error: (j as { message?: string })?.message || `Twilio HTTP ${res.status}`, code, httpStatus: res.status, twilioCode: Number.isFinite(tw) ? tw : undefined };
+      return { ok: false, status: j?.status, error: j?.message || `Twilio HTTP ${res.status}`, code, httpStatus: res.status, twilioCode: Number.isFinite(tw) ? tw : undefined };
     }
-    return { ok: true, status: (j as { status?: string })?.status };
+    return { ok: true, status: j?.status };
   } catch (e) {
     return { ok: false, error: (e as Error)?.message || String(e), code: 'send_failed' };
   }
