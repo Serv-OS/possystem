@@ -16,6 +16,15 @@ A SaaS restaurant/bar POS with many device "surfaces" off one codebase (URL `?mo
 
 ## Recent arc (this block of sessions)
 
+### AI assistant wired across the system (v5.5.735) — SHIPPED (phase 1)
+Peter: assistant said "couldn't find any info" about a donut that went to 86; wants it to answer most questions in detail. Root cause: it could 86 an item but had NO read tool over the 86 list, and `getStoreState` only passed 8 slices.
+- **Architecture** (unchanged): `api/ai.js` = stateless proxy (mode foh/boh/rota → allowlist + system prompt → Anthropic). Tools execute CLIENT-side in `src/lib/aiTools.js` `executeTool(name, input, storeState)` — reads the passed store snapshot AND already imports the ops-DB `supabase` client for direct queries. `AIChat.jsx` runs the tool loop + builds `getStoreState()`.
+- **7 new read tools** (in aiTools.js + api/ai.js TOOL_DEFINITIONS, added to BOTH ALLOWED_TOOLS_FOH/BOH): `get_86_status` (resolves archived names from DB so a 86'd-then-archived item is never misreported), `get_stock_status`, `lookup_item` (price/allergens/variants/mods/stock/86), `search_activity` (activity_events "when/who did X"), `get_order_queue`, `get_waitlist`, `get_menu_overview`.
+- **86 now logs to activity_events** (`store.toggle86` → `logActivity(kind:'stock', actorName:staff)`), so 86 changes show in the bell feed AND `search_activity` finds them going forward. Past 86s have no history but `get_86_status` still reports them + since-when from the `eighty_six.created_at` row.
+- **getStoreState widened**: + dailyCounts, orderQueue, waitlist, staffMembers, discountPresets, menus. **Model** bumped `claude-sonnet-4-6` → `claude-sonnet-5`.
+- Reviewed by a 15-agent adversarial pass (RLS/columns/model-id/donut path): 11/12 refuted, 1 low finding fixed. DB columns verified vs QueueSync (order_queue) + activity.js (activity_events).
+- **DEFERRED (phase 2)**: customers/loyalty + gift cards (Platform DB — the AI's `supabase` is ops-DB only), staff-on-shift (wf_timesheets — RLS review), deliveries (courier_deliveries), full report tools, and a "reason" field on 86. Can't live-test locally (needs the deployed ANTHROPIC_API_KEY) — Peter verifies on dev.
+
 ### Menu-cache-on-sign-in + per-user checkout (v5.5.734) — SHIPPED
 Two fixes shipped together.
 - **Category flicker on every login (Peter reported "categories move around then move back").** Root cause: `<SyncBridge>` is rendered in BOTH the PIN-screen and signed-in branches (App.jsx:8651 + :8660), so it **remounts on every login** and re-runs boot hydration — which applied the pushed config snapshot (correct order) then let a parallel direct DB re-fetch overwrite `menuCategories` with a DB-ordered copy. Fix: the pushed snapshot is now **authoritative** for menu data; `SyncBridge` guards the DB-fetch writes for menuItems/menuCategories/menus/modifierGroupDefs with `!snapHas(k)` (DB is a fallback only when nothing was pushed). A new Push to POS still refreshes via realtime. This is the "cache the menu, only refresh on push, function locally" model Peter asked for.
