@@ -407,6 +407,179 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
       return { result: { orders } };
     }
 
+    // ── v5.5.735: broad read tools — 86 / stock / kitchen queue / activity / waitlist / menu ──
+
+    case 'get_86_status': {
+      const { eightySixIds = [], menuItems = [], dailyCounts = {} } = storeState;
+      const byId = new Map(menuItems.map(i => [i.id, i]));
+      const whenMap = {};   // id -> created_at (when it went 86)
+      const nameMap = {};   // id -> name, for 86'd ids missing from the loaded menu (e.g. archived)
+      if (supabase && locationId) {
+        const { data } = await supabase.from('eighty_six').select('item_id, created_at').eq('location_id', locationId);
+        (data || []).forEach(r => { whenMap[r.item_id] = r.created_at; });
+        // An item can be 86'd then archived — it stays in eighty_six but drops out of menuItems
+        // (fetchMenuItems filters archived=false). Resolve those names so we never misreport it.
+        const missing = eightySixIds.filter(id => !byId.has(id));
+        if (missing.length) {
+          const { data: mi } = await supabase.from('menu_items').select('id, name').in('id', missing);
+          (mi || []).forEach(r => { nameMap[r.id] = r.name; });
+        }
+      }
+      const nameOf = (id) => byId.get(id)?.name || nameMap[id] || null;
+      // Build the FULL 86 list first — a genuinely-86'd id is never dropped, even if unnamed.
+      const full = eightySixIds.map(id => ({
+        item: nameOf(id) || `Item ${String(id).slice(0, 8)}`,
+        since: whenMap[id] ? new Date(whenMap[id]).toLocaleString('en-GB', { hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short' }) : null,
+        stock_remaining: dailyCounts[id] ? dailyCounts[id].remaining : null,
+      }));
+      const q = (toolInput.item_name || '').toLowerCase();
+      if (q) {
+        const matched = full.filter(x => (x.item || '').toLowerCase().includes(q));
+        if (matched.length) return { result: { count: matched.length, eighty_sixed: matched } };
+        // No 86'd item matches the name. Only claim "available" if a KNOWN item by that name exists.
+        const known = menuItems.find(i => (i.name || '').toLowerCase().includes(q));
+        if (known) return { result: { count: 0, eighty_sixed: [], note: `"${known.name}" is NOT currently 86'd (it's available).` } };
+        return {
+          result: {
+            count: 0, eighty_sixed: [],
+            note: full.length
+              ? `No 86'd item matches "${toolInput.item_name}", but ${full.length} item(s) are 86'd — try search_activity (kind:'stock') for the history.`
+              : `No item matching "${toolInput.item_name}", and nothing is currently 86'd.`,
+          },
+        };
+      }
+      return { result: { count: full.length, eighty_sixed: full } };
+    }
+
+    case 'get_stock_status': {
+      const { dailyCounts = {}, menuItems = [], eightySixIds = [] } = storeState;
+      const byId = new Map(menuItems.map(i => [i.id, i]));
+      const q = (toolInput.item_name || '').toLowerCase();
+      let entries = Object.entries(dailyCounts);
+      if (q) entries = entries.filter(([id]) => (byId.get(id)?.name || '').toLowerCase().includes(q));
+      const rows = entries.map(([id, c]) => {
+        const par = c?.par || 0, rem = c?.remaining ?? 0;
+        const status = eightySixIds.includes(id) ? '86 (turned off)' : (rem <= 0 ? 'out' : (rem <= Math.max(1, par * 0.2) ? 'low' : 'ok'));
+        return { item: byId.get(id)?.name || String(id), remaining: rem, par, status };
+      });
+      const flagged = rows.filter(r => r.status !== 'ok');
+      return { result: { tracked_items: rows.length, low_or_out: q ? rows : flagged, note: rows.length ? undefined : 'No items have daily stock counts set.' } };
+    }
+
+    case 'lookup_item': {
+      const { menuItems = [], menuCategories = [], modifierGroupDefs = [], eightySixIds = [], dailyCounts = {} } = storeState;
+      const q = (toolInput.item_name || '').toLowerCase();
+      const matches = menuItems.filter(i => !i.archived && i.type !== 'spacer' && (i.name || '').toLowerCase().includes(q));
+      if (!matches.length) return { result: { found: false, message: `No item matching "${toolInput.item_name}"` } };
+      return {
+        result: {
+          found: true,
+          items: matches.slice(0, 5).map(i => {
+            const cat = menuCategories.find(c => c.id === (i.cat || i.categoryId));
+            const variants = menuItems.filter(v => v.parentId === i.id && !v.archived)
+              .map(v => ({ name: v.name, price: money(v.price || 0), sold_out: eightySixIds.includes(v.id) }));
+            const mods = (i.assignedModifierGroups || [])
+              .map(mg => modifierGroupDefs.find(g => g.id === (mg.groupId || mg))?.name).filter(Boolean);
+            const dc = dailyCounts[i.id];
+            return {
+              name: i.name,
+              price: money(i.price || 0),
+              category: cat?.label || cat?.name || 'Unknown',
+              allergens: i.allergens?.length ? i.allergens.join(', ') : 'None declared',
+              sold_out_86: eightySixIds.includes(i.id),
+              stock_remaining: dc ? dc.remaining : null,
+              ...(variants.length ? { variants } : {}),
+              ...(mods.length ? { modifiers: mods.join(', ') } : {}),
+            };
+          }),
+        },
+      };
+    }
+
+    case 'get_order_queue': {
+      let rows = [];
+      if (supabase && locationId) {
+        const since = new Date(Date.now() - 12 * 3600 * 1000).toISOString();
+        const { data } = await supabase.from('order_queue')
+          .select('ref, source, status, total, customer, created_at')
+          .eq('location_id', locationId).gte('created_at', since)
+          .order('created_at', { ascending: false }).limit(60);
+        rows = data || [];
+      } else {
+        rows = (storeState.orderQueue || []).map(o => ({ ref: o.ref, source: o.source, status: o.status, total: o.total, customer: o.customer, created_at: o.createdAt || o.sentAt }));
+      }
+      const done = new Set(['collected', 'completed', 'cancelled', 'delivered', 'refunded']);
+      const active = rows.filter(o => !done.has((o.status || '').toLowerCase()));
+      const byStatus = {};
+      active.forEach(o => { const k = o.status || 'pending'; byStatus[k] = (byStatus[k] || 0) + 1; });
+      return {
+        result: {
+          active: active.length,
+          by_status: byStatus,
+          orders: active.slice(0, 30).map(o => ({
+            ref: o.ref, source: o.source, status: o.status,
+            total: o.total != null ? money(o.total) : null,
+            customer: o.customer?.name || o.customer?.firstName || null,
+            time: o.created_at ? new Date(o.created_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : null,
+          })),
+        },
+      };
+    }
+
+    case 'search_activity': {
+      if (!supabase || !locationId) return { result: { error: 'Not connected' } };
+      const hours = Math.min(Math.max(toolInput.hours_back || 24, 1), 168);
+      const since = new Date(Date.now() - hours * 3600 * 1000).toISOString();
+      let qb = supabase.from('activity_events')
+        .select('kind, severity, title, body, actor_name, created_at')
+        .eq('location_id', locationId).gte('created_at', since)
+        .order('created_at', { ascending: false }).limit(80);
+      if (toolInput.kind) qb = qb.eq('kind', toolInput.kind);
+      const { data } = await qb;
+      let rows = data || [];
+      const q = (toolInput.query || '').toLowerCase();
+      if (q) rows = rows.filter(r => (r.title || '').toLowerCase().includes(q) || (r.body || '').toLowerCase().includes(q));
+      return {
+        result: {
+          count: rows.length,
+          events: rows.slice(0, 40).map(r => ({
+            kind: r.kind, what: r.title,
+            ...(r.body ? { detail: r.body } : {}),
+            ...(r.actor_name ? { by: r.actor_name } : {}),
+            when: r.created_at ? new Date(r.created_at).toLocaleString('en-GB', { hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short' }) : null,
+          })),
+        },
+      };
+    }
+
+    case 'get_waitlist': {
+      const done = new Set(['seated', 'completed', 'cancelled', 'left', 'no_show']);
+      const wl = (storeState.waitlist || []).filter(w => !done.has((w.status || '').toLowerCase()));
+      return {
+        result: {
+          waiting: wl.length,
+          parties: wl.slice(0, 30).map(w => ({
+            name: w.name, size: w.size ?? w.partySize,
+            quoted_min: w.quoted ?? w.quotedMinutes,
+            status: w.status,
+            since: w.addedAt ? new Date(w.addedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : undefined,
+          })),
+        },
+      };
+    }
+
+    case 'get_menu_overview': {
+      const { menuCategories = [], menuItems = [], eightySixIds = [] } = storeState;
+      const live = menuItems.filter(i => !i.archived && i.type !== 'spacer');
+      const cats = menuCategories.filter(c => !c.parentId && !c.isSpecial)
+        .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0))
+        .map(c => {
+          const items = live.filter(i => i.cat === c.id || i.categoryId === c.id);
+          return { category: c.label || c.name, items: items.length, sold_out: items.filter(i => eightySixIds.includes(i.id)).length };
+        });
+      return { result: { categories: cats, total_items: live.length, total_86: eightySixIds.length } };
+    }
+
     // ── Write tools — return pendingAction, don't execute yet ──────────────────
 
     case 'add_menu_item': {

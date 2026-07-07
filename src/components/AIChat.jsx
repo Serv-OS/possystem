@@ -82,11 +82,18 @@ export default function AIChat({ mode = 'foh', initialContext = '', placeholder 
       menuItems:         s.menuItems || [],
       menuCategories:    s.menuCategories || [],
       modifierGroupDefs: s.modifierGroupDefs || [],
+      menus:             s.menus || [],
       closedChecks:      s.closedChecks || [],
       tables:            s.tables || [],
       activeTableId:     s.activeTableId || null,
       walkInOrder:       s.walkInOrder || null,
       eightySixIds:      s.eightySixIds || [],
+      // v5.5.735: broader operational state so the AI can answer stock / queue / waitlist questions
+      dailyCounts:       s.dailyCounts || {},
+      orderQueue:        s.orderQueue || [],
+      waitlist:          s.waitlist || [],
+      staffMembers:      s.staffMembers || [],
+      discountPresets:   s.discountPresets || [],
     };
   };
 

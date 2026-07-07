@@ -94,6 +94,16 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.735', date: '7 Jul 2026', label: 'AI assistant wired across the system — it can answer far more, in detail',
+    changes: [
+      'The shift assistant can now answer stock & 86 questions it used to miss — e.g. "is the donut 86’d?", "how many left?", "what’s sold out right now?", "tell me everything about the glazed donut" (price, allergens, sizes, modifiers, stock, 86 status).',
+      'New "when/who did that happen" answers: 86 changes, menu & price edits, orders and ops now all land on one activity timeline the assistant can search — so "when did the donut get 86’d and who by?" gets a real answer.',
+      'Also reachable now: the live kitchen / collection / delivery queue and the walk-in waitlist. Seven new read tools in total, on both the front-of-house and back-office assistants.',
+      'Marking an item 86 (or back on) now shows on the activity feed with who did it — visible in the bell timeline and to the assistant.',
+      'Assistant upgraded to the latest Claude model and told to try multiple sources before ever saying "I couldn’t find any info".',
+    ],
+  },
+  {
     version: '5.5.734', date: '6 Jul 2026', label: 'Menu loads from cache on sign-in (no more category flicker) + per-user checkout',
     changes: [
       'Fixed the category buttons shuffling and settling every time you signed in. The till was re-loading and re-sorting the whole menu from the database on each login, briefly fighting the pushed version. The menu now comes from the cached Push-to-POS snapshot and is only refreshed when you Push to POS again — so it loads instantly and stays put.',

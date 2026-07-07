@@ -21,6 +21,13 @@ const ALLOWED_TOOLS_FOH = [
   'apply_order_discount',
   'eighty_six_item',
   'get_shift_summary',
+  'get_86_status',
+  'get_stock_status',
+  'lookup_item',
+  'get_order_queue',
+  'search_activity',
+  'get_waitlist',
+  'get_menu_overview',
 ];
 
 const ALLOWED_TOOLS_BOH = [
@@ -42,6 +49,13 @@ const ALLOWED_TOOLS_BOH = [
   'add_menu_item',
   'update_item_price',
   'eighty_six_item',
+  'get_86_status',
+  'get_stock_status',
+  'lookup_item',
+  'get_order_queue',
+  'search_activity',
+  'get_waitlist',
+  'get_menu_overview',
 ];
 
 const TOOL_DEFINITIONS = {
@@ -255,6 +269,58 @@ const TOOL_DEFINITIONS = {
       required: ['item_id', 'new_price'],
     },
   },
+
+  // ── v5.5.735: broad read tools ──────────────────────────────────────────────
+
+  get_86_status: {
+    name: 'get_86_status',
+    description: "List items currently 86'd (sold out / manually turned off), with when each went 86 and any stock remaining. Pass item_name to check a SPECIFIC item, e.g. \"is the donut 86'd?\" — it will say whether that item is off and since when.",
+    input_schema: { type: 'object', properties: { item_name: { type: 'string', description: 'Optional: check one item by name' } }, required: [] },
+  },
+
+  get_stock_status: {
+    name: 'get_stock_status',
+    description: "Show items that are low or out of stock (daily count remaining vs par). Pass item_name to check one item's stock level. Use for \"what's running low\" / \"how many donuts left\".",
+    input_schema: { type: 'object', properties: { item_name: { type: 'string', description: 'Optional: check one item by name' } }, required: [] },
+  },
+
+  lookup_item: {
+    name: 'lookup_item',
+    description: 'Full detail for a menu item by name: price, category, allergens, whether it is 86’d, stock remaining, its sizes/variants and modifier groups. Best tool for a detailed question about a specific product (e.g. "tell me about the glazed donut").',
+    input_schema: { type: 'object', properties: { item_name: { type: 'string', description: 'The item name (partial ok)' } }, required: ['item_name'] },
+  },
+
+  get_order_queue: {
+    name: 'get_order_queue',
+    description: 'Live kitchen / collection / delivery queue — orders awaiting fulfilment (kiosk, online, catering), grouped by status. Use for "what\'s pending?", "any orders waiting?", "what\'s the queue like?".',
+    input_schema: { type: 'object', properties: {}, required: [] },
+  },
+
+  search_activity: {
+    name: 'search_activity',
+    description: "Search the operational activity timeline: orders, menu & price changes, 86 / stock changes, ops/temperature, and staff nudges — each with who did it and when. THE tool for \"when/who did X happen\" questions (e.g. \"when did the donut get 86'd?\", \"what changed today?\").",
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Optional text to match in the event (e.g. an item name like "donut")' },
+        kind: { type: 'string', enum: ['order', 'menu', 'stock', 'ops', 'nudge', 'system'], description: 'Optional event kind filter' },
+        hours_back: { type: 'number', description: 'How far back to look, in hours (default 24, max 168)' },
+      },
+      required: [],
+    },
+  },
+
+  get_waitlist: {
+    name: 'get_waitlist',
+    description: 'Current walk-in waitlist / table queue: parties waiting, party size, quoted wait time, and status. Use for "how long is the wait?", "who\'s in the queue?".',
+    input_schema: { type: 'object', properties: {}, required: [] },
+  },
+
+  get_menu_overview: {
+    name: 'get_menu_overview',
+    description: 'High-level overview of the menu: each category with its item count and how many are 86’d, plus totals. Use for "what\'s on the menu?", "how many items are off?".',
+    input_schema: { type: 'object', properties: {}, required: [] },
+  },
 };
 
 const SYSTEM_FOH = `You are an AI shift assistant built into a restaurant POS system. You help front-of-house staff during live service.
@@ -273,6 +339,19 @@ YOU CAN ANSWER QUESTIONS LIKE:
 - "Does the burger have gluten?" → use get_allergen_info
 - "What's the busiest hour been?" → use get_hourly_breakdown
 - "Who's sold the most today?" → get_server_performance
+- "Is the donut 86'd?" / "What's sold out right now?" → get_86_status
+- "How many donuts left?" / "What's running low?" → get_stock_status
+- "Tell me about the glazed donut" / "What's in the burger?" → lookup_item
+- "When did the donut get 86'd?" / "Who changed that?" / "What's happened today?" → search_activity
+- "Any orders waiting?" / "What's in the queue?" → get_order_queue
+- "How long is the wait?" / "Who's in the queue?" → get_waitlist
+- "What's on the menu?" / "How many items are off?" → get_menu_overview
+
+You have broad read access to this venue's live data — sales, floor, orders, the menu, stock, what's
+86'd, the fulfilment queue, the waitlist, and the operational activity timeline (who did what, when).
+Pick the tool that fits. If a first tool comes back empty, TRY ANOTHER before saying you can't help —
+e.g. if asked about a 86'd item, use get_86_status AND search_activity (kind:'stock') for the history.
+Never answer "I couldn't find any info" without having tried the relevant read tools.
 
 RULES:
 - Always call get_current_order BEFORE adding or removing anything from an order
@@ -297,6 +376,17 @@ YOU CAN ANSWER QUESTIONS LIKE:
 - "What's been our busiest hour?" → get_hourly_breakdown
 - "Show me recent orders" → get_order_history
 - "What tables are still open?" → get_open_tables
+- "What's 86'd right now?" / "Is the donut off?" → get_86_status
+- "What's low on stock?" / "How many donuts left?" → get_stock_status
+- "Tell me everything about the glazed donut" → lookup_item
+- "When did the donut get 86'd, and who by?" / "What's changed today?" → search_activity
+- "What's in the fulfilment queue?" → get_order_queue
+- "How's the waitlist?" → get_waitlist
+- "Give me a menu overview / what's off?" → get_menu_overview
+
+You have broad read access to this venue's live data. Pick the tool that fits; if a first tool comes
+back empty, try another (e.g. an item's 86 history → get_86_status AND search_activity kind:'stock')
+before saying you can't help. Never reply "I couldn't find any info" without trying the read tools.
 - "Update the price of the burger to £14" → update_item_price (with confirmation)
 - "Add a new item: Truffle Fries, £8" → add_menu_item (with confirmation)
 
@@ -345,7 +435,7 @@ export default async function handler(req, res) {
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
+        model: 'claude-sonnet-5',
         max_tokens: maxTokens,
         system: systemPrompt,
         ...(tools.length ? { tools } : {}),

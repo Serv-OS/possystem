@@ -8,6 +8,7 @@ import { operatorSwitchPatch, logoutPatch } from '../lib/cartHold';
 import { upsertMenuItem, upsertFloorTable, deleteFloorTable, insertKDSTicket, insertClosedCheck, toggle86DB, getNextOrderRefLocal, updateClosedCheckRefunds, upsertStockLevel, deleteStockLevel, decrementStockRPC, restoreStockRPC } from '../lib/db';
 import { printService } from '../lib/printer';
 import { hubrisePushStock, isHubriseConnected, hubrisePushStatus, isHubriseAutoReceipt } from '../lib/hubrise';
+import { logActivity } from '../lib/activity';
 import { depleteForSale, reverseForSale } from '../lib/stock/deplete';
 import { setTrainingMode as applyTrainingFlag, isTrainingMode } from '../lib/trainingMode';
 import { getDeliveryQuote, recordDeliverySurcharge } from '../lib/delivery/quoteService';
@@ -2888,6 +2889,20 @@ export const useStore = create((set, get) => ({
       const locId = getActiveLocationSync();
       if (locId && isHubriseConnected(locId)) hubrisePushStock(locId, [{ itemId: id, is86: !is86 }]).catch(() => {});
     } catch { /* non-fatal */ }
+    // v5.5.735: record the 86 change on the activity timeline so it shows in the feed AND the AI
+    // assistant can answer "when/who marked the donut 86". is86 = state BEFORE the toggle.
+    try {
+      const locId = getActiveLocationSync();
+      const it = get().menuItems.find(i => i.id === id);
+      const nm = it?.name || it?.menuName || 'Item';
+      if (locId) logActivity(locId, {
+        kind: 'stock',
+        severity: is86 ? 'info' : 'action',
+        title: is86 ? `${nm} back on` : `${nm} marked 86 (sold out)`,
+        actorName: get().staff?.name || null,
+        refType: 'item', refId: id,
+      });
+    } catch { /* feed best-effort */ }
   },
 
   // ── Daily counts / par levels ──────────────────────────────────────────────
