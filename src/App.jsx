@@ -94,6 +94,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.743', date: '7 Jul 2026', label: 'Catering menu now matches online ordering — categories in the same order',
+    changes: [
+      'Fixed the catering menu showing categories in a different order to online ordering (e.g. a sub-category like “Steaks” appearing first). Catering now shows the same top-level categories in the same order as the online menu.',
+    ],
+  },
+  {
     version: '5.5.742', date: '7 Jul 2026', label: 'Open bar tab — bar seats now wrap neatly inside the box',
     changes: [
       'Fixed the “Open bar tab” pop-up where the bar seat buttons (B1, B2 … and Roaming) ran off the right edge of the box when a venue had lots of bar seats. They now wrap onto tidy rows inside the pop-up.',

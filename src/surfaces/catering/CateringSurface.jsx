@@ -116,6 +116,14 @@ export default function CateringSurface({ location }) {
   const itemsForCat = (catId) => items.filter((i) =>
     (i.cat === catId || (Array.isArray(i.cats) && i.cats.includes(catId))) && !i.parent_id &&
     !(activeAllergens.length && (i.allergens || []).some((a) => activeAllergens.includes(a))));
+  // v5.5.743: match OnlineSurface exactly — show only TOP-LEVEL categories (no sub-categories) in the
+  // nav + sections, sorted by (sort_order||0) with a stable tie-break. Catering was rendering every
+  // category (incl. sub-categories like "Steaks") in raw DB order, so a sub surfaced first. Both
+  // surfaces now list the same top categories in the same order.
+  const topCats = useMemo(
+    () => (cats || []).filter((c) => !c.parent_id).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)),
+    [cats]
+  );
   const limitFor = (id) => (cfg?.item_limits || {})[id] || {};
   const is86 = (id) => eightySix.includes(id) || limitFor(id).max === 0;   // max 0 = operator-hidden (86)
   const addToCart = (item, mods, qty, notes = '') => {
@@ -215,10 +223,10 @@ export default function CateringSurface({ location }) {
       <MenuHeader theme={mt} name={location.name || 'Catering'} pills={[{ label: cfg.banner_message || 'Catering · Pre-order' }]} max={980} />
 
       {/* Sticky category chooser — scrolls to each menu section */}
-      {cats.filter((c) => itemsForCat(c.id).length).length > 1 && (
+      {topCats.filter((c) => itemsForCat(c.id).length).length > 1 && (
         <div style={{ position: 'sticky', top: 0, zIndex: 8, background: theme.bg, borderBottom: '1px solid #e2e8f0' }}>
           <div style={{ ...center, padding: '8px 16px', overflowX: 'auto', whiteSpace: 'nowrap', WebkitOverflowScrolling: 'touch', scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
-            {cats.map((c) => {
+            {topCats.map((c) => {
               if (!itemsForCat(c.id).length) return null;
               return <button key={c.id} onClick={() => document.getElementById(`cat-${c.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })} style={{ display: 'inline-block', padding: '7px 13px', marginRight: 6, borderRadius: 99, background: 'transparent', color: theme.brand, border: `1.5px solid ${theme.brand}`, fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>{c.label || c.name}</button>;
             })}
@@ -269,8 +277,8 @@ export default function CateringSurface({ location }) {
         )}
 
         {/* Menu */}
-        {cats.length === 0 && <div style={{ color: '#64748b' }}>No catering menu items yet.</div>}
-        {cats.map((cat) => {
+        {topCats.length === 0 && <div style={{ color: '#64748b' }}>No catering menu items yet.</div>}
+        {topCats.map((cat) => {
           const ci = itemsForCat(cat.id);
           if (!ci.length) return null;
           return (
