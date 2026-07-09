@@ -94,6 +94,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.742', date: '7 Jul 2026', label: 'Open bar tab — bar seats now wrap neatly inside the box',
+    changes: [
+      'Fixed the “Open bar tab” pop-up where the bar seat buttons (B1, B2 … and Roaming) ran off the right edge of the box when a venue had lots of bar seats. They now wrap onto tidy rows inside the pop-up.',
+    ],
+  },
+  {
     version: '5.5.741', date: '7 Jul 2026', label: 'Bar tabs now shows the device’s assigned menu (linked categories)',
     changes: [
       'Fixed the Bar tabs screen not showing a menu that was assigned to the device profile even though the POS showed it correctly. A category can belong to a menu two ways — set directly, or “linked” to the menu — and the Bar was only reading the direct one. It now also reads linked categories, exactly like the POS, so the assigned menu shows on the Bar too.',

@@ -72,15 +72,17 @@ function OpenTabModal({ onConfirm, onCancel }) {
 
           <div>
             <label style={labelStyle}>Bar seat (optional)</label>
-            <div style={{ display:'flex', gap:6 }}>
+            {/* v5.5.742: grid that WRAPS — a flat flex row overflowed the modal once a venue had many
+                bar seats (B1…B15 + Roaming spilled outside the card). auto-fill wraps into rows. */}
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(46px, 1fr))', gap:6 }}>
               {barSeats.length===0 && (
-                <div style={{ flex:1, padding:'8px 4px', borderRadius:8, background:'var(--bg3)', color:'var(--t4)', fontSize:11, fontStyle:'italic', textAlign:'center' }}>
+                <div style={{ gridColumn:'1 / -1', padding:'8px 4px', borderRadius:8, background:'var(--bg3)', color:'var(--t4)', fontSize:11, fontStyle:'italic', textAlign:'center' }}>
                   No bar seats on your floor plan. Roaming only.
                 </div>
               )}
               {barSeats.map(s=>(
                 <button key={s.id} disabled={s.busy} onClick={()=>setSeatId(s.id===seatId?'':s.id)} style={{
-                  flex:1, padding:'8px 4px', borderRadius:8, cursor:s.busy?'not-allowed':'pointer', fontFamily:'inherit',
+                  padding:'8px 4px', borderRadius:8, cursor:s.busy?'not-allowed':'pointer', fontFamily:'inherit',
                   border:`1.5px solid ${seatId===s.id?'var(--acc)':'var(--bdr)'}`,
                   background:seatId===s.id?'var(--acc-d)':'var(--bg3)',
                   color:seatId===s.id?'var(--acc)':(s.busy?'var(--t4)':'var(--t2)'), fontSize:13, fontWeight:700,
@@ -88,10 +90,10 @@ function OpenTabModal({ onConfirm, onCancel }) {
                 }} title={s.busy?'Seat already has an open tab':''}>{s.label}{s.busy?' \u00B7':''}</button>
               ))}
               <button onClick={()=>setSeatId('')} style={{
-                flex:1.5, padding:'8px 4px', borderRadius:8, cursor:'pointer', fontFamily:'inherit',
+                gridColumn:'span 2', padding:'8px 4px', borderRadius:8, cursor:'pointer', fontFamily:'inherit',
                 border:`1.5px solid ${'roaming'===seatId||seatId===''?'var(--acc)':'var(--bdr)'}`,
                 background:'roaming'===seatId||seatId===''?'var(--acc-d)':'var(--bg3)',
-                color:'roaming'===seatId||seatId===''?'var(--acc)':'var(--t2)', fontSize:12, fontWeight:700,
+                color:'roaming'===seatId||seatId===''?'var(--acc)':'var(--t2)', fontSize:12, fontWeight:700, whiteSpace:'nowrap',
               }}>🚶 Roaming</button>
             </div>
           </div>
