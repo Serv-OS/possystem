@@ -16,6 +16,28 @@ A SaaS restaurant/bar POS with many device "surfaces" off one codebase (URL `?mo
 
 ## Recent arc (this block of sessions)
 
+### Cross-device table reservations (v5.5.740) — SHIPPED (isolated design)
+Peter: a reservation made on one POS didn't show on the others. Root cause: `setReservation` only
+updated local `store.tables` (`_updateTable`); nothing persisted, and the real-time table sync
+(`active_sessions`) only carries tables with an open ORDER.
+- **First attempt (REVERTED):** carried reservations as a `{__reserved:true}` marker session inside
+  `active_sessions`. Adversarial review found 10 issues — it leaked as phantom occupied/seated/stalled
+  tables into the SyncBridge boot loader, SessionReconciler, MasterSync, `rpos-session-backup`,
+  `manager-snapshot`, `owner-snapshot`, Back Office overview — and could **overwrite a live order**.
+  Reverted whole (nothing shipped).
+- **Shipped design:** a DEDICATED, isolated table **`public.table_reservations`** (migration
+  `20260707`, applied: unique per loc+table, permissive RLS, REPLICA IDENTITY FULL, in
+  `supabase_realtime`) + **`src/sync/ReservationSync.js`** on its own realtime channel. It touches ONLY
+  `table_reservations` — never `active_sessions`, SessionSync, the session backup, reports, or the
+  snapshots. **Safety invariant:** `_applyReservation`/`_clearReservation` start with
+  `if (t.session) return t` — a live order is never wiped/downgraded. Verified by a 2nd review (all
+  findings low-severity reservation-robustness; zero live-order risk), then those fixed: `_lastSent`
+  latches only after a confirmed write (checks `.error`); `loadReservations` reconciles (heals missed
+  realtime events); reconnect + 30s periodic self-heal; flush trigger ignores broadcast echoes
+  (`isApplyingRef`). Wired in SyncBridge; `setReservation` stamps `reservedAt`.
+- **Design rule going forward:** table-state that must sync and ISN'T a live order gets its own
+  table + channel — never overload `active_sessions`.
+
 ### AI assistant wired across the system (v5.5.735) — SHIPPED (phase 1)
 Peter: assistant said "couldn't find any info" about a donut that went to 86; wants it to answer most questions in detail. Root cause: it could 86 an item but had NO read tool over the 86 list, and `getStoreState` only passed 8 slices.
 - **Architecture** (unchanged): `api/ai.js` = stateless proxy (mode foh/boh/rota → allowlist + system prompt → Anthropic). Tools execute CLIENT-side in `src/lib/aiTools.js` `executeTool(name, input, storeState)` — reads the passed store snapshot AND already imports the ops-DB `supabase` client for direct queries. `AIChat.jsx` runs the tool loop + builds `getStoreState()`.
