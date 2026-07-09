@@ -993,6 +993,17 @@ export const useStore = create((set, get) => ({
     // locationId and the guard can't tell whether subsequent moves are legitimate.
     let locId = null;
     try { locId = getActiveLocationSync() || await getLocationId(); } catch {}
+    const wantLoc = table.locationId || locId || null;
+    // v5.5.739: table labels must be unique per location — a duplicate "number" breaks seating,
+    // session sync (matched by table) and reports. Backstop the UI guard here so no path creates one.
+    const norm = (s) => String(s || '').trim().toLowerCase();
+    const dup = useStore.getState().tables.some(t =>
+      !t.parentId && norm(t.label) === norm(table.label) &&
+      (!t.locationId || !wantLoc || t.locationId === wantLoc));
+    if (dup) {
+      useStore.getState().showToast?.(`Table “${String(table.label || '').trim()}” already exists`, 'error');
+      return;
+    }
     const newTable = { id:`t-${Date.now()}`, status:'available', session:null, locationId: locId, ...table };
     // If caller passed an explicit locationId in `table`, that wins (spread above).
     set(s => ({ tables: [...s.tables, newTable] }));

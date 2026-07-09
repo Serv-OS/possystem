@@ -88,6 +88,30 @@ export default function FloorPlanBuilder() {
     markChanged();
   };
 
+  // v5.5.739: table labels must be unique per location (a duplicate "number" breaks seating,
+  // session sync and reports). Compare case-insensitively against this location's non-child tables.
+  const labelTaken = (label, exceptId) => {
+    const n = String(label || '').trim().toLowerCase();
+    if (!n) return false;
+    return tablesForThisLocation.some(t => t.id !== exceptId && !t.parentId
+      && String(t.label || '').trim().toLowerCase() === n);
+  };
+  // The Label edit is a draft committed on blur — blocking per-keystroke would stop you typing
+  // "T10" just because "T1" exists. Duplicates are rejected only on commit.
+  const [labelDraft, setLabelDraft] = useState('');
+  useEffect(() => { setLabelDraft(selectedTable?.label || ''); }, [selected, selectedTable?.label]);
+  const commitLabel = () => {
+    if (!selectedTable) return;
+    const v = labelDraft.trim();
+    if (!v || v === selectedTable.label) { setLabelDraft(selectedTable.label); return; }
+    if (labelTaken(v, selectedTable.id)) {
+      showToast(`Table “${v}” already exists`, 'error');
+      setLabelDraft(selectedTable.label);
+      return;
+    }
+    upd('label', v);
+  };
+
   const sectionColor = (id) => locationSections.find(s => s.id === id)?.color || '#888780';
   const sectionLabel = (id) => locationSections.find(s => s.id === id)?.label || id;
 
@@ -174,8 +198,12 @@ export default function FloorPlanBuilder() {
 
               <div style={{ marginBottom:9 }}>
                 <label style={{ display:'block', fontSize:10, color:'var(--t4)', marginBottom:4 }}>Label</label>
-                <input style={{ width:'100%', background:'var(--bg3)', border:'1px solid var(--bdr2)', borderRadius:8, padding:'6px 9px', color:'var(--t1)', fontSize:12, fontFamily:'inherit', outline:'none', boxSizing:'border-box' }}
-                  value={selectedTable.label} onChange={e => upd('label', e.target.value)}/>
+                <input style={{ width:'100%', background:'var(--bg3)', border:`1px solid ${labelDraft.trim() && labelTaken(labelDraft, selectedTable.id) ? 'var(--red)' : 'var(--bdr2)'}`, borderRadius:8, padding:'6px 9px', color:'var(--t1)', fontSize:12, fontFamily:'inherit', outline:'none', boxSizing:'border-box' }}
+                  value={labelDraft} onChange={e => setLabelDraft(e.target.value)} onBlur={commitLabel}
+                  onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}/>
+                {labelDraft.trim() && labelTaken(labelDraft, selectedTable.id) && (
+                  <div style={{ fontSize:10, color:'var(--red)', marginTop:3 }}>⚠ “{labelDraft.trim()}” is already used</div>
+                )}
               </div>
 
               <div style={{ marginBottom:9 }}>
@@ -329,8 +357,10 @@ export default function FloorPlanBuilder() {
         <AddTableModal
           sections={locationSections}
           defaultSection={viewSection === 'all' ? locationSections[0]?.id : viewSection}
+          labelTaken={labelTaken}
           onClose={() => setShowAddTable(false)}
           onAdd={table => {
+            if (labelTaken(table.label)) { showToast(`Table “${String(table.label).trim()}” already exists`, 'error'); return; }
             addTableToLayout(table);
             markChanged();
             setShowAddTable(false);
@@ -367,13 +397,14 @@ export default function FloorPlanBuilder() {
 }
 
 // ── Add table modal ───────────────────────────────────────────────────────────
-function AddTableModal({ sections, defaultSection, onAdd, onClose }) {
+function AddTableModal({ sections, defaultSection, labelTaken, onAdd, onClose }) {
   const [label, setLabel]       = useState('');
   const [maxCovers, setMaxCovers] = useState(4);
   const [shape, setShape]       = useState('sq');
   const [section, setSection]   = useState(defaultSection || sections[0]?.id);
 
-  const inp = { width:'100%', background:'var(--bg3)', border:'1.5px solid var(--bdr2)', borderRadius:10, padding:'9px 12px', color:'var(--t1)', fontSize:13, fontFamily:'inherit', outline:'none', display:'block', boxSizing:'border-box' };
+  const dup = !!label.trim() && typeof labelTaken === 'function' && labelTaken(label);
+  const inp = { width:'100%', background:'var(--bg3)', border:`1.5px solid ${dup ? 'var(--red)' : 'var(--bdr2)'}`, borderRadius:10, padding:'9px 12px', color:'var(--t1)', fontSize:13, fontFamily:'inherit', outline:'none', display:'block', boxSizing:'border-box' };
 
   return (
     <div className="modal-back" onClick={e => e.target === e.currentTarget && onClose()}>
@@ -386,6 +417,7 @@ function AddTableModal({ sections, defaultSection, onAdd, onClose }) {
           <div style={{ marginBottom:14 }}>
             <label style={{ display:'block', fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.07em', marginBottom:6 }}>Label</label>
             <input style={inp} placeholder="T11, Bar stool 1, Banquette…" value={label} onChange={e => setLabel(e.target.value)} autoFocus/>
+            {dup && <div style={{ fontSize:11, color:'var(--red)', marginTop:5 }}>⚠ A table called “{label.trim()}” already exists at this location</div>}
           </div>
           <div style={{ marginBottom:14 }}>
             <label style={{ display:'block', fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.07em', marginBottom:8 }}>Max covers</label>
@@ -409,7 +441,7 @@ function AddTableModal({ sections, defaultSection, onAdd, onClose }) {
           </div>
           <div style={{ display:'flex', gap:8 }}>
             <button className="btn btn-ghost" style={{ flex:1 }} onClick={onClose}>Cancel</button>
-            <button className="btn btn-acc" style={{ flex:2, height:42 }} disabled={!label.trim()} onClick={() => onAdd({ label, maxCovers, shape, section, x:40, y:40, w:shape==='rd'?72:80, h:shape==='rd'?72:64 })}>Add to floor plan</button>
+            <button className="btn btn-acc" style={{ flex:2, height:42 }} disabled={!label.trim() || dup} onClick={() => onAdd({ label: label.trim(), maxCovers, shape, section, x:40, y:40, w:shape==='rd'?72:80, h:shape==='rd'?72:64 })}>Add to floor plan</button>
           </div>
         </div>
       </div>

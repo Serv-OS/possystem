@@ -94,6 +94,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.739', date: '7 Jul 2026', label: 'Floor plan — no more duplicate table numbers',
+    changes: [
+      'You can no longer create two tables with the same number/label at a venue (duplicates broke seating, live sync and reports). The “Add table” button is disabled with a warning if the label is already used, and renaming a table to an existing label is rejected too.',
+      'The check is case-insensitive and per-location, so “T1” and “t1” count as the same table.',
+    ],
+  },
+  {
     version: '5.5.738', date: '7 Jul 2026', label: 'Fix: crash when seating a reserved table (or any table with a guest)',
     changes: [
       'Fixed an “App Error” when you seated a table that had a guest attached — e.g. seating a reservation, or seating a waitlist party. The POS tried to apply the guest’s saved allergen filter through a missing action and crashed the screen.',
