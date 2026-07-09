@@ -5,7 +5,7 @@ import ProductModal, { AllergenModal } from '../components/ProductModal';
 import InlineItemFlow from '../components/InlineItemFlow';
 import CheckoutModal from './CheckoutModal';
 import TabPreAuthTerminal from '../components/TabPreAuthTerminal';
-import { getNextOrderRefLocal } from '../lib/db';
+import { getNextOrderRefLocal, fetchMenuCategoryLinks } from '../lib/db';
 import { getActiveLocationSync, ensureAuthToken } from '../lib/supabase';
 import { isTrainingMode } from '../lib/trainingMode';
 import { money, currencySymbol } from '../lib/currency';
@@ -183,8 +183,23 @@ export default function BarSurface() {
 
   // Determine active menu for this device
   const deviceMenuId = deviceConfig?.menuId;
+  // v5.5.741: mirror the POS — a menu owns a category via menuCategories.menuId OR the
+  // menu_category_links join table ("assign categories to a menu"). The bar previously only matched
+  // menuId, so linked categories showed on the POS but never on the bar for the same device menu.
+  const [_categoryLinks, _setCategoryLinks] = useState([]);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try { const { data } = await fetchMenuCategoryLinks(); if (alive) _setCategoryLinks(data || []); }
+      catch (e) { console.warn('[BarSurface] fetchMenuCategoryLinks failed:', e?.message || e); }
+    })();
+    return () => { alive = false; };
+  }, []);
+  const linkedCatIds = useMemo(() => deviceMenuId
+    ? new Set((_categoryLinks||[]).filter(l => l.menu_id === deviceMenuId).map(l => l.category_id))
+    : new Set(), [_categoryLinks, deviceMenuId]);
   const activeMenuCatIds = deviceMenuId
-    ? (menuCategories||[]).filter(c=>c.menuId===deviceMenuId).map(c=>c.id)
+    ? (menuCategories||[]).filter(c => c.menuId===deviceMenuId || linkedCatIds.has(c.id)).map(c=>c.id)
     : null; // null means show all
 
   const ITEMS = (storeMenuItems || MENU_ITEMS).filter(i => {
@@ -652,7 +667,7 @@ export default function BarSurface() {
             {!activeTab&&<button onClick={()=>setShowOpenModal(true)} className="btn btn-acc btn-sm">+ New tab</button>}
           </div>
           <div style={{ display:'flex',gap:4,overflowX:'auto',paddingBottom:2 }}>
-            {[{id:'all',label:'All',icon:'🍽',color:'var(--acc)'},...(menuCategories||[]).filter(c=>!c.parentId&&!c.parent_id&&!c.isSpecial&&(!deviceMenuId||c.menuId===deviceMenuId)).sort((a,b)=>(a.sortOrder||0)-(b.sortOrder||0))].map(c=>{
+            {[{id:'all',label:'All',icon:'🍽',color:'var(--acc)'},...(menuCategories||[]).filter(c=>!c.parentId&&!c.parent_id&&!c.isSpecial&&(!deviceMenuId||c.menuId===deviceMenuId||linkedCatIds.has(c.id))).sort((a,b)=>(a.sortOrder||0)-(b.sortOrder||0))].map(c=>{
               const color = c.color||'var(--acc)';
               const isActive=cat===c.id&&!search;
               return(

@@ -94,6 +94,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.741', date: '7 Jul 2026', label: 'Bar tabs now shows the device’s assigned menu (linked categories)',
+    changes: [
+      'Fixed the Bar tabs screen not showing a menu that was assigned to the device profile even though the POS showed it correctly. A category can belong to a menu two ways — set directly, or “linked” to the menu — and the Bar was only reading the direct one. It now also reads linked categories, exactly like the POS, so the assigned menu shows on the Bar too.',
+    ],
+  },
+  {
     version: '5.5.740', date: '7 Jul 2026', label: 'Table reservations now sync across every till',
     changes: [
       'A reservation made on one POS now appears on all your other tills instantly. Before, a reservation only lived on the till it was made on.',
