@@ -53,7 +53,7 @@ export default function CateringSurface({ location }) {
   const cur = cfg?.currency || (location.currency || 'gbp').toLowerCase();
   // Themeable menu (prototype design system): one brand colour drives the palette via CSS vars.
   const mt = useMemo(() => readTheme(branding), [branding]);
-  const vars = useMemo(() => deriveVars(mt.brandColor), [mt.brandColor]);
+  const vars = useMemo(() => deriveVars(mt.brandColor, mt.bodyBg), [mt.brandColor, mt.bodyBg]);
   // `theme` keeps the (unchanged) card/checkout internals working; brand unified to the menu brand colour.
   const theme = useMemo(() => ({ brand: mt.brandColor, bg: '#ffffff', fg: FIXED.ink, accent: mt.brandColor, logo: mt.logoUrl, hero: mt.headerImageUrl, name: location.name || 'Catering', isLight: true }), [mt, location.name]);
 

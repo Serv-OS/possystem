@@ -44,15 +44,18 @@ export function readableOn(hex) { return isLight(hex) ? '#241f1c' : '#ffffff'; }
 
 // brandColor → { --brand, --brand-deep, --ember1, --ember2, + fixed tokens }. Matches the prototype
 // for #e2581f and generalises to any hue (embers keep the brand hue so non-orange brands stay on-brand).
-export function deriveVars(brandColor) {
+export function deriveVars(brandColor, bodyBg) {
   const brand = /^#?[0-9a-fA-F]{3,6}$/.test(String(brandColor || '')) ? (String(brandColor).startsWith('#') ? brandColor : `#${brandColor}`) : THEME_DEFAULTS.brandColor;
   const [h, s, l] = rgbToHsl(...hexToRgb(brand));
+  // v5.5.744: the storefront body background is now operator-controllable (Menu appearance → Body
+  // background colour, stored on online_branding.background). Falls back to the warm default.
+  const bg = /^#?[0-9a-fA-F]{3,6}$/.test(String(bodyBg || '')) ? (String(bodyBg).startsWith('#') ? bodyBg : `#${bodyBg}`) : FIXED.bg;
   return {
     '--brand': brand,
     '--brand-deep': hslToHex(h, Math.min(100, s + 6), l * 0.76),
     '--ember1': hslToHex(h + 6, Math.min(100, s + 20), Math.min(92, l + 9)),
     '--ember2': hslToHex(h - 4, Math.min(100, s + 12), l * 0.82),
-    '--ink': FIXED.ink, '--muted': FIXED.muted, '--bg': FIXED.bg, '--card': FIXED.card, '--line': FIXED.line,
+    '--ink': FIXED.ink, '--muted': FIXED.muted, '--bg': bg, '--card': FIXED.card, '--line': FIXED.line,
   };
 }
 
@@ -66,6 +69,7 @@ export function readTheme(branding) {
     logoUrl: b.logo_url || null,
     logoShape: ['auto', 'square', 'wide', 'tall', 'circle'].includes(b.logo_shape) ? b.logo_shape : THEME_DEFAULTS.logoShape,
     showOpenStatus: b.show_open_status !== false,
+    bodyBg: b.background || null,   // v5.5.744: operator-set storefront body background
   };
 }
 

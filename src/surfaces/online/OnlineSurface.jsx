@@ -341,7 +341,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
 
   // Themeable menu (prototype design system): brand-colour palette as CSS vars + themed header.
   const mt = useMemo(() => readTheme(branding), [branding]);
-  const vars = useMemo(() => deriveVars(mt.brandColor), [mt.brandColor]);
+  const vars = useMemo(() => deriveVars(mt.brandColor, mt.bodyBg), [mt.brandColor, mt.bodyBg]);
 
   const topCategories = useMemo(
     () => (categories || []).filter(c => !c.parent_id).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)),

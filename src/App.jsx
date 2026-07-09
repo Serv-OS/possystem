@@ -94,6 +94,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.744', date: '7 Jul 2026', label: 'All online/catering branding in one place (Menu appearance) + body background colour',
+    changes: [
+      'Branding for your online ordering & catering pages is now controlled in ONE place — Back office → Menu appearance. The duplicate branding controls in the Online ordering settings have been removed, so the two can no longer overwrite each other. (The kiosk is still branded separately.)',
+      'New: “Body background colour” — set the page background behind the menu (blank = the default warm cream).',
+      'New: “Remove logo” — if you haven’t uploaded your own logo, your venue initial is shown instead of any default logo.',
+    ],
+  },
+  {
     version: '5.5.743', date: '7 Jul 2026', label: 'Catering menu now matches online ordering — categories in the same order',
     changes: [
       'Fixed the catering menu showing categories in a different order to online ordering (e.g. a sub-category like “Steaks” appearing first). Catering now shows the same top-level categories in the same order as the online menu.',

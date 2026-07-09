@@ -204,20 +204,12 @@ export default function OnlineOrdering({ setSection }) {
     }
     setSaving(true); setError(''); setSaved(false);
 
-    // Strip empty strings so the JSONB stays clean
-    const cleanBranding = {
-      ...branding,   // preserve Menu-appearance theme fields (brand_color, header_style, logo_shape, show_open_status)
-      logo_url:     branding.logo_url?.trim()     || null,
-      hero_url:     branding.hero_url?.trim()     || null,
-      accent_color: branding.accent_color || BLANK_BRANDING.accent_color,
-      background:   branding.background   || BLANK_BRANDING.background,
-      foreground:   branding.foreground   || BLANK_BRANDING.foreground,
-    };
-
+    // v5.5.744: branding (logo / colours / header / background) is now edited ONLY in Menu appearance,
+    // so the two screens can no longer clobber each other's online_branding. This screen keeps the
+    // operational settings and deliberately does NOT write online_branding.
     const { data, error: err } = await platformSupabase
       .from('locations')
       .update({
-        online_branding:            cleanBranding,
         online_menu_id:             menuId || null,
         online_collection_lead_min: Math.max(0, parseInt(leadMin, 10) || 0),
         online_delivery_enabled:    !!deliveryOn,
@@ -335,66 +327,14 @@ export default function OnlineOrdering({ setSection }) {
         )}
       </div>
 
-      {/* Branding */}
+      {/* Branding — consolidated into Menu appearance (v5.5.744) */}
       <div style={S.card}>
         <div style={S.h2}>🎨 Branding</div>
         <div style={S.desc}>
-          Logo, colours, and hero image shown on the customer-facing pages. The accent colour drives buttons + price highlights. Leave the URLs blank for a generic look.
-        </div>
-
-        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14, marginBottom:14 }}>
-          <ImageUpload
-            label="Logo"
-            url={branding.logo_url}
-            kind="logo"
-            uploading={uploadingLogo}
-            inputRef={logoInputRef}
-            onPick={(file) => handleUpload(file, 'logo', setUploadingLogo)}
-            onClear={() => setBranding(b => ({ ...b, logo_url: '' }))}
-            help="Square works best · PNG with transparency recommended · max 4 MB"
-            previewBg="#0e0e10" previewWidth={56} previewHeight={56}/>
-          <ImageUpload
-            label="Hero banner"
-            url={branding.hero_url}
-            kind="hero"
-            uploading={uploadingHero}
-            inputRef={heroInputRef}
-            onPick={(file) => handleUpload(file, 'hero', setUploadingHero)}
-            onClear={() => setBranding(b => ({ ...b, hero_url: '' }))}
-            help="Wide image · 1600×600 ideal · max 4 MB"
-            previewBg="#0e0e10" previewWidth="100%" previewHeight={88}/>
-        </div>
-
-        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:14 }}>
-          <ColorField label="Accent colour" value={branding.accent_color} onChange={v => setBranding(b => ({ ...b, accent_color: v }))}/>
-          <ColorField label="Background"    value={branding.background}   onChange={v => setBranding(b => ({ ...b, background: v }))}/>
-          <ColorField label="Foreground"    value={branding.foreground}   onChange={v => setBranding(b => ({ ...b, foreground: v }))}/>
-        </div>
-
-        {/* Live mini-preview */}
-        <div style={{ marginTop:18 }}>
-          <div style={S.label}>Preview</div>
-          <div style={{
-            padding:'18px 20px', borderRadius:12, marginTop:8,
-            background: branding.background, color: branding.foreground,
-            border:'1px solid var(--bdr)',
-            display:'flex', alignItems:'center', gap:14,
-          }}>
-            {branding.logo_url
-              ? <img src={branding.logo_url} alt="logo" style={{ width:46, height:46, borderRadius:10, objectFit:'cover' }}/>
-              : <div style={{ width:46, height:46, borderRadius:10, background:branding.accent_color, color:'#0b0c10', display:'flex', alignItems:'center', justifyContent:'center', fontSize:20, fontWeight:800 }}>
-                  {(row.name || 'X')[0]}
-                </div>}
-            <div style={{ flex:1, minWidth:0 }}>
-              <div style={{ fontSize:15, fontWeight:800 }}>{row.name}</div>
-              <div style={{ fontSize:11, opacity:.6 }}>Order online · Collection</div>
-            </div>
-            <button style={{
-              padding:'9px 16px', borderRadius:99, border:'none',
-              background: branding.accent_color, color:'#0b0c10',
-              fontSize:12, fontWeight:800, cursor:'pointer', fontFamily:'inherit',
-            }}>View cart · £24.50</button>
-          </div>
+          Your logo, colours, header style, header photo and page background for the online ordering &amp;
+          catering pages are all set in <b>one place now — Back office → Menu appearance</b>, with a live
+          preview. This screen no longer edits branding, so the two can’t overwrite each other. (The kiosk
+          is still branded separately in Kiosk settings.)
         </div>
       </div>
 

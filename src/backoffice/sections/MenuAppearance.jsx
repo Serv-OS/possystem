@@ -81,7 +81,7 @@ export default function MenuAppearance() {
 
   const set = (patch) => setBranding((b) => ({ ...b, ...patch }));
   const mt = readTheme(branding);
-  const vars = deriveVars(mt.brandColor);
+  const vars = deriveVars(mt.brandColor, mt.bodyBg);
 
   const pickFile = async (kind, setUp) => {
     const ref = kind === 'logo' ? logoRef : heroRef;
@@ -95,7 +95,7 @@ export default function MenuAppearance() {
     if (!platformSupabase || !row) { setSave({ err: 'No customer-facing location found — set a slug in Online ordering first.' }); return; }
     setSave({ busy: true });
     try {
-      const next = { ...(row.online_branding || {}), ...branding, brand_color: mt.brandColor, header_style: mt.headerStyle, logo_shape: mt.logoShape, show_open_status: mt.showOpenStatus, logo_url: branding.logo_url || null, hero_url: branding.hero_url || null };
+      const next = { ...(row.online_branding || {}), ...branding, brand_color: mt.brandColor, header_style: mt.headerStyle, logo_shape: mt.logoShape, show_open_status: mt.showOpenStatus, logo_url: branding.logo_url || null, hero_url: branding.hero_url || null, background: branding.background || null };
       const { error } = await platformSupabase.from('locations').update({ online_branding: next }).eq('id', row.id);
       if (error) throw error;
       setRow((r) => ({ ...r, online_branding: next }));
@@ -125,6 +125,14 @@ export default function MenuAppearance() {
               </div>
               <div style={{ fontSize: 11.5, color: 'var(--t4)', marginTop: 5 }}>Drives every accent — header, prices, buttons, links.</div>
             </div>
+            <div style={S.field}><label style={S.label}>Body background colour</label>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                <input type="color" value={mt.bodyBg || '#f6f2ec'} onChange={(e) => set({ background: e.target.value })} style={{ width: 46, height: 38, border: '1px solid var(--bdr2)', borderRadius: 8, background: 'none', cursor: 'pointer' }} />
+                <input style={{ ...S.input, maxWidth: 130 }} value={branding.background || ''} onChange={(e) => set({ background: e.target.value })} placeholder="#f6f2ec" />
+                {branding.background && <button style={S.ghost} onClick={() => set({ background: '' })}>Reset</button>}
+              </div>
+              <div style={{ fontSize: 11.5, color: 'var(--t4)', marginTop: 5 }}>The page background behind the menu. Blank = the default warm cream.</div>
+            </div>
             <div style={S.field}><label style={S.label}>Header style</label>
               <div style={{ display: 'flex', gap: 8 }}>{HEADERS.map(([v, l]) => <button key={v} style={S.seg(mt.headerStyle === v)} onClick={() => set({ header_style: v })}>{l}</button>)}</div>
             </div>
@@ -138,10 +146,12 @@ export default function MenuAppearance() {
             </div>
             <div style={S.field}><label style={S.label}>Logo</label>
               <input ref={logoRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={() => pickFile('logo', setUpLogo)} />
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                 {branding.logo_url && <div style={{ height: 38, padding: 4, background: '#fff', border: '1px solid var(--bdr2)', borderRadius: 8 }}><img src={branding.logo_url} alt="logo" style={{ height: '100%', width: 'auto', objectFit: 'contain' }} /></div>}
                 <button style={S.ghost} onClick={() => logoRef.current?.click()} disabled={upLogo}>{upLogo ? 'Uploading…' : branding.logo_url ? 'Replace logo' : 'Upload logo'}</button>
+                {branding.logo_url && <button style={S.ghost} onClick={() => set({ logo_url: '' })}>Remove logo</button>}
               </div>
+              <div style={{ fontSize: 11.5, color: 'var(--t4)', marginTop: 5 }}>No logo → your venue initial is shown instead (never a ServOS logo).</div>
               <div style={{ marginTop: 10 }}><label style={S.label}>Logo shape</label>
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>{SHAPES.map(([v, l]) => <button key={v} style={S.seg(mt.logoShape === v)} onClick={() => set({ logo_shape: v })}>{l}</button>)}</div>
                 <div style={{ fontSize: 11.5, color: 'var(--t4)', marginTop: 5 }}>Auto fits the logo’s own proportions. Circle crops to a circle.</div>
