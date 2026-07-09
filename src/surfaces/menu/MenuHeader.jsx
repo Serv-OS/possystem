@@ -9,8 +9,10 @@
 
 import { logoGeom, EMBER_GRADIENT } from './menuTheme';
 
-// White logo plate with the real logo (or a brand-gradient initial fallback).
+// White logo plate with the real logo. v5.5.745: NO logo uploaded → NO plate at all (a clean header
+// with just the venue name), rather than a default/initial box — "remove the logo" means no square.
 function LogoPlate({ theme, name, height, onWhite = false }) {
+  if (!theme.logoUrl) return null;
   const g = logoGeom(theme.logoShape);
   const plate = {
     flex: 'none', height, padding: theme.logoShape === 'circle' ? 4 : 6, background: '#fff',
@@ -25,9 +27,7 @@ function LogoPlate({ theme, name, height, onWhite = false }) {
   };
   return (
     <div style={plate}>
-      {theme.logoUrl
-        ? <img src={theme.logoUrl} alt={name} style={imgStyle} />
-        : <div style={{ height: '100%', aspectRatio: '1', borderRadius: g.imgRadius, background: 'linear-gradient(150deg, var(--ember1), var(--brand))', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: "'Space Grotesk', sans-serif", fontWeight: 800, fontSize: '1.1em' }}>{(name || 'M')[0]}</div>}
+      <img src={theme.logoUrl} alt={name} style={imgStyle} />
     </div>
   );
 }

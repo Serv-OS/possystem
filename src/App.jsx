@@ -94,6 +94,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.745', date: '7 Jul 2026', label: 'Online/catering header — no logo means a clean header (no box)',
+    changes: [
+      'When no logo is uploaded, the online ordering & catering header now shows just your venue name — no logo box at all (previously it showed a placeholder box). Upload a logo in Menu appearance to bring it back.',
+    ],
+  },
+  {
     version: '5.5.744', date: '7 Jul 2026', label: 'All online/catering branding in one place (Menu appearance) + body background colour',
     changes: [
       'Branding for your online ordering & catering pages is now controlled in ONE place — Back office → Menu appearance. The duplicate branding controls in the Online ordering settings have been removed, so the two can no longer overwrite each other. (The kiosk is still branded separately.)',

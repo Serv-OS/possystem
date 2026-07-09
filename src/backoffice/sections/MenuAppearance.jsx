@@ -151,7 +151,7 @@ export default function MenuAppearance() {
                 <button style={S.ghost} onClick={() => logoRef.current?.click()} disabled={upLogo}>{upLogo ? 'Uploading…' : branding.logo_url ? 'Replace logo' : 'Upload logo'}</button>
                 {branding.logo_url && <button style={S.ghost} onClick={() => set({ logo_url: '' })}>Remove logo</button>}
               </div>
-              <div style={{ fontSize: 11.5, color: 'var(--t4)', marginTop: 5 }}>No logo → your venue initial is shown instead (never a ServOS logo).</div>
+              <div style={{ fontSize: 11.5, color: 'var(--t4)', marginTop: 5 }}>No logo → a clean header with just your venue name (no logo box).</div>
               <div style={{ marginTop: 10 }}><label style={S.label}>Logo shape</label>
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>{SHAPES.map(([v, l]) => <button key={v} style={S.seg(mt.logoShape === v)} onClick={() => set({ logo_shape: v })}>{l}</button>)}</div>
                 <div style={{ fontSize: 11.5, color: 'var(--t4)', marginTop: 5 }}>Auto fits the logo’s own proportions. Circle crops to a circle.</div>
