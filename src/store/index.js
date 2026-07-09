@@ -1215,7 +1215,10 @@ export const useStore = create((set, get) => ({
 
   // Add/remove reservation
   setReservation: (tableId, res) => {
-    get()._updateTable(tableId, { status: res?'reserved':'available', reservation: res||null });
+    // v5.5.740: stamp reservedAt on every set/edit so cross-device sync (ReservationSync) has a fresh,
+    // monotonic timestamp — it re-publishes on edits and resolves "newest wins" between devices.
+    const stamped = res ? { ...res, reservedAt: Date.now() } : null;
+    get()._updateTable(tableId, { status: stamped ? 'reserved' : 'available', reservation: stamped });
   },
 
   // Update covers count mid-service

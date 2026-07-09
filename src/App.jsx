@@ -94,6 +94,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.740', date: '7 Jul 2026', label: 'Table reservations now sync across every till',
+    changes: [
+      'A reservation made on one POS now appears on all your other tills instantly. Before, a reservation only lived on the till it was made on.',
+      'Full lifecycle syncs: reserve, edit, cancel, and seating a reserved table all update everywhere in real time.',
+      'Built as a separate, isolated system so it can never interfere with a live order — a table that already has an open order is always left exactly as it is.',
+    ],
+  },
+  {
     version: '5.5.739', date: '7 Jul 2026', label: 'Floor plan — no more duplicate table numbers',
     changes: [
       'You can no longer create two tables with the same number/label at a venue (duplicates broke seating, live sync and reports). The “Add table” button is disabled with a warning if the label is already used, and renaming a table to an existing label is rejected too.',
