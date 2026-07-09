@@ -603,41 +603,41 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
         WebkitBackdropFilter: 'saturate(180%) blur(12px)',
         borderBottom: `1px solid ${cardBdr}`,
       }}>
+        {/* v5.5.749: the venue logo, name, and table live in the header ABOVE.
+            The sticky bar carries only ACTIONS + categories so nothing is doubled
+            up (matches the customer-facing design). Sign-in sits left, Allergies right. */}
         <div style={{ maxWidth: 1100, margin: '0 auto', padding: '12px 20px 0',
-          display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap',
         }}>
-          {theme.logo && (
-            <img src={theme.logo} alt={theme.name}
-              style={{ height: 34, width: 'auto', maxWidth: 130, borderRadius: 8, objectFit: 'contain', background: '#fff', padding: '3px 6px', boxSizing: 'border-box', flexShrink: 0 }}/>
-          )}
-          <div style={{ fontSize: 15, fontWeight: 800, flexShrink: 0, marginRight: 'auto' }}>{theme.name}</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            {/* Order-type pill — online only (QR is always dine-in at the table) */}
+            {!isQr && (
+              <button onClick={() => setOrderType(null)} className="op-btn" style={{
+                padding: '6px 12px', borderRadius: 99,
+                background: `${theme.accent}18`, color: theme.fg,
+                border: `1px solid ${theme.accent}55`,
+                fontSize: 12, fontWeight: 800, fontFamily: 'inherit', cursor: 'pointer',
+                display: 'inline-flex', alignItems: 'center', gap: 6,
+              }}>
+                <span>{orderType === 'collection' ? '🥡' : '🚴'}</span>
+                <span>{orderType === 'collection' ? 'Collection' : 'Delivery'}</span>
+                <span style={{ opacity: 0.5, fontSize: 11 }}>↓</span>
+              </button>
+            )}
 
-          {/* v5.5.145: QR mode shows a static "Table T5" chip; online mode
-              keeps the changeable order-type pill. */}
-          {isQr ? (
-            <span style={{
+            {/* Loyalty / sign-in */}
+            <button onClick={() => { if (!loyalty?.verified) setShowLoyalty(true); }} className="op-btn" style={{
               padding: '6px 12px', borderRadius: 99,
-              background: `${theme.accent}18`, color: theme.fg,
-              border: `1px solid ${theme.accent}55`,
-              fontSize: 12, fontWeight: 800, fontFamily: 'inherit',
-              display: 'inline-flex', alignItems: 'center', gap: 6,
+              background: loyalty?.verified ? `${theme.accent}18` : 'transparent',
+              color: loyalty?.verified ? theme.accent : theme.fg,
+              border: `1px solid ${loyalty?.verified ? theme.accent + '44' : cardBdr}`,
+              fontSize: 12, fontWeight: 700, fontFamily: 'inherit', cursor: loyalty?.verified ? 'default' : 'pointer',
             }}>
-              <span>📱</span>
-              <span>Table {effectiveTableLabel || '?'}</span>
-            </span>
-          ) : (
-            <button onClick={() => setOrderType(null)} className="op-btn" style={{
-              padding: '6px 12px', borderRadius: 99,
-              background: `${theme.accent}18`, color: theme.fg,
-              border: `1px solid ${theme.accent}55`,
-              fontSize: 12, fontWeight: 800, fontFamily: 'inherit', cursor: 'pointer',
-              display: 'inline-flex', alignItems: 'center', gap: 6,
-            }}>
-              <span>{orderType === 'collection' ? '🥡' : '🚴'}</span>
-              <span>{orderType === 'collection' ? 'Collection' : 'Delivery'}</span>
-              <span style={{ opacity: 0.5, fontSize: 11 }}>↓</span>
+              {loyalty?.verified
+                ? `✦ ${loyalty.customer?.name?.split(' ')[0] || loyalty.phone}${loyalty.loyalty?.points_balance ? ` · ${loyalty.loyalty.points_balance} pts` : ''}`
+                : '✦ Sign in for rewards'}
             </button>
-          )}
+          </div>
 
           {/* Allergy filter — only shown when there are allergens to filter */}
           {knownAllergens.length > 0 && (
@@ -653,19 +653,6 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
               <span>{activeAllergens.length ? `${activeAllergens.length} allergy filter${activeAllergens.length === 1 ? '' : 's'}` : 'Allergies'}</span>
             </button>
           )}
-
-          {/* Loyalty / sign-in */}
-          <button onClick={() => { if (!loyalty?.verified) setShowLoyalty(true); }} className="op-btn" style={{
-            padding: '6px 12px', borderRadius: 99,
-            background: loyalty?.verified ? `${theme.accent}18` : 'transparent',
-            color: loyalty?.verified ? theme.accent : theme.fg,
-            border: `1px solid ${loyalty?.verified ? theme.accent + '44' : cardBdr}`,
-            fontSize: 12, fontWeight: 700, fontFamily: 'inherit', cursor: loyalty?.verified ? 'default' : 'pointer',
-          }}>
-            {loyalty?.verified
-              ? `✦ ${loyalty.customer?.name?.split(' ')[0] || loyalty.phone}${loyalty.loyalty?.points_balance ? ` · ${loyalty.loyalty.points_balance} pts` : ''}`
-              : '✦ Sign in for rewards'}
-          </button>
         </div>
 
         {/* Category chips */}

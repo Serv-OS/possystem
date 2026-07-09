@@ -94,6 +94,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.749', date: '7 Jul 2026', label: 'Online / QR ordering — cleaner header (no more doubled-up logo, name + table)',
+    changes: [
+      'The venue logo, name and table number were showing twice — once in the big header photo and again in the sticky bar right below it. The sticky bar now carries only the actions (order type, Sign in for rewards, Allergies) and the category tabs, so nothing is repeated.',
+      'Sign in for rewards sits on the left, Allergies on the right — matching the customer-facing design.',
+    ],
+  },
+  {
     version: '5.5.748', date: '7 Jul 2026', label: 'Gift-card buy + balance-check pages: Menu appearance branding + logo fix',
     changes: [
       'Gift-card purchase, balance-check and purchase-confirmation pages now use your Menu appearance branding (they already read it via the shared theme — this makes the logo look right).',
