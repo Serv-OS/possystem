@@ -2257,6 +2257,10 @@ export const useStore = create((set, get) => ({
   allergens: [],
   toggleAllergen: id => set(s=>({ allergens:s.allergens.includes(id)?s.allergens.filter(a=>a!==id):[...s.allergens,id] })),
   clearAllergens: () => set({ allergens:[] }),
+  // Bulk-set the active allergen filter (e.g. from a seated guest's saved allergens). POSSurface's
+  // table-customer hydrate calls this; without it, seating a table that carries a customer with
+  // allergens (a reservation / waitlist party) threw "setAllergens is not a function".
+  setAllergens: (arr) => set({ allergens: Array.isArray(arr) ? [...arr] : [] }),
 
   // ── Order type / customer ─────────────────
   orderType: 'dine-in',

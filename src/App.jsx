@@ -94,6 +94,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.738', date: '7 Jul 2026', label: 'Fix: crash when seating a reserved table (or any table with a guest)',
+    changes: [
+      'Fixed an “App Error” when you seated a table that had a guest attached — e.g. seating a reservation, or seating a waitlist party. The POS tried to apply the guest’s saved allergen filter through a missing action and crashed the screen.',
+      'The guest’s allergens now apply correctly on seating, with no crash.',
+    ],
+  },
+  {
     version: '5.5.737', date: '7 Jul 2026', label: 'Loyalty portal — verification codes send again (Twilio fix)',
     changes: [
       'FIXED: loyalty portal sign-in was failing for everyone with “Failed to send verification code”. Root cause: the code SMS was asking Twilio to use a custom “Your <venue>…” sender name that this Twilio Verify service doesn’t permit (Twilio error 60204), so Twilio rejected every send.',
