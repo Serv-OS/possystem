@@ -87,14 +87,18 @@ const DEFAULT_THEME = {
  * @param {object} [giftBranding] - gift_brand_config.branding (per-feature override)
  */
 export function buildGiftTheme(location, giftBranding) {
-  // Gift-specific branding takes priority over online_branding
-  const b = giftBranding || location?.online_branding;
+  // v5.5.747: Menu appearance (online_branding) is the SINGLE customer-facing branding source, so the
+  // loyalty portal / registration + gift pages match the online menu. The old per-company
+  // gift_brand_config is only a fallback now (kept so nothing breaks if online_branding is empty).
+  const b = location?.online_branding || giftBranding;
   if (!b) return { ...DEFAULT_THEME, companyName: location?.company_name || null };
   const bg = b.background || DEFAULT_THEME.bg;
-  const fg = b.foreground || DEFAULT_THEME.text;
-  const accent = b.accent_color || DEFAULT_THEME.accent;
+  const accent = b.brand_color || b.accent_color || DEFAULT_THEME.accent;   // brand_color = the Menu appearance colour
   const bgLum = luminance(bg);
   const isDark = bgLum < 0.45;
+  // Auto-contrast text against the chosen background (Menu appearance has no separate text control,
+  // and a stale foreground could otherwise be unreadable).
+  const fg = isDark ? '#ffffff' : '#16191c';
   return {
     bg,
     // Cards: transparent overlays that adapt to any background colour

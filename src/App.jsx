@@ -94,6 +94,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.747', date: '7 Jul 2026', label: 'Loyalty, registration + gift-card pages now use your Menu appearance branding',
+    changes: [
+      'Your customer-facing loyalty portal, sign-up/registration and gift-card pages now use the SAME branding as your online menu (logo, brand colour, background) — set once in Menu appearance. Previously they pulled from a separate, hidden gift/loyalty branding config, so they looked nothing like your menu.',
+      'The old “Gift card page branding” section is now marked as a legacy fallback and points you to Menu appearance.',
+      'Also fixed the logo being square-cropped on the loyalty portal (same rectangle-logo fix as the ordering pages).',
+    ],
+  },
+  {
     version: '5.5.746', date: '7 Jul 2026', label: 'Online ordering — your logo shows at its real shape (rectangle no longer cropped square)',
     changes: [
       'Fixed a rectangle/wide logo being squashed into a square box and cropped (e.g. on the QR “confirm your table” screen and the sign-in/order-type headers, showing only the middle of the logo). Logos now display at their true shape on a clean white plate — the whole logo is visible.',

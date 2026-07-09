@@ -273,8 +273,9 @@ export default function CustomerPortal({ location }) {
       <div style={{ textAlign: 'center', marginBottom: 28, flexShrink: 0 }}>
         {t.logo && (
           <img src={t.logo} alt={t.companyName || location.name} style={{
-            width: 100, height: 100, borderRadius: 20, objectFit: 'cover',
-            marginBottom: 14,
+            height: 76, width: 'auto', maxWidth: 260, borderRadius: 16, objectFit: 'contain',
+            background: '#fff', padding: '10px 14px', boxSizing: 'border-box',
+            boxShadow: '0 4px 18px rgba(0,0,0,0.15)', marginBottom: 14,
           }}/>
         )}
         <div style={{ fontSize: 24, fontWeight: 800 }}>{t.companyName || location.name}</div>

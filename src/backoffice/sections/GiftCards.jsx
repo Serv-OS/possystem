@@ -1435,8 +1435,11 @@ function BrandingPanel({ locationRow, opsLocId, brandConfig, onConfigUpdate }) {
   return (
     <div style={S.card}>
       <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--t1)', marginBottom: 4 }}>Gift card page branding</div>
-      <div style={{ fontSize: 12, color: 'var(--t4)', marginBottom: 16 }}>
-        Customise the look of your customer-facing gift card pages. If not set, falls back to your Online Ordering branding.
+      <div style={{ fontSize: 12.5, color: 'var(--t2)', background: 'var(--acc-d)', border: '1px solid var(--acc-b)', borderRadius: 10, padding: '10px 12px', marginBottom: 14, lineHeight: 1.5 }}>
+        <b>Now managed in Menu appearance.</b> Your loyalty, gift-card and registration pages use the same
+        branding as your online menu (logo, colour, background) — set it all in one place at
+        <b> Back office → Menu appearance</b>. The settings below are a legacy fallback and no longer affect
+        those pages while Menu appearance branding is set.
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
