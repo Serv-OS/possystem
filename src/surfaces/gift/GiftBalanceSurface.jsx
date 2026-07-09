@@ -67,7 +67,7 @@ export default function GiftBalanceSurface({ location }) {
             boxShadow: '0 6px 22px rgba(0,0,0,0.18)', marginBottom: 16,
           }}/>
         )}
-        <div style={{ fontSize: 26, fontWeight: 800 }}>{t.companyName || location.name}</div>
+        {!t.logo && <div style={{ fontSize: 26, fontWeight: 800 }}>{t.companyName || location.name}</div>}
         <div style={{ fontSize: 12, color: t.textDim, marginTop: 4 }}>
           Gift Card Balance
         </div>

@@ -278,7 +278,8 @@ export default function CustomerPortal({ location }) {
             boxShadow: '0 4px 18px rgba(0,0,0,0.15)', marginBottom: 14,
           }}/>
         )}
-        <div style={{ fontSize: 24, fontWeight: 800 }}>{t.companyName || location.name}</div>
+        {/* v5.5.750: the logo carries the brand — only show the name when there's no logo. */}
+        {!t.logo && <div style={{ fontSize: 24, fontWeight: 800 }}>{t.companyName || location.name}</div>}
         {screen === 'login' && (
           <div style={{ fontSize: 13, color: t.textMuted, marginTop: 4 }}>
             Sign in to your loyalty account

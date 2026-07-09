@@ -93,7 +93,7 @@ export default function GiftSuccessSurface({ location }) {
             boxShadow: '0 6px 22px rgba(0,0,0,0.18)', marginBottom: 16,
           }}/>
         )}
-        <div style={{ fontSize: 26, fontWeight: 800 }}>{t.companyName || location.name}</div>
+        {!t.logo && <div style={{ fontSize: 26, fontWeight: 800 }}>{t.companyName || location.name}</div>}
       </div>
 
       <div style={{ width: '100%', maxWidth: 420 }}>

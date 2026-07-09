@@ -94,6 +94,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.750', date: '7 Jul 2026', label: 'Loyalty + gift-card pages — logo only in the header (business name hidden when you have a logo)',
+    changes: [
+      'The customer-facing loyalty portal and gift-card pages no longer print the business name under the logo — the logo is enough, giving a cleaner header.',
+      'If a venue has no logo set, the business name still shows (so the header is never blank).',
+    ],
+  },
+  {
     version: '5.5.749', date: '7 Jul 2026', label: 'Online / QR ordering — cleaner header (no more doubled-up logo, name + table)',
     changes: [
       'The venue logo, name and table number were showing twice — once in the big header photo and again in the sticky bar right below it. The sticky bar now carries only the actions (order type, Sign in for rewards, Allergies) and the category tabs, so nothing is repeated.',
