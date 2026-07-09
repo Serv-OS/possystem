@@ -94,6 +94,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.748', date: '7 Jul 2026', label: 'Gift-card buy + balance-check pages: Menu appearance branding + logo fix',
+    changes: [
+      'Gift-card purchase, balance-check and purchase-confirmation pages now use your Menu appearance branding (they already read it via the shared theme — this makes the logo look right).',
+      'Fixed the logo being square-cropped on all three gift pages and on the catering confirmation header (your rectangle logo now shows in full on a clean white plate, same fix as the menu + loyalty pages).',
+    ],
+  },
+  {
     version: '5.5.747', date: '7 Jul 2026', label: 'Loyalty, registration + gift-card pages now use your Menu appearance branding',
     changes: [
       'Your customer-facing loyalty portal, sign-up/registration and gift-card pages now use the SAME branding as your online menu (logo, brand colour, background) — set once in Menu appearance. Previously they pulled from a separate, hidden gift/loyalty branding config, so they looked nothing like your menu.',

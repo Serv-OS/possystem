@@ -100,8 +100,9 @@ export default function GiftPurchaseSurface({ location }) {
       <div style={{ textAlign: 'center', marginBottom: 32 }}>
         {t.logo && (
           <img src={t.logo} alt={t.companyName || location.name} style={{
-            width: 144, height: 144, borderRadius: 20, objectFit: 'cover',
-            marginBottom: 16,
+            height: 96, width: 'auto', maxWidth: 300, borderRadius: 18, objectFit: 'contain',
+            background: '#fff', padding: '12px 18px', boxSizing: 'border-box',
+            boxShadow: '0 6px 22px rgba(0,0,0,0.18)', marginBottom: 16,
           }}/>
         )}
         <div style={{ fontSize: 26, fontWeight: 800 }}>{t.companyName || location.name}</div>

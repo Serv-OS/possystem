@@ -237,7 +237,7 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
       <div style={{ position: 'fixed', inset: 0, overflowY: 'auto', background: theme.bg || '#f5f5f5', color: theme.fg || '#0f172a', fontFamily: '-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",system-ui,sans-serif' }}>
         <header style={{ background: theme.brand, color: '#fff', padding: '16px 0' }}>
           <div style={{ ...center, display: 'flex', alignItems: 'center', gap: 12 }}>
-            {theme.logo && <img src={theme.logo} alt={theme.name} style={{ width: 38, height: 38, borderRadius: 8, objectFit: 'cover', flexShrink: 0 }} />}
+            {theme.logo && <img src={theme.logo} alt={theme.name} style={{ height: 34, width: 'auto', maxWidth: 130, borderRadius: 8, objectFit: 'contain', background: '#fff', padding: '4px 8px', boxSizing: 'border-box', flexShrink: 0 }} />}
             <div style={{ fontSize: 19, fontWeight: 800 }}>{theme.name || location.name}</div>
           </div>
         </header>
@@ -289,7 +289,7 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
     <div style={{ position: 'fixed', inset: 0, overflowY: 'auto', overflowX: 'hidden', WebkitOverflowScrolling: 'touch', paddingBottom: 40, background: theme.bg || '#f5f5f5', color: theme.fg || '#0f172a', fontFamily: '-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",system-ui,sans-serif' }}>
       <header style={{ background: theme.brand, color: '#fff', padding: '16px 0' }}>
         <div style={{ ...center, display: 'flex', alignItems: 'center', gap: 12 }}>
-          {theme.logo && <img src={theme.logo} alt={theme.name} style={{ width: 38, height: 38, borderRadius: 8, objectFit: 'cover', flexShrink: 0 }} />}
+          {theme.logo && <img src={theme.logo} alt={theme.name} style={{ height: 34, width: 'auto', maxWidth: 130, borderRadius: 8, objectFit: 'contain', background: '#fff', padding: '4px 8px', boxSizing: 'border-box', flexShrink: 0 }} />}
           <div>
             <button onClick={() => (step === 'pay' ? setStep('details') : onBack())} style={{ background: 'transparent', border: 'none', color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 700, padding: 0 }}>← {step === 'pay' ? 'Back to details' : 'Back to menu'}</button>
             <div style={{ fontSize: 19, fontWeight: 800, marginTop: 4 }}>Checkout</div>
