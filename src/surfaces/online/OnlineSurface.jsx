@@ -608,7 +608,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
         }}>
           {theme.logo && (
             <img src={theme.logo} alt={theme.name}
-              style={{ width: 36, height: 36, borderRadius: 8, objectFit: 'cover', flexShrink: 0 }}/>
+              style={{ height: 34, width: 'auto', maxWidth: 130, borderRadius: 8, objectFit: 'contain', background: '#fff', padding: '3px 6px', boxSizing: 'border-box', flexShrink: 0 }}/>
           )}
           <div style={{ fontSize: 15, fontWeight: 800, flexShrink: 0, marginRight: 'auto' }}>{theme.name}</div>
 
@@ -895,9 +895,9 @@ function Welcome({ theme, orderTypes, loyalty, onPickType, onLoyalty }) {
       <div style={{ maxWidth: 480, width: '100%' }}>
         {theme.logo
           ? <img src={theme.logo} alt={theme.name} style={{
-              width: 100, height: 100, borderRadius: 22, objectFit: 'cover',
-              border: '4px solid #fff', boxShadow: '0 8px 28px rgba(0,0,0,0.4)',
-              margin: '0 auto 18px',
+              height: 80, width: 'auto', maxWidth: 300, borderRadius: 18, objectFit: 'contain',
+              background: '#fff', padding: '10px 14px', boxSizing: 'border-box',
+              boxShadow: '0 8px 28px rgba(0,0,0,0.4)', margin: '0 auto 18px',
             }}/>
           : <div style={{
               width: 100, height: 100, borderRadius: 22,
@@ -1353,10 +1353,10 @@ function Hero({ theme, muted, leadMin, tableLabel }) {
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
           {theme.logo
             ? <img src={theme.logo} alt={theme.name} style={{
-                width: tableLabel ? 70 : 84, height: tableLabel ? 70 : 84,
-                borderRadius: 18, objectFit: 'cover',
-                border: '3px solid #fff', boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
-                flexShrink: 0,
+                height: tableLabel ? 60 : 72, width: 'auto', maxWidth: 240,
+                borderRadius: 16, objectFit: 'contain',
+                background: '#fff', padding: '8px 12px', boxSizing: 'border-box',
+                boxShadow: '0 8px 24px rgba(0,0,0,0.4)', flexShrink: 0,
               }}/>
             : <div style={{
                 width: tableLabel ? 70 : 84, height: tableLabel ? 70 : 84,
@@ -1530,9 +1530,9 @@ function ConfirmTableScreen({ theme, cardBdr, muted, locationName, presetLabel, 
       <div style={{ maxWidth: 440, width: '100%' }}>
         {theme.logo && (
           <img src={theme.logo} alt={locationName} style={{
-            width: 88, height: 88, borderRadius: 20, objectFit: 'cover',
-            border: '3px solid #fff', boxShadow: '0 8px 28px rgba(0,0,0,0.4)',
-            margin: '0 auto 18px',
+            height: 72, width: 'auto', maxWidth: 280, borderRadius: 16, objectFit: 'contain',
+            background: '#fff', padding: '10px 14px', boxSizing: 'border-box',
+            boxShadow: '0 8px 28px rgba(0,0,0,0.4)', margin: '0 auto 18px',
           }}/>
         )}
         <div style={{ fontSize: 14, fontWeight: 700, opacity: 0.9, textShadow: '0 1px 4px rgba(0,0,0,0.4)' }}>

@@ -94,6 +94,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.746', date: '7 Jul 2026', label: 'Online ordering — your logo shows at its real shape (rectangle no longer cropped square)',
+    changes: [
+      'Fixed a rectangle/wide logo being squashed into a square box and cropped (e.g. on the QR “confirm your table” screen and the sign-in/order-type headers, showing only the middle of the logo). Logos now display at their true shape on a clean white plate — the whole logo is visible.',
+    ],
+  },
+  {
     version: '5.5.745', date: '7 Jul 2026', label: 'Online/catering header — no logo means a clean header (no box)',
     changes: [
       'When no logo is uploaded, the online ordering & catering header now shows just your venue name — no logo box at all (previously it showed a placeholder box). Upload a logo in Menu appearance to bring it back.',
