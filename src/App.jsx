@@ -94,6 +94,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.751', date: '7 Jul 2026', label: 'Review card — logo now sits on a white plate so it reads over the background photo',
+    changes: [
+      'On the customer-facing review card, your logo was laid straight onto the header background photo, so a dark logo could disappear into the image. It now sits on a clean white plate (same as the menu, loyalty and gift headers), so it stays readable over any background.',
+      'It uses your Menu appearance logo — no separate upload needed.',
+    ],
+  },
+  {
     version: '5.5.750', date: '7 Jul 2026', label: 'Loyalty + gift-card pages — logo only in the header (business name hidden when you have a logo)',
     changes: [
       'The customer-facing loyalty portal and gift-card pages no longer print the business name under the logo — the logo is enough, giving a cleaner header.',

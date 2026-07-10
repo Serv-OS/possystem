@@ -100,7 +100,11 @@ export default function ReviewSurface({ location }) {
         {/* Brand hero — show the venue's background image if set, else a soft brand tint */}
         <div style={{ ...S.hero, ...(heroBg ? { backgroundImage: `linear-gradient(rgba(0,0,0,.32), rgba(0,0,0,.42)), url("${heroBg}")`, backgroundSize: 'cover', backgroundPosition: 'center', minHeight: 120 } : { background: `linear-gradient(135deg, ${accent}14, ${accent}05)` }) }}>
           {logo
-            ? <img src={logo} alt={venueName} style={{ maxHeight: 56, maxWidth: '70%', objectFit: 'contain' }} />
+            /* v5.5.751: logo on a white plate so it reads on any background photo (was laid
+               straight on the image, so a dark wordmark vanished into the photo). */
+            ? <div style={{ background: '#fff', borderRadius: 14, padding: '10px 16px', boxShadow: '0 6px 20px rgba(0,0,0,0.22)', display: 'inline-flex', maxWidth: '78%', boxSizing: 'border-box' }}>
+                <img src={logo} alt={venueName} style={{ height: 46, width: 'auto', maxWidth: '100%', objectFit: 'contain', display: 'block' }} />
+              </div>
             : <div style={{ ...S.logoBox, borderColor: heroBg ? 'rgba(255,255,255,.7)' : `${accent}55`, color: heroBg ? '#fff' : accent }}>{venueName}</div>}
         </div>
 
