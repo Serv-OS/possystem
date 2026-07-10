@@ -94,6 +94,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.752', date: '7 Jul 2026', label: 'Review card — upload your own logo just for this card',
+    changes: [
+      'You can now upload a logo specifically for the review card (Back office → Review Manager → Your review card → Look → “Logo for this card”). Useful when a background photo makes your normal logo hard to read — upload a version tuned for it (e.g. a white logo).',
+      'A card-specific logo shows as-is (no white plate). Leave it blank and the card falls back to your Menu appearance logo on a white plate, as before.',
+      'The live preview on the right updates instantly so you can see how it looks.',
+    ],
+  },
+  {
     version: '5.5.751', date: '7 Jul 2026', label: 'Review card — logo now sits on a white plate so it reads over the background photo',
     changes: [
       'On the customer-facing review card, your logo was laid straight onto the header background photo, so a dark logo could disappear into the image. It now sits on a clean white plate (same as the menu, loyalty and gift headers), so it stays readable over any background.',

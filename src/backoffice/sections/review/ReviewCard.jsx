@@ -32,6 +32,16 @@ async function uploadBackground(file, opsId) {
   return `${data.publicUrl}?t=${Date.now()}`;   // cache-bust on replace
 }
 
+// v5.5.752: an optional review-card-only logo, stored on online_branding.review_logo_url.
+async function uploadReviewLogo(file, opsId) {
+  const ext = (file.name.split('.').pop() || 'png').toLowerCase();
+  const path = `locations/${opsId}/review/logo.${ext}`;
+  const { error } = await supabase.storage.from(ASSET_BUCKET).upload(path, file, { upsert: true, contentType: file.type });
+  if (error) throw error;
+  const { data } = supabase.storage.from(ASSET_BUCKET).getPublicUrl(path);
+  return `${data.publicUrl}?t=${Date.now()}`;
+}
+
 const S = {
   h1:    { fontSize: 22, fontWeight: 800, color: 'var(--t1)', margin: 0, letterSpacing: '-.01em' },
   sub:   { fontSize: 13, color: 'var(--t3)', marginTop: 4, marginBottom: 18 },
@@ -55,13 +65,14 @@ const S = {
 export default function ReviewCard() {
   const [locId, setLocId] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [venue, setVenue] = useState({ name: 'Your venue', slug: null, branding: {} });
+  const [venue, setVenue] = useState({ id: null, name: 'Your venue', slug: null, branding: {} });
   const [copy, setCopy] = useState(DEFAULTS);
   const [save, setSave] = useState({});
   const [preview, setPreview] = useState('rate');   // rate | happy | private
   const [qr, setQr] = useState(null);
   const [copied, setCopied] = useState(false);
   const [bgBusy, setBgBusy] = useState(false);
+  const [logoBusy, setLogoBusy] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -70,11 +81,11 @@ export default function ReviewCard() {
         setLocId(id);
         if (!supabase || !id) { setLoading(false); return; }
         // venue brand + slug (platform locations — readable by the BO client)
-        let v = { name: 'Your venue', slug: null, branding: {} };
+        let v = { id: null, name: 'Your venue', slug: null, branding: {} };
         try {
           const { data: loc } = await platformSupabase.from('locations')
-            .select('name, online_slug, online_branding').or(`ops_location_id.eq.${id},id.eq.${id}`).maybeSingle();
-          if (loc) v = { name: loc.name || 'Your venue', slug: loc.online_slug || null, branding: loc.online_branding || {} };
+            .select('id, name, online_slug, online_branding').or(`ops_location_id.eq.${id},id.eq.${id}`).maybeSingle();
+          if (loc) v = { id: loc.id, name: loc.name || 'Your venue', slug: loc.online_slug || null, branding: loc.online_branding || {} };
         } catch { /* brand best-effort */ }
         setVenue(v);
         // saved copy
@@ -102,6 +113,7 @@ export default function ReviewCard() {
 
   const accent = venue.branding?.accent_color || venue.branding?.primary_color || FALLBACK_ACCENT;
   const logo = venue.branding?.logo_url || null;
+  const reviewLogo = venue.branding?.review_logo_url || null;
   const set = (patch) => setCopy(c => ({ ...c, ...patch }));
 
   const saveCopy = async () => {
@@ -132,6 +144,29 @@ export default function ReviewCard() {
     finally { setBgBusy(false); }
   };
 
+  // v5.5.752: the review-card logo lives on the venue's online_branding jsonb
+  // (review_logo_url) — no new table/column, and the customer card reads it directly.
+  const persistBranding = async (patch) => {
+    setVenue(v => ({ ...v, branding: { ...(v.branding || {}), ...patch } }));   // optimistic — snappy preview
+    if (!venue.id) { setSave({ err: 'No customer-facing location yet — set a slug in Online ordering first.' }); return; }
+    try {
+      // Re-read the latest branding first so we merge onto it (never clobber a
+      // concurrent Menu appearance edit — online_branding is a shared jsonb).
+      const { data: cur } = await platformSupabase.from('locations').select('online_branding').eq('id', venue.id).maybeSingle();
+      const nextBranding = { ...(cur?.online_branding || venue.branding || {}), ...patch };
+      const { error } = await platformSupabase.from('locations').update({ online_branding: nextBranding }).eq('id', venue.id);
+      if (error) throw error;
+      setVenue(v => ({ ...v, branding: nextBranding }));
+    } catch (e) { setSave({ err: e.message || 'Save failed' }); }
+  };
+  const onLogoFile = async (e) => {
+    const file = e.target.files?.[0]; if (!file) return;
+    setLogoBusy(true); setSave({});
+    try { const url = await uploadReviewLogo(file, locId); await persistBranding({ review_logo_url: url }); }
+    catch (err) { setSave({ err: err.message || 'Upload failed' }); }
+    finally { setLogoBusy(false); }
+  };
+
   if (loading) return <div style={S.empty}>Loading…</div>;
   if (!supabase || !locId) return <div style={S.empty}>{!locId ? 'Pick a location to manage its review card.' : 'Mock mode — connect Supabase to manage the review card.'}</div>;
 
@@ -160,7 +195,7 @@ export default function ReviewCard() {
               {save.done && <span style={S.ok}>✓ Saved</span>}
               {save.err && <span style={S.err}>{save.err}</span>}
             </div>
-            <div style={S.hint}>Logo &amp; colours come from this venue’s brand kit (Settings → Location → branding).</div>
+            <div style={S.hint}>Logo &amp; colours come from <b>Menu appearance</b>. You can also set a logo just for this card under “Look” below.</div>
           </div>
 
           <div style={S.card}>
@@ -177,6 +212,21 @@ export default function ReviewCard() {
                 <label style={{ ...S.ghost, display: 'inline-block' }}>{bgBusy ? 'Uploading…' : 'Upload background'}<input type="file" accept="image/*" onChange={onBgFile} style={{ display: 'none' }} /></label>
               )}
               <div style={S.hint}>A photo of your venue/food works well. It sits behind the card with a subtle dark overlay for legibility. JPG or PNG.</div>
+            </div>
+            <div style={S.field}>
+              <label style={S.label}>Logo for this card (optional)</label>
+              {venue.branding?.review_logo_url ? (
+                <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+                  <div style={{ padding: 6, background: '#0e0e10', borderRadius: 8, border: '1px solid var(--bdr)' }}>
+                    <img src={venue.branding.review_logo_url} alt="Review logo" style={{ height: 34, width: 'auto', maxWidth: 120, objectFit: 'contain', display: 'block' }} />
+                  </div>
+                  <label style={{ ...S.ghost, display: 'inline-block' }}>{logoBusy ? 'Uploading…' : 'Replace'}<input type="file" accept="image/*" onChange={onLogoFile} style={{ display: 'none' }} /></label>
+                  <button style={S.ghost} onClick={() => persistBranding({ review_logo_url: '' })}>Remove</button>
+                </div>
+              ) : (
+                <label style={{ ...S.ghost, display: 'inline-block' }}>{logoBusy ? 'Uploading…' : 'Upload logo'}<input type="file" accept="image/*" onChange={onLogoFile} style={{ display: 'none' }} /></label>
+              )}
+              <div style={S.hint}>Only for the review card. Handy when a background photo makes your normal logo hard to read — upload a version tuned for it (e.g. a white logo). It shows as-is (no white plate). Leave blank to use your menu logo on a white plate.</div>
             </div>
             <div style={S.field}>
               <label style={S.label}>Button style</label>
@@ -216,7 +266,7 @@ export default function ReviewCard() {
             {[['rate', 'Rate'], ['happy', 'Happy'], ['private', 'Needs work']].map(([k, l]) =>
               <button key={k} style={S.chip(preview === k)} onClick={() => setPreview(k)}>{l}</button>)}
           </div>
-          <Phone accent={accent} logo={logo} venue={venue.name} copy={copy} state={preview} />
+          <Phone accent={accent} logo={reviewLogo || logo} rawLogo={!!reviewLogo} venue={venue.name} copy={copy} state={preview} />
         </div>
       </div>
     </div>
@@ -224,7 +274,7 @@ export default function ReviewCard() {
 }
 
 // Faithful mini-render of ReviewSurface (the customer card).
-function Phone({ accent, logo, venue, copy, state }) {
+function Phone({ accent, logo, rawLogo, venue, copy, state }) {
   const bg = copy.hero_image_url || null;
   const btnBg = copy.card_button_style === 'accent' ? accent : '#1f1f24';
   const heroBgStyle = bg
@@ -247,7 +297,11 @@ function Phone({ accent, logo, venue, copy, state }) {
   };
   return (
     <div style={P.frame}><div style={P.screen}><div style={P.cardEl}>
-      <div style={P.hero}>{logo ? <img src={logo} alt={venue} style={{ maxHeight: 38, maxWidth: '70%', objectFit: 'contain' }} /> : <div style={P.logo}>{venue}</div>}</div>
+      <div style={P.hero}>{logo
+        ? (rawLogo
+            ? <img src={logo} alt={venue} style={{ maxHeight: 42, maxWidth: '72%', objectFit: 'contain' }} />
+            : <div style={{ background: '#fff', borderRadius: 9, padding: '7px 11px', boxShadow: '0 4px 14px rgba(0,0,0,.22)', display: 'inline-flex', maxWidth: '74%' }}><img src={logo} alt={venue} style={{ height: 30, width: 'auto', maxWidth: '100%', objectFit: 'contain', display: 'block' }} /></div>)
+        : <div style={P.logo}>{venue}</div>}</div>
       <div style={P.body}>
         {state === 'rate' && <>
           <div style={P.title}>{copy.page_title}</div>
