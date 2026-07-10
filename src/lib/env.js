@@ -26,12 +26,30 @@ export const CUSTOMER_ROOT = APP_TIER === 'prod'
 
 /**
  * Build a full customer-facing URL for a given slug and path.
+ *
+ * The pretty per-venue subdomain (e.g. peters-cafe.serv-os.app/gift/balance) ONLY
+ * resolves when the app is actually served from the customer domain. When the app is
+ * open on any OTHER host — a raw Vercel preview URL (possystem-*.vercel.app), a
+ * not-yet-wired custom domain, or localhost — that subdomain does not exist, so a
+ * shared/QR'd link would be dead. In that case we hand out a SAME-ORIGIN link that
+ * always works: keep the path and carry the slug in ?loc=. parseCustomerUrl reads the
+ * path (and ?loc) identically either way, so every surface routes correctly.
+ *
  * e.g. customerUrl('peters-cafe', '/gift/balance')
- *   → https://peters-cafe.serv-os.app/gift/balance       (prod)
- *   → https://peters-cafe.dev.serv-os.app/gift/balance    (dev)
+ *   → https://peters-cafe.serv-os.app/gift/balance                    (served from serv-os.app)
+ *   → https://possystem-x.vercel.app/gift/balance?loc=peters-cafe     (served from anywhere else)
  */
 export function customerUrl(slug, path = '') {
   if (!slug) return '';
+  if (typeof window !== 'undefined') {
+    const host = (window.location.hostname || '').toLowerCase();
+    const onCustomerDomain = host === CUSTOMER_DOMAIN || host.endsWith(`.${CUSTOMER_DOMAIN}`);
+    if (!onCustomerDomain) {
+      const p = path || '/';
+      const glue = p.includes('?') ? '&' : '?';
+      return `${window.location.origin}${p}${glue}loc=${encodeURIComponent(slug)}`;
+    }
+  }
   return `https://${slug}.${CUSTOMER_ROOT}${path}`;
 }
 

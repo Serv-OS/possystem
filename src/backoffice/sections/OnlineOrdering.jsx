@@ -407,23 +407,14 @@ function QrSettingsBlock({
 }) {
   const showsTabSettings = paymentMode === 'open_tab' || paymentMode === 'both';
   const buildQrUrl = (table) => {
-    // v5.5.214: use proper subdomain URLs now that wildcard DNS is set up.
-    // Falls back to ?loc= query param when slug isn't set (shouldn't happen
-    // since QR is disabled until slug exists, but defensive).
-    if (slug) {
-      const base = `https://${slug}.${CUSTOMER_ROOT}`;
-      if (tableMode === 'free') return `${base}/t/free`;
-      const t = table || {};
-      const tParam = t.label || t.id || '';
-      return `${base}/t/${encodeURIComponent(tParam)}`;
-    }
-    // Fallback: query-param form for testing without subdomain DNS
-    const base = window.location.origin;
-    const locParam = slug ? `&loc=${encodeURIComponent(slug)}` : '';
-    if (tableMode === 'free') return `${base}/?surface=qr${locParam}`;
+    // v5.5.753: delegate to customerUrl so the printed table QR uses the pretty
+    // subdomain form when the app is on the customer domain, and a working
+    // same-origin ?loc= link on any other host (e.g. a Vercel preview) — never a
+    // dead <slug>.serv-os.app link that only resolves once wildcard DNS is wired.
+    if (tableMode === 'free') return customerUrl(slug, '/t/free');
     const t = table || {};
     const tParam = t.label || t.id || '';
-    return `${base}/?surface=qr${locParam}&t=${encodeURIComponent(tParam)}`;
+    return customerUrl(slug, `/t/${encodeURIComponent(tParam)}`);
   };
 
   const downloadOne = async (table) => {

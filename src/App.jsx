@@ -94,6 +94,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.753', date: '7 Jul 2026', label: 'Customer links + QR codes now always point to a URL that works on your current site',
+    changes: [
+      'Every customer link and QR (review card, online ordering, table QR, gift cards, loyalty portal, WiFi, catering, Tables Ready) is now built from the address you are actually on. On the real serv-os.app site they stay as clean per-venue links (yourvenue.serv-os.app/review); on a preview/test address they become a same-origin link that resolves there (…/review?loc=yourvenue) instead of a dead subdomain that only works once DNS is wired.',
+      'This is why your review test came out as the long ?loc=…&surface=review address — the share links were pointing at a subdomain the preview site does not serve. They now match wherever you open the back office.',
+      'No change to how any page behaves — only the link/QR address is corrected.',
+    ],
+  },
+  {
     version: '5.5.752', date: '7 Jul 2026', label: 'Review card — upload your own logo just for this card',
     changes: [
       'You can now upload a logo specifically for the review card (Back office → Review Manager → Your review card → Look → “Logo for this card”). Useful when a background photo makes your normal logo hard to read — upload a version tuned for it (e.g. a white logo).',
