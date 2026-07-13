@@ -19,6 +19,20 @@ const KIND = {
   ops:    { icon: 'thermo',    tone: 'var(--red)' },
   system: { icon: 'sparkle',   tone: 'var(--t3)' },
 };
+const KIND_LABEL = { order: 'Orders', nudge: 'Nudges', menu: 'Menu', stock: 'Stock', ops: 'Ops', system: 'System' };
+
+// A filter chip in the panel header.
+function Chip({ label, active, tone, onClick }) {
+  return (
+    <button onClick={onClick} style={{
+      padding: '4px 10px', borderRadius: 999, cursor: 'pointer', fontFamily: 'inherit',
+      fontSize: 11.5, fontWeight: 700, whiteSpace: 'nowrap',
+      border: `1px solid ${active ? (tone || 'var(--acc)') : 'var(--bdr)'}`,
+      background: active ? 'var(--bg3)' : 'transparent',
+      color: active ? (tone || 'var(--t1)') : 'var(--t3)',
+    }}>{label}</button>
+  );
+}
 const agoOf = (iso) => {
   const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
   if (s < 60) return 'just now';
@@ -31,6 +45,7 @@ export default function ActivityFeed() {
   const [loc, setLoc] = useState(() => { const l = getActiveLocationSync(); return (l && l !== 'loc-demo') ? l : null; });
   const [events, setEvents] = useState([]);
   const [open, setOpen] = useState(false);
+  const [filter, setFilter] = useState(null);   // null = all kinds; else a KIND key
   const operator = useStore(s => s.staff?.name || null);
 
   // Resolve the real location, retrying until it's ready (mirrors App.jsx's boot loop).
@@ -64,6 +79,10 @@ export default function ActivityFeed() {
   const live = events.filter(e => !e.ackedAt);                              // un-dismissed = the inbox
   const actionOpen = live.filter(e => e.severity === 'action' || e.severity === 'urgent').length;
   const badge = live.length;
+  // Per-kind filter: chips over the present kinds; `shown` is the filtered list.
+  const kindCounts = live.reduce((m, e) => { m[e.kind] = (m[e.kind] || 0) + 1; return m; }, {});
+  const activeKinds = Object.keys(KIND).filter(k => kindCounts[k]);
+  const shown = filter && kindCounts[filter] ? live.filter(e => e.kind === filter) : live;
 
   const dismiss = async (e) => { setEvents(prev => prev.map(x => x.id === e.id ? { ...x, ackedAt: new Date().toISOString() } : x)); await ackActivity(e.id, operator); };
   const clearAll = async () => {
@@ -81,9 +100,17 @@ export default function ActivityFeed() {
           {live.length > 0 && <button onClick={clearAll} style={{ background: 'none', border: '1px solid var(--bdr)', borderRadius: 999, padding: '5px 12px', cursor: 'pointer', color: 'var(--t2)', fontWeight: 700, fontSize: 12, fontFamily: 'inherit' }}>Mark all read</button>}
           <button onClick={() => setOpen(false)} aria-label="Close" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--t3)', fontSize: 22, lineHeight: 1 }}>×</button>
         </div>
+        {live.length > 0 && activeKinds.length > 1 && (
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', padding: '10px 16px 4px', borderBottom: '1px solid var(--bg2)' }}>
+            <Chip label={`All ${live.length}`} active={!filter || !kindCounts[filter]} onClick={() => setFilter(null)} />
+            {activeKinds.map(k => (
+              <Chip key={k} label={`${KIND_LABEL[k] || k} ${kindCounts[k]}`} active={filter === k} tone={KIND[k].tone} onClick={() => setFilter(f => (f === k ? null : k))} />
+            ))}
+          </div>
+        )}
         <div style={{ flex: 1, overflowY: 'auto', padding: '6px 0' }}>
           {live.length === 0 && <div style={{ padding: 28, textAlign: 'center', color: 'var(--t3)', fontSize: 13 }}>All clear. Orders, nudges and changes will appear here.</div>}
-          {live.map(e => {
+          {shown.map(e => {
             const k = KIND[e.kind] || KIND.system;
             const action = e.severity === 'action' || e.severity === 'urgent';
             return (

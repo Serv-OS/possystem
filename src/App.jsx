@@ -93,6 +93,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.764', date: '13 Jul 2026', label: 'Activity feed — filter the bell by type',
+    changes: [
+      'The activity bell now has quick filter chips (All · Orders · Stock · Menu · Ops · Nudges) so you can jump to just the kind of update you care about. Chips only show the types that actually have items, with a live count on each.',
+      '(Stock 86 / back-in-stock changes already appear in the feed — this makes them easy to isolate.)',
+    ],
+  },
+  {
     version: '5.5.763', date: '13 Jul 2026', label: 'Tables Ready — internal tidy (single source for the table view)',
     changes: [
       'Housekeeping: the walk-in waitlist board, add-party drawer and store now share one copy of the “floor → tables” mapping instead of three copies, so quotes stay perfectly consistent. No visible change.',
