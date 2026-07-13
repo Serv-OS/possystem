@@ -318,6 +318,11 @@ export default function BackOfficeApp() {
       });
       if (effectiveLocId) {
         setResolvedLocationId(effectiveLocId);
+        // v5.5.761: persist the resolved location to rpos-bo-location so getActiveLocationSync()
+        // sees it. Previously that key was written ONLY on a manual location switch, so a BO that
+        // auto-resolved a single location left every getActiveLocationSync() consumer (all the
+        // Marketing sections, Review card, WiFi, etc.) showing "Pick a location to manage …".
+        try { localStorage.setItem('rpos-bo-location', JSON.stringify(effectiveLocId)); } catch { /* quota */ }
         loadLocationData(effectiveLocId);
       }
     })();

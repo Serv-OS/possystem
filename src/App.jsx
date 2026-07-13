@@ -93,6 +93,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.761', date: '13 Jul 2026', label: 'Fix — Marketing screens no longer stuck on “Pick a location”',
+    changes: [
+      'The Marketing screens (Campaigns, Segments, Workflows, Promotions, Quick send, reports, compliance) — and a few others (Review card, WiFi) — could show “Pick a location to manage …” even with a location active, because the resolved location wasn’t being remembered unless you manually switched venue. It’s now remembered automatically on sign-in.',
+    ],
+  },
+  {
     version: '5.5.760', date: '13 Jul 2026', label: 'Security — sales records now readable only by their own venue',
     changes: [
       'Your sales (closed checks — totals, tips, tender, customer details) can now be read only by that venue’s own paired devices and back office. Online / kiosk / QR orders still record exactly as before.',
