@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { supabase, isMock, LOCATION_ID, enforceTenantFence } from '../lib/supabase';
+import { supabase, isMock, LOCATION_ID, enforceTenantFence, ensureAuthToken } from '../lib/supabase';
 import { VERSION } from '../lib/version';
 import { ServOSIcon, ServOSWordmark } from '../components/ServOSBrand';
 
@@ -33,6 +33,17 @@ export default function PairingScreen({ onPaired }) {
       last_seen: new Date().toISOString(),
       session_token: null,  // clear session token so old session gets kicked on next check
     }).eq('id', data.id);
+
+    // v5.5.757 — POS-core RLS cutover, Stage 1: securely bind this device's anonymous
+    // session to the paired location server-side (devices.device_uid = auth.uid()), so a
+    // future RLS pass can scope it via pos_can_access(). The RPC takes device_uid from the
+    // JWT, never client input. Best-effort — pairing must NEVER fail on it.
+    try {
+      await ensureAuthToken();
+      await supabase.rpc('claim_device', { p_code: clean });
+    } catch (e) {
+      console.warn('[pair] claim_device failed (non-fatal):', e?.message);
+    }
 
     // v5.5.3: TENANT FENCE at pair-time. If this terminal was previously paired to a
     // different location, every location-scoped localStorage key (rpos-session-backup,

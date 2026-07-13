@@ -93,6 +93,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.757', date: '13 Jul 2026', label: 'Security foundation — POS devices now have a verified venue link (Stage 1 of tenant isolation)',
+    changes: [
+      'Groundwork for locking POS data strictly to each venue: when a till/KDS/bar/tables device pairs, it now records a secure server-side link between that device and its venue (established by the pairing code). Additive — nothing about how anything works changes yet.',
+      'For your testing: re-pair your devices once so they pick up the new link before the next stage (which adds the actual venue-scoped rules).',
+    ],
+  },
+  {
     version: '5.5.756', date: '13 Jul 2026', label: 'Security hardening — food-safety checklist photos now stored privately',
     changes: [
       'Checklist evidence photos (HACCP records) now save to a private, per-venue storage area instead of a shared public one. Only your own paired ops tablets can add them and only your team can view them (via secure, time-limited links).',
