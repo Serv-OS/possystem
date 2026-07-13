@@ -93,6 +93,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.760', date: '13 Jul 2026', label: 'Security — sales records now readable only by their own venue',
+    changes: [
+      'Your sales (closed checks — totals, tips, tender, customer details) can now be read only by that venue’s own paired devices and back office. Online / kiosk / QR orders still record exactly as before.',
+      'Continues the tenant-isolation lockdown after staff PINs & cash.',
+    ],
+  },
+  {
     version: '5.5.759', date: '13 Jul 2026', label: 'Security — staff PINs & cash data now locked to each venue (Stage 2)',
     changes: [
       'Staff records (including PINs), cash drawers and cash movements are now readable/writable only by that venue’s own paired devices and back office — no longer reachable across venues. First group of the tenant-isolation lockdown.',
