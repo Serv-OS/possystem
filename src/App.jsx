@@ -93,6 +93,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.758', date: '13 Jul 2026', label: 'Security foundation — devices now self-link to their venue on boot (no re-pair needed)',
+    changes: [
+      'Already-paired devices (a till that just opens straight to the order screen) now establish their secure venue link automatically on startup — you do NOT need to re-pair each one. Just reload the app once so the device picks it up.',
+      'Groundwork for the next stage of tenant isolation; still additive — nothing about day-to-day use changes.',
+    ],
+  },
+  {
     version: '5.5.757', date: '13 Jul 2026', label: 'Security foundation — POS devices now have a verified venue link (Stage 1 of tenant isolation)',
     changes: [
       'Groundwork for locking POS data strictly to each venue: when a till/KDS/bar/tables device pairs, it now records a secure server-side link between that device and its venue (established by the pairing code). Additive — nothing about how anything works changes yet.',

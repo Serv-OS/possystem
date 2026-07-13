@@ -63,6 +63,7 @@ export default function PairingScreen({ onPaired }) {
       locationName: data.locations?.name || 'Unknown',
       orgId: data.locations?.org_id,
       profileId: data.profile_id || null,
+      pairingCode: clean,   // v5.5.758: persisted so boot can re-establish the RLS device link
       pairedAt: new Date().toISOString(),
     };
     localStorage.setItem('rpos-device', JSON.stringify(deviceEntry));

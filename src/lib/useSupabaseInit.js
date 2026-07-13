@@ -9,7 +9,7 @@
 
 import { useEffect } from 'react';
 import { useStore } from '../store';
-import { supabase, isMock, getLocationId, ensureAuthToken } from './supabase';
+import { supabase, isMock, getLocationId, ensureAuthToken, claimPairedDeviceOnBoot } from './supabase';
 import {
   fetchMenuItems, fetchFloorPlan, fetch86List,
   fetchKDSTickets, fetchClosedChecks, fetchLatestConfigPush,
@@ -33,6 +33,9 @@ export default function useSupabaseInit() {
       try { await ensureAuthToken(); } catch (e) {
         console.warn('[useSupabaseInit] ensureAuthToken failed:', e.message);
       }
+      // v5.5.758: (re)bind an already-paired POS-family device to its location server-side
+      // so the RLS cutover link survives without a manual re-pair. Best-effort, non-blocking.
+      claimPairedDeviceOnBoot();
 
       // Load location config first — needed for timezone-correct reporting
       const locConfig = await getLocationConfig();

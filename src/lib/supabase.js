@@ -124,6 +124,33 @@ export const ensureAuthToken = async () => {
   return data?.session?.access_token || null;
 };
 
+/**
+ * v5.5.758 — POS-core RLS cutover, Stage 1: bind this already-paired POS-family device
+ * (POS/KDS/bar/tables) to its location server-side on every boot, so the link survives
+ * without a manual re-pair (a device that boots straight in never hits PairingScreen).
+ * Secure: claim_device() stamps devices.device_uid from the JWT (auth.uid()), gated by the
+ * pairing CODE — the proof of authorisation. We persist the code in rpos-device the first
+ * time (read from the still-open devices row) so later boots re-claim without needing to
+ * read the (Stage-3-locked) devices table. Best-effort — never throws into the boot path.
+ */
+export const claimPairedDeviceOnBoot = async () => {
+  if (!supabase) return;
+  let dev; try { dev = JSON.parse(localStorage.getItem('rpos-device') || 'null'); } catch { return; }
+  if (!dev || !dev.id || dev.id === 'admin' || dev.adminMode || !dev.locationId) return;
+  try {
+    await ensureAuthToken();
+    let code = dev.pairingCode;
+    if (!code) {
+      const { data } = await supabase.from('devices').select('pairing_code').eq('id', dev.id).maybeSingle();
+      code = data?.pairing_code || null;
+      if (code) { dev.pairingCode = code; try { localStorage.setItem('rpos-device', JSON.stringify(dev)); } catch { /* quota */ } }
+    }
+    if (code) await supabase.rpc('claim_device', { p_code: code });
+  } catch (e) {
+    console.warn('[boot] device claim failed (non-fatal):', e?.message);
+  }
+};
+
 // ──────────────────────────────────────────────────────────────────
 // v5.5.3 — TENANT FENCE  (hotfixed in v5.5.4)
 //
