@@ -16,6 +16,22 @@ export const DEFAULT_BANDS = [
 ];
 export const DEFAULT_QUOTE_RULES = { buffer: 5, roundTo: 5, maxQuote: 120, defaultTurn: 60 };
 
+/**
+ * Map the store's floor tables → the estimator's table shape. EXCLUDES merged child
+ * seats (`parentId`) which would double-count capacity. status: available→open,
+ * clearing→clearing, everything else→seated. Single source of truth for the queue board,
+ * the add-party drawer, and the store's waitlistTablesView (previously copy-pasted 3×).
+ */
+export function tablesView(tables = []) {
+  return (tables || [])
+    .filter((t) => !t.parentId)
+    .map((t) => ({
+      cap: t.maxCovers,
+      status: t.status === 'available' ? 'open' : t.status === 'clearing' ? 'clearing' : 'seated',
+      section: t.section,
+    }));
+}
+
 // ── Status lifecycle ──────────────────────────────────────────────────────────
 export const STATUS = {
   WAITING: 'waiting', NOTIFIED: 'notified', READY: 'ready', SEATED: 'seated',

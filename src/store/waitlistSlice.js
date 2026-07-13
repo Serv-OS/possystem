@@ -26,6 +26,7 @@ import {
   actualWaitMin,
   DEFAULT_BANDS,
   DEFAULT_QUOTE_RULES,
+  tablesView,
 } from '../lib/waitlist/waitlist.js';
 import { isTrainingMode } from '../lib/trainingMode.js';
 
@@ -171,16 +172,7 @@ export function waitlistSlice(set, get) {
     // ── floor view: store tables -> estimator table shape ─────────────────────
     // EXCLUDE merged child seats (t.parentId) — they double-count capacity.
     // status mapping: available->open, clearing->clearing, everything else->seated.
-    waitlistTablesView: () => {
-      const tables = get().tables || [];
-      return tables
-        .filter((t) => !t.parentId)
-        .map((t) => ({
-          cap: t.maxCovers,
-          status: t.status === 'available' ? 'open' : t.status === 'clearing' ? 'clearing' : 'seated',
-          section: t.section,
-        }));
-    },
+    waitlistTablesView: () => tablesView(get().tables || []),
 
     // Standalone floor loader for the host stand. The waitlist surface renders WITHOUT
     // SyncBridge (like Operations), so store.tables would otherwise be empty and the

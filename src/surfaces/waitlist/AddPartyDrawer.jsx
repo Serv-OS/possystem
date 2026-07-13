@@ -12,20 +12,10 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../../store';
-import { estimate, bandFor, DEFAULT_BANDS, DEFAULT_QUOTE_RULES, isActive } from '../../lib/waitlist/waitlist';
+import { estimate, bandFor, DEFAULT_BANDS, DEFAULT_QUOTE_RULES, isActive, tablesView } from '../../lib/waitlist/waitlist';
 import { Icon } from '../../components/ServOSIcons';
 
 const mono = { fontFamily: 'var(--font-mono)' };
-
-function tablesView(tables = []) {
-  return tables
-    .filter(t => !t.parentId)
-    .map(t => ({
-      cap: t.maxCovers,
-      status: t.status === 'available' ? 'open' : t.status === 'clearing' ? 'clearing' : 'seated',
-      section: t.section,
-    }));
-}
 
 export default function AddPartyDrawer({ loc, operator, onClose }) {
   const tables = useStore(s => s.tables) || [];

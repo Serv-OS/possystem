@@ -11,22 +11,10 @@
 
 import { useMemo } from 'react';
 import { useStore } from '../../store';
-import { perBandStrip, isActive, DEFAULT_BANDS, DEFAULT_QUOTE_RULES } from '../../lib/waitlist/waitlist';
+import { perBandStrip, isActive, DEFAULT_BANDS, DEFAULT_QUOTE_RULES, tablesView } from '../../lib/waitlist/waitlist';
 import QueueCard from './QueueCard';
 
 const mono = { fontFamily: 'var(--font-mono)' };
-
-// Map the store's floor → estimator table shape, excluding merged child seats.
-// Mirrors store.waitlistTablesView() so the strip matches the per-entry quotes.
-function tablesView(tables = []) {
-  return tables
-    .filter(t => !t.parentId)
-    .map(t => ({
-      cap: t.maxCovers,
-      status: t.status === 'available' ? 'open' : t.status === 'clearing' ? 'clearing' : 'seated',
-      section: t.section,
-    }));
-}
 
 export default function QueueBoard({ loc, operator, onSeat }) {
   const waitlist = useStore(s => s.waitlist) || [];

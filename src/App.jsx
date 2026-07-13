@@ -93,6 +93,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.763', date: '13 Jul 2026', label: 'Tables Ready — internal tidy (single source for the table view)',
+    changes: [
+      'Housekeeping: the walk-in waitlist board, add-party drawer and store now share one copy of the “floor → tables” mapping instead of three copies, so quotes stay perfectly consistent. No visible change.',
+    ],
+  },
+  {
     version: '5.5.762', date: '13 Jul 2026', label: 'Security + housekeeping — modifier writes locked to venue, stock depletion fix live, temp diagnostics removed',
     changes: [
       'Menu modifier groups can now only be edited by their own venue’s back office (public menus still display everywhere) — continues the tenant-isolation lockdown.',
