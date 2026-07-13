@@ -28,7 +28,6 @@ import MPOSSurface from './surfaces/MPOSSurface';
 import TimeClockSurface from './surfaces/TimeClockSurface';
 import OwnerSurface from './surfaces/OwnerSurface';
 import MenuBoardSurface from './surfaces/MenuBoardSurface';
-import OperationsSurface from './surfaces/OperationsSurface';
 import WaitlistSurface from './surfaces/waitlist/WaitlistSurface';
 import ManagerSurface from './surfaces/ManagerSurface';
 import KioskAutoUpdate from './components/KioskAutoUpdate';
@@ -93,6 +92,14 @@ import { ServOSIcon } from './components/ServOSBrand';
 import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
+  {
+    version: '5.5.754', date: '7 Jul 2026', label: 'Standalone Operations app retired — Operations now lives inside the Manager app',
+    changes: [
+      'The separate “Operations” tablet mode (?mode=ops) has been retired. Everything it did — temperature rounds, checklists, deliveries, maintenance — is the Ops tab in the Manager app, which every role can reach.',
+      'No disruption: a tablet already paired as an Operations device is the same pairing, so it goes straight to the PIN screen in the Manager app — nothing to re-pair. Any old ?mode=ops link auto-redirects to the Manager app.',
+      'The “Operations” card was removed from the device mode-selector; the Back office pairing screen now points tablets at the Manager app.',
+    ],
+  },
   {
     version: '5.5.753', date: '7 Jul 2026', label: 'Customer links + QR codes now always point to a URL that works on your current site',
     changes: [
@@ -8343,7 +8350,6 @@ export default function App() {
       onSelectMPOS={() => { localStorage.setItem('rpos-device-mode', 'mpos'); window.location.href = '?mode=mpos'; }}
       onSelectClock={() => { localStorage.setItem('rpos-device-mode', 'clock'); window.location.href = '?mode=clock'; }}
       onSelectMenuBoard={() => { localStorage.setItem('rpos-device-mode', 'menuboard'); window.location.href = '?mode=menuboard'; }}
-      onSelectOps={() => { localStorage.setItem('rpos-device-mode', 'ops'); window.location.href = '?mode=ops'; }}
       onSelectWaitlist={() => { localStorage.setItem('rpos-device-mode', 'waitlist'); window.location.href = '?mode=waitlist'; }}
       onSelectManager={() => { localStorage.setItem('rpos-device-mode', 'manager'); window.location.href = '?mode=manager'; }}
       onSelectBackOffice={() => { localStorage.setItem('rpos-device-mode', 'backoffice'); window.location.href = '?mode=office'; }}
@@ -8372,9 +8378,16 @@ export default function App() {
   // over Realtime. No SyncBridge (like customer-display).
   if (deviceMode === 'menuboard') return <><KioskAutoUpdate /><MenuBoardSurface /></>;
 
-  // Operations — mobile food-safety/ops surface (temperature, deliveries, maintenance).
-  // Pairs itself via ops_devices (claim-code + heartbeat) then staff PIN; no rpos-device.
-  if (deviceMode === 'ops') return <><KioskAutoUpdate /><OperationsSurface /></>;
+  // Operations — RETIRED as a standalone surface (v5.5.754). Folded into the Manager app
+  // (?mode=manager), which renders the exact same Ops screens (the Ops tab is available to
+  // EVERY role) off the SAME ops_devices pairing — so an already-paired Ops tablet lands
+  // straight on the PIN screen, no re-pair. Redirect ?mode=ops (and migrate a device whose
+  // stored mode is 'ops') to the Manager app.
+  if (deviceMode === 'ops') {
+    if (storedMode === 'ops') localStorage.setItem('rpos-device-mode', 'manager');
+    window.location.replace('?mode=manager');
+    return null;
+  }
   if (deviceMode === 'waitlist') return <><KioskAutoUpdate /><WaitlistSurface /></>;
 
   // ServOS Manager — owner app + ops tablet merged into one role-adaptive phone app. Pairs itself

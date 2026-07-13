@@ -58,7 +58,7 @@ export default function OpsDevices() {
     await removeOpsDevice(d.id, locId); showToast?.('Tablet unpaired', 'success'); reload();
   };
 
-  const opsUrl = `${typeof window !== 'undefined' ? window.location.origin : ''}/?mode=ops`;
+  const opsUrl = `${typeof window !== 'undefined' ? window.location.origin : ''}/?mode=manager`;
 
   return (
     <div style={{ height: '100%', overflowY: 'auto', background: 'var(--bg0)', padding: '22px 26px' }}>
@@ -71,7 +71,7 @@ export default function OpsDevices() {
       <div style={{ background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 14, padding: 18, marginBottom: 18, maxWidth: 760 }}>
         <div style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--t1)', marginBottom: 10 }}>Pair a tablet</div>
         <ol style={{ margin: '0 0 14px', paddingLeft: 18, color: 'var(--t2)', fontSize: 13, lineHeight: 1.7 }}>
-          <li>On the tablet, open <code style={{ background: 'var(--bg2)', padding: '1px 6px', borderRadius: 5, color: 'var(--t1)' }}>{opsUrl}</code> (or tap <b>Operations</b> on the mode-selector screen).</li>
+          <li>On the tablet, open <code style={{ background: 'var(--bg2)', padding: '1px 6px', borderRadius: 5, color: 'var(--t1)' }}>{opsUrl}</code> (or tap <b>Manager</b> on the mode-selector screen). Operations lives inside the Manager app.</li>
           <li>It shows a <b>6-character pairing code</b>. Type that code below and pair.</li>
           <li>The tablet then asks for a staff PIN — and you’re into the floor app.</li>
         </ol>
