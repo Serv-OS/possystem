@@ -93,6 +93,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.755', date: '13 Jul 2026', label: 'Security hardening — stock & purchasing data now strictly isolated per venue',
+    changes: [
+      'Closed a data-isolation gap on the stock, purchasing, suppliers and wastage tables where, on a multi-venue account, a signed-in user could reach another venue’s data. Access is now correctly limited to the venues you’re assigned to.',
+      'Internal database security only — nothing changes in how the app works for you. Single-venue accounts were never exposed.',
+    ],
+  },
+  {
     version: '5.5.754', date: '7 Jul 2026', label: 'Standalone Operations app retired — Operations now lives inside the Manager app',
     changes: [
       'The separate “Operations” tablet mode (?mode=ops) has been retired. Everything it did — temperature rounds, checklists, deliveries, maintenance — is the Ops tab in the Manager app, which every role can reach.',
