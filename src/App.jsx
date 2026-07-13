@@ -93,6 +93,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.762', date: '13 Jul 2026', label: 'Security + housekeeping — modifier writes locked to venue, stock depletion fix live, temp diagnostics removed',
+    changes: [
+      'Menu modifier groups can now only be edited by their own venue’s back office (public menus still display everywhere) — continues the tenant-isolation lockdown.',
+      'Stock depletion for kiosk/online orders now respects per-order-type recipe lines (e.g. a takeaway cup only depletes on takeaway) — the server function is deployed.',
+      'Removed a temporary database diagnostic (the table-session audit trigger) now that the fix it was watching is proven stable — slightly faster table open/close.',
+    ],
+  },
+  {
     version: '5.5.761', date: '13 Jul 2026', label: 'Fix — Marketing screens no longer stuck on “Pick a location”',
     changes: [
       'The Marketing screens (Campaigns, Segments, Workflows, Promotions, Quick send, reports, compliance) — and a few others (Review card, WiFi) — could show “Pick a location to manage …” even with a location active, because the resolved location wasn’t being remembered unless you manually switched venue. It’s now remembered automatically on sign-in.',
