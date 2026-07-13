@@ -613,9 +613,11 @@ function ChecklistRun({ loc, operator, checklist, onDone }) {
     pendingTaskRef.current = null;
     if (!file || !task || !run) return;
     setErr(''); setUploadingId(task.id);
-    const { url, error } = await uploadChecklistPhoto(file, { locationId: loc, runId: run.id, taskId: task.id });
-    if (error || !url) { setUploadingId(null); setErr(error?.message || 'Photo upload failed — check signal and try again'); return; }
-    const { error: saveErr } = await completeTask(run.id, task.id, { done: true, photoUrl: url, by: operator?.name, byId: operator?.id }, loc);
+    // v5.5.756: persist the PRIVATE-bucket PATH (signed URLs expire); use the returned
+    // signed url only for the immediate on-screen thumbnail.
+    const { url, path, error } = await uploadChecklistPhoto(file, { locationId: loc, runId: run.id, taskId: task.id });
+    if (error || !path) { setUploadingId(null); setErr(error?.message || 'Photo upload failed — check signal and try again'); return; }
+    const { error: saveErr } = await completeTask(run.id, task.id, { done: true, photoUrl: path, by: operator?.name, byId: operator?.id }, loc);
     if (saveErr) { setUploadingId(null); setErr('Saved the photo but could not record completion — try again'); return; }
     setDone(d => ({ ...d, [task.id]: { taskId: task.id, by: operator?.name, at: new Date().toISOString(), photoUrl: url } }));
     setUploadingId(null);

@@ -31,6 +31,23 @@ const taskFromRow = (r) => ({
 const runFromRow = (r) => ({ id: r.id, checklistId: r.checklist_id, runDate: r.run_date, status: r.status, completedByName: r.completed_by_name, completedAt: r.completed_at });
 const complFromRow = (r) => ({ id: r.id, runId: r.run_id, taskId: r.task_id, done: r.done, valueText: r.value_text, photoUrl: r.photo_url, completedByName: r.completed_by_name, completedAt: r.completed_at });
 
+// ── Evidence photos live in the PRIVATE 'ops-evidence' bucket (v5.5.756). The stored
+// photo_url is a bucket PATH (<location_id>/<run_id>/<task_id>.<ext>); we mint short-lived
+// signed URLs on read so thumbnails render without the bucket being world-readable. Legacy
+// rows hold a full public receipt-assets URL — those pass through untouched.
+const EVIDENCE_BUCKET = 'ops-evidence';
+const signCompletions = async (compls) => {
+  if (isMock || !supabase || !compls?.length) return compls;
+  const paths = [...new Set(compls.map(c => c.photoUrl).filter(u => u && !/^https?:\/\//.test(u)))];
+  if (!paths.length) return compls;
+  const map = {};
+  try {
+    const { data } = await supabase.storage.from(EVIDENCE_BUCKET).createSignedUrls(paths, 3600);
+    (data || []).forEach(d => { if (d?.path && d?.signedUrl) map[d.path] = d.signedUrl; });
+  } catch { /* leave the raw path — the thumbnail just won't load */ }
+  return compls.map(c => (c.photoUrl && map[c.photoUrl]) ? { ...c, photoUrl: map[c.photoUrl] } : c);
+};
+
 // ── templates (admin) ─────────────────────────────────────────────────────────
 export const fetchChecklists = async (locationId = null, includeArchived = false) => {
   if (isMock || !supabase) return { data: [], error: null };
@@ -85,7 +102,8 @@ export const fetchTodayChecklists = async (locationId = null) => {
     supabase.from('ops_task_completions').select('*').eq('location_id', locationId).gte('completed_at', today + 'T00:00:00'),
   ]);
   const runByList = {}; (runs || []).forEach(r => { runByList[r.checklist_id] = runFromRow(r); });
-  const complByRun = {}; (compls || []).forEach(c => { (complByRun[c.run_id] ??= []).push(complFromRow(c)); });
+  const signedCompls = await signCompletions((compls || []).map(complFromRow));
+  const complByRun = {}; signedCompls.forEach(c => { (complByRun[c.runId] ??= []).push(c); });
   return {
     data: due.map(l => {
       const run = runByList[l.id] || null;
@@ -155,36 +173,35 @@ export const fetchRunCompletions = async (runIds, locationId = null) => {
   if (!locationId || ids.length === 0) return { data: [], error: null };
   const { data, error } = await supabase.from('ops_task_completions')
     .select('*').eq('location_id', locationId).in('run_id', ids);
-  return { data: (data || []).map(complFromRow), error };
+  return { data: await signCompletions((data || []).map(complFromRow)), error };
 };
 
 // ── Evidence photos ──────────────────────────────────────────────────────────
-// Reuses the public 'receipt-assets' bucket. Its INSERT policy only requires
-// auth.role()='authenticated', which anonymous device sessions satisfy — so paired
-// ops tablets can upload with no extra storage policy. Path is location-prefixed
-// and timestamped so re-captures never clash.
-const EVIDENCE_BUCKET = 'receipt-assets';
+// PRIVATE 'ops-evidence' bucket (v5.5.756). Storage RLS lets a paired ops device write
+// ONLY under its own <location_id>/ folder (keyed on the ops_devices claim); back office
+// reads via user_accessible_locations(). We persist the bucket PATH and hand back a signed
+// URL for the immediate thumbnail. Path is stable per task so a re-capture overwrites
+// (no orphans). See migration 20260713b_ops_evidence_private_bucket.sql.
 const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
 export const uploadChecklistPhoto = async (file, { locationId = null, runId, taskId } = {}) => {
-  if (isMock || !supabase) return { url: null, error: new Error('Not connected') };
-  // TRAINING MODE: never upload evidence to the live storage bucket. Mirror the
-  // mock benign-return shape ({url:null, error}) so onPhotoPicked surfaces it
-  // gracefully rather than writing a real object.
-  if (isTrainingMode()) return { url: null, error: new Error('Training mode — evidence not saved') };
-  if (!file) return { url: null, error: new Error('No file') };
-  if (file.size > MAX_PHOTO_BYTES) return { url: null, error: new Error('Photo too large — keep it under 10 MB') };
+  if (isMock || !supabase) return { url: null, path: null, error: new Error('Not connected') };
+  // TRAINING MODE: never upload evidence to live storage. Benign return so onPhotoPicked
+  // surfaces it gracefully rather than writing a real object.
+  if (isTrainingMode()) return { url: null, path: null, error: new Error('Training mode — evidence not saved') };
+  if (!file) return { url: null, path: null, error: new Error('No file') };
+  if (file.size > MAX_PHOTO_BYTES) return { url: null, path: null, error: new Error('Photo too large — keep it under 10 MB') };
   locationId = await ensureLoc(locationId);
-  if (!locationId || !runId || !taskId) return { url: null, error: new Error('Missing run/task/location') };
+  if (!locationId || !runId || !taskId) return { url: null, path: null, error: new Error('Missing run/task/location') };
   // Desktop browsers can't decode HEIC; capture="environment" yields JPEG anyway.
   const ext = (file.name?.split('.').pop() || 'jpg').toLowerCase().replace('jpeg', 'jpg');
   const safeExt = ['jpg', 'png', 'webp'].includes(ext) ? ext : 'jpg';
-  // Stable per-task path so a re-capture OVERWRITES the previous object (no orphans);
-  // the cache-busting ?t on the returned URL guarantees the new image is shown.
-  const path = `ops-evidence/${locationId}/${runId}/${taskId}.${safeExt}`;
+  // First path segment = location_id so the storage RLS device fence matches.
+  const path = `${locationId}/${runId}/${taskId}.${safeExt}`;
   const { error } = await supabase.storage.from(EVIDENCE_BUCKET).upload(path, file, {
     upsert: true, contentType: file.type || 'image/jpeg', cacheControl: '3600',
   });
-  if (error) return { url: null, error };
-  const { data } = supabase.storage.from(EVIDENCE_BUCKET).getPublicUrl(path);
-  return { url: `${data.publicUrl}?t=${Date.now()}`, error: null };
+  if (error) return { url: null, path: null, error };
+  // Signed URL for the immediate thumbnail; the PATH is what we persist (signed URLs expire).
+  const { data } = await supabase.storage.from(EVIDENCE_BUCKET).createSignedUrl(path, 3600);
+  return { url: data?.signedUrl || null, path, error: null };
 };

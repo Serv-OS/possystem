@@ -93,6 +93,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.756', date: '13 Jul 2026', label: 'Security hardening — food-safety checklist photos now stored privately',
+    changes: [
+      'Checklist evidence photos (HACCP records) now save to a private, per-venue storage area instead of a shared public one. Only your own paired ops tablets can add them and only your team can view them (via secure, time-limited links).',
+      'No change to how you capture or view photos — the camera and thumbnails work exactly as before. Photos taken before this update keep displaying.',
+    ],
+  },
+  {
     version: '5.5.755', date: '13 Jul 2026', label: 'Security hardening — stock & purchasing data now strictly isolated per venue',
     changes: [
       'Closed a data-isolation gap on the stock, purchasing, suppliers and wastage tables where, on a multi-venue account, a signed-in user could reach another venue’s data. Access is now correctly limited to the venues you’re assigned to.',
