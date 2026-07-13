@@ -93,6 +93,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.759', date: '13 Jul 2026', label: 'Security — staff PINs & cash data now locked to each venue (Stage 2)',
+    changes: [
+      'Staff records (including PINs), cash drawers and cash movements are now readable/writable only by that venue’s own paired devices and back office — no longer reachable across venues. First group of the tenant-isolation lockdown.',
+      'A device must have linked (Stage 1) to use these — a device that hasn’t reloaded yet just needs one reload to link. Back office is unaffected.',
+    ],
+  },
+  {
     version: '5.5.758', date: '13 Jul 2026', label: 'Security foundation — devices now self-link to their venue on boot (no re-pair needed)',
     changes: [
       'Already-paired devices (a till that just opens straight to the order screen) now establish their secure venue link automatically on startup — you do NOT need to re-pair each one. Just reload the app once so the device picks it up.',
