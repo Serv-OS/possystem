@@ -226,8 +226,15 @@ export function buildPrintMenuHtml(cfg, data) {
   function ready(){
     var ran=false;
     function go(){ if(ran) return; ran=true; try{ build(); }catch(e){ done(); } }
-    var fr=(document.fonts&&document.fonts.ready)?document.fonts.ready:Promise.resolve();
-    fr.then(go); setTimeout(go, 600);
+    // Measure only once fonts AND images (the logo) have settled, so the header height
+    // is final before we paginate. Fixed .pm-logo height already makes this timing-safe,
+    // but waiting also ensures the logo pixels are present in the printed PDF.
+    var waits=[];
+    if(document.fonts&&document.fonts.ready) waits.push(document.fonts.ready);
+    var imgs=[].slice.call(document.images||[]);
+    for(var i=0;i<imgs.length;i++){ (function(im){ if(!im.complete){ waits.push(new Promise(function(res){ im.addEventListener('load',res); im.addEventListener('error',res); })); } })(imgs[i]); }
+    if(waits.length){ Promise.all(waits).then(go); } else { go(); }
+    setTimeout(go, 2500); // fallback: never let a slow/broken logo stall the print
   }
   if(document.readyState==='complete') ready(); else window.addEventListener('load', ready);
 })();`;
@@ -241,7 +248,11 @@ export function buildPrintMenuHtml(cfg, data) {
   .pm-head { padding: 0 0 10px; margin-bottom: ${Math.max(8, sectionGap)}px; border-bottom: 2px solid ${accent}; }
   .pm-head-center { text-align: center; }
   .pm-head-left { display: flex; align-items: center; gap: 14px; }
-  .pm-logo { max-height: 64px; max-width: 240px; object-fit: contain; ${c.logo === 'top-center' ? 'display:block;margin:0 auto 8px;' : ''} }
+  /* Fixed height (not max-height) reserves the logo's vertical space even before the
+     image loads, so the header measures the same whether or not the (remote) logo has
+     arrived — otherwise a late logo grows the header after pagination and the whole
+     column block gets shoved to page 2 in Safari. object-fit keeps the aspect ratio. */
+  .pm-logo { height: 64px; max-width: 240px; object-fit: contain; ${c.logo === 'top-center' ? 'display:block;margin:0 auto 8px;' : ''} }
   .pm-title { font-size: ${z(26)}px; font-weight: 700; letter-spacing: .01em; color: ${accent}; margin: 0; }
   .pm-sub { font-size: ${z(12)}px; color: #666; margin-top: 2px; }
   /* Off-screen measuring area (removed once pagination runs). */

@@ -186,7 +186,7 @@ export default function PrintMenu() {
     const go = () => {
       let ready = false;
       try { ready = !!w.__pmPaginated || w.closed; } catch { ready = true; }
-      if (ready || Date.now() - t0 > 4000) {
+      if (ready || Date.now() - t0 > 6000) {
         try { if (!w.closed) { w.focus(); w.print(); } } catch { /* user can print manually */ }
       } else {
         setTimeout(go, 60);

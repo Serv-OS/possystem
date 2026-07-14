@@ -93,6 +93,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.775', date: '14 Jul 2026', label: 'Print menu — fix blank first page when your menu has a logo',
+    changes: [
+      'Fixed a blank first page (just the logo/title, then the menu starting on page 2) when the menu has a logo. The layout was being measured before the logo image had loaded, so the header size was wrong and the columns got pushed to the next page.',
+      'The logo now reserves its space up-front and the layout waits for the logo to load before printing, so the header and the menu sit together on page 1. Verified by generating real PDFs with a logo.',
+    ],
+  },
+  {
     version: '5.5.774', date: '13 Jul 2026', label: 'Print menu — fix single-column + category bleed when printing from Safari',
     changes: [
       'Fixed the PDF coming out as a single column with categories split across page breaks when printing from Safari. Safari’s print engine doesn’t honour CSS columns or “keep-together” rules, so the menu now lays itself out into real pages and columns before printing — the same result in Safari, Chrome and every other browser.',
