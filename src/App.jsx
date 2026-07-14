@@ -93,6 +93,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.765', date: '13 Jul 2026', label: 'Fix — card-reader settings (idle screen + tipping) now actually save',
+    changes: [
+      'The reader settings (idle screen image, tipping prompt) appeared to save but silently reverted — a missing database write-permission blocked the update. Fixed; “Save & sync to readers” now persists and pushes to your readers.',
+    ],
+  },
+  {
     version: '5.5.764', date: '13 Jul 2026', label: 'Activity feed — filter the bell by type',
     changes: [
       'The activity bell now has quick filter chips (All · Orders · Stock · Menu · Ops · Nudges) so you can jump to just the kind of update you care about. Chips only show the types that actually have items, with a live count on each.',
