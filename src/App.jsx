@@ -93,6 +93,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.768', date: '13 Jul 2026', label: 'Card reader diagnostics now reflect real usage (fixes stale “seen 51d ago”)',
+    changes: [
+      'A reader that is online and taking payments no longer shows stale “seen N days ago”, blank IP/firmware, or “last status check: never”. Every card payment now stamps the reader as seen, and the Card readers page fetches a live snapshot from Stripe automatically when you open it (not only when you click “Refresh status”).',
+      'Fixed a bug where refreshing status could wipe the “last seen” value: Stripe’s reader object has no last-seen field, so a live “online” check is now treated as “seen now”, and IP address + firmware version populate correctly.',
+    ],
+  },
+  {
     version: '5.5.767', date: '13 Jul 2026', label: 'Reader idle-screen — correct size guidance + upload service deployed',
     changes: [
       'The idle-screen upload service (which had been missing, causing “Load failed”) is now deployed, so uploads and “Save & sync to readers” work.',

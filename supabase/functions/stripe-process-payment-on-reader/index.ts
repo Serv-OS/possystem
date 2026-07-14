@@ -212,6 +212,27 @@ Deno.serve(async (req) => {
     }, 400);
   }
 
+  // The reader accepted the payment action → it is online and reachable RIGHT
+  // NOW. Stamp live diagnostics onto its payment_devices row so the BO Card
+  // readers page reflects real usage instead of stale registration-time values
+  // ("seen N days ago" even though the reader took a payment today). The
+  // processPaymentIntent response IS the reader object, so ip/firmware are free.
+  try {
+    const nowIso = new Date().toISOString();
+    const stamp: Record<string, unknown> = {
+      status: (action as unknown as { status?: string }).status ?? 'online',
+      last_seen_at: nowIso,
+      last_status_check_at: nowIso,
+    };
+    const ip = (action as unknown as { ip_address?: string }).ip_address;
+    const fw = (action as unknown as { device_sw_version?: string }).device_sw_version;
+    if (ip) stamp.ip_address = ip;
+    if (fw) stamp.firmware_version = fw;
+    await platformAdmin.from('payment_devices').update(stamp).eq('id', reader.id);
+  } catch (e) {
+    console.warn('[stripe-process-payment-on-reader] last_seen stamp failed (non-fatal):', (e as Error).message);
+  }
+
   return json({
     success: true,
     payment_intent_id: pi.id,

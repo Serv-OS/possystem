@@ -79,18 +79,26 @@ Deno.serve(async (req) => {
         { stripeAccount: msa.stripe_account_id },
       );
 
-      const update = {
+      const nowIso = new Date().toISOString();
+      // Stripe's Terminal Reader object does NOT expose a reliable last-seen
+      // timestamp, so we must not blindly write null here (that wiped the value
+      // and showed "never"/"51d ago"). A live retrieve that returns status
+      // 'online' means Stripe can reach the reader right now → seen now. If it's
+      // offline we leave last_seen_at untouched (keep the last known good value).
+      const stripeLastSeen = (sr as any).last_seen_at
+        ? new Date((sr as any).last_seen_at * 1000).toISOString()
+        : null;
+      const update: Record<string, unknown> = {
         ip_address: sr.ip_address ?? null,
         firmware_version: (sr as any).device_sw_version ?? null,
         status: sr.status ?? null,
         serial_number: sr.serial_number ?? null,
         label: sr.label ?? null,
         device_type: sr.device_type ?? null,
-        last_seen_at: (sr as any).last_seen_at
-          ? new Date((sr as any).last_seen_at * 1000).toISOString()
-          : null,
-        last_status_check_at: new Date().toISOString(),
+        last_status_check_at: nowIso,
       };
+      if (stripeLastSeen) update.last_seen_at = stripeLastSeen;
+      else if (sr.status === 'online') update.last_seen_at = nowIso;
 
       await platformAdmin.from('payment_devices').update(update).eq('id', r.id);
 

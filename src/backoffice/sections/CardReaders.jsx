@@ -11,7 +11,7 @@
 // reader's own screen. The Stripe Terminal SDK is no longer in the APK.
 // Cross-location oversight lives in the super-admin app (?mode=admin).
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { supabase, platformSupabase, getActiveLocationSync } from '../../lib/supabase';
 import { resolvePlatformLocationId } from '../../lib/networkReader';
 import { stripeCurrency } from '../../lib/currency';
@@ -127,6 +127,18 @@ export default function CardReaders() {
       setRefreshingStatus(false);
     }
   };
+
+  // Auto-fetch live diagnostics from Stripe once when the page opens, so the
+  // reader cards show current status / IP / firmware / last-seen without the
+  // admin having to click "Refresh status". Guarded to run a single time.
+  const autoCheckedRef = useRef(false);
+  useEffect(() => {
+    if (platformLocationId && !autoCheckedRef.current) {
+      autoCheckedRef.current = true;
+      refreshStatusFromStripe();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [platformLocationId]);
 
   const networkReaders = readers.filter(r => r.connection_kind === 'network');
 
