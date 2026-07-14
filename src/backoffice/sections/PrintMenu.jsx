@@ -179,8 +179,20 @@ export default function PrintMenu() {
     const w = window.open('', '_blank');
     if (!w) { alert('Please allow pop-ups to export the menu PDF.'); return; }
     w.document.open(); w.document.write(html); w.document.close();
-    // Give the browser a moment to lay out (fonts/logo) before the print dialog.
-    setTimeout(() => { try { w.focus(); w.print(); } catch { /* user can print manually */ } }, 350);
+    // The document paginates itself in JS (measures + packs categories into pages).
+    // Wait until it signals __pmPaginated before opening the print dialog, so the PDF
+    // reflects the final paged layout — with a timeout fallback if anything stalls.
+    const t0 = Date.now();
+    const go = () => {
+      let ready = false;
+      try { ready = !!w.__pmPaginated || w.closed; } catch { ready = true; }
+      if (ready || Date.now() - t0 > 4000) {
+        try { if (!w.closed) { w.focus(); w.print(); } } catch { /* user can print manually */ }
+      } else {
+        setTimeout(go, 60);
+      }
+    };
+    setTimeout(go, 150);
   };
 
   if (loading) return <div style={S.empty}>Loading…</div>;

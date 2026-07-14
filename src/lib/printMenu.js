@@ -149,9 +149,88 @@ export function buildPrintMenuHtml(cfg, data) {
     : '';
   const headerClass = c.logo === 'top-left' ? 'pm-head pm-head-left' : 'pm-head pm-head-center';
 
-  const body = cats.length
-    ? `<div class="pm-cols">${cats.map(catHtml).join('')}</div>`
-    : `<div class="pm-empty">No categories with items selected. Choose categories on the left.</div>`;
+  const headerHtml = `<header id="pm-header" class="${headerClass}">
+    ${logoBlock}
+    <div>
+      <h1 class="pm-title">${esc(title)}</h1>
+      ${c.subtitle ? `<div class="pm-sub">${esc(c.subtitle)}</div>` : ''}
+    </div>
+  </header>`;
+  const notesHtml = disclaimers ? `<div id="pm-notes" class="pm-notes">${disclaimers}</div>` : '';
+
+  // Page geometry (CSS px) for the JS paginator. Safari/WebKit collapse CSS
+  // multi-column layouts and ignore break-inside when PRINTING, so we don't rely on
+  // the browser's column/pagination engine — we measure each category and pack whole
+  // categories into columns and pages ourselves. Works identically in every engine.
+  const pxPerMm = 96 / 25.4;
+  const contentWpx = Math.round((pageW - 24) * pxPerMm);   // printable width  (page − 2×12mm margin)
+  const contentHpx = Math.round((pageH - 24) * pxPerMm);   // printable height
+  const colWpx = Math.max(80, Math.floor((contentWpx - (cols - 1) * colGap) / cols));
+  const PGEO = { COLS: cols, CONTENT_W: contentWpx, CONTENT_H: contentHpx, COL_W: colWpx, SECTION_GAP: sectionGap, HEADER_MB: Math.max(8, sectionGap), NOTES_MT: Math.max(10, sectionGap) };
+
+  const paginate = `
+(function(){
+  var G = ${JSON.stringify(PGEO)};
+  function build(){
+    var stage=document.getElementById('pm-stage');
+    var pagesRoot=document.getElementById('pm-pages');
+    if(!stage||!pagesRoot){ done(); return; }
+    var header=document.getElementById('pm-header');
+    var notes=document.getElementById('pm-notes');
+    var catsWrap=document.getElementById('pm-cats');
+    stage.style.width = G.CONTENT_W + 'px';
+    var headerH = header ? (header.offsetHeight + G.HEADER_MB) : 0;
+    var notesH = notes ? (notes.offsetHeight + G.NOTES_MT) : 0;
+    if(catsWrap){ catsWrap.style.width = G.COL_W + 'px'; }
+    var els = catsWrap ? [].slice.call(catsWrap.children) : [];
+    var measured = els.map(function(el){ return { el: el, h: el.offsetHeight + G.SECTION_GAP }; });
+    var SAFETY = 16;
+    var pages=[];
+    function newPage(){ var p={cols:[],isFirst:pages.length===0}; for(var i=0;i<G.COLS;i++)p.cols.push([]); pages.push(p); return p; }
+    function usable(pg){ return G.CONTENT_H - (pg.isFirst?headerH:0) - SAFETY; }
+    var page=newPage(), colIdx=0, used=0;
+    for(var i=0;i<measured.length;i++){
+      var m=measured[i];
+      if(used>0 && (used+m.h)>usable(page)){
+        colIdx++;
+        if(colIdx>=G.COLS){ page=newPage(); colIdx=0; }
+        used=0;
+      }
+      page.cols[colIdx].push(m); used+=m.h;
+    }
+    var last=pages[pages.length-1]||newPage();
+    var maxH=0; for(var a=0;a<last.cols.length;a++){ var s=0; for(var b=0;b<last.cols[a].length;b++) s+=last.cols[a][b].h; if(s>maxH)maxH=s; }
+    var notesOwnPage = !!notes && (maxH + notesH > usable(last));
+    for(var pi=0;pi<pages.length;pi++){
+      var p=pages[pi];
+      var pd=document.createElement('div'); pd.className='pm-page';
+      if(p.isFirst && header) pd.appendChild(header);
+      var cd=document.createElement('div'); cd.className='pm-cols';
+      for(var ci=0;ci<p.cols.length;ci++){
+        var col=document.createElement('div'); col.className='pm-col';
+        for(var k=0;k<p.cols[ci].length;k++) col.appendChild(p.cols[ci][k].el);
+        cd.appendChild(col);
+      }
+      pd.appendChild(cd);
+      if(notes && !notesOwnPage && pi===pages.length-1) pd.appendChild(notes);
+      pagesRoot.appendChild(pd);
+    }
+    if(notes && notesOwnPage){ var np=document.createElement('div'); np.className='pm-page'; np.appendChild(notes); pagesRoot.appendChild(np); }
+    if(stage.parentNode) stage.parentNode.removeChild(stage);
+    done();
+  }
+  function done(){ window.__pmPaginated=true; if(typeof window.__pmOnReady==='function'){ try{ window.__pmOnReady(); }catch(e){} } }
+  // NB: do NOT wait on requestAnimationFrame — it is throttled/never fires in background
+  // or non-visible tabs (and in Safari's print window), which would stall pagination.
+  // Reading offsetHeight in build() forces synchronous layout, so no paint frame is needed.
+  function ready(){
+    var ran=false;
+    function go(){ if(ran) return; ran=true; try{ build(); }catch(e){ done(); } }
+    var fr=(document.fonts&&document.fonts.ready)?document.fonts.ready:Promise.resolve();
+    fr.then(go); setTimeout(go, 600);
+  }
+  if(document.readyState==='complete') ready(); else window.addEventListener('load', ready);
+})();`;
 
   return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)} — Menu</title>
 <style>
@@ -165,10 +244,14 @@ export function buildPrintMenuHtml(cfg, data) {
   .pm-logo { max-height: 64px; max-width: 240px; object-fit: contain; ${c.logo === 'top-center' ? 'display:block;margin:0 auto 8px;' : ''} }
   .pm-title { font-size: ${z(26)}px; font-weight: 700; letter-spacing: .01em; color: ${accent}; margin: 0; }
   .pm-sub { font-size: ${z(12)}px; color: #666; margin-top: 2px; }
-  .pm-cols { column-count: ${cols}; column-gap: ${colGap}px; column-fill: balance; }
-  /* Keep a whole category together: if it doesn't fit the rest of a column/page it
-     moves — as a block — to the next column, and to the next page rather than splitting. */
-  .pm-cat { break-inside: avoid; -webkit-column-break-inside: avoid; page-break-inside: avoid; margin: 0 0 ${sectionGap}px; }
+  /* Off-screen measuring area (removed once pagination runs). */
+  #pm-stage { position: absolute; left: -100000px; top: 0; }
+  .pm-cols { display: flex; gap: ${colGap}px; align-items: flex-start; }
+  .pm-col { width: ${colWpx}px; }
+  /* A category is packed as one whole block into a single column — never split.
+     page-break-inside:avoid is belt-and-braces: if the print engine's layout drifts a
+     little from our measurement, it still keeps a category whole across a page break. */
+  .pm-cat { margin: 0 0 ${sectionGap}px; page-break-inside: avoid; break-inside: avoid; }
   .pm-cat-h { font-size: ${z(15)}px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: ${accent}; margin: 0 0 ${Math.max(2, Math.round(itemGap / 3))}px; padding-bottom: 3px; border-bottom: 1px solid #ddd; }
   .pm-cat-desc { font-size: ${z(10.5)}px; color: #777; font-style: italic; margin: 0 0 ${Math.max(3, Math.round(itemGap * 0.8))}px; }
   .pm-item { margin: 0 0 ${itemGap}px; }
@@ -181,22 +264,18 @@ export function buildPrintMenuHtml(cfg, data) {
   .pm-variants { font-size: ${z(10.5)}px; color: #444; margin-top: 2px; display: flex; flex-wrap: wrap; gap: 4px 12px; }
   .pm-variant b { font-weight: 700; }
   .pm-alg { font-size: ${z(9)}px; color: #8a8a8a; font-style: italic; margin-top: 1px; }
-  .pm-notes { margin-top: ${Math.max(10, sectionGap)}px; padding-top: 8px; border-top: 1px solid #ddd; }
+  .pm-notes { padding-top: 8px; border-top: 1px solid #ddd; margin-top: ${Math.max(10, sectionGap)}px; }
   .pm-note { font-size: ${z(9)}px; color: #777; margin-top: 3px; }
   .pm-footer { font-size: ${z(9.5)}px; color: #555; margin-top: 6px; text-align: center; font-weight: 600; }
   .pm-empty { color: #999; font-size: 13px; text-align: center; padding: 60px 20px; }
-  /* On-screen preview only: draw the page as a white sheet. Print ignores this via @media. */
-  @media screen { body { background: #fff; width: ${pageW}mm; min-height: ${pageH}mm; padding: 12mm; margin: 0 auto; } }
+  /* On-screen preview: draw each page as a white sheet. */
+  @media screen { body { background: #ececec; } .pm-page { background: #fff; width: ${pageW}mm; min-height: ${pageH}mm; padding: 12mm; margin: 0 auto 14px; box-shadow: 0 1px 8px rgba(0,0,0,.16); overflow: hidden; } }
+  /* Print: one <div.pm-page> per sheet (works in Safari/WebKit + Blink). */
+  @media print { .pm-page { page-break-after: always; break-after: page; } .pm-page:last-child { page-break-after: auto; break-after: auto; } }
 </style></head>
 <body>
-  <header class="${headerClass}">
-    ${logoBlock}
-    <div>
-      <h1 class="pm-title">${esc(title)}</h1>
-      ${c.subtitle ? `<div class="pm-sub">${esc(c.subtitle)}</div>` : ''}
-    </div>
-  </header>
-  ${body}
-  ${disclaimers ? `<div class="pm-notes">${disclaimers}</div>` : ''}
+${cats.length
+  ? `<div id="pm-stage">${headerHtml}<div id="pm-cats">${cats.map(catHtml).join('')}</div>${notesHtml}</div><div id="pm-pages"></div><script>${paginate}</script>`
+  : `<div class="pm-page">${headerHtml}<div class="pm-empty">No categories with items selected. Choose categories on the left.</div></div>`}
 </body></html>`;
 }

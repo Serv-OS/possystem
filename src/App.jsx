@@ -93,6 +93,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.774', date: '13 Jul 2026', label: 'Print menu — fix single-column + category bleed when printing from Safari',
+    changes: [
+      'Fixed the PDF coming out as a single column with categories split across page breaks when printing from Safari. Safari’s print engine doesn’t honour CSS columns or “keep-together” rules, so the menu now lays itself out into real pages and columns before printing — the same result in Safari, Chrome and every other browser.',
+      'Each page’s columns are balanced, the menu reads in the right order (down column 1, then column 2, then the next page), and a category is always kept whole on one page. Verified by generating real multi-page PDFs across A4 / US Letter and 2 / 3 columns.',
+    ],
+  },
+  {
     version: '5.5.773', date: '13 Jul 2026', label: 'Print menu — categories no longer split across a page break',
     changes: [
       'A category that doesn’t fit at the bottom of a page now moves as a whole block to the next column/page instead of splitting across the break — so a category is never cut in half between pages.',
