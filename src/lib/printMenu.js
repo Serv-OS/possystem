@@ -72,48 +72,6 @@ function dietaryBadges(it) {
 
 const fmtMoney = (n, sym) => `${sym}${(Number(n) || 0).toFixed(2)}`;
 
-// Rough printed height of a category block (in arbitrary "line" units) so we can
-// balance columns deterministically. We do NOT rely on CSS multi-column balancing:
-// on screen the page has a definite height so `column-count` balances nicely, but
-// when PRINTING there's no definite height, so the browser fills column 1 first and
-// a short menu collapses into a single column. Distributing categories into real
-// flas flex columns ourselves makes the printed PDF match the preview exactly.
-function catWeight(k, itemsByCat, cfg) {
-  const items = itemsByCat[k.id] || [];
-  let w = 2.4;                       // category header + rule
-  if (k.description) w += 1;
-  for (const it of items) {
-    w += 1;                          // name row
-    if (cfg.showDescription && it.description) w += 0.9;
-    if (cfg.showAllergens && Array.isArray(it.allergens) && it.allergens.length) w += 0.7;
-    if (Array.isArray(it._variants) && it._variants.length) w += 0.8;
-  }
-  return w + 0.9;                    // trailing section gap
-}
-
-// Split categories (in reading order) into balanced columns. Sequential fill keeps
-// menu order (col 1 top→bottom, then col 2…) while evening out column heights, and
-// guarantees no column is left empty. Columns are capped to the number of categories
-// so 2 categories over "3 columns" become 2 full-width columns, not 1 + 2 blanks.
-export function distributeCategories(cats, itemsByCat, cols, cfg) {
-  const n = Math.max(1, Math.min(3, cols | 0, cats.length || 1));
-  if (n <= 1 || cats.length <= 1) return [cats.slice()];
-  const w = cats.map(k => catWeight(k, itemsByCat, cfg));
-  const total = w.reduce((s, x) => s + x, 0);
-  const target = total / n;
-  const columns = Array.from({ length: n }, () => []);
-  let ci = 0, acc = 0;
-  for (let i = 0; i < cats.length; i++) {
-    const catsLeft = cats.length - i;              // including this one
-    const colsAfter = n - 1 - ci;                  // empty columns after the current one
-    const mustReserve = catsLeft <= colsAfter;     // too few cats left → hand one to the next column now
-    const overshoot = acc + w[i] / 2 >= target;    // adding this would push the column past its share
-    if (ci < n - 1 && columns[ci].length > 0 && (mustReserve || overshoot)) { ci++; acc = 0; }
-    columns[ci].push(cats[i]); acc += w[i];
-  }
-  return columns;
-}
-
 /**
  * @param {object} cfg   merged over DEFAULT_PRINT_CONFIG
  * @param {object} data  { venueName, logoUrl, brandColor, currencySymbol,
@@ -191,9 +149,8 @@ export function buildPrintMenuHtml(cfg, data) {
     : '';
   const headerClass = c.logo === 'top-left' ? 'pm-head pm-head-left' : 'pm-head pm-head-center';
 
-  const columns = distributeCategories(cats, itemsByCat, cols, c);
   const body = cats.length
-    ? `<div class="pm-cols">${columns.map(col => `<div class="pm-col">${col.map(catHtml).join('')}</div>`).join('')}</div>`
+    ? `<div class="pm-cols">${cats.map(catHtml).join('')}</div>`
     : `<div class="pm-empty">No categories with items selected. Choose categories on the left.</div>`;
 
   return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)} — Menu</title>
@@ -208,8 +165,9 @@ export function buildPrintMenuHtml(cfg, data) {
   .pm-logo { max-height: 64px; max-width: 240px; object-fit: contain; ${c.logo === 'top-center' ? 'display:block;margin:0 auto 8px;' : ''} }
   .pm-title { font-size: ${z(26)}px; font-weight: 700; letter-spacing: .01em; color: ${accent}; margin: 0; }
   .pm-sub { font-size: ${z(12)}px; color: #666; margin-top: 2px; }
-  .pm-cols { display: flex; gap: ${colGap}px; align-items: flex-start; }
-  .pm-col { flex: 1 1 0; min-width: 0; }
+  .pm-cols { column-count: ${cols}; column-gap: ${colGap}px; column-fill: balance; }
+  /* Keep a whole category together: if it doesn't fit the rest of a column/page it
+     moves — as a block — to the next column, and to the next page rather than splitting. */
   .pm-cat { break-inside: avoid; -webkit-column-break-inside: avoid; page-break-inside: avoid; margin: 0 0 ${sectionGap}px; }
   .pm-cat-h { font-size: ${z(15)}px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: ${accent}; margin: 0 0 ${Math.max(2, Math.round(itemGap / 3))}px; padding-bottom: 3px; border-bottom: 1px solid #ddd; }
   .pm-cat-desc { font-size: ${z(10.5)}px; color: #777; font-style: italic; margin: 0 0 ${Math.max(3, Math.round(itemGap * 0.8))}px; }

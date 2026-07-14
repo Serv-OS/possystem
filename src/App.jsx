@@ -93,6 +93,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.773', date: '13 Jul 2026', label: 'Print menu — categories no longer split across a page break',
+    changes: [
+      'A category that doesn’t fit at the bottom of a page now moves as a whole block to the next column/page instead of splitting across the break — so a category is never cut in half between pages.',
+      'Multi-page menus now flow in proper reading order (down column 1, then column 2, then the next page) with each page’s columns balanced. Verified by generating real multi-page PDFs.',
+    ],
+  },
+  {
     version: '5.5.772', date: '13 Jul 2026', label: 'Print menu — fix: columns collapsing to one when you Print / Save as PDF',
     changes: [
       'Fixed the print/PDF output collapsing your multi-column menu into a single column. The columns are now built as real side-by-side columns (evenly balanced, in menu order), so what you see in the preview is exactly what prints.',
