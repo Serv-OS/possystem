@@ -76,7 +76,12 @@ export default function PrintMenu() {
         fetchMenuItems(id),
         supabase.from('locations').select('name, currency, print_menu_config').eq('id', id).maybeSingle(),
       ]);
-      setCats((c?.data || []).filter(x => !x.parent_id && !x.is_special).sort((a, z) => (a.sort_order || 0) - (z.sort_order || 0)));
+      // menu_categories stores the display name in `label` (not `name`); normalise so
+      // the checklist AND the printed headers both read `name`.
+      setCats((c?.data || [])
+        .filter(x => !x.parent_id && !x.is_special)
+        .map(x => ({ ...x, name: x.label ?? x.name ?? 'Category' }))
+        .sort((a, z) => (a.sort_order || 0) - (z.sort_order || 0)));
       setItems(it?.data || []);
       const loc = locRes?.data || {};
       setVenueName(loc.name || 'Menu');

@@ -123,7 +123,7 @@ const sbUpsertMenuItem = async (item) => {
     kitchen_name: item.kitchenName||item.name, description: item.description||'',
     type: item.type||'simple', cat: item.cat||null, cats: item.cats||[],
     parent_id: item.parentId||null, sort_order: item.sortOrder||0,
-    pricing: item.pricing||{base:0}, allergens: item.allergens||[],
+    pricing: item.pricing||{base:0}, allergens: item.allergens||[], tags: item.tags||[],
     assigned_modifier_groups: item.assignedModifierGroups||[],
     visibility: item.visibility||{pos:true,kiosk:true,online:true},
     sold_alone: item.soldAlone||false, archived: item.archived||false,

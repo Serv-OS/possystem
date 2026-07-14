@@ -30,6 +30,16 @@ import PerMenuPricingTiers from './PerMenuPricingTiers';
 import MenuImportModal from '../components/MenuImportModal';
 import { money } from '../../lib/currency';
 
+// Dietary tags — stored on menu_items.tags (jsonb). The tag id is what the print
+// menu + digital menu board map to a GF/V/VG/DF badge (see printMenu.js DIET map),
+// so these ids MUST stay in that map's key set.
+const DIET_TAGS = [
+  { id:'vegetarian',  label:'Vegetarian', badge:'V',  icon:'🥗' },
+  { id:'vegan',       label:'Vegan',      badge:'VG', icon:'🌱' },
+  { id:'gluten-free', label:'Gluten-free',badge:'GF', icon:'🌾' },
+  { id:'dairy-free',  label:'Dairy-free', badge:'DF', icon:'🥛' },
+];
+
 // ── Clone item helper ─────────────────────────────────────────────────────────
 async function cloneItem(item, menuItems, addMenuItem, updateMenuItem, markBOChange, showToast, setSelItemId) {
   const baseName = item.menuName || item.name || 'Item';
@@ -48,6 +58,7 @@ async function cloneItem(item, menuItems, addMenuItem, updateMenuItem, markBOCha
     price:                    item.price,
     pricing:                  item.pricing ? { ...item.pricing } : { base: item.price || 0 },
     allergens:                [...(item.allergens || [])],
+    tags:                     [...(item.tags || [])],
     assignedModifierGroups:   [...(item.assignedModifierGroups || [])],
     assignedInstructionGroups:[...(item.assignedInstructionGroups || [])],
     modifierGroups:           item.modifierGroups ? [...item.modifierGroups] : undefined,
@@ -79,6 +90,7 @@ async function cloneItem(item, menuItems, addMenuItem, updateMenuItem, markBOCha
           price: child.price,
           pricing: child.pricing ? { ...child.pricing } : { base: child.price || 0 },
           allergens: [...(child.allergens || [])],
+          tags: [...(child.tags || [])],
           assignedModifierGroups: [...(child.assignedModifierGroups || [])],
           sortOrder: i,
         });
@@ -1706,7 +1718,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
     !isSub && { id:'modifiers', label:`Modifiers${assignedMods.length>0?` (${assignedMods.length})`:''}` },
     { id:'pricing',   label:'Pricing' },
     { id:'tax',       label:`Tax${item.taxRateId ? ' ✓' : ''}` },
-    { id:'allergens', label:`Allergens${(item.allergens||[]).length>0?` (${item.allergens.length})`:''}` },
+    { id:'allergens', label:`Allergens & dietary${((item.allergens||[]).length + (item.tags||[]).length)>0?` (${(item.allergens||[]).length + (item.tags||[]).length})`:''}` },
     isPizza && { id:'pizza', label:'Pizza' },
   ].filter(Boolean);
 
@@ -2227,9 +2239,23 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
           <TaxSection item={item} onUpdate={onUpdate} markBOChange={markBOChange}/>
         )}
 
-        {/* ════ ALLERGENS ══════════════════════════════════════════════════ */}
+        {/* ════ ALLERGENS & DIETARY ════════════════════════════════════════ */}
         {sec==='allergens' && (
           <div>
+            <span style={lbl}>Dietary — shows as a badge on the print menu &amp; menu board</span>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:5, marginBottom:16 }}>
+              {DIET_TAGS.map(d=>{
+                const on=(item.tags||[]).includes(d.id);
+                return (
+                  <button key={d.id} onClick={()=>onUpdate({tags:on?(item.tags||[]).filter(x=>x!==d.id):[...(item.tags||[]),d.id]})} style={{ display:'flex', alignItems:'center', gap:7, padding:'7px 9px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', textAlign:'left', border:`1.5px solid ${on?'var(--grn,#2f8f4e)':'var(--bdr)'}`, background:on?'var(--grn-d,rgba(47,143,78,.12))':'var(--bg3)', transition:'all .1s' }}>
+                    <div style={{ width:16,height:16,borderRadius:3,border:`2px solid ${on?'var(--grn,#2f8f4e)':'var(--bdr2)'}`,background:on?'var(--grn,#2f8f4e)':'transparent',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>
+                      {on&&<div style={{ width:6,height:6,borderRadius:1,background:'#fff' }}/>}
+                    </div>
+                    <span style={{ fontSize:11, fontWeight:on?700:400, color:on?'var(--grn,#2f8f4e)':'var(--t1)' }}>{d.icon} {d.label} <b style={{ opacity:.7 }}>{d.badge}</b></span>
+                  </button>
+                );
+              })}
+            </div>
             <span style={lbl}>Declared allergens — EU 14 mandatory</span>
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:5 }}>
               {ALLERGENS.map(a=>{

@@ -93,6 +93,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.770', date: '13 Jul 2026', label: 'Print menu fixes — category names now show + real dietary badges (V/VG/GF/DF)',
+    changes: [
+      'Fixed: category names were blank on the print menu (both in the category list and as the printed section headers). They now show correctly.',
+      'Dietary badges are now real. New “Allergens & dietary” tab on each menu item (Back office → Menu) lets you mark Vegetarian / Vegan / Gluten-free / Dairy-free. Tick a diet and it shows as a V / VG / GF / DF badge on the print menu (when “Dietary badges” is on) — and on your digital menu boards too.',
+    ],
+  },
+  {
     version: '5.5.769', date: '13 Jul 2026', label: 'NEW — Print menu: design a printable / PDF menu from your programmed menu',
     changes: [
       'New Back office → Channels → Print menu. Build a print-ready menu straight from the menu you’ve already programmed — no re-typing. Pick and re-order which categories to show, choose 1–3 columns, portrait or landscape, A4 or US Letter, a font, and where the logo sits (top-centre, top-left or none).',

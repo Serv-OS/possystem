@@ -181,6 +181,7 @@ export const upsertMenuItem = async (item, locationId = null) => {
     sort_order:   item.sortOrder   ?? item.sort_order   ?? 0,
     pricing,
     allergens:    item.allergens   || [],
+    tags:         item.tags        || [],
     assigned_modifier_groups:    item.assignedModifierGroups    || item.assigned_modifier_groups    || [],
     assigned_instruction_groups: item.assignedInstructionGroups || item.assigned_instruction_groups || [],
     visibility:   item.visibility  || { pos: true, kiosk: true, online: true },

@@ -264,6 +264,7 @@ export default function SyncBridge({ onSyncPulse }) {
             assignedModifierGroups: item.assigned_modifier_groups ?? item.assignedModifierGroups ?? [],
             assignedInstructionGroups: item.assigned_instruction_groups ?? item.assignedInstructionGroups ?? [],
             image: item.image ?? null,
+            tags: Array.isArray(item.tags) ? item.tags : [],   // dietary tags (V/VG/GF/DF)
           }));
 
           // Sync any local-only items that failed to save previously (e.g. before schema was ready)
