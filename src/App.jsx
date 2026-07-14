@@ -93,6 +93,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.769', date: '13 Jul 2026', label: 'NEW — Print menu: design a printable / PDF menu from your programmed menu',
+    changes: [
+      'New Back office → Channels → Print menu. Build a print-ready menu straight from the menu you’ve already programmed — no re-typing. Pick and re-order which categories to show, choose 1–3 columns, portrait or landscape, A4 or US Letter, a font, and where the logo sits (top-centre, top-left or none).',
+      'Toggle exactly what appears on each dish — description, price, allergens, and GF/V/VG dietary badges — with an optional dotted price leader.',
+      'Add an allergen disclaimer, a service-charge disclaimer and a footer line (address / phone / website).',
+      'Live page preview updates as you edit, shown at true paper size. “Print / Save as PDF” opens your print dialog so you can print in-house or save a crisp vector PDF. Your setup is saved per venue.',
+    ],
+  },
+  {
     version: '5.5.768', date: '13 Jul 2026', label: 'Card reader diagnostics now reflect real usage (fixes stale “seen 51d ago”)',
     changes: [
       'A reader that is online and taking payments no longer shows stale “seen N days ago”, blank IP/firmware, or “last status check: never”. Every card payment now stamps the reader as seen, and the Card readers page fetches a live snapshot from Stripe automatically when you open it (not only when you click “Refresh status”).',
