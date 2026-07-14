@@ -93,6 +93,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.777', date: '14 Jul 2026', label: 'Print menu — rebuilt as a real PDF generator (fixes Safari single-column / blank-page / clipping for good)',
+    changes: [
+      'The print menu now builds a proper PDF itself instead of relying on the browser’s print engine. That engine behaved differently in every browser — Safari especially collapsed the columns, dropped the menu onto page 2, or clipped items — which caused the problems you saw.',
+      'Now it’s identical everywhere: header (logo + title) and the menu together on page 1, balanced columns in the right reading order, whole categories that never split across a page, allergen + service-charge disclaimers and footer at the end.',
+      'The preview on the right is now the real PDF, so it’s exactly what you’ll print. “Print / Save as PDF” opens it in your browser’s PDF viewer to print or save.',
+      'Verified by generating real PDFs across A4 / US Letter, 1–3 columns, with and without a logo, short and multi-page menus.',
+    ],
+  },
+  {
     version: '5.5.776', date: '14 Jul 2026', label: 'Print menu — guarantee the logo/header and the menu stay on page 1 together',
     changes: [
       'Hardened the fix for the blank first page: each printed page is now a fixed single sheet, so the header (logo + title) and the menu columns physically can’t be split onto separate pages in any browser — including Safari.',

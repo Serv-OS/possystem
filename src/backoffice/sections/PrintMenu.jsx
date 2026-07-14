@@ -3,13 +3,15 @@
 // Back office → Channels → "Print menu". Design a printable/PDF menu from the programmed menu:
 // choose + order categories, columns, orientation, paper size, font, logo placement, what to
 // show (description / allergens / price / dietary), and allergen + service-charge disclaimers.
-// Live A4/Letter preview (same HTML that prints) + "Print / Save as PDF" (window.print → the OS
-// dialog, where the user picks the printer or "Save as PDF"). Config persists per location.
+// The preview and the export are the SAME jsPDF document (buildMenuPdf) — we generate the PDF
+// ourselves rather than relying on the browser's print engine, so it looks identical in every
+// browser (Safari included) and there are no CSS-print surprises. Config persists per location.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase, isMock, platformSupabase, getActiveLocationSync } from '../../lib/supabase';
 import { fetchMenuCategories, fetchMenuItems } from '../../lib/db';
-import { buildPrintMenuHtml, DEFAULT_PRINT_CONFIG, PRINT_FONTS, PAPER } from '../../lib/printMenu';
+import { DEFAULT_PRINT_CONFIG, PRINT_FONTS, PAPER } from '../../lib/printMenu';
+import { buildMenuPdf } from '../../lib/printMenuPdf';
 
 const CUR = { gbp: '£', usd: '$', eur: '€', aud: '$', cad: '$', nzd: '$' };
 
@@ -77,6 +79,9 @@ export default function PrintMenu() {
   const [saveState, setSaveState] = useState('');   // '', 'saving', 'saved'
   const saveTimer = useRef(null);
   const loadedRef = useRef(false);
+  const [logo, setLogo] = useState({ dataUri: null, aspect: 3 });   // logo fetched to a data-URI for the PDF
+  const [pdfUrl, setPdfUrl] = useState(null);
+  const pdfUrlRef = useRef(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -109,6 +114,16 @@ export default function PrintMenu() {
         const { data: p } = await platformSupabase.from('locations').select('online_branding').or(`ops_location_id.eq.${id},id.eq.${id}`).maybeSingle();
         const b = p?.online_branding || {};
         setBranding({ logoUrl: b.logo_url || null, brandColor: b.brand_color || b.accent_color || '#1a1a1a' });
+        if (b.logo_url) {                                   // fetch the logo to a data-URI so jsPDF can embed it
+          try {
+            const res = await fetch(b.logo_url);
+            const blob = await res.blob();
+            const dataUri = await new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.onerror = () => r(null); fr.readAsDataURL(blob); });
+            let aspect = 3;
+            if (dataUri) aspect = await new Promise(r => { const im = new Image(); im.onload = () => r((im.naturalWidth / im.naturalHeight) || 3); im.onerror = () => r(3); im.src = dataUri; });
+            setLogo({ dataUri: dataUri || null, aspect });
+          } catch { setLogo({ dataUri: null, aspect: 3 }); }
+        } else setLogo({ dataUri: null, aspect: 3 });
       } catch { /* branding best-effort */ }
       loadedRef.current = true;
     } finally { setLoading(false); }
@@ -170,44 +185,40 @@ export default function PrintMenu() {
     set({ categoryIds: base });
   };
 
-  const html = useMemo(() => buildPrintMenuHtml(cfg, {
-    venueName, logoUrl: branding.logoUrl, brandColor: branding.brandColor, currencySymbol,
-    categories: cats, itemsByCat,
-  }), [cfg, venueName, branding, currencySymbol, cats, itemsByCat]);
+  // Build the actual PDF (debounced) and expose it as a blob URL for the preview + export.
+  // The preview IS the real PDF, so what you see is exactly what prints/saves.
+  const genData = useMemo(() => ({
+    venueName, logoDataUri: cfg.logo === 'none' ? null : logo.dataUri, logoAspect: logo.aspect,
+    brandColor: branding.brandColor, currencySymbol, categories: cats, itemsByCat,
+  }), [venueName, cfg.logo, logo, branding.brandColor, currencySymbol, cats, itemsByCat]);
+
+  useEffect(() => {
+    if (loading || !locId) return;
+    const t = setTimeout(() => {
+      try {
+        const doc = buildMenuPdf(cfg, genData);
+        const url = URL.createObjectURL(doc.output('blob'));
+        if (pdfUrlRef.current) URL.revokeObjectURL(pdfUrlRef.current);
+        pdfUrlRef.current = url;
+        setPdfUrl(url);
+      } catch { /* keep the previous preview on a transient error */ }
+    }, 180);
+    return () => clearTimeout(t);
+  }, [cfg, genData, loading, locId]);
+
+  useEffect(() => () => { if (pdfUrlRef.current) URL.revokeObjectURL(pdfUrlRef.current); }, []);
 
   const printNow = () => {
-    const w = window.open('', '_blank');
-    if (!w) { alert('Please allow pop-ups to export the menu PDF.'); return; }
-    w.document.open(); w.document.write(html); w.document.close();
-    // The document paginates itself in JS (measures + packs categories into pages).
-    // Wait until it signals __pmPaginated before opening the print dialog, so the PDF
-    // reflects the final paged layout — with a timeout fallback if anything stalls.
-    const t0 = Date.now();
-    const go = () => {
-      let ready = false;
-      try { ready = !!w.__pmPaginated || w.closed; } catch { ready = true; }
-      if (ready || Date.now() - t0 > 6000) {
-        try { if (!w.closed) { w.focus(); w.print(); } } catch { /* user can print manually */ }
-      } else {
-        setTimeout(go, 60);
-      }
-    };
-    setTimeout(go, 150);
+    if (!pdfUrl) return;
+    const w = window.open(pdfUrl, '_blank');   // opens the PDF viewer → user can print or save
+    if (!w) alert('Please allow pop-ups to open the menu PDF for printing / saving.');
   };
 
   if (loading) return <div style={S.empty}>Loading…</div>;
   if (!supabase || !locId) return <div style={S.empty}>Pick a location to design its print menu.</div>;
 
-  // Preview: render the exact print HTML in an iframe at page size, scaled to fit.
   const paper = PAPER[cfg.paper] || PAPER.a4;
   const land = cfg.orientation === 'landscape';
-  const pageMmW = land ? paper.h : paper.w;
-  const pageMmH = land ? paper.w : paper.h;
-  const pxPerMm = 96 / 25.4;
-  const pageW = Math.round(pageMmW * pxPerMm);
-  const pageH = Math.round(pageMmH * pxPerMm);
-  const previewW = land ? 620 : 460;
-  const scale = previewW / pageW;
 
   return (
     <div>
@@ -307,13 +318,13 @@ export default function PrintMenu() {
               {saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? '✓ Saved' : `${paper.label} · ${land ? 'Landscape' : 'Portrait'} · ${cfg.columns} col`}
             </span>
           </div>
-          <div style={{ background: 'var(--bg0)', border: '1px solid var(--bdr)', borderRadius: 12, padding: 16, overflow: 'auto', display: 'flex', justifyContent: 'center' }}>
-            <div style={{ width: previewW, height: Math.round(pageH * scale), overflow: 'hidden', boxShadow: '0 6px 24px rgba(0,0,0,.18)', flexShrink: 0 }}>
-              <iframe title="Menu preview" srcDoc={html} scrolling="no"
-                style={{ width: pageW, height: pageH, border: 'none', transform: `scale(${scale})`, transformOrigin: 'top left', background: '#fff' }} />
-            </div>
+          <div style={{ background: 'var(--bg0)', border: '1px solid var(--bdr)', borderRadius: 12, padding: 8, height: 780 }}>
+            {pdfUrl
+              ? <iframe key={cfg.paper + cfg.orientation} title="Menu preview" src={`${pdfUrl}#toolbar=0&navpanes=0&view=FitH`}
+                  style={{ width: '100%', height: '100%', border: 'none', borderRadius: 8, background: '#fff' }} />
+              : <div style={S.empty}>Generating preview…</div>}
           </div>
-          <div style={S.hint}>The preview shows one page — a longer menu flows onto more pages when printed. In the print dialog choose your printer or <b>Save as PDF</b>.</div>
+          <div style={S.hint}>This preview is the real PDF — exactly what prints. Scroll to see every page. Use <b>Print / Save as PDF</b> to open it in your browser’s viewer, then print or save.</div>
         </div>
       </div>
     </div>
