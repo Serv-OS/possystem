@@ -184,7 +184,7 @@ export function buildPrintMenuHtml(cfg, data) {
     if(catsWrap){ catsWrap.style.width = G.COL_W + 'px'; }
     var els = catsWrap ? [].slice.call(catsWrap.children) : [];
     var measured = els.map(function(el){ return { el: el, h: el.offsetHeight + G.SECTION_GAP }; });
-    var SAFETY = 16;
+    var SAFETY = 30; // slack so a column never exceeds the fixed page height (print rendering can differ a little from our screen measurement)
     var pages=[];
     function newPage(){ var p={cols:[],isFirst:pages.length===0}; for(var i=0;i<G.COLS;i++)p.cols.push([]); pages.push(p); return p; }
     function usable(pg){ return G.CONTENT_H - (pg.isFirst?headerH:0) - SAFETY; }
@@ -281,8 +281,14 @@ export function buildPrintMenuHtml(cfg, data) {
   .pm-empty { color: #999; font-size: 13px; text-align: center; padding: 60px 20px; }
   /* On-screen preview: draw each page as a white sheet. */
   @media screen { body { background: #ececec; } .pm-page { background: #fff; width: ${pageW}mm; min-height: ${pageH}mm; padding: 12mm; margin: 0 auto 14px; box-shadow: 0 1px 8px rgba(0,0,0,.16); overflow: hidden; } }
-  /* Print: one <div.pm-page> per sheet (works in Safari/WebKit + Blink). */
-  @media print { .pm-page { page-break-after: always; break-after: page; } .pm-page:last-child { page-break-after: auto; break-after: auto; } }
+  /* Print: one <div.pm-page> per sheet. FIXED height (= printable area) makes every
+     page exactly one sheet, so the header and its columns live in the SAME single-sheet
+     box and can never be split onto separate pages — no matter how the engine (Safari!)
+     would otherwise want to break between them. Content is pre-packed to fit this height. */
+  @media print {
+    .pm-page { height: ${contentHpx}px; overflow: hidden; page-break-after: always; break-after: page; page-break-inside: avoid; }
+    .pm-page:last-child { page-break-after: auto; break-after: auto; }
+  }
 </style></head>
 <body>
 ${cats.length

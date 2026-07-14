@@ -93,6 +93,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.776', date: '14 Jul 2026', label: 'Print menu — guarantee the logo/header and the menu stay on page 1 together',
+    changes: [
+      'Hardened the fix for the blank first page: each printed page is now a fixed single sheet, so the header (logo + title) and the menu columns physically can’t be split onto separate pages in any browser — including Safari.',
+      'Verified with real multi-page PDFs (with and without a logo, A4 and US Letter, 2 and 3 columns): page 1 always shows the header plus the menu, and no category is split across a page.',
+    ],
+  },
+  {
     version: '5.5.775', date: '14 Jul 2026', label: 'Print menu — fix blank first page when your menu has a logo',
     changes: [
       'Fixed a blank first page (just the logo/title, then the menu starting on page 2) when the menu has a logo. The layout was being measured before the logo image had loaded, so the header size was wrong and the columns got pushed to the next page.',
