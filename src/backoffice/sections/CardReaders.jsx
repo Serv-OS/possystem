@@ -617,6 +617,7 @@ function ReaderSettingsPanel({ locationId }) {
   const [ssUploading, setSsUploading] = useState(false);
   const [ssError, setSsError] = useState(null);
   const [ssNote, setSsNote] = useState(null);
+  const [ssImageUrl, setSsImageUrl] = useState(null);   // viewable Storage URL (Stripe file ids aren't renderable)
 
   // ── Screensaver upload handler ──────────────────────────────────────
   const handleSsUpload = async (file) => {
@@ -668,6 +669,15 @@ function ReaderSettingsPanel({ locationId }) {
 
       setSsFileId(j.file_id);
       setSsEnabled(true);
+      // Also stash a VIEWABLE copy in Storage so the back office previews the real image on
+      // reload (Stripe file objects aren't directly renderable). Best-effort — the Stripe upload
+      // above is the source of truth for what the reader shows.
+      try {
+        const ext = file.type === 'image/png' ? 'png' : 'jpg';
+        const path = `reader-idle/${locationId}.${ext}`;
+        const { error: upErr } = await supabase.storage.from('receipt-assets').upload(path, file, { upsert: true, contentType: file.type });
+        if (!upErr) { const { data: pub } = supabase.storage.from('receipt-assets').getPublicUrl(path); if (pub?.publicUrl) setSsImageUrl(`${pub.publicUrl}?t=${Date.now()}`); }
+      } catch { /* preview-only; non-fatal */ }
       setSsNote(`Uploaded (${j.size_kb} KB) — tap "Save & sync to readers" to push to devices`);
     } catch (e) {
       setSsError(String(e?.message ?? e));
@@ -697,6 +707,7 @@ function ReaderSettingsPanel({ locationId }) {
 
       setSsFileId(null);
       setSsPreview(null);
+      setSsImageUrl(null);
       setSsEnabled(false);
       setSsNote('Screensaver removed — tap "Save & sync to readers" to update devices');
     } catch (e) {
@@ -719,6 +730,8 @@ function ReaderSettingsPanel({ locationId }) {
         setSmartThreshold(data.smart_tip_threshold_minor != null ? String(data.smart_tip_threshold_minor / 100) : '');
         setSsEnabled(!!data.idle_screen_enabled);
         setSsFileId(data.idle_screen_file_id || null);
+        setSsImageUrl(data.idle_screen_image_url || null);
+        if (data.idle_screen_image_url) setSsPreview(data.idle_screen_image_url);   // show the real image on reload
       }
     })();
   }, [locationId]);
@@ -739,6 +752,7 @@ function ReaderSettingsPanel({ locationId }) {
         allow_custom_tip: allowCustom,
         smart_tip_threshold_minor: thresholdMinor,
         idle_screen_enabled: ssEnabled,
+        idle_screen_image_url: ssImageUrl,
       }).eq('location_id', locationId);
       if (updErr) throw updErr;
 

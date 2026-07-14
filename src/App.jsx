@@ -93,6 +93,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.766', date: '13 Jul 2026', label: 'Fix — reader idle-screen image now shows in the back office after upload',
+    changes: [
+      'The idle-screen image you upload now displays as a proper preview in the back office (and after reload), instead of just showing an internal file id. A viewable copy is kept so you can always see what’s currently set.',
+    ],
+  },
+  {
     version: '5.5.765', date: '13 Jul 2026', label: 'Fix — card-reader settings (idle screen + tipping) now actually save',
     changes: [
       'The reader settings (idle screen image, tipping prompt) appeared to save but silently reverted — a missing database write-permission blocked the update. Fixed; “Save & sync to readers” now persists and pushes to your readers.',
