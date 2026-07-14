@@ -51,6 +51,19 @@ function Toggle({ on, label, set }) {
     </label>
   );
 }
+function Range({ label, val, min, max, step = 1, unit = '', set }) {
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 }}>
+        <label style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--t2)' }}>{label}</label>
+        <span style={{ fontSize: 11, color: 'var(--t3)', fontWeight: 600 }}>{val}{unit}</span>
+      </div>
+      <input type="range" min={min} max={max} step={step} value={val}
+        onChange={e => set(Number(e.target.value))}
+        style={{ width: '100%', accentColor: 'var(--acc)', cursor: 'pointer' }} />
+    </div>
+  );
+}
 
 export default function PrintMenu() {
   const [locId, setLocId] = useState(null);
@@ -223,6 +236,16 @@ export default function PrintMenu() {
                 <input type="color" value={/^#[0-9a-fA-F]{6}$/.test(cfg.accent) ? cfg.accent : (branding.brandColor || '#1a1a1a')} onChange={e => set({ accent: e.target.value })} style={{ width: 42, height: 34, border: '1px solid var(--bdr2)', borderRadius: 8, background: 'none', cursor: 'pointer' }} />
                 <button style={S.ghost} onClick={() => set({ accent: '' })}>Use brand colour</button>
               </div></div>
+          </div>
+
+          {/* Spacing & size */}
+          <div style={S.card}>
+            <div style={S.h2}>Spacing &amp; size</div>
+            <div style={S.field}><label style={S.label}>Text size</label>
+              <Pills opts={[['0.9', 'Small'], ['1', 'Medium'], ['1.15', 'Large']]} val={String(cfg.fontScale)} on={v => set({ fontScale: Number(v) })} /></div>
+            <Range label="Space between items" val={cfg.itemGap} min={0} max={24} unit="px" set={v => set({ itemGap: v })} />
+            <Range label="Space between sections" val={cfg.sectionGap} min={2} max={40} unit="px" set={v => set({ sectionGap: v })} />
+            {Number(cfg.columns) > 1 && <Range label="Space between columns" val={cfg.columnGap} min={8} max={36} unit="px" set={v => set({ columnGap: v })} />}
           </div>
 
           {/* Show / hide */}

@@ -93,6 +93,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.771', date: '13 Jul 2026', label: 'Print menu — spacing & size controls (padding between items / sections + text size)',
+    changes: [
+      'New “Spacing & size” controls on the print menu: set the text size (Small / Medium / Large), and drag sliders to adjust the space between items, the space between sections, and the space between columns. The preview updates live so you can dial in exactly how packed or airy the page looks before printing.',
+    ],
+  },
+  {
     version: '5.5.770', date: '13 Jul 2026', label: 'Print menu fixes — category names now show + real dietary badges (V/VG/GF/DF)',
     changes: [
       'Fixed: category names were blank on the print menu (both in the category list and as the printed section headers). They now show correctly.',

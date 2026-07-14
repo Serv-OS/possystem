@@ -41,6 +41,10 @@ export const DEFAULT_PRINT_CONFIG = {
   showPrice: true,
   showDietary: false,        // GF/V/VG badges from tags
   leaders: true,             // dotted leader between name and price
+  fontScale: 1,              // overall text size — 0.9 (S) | 1 (M) | 1.15 (L)
+  itemGap: 6,                // px — vertical space below each item
+  sectionGap: 12,            // px — vertical space below each category block
+  columnGap: 16,             // px — space between columns
   allergenNote: { show: true, text: 'Allergen information: please speak to a member of staff before ordering. All 14 major allergens are handled in our kitchen and we cannot guarantee any dish is free from traces.' },
   serviceNote:  { show: false, text: 'A discretionary 12.5% service charge is added to your bill; 100% goes to the team.' },
   footer: '',                // free footer line (e.g. address / phone / website)
@@ -97,6 +101,14 @@ export function buildPrintMenuHtml(cfg, data) {
   const fontCss = (PRINT_FONTS[c.font] || PRINT_FONTS.serif).css;
   const cols = Math.max(1, Math.min(3, Number(c.columns) || 1));
 
+  // Spacing + size controls (all clamped so a bad config can't break the layout).
+  const clamp = (v, lo, hi, dflt) => { const n = Number(v); return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : dflt; };
+  const fs = clamp(c.fontScale, 0.7, 1.5, 1);      // overall text-size multiplier
+  const z = (n) => +(n * fs).toFixed(2);           // scale a base px size by fs
+  const itemGap = clamp(c.itemGap, 0, 30, 6);      // px below each item
+  const sectionGap = clamp(c.sectionGap, 0, 48, 12); // px below each category
+  const colGap = clamp(c.columnGap, 6, 40, 16);    // px between columns
+
   const itemHtml = (it) => {
     const price = priceOf(it);
     const variants = Array.isArray(it._variants) ? it._variants : [];
@@ -146,30 +158,30 @@ export function buildPrintMenuHtml(cfg, data) {
   @page { size: ${paper.label === 'A4' ? 'A4' : 'letter'} ${land ? 'landscape' : 'portrait'}; margin: 12mm; }
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; }
-  body { font-family: ${fontCss}; color: #1b1b1b; line-height: 1.35; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  .pm-head { padding: 0 0 10px; margin-bottom: 12px; border-bottom: 2px solid ${accent}; }
+  body { font-family: ${fontCss}; color: #1b1b1b; line-height: 1.35; font-size: ${z(12)}px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .pm-head { padding: 0 0 10px; margin-bottom: ${Math.max(8, sectionGap)}px; border-bottom: 2px solid ${accent}; }
   .pm-head-center { text-align: center; }
   .pm-head-left { display: flex; align-items: center; gap: 14px; }
   .pm-logo { max-height: 64px; max-width: 240px; object-fit: contain; ${c.logo === 'top-center' ? 'display:block;margin:0 auto 8px;' : ''} }
-  .pm-title { font-size: 26px; font-weight: 700; letter-spacing: .01em; color: ${accent}; margin: 0; }
-  .pm-sub { font-size: 12px; color: #666; margin-top: 2px; }
-  .pm-cols { column-count: ${cols}; column-gap: 16px; }
-  .pm-cat { break-inside: avoid; -webkit-column-break-inside: avoid; page-break-inside: avoid; margin: 0 0 12px; }
-  .pm-cat-h { font-size: 15px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: ${accent}; margin: 0 0 2px; padding-bottom: 3px; border-bottom: 1px solid #ddd; }
-  .pm-cat-desc { font-size: 10.5px; color: #777; font-style: italic; margin: 0 0 5px; }
-  .pm-item { margin: 0 0 6px; }
+  .pm-title { font-size: ${z(26)}px; font-weight: 700; letter-spacing: .01em; color: ${accent}; margin: 0; }
+  .pm-sub { font-size: ${z(12)}px; color: #666; margin-top: 2px; }
+  .pm-cols { column-count: ${cols}; column-gap: ${colGap}px; }
+  .pm-cat { break-inside: avoid; -webkit-column-break-inside: avoid; page-break-inside: avoid; margin: 0 0 ${sectionGap}px; }
+  .pm-cat-h { font-size: ${z(15)}px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: ${accent}; margin: 0 0 ${Math.max(2, Math.round(itemGap / 3))}px; padding-bottom: 3px; border-bottom: 1px solid #ddd; }
+  .pm-cat-desc { font-size: ${z(10.5)}px; color: #777; font-style: italic; margin: 0 0 ${Math.max(3, Math.round(itemGap * 0.8))}px; }
+  .pm-item { margin: 0 0 ${itemGap}px; }
   .pm-item-row { display: flex; align-items: baseline; gap: 4px; }
-  .pm-name { font-size: 12px; font-weight: 600; white-space: nowrap; }
-  .pm-diet { font-size: 8.5px; font-weight: 700; color: #2f8f4e; letter-spacing: .04em; }
+  .pm-name { font-size: ${z(12)}px; font-weight: 600; white-space: nowrap; }
+  .pm-diet { font-size: ${z(8.5)}px; font-weight: 700; color: #2f8f4e; letter-spacing: .04em; }
   .pm-leader { flex: 1 1 auto; border-bottom: 1px dotted #bbb; transform: translateY(-3px); min-width: 8px; }
-  .pm-price { font-size: 12px; font-weight: 700; white-space: nowrap; }
-  .pm-desc { font-size: 10.5px; color: #555; margin-top: 1px; }
-  .pm-variants { font-size: 10.5px; color: #444; margin-top: 2px; display: flex; flex-wrap: wrap; gap: 4px 12px; }
+  .pm-price { font-size: ${z(12)}px; font-weight: 700; white-space: nowrap; }
+  .pm-desc { font-size: ${z(10.5)}px; color: #555; margin-top: 1px; }
+  .pm-variants { font-size: ${z(10.5)}px; color: #444; margin-top: 2px; display: flex; flex-wrap: wrap; gap: 4px 12px; }
   .pm-variant b { font-weight: 700; }
-  .pm-alg { font-size: 9px; color: #8a8a8a; font-style: italic; margin-top: 1px; }
-  .pm-notes { margin-top: 14px; padding-top: 8px; border-top: 1px solid #ddd; column-span: all; }
-  .pm-note { font-size: 9px; color: #777; margin-top: 3px; }
-  .pm-footer { font-size: 9.5px; color: #555; margin-top: 6px; text-align: center; font-weight: 600; }
+  .pm-alg { font-size: ${z(9)}px; color: #8a8a8a; font-style: italic; margin-top: 1px; }
+  .pm-notes { margin-top: ${Math.max(10, sectionGap)}px; padding-top: 8px; border-top: 1px solid #ddd; column-span: all; }
+  .pm-note { font-size: ${z(9)}px; color: #777; margin-top: 3px; }
+  .pm-footer { font-size: ${z(9.5)}px; color: #555; margin-top: 6px; text-align: center; font-weight: 600; }
   .pm-empty { color: #999; font-size: 13px; text-align: center; padding: 60px 20px; }
   /* On-screen preview only: draw the page as a white sheet. Print ignores this via @media. */
   @media screen { body { background: #fff; width: ${pageW}mm; min-height: ${pageH}mm; padding: 12mm; margin: 0 auto; } }
