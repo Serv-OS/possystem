@@ -956,7 +956,7 @@ function ReaderSettingsPanel({ locationId }) {
             )}
 
             <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 10, lineHeight: 1.45 }}>
-              Recommended: 1080 × 1920 pixels for WisePOS E / S700. PNG or JPEG, max 512 KB. After uploading, tap "Save & sync to readers" below to push it to your readers.
+              Maximum 720 × 1280 pixels (portrait) for WisePOS E / S700 — larger images are rejected by the reader. PNG or JPEG, max 512 KB. After uploading, tap "Save & sync to readers" below to push it to your readers.
             </div>
           </div>
         </div>

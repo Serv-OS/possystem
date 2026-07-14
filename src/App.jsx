@@ -93,6 +93,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.767', date: '13 Jul 2026', label: 'Reader idle-screen — correct size guidance + upload service deployed',
+    changes: [
+      'The idle-screen upload service (which had been missing, causing “Load failed”) is now deployed, so uploads and “Save & sync to readers” work.',
+      'Corrected the on-screen size guidance to the reader’s real maximum — 720 × 1280 pixels — so images sync without the “Splashscreen exceeds maximum dimensions” error.',
+    ],
+  },
+  {
     version: '5.5.766', date: '13 Jul 2026', label: 'Fix — reader idle-screen image now shows in the back office after upload',
     changes: [
       'The idle-screen image you upload now displays as a proper preview in the back office (and after reload), instead of just showing an internal file id. A viewable copy is kept so you can always see what’s currently set.',
