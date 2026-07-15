@@ -51,6 +51,7 @@ create table if not exists public.xero_config (
   cash_account_code     text,
   post_mode             text not null default 'invoice',  -- 'invoice' | 'manual_journal'
   auto_daily            boolean not null default false,   -- nightly auto-post
+  detail                jsonb,                            -- resolved Xero ids (contact, clearing accounts, …)
   updated_at            timestamptz not null default now()
 );
 alter table public.xero_config enable row level security;

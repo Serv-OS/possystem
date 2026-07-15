@@ -7,7 +7,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { getActiveLocationSync } from '../../lib/supabase';
-import { xeroStatus, xeroOAuthStart, xeroDisconnect } from '../../lib/xero';
+import { xeroStatus, xeroOAuthStart, xeroDisconnect, xeroSyncSales } from '../../lib/xero';
 
 const S = {
   h1: { fontSize: 22, fontWeight: 800, color: 'var(--t1)', margin: 0, letterSpacing: '-.01em' },
@@ -28,6 +28,11 @@ export default function XeroIntegration() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [flash, setFlash] = useState('');
+  const today = new Date().toISOString().slice(0, 10);
+  const [syncDate, setSyncDate] = useState(today);
+  const [syncing, setSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState(null);
+  const [syncErr, setSyncErr] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true); setErr('');
@@ -65,6 +70,14 @@ export default function XeroIntegration() {
     try { await xeroDisconnect(locId); await load(); } catch (e) { setErr(e.message || 'Disconnect failed'); } finally { setBusy(false); }
   };
 
+  const syncSales = async () => {
+    if (!locId) return;
+    setSyncing(true); setSyncErr(''); setSyncResult(null);
+    try { setSyncResult(await xeroSyncSales(locId, syncDate)); }
+    catch (e) { setSyncErr(e.message || 'Sync failed'); }
+    finally { setSyncing(false); }
+  };
+
   if (loading) return <div style={S.empty}>Loading…</div>;
   if (!locId) return <div style={S.empty}>Pick a location to connect Xero.</div>;
 
@@ -100,8 +113,28 @@ export default function XeroIntegration() {
             <a href={status.manager_url || 'https://go.xero.com'} target="_blank" rel="noreferrer" style={{ ...S.ghost, textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}>Open in Xero ↗</a>
             <button style={S.ghost} onClick={disconnect} disabled={busy}>Disconnect</button>
           </div>
-          <div style={{ ...S.note, marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--bdr)' }}>
-            <b>Next:</b> pushing daily sales &amp; VAT is coming in the next update — you’ll get a “Sync today’s sales” button and a nightly auto-post option here.
+          <div style={{ marginTop: 18, paddingTop: 16, borderTop: '1px solid var(--bdr)' }}>
+            <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--t1)', marginBottom: 6 }}>Push sales to Xero</div>
+            <div style={S.note}>Posts that day’s takings into Xero as “received money” in a clearing account (card and cash kept separate). When your card <b>payout</b> lands in the bank, reconcile it against the clearing account — that’s how sales connect to the cash in the bank.</div>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 14, flexWrap: 'wrap' }}>
+              <input type="date" value={syncDate} max={today} onChange={e => setSyncDate(e.target.value)}
+                style={{ border: '1px solid var(--bdr2)', borderRadius: 9, padding: '9px 11px', fontSize: 13, fontFamily: 'inherit', color: 'var(--t1)', background: 'var(--bg2)' }} />
+              <button style={S.btn} onClick={syncSales} disabled={syncing}>{syncing ? 'Pushing…' : 'Push sales to Xero'}</button>
+            </div>
+            {syncErr && <div style={S.banner(false)}>{syncErr}</div>}
+            {syncResult?.ok && syncResult.already && <div style={{ ...S.banner(true), marginTop: 12 }}>✓ Already pushed for {syncResult.date}.</div>}
+            {syncResult?.ok && !syncResult.already && (
+              <div style={{ marginTop: 12 }}>
+                <div style={{ ...S.banner(true), marginBottom: 8 }}>✓ Pushed {syncResult.date} to Xero{syncResult.sample ? ' (test figures — no real sales that day)' : ''}.</div>
+                {(syncResult.lines || []).map((l, i) => (
+                  <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13, padding: '7px 10px', border: '1px solid var(--bdr2)', borderRadius: 8, marginBottom: 6, background: 'var(--bg2)' }}>
+                    <span style={{ color: 'var(--t1)', fontWeight: 700, textTransform: 'capitalize' }}>{l.method} · £{Number(l.gross).toFixed(2)}</span>
+                    {l.link && <a href={l.link} target="_blank" rel="noreferrer" style={{ color: 'var(--acc)', fontWeight: 700, textDecoration: 'none', fontSize: 12 }}>View in Xero ↗</a>}
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{ ...S.note, marginTop: 10 }}>Safe to click more than once — a day already sent won’t be duplicated.</div>
           </div>
         </div>
       ) : (

@@ -93,6 +93,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.781', date: '15 Jul 2026', label: 'Xero — push your daily sales into Xero (Settings → Xero → Push sales)',
+    changes: [
+      'Once connected to Xero, you can push a day’s takings straight in with one button. Card and cash are posted separately as “received money” into clearing accounts we set up for you automatically.',
+      'The point: when your card processor’s payout lands in your bank, your accountant reconciles it against the clearing account — so sales are tied to the cash that actually hits the bank. Pick a date and hit “Push sales to Xero”. Sending the same day twice won’t duplicate anything.',
+      'VAT is applied automatically from your Xero tax rates (or left off for non-VAT organisations).',
+    ],
+  },
+  {
     version: '5.5.780', date: '15 Jul 2026', label: 'NEW — Xero accounting: connect your venue to Xero (Settings → Xero)',
     changes: [
       'First slice of the Xero integration: Back office → Settings → Xero (accounting). Connect a venue to its own Xero organisation with one click (secure OAuth) and see the linked company; disconnect any time. Your Xero login/tokens are held on the server and never shown in the app.',
