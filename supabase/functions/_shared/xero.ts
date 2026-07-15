@@ -19,10 +19,17 @@ export const XERO_API = 'https://api.xero.com/api.xro/2.0';
 const basic = (id: string, secret: string) => 'Basic ' + btoa(`${id}:${secret}`);
 
 export function authorizeUrl(clientId: string, redirectUri: string, state: string): string {
-  const p = new URLSearchParams({
-    response_type: 'code', client_id: clientId, redirect_uri: redirectUri, scope: XERO_SCOPES, state,
-  });
-  return `${AUTHORIZE}?${p.toString()}`;
+  // Build the query manually: URLSearchParams encodes spaces as '+', but Xero's authorize
+  // endpoint does NOT treat '+' as a space in the scope param and rejects it with
+  // "invalid_scope". encodeURIComponent uses %20, which Xero accepts.
+  const params: [string, string][] = [
+    ['response_type', 'code'],
+    ['client_id', clientId],
+    ['redirect_uri', redirectUri],
+    ['scope', XERO_SCOPES],
+    ['state', state],
+  ];
+  return `${AUTHORIZE}?${params.map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&')}`;
 }
 
 export async function exchangeCode(clientId: string, clientSecret: string, redirectUri: string, code: string): Promise<any> {
