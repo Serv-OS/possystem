@@ -5,10 +5,14 @@
 // and refresh on demand. Xero ROTATES the refresh token on every refresh — callers MUST
 // persist the new refresh_token each time (getValidAccessToken does this).
 
+// NB: Xero DEPRECATED the broad `accounting.transactions` scope on 2 Mar 2026 — apps
+// created after that date get `invalid_scope` if they request it. Use the fine-grained
+// replacements instead (accounting.invoices covers both sales ACCREC + supplier ACCPAY
+// bills; banktransactions/manualjournals/payments cover the rest).
 export const XERO_SCOPES = [
   'openid', 'profile', 'email', 'offline_access',
-  'accounting.transactions', 'accounting.contacts',
-  'accounting.settings', 'accounting.attachments',
+  'accounting.invoices', 'accounting.banktransactions', 'accounting.manualjournals', 'accounting.payments',
+  'accounting.contacts', 'accounting.settings', 'accounting.attachments',
 ].join(' ');
 
 const AUTHORIZE = 'https://login.xero.com/identity/connect/authorize';
