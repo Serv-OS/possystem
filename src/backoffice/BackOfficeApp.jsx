@@ -75,6 +75,7 @@ import UberDirect from './sections/UberDirect';
 import DeliveriesBoard from './sections/DeliveriesBoard';
 import Compliance from './sections/marketing/Compliance';
 import SendingDomain from './sections/marketing/SendingDomain';
+import XeroIntegration from './sections/XeroIntegration';
 import MenuBoards from './sections/MenuBoards';
 import PrintMenu from './sections/PrintMenu';
 import { money, currencySymbol } from '../lib/currency';
@@ -156,7 +157,7 @@ const NAV_IA = [
   { label:'Channels',   icon:'channels',  children:[['online','Online ordering'],['catering','Catering ordering'],['catering-orders','Catering orders'],['hubrise','3rd Party orders'],['uber-direct','Delivery'],['deliveries-live','Deliveries (live)'],['waitlist','Tables Ready'],['menu-appearance','Menu appearance'],['kiosks','Kiosks'],['menuboards','Menu boards'],['print-menu','Print menu']] },
   { label:'Hardware',   icon:'hardware',  children:[['devices','Terminals'],['profiles','Device profiles'],['printers','Printers'],['printing','Production printing'],['cardreaders','Card readers'],['cashdrawers','Cash drawers'],['network','Network & sync']] },
   { label:'Reports',    icon:'reports',   children:[['reports','Sales reports'],['shift','Shifts'],['eod','Close day'],['pettycash','Petty cash'],['waitlist-insights','Tables Ready']] },
-  { label:'Settings',   icon:'settings',  children:[['location','Location settings'],['receipt','Receipt'],['sending-domain','Email domain'],['ai','AI assistant']] },
+  { label:'Settings',   icon:'settings',  children:[['location','Location settings'],['receipt','Receipt'],['sending-domain','Email domain'],['xero','Xero (accounting)'],['ai','AI assistant']] },
 ];
 
 export default function BackOfficeApp() {
@@ -668,6 +669,7 @@ export default function BackOfficeApp() {
           {section === 'marketing-reports' && <MarketingReports />}
           {section === 'compliance' && <Compliance />}
           {section === 'sending-domain' && <SendingDomain />}
+          {section === 'xero' && <XeroIntegration />}
           {section?.startsWith('wf-') && <Workforce section={section} orgCtx={orgCtx} />}
           {section === 'menu'       && <MenuManager />}
           {section === 'floorplan'  && <FloorPlanBuilder />}

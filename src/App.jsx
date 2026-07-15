@@ -93,6 +93,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.780', date: '15 Jul 2026', label: 'NEW — Xero accounting: connect your venue to Xero (Settings → Xero)',
+    changes: [
+      'First slice of the Xero integration: Back office → Settings → Xero (accounting). Connect a venue to its own Xero organisation with one click (secure OAuth) and see the linked company; disconnect any time. Your Xero login/tokens are held on the server and never shown in the app.',
+      'Next up: pushing daily sales & VAT into Xero, then supplier bills/expenses and payment reconciliation.',
+    ],
+  },
+  {
     version: '5.5.779', date: '15 Jul 2026', label: 'POS — fix: empty menu no longer blanks the till (menu now always shows)',
     changes: [
       'Fixed the POS showing a blank menu when a second, empty menu (e.g. a half-built “New Test” menu) was left active — with equal priority it could win the menu selection and hide your real menu. The till now only ever selects a menu that actually has categories, so your menu always shows.',
