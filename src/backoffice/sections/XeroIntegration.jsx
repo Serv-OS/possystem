@@ -7,7 +7,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { getActiveLocationSync } from '../../lib/supabase';
-import { xeroStatus, xeroOAuthStart, xeroDisconnect, xeroSyncSales, xeroOptions, xeroGetMapping, xeroSaveMapping } from '../../lib/xero';
+import { xeroStatus, xeroOAuthStart, xeroDisconnect, xeroSyncSales, xeroOptions, xeroGetMapping, xeroSaveMapping, xeroSetAutoDaily } from '../../lib/xero';
 
 const S = {
   h1: { fontSize: 22, fontWeight: 800, color: 'var(--t1)', margin: 0, letterSpacing: '-.01em' },
@@ -125,12 +125,17 @@ export default function XeroIntegration() {
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState(null);
   const [syncErr, setSyncErr] = useState('');
+  const [autoDaily, setAutoDaily] = useState(false);
+  const [autoBusy, setAutoBusy] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true); setErr('');
     const id = getActiveLocationSync(); setLocId(id);
     if (!id) { setLoading(false); return; }
-    try { setStatus(await xeroStatus(id)); } catch (e) { setErr(e.message || 'Could not load Xero status'); } finally { setLoading(false); }
+    try {
+      setStatus(await xeroStatus(id));
+      try { const m = await xeroGetMapping(id); setAutoDaily(!!m.autoDaily); } catch { /* non-fatal */ }
+    } catch (e) { setErr(e.message || 'Could not load Xero status'); } finally { setLoading(false); }
   }, []);
   useEffect(() => { load(); }, [load]);
 
@@ -228,6 +233,17 @@ export default function XeroIntegration() {
               </div>
             )}
             <div style={{ ...S.note, marginTop: 10 }}>Safe to click more than once — a day already sent won’t be duplicated.</div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--bdr)' }}>
+              <input type="checkbox" checked={autoDaily} disabled={autoBusy}
+                onChange={async (e) => {
+                  const v = e.target.checked;
+                  setAutoDaily(v); setAutoBusy(true);
+                  try { await xeroSetAutoDaily(locId, v); } catch { setAutoDaily(!v); } finally { setAutoBusy(false); }
+                }}
+                style={{ width: 17, height: 17 }} />
+              <span style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--t1)' }}>Auto-post each night</span>
+              <span style={{ fontSize: 12, color: 'var(--t4)' }}>— yesterday’s takings post automatically every morning. Days with no sales are skipped.</span>
+            </label>
           </div>
         </div>
         <MappingCard locId={locId} />

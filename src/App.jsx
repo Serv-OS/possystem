@@ -93,6 +93,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.783', date: '15 Jul 2026', label: 'Xero — nightly auto-post (set & forget) + empty-day safety',
+    changes: [
+      'New “Auto-post each night” toggle on the Xero screen: yesterday’s takings post into Xero automatically every morning (runs on the server — no till or browser needs to be open). Days with no sales are skipped, and a day already posted is never duplicated.',
+      'Safety fix: an empty day can no longer post test figures — sample data now only appears when you explicitly ask for a test push.',
+    ],
+  },
+  {
     version: '5.5.782', date: '15 Jul 2026', label: 'Xero — account mapping + tips/service split (Settings → Xero → Account mapping)',
     changes: [
       'The Xero sync now splits each day into Sales, Tips/gratuities and Service charge and posts each to the account you choose — plus a default VAT/tax rate and, per payment method, which bank “clearing” account it lands in.',

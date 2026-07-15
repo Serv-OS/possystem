@@ -28,3 +28,4 @@ export const xeroSyncSales  = (locationId, date, opts = {}) => call('xero-sales'
 export const xeroOptions     = (locationId) => call('xero-config', { action: 'options', locationId });
 export const xeroGetMapping  = (locationId) => call('xero-config', { action: 'get', locationId });
 export const xeroSaveMapping = (locationId, mapping) => call('xero-config', { action: 'save', locationId, mapping });
+export const xeroSetAutoDaily = (locationId, autoDaily) => call('xero-config', { action: 'save', locationId, autoDaily });

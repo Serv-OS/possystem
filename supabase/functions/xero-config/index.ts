@@ -55,14 +55,16 @@ Deno.serve(async (req) => {
 
   try {
     if (action === 'get') {
-      const { data } = await sb.from('xero_config').select('mapping,detail').eq('location_id', locationId).maybeSingle();
-      return json({ mapping: data?.mapping || null, detail: data?.detail || null });
+      const { data } = await sb.from('xero_config').select('mapping,detail,auto_daily').eq('location_id', locationId).maybeSingle();
+      return json({ mapping: data?.mapping || null, detail: data?.detail || null, autoDaily: !!data?.auto_daily });
     }
 
     if (action === 'save') {
-      const mapping = body.mapping || {};
-      await sb.from('xero_config').upsert({ location_id: locationId, mapping, updated_at: new Date().toISOString() }, { onConflict: 'location_id' });
-      return json({ ok: true, mapping });
+      const patch: Record<string, unknown> = { location_id: locationId, updated_at: new Date().toISOString() };
+      if (body.mapping !== undefined) patch.mapping = body.mapping || {};
+      if (body.autoDaily !== undefined) patch.auto_daily = !!body.autoDaily;
+      await sb.from('xero_config').upsert(patch, { onConflict: 'location_id' });
+      return json({ ok: true });
     }
 
     if (action === 'options') {

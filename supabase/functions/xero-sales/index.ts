@@ -126,14 +126,16 @@ Deno.serve(async (req) => {
     const { accessToken, tenantId } = await getValidAccessToken(sb, locationId, CLIENT_ID, CLIENT_SECRET);
 
     let groups = await aggregate(locationId, date);
-    let sample = !!body.sample;
-    if (!groups.length) sample = true;
-    if (sample && !groups.length) {
+    const sample = !!body.sample && !groups.length;   // test figures ONLY when explicitly requested
+    if (sample) {
       groups = [
         { method: 'card', total: 120.00, tip: 12.00, service: 6.00, n: 3 },
         { method: 'cash', total: 30.00, tip: 0, service: 0, n: 1 },
       ];
     }
+    // A day with no sales posts nothing — critical for the nightly auto-post, which must
+    // never write test figures into a live ledger.
+    if (!groups.length) return json({ ok: true, empty: true, date, lines: [] });
 
     if (dryRun) return json({ ok: true, date, sample, groups });
 
