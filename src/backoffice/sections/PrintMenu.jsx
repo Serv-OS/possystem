@@ -114,21 +114,32 @@ export default function PrintMenu() {
         const { data: p } = await platformSupabase.from('locations').select('online_branding').or(`ops_location_id.eq.${id},id.eq.${id}`).maybeSingle();
         const b = p?.online_branding || {};
         setBranding({ logoUrl: b.logo_url || null, brandColor: b.brand_color || b.accent_color || '#1a1a1a' });
-        if (b.logo_url) {                                   // fetch the logo to a data-URI so jsPDF can embed it
-          try {
-            const res = await fetch(b.logo_url);
-            const blob = await res.blob();
-            const dataUri = await new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.onerror = () => r(null); fr.readAsDataURL(blob); });
-            let aspect = 3;
-            if (dataUri) aspect = await new Promise(r => { const im = new Image(); im.onload = () => r((im.naturalWidth / im.naturalHeight) || 3); im.onerror = () => r(3); im.src = dataUri; });
-            setLogo({ dataUri: dataUri || null, aspect });
-          } catch { setLogo({ dataUri: null, aspect: 3 }); }
-        } else setLogo({ dataUri: null, aspect: 3 });
+        // NB: the logo is fetched to a data-URI in a SEPARATE effect (below) so a slow
+        // logo never blocks the screen/menu from rendering.
       } catch { /* branding best-effort */ }
       loadedRef.current = true;
     } finally { setLoading(false); }
   }, []);
   useEffect(() => { load(); }, [load]);
+
+  // Fetch the logo → data-URI OUT of the load path (so a slow/broken logo never blocks
+  // the menu from rendering). The preview rebuilds once the logo arrives.
+  useEffect(() => {
+    let cancelled = false;
+    const url = branding.logoUrl;
+    if (!url) { setLogo({ dataUri: null, aspect: 3 }); return; }
+    (async () => {
+      try {
+        const res = await fetch(url);
+        const blob = await res.blob();
+        const dataUri = await new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.onerror = () => r(null); fr.readAsDataURL(blob); });
+        let aspect = 3;
+        if (dataUri) aspect = await new Promise(r => { const im = new Image(); im.onload = () => r((im.naturalWidth / im.naturalHeight) || 3); im.onerror = () => r(3); im.src = dataUri; });
+        if (!cancelled) setLogo({ dataUri: dataUri || null, aspect });
+      } catch { if (!cancelled) setLogo({ dataUri: null, aspect: 3 }); }
+    })();
+    return () => { cancelled = true; };
+  }, [branding.logoUrl]);
 
   // Persist config (debounced) once the initial load is done.
   useEffect(() => {

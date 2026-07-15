@@ -93,6 +93,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.778', date: '14 Jul 2026', label: 'Print menu — fix: screen stuck loading when a venue logo is set',
+    changes: [
+      'Fixed the Print menu not loading (blank / stuck) when the venue has a logo — the logo download was blocking the whole screen. It now loads the menu straight away and drops the logo in once it’s fetched.',
+    ],
+  },
+  {
     version: '5.5.777', date: '14 Jul 2026', label: 'Print menu — rebuilt as a real PDF generator (fixes Safari single-column / blank-page / clipping for good)',
     changes: [
       'The print menu now builds a proper PDF itself instead of relying on the browser’s print engine. That engine behaved differently in every browser — Safari especially collapsed the columns, dropped the menu onto page 2, or clipped items — which caused the problems you saw.',
