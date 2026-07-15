@@ -93,6 +93,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.784', date: '15 Jul 2026', label: 'Xero — supplier invoices push to Xero as bills, with the scanned copy attached',
+    changes: [
+      'Purchasing → Invoices: every posted supplier invoice now has a “Push to Xero” button (when the venue is connected). It lands in Xero as a proper supplier bill — right supplier (created automatically if new), invoice number, date, due date from the supplier’s payment terms, and each line on your Purchases/COGS account.',
+      'The photo/PDF you scanned is now kept and attached to the bill in Xero, so the accountant sees the original document. Pushing twice never duplicates.',
+      'Account mapping gains two new choices: “Purchases / COGS” account and “VAT on purchases”.',
+    ],
+  },
+  {
     version: '5.5.783', date: '15 Jul 2026', label: 'Xero — nightly auto-post (set & forget) + empty-day safety',
     changes: [
       'New “Auto-post each night” toggle on the Xero screen: yesterday’s takings post into Xero automatically every morning (runs on the server — no till or browser needs to be open). Days with no sales are skipped, and a day already posted is never duplicated.',

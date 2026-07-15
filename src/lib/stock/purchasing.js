@@ -239,7 +239,7 @@ export const postInvoice = async (header, lines, locationId = null) => {
     location_id: locationId, supplier_id: header.supplierId || null, invoice_number: header.invoiceNumber || null,
     invoice_date: header.invoiceDate || null, status: 'POSTED', ocr_confidence: header.ocrConfidence ?? null,
     subtotal: header.subtotal ?? null, tax: header.tax ?? null, total: header.total ?? null,
-    raw_json: header.rawJson || null, posted_at: nowIso(),
+    raw_json: header.rawJson || null, image_path: header.imagePath || null, posted_at: nowIso(),
   }).select().maybeSingle();
   if (error || !inv) return { data: null, error: error || new Error('Invoice save failed') };
 

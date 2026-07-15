@@ -29,3 +29,6 @@ export const xeroOptions     = (locationId) => call('xero-config', { action: 'op
 export const xeroGetMapping  = (locationId) => call('xero-config', { action: 'get', locationId });
 export const xeroSaveMapping = (locationId, mapping) => call('xero-config', { action: 'save', locationId, mapping });
 export const xeroSetAutoDaily = (locationId, autoDaily) => call('xero-config', { action: 'save', locationId, autoDaily });
+
+// Push a posted supplier invoice to Xero as an ACCPAY bill (+ scanned image attached).
+export const xeroPushBill = (locationId, invoiceId) => call('xero-bills', { locationId, invoiceId });

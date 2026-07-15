@@ -85,6 +85,18 @@ function MappingCard({ locId }) {
                   {(opts.taxRates || []).map(t => <option key={t.taxType} value={t.taxType}>{t.name} ({t.rate}%)</option>)}
                 </select>
               </div>
+              <div style={fieldRow}><span style={flabel}>Purchases / COGS</span>
+                <select value={map.purchasesAccount || ''} onChange={e => set({ purchasesAccount: e.target.value })} style={sel}>
+                  <option value="">Auto (cost of sales)</option>
+                  {byType(['DIRECTCOSTS', 'EXPENSE', 'OVERHEADS']).map(a => <option key={a.id} value={a.code || a.id}>{a.code ? `${a.code} · ` : ''}{a.name}</option>)}
+                </select>
+              </div>
+              <div style={fieldRow}><span style={flabel}>VAT on purchases</span>
+                <select value={map.purchaseTax || ''} onChange={e => set({ purchaseTax: e.target.value })} style={sel}>
+                  <option value="">None</option>
+                  {(opts.taxRates || []).map(t => <option key={t.taxType} value={t.taxType}>{t.name} ({t.rate}%)</option>)}
+                </select>
+              </div>
 
               <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--t1)', margin: '18px 0 4px' }}>Payment method → bank account</div>
               <div style={S.note}>Each method lands in a Xero “clearing” bank account so its payout reconciles there.</div>

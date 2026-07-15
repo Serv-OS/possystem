@@ -6,12 +6,13 @@
 
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useStore } from '../../store';
-import { getActiveLocationSync, getLocationId } from '../../lib/supabase';
+import { supabase, getActiveLocationSync, getLocationId } from '../../lib/supabase';
 import { money, currencySymbol } from '../../lib/currency';
 import { formatRateLabel, purchaseNet } from '../../lib/tax';
 import { convert } from '../../lib/stock/conversion';
 import { fetchSuppliers, fetchInventoryItems } from '../../lib/stock/data';
 import { scanInvoice, postInvoice, fetchInvoices } from '../../lib/stock/purchasing';
+import { xeroStatus, xeroPushBill } from '../../lib/xero';
 
 const field = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '8px 10px', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
 const lbl = { display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 5 };
@@ -46,18 +47,35 @@ export default function Invoices() {
   const [scanning, setScanning] = useState(false);
   const [review, setReview] = useState(null);   // { header, lines }
   const [posting, setPosting] = useState(false);
+  const [pendingFile, setPendingFile] = useState(null);   // the scanned file — stored + attached to the Xero bill
+  const [xeroOn, setXeroOn] = useState(false);
+  const [xeroPush, setXeroPush] = useState({});            // invoiceId -> 'busy' | {link} | {error}
 
   const reload = useCallback(async () => {
     const loc = locId || getActiveLocationSync() || await getLocationId().catch(() => null);
     if (loc && loc !== locId) setLocId(loc);
     const [{ data: s }, { data: it }, { data: h }] = await Promise.all([fetchSuppliers(loc), fetchInventoryItems(loc), fetchInvoices(loc)]);
     setSuppliers(s || []); setItems(it || []); setHistory(h || []);
+    if (loc) xeroStatus(loc).then(st => setXeroOn(!!st?.connected)).catch(() => {});
   }, [locId]);
   useEffect(() => { reload(); /* eslint-disable-next-line */ }, []);
+
+  const pushToXero = async (invId) => {
+    setXeroPush(p => ({ ...p, [invId]: 'busy' }));
+    try {
+      const r = await xeroPushBill(locId, invId);
+      setXeroPush(p => ({ ...p, [invId]: { link: r.link || (r.detail && r.detail.link) || null } }));
+      showToast?.(r.already ? 'Already in Xero' : 'Sent to Xero', 'success');
+    } catch (e) {
+      setXeroPush(p => ({ ...p, [invId]: { error: e.message } }));
+      showToast?.(e.message || 'Xero push failed', 'error');
+    }
+  };
 
   const onFile = (e) => {
     const f = e.target.files?.[0];
     if (!f) return;
+    setPendingFile(f);
     const reader = new FileReader();
     reader.onload = async () => {
       const b64 = String(reader.result).split(',')[1];
@@ -105,18 +123,29 @@ export default function Invoices() {
     const matched = review.lines.filter(l => l.matchedItemId && Number(l.qty) > 0);
     if (!matched.length) { showToast?.('Match at least one line to a stock item', 'error'); return; }
     setPosting(true);
+    // Keep the scanned file: upload to the private invoice-scans bucket so it can be
+    // re-viewed later and attached to the Xero bill. Best-effort — posting continues.
+    let imagePath = null;
+    if (pendingFile && supabase && locId) {
+      try {
+        const ext = (pendingFile.name?.split('.').pop() || (pendingFile.type === 'application/pdf' ? 'pdf' : 'jpg')).toLowerCase();
+        const path = `${locId}/${crypto.randomUUID()}.${ext}`;
+        const up = await supabase.storage.from('invoice-scans').upload(path, pendingFile, { contentType: pendingFile.type || 'image/jpeg' });
+        if (!up.error) imagePath = path;
+      } catch { /* non-fatal */ }
+    }
     // Store the VAT computed from the (reviewed) lines, net of any inc-VAT entries.
     const net = review.lines.reduce((s, l) => s + netLineOf(l), 0);
     const vat = review.lines.reduce((s, l) => s + netLineOf(l) * lineRateDec(l), 0);
     const { error } = await postInvoice({
-      ...review.header,
+      ...review.header, imagePath,
       subtotal: Math.round(net * 100) / 100, tax: Math.round(vat * 100) / 100, total: Math.round((net + vat) * 100) / 100,
       flags: undefined,
     }, review.lines.map(l => ({ ...l, flags: lineInfo(l).flag ? [lineInfo(l).flag] : [] })), locId);
     setPosting(false);
     if (error) { showToast?.(error.message, 'error'); return; }
     showToast?.(`Posted invoice — ${matched.length} line${matched.length === 1 ? '' : 's'} received`, 'success');
-    setReview(null); await reload();
+    setReview(null); setPendingFile(null); await reload();
   };
 
   return (
@@ -213,7 +242,7 @@ export default function Invoices() {
       {history.length === 0 && <div style={{ fontSize: 12, color: 'var(--t3)' }}>No invoices posted yet.</div>}
       {history.length > 0 && (
         <table style={{ width: '100%', maxWidth: 760, borderCollapse: 'collapse', fontSize: 12.5 }}>
-          <thead><tr style={{ color: 'var(--t3)', textAlign: 'left' }}>{['Date', 'Supplier', 'Invoice #', 'Total', 'Status'].map(h => <th key={h} style={{ padding: '6px 8px', borderBottom: '1px solid var(--bdr)', fontWeight: 600 }}>{h}</th>)}</tr></thead>
+          <thead><tr style={{ color: 'var(--t3)', textAlign: 'left' }}>{['Date', 'Supplier', 'Invoice #', 'Total', 'Status', ...(xeroOn ? ['Xero'] : [])].map(h => <th key={h} style={{ padding: '6px 8px', borderBottom: '1px solid var(--bdr)', fontWeight: 600 }}>{h}</th>)}</tr></thead>
           <tbody>
             {history.map(inv => (
               <tr key={inv.id} style={{ color: 'var(--t1)' }}>
@@ -222,6 +251,17 @@ export default function Invoices() {
                 <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)' }}>{inv.invoiceNumber || '—'}</td>
                 <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)' }}>{inv.total != null ? money(inv.total) : '—'}</td>
                 <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)', color: 'var(--grn, #16a34a)' }}>{inv.status}</td>
+                {xeroOn && (
+                  <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)' }}>
+                    {(() => {
+                      const st = xeroPush[inv.id];
+                      if (st === 'busy') return <span style={{ color: 'var(--t3)', fontSize: 12 }}>Sending…</span>;
+                      if (st && st.link) return <a href={st.link} target="_blank" rel="noreferrer" style={{ color: 'var(--acc)', fontWeight: 700, fontSize: 12, textDecoration: 'none' }}>✓ In Xero ↗</a>;
+                      if (st && !st.link && !st.error) return <span style={{ color: 'var(--grn, #16a34a)', fontSize: 12, fontWeight: 700 }}>✓ In Xero</span>;
+                      return <button onClick={() => pushToXero(inv.id)} style={{ padding: '4px 10px', borderRadius: 7, border: '1px solid var(--bdr)', background: 'var(--bg2)', color: 'var(--t1)', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>Push to Xero</button>;
+                    })()}
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>
