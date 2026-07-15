@@ -23,3 +23,8 @@ export const xeroDisconnect = (locationId) => call('xero-connect', { action: 'di
 
 // Push a day's takings to Xero (Receive Money into the clearing account). date = 'YYYY-MM-DD'.
 export const xeroSyncSales  = (locationId, date, opts = {}) => call('xero-sales', { locationId, date, ...opts });
+
+// Mapping config: which Xero accounts / tax rate each money flow posts to.
+export const xeroOptions     = (locationId) => call('xero-config', { action: 'options', locationId });
+export const xeroGetMapping  = (locationId) => call('xero-config', { action: 'get', locationId });
+export const xeroSaveMapping = (locationId, mapping) => call('xero-config', { action: 'save', locationId, mapping });

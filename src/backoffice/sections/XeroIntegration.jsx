@@ -7,7 +7,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { getActiveLocationSync } from '../../lib/supabase';
-import { xeroStatus, xeroOAuthStart, xeroDisconnect, xeroSyncSales } from '../../lib/xero';
+import { xeroStatus, xeroOAuthStart, xeroDisconnect, xeroSyncSales, xeroOptions, xeroGetMapping, xeroSaveMapping } from '../../lib/xero';
 
 const S = {
   h1: { fontSize: 22, fontWeight: 800, color: 'var(--t1)', margin: 0, letterSpacing: '-.01em' },
@@ -20,6 +20,98 @@ const S = {
   pill: (bg, fg) => ({ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '3px 10px', borderRadius: 999, fontSize: 12, fontWeight: 800, background: bg, color: fg }),
   banner: (ok) => ({ padding: '10px 14px', borderRadius: 10, fontSize: 13, fontWeight: 700, marginBottom: 14, maxWidth: 620, background: ok ? 'rgba(46,143,78,.14)' : 'rgba(200,60,60,.14)', color: ok ? '#2f8f4e' : '#c33', border: `1px solid ${ok ? 'rgba(46,143,78,.3)' : 'rgba(200,60,60,.3)'}` }),
 };
+
+const sel = { width: '100%', boxSizing: 'border-box', border: '1px solid var(--bdr2)', borderRadius: 9, padding: '8px 10px', fontSize: 13, fontFamily: 'inherit', color: 'var(--t1)', background: 'var(--bg2)', outline: 'none' };
+const fieldRow = { display: 'grid', gridTemplateColumns: '150px 1fr', gap: 12, alignItems: 'center', marginBottom: 10 };
+const flabel = { fontSize: 12.5, fontWeight: 700, color: 'var(--t2)' };
+
+// Advanced: map each money flow to a Xero account + the default VAT rate + which clearing
+// account each payment method lands in. All optional — sensible defaults apply if left blank.
+function MappingCard({ locId }) {
+  const [open, setOpen] = useState(false);
+  const [opts, setOpts] = useState(null);
+  const [map, setMap] = useState({});
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [err, setErr] = useState('');
+
+  const load = async () => {
+    setLoading(true); setErr('');
+    try {
+      const [o, m] = await Promise.all([xeroOptions(locId), xeroGetMapping(locId)]);
+      setOpts(o); setMap((m && m.mapping) || {});
+    } catch (e) { setErr(e.message || 'Could not load your Xero accounts'); }
+    finally { setLoading(false); }
+  };
+  const toggle = () => { const n = !open; setOpen(n); if (n && !opts && !loading) load(); };
+  const set = (patch) => setMap(m => ({ ...m, ...patch }));
+  const setPay = (method, acctId) => setMap(m => ({ ...m, paymentMap: { ...(m.paymentMap || {}), [method]: acctId } }));
+  const save = async () => {
+    setSaving(true); setSaved(false); setErr('');
+    try { await xeroSaveMapping(locId, map); setSaved(true); setTimeout(() => setSaved(false), 2200); }
+    catch (e) { setErr(e.message || 'Save failed'); } finally { setSaving(false); }
+  };
+
+  const accounts = opts?.accounts || [];
+  const banks = accounts.filter(a => a.bank);
+  const byType = (types) => accounts.filter(a => !a.bank && (!types || types.includes(String(a.type).toUpperCase())));
+  const AcctSelect = ({ value, onChange, types }) => (
+    <select value={value || ''} onChange={e => onChange(e.target.value)} style={sel}>
+      <option value="">Default (Sales)</option>
+      {byType(types).map(a => <option key={a.id} value={a.code || a.id}>{a.code ? `${a.code} · ` : ''}{a.name}</option>)}
+    </select>
+  );
+
+  return (
+    <div style={{ ...S.card, marginTop: 0 }}>
+      <button onClick={toggle} style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontFamily: 'inherit' }}>
+        <span style={{ fontSize: 14, fontWeight: 800, color: 'var(--t1)' }}>Account mapping <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--t4)' }}>· optional</span></span>
+        <span style={{ color: 'var(--t3)', fontSize: 13 }}>{open ? 'Hide ▲' : 'Set up ▼'}</span>
+      </button>
+      {open && (
+        <div style={{ marginTop: 14 }}>
+          <div style={S.note}>Choose exactly where each part of a sale posts in Xero. Leave anything blank to use the default. Tips are usually a <b>liability</b> (money owed to staff), not income.</div>
+          {loading && <div style={{ ...S.note, marginTop: 12 }}>Loading your Xero accounts…</div>}
+          {err && <div style={{ ...S.banner(false), marginTop: 12 }}>{err}</div>}
+          {opts && !loading && (
+            <div style={{ marginTop: 14 }}>
+              <div style={fieldRow}><span style={flabel}>Sales revenue</span><AcctSelect value={map.revenueAccount} onChange={v => set({ revenueAccount: v })} types={['REVENUE', 'SALES']} /></div>
+              <div style={fieldRow}><span style={flabel}>Tips / gratuities</span><AcctSelect value={map.tipsAccount} onChange={v => set({ tipsAccount: v })} types={['CURRLIAB', 'LIABILITY', 'REVENUE']} /></div>
+              <div style={fieldRow}><span style={flabel}>Service charge</span><AcctSelect value={map.serviceAccount} onChange={v => set({ serviceAccount: v })} types={['REVENUE', 'CURRLIAB', 'LIABILITY']} /></div>
+              <div style={fieldRow}><span style={flabel}>VAT / tax rate</span>
+                <select value={map.taxDefault || ''} onChange={e => set({ taxDefault: e.target.value })} style={sel}>
+                  <option value="">Auto (from Xero)</option>
+                  {(opts.taxRates || []).map(t => <option key={t.taxType} value={t.taxType}>{t.name} ({t.rate}%)</option>)}
+                </select>
+              </div>
+
+              <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--t1)', margin: '18px 0 4px' }}>Payment method → bank account</div>
+              <div style={S.note}>Each method lands in a Xero “clearing” bank account so its payout reconciles there.</div>
+              <div style={{ marginTop: 10 }}>
+                {(opts.paymentMethods || []).length === 0 && <div style={{ fontSize: 12, color: 'var(--t4)' }}>No sales yet to map.</div>}
+                {(opts.paymentMethods || []).map(m => (
+                  <div key={m} style={fieldRow}>
+                    <span style={{ ...flabel, textTransform: 'capitalize' }}>{m}</span>
+                    <select value={(map.paymentMap || {})[m] || ''} onChange={e => setPay(m, e.target.value)} style={sel}>
+                      <option value="">Auto ({/cash/i.test(m) ? 'Cash' : 'Card'} Clearing)</option>
+                      {banks.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                    </select>
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 16 }}>
+                <button style={S.btn} onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save mapping'}</button>
+                {saved && <span style={{ color: '#2f8f4e', fontWeight: 700, fontSize: 13 }}>✓ Saved</span>}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function XeroIntegration() {
   const [locId, setLocId] = useState(null);
@@ -105,6 +197,7 @@ export default function XeroIntegration() {
           </div>
         </div>
       ) : connected ? (
+        <>
         <div style={S.card}>
           <div style={S.pill('rgba(46,143,78,.16)', '#2f8f4e')}>● Connected</div>
           <div style={{ marginTop: 12, fontSize: 15, fontWeight: 800, color: 'var(--t1)' }}>{status.tenant_name || 'Xero organisation'}</div>
@@ -137,6 +230,8 @@ export default function XeroIntegration() {
             <div style={{ ...S.note, marginTop: 10 }}>Safe to click more than once — a day already sent won’t be duplicated.</div>
           </div>
         </div>
+        <MappingCard locId={locId} />
+        </>
       ) : (
         <div style={S.card}>
           <div style={S.pill('rgba(120,120,120,.16)', 'var(--t2)')}>● Not connected</div>

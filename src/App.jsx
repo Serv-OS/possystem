@@ -93,6 +93,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.782', date: '15 Jul 2026', label: 'Xero — account mapping + tips/service split (Settings → Xero → Account mapping)',
+    changes: [
+      'The Xero sync now splits each day into Sales, Tips/gratuities and Service charge and posts each to the account you choose — plus a default VAT/tax rate and, per payment method, which bank “clearing” account it lands in.',
+      'New “Account mapping” panel on the Xero screen reads your real Xero chart of accounts and tax rates so you just pick from dropdowns. Everything’s optional — sensible defaults apply until you set them. Tips default to being kept separate (they’re money owed to staff, not income).',
+    ],
+  },
+  {
     version: '5.5.781', date: '15 Jul 2026', label: 'Xero — push your daily sales into Xero (Settings → Xero → Push sales)',
     changes: [
       'Once connected to Xero, you can push a day’s takings straight in with one button. Card and cash are posted separately as “received money” into clearing accounts we set up for you automatically.',

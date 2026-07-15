@@ -1,20 +1,23 @@
 // supabase/functions/xero-sales/index.ts
 //
 // Push a venue's daily takings into its connected Xero org so sales reconcile against
-// bank payouts. The model (simple, but reconciliation-correct):
-//   • Card-type takings post as "Receive Money" into a Xero bank account "ServOS Card
-//     Clearing". When the card processor's PAYOUT lands in the real bank, the accountant
-//     reconciles it against this clearing account (a transfer), and the fee difference
-//     goes to an expense — so sales ↔ payout are linked and the clearing nets to zero.
-//   • Cash takings post the same way into "ServOS Cash Clearing".
-// One Receive-Money transaction per payment type per day. Idempotent per (location,date)
-// via xero_sync_log. Prerequisites (clearing bank accounts, a Contact, the sales account
-// + VAT rate) are auto-provisioned on first push and cached in xero_config.
+// bank payouts, splitting every money flow to the accounts the operator maps.
+//
+// Model (simple to run, reconciliation-correct):
+//   • Group the day's checks by payment method → resolve each method to a Xero bank
+//     "clearing" account (operator mapping, else auto Card/Cash Clearing).
+//   • Per clearing account, post ONE "Receive Money" bank transaction whose total = the
+//     takings that landed via those methods. Its line items split the money into:
+//       – Sales   (revenue = total − tips − service)  → mapped revenue account + VAT
+//       – Tips     → mapped tips account (no VAT; a liability by default)
+//       – Service  → mapped service-charge account
+//   • When the card PAYOUT lands in the real bank, the accountant reconciles it against
+//     the clearing account (a transfer) → sales tied to cash-in-the-bank.
+// Idempotent per (location,date) via xero_sync_log. Prereqs auto-provisioned; the exact
+// accounts/tax are configurable via xero-config (stored in xero_config.mapping).
 //
 //   POST { locationId, date? (YYYY-MM-DD, default today), sample?, dryRun? }
-//     -> { ok, date, lines:[{method,gross,vat,bankTransactionID,link}], already? }
-//
-// Deploy --no-verify-jwt (own auth). Tokens stay server-side.
+// Deploy --no-verify-jwt.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { getValidAccessToken, xeroApi } from '../_shared/xero.ts';
@@ -50,85 +53,64 @@ async function requireAccess(req: Request, opsLocationId: string): Promise<{ ok:
   return { ok: true };
 }
 
-// Find an account by name (case-insensitive) among all accounts.
-function findAccount(accounts: any[], name: string) {
-  return (accounts || []).find((a) => String(a.Name || '').toLowerCase() === name.toLowerCase());
-}
+const findAccount = (accounts: any[], name: string) => (accounts || []).find((a) => String(a.Name || '').toLowerCase() === name.toLowerCase());
 
 async function ensureBankAccount(token: string, tenantId: string, accounts: any[], name: string, number: string, code: string): Promise<any> {
   const existing = findAccount(accounts, name);
   if (existing) return existing;
-  const created = await xeroApi(token, tenantId, '/Accounts', {
-    method: 'PUT',
-    body: JSON.stringify({ Name: name, Type: 'BANK', BankAccountNumber: number, Code: code }),
-  });
+  const created = await xeroApi(token, tenantId, '/Accounts', { method: 'PUT', body: JSON.stringify({ Name: name, Type: 'BANK', BankAccountNumber: number, Code: code }) });
   return created?.Accounts?.[0];
 }
 
-// Resolve + cache the account/tax/contact wiring for this venue.
-async function ensureConfig(token: string, tenantId: string, locationId: string) {
-  const { data: cfg } = await sb.from('xero_config').select('*').eq('location_id', locationId).maybeSingle();
+// Auto-provision + cache the baseline wiring (used as defaults when the operator hasn't mapped).
+async function ensureDetail(token: string, tenantId: string, locationId: string) {
+  const { data: cfg } = await sb.from('xero_config').select('detail').eq('location_id', locationId).maybeSingle();
   const cache = cfg?.detail || {};
   if (cache.contactId && cache.cardClearingId && cache.cashClearingId && cache.salesAccountCode && ('taxType' in cache)) return cache;
 
-  // Accounts
   const accRes = await xeroApi(token, tenantId, '/Accounts');
   const accounts = accRes?.Accounts || [];
   const card = await ensureBankAccount(token, tenantId, accounts, 'ServOS Card Clearing', 'SERVOS-CARD-CLR', 'SOSCARDCLR');
-  // re-fetch not needed; cash may collide with the just-created one only by name (different)
   const cash = await ensureBankAccount(token, tenantId, accounts.concat(card ? [card] : []), 'ServOS Cash Clearing', 'SERVOS-CASH-CLR', 'SOSCASHCLR');
-  // Sales (revenue) account — prefer 200, else first active REVENUE account.
   const revenue = accounts.find((a: any) => a.Code === '200' && String(a.Type).toUpperCase() === 'REVENUE')
     || accounts.find((a: any) => String(a.Type).toUpperCase() === 'REVENUE' && String(a.Status || 'ACTIVE').toUpperCase() === 'ACTIVE');
   const salesAccountCode = revenue?.Code || '200';
 
-  // Contact
   let contactId = null;
   const cRes = await xeroApi(token, tenantId, `/Contacts?where=${encodeURIComponent('Name=="ServOS POS Sales"')}`);
   contactId = cRes?.Contacts?.[0]?.ContactID || null;
-  if (!contactId) {
-    const created = await xeroApi(token, tenantId, '/Contacts', { method: 'PUT', body: JSON.stringify({ Name: 'ServOS POS Sales' }) });
-    contactId = created?.Contacts?.[0]?.ContactID || null;
-  }
+  if (!contactId) { const created = await xeroApi(token, tenantId, '/Contacts', { method: 'PUT', body: JSON.stringify({ Name: 'ServOS POS Sales' }) }); contactId = created?.Contacts?.[0]?.ContactID || null; }
 
-  // Output VAT rate — a standard ~20% sales rate if present, else common UK code, else none.
   let taxType = 'NONE';
   try {
     const tRes = await xeroApi(token, tenantId, '/TaxRates');
-    const rates = tRes?.TaxRates || [];
-    const active = rates.filter((r: any) => String(r.Status || 'ACTIVE').toUpperCase() === 'ACTIVE' && (r.CanApplyToRevenue === undefined || r.CanApplyToRevenue));
-    const twenty = active.find((r: any) => Math.round(Number(r.EffectiveRate)) === 20 && /output|sales|standard|income|20/i.test(`${r.Name} ${r.TaxType}`))
-      || active.find((r: any) => Math.round(Number(r.EffectiveRate)) === 20);
-    taxType = twenty?.TaxType || (rates.find((r: any) => r.TaxType === 'OUTPUT2') ? 'OUTPUT2' : 'NONE');
-  } catch { taxType = 'OUTPUT2'; }
+    const active = (tRes?.TaxRates || []).filter((r: any) => String(r.Status || 'ACTIVE').toUpperCase() === 'ACTIVE');
+    const twenty = active.find((r: any) => Math.round(Number(r.EffectiveRate)) === 20);
+    taxType = twenty?.TaxType || (active.find((r: any) => r.TaxType === 'OUTPUT2') ? 'OUTPUT2' : 'NONE');
+  } catch { taxType = 'NONE'; }
 
   const resolved = { contactId, cardClearingId: card?.AccountID, cashClearingId: cash?.AccountID, salesAccountCode, taxType };
   await sb.from('xero_config').upsert({ location_id: locationId, sales_account_code: salesAccountCode, tax_type: taxType, detail: resolved, updated_at: new Date().toISOString() }, { onConflict: 'location_id' });
   return resolved;
 }
 
-// Aggregate the day's takings from closed_checks, grouped into card vs cash.
+// Group the day's checks by payment method with money split into total / tips / service.
 async function aggregate(locationId: string, date: string) {
-  const start = `${date}T00:00:00.000Z`;
-  const end = `${date}T23:59:59.999Z`;
-  const { data } = await sb.from('closed_checks').select('payment_method,total,tax_amount,tax')
+  const start = `${date}T00:00:00.000Z`, end = `${date}T23:59:59.999Z`;
+  const { data } = await sb.from('closed_checks').select('payment_method,method,total,tip,service')
     .eq('location_id', locationId).gte('closed_at', start).lte('closed_at', end);
-  const g = { card: { gross: 0, vat: 0, n: 0 }, cash: { gross: 0, vat: 0, n: 0 } };
+  const by: Record<string, any> = {};
   for (const r of (data || [])) {
-    const k = isCash(r.payment_method) ? 'cash' : 'card';
-    g[k].gross += Number(r.total) || 0;
-    g[k].vat += Number(r.tax_amount ?? r.tax ?? 0) || 0;
-    g[k].n += 1;
+    const m = ((r.payment_method || r.method || 'other') + '').trim() || 'other';
+    const g = by[m] || (by[m] = { method: m, total: 0, tip: 0, service: 0, n: 0 });
+    g.total += Number(r.total) || 0; g.tip += Number(r.tip) || 0; g.service += Number(r.service) || 0; g.n += 1;
   }
-  g.card.gross = money(g.card.gross); g.card.vat = money(g.card.vat);
-  g.cash.gross = money(g.cash.gross); g.cash.vat = money(g.cash.vat);
-  return g;
+  return Object.values(by).map((g: any) => ({ ...g, total: money(g.total), tip: money(g.tip), service: money(g.service) }));
 }
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   if (req.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
-
   let body: any = {};
   try { body = await req.json(); } catch { /* ignore */ }
   const locationId = body.locationId;
@@ -143,56 +125,58 @@ Deno.serve(async (req) => {
     if (!CLIENT_ID || !CLIENT_SECRET) return json({ error: 'Xero is not configured.' }, 400);
     const { accessToken, tenantId } = await getValidAccessToken(sb, locationId, CLIENT_ID, CLIENT_SECRET);
 
-    // Aggregate; if empty (or a sample was requested) use a clearly-labelled test figure.
-    let agg = await aggregate(locationId, date);
+    let groups = await aggregate(locationId, date);
     let sample = !!body.sample;
-    if (agg.card.gross === 0 && agg.cash.gross === 0) { sample = true; }
-    if (sample && agg.card.gross === 0 && agg.cash.gross === 0) {
-      agg = { card: { gross: 120.00, vat: 20.00, n: 3 }, cash: { gross: 30.00, vat: 5.00, n: 1 } };
+    if (!groups.length) sample = true;
+    if (sample && !groups.length) {
+      groups = [
+        { method: 'card', total: 120.00, tip: 12.00, service: 6.00, n: 3 },
+        { method: 'cash', total: 30.00, tip: 0, service: 0, n: 1 },
+      ];
     }
 
-    const groups = [
-      { method: 'card', label: 'Card', ...agg.card },
-      { method: 'cash', label: 'Cash', ...agg.cash },
-    ].filter((x) => x.gross > 0);
+    if (dryRun) return json({ ok: true, date, sample, groups });
 
-    if (dryRun) return json({ ok: true, date, sample, dryRun: true, lines: groups });
-
-    // Idempotency: one push per (location, date).
-    const { data: prior } = await sb.from('xero_sync_log').select('id,detail,status').eq('location_id', locationId).eq('kind', 'daily_sales').eq('ref_date', date).maybeSingle();
+    const { data: prior } = await sb.from('xero_sync_log').select('detail,status').eq('location_id', locationId).eq('kind', 'daily_sales').eq('ref_date', date).maybeSingle();
     if (prior && prior.status === 'ok') return json({ ok: true, already: true, date, detail: prior.detail });
 
-    const cfg = await ensureConfig(accessToken, tenantId, locationId);
+    const detail = await ensureDetail(accessToken, tenantId, locationId);
+    const { data: cfgRow } = await sb.from('xero_config').select('mapping').eq('location_id', locationId).maybeSingle();
+    const map = cfgRow?.mapping || {};
+    const revenueAccount = map.revenueAccount || detail.salesAccountCode;
+    const tipsAccount = map.tipsAccount || revenueAccount;
+    const serviceAccount = map.serviceAccount || revenueAccount;
+    const taxDefault = map.taxDefault || detail.taxType || 'NONE';
+    const serviceTax = map.serviceTaxable === false ? 'NONE' : (map.serviceTax || taxDefault);
+    const paymentMap = map.paymentMap || {};
 
-    const lines: any[] = [];
-    for (const grp of groups) {
-      const bankAccountId = grp.method === 'cash' ? cfg.cashClearingId : cfg.cardClearingId;
-      const payload = {
-        BankTransactions: [{
-          Type: 'RECEIVE',
-          Contact: { ContactID: cfg.contactId },
-          BankAccount: { AccountID: bankAccountId },
-          Date: date,
-          Reference: `ServOS ${grp.label} takings ${date}${sample ? ' (TEST)' : ''}`,
-          LineAmountTypes: 'Inclusive',
-          LineItems: [{
-            Description: `${grp.label} takings — ${date}${sample ? ' (TEST)' : ''}`,
-            Quantity: 1,
-            UnitAmount: grp.gross,
-            AccountCode: cfg.salesAccountCode,
-            TaxType: cfg.taxType,
-          }],
-        }],
-      };
-      const res = await xeroApi(accessToken, tenantId, '/BankTransactions', { method: 'PUT', body: JSON.stringify(payload) });
-      const bt = res?.BankTransactions?.[0];
-      lines.push({ method: grp.method, gross: grp.gross, vat: grp.vat, bankTransactionID: bt?.BankTransactionID, status: bt?.StatusAttributeString || bt?.Status, link: bt?.BankTransactionID ? `https://go.xero.com/Bank/ViewTransaction.aspx?bankTransactionID=${bt.BankTransactionID}` : null });
+    // Resolve each method → a clearing bank account, then merge methods that share one.
+    const byAcct: Record<string, any> = {};
+    for (const g of groups) {
+      const acctId = paymentMap[g.method] || (isCash(g.method) ? detail.cashClearingId : detail.cardClearingId);
+      const b = byAcct[acctId] || (byAcct[acctId] = { accountId: acctId, total: 0, tip: 0, service: 0, methods: [] as string[] });
+      b.total += g.total; b.tip += g.tip; b.service += g.service; b.methods.push(g.method);
     }
 
-    await writeLog(locationId, date, {
-      xero_id: lines.map((l) => l.bankTransactionID).filter(Boolean).join(','),
-      status: 'ok', detail: { sample, lines },
-    });
+    const lines: any[] = [];
+    for (const acctId of Object.keys(byAcct)) {
+      const b = byAcct[acctId];
+      b.total = money(b.total); b.tip = money(b.tip); b.service = money(b.service);
+      const revenue = money(b.total - b.tip - b.service);
+      const li: any[] = [];
+      if (revenue > 0) li.push({ Description: `Sales — ${date}`, Quantity: 1, UnitAmount: revenue, AccountCode: revenueAccount, TaxType: taxDefault });
+      if (b.tip > 0) li.push({ Description: `Tips / gratuities — ${date}`, Quantity: 1, UnitAmount: b.tip, AccountCode: tipsAccount, TaxType: 'NONE' });
+      if (b.service > 0) li.push({ Description: `Service charge — ${date}`, Quantity: 1, UnitAmount: b.service, AccountCode: serviceAccount, TaxType: serviceTax });
+      // Guard against odd data (tips+service ≥ total): post the whole amount as one sales line.
+      if (!li.length || revenue <= 0) { li.length = 0; li.push({ Description: `Takings — ${date}`, Quantity: 1, UnitAmount: b.total, AccountCode: revenueAccount, TaxType: taxDefault }); }
+
+      const payload = { BankTransactions: [{ Type: 'RECEIVE', Contact: { ContactID: detail.contactId }, BankAccount: { AccountID: acctId }, Date: date, Reference: `ServOS takings ${date}${sample ? ' (TEST)' : ''} · ${b.methods.join(', ')}`, LineAmountTypes: 'Inclusive', LineItems: li }] };
+      const res = await xeroApi(accessToken, tenantId, '/BankTransactions', { method: 'PUT', body: JSON.stringify(payload) });
+      const bt = res?.BankTransactions?.[0];
+      lines.push({ methods: b.methods, account: bt?.BankAccount?.Name || acctId, total: b.total, tip: b.tip, service: b.service, revenue, bankTransactionID: bt?.BankTransactionID, status: bt?.Status, link: bt?.BankTransactionID ? `https://go.xero.com/Bank/ViewTransaction.aspx?bankTransactionID=${bt.BankTransactionID}` : null });
+    }
+
+    await writeLog(locationId, date, { xero_id: lines.map((l) => l.bankTransactionID).filter(Boolean).join(','), status: 'ok', detail: { sample, lines } });
     return json({ ok: true, date, sample, lines });
   } catch (e) {
     const msg = (e as Error)?.message || String(e);
