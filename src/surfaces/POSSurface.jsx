@@ -191,11 +191,19 @@ export default function POSSurface() {
       }
       return true;
     };
-    const allMenus = (menus || []).filter(m => m.isActive !== false && m.is_active !== false);
+    const liveMenus = (menus || []).filter(m => m.isActive !== false && m.is_active !== false);
+    // v5.5.x: NEVER resolve to a menu that has no categories — an empty menu (e.g. a
+    // half-built "New Test" menu that's still active) would otherwise win the schedule/
+    // priority race and blank the POS grid entirely. Prefer menus that actually have at
+    // least one top-level category; only fall back to all live menus if none do.
+    const menusWithCats = new Set((menuCategories || []).filter(c => !c.parentId && !c.isSpecial && c.menuId).map(c => c.menuId));
+    const withCats = liveMenus.filter(m => menusWithCats.has(m.id));
+    const allMenus = withCats.length ? withCats : liveMenus;
     const activeNow = allMenus.filter(isActive);
     const preferred = deviceConfig?.menuId;
-    // 1. If device pinned to a menu and that menu is currently active, honour it.
-    if (preferred && activeNow.some(m => m.id === preferred)) return preferred;
+    const preferredOk = preferred && allMenus.some(m => m.id === preferred);   // pinned menu must itself have cats
+    // 1. If device pinned to a (non-empty) menu that's currently active, honour it.
+    if (preferredOk && activeNow.some(m => m.id === preferred)) return preferred;
     // 2. Otherwise pick highest-priority menu currently active.
     if (activeNow.length > 0) {
       return activeNow.slice().sort((a, b) => (b.priority || 0) - (a.priority || 0))[0].id;
@@ -203,11 +211,13 @@ export default function POSSurface() {
     // 3. No menus active right now: fall back to default flagged menu.
     const def = allMenus.find(m => m.isDefault || m.is_default);
     if (def) return def.id;
-    // 4. Last resort: device pinned (even if its schedule says inactive).
-    if (preferred) return preferred;
-    // 5. Nothing matches: show all categories (legacy behaviour).
+    // 4. Device pinned (even if its schedule says inactive), provided it has cats.
+    if (preferredOk) return preferred;
+    // 5. Any non-empty menu (highest priority) so the grid is never blank when items exist.
+    if (allMenus.length) return allMenus.slice().sort((a, b) => (b.priority || 0) - (a.priority || 0))[0].id;
+    // 6. Nothing matches: show all categories (legacy behaviour).
     return null;
-  }, [menus, deviceConfig?.menuId, _clockTick]);
+  }, [menus, deviceConfig?.menuId, menuCategories, _clockTick]);
 
   // v4.7.7: mirror the resolved deviceMenuId into the store's activeMenuId so internal
   // getItemPrice calls (addItem fallback, setOrderType reprice) pick up per-menu pricing

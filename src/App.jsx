@@ -93,6 +93,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.779', date: '15 Jul 2026', label: 'POS — fix: empty menu no longer blanks the till (menu now always shows)',
+    changes: [
+      'Fixed the POS showing a blank menu when a second, empty menu (e.g. a half-built “New Test” menu) was left active — with equal priority it could win the menu selection and hide your real menu. The till now only ever selects a menu that actually has categories, so your menu always shows.',
+    ],
+  },
+  {
     version: '5.5.778', date: '14 Jul 2026', label: 'Print menu — fix: screen stuck loading when a venue logo is set',
     changes: [
       'Fixed the Print menu not loading (blank / stuck) when the venue has a logo — the logo download was blocking the whole screen. It now loads the menu straight away and drops the logo in once it’s fetched.',
