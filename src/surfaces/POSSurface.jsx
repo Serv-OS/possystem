@@ -294,6 +294,15 @@ export default function POSSurface() {
   const [showTableActions, setShowTableActions] = useState(false);
   const [lastAddedUid, setLastAddedUid] = useState(null);
   const longPressTimer = useRef(null);
+  // v5.5.791: order panel follows adds — when a line is appended (or an existing
+  // line's qty goes up) the items list scrolls it into view and flashes it.
+  // Diffed against the previous uid→qty map so unrelated re-renders never
+  // re-trigger; the baseline resets when switching table / walk-in context.
+  const orderListRef = useRef(null);
+  const prevOrderLinesRef = useRef(null);   // Map<uid, qty> | null
+  const prevOrderKeyRef = useRef(null);     // activeTableId | 'walkin'
+  const lineFlashTimerRef = useRef(null);
+  const [flashLineUid, setFlashLineUid] = useState(null);
 
   const activeTable = activeTableId ? tables.find(t=>t.id===activeTableId) : null;
   const session = activeTable?.session;
@@ -313,6 +322,36 @@ export default function POSSurface() {
   const autoDiscountTotal = autoDiscounts.reduce((s, d) => s + (d.value || 0), 0);
   const manualCheckDiscount = Math.max(0, checkDiscount - autoDiscountTotal);
   const orderNote = getPOSOrderNote();
+
+  // v5.5.791: detect a just-added line (new uid) or a qty bump on an existing
+  // line, then scroll it into view in the order panel + flash it. Covers every
+  // add path (quick tap, product modal, inline flow, custom item) because it
+  // diffs the items list itself rather than hooking each caller.
+  useEffect(() => {
+    const key = activeTableId || 'walkin';
+    const prev = prevOrderLinesRef.current;
+    const sameOrder = prevOrderKeyRef.current === key && prev !== null;
+    const next = new Map(items.map(i => [i.uid, i.qty || 0]));
+    prevOrderKeyRef.current = key;
+    prevOrderLinesRef.current = next;
+    if (!sameOrder) return;                       // first render / switched order — baseline only
+    let target = null;
+    for (const it of items) {
+      if (!prev.has(it.uid)) target = it.uid;                      // new line appended
+      else if ((it.qty || 0) > prev.get(it.uid)) target = it.uid;  // qty increased on an existing line
+    }
+    if (!target) return;
+    setFlashLineUid(target);
+    clearTimeout(lineFlashTimerRef.current);
+    lineFlashTimerRef.current = setTimeout(() => setFlashLineUid(null), 1000);
+    // Effects run after the DOM commit, so the new line already exists — scroll
+    // it into view directly (no rAF: it never fires on hidden/background tabs,
+    // where smooth scrolling also stalls — jump instantly there instead).
+    try {
+      orderListRef.current?.querySelector(`[data-line-uid="${CSS.escape(target)}"]`)
+        ?.scrollIntoView({ behavior: document.hidden ? 'auto' : 'smooth', block: 'nearest' });
+    } catch { /* noop */ }
+  }, [items, activeTableId]);
 
   // v5.5.188: cache the per-reader customer display setting on boot.
   // Reads payment_devices.customer_display_enabled once; pushReaderDisplay
@@ -1080,7 +1119,7 @@ export default function POSSurface() {
         </div>
 
         {/* Items by course */}
-        <div style={{flex:1,overflowY:'auto',padding:'4px 10px'}}>
+        <div ref={orderListRef} style={{flex:1,overflowY:'auto',padding:'4px 10px'}}>
 
           {/* Empty state */}
           {items.length===0&&(
@@ -1109,6 +1148,7 @@ export default function POSSurface() {
                 )}
                 {byCourse[courseNum].map(item=>(
                   <OrderItem key={item.uid} item={item} covers={covers} orderType={orderType} seatList={seatList} namesOnly={namesOnly}
+                    flash={flashLineUid===item.uid}
                     onQty={d=>updateItemQty(item.uid,d)}
                     onRemove={()=>removeItem(item.uid)}
                     onNote={n=>updateItemNote(item.uid,n)}
@@ -1841,7 +1881,7 @@ export default function POSSurface() {
 }
 
 function OrderItem({
-  item, covers, orderType, seatList, onQty, onRemove, onNote, onSeat, onCourse, onVoid, onDiscount, onRemoveDiscount, namesOnly=false }) {
+  item, covers, orderType, seatList, onQty, onRemove, onNote, onSeat, onCourse, onVoid, onDiscount, onRemoveDiscount, namesOnly=false, flash=false }) {
   const compact = useCompact();
   const [showMenu, setShowMenu] = useState(false);
   const [editNote, setEditNote] = useState(false);
@@ -1860,7 +1900,7 @@ function OrderItem({
   if (namesOnly) {
     const price = item.price * item.qty;
     return (
-      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',
+      <div data-line-uid={item.uid} className={flash?'line-flash':undefined} style={{display:'flex',justifyContent:'space-between',alignItems:'center',
         padding:'4px 10px',borderBottom:'1px solid var(--bdr)',gap:8,
         opacity:isVoided?0.4:1}}>
         <span style={{fontSize:11,color:'var(--t1)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}}>
@@ -1877,7 +1917,7 @@ function OrderItem({
   }
 
   return (
-    <div style={{
+    <div data-line-uid={item.uid} className={flash?'line-flash':undefined} style={{
       background: isVoided ? 'rgba(239,68,68,.04)' : isCommitted ? 'var(--bg2)' : 'var(--bg2)',
       border:`1.5px solid ${isVoided?'var(--red-b)':isCommitted?'rgba(34,197,94,.2)':'var(--bdr)'}`,
       borderRadius:12,

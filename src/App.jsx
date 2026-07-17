@@ -93,6 +93,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.791', date: '17 Jul 2026', label: 'POS — the order panel now follows as you add items',
+    changes: [
+      'POS — the order panel now follows as you add items: jumps to the new line and highlights it. On a long order, tapping menu items used to add the new line out of view at the bottom of the basket; the panel now auto-scrolls so the just-added line is visible, with a brief highlight so it\'s obvious what changed.',
+      'Also applies when a line\'s quantity goes up (the + stepper, or on the bar when tapping the same drink again merges into the existing line) — the updated line scrolls into view and flashes.',
+      'Same behaviour on the Bar tabs screen: the round being built follows and highlights each added or merged line. Nothing changes about what gets ordered — this is purely a visibility improvement.',
+    ],
+  },
+  {
     version: '5.5.790', date: '17 Jul 2026', label: 'Receipt name + kitchen name now used everywhere',
     changes: [
       'An item\'s three names now actually do their jobs. The POS button name stays on the till screen, but customer receipts (printed, emailed and reprinted) now show the item\'s RECEIPT name, and the kitchen screens + printed kitchen tickets now show the item\'s KITCHEN/KDS name — set them in Back Office → Menu → item → Receipt name / Kitchen · KDS.',

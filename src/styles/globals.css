@@ -209,6 +209,12 @@ button { font-family: inherit; }
 
 .add-pulse { animation: itemAdd .25s cubic-bezier(.2,.8,.3,1); }
 
+/* v5.5.791: order-panel line flash — the just-added/updated order line glows
+   accent briefly then fades back to its normal (inline) colours. Keyframe
+   animations win over inline styles for the duration, so no !important. */
+@keyframes lineFlash { 0%, 30% { background: var(--acc-d); border-color: var(--acc-b); } }
+.line-flash { animation: lineFlash 1s ease-out; }
+
 .divider { height: 1px; background: var(--bdr); margin: 12px 0; }
 
 /* ── Product card base ── */

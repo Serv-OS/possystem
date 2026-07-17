@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { useStore } from '../store';
 import { MENU_ITEMS, ALLERGENS } from '../data/seed';
 import ProductModal, { AllergenModal } from '../components/ProductModal';
@@ -178,6 +178,14 @@ export default function BarSurface() {
   const [noteVal, setNoteVal]               = useState('');
   const [voidConfirm, setVoidConfirm]       = useState(null); // { tabId, roundId, rNum }
   const [showTabFilter, setShowTabFilter]   = useState('active'); // active | all
+  // v5.5.791: round panel follows adds — the just-added (or qty-merged) round
+  // line is scrolled into view and flashed, same pattern as the POS order panel.
+  // Diffed against the previous uid→qty map so unrelated re-renders never re-trigger.
+  const roundListRef = useRef(null);
+  const prevRoundLinesRef = useRef(null);   // Map<uid, qty> | null
+  const prevRoundTabRef = useRef(null);
+  const roundFlashTimerRef = useRef(null);
+  const [flashRoundUid, setFlashRoundUid] = useState(null);
 
   useEffect(() => { if (tabs.length===0) seedTabs(); }, []);
 
@@ -256,6 +264,35 @@ export default function BarSurface() {
 
   const removeFromRound = (uid) => setRoundItems(p=>p.filter(r=>r.uid!==uid));
   const updateRoundQty  = (uid,d) => setRoundItems(p=>p.map(r=>r.uid===uid?{...r,qty:Math.max(1,r.qty+d)}:r));
+
+  // v5.5.791: detect a just-added round line (new uid) OR a qty merge onto an
+  // existing line (addToRound increments qty for same item+mods), then scroll
+  // it into view in the rounds panel + flash it.
+  useEffect(() => {
+    const key = activeTabId || null;
+    const prev = prevRoundLinesRef.current;
+    const sameTab = prevRoundTabRef.current === key && prev !== null;
+    const next = new Map(roundItems.map(i => [i.uid, i.qty || 0]));
+    prevRoundTabRef.current = key;
+    prevRoundLinesRef.current = next;
+    if (!sameTab) return;                       // first render / switched tab — baseline only
+    let target = null;
+    for (const it of roundItems) {
+      if (!prev.has(it.uid)) target = it.uid;                      // new line appended
+      else if ((it.qty || 0) > prev.get(it.uid)) target = it.uid;  // qty merged onto an existing line
+    }
+    if (!target) return;
+    setFlashRoundUid(target);
+    clearTimeout(roundFlashTimerRef.current);
+    roundFlashTimerRef.current = setTimeout(() => setFlashRoundUid(null), 1000);
+    // Effects run after the DOM commit, so the new line already exists — scroll
+    // it into view directly (no rAF: it never fires on hidden/background tabs,
+    // where smooth scrolling also stalls — jump instantly there instead).
+    try {
+      roundListRef.current?.querySelector(`[data-line-uid="${CSS.escape(target)}"]`)
+        ?.scrollIntoView({ behavior: document.hidden ? 'auto' : 'smooth', block: 'nearest' });
+    } catch { /* noop */ }
+  }, [roundItems, activeTabId]);
 
   const handleItemTap = (item) => {
     if (eightySixIds.includes(item.id)) { showToast(`${item.name} is 86'd`,'error'); return; }
@@ -570,7 +607,7 @@ export default function BarSurface() {
             </div>
 
             {/* Rounds history */}
-            <div style={{ flex:1, overflowY:'auto', padding:'10px 12px' }}>
+            <div ref={roundListRef} style={{ flex:1, overflowY:'auto', padding:'10px 12px' }}>
               {activeTab.rounds.length===0&&roundItems.length===0&&(
                 <div style={{ textAlign:'center',padding:'30px 0',color:'var(--t3)' }}>
                   <div style={{ fontSize:28,marginBottom:8,opacity:.5 }}>🍹</div>
@@ -589,7 +626,7 @@ export default function BarSurface() {
                   </div>
                   <div style={{ padding:'8px 12px' }}>
                     {roundItems.map(item=>(
-                      <RoundItem key={item.uid} item={item}
+                      <RoundItem key={item.uid} item={item} flash={flashRoundUid===item.uid}
                         onQty={d=>updateRoundQty(item.uid,d)}
                         onRemove={()=>removeFromRound(item.uid)}/>
                     ))}
@@ -849,11 +886,11 @@ export default function BarSurface() {
 }
 
 // ─── Round Item Row ──────────────────────────────────────────────────────────
-function RoundItem({ item, onQty, onRemove }) {
+function RoundItem({ item, onQty, onRemove, flash=false }) {
   const [editNote, setEditNote] = useState(false);
   const [note, setNote] = useState(item.notes||'');
   return (
-    <div style={{ marginBottom:6, paddingBottom:6, borderBottom:'1px solid rgba(232,160,32,.15)' }}>
+    <div data-line-uid={item.uid} className={flash?'line-flash':undefined} style={{ marginBottom:6, paddingBottom:6, borderBottom:'1px solid rgba(232,160,32,.15)' }}>
       <div style={{ display:'flex',alignItems:'flex-start',gap:8 }}>
         <div style={{ flex:1 }}>
           <div style={{ fontSize:12,fontWeight:600,color:'var(--t1)' }}>{item.menuName||item.menu_name||item.name||'Item'}</div>
