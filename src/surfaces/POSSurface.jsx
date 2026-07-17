@@ -738,18 +738,16 @@ export default function POSSurface() {
     console.info('[PayComplete] shouldPrint=', shouldPrint, 'deviceConfig.apc=', deviceConfig?.autoPrintReceiptOnClose, 'paymentInfo.printReceipt=', paymentInfo.printReceipt);
     try {
       if (activeTableId) {
-        // If table has unsent items, fire them to kitchen before closing
-        const session = useStore.getState().tables.find(t => t.id === activeTableId);
-        const hasUnsent = session?.items?.some(i => i.status === 'pending' && !i.voided);
-        if (hasUnsent) sendToKitchen(activeTableId);
+        // v5.5.792: unsent/held lines now fire INSIDE clearTable (store choke point,
+        // shared with MPOS) as one combined payment-time send. The old pre-fire here
+        // was also broken — it read the table row (not .session), so hasUnsent was
+        // always false and table orders paid with unsent items never fired.
         clearTable(activeTableId, paymentInfo);
         showToast('Payment complete, table cleared', 'success');
         setSurface('tables');
       } else {
-        // Walk-in: if order hasn't been sent to kitchen yet, fire it now
-        const order = useStore.getState().walkInOrder;
-        const hasUnsent = order?.items?.some(i => i.status === 'pending' && !i.voided);
-        if (hasUnsent) sendToKitchen(null);
+        // v5.5.792: unsent lines fire INSIDE recordWalkInClosed (store choke point)
+        // as one combined send — all courses at once, no holds, no double-fire.
         recordWalkInClosed(useStore.getState().walkInOrder, orderType, customer, paymentInfo);
         clearWalkIn();
         showToast('Payment complete', 'success');

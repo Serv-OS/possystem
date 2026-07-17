@@ -1181,6 +1181,18 @@ export const useStore = create((set, get) => ({
       get().showToast('QR tab — close it from Orders Hub → Open QR tabs (captures the card hold + saves to history)', 'info');
       return;
     }
+    // v5.5.792: PAYING MUST GUARANTEE PRODUCTION. If the check being paid still has
+    // lines the kitchen never fired (never sent, or sent-but-held courses), fire them
+    // ALL now in one combined send — course holds ignored, the customer is paying.
+    // Gated on a real payment (method present) so a manual table clear/void never
+    // fires the kitchen. Lines already sent+fired are excluded (no double-fire).
+    // KDS insert / print / queue writes are training-gated at the leaf fns.
+    if (paymentInfo?.method) {
+      const closing = get().tables.find(t => t.id === tableId);
+      const hasUnfired = closing?.session?.items?.some(i =>
+        !i.voided && (i.status === 'pending' || (i.status === 'sent' && !i.fired)));
+      if (hasUnfired) get().sendToKitchen({ fireAll: true, tableId });
+    }
     get().recordClosedCheck(tableId, paymentInfo);
     const table = get().tables.find(t => t.id === tableId);
 
@@ -1634,7 +1646,19 @@ export const useStore = create((set, get) => ({
     // sendToKitchen(null) or sendToKitchen(tableId) as positional args.
     // Destructuring `null` throws; this internal default doesn't.
     const bypassSchedule = (opts && typeof opts === 'object') ? !!opts.bypassSchedule : false;
+    // v5.5.792: payment-time fire (see clearTable / recordWalkInClosed). fireAll
+    // sends EVERY line the kitchen has never fired — never-sent lines AND
+    // sent-but-held later courses — in ONE combined send with course holds
+    // ignored (the customer is paying; course sequencing no longer applies).
+    // Lines already sent AND fired are excluded, so nothing double-fires.
+    const fireAll = (opts && typeof opts === 'object') ? !!opts.fireAll : false;
     const { activeTableId, staff, orderType, customer, addToQueue, tables } = get();
+    // fireAll callers pass the table being closed explicitly (clearTable can run
+    // with a tableId that is not the activeTableId, e.g. MPOS).
+    const targetTableId = (opts && typeof opts === 'object' && 'tableId' in opts) ? opts.tableId : activeTableId;
+    // The lines a send should pick up. Normal send: pending only (original
+    // behaviour). fireAll: pending PLUS sent-but-held (fired === false).
+    const isUnsentLine = (i) => !i.voided && (i.status === 'pending' || (fireAll && i.status === 'sent' && !i.fired));
 
     // Get routing config — prefer store value (pushed from back office), fall back to localStorage
     const getRoutingConfig = () => {
@@ -1703,6 +1727,11 @@ export const useStore = create((set, get) => ({
     // courses up through it so the kitchen doesn't hold items for a course
     // that has no food in it.
     const computeFiredOnSend = (items) => {
+      // v5.5.792: fireAll = payment-time send — every unsent line's course fires
+      // at once, regardless of course number or hold state.
+      if (fireAll) {
+        return [...new Set([0, ...(items || []).filter(isUnsentLine).map(i => i.course ?? 1)])].sort((a,b) => a-b);
+      }
       const pending = (items || []).filter(i => !i.voided && (i.status === 'pending' || i.status === 'sent'));
       const courses = [...new Set(pending.map(i => i.course ?? 1))].filter(c => c >= 1).sort((a,b) => a-b);
       const lowest = courses[0] || 1;
@@ -1716,7 +1745,8 @@ export const useStore = create((set, get) => ({
       const byCenter = {};
       const FIRED_ON_SEND = _firedOnSend;
       // Send ALL non-voided pending items — not just courses 0+1
-      items.filter(i => !i.voided && i.status === 'pending').forEach(item => {
+      // (v5.5.792: in fireAll mode isUnsentLine also picks up sent-but-held lines)
+      items.filter(isUnsentLine).forEach(item => {
         const centres = getCentresForItem(item, routingConfig);
         centres.forEach(cid => {
           if (!byCenter[cid]) byCenter[cid] = [];
@@ -1751,12 +1781,12 @@ export const useStore = create((set, get) => ({
       });
     };
 
-    if (activeTableId) {
-      const table = tables.find(t => t.id === activeTableId);
+    if (targetTableId) {
+      const table = tables.find(t => t.id === targetTableId);
       const session = table?.session;
-      const pendingItems = session?.items?.filter(i => i.status === 'pending' && !i.voided) || [];
+      const pendingItems = session?.items?.filter(isUnsentLine) || [];
       const firedOnSend = computeFiredOnSend(session?.items || []);
-      const newTickets = createKdsTickets(pendingItems, table?.label || activeTableId, staff?.name || 'Server', session?.covers || 2, firedOnSend);
+      const newTickets = createKdsTickets(pendingItems, table?.label || targetTableId, staff?.name || 'Server', session?.covers || 2, firedOnSend);
       // Route print jobs for each ticket (fires to mapped printer per centre)
       const printConfig = getRoutingConfig();
       const getCentrePrinter = (centreId) => {
@@ -1781,7 +1811,7 @@ export const useStore = create((set, get) => ({
       });
       set(s=>({
         tables: s.tables.map(t=>{
-          if(t.id!==activeTableId||!t.session)return t;
+          if(t.id!==targetTableId||!t.session)return t;
           // v5.5.4: TWO independent concepts on each item:
           //   status: 'pending' | 'sent'  — whether the kitchen has SEEN this item yet.
           //                                  An item is 'sent' as soon as it's printed.
@@ -1797,7 +1827,9 @@ export const useStore = create((set, get) => ({
           // 'fired' flag gates fire-vs-hold.
           const firedCourses=[...new Set([...(t.session.firedCourses||[]),...firedOnSend])];
           const items=t.session.items.map(i => {
-            if (i.status !== 'pending' || i.voided) return i;
+            // v5.5.792: isUnsentLine ≡ the old (status==='pending' && !voided) guard
+            // for a normal send; in fireAll mode it also flips sent-but-held lines.
+            if (!isUnsentLine(i)) return i;
             return { ...i, fired: firedCourses.includes(i.course), status: 'sent' };
           });
           const subtotal=items.reduce((s,i)=>s+i.price*i.qty,0);
@@ -1807,7 +1839,10 @@ export const useStore = create((set, get) => ({
       }));
       newTickets.forEach(t => insertKDSTicket(t));
       get().showToast('Sent to kitchen','success');
-      get().maybeAutoSignout('send');   // v5.5.731 per-device sign-out-on-send
+      // v5.5.792: fireAll runs mid-payment-close — let the payment path's own
+      // maybeAutoSignout('pay') handle sign-out; signing out here would yank the
+      // staff context before recordClosedCheck writes the check.
+      if (!fireAll) get().maybeAutoSignout('send');   // v5.5.731 per-device sign-out-on-send
     } else {
       const order = get().walkInOrder;
       if (!order?.items?.length) return;
@@ -1872,7 +1907,7 @@ export const useStore = create((set, get) => ({
           return;
         }
       }
-      const pendingItems = order.items.filter(i => i.status === 'pending' && !i.voided);
+      const pendingItems = order.items.filter(isUnsentLine);
       const label = customer?.name ? `${orderType.charAt(0).toUpperCase()+orderType.slice(1)} · ${customer.name}` : orderType;
       const wiFiredOnSend = computeFiredOnSend(order.items || []);
       const newTickets = createKdsTickets(pendingItems, label, staff?.name || 'Server', 1, wiFiredOnSend);
@@ -4183,6 +4218,19 @@ export const useStore = create((set, get) => ({
 
   recordWalkInClosed: (walkInOrder, orderType, customer, paymentInfo = {}) => {
     if (!walkInOrder?.items?.length) return;
+    // v5.5.792: PAYING MUST GUARANTEE PRODUCTION. Counter/walk-up staff often take
+    // payment without ever tapping Send — the check used to close paid with NO KDS
+    // ticket and no kitchen print. If any line was never fired (never sent, or
+    // sent-but-held course), fire them ALL now in one combined send (course holds
+    // ignored — the customer is paying). Already sent+fired lines are excluded, so
+    // a normal Send → Pay flow doesn't double-fire. Only runs when the caller is
+    // closing the live store walkInOrder (POS + MPOS both do); after the send we
+    // re-read it so the record picks up the queue ref + sent flags the send stamped.
+    if (walkInOrder === get().walkInOrder &&
+        walkInOrder.items.some(i => !i.voided && (i.status === 'pending' || (i.status === 'sent' && !i.fired)))) {
+      get().sendToKitchen({ fireAll: true, tableId: null });
+      walkInOrder = get().walkInOrder || walkInOrder;
+    }
     const { staff, taxRates } = get();
     const subtotal = walkInOrder.items.reduce((s, i) => s + i.price * i.qty, 0);
     // v4.6.19 — compute tax at close so tax_amount can be stored with the row

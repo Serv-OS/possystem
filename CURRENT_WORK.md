@@ -16,6 +16,27 @@ A SaaS restaurant/bar POS with many device "surfaces" off one codebase (URL `?mo
 
 ## Recent arc (this block of sessions)
 
+### Paying always fires production (v5.5.792) — SHIPPED
+Owner bug: counter/walk-up staff ring items and go STRAIGHT to payment (e.g. cash) without
+tapping Save & send — the check closed paid but NO KDS ticket / kitchen print ever fired.
+Fix at the **store choke point**: `recordWalkInClosed` (walk-in/takeaway/counter) and
+`clearTable` (tables, gated on `paymentInfo?.method` so a manual Close-table never fires)
+now call `sendToKitchen({ fireAll: true, tableId })` when any line was never fired.
+`fireAll` is a new mode inside `sendToKitchen` (store/index.js): picks up pending AND
+sent-but-HELD lines (`isUnsentLine`), fires ALL courses at once (owner spec: course
+sequencing is over when the customer pays — one combined send per production centre,
+normal print routing), and skips `maybeAutoSignout('send')` (payment path has its own).
+Double-fire safe: sent+fired lines are excluded, so Send→Pay makes exactly one ticket and
+paying a table with a held course fires only the held lines. Covers POS + MPOS (both close
+via the store fns); Bar tabs fire rounds at add time so nothing unsent exists at close.
+Root causes: (1) v4.4.7 refactor (`a5741d1`) read the table ROW instead of `.session` in
+POSSurface's pay-time check → tables never fired; (2) the walk-in pre-fire lived only in
+POSSurface → MPOS table payments had no fire; both pre-fire blocks removed from
+`handlePayComplete` in favour of the store hook. Training gating unchanged (leaf fns).
+Verified in dev mock: pay-without-send fires 1 combined ticket (all `fired:true`);
+Send→Pay adds none; C1+C2 pay-without-send fires both at once; table with held C2 fires
+only the toffee on pay; manual Close table fires nothing.
+
 ### Order panel follows adds (v5.5.791) — SHIPPED
 Owner UX report: on a long order, tapping menu items appended the new line out of view at the
 bottom of the basket. The POS order panel (and the Bar round-being-built) now auto-scrolls the

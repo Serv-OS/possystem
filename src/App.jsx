@@ -93,6 +93,17 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.792', date: '17 Jul 2026', label: 'POS — paying an order now always sends unsent items to the kitchen',
+    changes: [
+      'POS — paying an order now always sends unsent items to the kitchen (counter cash-off fires production tickets). Counter/walk-up staff often ring items and go straight to payment without tapping Save & send; the check used to close paid with NO KDS ticket and no kitchen print, so takeaway orders never reached the kitchen. Paying now guarantees production.',
+      'The fire happens at the store choke point — inside recordWalkInClosed (walk-in/takeaway/counter) and clearTable (table orders) — so every payment path is covered: cash, card (Stripe + Ryft), split, and gift, on the desktop POS AND MPOS, for walk-in and table orders alike.',
+      'Per the owner spec, the payment-time send ignores course firing/holds entirely: everything unsent fires AT ONCE — never-sent lines and sent-but-HELD later courses both go out in one combined send per production centre (normal per-station print routing still applies). The customer is paying and leaving; course sequencing no longer applies.',
+      'No double-fire: lines already sent AND fired are excluded (the existing status/fired flags are respected), so a normal Send → Pay flow produces exactly one ticket, and paying a table with a held course fires ONLY the held lines.',
+      'Root cause of the table half: a v4.4.7 refactor read the table row instead of its .session when checking for unsent items, so the pay-time check was always false on tables. The walk-in pre-fire also ran as a separate step in the POS surface only — MPOS table payments had no fire at all. Both now converge on the store.',
+      'A manual Close table (no payment) still never fires the kitchen — the clearTable fire is gated on a real payment method. Training mode is unchanged: KDS inserts, kitchen prints and queue writes stay gated at the leaf functions exactly as the Save & send path.',
+    ],
+  },
+  {
     version: '5.5.791', date: '17 Jul 2026', label: 'POS — the order panel now follows as you add items',
     changes: [
       'POS — the order panel now follows as you add items: jumps to the new line and highlights it. On a long order, tapping menu items used to add the new line out of view at the bottom of the basket; the panel now auto-scrolls so the just-added line is visible, with a brief highlight so it\'s obvious what changed.',
