@@ -93,6 +93,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.785', date: '17 Jul 2026', label: 'Internal — marketing screenshot harness (scripts/screenshots.mjs)',
+    changes: [
+      'New internal tool: automated retina screenshots of every surface (back office, till, floor, KDS, bar, orders, clock, waitlist, menu board, online ordering, review card, manager app) for sales-deck material. No product changes.',
+    ],
+  },
+  {
     version: '5.5.784', date: '15 Jul 2026', label: 'Xero — supplier invoices push to Xero as bills, with the scanned copy attached',
     changes: [
       'Purchasing → Invoices: every posted supplier invoice now has a “Push to Xero” button (when the venue is connected). It lands in Xero as a proper supplier bill — right supplier (created automatically if new), invoice number, date, due date from the supplier’s payment terms, and each line on your Purchases/COGS account.',
