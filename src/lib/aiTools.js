@@ -766,7 +766,10 @@ export async function executeConfirmedAction(action, storeActions = {}) {
         allergens:  [],
         archived:   false,
       };
-      await addMenuItem(newItem);
+      const created = await addMenuItem(newItem);
+      // v5.5.797: duplicate-name guard — the store refuses a live top-level
+      // product whose name matches an existing one (returns null).
+      if (!created) return { ok: false, error: `A product called "${payload.name}" already exists` };
       return { ok: true, message: `"${payload.name}" added to the menu at ${money(Number(payload.price))}` };
     }
 

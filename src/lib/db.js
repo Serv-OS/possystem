@@ -166,6 +166,15 @@ export const upsertMenuItem = async (item, locationId = null) => {
   // that looks up by name. Now name + menu_name + receipt_name + kitchen_name
   // all cascade through the same chain so a rename updates them together.
   const _displayName = item.menuName || item.menu_name || item.name || 'Item';
+  // v5.5.797: AUTO-MODIFIABLE SAFETY NET — a top-level product with modifier
+  // groups attached must never be written as plain 'simple': the till
+  // hard-skips the options screen for type='simple' (POSSurface needsModal),
+  // so the attached groups would never show. Mirrors the store-side flip in
+  // updateMenuItem/addMenuItem so both write paths agree.
+  const _parentId = item.parentId !== undefined ? item.parentId : (item.parent_id !== undefined ? item.parent_id : null);
+  const _assignedMods = item.assignedModifierGroups || item.assigned_modifier_groups || [];
+  let _type = item.type || 'simple';
+  if (_type === 'simple' && !_parentId && Array.isArray(_assignedMods) && _assignedMods.length > 0) _type = 'modifiable';
   const dbItem = {
     id:           item.id,
     location_id:  locationId,
@@ -174,10 +183,10 @@ export const upsertMenuItem = async (item, locationId = null) => {
     receipt_name: item.receiptName || item.receipt_name || _displayName,
     kitchen_name: item.kitchenName || item.kitchen_name || _displayName,
     description:  item.description || '',
-    type:         item.type        || 'simple',
+    type:         _type,
     cat:          item.cat         || null,
     cats:         item.cats        || [],
-    parent_id:    item.parentId !== undefined ? item.parentId : (item.parent_id !== undefined ? item.parent_id : null),
+    parent_id:    _parentId,
     sort_order:   item.sortOrder   ?? item.sort_order   ?? 0,
     pricing,
     allergens:    item.allergens   || [],

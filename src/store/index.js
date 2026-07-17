@@ -211,6 +211,24 @@ const _savedBO = (() => {
   try { return JSON.parse(localStorage.getItem('rpos-bo-config')||'{}'); } catch { return {}; }
 })();
 
+// ── Duplicate product-name rule (v5.5.797) ───────────────────────────────────
+// Within one location, live TOP-LEVEL products must have unique display names,
+// compared case-insensitively on the trimmed name. Exempt: variants (parentId
+// set — sizes legitimately repeat "Small"/"Large" across parents), sub-items,
+// spacers, and archived items. Returns the conflicting item, or null.
+// The store menuItems list is already scoped to the active location.
+export const findDuplicateProductName = (items, name, excludeId = null) => {
+  const key = String(name || '').trim().toLowerCase();
+  if (!key) return null;
+  return (items || []).find(i =>
+    i.id !== excludeId &&
+    !i.parentId &&
+    !i.archived &&
+    !['subitem', 'spacer'].includes(i.type || 'simple') &&
+    String(i.menuName || i.name || '').trim().toLowerCase() === key
+  ) || null;
+};
+
 export const useStore = create((set, get) => ({
   // Tables Ready — walk-in waitlist / live table-queue (slice in ./waitlistSlice.js).
   ...waitlistSlice(set, get),
@@ -769,11 +787,53 @@ export const useStore = create((set, get) => ({
 
   updateMenuItem: (id, patch) => {
     set(s => {
+      // DUPLICATE-NAME GUARD (v5.5.797) — refuse a rename that would give two
+      // live top-level products the same (trimmed, case-insensitive) name.
+      // The BO editors pre-check and show their own visible errors; this is
+      // the choke-point backstop so no caller can persist a duplicate. Only
+      // fires when the display name actually CHANGES — pre-existing
+      // duplicates stay editable (price etc.) until someone renames them.
+      {
+        const cur = s.menuItems.find(i => i.id === id);
+        if (cur) {
+          const pick = (camel, snake, fallback) =>
+            (camel in patch) ? patch[camel] : (snake in patch) ? patch[snake] : fallback;
+          const nextDisplay = pick('menuName', 'menu_name', cur.menuName) || ('name' in patch ? patch.name : cur.name) || '';
+          const norm = v => String(v || '').trim().toLowerCase();
+          const resParent = 'parentId' in patch ? patch.parentId : cur.parentId;
+          const resType   = ('type' in patch ? patch.type : cur.type) || 'simple';
+          if (norm(nextDisplay) && norm(nextDisplay) !== norm(cur.menuName || cur.name)
+              && !resParent && !['subitem','spacer'].includes(resType)
+              && !cur.archived && !patch.archived) {
+            const dup = findDuplicateProductName(s.menuItems, nextDisplay, id);
+            if (dup) {
+              console.warn(`[store] updateMenuItem blocked: a product called "${nextDisplay}" already exists (${dup.id})`);
+              return {};
+            }
+          }
+        }
+      }
       let items = s.menuItems.map(item => {
         if (item.id !== id) return item;
         const updated = { ...item, ...patch };
         if (patch.modifierGroups !== undefined && !['subitem','variants','combo','pizza'].includes(updated.type)) {
           updated.type = patch.modifierGroups?.length > 0 ? 'modifiable' : 'simple';
+        }
+        // v5.5.797: AUTO-MODIFIABLE — the BO editor attaches modifier groups
+        // via assignedModifierGroups (NOT the legacy modifierGroups field
+        // above), so the auto-type flip never fired and the till skipped the
+        // options screen for those products (POSSurface needsModal hard-skips
+        // type='simple'). A top-level product with groups attached and still
+        // on the plain type flips to 'modifiable' on any save; emptying the
+        // attach list flips it back (unless instruction groups still need the
+        // modal). Never overrides an explicit type in the same patch and
+        // never touches subitem/variants/combo/pizza/spacer types.
+        if (!('type' in patch) && !updated.parentId) {
+          const t = updated.type || 'simple';
+          const nMods = updated.assignedModifierGroups?.length || 0;
+          const nInst = updated.assignedInstructionGroups?.length || 0;
+          if (t === 'simple' && nMods > 0) updated.type = 'modifiable';
+          else if (t === 'modifiable' && nMods === 0 && nInst === 0 && patch.assignedModifierGroups !== undefined) updated.type = 'simple';
         }
         return updated;
       });
@@ -894,6 +954,16 @@ export const useStore = create((set, get) => ({
   addMenuItem: item => {
     const base = item.price || item.basePrice || 0;
     const isSubitem = item.type === 'subitem';
+    // DUPLICATE-NAME GUARD (v5.5.797) — a live top-level product may not share
+    // a (trimmed, case-insensitive) name with another. Refuse + return null;
+    // callers surface the visible error (store toasts don't render in BO).
+    if (!item.parentId && !['subitem','spacer'].includes(item.type || 'simple') && !item.archived) {
+      const dup = findDuplicateProductName(useStore.getState().menuItems, item.menuName || item.name);
+      if (dup) {
+        console.warn(`[store] addMenuItem blocked: a product called "${item.menuName || item.name}" already exists (${dup.id})`);
+        return null;
+      }
+    }
     const newItem = {
       id:`m-${Date.now()}`, scope:'local', instructions:'', image:null, tags:[],
       // Subitems are hidden from POS/kiosk/online by default - they only appear in modifier groups
@@ -907,6 +977,12 @@ export const useStore = create((set, get) => ({
       kitchenName: item.kitchenName || item.name || 'New item',
       pricing: item.pricing || { base, dineIn:null, takeaway:null, collection:null, delivery:null },
     };
+    // v5.5.797: AUTO-MODIFIABLE on create — a top-level product born with
+    // modifier groups attached (clone, import, AI add) and the plain type
+    // must be 'modifiable' or the till skips its options screen.
+    if (!newItem.parentId && (newItem.type || 'simple') === 'simple' && (newItem.assignedModifierGroups?.length > 0)) {
+      newItem.type = 'modifiable';
+    }
     set(s => ({ menuItems: [...s.menuItems, newItem] }));
     upsertMenuItem(newItem);
     return newItem;

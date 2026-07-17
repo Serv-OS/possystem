@@ -23,7 +23,7 @@
  */
 
 import { useState, useEffect, useMemo, useCallback } from 'react';
-import { useStore } from '../../store';
+import { useStore, findDuplicateProductName } from '../../store';
 import { ALLERGENS } from '../../data/seed';
 import { supabase, getLocationId } from '../../lib/supabase';
 import { upsertMenuItem, uploadProductImage, deleteProductImage } from '../../lib/db';
@@ -134,6 +134,11 @@ export default function Items() {
     // Normalise into a working draft. Defaults guard against legacy items.
     setDraft({
       id: item.id,
+      // v5.5.797: carry type + parentId through the save so the DB write can't
+      // default them (upsertMenuItem falls back to type:'simple'/parent_id:null
+      // for missing fields, which was silently downgrading e.g. 'modifiable').
+      type: item.type || 'simple',
+      parentId: item.parentId ?? null,
       name: item.name || '',
       menuName: item.menuName || '',
       receiptName: item.receiptName || '',
@@ -188,7 +193,7 @@ export default function Items() {
   const onNew = useCallback(() => {
     if (!addMenuItem) return;
     const id = 'm-' + Date.now();
-    addMenuItem({
+    const created = addMenuItem({
       id,
       type: 'simple',
       name: 'New item',
@@ -200,14 +205,33 @@ export default function Items() {
       scope: 'local',
       sortOrder: 999,
     });
+    // v5.5.797: duplicate-name guard — an un-renamed "New item" already exists
+    if (!created) { alert('A product called "New item" already exists — rename it before adding another.'); return; }
     setSelectedId(id);
   }, [addMenuItem, visibleItems, menuCategories]);
 
   const onSave = useCallback(async () => {
     if (!draft || saving) return;
+    // DUPLICATE-NAME GUARD (v5.5.797) — live top-level products must have
+    // unique names (trimmed, case-insensitive). Only fires when the name
+    // actually changes, so pre-existing duplicates stay editable until
+    // renamed. alert() matches this section's existing error pattern.
+    const orig = menuItems.find(i => i.id === draft.id);
+    const nextDisplay = (draft.menuName || draft.name || '').trim();
+    const oldDisplay = (orig?.menuName || orig?.name || '').trim();
+    if (!draft.parentId && !['subitem','spacer'].includes(draft.type || 'simple')
+        && nextDisplay.toLowerCase() !== oldDisplay.toLowerCase()) {
+      const dup = findDuplicateProductName(menuItems, nextDisplay, draft.id);
+      if (dup) {
+        alert(`A product called "${dup.menuName || dup.name}" already exists.`);
+        return;
+      }
+    }
     setSaving(true);
     try {
-      // Update local store first (optimistic)
+      // Update local store first (optimistic). No type/parentId here — the
+      // store merge already preserves them, and leaving type out lets the
+      // store's auto-modifiable flip run when modifier groups are attached.
       if (updateMenuItem) {
         updateMenuItem(draft.id, {
           name: draft.name,
@@ -228,9 +252,15 @@ export default function Items() {
           archived: draft.archived,
         });
       }
-      // Persist to DB. v4.6.0 fields go through verbatim.
+      // Persist to DB. v4.6.0 fields go through verbatim. type comes from the
+      // store post-update (it may have auto-flipped simple↔modifiable);
+      // type/parentId are passed explicitly so upsertMenuItem can't default
+      // them to 'simple'/null and silently clobber the row.
+      const stored = useStore.getState().menuItems.find(i => i.id === draft.id);
       await upsertMenuItem({
         id: draft.id,
+        type: stored?.type ?? draft.type,
+        parentId: draft.parentId,
         name: draft.name,
         menuName: draft.menuName,
         receiptName: draft.receiptName,
@@ -254,7 +284,7 @@ export default function Items() {
     } finally {
       setSaving(false);
     }
-  }, [draft, saving, updateMenuItem]);
+  }, [draft, saving, updateMenuItem, menuItems]);
 
   const onDiscard = useCallback(() => {
     // Reset draft from store

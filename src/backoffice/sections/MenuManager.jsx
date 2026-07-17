@@ -21,7 +21,7 @@
  *  └── Same — options are plain strings
  */
 import { useState, useMemo, useCallback, useEffect } from 'react';
-import { useStore } from '../../store';
+import { useStore, findDuplicateProductName } from '../../store';
 import { ALLERGENS } from '../../data/seed';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
 import { upsertMenuItem, uploadProductImage, deleteProductImage, saveQuickScreenIds, setMenuItemScope, linkCategoryToMenu, unlinkCategoryFromMenu, fetchMenuCategoryLinks } from '../../lib/db';
@@ -48,6 +48,15 @@ async function cloneItem(item, menuItems, addMenuItem, updateMenuItem, markBOCha
 
   const name = cloneName.trim();
 
+  // DUPLICATE-NAME GUARD (v5.5.797) — refuse a clone name that matches a live
+  // top-level product (trimmed, case-insensitive). Native alert: store toasts
+  // don't render in ?mode=office, and this flow already uses window.prompt.
+  const dup = findDuplicateProductName(menuItems, name);
+  if (dup) {
+    window.alert(`A product called "${dup.menuName || dup.name}" already exists — choose a different name.`);
+    return;
+  }
+
   // Clone the parent item — strip id, parentId, keep everything else
   const newItem = addMenuItem({
     name, menuName: name, receiptName: name, kitchenName: name,
@@ -67,6 +76,11 @@ async function cloneItem(item, menuItems, addMenuItem, updateMenuItem, markBOCha
     centreId:                 item.centreId || null,
     sortOrder:                (item.sortOrder ?? 0) + 1,
   });
+  // Store-level backstop (stale list race) — same rule, same message
+  if (!newItem) {
+    window.alert(`A product called "${name}" already exists — choose a different name.`);
+    return;
+  }
 
   // Clone child variants if the original has sizes
   if (item.type === 'variants') {
@@ -411,10 +425,12 @@ function MenuTab() {
   },[dragItemId, displayItems, updateMenuItem, markBOChange, showToast]);
 
   const addItem = (type='simple')=>{
-    addMenuItem({ name:'New item', menuName:'New item', receiptName:'New item', kitchenName:'New item',
+    const created = addMenuItem({ name:'New item', menuName:'New item', receiptName:'New item', kitchenName:'New item',
       type, cat:selCatId||undefined, allergens:[],
       pricing:{base:0,dineIn:null,takeaway:null,collection:null,delivery:null},
       assignedModifierGroups:[], assignedInstructionGroups:[], cats:[], });
+    // v5.5.797: duplicate-name guard — an un-renamed "New item" already exists
+    if (!created) { window.alert('A product called "New item" already exists — rename it before adding another.'); return; }
     markBOChange();
     setTimeout(()=>{ const id=useStore.getState().menuItems.slice(-1)[0]?.id; if(id) setSelItemId(id); },30);
   };
@@ -1222,9 +1238,11 @@ function ItemsLibrary() {
 
   const addNewItem = () => {
     const defCat = catFilter!=='all' ? catFilter : (allCats.find(c=>!c.parentId)?.id||'');
-    addMenuItem({ name:'New item', menuName:'New item', receiptName:'New item', kitchenName:'New item',
+    const created = addMenuItem({ name:'New item', menuName:'New item', receiptName:'New item', kitchenName:'New item',
       type:'simple', cat:defCat, allergens:[], pricing:{base:0},
       assignedModifierGroups:[], assignedInstructionGroups:[], cats:[], sortOrder:999 });
+    // v5.5.797: duplicate-name guard — an un-renamed "New item" already exists
+    if (!created) { window.alert('A product called "New item" already exists — rename it before adding another.'); return; }
     markBOChange();
     setTimeout(()=>{ const last=useStore.getState().menuItems.slice(-1)[0]; if(last) setSelItemId(last.id); }, 30);
   };
@@ -1646,6 +1664,25 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
   const f   = (k,v) => onUpdate({ [k]: v });
   const fp  = (k,v) => onUpdate({ pricing: { ...p, [k]: v===''?null:parseFloat(v)||0 }, ...(k==='base'?{price:parseFloat(v)||0}:{}) });
 
+  // ── Duplicate-name guard (v5.5.797) ────────────────────────────────────────
+  // The POS-button-name input is draft-buffered (commit on blur / Enter) so a
+  // rename that collides with another live top-level product can be refused
+  // with an inline error, without blocking keystrokes mid-typing (e.g. typing
+  // "Coke Zero" transiently passes through "Coke"). Variants/sub-items are
+  // exempt — sizes legitimately repeat names across parents. Committing also
+  // means the v5.5.796 modifier-group rename cascade fires once per rename,
+  // not once per keystroke.
+  const [nameDraft, setNameDraft] = useState(null);
+  useEffect(() => { setNameDraft(null); }, [item.id]);
+  const nameGuarded = !item.parentId && !['subitem','spacer'].includes(item.type || 'simple');
+  const nameDup = (nameDraft != null && nameGuarded) ? findDuplicateProductName(menuItems, nameDraft, item.id) : null;
+  const commitName = () => {
+    if (nameDraft == null) return;
+    if (nameGuarded && findDuplicateProductName(menuItems, nameDraft, item.id)) return; // blocked — inline error stays visible
+    f('menuName', nameDraft);
+    setNameDraft(null);
+  };
+
   // ── Variants ───────────────────────────────────────────────────────────────
   const variants = menuItems.filter(c => c.parentId===item.id && !c.archived)
     .sort((a,b) => (a.sortOrder??999)-(b.sortOrder??999));
@@ -1760,7 +1797,17 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
 
             <div>
               <span style={lbl}>POS button name</span>
-              <input style={inp} value={item.menuName||''} onChange={e=>f('menuName',e.target.value)} placeholder="Name shown on POS button"/>
+              <input style={{ ...inp, ...(nameDup ? { border:'1.5px solid var(--red-b)' } : {}) }}
+                value={nameDraft ?? (item.menuName||'')}
+                onChange={e=>setNameDraft(e.target.value)}
+                onBlur={commitName}
+                onKeyDown={e=>{ if (e.key==='Enter') e.currentTarget.blur(); }}
+                placeholder="Name shown on POS button"/>
+              {nameDup && (
+                <div style={{ fontSize:11, color:'var(--red)', marginTop:4, fontWeight:600 }}>
+                  A product called “{nameDup.menuName || nameDup.name}” already exists
+                </div>
+              )}
             </div>
 
             {!isSub && (
