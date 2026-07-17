@@ -6,8 +6,9 @@
 // Search box is always visible at the top and bypasses the category step
 // when a query is present.
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useStore } from '../../store';
+import { fetchMenuCategoryLinks } from '../../lib/db';
 import { Sx, money } from './MShellStyles';
 import MAllergenPicker from './MAllergenPicker';
 import MVoiceOrder from './MVoiceOrder';
@@ -55,6 +56,27 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
   const cartCount = activeItems.reduce((s, i) => s + (i.qty || 0), 0);
   const cartSubtotal = activeItems.reduce((s, i) => s + (i.price || 0) * (i.qty || 0), 0);
 
+  // v5.5.788: mirror the POS rule (v4.7.6) — a menu owns a category via
+  // category.menuId (primary home) OR the menu_category_links join table.
+  // MPOS previously matched menuId only, so categories joined to the active
+  // menu via links showed on the POS/bar but never on the phone.
+  const [categoryLinks, setCategoryLinks] = useState([]);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const { data } = await fetchMenuCategoryLinks();
+        if (alive) setCategoryLinks(data || []);
+      } catch (e) {
+        console.warn('[MMenu] fetchMenuCategoryLinks failed:', e?.message || e);
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
+  const linkedCatIds = useMemo(() => effectiveMenuId
+    ? new Set((categoryLinks || []).filter(l => l.menu_id === effectiveMenuId).map(l => l.category_id))
+    : new Set(), [categoryLinks, effectiveMenuId]);
+
   // Top-level visible categories — STRICT filter when an active menu is set.
   // If the user explicitly set "Main" in BO and a category belongs to "Test"
   // (a different menuId), we hide it — even if that means the menu is empty.
@@ -66,8 +88,8 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
   const topLevelCategories = useMemo(() => {
     const allTop = menuCategories.filter(c => !c.parentId && c.visible !== false);
     if (!effectiveMenuId) return allTop;
-    return allTop.filter(c => !c.menuId || c.menuId === effectiveMenuId);
-  }, [menuCategories, effectiveMenuId]);
+    return allTop.filter(c => !c.menuId || c.menuId === effectiveMenuId || linkedCatIds.has(c.id));
+  }, [menuCategories, effectiveMenuId, linkedCatIds]);
 
   // Items by predicate. Hide child variants here (parentId set) so they don't
   // appear as their own rows — they show up inside the parent variant picker.

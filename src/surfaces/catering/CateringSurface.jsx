@@ -77,7 +77,11 @@ export default function CateringSurface({ location }) {
           supabase.from('locations').select('receipt_branding').eq('id', opsId).maybeSingle(),
         ]);
         const allow = new Set((linkRows || []).map((l) => l.category_id));
-        setCats((catRows || []).filter((c) => allow.size === 0 || allow.has(c.id)));
+        // Match the POS rule (v4.7.6): a category is in a chosen menu if that menu is its
+        // PRIMARY home (menu_id) OR it's joined via menu_category_links. Links-only checking
+        // dropped home-menu categories with no link row (same bug OnlineSurface had, v5.5.786).
+        setCats((catRows || []).filter((c) =>
+          !menuIds.length || menuIds.includes(c.menu_id) || allow.has(c.id) || (c.parent_id && allow.has(c.parent_id))));
         setItems(itemRows || []);
         setTaxRates(taxRows || []);
         setEightySix((e86 || []).map((r) => r.item_id));

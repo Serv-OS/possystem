@@ -93,6 +93,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.788', date: '17 Jul 2026', label: 'Catering / mobile POS / kiosk — fix: menu categories missing on some surfaces',
+    changes: [
+      'Catering online ordering had the same bug fixed on the main storefront in v5.5.786: it only showed categories with an explicit menu-link row, so categories whose home menu is one of the chosen catering menus (but with no link row) never appeared. It now uses the till rule — a category shows if a chosen menu is its home menu OR it is linked to it.',
+      'Mobile POS (MPOS) had the mirror-image bug: it only matched a category\'s home menu and ignored menu links entirely, so categories joined to the active menu via "assign categories to a menu" showed on the till and bar but never on the phone. The phone menu browser now loads the menu links and applies the same home-OR-linked rule (search results inherit the fix too).',
+      'Kiosk: a sub-category now also shows when its PARENT category is linked to the active menu, matching the online storefront and till behaviour. (The kiosk already applied the home-OR-linked rule for the category itself.)',
+    ],
+  },
+  {
     version: '5.5.787', date: '17 Jul 2026', label: 'Online checkout — fix: offers now reduce the total, VAT and amount charged',
     changes: [
       'When an automatic offer (e.g. a lunch deal) fired on an online order, the checkout header showed the saving but the order summary, Total, “incl. VAT” line and the continue/pay buttons still showed the full price. The card was charged the correct discounted amount — the display and records around it were wrong. Everything now shows the discounted figure, with the offer listed as its own line in the order summary.',

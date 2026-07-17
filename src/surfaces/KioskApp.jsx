@@ -445,9 +445,11 @@ export default function KioskApp({ kioskId, onUnpair }) {
   const visibleCategories = useMemo(() => {
     const linkedIds = new Set(links.filter(l => l.menu_id === activeMenuId).map(l => l.category_id));
     // v5.3.1: include sub-categories (Coffee under Drinks, etc). Only filter out is_special.
+    // v5.5.788: also include a sub-category whose PARENT is linked to the active menu
+    // (matches OnlineSurface/POS — the sub follows its parent into the menu).
     return categories
       .filter(c => !c.is_special)
-      .filter(c => !activeMenuId || c.menu_id === activeMenuId || linkedIds.has(c.id))
+      .filter(c => !activeMenuId || c.menu_id === activeMenuId || linkedIds.has(c.id) || (c.parent_id && linkedIds.has(c.parent_id)))
       .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
   }, [categories, links, activeMenuId]);
 
