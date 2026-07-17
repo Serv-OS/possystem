@@ -70,6 +70,7 @@ export default function POSSurface() {
     menus,
     taxRates,
     showItemImages,
+    takeawayCustomerDetails,
     location,
   } = useStore();
 
@@ -537,7 +538,12 @@ export default function POSSurface() {
   const nextToFire = courseNums.find(c=>c>1&&!firedCourses.includes(c)&&(firedCourses.includes(c-1)||firedCourses.includes(1)));
 
   const handleTypeChange = (t) => {
-    if (t!=='dine-in') { setPendingOrderType(t); setShowCustomerModal(true); }
+    if (t!=='dine-in') {
+      // v5.5.799: quick-service venues — 'Not needed' skips the customer prompt on
+      // takeaway/collection entirely; the order carries its short ref like an unnamed walk-in.
+      if (takeawayCustomerDetails === 'none' && (t === 'takeaway' || t === 'collection')) { setOrderType(t); return; }
+      setPendingOrderType(t); setShowCustomerModal(true);
+    }
     else { setOrderType('dine-in'); clearCustomer(); }
   };
 
@@ -636,8 +642,13 @@ export default function POSSurface() {
       // details, skip the SendWithoutTableModal — it was forcing them to re-pick the type
       // and losing the original orderType (Bug 2 downstream).
       const preSelected = (orderType === 'takeaway' || orderType === 'collection' || orderType === 'delivery');
-      if (preSelected && customer?.name) {
-        const name = customer.name;
+      // v5.5.799: 'Not needed' mode — takeaway/collection sends straight through with no
+      // customer prompt. An empty-name customer means Orders Hub falls back to the short
+      // order ref (R-number), matching unnamed walk-ins; delivery always needs details.
+      const skipDetails = takeawayCustomerDetails === 'none' && (orderType === 'takeaway' || orderType === 'collection');
+      if (preSelected && (customer?.name || skipDetails)) {
+        if (!customer?.name) setCustomer({ name: '', isASAP: true });
+        const name = customer?.name;
         const type = orderType;
         setShowCheckout(false);
         sendToKitchen();
@@ -645,7 +656,7 @@ export default function POSSurface() {
         // (counter/takeaway/collection/delivery/dine-in/bar). Without this, items stay in
         // the checkout and the user has no visual cue that the send fired.
         clearWalkIn();
-        showToast(`${name} — ${type} sent`, 'success');
+        showToast(name ? `${name} — ${type} sent` : `${type} sent`, 'success');
         return;
       }
       setShowSendModal(true);
@@ -1778,7 +1789,8 @@ export default function POSSurface() {
               store.setOrderType(result.type);
               store.sendToKitchen();
               store.clearWalkIn();
-              showToast(`${result.name} — ${result.type} sent`, 'success');
+              // v5.5.799: 'Not needed' mode sends with no name — the order shows its short ref.
+              showToast(result.name ? `${result.name} — ${result.type} sent` : `${result.type} sent`, 'success');
 
             } else if (result.type === 'delivery') {
               store.setCustomer({ name: result.name, phone: result.phone, address: result.address, isASAP: false });

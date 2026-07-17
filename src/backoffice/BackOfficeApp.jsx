@@ -749,15 +749,20 @@ function PushToPOSButton() {
     // Load routing from Supabase (source of truth), fall back to localStorage
     let printRouting = { centres:[], routing:{} };
     let printers = [];
+    // v5.5.799: takeaway customer-details level rides the snapshot so tills refresh
+    // on push (fallback: whatever this session already has, default 'full').
+    let takeawayCustomerDetails = useStore.getState().takeawayCustomerDetails || 'full';
     try {
       const locId = await getLocationId();
       if (locId && supabase) {
-        const [rtRes, prnRes] = await Promise.all([
+        const [rtRes, prnRes, locRes] = await Promise.all([
           supabase.from('print_routing').select('centres,routing').eq('location_id', locId).single(),
           supabase.from('printers').select('*').eq('location_id', locId),
+          supabase.from('locations').select('pos_settings').eq('id', locId).maybeSingle(),
         ]);
         if (rtRes.data) printRouting = { centres: rtRes.data.centres||[], routing: rtRes.data.routing||{} };
         if (prnRes.data) printers = prnRes.data.map(r => ({ id:r.id, name:r.name, model:r.meta?.model, connectionType:r.connection, address:r.ip, port:r.port||9100, paperWidth:r.paper_width||80, roles:r.meta?.roles||[], location:r.meta?.location||'' }));
+        if (locRes.data) takeawayCustomerDetails = locRes.data.pos_settings?.takeaway_customer_details || 'full';
       }
     } catch {}
     // Fallback to localStorage if Supabase failed
@@ -798,6 +803,7 @@ function PushToPOSButton() {
       discountPresets: useStore.getState().discountPresets || [],
       discountRules: useStore.getState().discountRules || [],
       quickScreenIds: useStore.getState().quickScreenIds || [],
+      takeawayCustomerDetails,
       changeCount: pendingBOChanges,
       profiles: deviceProfiles,
       modifierGroupDefs: useStore.getState().modifierGroupDefs || [],

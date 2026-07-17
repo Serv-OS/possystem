@@ -371,6 +371,10 @@ export const useStore = create((set, get) => ({
       // Print routing config from back office
       ...(snap.printRouting ? { printRouting: snap.printRouting } : {}),
 
+      // v5.5.799: takeaway customer-details level rides the push so tills pick
+      // up a Location settings change without a reboot (boot path: SyncBridge).
+      ...(snap.takeawayCustomerDetails ? { takeawayCustomerDetails: snap.takeawayCustomerDetails } : {}),
+
       configVersion: snap.version,
       configUpdateAvailable: false,
       configUpdateSnapshot: null,
@@ -3040,6 +3044,12 @@ export const useStore = create((set, get) => ({
   eightySixIds: [],
   showItemImages: false,
   setShowItemImages: (val) => set({ showItemImages: val }),
+  // v5.5.799: how much customer detail the POS asks for on takeaway/collection orders.
+  // 'full' = name+phone modal (default) · 'name' = single required name field · 'none' = no prompt.
+  // Persisted on ops locations.pos_settings.takeaway_customer_details; loaded at boot in SyncBridge
+  // and refreshed via the config-push snapshot. POS-only — online/QR/kiosk flows are untouched.
+  takeawayCustomerDetails: 'full',
+  setTakeawayCustomerDetails: (val) => set({ takeawayCustomerDetails: ['full','name','none'].includes(val) ? val : 'full' }),
   toggle86: id => {
     const is86 = get().eightySixIds.includes(id);
     set(s => ({ eightySixIds: is86 ? s.eightySixIds.filter(x=>x!==id) : [...s.eightySixIds, id] }));

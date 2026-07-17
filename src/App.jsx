@@ -94,6 +94,16 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.799', date: '17 Jul 2026', label: 'New setting — Takeaway customer details: Full / Name only / Not needed, for quick-service counters',
+    changes: [
+      'New venue setting in Back office → Settings → Location settings → "Takeaway customer details" — quick service: take just a name, or skip details completely. Three choices: Full details (name + phone, the current behaviour), Name only (one required name field — no phone or email), and Not needed (no prompt at all).',
+      'Not needed: tapping Takeaway/Collect on the till switches the order type with NO customer modal, and Send goes straight to the kitchen — the order shows its short order reference (R-number) in the Orders hub, exactly like an unnamed walk-in. The "How is this order being served?" send flow also skips the details step for takeaway/collection.',
+      'Name only: one quick required name field (plus collection time where relevant) — the name still shows on kitchen tickets and the Orders hub card as before. Staff can always attach fuller details voluntarily via Add customer.',
+      'Applies to POS takeaway/collection only — delivery still requires full details, dine-in loyalty attach is unchanged, and online / QR / kiosk customer flows are untouched.',
+      'Stored per-location in a new ops locations.pos_settings jsonb (takeaway_customer_details; migration applied). Tills load it at boot via the SyncBridge direct locations fetch and refresh it on every Push to POS (it rides the config snapshot).',
+    ],
+  },
+  {
     version: '5.5.798', date: '17 Jul 2026', label: 'Fix — no more duplicate product names, and products with modifiers always open the options screen',
     changes: [
       'You can no longer create two products with the same name. Renaming a product to a name that already exists, adding a product from the Items library, cloning, or the AI assistant creating one — all are blocked with a clear "A product called \'X\' already exists" message. Names are compared ignoring case and spaces around them (so "coke" and "Coke " count as the same).',

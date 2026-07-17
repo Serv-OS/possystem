@@ -93,6 +93,11 @@ export default function LocationSettings() {
   const [shifts, setShifts]         = useState([]);
   const [showItemImages, setShowItemImages] = useState(false);
   const [loadingImageSetting, setLoadingImageSetting] = useState(true);
+  // v5.5.799: takeaway/collection customer-details level on the POS (ops DB
+  // locations.pos_settings.takeaway_customer_details). Keep the raw jsonb so
+  // saving merges rather than clobbers any future pos_settings keys.
+  const [takeawayDetails, setTakeawayDetails] = useState('full');
+  const [posSettingsRaw, setPosSettingsRaw] = useState(null);
   // Opening hours — Phase 1 of online ordering. Stored on locations.opening_hours
   // (jsonb). Both kiosk and online surfaces gate ordering on this.
   const [openingHours, setOpeningHours] = useState(emptyOpeningHours());
@@ -218,12 +223,16 @@ export default function LocationSettings() {
       }
     })();
 
-    // Load show_item_images from ops DB
+    // Load show_item_images + pos_settings from ops DB
     (async () => {
       const locId = await getLocationId().catch(() => null);
       if (!locId || !supabase) { setLoadingImageSetting(false); return; }
-      const { data } = await supabase.from('locations').select('show_item_images').eq('id', locId).single();
-      if (data) setShowItemImages(data.show_item_images ?? false);
+      const { data } = await supabase.from('locations').select('show_item_images, pos_settings').eq('id', locId).single();
+      if (data) {
+        setShowItemImages(data.show_item_images ?? false);
+        setPosSettingsRaw(data.pos_settings || {});
+        setTakeawayDetails(['full','name','none'].includes(data.pos_settings?.takeaway_customer_details) ? data.pos_settings.takeaway_customer_details : 'full');
+      }
       setLoadingImageSetting(false);
     })();
   }, []);
@@ -287,10 +296,16 @@ export default function LocationSettings() {
       // pointing at the RLS UPDATE policy (the most common cause).
       .maybeSingle();
 
-    // Save show_item_images to ops DB (separate concern)
+    // Save show_item_images + pos_settings to ops DB (separate concern).
+    // pos_settings merges over the loaded jsonb so future keys survive this save.
     const locId = await getLocationId().catch(() => null);
     if (locId && supabase) {
-      try { await supabase.from('locations').update({ show_item_images: showItemImages }).eq('id', locId); } catch {}
+      try {
+        await supabase.from('locations').update({
+          show_item_images: showItemImages,
+          pos_settings: { ...(posSettingsRaw || {}), takeaway_customer_details: takeawayDetails },
+        }).eq('id', locId);
+      } catch {}
     }
     setSaving(false);
 
@@ -580,6 +595,46 @@ export default function LocationSettings() {
           </button>
         </div>
         {loadingImageSetting && <div style={{ fontSize:11, color:'var(--t4)' }}>Loading…</div>}
+      </div>
+
+      {/* v5.5.799: Takeaway customer details */}
+      <div style={S.card}>
+        <div style={S.h2}>🥡 Takeaway customer details</div>
+        <div style={S.desc}>
+          What the POS asks for on takeaway and collection orders. Quick service: take just a name, or skip details completely.
+        </div>
+        <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+          {[
+            { value:'full', label:'Full details', sub:'Name and phone required — collection time, email and notes available (current behaviour).' },
+            { value:'name', label:'Name only',    sub:'One quick name field — required, but no phone or email.' },
+            { value:'none', label:'Not needed',   sub:'No prompt at all — the order goes straight through with a short order reference.' },
+          ].map(opt => {
+            const active = takeawayDetails === opt.value;
+            return (
+              <button key={opt.value} onClick={() => setTakeawayDetails(opt.value)} style={{
+                display:'flex', alignItems:'center', gap:12, textAlign:'left', cursor:'pointer', fontFamily:'inherit',
+                padding:'11px 14px', borderRadius:10,
+                background: active ? 'var(--acc-d)' : 'var(--bg)',
+                border: `1.5px solid ${active ? 'var(--acc)' : 'var(--bdr)'}`,
+                transition:'all .12s',
+              }}>
+                <div style={{
+                  width:16, height:16, borderRadius:'50%', flexShrink:0,
+                  border:`2px solid ${active ? 'var(--acc)' : 'var(--bdr2)'}`,
+                  background: active ? 'var(--acc)' : 'transparent',
+                  boxShadow: active ? 'inset 0 0 0 3px var(--bg1)' : 'none',
+                }}/>
+                <div>
+                  <div style={{ fontSize:13, fontWeight:700, color: active ? 'var(--acc)' : 'var(--t1)' }}>{opt.label}</div>
+                  <div style={{ fontSize:11, color:'var(--t4)', marginTop:2 }}>{opt.sub}</div>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+        <div style={{ fontSize:11, color:'var(--t4)', marginTop:10 }}>
+          Applies to till takeaway/collection orders only — online, QR and kiosk ordering are unaffected. Tills pick this up on the next Push to POS or reload.
+        </div>
       </div>
 
       {/* Save */}

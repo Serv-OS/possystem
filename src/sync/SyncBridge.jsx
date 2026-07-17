@@ -26,7 +26,7 @@ const OPERATIONAL_KEYS = [
 // Table status/session sync (operational part only — layout comes via CONFIG_PUSH)
 // We sync the whole tables array but the POS only applies non-layout fields from broadcasts
 // Layout (x,y,w,h,label,section,shape) only changes via CONFIG_PUSH
-const SHARED_KEYS = [...OPERATIONAL_KEYS, 'tables', 'showItemImages'];
+const SHARED_KEYS = [...OPERATIONAL_KEYS, 'tables', 'showItemImages', 'takeawayCustomerDetails'];
 
 let channelInstance = null;
 export function getChannel() { return channelInstance; }
@@ -432,12 +432,14 @@ export default function SyncBridge({ onSyncPulse }) {
             // Load quick screen IDs directly — single source of truth
             const { data: locData } = await supabase
               .from('locations')
-              .select('quick_screen_ids')
+              .select('quick_screen_ids, pos_settings')
               .eq('id', locId)
               .single();
             if (locData?.quick_screen_ids?.length) {
               useStore.getState().setQuickScreenIds(locData.quick_screen_ids);
             }
+            // v5.5.799: takeaway customer-details level (setter sanitises to 'full')
+            useStore.getState().setTakeawayCustomerDetails(locData?.pos_settings?.takeaway_customer_details);
           }
         } catch (e) { console.warn('[SyncBridge] settings load failed:', e.message); }
       })();

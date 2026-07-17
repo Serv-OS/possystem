@@ -78,7 +78,7 @@ const inp = {
 };
 
 export default function OrderTypeModal({ items, onClose, onComplete }) {
-  const { tables, tabs, seatTableWithItems, mergeItemsToTable, splitTableCheck, openTab, showToast, staff } = useStore();
+  const { tables, tabs, seatTableWithItems, mergeItemsToTable, splitTableCheck, openTab, showToast, staff, takeawayCustomerDetails } = useStore();
   const [step, setStep] = useState('type');       // type | details | table_pick | tab_pick
   const [selectedType, setSelectedType] = useState(null);
   const [form, setForm] = useState({ name: '', phone: '', time: '', address: '', isASAP: false, tabName: '' });
@@ -95,10 +95,19 @@ export default function OrderTypeModal({ items, onClose, onComplete }) {
 
   const setField = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
+  // v5.5.799: venue setting — how much customer detail takeaway/collection asks for.
+  // 'none' skips the details step entirely; 'name' shows only the name field below.
+  const takeawayMode = takeawayCustomerDetails || 'full';
+
   const handleTypeSelect = (type) => {
     setSelectedType(type);
     if (type.id === 'dine-in') { setStep('table_pick'); return; }
     if (type.id === 'bar')     { setStep('tab_pick');   return; }
+    if ((type.id === 'takeaway' || type.id === 'collection') && takeawayMode === 'none') {
+      // Straight to kitchen — the order carries its short ref like an unnamed walk-in.
+      onComplete({ type: type.id, name: '', phone: '', time: '', isASAP: true, orderType: type.id, channel: type.id });
+      return;
+    }
     setStep('details');
     setTimeout(() => nameRef.current?.focus(), 80);
   };
@@ -218,10 +227,13 @@ export default function OrderTypeModal({ items, onClose, onComplete }) {
                   onKeyDown={e => e.key === 'Enter' && confirmTakeaway()}
                   placeholder="Customer name" autoFocus />
               </div>
+              {/* v5.5.799: 'Name only' mode — just the name, no phone */}
+              {takeawayMode !== 'name' && (
               <div>
                 <div style={{ fontSize: 10, fontWeight: 800, color: 'var(--t4)', textTransform: 'uppercase', letterSpacing: '.1em', marginBottom: 6 }}>Phone (optional)</div>
                 <input style={inp} type="tel" value={form.phone} onChange={e => setField('phone', e.target.value)} placeholder="+44 7700 000000" />
               </div>
+              )}
               <div>
                 <div style={{ fontSize: 10, fontWeight: 800, color: 'var(--t4)', textTransform: 'uppercase', letterSpacing: '.1em', marginBottom: 6 }}>Collection time</div>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginBottom: 8 }}>

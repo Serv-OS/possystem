@@ -3,7 +3,7 @@ import { useStore, getCollectionSlots } from '../store';
 import AddressAutocomplete from './AddressAutocomplete';
 
 export default function CustomerModal({ orderType, existing, onConfirm, onCancel }) {
-  const { searchCustomers, searchCustomersLive, addToHistory, showToast } = useStore();
+  const { searchCustomers, searchCustomersLive, addToHistory, showToast, takeawayCustomerDetails } = useStore();
   const [name, setName]       = useState(existing?.name || '');
   const [phone, setPhone]     = useState(existing?.phone || '');
   const [email, setEmail]     = useState(existing?.email || '');
@@ -32,6 +32,10 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
   const slots = getCollectionSlots();
   const isCollection = orderType === 'collection';
   const isDelivery = orderType === 'delivery';
+  // v5.5.799: quick-service venues can relax takeaway/collection to a single name field
+  // ('name' mode — and 'none' mode when this modal is opened explicitly via Add customer).
+  // Dine-in loyalty attach and delivery always keep the full form.
+  const nameOnly = (orderType === 'takeaway' || isCollection) && takeawayCustomerDetails !== 'full' && !!takeawayCustomerDetails;
 
   // Live phone/name search
   // v5.5.280: phone search starts at 6 digits (was 3) to reduce DB load at scale.
@@ -70,18 +74,19 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
   };
 
   const handleConfirm = async () => {
-    if (!name.trim() || !phone.trim()) {
-      showToast('Name and phone number are required', 'error'); return;
+    if (!name.trim() || (!nameOnly && !phone.trim())) {
+      showToast(nameOnly ? 'Customer name is required' : 'Name and phone number are required', 'error'); return;
     }
     if (isDelivery && (!addr1.trim() || !postcode.trim())) {
       showToast('Delivery address and postcode are required', 'error'); return;
     }
     // v5.5.248: before creating, check if this phone already exists in the DB.
     // If it does, auto-populate from the existing profile to prevent duplicates.
+    // v5.5.799: skipped in name-only mode — there's no phone to dedupe on.
     let finalName = name.trim();
     let finalEmail = email.trim();
     let finalNotes = notes.trim();
-    try {
+    if (phone.trim()) try {
       const live = typeof searchCustomersLive === 'function' ? await searchCustomersLive(phone.trim()) : [];
       const phoneDigits = phone.trim().replace(/[^\d+]/g, '');
       const match = (live || []).find(c => {
@@ -176,6 +181,8 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
             </label>
             <input style={inputStyle} placeholder="Customer name" value={name} onChange={e => setName(e.target.value)}/>
           </div>
+          {/* v5.5.799: name-only mode — quick service takes just the name */}
+          {!nameOnly && (<>
           <div>
             <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t2)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>
               Phone <span style={{ color: 'var(--red)' }}>*</span>
@@ -188,6 +195,7 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
             </label>
             <input style={inputStyle} type="email" placeholder="email@example.com" value={email} onChange={e => setEmail(e.target.value)}/>
           </div>
+          </>)}
           {isDelivery && (<>
           <div>
             <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t2)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>
