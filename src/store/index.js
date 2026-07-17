@@ -5,6 +5,7 @@ import { resolveServiceCharge } from '../lib/serviceCharge';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../lib/discountEngine';
 import { buildScheduleCtx } from '../lib/locationTime';
 import { operatorSwitchPatch, logoutPatch } from '../lib/cartHold';
+import { kitchenOverride, receiptOverride } from '../lib/itemDisplay';
 import { upsertMenuItem, upsertFloorTable, deleteFloorTable, insertKDSTicket, insertClosedCheck, toggle86DB, getNextOrderRefLocal, updateClosedCheckRefunds, upsertStockLevel, deleteStockLevel, decrementStockRPC, restoreStockRPC } from '../lib/db';
 import { printService } from '../lib/printer';
 import { hubrisePushStock, isHubriseConnected, hubrisePushStatus, isHubriseAutoReceipt } from '../lib/hubrise';
@@ -1364,6 +1365,12 @@ export const useStore = create((set, get) => ({
     const newItem = {
       uid: uid(), itemId: item.id,
       name: opts.displayName || item.name,
+      // Triple-naming: snapshot the item's explicit kitchen/receipt names onto
+      // the line (null when not set — see itemDisplay.js). KDS tickets read
+      // kitchenName || name (createKdsTickets), receipts read receiptName ||
+      // name (printer.js / sendReceipt.js). The POS order panel keeps `name`.
+      kitchenName: kitchenOverride(item),
+      receiptName: receiptOverride(item),
       price, qty, mods: mods||[], notes: opts.notes||'',
       pizzaConfig, allergens: item.allergens||[],
       centreId: item.centreId,

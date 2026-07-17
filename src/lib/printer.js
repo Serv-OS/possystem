@@ -176,7 +176,10 @@ export async function buildCustomerReceipt({ location, check, items, totals }) {
 
   consolidateReceiptLines(items).forEach(item=>{
     const linePrice=`\xA3${(item.price*item.qty).toFixed(2)}`;
-    const nameStr=item.qty>1?`${item.qty}x ${item.name}`:item.name;
+    // Triple-naming: receipts print the item's explicit receipt name when the
+    // line carries one (snapshotted at add time), else the POS line name.
+    const printName=item.receiptName||item.name;
+    const nameStr=item.qty>1?`${item.qty}x ${printName}`:printName;
     b.twoCol(nameStr.substring(0,42-linePrice.length-1), linePrice);
     const modLines = Array.isArray(item.mods) ? item.mods : (item.mods ? item.mods.split(' · ') : []);
     modLines.forEach(m => b.fontB().line(`  ${typeof m === 'string' ? m : (m.label||'')}`).fontA());
@@ -345,7 +348,10 @@ export function buildKitchenTicket({ table, server, covers, course, centreName, 
     courseItems.forEach(item=>{
       b.doubleBoth();
       const qty=item.qty>1?`${item.qty}x `:'';
-      b.text(qty+(item.name||'').toUpperCase().substring(0,22)).lf();
+      // Triple-naming: kitchen tickets print the item's explicit kitchen name
+      // when the line carries one (most job builders pre-resolve it into
+      // `name`; the kiosk/online path passes kitchenName through raw).
+      b.text(qty+(item.kitchenName||item.name||'').toUpperCase().substring(0,22)).lf();
       b.normal();
       if(item.seat) b.fontB().line(`  Seat ${item.seat}`).fontA();
       // Each mod/instruction on its own red line
@@ -441,7 +447,7 @@ function buildReceiptHtml({ location, check, items, totals }) {
   const rows = consolidateReceiptLines(items).map(item=>{
     const modLines = Array.isArray(item.mods) ? item.mods : (item.mods ? item.mods.split(' · ') : []);
     return `
-    <div class="row"><span>${item.qty>1?`${item.qty}\xD7 `:''}${item.name}</span><span>\xA3${(item.price*item.qty).toFixed(2)}</span></div>
+    <div class="row"><span>${item.qty>1?`${item.qty}\xD7 `:''}${item.receiptName||item.name}</span><span>\xA3${(item.price*item.qty).toFixed(2)}</span></div>
     ${modLines.map(m=>`<div style="padding-left:8px;font-size:10px">${typeof m==='string'?m:(m.label||'')}</div>`).join('')}
   `;}).join('');
   return `

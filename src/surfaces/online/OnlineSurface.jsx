@@ -15,6 +15,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { isItemEightySixed } from '../../lib/itemAvailability';
+import { receiptOverride } from '../../lib/itemDisplay';
 import { getStashedTab, clearStashedTab, stashTab } from '../../lib/qrTabStorage';
 import OnlineCart from './OnlineCart';
 import OnlineCheckout from './OnlineCheckout';
@@ -399,6 +400,10 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
       itemId: item.id,
       name: item.menu_name || item.name,
       kitchenName: item.kitchen_name || item.kitchenName || null,
+      // Triple-naming: explicit receipt name (null when not set) — the
+      // checkout stamps it onto order_queue/closed_checks items so printed +
+      // emailed receipts read receiptName || name.
+      receiptName: receiptOverride(item),
       cat: item.cat || null,
       cats: Array.isArray(item.cats) ? item.cats : null,
       parentId: item.parent_id || item.parentId || null,

@@ -87,7 +87,8 @@ export async function sendEmailReceipt({ to, locationId, check, locationLabel, b
   const itemLines = [];
   items.forEach(it => {
     const lineTotal = (it.price || 0) * (it.qty || 1);
-    itemLines.push(`${it.qty > 1 ? `${it.qty}x ` : ''}${it.name}  ${money(lineTotal)}`);
+    // Triple-naming: emailed receipts use the line's explicit receipt name when set
+    itemLines.push(`${it.qty > 1 ? `${it.qty}x ` : ''}${it.receiptName || it.name}  ${money(lineTotal)}`);
     if (it.qty > 1) itemLines.push(`  ${money(it.price)} each`);
     const mods = (it.mods || []).map(m => m?.name || m?.label || m).filter(Boolean);
     if (mods.length) itemLines.push(`  + ${mods.join(' · ')}`);
@@ -239,7 +240,7 @@ function buildReceiptHtml({ check, locationLabel, branding, greetingText }) {
         <div style="margin-bottom:10px;">
           <div style="${S.row}">
             <div style="flex:1;">
-              <div style="font-weight:600;">${it.qty > 1 ? `${it.qty} × ` : ''}${escapeHtml(it.name || '')}</div>
+              <div style="font-weight:600;">${it.qty > 1 ? `${it.qty} × ` : ''}${escapeHtml(it.receiptName || it.name || '')}</div>
               ${it.qty > 1 ? `<div style="font-size:11px;${S.dim}margin-top:1px;">${money(it.price)} each</div>` : ''}
               ${(it.mods || []).length ? `<div style="font-size:11px;${S.muted}margin-top:2px;">+ ${(it.mods || []).map(m => escapeHtml(m?.name || m?.label || m)).filter(Boolean).join(' · ')}</div>` : ''}
               ${it.notes ? `<div style="font-size:11px;${S.dim}margin-top:2px;font-style:italic;">${escapeHtml(it.notes)}</div>` : ''}
@@ -371,7 +372,8 @@ function buildReceiptText({ check, locationLabel, branding }) {
 
   items.forEach(it => {
     const lineTotal = (it.price || 0) * (it.qty || 1);
-    const nameStr = it.qty > 1 ? `${it.qty} x ${it.name}` : it.name;
+    const rName = it.receiptName || it.name;
+    const nameStr = it.qty > 1 ? `${it.qty} x ${rName}` : rName;
     lines.push(pad(nameStr, money(lineTotal)));
     if (it.qty > 1) lines.push(`     ${money(it.price)} each`);
     if ((it.mods || []).length) lines.push(`  + ${(it.mods || []).map(m => m?.name || m?.label || m).filter(Boolean).join(' · ')}`);

@@ -183,6 +183,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
       cats: l.cats || null,
       parentId: l.parentId || null,
       kitchenName: l.kitchenName || null,
+      receiptName: l.receiptName || null,
       // v5.5.145: stamp items as already 'sent' + fired:true (paid order
       // means kitchen owns it now, no operator click needed). Mirrors what
       // OnlineCheckout does for paid online orders.

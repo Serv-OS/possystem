@@ -301,6 +301,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       cats: l.cats || null,
       parentId: l.parentId || null,
       kitchenName: l.kitchenName || null,
+      receiptName: l.receiptName || null,
       status: 'sent',
       fired: true,
       course: 1,

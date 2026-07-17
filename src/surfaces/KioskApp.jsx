@@ -28,7 +28,7 @@ import { buildScheduleCtx } from '../lib/locationTime';
 import { depleteForSaleServer } from '../lib/stock/deplete';
 import KioskProductModal from './KioskProductModal';
 import { t, setLang, useKioskLang, LANGUAGES, getLanguageMeta } from '../lib/i18n';
-import { displayName } from '../lib/itemDisplay';
+import { displayName, kitchenOverride, receiptOverride } from '../lib/itemDisplay';
 import { fetchCustomerByPhone } from '../lib/customerLookup';
 import { money, stripeCurrency } from '../lib/currency';
 // networkReader import removed — kiosk payment now uses server-side edge function directly
@@ -650,6 +650,13 @@ export default function KioskApp({ kioskId, onUnpair }) {
       const itemsPayload = cart.map(l => ({
         id: l.item.id,
         name: l.name,
+        // Triple-naming: explicit kitchen/receipt names ride into closed_checks
+        // + order_queue (null when not set). routeKioskOrderPrints reads
+        // kitchenName || name for KDS/tickets; receipt builders read
+        // receiptName || name. l.item is a raw Supabase row (snake_case) —
+        // the itemDisplay resolvers read both shapes.
+        kitchenName: kitchenOverride(l.item),
+        receiptName: receiptOverride(l.item),
         qty: l.qty,
         price: l.linePrice,
         // POS expects mods as array of { label, price, groupLabel }

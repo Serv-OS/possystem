@@ -22,3 +22,28 @@ export function displayName(item) {
   if (!item) return '';
   return item.menuName ?? item.menu_name ?? item.name ?? '';
 }
+
+// ── Kitchen / receipt name overrides ─────────────────────────────────────────
+// Two more name fields exist on a menu_items row:
+//   - `kitchenName` (DB `kitchen_name`) — what the KDS + kitchen tickets print.
+//   - `receiptName` (DB `receipt_name`) — what customer receipts print.
+//
+// Both save paths default the DB column to the item's display name when the
+// operator never typed one, so a populated column does NOT mean "explicitly
+// set". These resolvers return the override ONLY when it genuinely differs
+// from the item's base `name` — callers snapshot the result onto the order
+// line at add time (null when no override) and render `kitchenName || name` /
+// `receiptName || name`. That keeps synthesized line names (e.g. variant
+// "Lager — Pint") intact for the common no-override case: zero visual change
+// unless the operator actually set a kitchen/receipt name.
+export function kitchenOverride(item) {
+  if (!item) return null;
+  const k = item.kitchenName ?? item.kitchen_name ?? null;
+  return (k && k !== item.name) ? k : null;
+}
+
+export function receiptOverride(item) {
+  if (!item) return null;
+  const r = item.receiptName ?? item.receipt_name ?? null;
+  return (r && r !== item.name) ? r : null;
+}

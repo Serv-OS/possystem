@@ -93,6 +93,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.790', date: '17 Jul 2026', label: 'Receipt name + kitchen name now used everywhere',
+    changes: [
+      'An item\'s three names now actually do their jobs. The POS button name stays on the till screen, but customer receipts (printed, emailed and reprinted) now show the item\'s RECEIPT name, and the kitchen screens + printed kitchen tickets now show the item\'s KITCHEN/KDS name — set them in Back Office → Menu → item → Receipt name / Kitchen · KDS.',
+      'Works on every order source: till, bar tabs, mobile POS, kiosk, online ordering, QR table ordering and catering. The names are stamped onto each order line when it\'s added, so tickets, the orders hub, receipts and order history all stay consistent.',
+      'Items without a custom receipt or kitchen name are completely unchanged — everything falls back to the name you see on the POS button, so nothing prints blank and existing menus look exactly the same.',
+    ],
+  },
+  {
     version: '5.5.789', date: '17 Jul 2026', label: 'Workforce rota — standard shifts, copy shifts/weeks, holiday & availability warnings',
     changes: [
       'Standard shifts: set up your usual shifts once (e.g. Morning 09:00–17:00, Evening 17:00–23:00, with break, section and colour) via the new “Standard shifts” button on the rota. When adding a shift, tap a preset chip and the times fill in — no more typing every shift.',

@@ -9,6 +9,7 @@ import { getNextOrderRefLocal, fetchMenuCategoryLinks } from '../lib/db';
 import { getActiveLocationSync, ensureAuthToken } from '../lib/supabase';
 import { isTrainingMode } from '../lib/trainingMode';
 import { money, currencySymbol } from '../lib/currency';
+import { kitchenOverride, receiptOverride } from '../lib/itemDisplay';
 
 const CAT_META = {
   quick:    { icon:'⚡', color:'#e8a020' },
@@ -245,7 +246,10 @@ export default function BarSurface() {
       // Same item+mods → increment qty
       const idx = prev.findIndex(r=>r.itemId===item.id && JSON.stringify(r.mods)===JSON.stringify(mods) && !opts.notes);
       if (idx>=0 && !opts.notes) return prev.map((r,i)=>i===idx?{...r,qty:r.qty+1}:r);
-      return [...prev, { uid:`r${Date.now()}`, itemId:item.id, name, price, qty:opts.qty||1, mods, notes:opts.notes||'', allergens:item.allergens||[] }];
+      // Triple-naming: carry explicit kitchen/receipt names onto the round line
+      // (null when not set) — addRoundToTab's KDS tickets read kitchenName ||
+      // name, receipts read receiptName || name.
+      return [...prev, { uid:`r${Date.now()}`, itemId:item.id, name, kitchenName:kitchenOverride(item), receiptName:receiptOverride(item), price, qty:opts.qty||1, mods, notes:opts.notes||'', allergens:item.allergens||[] }];
     });
     showToast(`${name} added to round`,'success');
   };
