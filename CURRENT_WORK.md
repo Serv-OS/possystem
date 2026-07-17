@@ -56,6 +56,15 @@ EXISTING online / catering URLs (per-venue flows untouched, read-only end to end
   reserved subdomain); App.jsx routes it before venue CustomerBoot; `groupOrderUrl()` in
   `lib/env.js`. BO → Online ordering shows a read-only "Group ordering link" card when the
   company has >1 location (BO's platform reads run as anon role — count sees all company venues).
+- **Owner feedback round (next version): pickers split + single-venue skip.** Catering is a
+  separate face of the business — `/order/<group>` is now ONLINE-ONLY (no catering button);
+  NEW `/cater/<group>` (or `?cater=`) lists ONLY catering-enabled venues with Delivery /
+  Collection badges (from `catering_public_settings` — `takeout_enabled`/`delivery_enabled`/
+  `takeout_dining_option` are already anon-exposed, no RPC change). Exactly ONE eligible venue
+  → the picker is skipped (`location.replace` straight into the venue's site) for BOTH pickers.
+  Separate localStorage keys (`rpos-group-last:` online, `rpos-group-cater:` catering).
+  BO: Catering ordering settings gained a "Group catering link" card (`groupCaterUrl()`);
+  the Online ordering card is online-only and cross-references it.
 - **Deferred:** postcode/geo search + distance sort, company-level branding (uses first venue's),
   a pretty dedicated group domain (link is same-origin today), venue photos on the cards.
 

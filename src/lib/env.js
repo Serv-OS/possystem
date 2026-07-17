@@ -68,6 +68,18 @@ export function groupOrderUrl(groupSlug) {
 }
 
 /**
+ * Group CATERING link — same idea as groupOrderUrl but for the catering venue
+ * picker (/cater/<groupSlug>). Catering is a separate face of the business, so it
+ * gets its own link and its own picker (catering-enabled venues only).
+ */
+export function groupCaterUrl(groupSlug) {
+  if (!groupSlug) return '';
+  const path = `/cater/${encodeURIComponent(groupSlug)}`;
+  if (typeof window !== 'undefined') return `${window.location.origin}${path}`;
+  return `https://${OPERATOR_HOST}${path}`;
+}
+
+/**
  * The operator app hostname.
  * dev → dev.serv-os.app, stage → stage.serv-os.app, prod → app.serv-os.app
  */

@@ -1,50 +1,66 @@
 // src/surfaces/GroupOrderSurface.jsx
 //
-// Multi-site GROUP landing page (Toast-style) — one link for a restaurant group:
-// /order/<groupSlug> (or ?group=<groupSlug>). The customer picks a venue, then is
-// handed to that venue's EXISTING online / catering URL — this page never touches
-// the per-venue ordering flows.
+// Multi-site GROUP landing pages (Toast-style) — one link for a restaurant group.
+// TWO separate faces of the business, two separate pickers (owner decision —
+// catering must never sit as a button next to "Order online"):
+//   variant='online'   /order/<groupSlug> (or ?group=)  → online-ordering venue picker
+//   variant='catering' /cater/<groupSlug> (or ?cater=)  → catering venue picker
+//                                                          (catering-enabled venues ONLY,
+//                                                          with Delivery / Collection badges)
+// The customer picks a venue, then is handed to that venue's EXISTING online or
+// catering URL — this page never touches the per-venue ordering flows. If exactly
+// ONE venue is eligible for the picker's channel, the picker is skipped entirely
+// and the customer is redirected straight into that venue's site.
 //
 // Resolution: groupSlug → platform `companies.slug` → that company's platform
-// `locations` rows (company_id linkage). Branding comes from the first online-enabled
-// venue's online_branding (same MenuTheme engine as the storefront), OPEN/CLOSED from
-// each venue's platform opening_hours + timezone via lib/openingHours. Catering
-// buttons show only where the venue's catering site is enabled (anon-safe
-// catering_public_settings RPC on the ops DB — returns null when the site is off).
+// `locations` rows (company_id linkage). Branding comes from the first eligible
+// venue's online_branding (same MenuTheme engine as the storefront). OPEN/CLOSED
+// (online picker only — catering runs on its own hours/lead-time, so the picker
+// shows fulfilment badges instead) from each venue's platform opening_hours +
+// timezone via lib/openingHours. Catering eligibility + fulfilment (takeout /
+// delivery) come from the anon-safe catering_public_settings RPC on the ops DB —
+// it returns the settings row ONLY when the catering site is enabled.
 //
 // Read-only / marketing-safe: no writes anywhere. The chosen venue is remembered in
-// localStorage (offline-cache-style convenience only) so return visits get an
-// "Order again from <venue>" banner — never a forced redirect.
+// localStorage (offline-cache-style convenience only; separate keys per picker so
+// online + catering choices don't clash) for an "Order again" banner — never a
+// forced redirect.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase, platformSupabase } from '../lib/supabase';
 import { customerUrl } from '../lib/env';
 import { isOpenNow, nextOpensAt } from '../lib/openingHours';
 import { readTheme, deriveVars, readableOn, FIXED, DISPLAY_FONT, BODY_FONT } from './menu/menuTheme';
 import MenuHeader from './menu/MenuHeader';
 
-const LAST_VENUE_KEY = (groupSlug) => `rpos-group-last:${groupSlug}`;
+// Separate keys per picker — an online choice must not pre-select a catering venue
+// (and vice versa). The online key predates the split, so it keeps its old name.
+const LAST_VENUE_KEY = (variant, groupSlug) =>
+  variant === 'catering' ? `rpos-group-cater:${groupSlug}` : `rpos-group-last:${groupSlug}`;
 
-function readLastVenue(groupSlug) {
+function readLastVenue(variant, groupSlug) {
   try {
-    const raw = window.localStorage.getItem(LAST_VENUE_KEY(groupSlug));
+    const raw = window.localStorage.getItem(LAST_VENUE_KEY(variant, groupSlug));
     if (!raw) return null;
     const v = JSON.parse(raw);
     return v && v.locationId ? v : null;
   } catch { return null; }
 }
-function saveLastVenue(groupSlug, loc) {
+function saveLastVenue(variant, groupSlug, loc) {
   try {
-    window.localStorage.setItem(LAST_VENUE_KEY(groupSlug), JSON.stringify({ locationId: loc.id, name: loc.name }));
+    window.localStorage.setItem(LAST_VENUE_KEY(variant, groupSlug), JSON.stringify({ locationId: loc.id, name: loc.name }));
   } catch { /* storage unavailable — banner just won't show */ }
 }
-function clearLastVenue(groupSlug) {
-  try { window.localStorage.removeItem(LAST_VENUE_KEY(groupSlug)); } catch {}
+function clearLastVenue(variant, groupSlug) {
+  try { window.localStorage.removeItem(LAST_VENUE_KEY(variant, groupSlug)); } catch {}
 }
 
-export default function GroupOrderSurface({ groupSlug }) {
+export default function GroupOrderSurface({ groupSlug, variant = 'online' }) {
+  const isCatering = variant === 'catering';
   const [state, setState] = useState({ loading: true, company: null, venues: [], error: null });
-  const [lastVenue, setLastVenue] = useState(() => readLastVenue(groupSlug));
+  const [lastVenue, setLastVenue] = useState(() => readLastVenue(variant, groupSlug));
+  const [redirecting, setRedirecting] = useState(null);   // venue name while auto-redirecting
+  const redirected = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -65,20 +81,27 @@ export default function GroupOrderSurface({ groupSlug }) {
         if (cancelled) return;
         const venues = locs || [];
 
-        // Catering availability per venue — the anon-safe RPC returns settings ONLY
-        // when the catering site is enabled, so a non-null result = show the button.
-        // Each probe is independently guarded: a failure just hides that button.
-        const cateringOk = {};
+        // Catering availability + fulfilment per venue — the anon-safe RPC returns
+        // the settings row ONLY when the catering site is enabled, so a non-null
+        // result = catering is on; takeout/delivery flags drive the picker badges.
+        // Each probe is independently guarded: a failure treats catering as off.
+        const catering = {};
         if (supabase) {
           await Promise.all(venues.map(async (v) => {
             try {
               const { data } = await supabase.rpc('catering_public_settings', { p_location: v.ops_location_id || v.id });
-              if (data) cateringOk[v.id] = true;
-            } catch { /* button stays hidden */ }
+              if (data) {
+                catering[v.id] = {
+                  collection: !!data.takeout_enabled,
+                  delivery: !!data.delivery_enabled,
+                  collectionLabel: data.takeout_dining_option === 'pickup' ? 'Pickup' : 'Collection',
+                };
+              }
+            } catch { /* catering treated as off for this venue */ }
           }));
         }
 
-        setState({ loading: false, company, venues: venues.map(v => ({ ...v, cateringEnabled: !!cateringOk[v.id] })), error: null });
+        setState({ loading: false, company, venues: venues.map(v => ({ ...v, catering: catering[v.id] || null })), error: null });
       } catch (e) {
         if (!cancelled) setState({ loading: false, company: null, venues: [], error: e?.message || 'load_failed' });
       }
@@ -86,9 +109,33 @@ export default function GroupOrderSurface({ groupSlug }) {
     return () => { cancelled = true; };
   }, [groupSlug]);
 
-  // Brand theme from the first online-enabled venue that has branding (falling back
-  // to any branded venue) — same MenuTheme engine as the online/catering storefronts.
-  const brandLoc = state.venues.find(v => v.online_enabled && v.online_branding)
+  // Which venues does THIS picker show / link to?
+  //   online   → all venues listed; the button only where online ordering is live
+  //   catering → catering-enabled venues ONLY (a different face of the business)
+  const displayVenues = isCatering
+    ? state.venues.filter(v => v.catering && v.online_slug)
+    : state.venues;
+  const actionable = isCatering
+    ? displayVenues
+    : state.venues.filter(v => v.online_enabled && v.online_slug);
+  const targetUrlFor = (v) => customerUrl(v.online_slug, isCatering ? '/catering' : '');
+
+  // Single eligible venue → skip the picker, go straight into that venue's site.
+  useEffect(() => {
+    if (state.loading || state.error || !state.company || redirected.current) return;
+    if (actionable.length === 1) {
+      redirected.current = true;
+      const v = actionable[0];
+      setRedirecting(v.name);
+      window.location.replace(targetUrlFor(v));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state]);
+
+  // Brand theme from the first eligible venue that has branding — same MenuTheme
+  // engine as the online/catering storefronts.
+  const brandLoc = actionable.find(v => v.online_branding)
+    || state.venues.find(v => v.online_enabled && v.online_branding)
     || state.venues.find(v => v.online_branding)
     || null;
   const mt = useMemo(() => readTheme(brandLoc?.online_branding), [brandLoc]);
@@ -102,10 +149,12 @@ export default function GroupOrderSurface({ groupSlug }) {
     background: 'var(--bg)', color: 'var(--ink)', fontFamily: BODY_FONT,
   };
 
-  if (state.loading) {
+  if (state.loading || redirecting) {
     return (
       <div style={shell}>
-        <div style={{ textAlign: 'center', padding: '90px 20px', color: FIXED.muted, fontSize: 14 }}>Loading…</div>
+        <div style={{ textAlign: 'center', padding: '90px 20px', color: FIXED.muted, fontSize: 14 }}>
+          {redirecting ? <>Taking you to <b style={{ color: FIXED.ink }}>{redirecting}</b>…</> : 'Loading…'}
+        </div>
       </div>
     );
   }
@@ -124,19 +173,22 @@ export default function GroupOrderSurface({ groupSlug }) {
     );
   }
 
-  const venues = state.venues;
-  const remembered = lastVenue && venues.find(v => v.id === lastVenue.locationId);
-  const rememberedOrderable = remembered && remembered.online_slug && (remembered.online_enabled || remembered.cateringEnabled);
+  const remembered = lastVenue && actionable.find(v => v.id === lastVenue.locationId);
+  const pickCta = isCatering ? 'Order catering' : 'Order online';
 
   return (
     <div style={shell}>
       <MenuHeader theme={mt} name={state.company.name}
-        pills={[{ label: venues.length === 1 ? 'Order online' : `${venues.length} locations · pick yours` }]} />
+        pills={[{
+          label: isCatering
+            ? (displayVenues.length > 1 ? `Catering · ${displayVenues.length} venues` : 'Catering')
+            : (displayVenues.length === 1 ? 'Order online' : `${displayVenues.length} locations · pick yours`),
+        }]} />
 
       <div style={{ maxWidth: 640, margin: '0 auto', padding: '16px 16px 56px' }}>
 
         {/* Return visit — remembered venue banner (no forced redirect) */}
-        {rememberedOrderable && (
+        {remembered && (
           <div style={{
             display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
             padding: '12px 14px', margin: '4px 0 14px',
@@ -145,20 +197,20 @@ export default function GroupOrderSurface({ groupSlug }) {
             borderRadius: 14,
           }}>
             <div style={{ flex: '1 1 180px', fontSize: 14, minWidth: 0 }}>
-              Order again from <b>{remembered.name}</b>?
+              {isCatering
+                ? <>Order catering from <b>{remembered.name}</b> again?</>
+                : <>Order again from <b>{remembered.name}</b>?</>}
             </div>
             <div style={{ display: 'flex', gap: 8, flex: 'none' }}>
-              {remembered.online_enabled && (
-                <a href={customerUrl(remembered.online_slug, '')}
-                  onClick={() => saveLastVenue(groupSlug, remembered)}
-                  style={{
-                    padding: '9px 16px', borderRadius: 99, background: 'var(--brand)', color: onBrand,
-                    fontSize: 13, fontWeight: 700, textDecoration: 'none', whiteSpace: 'nowrap',
-                  }}>
-                  Order online
-                </a>
-              )}
-              <button onClick={() => { clearLastVenue(groupSlug); setLastVenue(null); }}
+              <a href={targetUrlFor(remembered)}
+                onClick={() => saveLastVenue(variant, groupSlug, remembered)}
+                style={{
+                  padding: '9px 16px', borderRadius: 99, background: 'var(--brand)', color: onBrand,
+                  fontSize: 13, fontWeight: 700, textDecoration: 'none', whiteSpace: 'nowrap',
+                }}>
+                {pickCta}
+              </a>
+              <button onClick={() => { clearLastVenue(variant, groupSlug); setLastVenue(null); }}
                 style={{
                   padding: '9px 14px', borderRadius: 99, background: 'transparent', color: FIXED.muted,
                   border: `1px solid ${FIXED.line}`, fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap',
@@ -170,19 +222,22 @@ export default function GroupOrderSurface({ groupSlug }) {
         )}
 
         <div style={{ fontFamily: DISPLAY_FONT, fontSize: 15, fontWeight: 700, letterSpacing: '-.01em', margin: '10px 2px 10px' }}>
-          {venues.length === 1 ? 'Our venue' : 'Choose a venue'}
+          {displayVenues.length === 1 ? 'Our venue' : (isCatering ? 'Choose a venue for catering' : 'Choose a venue')}
         </div>
 
-        {venues.length === 0 && (
+        {displayVenues.length === 0 && (
           <div style={{ padding: '28px 20px', textAlign: 'center', background: FIXED.card, border: `1px solid ${FIXED.line}`, borderRadius: 16, color: FIXED.muted, fontSize: 14 }}>
-            No venues are set up for online ordering yet — please check back soon.
+            {isCatering
+              ? <>Catering isn't available to order online yet — please contact {state.company.name} directly.</>
+              : <>No venues are set up for online ordering yet — please check back soon.</>}
           </div>
         )}
 
         <div style={{ display: 'grid', gap: 12 }}>
-          {venues.map(v => (
-            <VenueCard key={v.id} venue={v} brandColor={mt.brandColor} onBrand={onBrand}
-              onPick={() => saveLastVenue(groupSlug, v)} />
+          {displayVenues.map(v => (
+            <VenueCard key={v.id} venue={v} isCatering={isCatering} cta={pickCta}
+              targetUrl={targetUrlFor(v)} brandColor={mt.brandColor} onBrand={onBrand}
+              onPick={() => saveLastVenue(variant, groupSlug, v)} />
           ))}
         </div>
 
@@ -195,12 +250,14 @@ export default function GroupOrderSurface({ groupSlug }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-function VenueCard({ venue, brandColor, onBrand, onPick }) {
+function VenueCard({ venue, isCatering, cta, targetUrl, brandColor, onBrand, onPick }) {
   const tz = venue.timezone || 'Europe/London';
-  const hasHours = !!venue.opening_hours?.weekly;
+  // OPEN/CLOSED is the venue's live door status — meaningful for ordering food now,
+  // NOT for catering (pre-orders run on catering's own hours/lead-time), so the
+  // catering picker shows fulfilment badges instead.
+  const hasHours = !isCatering && !!venue.opening_hours?.weekly;
   const status = hasHours ? isOpenNow(venue.opening_hours, tz) : null;
-  const canOnline = !!(venue.online_enabled && venue.online_slug);
-  const canCatering = !!(venue.cateringEnabled && venue.online_slug);
+  const canOrder = isCatering ? true : !!(venue.online_enabled && venue.online_slug);
 
   let closedLine = null;
   if (status && !status.open) {
@@ -209,6 +266,16 @@ function VenueCard({ venue, brandColor, onBrand, onPick }) {
       closedLine = `Opens ${new Intl.DateTimeFormat('en-GB', { timeZone: tz, weekday: 'short', hour: 'numeric', minute: '2-digit', hour12: true }).format(next)}`;
     }
   }
+
+  const badge = (label, emoji) => (
+    <span key={label} style={{
+      display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 10px', borderRadius: 99,
+      fontSize: 12, fontWeight: 700, background: `${brandColor}12`, color: FIXED.ink,
+      border: `1px solid ${brandColor}44`,
+    }}>
+      <span aria-hidden="true">{emoji}</span>{label}
+    </span>
+  );
 
   return (
     <div style={{ background: FIXED.card, border: `1px solid ${FIXED.line}`, borderRadius: 16, padding: '16px 16px 14px', boxShadow: '0 1px 2px rgba(36,31,28,.04)' }}>
@@ -233,28 +300,24 @@ function VenueCard({ venue, brandColor, onBrand, onPick }) {
 
       {closedLine && <div style={{ fontSize: 12, color: FIXED.muted, marginTop: 6 }}>{closedLine}</div>}
 
-      {(canOnline || canCatering) ? (
+      {/* Catering fulfilment badges — what this venue offers for catering */}
+      {isCatering && venue.catering && (venue.catering.delivery || venue.catering.collection) && (
+        <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+          {venue.catering.delivery && badge('Delivery', '🚚')}
+          {venue.catering.collection && badge(venue.catering.collectionLabel, '🥡')}
+        </div>
+      )}
+
+      {canOrder ? (
         <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
-          {canOnline && (
-            <a href={customerUrl(venue.online_slug, '')} onClick={onPick}
-              style={{
-                flex: '1 1 140px', textAlign: 'center', padding: '11px 16px', borderRadius: 12,
-                background: brandColor, color: onBrand, fontSize: 14, fontWeight: 700,
-                textDecoration: 'none',
-              }}>
-              Order online
-            </a>
-          )}
-          {canCatering && (
-            <a href={customerUrl(venue.online_slug, '/catering')} onClick={onPick}
-              style={{
-                flex: '1 1 140px', textAlign: 'center', padding: '11px 16px', borderRadius: 12,
-                background: 'transparent', color: FIXED.ink, fontSize: 14, fontWeight: 700,
-                border: `1.5px solid ${FIXED.line}`, textDecoration: 'none',
-              }}>
-              Catering
-            </a>
-          )}
+          <a href={targetUrl} onClick={onPick}
+            style={{
+              flex: '1 1 140px', textAlign: 'center', padding: '11px 16px', borderRadius: 12,
+              background: brandColor, color: onBrand, fontSize: 14, fontWeight: 700,
+              textDecoration: 'none',
+            }}>
+            {cta}
+          </a>
         </div>
       ) : (
         <div style={{ marginTop: 12, fontSize: 13, color: FIXED.muted, fontStyle: 'italic' }}>

@@ -8661,11 +8661,14 @@ export default function App() {
   if (urlMode === 'ryft-test') return <RyftTestSurface />;
   if (!urlMode) {
     const customerCtx = parseCustomerUrlForBoot();
-    // Multi-site group landing page — /order/<groupSlug> (or ?group=). Resolves a
-    // COMPANY (platform companies.slug), not a venue; the customer picks a venue
-    // there and is handed to that venue's existing online/catering URL.
-    if (customerCtx?.mode === 'group' && customerCtx.groupSlug) {
-      return <GroupOrderSurface groupSlug={customerCtx.groupSlug} />;
+    // Multi-site group landing pages — /order/<groupSlug> (or ?group=) for online
+    // ordering, /cater/<groupSlug> (or ?cater=) for catering. Resolves a COMPANY
+    // (platform companies.slug), not a venue; the customer picks a venue and is
+    // handed to that venue's existing online/catering URL. A single eligible venue
+    // skips the picker and redirects straight in.
+    if ((customerCtx?.mode === 'group' || customerCtx?.mode === 'group_catering') && customerCtx.groupSlug) {
+      return <GroupOrderSurface groupSlug={customerCtx.groupSlug}
+        variant={customerCtx.mode === 'group_catering' ? 'catering' : 'online'} />;
     }
     if (customerCtx?.slug && CUSTOMER_MODES.includes(customerCtx.mode)) {
       return <CustomerBoot slug={customerCtx.slug} mode={customerCtx.mode} tableId={customerCtx.tableId} />;

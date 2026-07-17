@@ -32,6 +32,7 @@ const NON_SLUG_SUBDOMAINS = new Set([
   '', 'www', 'localhost', 'possystem-liard',
   'de', 'app', 'bo', 'admin', 'api', 'staging', 'stage', 'dev', 'test', 'preview',
   'order', // reserved for the multi-site group landing page (/order/<groupSlug>)
+  'cater', // reserved for the multi-site group CATERING picker (/cater/<groupSlug>)
 ]);
 
 // Domains we treat as the customer-facing root. The first match wins.
@@ -50,11 +51,18 @@ export function parseCustomerUrl(loc = (typeof window !== 'undefined' ? window.l
   const pathname = loc.pathname || '/';
   const params = new URLSearchParams(loc.search || '');
 
-  // Multi-site group landing page — /order/<groupSlug> (path) or ?group=<groupSlug>
-  // (query variant for hosts/previews where paths are awkward). Resolved against
-  // platform `companies.slug`, NOT a venue slug — checked before venue parsing so a
-  // group link works on any host that serves this app (operator domain, Vercel
-  // preview, or a venue subdomain).
+  // Multi-site group landing pages — resolved against platform `companies.slug`,
+  // NOT a venue slug — checked before venue parsing so a group link works on any
+  // host that serves this app (operator domain, Vercel preview, or a venue
+  // subdomain). Two separate faces of the business, two separate pickers:
+  //   /order/<groupSlug>  (or ?group=)  → online-ordering venue picker
+  //   /cater/<groupSlug>  (or ?cater=)  → catering venue picker
+  const caterMatch = pathname.match(/^\/cater\/([^/?#]+)/);
+  const caterParam = params.get('cater');
+  if (caterMatch || caterParam) {
+    const groupSlug = (caterMatch ? decodeURIComponent(caterMatch[1]) : caterParam).toLowerCase();
+    return { mode: 'group_catering', slug: null, tableId: null, groupSlug };
+  }
   const groupMatch = pathname.match(/^\/order\/([^/?#]+)/);
   const groupParam = params.get('group');
   if (groupMatch || groupParam) {

@@ -8,7 +8,7 @@
 
 import { useEffect, useState } from 'react';
 import { supabase, platformSupabase, getActiveLocationSync } from '../../lib/supabase';
-import { CUSTOMER_ROOT, customerUrl } from '../../lib/env';
+import { CUSTOMER_ROOT, customerUrl, groupCaterUrl } from '../../lib/env';
 
 const S = {
   h1: { fontSize: 22, fontWeight: 800, color: 'var(--t1)', margin: 0, letterSpacing: '-.01em' },
@@ -79,6 +79,10 @@ export default function CateringSettings() {
   const [menuItems, setMenuItems] = useState([]);
   const [menuLinks, setMenuLinks] = useState([]);
   const [venueSlug, setVenueSlug] = useState(null);
+  // Multi-site group CATERING link — set when this venue's company has more than one
+  // location ({ slug, name, count }); read-only, shown for copying. The /cater page
+  // lists only catering-enabled venues and redirects straight in when there's one.
+  const [group, setGroup] = useState(null);
   const [s, setS] = useState(null);
   const [save, setSave] = useState({});
 
@@ -100,7 +104,20 @@ export default function CateringSettings() {
         const { data: ml } = menuIds.length ? await supabase.from('menu_category_links').select('menu_id, category_id').in('menu_id', menuIds) : { data: [] };
         setMenuLinks(ml || []);
         // The catering site lives at the venue's existing web slug + /catering — fetch it for the URL/link.
-        try { const { data: pl } = await platformSupabase.from('locations').select('online_slug').or(`ops_location_id.eq.${id},id.eq.${id}`).limit(1).maybeSingle(); setVenueSlug(pl?.online_slug || null); } catch { /* slug optional */ }
+        try {
+          const { data: pl } = await platformSupabase.from('locations').select('online_slug, company_id').or(`ops_location_id.eq.${id},id.eq.${id}`).limit(1).maybeSingle();
+          setVenueSlug(pl?.online_slug || null);
+          // Multi-site group catering link — when the company has more than one
+          // location, surface the one-link-for-the-group catering picker
+          // (/cater/<companies.slug>). Defensive: any failure just hides the card.
+          if (pl?.company_id) {
+            const [{ data: co }, { count }] = await Promise.all([
+              platformSupabase.from('companies').select('id, name, slug').eq('id', pl.company_id).maybeSingle(),
+              platformSupabase.from('locations').select('id', { count: 'exact', head: true }).eq('company_id', pl.company_id),
+            ]);
+            if (co?.slug && (count || 0) > 1) setGroup({ slug: co.slug, name: co.name, count });
+          }
+        } catch { /* slug + group link optional */ }
         setS(row ? fromRow(row) : BLANK(id));
       } catch { /* leave blank */ } finally { setLoading(false); }
     })();
@@ -177,6 +194,9 @@ export default function CateringSettings() {
         </div>
         <div style={S.field}><label style={S.label}>Banner message <span style={{ color: 'var(--t4)', fontWeight: 500 }}>optional</span></label><input style={S.input} value={s.banner_message} onChange={(e) => set({ banner_message: e.target.value })} placeholder="Order 48h ahead for events" /></div>
       </div>
+
+      {/* Multi-site group catering link — one link for the whole group */}
+      {group && <GroupCaterLinkCard group={group} />}
 
       {/* Hours + closures */}
       <div style={S.card}>
@@ -302,6 +322,41 @@ export default function CateringSettings() {
         <button style={S.btn} onClick={saveAll} disabled={save.busy}>{save.busy ? 'Saving…' : 'Save catering settings'}</button>
         {save.done && <span style={S.ok}>✓ Saved</span>}
         {save.err && <span style={S.err}>{save.err}</span>}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Multi-site group CATERING link — read-only copy field. One link for the whole
+// group: customers land on a catering venue picker (/cater/<companies.slug>)
+// listing ONLY catering-enabled venues with their Delivery / Collection badges,
+// then go to the chosen venue's catering site. If just one venue offers catering,
+// the link redirects straight into it — so it's safe to share even now.
+function GroupCaterLinkCard({ group }) {
+  const [copied, setCopied] = useState(false);
+  const url = groupCaterUrl(group.slug);
+  if (!url) return null;
+  return (
+    <div style={S.card}>
+      <h2 style={S.h2}>🏢 Group catering link</h2>
+      <div style={{ ...S.hint, marginTop: 0, marginBottom: 12 }}>
+        <b>{group.name}</b> has {group.count} locations. Put this ONE link on the group's website —
+        customers see every venue that offers catering (with its delivery / collection options) and pick
+        theirs. If only one venue offers catering, the link goes straight to it. The group <b>online
+        ordering</b> link lives in Channels → Online ordering.
+      </div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <input readOnly value={url} onFocus={(e) => e.target.select()}
+          style={{ ...S.input, flex: '1 1 260px', width: 'auto', fontFamily: 'var(--font-mono, monospace)', fontSize: 12, color: 'var(--t2)' }} />
+        <button onClick={() => { navigator.clipboard?.writeText(url); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
+          style={{ ...S.btn, background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr2)' }}>
+          {copied ? '✓ Copied' : '📋 Copy'}
+        </button>
+        <a href={url} target="_blank" rel="noopener"
+          style={{ ...S.btn, background: 'transparent', color: 'var(--acc)', border: '1px solid var(--bdr2)', textDecoration: 'none', display: 'inline-block' }}>
+          Open ↗
+        </a>
       </div>
     </div>
   );

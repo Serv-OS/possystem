@@ -663,7 +663,9 @@ function QrSettingsBlock({
 
 // Multi-site group ordering link — read-only copy field. One link for the whole
 // group: customers land on a branded venue picker (/order/<companies.slug>) and are
-// handed to the chosen venue's existing online/catering URLs.
+// handed to the chosen venue's existing ONLINE ordering URL. Catering is a separate
+// face of the business with its own group link (see Channels → Catering ordering).
+// A single online-enabled venue skips the picker and redirects straight in.
 function GroupLinkCard({ group }) {
   const [copied, setCopied] = useState(false);
   const url = groupOrderUrl(group.slug);
@@ -673,7 +675,9 @@ function GroupLinkCard({ group }) {
       <div style={S.h2}>🏢 Group ordering link</div>
       <div style={S.desc}>
         <b>{group.name}</b> has {group.count} locations. Put this ONE link on the group's website —
-        customers pick their venue, then order online or catering there. Per-venue links above keep working as normal.
+        customers pick their venue, then order online there (if only one venue has online ordering,
+        they go straight in). Per-venue links above keep working as normal. The group <b>catering</b> link
+        lives in Channels → Catering ordering.
       </div>
       <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
         <input readOnly value={url} onFocus={e => e.target.select()}
