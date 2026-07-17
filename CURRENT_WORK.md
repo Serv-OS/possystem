@@ -16,6 +16,29 @@ A SaaS restaurant/bar POS with many device "surfaces" off one codebase (URL `?mo
 
 ## Recent arc (this block of sessions)
 
+### Duplicate-name guard + auto-modifiable type (v5.5.798) — SHIPPED
+Owner bug 1: he could add the same product twice. Rule (new `findDuplicateProductName`
+export in store/index.js): within a location, live TOP-LEVEL products (parentId null,
+not subitem/spacer, not archived) must have unique display names (menuName||name,
+trim+lowercase). Wired: store `addMenuItem` (refuses, returns null — callers alert) and
+`updateMenuItem` (backstop; only fires when the name CHANGES, so pre-existing duplicates
+— demo DB has "Asahi" ×2 — stay editable until renamed); MenuManager add-product, clone
+prompt, Items.jsx library add/save, AI `add_menu_item`. The ItemEditor POS-button-name
+input is now DRAFT-BUFFERED (commit on blur/Enter) with an inline red error — a hard
+per-keystroke guard would make "Coke Zero" untypeable while "Coke" exists; side effect:
+the v5.5.796 rename cascade now fires once per rename, not per keystroke (verified in
+dev mock: cascade still updates modifier-group options). Store toasts do NOT render in
+?mode=office — that's why errors are inline + window.alert.
+Owner bug 2: attaching modifier groups didn't set the type, and POSSurface `needsModal`
+hard-skips type='simple' → options screen never opened. The old auto-flip only watched
+legacy `patch.modifierGroups`; now `assignedModifierGroups` flips simple↔modifiable in
+`updateMenuItem`/`addMenuItem` (never when 'type' is in the same patch; never for
+subitem/variants/combo/pizza/spacer; won't downgrade while instruction groups remain)
++ a db.js `upsertMenuItem` safety net (simple + mods attached + top-level ⇒ modifiable).
+Items.jsx saves now pass type/parentId to the DB write (partial payloads were silently
+resetting them). NOTE: instruction-groups-only items still stay 'simple' (till skips
+their sheet) — same bug class, not in scope, flag if the owner hits it.
+
 ### Multi-site group ordering link (v5.5.797) — SHIPPED
 Toast-style ONE link for restaurant groups: `/order/<groupSlug>` (or `?group=`) renders a
 branded venue-picker landing page; the customer picks a venue and is handed to that venue's

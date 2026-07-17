@@ -94,6 +94,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.798', date: '17 Jul 2026', label: 'Fix — no more duplicate product names, and products with modifiers always open the options screen',
+    changes: [
+      'You can no longer create two products with the same name. Renaming a product to a name that already exists, adding a product from the Items library, cloning, or the AI assistant creating one — all are blocked with a clear "A product called \'X\' already exists" message. Names are compared ignoring case and spaces around them (so "coke" and "Coke " count as the same).',
+      'Sizes and sub-items are unaffected — different products can still both have a "Small"/"Large" size, and existing duplicates already on your menu are left untouched (they stay editable; you just can\'t rename anything INTO a clash).',
+      'Adding modifiers to a product now automatically marks it as modifiable so the options screen always appears. Previously the product could stay "Simple", and the till would add it with one tap without ever showing the modifier choices; removing the last modifier group flips it back to Simple. Types you set deliberately (Pizza, Combo, sizes, sub-item) are never changed.',
+    ],
+  },
+  {
     version: '5.5.797', date: '17 Jul 2026', label: 'NEW — One ordering link for multi-site groups: customers pick their venue, then order (online + catering)',
     changes: [
       'Restaurant groups get ONE link to put on their website — /order/<group> — showing a branded landing page (group logo, colours and header from Menu appearance) with every venue: name, address, live OPEN/CLOSED status, and "Order online" / "Catering" buttons that hand off to each venue\'s existing ordering pages. Buttons only show where that channel is actually enabled for the venue.',
