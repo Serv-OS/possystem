@@ -1342,11 +1342,19 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
           </div>
         </div>
 
-        <div style={{ flex:1, overflowY:'auto', padding:compact?'10px 14px':'18px 20px' }}>
+        {/* v5.5.793: on the review screen the body is a flex column — the items region
+            scrolls on its own while the totals + payment controls stay pinned in view
+            (staff go straight to payment; they must never have to scroll to reach it).
+            Every other screen keeps the original whole-body scroll. */}
+        <div style={ screen==='review'
+          ? { flex:1, minHeight:0, display:'flex', flexDirection:'column', overflow:'hidden', padding:compact?'10px 14px':'18px 20px' }
+          : { flex:1, overflowY:'auto', padding:compact?'10px 14px':'18px 20px' } }>
 
           {/* ══ REVIEW ══════════════════════════════════════════════ */}
           {screen==='review' && (
             <>
+              {/* Scrolling region: bill items (+ loyalty banner) */}
+              <div style={{ flex:'1 1 auto', minHeight:0, overflowY:'auto' }}>
               {/* Bill items — grouped by course */}
               <div style={{ marginBottom:16, borderRadius:14, border:'1px solid var(--bdr)', overflow:'hidden' }}>
                 {courseNums.map(cNum => (
@@ -1430,7 +1438,10 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
               {loyaltyLoading && customer?.phone && (
                 <div style={{ fontSize: 11, color: 'var(--t4)', marginBottom: 10, textAlign: 'center' }}>Loading loyalty...</div>
               )}
+              </div>
 
+              {/* Pinned region: totals + payment controls — always visible, never scrolls away */}
+              <div style={{ flexShrink:0 }}>
               {/* Totals */}
               <div style={{ background:'var(--bg3)', borderRadius:compact?10:14, padding:compact?'10px 12px':'14px 16px', marginBottom:compact?12:20, border:'1px solid var(--bdr)' }}>
                 {hasTax && hasExclusive ? (
@@ -1539,65 +1550,70 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
               </div>
 
               {/* ── Primary payment buttons ── */}
+              {/* v5.5.793: compact tiles (~half height) — icon + label on one row, single subtitle */}
               <div style={{ display:'flex', gap:10, marginBottom:10 }}>
                 <button onClick={handleCardPress} style={{
-                  flex:1, padding:compact?'12px 10px':'22px 14px', borderRadius:compact?12:18, cursor:'pointer', fontFamily:'inherit',
+                  flex:1, padding:compact?'9px 8px':'11px 12px', borderRadius:compact?12:14, cursor:'pointer', fontFamily:'inherit',
                   background:'var(--card-bg)', border:`1.5px solid var(--card-border)`,
-                  display:'flex', flexDirection:'column', alignItems:'center', gap:8,
+                  display:'flex', flexDirection:'column', alignItems:'center', gap:3,
                   transition:'transform .14s, box-shadow .14s',
                 }}
                 onMouseEnter={e=>{e.currentTarget.style.transform='translateY(-2px)';e.currentTarget.style.boxShadow='var(--sh2)';}}
                 onMouseLeave={e=>{e.currentTarget.style.transform='';e.currentTarget.style.boxShadow='';}}>
-                  <div style={{ fontSize:compact?24:36 }}>💳</div>
-                  <div style={{ fontSize:compact?13:17, fontWeight:800, color:'var(--card-text)' }}>Card</div>
-                  <div style={{ fontSize:11, color:'var(--card-sub)' }}>Tap, chip, contactless</div>
+                  <div style={{ display:'flex', alignItems:'center', gap:7 }}>
+                    <span style={{ fontSize:compact?17:20 }}>💳</span>
+                    <span style={{ fontSize:compact?13:16, fontWeight:800, color:'var(--card-text)' }}>Card</span>
+                  </div>
                   {/* v5.5.172: tip prompt is now ON THE READER, not on POS */}
-                  <div style={{ fontSize:10, color:'var(--card-sub)', opacity:.7, marginTop:-2 }}>Tip prompt on reader</div>
+                  <div style={{ fontSize:compact?10:11, color:'var(--card-sub)', textAlign:'center' }}>Tap, chip, contactless · tip prompt on reader</div>
                 </button>
 
                 {_canTakeCash && <button onClick={()=>setScreen('cash')} style={{
-                  flex:1, padding:compact?'12px 10px':'22px 14px', borderRadius:compact?12:18, cursor:'pointer', fontFamily:'inherit',
+                  flex:1, padding:compact?'9px 8px':'11px 12px', borderRadius:compact?12:14, cursor:'pointer', fontFamily:'inherit',
                   background:'var(--cash-bg)', border:`1.5px solid var(--cash-border)`,
-                  display:'flex', flexDirection:'column', alignItems:'center', gap:8,
+                  display:'flex', flexDirection:'column', alignItems:'center', gap:3,
                   transition:'transform .14s, box-shadow .14s',
                 }}
                 onMouseEnter={e=>{e.currentTarget.style.transform='translateY(-2px)';e.currentTarget.style.boxShadow='var(--sh2)';}}
                 onMouseLeave={e=>{e.currentTarget.style.transform='';e.currentTarget.style.boxShadow='';}}>
-                  <div style={{ fontSize:compact?24:36 }}>{String.fromCodePoint(0x1F4B5)}</div>
-                  <div style={{ fontSize:compact?13:17, fontWeight:800, color:'var(--cash-text)' }}>Cash</div>
-                  <div style={{ fontSize:11, color:'var(--cash-sub)' }}>Change calculated</div>
-                  <div style={{ fontSize:10, color:'var(--cash-sub)', opacity:.7, marginTop:-2 }}>Instant, no tip prompt</div>
+                  <div style={{ display:'flex', alignItems:'center', gap:7 }}>
+                    <span style={{ fontSize:compact?17:20 }}>{String.fromCodePoint(0x1F4B5)}</span>
+                    <span style={{ fontSize:compact?13:16, fontWeight:800, color:'var(--cash-text)' }}>Cash</span>
+                  </div>
+                  <div style={{ fontSize:compact?10:11, color:'var(--cash-sub)', textAlign:'center' }}>Change calculated · no tip prompt</div>
                 </button>}
               </div>
 
-              {/* v5.5.193: Gift card button (v5.5.505: also accepts promo codes) */}
-              <button onClick={()=>setScreen('gift_card')} style={{
-                width:'100%', padding:'13px', borderRadius:13, cursor:'pointer', fontFamily:'inherit',
-                background:'var(--bg3)', border:'1.5px solid var(--bdr2)',
-                display:'flex', alignItems:'center', justifyContent:'center', gap:10,
-                color:'var(--t3)', fontSize:13, fontWeight:600, transition:'all .14s',
-                marginBottom:10,
-              }}
-              onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--acc-b)';e.currentTarget.style.color='var(--acc)';}}
-              onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--bdr2)';e.currentTarget.style.color='var(--t3)';}}>
-                <span>{String.fromCodePoint(0x1F381)}</span>
-                {giftApplied
-                  ? `Gift card applied: ${String.fromCodePoint(0x00A3)}${giftCredit.toFixed(2)} (${String.fromCodePoint(0x00A3)}${grand.toFixed(2)} remaining)`
-                  : 'Gift card or promo code'}
-              </button>
+              {/* v5.5.793: Gift card (v5.5.505: also accepts promo codes) + Split — side by side to save vertical space */}
+              <div style={{ display:'flex', gap:10 }}>
+                <button onClick={()=>setScreen('gift_card')} style={{
+                  flex:1, minWidth:0, padding:'12px 8px', borderRadius:13, cursor:'pointer', fontFamily:'inherit',
+                  background:'var(--bg3)', border:'1.5px solid var(--bdr2)',
+                  display:'flex', alignItems:'center', justifyContent:'center', gap:8,
+                  color:'var(--t3)', fontSize:13, fontWeight:600, transition:'all .14s',
+                }}
+                onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--acc-b)';e.currentTarget.style.color='var(--acc)';}}
+                onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--bdr2)';e.currentTarget.style.color='var(--t3)';}}>
+                  <span>{String.fromCodePoint(0x1F381)}</span>
+                  {giftApplied
+                    ? `Gift card ${String.fromCodePoint(0x00A3)}${giftCredit.toFixed(2)} · ${String.fromCodePoint(0x00A3)}${grand.toFixed(2)} due`
+                    : 'Gift card or promo code'}
+                </button>
 
-              {/* Split — secondary */}
-              <button onClick={()=>setShowSplit(true)} style={{
-                width:'100%', padding:'13px', borderRadius:13, cursor:'pointer', fontFamily:'inherit',
-                background:'var(--bg3)', border:'1.5px solid var(--bdr2)',
-                display:'flex', alignItems:'center', justifyContent:'center', gap:10,
-                color:'var(--t3)', fontSize:13, fontWeight:600, transition:'all .14s',
-              }}
-              onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--acc-b)';e.currentTarget.style.color='var(--acc)';}}
-              onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--bdr2)';e.currentTarget.style.color='var(--t3)';}}>
-                <span>⚖</span>
-                Split check · {covers} {covers===1?'guest':'guests'}
-              </button>
+                {/* Split — secondary */}
+                <button onClick={()=>setShowSplit(true)} style={{
+                  flex:1, minWidth:0, padding:'12px 8px', borderRadius:13, cursor:'pointer', fontFamily:'inherit',
+                  background:'var(--bg3)', border:'1.5px solid var(--bdr2)',
+                  display:'flex', alignItems:'center', justifyContent:'center', gap:8,
+                  color:'var(--t3)', fontSize:13, fontWeight:600, transition:'all .14s',
+                }}
+                onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--acc-b)';e.currentTarget.style.color='var(--acc)';}}
+                onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--bdr2)';e.currentTarget.style.color='var(--t3)';}}>
+                  <span>⚖</span>
+                  Split check · {covers} {covers===1?'guest':'guests'}
+                </button>
+              </div>
+              </div>
             </>
           )}
 

@@ -93,6 +93,16 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.793', date: '17 Jul 2026', label: 'POS checkout — compact layout: payment always in view',
+    changes: [
+      'POS checkout — compact layout: payment always in view, items scroll, gift/split side by side, smaller payment tiles. Staff usually skip reviewing the bill and go straight to payment; on a long order the payment buttons used to be pushed below the fold and needed a scroll to reach.',
+      'The bill items now scroll in their own region while the totals card, Print receipt toggle, payment tiles and the gift/split row stay pinned and fully visible — on landscape tills and portrait tablets alike.',
+      'Card and Cash tiles are roughly half as tall: icon and name on one line with a single compact subtitle (Card: "Tap, chip, contactless · tip prompt on reader"; Cash: "Change calculated · no tip prompt"). Still full-width, comfortably tappable touch targets.',
+      '"Gift card or promo code" and "Split check" are now two half-width buttons on one row instead of stacked full-width buttons, saving a row of vertical space.',
+      'Layout only — no change to any payment, gift card, promo, loyalty or split logic.',
+    ],
+  },
+  {
     version: '5.5.792', date: '17 Jul 2026', label: 'POS — paying an order now always sends unsent items to the kitchen',
     changes: [
       'POS — paying an order now always sends unsent items to the kitchen (counter cash-off fires production tickets). Counter/walk-up staff often ring items and go straight to payment without tapping Save & send; the check used to close paid with NO KDS ticket and no kitchen print, so takeaway orders never reached the kitchen. Paying now guarantees production.',
