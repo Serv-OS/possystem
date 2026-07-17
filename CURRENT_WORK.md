@@ -16,6 +16,30 @@ A SaaS restaurant/bar POS with many device "surfaces" off one codebase (URL `?mo
 
 ## Recent arc (this block of sessions)
 
+### Triple item naming actually wired (v5.5.790) — SHIPPED
+Owner bug: menu items have three names (POS button / RECEIPT / KITCHEN-KDS) but receipts and the
+KDS/kitchen tickets always printed the POS name. Root cause: order lines only snapshotted `name` at
+add time — the save/load paths (`receipt_name`/`kitchen_name` columns, SyncBridge/BackOfficeApp/
+realtime/useSupabaseInit mappings, config-push snapshot, both item upsert paths) were all already
+correct.
+- **New resolvers** `kitchenOverride(item)` / `receiptOverride(item)` in `src/lib/itemDisplay.js`:
+  return the explicit name ONLY when it differs from the item's base `name` (both save paths default
+  the DB columns to the display name, so a populated column ≠ explicitly set). Lines carry the
+  override or `null` — synthesized variant line names ("Lager — Pint") and no-override items render
+  exactly as before.
+- **Line snapshot:** store `addItem` (POS/MPOS/tables), `BarSurface.addToRound` (bar tabs),
+  `KioskApp.submitOrder` itemsPayload, `OnlineSurface.addToCart` (+receiptName; feeds online + QR),
+  and the online/QR/catering checkout queue-item builders. Names ride into `active_sessions`,
+  `closed_checks` and `order_queue` jsonb, so KDS via `routeKioskOrderPrints` and receipt reprints/
+  emails from history all see them.
+- **Render:** `printer.js` `buildCustomerReceipt`+`buildReceiptHtml` → `receiptName || name`,
+  `buildKitchenTicket` → `kitchenName || name`; `sendReceipt.js` (all 3 bodies) → `receiptName ||
+  name`. Existing consumers (store `createKdsTickets`/`addRoundToTab`/`transferTable`/
+  `routeKioskOrderPrints`, OrdersHub, ReceiptModal) already read the fallback chains.
+- POS on-screen order panel + customer-facing surfaces intentionally keep the POS/menu name.
+  Modifiers were explicitly out of scope. Verified in dev mock (seed "Soup of the day" → Orders hub
+  shows "SOUP"; pre-existing lines unchanged). Build clean.
+
 ### Workforce rota — standard shifts, copy shift/week, clash warnings (v5.5.789) — SHIPPED
 Owner ask: preset "standard shifts" for speed, copy shifts and whole weeks, and flag holiday/
 availability clashes when placing someone. All in `WfRota.jsx` + a new pure helper:
