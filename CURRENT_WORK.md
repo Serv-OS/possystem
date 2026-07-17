@@ -16,6 +16,26 @@ A SaaS restaurant/bar POS with many device "surfaces" off one codebase (URL `?mo
 
 ## Recent arc (this block of sessions)
 
+### Multi-site group ordering link (v5.5.797) — SHIPPED
+Toast-style ONE link for restaurant groups: `/order/<groupSlug>` (or `?group=`) renders a
+branded venue-picker landing page; the customer picks a venue and is handed to that venue's
+EXISTING online / catering URLs (per-venue flows untouched, read-only end to end).
+- **Resolution:** groupSlug = platform `companies.slug` (column already existed, unique +
+  anon-readable — NO migration needed; demo group slug is `posup-test`) → `locations` rows by
+  `company_id`. Venue "slug" for ordering links is `platform.locations.online_slug` (subdomain
+  `<slug>.serv-os.app` or same-origin `?loc=` fallback via `customerUrl()` in `lib/env.js`).
+- **New:** `src/surfaces/GroupOrderSurface.jsx` (MenuTheme engine — `readTheme`/`deriveVars` +
+  `MenuHeader` from the first branded online-enabled venue; per-venue OPEN/CLOSED via
+  `lib/openingHours` on platform `opening_hours`; Catering button gated on the anon-safe
+  `catering_public_settings` RPC returning non-null; localStorage `rpos-group-last:<slug>`
+  drives an "Order again from <venue>?" banner — never a forced redirect).
+- **Wiring:** `customerUrl.js` parses `/order/<slug>` + `?group=` → `mode:'group'` (+ `order`
+  reserved subdomain); App.jsx routes it before venue CustomerBoot; `groupOrderUrl()` in
+  `lib/env.js`. BO → Online ordering shows a read-only "Group ordering link" card when the
+  company has >1 location (BO's platform reads run as anon role — count sees all company venues).
+- **Deferred:** postcode/geo search + distance sort, company-level branding (uses first venue's),
+  a pretty dedicated group domain (link is same-origin today), venue photos on the cards.
+
 ### Product rename now cascades into modifier groups (v5.5.796) — SHIPPED
 Owner bug: renaming a product in BO menu manager left the OLD name on that product where
 it appears as an option inside modifier groups. Root cause: the existing rename cascade in

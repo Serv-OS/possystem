@@ -94,6 +94,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.797', date: '17 Jul 2026', label: 'NEW — One ordering link for multi-site groups: customers pick their venue, then order (online + catering)',
+    changes: [
+      'Restaurant groups get ONE link to put on their website — /order/<group> — showing a branded landing page (group logo, colours and header from Menu appearance) with every venue: name, address, live OPEN/CLOSED status, and "Order online" / "Catering" buttons that hand off to each venue\'s existing ordering pages. Buttons only show where that channel is actually enabled for the venue.',
+      'Return visits are remembered: the page shows an "Order again from <venue>?" banner at the top with a one-tap reorder and a "Change venue" option — never a forced redirect.',
+      'Back office → Channels → Online ordering now shows a read-only "Group ordering link" card (copy + open) whenever your company has more than one location. Per-venue links are unchanged.',
+      'Also accepts ?group=<group> as a query variant. The group is resolved from the platform companies list (its web slug); venues come from that company\'s locations. Read-only end to end — no per-venue ordering flow was touched.',
+    ],
+  },
+  {
     version: '5.5.796', date: '17 Jul 2026', label: 'Renaming a product now updates it inside modifier groups too',
     changes: [
       'Renaming a product in the Back office menu manager now renames it everywhere it appears as an option inside modifier groups — options linked to the product (opt.itemId) and older options matched only by name both pick up the new name and save immediately.',
