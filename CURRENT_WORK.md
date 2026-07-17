@@ -16,6 +16,21 @@ A SaaS restaurant/bar POS with many device "surfaces" off one codebase (URL `?mo
 
 ## Recent arc (this block of sessions)
 
+### Menu-category membership sweep (v5.5.786–788) — SHIPPED
+The rule (POS v4.7.6): a category is "in menu M" if `menu_categories.menu_id === M` (primary home)
+**OR** a `menu_category_links` row joins it (or its parent) to M. Several surfaces applied only half:
+- **v5.5.786 OnlineSurface** — links-ONLY filter dropped home-menu categories with no link row
+  (Salads/Sides/Dessert vanished online). Fixed to primary-OR-linked.
+- **v5.5.788 sweep of the other surfaces:** **CateringSurface** had the same links-only bug against
+  `catering_public_settings.menu_ids` → now primary-OR-linked(-or-parent-linked), keeping the
+  no-menus-chosen → show-all legacy path. **MPOS MMenu** had the MIRROR bug (primary `menuId` only,
+  links ignored — linked categories showed on POS/bar, never on the phone) → now fetches
+  `fetchMenuCategoryLinks()` like BarSurface v5.5.741 and applies primary-OR-linked; search inherits.
+  **KioskApp** already had primary-OR-linked; added the missing parent-linked clause for sub-categories.
+  KioskSurface = pairing wrapper only (no filtering); BarSurface fixed earlier (v5.5.741).
+- **Checklist for any NEW surface that picks categories by menu:** primary `menu_id` OR linked OR
+  parent-linked — never links-only, never primary-only.
+
 ### Cross-device table reservations (v5.5.740) — SHIPPED (isolated design)
 Peter: a reservation made on one POS didn't show on the others. Root cause: `setReservation` only
 updated local `store.tables` (`_updateTable`); nothing persisted, and the real-time table sync
