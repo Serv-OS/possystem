@@ -16,6 +16,28 @@ A SaaS restaurant/bar POS with many device "surfaces" off one codebase (URL `?mo
 
 ## Recent arc (this block of sessions)
 
+### Workforce rota — standard shifts, copy shift/week, clash warnings (v5.5.789) — SHIPPED
+Owner ask: preset "standard shifts" for speed, copy shifts and whole weeks, and flag holiday/
+availability clashes when placing someone. All in `WfRota.jsx` + a new pure helper:
+- **Standard shifts:** venue presets (name/start/finish/break/section/colour) stored on
+  `wf_venue_settings.settings.shiftTemplates` (jsonb — NO new table). "Standard shifts" button on the
+  rota manages them; they render as one-tap prefill chips in the add/edit-shift modal. Saved via the
+  full-settings upsert (`saveSettings` writes the whole row — always spread the existing settings).
+- **Copy shift:** "Copy" in the shift editor → person + day pickers → draft copy. Rate is
+  RE-snapshotted for the target person (`resolveRate`), never carried across.
+- **Copy week:** header button → target week picker (default next week) → all shifts cloned as
+  DRAFTS via `saveShiftsBulk` (one round-trip). Skips leavers (not in the `loadStaff` list — it
+  excludes `status='leaver'`) and copies that would overlap existing shifts in the target week
+  (loaded fresh before insert). Jumps the view to the target week; audit-logged (`rota.copy_week`).
+- **Clash warnings:** `src/staff/wfClash.js` (pure, unit-tested — `wfClash.test.js`, 6 tests):
+  hard shift-overlap block (`findClash`, moved out of WfRota) + soft warnings from APPROVED
+  `wf_time_off` rows covering the date and `wf_availability.per_day` (`{day:0..6 Mon-first,
+  state:'unavailable'}`). Warnings NEVER block — modal shows "⚠ Jane is on holiday that day" and the
+  button becomes "Save anyway"/"Copy anyway"; grid chips of flagged shifts get an amber ⚠. Copy-week
+  places flagged shifts but counts them in the results toast ("N with warnings").
+- Verified in dev mock mode end-to-end (templates → chip prefill → warning → save anyway → copy
+  shift → copy week). Build clean, 248/248 node tests pass.
+
 ### Menu-category membership sweep (v5.5.786–788) — SHIPPED
 The rule (POS v4.7.6): a category is "in menu M" if `menu_categories.menu_id === M` (primary home)
 **OR** a `menu_category_links` row joins it (or its parent) to M. Several surfaces applied only half:

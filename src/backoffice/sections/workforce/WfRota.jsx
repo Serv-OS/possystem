@@ -11,31 +11,38 @@ import { Card, EmptyState, Badge, RoleChip, money, th, td, inputStyle, labelStyl
 import * as wf from '../../../staff/wfData';
 import { buildWeek, addWeeks, weekRangeLabel, ymd } from '../../../staff/wfWeek';
 import { hoursOf, resolveRate, labourPct } from '../../../staff/labour';
+// Clash logic (shift overlap = hard block; approved leave / unavailable day =
+// soft warning, place anyway) is pure + unit-tested in wfClash.js.
+import { findClash, clashWarnings } from '../../../staff/wfClash';
 
 const GRP_ORDER = ['mgmt', 'bar', 'floor', 'kitchen', 'door'];
+const TPL_COLOURS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#64748b'];
 
-// ── shift clash detection ────────────────────────────────────────────────────
-// Split shifts are allowed (several per day) but must NOT overlap. Touching
-// endpoints (…–17:00 then 17:00–…) are fine. Overnight finishes roll past
-// midnight for the comparison.
-const toMins = hhmm => { const [h, m] = String(hhmm || '0:0').split(':').map(Number); return (h || 0) * 60 + (m || 0); };
-const spanOf = (start, finish) => { const s = toMins(start); let f = toMins(finish); if (f <= s) f += 24 * 60; return [s, f]; };
-function findClash(list, staffId, dateIso, start, finish, ignoreId) {
-  const [s1, f1] = spanOf(start, finish);
-  return (list || []).find(x => {
-    if (x.staffId !== staffId || x.date !== dateIso || x.id === ignoreId) return false;
-    const [s2, f2] = spanOf(x.start, x.finish);
-    return s1 < f2 && s2 < f1;
-  });
+// ── small shared bits ───────────────────────────────────────────────────────
+/** Amber "place anyway" warning box (approved leave / unavailable day). */
+function WarnBox({ warnings }) {
+  if (!warnings?.length) return null;
+  return (
+    <div style={{ marginTop: 12, padding: '10px 12px', background: 'rgba(245,166,35,.10)', border: '1px solid rgba(245,166,35,.30)', borderRadius: 10, fontSize: 12.5, color: 'var(--amber)', lineHeight: 1.6 }}>
+      {warnings.map((w, i) => <div key={i}>⚠ {w}</div>)}
+    </div>
+  );
 }
 
 // ── Shift editor modal ──────────────────────────────────────────────────────
-function ShiftModal({ staff, day, shift, sections, onSave, onDelete, onClose, saving }) {
+function ShiftModal({ staff, day, shift, sections, templates, warnings, onSave, onDelete, onDuplicate, onClose, saving }) {
   const [start, setStart] = useState(shift?.start || '09:00');
   const [finish, setFinish] = useState(shift?.finish || '17:00');
   const [breakMins, setBreakMins] = useState(shift?.breakMins ?? 30);
   const [sectionId, setSectionId] = useState(shift?.sectionId || sections[0]?.id || '');
   const hrs = useMemo(() => Math.max(0, hoursOf(start, finish) - (Number(breakMins) || 0) / 60), [start, finish, breakMins]);
+
+  // One tap fills the times from a standard shift (Morning / Evening / …).
+  const applyTpl = (t) => {
+    setStart(t.start); setFinish(t.finish);
+    if (t.breakMins != null) setBreakMins(t.breakMins);
+    if (t.sectionId && sections.some(s => s.id === t.sectionId)) setSectionId(t.sectionId);
+  };
 
   return (
     <div className="modal-back" onClick={e => e.target === e.currentTarget && onClose()}>
@@ -47,6 +54,18 @@ function ShiftModal({ staff, day, shift, sections, onSave, onDelete, onClose, sa
           </div>
           <button className="btn btn-ghost btn-sm" onClick={onClose}><Icon name="close" size={14} /></button>
         </div>
+        {!!templates?.length && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 12 }}>
+            {templates.map(t => (
+              <button key={t.id} className="btn btn-ghost btn-xs" onClick={() => applyTpl(t)}
+                title={`${t.start}–${t.finish}`}
+                style={{ borderRadius: 999, border: '1px solid var(--inset-border)', background: 'var(--inset)' }}>
+                <span style={{ width: 7, height: 7, borderRadius: '50%', background: t.color || 'var(--t3)', flexShrink: 0 }} />
+                {t.name} <span className="mono" style={{ color: 'var(--t4)', fontSize: 10 }}>{t.start}–{t.finish}</span>
+              </button>
+            ))}
+          </div>
+        )}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 14 }}>
           <div><label style={labelStyle}>Start</label><input type="time" style={inputStyle} value={start} onChange={e => setStart(e.target.value)} /></div>
           <div><label style={labelStyle}>Finish</label><input type="time" style={inputStyle} value={finish} onChange={e => setFinish(e.target.value)} /></div>
@@ -61,12 +80,18 @@ function ShiftModal({ staff, day, shift, sections, onSave, onDelete, onClose, sa
         <div style={{ marginTop: 14, padding: '10px 12px', background: 'var(--inset)', border: '1px solid var(--inset-border)', borderRadius: 10, fontSize: 12, color: 'var(--t2)' }}>
           <Icon name="clock" size={13} /> &nbsp;Paid hours: <b className="mono" style={{ color: 'var(--t1)' }}>{hrs.toFixed(2)}h</b>
         </div>
+        <WarnBox warnings={warnings} />
         <div style={{ display: 'flex', gap: 8, marginTop: 18, justifyContent: shift ? 'space-between' : 'flex-end' }}>
-          {shift && <button className="btn btn-ghost btn-sm" disabled={saving} onClick={() => onDelete(shift)} style={{ color: 'var(--red)' }}><Icon name="close" size={13} /> Delete</button>}
+          {shift && (
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button className="btn btn-ghost btn-sm" disabled={saving} onClick={() => onDelete(shift)} style={{ color: 'var(--red)' }}><Icon name="close" size={13} /> Delete</button>
+              <button className="btn btn-ghost btn-sm" disabled={saving} onClick={() => onDuplicate(shift)} title="Copy this shift to another day or person"><Icon name="clipboard" size={13} /> Copy</button>
+            </div>
+          )}
           <div style={{ display: 'flex', gap: 8 }}>
             <button className="btn btn-ghost btn-sm" onClick={onClose} disabled={saving}>Cancel</button>
             <button className="btn btn-acc btn-sm" disabled={saving} onClick={() => onSave({ start, finish, breakMins: Number(breakMins) || 0, sectionId, section: sections.find(s => s.id === sectionId)?.name || null })}>
-              <Icon name="check" size={13} /> {saving ? 'Saving…' : 'Save shift'}
+              <Icon name="check" size={13} /> {saving ? 'Saving…' : warnings?.length ? 'Save anyway' : 'Save shift'}
             </button>
           </div>
         </div>
@@ -75,8 +100,179 @@ function ShiftModal({ staff, day, shift, sections, onSave, onDelete, onClose, sa
   );
 }
 
+// ── Standard shifts (templates) manager ─────────────────────────────────────
+// Presets live on wf_venue_settings.settings.shiftTemplates — no new table.
+function TemplatesModal({ templates, sections, onSave, onClose, saving }) {
+  const [list, setList] = useState(templates || []);
+  const [form, setForm] = useState(null); // { id?, name, start, finish, breakMins, sectionId, color }
+  const blank = { name: '', start: '09:00', finish: '17:00', breakMins: 30, sectionId: '', color: TPL_COLOURS[0] };
+
+  const upsert = () => {
+    if (!form.name.trim()) return;
+    const t = { ...form, name: form.name.trim(), breakMins: Number(form.breakMins) || 0, id: form.id || 'tpl-' + Date.now() };
+    setList(prev => form.id ? prev.map(x => x.id === form.id ? t : x) : [...prev, t]);
+    setForm(null);
+  };
+
+  return (
+    <div className="modal-back" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal-box" style={{ maxWidth: 460 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+          <div>
+            <div style={{ fontSize: 16, fontWeight: 700 }}>Standard shifts</div>
+            <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>Presets you can drop onto the rota in one tap.</div>
+          </div>
+          <button className="btn btn-ghost btn-sm" onClick={onClose}><Icon name="close" size={14} /></button>
+        </div>
+
+        {list.length === 0 && !form && (
+          <div style={{ margin: '14px 0', padding: '14px 16px', background: 'var(--inset)', border: '1px solid var(--inset-border)', borderRadius: 12, fontSize: 12.5, color: 'var(--t3)', lineHeight: 1.6 }}>
+            No standard shifts yet. Create presets like <b>Morning 09:00–17:00</b> or <b>Evening 17:00–23:00</b> — they appear as one-tap chips when you add a shift.
+          </div>
+        )}
+
+        {list.length > 0 && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 14 }}>
+            {list.map(t => (
+              <div key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', background: 'var(--inset)', border: '1px solid var(--inset-border)', borderRadius: 10 }}>
+                <span style={{ width: 9, height: 9, borderRadius: '50%', background: t.color || 'var(--t3)', flexShrink: 0 }} />
+                <span style={{ fontWeight: 600, fontSize: 13, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.name}</span>
+                <span className="mono" style={{ fontSize: 11.5, color: 'var(--t3)' }}>{t.start}–{t.finish}</span>
+                {t.sectionId && <span style={{ fontSize: 11, color: 'var(--t4)' }}>{sections.find(s => s.id === t.sectionId)?.name || ''}</span>}
+                <button className="btn btn-ghost btn-xs" onClick={() => setForm({ ...blank, ...t })}><Icon name="edit" size={12} /></button>
+                <button className="btn btn-ghost btn-xs" style={{ color: 'var(--red)' }} onClick={() => setList(prev => prev.filter(x => x.id !== t.id))}><Icon name="close" size={12} /></button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {form ? (
+          <div style={{ marginTop: 14, padding: 14, border: '1px solid var(--bdr2)', borderRadius: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <div style={{ gridColumn: '1 / -1' }}><label style={labelStyle}>Name</label><input style={inputStyle} value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Morning" autoFocus /></div>
+              <div><label style={labelStyle}>Start</label><input type="time" style={inputStyle} value={form.start} onChange={e => setForm(f => ({ ...f, start: e.target.value }))} /></div>
+              <div><label style={labelStyle}>Finish</label><input type="time" style={inputStyle} value={form.finish} onChange={e => setForm(f => ({ ...f, finish: e.target.value }))} /></div>
+              <div><label style={labelStyle}>Break (mins)</label><input type="number" min="0" style={inputStyle} value={form.breakMins} onChange={e => setForm(f => ({ ...f, breakMins: e.target.value }))} /></div>
+              <div><label style={labelStyle}>Section (optional)</label>
+                <select style={inputStyle} value={form.sectionId} onChange={e => setForm(f => ({ ...f, sectionId: e.target.value }))}>
+                  <option value="">— none —</option>
+                  {sections.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+              </div>
+              <div style={{ gridColumn: '1 / -1' }}><label style={labelStyle}>Colour</label>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  {TPL_COLOURS.map(c => (
+                    <button key={c} onClick={() => setForm(f => ({ ...f, color: c }))}
+                      style={{ width: 24, height: 24, borderRadius: '50%', background: c, border: form.color === c ? '2px solid var(--t1)' : '2px solid transparent', cursor: 'pointer' }} />
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 14 }}>
+              <button className="btn btn-ghost btn-sm" onClick={() => setForm(null)}>Cancel</button>
+              <button className="btn btn-acc btn-sm" disabled={!form.name.trim()} onClick={upsert}><Icon name="check" size={13} /> {form.id ? 'Update' : 'Add'}</button>
+            </div>
+          </div>
+        ) : (
+          <button className="btn btn-ghost btn-sm" style={{ marginTop: 12 }} onClick={() => setForm({ ...blank })}><Icon name="plus" size={13} /> Add standard shift</button>
+        )}
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 18 }}>
+          <button className="btn btn-ghost btn-sm" onClick={onClose} disabled={saving}>Cancel</button>
+          <button className="btn btn-acc btn-sm" disabled={saving || !!form} onClick={() => onSave(list)}>
+            <Icon name="check" size={13} /> {saving ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Copy shift modal ────────────────────────────────────────────────────────
+// Duplicate an existing shift to another day and/or person. The copy lands as
+// a DRAFT. Overlaps block; leave/availability warn but never block.
+function CopyShiftModal({ source, staff, wk, shifts, timeOff, avail, onCopy, onClose, saving }) {
+  const [staffId, setStaffId] = useState(source.staffId);
+  const [dateIso, setDateIso] = useState(source.date);
+  const target = staff.find(s => s.id === staffId);
+  const clash = findClash(shifts, staffId, dateIso, source.start, source.finish);
+  const warnings = useMemo(() => clashWarnings({ staffName: target?.name, staffId, dateIso, timeOff, availability: avail }), [target, staffId, dateIso, timeOff, avail]);
+
+  return (
+    <div className="modal-back" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal-box" style={{ maxWidth: 420 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+          <div>
+            <div style={{ fontSize: 16, fontWeight: 700 }}>Copy shift</div>
+            <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }} className="mono">{source.start}–{source.finish}{source.section ? ` · ${source.section}` : ''}</div>
+          </div>
+          <button className="btn btn-ghost btn-sm" onClick={onClose}><Icon name="close" size={14} /></button>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 14 }}>
+          <div><label style={labelStyle}>To person</label>
+            <select style={inputStyle} value={staffId} onChange={e => setStaffId(e.target.value)}>
+              {staff.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+          </div>
+          <div><label style={labelStyle}>To day</label>
+            <select style={inputStyle} value={dateIso} onChange={e => setDateIso(e.target.value)}>
+              {wk.days.map(d => <option key={d.iso} value={d.iso}>{d.label} {d.dom}</option>)}
+            </select>
+          </div>
+        </div>
+        {clash && (
+          <div style={{ marginTop: 12, padding: '10px 12px', background: 'var(--red-d)', border: '1px solid var(--red-b)', borderRadius: 10, fontSize: 12.5, color: 'var(--red)' }}>
+            Clashes with their {clash.start}–{clash.finish} shift that day — pick another day or person.
+          </div>
+        )}
+        <WarnBox warnings={warnings} />
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 18 }}>
+          <button className="btn btn-ghost btn-sm" onClick={onClose} disabled={saving}>Cancel</button>
+          <button className="btn btn-acc btn-sm" disabled={saving || !!clash || !target} onClick={() => onCopy(target, dateIso)}>
+            <Icon name="check" size={13} /> {saving ? 'Copying…' : warnings.length ? 'Copy anyway' : 'Copy shift'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Copy week modal ─────────────────────────────────────────────────────────
+function CopyWeekModal({ wk, shiftCount, onCopy, onClose, saving }) {
+  const [target, setTarget] = useState(addWeeks(wk.startIso, 1));
+  const same = target.startIso === wk.startIso;
+  return (
+    <div className="modal-back" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal-box" style={{ maxWidth: 420 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+          <div>
+            <div style={{ fontSize: 16, fontWeight: 700 }}>Copy week</div>
+            <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>Copy all of <b>{weekRangeLabel(wk)}</b> to another week.</div>
+          </div>
+          <button className="btn btn-ghost btn-sm" onClick={onClose}><Icon name="close" size={14} /></button>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 16 }}>
+          <button className="btn btn-ghost btn-sm" onClick={() => setTarget(addWeeks(target.startIso, -1))}><Icon name="chevron" size={14} style={{ transform: 'rotate(180deg)' }} /></button>
+          <div style={{ minWidth: 150, textAlign: 'center', fontSize: 15, fontWeight: 700 }}>{weekRangeLabel(target)}</div>
+          <button className="btn btn-ghost btn-sm" onClick={() => setTarget(addWeeks(target.startIso, 1))}><Icon name="chevron" size={14} /></button>
+        </div>
+        <div style={{ marginTop: 14, padding: '10px 12px', background: 'var(--inset)', border: '1px solid var(--inset-border)', borderRadius: 10, fontSize: 12, color: 'var(--t2)', lineHeight: 1.6 }}>
+          Copies <b>{shiftCount}</b> shift{shiftCount === 1 ? '' : 's'} as <b>drafts</b> — publish when ready. Shifts that would overlap an existing shift, or belong to someone who has left, are skipped. Holiday or availability clashes are flagged, not blocked.
+        </div>
+        {same && <div style={{ marginTop: 10, fontSize: 12, color: 'var(--amber)' }}>Pick a different week.</div>}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 18 }}>
+          <button className="btn btn-ghost btn-sm" onClick={onClose} disabled={saving}>Cancel</button>
+          <button className="btn btn-acc btn-sm" disabled={saving || same || !shiftCount} onClick={() => onCopy(target)}>
+            <Icon name="check" size={13} /> {saving ? 'Copying…' : 'Copy week'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main section ─────────────────────────────────────────────────────────────
-export default function WfRota({ ctx, staff, roles, sections, settings, week, showToast }) {
+export default function WfRota({ ctx, staff, roles, sections, settings, week, showToast, onSettingsSaved }) {
   const [wk, setWk] = useState(week);
   const [shifts, setShifts] = useState([]);
   const [forecast, setForecast] = useState({});   // { iso: amount }
@@ -89,24 +285,35 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
   const [view, setView] = useState('staff');       // 'staff' | 'section'
   const [secs, setSecs] = useState(sections || []); // sections loaded fresh (Settings may have changed them)
   const [timesheets, setTimesheets] = useState([]); // for actual wage cost
+  const [timeOff, setTimeOff] = useState([]);       // wf_time_off — approved leave drives warnings
+  const [avail, setAvail] = useState([]);           // wf_availability — weekly pattern drives warnings
+  const [tplOpen, setTplOpen] = useState(false);    // Standard shifts manager
+  const [copying, setCopying] = useState(null);     // shift being duplicated
+  const [copyWeekOpen, setCopyWeekOpen] = useState(false);
 
   const targetPct = settings?.labourTargetPct ?? 0.3;
+  // Standard shifts (venue presets) live on wf_venue_settings.settings jsonb.
+  const templates = settings?.settings?.shiftTemplates || [];
 
   async function reload(w) {
     setLoading(true);
     try {
-      const [sh, fc, ac, sc, ts] = await Promise.all([
+      const [sh, fc, ac, sc, ts, lv, av] = await Promise.all([
         wf.loadShifts(ctx.locationId, w.startIso, w.endIso),
         wf.loadForecast(ctx.locationId, w.startIso, w.endIso),
         wf.loadActualSales(ctx.locationId, w.startIso, w.endIso),
         wf.loadSections(ctx.locationId),
         wf.loadTimesheets(ctx.locationId, w.startIso, w.endIso),
+        wf.loadTimeOff(ctx.locationId),
+        wf.loadAvailability(ctx.locationId),
       ]);
       setShifts(sh || []);
       setForecast(fc || {});
       setActual(ac || {});
       if (sc) setSecs(sc);
       setTimesheets(ts || []);
+      setTimeOff(lv || []);
+      setAvail(av || []);
     } catch (e) {
       showToast('Could not load the rota: ' + e.message, 'error');
     } finally {
@@ -202,6 +409,97 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
       showToast('Delete failed: ' + e.message, 'error');
       reload(wk);
     }
+  }
+
+  // Persist the standard-shift presets onto wf_venue_settings.settings jsonb
+  // (whole settings row is upserted — pass the full current settings through).
+  async function saveTemplates(list) {
+    setSaving(true);
+    try {
+      const saved = await wf.saveSettings({ ...settings, settings: { ...(settings?.settings || {}), shiftTemplates: list } }, ctx.locationId, ctx.orgId);
+      onSettingsSaved?.(saved);
+      setTplOpen(false);
+      showToast('Standard shifts saved', 'success');
+    } catch (e) {
+      showToast('Could not save standard shifts: ' + e.message, 'error');
+    } finally { setSaving(false); }
+  }
+
+  // Duplicate one shift to another day and/or person — lands as a DRAFT with
+  // the rate re-snapshotted for the target person (never carried across).
+  async function copyShift(target, dateIso) {
+    const src = copying;
+    const role = roles.map[target.role];
+    const { rate, source } = resolveRate(target, role);
+    const hours = Math.max(0, hoursOf(src.start, src.finish) - (src.breakMins || 0) / 60);
+    const next = {
+      id: 'tmp-' + Date.now(),
+      staffId: target.id, roleKey: target.role, date: dateIso,
+      start: src.start, finish: src.finish, breakMins: src.breakMins || 0,
+      sectionId: src.sectionId || null, section: src.section || null,
+      status: 'draft', note: '',
+      effectiveRate: rate, rateSource: source,
+      computedHours: Math.round(hours * 100) / 100,
+      computedCost: Math.round(hours * rate * 100) / 100,
+    };
+    setSaving(true);
+    try {
+      const saved = await wf.saveShift(next, ctx.locationId, ctx.orgId);
+      setShifts(prev => [...prev, saved]);
+      setCopying(null);
+      showToast('Shift copied — drafted, publish when ready', 'success');
+    } catch (e) {
+      showToast('Copy failed: ' + e.message, 'error');
+    } finally { setSaving(false); }
+  }
+
+  // Copy the whole week's shifts to another week as DRAFTS. Skips leavers
+  // (no longer in the staff list) and shifts that would overlap; leave/
+  // availability clashes are placed but counted in the results toast.
+  async function copyWeek(target) {
+    setSaving(true);
+    try {
+      const existing = await wf.loadShifts(ctx.locationId, target.startIso, target.endIso);
+      const working = [...(existing || [])];
+      const staffById = Object.fromEntries(staff.map(s => [s.id, s]));
+      const toInsert = [];
+      let skipped = 0, warned = 0;
+      for (const s of shifts) {
+        const idx = wk.days.findIndex(d => d.iso === s.date);
+        const person = staffById[s.staffId];
+        if (idx < 0 || !person) { skipped++; continue; }             // leaver / out of week
+        const dateIso = target.days[idx].iso;
+        if (findClash(working, s.staffId, dateIso, s.start, s.finish)) { skipped++; continue; }
+        if (clashWarnings({ staffName: person.name, staffId: s.staffId, dateIso, timeOff, availability: avail }).length) warned++;
+        const role = roles.map[person.role];
+        const { rate, source } = resolveRate(person, role);
+        const hours = Math.max(0, hoursOf(s.start, s.finish) - (s.breakMins || 0) / 60);
+        const copy = {
+          staffId: s.staffId, roleKey: person.role, date: dateIso,
+          start: s.start, finish: s.finish, breakMins: s.breakMins || 0,
+          sectionId: s.sectionId || null, section: s.section || null, status: 'draft',
+          effectiveRate: rate, rateSource: source,
+          computedHours: Math.round(hours * 100) / 100,
+          computedCost: Math.round(hours * rate * 100) / 100,
+        };
+        working.push(copy);
+        toInsert.push(copy);
+      }
+      let added = 0;
+      if (toInsert.length) {
+        const saved = await wf.saveShiftsBulk(toInsert, ctx.locationId, ctx.orgId);
+        added = saved.length;
+        await wf.logAudit({ action: 'rota.copy_week', entity: 'wf_shifts', entityId: target.startIso, reason: `Copied ${added} shift(s) from ${weekRangeLabel(wk)} to ${weekRangeLabel(target)}`, after: { from: wk.startIso, to: target.startIso, count: added } }, ctx.locationId, ctx.orgId);
+      }
+      setCopyWeekOpen(false);
+      const bits = [`${added} shift${added === 1 ? '' : 's'} copied as drafts`];
+      if (warned) bits.push(`${warned} with warnings`);
+      if (skipped) bits.push(`${skipped} skipped`);
+      showToast(bits.join(' · '), added ? 'success' : 'info');
+      if (added) setWk(target); // jump to the target week to review the drafts
+    } catch (e) {
+      showToast('Copy week failed: ' + e.message, 'error');
+    } finally { setSaving(false); }
   }
 
   async function saveForecastCell(iso, raw) {
@@ -360,6 +658,12 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
             <button key={k} className={view === k ? 'btn btn-acc btn-xs' : 'btn btn-ghost btn-xs'} style={{ borderRadius: 999 }} onClick={() => setView(k)}>{lbl}</button>
           ))}
         </div>
+        <button className="btn btn-ghost btn-sm" onClick={() => setTplOpen(true)} title="Set up standard shifts (Morning, Evening…) to drop onto the rota in one tap">
+          <Icon name="clock" size={14} /> Standard shifts
+        </button>
+        <button className="btn btn-ghost btn-sm" disabled={saving || !shifts.length} onClick={() => setCopyWeekOpen(true)} title="Copy this week's shifts to another week as drafts">
+          <Icon name="clipboard" size={14} /> Copy week
+        </button>
         <button className="btn btn-ghost btn-sm" disabled={aiBusy || publishing} onClick={buildWithAI} title="Generate a draft rota from availability, forecast and your target labour %">
           <Icon name="sparkle" size={14} /> {aiBusy ? 'Building…' : 'Build with AI'}
         </button>
@@ -377,11 +681,36 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
     </th>
   ));
 
+  // Modals shared by both views (templates / copy shift / copy week / editor).
+  const Modals = (
+    <>
+      {editing && (
+        <ShiftModal
+          staff={editing.staff} day={editing.day} shift={editing.shift}
+          sections={secs} templates={templates} saving={saving}
+          warnings={clashWarnings({ staffName: editing.staff.name, staffId: editing.staff.id, dateIso: editing.day.iso, timeOff, availability: avail })}
+          onSave={saveShift} onDelete={removeShift} onClose={() => setEditing(null)}
+          onDuplicate={(sh) => { setEditing(null); setCopying(sh); }}
+        />
+      )}
+      {tplOpen && (
+        <TemplatesModal templates={templates} sections={secs} saving={saving} onSave={saveTemplates} onClose={() => setTplOpen(false)} />
+      )}
+      {copying && (
+        <CopyShiftModal source={copying} staff={staff} wk={wk} shifts={shifts} timeOff={timeOff} avail={avail} saving={saving} onCopy={copyShift} onClose={() => setCopying(null)} />
+      )}
+      {copyWeekOpen && (
+        <CopyWeekModal wk={wk} shiftCount={shifts.length} saving={saving} onCopy={copyWeek} onClose={() => setCopyWeekOpen(false)} />
+      )}
+    </>
+  );
+
   // ── By section view ────────────────────────────────────────────────────────
   if (view === 'section') {
     return (
       <Card>
         {Header}
+        {Modals}
         {secs.length === 0
           ? <EmptyState icon="floor" title="No sections yet" body="Create sections (Bar, Floor, Kitchen…) in Settings to track coverage per area. Then assign each shift to a section and we'll flag any day that's understaffed." />
           : (
@@ -422,7 +751,9 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
             <thead><tr><th style={{ ...th, minWidth: 160 }}>Team</th>{dayCols}</tr></thead>
             <tbody>
               {groups.map(g => (
-                <RotaGroup key={g.grp} g={g} wk={wk} roles={roles} shiftsFor={shiftsFor} onCell={(s, d, shift) => setEditing({ staff: s, day: d, shift })} />
+                <RotaGroup key={g.grp} g={g} wk={wk} roles={roles} shiftsFor={shiftsFor}
+                  warnFor={(s, iso) => clashWarnings({ staffName: s.name, staffId: s.id, dateIso: iso, timeOff, availability: avail })}
+                  onCell={(s, d, shift) => setEditing({ staff: s, day: d, shift })} />
               ))}
 
               {/* ── footer metric rows ── */}
@@ -499,19 +830,13 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
         </div>
       </Card>
 
-      {editing && (
-        <ShiftModal
-          staff={editing.staff} day={editing.day} shift={editing.shift}
-          sections={secs} saving={saving}
-          onSave={saveShift} onDelete={removeShift} onClose={() => setEditing(null)}
-        />
-      )}
+      {Modals}
     </>
   );
 }
 
 // ── group of staff rows under a section heading ───────────────────────────────
-function RotaGroup({ g, wk, roles, shiftsFor, onCell }) {
+function RotaGroup({ g, wk, roles, shiftsFor, warnFor, onCell }) {
   const col = groupColor(g.grp);
   return (
     <>
@@ -535,6 +860,7 @@ function RotaGroup({ g, wk, roles, shiftsFor, onCell }) {
           </td>
           {wk.days.map(d => {
             const list = shiftsFor(s.id, d.iso);
+            const warns = list.length ? (warnFor?.(s, d.iso) || []) : [];
             return (
               <td key={d.iso} style={{ ...td, textAlign: 'center', padding: 4, background: d.isToday ? cellTint('var(--acc)', 5) : 'transparent', verticalAlign: 'top' }}>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -542,10 +868,10 @@ function RotaGroup({ g, wk, roles, shiftsFor, onCell }) {
                     <button
                       key={sh.id}
                       onClick={() => onCell(s, d, sh)}
-                      title={`${sh.start}–${sh.finish} · ${money(sh.computedCost)}`}
-                      style={{ width: '100%', cursor: 'pointer', textAlign: 'center', borderRadius: 9, padding: '6px 4px', fontFamily: 'inherit', background: sh.status === 'published' ? cellTint(col, 16) : 'var(--inset)', border: `1px solid ${sh.status === 'published' ? cellTint(col, 32) : 'var(--inset-border)'}` }}
+                      title={`${sh.start}–${sh.finish} · ${money(sh.computedCost)}${warns.length ? `\n⚠ ${warns.join('\n⚠ ')}` : ''}`}
+                      style={{ width: '100%', cursor: 'pointer', textAlign: 'center', borderRadius: 9, padding: '6px 4px', fontFamily: 'inherit', background: sh.status === 'published' ? cellTint(col, 16) : 'var(--inset)', border: `1px solid ${warns.length ? 'rgba(245,166,35,.45)' : sh.status === 'published' ? cellTint(col, 32) : 'var(--inset-border)'}` }}
                     >
-                      <div className="mono" style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--t1)' }}>{sh.start}–{sh.finish}</div>
+                      <div className="mono" style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--t1)' }}>{warns.length ? '⚠ ' : ''}{sh.start}–{sh.finish}</div>
                       <div style={{ fontSize: 10, color: 'var(--t3)', marginTop: 1 }}>{Number(sh.computedHours || 0).toFixed(1)}h{sh.status !== 'published' ? ' · draft' : ''}</div>
                     </button>
                   ))}

@@ -93,6 +93,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.789', date: '17 Jul 2026', label: 'Workforce rota — standard shifts, copy shifts/weeks, holiday & availability warnings',
+    changes: [
+      'Standard shifts: set up your usual shifts once (e.g. Morning 09:00–17:00, Evening 17:00–23:00, with break, section and colour) via the new “Standard shifts” button on the rota. When adding a shift, tap a preset chip and the times fill in — no more typing every shift.',
+      'Copy a shift: open any shift and hit “Copy” to duplicate it to another day or another person. The copy lands as a draft, ready to tweak and publish.',
+      'Copy a week: the new “Copy week” button copies the whole week’s rota to any other week as drafts. People who have left, and copies that would overlap an existing shift, are skipped automatically.',
+      'Clash warnings: putting someone on a shift while they’re on approved holiday, or on a day they’ve marked unavailable, now warns you (“⚠ Jane is on holiday that day”) — on add, edit and copy. It never blocks: you can always place the shift anyway. Flagged shifts also show a ⚠ on the rota grid.',
+    ],
+  },
+  {
     version: '5.5.788', date: '17 Jul 2026', label: 'Catering / mobile POS / kiosk — fix: menu categories missing on some surfaces',
     changes: [
       'Catering online ordering had the same bug fixed on the main storefront in v5.5.786: it only showed categories with an explicit menu-link row, so categories whose home menu is one of the chosen catering menus (but with no link row) never appeared. It now uses the till rule — a category shows if a chosen menu is its home menu OR it is linked to it.',
