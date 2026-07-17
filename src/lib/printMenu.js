@@ -13,6 +13,10 @@
 //
 // Pure — no React/DOM/Supabase. Unit-testable.
 
+// Dietary badge resolution (GF/V/VG/DF from item tags) — shared with the
+// menu board + online storefront via src/lib/dietary.js (pure, no DOM).
+import { dietaryBadges } from './dietary';
+
 export const PRINT_FONTS = {
   serif:      { label: 'Elegant serif',  css: "Georgia, 'Times New Roman', serif" },
   sans:       { label: 'Clean sans',     css: "'Helvetica Neue', Arial, sans-serif" },
@@ -61,13 +65,6 @@ export function priceOf(it) {
     if (p.base != null) return Number(p.base) || 0;
   }
   return Number(it && it.price) || 0;
-}
-
-const DIET = { gf: 'GF', glutenfree: 'GF', 'gluten-free': 'GF', 'gluten free': 'GF', v: 'V', veg: 'V', vegetarian: 'V', vg: 'VG', vegan: 'VG', df: 'DF', dairyfree: 'DF', 'dairy-free': 'DF' };
-function dietaryBadges(it) {
-  const out = [], seen = new Set();
-  for (const t of (Array.isArray(it.tags) ? it.tags : [])) { const b = DIET[String(t).toLowerCase().trim()]; if (b && !seen.has(b)) { seen.add(b); out.push(b); } }
-  return out;
 }
 
 const fmtMoney = (n, sym) => `${sym}${(Number(n) || 0).toFixed(2)}`;

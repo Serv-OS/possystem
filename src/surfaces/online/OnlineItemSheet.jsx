@@ -6,6 +6,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { money } from '../../lib/currency';
+import { dietaryBadges, DIET_LABELS } from '../../lib/dietary';
 
 export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs = [], eightySixIds = [], onClose, onAdd }) {
   const [qty, setQty]               = useState(1);
@@ -320,6 +321,9 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
   const inputBg  = theme.isLight ? '#f5f5f7' : '#1f1f24';
   const display  = effectiveItem.menu_name || effectiveItem.name;
   const heroImg  = item.image || effectiveItem.image;
+  // GF/V/VG/DF from menu_items.tags — variant's own tags, else the base item's.
+  const ownDiet    = dietaryBadges(effectiveItem);
+  const dietBadges = ownDiet.length ? ownDiet : dietaryBadges(item);
 
   return (
     <div onClick={onClose} style={{
@@ -363,6 +367,24 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
           <div style={{ fontSize: 24, fontWeight: 800, letterSpacing: '-0.02em', marginBottom: 6 }}>
             {display}
           </div>
+          {/* Dietary badges — GF/V/VG/DF with full labels. Selected variant's
+              own tags win; falls back to the base item (same own→parent
+              pattern as modifier groups). Untagged items render nothing. */}
+          {dietBadges.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
+              {dietBadges.map(d => (
+                <span key={d} style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 5,
+                  padding: '3px 10px', borderRadius: 99,
+                  background: '#e3f4e8', color: '#1e6b3a',
+                  fontSize: 12, fontWeight: 700, letterSpacing: '0.02em',
+                }}>
+                  <span style={{ fontWeight: 800, fontSize: 11, letterSpacing: '0.04em' }}>{d}</span>
+                  {DIET_LABELS[d]}
+                </span>
+              ))}
+            </div>
+          )}
           {item.description && (
             <div style={{ fontSize: 14, color: muted, lineHeight: 1.55, marginBottom: 18 }}>
               {item.description}

@@ -15,6 +15,7 @@ import { useEffect, useState, useRef, useLayoutEffect, useCallback, useMemo } fr
 import { supabase, isMock, ensureAuthToken } from '../lib/supabase';
 import { fetchMenuCategories, fetchMenuItems, fetch86List } from '../lib/db';
 import { money } from '../lib/currency';
+import { dietaryBadges } from '../lib/dietary';
 
 const DEFAULT_THEME = { bgColor: '#14110d', textColor: '#F5EFE6', mutedColor: '#B8AE9E', accent: '#E8A23C', font: '', footerNote: '', logoUrl: null, bgImageUrl: null };
 const DEFAULT_DISPLAY = { showDescription: true, showAllergens: true, showPrices: true, showImages: false, soldOut: 'grey', textScale: 1, hidePriceless: false };
@@ -47,15 +48,8 @@ const boardPrice = (it) => {
   }
   return Number(it.price) || 0;
 };
-const DIET = { gf: 'GF', glutenfree: 'GF', 'gluten-free': 'GF', 'gluten free': 'GF', v: 'V', veg: 'V', vegetarian: 'V', vg: 'VG', vegan: 'VG', df: 'DF', dairyfree: 'DF', 'dairy-free': 'DF' };
-const dietaryBadges = (it) => {
-  const out = [], seen = new Set();
-  for (const t of (Array.isArray(it.tags) ? it.tags : [])) {
-    const b = DIET[String(t).toLowerCase().trim()];
-    if (b && !seen.has(b)) { seen.add(b); out.push(b); }
-  }
-  return out;
-};
+// GF/V/VG/DF badge resolution now shared (src/lib/dietary.js) with the print
+// menu + online storefront — imported above, do not re-fork the map here.
 const visibleItem = (it) => !it.archived && (!it.visibility || it.visibility.kiosk !== false);
 
 export default function MenuBoardSurface() {

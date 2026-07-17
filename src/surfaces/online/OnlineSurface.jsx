@@ -16,6 +16,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { isItemEightySixed } from '../../lib/itemAvailability';
 import { receiptOverride } from '../../lib/itemDisplay';
+import { dietaryBadges, DIET_LABELS } from '../../lib/dietary';
 import { getStashedTab, clearStashedTab, stashTab } from '../../lib/qrTabStorage';
 import OnlineCart from './OnlineCart';
 import OnlineCheckout from './OnlineCheckout';
@@ -1417,6 +1418,7 @@ function ItemCard({ item, theme, cardBg, cardBdr, muted, onPick, variantInfo, is
   // Variant parents have base price 0; show "from £X" using cheapest child.
   const displayPrice = isVariantParent ? (variantInfo.fromPrice || 0) : ownPrice;
   const allergens = item.allergens || [];
+  const diet = dietaryBadges(item); // GF/V/VG/DF chips — [] for untagged items (no visual change)
   return (
     <button onClick={is86 ? undefined : onPick} disabled={is86}
       className={is86 ? undefined : 'op-btn'}
@@ -1491,6 +1493,13 @@ function ItemCard({ item, theme, cardBg, cardBdr, muted, onPick, variantInfo, is
               fontSize: 10, fontWeight: 700,
             }}>SIZES</span>
           )}
+          {diet.map(d => (
+            <span key={d} title={DIET_LABELS[d]} style={{
+              padding: '2px 8px', borderRadius: 99,
+              background: '#e3f4e8', color: '#1e6b3a',
+              fontSize: 10, fontWeight: 800, letterSpacing: '0.04em',
+            }}>{d}</span>
+          ))}
           {allergens.length > 0 && (
             <span title={`Contains: ${allergens.join(', ')}`} style={{
               padding: '2px 8px', borderRadius: 99,
