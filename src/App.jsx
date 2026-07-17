@@ -93,6 +93,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.795', date: '17 Jul 2026', label: 'Online ordering — dietary icons (GF / V / VG / DF) now show on menu items',
+    changes: [
+      'Online ordering — dietary icons (GF / V / VG / DF) now show on menu items. Items tagged in Back office → Menu → Allergens & dietary display small green badge pills on the storefront menu cards, next to the price.',
+      'The item detail sheet shows the same badges larger with full labels ("VG Vegan", "GF Gluten free") under the item name, so customers can confirm before adding to basket. Items with no dietary tags look exactly as before.',
+      'The GF/V/VG/DF tag-to-badge mapping is now one shared helper (src/lib/dietary.js) used by the print menu, the digital menu board and online ordering — a tag set once in the menu shows consistently across all three.',
+    ],
+  },
+  {
     version: '5.5.794', date: '17 Jul 2026', label: 'Renaming a venue now updates the customer-facing ordering pages too',
     changes: [
       'Fixed venue renames only applying inside the till/back office. The name is now saved to both databases at once, so online ordering, gift cards and loyalty pages show the new name straight away.',
