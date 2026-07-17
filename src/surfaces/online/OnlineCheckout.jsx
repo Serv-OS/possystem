@@ -200,6 +200,18 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   const subtotalMinor = Math.round(subtotal * 100);
   // Auto-discounts reduce the goods first; gift/loyalty then apply to the discounted bill.
   const discountedSubtotalMinor = Math.max(0, subtotalMinor - autoDiscountMinor);
+  // v5.5.787: offers reduce the price actually paid, so the VAT shown/recorded must be
+  // extracted from the DISCOUNTED amount, not the full menu prices. Offers apply across
+  // the goods, so scale each rate's share by the goods discount ratio.
+  const discountedTaxBreakdown = useMemo(() => {
+    if (!taxBreakdown || autoDiscountMinor <= 0 || subtotalMinor <= 0) return taxBreakdown;
+    const scale = discountedSubtotalMinor / subtotalMinor;
+    return {
+      ...taxBreakdown,
+      totalTax: taxBreakdown.totalTax * scale,
+      breakdown: taxBreakdown.breakdown.map(b => ({ ...b, tax: b.tax * scale, net: b.net * scale, gross: b.gross * scale })),
+    };
+  }, [taxBreakdown, autoDiscountMinor, subtotalMinor, discountedSubtotalMinor]);
   // v5.5.648: live delivery quote (Uber Direct, or the configured fee for HubRise-bridge
   // venues) — fold the customer fee into the amount payable so it's charged + shown.
   const [deliveryQuote, setDeliveryQuote] = useState(null);
@@ -447,7 +459,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     if (!giftCard) return;
     setGiftLoading(true); setGiftError('');
     try {
-      const redeemAmount = Math.min(giftCard.balance, subtotalMinor);
+      const redeemAmount = Math.min(giftCard.balance, discountedSubtotalMinor); // v5.5.787: never redeem more than the discounted bill
       if (redeemAmount <= 0) { setGiftError('Nothing to redeem'); setGiftLoading(false); return; }
       const idempotencyKey = `online:${orderShape.ref}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
       const token = await getAuthToken();
@@ -643,7 +655,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       if (rType === 'discount_fixed' || rType === 'fixed') {
         discountMinor = rValue.amount_minor || Math.round((reward.discount_value || 0) * 100);
       } else if (rType === 'discount_percent' || rType === 'percentage') {
-        discountMinor = Math.round(subtotalMinor * (rValue.percent || reward.discount_value || 0) / 100);
+        discountMinor = Math.round(discountedSubtotalMinor * (rValue.percent || reward.discount_value || 0) / 100);
       } else if (rType === 'free_item') {
         // v5.5.247: free item — find cheapest eligible item in cart
         const eligibleIds = new Set((rValue.eligible_items || []).map(ei => ei.id));
@@ -659,7 +671,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           discountMinor = cheapest ? Math.round(cheapest.price * 100) : 0;
         }
       }
-      discountMinor = Math.min(discountMinor, subtotalMinor - giftAppliedMinor); // can't exceed remaining
+      discountMinor = Math.min(discountMinor, discountedSubtotalMinor - giftAppliedMinor); // can't exceed remaining
       setRewardApplied({
         reward_id: reward.id,
         reward_name: reward.name,
@@ -688,14 +700,16 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   const sendOrderConfirmation = (closedCheck) => {
     try {
       const { ref, customer, items } = orderShape;
-      const total = subtotal + deliveryFeeMinor / 100;
+      // v5.5.787: offers reduce the bill — the receipt total/VAT must be the discounted figures.
+      const total = (discountedSubtotalMinor + deliveryFeeMinor) / 100;
       const toEmail = (customer?.email || '').trim();
       if (toEmail) {
         sendEmailReceipt({
           to: toEmail, locationId: opsLocationId, locationLabel: location?.name,
           check: {
             id: closedCheck.id, ref, items, customer, closedAt: Date.now(), total,
-            service: 0, tip: 0, taxAmount: taxBreakdown?.totalTax || 0, taxBreakdown,
+            discountAmount: autoDiscountMinor / 100,
+            service: 0, tip: 0, taxAmount: discountedTaxBreakdown?.totalTax || 0, taxBreakdown: discountedTaxBreakdown,
             method: closedCheck.method || 'card', server: 'Online',
           },
         }).catch(() => {});
@@ -726,7 +740,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         status: 'prep',
         source: 'online',
         items, customer,
-        total: subtotal + deliveryFeeMinor / 100,   // v5.5.657: include the delivery fee so the queue/kitchen total matches what was charged
+        total: (discountedSubtotalMinor + deliveryFeeMinor) / 100,   // v5.5.657: include the delivery fee; v5.5.787: net of offers so the queue/kitchen total matches what was charged
         sent_at: sentAt.toISOString(),
         collection_time: collectionTimeLabel,
         is_asap: timeMode === 'asap',
@@ -754,7 +768,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           subtotal,
           service: 0,
           tip: 0,
-          tax_amount: taxBreakdown?.totalTax || null,
+          tax_amount: discountedTaxBreakdown?.totalTax || null, // v5.5.787: VAT on the discounted amount
           total: remainingMinor / 100,   // NET of gift card + loyalty (what was actually paid) — matches POS/kiosk
           method: rewardApplied && giftApplied ? 'split' : giftApplied ? 'gift_card' : rewardApplied ? 'loyalty' : 'gift_card',
           drawer_id: null,
@@ -797,13 +811,13 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         email: customer.email,
         marketingOptIn: false,
         locationId: opsLocationId,
-        orderRecord: { ref, total: subtotal, items, type: orderType },
+        orderRecord: { ref, total: discountedSubtotalMinor / 100, items, type: orderType },
       }).catch(e => console.warn('[OnlineCheckout] attribute failed:', e?.message || e));
 
       // v5.5.287: Decrement stock for each item in the order
       decrementOnlineStock(cart, opsLocationId);
 
-      onPlaced?.({ ref, collectionAt, total: subtotal, paymentIntent: null });
+      onPlaced?.({ ref, collectionAt, total: (discountedSubtotalMinor + deliveryFeeMinor) / 100, paymentIntent: null });
     } catch (e) {
       console.error('[OnlineCheckout] gift-only order failed:', e);
       setError('Could not save the order. Contact the venue.');
@@ -835,7 +849,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         status: 'prep',
         source: 'online',
         items, customer,
-        total: subtotal + deliveryFeeMinor / 100,   // v5.5.657: include the delivery fee so the queue/kitchen total matches what was charged
+        total: (discountedSubtotalMinor + deliveryFeeMinor) / 100,   // v5.5.657: include the delivery fee; v5.5.787: net of offers so the queue/kitchen total matches what was charged
         sent_at: sentAt.toISOString(),
         collection_time: collectionTimeLabel,
         is_asap: timeMode === 'asap',
@@ -867,7 +881,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           subtotal,
           service: 0,
           tip: 0,
-          tax_amount: taxBreakdown?.totalTax || null, // v5.5.154: VAT for reports + receipt
+          tax_amount: discountedTaxBreakdown?.totalTax || null, // v5.5.154: VAT for reports + receipt; v5.5.787: on the discounted amount
           total: remainingMinor / 100,   // NET of gift card + loyalty (what was actually paid) — matches POS/kiosk
           method: (giftApplied || rewardApplied) ? 'split' : 'card',
           stripe_payment_intent_id: payId,
@@ -923,7 +937,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         email: customer.email,
         marketingOptIn: false,
         locationId: opsLocationId,
-        orderRecord: { ref, total: subtotal, items, type: orderType },
+        orderRecord: { ref, total: discountedSubtotalMinor / 100, items, type: orderType },
       }).catch(e => console.warn('[OnlineCheckout] attribute failed:', e?.message || e));
 
       // v5.5.287: Decrement stock for each item in the order
@@ -940,11 +954,11 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           // pickupAt = the food-ready time, but ONLY for SCHEDULED orders (a future slot) so Stuart
           // collects then. ASAP orders dispatch IMMEDIATELY (Stuart finds a courier now) — never
           // scheduled to a future time, which surprised staff ("ASAP got scheduled for later").
-          dispatchDelivery({ opsLocationId, order: { ref, items, total: subtotal + deliveryFeeMinor / 100, customer, pickupAt: (timeMode === 'asap' || !collectionAt) ? null : collectionAt.toISOString() }, quote: dq }).catch(() => {});
+          dispatchDelivery({ opsLocationId, order: { ref, items, total: (discountedSubtotalMinor + deliveryFeeMinor) / 100, customer, pickupAt: (timeMode === 'asap' || !collectionAt) ? null : collectionAt.toISOString() }, quote: dq }).catch(() => {});
         }
       }
 
-      onPlaced?.({ ref, collectionAt, total: subtotal, paymentIntent });
+      onPlaced?.({ ref, collectionAt, total: (discountedSubtotalMinor + deliveryFeeMinor) / 100, paymentIntent });
     } catch (e) {
       console.error('[OnlineCheckout] post-payment write failed:', e);
       setError('Payment succeeded but we could not save the order. Contact the venue with ref ' + orderShape.ref + '.');
@@ -1025,7 +1039,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           <Elements stripe={stripePromise} options={{ clientSecret: pi.client_secret, appearance: { theme: theme.isLight ? 'stripe' : 'night' } }}>
             <PayStep
               pi={pi} subtotal={remainingMinor / 100} theme={theme} cardBdr={cardBdr} inputBg={inputBg} muted={muted}
-              cart={cart} giftApplied={giftApplied} rewardApplied={rewardApplied}
+              cart={cart} autoDiscounts={autoDiscounts} giftApplied={giftApplied} rewardApplied={rewardApplied}
               onPaid={onPaymentSuccess}
               onError={setError}
               error={error}
@@ -1087,9 +1101,9 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
                     <div style={{ fontSize: 28 }}>💳</div>
                   </div>
                   <div style={{ fontSize: 12, color: muted, marginBottom: 10 }}>
-                    {giftCard.balance >= subtotalMinor
-                      ? `This card will cover the full order (${money(subtotal)}). No card payment needed.`
-                      : `This card will pay ${money((giftCard.balance / 100))} of your ${money(subtotal)} order. You'll pay the remaining ${money(((subtotalMinor - giftCard.balance) / 100))} by card.`
+                    {giftCard.balance >= discountedSubtotalMinor
+                      ? `This card will cover the full order (${money((discountedSubtotalMinor / 100))}). No card payment needed.`
+                      : `This card will pay ${money((giftCard.balance / 100))} of your ${money((discountedSubtotalMinor / 100))} order. You'll pay the remaining ${money(((discountedSubtotalMinor - giftCard.balance) / 100))} by card.`
                     }
                   </div>
                   <button
@@ -1103,7 +1117,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
                       fontFamily: 'inherit', opacity: giftLoading ? 0.6 : 1,
                     }}
                   >
-                    {giftLoading ? 'Applying…' : `Apply ${money((Math.min(giftCard.balance, subtotalMinor) / 100))} from gift card`}
+                    {giftLoading ? 'Applying…' : `Apply ${money((Math.min(giftCard.balance, discountedSubtotalMinor) / 100))} from gift card`}
                   </button>
                 </div>
               )}
@@ -1151,6 +1165,12 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
                 </div>
               );
             })}
+            {autoDiscounts.map((d, i) => (
+              <div key={`offer-${i}`} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13, color: theme.accent }}>
+                <span>🏷 {d.label}</span>
+                <span style={{ fontWeight: 700 }}>-{money(d.value || 0)}</span>
+              </div>
+            ))}
             {giftApplied && (
               <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13, color: theme.accent }}>
                 <span>💳 Gift card</span>
@@ -1281,6 +1301,12 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
                 </div>
               );
             })}
+            {autoDiscounts.map((d, i) => (
+              <div key={`offer-${i}`} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13, color: theme.accent }}>
+                <span>🏷 {d.label}</span>
+                <span style={{ fontWeight: 700 }}>-{money(d.value || 0)}</span>
+              </div>
+            ))}
             {giftApplied && (
               <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13, color: theme.accent }}>
                 <span>💳 Gift card</span>
@@ -1401,7 +1427,13 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
                 </div>
               );
             })}
-            {taxBreakdown.totalTax > 0 && taxBreakdown.breakdown.map((b, i) => (
+            {autoDiscounts.map((d, i) => (
+              <div key={`offer-${i}`} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13, color: theme.accent }}>
+                <span>🏷 {d.label}</span>
+                <span style={{ fontWeight: 700 }}>-{money(d.value || 0)}</span>
+              </div>
+            ))}
+            {discountedTaxBreakdown.totalTax > 0 && discountedTaxBreakdown.breakdown.map((b, i) => (
               <div key={`vat-${i}`} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 12, color: muted }}>
                 <span>incl. {b.rate.name || `VAT ${(Number(b.rate.rate) * 100).toFixed(0)}%`}</span>
                 <span>{money(b.tax)}</span>
@@ -1414,7 +1446,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
             )}
             <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0 0', borderTop: `1px solid ${cardBdr}`, marginTop: 8 }}>
               <span style={{ fontSize: 14, fontWeight: 800 }}>Total</span>
-              <span style={{ fontSize: 18, fontWeight: 900 }}>{money(subtotal + deliveryFeeMinor / 100)}</span>
+              <span style={{ fontSize: 18, fontWeight: 900 }}>{money((discountedSubtotalMinor + deliveryFeeMinor) / 100)}</span>
             </div>
           </div>
         </div>
@@ -1437,7 +1469,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
               display: 'flex', justifyContent: 'space-between', alignItems: 'center',
             }}>
               <span>Continue to payment</span>
-              <span>{money(subtotal)}</span>
+              <span>{money((discountedSubtotalMinor + deliveryFeeMinor) / 100)}</span>
             </button>
           </div>
         )}
@@ -1470,7 +1502,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
                 display: 'flex', justifyContent: 'space-between', alignItems: 'center',
               }}>
                 <span>{working ? 'Starting payment…' : rewardsAvailable ? 'Skip to rewards' : 'Pay by card'}</span>
-                <span>{money(subtotal)}</span>
+                <span>{money((remainingMinor / 100))}</span>
               </button>
             )}
             {!giftApplied && !rewardsAvailable && (
@@ -1668,7 +1700,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
 // ─────────────────────────────────────────────────────────────────────────────
 // PayStep — renders the CardElement + Pay button. Lives inside <Elements>
 // so it can use useStripe() / useElements() to confirm the PaymentIntent.
-function PayStep({ pi, subtotal, theme, cardBdr, inputBg, muted, cart, giftApplied, rewardApplied, onPaid, onError, error }) {
+function PayStep({ pi, subtotal, theme, cardBdr, inputBg, muted, cart, autoDiscounts = [], giftApplied, rewardApplied, onPaid, onError, error }) {
   const stripe = useStripe();
   const elements = useElements();
   const [busy, setBusy] = useState(false);
@@ -1724,6 +1756,12 @@ function PayStep({ pi, subtotal, theme, cardBdr, inputBg, muted, cart, giftAppli
               </div>
             );
           })}
+          {autoDiscounts.map((d, i) => (
+            <div key={`offer-${i}`} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 13, color: theme.accent }}>
+              <span>🏷 {d.label}</span>
+              <span style={{ fontWeight: 700 }}>-{money(d.value || 0)}</span>
+            </div>
+          ))}
           {giftApplied && (
             <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 13, color: theme.accent }}>
               <span>💳 Gift card</span>

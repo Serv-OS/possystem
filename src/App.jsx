@@ -93,6 +93,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.787', date: '17 Jul 2026', label: 'Online checkout — fix: offers now reduce the total, VAT and amount charged',
+    changes: [
+      'When an automatic offer (e.g. a lunch deal) fired on an online order, the checkout header showed the saving but the order summary, Total, “incl. VAT” line and the continue/pay buttons still showed the full price. The card was charged the correct discounted amount — the display and records around it were wrong. Everything now shows the discounted figure, with the offer listed as its own line in the order summary.',
+      'VAT is now calculated on the discounted amount (what the customer actually pays), on screen, on the emailed receipt and in the recorded check — so reports no longer overstate VAT on discounted online orders.',
+      'The kitchen/queue total, delivery dispatch total and customer-profile spend now also use the discounted figure, and a gift card can no longer redeem more than the discounted bill.',
+    ],
+  },
+  {
     version: '5.5.786', date: '17 Jul 2026', label: 'Online ordering — fix: some categories missing from the storefront (Salads / Sides / Dessert)',
     changes: [
       'Fixed categories not appearing on online ordering when they belong to the menu directly but have no explicit menu-link row. The storefront now uses the same rule as the till — a category shows if this is its home menu OR it is linked to it — so Salads, Sides and Dessert are back online.',
