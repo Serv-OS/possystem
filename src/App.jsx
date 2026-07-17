@@ -93,6 +93,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.796', date: '17 Jul 2026', label: 'Renaming a product now updates it inside modifier groups too',
+    changes: [
+      'Renaming a product in the Back office menu manager now renames it everywhere it appears as an option inside modifier groups — options linked to the product (opt.itemId) and older options matched only by name both pick up the new name and save immediately.',
+      'Previously the cascade only matched legacy composite option ids ("opt-NNN-m-<id>"), so options linked via itemId — how the back office has created them since — kept the old snapshotted name on the till, kiosk and online.',
+      'The name-match fallback rename keeps the 86/out-of-stock check working for never-linked options: it resolves by name, so the option must follow the product\'s new name.',
+      'The item save never fails on this: if a modifier-group save errors, the item still saves and a warning toast asks for a manual refresh of the modifier lists.',
+    ],
+  },
+  {
     version: '5.5.795', date: '17 Jul 2026', label: 'Online ordering — dietary icons (GF / V / VG / DF) now show on menu items',
     changes: [
       'Online ordering — dietary icons (GF / V / VG / DF) now show on menu items. Items tagged in Back office → Menu → Allergens & dietary display small green badge pills on the storefront menu cards, next to the price.',

@@ -645,19 +645,23 @@ export const useStore = create((set, get) => ({
         {id:'sub-soy',     name:'Soy milk',            price:0.5},
       ]},
   ] : [],
-  // Helper: persist a modifier group to Supabase (upsert by id)
+  // Helper: persist a modifier group to Supabase (upsert by id).
+  // Returns true on success, false on failure — callers that need to know
+  // (the item-rename cascade) check it; existing callers ignore it.
   _saveModGroup: async (group) => {
-    if (isMock) return;
+    if (isMock) return true;
     try {
       const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
       const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
       const locId = getActiveLocationSync() || await getLocationId();
-      await fetch(`${SUPABASE_URL}/rest/v1/modifier_groups?on_conflict=id`, {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/modifier_groups?on_conflict=id`, {
         method: 'POST',
         headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}`, 'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates,return=minimal' },
         body: JSON.stringify([{ id: group.id, location_id: locId, name: group.name, min: group.min ?? 0, max: group.max ?? 1, selection_type: group.selectionType || 'single', options: group.options || [], sort_order: group.sortOrder || 0 }]),
       });
-    } catch (e) { console.warn('modifier group save failed', e); }
+      if (!res.ok) console.warn('modifier group save failed:', res.status);
+      return res.ok;
+    } catch (e) { console.warn('modifier group save failed', e); return false; }
   },
 
   addModifierGroupDef: g => {
@@ -829,14 +833,23 @@ export const useStore = create((set, get) => ({
       // RENAME CASCADE — if the display name changed, walk modifier_groups
       // and update any option that references this menu_item, so the picker
       // labels (and the cart-line mod entries built from them) reflect the
-      // new name. Modifier-group options use composite ids of the form
-      // "opt-NNN-m-<menu_item_id>"; we match on the m-<id> tail.
+      // new name. Options link three ways:
+      //   1. opt.itemId === item.id — the primary linkage (BO "add item as
+      //      option" sets it; also how the kiosk 86-check resolves).
+      //   2. Legacy composite ids of the form "opt-NNN-m-<menu_item_id>" —
+      //      match on the m-<id> tail (only works for m-* item ids).
+      //   3. No itemId at all — the resolveOptItemId name-match fallback.
+      //      Rename those whose name matches the OLD item name (same
+      //      trim+lowercase normalisation) so the 86 fallback keeps working.
       const nameChanged = (
         ('menuName' in patch && patch.menuName !== undefined) ||
         ('name'     in patch && patch.name     !== undefined) ||
         ('menu_name' in patch && patch.menu_name !== undefined)
       ) && fullItem;
       if (nameChanged) {
+        const prevItem = s.menuItems.find(i => i.id === id);
+        const oldName = prevItem ? (prevItem.menuName || prevItem.name || '') : '';
+        const oldKey = String(oldName).trim().toLowerCase();
         const newName = fullItem.menuName || fullItem.name || 'Item';
         const idTail = `-m-${id.replace(/^m-/, '')}`;
         let touched = 0;
@@ -844,7 +857,11 @@ export const useStore = create((set, get) => ({
           if (!Array.isArray(g.options) || g.options.length === 0) return g;
           let groupChanged = false;
           const newOptions = g.options.map(o => {
-            const matchesId = o.id === id || (typeof o.id === 'string' && o.id.endsWith(idTail));
+            const optItemId = o.itemId || o.item_id || null;
+            const matchesId = optItemId === id
+              || o.id === id
+              || (typeof o.id === 'string' && o.id.endsWith(idTail))
+              || (!optItemId && oldKey && String(o.name || '').trim().toLowerCase() === oldKey);
             if (!matchesId) return o;
             if (o.name === newName) return o;
             groupChanged = true;
@@ -855,9 +872,18 @@ export const useStore = create((set, get) => ({
         });
         if (touched > 0) {
           // Persist every group whose options changed (rare, so the parallel
-          // saves are bounded).
+          // saves are bounded). A group-save failure must NEVER fail the item
+          // save — warn so the operator knows to re-check the modifier lists.
+          const saves = [];
           updatedGroups.forEach((g, i) => {
-            if (g !== s.modifierGroupDefs[i]) useStore.getState()._saveModGroup(g);
+            if (g !== s.modifierGroupDefs[i]) saves.push(useStore.getState()._saveModGroup(g));
+          });
+          Promise.all(saves).then(results => {
+            if (results.some(r => r === false)) {
+              useStore.getState().showToast?.('Item saved — modifier lists may need a manual refresh', 'warning');
+            }
+          }).catch(() => {
+            useStore.getState().showToast?.('Item saved — modifier lists may need a manual refresh', 'warning');
           });
           return { menuItems: items, modifierGroupDefs: updatedGroups };
         }
