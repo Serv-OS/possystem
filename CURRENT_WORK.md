@@ -16,6 +16,17 @@ A SaaS restaurant/bar POS with many device "surfaces" off one codebase (URL `?mo
 
 ## Recent arc (this block of sessions)
 
+### Checkout compact layout (v5.5.793) — SHIPPED
+Owner request from live portrait-till screenshots: staff go straight to payment, so the
+payment controls must NEVER need a scroll to reach. `CheckoutModal.jsx` review screen is
+now a flex column: the bill-items list (+ loyalty banner) scrolls in its own region
+(`flex:'1 1 auto', minHeight:0, overflowY:auto`) while totals / Print receipt / payment
+tiles / gift+split stay pinned below (`flexShrink:0`); every other checkout screen keeps
+the original whole-body scroll (conditional style on the body div). Card/Cash tiles are
+~half height (icon+name on one row, single merged subtitle); "Gift card or promo code" +
+"Split check" are two half-width buttons on one row. Layout only — zero payment-logic
+changes. Verified in dev mock at 1280×800 and 800×1280 with a 12-line order.
+
 ### Paying always fires production (v5.5.792) — SHIPPED
 Owner bug: counter/walk-up staff ring items and go STRAIGHT to payment (e.g. cash) without
 tapping Save & send — the check closed paid but NO KDS ticket / kitchen print ever fired.
