@@ -16,6 +16,18 @@ A SaaS restaurant/bar POS with many device "surfaces" off one codebase (URL `?mo
 
 ## Recent arc (this block of sessions)
 
+### Order panel follows adds (v5.5.791) — SHIPPED
+Owner UX report: on a long order, tapping menu items appended the new line out of view at the
+bottom of the basket. The POS order panel (and the Bar round-being-built) now auto-scrolls the
+just-added line into view and flashes it (~1s accent fade, new `.line-flash` keyframe in
+`globals.css`). Also fires on a qty increase of an existing line (+ stepper on POS; same-item
+merge on Bar). Implementation: an effect diffs the items list (uid→qty map in a ref) so unrelated
+re-renders never re-trigger, baseline resets on table/walk-in/tab switch; lines carry
+`data-line-uid`, scroll via `scrollIntoView` on the panel ref — **no rAF** (never fires on
+hidden/background tabs; smooth on visible tills, instant when `document.hidden`). Files:
+`POSSurface.jsx`, `BarSurface.jsx`, `styles/globals.css`. **MPOS skipped** — its menu and cart are
+separate full screens (no visible basket while tapping), so the pattern doesn't apply.
+
 ### Triple item naming actually wired (v5.5.790) — SHIPPED
 Owner bug: menu items have three names (POS button / RECEIPT / KITCHEN-KDS) but receipts and the
 KDS/kitchen tickets always printed the POS name. Root cause: order lines only snapshotted `name` at
