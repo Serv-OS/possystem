@@ -16,6 +16,23 @@ A SaaS restaurant/bar POS with many device "surfaces" off one codebase (URL `?mo
 
 ## Recent arc (this block of sessions)
 
+### Product rename now cascades into modifier groups (v5.5.796) — SHIPPED
+Owner bug: renaming a product in BO menu manager left the OLD name on that product where
+it appears as an option inside modifier groups. Root cause: the existing rename cascade in
+`updateMenuItem` (store/index.js) only matched legacy composite option ids
+(`opt-NNN-m-<id>`) — it never checked `opt.itemId`, which is how the BO modifier editor
+has linked options to items since (MenuManager "Add option from Items list"), and the
+`-m-` tail never matches items whose ids don't start with `m-`. Fix at the same choke
+point: cascade now matches (1) `opt.itemId === item.id`, (2) the legacy id forms, and
+(3) options with NO itemId whose name equals the OLD item name (trim+lowercase — mirrors
+`resolveOptItemId`'s 86-fallback so name-linked options keep following the item). Changed
+groups persist via `_saveModGroup` (now returns success) and a failure toasts
+"Item saved — modifier lists may need a manual refresh" — the item save itself never
+fails on a group-save error. Groups reach tills via the config-push snapshot
+(`modifierGroupDefs`) + direct `modifier_groups` fetch at boot; no render-path changes.
+Verified in dev mock: UI rename of a sub-item updated both an itemId-linked option and a
+name-only option live in the modifier editor.
+
 ### Checkout compact layout (v5.5.793) — SHIPPED
 Owner request from live portrait-till screenshots: staff go straight to payment, so the
 payment controls must NEVER need a scroll to reach. `CheckoutModal.jsx` review screen is
