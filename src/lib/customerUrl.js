@@ -31,6 +31,7 @@ import { CUSTOMER_ROOT } from './env';
 const NON_SLUG_SUBDOMAINS = new Set([
   '', 'www', 'localhost', 'possystem-liard',
   'de', 'app', 'bo', 'admin', 'api', 'staging', 'stage', 'dev', 'test', 'preview',
+  'order', // reserved for the multi-site group landing page (/order/<groupSlug>)
 ]);
 
 // Domains we treat as the customer-facing root. The first match wins.
@@ -44,10 +45,22 @@ const ROOT_DOMAIN_SUFFIXES = [
 ];
 
 export function parseCustomerUrl(loc = (typeof window !== 'undefined' ? window.location : null)) {
-  if (!loc) return { mode: null, slug: null, tableId: null };
+  if (!loc) return { mode: null, slug: null, tableId: null, groupSlug: null };
   const hostname = (loc.hostname || '').toLowerCase();
   const pathname = loc.pathname || '/';
   const params = new URLSearchParams(loc.search || '');
+
+  // Multi-site group landing page — /order/<groupSlug> (path) or ?group=<groupSlug>
+  // (query variant for hosts/previews where paths are awkward). Resolved against
+  // platform `companies.slug`, NOT a venue slug — checked before venue parsing so a
+  // group link works on any host that serves this app (operator domain, Vercel
+  // preview, or a venue subdomain).
+  const groupMatch = pathname.match(/^\/order\/([^/?#]+)/);
+  const groupParam = params.get('group');
+  if (groupMatch || groupParam) {
+    const groupSlug = (groupMatch ? decodeURIComponent(groupMatch[1]) : groupParam).toLowerCase();
+    return { mode: 'group', slug: null, tableId: null, groupSlug };
+  }
 
   // 1. Slug — try subdomain first, fall back to ?loc query
   let slug = null;
@@ -123,7 +136,7 @@ export function parseCustomerUrl(loc = (typeof window !== 'undefined' ? window.l
     else if (slug) mode = 'online'; // having a slug implies online by default
   }
 
-  return { mode, slug, tableId };
+  return { mode, slug, tableId, groupSlug: null };
 }
 
 // Resolve a slug to a location row from platform DB. Returns null if the

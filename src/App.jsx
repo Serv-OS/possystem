@@ -34,6 +34,7 @@ import KioskAutoUpdate from './components/KioskAutoUpdate';
 import OnboardingSignSurface from './surfaces/OnboardingSignSurface';
 import RyftTestSurface from './surfaces/RyftTestSurface';
 import CustomerBoot from './surfaces/CustomerBoot';
+import GroupOrderSurface from './surfaces/GroupOrderSurface';
 import { parseCustomerUrl as parseCustomerUrlForBoot } from './lib/customerUrl';
 import AIChat from './components/AIChat';
 
@@ -8633,6 +8634,12 @@ export default function App() {
   if (urlMode === 'ryft-test') return <RyftTestSurface />;
   if (!urlMode) {
     const customerCtx = parseCustomerUrlForBoot();
+    // Multi-site group landing page — /order/<groupSlug> (or ?group=). Resolves a
+    // COMPANY (platform companies.slug), not a venue; the customer picks a venue
+    // there and is handed to that venue's existing online/catering URL.
+    if (customerCtx?.mode === 'group' && customerCtx.groupSlug) {
+      return <GroupOrderSurface groupSlug={customerCtx.groupSlug} />;
+    }
     if (customerCtx?.slug && CUSTOMER_MODES.includes(customerCtx.mode)) {
       return <CustomerBoot slug={customerCtx.slug} mode={customerCtx.mode} tableId={customerCtx.tableId} />;
     }

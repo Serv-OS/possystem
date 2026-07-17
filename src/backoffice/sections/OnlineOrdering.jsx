@@ -10,7 +10,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { platformSupabase, supabase, getLocationId } from '../../lib/supabase';
-import { CUSTOMER_ROOT, customerUrl } from '../../lib/env';
+import { CUSTOMER_ROOT, customerUrl, groupOrderUrl } from '../../lib/env';
 import QRCode from 'qrcode';
 
 // Reuses the existing receipt-assets bucket with an online/ prefix so logo
@@ -46,6 +46,9 @@ export default function OnlineOrdering({ setSection }) {
   const [error, setError]     = useState('');
 
   const [row,    setRow]      = useState(null);
+  // Multi-site group ordering link — set when this venue's company has
+  // more than one location ({ slug, name, count }); read-only, shown for copying.
+  const [group,  setGroup]    = useState(null);
   const [menus,  setMenus]    = useState([]);
   const [branding, setBranding] = useState(BLANK_BRANDING);
   const [menuId, setMenuId]   = useState('');
@@ -88,7 +91,7 @@ export default function OnlineOrdering({ setSection }) {
 
         // Platform location row — the home of online_branding / online_menu_id / etc
         if (platformSupabase) {
-          const select = 'id, name, online_slug, online_enabled, qr_enabled, online_menu_id, online_branding, online_collection_lead_min, online_delivery_enabled';
+          const select = 'id, name, company_id, online_slug, online_enabled, qr_enabled, online_menu_id, online_branding, online_collection_lead_min, online_delivery_enabled';
           let r = null;
           if (opsLocId) {
             const r1 = await platformSupabase.from('locations').select(select).eq('ops_location_id', opsLocId).maybeSingle();
@@ -137,6 +140,19 @@ export default function OnlineOrdering({ setSection }) {
                 if (tab.qr_tab_force_close_after_minutes != null) setQrTabForceCloseMin(Number(tab.qr_tab_force_close_after_minutes));
               }
             } catch { /* columns not migrated — defaults stand */ }
+            // Multi-site group ordering link — when this venue's company has more
+            // than one location, surface the one-link-for-the-group landing page
+            // (/order/<companies.slug>) for copying. Defensive: any failure just
+            // hides the card.
+            try {
+              if (r.company_id) {
+                const [{ data: co }, { count }] = await Promise.all([
+                  platformSupabase.from('companies').select('id, name, slug').eq('id', r.company_id).maybeSingle(),
+                  platformSupabase.from('locations').select('id', { count: 'exact', head: true }).eq('company_id', r.company_id),
+                ]);
+                if (alive && co?.slug && (count || 0) > 1) setGroup({ slug: co.slug, name: co.name, count });
+              }
+            } catch { /* group link is optional */ }
           }
         }
         // v5.5.147/148/152: load floor-plan tables. floor_tables schema is
@@ -304,6 +320,9 @@ export default function OnlineOrdering({ setSection }) {
         <StatusPill title="🎁 Gift cards" enabled={true} url={giftUrl} preview={previewGift}/>
         <StatusPill title="⭐ Loyalty portal" enabled={true} url={portalUrl} preview={previewPortal}/>
       </div>
+
+      {/* Multi-site group ordering link — one link for the whole group */}
+      {group && <GroupLinkCard group={group} />}
 
       {/* Menu picker */}
       <div style={S.card}>
@@ -637,6 +656,36 @@ function QrSettingsBlock({
             })}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// Multi-site group ordering link — read-only copy field. One link for the whole
+// group: customers land on a branded venue picker (/order/<companies.slug>) and are
+// handed to the chosen venue's existing online/catering URLs.
+function GroupLinkCard({ group }) {
+  const [copied, setCopied] = useState(false);
+  const url = groupOrderUrl(group.slug);
+  if (!url) return null;
+  return (
+    <div style={S.card}>
+      <div style={S.h2}>🏢 Group ordering link</div>
+      <div style={S.desc}>
+        <b>{group.name}</b> has {group.count} locations. Put this ONE link on the group's website —
+        customers pick their venue, then order online or catering there. Per-venue links above keep working as normal.
+      </div>
+      <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
+        <input readOnly value={url} onFocus={e => e.target.select()}
+          style={{ ...S.input, flex:'1 1 260px', width:'auto', fontFamily:'var(--font-mono, monospace)', fontSize:12, color:'var(--t2)' }}/>
+        <button onClick={() => { navigator.clipboard?.writeText(url); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
+          style={{ ...S.btn, background:'var(--bg3)', color:'var(--t1)', border:'1px solid var(--bdr)' }}>
+          {copied ? '✓ Copied' : '📋 Copy'}
+        </button>
+        <a href={url} target="_blank" rel="noopener"
+          style={{ ...S.btn, background:'transparent', color:'var(--acc)', border:'1px solid var(--bdr)', textDecoration:'none', display:'inline-block' }}>
+          Open ↗
+        </a>
       </div>
     </div>
   );

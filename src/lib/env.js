@@ -54,6 +54,20 @@ export function customerUrl(slug, path = '') {
 }
 
 /**
+ * Build the multi-site GROUP ordering link — one link a restaurant group puts on
+ * their website; customers pick a venue, then order. Path-based (/order/<groupSlug>,
+ * groupSlug = platform companies.slug) rather than subdomain-based, so it works on
+ * any host that serves this app: the operator domain, a Vercel preview, or a venue
+ * subdomain. Same-origin keeps the link alive wherever it was generated.
+ */
+export function groupOrderUrl(groupSlug) {
+  if (!groupSlug) return '';
+  const path = `/order/${encodeURIComponent(groupSlug)}`;
+  if (typeof window !== 'undefined') return `${window.location.origin}${path}`;
+  return `https://${OPERATOR_HOST}${path}`;
+}
+
+/**
  * The operator app hostname.
  * dev → dev.serv-os.app, stage → stage.serv-os.app, prod → app.serv-os.app
  */
