@@ -243,7 +243,10 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
         let cats = categoriesData;
         if (linksData) {
           const linked = new Set(linksData.map(l => l.category_id));
-          cats = cats.filter(c => linked.has(c.id) || (c.parent_id && linked.has(c.parent_id)));
+          // Match the POS rule (v4.7.6): a category is in the menu if the menu is its
+          // PRIMARY home (menu_id) OR it's joined via menu_category_links. Checking only
+          // links dropped home-menu categories with no link row (Salads/Sides/Dessert).
+          cats = cats.filter(c => c.menu_id === onlineMenuId || linked.has(c.id) || (c.parent_id && linked.has(c.parent_id)));
         }
         console.log('[OnlineSurface] fetch results', {
           items: itemsData.length, categories: cats.length,

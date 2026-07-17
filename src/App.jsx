@@ -93,6 +93,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.786', date: '17 Jul 2026', label: 'Online ordering — fix: some categories missing from the storefront (Salads / Sides / Dessert)',
+    changes: [
+      'Fixed categories not appearing on online ordering when they belong to the menu directly but have no explicit menu-link row. The storefront now uses the same rule as the till — a category shows if this is its home menu OR it is linked to it — so Salads, Sides and Dessert are back online.',
+    ],
+  },
+  {
     version: '5.5.785', date: '17 Jul 2026', label: 'Internal — marketing screenshot harness (scripts/screenshots.mjs)',
     changes: [
       'New internal tool: automated retina screenshots of every surface (back office, till, floor, KDS, bar, orders, clock, waitlist, menu board, online ordering, review card, manager app) for sales-deck material. No product changes.',
