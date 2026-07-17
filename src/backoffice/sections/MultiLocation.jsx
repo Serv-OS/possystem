@@ -6,6 +6,7 @@
  */
 import { useState } from 'react';
 import { useStore } from '../../store';
+import { supabase, platformSupabase, isMock } from '../../lib/supabase';
 
 const TIMEZONES = [
   'Europe/London', 'Europe/Dublin', 'Europe/Paris', 'Europe/Berlin',
@@ -39,10 +40,25 @@ export default function MultiLocation() {
     setView('add');
   };
 
-  const save = () => {
+  const save = async () => {
     if (!form.name?.trim()) { showToast('Location name required', 'error'); return; }
     if (editId) {
       updateLocation(editId, form);
+      // Persist the venue name to BOTH databases: ops (tills, back office, receipts)
+      // and platform (online ordering / gift / loyalty read the name from the platform
+      // row, matched by ops_location_id) — otherwise a rename never reaches the
+      // customer-facing ordering pages. Best-effort: the local save stands either way.
+      if (!isMock && supabase) {
+        const name = form.name.trim();
+        try {
+          await supabase.from('locations').update({ name }).eq('id', editId);
+          const { error: pErr } = await platformSupabase.from('locations').update({ name })
+            .or(`ops_location_id.eq.${editId},id.eq.${editId}`);
+          if (pErr) showToast('Saved, but the online-ordering name didn’t sync — try again', 'error');
+        } catch {
+          showToast('Saved here, but the name didn’t sync everywhere — check your connection', 'error');
+        }
+      }
       showToast('Location updated', 'success');
     } else {
       addLocation({ id:`loc-${Date.now()}`, ...form, isActive:true, createdAt:new Date() });

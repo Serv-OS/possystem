@@ -93,6 +93,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.794', date: '17 Jul 2026', label: 'Renaming a venue now updates the customer-facing ordering pages too',
+    changes: [
+      'Fixed venue renames only applying inside the till/back office. The name is now saved to both databases at once, so online ordering, gift cards and loyalty pages show the new name straight away.',
+    ],
+  },
+  {
     version: '5.5.793', date: '17 Jul 2026', label: 'POS checkout — compact layout: payment always in view',
     changes: [
       'POS checkout — compact layout: payment always in view, items scroll, gift/split side by side, smaller payment tiles. Staff usually skip reviewing the bill and go straight to payment; on a long order the payment buttons used to be pushed below the fold and needed a scroll to reach.',
