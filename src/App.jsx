@@ -94,6 +94,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.801', date: '17 Jul 2026', label: 'Fix — archiving/restoring an item from the Items library no longer risks resetting its details',
+    changes: [
+      'Archiving or restoring an item from Back office → Menu → Items wrote a near-empty row to the database, which could silently reset the item\'s name, price, category, modifier assignments and variant linkage. The archive/restore toggle now updates ONLY the archived flag.',
+      'Saving an item from the Items tab now carries the full item through to the database — fields the form doesn\'t edit (tax rate, KDS centre, visibility, sold-alone, tags, instruction groups) were being reset to defaults on every save.',
+    ],
+  },
+  {
     version: '5.5.800', date: '17 Jul 2026', label: 'Group ordering: single venue goes straight to ordering; separate catering location chooser with delivery/pickup per venue',
     changes: [
       'Single-venue skip: on the group ordering link (/order/<group>), when only ONE venue in the group has online ordering, customers now go straight into that venue\'s ordering site — no picker page. Same for the catering link below.',

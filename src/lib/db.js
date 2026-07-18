@@ -221,6 +221,16 @@ export const archiveMenuItem = async (id) => {
   return supabase.from('menu_items').update({ archived: true, updated_at: new Date().toISOString() }).eq('id', id).eq('location_id', locationId);
 };
 
+// v5.5.801: flip ONLY the archived flag. Never route an archive/restore through
+// upsertMenuItem with a partial object — it builds a full row and defaults every
+// missing field (name→'Item', pricing→{base:0}, cat/parent_id→null, mods→[]),
+// wiping the item's real data.
+export const setMenuItemArchived = async (id, archived) => {
+  if (isMock) return { data: null, error: null };
+  const locationId = getActiveLocationSync() || await getLocationId();
+  return supabase.from('menu_items').update({ archived: !!archived, updated_at: new Date().toISOString() }).eq('id', id).eq('location_id', locationId);
+};
+
 // ── Floor plan ────────────────────────────────────────────────────────────────
 export const fetchFloorPlan = async (locationId = null) => {
   if (isMock) return { data: null, error: null };

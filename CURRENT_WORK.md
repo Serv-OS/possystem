@@ -1,6 +1,6 @@
 # Serv OS / RPOS — session handoff
 
-> **Current build: v5.5.699** · live: https://possystem-liard.vercel.app · dev: https://dev.serv-os.app · repo: **Serv-OS/possystem** (branch `develop`, Vercel auto-deploys).
+> **Current build: v5.5.801** · live: https://possystem-liard.vercel.app · dev: https://dev.serv-os.app · repo: **Serv-OS/possystem** (branch `develop`, Vercel auto-deploys).
 > Multi-tenant hospitality POS (React 19 + Vite, Zustand, Supabase; no TypeScript, no tests). First customer is UK / GBP.
 > **Pillars:** don't break working functionality · resolve the real `locationId` before any DB write (never `loc-demo`) · CSS vars not hardcoded colours · bump `src/lib/version.js` + add a `CHANGELOG` entry in `src/App.jsx` on every web deploy · money is `numeric`, never float.
 
@@ -15,6 +15,23 @@ A SaaS restaurant/bar POS with many device "surfaces" off one codebase (URL `?mo
 ---
 
 ## Recent arc (this block of sessions)
+
+### Items-library archive wipe fix (v5.5.801) — SHIPPED
+Latent data loss in `src/backoffice/sections/Items.jsx`: `onArchiveToggle` pushed
+`upsertMenuItem({ id, archived })` — but db.js `upsertMenuItem` builds a FULL row,
+defaulting every missing field (name→'Item', pricing→{base:0}, cat/parent_id→null,
+mods→[]), so an archive/restore could wipe the item's real data. Now uses new db.js
+`setMenuItemArchived(id, archived)` — a targeted `update({archived, updated_at})`
+with the location fence, mirroring `archiveMenuItem`. Same class in `onSave`: its
+enumerated payload omitted tags/visibility/soldAlone/centreId/taxRateId/taxOverrides/
+instruction groups/org/master/lockedFields → now spreads the full post-update store
+item first. Audited ALL other `upsertMenuItem(` callers (BackOfficeApp push,
+SyncBridge, store ×3) — all pass full items, safe. Did NOT touch upsertMenuItem's
+defaulting (store paths rely on it). IMPORTANT context: **Items.jsx is currently
+DEAD code — nothing imports it** (the BO nav "Items" tab is MenuManager's own tab,
+which archives via the safe store actions); the fix future-proofs the designated
+replacement component before anyone re-mounts it. Verified: clean build; dev-mock
+archive→restore of 8oz Ribeye in MenuManager kept name/price/type/mods/category.
 
 ### Duplicate-name guard + auto-modifiable type (v5.5.798) — SHIPPED
 Owner bug 1: he could add the same product twice. Rule (new `findDuplicateProductName`

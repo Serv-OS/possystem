@@ -26,7 +26,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useStore, findDuplicateProductName } from '../../store';
 import { ALLERGENS } from '../../data/seed';
 import { supabase, getLocationId } from '../../lib/supabase';
-import { upsertMenuItem, uploadProductImage, deleteProductImage } from '../../lib/db';
+import { upsertMenuItem, setMenuItemArchived, uploadProductImage, deleteProductImage } from '../../lib/db';
 import { money } from '../../lib/currency';
 
 // ───────────────────────────────────────────────────────────────────
@@ -257,7 +257,12 @@ export default function Items() {
       // type/parentId are passed explicitly so upsertMenuItem can't default
       // them to 'simple'/null and silently clobber the row.
       const stored = useStore.getState().menuItems.find(i => i.id === draft.id);
+      // v5.5.801: spread the FULL store item first — fields this form doesn't
+      // edit (tags, visibility, soldAlone, centreId, taxRateId, taxOverrides,
+      // instruction groups, org/master/lockedFields) must reach the DB write,
+      // or upsertMenuItem defaults them and silently resets the row.
       await upsertMenuItem({
+        ...(stored || {}),
         id: draft.id,
         type: stored?.type ?? draft.type,
         parentId: draft.parentId,
@@ -304,8 +309,10 @@ export default function Items() {
     try {
       if (newArchived && archiveMenuItem) await archiveMenuItem(draft.id);
       else if (updateMenuItem) updateMenuItem(draft.id, { archived: newArchived });
-      // Push to DB regardless so it survives reload
-      await upsertMenuItem({ id: draft.id, archived: newArchived });
+      // Push to DB regardless so it survives reload. v5.5.801: targeted flag
+      // update only — upsertMenuItem({ id, archived }) rebuilt the whole row
+      // from defaults, wiping name/pricing/category/mods/parent linkage.
+      await setMenuItemArchived(draft.id, newArchived);
     } catch (e) {
       console.warn('[Items] archive toggle failed:', e?.message || e);
     }
