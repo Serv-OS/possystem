@@ -29,7 +29,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase, platformSupabase } from '../lib/supabase';
 import { customerUrl } from '../lib/env';
-import { isOpenNow, nextOpensAt } from '../lib/openingHours';
+import { isOpenNow, nextOpensAt, formatHoursPreview } from '../lib/openingHours';
 import { readTheme, deriveVars, readableOn, FIXED, DISPLAY_FONT, BODY_FONT } from './menu/menuTheme';
 import MenuHeader from './menu/MenuHeader';
 
@@ -81,6 +81,19 @@ export default function GroupOrderSurface({ groupSlug, variant = 'online' }) {
         if (cancelled) return;
         const venues = locs || [];
 
+        // v5.5.802: venue address for the picker cards. The platform row's address
+        // is often unset — the ops DB `locations.address` (receipt/BO address) is
+        // the populated source, so probe it as the fallback. Failure = no address
+        // line, never a broken card.
+        const opsAddr = {};
+        if (supabase && venues.length) {
+          try {
+            const opsIds = [...new Set(venues.map(v => v.ops_location_id || v.id))];
+            const { data: opsLocs } = await supabase.from('locations').select('id, address').in('id', opsIds);
+            (opsLocs || []).forEach(r => { if (r.address && String(r.address).trim()) opsAddr[r.id] = String(r.address).trim(); });
+          } catch { /* address line just won't render */ }
+        }
+
         // Catering availability + fulfilment per venue — the anon-safe RPC returns
         // the settings row ONLY when the catering site is enabled, so a non-null
         // result = catering is on; takeout/delivery flags drive the picker badges.
@@ -101,7 +114,14 @@ export default function GroupOrderSurface({ groupSlug, variant = 'online' }) {
           }));
         }
 
-        setState({ loading: false, company, venues: venues.map(v => ({ ...v, catering: catering[v.id] || null })), error: null });
+        setState({
+          loading: false, company, error: null,
+          venues: venues.map(v => ({
+            ...v,
+            address: (v.address && String(v.address).trim()) || opsAddr[v.ops_location_id || v.id] || null,
+            catering: catering[v.id] || null,
+          })),
+        });
       } catch (e) {
         if (!cancelled) setState({ loading: false, company: null, venues: [], error: e?.message || 'load_failed' });
       }
@@ -299,6 +319,16 @@ function VenueCard({ venue, isCatering, cta, targetUrl, brandColor, onBrand, onP
       </div>
 
       {closedLine && <div style={{ fontSize: 12, color: FIXED.muted, marginTop: 6 }}>{closedLine}</div>}
+
+      {/* v5.5.802: full weekly opening times — not just the live open/closed dot.
+          Door hours are meaningful for ordering food now, so (like the status
+          pill) they show on the online picker only; catering runs on its own
+          hours/lead-time and keeps its fulfilment badges instead. */}
+      {hasHours && (
+        <div style={{ fontSize: 12, color: FIXED.muted, marginTop: 6, lineHeight: 1.55 }}>
+          <span aria-hidden="true">🕒</span> {formatHoursPreview(venue.opening_hours)}
+        </div>
+      )}
 
       {/* Catering fulfilment badges — what this venue offers for catering */}
       {isCatering && venue.catering && (venue.catering.delivery || venue.catering.collection) && (

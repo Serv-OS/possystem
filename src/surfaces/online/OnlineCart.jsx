@@ -5,7 +5,10 @@
 import { calculateOrderTax } from '../../lib/tax';
 import { money } from '../../lib/currency';
 
-export default function OnlineCart({ cart, theme, orderType, taxRates = [], onClose, onRemove, onUpdateQty, onCheckout }) {
+// checkoutDisabledReason (v5.5.802): when set, the Checkout button is disabled and
+// the reason shows above the CTAs — used while the venue is closed with no
+// order-ahead available (browse-only mode).
+export default function OnlineCart({ cart, theme, orderType, taxRates = [], onClose, onRemove, onUpdateQty, onCheckout, checkoutDisabledReason = null }) {
   const subtotal = cart.reduce((s, l) => {
     const unit = l.price + (l.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0);
     return s + unit * (l.qty || 1);
@@ -137,6 +140,17 @@ export default function OnlineCart({ cart, theme, orderType, taxRates = [], onCl
           </div>
         )}
 
+        {/* Closed / browse-only — checkout blocked with the reason (v5.5.802) */}
+        {checkoutDisabledReason && cart.length > 0 && (
+          <div style={{
+            margin: '0 22px 10px', padding: '10px 14px', borderRadius: 10, flexShrink: 0,
+            background: '#fffbeb', border: '1.5px solid #f59e0b', color: '#92400e',
+            fontSize: 13, fontWeight: 700, lineHeight: 1.5, display: 'flex', alignItems: 'center', gap: 8,
+          }}>
+            <span>🌙</span><span>{checkoutDisabledReason}</span>
+          </div>
+        )}
+
         {/* CTAs */}
         <div style={{
           padding: '12px 22px calc(14px + env(safe-area-inset-bottom)) 22px',
@@ -147,11 +161,12 @@ export default function OnlineCart({ cart, theme, orderType, taxRates = [], onCl
             background: 'transparent', color: theme.fg, border: `1.5px solid ${cardBdr}`,
             fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit',
           }}>Add more</button>
-          <button onClick={onCheckout} disabled={cart.length === 0} style={{
+          <button onClick={onCheckout} disabled={cart.length === 0 || !!checkoutDisabledReason} style={{
             flex: 1, padding: '14px 18px', borderRadius: 12,
-            background: cart.length ? theme.accent : `${theme.fg}20`,
-            color: cart.length ? contrastFg(theme.accent) : `${theme.fg}60`,
-            border: 'none', fontSize: 15, fontWeight: 800, cursor: cart.length ? 'pointer' : 'not-allowed',
+            background: (cart.length && !checkoutDisabledReason) ? theme.accent : `${theme.fg}20`,
+            color: (cart.length && !checkoutDisabledReason) ? contrastFg(theme.accent) : `${theme.fg}60`,
+            border: 'none', fontSize: 15, fontWeight: 800,
+            cursor: (cart.length && !checkoutDisabledReason) ? 'pointer' : 'not-allowed',
             fontFamily: 'inherit',
           }}>
             Checkout · {money(subtotal)}

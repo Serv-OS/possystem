@@ -62,7 +62,10 @@ function decrementOnlineStock(cart, locationId) {
   }
 }
 
-export default function OnlineCheckout({ cart, theme, location, orderType, loyalty, taxRates = [], onClose, onPlaced, onOpenLoyalty, onLoyaltyVerified }) {
+// orderAheadOnly (v5.5.802): the venue is currently CLOSED and the customer is
+// ordering ahead for reopening — timing is forced to a scheduled slot (slots only
+// ever fall inside opening windows) and the ASAP option isn't offered.
+export default function OnlineCheckout({ cart, theme, location, orderType, loyalty, taxRates = [], onClose, onPlaced, onOpenLoyalty, onLoyaltyVerified, orderAheadOnly = false }) {
   const opsLocationId = location.ops_location_id || location.id; // ops DB
   const platformLocationId = location.id;                         // platform DB
   const tz = location.timezone || 'Europe/London';
@@ -143,8 +146,8 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   // Clear hint when loyalty sign-in succeeds
   useEffect(() => { if (loyalty?.verified) setLoyaltyHint(null); }, [loyalty?.verified]);
 
-  // Timing — ASAP or scheduled
-  const [timeMode, setTimeMode] = useState('asap'); // 'asap' | 'scheduled'
+  // Timing — ASAP or scheduled (closed venues: scheduled only)
+  const [timeMode, setTimeMode] = useState(orderAheadOnly ? 'scheduled' : 'asap'); // 'asap' | 'scheduled'
   const [slot, setSlot]         = useState(null);
 
   // Submit
@@ -1399,16 +1402,25 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
 
           {/* 2. When? */}
           <SectionTitle>When?</SectionTitle>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <ModeChip active={timeMode === 'asap'} onClick={() => setTimeMode('asap')}
-              theme={theme} cardBdr={cardBdr}>
-              ⚡ ASAP <span style={{ opacity: 0.6, marginLeft: 4 }}>· ~{leadMin} min</span>
-            </ModeChip>
-            <ModeChip active={timeMode === 'scheduled'} onClick={() => setTimeMode('scheduled')}
-              theme={theme} cardBdr={cardBdr}>
-              🗓 Schedule
-            </ModeChip>
-          </div>
+          {orderAheadOnly ? (
+            <div style={{
+              background: inputBg, border: `1.5px solid ${cardBdr}`, borderRadius: 12,
+              padding: '11px 14px', fontSize: 13, fontWeight: 600, lineHeight: 1.5,
+            }}>
+              🌙 We're closed right now — pick a time below and your order will be ready when we reopen.
+            </div>
+          ) : (
+            <div style={{ display: 'flex', gap: 8 }}>
+              <ModeChip active={timeMode === 'asap'} onClick={() => setTimeMode('asap')}
+                theme={theme} cardBdr={cardBdr}>
+                ⚡ ASAP <span style={{ opacity: 0.6, marginLeft: 4 }}>· ~{leadMin} min</span>
+              </ModeChip>
+              <ModeChip active={timeMode === 'scheduled'} onClick={() => setTimeMode('scheduled')}
+                theme={theme} cardBdr={cardBdr}>
+                🗓 Schedule
+              </ModeChip>
+            </div>
+          )}
           {timeMode === 'scheduled' && (
             <SlotPicker slots={slots} value={slot} onChange={setSlot} theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
           )}

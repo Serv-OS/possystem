@@ -33,7 +33,12 @@ const FALLBACK_ACCENT = '#e8a020';
 const FALLBACK_BG     = '#ffffff';
 const FALLBACK_FG     = '#1a1a1a';
 
-export default function OnlineSurface({ location, mode = 'online', tableId = null, tableLabel = null }) {
+// closedInfo (v5.5.802) — set by CustomerBoot when the venue is CLOSED but the
+// customer tapped through to browse: { reopenAt: Date|null, canOrderAhead: bool }.
+// Shows a persistent closed banner, swaps the "Open now" pill, and gates checkout:
+// canOrderAhead → checkout forced to a scheduled slot (no ASAP); otherwise the
+// cart stays browsable but pay is disabled with the reason.
+export default function OnlineSurface({ location, mode = 'online', tableId = null, tableLabel = null, closedInfo = null }) {
   // v5.5.145: same surface drives both /?surface=online (collection/delivery)
   // and /?surface=qr&t=T5 (table-side). Mode flips a few small pieces:
   // welcome screen, sticky header chip, hero pills, checkout component,
@@ -348,6 +353,26 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   const mt = useMemo(() => readTheme(branding), [branding]);
   const vars = useMemo(() => deriveVars(mt.brandColor, mt.bodyBg), [mt.brandColor, mt.bodyBg]);
 
+  // v5.5.802: closed-browse mode — persistent banner + checkout gating.
+  const tzOnline = location.timezone || 'Europe/London';
+  const reopenShort = useMemo(() => (closedInfo?.reopenAt
+    ? new Intl.DateTimeFormat('en-GB', { timeZone: tzOnline, weekday: 'short', hour: 'numeric', minute: '2-digit', hour12: true })
+        .format(closedInfo.reopenAt).replace(',', '')
+    : null), [closedInfo, tzOnline]);
+  const browseOnly = !!(closedInfo && !closedInfo.canOrderAhead);
+  // Measured so the sticky category header can sit just below the banner.
+  const [noticeH, setNoticeH] = useState(0);
+  const closedNotice = closedInfo ? (
+    <div ref={el => { if (el && el.offsetHeight !== noticeH) setNoticeH(el.offsetHeight); }} style={{
+      position: 'sticky', top: 0, zIndex: 40, background: '#1a1310', color: '#fff',
+      padding: '9px 14px', textAlign: 'center', fontSize: 13, fontWeight: 700, lineHeight: 1.45,
+      borderBottom: '2px solid var(--brand)',
+    }}>
+      🌙 Closed{reopenShort ? <> — opens <b>{reopenShort}</b></> : ''}
+      {closedInfo.canOrderAhead ? ' · you can order ahead' : ' · browsing only'}
+    </div>
+  ) : null;
+
   const topCategories = useMemo(
     () => (categories || []).filter(c => !c.parent_id).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)),
     [categories]
@@ -561,7 +586,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   // Welcome step — first thing customers see
   if (!orderType) {
     return (
-      <ScrollShell theme={theme} vars={vars}>
+      <ScrollShell theme={theme} vars={vars} notice={closedNotice}>
         {paymentNotice === 'cancel' && (
           <div style={{
             position: 'fixed', top: 16, left: '50%', transform: 'translateX(-50%)', zIndex: 70,
@@ -595,19 +620,21 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   }
 
   return (
-    <ScrollShell theme={theme} vars={vars} extraBottomPad={cart.length > 0 ? 96 : 0}>
+    <ScrollShell theme={theme} vars={vars} extraBottomPad={cart.length > 0 ? 96 : 0} notice={closedNotice}>
       {/* Themeable header (cinematic / framed / compact) */}
       <MenuHeader theme={mt} name={location.name} pills={
         isQr
           ? [{ label: `Table ${effectiveTableLabel}` }]
           : (mt.showOpenStatus
-            ? [{ label: 'Open now', dot: true, green: true }].concat(Number(location.online_collection_lead_min) ? [{ label: `${Number(location.online_collection_lead_min)} min prep time` }] : [])
+            ? (closedInfo
+              ? [{ label: reopenShort ? `Closed — opens ${reopenShort}` : 'Closed' }]
+              : [{ label: 'Open now', dot: true, green: true }].concat(Number(location.online_collection_lead_min) ? [{ label: `${Number(location.online_collection_lead_min)} min prep time` }] : []))
             : [])
       }/>
 
       {/* Sticky header — order-type pill + allergy filter + loyalty + categories */}
       <div style={{
-        position: 'sticky', top: 0, zIndex: 8,
+        position: 'sticky', top: noticeH, zIndex: 8,
         background: headerBg, backdropFilter: 'saturate(180%) blur(12px)',
         WebkitBackdropFilter: 'saturate(180%) blur(12px)',
         borderBottom: `1px solid ${cardBdr}`,
@@ -718,7 +745,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           const catItems = itemsForCat(cat.id);
           if (!catItems.length) return null;
           return (
-            <section key={cat.id} id={`cat-${cat.id}`} style={{ marginBottom: 36, scrollMarginTop: 80 }}>
+            <section key={cat.id} id={`cat-${cat.id}`} style={{ marginBottom: 36, scrollMarginTop: 80 + noticeH }}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 18 }}>
                 <h2 style={{ fontFamily: DISPLAY_FONT, fontWeight: 700, fontSize: 'clamp(20px,4.4cqw,28px)', margin: 0, letterSpacing: '-.02em', color: 'var(--ink)' }}>{cat.label || cat.name}</h2>
                 <span style={{ height: 1, flex: 1, background: 'var(--line)' }} />
@@ -792,9 +819,13 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
         <OnlineCart
           cart={cart} theme={theme} orderType={orderType}
           taxRates={taxRates}
+          checkoutDisabledReason={browseOnly
+            ? `We're closed${reopenShort ? ` — ordering opens ${reopenShort}` : ' — online ordering is unavailable right now'}.`
+            : null}
           onClose={() => setShowCart(false)}
           onRemove={removeFromCart} onUpdateQty={updateQty}
           onCheckout={() => {
+            if (browseOnly) return; // belt & braces — the cart button is disabled too
             setShowCart(false);
             setShowCheckout(true);
           }}
@@ -806,6 +837,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           cart={cart} theme={theme} location={location}
           orderType={orderType} loyalty={loyalty}
           taxRates={taxRates}
+          orderAheadOnly={!!closedInfo}
           onClose={() => setShowCheckout(false)}
           onOpenLoyalty={() => { setShowCheckout(false); setShowLoyalty(true); }}
           onLoyaltyVerified={(ph, data) => { setLoyalty({ phone: ph, verified: true, ...data }); }}
@@ -860,7 +892,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
 // ─────────────────────────────────────────────────────────────────────────────
 // ScrollShell — wraps the surface in its own scroll container so we don't
 // inherit the operator app's body { overflow: hidden } from globals.css.
-function ScrollShell({ theme, vars, extraBottomPad = 0, children }) {
+function ScrollShell({ theme, vars, extraBottomPad = 0, notice = null, children }) {
   return (
     <div style={{
       ...(vars || {}),
@@ -870,6 +902,7 @@ function ScrollShell({ theme, vars, extraBottomPad = 0, children }) {
       fontFamily: "'Hanken Grotesk', system-ui, sans-serif",
       paddingBottom: extraBottomPad,
     }}>
+      {notice}
       {children}
     </div>
   );

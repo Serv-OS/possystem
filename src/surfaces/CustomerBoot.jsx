@@ -16,6 +16,8 @@ import { setActiveCurrency } from '../lib/currency';
 import { lookupLocationBySlug } from '../lib/customerUrl';
 import { CUSTOMER_ROOT } from '../lib/env';
 import { isOpenNow, nextOpensAt, formatHoursPreview } from '../lib/openingHours';
+import { readTheme, deriveVars, readableOn, DISPLAY_FONT, BODY_FONT } from './menu/menuTheme';
+import MenuHeader from './menu/MenuHeader';
 import OnlineSurface from './online/OnlineSurface';
 import GiftPurchaseSurface from './gift/GiftPurchaseSurface';
 import GiftBalanceSurface from './gift/GiftBalanceSurface';
@@ -28,6 +30,9 @@ import WaitlistJoinSurface from './waitlist/WaitlistJoinSurface';
 
 export default function CustomerBoot({ slug, mode, tableId }) {
   const [state, setState] = useState({ loading: true, location: null, error: null });
+  // v5.5.802: the customer tapped through the closed screen — browse the menu
+  // (and order ahead for reopening) while the venue is shut.
+  const [browseClosed, setBrowseClosed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -104,8 +109,18 @@ export default function CustomerBoot({ slug, mode, tableId }) {
   const status = isOpenNow(loc.opening_hours, tz);
   if (!status.open) {
     const next = nextOpensAt(loc.opening_hours, tz);
+    if (mode === 'online') {
+      // v5.5.802: closed ≠ locked out. The customer can always browse the full
+      // menu, and — when the venue reopens within the checkout's 7-day slot
+      // window — order ahead (checkout forces a scheduled slot, never ASAP).
+      const canOrderAhead = !!(next && (next.getTime() - Date.now()) < 7 * 24 * 60 * 60 * 1000);
+      const closedInfo = { reopenAt: next, canOrderAhead };
+      if (browseClosed) return <OnlineSurface location={loc} closedInfo={closedInfo}/>;
+      return <ClosedScreen location={loc} nextOpens={next} canOrderAhead={canOrderAhead}
+        onEnter={() => setBrowseClosed(true)}/>;
+    }
     return <CustomerShell location={loc}>
-      <ClosedBanner location={loc} nextOpensAt={next} mode={mode}/>
+      <ClosedBanner location={loc} nextOpensAt={next}/>
     </CustomerShell>;
   }
 
@@ -161,7 +176,7 @@ function ErrorState({ icon, title, body }) {
   );
 }
 
-function ClosedBanner({ location, nextOpensAt, mode }) {
+function ClosedBanner({ location, nextOpensAt }) {
   const tz = location.timezone || 'Europe/London';
   const fmt = nextOpensAt
     ? new Intl.DateTimeFormat('en-GB', { timeZone: tz, weekday:'long', hour:'numeric', minute:'2-digit', hour12:true }).format(nextOpensAt)
@@ -173,16 +188,72 @@ function ClosedBanner({ location, nextOpensAt, mode }) {
       <div style={{ fontSize:13, color:'#aaa', marginBottom:16 }}>
         {fmt ? <>Opens <b style={{ color:'#fff' }}>{fmt}</b></> : 'Hours not set yet — please come back later.'}
       </div>
-      {mode === 'online' && nextOpensAt && (
-        <button style={{
-          padding:'12px 22px', borderRadius:99, background:'#e8a020', color:'#0b0c10', border:'none',
-          fontWeight:800, fontSize:13, cursor:'pointer', marginTop:6,
-        }}>
-          Order ahead for later
-        </button>
-      )}
       <div style={{ fontSize:11, color:'#666', marginTop:18 }}>
         {formatHoursPreview(location.opening_hours)}
+      </div>
+    </div>
+  );
+}
+
+// v5.5.802: themed closed screen for online ordering — same MenuTheme engine as
+// the storefront (brand palette + cinematic/framed/compact header + logo plate),
+// with a graceful default when the venue has no Menu-appearance branding set.
+// The button is never dead: it always opens the menu — labelled "Order ahead for
+// later" when scheduled checkout is possible, "Browse the menu" otherwise.
+function ClosedScreen({ location, nextOpens, canOrderAhead, onEnter }) {
+  const tz = location.timezone || 'Europe/London';
+  const mt = readTheme(location.online_branding);
+  const vars = deriveVars(mt.brandColor, mt.bodyBg);
+  const onBrand = readableOn(mt.brandColor);
+  const fmt = nextOpens
+    ? new Intl.DateTimeFormat('en-GB', { timeZone: tz, weekday:'long', hour:'numeric', minute:'2-digit', hour12:true }).format(nextOpens)
+    : null;
+  return (
+    <div style={{
+      ...vars, position:'fixed', inset:0, overflowY:'auto', overflowX:'hidden',
+      WebkitOverflowScrolling:'touch', containerType:'inline-size',
+      background:'var(--bg)', color:'var(--ink)', fontFamily: BODY_FONT,
+    }}>
+      <MenuHeader theme={mt} name={location.name} pills={[{ label: fmt ? `Closed · opens ${fmt}` : 'Closed' }]}/>
+      <div style={{ maxWidth:560, margin:'0 auto', padding:'18px 16px 56px' }}>
+        <div style={{
+          background:'var(--card)', border:'1px solid var(--line)', borderRadius:16,
+          padding:'30px 22px', textAlign:'center', boxShadow:'0 1px 2px rgba(36,31,28,.04)',
+        }}>
+          <div style={{ fontSize:38, marginBottom:10 }}>🌙</div>
+          <div style={{ fontFamily: DISPLAY_FONT, fontSize:21, fontWeight:700, letterSpacing:'-.01em', marginBottom:6 }}>
+            We're closed right now
+          </div>
+          <div style={{ fontSize:14, color:'var(--muted)', lineHeight:1.6, marginBottom:18 }}>
+            {fmt ? <>We open again <b style={{ color:'var(--ink)' }}>{fmt}</b>. </> : <>Opening hours haven't been set yet. </>}
+            {canOrderAhead
+              ? 'Order ahead now and it’ll be ready when we reopen — or just browse the menu.'
+              : 'You can still browse the full menu.'}
+          </div>
+          <button onClick={onEnter} className="op-btn-primary" style={{
+            width:'100%', maxWidth:340, padding:'14px 22px', borderRadius:99,
+            background:'var(--brand)', color:onBrand, border:'none',
+            fontSize:15, fontWeight:700, cursor:'pointer', fontFamily:'inherit',
+          }}>
+            {canOrderAhead ? 'Order ahead for later' : 'Browse the menu'}
+          </button>
+          {canOrderAhead && (
+            <div style={{ marginTop:10 }}>
+              <button onClick={onEnter} style={{
+                background:'none', border:'none', color:'var(--muted)', fontSize:13, fontWeight:600,
+                cursor:'pointer', textDecoration:'underline', fontFamily:'inherit',
+              }}>
+                Just browse the menu
+              </button>
+            </div>
+          )}
+          <div style={{ fontSize:12, color:'var(--muted)', marginTop:18, lineHeight:1.6 }}>
+            {formatHoursPreview(location.opening_hours)}
+          </div>
+        </div>
+        <div style={{ textAlign:'center', marginTop:26, fontSize:11, color:'var(--muted)' }}>
+          Powered by Serv OS
+        </div>
       </div>
     </div>
   );

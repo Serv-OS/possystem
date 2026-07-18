@@ -94,6 +94,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.802', date: '17 Jul 2026', label: 'Closed venues: branded page, browse the menu any time, order ahead works; venue picker shows address + full opening times',
+    changes: [
+      'The online-ordering closed screen is now BRANDED: it uses the venue\'s Menu appearance theme (brand colour, header style, hero photo, logo plate) — the same engine as the storefront — with a clean default look when no branding is set.',
+      '"Order ahead for later" now WORKS: it takes the customer into the full menu and checkout is forced to a scheduled collection/delivery slot (no ASAP) for when the venue reopens. A "Just browse the menu" link sits underneath.',
+      'Browse while closed: the menu is fully viewable when the venue is shut, with a persistent "Closed — opens …" banner and the header pill switching from "Open now" to the reopen time. If the venue won\'t reopen within the 7-day slot window (or has no hours set), the button reads "Browse the menu" and checkout is disabled with the reason shown in the basket.',
+      'Group venue picker (/order/<group> and /cater/<group>): each venue card now shows the venue ADDRESS (falls back to the venue\'s Back-office address when the platform row has none) and the FULL weekly opening times — not just the Open/Closed dot.',
+    ],
+  },
+  {
     version: '5.5.801', date: '17 Jul 2026', label: 'Fix — archiving/restoring an item from the Items library no longer risks resetting its details',
     changes: [
       'Archiving or restoring an item from Back office → Menu → Items wrote a near-empty row to the database, which could silently reset the item\'s name, price, category, modifier assignments and variant linkage. The archive/restore toggle now updates ONLY the archived flag.',
