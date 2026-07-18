@@ -94,6 +94,17 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.807', date: '18 Jul 2026', label: 'Venue chooser redesigned — map, distances and cleaner hours',
+    changes: [
+      'Venue chooser redesigned — live map with numbered pins, "use my location" nearest-first sorting, cleaner hours with Today/Tomorrow + full week.',
+      'The group ordering page (/order/<group>) now shows a live street map beside the venue list, with a numbered pin per venue that highlights as you hover or pick a card (tap a pin to jump to its venue).',
+      '"Use my location" button: with your permission the venues re-sort closest-first with distances ("1.2 mi away") and a "Nearest to you" badge — it never asks on page load, and if location is unavailable the list simply stays unsorted.',
+      'Venue opening times are now Today + Tomorrow at a glance, with the full week tucked behind "All opening times"; live status pills show Open, Closing soon (last hour) or Closed with a plain-English line like "Opens tomorrow at 9am".',
+      'The catering chooser (/cater/<group>) gets the same new look while keeping its own face: Delivery/Collection badges and "Order catering" — no open/closed emphasis, because catering pre-orders run on their own hours.',
+      'Venues can now carry map coordinates (new latitude/longitude on the platform venue record); venues without them just show no distance and sit off the map — nothing breaks.',
+    ],
+  },
+  {
     version: '5.5.806', date: '18 Jul 2026', label: 'Housekeeping — removed the old unmounted Items library',
     changes: [
       'Deleted the legacy standalone Items library (sections/Items.jsx, v4.6-era) — it was never wired into Back Office navigation and everything it did now lives in Menu manager\'s Items tab, which is the single item editor going forward (ADR-022). No functional change.',

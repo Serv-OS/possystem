@@ -1,6 +1,6 @@
 # Serv OS / RPOS — session handoff
 
-> **Current build: v5.5.806** · live: https://possystem-liard.vercel.app · dev: https://dev.serv-os.app · repo: **Serv-OS/possystem** (branch `develop`, Vercel auto-deploys).
+> **Current build: v5.5.807** · live: https://possystem-liard.vercel.app · dev: https://dev.serv-os.app · repo: **Serv-OS/possystem** (branch `develop`, Vercel auto-deploys).
 > Multi-tenant hospitality POS (React 19 + Vite, Zustand, Supabase; no TypeScript, no tests). First customer is UK / GBP.
 > **Pillars:** don't break working functionality · resolve the real `locationId` before any DB write (never `loc-demo`) · CSS vars not hardcoded colours · bump `src/lib/version.js` + add a `CHANGELOG` entry in `src/App.jsx` on every web deploy · money is `numeric`, never float.
 
@@ -16,7 +16,32 @@ A SaaS restaurant/bar POS with many device "surfaces" off one codebase (URL `?mo
 
 ## Recent arc (this block of sessions)
 
-### Deleted the dead standalone Items library (v5.5.806) — SHIPPED
+### Venue picker design-handoff redesign (v5.5.807) — SHIPPED
+`GroupOrderSurface.jsx` rebuilt to the owner's design handoff (Figtree on cream,
+1080px two-column grid: venue cards + sticky map; <900px single column, map on
+top at 240px). The branded MenuTheme `MenuHeader` stays on top (owner constraint);
+everything below follows the handoff, with ONE deliberate deviation: the design's
+brand red (#C7503B) maps to the group's own theme accent (`readableOn` for text on
+it), cream neutrals verbatim. New per-card: live status pill (Open / Closing soon
+≤60min / Closed, 60s re-tick), plain-English status line ("Opens tomorrow at
+9am"), hours trimmed to Today+Tomorrow with the full week behind an "All opening
+times" disclosure (today bolded) — all venue-tz aware via lib/openingHours.
+Geolocation: "Use my location" button (NEVER prompts on load; silent locate only
+when permission already granted) → haversine nearest-first sort, "1.2 mi away"
+distances, "Nearest to you" badge, auto-select nearest; failure = neutral
+fallback (unsorted, no distances — no fake point). Map: **Leaflet 1.9.4 + OSM
+tiles** (new dep — the "Mapbox stack" is geocoding-only fetch helpers, no
+renderer; the delivery live map is Stuart's iframe), muted tile filter, numbered
+teardrop pins synced to card hover/select, you-are-here dot, fitBounds;
+coincident venues (same address) fan pins ±17px so both stay clickable. Coords:
+NEW platform `locations.latitude/longitude` (additive,
+`20260718_PLATFORM_location_coords.sql`, applied) — both posup-test venues
+backfilled by geocoding their shared demo address (1426 Shoal Drive, San Mateo).
+No coords → no distance/pin; none at all → no map. Catering picker keeps its own
+face inside the same layout (badges, "Order catering", no open/closed). Kept:
+single-venue skip, remembered-venue banner (restyled), address fallback chain,
+"Powered by Serv OS". Figtree added to index.html. Verified in-browser against
+real data at desktop + 375px incl. locate grant (stubbed coords) + deny paths.
 Owner-confirmed decision (18 Jul 2026): `src/backoffice/sections/Items.jsx` (the
 v4.6.1 "dedicated Items library", never imported anywhere, unreachable since it was
 written) is DELETED rather than mounted. Everything it offered — including its one
