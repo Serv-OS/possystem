@@ -1,6 +1,6 @@
 # Serv OS / RPOS — session handoff
 
-> **Current build: v5.5.801** · live: https://possystem-liard.vercel.app · dev: https://dev.serv-os.app · repo: **Serv-OS/possystem** (branch `develop`, Vercel auto-deploys).
+> **Current build: v5.5.802** · live: https://possystem-liard.vercel.app · dev: https://dev.serv-os.app · repo: **Serv-OS/possystem** (branch `develop`, Vercel auto-deploys).
 > Multi-tenant hospitality POS (React 19 + Vite, Zustand, Supabase; no TypeScript, no tests). First customer is UK / GBP.
 > **Pillars:** don't break working functionality · resolve the real `locationId` before any DB write (never `loc-demo`) · CSS vars not hardcoded colours · bump `src/lib/version.js` + add a `CHANGELOG` entry in `src/App.jsx` on every web deploy · money is `numeric`, never float.
 
@@ -15,6 +15,26 @@ A SaaS restaurant/bar POS with many device "surfaces" off one codebase (URL `?mo
 ---
 
 ## Recent arc (this block of sessions)
+
+### Closed-venue online ordering + picker details (v5.5.802) — SHIPPED
+Owner feedback on Location 2's closed page (plain black screen, dead button). Now:
+the closed gate (`CustomerBoot.jsx` → new `ClosedScreen`) is themed with the same
+MenuTheme engine as the storefront (readTheme/deriveVars/MenuHeader; graceful default
+when `online_branding` is null). "Order ahead for later" WORKS — enters
+`OnlineSurface` with a `closedInfo` prop: full menu browsable, persistent sticky
+"Closed — opens …" banner (measured height offsets the sticky category header),
+header pill swaps off "Open now", and `OnlineCheckout orderAheadOnly` forces the
+scheduled slot picker (no ASAP; slots only exist inside opening windows). If reopen
+is >7 days out / hours unset → button says "Browse the menu" and OnlineCart's
+checkout is disabled with the reason (`checkoutDisabledReason`). QR closed gate
+unchanged. Group picker (`GroupOrderSurface.jsx`): venue cards show the address
+(platform `locations.address`, falling back to ops `locations.address` — that's the
+populated one) + full weekly hours via `formatHoursPreview`; catering picker keeps
+fulfilment badges (own hours) but gains the address. Verified in-browser against
+real data (Location 2 genuinely closed at test time). PRE-EXISTING bug spotted, not
+fixed: `buildCollectionSlots` (OnlineCheckout) builds slot Dates with device-local
+`setHours` but labels them in venue tz — slots skew when the customer's device tz ≠
+venue tz.
 
 ### Items-library archive wipe fix (v5.5.801) — SHIPPED
 Latent data loss in `src/backoffice/sections/Items.jsx`: `onArchiveToggle` pushed
