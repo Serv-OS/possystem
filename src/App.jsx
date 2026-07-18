@@ -94,6 +94,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.800', date: '17 Jul 2026', label: 'Group ordering: single venue goes straight to ordering; separate catering location chooser with delivery/pickup per venue',
+    changes: [
+      'Single-venue skip: on the group ordering link (/order/<group>), when only ONE venue in the group has online ordering, customers now go straight into that venue\'s ordering site — no picker page. Same for the catering link below.',
+      'Catering is now its own face of the business: the group ordering page is ONLINE-ONLY (the Catering button is gone), and a NEW group catering link (/cater/<group>, or ?cater=) shows a catering venue chooser listing ONLY venues with catering switched on — each card shows what that venue offers (Delivery and/or Collection badges, straight from its catering settings).',
+      'Each chooser remembers its own last venue separately — ordering catering from one venue won\'t pre-select it on the online ordering page (and vice versa).',
+      'Back office: Channels → Catering ordering now shows the read-only "Group catering link" card (copy + open) when your company has more than one location; the group link card in Online ordering is online-only and points you there for catering.',
+    ],
+  },
+  {
     version: '5.5.799', date: '17 Jul 2026', label: 'New setting — Takeaway customer details: Full / Name only / Not needed, for quick-service counters',
     changes: [
       'New venue setting in Back office → Settings → Location settings → "Takeaway customer details" — quick service: take just a name, or skip details completely. Three choices: Full details (name + phone, the current behaviour), Name only (one required name field — no phone or email), and Not needed (no prompt at all).',
