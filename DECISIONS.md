@@ -231,3 +231,13 @@ Short ADR entries for non-obvious choices in the codebase.
 - **Security is RLS + SECURITY DEFINER RPCs, no edge function.** A device can SELECT/heartbeat only its own row (`device_uid = auth.uid()`); Back Office sees only its venue's screens; there is **no UPDATE policy** — `claim`/`set`/`heartbeat` are SECURITY DEFINER functions that validate location access and always set `location_id` from the chosen board (never device-supplied). So pairing codes aren't enumerable cross-tenant and a device can never write its own `location_id`/`board_id`. After an adversarial RLS review, codes were raised to ~39-bit (8-char unambiguous) and `claim` gained a 30-min TTL to stop pre-claiming abandoned codes.
 
 **Consequences:** One web surface (`?mode=menuboard`) serves both a direct `?board=<id>` link and the paired-device flow; the Android `menuboard` flavor (still to build) just boots to `?mode=menuboard`. Reviewed-and-confirmed multi-tenant-safe; the only deferred hardening is an optional per-caller rate-limit on `claim` (entropy+TTL already make brute-force infeasible). Spec: `MENU_BOARD_PLAN.md`; migrations `20260613_menu_boards.sql` + `20260614*_menu_board_screens*.sql`.
+
+---
+
+## ADR-022: Delete the standalone Items library (`sections/Items.jsx`) — MenuManager's Items tab is the one item editor
+
+**Context:** `src/backoffice/sections/Items.jsx` (v4.6.1, ~950 lines) was built as a dedicated "Items library" meant to replace the item-management surface inside MenuManager, pending sign-off that never came. It was never wired into `BackOfficeApp.jsx` — nothing imported it, so it shipped as unreachable dead code for ~1,000 versions while MenuManager's own `ItemsLibrary` tab kept receiving all item-editor investment (sizes/variants, spacers, pizza, combo, instruction groups, visibility toggles, 86 toggle, duplicate-name guard). Its one distinctive feature — ownership scope (local/shared/global) — was absorbed into MenuManager's item editor in v4.6.3. Its latent archive/restore and partial-save DB-write bugs were fixed in v5.5.801, so mounting it was *safe* — the question was whether it was *useful*.
+
+**Decision:** Delete it (v5.5.806, owner-confirmed 18 Jul 2026). Do not mount a second item editor. MenuManager's Items tab (`ItemsLibrary` in `MenuManager.jsx`) is the single item-management surface.
+
+**Consequences:** One write path and one UI for item edits — avoids a UI-level "two save paths" divergence (the same failure mode as the `sbUpsertCategory`/`upsertMenuItem` gotcha). If a simpler, focused item-library UX is wanted later (the original food-hall pitch), build it against the current editor/feature set rather than resurrecting the v4.6 file (recoverable from git history before v5.5.806 if ever needed).

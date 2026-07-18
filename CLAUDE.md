@@ -142,7 +142,6 @@ src/
       BOReports.jsx          — Reports hub
       Transactions.jsx       — Transaction history browser
       Inventory.jsx          — Stock/inventory management
-      Items.jsx              — Global item library
       TaxManager.jsx         — Tax rate configuration
       PrintRouting.jsx       — Print station/ticket routing rules
       PrinterRegistry.jsx    — Printer discovery and pairing

@@ -1,6 +1,6 @@
 # Serv OS / RPOS — session handoff
 
-> **Current build: v5.5.802** · live: https://possystem-liard.vercel.app · dev: https://dev.serv-os.app · repo: **Serv-OS/possystem** (branch `develop`, Vercel auto-deploys).
+> **Current build: v5.5.806** · live: https://possystem-liard.vercel.app · dev: https://dev.serv-os.app · repo: **Serv-OS/possystem** (branch `develop`, Vercel auto-deploys).
 > Multi-tenant hospitality POS (React 19 + Vite, Zustand, Supabase; no TypeScript, no tests). First customer is UK / GBP.
 > **Pillars:** don't break working functionality · resolve the real `locationId` before any DB write (never `loc-demo`) · CSS vars not hardcoded colours · bump `src/lib/version.js` + add a `CHANGELOG` entry in `src/App.jsx` on every web deploy · money is `numeric`, never float.
 
@@ -15,6 +15,18 @@ A SaaS restaurant/bar POS with many device "surfaces" off one codebase (URL `?mo
 ---
 
 ## Recent arc (this block of sessions)
+
+### Deleted the dead standalone Items library (v5.5.806) — SHIPPED
+Owner-confirmed decision (18 Jul 2026): `src/backoffice/sections/Items.jsx` (the
+v4.6.1 "dedicated Items library", never imported anywhere, unreachable since it was
+written) is DELETED rather than mounted. Everything it offered — including its one
+distinctive feature, local/shared/global ownership scope — now lives in MenuManager's
+own Items tab (`ItemsLibrary`), which is the single item editor going forward.
+Mounting it would have created a second, less-capable parallel item editor (no
+sizes/spacers/combos/instruction groups). Rationale recorded as **ADR-022** in
+DECISIONS.md; CLAUDE.md folder listing updated. Recoverable from git history
+pre-v5.5.806 if the focused-library UX is ever wanted again. The earlier Items.jsx
+archive-wipe/partial-save fixes (v5.5.801) remain relevant only as history.
 
 ### Closed-venue online ordering + picker details (v5.5.802) — SHIPPED
 Owner feedback on Location 2's closed page (plain black screen, dead button). Now:

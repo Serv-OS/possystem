@@ -94,6 +94,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.806', date: '18 Jul 2026', label: 'Housekeeping — removed the old unmounted Items library',
+    changes: [
+      'Deleted the legacy standalone Items library (sections/Items.jsx, v4.6-era) — it was never wired into Back Office navigation and everything it did now lives in Menu manager\'s Items tab, which is the single item editor going forward (ADR-022). No functional change.',
+    ],
+  },
+  {
     version: '5.5.805', date: '18 Jul 2026', label: 'Venue picker — opening times listed one line per day',
     changes: [
       'The venue chooser now lists opening times day by day (Mon–Sun, each on its own line, "Closed" where applicable), exactly following the times set in the venue\'s opening-hours settings.',
