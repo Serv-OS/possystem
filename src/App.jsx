@@ -94,6 +94,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.804', date: '18 Jul 2026', label: 'Venue picker — address from Receipt settings + cleaner hours',
+    changes: [
+      'The venue chooser now falls back to the address you already set in Settings → Receipt (the receipt header address), so you only maintain the address in one place.',
+      'Removed the clock icon from the opening times for a cleaner look.',
+    ],
+  },
+  {
     version: '5.5.803', date: '18 Jul 2026', label: 'Venue picker — opening times now stack one line per time window',
     changes: [
       'On the multi-site venue chooser, opening hours display stacked (each day-group and time window on its own line) instead of one long line — easier to read at a glance, especially on phones.',

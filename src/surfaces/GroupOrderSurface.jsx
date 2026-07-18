@@ -89,8 +89,14 @@ export default function GroupOrderSurface({ groupSlug, variant = 'online' }) {
         if (supabase && venues.length) {
           try {
             const opsIds = [...new Set(venues.map(v => v.ops_location_id || v.id))];
-            const { data: opsLocs } = await supabase.from('locations').select('id, address').in('id', opsIds);
-            (opsLocs || []).forEach(r => { if (r.address && String(r.address).trim()) opsAddr[r.id] = String(r.address).trim(); });
+            const { data: opsLocs } = await supabase.from('locations').select('id, address, receipt_branding').in('id', opsIds);
+            (opsLocs || []).forEach(r => {
+              // Fallback chain: ops address column → the receipt-settings address lines
+              // (Settings → Receipt → "Address"), so venues only maintain it once.
+              const rb = (r.receipt_branding?.header?.address_lines || []).filter(Boolean).join(', ');
+              const a = (r.address && String(r.address).trim()) || rb;
+              if (a) opsAddr[r.id] = a;
+            });
           } catch { /* address line just won't render */ }
         }
 
@@ -328,7 +334,7 @@ function VenueCard({ venue, isCatering, cta, targetUrl, brandColor, onBrand, onP
         <div style={{ fontSize: 12, color: FIXED.muted, marginTop: 6, lineHeight: 1.55 }}>
           {/* Stacked: one line per day-group / time window (owner preference) */}
           {String(formatHoursPreview(venue.opening_hours)).split(/,\s+|\s+&\s+/).map((line, i) => (
-            <div key={i}>{i === 0 ? <><span aria-hidden="true">🕒</span> </> : null}{line}</div>
+            <div key={i}>{line}</div>
           ))}
         </div>
       )}
