@@ -326,7 +326,10 @@ function VenueCard({ venue, isCatering, cta, targetUrl, brandColor, onBrand, onP
           hours/lead-time and keeps its fulfilment badges instead. */}
       {hasHours && (
         <div style={{ fontSize: 12, color: FIXED.muted, marginTop: 6, lineHeight: 1.55 }}>
-          <span aria-hidden="true">🕒</span> {formatHoursPreview(venue.opening_hours)}
+          {/* Stacked: one line per day-group / time window (owner preference) */}
+          {String(formatHoursPreview(venue.opening_hours)).split(/,\s+|\s+&\s+/).map((line, i) => (
+            <div key={i}>{i === 0 ? <><span aria-hidden="true">🕒</span> </> : null}{line}</div>
+          ))}
         </div>
       )}
 

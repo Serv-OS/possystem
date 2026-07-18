@@ -94,6 +94,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.803', date: '18 Jul 2026', label: 'Venue picker — opening times now stack one line per time window',
+    changes: [
+      'On the multi-site venue chooser, opening hours display stacked (each day-group and time window on its own line) instead of one long line — easier to read at a glance, especially on phones.',
+    ],
+  },
+  {
     version: '5.5.802', date: '17 Jul 2026', label: 'Closed venues: branded page, browse the menu any time, order ahead works; venue picker shows address + full opening times',
     changes: [
       'The online-ordering closed screen is now BRANDED: it uses the venue\'s Menu appearance theme (brand colour, header style, hero photo, logo plate) — the same engine as the storefront — with a clean default look when no branding is set.',
