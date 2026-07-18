@@ -29,7 +29,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase, platformSupabase } from '../lib/supabase';
 import { customerUrl } from '../lib/env';
-import { isOpenNow, nextOpensAt, formatHoursPreview } from '../lib/openingHours';
+import { isOpenNow, nextOpensAt } from '../lib/openingHours';
 import { readTheme, deriveVars, readableOn, FIXED, DISPLAY_FONT, BODY_FONT } from './menu/menuTheme';
 import MenuHeader from './menu/MenuHeader';
 
@@ -332,10 +332,20 @@ function VenueCard({ venue, isCatering, cta, targetUrl, brandColor, onBrand, onP
           hours/lead-time and keeps its fulfilment badges instead. */}
       {hasHours && (
         <div style={{ fontSize: 12, color: FIXED.muted, marginTop: 6, lineHeight: 1.55 }}>
-          {/* Stacked: one line per day-group / time window (owner preference) */}
-          {String(formatHoursPreview(venue.opening_hours)).split(/,\s+|\s+&\s+/).map((line, i) => (
-            <div key={i}>{line}</div>
-          ))}
+          {/* One line per day, straight from the venue's opening-times settings (owner preference) */}
+          {['mon','tue','wed','thu','fri','sat','sun'].map((d, i) => {
+            const wins = venue.opening_hours?.weekly?.[d];
+            const label = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][i];
+            const txt = (!Array.isArray(wins) || wins.length === 0)
+              ? 'Closed'
+              : wins.map(w => `${w.open}–${w.close}`).join(' · ');
+            return (
+              <div key={d} style={{ display: 'flex', gap: 8 }}>
+                <span style={{ width: 34, flexShrink: 0 }}>{label}</span>
+                <span>{txt}</span>
+              </div>
+            );
+          })}
         </div>
       )}
 

@@ -94,6 +94,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.805', date: '18 Jul 2026', label: 'Venue picker — opening times listed one line per day',
+    changes: [
+      'The venue chooser now lists opening times day by day (Mon–Sun, each on its own line, "Closed" where applicable), exactly following the times set in the venue\'s opening-hours settings.',
+    ],
+  },
+  {
     version: '5.5.804', date: '18 Jul 2026', label: 'Venue picker — address from Receipt settings + cleaner hours',
     changes: [
       'The venue chooser now falls back to the address you already set in Settings → Receipt (the receipt header address), so you only maintain the address in one place.',
