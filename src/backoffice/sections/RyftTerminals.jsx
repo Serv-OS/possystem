@@ -65,7 +65,22 @@ export default function RyftTerminals() {
   const deviceName = (id) => { const d = devices.find(x => x.id === id); return d ? `${d.name} (${d.type})` : null; };
 
   if (loading) return null;                                   // stay quiet until we know
-  if (!state || state.processor !== 'ryft') return null;      // invisible on non-Ryft venues
+  // v5.5.808: if the list call FAILED we don't know whether this is a Ryft venue
+  // — never vanish silently (the owner pairing terminals would see only the
+  // Stripe screen with zero clues). Show the error + a retry.
+  if (!state) {
+    if (!error) return null;
+    return (
+      <div style={S.card}>
+        <div style={S.h2}>💳 Ryft card readers</div>
+        <div style={S.err}>Couldn't load the Ryft terminal panel: {error}</div>
+        <div style={{ marginTop: 12 }}>
+          <button onClick={load} style={{ ...S.btn, ...S.btnGhost }}>↻ Retry</button>
+        </div>
+      </div>
+    );
+  }
+  if (state.processor !== 'ryft') return null;                // invisible on non-Ryft venues
 
   const terminals = state.terminals || [];
 

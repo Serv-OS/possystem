@@ -1,28 +1,73 @@
 import { useState, useMemo, useRef, useEffect } from 'react';
-import { supabase } from '../lib/supabase';
+import { supabase, isMock } from '../lib/supabase';
 import { getActiveLocationSync, ensureAuthToken } from '../lib/supabase';
 import {
   resolvePlatformLocationId,
   getAssignedNetworkReader,
 } from '../lib/networkReader';
+import { getLocationProcessorInfo } from '../lib/payments/processor';
+import { chargeRyftTerminal } from '../lib/payments/ryftTerminal';
 import { money, currencySymbol, stripeCurrency } from '../lib/currency';
 import { isTrainingMode } from '../lib/trainingMode';
 
 // ─── v5.5.291: Card terminal for split portions ─────────────────────────────
-// Sends the portion amount to the Stripe Terminal reader — same REST flow as
-// CheckoutModal's CardTerminal but scoped to a single split portion.
+// Sends the portion amount to the card terminal — same flow as CheckoutModal's
+// CardTerminal but scoped to a single split portion. v5.5.808: dispatches by
+// the venue's processor — Ryft venues drive the PAX via chargeRyftTerminal
+// (no on-reader tip prompt on Ryft, so split card legs record tip 0).
 function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
   const [state, setState] = useState('resolving'); // resolving | starting | collecting | success | error | cancelling | simulated
   const [statusMsg, setStatusMsg] = useState('Connecting to reader…');
   const [errorMsg, setErrorMsg] = useState(null);
   const [readerLabel, setReaderLabel] = useState('');
+  const [attempt, setAttempt] = useState(0);       // v5.5.808: bump to re-run the flow (Retry)
   const pollAbortRef = useRef(false);
   const piIdRef = useRef(null);
   const readerIdRef = useRef(null);
   const platformLocRef = useRef(null);
   const startedRef = useRef(false);
+  const processorRef = useRef('stripe');
+  const ryftAbortRef = useRef(null);
+  const ryftFlightRef = useRef(null);
 
-  // Resolve reader on mount, then start payment
+  // ─── Ryft terminal branch (v5.5.808) ──────────────────────────────────
+  const runRyftPayment = async (opsLocationId) => {
+    setState('starting');
+    setStatusMsg('Starting terminal payment…');
+    setErrorMsg(null);
+    setReaderLabel('Ryft terminal');
+    const controller = new AbortController();
+    ryftAbortRef.current = controller;
+    const flight = chargeRyftTerminal({
+      locationId: opsLocationId,
+      posDeviceId: (() => { try { return JSON.parse(localStorage.getItem('rpos-device') || 'null')?.id || null; } catch { return null; } })(),
+      amountMinor: Math.round(amount * 100),
+      currency: stripeCurrency(),
+      captureMethod: 'automatic',
+      signal: controller.signal,
+      onProgress: (st) => {
+        if (st === 'present_card') { setState('collecting'); setStatusMsg('Ask the customer to present their card'); }
+        else if (st === 'processing') setStatusMsg('Processing on the terminal…');
+      },
+    });
+    ryftFlightRef.current = flight;
+    try {
+      const result = await flight;
+      setState('success');
+      setStatusMsg('Payment approved');
+      // Ryft terminals have no on-reader tip prompt → split portion tip is 0.
+      setTimeout(() => onComplete('card', result.paymentSessionId, 0), 800);
+    } catch (e) {
+      if (e?.message === 'cancelled') return;   // staff cancel — handled by cancelReader
+      setState('error');
+      setErrorMsg(e?.declined ? 'Card declined — try another card' : (e?.message || 'Terminal payment failed'));
+    } finally {
+      ryftAbortRef.current = null;
+      ryftFlightRef.current = null;
+    }
+  };
+
+  // Resolve processor + reader, then start payment. Re-runs on Retry (attempt).
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -38,14 +83,30 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
         }
         const opsLocationId = getActiveLocationSync();
         if (!opsLocationId) { setState('error'); setErrorMsg('Location not resolved'); return; }
+        // v5.5.808: dispatch by processor. Non-definitive lookups do NOT count
+        // as Stripe — see the no-reader guard below.
+        let procInfo = { processor: 'stripe', definitive: false };
+        try { procInfo = await getLocationProcessorInfo(opsLocationId); } catch { /* stays non-definitive */ }
+        if (cancelled) return;
+        processorRef.current = procInfo.processor;
+        if (procInfo.processor === 'ryft') {
+          if (!startedRef.current) { startedRef.current = true; runRyftPayment(opsLocationId); }
+          return;
+        }
         const platformId = await resolvePlatformLocationId(opsLocationId);
         if (cancelled) return;
         platformLocRef.current = platformId;
         const assigned = await getAssignedNetworkReader();
         if (cancelled) return;
         if (!assigned) {
-          // No reader — fall back to simulated approval
-          setState('simulated');
+          // v5.5.808: the click-to-approve simulator is dev-mock ONLY — it used
+          // to close real split portions as PAID with no money taken. Production
+          // gets an honest dead-end instead.
+          if (isMock) { setState('simulated'); return; }
+          setState('error');
+          setErrorMsg(procInfo.definitive
+            ? 'No card reader is available on this till — check the reader assignment, or take cash / gift card.'
+            : 'Card payments unavailable — check this till’s connection and try again.');
           return;
         }
         setReaderLabel(assigned.label || assigned.stripe_reader_id);
@@ -61,12 +122,26 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
     return () => {
       cancelled = true;
       pollAbortRef.current = true;
-      // Best-effort cancel on unmount
+      // Best-effort cancel on unmount — Ryft abort fires ryft-terminal-cancel
+      // from the helper so the PAX doesn't sit live collecting.
+      try { ryftAbortRef.current?.abort(); } catch { /* */ }
       if (piIdRef.current && readerIdRef.current && platformLocRef.current) {
-        cancelReader().catch(() => {});
+        cancelStripeActionSilent().catch(() => {});
       }
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [attempt]);
+
+  // Cancel the Stripe reader action WITHOUT touching UI state — used by the
+  // unmount cleanup and the interactive cancel button.
+  const cancelStripeActionSilent = async () => {
+    const token = await ensureAuthToken();
+    await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-cancel-reader-action`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify({ payment_intent_id: piIdRef.current, reader_id: readerIdRef.current, location_id: platformLocRef.current }),
+    });
+  };
 
   const runPayment = async (reader, platformId) => {
     setState('starting');
@@ -156,23 +231,40 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
   const cancelReader = async () => {
     pollAbortRef.current = true;
     setState('cancelling');
+    // v5.5.808: Ryft branch — abort the in-flight charge and WAIT for the
+    // cancel to be confirmed before leaving (same rule as the main checkout:
+    // never walk away from a PAX that might still be live collecting).
+    if (processorRef.current === 'ryft') {
+      try { ryftAbortRef.current?.abort(); } catch { /* */ }
+      const flight = ryftFlightRef.current;
+      if (flight) {
+        const outcome = await Promise.race([
+          flight.then(() => ({ ok: true, paid: true }))
+                .catch(e => ({ ok: e?.message === 'cancelled' && e?.cancelConfirmed !== false, paid: false })),
+          new Promise(r => setTimeout(() => r({ ok: false, timeout: true }), 10000)),
+        ]);
+        if (outcome.paid) { setState('success'); return; }   // tap beat the cancel — runRyftPayment already completed the portion
+        if (!outcome.ok) {
+          setState('error');
+          setErrorMsg('Could not confirm the terminal cancel — check the terminal screen before retrying. Do NOT let the customer tap.');
+          return;
+        }
+      }
+      onBack();
+      return;
+    }
     try {
-      const token = await ensureAuthToken();
-      await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-cancel-reader-action`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-        body: JSON.stringify({ payment_intent_id: piIdRef.current, reader_id: readerIdRef.current, location_id: platformLocRef.current }),
-      });
+      await cancelStripeActionSilent();
     } catch (e) { console.warn('[SplitCardTerminal] cancel failed:', e?.message); }
     onBack();
   };
 
   // ─── Render ─────────────────────────────────────────────────
   if (state === 'simulated') {
-    // No reader assigned — simulated approval (same as POS fallback)
+    // No reader assigned — simulated approval (dev-mock ONLY, gated above)
     return (
       <div style={{ textAlign: 'center', padding: '16px 0' }}>
-        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 8 }}>No card reader assigned</div>
+        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 8 }}>No card reader assigned · dev simulator</div>
         <div style={{ fontSize: 32, fontWeight: 800, color: 'var(--t1)', fontFamily: 'DM Mono,monospace', marginBottom: 16 }}>{money(amount)}</div>
         <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
           <button className="btn btn-ghost" style={{ height: 42 }} onClick={onBack}>← Back</button>
@@ -201,7 +293,7 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
         <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
           <button className="btn btn-ghost" style={{ height: 42 }} onClick={onBack}>← Back</button>
           <button className="btn btn-grn" style={{ height: 42, padding: '0 22px' }}
-            onClick={() => { startedRef.current = false; pollAbortRef.current = false; setState('resolving'); setErrorMsg(null); }}>
+            onClick={() => { startedRef.current = false; pollAbortRef.current = false; setState('resolving'); setErrorMsg(null); setAttempt(a => a + 1); }}>
             Retry
           </button>
         </div>

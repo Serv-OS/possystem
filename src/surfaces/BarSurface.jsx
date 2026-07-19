@@ -365,6 +365,12 @@ export default function BarSurface() {
       total: payInfo?.grand != null ? payInfo.grand : subtotal,
       method: payInfo?.method || 'card',
       giftCard: payInfo?.giftCard || null,
+      // v5.5.808: stamp WHICH processor took the card + the card-scheme receipt
+      // block. Without these a Ryft bar-tab payment recorded processor 'stripe',
+      // so a later refund routed to Stripe with a ps_ id and silently failed —
+      // and the UK card receipt block never printed on bar-tab receipts.
+      processor: payInfo?.processor || 'stripe',
+      cardReceipt: payInfo?.cardReceipt || null,
       // v5.5.323: carry the card PaymentIntent so a refund returns funds to the
       // original card automatically (bar tabs previously stored none).
       stripePaymentIntentId: payInfo?.stripePaymentIntentId || null,

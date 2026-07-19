@@ -8,8 +8,8 @@ import {
   resolvePlatformLocationId,
   getAssignedNetworkReader,
 } from '../lib/networkReader';
-import { getActiveLocationSync, supabase, ensureAuthToken } from '../lib/supabase';
-import { getLocationProcessor } from '../lib/payments/processor';
+import { getActiveLocationSync, supabase, ensureAuthToken, isMock } from '../lib/supabase';
+import { getLocationProcessor, getLocationProcessorInfo } from '../lib/payments/processor';
 import { chargeRyftTerminal } from '../lib/payments/ryftTerminal';
 import { fetchCustomerByPhone } from '../lib/customerLookup';
 import { redeemLoyaltyReward } from '../lib/loyaltyRedeem';
@@ -113,9 +113,17 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
   const [errorMsg, setErrorMsg] = useState(null);
   const [piResult, setPiResult] = useState(null);
   const [processor, setProcessor] = useState('stripe');                // 'stripe' | 'ryft' — per location
+  // v5.5.808: null = still resolving, true = definitive answer, false = lookup
+  // FAILED ('stripe' is only a guess). A failed lookup must never fall through
+  // to the click-to-approve simulator on a production till.
+  const [processorKnown, setProcessorKnown] = useState(null);
+  // v5.5.808: true once the reader/processor lookup has finished (success OR
+  // failure) — the "unavailable" dead-end must not flash while still resolving.
+  const [lookupDone, setLookupDone] = useState(false);
   const startedRef = useRef(false);
   const pollAbortRef = useRef(false);
   const ryftAbortRef = useRef(null);
+  const ryftFlightRef = useRef(null);   // in-flight chargeRyftTerminal promise (awaited by Cancel)
 
   // Resolve location + check for assigned network reader on mount
   useEffect(() => {
@@ -128,12 +136,17 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
         if (cancelled) return;
         setPlatformLocId(platformId);
         // Per-location processor (defaults to 'stripe' — never breaks live venues).
-        try { const p = await getLocationProcessor(opsLocationId); if (!cancelled) setProcessor(p); } catch { /* stays stripe */ }
+        try {
+          const info = await getLocationProcessorInfo(opsLocationId);
+          if (!cancelled) { setProcessor(info.processor); setProcessorKnown(info.definitive); }
+        } catch { if (!cancelled) setProcessorKnown(false); /* stays stripe, non-definitive */ }
         const assigned = await getAssignedNetworkReader();
         if (cancelled) return;
         setNetworkReader(assigned);
       } catch (e) {
         console.warn('[CardTerminal] resolve location/reader failed:', e?.message ?? e);
+      } finally {
+        if (!cancelled) setLookupDone(true);
       }
     })();
     return () => { cancelled = true; };
@@ -163,12 +176,22 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
     }
   }, [state, restState, onComplete, piResult]);
 
-  // Cleanup: cancel any in-flight reader action when this screen unmounts
+  // Cleanup: cancel any in-flight reader/terminal action when this screen unmounts.
+  // v5.5.808: read state through a ref — the old [] -deps closure captured the
+  // INITIAL null paymentIntentId, so the Stripe cancel never actually fired; and
+  // the Ryft AbortController was never aborted at all, leaving the PAX live
+  // collecting a card after a reload/navigation (tap = captured money, no check).
+  const cleanupRef = useRef({});
+  cleanupRef.current = { paymentIntentId, restState, networkReader, platformLocId };
   useEffect(() => () => {
     pollAbortRef.current = true;
-    if (paymentIntentId && (restState === 'collecting' || restState === 'starting')) {
+    // Ryft: abort the in-flight terminal charge — the helper fires
+    // ryft-terminal-cancel from its abort path (best-effort, survives unmount).
+    try { ryftAbortRef.current?.abort(); } catch { /* */ }
+    const c = cleanupRef.current;
+    if (c.paymentIntentId && (c.restState === 'collecting' || c.restState === 'starting')) {
       // Best-effort cancel — don't await
-      callCancelReaderAction({ paymentIntentId, readerId: networkReader?.stripe_reader_id, locationId: platformLocId })
+      callCancelReaderAction({ paymentIntentId: c.paymentIntentId, readerId: c.networkReader?.stripe_reader_id, locationId: c.platformLocId })
         .catch(() => {});
     }
   }, []);
@@ -211,28 +234,38 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
   const runRyftTerminalFlow = async () => {
     const controller = new AbortController();
     ryftAbortRef.current = controller;
+    // Keep the promise so Cancel can AWAIT the outcome (cancel confirmed vs
+    // customer tap winning the race) instead of instantly returning to review.
+    const flight = chargeRyftTerminal({
+      locationId: getActiveLocationSync(),
+      posDeviceId: (() => { try { return JSON.parse(localStorage.getItem('rpos-device') || 'null')?.id || null; } catch { return null; } })(),
+      amountMinor: Math.round(grand * 100),
+      currency: stripeCurrency(),
+      captureMethod: 'automatic',
+      signal: controller.signal,
+      onProgress: (state) => {
+        if (state === 'present_card') { setRestState('collecting'); setRestStatusMsg('Ask the customer to present their card'); }
+        else if (state === 'processing') setRestStatusMsg('Processing on the terminal…');
+      },
+    });
+    ryftFlightRef.current = flight;
     try {
-      const result = await chargeRyftTerminal({
-        locationId: getActiveLocationSync(),
-        posDeviceId: (() => { try { return JSON.parse(localStorage.getItem('rpos-device') || 'null')?.id || null; } catch { return null; } })(),
-        amountMinor: Math.round(grand * 100),
-        currency: stripeCurrency(),
-        captureMethod: 'automatic',
-        signal: controller.signal,
-        onProgress: (state) => {
-          if (state === 'present_card') { setRestState('collecting'); setRestStatusMsg('Ask the customer to present their card'); }
-          else if (state === 'processing') setRestStatusMsg('Processing on the terminal…');
-        },
-      });
+      const result = await flight;
+      // v5.5.808: record what Ryft says was CAPTURED, not what we asked for —
+      // falls back to the requested amount on older fn responses.
+      const requestedMinor = Math.round(grand * 100);
+      const capturedMinor = Number.isFinite(result.amountMinor) ? result.amountMinor : requestedMinor;
       setRestState('success');
       setRestStatusMsg('Payment approved');
-      setPiResult({ status: 'succeeded', paymentIntentId: result.paymentSessionId, amount: Math.round(grand * 100), amountReceived: Math.round(grand * 100), processor: 'ryft', card: result.card || null });
+      setPiResult({ status: 'succeeded', paymentIntentId: result.paymentSessionId, amount: capturedMinor, amountReceived: capturedMinor, processor: 'ryft', card: result.card || null });
     } catch (e) {
       if (e.message === 'cancelled') return;             // user cancelled — handled by cancelRestFlow
       setRestState('error');
-      setErrorMsg(e.message || 'Terminal payment failed');
+      // v5.5.808: a definitive decline reads as a decline, not a generic failure/timeout.
+      setErrorMsg(e.declined ? 'Card declined — try another card' : (e.message || 'Terminal payment failed'));
     } finally {
       ryftAbortRef.current = null;
+      ryftFlightRef.current = null;
     }
   };
 
@@ -379,13 +412,32 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
 
   const cancelRestFlow = async () => {
     pollAbortRef.current = true;
-    setRestState('cancelling');
     // Ryft: abort the in-flight terminal charge (the helper cancels the action).
+    // v5.5.808: WAIT for the cancel to be confirmed before leaving the payment
+    // screen — returning instantly left a window where the PAX was still live
+    // and a customer tap = captured money with no closed check.
     if (processor === 'ryft') {
+      if (piResult) return;                       // payment already approved — let completion run
+      setRestState('cancelling');
       try { ryftAbortRef.current?.abort(); } catch { /* */ }
+      const flight = ryftFlightRef.current;
+      if (flight) {
+        const outcome = await Promise.race([
+          flight.then(() => ({ ok: true, paid: true }))
+                .catch(e => ({ ok: e?.message === 'cancelled' && e?.cancelConfirmed !== false, paid: false })),
+          new Promise(r => setTimeout(() => r({ ok: false, timeout: true }), 10000)),
+        ]);
+        if (outcome.paid) { setRestState('success'); return; }   // customer tap beat the cancel — complete the sale
+        if (!outcome.ok) {
+          setRestState('error');
+          setErrorMsg('Could not confirm the terminal cancel — check the terminal screen before retrying. Do NOT let the customer tap.');
+          return;
+        }
+      }
       onBack();
       return;
     }
+    setRestState('cancelling');
     try {
       await callCancelReaderAction({
         paymentIntentId,
@@ -408,6 +460,10 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
   // Prioritise REST flow when a network reader is assigned, OR when the
   // location runs on Ryft (card-present goes through the Ryft terminal).
   const useRest = !!networkReader || processor === 'ryft';
+  // v5.5.808: the click-to-approve simulator is dev/training ONLY. A production
+  // till must never be able to close a real check as paid with no money taken —
+  // if there's no reader (or the processor lookup failed), say so honestly.
+  const allowSimulated = isMock || isTrainingMode();
 
   return (
     <div style={{ display:'flex', flexDirection:'column', alignItems:'center', textAlign:'center' }}>
@@ -415,7 +471,9 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
       {useRest && (restState === 'starting' || restState === 'collecting' || restState === 'cancelling') && (
         <RestCardWaiting
           grand={grand}
-          readerLabel={networkReader.label || networkReader.stripe_reader_id}
+          // v5.5.808: networkReader is NULL on a Ryft-only till (no Stripe reader
+          // bound) — the unguarded deref crashed the whole POS mid-payment.
+          readerLabel={networkReader?.label || networkReader?.stripe_reader_id || (processor === 'ryft' ? 'Ryft terminal' : 'card reader')}
           statusMsg={restStatusMsg}
           state={restState}
           onCancel={cancelRestFlow}
@@ -445,12 +503,42 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
         </div>
       )}
 
-      {/* No network reader assigned → simulated (browser dev / unconfigured devices) */}
-      {!useRest && state==='waiting' && (
+      {/* No network reader assigned → simulated (browser dev / training ONLY) */}
+      {!useRest && state==='waiting' && allowSimulated && (
         <SimulatedCardWaiting grand={grand} onSimulate={() => setState('approved')} onBack={onBack} />
       )}
 
+      {/* v5.5.808: production till, lookup still running — neutral holding state */}
+      {!useRest && state==='waiting' && !allowSimulated && !lookupDone && (
+        <div style={{ padding:'32px 8px', textAlign:'center' }}>
+          <div style={{ fontSize:14, color:'var(--t3)', marginBottom:16 }}>Connecting to card reader…</div>
+          <button className="btn btn-ghost" style={{ height:42, padding:'0 20px' }} onClick={onBack}>← Back</button>
+        </div>
+      )}
+
+      {/* v5.5.808: production till with no reader (or a failed processor lookup) —
+          an honest dead-end instead of the click-to-approve simulator. */}
+      {!useRest && state==='waiting' && !allowSimulated && lookupDone && (
+        <CardUnavailable
+          detail={processorKnown === false
+            ? 'Could not reach the payment service — check this till’s internet connection and try again.'
+            : 'No card reader is available on this till — check the reader assignment in Back Office → Card readers, or take another payment method.'}
+          onBack={onBack}
+        />
+      )}
+
       {!useRest && state==='approved' && <ApprovedView grand={grand}/>}
+    </div>
+  );
+}
+
+function CardUnavailable({ detail, onBack }) {
+  return (
+    <div style={{ padding:'20px 8px', textAlign:'center' }}>
+      <div style={{ fontSize:48, marginBottom:8 }}>📵</div>
+      <div style={{ fontSize:18, fontWeight:800, color:'var(--red)', marginBottom:6 }}>Card payments unavailable</div>
+      <div style={{ fontSize:13, color:'var(--t2)', marginBottom:16, maxWidth:380, margin:'0 auto 16px' }}>{detail}</div>
+      <button className="btn btn-ghost" style={{ height:46, padding:'0 22px' }} onClick={onBack}>← Back</button>
     </div>
   );
 }
@@ -1210,6 +1298,19 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
 
   const isBarTab = orderType==='bar-tab';
   const skipTip  = isBarTab || orderType==='takeaway' || orderType==='collection';
+
+  // v5.5.808: resolve the venue's card processor at modal level too. Ryft's
+  // terminal API has NO on-reader tip prompt, so Ryft venues pick the tip ON
+  // SCREEN (TipPicker) before the terminal payment; split card legs also
+  // dispatch by this. Defaults to 'stripe' — never changes live Stripe venues.
+  const [cardProcessor, setCardProcessor] = useState('stripe');
+  useEffect(() => {
+    let alive = true;
+    getLocationProcessor(getActiveLocationSync())
+      .then(p => { if (alive) setCardProcessor(p); })
+      .catch(() => { /* stays stripe */ });
+    return () => { alive = false; };
+  }, []);
   const giftCredit = giftApplied?.applied ? giftApplied.applied / 100 : 0;
   // Loyalty discount applied to total
   const loyaltyCredit = loyaltyApplied?.discount_value ? loyaltyApplied.discount_value / 100 : 0;
@@ -1246,7 +1347,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   const hasTax = taxBreakdown?.breakdown?.length > 0;
   const hasExclusive = taxBreakdown?.hasExclusiveTax;
 
-  const complete = (method, tip=tipAmt, tendered=null, stripePaymentIntentId=null, cardReceipt=null, cardProcessor=null) => {
+  const complete = (method, tip=tipAmt, tendered=null, stripePaymentIntentId=null, cardReceipt=null, paidProcessor=null, capturedMinor=null) => {
     const hasGift = !!giftApplied;
     const hasLoyalty = !!loyaltyApplied;
     let finalMethod = method;
@@ -1264,9 +1365,15 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
       loyaltyRedemption: loyaltyApplied || undefined,
       promoRedemption: promoApplied || undefined,
       stripePaymentIntentId,
+      // v5.5.808: when the terminal reported what it actually CAPTURED, stamp it
+      // on the refundable card leg — the record must match the money taken (the
+      // fallback derives the leg amount from the requested grand instead).
+      ...(stripePaymentIntentId && Number.isFinite(capturedMinor)
+        ? { paymentIntents: [{ id: stripePaymentIntentId, amountMinor: capturedMinor }] }
+        : {}),
       // NOTE: piResult/processor are CardTerminal state — NOT in scope here. The processor rides
       // in as a parameter from the card call site (the pi the reader flow hands back).
-      processor: cardProcessor || 'stripe',
+      processor: paidProcessor || 'stripe',
       cardReceipt,   // card-scheme receipt block (brand/last4/auth code/AID/CVM) — printed at the receipt bottom
     });
   };
@@ -1276,7 +1383,10 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   // side. The POS no longer pre-collects a tip. Goes straight from review
   // to card_terminal. The actual tip the customer chose comes back via the
   // payment intent's amount_received and is reflected in `complete()` below.
+  // v5.5.808: Ryft terminals have NO on-reader tip prompt — Ryft venues route
+  // through the on-screen TipPicker first, then charge grand (bill + tip).
   const handleCardPress = () => {
+    if (cardProcessor === 'ryft' && !skipTip) { setScreen('card_tip'); return; }
     setScreen('card_terminal');
   };
 
@@ -1564,8 +1674,8 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                     <span style={{ fontSize:compact?17:20 }}>💳</span>
                     <span style={{ fontSize:compact?13:16, fontWeight:800, color:'var(--card-text)' }}>Card</span>
                   </div>
-                  {/* v5.5.172: tip prompt is now ON THE READER, not on POS */}
-                  <div style={{ fontSize:compact?10:11, color:'var(--card-sub)', textAlign:'center' }}>Tap, chip, contactless · tip prompt on reader</div>
+                  {/* v5.5.172: tip prompt is ON THE READER (Stripe). v5.5.808: Ryft terminals have no reader tip prompt — tip is picked on screen first. */}
+                  <div style={{ fontSize:compact?10:11, color:'var(--card-sub)', textAlign:'center' }}>{cardProcessor === 'ryft' ? 'Tap, chip, contactless · tip added on screen' : 'Tap, chip, contactless · tip prompt on reader'}</div>
                 </button>
 
                 {_canTakeCash && <button onClick={()=>setScreen('cash')} style={{
@@ -1630,12 +1740,17 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                 // v5.5.172: derive the real reader-collected tip from the
                 // captured PaymentIntent. amountReceived = (base + tip).
                 // Fall back to 0 if the simulated path (no reader) ran.
+                // v5.5.808: Ryft has no on-reader tip prompt — the tip was picked
+                // on the POS screen (tipAmt), so record exactly that.
                 const receivedMinor = pi?.amountReceived ?? null;
                 const receivedGbp   = receivedMinor != null ? receivedMinor / 100 : null;
-                const realTip = receivedGbp != null ? Math.max(0, +(receivedGbp - total).toFixed(2)) : 0;
-                complete('card', realTip, null, pi?.paymentIntentId || null, pi?.card || null, pi?.processor || 'stripe');
+                const realTip = pi?.processor === 'ryft'
+                  ? tipAmt
+                  : (receivedGbp != null ? Math.max(0, +(receivedGbp - total).toFixed(2)) : 0);
+                complete('card', realTip, null, pi?.paymentIntentId || null, pi?.card || null, pi?.processor || 'stripe',
+                  Number.isFinite(receivedMinor) ? receivedMinor : null);
               }}
-              onBack={()=>setScreen('review')}
+              onBack={()=>{ setTipAmt(0); setScreen('review'); }}
             />
           )}
 
@@ -1705,7 +1820,9 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
             // closed check records the real tip (reports + reconciliation),
             // matching the main checkout flow. grand = base bill + total tips.
             const tipTotal = +((portions||[]).reduce((s,p)=>s+(Number(p.tip)||0),0)).toFixed(2);
-            onComplete({ method:'split', tip:tipTotal, grand:total+tipTotal, portions, paymentIntents, stripePaymentIntentId: paymentIntents[0]?.id || null, printReceipt });
+            // v5.5.808: stamp which processor took the card legs — refunds route
+            // by check.processor, so a Ryft split must not default to 'stripe'.
+            onComplete({ method:'split', tip:tipTotal, grand:total+tipTotal, portions, paymentIntents, stripePaymentIntentId: paymentIntents[0]?.id || null, processor: cardProcessor || 'stripe', printReceipt });
           }}
           onClose={()=>setShowSplit(false)}
         />

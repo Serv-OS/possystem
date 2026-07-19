@@ -14,6 +14,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { supabase, platformSupabase, getActiveLocationSync } from '../../lib/supabase';
 import { resolvePlatformLocationId } from '../../lib/networkReader';
+import { getLocationProcessor } from '../../lib/payments/processor';
 import { stripeCurrency } from '../../lib/currency';
 import RyftTerminals from './RyftTerminals';
 
@@ -49,6 +50,9 @@ export default function CardReaders() {
   const [refreshingStatus, setRefreshingStatus] = useState(false);
   const [lastRefreshedAt, setLastRefreshedAt] = useState(null);
   const [reassignReader, setReassignReader] = useState(null);
+  // v5.5.808: null = unresolved. On a Ryft venue the Stripe auto-status-check is
+  // skipped — it has no Stripe readers to poll and just painted a red error banner.
+  const [processor, setProcessor] = useState(null);
 
   const refresh = useCallback(async () => {
     if (!platformSupabase) {
@@ -65,6 +69,8 @@ export default function CardReaders() {
         return;
       }
       setOpsLocationId(opsLocId);
+      // Resolve the venue's processor (fire-and-forget — gates the Stripe auto-check below).
+      getLocationProcessor(opsLocId).then(setProcessor).catch(() => setProcessor('stripe'));
       const platformId = await resolvePlatformLocationId(opsLocId);
       if (!platformId) {
         setError('This location is not registered for billing yet. Contact platform admin.');
@@ -131,14 +137,17 @@ export default function CardReaders() {
   // Auto-fetch live diagnostics from Stripe once when the page opens, so the
   // reader cards show current status / IP / firmware / last-seen without the
   // admin having to click "Refresh status". Guarded to run a single time.
+  // v5.5.808: waits for the processor answer and SKIPS entirely on a Ryft venue
+  // — there are no Stripe readers to poll and the failed check just painted a
+  // red "Status refresh failed" banner over the Ryft pairing panel.
   const autoCheckedRef = useRef(false);
   useEffect(() => {
-    if (platformLocationId && !autoCheckedRef.current) {
-      autoCheckedRef.current = true;
-      refreshStatusFromStripe();
-    }
+    if (!platformLocationId || autoCheckedRef.current || processor == null) return;
+    autoCheckedRef.current = true;
+    if (processor === 'ryft') return;
+    refreshStatusFromStripe();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [platformLocationId]);
+  }, [platformLocationId, processor]);
 
   const networkReaders = readers.filter(r => r.connection_kind === 'network');
 

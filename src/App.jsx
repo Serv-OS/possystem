@@ -94,6 +94,19 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.808', date: '19 Jul 2026', label: 'Ryft terminals — fixes ahead of first hardware test',
+    changes: [
+      'Ryft terminals — fixes ahead of first hardware test: crash guard, tips on screen, declines shown, safer cancel/refunds routing, no simulated payments in production.',
+      'Crash guard: starting a Ryft card payment on a till with no Stripe reader bound no longer crashes the POS — the waiting screen now says "on Ryft terminal" instead of dereferencing a missing reader.',
+      'Tips on screen: Ryft terminals have no on-reader tip prompt, so Ryft venues now go through the POS gratuity screen before the terminal payment, and the closed check records the amount the terminal actually captured.',
+      'Declines shown: a declined card now stops the payment immediately with "Card declined — try another card" instead of hanging until the 2-minute timeout; one transient network blip mid-payment no longer kills a live payment (it retries before failing, and cancels the terminal if it truly can\'t recover).',
+      'Safer cancel: Cancel payment now waits until the terminal cancel is CONFIRMED before returning to the order (and warns if it couldn\'t confirm), and closing/reloading the till mid-payment aborts the terminal action — no more PAX left live collecting a card with no order behind it. (Also fixed: the same unmount cancel never actually fired for Stripe readers.)',
+      'Refund routing: bar-tab card payments now stamp which processor took the card (and the card receipt block), so refunding a Ryft-paid bar tab goes back to Ryft instead of silently failing against Stripe.',
+      'No simulated payments in production: the click-to-approve card simulator is now dev/training-only — a live till with no reader (or an unreachable payment service) shows an honest "Card payments unavailable" screen instead of letting a real check close as paid with no money taken. Split checks route their card legs through the Ryft terminal on Ryft venues (same flow as the main checkout) and their simulator is dev-only too.',
+      'Back Office: the Ryft card-readers panel no longer vanishes silently if its first load fails (it shows the error with a Retry), and Ryft venues skip the Stripe reader status check that painted a spurious red error banner.',
+    ],
+  },
+  {
     version: '5.5.807', date: '18 Jul 2026', label: 'Venue chooser redesigned — map, distances and cleaner hours',
     changes: [
       'Venue chooser redesigned — live map with numbered pins, "use my location" nearest-first sorting, cleaner hours with Today/Tomorrow + full week.',
