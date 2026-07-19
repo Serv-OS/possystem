@@ -29,9 +29,22 @@ Deno.serve(async (req) => {
   try { body = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
   if (!body.location_id) return json({ error: 'location_id required' }, 400);
 
-  // Ops location id → Platform location (ops_location_id) → payment_processor.
-  const { data } = await platformAdmin.from('locations')
-    .select('payment_processor').eq('ops_location_id', body.location_id).maybeSingle();
-  const processor = data?.payment_processor === 'ryft' ? 'ryft' : 'stripe';
+  // Accept EITHER id space: POS sends the Ops location id, while online/QR/
+  // catering send the PLATFORM location id (and the two genuinely diverge —
+  // e.g. platform a1b2c3d4-0002… ↔ ops 7218c716…, and provision-location mints
+  // a fresh platform uuid). Try ops_location_id first, fall back to id —
+  // the same dual-resolution idiom as ryft-terminal-payment / ryft-tab.
+  let { data: loc } = await platformAdmin.from('locations')
+    .select('id, payment_processor').eq('ops_location_id', body.location_id).maybeSingle();
+  if (!loc) {
+    const fb = await platformAdmin.from('locations')
+      .select('id, payment_processor').eq('id', body.location_id).maybeSingle();
+    loc = fb.data ?? null;
+  }
+  // Definitive error when the location can't be found — never a silent 'stripe'
+  // the client would cache. Default to 'stripe' ONLY when the row exists and
+  // has no processor set (backward-compatible contract).
+  if (!loc) return json({ error: 'location not found' }, 404);
+  const processor = loc.payment_processor === 'ryft' ? 'ryft' : 'stripe';
   return json({ processor });
 });

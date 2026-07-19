@@ -71,12 +71,19 @@ export const refundPaymentSession = (id: string, body: Record<string, unknown>, 
 // Take a payment on a Ryft Android terminal. The response carries
 // action.transaction.paymentSessionId — poll THAT payment session for the
 // PendingPayment → Approved → Captured lifecycle (same as card-not-present).
+// Matches Ryft's TerminalPaymentRequestBody (OpenAPI v1.1.0): ONLY amounts,
+// currency, paymentSession, settings. There is NO top-level metadata and NO
+// captureFlow (that's online-only) — metadata/platformFee/paymentSettings go
+// inside `paymentSession` (TerminalPaymentSessionRequest).
 export interface TerminalPaymentInput {
   amounts: { requested: number };            // minor units
   currency: string;                          // ISO, e.g. "GBP"
-  captureFlow?: 'Automatic' | 'Manual';
   settings?: { receiptPrintingSource?: 'PointOfSale' | 'Terminal' };
-  metadata?: Record<string, string>;
+  paymentSession?: {
+    platformFee?: number;
+    metadata?: Record<string, string>;
+    paymentSettings?: Record<string, unknown>;
+  };
   [k: string]: unknown;
 }
 

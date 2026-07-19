@@ -80,6 +80,19 @@ Deno.serve(async (req) => {
     }
   }
 
+  // Metadata belongs INSIDE paymentSession (TerminalPaymentSessionRequest:
+  // platformFee | metadata | paymentSettings) — TerminalPaymentRequestBody has
+  // NO top-level metadata field (Ryft OpenAPI v1.1.0: amounts, currency,
+  // paymentSession, settings only). Sanitised to Ryft's documented limits:
+  // max 10 entries, keys 1-30 chars, string values 1-250 chars.
+  const psMetadata: Record<string, string> = {};
+  for (const [k, v] of Object.entries({ ...(closed_check_id ? { closed_check_id } : {}), ...metadata })) {
+    if (Object.keys(psMetadata).length >= 10) break;
+    const key = String(k).slice(0, 30);
+    const val = String(v ?? '').slice(0, 250);
+    if (key && val) psMetadata[key] = val;
+  }
+
   const res = await createTerminalPayment(terminalId!, {
     amounts: { requested: amount_minor },
     currency,
@@ -90,13 +103,13 @@ Deno.serve(async (req) => {
     settings: { receiptPrintingSource: 'Terminal' },
     // platformFee = our markup; book Ryft's own fees to the merchant sub-account
     // (explicit, model-agnostic — see ryft-create-payment-session).
-    ...((platformFee != null || accountId) ? {
+    ...((platformFee != null || accountId || Object.keys(psMetadata).length > 0) ? {
       paymentSession: {
         ...(platformFee != null ? { platformFee } : {}),
         ...(accountId ? { paymentSettings: { platform: { paymentFees: { combined: { bookTo: accountId } } } } } : {}),
+        ...(Object.keys(psMetadata).length > 0 ? { metadata: psMetadata } : {}),
       },
     } : {}),
-    metadata: { ...(closed_check_id ? { closed_check_id } : {}), ...metadata },
   }, accountId ? { accountId } : {});
 
   if (!res.ok) {

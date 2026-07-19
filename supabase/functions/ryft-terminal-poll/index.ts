@@ -21,10 +21,20 @@ async function authorize(req: Request): Promise<boolean> {
 }
 
 // Ryft session status → normalised POS state.
-function stateOf(status: string): 'processing' | 'succeeded' | 'failed' {
+//
+// Ryft OpenAPI v1.1.0: PaymentSession.status enum is exactly
+// PendingPayment | PendingAction | Processing | Approved | Captured | Voided —
+// there is NO 'Declined'/'Failed' status. A declined tap leaves the session in
+// PendingPayment with `lastError` populated (LastPaymentError string enum, e.g.
+// 'insufficient_funds', 'declined_do_not_honour'; "we may add further values
+// without notice"), so a populated lastError on a non-approved session IS the
+// decline signal. Approved/Captured win over a stale lastError from an earlier
+// attempt that later succeeded.
+function stateOf(status: string, lastError?: string | null): 'processing' | 'succeeded' | 'failed' {
   if (status === 'Approved' || status === 'Captured') return 'succeeded';
-  if (status === 'Declined' || status === 'Voided' || status === 'Failed') return 'failed';
-  return 'processing'; // PendingPayment, InProgress, etc.
+  if (status === 'Voided') return 'failed';
+  if (lastError) return 'failed'; // declined — definitive, stop polling
+  return 'processing'; // PendingPayment, PendingAction, Processing
 }
 
 Deno.serve(async (req) => {
@@ -41,6 +51,9 @@ Deno.serve(async (req) => {
   if (!res.ok) return json({ error: res.data?.message || `Ryft error (${res.status})`, ryft: res.data }, 502);
 
   const status = res.data?.status ?? 'PendingPayment';
+  const lastError: string | null = res.data?.lastError ?? null;
+  const state = stateOf(status, lastError);
+  const declined = state === 'failed' && !!lastError;
 
   // Card receipt block (UK card-scheme receipt requirements) — best-effort extraction from the
   // Ryft PaymentSession. Field paths differ across Ryft API versions, so probe the known spots;
@@ -60,8 +73,17 @@ Deno.serve(async (req) => {
   } catch { /* receipt block is best-effort */ }
 
   return json({
-    state: stateOf(status),
+    state,
     status,
+    // Decline surface (Ryft has no 'Declined' status — see stateOf). `declined`
+    // is the definitive stop-polling signal; lastError carries Ryft's reason
+    // code; declineMessage is display-ready. NOTE: never put an `error` key on
+    // this 200 body — the client invoke() helper treats data.error as a throw.
+    declined,
+    lastError,
+    declineMessage: declined
+      ? `Card declined${lastError ? ` (${String(lastError).replace(/_/g, ' ')})` : ''}`
+      : null,
     amount: res.data?.amount ?? null,
     currency: res.data?.currency ?? null,
     sessionId: res.data?.id ?? body.payment_session_id,
