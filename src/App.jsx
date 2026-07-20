@@ -94,6 +94,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.822', date: '20 Jul 2026', label: 'POS \u2014 FIX: cash "Exact" could refuse to complete the sale',
+    changes: [
+      'Fixed a serious till bug: on some orders, tapping Cash then Exact showed "Short by \u00a30.00" and left Complete greyed out, so the sale could not be taken as cash at all. Staff had to key a higher amount and hand back the difference.',
+      'Cause: the amount was being compared as a decimal rather than in pence. Ordinary totals land on values like 12.600000000000001 (that is simply 3 \u00d7 \u00a34.20), and the Exact button fills in 12.60 \u2014 which the till then read as a fraction of a penny short.',
+      'All cash comparisons now work in whole pence, so Exact always completes. Change and Short by are calculated the same way, so they can never show a rounding artefact.',
+      'Also fixed alongside it: a quick-cash button (\u00a35 / \u00a310 / \u00a320 / \u00a350) could vanish on a total that was exactly that amount.',
+    ],
+  },
+  {
     version: '5.5.821', date: '20 Jul 2026', label: 'Recipe GP — the "Heineken - Half" ghost row, properly fixed',
     changes: [
       'Fixed for real this time: the leftover "Heineken - Half" row is gone. My previous attempt assumed the dish had been archived \u2014 it had not. The recipe was attached to the "Heineken" parent product, which holds no price of its own because its Half and Pint sizes carry the prices. So it could only ever show as \u00a30.00 / Unpriced.',

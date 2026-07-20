@@ -649,8 +649,16 @@ function CashTransaction({ grand, onComplete, onBack }) {
   const compact = useCompact();
   const [entered, setEntered] = useState('');
   const tendered = parseFloat(entered) || 0;
-  const change   = Math.max(0, tendered - grand);
-  const isValid  = tendered >= grand;
+  // v5.5.822: compare in PENCE, never raw floats. `grand` is the result of float
+  // arithmetic (total + tip − gift − loyalty − promo), so it routinely carries dust
+  // like 0.30000000000000004. "Exact" fills the box with grand.toFixed(2) → "0.30",
+  // and 0.30 >= 0.30000000000000004 is FALSE — so tendering the exact amount read as
+  // short by £0.00 and left Complete disabled. Same idiom the card path already uses.
+  const grandMinor    = Math.round(grand * 100);
+  const tenderedMinor = Math.round(tendered * 100);
+  const shortMinor    = Math.max(0, grandMinor - tenderedMinor);
+  const change        = Math.max(0, tenderedMinor - grandMinor) / 100;
+  const isValid       = tenderedMinor >= grandMinor;
 
   const press = (d) => {
     if (d==='⌫') { setEntered(p=>p.slice(0,-1)); return; }
@@ -661,7 +669,7 @@ function CashTransaction({ grand, onComplete, onBack }) {
   };
 
   const quickAmounts = [
-    ...([5,10,20,50].filter(n=>n>=grand)),
+    ...([5,10,20,50].filter(n=>Math.round(n*100)>=grandMinor)),
     Math.ceil(grand),
     Math.ceil(grand/5)*5,
   ].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a-b).slice(0,5);
@@ -682,7 +690,7 @@ function CashTransaction({ grand, onComplete, onBack }) {
             </div>
             <div style={{ fontSize:compact?22:30, fontWeight:800, fontFamily:'var(--font-mono)', letterSpacing:'-.01em',
               color:isValid?'var(--grn)':entered?'var(--red)':'var(--t4)' }}>
-              {isValid?`${money(change)}`:entered?`${money((grand-tendered))}`:'—'}
+              {isValid?`${money(change)}`:entered?`${money(shortMinor/100)}`:'—'}
             </div>
           </div>
         </div>
