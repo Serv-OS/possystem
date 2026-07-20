@@ -2066,7 +2066,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                   {[
                     { id: 'local',  label: 'Local',  desc: 'This location only.' },
                     { id: 'shared', label: 'Shared', desc: 'All locations in this org. Each can override price, category, image.' },
-                    { id: 'global', label: 'Global', desc: 'Managed centrally. Edit once, applies everywhere. Locations cannot override.' },
+                    { id: 'global', label: 'Global', desc: 'Managed centrally. Edit once, applies everywhere. No overrides.' },
                   ].map(s => {
                     const on = (item.scope || 'local') === s.id;
                     return (
@@ -2095,13 +2095,24 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                         onUpdate({ scope: prev });
                       }
                     }} style={{
-                        background: on ? 'rgba(249,115,22,0.06)' : 'var(--bg2)',
-                        border: '1.5px solid ' + (on ? 'rgba(249,115,22,0.45)' : 'var(--bdr)'),
-                        borderRadius: 8, padding: 10, cursor: 'pointer', textAlign: 'left',
-                        color: 'inherit', fontFamily: 'inherit',
+                        // v5.5.813 (handoff marker 10): equal cards with an explicit
+                        // radio affordance. Selected keeps the existing amber accent —
+                        // mapped to the theme's --amber so it holds up in dark + light.
+                        background: on ? 'color-mix(in srgb, var(--amber, #F5A623) 11%, transparent)' : 'var(--bg2)',
+                        border: '1.5px solid ' + (on ? 'color-mix(in srgb, var(--amber, #F5A623) 45%, transparent)' : 'var(--bdr)'),
+                        borderRadius: 10, padding: 10, cursor: 'pointer', textAlign: 'left',
+                        color: 'inherit', fontFamily: 'inherit', transition: 'background .12s, border-color .12s',
                       }}>
-                        <div style={{ fontWeight: 600, fontSize: 13, color: on ? 'var(--acc)' : 'var(--t1)', marginBottom: 3 }}>{s.label}</div>
-                        <div style={{ fontSize: 11, color: 'var(--t3)', lineHeight: 1.4 }}>{s.desc}</div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <span style={{
+                            width: 14, height: 14, borderRadius: '50%', flexShrink: 0, display: 'grid', placeItems: 'center',
+                            border: `1.5px solid ${on ? 'var(--amber, #F5A623)' : 'var(--bdr2)'}`,
+                          }}>
+                            {on && <span style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--amber, #F5A623)' }}/>}
+                          </span>
+                          <span style={{ fontWeight: 700, fontSize: 13, color: on ? 'var(--amber, #F5A623)' : 'var(--t1)' }}>{s.label}</span>
+                        </div>
+                        <div style={{ fontSize: 11, color: 'var(--t3)', lineHeight: 1.45, marginTop: 5 }}>{s.desc}</div>
                       </button>
                     );
                   })}

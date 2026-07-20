@@ -94,6 +94,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.814', date: '20 Jul 2026', label: 'Menu manager — Sharing cards tidied',
+    changes: [
+      'Sharing (Local / Shared / Global) on an item is now three equal cards with a proper radio dot, so it is obvious which one is selected — it previously relied on a faint tint alone.',
+      'The selected card keeps its amber highlight and now follows your theme, so it looks right in both dark and light mode.',
+      'Trimmed the Global wording to "Managed centrally. Edit once, applies everywhere. No overrides." All three options still work exactly as before.',
+    ],
+  },
+  {
     version: '5.5.813', date: '20 Jul 2026', label: 'Menu manager — visual polish + cost & GP%',
     changes: [
       'Items list now shows COST and GP % for every product. Cost is pulled from the linked recipe (never typed in here) and GP % is worked out for you — green when the margin is healthy (62%+), amber when it is thin. Items with no recipe show "No recipe", so costing gaps are visible instead of hidden.',
