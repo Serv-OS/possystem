@@ -94,6 +94,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.823', date: '20 Jul 2026', label: 'Stock counts — you can now delete a count',
+    changes: [
+      'You can now delete a stock count. Counts were create-only, so a sheet started by mistake stayed on the list forever with no way to clear it.',
+      'You can also remove a single item from a count sheet with the \u00d7 next to it \u2014 handy when one line is wrong but the rest of the count is fine.',
+      'Approved counts are protected: they show a padlock instead of a delete button. Approving a count adjusts your stock levels, and The Gap report measures variance against those adjustments \u2014 deleting one would quietly rewrite your stock history. Counts that have not been approved have changed nothing, so they are safe to bin.',
+    ],
+  },
+  {
     version: '5.5.822', date: '20 Jul 2026', label: 'POS \u2014 FIX: cash "Exact" could refuse to complete the sale',
     changes: [
       'Fixed a serious till bug: on some orders, tapping Cash then Exact showed "Short by \u00a30.00" and left Complete greyed out, so the sale could not be taken as cash at all. Staff had to key a higher amount and hand back the difference.',

@@ -112,6 +112,48 @@ export const setCountStatus = async (countId, status, locationId = null) => {
 };
 
 /**
+ * Remove one item from a count sheet. Only meaningful before approval — once a
+ * count is APPROVED its lines are the evidence behind posted STOCK_COUNT_ADJ
+ * movements, so they must not be edited away.
+ */
+export const removeCountLine = async (lineId, locationId = null) => {
+  if (isMock || !supabase) return { error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { error: new Error('No locationId') };
+  const { data: line } = await supabase.from('stock_count_lines')
+    .select('id, count_id').eq('location_id', locationId).eq('id', lineId).maybeSingle();
+  if (!line) return { error: new Error('Line not found') };
+  const { data: count } = await supabase.from('stock_counts')
+    .select('status').eq('location_id', locationId).eq('id', line.count_id).maybeSingle();
+  if (count?.status === 'APPROVED') return { error: new Error('This count has been approved — its lines are part of your stock history and cannot be removed.') };
+  return supabase.from('stock_count_lines').delete().eq('location_id', locationId).eq('id', lineId);
+};
+
+/**
+ * Delete a whole count sheet.
+ *
+ * Guarded on purpose: approving a count posts STOCK_COUNT_ADJ movements, and those
+ * movements are what The Gap report measures variance from. Deleting an approved
+ * count would silently rewrite stock history and leave the adjustments orphaned, so
+ * it is refused — a DRAFT or SUBMITTED count has posted nothing and is safe to bin.
+ */
+export const deleteCount = async (countId, locationId = null) => {
+  if (isMock || !supabase) return { error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { error: new Error('No locationId') };
+  const { data: count } = await supabase.from('stock_counts')
+    .select('status').eq('location_id', locationId).eq('id', countId).maybeSingle();
+  if (!count) return { error: new Error('Count not found') };
+  if (count.status === 'APPROVED') {
+    return { error: new Error('This count has been approved and already adjusted your stock, so it cannot be deleted.') };
+  }
+  const { error: lineErr } = await supabase.from('stock_count_lines')
+    .delete().eq('location_id', locationId).eq('count_id', countId);
+  if (lineErr) return { error: lineErr };
+  return supabase.from('stock_counts').delete().eq('location_id', locationId).eq('id', countId);
+};
+
+/**
  * Approve a count: for every counted line, post a STOCK_COUNT_ADJ that moves on-hand
  * to the counted figure (delta = counted − current on-hand), idempotent per
  * count+item, and record the variance. Marks the count APPROVED.

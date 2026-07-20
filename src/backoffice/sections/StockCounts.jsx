@@ -10,7 +10,7 @@ import { useStore } from '../../store';
 import { getActiveLocationSync, getLocationId } from '../../lib/supabase';
 import { money } from '../../lib/currency';
 import { fetchInventoryItems } from '../../lib/stock/data';
-import { fetchCounts, fetchCount, createCount, saveCountLine, approveCount } from '../../lib/stock/counts';
+import { fetchCounts, fetchCount, createCount, saveCountLine, approveCount, deleteCount, removeCountLine } from '../../lib/stock/counts';
 import { toBase, fromBase, formatToken } from '../../lib/stock/uom';
 
 const field = { background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 8, padding: '10px 12px', fontSize: 16, outline: 'none', boxSizing: 'border-box', textAlign: 'right' };
@@ -50,6 +50,31 @@ export default function StockCounts() {
     let any = false, sum = 0;
     for (const [tok, v] of Object.entries(e)) { if (v === '' || v == null) continue; const n = Number(v); if (!Number.isFinite(n)) continue; any = true; try { sum += toBase(n, tok, u); } catch { /* skip bad unit */ } }
     return any ? sum : null;
+  };
+
+  // v5.5.823: counts were create-only — an unwanted sheet could never be cleared.
+  // Both paths refuse APPROVED counts server-side too, because approving posts
+  // STOCK_COUNT_ADJ movements that The Gap measures against.
+  const removeCount = async (e, c) => {
+    e.stopPropagation();
+    if (!window.confirm(`Delete "${c.name}"? This count hasn't been approved, so no stock will change.`)) return;
+    setBusy(true);
+    const { error } = await deleteCount(c.id, locId);
+    setBusy(false);
+    if (error) { showToast(error.message || 'Could not delete the count', 'error'); return; }
+    if (active?.id === c.id) setActive(null);
+    showToast(`"${c.name}" deleted`, 'info');
+    reload();
+  };
+
+  const removeLine = async (line) => {
+    const name = itemName(line.inventoryItemId);
+    if (!window.confirm(`Remove ${name} from this count?`)) return;
+    const { error } = await removeCountLine(line.id, locId);
+    if (error) { showToast(error.message || 'Could not remove that item', 'error'); return; }
+    setActive(a => a ? { ...a, lines: a.lines.filter(l => l.id !== line.id) } : a);
+    setEdits(prev => { const n = { ...prev }; delete n[line.id]; return n; });
+    showToast(`${name} removed`, 'info');
   };
 
   const openCount = async (id) => {
@@ -119,7 +144,15 @@ export default function StockCounts() {
               <div key={line.id} style={{ background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 10, padding: '10px 14px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10 }}>
                   <div style={{ fontSize: 14, color: 'var(--t1)' }}>{itemName(line.inventoryItemId)}</div>
-                  <div style={{ fontSize: 11, color: 'var(--t3)' }}>system: {r3(expDisp == null ? line.expectedQty : expDisp)} {dLabel}</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <div style={{ fontSize: 11, color: 'var(--t3)' }}>system: {r3(expDisp == null ? line.expectedQty : expDisp)} {dLabel}</div>
+                    {/* drop a single item off the sheet without binning the whole count */}
+                    {!approved && (
+                      <button onClick={() => removeLine(line)} title={`Remove ${itemName(line.inventoryItemId)} from this count`}
+                        style={{ width: 24, height: 24, flexShrink: 0, borderRadius: 7, cursor: 'pointer', fontFamily: 'inherit',
+                          border: '1px solid var(--bdr)', background: 'var(--bg1)', color: 'var(--t3)', fontSize: 12, lineHeight: 1 }}>×</button>
+                    )}
+                  </div>
                 </div>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
                   {units.map(uo => (
@@ -172,9 +205,21 @@ export default function StockCounts() {
               <div style={{ fontSize: 14, color: 'var(--t1)' }}>{c.name}</div>
               <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2 }}>{new Date(c.createdAt).toLocaleString()}</div>
             </div>
-            <div style={{ textAlign: 'right' }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: c.status === 'APPROVED' ? 'var(--grn, #16a34a)' : 'var(--t3)' }}>{c.status}</div>
-              {c.varianceValue != null && <div style={{ fontSize: 12, color: c.varianceValue < 0 ? 'var(--red, #ef4444)' : 'var(--t2)', marginTop: 2 }}>{money(c.varianceValue)}</div>}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <div style={{ textAlign: 'right' }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: c.status === 'APPROVED' ? 'var(--grn)' : 'var(--t3)' }}>{c.status}</div>
+                {c.varianceValue != null && <div style={{ fontSize: 12, color: c.varianceValue < 0 ? 'var(--red)' : 'var(--t2)', marginTop: 2 }}>{money(c.varianceValue)}</div>}
+              </div>
+              {/* v5.5.823: an approved count has already adjusted stock and is the
+                  evidence behind those movements, so only unapproved sheets can go. */}
+              {c.status !== 'APPROVED' ? (
+                <button onClick={e => removeCount(e, c)} title="Delete this count"
+                  style={{ width: 30, height: 30, flexShrink: 0, borderRadius: 8, cursor: 'pointer', fontFamily: 'inherit',
+                    border: '1px solid var(--bdr)', background: 'var(--bg1)', color: 'var(--t3)', fontSize: 14 }}>×</button>
+              ) : (
+                <span title="Approved counts have already adjusted your stock and cannot be deleted"
+                  style={{ width: 30, textAlign: 'center', color: 'var(--t4)', fontSize: 12 }}>🔒</span>
+              )}
             </div>
           </div>
         ))}
