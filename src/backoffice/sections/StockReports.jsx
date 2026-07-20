@@ -236,7 +236,16 @@ function RecipeGP({ recipes, ctx, menuItems, taxRates = [] }) {
     return netOf(gross, resolveTaxRate({ taxRateId, taxOverrides }, taxRates, 'dine-in'));
   }, [byId, taxRates]);
 
-  const base = useMemo(() => recipes.filter(r => r.recipeType === 'MENU').map(r => {
+  // v5.5.820: this tab lists RECIPES, and archiving a dish doesn't remove its
+  // recipe — so a deleted product left a ghost row here (£0.00 / "Unpriced") that
+  // is not sellable and not on the POS. A recipe that isn't linked to a dish yet
+  // still shows, because that's a setup gap worth seeing rather than noise.
+  const base = useMemo(() => recipes.filter(r => {
+    if (r.recipeType !== 'MENU') return false;
+    if (!r.menuItemId) return true;
+    const mi = byId[String(r.menuItemId)];
+    return !!mi && !mi.archived;
+  }).map(r => {
     const c = costRecipeWith(r, ctx);
     const plate = c?.error ? null : c.totalCost;
     const price = netSell(byId[String(r.menuItemId)]);

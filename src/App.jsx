@@ -94,6 +94,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.820', date: '20 Jul 2026', label: 'Recipe GP — deleted dishes no longer haunt the report',
+    changes: [
+      'Fixed: a product you had deleted still appeared in Recipe GP as a \u00a30.00 "Unpriced" row. Deleting a product archives it but leaves its recipe behind, and this tab was listing recipes rather than live dishes \u2014 so the leftover recipe showed as a ghost row for something you can no longer sell.',
+      'Recipe GP now only lists dishes that are actually still on the menu. A recipe you have not linked to a dish yet still shows, because that is a setup gap worth seeing rather than noise.',
+      'The By supplier tab deliberately still counts sales of dishes you later deleted \u2014 that profit really was earned in the period, so hiding it would understate the supplier.',
+    ],
+  },
+  {
     version: '5.5.819', date: '20 Jul 2026', label: 'Stock reports — supplier now shows on every item that has one',
     changes: [
       'Fixed: items showed "\u2014" in the Supplier column even when they clearly had a supplier. It was only reading the optional "default supplier" field on the item, and ignoring the actual purchasing link you set up when you added the supplier\u2019s pack and price.',
