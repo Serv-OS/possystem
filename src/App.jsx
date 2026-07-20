@@ -94,6 +94,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.821', date: '20 Jul 2026', label: 'Recipe GP — the "Heineken - Half" ghost row, properly fixed',
+    changes: [
+      'Fixed for real this time: the leftover "Heineken - Half" row is gone. My previous attempt assumed the dish had been archived \u2014 it had not. The recipe was attached to the "Heineken" parent product, which holds no price of its own because its Half and Pint sizes carry the prices. So it could only ever show as \u00a30.00 / Unpriced.',
+      'Recipe GP now skips recipes attached to a parent product with sizes. The sizes themselves are what you sell, and they already appear correctly \u2014 Heineken Half at 63.6% and Heineken Pint at 46.2%.',
+      'Checked against your live data before shipping: exactly one row disappears (the ghost) and all five real dishes stay.',
+      'If you want the stale recipe gone for good rather than just hidden, delete "Heineken - Half" in Produce \u2192 Recipes.',
+    ],
+  },
+  {
     version: '5.5.820', date: '20 Jul 2026', label: 'Recipe GP — deleted dishes no longer haunt the report',
     changes: [
       'Fixed: a product you had deleted still appeared in Recipe GP as a \u00a30.00 "Unpriced" row. Deleting a product archives it but leaves its recipe behind, and this tab was listing recipes rather than live dishes \u2014 so the leftover recipe showed as a ghost row for something you can no longer sell.',

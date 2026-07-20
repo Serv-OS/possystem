@@ -236,15 +236,27 @@ function RecipeGP({ recipes, ctx, menuItems, taxRates = [] }) {
     return netOf(gross, resolveTaxRate({ taxRateId, taxOverrides }, taxRates, 'dine-in'));
   }, [byId, taxRates]);
 
-  // v5.5.820: this tab lists RECIPES, and archiving a dish doesn't remove its
-  // recipe — so a deleted product left a ghost row here (£0.00 / "Unpriced") that
-  // is not sellable and not on the POS. A recipe that isn't linked to a dish yet
-  // still shows, because that's a setup gap worth seeing rather than noise.
+  // Menu items that are a parent of live variants (Heineken → Half / Pint).
+  const variantParentIds = useMemo(
+    () => new Set(menuItems.filter(i => i.parentId && !i.archived).map(i => String(i.parentId))),
+    [menuItems]);
+
+  // v5.5.821: this tab lists RECIPES, so a recipe can outlive what made it useful
+  // and leave a £0.00 "Unpriced" ghost. Two ways that happens:
+  //   • the dish it points at was archived — not sellable any more;
+  //   • the dish it points at is a VARIANTS PARENT. A parent carries no price of
+  //     its own (its variants do), so its "GP" is meaningless by construction. The
+  //     sellable units are the variants, which have their own recipes and appear
+  //     correctly. Seen live: a stale "Heineken - Half" recipe hanging off the
+  //     "Heineken" parent while "Heineken Half" / "Heineken Pint" cost properly.
+  // A recipe not linked to any dish still shows — that's an unfinished setup.
   const base = useMemo(() => recipes.filter(r => {
     if (r.recipeType !== 'MENU') return false;
     if (!r.menuItemId) return true;
     const mi = byId[String(r.menuItemId)];
-    return !!mi && !mi.archived;
+    if (!mi || mi.archived) return false;
+    if (mi.type === 'variants' || variantParentIds.has(String(mi.id))) return false;
+    return true;
   }).map(r => {
     const c = costRecipeWith(r, ctx);
     const plate = c?.error ? null : c.totalCost;
@@ -258,7 +270,7 @@ function RecipeGP({ recipes, ctx, menuItems, taxRates = [] }) {
       target: r.gpTargetPct ?? null,
       unpriced: plate != null && !(price > 0),
     };
-  }), [recipes, ctx, byId, netSell]);
+  }), [recipes, ctx, byId, netSell, variantParentIds]);
 
   const filtered = useMemo(() => filter === 'below'
     ? base.filter(r => r.gpPct != null && r.gpPct < (r.target ?? 60))
