@@ -21,6 +21,7 @@ import {
   gpAmount,
   gpPct,
   lineAppliesToOrderType,
+  costBreakdownByPurchasedItem,
 } from './costing.js';
 
 const near = (a, b, eps = 1e-6) => assert.ok(Math.abs(a - b) <= eps, `expected ${a} ≈ ${b}`);
@@ -211,4 +212,71 @@ test('recipe cycle (A → B → A) throws, not infinite loop', () => {
 test('a MADE item without a recipe falls back to currentCost', () => {
   const ctx = { itemsById: { prep: { id: 'prep', kind: 'MADE', baseUnit: 'g', currentCost: 0.05 } } };
   near(componentUnitCost('prep', ctx), 0.05);
+});
+
+// ── Supplier cost attribution ────────────────────────────────────────────────
+// These numbers drive purchasing decisions, so the invariant that matters is
+// that the parts always reconcile to the whole plate cost.
+
+test('costBreakdownByPurchasedItem: splits a plate across its purchased items and reconciles', () => {
+  const ctx = { itemsById: {
+    beans: { id:'beans', kind:'PURCHASED', baseUnit:'g',  currentCost: 20/1000, itemConversions: [] }, // £20/kg
+    milk:  { id:'milk',  kind:'PURCHASED', baseUnit:'ml', currentCost: 1.2/1000, itemConversions: [] }, // £1.20/L
+    cup:   { id:'cup',   kind:'PURCHASED', baseUnit:'each', currentCost: 0.10, itemConversions: [] },
+  }, recipesByOutputItem: {} };
+  const latte = { yieldQty:1, yieldUnit:'each', output:{ baseUnit:'each', itemConversions:[] }, lines:[
+    { componentItemId:'beans', qty:18, unit:'g' },    // £0.36
+    { componentItemId:'milk',  qty:200, unit:'ml' },  // £0.24
+    { componentItemId:'cup',   qty:1, unit:'each' },  // £0.10
+  ]};
+  const { byItem, total } = costBreakdownByPurchasedItem(latte, ctx);
+  near(byItem.beans, 0.36); near(byItem.milk, 0.24); near(byItem.cup, 0.10);
+  near(total, 0.70);
+  // the whole point: parts sum to the same number GP is calculated from
+  near(Object.values(byItem).reduce((a,b)=>a+b,0), recipeCost(latte, ctx).totalCost);
+});
+
+test('costBreakdownByPurchasedItem: a MADE prep is exploded onto its raw inputs, not itself', () => {
+  const ctx = { itemsById: {
+    tomatoes: { id:'tomatoes', kind:'PURCHASED', baseUnit:'g', currentCost: 2/1000, itemConversions: [] }, // £2/kg
+    oil:      { id:'oil',      kind:'PURCHASED', baseUnit:'ml', currentCost: 8/1000, itemConversions: [] }, // £8/L
+    sauce:    { id:'sauce',    kind:'MADE',      baseUnit:'ml', itemConversions: [] },
+    base:     { id:'base',     kind:'PURCHASED', baseUnit:'each', currentCost: 0.50, itemConversions: [] },
+  }, recipesByOutputItem: {} };
+  // 1000ml of sauce from 800g tomatoes (£1.60) + 50ml oil (£0.40) = £2.00 → £0.002/ml
+  const sauceRecipe = { outputItemId:'sauce', yieldQty:1000, yieldUnit:'ml', lines:[
+    { componentItemId:'tomatoes', qty:800, unit:'g' },
+    { componentItemId:'oil',      qty:50,  unit:'ml' },
+  ]};
+  ctx.recipesByOutputItem.sauce = sauceRecipe;
+  const pizza = { yieldQty:1, yieldUnit:'each', output:{ baseUnit:'each', itemConversions:[] }, lines:[
+    { componentItemId:'base',  qty:1, unit:'each' },   // £0.50
+    { componentItemId:'sauce', qty:100, unit:'ml' },   // £0.20 of prep
+  ]};
+  const { byItem, total } = costBreakdownByPurchasedItem(pizza, ctx);
+  near(total, 0.70);
+  assert.equal(byItem.sauce, undefined, 'a MADE prep must not hold cost — it has no supplier');
+  near(byItem.base, 0.50);
+  near(byItem.tomatoes, 0.16);  // 80% of the £0.20 of sauce
+  near(byItem.oil, 0.04);       // 20% of it
+  near(Object.values(byItem).reduce((a,b)=>a+b,0), recipeCost(pizza, ctx).totalCost);
+});
+
+test('costBreakdownByPurchasedItem: honours wastage, usablePct and order-type scoping', () => {
+  const ctx = { itemsById: {
+    fish: { id:'fish', kind:'PURCHASED', baseUnit:'g', currentCost: 10/1000, itemConversions: [] }, // £10/kg
+    box:  { id:'box',  kind:'PURCHASED', baseUnit:'each', currentCost: 0.25, itemConversions: [] },
+  }, recipesByOutputItem: {} };
+  const dish = { yieldQty:1, yieldUnit:'each', wastagePct:10, output:{ baseUnit:'each', itemConversions:[] }, lines:[
+    { componentItemId:'fish', qty:100, unit:'g', usablePct:80 },              // 100/0.8 = 125g = £1.25
+    { componentItemId:'box',  qty:1, unit:'each', orderTypes:['takeaway'] },  // dine-in excludes this
+  ]};
+  const dineIn = costBreakdownByPurchasedItem(dish, ctx, 'dine-in');
+  near(dineIn.byItem.fish, 1.375);              // £1.25 + 10% wastage
+  assert.equal(dineIn.byItem.box, undefined);   // scoped out
+  near(dineIn.total, recipeCost(dish, ctx, 'dine-in').totalCost);
+
+  const takeaway = costBreakdownByPurchasedItem(dish, ctx, 'takeaway');
+  near(takeaway.byItem.box, 0.275);             // £0.25 + 10% wastage
+  near(takeaway.total, recipeCost(dish, ctx, 'takeaway').totalCost);
 });

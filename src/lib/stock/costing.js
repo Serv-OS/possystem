@@ -216,3 +216,72 @@ export function gpPct(netPrice, cost) {
   if (!(p > 0)) return null;
   return ((p - Number(cost)) / p) * 100;
 }
+
+// ── Per-supplier cost attribution ────────────────────────────────────────────
+/**
+ * Break a recipe's plate cost down to the PURCHASED items that make it up.
+ *
+ * `computeRecipe` returns a single total, which is all GP needs. Attributing GP
+ * to a *supplier* needs to know who contributed what — and only purchased items
+ * carry a supplier (a MADE prep has none), so nested prep recipes are exploded
+ * proportionally into their own purchased inputs until every penny lands on
+ * something buyable.
+ *
+ * Mirrors `computeRecipe` exactly (order-type scoping, usablePct, wastagePct,
+ * nested preps, cycle guard) so the parts always reconcile to the whole:
+ *   sum(values of byItem) === recipeCost(...).totalCost
+ *
+ * @param {object} recipe
+ * @param {CostingCtx} ctx
+ * @param {string|null} [orderType]
+ * @returns {{ byItem: Record<string, number>, total: number }} £ per purchased item
+ */
+export function costBreakdownByPurchasedItem(recipe, ctx, orderType = null) {
+  if (!ctx.memo) ctx.memo = new Map();
+  const outputItem = recipe.outputItemId
+    ? ctx.itemsById?.[recipe.outputItemId]
+    : (recipe.output || { baseUnit: recipe.yieldUnit || 'each', itemConversions: [] });
+  if (!outputItem) throw new Error(`costBreakdownByPurchasedItem: unknown output item "${recipe.outputItemId}"`);
+
+  const byItem = {};
+  const stack = new Set(recipe.outputItemId ? [recipe.outputItemId] : []);
+  const total = walk(recipe, outputItem, ctx, orderType, 1, byItem, stack);
+  return { byItem, total };
+}
+
+/** Accumulate `scale`-weighted line costs into `out`, exploding MADE components. */
+function walk(recipe, outputItem, ctx, orderType, scale, out, stack) {
+  const lines = [];
+  let raw = 0;
+  for (const line of recipe.lines || []) {
+    if (!lineAppliesToOrderType(line, orderType)) continue;
+    const comp = ctx.itemsById?.[line.componentItemId];
+    if (!comp) throw new Error(`costBreakdownByPurchasedItem: line references unknown item "${line.componentItemId}"`);
+    const qtyBase = toBase(Number(line.qty), line.unit, comp);
+    const usable = (line.usablePct == null ? 100 : Number(line.usablePct)) / 100;
+    if (!(usable > 0)) throw new Error(`costBreakdownByPurchasedItem: usablePct must be > 0 (line "${line.componentItemId}")`);
+    const cost = (qtyBase / usable) * componentUnitCost(line.componentItemId, ctx, stack);
+    lines.push({ id: line.componentItemId, comp, cost });
+    raw += cost;
+  }
+  const wastage = 1 + (Number(recipe.wastagePct) || 0) / 100;
+
+  let attributed = 0;
+  for (const l of lines) {
+    const amount = l.cost * wastage * scale;
+    const sub = ctx.recipesByOutputItem?.[l.id];
+    if (l.comp.kind === 'MADE' && sub && !stack.has(l.id)) {
+      // A prep has no supplier of its own — push its cost down onto the raw items
+      // it is made from, in proportion to how that prep's own cost is composed.
+      stack.add(l.id);
+      const subRaw = walk(sub, l.comp, ctx, null, 1, {}, stack);   // measure only
+      if (subRaw > 0) walk(sub, l.comp, ctx, null, amount / subRaw, out, stack);
+      else out[l.id] = (out[l.id] || 0) + amount;                  // zero-cost prep — keep the penny
+      stack.delete(l.id);
+    } else {
+      out[l.id] = (out[l.id] || 0) + amount;
+    }
+    attributed += amount;
+  }
+  return attributed;
+}

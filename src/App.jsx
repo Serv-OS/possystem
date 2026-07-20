@@ -94,6 +94,17 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.818', date: '20 Jul 2026', label: 'Stock reports — new look + a By supplier view',
+    changes: [
+      'Stock reports rebuilt on a new report design: headline figures at the top, filter chips, search, sortable columns, inline bars showing how each row compares, and a totals line. This is the template the other reports will move to.',
+      'NEW "By supplier" tab — answers "which of my suppliers actually make me money". Ranks every supplier by the gross profit their goods generated, alongside the stock value you hold with them.',
+      'Because a dish usually contains ingredients from several suppliers, each dish\'s profit is split between them in proportion to how much of the plate cost each one contributed. Nothing gets counted twice and the column adds back up to your real GP.',
+      'Valuation now shows which supplier each item comes from, and a "By supplier" toggle groups your stock under each one with a subtotal.',
+      'GP percentages are colour-coded consistently everywhere — green at 60%+, amber below, so a thin margin is obvious at a glance.',
+      'The date range only appears on the tabs it actually filters (Movements, The Gap, By supplier). Valuation and Recipe GP say "as of today" instead of showing dates that would not have changed anything.',
+    ],
+  },
+  {
     version: '5.5.817', date: '20 Jul 2026', label: 'Menu builder — item grid locked to the real POS layout',
     changes: [
       'The item grid in the menu builder is now the actual POS layout — 6 columns, same button height and spacing as the till. What you arrange in the back office is exactly what your staff see, so you can genuinely design your POS screens from here.',
