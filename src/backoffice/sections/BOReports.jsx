@@ -184,7 +184,7 @@ export default function BOReports({ setSection } = {}) {
   // Catalog view
   if (view === 'catalog') {
     return (
-      <div style={{ padding:'20px 24px', flex:1, overflow:'auto', minHeight:0 }}>
+      <div style={{ flex:1, minHeight:0, display:'flex', overflow:'hidden' }}>
         <Catalog onOpen={openReport} counts={catalogCounts}/>
       </div>
     );

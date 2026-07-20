@@ -94,6 +94,19 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.812', date: '20 Jul 2026', label: 'Reports catalog — new two-pane design',
+    changes: [
+      'Reports catalog redesigned: a category rail down the side (All / Pinned / Recent, then every category with its report count) so you can jump straight to the reports you want.',
+      'Search: type to filter every report by name, description or category — matches are highlighted. Press "/" anywhere on the screen to jump into the search box, Esc to clear it.',
+      'Pin your favourites: click the star on any report to pin it. Pinned reports get their own band at the top of the catalog for one-click access.',
+      'Recently viewed: the last 6 reports you opened show in their own band, so getting back to yesterday\'s report is one click.',
+      'Reports are now dense one-line rows instead of tall cards — you can see far more of the library at once, and one-report categories no longer waste half a screen.',
+      'Live badges where they matter: Open orders shows a live count of tables still on the floor, so you can see there is something to look at before opening it.',
+      'Removed the NEW / UPDATED badges — nearly every report carried one, so they had stopped meaning anything.',
+      'Pins and recents are remembered per venue on this device. Colours follow your theme, so the new catalog works in both dark and light mode.',
+    ],
+  },
+  {
     version: '5.5.811', date: '20 Jul 2026', label: 'Menu — retire the Pizza product type',
     changes: [
       'Removed the "Pizza" product type from the item editor — the chip at the top of a product and the matching filter in the item list are gone, since it has not been used for a long time.',
