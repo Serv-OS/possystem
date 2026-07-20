@@ -94,6 +94,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.809', date: '20 Jul 2026', label: 'Reports — everything under one Reports menu',
+    changes: [
+      'Reports menu now gathers every report in one place: Inventory reports and the Marketing report now appear under Reports too, alongside Sales, Shifts, Close day, Petty cash and Tables Ready.',
+      'Nothing moved — Inventory reports still live under Inventory and the Marketing report still lives under Customers; they are now simply listed under Reports as well, so you can find them wherever you look.',
+      'Renamed the Reports menu\'s first entry from "Sales reports" to "All reports" — it opens the full reports hub (sales, tax, tips, product mix, P&L, payroll, card payouts and more), so the old "Sales reports" label was misleading.',
+    ],
+  },
+  {
     version: '5.5.808', date: '19 Jul 2026', label: 'Ryft terminals — fixes ahead of first hardware test',
     changes: [
       'Ryft terminals — fixes ahead of first hardware test: crash guard, tips on screen, declines shown, safer cancel/refunds routing, no simulated payments in production.',
