@@ -930,7 +930,7 @@ function MenuTab() {
               updateMenuItem={updateMenuItem} markBOChange={markBOChange} showToast={showToast}
               eightySixIds={eightySixIds} modifierGroupDefs={modifierGroupDefs}/>
           ) : (<>
-          <div style={{ flex:1, overflowY:'auto', padding:'12px' }}
+          <div style={{ flex:1, overflowY:'auto', overflowX:'auto', padding:'12px' }}
             onDragOver={e=>e.preventDefault()}
             onDrop={e=>{ if(dragItemId&&!overItemId){ const max=Math.max(...displayItems.map(i=>i.sortOrder??0),0); updateMenuItem(dragItemId,{sortOrder:max+1}); markBOChange(); setDragItemId(null); } }}>
             {displayItems.length===0 ? (
@@ -940,11 +940,23 @@ function MenuTab() {
                 <button onClick={()=>setShowAddPanel(true)} style={{ padding:'8px 18px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:13, fontWeight:700 }}>+ Add items to this category</button>
               </div>
             ) : (
-              // v5.5.816: was a hardcoded repeat(6,1fr), which squeezed six columns
-              // into whatever width was left — with the detail panel open that made
-              // ~85px cards with truncated names. The cards now have a real minimum
-              // and the column count follows the available space.
-              <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(178px, 1fr))', gap:10, alignContent:'start' }}>
+              // v5.5.817: LOCKED TO THE POS GRID. This is a layout editor, not a
+              // gallery — position N here is position N on the till, which is the
+              // whole point of the Spacer cells. So the column count, row height and
+              // gap are copied from POSSurface's item grid (repeat(6,1fr),
+              // gridAutoRows minmax(110px,auto), gap 8). It must NEVER reflow to a
+              // different column count: that would silently misrepresent the layout
+              // the operator is building. When the pane is too narrow the columns
+              // hold their minimum and the area scrolls sideways instead.
+              <div style={{
+                display:'grid',
+                gridTemplateColumns:'repeat(6, minmax(118px, 1fr))',
+                gridAutoRows:'minmax(110px, auto)',
+                gap:8,
+                alignContent:'start',
+                maxWidth:1180,          // keeps till-like proportions on a big monitor
+                minWidth:6*118 + 5*8,   // 6 columns never collapse below a usable size
+              }}>
                 {gridWithSpacers.map(item=>{
                   // Spacer cell — draggable blank layout cell
                   if (item._spacer) return (
@@ -992,7 +1004,8 @@ function MenuTab() {
                           position:'relative', borderRadius:14, cursor:'pointer', userSelect:'none',
                           border:`2px solid ${active?'var(--acc)':'var(--bdr)'}`,
                           background:active?'var(--acc-d)':'var(--bg2)',
-                          overflow:'hidden', minHeight:118, display:'flex', flexDirection:'column',
+                          // height:100% so the card fills the POS-sized row box above
+                          overflow:'hidden', height:'100%', minHeight:110, display:'flex', flexDirection:'column',
                           boxShadow:active?'0 0 0 3px var(--acc-b)':'none',
                           transition:'border-color .1s, box-shadow .1s',
                         }}>
@@ -1062,8 +1075,12 @@ function MenuTab() {
               </div>
             )}
           </div>
-          <div style={{ padding:'4px 12px', borderTop:'1px solid var(--bdr)', fontSize:9, color:'var(--t4)', background:'var(--bg1)' }}>
-            Drag cards to reorder · order reflects on POS instantly
+          <div style={{ padding:'5px 12px', borderTop:'1px solid var(--bdr)', fontSize:9.5, color:'var(--t4)', background:'var(--bg1)', display:'flex', alignItems:'center', gap:8, flexWrap:'wrap' }}>
+            <span style={{ display:'inline-flex', alignItems:'center', gap:5, fontWeight:700, color:'var(--t3)' }}>
+              <span style={{ width:5, height:5, borderRadius:'50%', background:'var(--acc)' }}/>
+              This is the POS layout — 6 columns, same as the till
+            </span>
+            <span>Drag cards to reorder · use + Spacer to leave a gap · reflects on POS instantly</span>
           </div>
           </>
           )}

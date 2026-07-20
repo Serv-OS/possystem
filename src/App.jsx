@@ -94,6 +94,16 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.817', date: '20 Jul 2026', label: 'Menu builder — item grid locked to the real POS layout',
+    changes: [
+      'The item grid in the menu builder is now the actual POS layout — 6 columns, same button height and spacing as the till. What you arrange in the back office is exactly what your staff see, so you can genuinely design your POS screens from here.',
+      'Because the grid is locked, + Spacer now does what it should: leave a real gap in that position on the till, letting you group items into blocks and rows.',
+      'The grid never re-flows to a different number of columns. If the window gets narrow the area scrolls sideways instead — a layout that silently rearranged itself would be lying to you about what the till looks like.',
+      'On a wide monitor the grid holds till-like proportions rather than stretching buttons across the whole screen.',
+      'A note under the grid now spells out that this is the POS layout, so it is obvious what you are editing.',
+    ],
+  },
+  {
     version: '5.5.816', date: '20 Jul 2026', label: 'Menu manager — fills the screen properly',
     changes: [
       'The menu builder now uses the full width of your screen. It was being squeezed into a 1600px column with padding either side, which left a dead strip down the right on a big monitor.',
