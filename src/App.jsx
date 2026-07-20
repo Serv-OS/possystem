@@ -94,6 +94,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.826', date: '20 Jul 2026', label: 'Card readers \u2014 link a reader Ryft already knows about',
+    changes: [
+      'If your card reader is already registered with Ryft \u2014 because you bought it through their portal, or their support set it up \u2014 you can now link it to a venue instead of trying to pair it again.',
+      'Back Office \u2192 Hardware \u2192 Card readers \u2192 "Find readers on my Ryft account". Pick the reader and link it.',
+      'Before this, the only option was to pair by serial number, which Ryft rejects for a reader it has already registered \u2014 so a reader you had legitimately set up could not be connected.',
+      'Linking checks the reader really is on your venue\u2019s Ryft account first, so a mistyped id or someone else\u2019s reader cannot be attached.',
+    ],
+  },
+  {
     version: '5.5.825', date: '20 Jul 2026', label: 'POS \u2014 FIX: un-86 now actually puts the item back on sale',
     changes: [
       'Fixed: when an item ran out and auto-86\u2019d, un-86\u2019ing it on the POS did not work. The toast said un-86\u2019d, but the item still refused to go on an order with \u201cout of stock\u201d, because its daily count was still sitting at zero and that blocks the sale on its own.',

@@ -44,6 +44,10 @@ export default function RyftTerminals() {
   const [name, setName] = useState('');
   const [posDevice, setPosDevice] = useState('');
   const [busy, setBusy] = useState(false);
+  // v5.5.826: terminals that already exist AT RYFT (bought via their Portal, or
+  // provisioned by their support). Those can't be registered again — POST would
+  // reject the duplicate — so we adopt them instead.
+  const [available, setAvailable] = useState(null);
 
   const load = async () => {
     setLoading(true); setError('');
@@ -93,6 +97,23 @@ export default function RyftTerminals() {
     } catch (e) { setError(e.message); }
     finally { setBusy(false); }
   };
+  const findExisting = async () => {
+    setBusy(true); setError('');
+    try { const r = await callTerminals('available', {}); setAvailable(r.terminals || []); }
+    catch (e) { setError(e.message); }
+    finally { setBusy(false); }
+  };
+
+  const adopt = async (terminalId) => {
+    setBusy(true); setError('');
+    try {
+      await callTerminals('adopt', { terminal_id: terminalId, terminal_name: name || undefined, pos_device_id: posDevice || undefined });
+      setName(''); setPosDevice(''); setAvailable(null);
+      await load();
+    } catch (e) { setError(e.message); }
+    finally { setBusy(false); }
+  };
+
   const remove = async (terminalId) => {
     if (!confirm('Remove this reader? It will be deregistered from Ryft.')) return;
     try { await callTerminals('unregister', { terminal_id: terminalId }); await load(); }
@@ -158,6 +179,42 @@ export default function RyftTerminals() {
               <button onClick={register} disabled={busy || !serial.trim()} style={{ ...S.btn, ...S.btnPrim }}>{busy ? 'Pairing…' : 'Pair reader'}</button>
               <button onClick={load} disabled={busy} style={{ ...S.btn, ...S.btnGhost }}>↻ Refresh</button>
               <span style={{ fontSize:11, color:'var(--t4)' }}>The venue address from your onboarding is used automatically.</span>
+            </div>
+
+            {/* Already registered with Ryft? Adopt it rather than re-registering. */}
+            <div style={{ marginTop:16, paddingTop:14, borderTop:'1px solid var(--bdr)' }}>
+              <div style={{ fontSize:12, color:'var(--t3)', marginBottom:8 }}>
+                Bought the reader through Ryft, or already registered it in their portal? It's on your Ryft
+                account already — link it here instead of pairing it again.
+              </div>
+              <button onClick={findExisting} disabled={busy} style={{ ...S.btn, ...S.btnGhost }}>
+                {busy ? 'Checking…' : 'Find readers on my Ryft account'}
+              </button>
+
+              {available && available.length === 0 && (
+                <div style={{ fontSize:12, color:'var(--t4)', marginTop:10 }}>
+                  No readers found on your Ryft account for this venue. If you expected one, check you're in the
+                  same environment (sandbox vs live) as the device.
+                </div>
+              )}
+
+              {available && available.length > 0 && (
+                <div style={{ display:'flex', flexDirection:'column', gap:8, marginTop:10 }}>
+                  {available.map(t => (
+                    <div key={t.id} style={{ display:'flex', alignItems:'center', gap:12, padding:'10px 12px', background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:9 }}>
+                      <div style={{ flex:1, minWidth:0 }}>
+                        <div style={{ fontSize:13, fontWeight:600, color:'var(--t1)' }}>{t.name || 'Unnamed reader'}</div>
+                        <div style={{ fontSize:11, color:'var(--t4)', fontFamily:'var(--font-mono,monospace)' }}>
+                          S/N {t.serial_number || '—'} · {t.id}
+                        </div>
+                      </div>
+                      {t.already_linked
+                        ? <span style={{ fontSize:11, fontWeight:700, color:'var(--grn)' }}>✓ Linked</span>
+                        : <button onClick={() => adopt(t.id)} disabled={busy} style={{ ...S.btn, ...S.btnPrim }}>Link this reader</button>}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </>

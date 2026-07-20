@@ -9,10 +9,16 @@
 //   register    { ops_location_id, serial_number, terminal_name?, pos_device_id?, address? }
 //                  → ensures an in-person location (iploc_) for the venue, then
 //                    POST /in-person/terminals, then stores it in payment_devices
+//   available   { ops_location_id }                       → terminals that exist AT RYFT
+//                  for this venue's account (hardware bought via the Ryft Portal
+//                  is already registered there — you adopt it, not re-create it)
+//   adopt       { ops_location_id, terminal_id, terminal_name?, pos_device_id? }
+//                  → verify the terminal is in this account's Ryft estate, then link
+//                    it locally WITHOUT calling POST (which would reject a duplicate)
 //   unregister  { ops_location_id, terminal_id }          → delete at Ryft + locally
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { getAccount, createInPersonLocation, registerTerminal, deleteTerminal, ryftConfigured } from '../_shared/ryft.ts';
+import { getAccount, createInPersonLocation, registerTerminal, listTerminals, deleteTerminal, ryftConfigured } from '../_shared/ryft.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -117,6 +123,61 @@ Deno.serve(async (req) => {
     if (upErr) return json({ error: `stored at Ryft but local save failed: ${upErr.message}`, terminal_id: terminalId }, 500);
 
     return json({ success: true, terminal_id: terminalId, iploc });
+  }
+
+  // ── available: terminals that exist at RYFT for this venue's account ──────
+  // Ryft's estate is the source of truth for hardware. A device bought through
+  // the Ryft Portal (or provisioned by their support) is already registered
+  // there, so POST /in-person/terminals would reject it as a duplicate — you
+  // adopt it instead of creating it.
+  if (action === 'available') {
+    const { data: mra } = await platformAdmin.from('merchant_ryft_accounts')
+      .select('ryft_account_id').eq('location_id', loc.id).maybeSingle();
+    if (!mra?.ryft_account_id) return json({ error: 'Set up card payments for this location first (no Ryft account).' }, 400);
+    const res = await listTerminals({ accountId: mra.ryft_account_id });
+    if (!res.ok) return json({ error: ryftErr(res.data) || `Couldn't list terminals at Ryft (${res.status})`, ryft: res.data }, 502);
+    const items = (res.data?.items ?? res.data ?? []) as Array<Record<string, unknown>>;
+    // Flag which ones we've already linked, so the UI can grey them out.
+    const { data: mine } = await platformAdmin.from('payment_devices')
+      .select('ryft_terminal_id').eq('location_id', loc.id).eq('processor', 'ryft');
+    const linked = new Set((mine ?? []).map(r => r.ryft_terminal_id));
+    return json({
+      terminals: items.map(t => ({
+        id: t.id, serial_number: t.serialNumber ?? null, name: t.name ?? null,
+        status: t.status ?? null, already_linked: linked.has(t.id as string),
+      })),
+    });
+  }
+
+  // ── adopt: link a terminal that ALREADY exists at Ryft ────────────────────
+  // Verifies it really is in this account's estate before storing, so a typo'd
+  // or someone else's terminal id can't be attached to this venue.
+  if (action === 'adopt') {
+    const terminalId = String(body.terminal_id ?? '').trim();
+    if (!terminalId) return json({ error: 'terminal_id required' }, 400);
+
+    const { data: mra } = await platformAdmin.from('merchant_ryft_accounts')
+      .select('ryft_account_id').eq('location_id', loc.id).maybeSingle();
+    if (!mra?.ryft_account_id) return json({ error: 'Set up card payments for this location first (no Ryft account).' }, 400);
+
+    const res = await listTerminals({ accountId: mra.ryft_account_id });
+    if (!res.ok) return json({ error: ryftErr(res.data) || `Couldn't verify the terminal at Ryft (${res.status})`, ryft: res.data }, 502);
+    const items = (res.data?.items ?? res.data ?? []) as Array<Record<string, unknown>>;
+    const match = items.find(t => t.id === terminalId);
+    if (!match) {
+      return json({ error: `Terminal ${terminalId} isn't in this venue's Ryft account. Check you're in the same environment (sandbox vs live) as the terminal.` }, 404);
+    }
+
+    const { error: upErr } = await platformAdmin.from('payment_devices').upsert({
+      location_id: loc.id, processor: 'ryft', ryft_terminal_id: terminalId,
+      serial_number: (match.serialNumber as string) ?? null,
+      label: body.terminal_name || (match.name as string) || null,
+      bound_pos_device_id: body.pos_device_id || null, status: 'registered',
+      registered_by_user_id: caller.id,
+    }, { onConflict: 'ryft_terminal_id' });
+    if (upErr) return json({ error: `local save failed: ${upErr.message}` }, 500);
+
+    return json({ success: true, terminal_id: terminalId, serial_number: match.serialNumber ?? null, adopted: true });
   }
 
   return json({ error: `unknown action: ${action}` }, 400);
