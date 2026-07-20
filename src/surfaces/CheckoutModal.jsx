@@ -8,7 +8,7 @@ import {
   resolvePlatformLocationId,
   getAssignedNetworkReader,
 } from '../lib/networkReader';
-import { getActiveLocationSync, supabase, platformSupabase, ensureAuthToken, isMock } from '../lib/supabase';
+import { getActiveLocationSync, supabase, ensureAuthToken, isMock } from '../lib/supabase';
 import { getLocationProcessor, getLocationProcessorInfo } from '../lib/payments/processor';
 import { chargeRyftTerminal } from '../lib/payments/ryftTerminal';
 import { fetchCustomerByPhone } from '../lib/customerLookup';
@@ -19,91 +19,6 @@ import { isTrainingMode } from '../lib/trainingMode';
 // (readerDisplay imports removed — cancel now lets the natural cart-change effect refresh the reader after onBack)
 
 // ─── Tip picker ───────────────────────────────────────────────────────────────
-// v5.5.827: driven by the venue's OWN tipping rules (location_reader_settings) —
-// the same row stripe-sync-location-reader-config pushes into Stripe's Terminal
-// Configuration. Ryft has no on-reader tip prompt, so this on-screen picker IS
-// the Ryft equivalent of the Stripe reader's tip step, and must honour the same
-// settings: percentages, custom-tip allowance, smart-tip threshold, and the
-// enable toggle (handled by the caller, which skips this screen entirely).
-function TipPicker({ total, onSelect, tipCfg }) {
-  const compact = useCompact();
-  const [custom, setCustom] = useState('');
-  const pcts = (tipCfg?.tip_percentages?.length ? tipCfg.tip_percentages : [15, 18, 20]);
-  // Smart tip: below the configured threshold, show fixed amounts instead of
-  // percentages (15% of a £3 coffee is meaningless). Mirrors the Stripe reader.
-  const smartMinor = tipCfg?.smart_tip_threshold_minor ?? null;
-  const useFixed = smartMinor != null && Math.round(total * 100) < smartMinor;
-  const fixedAmts = [1, 2, 3];
-  const presets = useFixed ? [0, ...fixedAmts] : [0, ...pcts];
-  const [active, setActive] = useState(useFixed ? fixedAmts[0] : pcts[Math.min(1, pcts.length - 1)]);
-  const allowCustom = tipCfg?.allow_custom_tip !== false;
-  const tipAmt = custom !== '' ? (parseFloat(custom)||0)
-    : useFixed ? active
-    : total * active / 100;
-  const pick = (p) => { setActive(p); setCustom(''); };
-
-  return (
-    <div>
-      <div style={{ textAlign:'center', marginBottom:20 }}>
-        <div style={{ fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:8 }}>Add gratuity to</div>
-        <div style={{ fontSize:32, fontWeight:800, color:'var(--t1)', fontFamily:'var(--font-mono)' }}>{money(total)}</div>
-      </div>
-
-      {/* Preset grid — £ amount as hero */}
-      <div style={{ display:'grid', gridTemplateColumns:`repeat(${Math.min(presets.length,5)},1fr)`, gap:6, marginBottom:16 }}>
-        {presets.map(p => {
-          const isOn = active===p && custom==='';
-          const amt  = useFixed ? p : total * p / 100;
-          return (
-            <button key={p} onClick={()=>pick(p)} style={{
-              padding:'12px 4px', borderRadius:12, cursor:'pointer', textAlign:'center', fontFamily:'inherit',
-              border:`2px solid ${isOn?'var(--acc)':'var(--bdr)'}`,
-              background:isOn?'var(--acc-d)':'var(--bg3)',
-              transition:'all .12s',
-            }}>
-              {p===0 ? (
-                <div style={{ fontSize:15, fontWeight:800, color:isOn?'var(--acc)':'var(--t3)', lineHeight:1 }}>None</div>
-              ) : (
-                <>
-                  <div style={{ fontSize:15, fontWeight:800, color:isOn?'var(--acc)':'var(--t1)', fontFamily:'var(--font-mono)', lineHeight:1 }}>{money(amt)}</div>
-                  {!useFixed && <div style={{ fontSize:10, color:isOn?'var(--acc)':'var(--t4)', marginTop:3, fontWeight:700 }}>{p}%</div>}
-                </>
-              )}
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Custom amount — only when the venue allows custom tips */}
-      {allowCustom && <div style={{ position:'relative', marginBottom:16 }}>
-        <span style={{ position:'absolute', left:14, top:'50%', transform:'translateY(-50%)', color:'var(--t3)', fontWeight:700, fontSize:16, fontFamily:'var(--font-mono)' }}>£</span>
-        <input type="number" value={custom}
-          onChange={e=>{setCustom(e.target.value);setActive(null);}}
-          placeholder="Custom amount"
-          className="input" style={{ paddingLeft:30, fontSize:16, height:46 }}/>
-      </div>}
-
-      {/* Live summary */}
-      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'12px 16px', background:'var(--bg3)', borderRadius:12, marginBottom:16, border:'1px solid var(--bdr)' }}>
-        <div>
-          <div style={{ fontSize:11, color:'var(--t3)', fontWeight:600, marginBottom:2 }}>Tip added</div>
-          <div style={{ fontSize:13, color:'var(--t2)' }}>Bill + tip</div>
-        </div>
-        <div style={{ textAlign:'right' }}>
-          <div style={{ fontSize:16, fontWeight:800, color:'var(--acc)', fontFamily:'var(--font-mono)' }}>+{money(tipAmt)}</div>
-          <div style={{ fontSize:20, fontWeight:800, color:'var(--t1)', fontFamily:'var(--font-mono)' }}>{money((total+tipAmt))}</div>
-        </div>
-      </div>
-
-      <div style={{ display:'flex', gap:8 }}>
-        <button className="btn btn-ghost" style={{ flex:1, height:46 }} onClick={()=>onSelect(0)}>Skip</button>
-        <button className="btn btn-acc" style={{ flex:2, height:46, fontSize:14 }} onClick={()=>onSelect(tipAmt)}>
-          Confirm tip · {money((total+tipAmt))} →
-        </button>
-      </div>
-    </div>
-  );
-}
 
 // ─── Card terminal ────────────────────────────────────────────────────────────
 // Handles three modes, in order:
@@ -1322,32 +1237,15 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   const isBarTab = orderType==='bar-tab';
   const skipTip  = isBarTab || orderType==='takeaway' || orderType==='collection';
 
-  // v5.5.808: resolve the venue's card processor at modal level too. Ryft's
-  // terminal API has NO on-reader tip prompt, so Ryft venues pick the tip ON
-  // SCREEN (TipPicker) before the terminal payment; split card legs also
-  // dispatch by this. Defaults to 'stripe' — never changes live Stripe venues.
+  // v5.5.808: resolve the venue's card processor at modal level too — the card
+  // press, split card legs and the terminal flow all dispatch by this. Defaults
+  // to 'stripe', so live Stripe venues are never affected by a failed lookup.
   const [cardProcessor, setCardProcessor] = useState('stripe');
-  // v5.5.827: the venue's tipping rules. Stripe pushes these to the reader via its
-  // Terminal Configuration; on Ryft there is no reader prompt, so the on-screen
-  // TipPicker has to apply the SAME rules — including being turned off entirely.
-  // null = not loaded yet (we don't guess), so the tip step waits rather than
-  // showing hardcoded percentages the operator never configured.
-  const [tipCfg, setTipCfg] = useState(null);
   useEffect(() => {
     let alive = true;
     getLocationProcessor(getActiveLocationSync())
       .then(p => { if (alive) setCardProcessor(p); })
       .catch(() => { /* stays stripe */ });
-    (async () => {
-      try {
-        const locId = getActiveLocationSync();
-        if (!locId || !platformSupabase) { if (alive) setTipCfg({}); return; }
-        const { data } = await platformSupabase.from('location_reader_settings')
-          .select('tipping_enabled, tip_percentages, allow_custom_tip, smart_tip_threshold_minor')
-          .eq('location_id', locId).maybeSingle();
-        if (alive) setTipCfg(data || {});
-      } catch { if (alive) setTipCfg({}); }
-    })();
     return () => { alive = false; };
   }, []);
   const giftCredit = giftApplied?.applied ? giftApplied.applied / 100 : 0;
@@ -1422,14 +1320,13 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   // side. The POS no longer pre-collects a tip. Goes straight from review
   // to card_terminal. The actual tip the customer chose comes back via the
   // payment intent's amount_received and is reflected in `complete()` below.
-  // v5.5.808: Ryft terminals have NO on-reader tip prompt — Ryft venues route
-  // through the on-screen TipPicker first, then charge grand (bill + tip).
+  // Ryft venues take no tip at all (see handleCardPress) — grand is just the bill.
   const handleCardPress = () => {
-    // Ryft has no on-reader tip prompt, so tips are taken on screen first — but
-    // only when the venue actually has tipping switched on (same setting Stripe
-    // readers obey). tipping_enabled === false means no tip step, exactly as a
-    // Stripe reader would skip straight to the card prompt.
-    if (cardProcessor === 'ryft' && !skipTip && tipCfg?.tipping_enabled !== false) { setScreen('card_tip'); return; }
+    // NOTE: no tip step on Ryft. Ryft's terminal API has no tipping at all — the
+    // payment takes a single `amounts.requested` and reports back only that, so a
+    // tip could neither be prompted for on the reader nor read back if the device
+    // added one. An on-screen picker was tried and removed: asking staff to key a
+    // tip on the till before handing over the terminal is not how tipping works.
     setScreen('card_terminal');
   };
 
@@ -1451,7 +1348,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     : orderType;
 
   const SCREENS = {
-    review:'Checkout', card_tip:'Gratuity',
+    review:'Checkout',
     card_terminal:'Card payment', cash:'Cash payment',
     gift_card:'Gift card', loyalty_rewards:'Loyalty rewards',
   };
@@ -1768,10 +1665,6 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
               </div>
               </div>
             </>
-          )}
-
-          {screen==='card_tip' && (
-            <TipPicker total={total} tipCfg={tipCfg} onSelect={(tip)=>{ setTipAmt(tip); setScreen('card_terminal'); }}/>
           )}
 
           {screen==='card_terminal' && (

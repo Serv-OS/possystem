@@ -94,6 +94,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.828', date: '20 Jul 2026', label: 'Removed the on-screen tip step on Ryft',
+    changes: [
+      'Removed the gratuity screen that appeared on the till before a Ryft card payment. Asking staff to key a tip on the POS before handing the terminal over is not how tipping should work, so it is gone \u2014 card now goes straight to the reader.',
+      'Why there is no tip prompt on the Ryft reader: Ryft\u2019s terminal API has no tipping of any kind. A payment takes a single amount and the reader reports back only that amount, so it cannot prompt for a tip and we could not read one back even if the device added one.',
+      'Stripe venues are completely unaffected \u2014 tipping still happens on the reader as before, using your Reader settings.',
+      'Raised with Ryft: whether their terminal app can prompt for a tip, and how the captured amount would be reported if it did.',
+    ],
+  },
+  {
     version: '5.5.827', date: '20 Jul 2026', label: 'Ryft tipping now uses YOUR tip settings',
     changes: [
       'Fixed: on Ryft venues the tip screen ignored your tipping setup and always showed its own 10 / 12.5 / 15 / 20 percentages. It now uses exactly what you configured in Card readers \u2192 Reader settings \u2014 the same settings your Stripe readers use.',
