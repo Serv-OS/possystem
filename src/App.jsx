@@ -94,6 +94,16 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.827', date: '20 Jul 2026', label: 'Ryft tipping now uses YOUR tip settings',
+    changes: [
+      'Fixed: on Ryft venues the tip screen ignored your tipping setup and always showed its own 10 / 12.5 / 15 / 20 percentages. It now uses exactly what you configured in Card readers \u2192 Reader settings \u2014 the same settings your Stripe readers use.',
+      'Turning tipping OFF now works on Ryft: with tipping disabled the tip step is skipped entirely and it goes straight to the card prompt, just like a Stripe reader would.',
+      '"Allow custom tip" is respected \u2014 switch it off and the custom amount box no longer appears.',
+      'Smart-tip threshold is respected \u2014 below your threshold the screen offers fixed amounts (\u00a31 / \u00a32 / \u00a33) instead of percentages, matching how the Stripe reader behaves on small bills.',
+      'Why it differed: Stripe collects the tip on the card reader itself, and your settings are pushed to it. Ryft terminals have no tip prompt, so we take the tip on the POS screen \u2014 but that screen was never wired to your settings.',
+    ],
+  },
+  {
     version: '5.5.826', date: '20 Jul 2026', label: 'Card readers \u2014 link a reader Ryft already knows about',
     changes: [
       'If your card reader is already registered with Ryft \u2014 because you bought it through their portal, or their support set it up \u2014 you can now link it to a venue instead of trying to pair it again.',
