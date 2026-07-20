@@ -441,6 +441,16 @@ button { font-family: inherit; }
   padding: clamp(16px, 2.5vw, 28px) clamp(20px, 4vw, 48px) !important;
   box-sizing: border-box !important;
 }
+/* v5.5.816: WORKSPACE screens opt out of the reading cap.
+   The rule above is right for document-style pages (settings, forms) but wrong
+   for multi-column tools like the Menu manager: capping at 1600px and adding
+   48px page padding steals the width its item grid needs, leaving a dead margin
+   on wide monitors. These screens own their own column spacing, so they run
+   edge-to-edge and fill the viewport. */
+.bo-page-shell > .bo-workspace {
+  max-width: none !important;
+  padding: 0 !important;
+}
 
 /* ============================================================
    SERVOS — "liquid glass" visual system (v5.5.350)

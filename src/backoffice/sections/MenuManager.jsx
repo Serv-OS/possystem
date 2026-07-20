@@ -208,7 +208,7 @@ export default function MenuManager() {
   const { menus } = useStore();
   const defaultMenuId = menus?.[0]?.id;
   return (
-    <div style={{ display:'flex', flexDirection:'column', height:'100%', overflow:'hidden' }}>
+    <div className="bo-workspace" style={{ display:'flex', flexDirection:'column', height:'100%', overflow:'hidden' }}>
       <nav style={{ display:'flex', borderBottom:'1px solid var(--bdr)', background:'var(--bg1)', flexShrink:0, alignItems:'center' }}>
         {[['menu','🍽 Menus'],['quick','⚡ Quick Screen'],['items','📋 Items'],['modifiers','⊕ Modifier groups'],['instructions','📝 Instruction groups']].map(([id,label])=>(
           <button key={id} onClick={()=>setTab(id)} style={{ padding:'0 20px', height:46, cursor:'pointer', fontFamily:'inherit', border:'none', borderBottom:`3px solid ${tab===id?'var(--acc)':'transparent'}`, background:'transparent', color:tab===id?'var(--acc)':'var(--t3)', fontSize:13, fontWeight:tab===id?800:500 }}>
@@ -940,7 +940,11 @@ function MenuTab() {
                 <button onClick={()=>setShowAddPanel(true)} style={{ padding:'8px 18px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:13, fontWeight:700 }}>+ Add items to this category</button>
               </div>
             ) : (
-              <div style={{ display:'grid', gridTemplateColumns:'repeat(6, 1fr)', gap:10 }}>
+              // v5.5.816: was a hardcoded repeat(6,1fr), which squeezed six columns
+              // into whatever width was left — with the detail panel open that made
+              // ~85px cards with truncated names. The cards now have a real minimum
+              // and the column count follows the available space.
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(178px, 1fr))', gap:10, alignContent:'start' }}>
                 {gridWithSpacers.map(item=>{
                   // Spacer cell — draggable blank layout cell
                   if (item._spacer) return (

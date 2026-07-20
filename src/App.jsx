@@ -94,6 +94,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.816', date: '20 Jul 2026', label: 'Menu manager — fills the screen properly',
+    changes: [
+      'The menu builder now uses the full width of your screen. It was being squeezed into a 1600px column with padding either side, which left a dead strip down the right on a big monitor.',
+      'Item cards size themselves to the space instead of always cramming six into a row. On a narrow pane you now get fewer, readable cards rather than six tiny ones with cut-off names; on a wide screen you get more per row.',
+      'Cards keep a sensible minimum width, so they never stretch to silly proportions when a category only has two or three items.',
+    ],
+  },
+  {
     version: '5.5.815', date: '20 Jul 2026', label: 'Menu manager — collapse groups + filter categories',
     changes: [
       'Category groups now fold away. Click the arrow next to a parent (Mains, Drinks…) to collapse it, so a long menu fits on one screen instead of endless scrolling. Only groups that actually have sub-categories get an arrow.',
