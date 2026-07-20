@@ -94,6 +94,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.810', date: '20 Jul 2026', label: 'Reports catalog — Inventory & Marketing report tiles',
+    changes: [
+      'The Reports catalog now shows two more cards — "Inventory reports" and "Marketing reports" — so every report is discoverable from the one Reports screen.',
+      'Inventory reports tile opens the full Inventory → Reports screen (valuation, recipe GP / food-cost %, movements ledger and the theoretical-vs-actual gap); the Marketing report tile opens the Customers → Marketing report screen (redemptions, attributed revenue, channel split, message stats).',
+      'Nothing was moved or duplicated — the tiles jump to the real screens where those reports already live, so there is still a single source of truth.',
+      'Reverted the earlier nav-dropdown shortcuts for these two (they now live in the catalog instead, where you asked for them).',
+    ],
+  },
+  {
     version: '5.5.809', date: '20 Jul 2026', label: 'Reports — everything under one Reports menu',
     changes: [
       'Reports menu now gathers every report in one place: Inventory reports and the Marketing report now appear under Reports too, alongside Sales, Shifts, Close day, Petty cash and Tables Ready.',

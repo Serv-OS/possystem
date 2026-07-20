@@ -45,7 +45,7 @@ import { money } from '../../lib/currency';
 const fmt  = n => `${money((n || 0))}`;
 const fmtN = n => (n || 0).toLocaleString();
 
-export default function BOReports() {
+export default function BOReports({ setSection } = {}) {
   const { tables, taxRates, closedChecks: storeChecks } = useStore();
 
   const [view, setView]               = useState('catalog'); // 'catalog' or a report id
@@ -55,6 +55,18 @@ export default function BOReports() {
   const [serverFilter, setServerFilter]       = useState('all');
   const [orderTypeFilter, setOrderTypeFilter] = useState('all');
   const [sourceFilter, setSourceFilter]       = useState('all'); // v5.5.140: pos / kiosk / online / qr
+
+  // Opening a catalog tile: most reports render in-shell (setView), but some tiles
+  // point at full Back Office sections that live in their own group (e.g. Inventory
+  // reports, Marketing report). Those carry a `section` and navigate there instead —
+  // single source of truth, nothing duplicated or embedded.
+  const openReport = (r) => {
+    if (r && typeof r === 'object' && r.section) {
+      if (setSection) setSection(r.section);
+      return;
+    }
+    setView(typeof r === 'string' ? r : r?.id);
+  };
 
   // v4.6.24: Load location timezone + businessDayStart + service periods so reports
   // can honour real business-day boundaries and service-period grouping.
@@ -173,7 +185,7 @@ export default function BOReports() {
   if (view === 'catalog') {
     return (
       <div style={{ padding:'20px 24px', flex:1, overflow:'auto', minHeight:0 }}>
-        <Catalog onOpen={setView} counts={catalogCounts}/>
+        <Catalog onOpen={openReport} counts={catalogCounts}/>
       </div>
     );
   }

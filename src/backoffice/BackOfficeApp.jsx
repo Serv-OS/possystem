@@ -156,7 +156,7 @@ const NAV_IA = [
   { label:'Customers',  icon:'customers', children:[['customers','Customers'],['promotions','Promotions'],['segments','Segments'],['campaigns','Campaigns'],['quicksend','Quick send'],['workflows','Workflows'],['marketing-reports','Marketing report'],['compliance','Marketing compliance'],['wifi','WiFi'],['reviews','Reviews'],['loyalty','Loyalty'],['giftcards','Gift cards'],['messages','Messages']] },
   { label:'Channels',   icon:'channels',  children:[['online','Online ordering'],['catering','Catering ordering'],['catering-orders','Catering orders'],['hubrise','3rd Party orders'],['uber-direct','Delivery'],['deliveries-live','Deliveries (live)'],['waitlist','Tables Ready'],['menu-appearance','Menu appearance'],['kiosks','Kiosks'],['menuboards','Menu boards'],['print-menu','Print menu']] },
   { label:'Hardware',   icon:'hardware',  children:[['devices','Terminals'],['profiles','Device profiles'],['printers','Printers'],['printing','Production printing'],['cardreaders','Card readers'],['cashdrawers','Cash drawers'],['network','Network & sync']] },
-  { label:'Reports',    icon:'reports',   children:[['reports','All reports'],['stock-reports','Inventory reports'],['marketing-reports','Marketing report'],['shift','Shifts'],['eod','Close day'],['pettycash','Petty cash'],['waitlist-insights','Tables Ready']] },
+  { label:'Reports',    icon:'reports',   children:[['reports','All reports'],['shift','Shifts'],['eod','Close day'],['pettycash','Petty cash'],['waitlist-insights','Tables Ready']] },
   { label:'Settings',   icon:'settings',  children:[['location','Location settings'],['receipt','Receipt'],['sending-domain','Email domain'],['xero','Xero (accounting)'],['ai','AI assistant']] },
 ];
 
@@ -712,7 +712,7 @@ export default function BackOfficeApp() {
           {section === 'cashdrawers' && <CashDrawers />}
           {section === 'staff'      && <StaffManager />}
           {section === 'printing'   && <PrintRouting />}
-          {section === 'reports'    && <BOReports />}
+          {section === 'reports'    && <BOReports setSection={setSection} />}
           {section === 'shift'      && <Shift />}
           {section === 'eod'        && <EODClose />}
           {section === 'pettycash'  && <PettyCash />}

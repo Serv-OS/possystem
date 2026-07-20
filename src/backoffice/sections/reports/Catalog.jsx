@@ -63,6 +63,24 @@ export const CATEGORIES = [
     ],
   },
   {
+    id: 'inventory', label: 'Inventory reports', icon: '🗃',
+    description: 'Stock valuation, recipe margins and the variance gap.',
+    // Opens the full Inventory → Reports screen (its own section), not an in-shell report.
+    reports: [
+      { id:'stock_reports', label:'Inventory reports', section:'stock-reports',
+        desc:'Valuation · recipe GP / food-cost % · movements ledger · theoretical-vs-actual gap', badge:'new' },
+    ],
+  },
+  {
+    id: 'marketing', label: 'Marketing reports', icon: '📣',
+    description: 'Campaign and offer attribution.',
+    // Opens the full Customers → Marketing report screen (its own section).
+    reports: [
+      { id:'marketing_reports', label:'Marketing report', section:'marketing-reports',
+        desc:'Redemptions, attributed revenue, channel split and message delivery stats', badge:'new' },
+    ],
+  },
+  {
     id: 'loyalty', label: 'Loyalty reports', icon: '💎',
     description: 'Member engagement, stamp cards, points circulation and reward redemptions.',
     reports: [
@@ -124,7 +142,7 @@ export default function Catalog({ onOpen, counts = {} }) {
                 {cat.reports.map(r => (
                   <button
                     key={r.id}
-                    onClick={() => onOpen(r.id)}
+                    onClick={() => onOpen(r)}
                     style={{
                       textAlign: 'left', padding: '8px 10px', marginLeft: -10, marginRight: -10,
                       borderRadius: 8, border: 'none', background: 'transparent',
