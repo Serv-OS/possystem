@@ -3055,6 +3055,19 @@ export const useStore = create((set, get) => ({
     set(s => ({ eightySixIds: is86 ? s.eightySixIds.filter(x=>x!==id) : [...s.eightySixIds, id] }));
     // Write to Supabase (no-op in mock mode)
     toggle86DB(id, is86);
+    // v5.5.825: un-86ing an item whose daily count is exhausted must ALSO clear the
+    // count. POSSurface blocks any item with remaining <= 0 independently of the 86
+    // list (the cross-device oversell guard), so on its own the un-86 silently does
+    // nothing — staff tap it, the toast says un-86'd, and the item still refuses to
+    // add with "out of stock". Clearing returns the item to untracked until someone
+    // sets a new count. Only when EXHAUSTED: a count with stock left is still valid,
+    // so un-86ing a manually-86'd item must not wipe its remaining quantity.
+    if (is86) {
+      const dc = get().dailyCounts?.[id];
+      if (dc && typeof dc.remaining === 'number' && dc.remaining <= 0) {
+        get().clearDailyCount(id);
+      }
+    }
     // Best-effort: mirror the new 86 state to HubRise channels (instant out-of-stock).
     // The reconcile cron also resyncs, so a missed push self-heals. !is86 = now 86'd.
     try {

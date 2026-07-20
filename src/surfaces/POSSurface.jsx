@@ -1862,7 +1862,19 @@ export default function POSSurface() {
         <ItemInfoModal
           item={infoItem}
           is86={eightySixIds.includes(infoItem.id)}
-          onToggle86={()=>{ toggle86(infoItem.id); showToast(eightySixIds.includes(infoItem.id)?`${infoItem.name} un-86'd`:`${infoItem.name} 86'd`,'warning'); }}
+          onToggle86={()=>{
+            // v5.5.825: say so when the un-86 also cleared an exhausted count, so
+            // staff know the item is now untracked and a new count is needed.
+            const _was86 = eightySixIds.includes(infoItem.id);
+            const _dc = dailyCounts?.[infoItem.id];
+            const _clearedCount = _was86 && _dc && typeof _dc.remaining === 'number' && _dc.remaining <= 0;
+            toggle86(infoItem.id);
+            showToast(
+              _was86
+                ? `${infoItem.name} un-86'd${_clearedCount ? ' — count cleared, set a new count to track it again' : ''}`
+                : `${infoItem.name} 86'd`,
+              'warning');
+          }}
           onClose={()=>setInfoItem(null)}
           onAddToOrder={()=>{ setInfoItem(null); handleItemTap(infoItem); }}
         />

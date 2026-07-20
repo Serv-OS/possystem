@@ -94,6 +94,16 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.825', date: '20 Jul 2026', label: 'POS \u2014 FIX: un-86 now actually puts the item back on sale',
+    changes: [
+      'Fixed: when an item ran out and auto-86\u2019d, un-86\u2019ing it on the POS did not work. The toast said un-86\u2019d, but the item still refused to go on an order with \u201cout of stock\u201d, because its daily count was still sitting at zero and that blocks the sale on its own.',
+      'Un-86 now also clears the count, so the item goes straight back on sale as untracked \u2014 exactly as you would expect when you say it is available again.',
+      'The POS now tells you: \u201cun-86\u2019d \u2014 count cleared, set a new count to track it again\u201d, so nobody assumes stock is still being counted down when it is not.',
+      'Items you 86\u2019d by hand that still have stock left keep their count when you un-86 them \u2014 only an exhausted count is cleared.',
+      'Applies anywhere you un-86: the till, Inventory, and the menu screens.',
+    ],
+  },
+  {
     version: '5.5.824', date: '20 Jul 2026', label: 'Produce & Purchasing brought in line with the new look',
     changes: [
       'Recipes, Batches, Order pad, Suppliers, Purchase orders and Supplier invoices now match the rest of the Back Office \u2014 the same page headings, search boxes, filter chips and table styling used by the reports.',
