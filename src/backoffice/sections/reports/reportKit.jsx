@@ -184,6 +184,35 @@ export function PeriodControl({ from, to, setFrom, setTo }) {
   );
 }
 
+/**
+ * Standard page header: eyebrow (section) + title + subtitle, with room for a
+ * toolbar on the right. Shared so every Back Office screen introduces itself the
+ * same way instead of each inventing its own H1.
+ */
+export function PageHeader({ eyebrow, title, subtitle, children }) {
+  return (
+    <div style={{ display:'flex', alignItems:'flex-start', gap:16, flexWrap:'wrap', marginBottom:16 }}>
+      <div style={{ flex:1, minWidth:240 }}>
+        {eyebrow && <div style={{ fontSize:11, fontWeight:700, letterSpacing:'1.2px', color:'var(--t4)' }}>{eyebrow}</div>}
+        <h1 style={{ fontSize:28, fontWeight:700, letterSpacing:'-.7px', margin:'5px 0 4px', color:'var(--t1)' }}>{title}</h1>
+        {subtitle && <p style={{ margin:0, fontSize:13.5, color:'var(--t3)' }}>{subtitle}</p>}
+      </div>
+      {children && <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>{children}</div>}
+    </div>
+  );
+}
+
+/** Primary action button, matching the standard's weight and radius. */
+export function PrimaryBtn({ onClick, children, disabled }) {
+  return (
+    <button onClick={onClick} disabled={disabled} style={{
+      border:'none', borderRadius:12, padding:'9px 16px', background:'var(--acc)', color:'#0b0c10',
+      fontFamily:'inherit', fontSize:13, fontWeight:700, cursor: disabled ? 'default' : 'pointer',
+      opacity: disabled ? .5 : 1, flexShrink:0,
+    }}>{children}</button>
+  );
+}
+
 export function Tabs({ value, onChange, options }) {
   return (
     <div style={{ display:'flex', gap:4, borderBottom:'1px solid var(--bdr)', marginBottom:18, overflowX:'auto' }}>

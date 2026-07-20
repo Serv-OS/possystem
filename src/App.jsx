@@ -94,6 +94,16 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.824', date: '20 Jul 2026', label: 'Produce & Purchasing brought in line with the new look',
+    changes: [
+      'Recipes, Batches, Order pad, Suppliers, Purchase orders and Supplier invoices now match the rest of the Back Office \u2014 the same page headings, search boxes, filter chips and table styling used by the reports.',
+      'Order pad gets a proper search and filter chips (All suppliers / All items / Only what needs ordering), and Batch history plus Posted invoices are now clean sortable tables.',
+      'Fixed 44 hardcoded colours across these six screens. They were fixed light-mode values that did not follow your theme, so parts of these pages looked wrong in dark mode.',
+      'One of those was a real bug rather than a cosmetic one: the "unmatched line" warning on supplier invoices referenced a colour name that does not exist, so it always fell back to a fixed orange in both themes.',
+      'Deliberately left alone: the invoice review grid is not sortable, because its rows are edited by position \u2014 re-ordering them would have edited the wrong line. Recipes and Purchase orders keep their editor layout rather than being forced into a report shape.',
+    ],
+  },
+  {
     version: '5.5.823', date: '20 Jul 2026', label: 'Stock counts — you can now delete a count',
     changes: [
       'You can now delete a stock count. Counts were create-only, so a sheet started by mistake stayed on the list forever with no way to clear it.',

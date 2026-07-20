@@ -15,6 +15,7 @@ import { buildCostingCtx } from '../../lib/stock/recipes';
 import { fetchRecipes } from '../../lib/stock/recipes';
 import { fetchInventoryItems } from '../../lib/stock/data';
 import { planBatch, produceBatch, fetchBatches } from '../../lib/stock/production';
+import { PageHeader, PrimaryBtn, ReportTable, Money, Tag } from './reports/reportKit';
 
 const field = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '8px 10px', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
 const lbl = { display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 5 };
@@ -58,6 +59,25 @@ export default function Batches() {
     } catch (e) { return { error: e.message }; }
   }, [recipe, actualQty, ctx]);
 
+  /* Batch history — flat, read-only. Columns match the previous table 1:1. */
+  const batchCols = useMemo(() => [
+    { key: 'date', label: 'Date', render: b => <span style={{ color: 'var(--t3)' }}>{b.producedAt ? new Date(b.producedAt).toLocaleDateString() : '—'}</span> },
+    { key: 'item', label: 'Item', render: b => <span style={{ color: 'var(--t1)', fontWeight: 500 }}>{b.outputName || itemName(b.outputItemId)}</span> },
+    { key: 'output', label: 'Output', align: 'right', render: b => <span style={{ color: 'var(--t1)' }}>{b.actualQty} {b.outputUnit}</span> },
+    {
+      key: 'planned', label: 'Planned', align: 'right',
+      render: b => {
+        const variance = b.plannedQty != null && b.actualQty != null && b.actualQty < b.plannedQty;
+        return <span style={{ color: variance ? 'var(--red)' : 'var(--t3)' }}>{b.plannedQty} {b.outputUnit}</span>;
+      },
+    },
+    { key: 'cost', label: 'Cost', align: 'right', render: b => <Money v={b.actualCost} /> },
+    { key: 'unitCost', label: 'Unit cost', align: 'right', render: b => <span style={{ color: 'var(--t3)' }}>{b.outputUnitCost == null ? '—' : currencySymbol() + Number(b.outputUnitCost).toFixed(4).replace(/0+$/, '').replace(/\.$/, '')}</span> },
+    { key: 'lot', label: 'Lot', render: b => <span style={{ color: 'var(--t3)' }}>{b.lotCode || ''}</span> },
+    { key: 'expiry', label: 'Use-by', render: b => <span style={{ color: 'var(--t3)' }}>{b.expiryAt ? new Date(b.expiryAt).toLocaleDateString() : ''}</span> },
+    { key: 'status', label: 'Status', render: b => (b.status ? <Tag label={b.status} tone={b.status === 'COMPLETED' ? 'good' : 'neutral'} /> : null) },
+  ], [itemName]);
+
   const produce = async () => {
     if (!recipe) { showToast?.('Pick a recipe', 'error'); return; }
     if (!(actualQty > 0)) { showToast?.('Enter an output quantity', 'error'); return; }
@@ -72,8 +92,11 @@ export default function Batches() {
 
   return (
     <div style={{ height: '100%', overflowY: 'auto', background: 'var(--bg0)', padding: '22px 26px' }}>
-      <h1 style={{ fontSize: 22, fontWeight: 600, margin: '0 0 4px', color: 'var(--t1)' }}>Production batches</h1>
-      <div style={{ fontSize: 13, color: 'var(--t3)', marginBottom: 20 }}>Make a prep/sub-recipe item — consumes the ingredients and adds the made item to stock at production cost.</div>
+      <PageHeader
+        eyebrow="PRODUCE"
+        title="Batches"
+        subtitle="Make a prep/sub-recipe item — consumes the ingredients and adds the made item to stock at production cost."
+      />
 
       {/* New batch */}
       <div style={{ background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 12, padding: 18, maxWidth: 880, marginBottom: 26 }}>
@@ -100,7 +123,7 @@ export default function Batches() {
                 <div style={{ display: 'flex', gap: 26, marginBottom: 10, flexWrap: 'wrap' }}>
                   <Stat label="Batch cost" value={money(plan.totalCost)} />
                   <Stat label={`Cost / ${recipe.yieldUnit}`} value={currencySymbol() + plan.outputUnitCost.toFixed(4).replace(/0+$/, '').replace(/\.$/, '')} />
-                  <Stat label="vs planned yield" value={`${actualQty} / ${recipe.yieldQty} ${recipe.yieldUnit}`} color={actualQty < recipe.yieldQty ? 'var(--red, #ef4444)' : 'var(--t1)'} />
+                  <Stat label="vs planned yield" value={`${actualQty} / ${recipe.yieldQty} ${recipe.yieldUnit}`} color={actualQty < recipe.yieldQty ? 'var(--red)' : 'var(--t1)'} />
                 </div>
                 <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 6 }}>Will consume</div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -113,48 +136,26 @@ export default function Batches() {
                 </div>
               </div>
             )}
-            {plan?.error && <div style={{ marginTop: 12, fontSize: 12, color: 'var(--red, #ef4444)' }}>{plan.error}</div>}
+            {plan?.error && <div style={{ marginTop: 12, fontSize: 12, color: 'var(--red)' }}>{plan.error}</div>}
 
-            <button onClick={produce} disabled={busy || !recipe || !(actualQty > 0)} style={{ marginTop: 16, padding: '10px 22px', borderRadius: 8, background: 'var(--acc)', color: '#fff', border: 0, fontSize: 14, fontWeight: 700, cursor: 'pointer', opacity: (busy || !recipe) ? 0.6 : 1 }}>
-              {busy ? 'Producing…' : 'Produce batch'}
-            </button>
+            <div style={{ marginTop: 16 }}>
+              <PrimaryBtn onClick={produce} disabled={busy || !recipe || !(actualQty > 0)}>
+                {busy ? 'Producing…' : 'Produce batch'}
+              </PrimaryBtn>
+            </div>
           </>
         )}
       </div>
 
       {/* History */}
       <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)', marginBottom: 10 }}>Batch history</div>
-      {loading && <div style={{ fontSize: 12, color: 'var(--t3)' }}>Loading…</div>}
-      {!loading && batches.length === 0 && <div style={{ fontSize: 12, color: 'var(--t3)' }}>No batches produced yet.</div>}
-      {batches.length > 0 && (
-        <table style={{ width: '100%', maxWidth: 1000, borderCollapse: 'collapse', fontSize: 12.5 }}>
-          <thead>
-            <tr style={{ color: 'var(--t3)', textAlign: 'left' }}>
-              {['Date', 'Item', 'Output', 'Planned', 'Cost', 'Unit cost', 'Lot', 'Use-by', 'Status'].map(h => (
-                <th key={h} style={{ padding: '6px 8px', borderBottom: '1px solid var(--bdr)', fontWeight: 600 }}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {batches.map(b => {
-              const variance = b.plannedQty != null && b.actualQty != null && b.actualQty < b.plannedQty;
-              return (
-                <tr key={b.id} style={{ color: 'var(--t1)' }}>
-                  <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)', color: 'var(--t3)' }}>{b.producedAt ? new Date(b.producedAt).toLocaleDateString() : '—'}</td>
-                  <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)' }}>{b.outputName || itemName(b.outputItemId)}</td>
-                  <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)' }}>{b.actualQty} {b.outputUnit}</td>
-                  <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)', color: variance ? 'var(--red, #ef4444)' : 'var(--t3)' }}>{b.plannedQty} {b.outputUnit}</td>
-                  <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)' }}>{b.actualCost == null ? '—' : money(b.actualCost)}</td>
-                  <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)', color: 'var(--t3)' }}>{b.outputUnitCost == null ? '—' : currencySymbol() + Number(b.outputUnitCost).toFixed(4).replace(/0+$/, '').replace(/\.$/, '')}</td>
-                  <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)', color: 'var(--t3)' }}>{b.lotCode || ''}</td>
-                  <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)', color: 'var(--t3)' }}>{b.expiryAt ? new Date(b.expiryAt).toLocaleDateString() : ''}</td>
-                  <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)', color: b.status === 'COMPLETED' ? 'var(--grn, #16a34a)' : 'var(--t3)' }}>{b.status}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      )}
+      <div style={{ maxWidth: 1000 }}>
+        <ReportTable
+          columns={batchCols}
+          rows={batches}
+          empty={loading ? 'Loading…' : 'No batches produced yet.'}
+        />
+      </div>
     </div>
   );
 }

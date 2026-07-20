@@ -13,6 +13,7 @@ import { convert } from '../../lib/stock/conversion';
 import { fetchSuppliers, fetchInventoryItems } from '../../lib/stock/data';
 import { scanInvoice, postInvoice, fetchInvoices } from '../../lib/stock/purchasing';
 import { xeroStatus, xeroPushBill } from '../../lib/xero';
+import { PageHeader, ReportTable, useSort, sortRows, SubToolbar, Tag, Money } from './reports/reportKit';
 
 const field = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '8px 10px', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
 const lbl = { display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 5 };
@@ -50,6 +51,9 @@ export default function Invoices() {
   const [pendingFile, setPendingFile] = useState(null);   // the scanned file — stored + attached to the Xero bill
   const [xeroOn, setXeroOn] = useState(false);
   const [xeroPush, setXeroPush] = useState({});            // invoiceId -> 'busy' | {link} | {error}
+  // Sorting is applied ONLY to the read-only posted-invoice history (real row ids).
+  // The review grid below is addressed by array index and must never be reordered.
+  const [histSort, onHistSort] = useSort('date', 'desc');
 
   const reload = useCallback(async () => {
     const loc = locId || getActiveLocationSync() || await getLocationId().catch(() => null);
@@ -148,23 +152,55 @@ export default function Invoices() {
     setReview(null); setPendingFile(null); await reload();
   };
 
+  const supplierNameOf = useCallback((inv) => suppliers.find(s => s.id === inv.supplierId)?.name || '', [suppliers]);
+
+  // Read-only history — safe to sort (each row carries its own invoice id).
+  const historyRows = useMemo(() => sortRows(history, histSort, {
+    date: (inv) => inv.invoiceDate || inv.createdAt || '',
+    supplier: supplierNameOf,
+    number: (inv) => inv.invoiceNumber || '',
+    total: (inv) => (inv.total == null ? null : Number(inv.total)),
+    status: (inv) => inv.status || '',
+  }), [history, histSort, supplierNameOf]);
+
+  const historyCols = useMemo(() => [
+    { key: 'date', label: 'Date', sortable: true, render: (inv) => <span style={{ color: 'var(--t3)', whiteSpace: 'nowrap' }}>{inv.invoiceDate || (inv.createdAt ? new Date(inv.createdAt).toLocaleDateString() : '')}</span> },
+    { key: 'supplier', label: 'Supplier', sortable: true, render: (inv) => <span style={{ color: 'var(--t1)' }}>{supplierNameOf(inv) || '—'}</span> },
+    { key: 'number', label: 'Invoice #', sortable: true, render: (inv) => inv.invoiceNumber || '—' },
+    { key: 'total', label: 'Total', align: 'right', sortable: true, render: (inv) => <Money v={inv.total} /> },
+    { key: 'status', label: 'Status', sortable: true, render: (inv) => <Tag label={inv.status} tone={inv.status === 'posted' ? 'good' : 'neutral'} /> },
+    ...(xeroOn ? [{
+      key: 'xero', label: 'Xero', render: (inv) => {
+        const st = xeroPush[inv.id];
+        if (st === 'busy') return <span style={{ color: 'var(--t3)', fontSize: 12 }}>Sending…</span>;
+        if (st && st.link) return <a href={st.link} target="_blank" rel="noreferrer" style={{ color: 'var(--acc)', fontWeight: 700, fontSize: 12, textDecoration: 'none' }}>✓ In Xero ↗</a>;
+        if (st && !st.link && !st.error) return <span style={{ color: 'var(--grn)', fontSize: 12, fontWeight: 700 }}>✓ In Xero</span>;
+        return <button onClick={() => pushToXero(inv.id)} style={{ padding: '5px 11px', borderRadius: 9, border: '1px solid var(--bdr2)', background: 'var(--bg2)', color: 'var(--t1)', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>Push to Xero</button>;
+      },
+    }] : []),
+    /* eslint-disable-next-line react-hooks/exhaustive-deps */
+  ], [supplierNameOf, xeroOn, xeroPush]);
+
   return (
     <div style={{ height: '100%', overflowY: 'auto', background: 'var(--bg0)', padding: '22px 26px' }}>
-      <h1 style={{ fontSize: 22, fontWeight: 600, margin: '0 0 4px', color: 'var(--t1)' }}>Supplier invoices</h1>
-      <div style={{ fontSize: 13, color: 'var(--t3)', marginBottom: 18 }}>Snap or upload an invoice / delivery note — it’s read automatically, you check it, then it updates stock and costs.</div>
+      <PageHeader
+        eyebrow="PURCHASING"
+        title="Supplier invoices"
+        subtitle="Snap or upload an invoice / delivery note — it’s read automatically, you check it, then it updates stock and costs."
+      />
 
       {!review && (
-        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 10, padding: '12px 20px', borderRadius: 10, background: 'var(--acc)', color: '#fff', fontSize: 14, fontWeight: 700, cursor: scanning ? 'default' : 'pointer', opacity: scanning ? 0.6 : 1 }}>
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 10, padding: '11px 18px', borderRadius: 12, background: 'var(--acc)', color: '#0b0c10', fontSize: 13.5, fontWeight: 700, cursor: scanning ? 'default' : 'pointer', opacity: scanning ? 0.6 : 1 }}>
           {scanning ? 'Scanning…' : '📷 Scan / upload invoice'}
           <input type="file" accept="image/*,application/pdf" capture="environment" onChange={onFile} disabled={scanning} style={{ display: 'none' }} />
         </label>
       )}
 
       {review && (
-        <div style={{ background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 12, padding: 18, marginBottom: 24, maxWidth: 1000 }}>
+        <div style={{ background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 16, padding: 18, marginBottom: 24, maxWidth: 1000 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-            <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--t1)' }}>Review invoice {review.header.ocrConfidence != null && <span style={{ fontSize: 11, color: 'var(--t3)', fontWeight: 400 }}>· {review.header.ocrConfidence}% confidence</span>}</div>
-            <button onClick={() => setReview(null)} style={{ background: 'transparent', border: 0, color: 'var(--t3)', cursor: 'pointer', fontSize: 13 }}>Discard</button>
+            <div style={{ fontSize: 14.5, fontWeight: 700, color: 'var(--t1)', letterSpacing: '-.2px' }}>Review invoice {review.header.ocrConfidence != null && <span style={{ fontSize: 11.5, color: 'var(--t3)', fontWeight: 500 }}>· {review.header.ocrConfidence}% confidence</span>}</div>
+            <button onClick={() => setReview(null)} style={{ background: 'transparent', border: '1px solid var(--bdr)', borderRadius: 9, padding: '5px 11px', color: 'var(--t3)', cursor: 'pointer', fontSize: 12.5, fontWeight: 600, fontFamily: 'inherit' }}>Discard</button>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: 12, marginBottom: 14 }}>
             <div><label style={lbl}>Supplier {review.header.supplierName ? `(read: ${review.header.supplierName})` : ''}</label>
@@ -177,26 +213,29 @@ export default function Invoices() {
             <div><label style={lbl}>Date</label><input type="date" value={review.header.invoiceDate || ''} onChange={e => updHeader('invoiceDate', e.target.value)} style={field} /></div>
           </div>
 
+          {/* Review grid — rows are addressed by ARRAY INDEX (updLine/rmLine), so this
+              table is intentionally never sorted or reordered. Presentation only. */}
+          <div style={{ border: '1px solid var(--bdr)', borderRadius: 12, overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
-            <thead><tr style={{ color: 'var(--t3)', textAlign: 'left' }}>
-              {['On invoice', 'Match to stock item', 'Qty', 'Unit', 'Line total', 'VAT', 'New unit cost (ex VAT)', ''].map(h => <th key={h} style={{ padding: '6px 6px', borderBottom: '1px solid var(--bdr)', fontWeight: 600 }}>{h}</th>)}
+            <thead><tr style={{ textAlign: 'left' }}>
+              {['On invoice', 'Match to stock item', 'Qty', 'Unit', 'Line total', 'VAT', 'New unit cost (ex VAT)', ''].map(h => <th key={h} style={{ padding: '10px 10px', background: 'var(--bg2)', borderBottom: '1px solid var(--bdr)', color: 'var(--t3)', fontSize: 11.5, fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</th>)}
             </tr></thead>
             <tbody>
               {review.lines.map((l, i) => {
                 const info = lineInfo(l);
                 return (
                   <tr key={i}>
-                    <td style={{ padding: '5px 6px', borderBottom: '1px solid var(--bg2)' }}><input value={l.description} onChange={e => updLine(i, 'description', e.target.value)} style={{ ...field, width: 200 }} /></td>
-                    <td style={{ padding: '5px 6px', borderBottom: '1px solid var(--bg2)' }}>
-                      <select value={l.matchedItemId} onChange={e => { const it = itemById(e.target.value); updLine(i, 'matchedItemId', e.target.value); if (it && (!l.unit)) updLine(i, 'unit', it.baseUnit); updLine(i, 'purchaseTaxRateId', it?.purchaseTaxRateId || ''); }} style={{ ...field, width: 200, color: l.matchedItemId ? 'var(--t1)' : 'var(--red, #ef4444)' }}>
+                    <td style={{ padding: '7px 10px', borderBottom: '1px solid var(--bdr)' }}><input value={l.description} onChange={e => updLine(i, 'description', e.target.value)} style={{ ...field, width: 200 }} /></td>
+                    <td style={{ padding: '7px 10px', borderBottom: '1px solid var(--bdr)' }}>
+                      <select value={l.matchedItemId} onChange={e => { const it = itemById(e.target.value); updLine(i, 'matchedItemId', e.target.value); if (it && (!l.unit)) updLine(i, 'unit', it.baseUnit); updLine(i, 'purchaseTaxRateId', it?.purchaseTaxRateId || ''); }} style={{ ...field, width: 200, color: l.matchedItemId ? 'var(--t1)' : 'var(--red)', borderColor: l.matchedItemId ? 'var(--bdr)' : 'var(--red-b)' }}>
                         <option value="">— unmatched —</option>
                         {items.filter(it => !it.archivedAt).map(it => <option key={it.id} value={it.id}>{it.name}</option>)}
                       </select>
                     </td>
-                    <td style={{ padding: '5px 6px', borderBottom: '1px solid var(--bg2)' }}><input type="number" min="0" step="any" value={l.qty} onChange={e => updLine(i, 'qty', e.target.value)} style={{ ...field, width: 64 }} /></td>
-                    <td style={{ padding: '5px 6px', borderBottom: '1px solid var(--bg2)' }}><input value={l.unit} onChange={e => updLine(i, 'unit', e.target.value)} style={{ ...field, width: 64 }} /></td>
-                    <td style={{ padding: '5px 6px', borderBottom: '1px solid var(--bg2)' }}><input type="number" min="0" step="any" value={l.lineTotal ?? ''} onChange={e => updLine(i, 'lineTotal', e.target.value === '' ? null : Number(e.target.value))} placeholder={money(Number(l.qty) * Number(l.unitPrice))} style={{ ...field, width: 84 }} /></td>
-                    <td style={{ padding: '5px 6px', borderBottom: '1px solid var(--bg2)', whiteSpace: 'nowrap' }}>
+                    <td style={{ padding: '7px 10px', borderBottom: '1px solid var(--bdr)' }}><input type="number" min="0" step="any" value={l.qty} onChange={e => updLine(i, 'qty', e.target.value)} style={{ ...field, width: 64 }} /></td>
+                    <td style={{ padding: '7px 10px', borderBottom: '1px solid var(--bdr)' }}><input value={l.unit} onChange={e => updLine(i, 'unit', e.target.value)} style={{ ...field, width: 64 }} /></td>
+                    <td style={{ padding: '7px 10px', borderBottom: '1px solid var(--bdr)' }}><input type="number" min="0" step="any" value={l.lineTotal ?? ''} onChange={e => updLine(i, 'lineTotal', e.target.value === '' ? null : Number(e.target.value))} placeholder={money(Number(l.qty) * Number(l.unitPrice))} style={{ ...field, width: 84 }} /></td>
+                    <td style={{ padding: '7px 10px', borderBottom: '1px solid var(--bdr)', whiteSpace: 'nowrap' }}>
                       <select value={l.purchaseTaxRateId || ''} onChange={e => updLine(i, 'purchaseTaxRateId', e.target.value)} style={{ ...field, width: 78, display: 'inline-block' }}>
                         <option value="">No VAT</option>
                         {taxRates.filter(r => r.active !== false).map(r => <option key={r.id} value={r.id}>{Math.round(Number(r.rate) * 100)}%</option>)}
@@ -207,16 +246,17 @@ export default function Invoices() {
                         </label>
                       )}
                     </td>
-                    <td style={{ padding: '5px 6px', borderBottom: '1px solid var(--bg2)', whiteSpace: 'nowrap' }}>
+                    <td style={{ padding: '7px 10px', borderBottom: '1px solid var(--bdr)', whiteSpace: 'nowrap' }}>
                       {info.newCost == null ? '—' : currencySymbol() + info.newCost.toFixed(4).replace(/0+$/, '').replace(/\.$/, '')}
-                      {info.flag && <span style={{ marginLeft: 6, fontSize: 11, fontWeight: 700, color: info.flag.startsWith('↑') || info.flag === 'NEW' ? 'var(--red, #ef4444)' : info.flag.startsWith('↓') ? 'var(--grn, #16a34a)' : 'var(--t3)' }}>{info.flag === 'NEW' ? 'new item' : info.flag === 'UNIT?' ? 'unit?' : info.flag}</span>}
+                      {info.flag && <span style={{ marginLeft: 6, fontSize: 11, fontWeight: 700, color: info.flag.startsWith('↑') || info.flag === 'NEW' ? 'var(--red)' : info.flag.startsWith('↓') ? 'var(--grn)' : 'var(--t3)' }}>{info.flag === 'NEW' ? 'new item' : info.flag === 'UNIT?' ? 'unit?' : info.flag}</span>}
                     </td>
-                    <td style={{ padding: '5px 6px', borderBottom: '1px solid var(--bg2)' }}><button onClick={() => rmLine(i)} style={{ background: 'transparent', border: 0, color: 'var(--t3)', cursor: 'pointer', fontSize: 15 }}>×</button></td>
+                    <td style={{ padding: '7px 10px', borderBottom: '1px solid var(--bdr)' }}><button onClick={() => rmLine(i)} style={{ background: 'transparent', border: 0, color: 'var(--t3)', cursor: 'pointer', fontSize: 15 }}>×</button></td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
+          </div>
 
           {(() => {
             const net = review.lines.reduce((s, l) => s + netLineOf(l), 0);
@@ -228,45 +268,27 @@ export default function Invoices() {
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 16, flexWrap: 'wrap' }}>
                 <div style={{ fontSize: 13, color: 'var(--t1)', marginRight: 'auto' }}>
                   Subtotal (ex VAT): <b>{money(net)}</b> · VAT: <b>{money(vat)}</b> · Total: <b>{money(gross)}</b>
-                  {read != null && <span style={{ fontSize: 11, color: mismatch ? 'var(--amb,#e8a020)' : 'var(--t3)', marginLeft: 10 }}>{mismatch ? `⚠ read total ${money(read)} — check VAT/lines` : `✓ matches read total`}</span>}
+                  {read != null && <span style={{ fontSize: 11, color: mismatch ? 'var(--amber)' : 'var(--t3)', marginLeft: 10 }}>{mismatch ? `⚠ read total ${money(read)} — check VAT/lines` : `✓ matches read total`}</span>}
                 </div>
-                <button onClick={post} disabled={posting} style={{ padding: '10px 22px', borderRadius: 8, background: 'var(--grn, #16a34a)', color: '#fff', border: 0, fontSize: 14, fontWeight: 700, cursor: 'pointer', opacity: posting ? 0.6 : 1 }}>{posting ? 'Posting…' : 'Post to stock'}</button>
+                <button onClick={post} disabled={posting} style={{ padding: '9px 18px', borderRadius: 12, background: 'var(--grn)', color: '#0b0c10', border: 0, fontFamily: 'inherit', fontSize: 13, fontWeight: 700, cursor: posting ? 'default' : 'pointer', opacity: posting ? 0.5 : 1 }}>{posting ? 'Posting…' : 'Post to stock'}</button>
               </div>
             );
           })()}
         </div>
       )}
 
-      {/* History */}
-      <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)', margin: '8px 0 10px' }}>Posted invoices</div>
-      {history.length === 0 && <div style={{ fontSize: 12, color: 'var(--t3)' }}>No invoices posted yet.</div>}
-      {history.length > 0 && (
-        <table style={{ width: '100%', maxWidth: 760, borderCollapse: 'collapse', fontSize: 12.5 }}>
-          <thead><tr style={{ color: 'var(--t3)', textAlign: 'left' }}>{['Date', 'Supplier', 'Invoice #', 'Total', 'Status', ...(xeroOn ? ['Xero'] : [])].map(h => <th key={h} style={{ padding: '6px 8px', borderBottom: '1px solid var(--bdr)', fontWeight: 600 }}>{h}</th>)}</tr></thead>
-          <tbody>
-            {history.map(inv => (
-              <tr key={inv.id} style={{ color: 'var(--t1)' }}>
-                <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)', color: 'var(--t3)' }}>{inv.invoiceDate || (inv.createdAt ? new Date(inv.createdAt).toLocaleDateString() : '')}</td>
-                <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)' }}>{suppliers.find(s => s.id === inv.supplierId)?.name || '—'}</td>
-                <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)' }}>{inv.invoiceNumber || '—'}</td>
-                <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)' }}>{inv.total != null ? money(inv.total) : '—'}</td>
-                <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)', color: 'var(--grn, #16a34a)' }}>{inv.status}</td>
-                {xeroOn && (
-                  <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)' }}>
-                    {(() => {
-                      const st = xeroPush[inv.id];
-                      if (st === 'busy') return <span style={{ color: 'var(--t3)', fontSize: 12 }}>Sending…</span>;
-                      if (st && st.link) return <a href={st.link} target="_blank" rel="noreferrer" style={{ color: 'var(--acc)', fontWeight: 700, fontSize: 12, textDecoration: 'none' }}>✓ In Xero ↗</a>;
-                      if (st && !st.link && !st.error) return <span style={{ color: 'var(--grn, #16a34a)', fontSize: 12, fontWeight: 700 }}>✓ In Xero</span>;
-                      return <button onClick={() => pushToXero(inv.id)} style={{ padding: '4px 10px', borderRadius: 7, border: '1px solid var(--bdr)', background: 'var(--bg2)', color: 'var(--t1)', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>Push to Xero</button>;
-                    })()}
-                  </td>
-                )}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+      {/* History — read-only, real row ids, so sorting is safe here. */}
+      <div style={{ maxWidth: 860 }}>
+        <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--t1)', letterSpacing: '-.3px', margin: '8px 0 8px' }}>Posted invoices</div>
+        <SubToolbar count={`${history.length} invoice${history.length === 1 ? '' : 's'}`} />
+        <ReportTable
+          columns={historyCols}
+          rows={historyRows}
+          sort={histSort}
+          onSort={onHistSort}
+          empty="No invoices posted yet."
+        />
+      </div>
     </div>
   );
 }

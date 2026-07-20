@@ -25,6 +25,7 @@ import {
   linkMenuItemRecipe, buildCostingCtx, recomputeMadeItemCost, costRecipeWith,
 } from '../../lib/stock/recipes';
 import { resolveTaxRate, netOf } from '../../lib/tax';
+import { PageHeader } from './reports/reportKit';
 
 const UNIT_OPTS = Object.entries(UNITS).map(([code, u]) => ({ code, ...u }));
 const DIM_ORDER = [DIMENSIONS.COUNT, DIMENSIONS.WEIGHT, DIMENSIONS.VOLUME];
@@ -167,17 +168,22 @@ export default function Recipes() {
   };
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '330px 1fr', height: '100%', minHeight: 0, background: 'var(--bg0)' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, background: 'var(--bg0)' }}>
+      <div style={{ flexShrink: 0, padding: '20px 22px 0' }}>
+        <PageHeader eyebrow="PRODUCE" title="Recipes" subtitle="Build dish and prep recipes from your stock items — plate cost and GP update live against the menu price." />
+      </div>
+      {/* Two-pane master/detail. flex:1 + minHeight:0 keeps the header above it while both panes still scroll on their own. */}
+      <div style={{ display: 'grid', gridTemplateColumns: '330px 1fr', flex: 1, minHeight: 0, borderTop: '1px solid var(--bdr)' }}>
       <aside style={{ borderRight: '1px solid var(--bdr)', background: 'var(--bg1)', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
         <div style={{ padding: 14 }}>
           <div style={{ display: 'flex', gap: 4, marginBottom: 10 }}>
             {[['dishes', 'Dishes'], ['prep', 'Prep']].map(([id, label]) => (
-              <button key={id} onClick={() => { setMode(id); setDraft(null); setSelectedKey(null); }} style={{ flex: 1, fontSize: 12, fontWeight: 700, padding: '7px 0', borderRadius: 7, cursor: 'pointer', background: mode === id ? 'var(--acc)' : 'var(--bg2)', color: mode === id ? '#fff' : 'var(--t3)', border: '1px solid ' + (mode === id ? 'var(--acc)' : 'var(--bdr)') }}>{label}</button>
+              <button key={id} onClick={() => { setMode(id); setDraft(null); setSelectedKey(null); }} style={{ flex: 1, fontSize: 12, fontWeight: 700, padding: '7px 0', borderRadius: 7, cursor: 'pointer', background: mode === id ? 'var(--acc)' : 'var(--bg2)', color: mode === id ? '#0b0c10' : 'var(--t3)', border: '1px solid ' + (mode === id ? 'var(--acc)' : 'var(--bdr)') }}>{label}</button>
             ))}
           </div>
           <div style={{ position: 'relative' }}>
             <input value={search} onChange={e => setSearch(e.target.value)} placeholder={mode === 'dishes' ? 'Search menu products…' : 'Search prep recipes…'} style={{ ...field, paddingRight: mode === 'prep' ? 40 : 10 }} />
-            {mode === 'prep' && <button onClick={newPrep} title="New prep recipe" style={{ position: 'absolute', top: 4, right: 6, width: 28, height: 28, borderRadius: 6, background: 'var(--acc)', color: '#fff', border: 0, fontSize: 18, cursor: 'pointer' }}>+</button>}
+            {mode === 'prep' && <button onClick={newPrep} title="New prep recipe" style={{ position: 'absolute', top: 4, right: 6, width: 28, height: 28, borderRadius: 6, background: 'var(--acc)', color: '#0b0c10', border: 0, fontSize: 18, cursor: 'pointer' }}>+</button>}
           </div>
         </div>
 
@@ -192,7 +198,7 @@ export default function Recipes() {
               <div key={x.m.id} onClick={() => selectDish(x)} style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '10px 16px', cursor: 'pointer', borderLeft: '3px solid ' + (sel ? 'var(--acc)' : 'transparent'), background: sel ? 'var(--bg2)' : 'transparent' }}>
                 <div style={{ minWidth: 0, flex: 1 }}>
                   <div style={{ fontSize: 13, color: 'var(--t1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{x.label}</div>
-                  <div style={{ fontSize: 11, marginTop: 2, color: linked ? 'var(--grn, #16a34a)' : 'var(--t4)' }}>{linked ? `✓ recipe · ${x.recipe.lines?.length || 0} ingredient${(x.recipe.lines?.length || 0) === 1 ? '' : 's'}` : 'no recipe yet'}</div>
+                  <div style={{ fontSize: 11, marginTop: 2, color: linked ? 'var(--grn)' : 'var(--t4)' }}>{linked ? `✓ recipe · ${x.recipe.lines?.length || 0} ingredient${(x.recipe.lines?.length || 0) === 1 ? '' : 's'}` : 'no recipe yet'}</div>
                 </div>
                 {!linked && <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--t4)', border: '1px solid var(--bdr)', borderRadius: 20, padding: '2px 7px' }}>add</span>}
               </div>
@@ -225,7 +231,7 @@ export default function Recipes() {
           <>
             <div style={{ padding: '16px 22px', borderBottom: '1px solid var(--bdr)', display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
               <div style={{ flex: 1, minWidth: 200 }}>
-                <h1 style={{ fontSize: 21, fontWeight: 600, margin: 0, color: 'var(--t1)' }}>{draft.recipeType === 'MENU' ? (menuMeta.label(menuMeta.byId[String(draft.menuItemId)] || {}) || draft.name) : (draft.name || 'New prep recipe')}</h1>
+                <h2 style={{ fontSize: 18, fontWeight: 700, letterSpacing: '-.3px', margin: 0, color: 'var(--t1)' }}>{draft.recipeType === 'MENU' ? (menuMeta.label(menuMeta.byId[String(draft.menuItemId)] || {}) || draft.name) : (draft.name || 'New prep recipe')}</h2>
                 <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 3 }}>{draft.recipeType === 'MENU' ? `Dish recipe${menuPrice != null ? ` · sells at ${money(menuPrice)}${menuPriceNet != null && menuPriceNet < menuPrice ? ` (${money(menuPriceNet)} ex VAT)` : ''}` : ''}` : 'Prep / sub-recipe'} · {draft.lines.length} ingredient{draft.lines.length === 1 ? '' : 's'}</div>
               </div>
               <RecipeStats draft={draft} cost={draft.recipeType === 'MENU' ? (costByType[otView === 'all' ? 'dine-in' : otView] || cost) : cost} menuPrice={menuPriceNet} viewType={otView} />
@@ -271,7 +277,7 @@ export default function Recipes() {
                         return (
                           <button key={ot} onClick={() => setOtView(ot)} style={otCard(otView === ot)}>
                             <div style={otCardTop}>{ORDER_TYPE_LABELS[ot]}{extra ? ` · +${extra}` : ''}</div>
-                            <div style={{ ...otCardSub, color: gp == null ? 'var(--t3)' : (below ? 'var(--red, #ef4444)' : 'var(--grn, #16a34a)') }}>
+                            <div style={{ ...otCardSub, color: gp == null ? 'var(--t3)' : (below ? 'var(--red)' : 'var(--grn)') }}>
                               {gp == null ? '—' : `GP ${gp.toFixed(1)}%`}{plate != null ? ` · ${money(plate)}` : ''}
                             </div>
                           </button>
@@ -310,7 +316,7 @@ export default function Recipes() {
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <div style={{ fontSize: 13, color: 'var(--t1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{itemName(l.componentItemId)}</div>
-                            <div style={{ fontSize: 11, color: noCost ? 'var(--red, #ef4444)' : 'var(--t3)', marginTop: 1 }}>
+                            <div style={{ fontSize: 11, color: noCost ? 'var(--red)' : 'var(--t3)', marginTop: 1 }}>
                               {noCost ? '⚠ no price set — add a supplier price on this item' : (comp ? `${fmtCost(comp.currentCost)} / ${comp.baseUnit}` : '')}
                             </div>
                           </div>
@@ -322,7 +328,7 @@ export default function Recipes() {
                               </select>
                             : <UnitSelect value={l.unit} onChange={v => updLine(i, 'unit', v)} width={92} />}
                           <span style={{ fontSize: 13, color: 'var(--t3)' }}>=</span>
-                          <span style={{ width: 74, textAlign: 'right', fontSize: 13, fontWeight: 600, color: convErr ? 'var(--red, #ef4444)' : 'var(--t1)' }}>{convErr ? 'unit?' : lc == null ? '—' : money(lc)}</span>
+                          <span style={{ width: 74, textAlign: 'right', fontSize: 13, fontWeight: 600, color: convErr ? 'var(--red)' : 'var(--t1)' }}>{convErr ? 'unit?' : lc == null ? '—' : money(lc)}</span>
                           <button onClick={() => rmLine(i)} style={{ background: 'transparent', border: 0, color: 'var(--t3)', cursor: 'pointer', fontSize: 16 }}>×</button>
                         </div>
                         {draft.recipeType === 'MENU' && (
@@ -341,7 +347,7 @@ export default function Recipes() {
 
                 <div style={{ marginTop: 16 }}><label style={lbl}>Method (optional)</label><textarea value={draft.method || ''} onChange={e => upd('method', e.target.value)} style={{ ...field, minHeight: 64, resize: 'vertical' }} /></div>
 
-                <button onClick={save} disabled={saving} style={{ marginTop: 16, padding: '10px 22px', borderRadius: 8, background: 'var(--acc)', color: '#fff', border: 0, fontSize: 14, fontWeight: 700, cursor: 'pointer', opacity: saving ? 0.6 : 1 }}>
+                <button onClick={save} disabled={saving} style={{ marginTop: 16, padding: '10px 22px', borderRadius: 8, background: 'var(--acc)', color: '#0b0c10', border: 0, fontSize: 14, fontWeight: 700, cursor: 'pointer', opacity: saving ? 0.6 : 1 }}>
                   {saving ? 'Saving…' : draft.id ? 'Save recipe' : 'Create recipe'}
                 </button>
               </div>
@@ -349,12 +355,13 @@ export default function Recipes() {
           </>
         )}
       </main>
+      </div>
     </div>
   );
 }
 
 function RecipeStats({ draft, cost, menuPrice, viewType }) {
-  if (cost?.error) return <div style={{ fontSize: 12, color: 'var(--red, #ef4444)', maxWidth: 220, textAlign: 'right' }}>{cost.error}</div>;
+  if (cost?.error) return <div style={{ fontSize: 12, color: 'var(--red)', maxWidth: 220, textAlign: 'right' }}>{cost.error}</div>;
   const plate = draft.recipeType === 'MENU' ? cost?.totalCost : cost?.costPerYieldBase;
   const stat = (label, val, color) => (
     <div><div style={{ fontSize: 11, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em' }}>{label}</div><div style={{ fontSize: 18, fontWeight: 700, color: color || 'var(--t1)' }}>{val}</div></div>
@@ -372,7 +379,7 @@ function RecipeStats({ draft, cost, menuPrice, viewType }) {
         {stat('Plate cost', plate == null ? '—' : money(plate))}
         {stat('Food cost', price != null && plate != null ? (foodCostPct(plate, price)?.toFixed(1) + '%') : '—')}
         {stat('GP', price != null && plate != null ? money(gpAmount(price, plate)) : '—')}
-        {stat('GP %', gp == null ? '—' : gp.toFixed(1) + '%', below ? 'var(--red, #ef4444)' : 'var(--grn, #16a34a)')}
+        {stat('GP %', gp == null ? '—' : gp.toFixed(1) + '%', below ? 'var(--red)' : 'var(--grn)')}
       </div>
       <div style={{ fontSize: 10, color: 'var(--t3)', marginTop: 3, textTransform: 'uppercase', letterSpacing: '.04em' }}>
         {viewType && viewType !== 'all' ? `for ${ORDER_TYPE_LABELS[viewType] || viewType}` : 'base · all order types'}

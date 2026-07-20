@@ -26,14 +26,20 @@ import { displayInUnits } from '../../lib/stock/uom';
 import { fetchInventoryItems, fetchSuppliers, fetchUsageRates } from '../../lib/stock/data';
 import { fetchParLevels } from '../../lib/stock/counts';
 import { fetchPurchaseOrders, createOrdersFromBasket } from '../../lib/stock/purchasing';
+import { PageHeader, PrimaryBtn, SearchField, Chips } from './reports/reportKit';
 
 const USAGE_DAYS = 28;
 const r2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
 // NET (ex-VAT) pack price — the cost basis. fetchInventoryItems strips inc-VAT prices.
 const spNet = (sp) => (sp && sp.netPackPrice != null) ? Number(sp.netPackPrice) : Number(sp?.packPrice || 0);
-const field = { background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '7px 9px', fontSize: 13, outline: 'none' };
-const th = { padding: '7px 8px', borderBottom: '1px solid var(--bdr)', fontWeight: 600, color: 'var(--t3)', textAlign: 'left', fontSize: 11, textTransform: 'uppercase', letterSpacing: '.04em' };
-const td = { padding: '7px 8px', borderBottom: '1px solid var(--bg2)' };
+const field = { background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 8, padding: '7px 9px', fontSize: 13, outline: 'none', fontFamily: 'inherit' };
+// Borderless number input for the "Default cover / Safety" pill in the page header.
+const bareNum = { border: 'none', background: 'transparent', color: 'var(--t1)', fontFamily: 'inherit', fontSize: 12.5, fontWeight: 600, outline: 'none', textAlign: 'right', padding: 0 };
+const ghostBtn = { padding: '9px 14px', borderRadius: 12, background: 'var(--bg1)', border: '1px solid var(--bdr2)', color: 'var(--t2)', fontFamily: 'inherit', fontSize: 13, fontWeight: 600, cursor: 'pointer', flexShrink: 0 };
+const numCell = { fontVariantNumeric: 'tabular-nums' };
+const th = { padding: '11px 14px', borderBottom: '1px solid var(--bdr)', fontWeight: 600, color: 'var(--t3)', textAlign: 'left', fontSize: 11.5, textTransform: 'uppercase', letterSpacing: '.05em', whiteSpace: 'nowrap' };
+const td = { padding: '11px 14px', borderBottom: '1px solid var(--bdr)', verticalAlign: 'middle' };
+const HEADERS = ['Item', 'On hand', 'Use/day', 'Cover', 'Suggested', 'Order', 'Supplier', 'Line £ (ex VAT)'];
 
 const DOW = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 const DAY_LBL = { sun: 'Sun', mon: 'Mon', tue: 'Tue', wed: 'Wed', thu: 'Thu', fri: 'Fri', sat: 'Sat' };
@@ -154,81 +160,112 @@ export default function OrderPad() {
   if (loading) return <div style={{ padding: 26, color: 'var(--t3)' }}>Loading…</div>;
 
   return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: 'var(--bg0)' }}>
-      <div style={{ padding: '18px 24px 12px' }}>
-        <h1 style={{ fontSize: 22, fontWeight: 700, margin: '0 0 4px', color: 'var(--t1)' }}>Order pad</h1>
-        <div style={{ fontSize: 13, color: 'var(--t3)', marginBottom: 12 }}>Suggested quantities cover you to each supplier’s next delivery (plus a safety buffer). Fill from the forecast, tweak, and the basket splits into one order per supplier.</div>
-        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search items…" style={{ ...field, width: 180 }} />
-          <select value={supplierFilter} onChange={e => setSupplierFilter(e.target.value)} style={field}>
-            <option value="all">All suppliers</option>
-            {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-          </select>
-          <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13, color: 'var(--t2)', cursor: 'pointer' }}>
-            <input type="checkbox" checked={needOnly} onChange={e => setNeedOnly(e.target.checked)} /> Only what needs ordering
-          </label>
-          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
-            <span style={{ fontSize: 12, color: 'var(--t3)' }} title="Used for suppliers with no delivery schedule set">Default cover</span>
-            <input type="number" min="1" value={days} onChange={e => setDays(Number(e.target.value) || 1)} style={{ ...field, width: 52, textAlign: 'right' }} />
-            <span style={{ fontSize: 12, color: 'var(--t3)' }}>d</span>
-            <span style={{ fontSize: 12, color: 'var(--t3)', marginLeft: 6 }}>Safety</span>
-            <input type="number" min="0" value={safetyDays} onChange={e => setSafetyDays(Number(e.target.value) || 0)} style={{ ...field, width: 46, textAlign: 'right' }} />
-            <span style={{ fontSize: 12, color: 'var(--t3)' }}>d</span>
-            <button onClick={fillSuggested} style={{ padding: '8px 14px', borderRadius: 7, background: 'var(--acc)', color: '#fff', border: 0, fontSize: 13, fontWeight: 700, cursor: 'pointer', marginLeft: 4 }}>Fill from forecast</button>
-            <button onClick={clearAll} style={{ padding: '8px 12px', borderRadius: 7, background: 'var(--bg2)', border: '1px solid var(--bdr)', color: 'var(--t2)', fontSize: 13, cursor: 'pointer' }}>Clear</button>
+    <div style={{ height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', background: 'var(--bg)' }}>
+      <div style={{ flexShrink: 0, padding: '22px 26px 14px' }}>
+        <PageHeader
+          eyebrow="PURCHASING"
+          title="Order pad"
+          subtitle="Suggested quantities cover you to each supplier’s next delivery (plus a safety buffer). Fill from the forecast, tweak, and the basket splits into one order per supplier."
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'var(--bg1)', border: '1px solid var(--bdr2)', borderRadius: 12, padding: '7px 12px' }}>
+            <span style={{ fontSize: 11.5, color: 'var(--t4)' }} title="Used for suppliers with no delivery schedule set">Default cover</span>
+            <input type="number" min="1" value={days} onChange={e => setDays(Number(e.target.value) || 1)} style={{ ...bareNum, width: 34 }} />
+            <span style={{ fontSize: 11.5, color: 'var(--t4)' }}>d</span>
+            <span style={{ width: 1, height: 16, background: 'var(--bdr)' }} />
+            <span style={{ fontSize: 11.5, color: 'var(--t4)' }}>Safety</span>
+            <input type="number" min="0" value={safetyDays} onChange={e => setSafetyDays(Number(e.target.value) || 0)} style={{ ...bareNum, width: 30 }} />
+            <span style={{ fontSize: 11.5, color: 'var(--t4)' }}>d</span>
           </div>
+          <PrimaryBtn onClick={fillSuggested}>Fill from forecast</PrimaryBtn>
+          <button onClick={clearAll} style={ghostBtn}>Clear</button>
+        </PageHeader>
+
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <SearchField value={search} onChange={setSearch} placeholder="Search items…" width={220} />
+          <Chips value={supplierFilter} onChange={setSupplierFilter}
+            options={[{ id: 'all', label: 'All suppliers' }, ...suppliers.map(s => ({ id: s.id, label: s.name }))]} />
+          <span style={{ width: 1, height: 20, background: 'var(--bdr)', flexShrink: 0 }} />
+          <Chips value={needOnly ? 'need' : 'all'} onChange={v => setNeedOnly(v === 'need')}
+            options={[{ id: 'all', label: 'All items' }, { id: 'need', label: 'Only what needs ordering' }]} />
+          <span style={{ marginLeft: 'auto', fontSize: 12.5, color: 'var(--t3)', ...numCell }}>{filtered.length} of {rows.length} items</span>
         </div>
-        {noSupplier > 0 && <div style={{ fontSize: 12, color: 'var(--red, #ef4444)', marginTop: 8 }}>⚠ {noSupplier} item{noSupplier === 1 ? '' : 's'} have no supplier — add one on the item’s Suppliers tab to order them.</div>}
+
+        {noSupplier > 0 && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10, padding: '8px 12px', borderRadius: 10, background: 'var(--red-d)', border: '1px solid var(--red-b)', fontSize: 12, color: 'var(--red)' }}>
+            <span aria-hidden="true">⚠</span>
+            <span>{noSupplier} item{noSupplier === 1 ? '' : 's'} have no supplier — add one on the item’s Suppliers tab to order them.</span>
+          </div>
+        )}
       </div>
 
-      <div style={{ flex: 1, overflowY: 'auto', padding: '0 24px' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-          <thead><tr>{['Item', 'On hand', 'Use/day', 'Cover', 'Suggested', 'Order', 'Supplier', 'Line £ (ex VAT)'].map((h, i) => <th key={h} style={{ ...th, textAlign: i >= 1 && i <= 5 ? 'right' : 'left', position: 'sticky', top: 0, background: 'var(--bg0)' }}>{h}</th>)}</tr></thead>
-          <tbody>
-            {filtered.map(r => {
-              const oh = displayInUnits(r.onHand, r.it);
-              const use = displayInUnits(r.avgDaily, r.it);
-              const n = qty[r.it.id] ?? '';
-              const low = r.par != null && r.onHand <= (pars[r.it.id]?.reorderPoint ?? -Infinity);
-              const nextDel = r.sp ? (supById[r.sp.supplierId]?.deliveryDays || []) : [];
-              return (
-                <tr key={r.it.id} style={{ color: 'var(--t1)' }}>
-                  <td style={td}>{r.it.name}{low && <span style={{ color: 'var(--red, #ef4444)', fontSize: 11, marginLeft: 6 }}>low</span>}</td>
-                  <td style={{ ...td, textAlign: 'right' }}>{oh.qty} {oh.label}</td>
-                  <td style={{ ...td, textAlign: 'right', color: 'var(--t3)' }}>{r.avgDaily > 0 ? `${r2(use.qty)} ${use.label}` : '—'}</td>
-                  <td style={{ ...td, textAlign: 'right', color: 'var(--t4)', fontSize: 12 }} title={r.sched != null ? `Covers to the supplier’s second delivery (${nextDel.map(d => DAY_LBL[d] || d).join('/')}) + ${safetyDays}d safety` : `No delivery schedule — default ${days}d + ${safetyDays}d safety`}>
-                    {r.effCover}d{r.sched != null ? ' 🚚' : ''}
-                  </td>
-                  <td style={{ ...td, textAlign: 'right', color: r.suggestedPacks > 0 ? 'var(--acc)' : 'var(--t4)' }}>{r.sp ? r.suggestedPacks : '—'}</td>
-                  <td style={{ ...td, textAlign: 'right' }}>
-                    {r.sp
-                      ? <input type="number" min="0" value={n} onChange={e => setQty(q => ({ ...q, [r.it.id]: e.target.value }))} placeholder="0" style={{ ...field, width: 64, textAlign: 'right' }} />
-                      : <span style={{ fontSize: 11, color: 'var(--red, #ef4444)' }}>no supplier</span>}
-                  </td>
-                  <td style={{ ...td, color: 'var(--t3)' }}>
-                    {!r.sp ? '—' : r.allSps.length > 1 ? (
-                      <select value={r.sp.id} onChange={e => setSupplierOverride(o => ({ ...o, [r.it.id]: e.target.value }))} style={{ ...field, padding: '4px 6px', fontSize: 12, maxWidth: 200 }}>
-                        {r.allSps.map(s => <option key={s.id} value={s.id}>{supName(s.supplierId)} · {money(spNet(s))}{s.isPreferred ? ' ★' : ''}</option>)}
-                      </select>
-                    ) : `${supName(r.sp.supplierId)} · ${r.sp.packDescription || r.perPack + ' ' + r.it.baseUnit}`}
-                  </td>
-                  <td style={{ ...td, textAlign: 'right' }}>{r.sp && Number(n) > 0 ? money(Number(n) * spNet(r.sp)) : ''}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-        {filtered.length === 0 && <div style={{ padding: 16, color: 'var(--t3)', fontSize: 13 }}>No items match.</div>}
+      {/* Scroll pane. minHeight:0 keeps this the only scroller so the sticky <thead>
+          and the pinned basket footer both survive. The surface card deliberately has
+          NO overflow:hidden — that would kill both the sticky header and the per-row
+          supplier <select>. */}
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '0 26px 22px' }}>
+        <div style={{ background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 16 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead><tr>{HEADERS.map((h, i) => (
+              <th key={h} style={{
+                ...th, textAlign: i >= 1 && i <= 5 ? 'right' : 'left',
+                position: 'sticky', top: 0, zIndex: 2, background: 'var(--bg2)',
+                // border-collapse drops borders on sticky cells — paint it as a shadow.
+                boxShadow: 'inset 0 -1px 0 var(--bdr)',
+                borderTopLeftRadius: i === 0 ? 15 : 0,
+                borderTopRightRadius: i === HEADERS.length - 1 ? 15 : 0,
+              }}>{h}</th>
+            ))}</tr></thead>
+            <tbody>
+              {filtered.map((r, ri) => {
+                const oh = displayInUnits(r.onHand, r.it);
+                const use = displayInUnits(r.avgDaily, r.it);
+                const n = qty[r.it.id] ?? '';
+                const low = r.par != null && r.onHand <= (pars[r.it.id]?.reorderPoint ?? -Infinity);
+                const nextDel = r.sp ? (supById[r.sp.supplierId]?.deliveryDays || []) : [];
+                // Last row drops its rule so it doesn't cut across the card's rounded base.
+                const cell = ri === filtered.length - 1 ? { ...td, borderBottom: 'none' } : td;
+                return (
+                  <tr key={r.it.id} style={{ color: 'var(--t1)' }}>
+                    <td style={{ ...cell, fontWeight: 500 }}>{r.it.name}{low && <span style={{ color: 'var(--red)', fontSize: 10.5, fontWeight: 700, marginLeft: 7, padding: '2px 6px', borderRadius: 6, background: 'var(--red-d)', border: '1px solid var(--red-b)', textTransform: 'uppercase', letterSpacing: '.04em' }}>low</span>}</td>
+                    <td style={{ ...cell, ...numCell, textAlign: 'right' }}>{oh.qty} <span style={{ color: 'var(--t4)' }}>{oh.label}</span></td>
+                    <td style={{ ...cell, ...numCell, textAlign: 'right', color: 'var(--t3)' }}>{r.avgDaily > 0 ? `${r2(use.qty)} ${use.label}` : '—'}</td>
+                    <td style={{ ...cell, ...numCell, textAlign: 'right', color: 'var(--t4)', fontSize: 12 }} title={r.sched != null ? `Covers to the supplier’s second delivery (${nextDel.map(d => DAY_LBL[d] || d).join('/')}) + ${safetyDays}d safety` : `No delivery schedule — default ${days}d + ${safetyDays}d safety`}>
+                      {r.effCover}d{r.sched != null ? ' 🚚' : ''}
+                    </td>
+                    <td style={{ ...cell, ...numCell, textAlign: 'right', fontWeight: r.suggestedPacks > 0 ? 700 : 400, color: r.suggestedPacks > 0 ? 'var(--acc)' : 'var(--t4)' }}>{r.sp ? r.suggestedPacks : '—'}</td>
+                    <td style={{ ...cell, textAlign: 'right' }}>
+                      {r.sp
+                        ? <input type="number" min="0" value={n} onChange={e => setQty(q => ({ ...q, [r.it.id]: e.target.value }))} placeholder="0" style={{ ...field, ...numCell, width: 64, textAlign: 'right' }} />
+                        : <span style={{ fontSize: 11, color: 'var(--red)' }}>no supplier</span>}
+                    </td>
+                    <td style={{ ...cell, color: 'var(--t3)' }}>
+                      {!r.sp ? '—' : r.allSps.length > 1 ? (
+                        <select value={r.sp.id} onChange={e => setSupplierOverride(o => ({ ...o, [r.it.id]: e.target.value }))} style={{ ...field, padding: '5px 7px', fontSize: 12, maxWidth: 200 }}>
+                          {r.allSps.map(s => <option key={s.id} value={s.id}>{supName(s.supplierId)} · {money(spNet(s))}{s.isPreferred ? ' ★' : ''}</option>)}
+                        </select>
+                      ) : `${supName(r.sp.supplierId)} · ${r.sp.packDescription || r.perPack + ' ' + r.it.baseUnit}`}
+                    </td>
+                    <td style={{ ...cell, ...numCell, textAlign: 'right', fontWeight: 600 }}>{r.sp && Number(n) > 0 ? money(Number(n) * spNet(r.sp)) : ''}</td>
+                  </tr>
+                );
+              })}
+              {filtered.length === 0 && (
+                <tr><td colSpan={HEADERS.length} style={{ ...td, borderBottom: 'none', textAlign: 'center', color: 'var(--t4)', padding: '44px 18px', fontSize: 13 }}>No items match.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
 
-      {/* Basket bar */}
-      <div style={{ borderTop: '1px solid var(--bdr)', background: 'var(--bg1)', padding: '12px 24px', display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
-        <div style={{ fontSize: 13, color: 'var(--t1)' }}>
-          {basketCount === 0 ? 'Nothing in the basket yet' : <><b>{basketCount}</b> line{basketCount === 1 ? '' : 's'} · <b>{supplierCount}</b> supplier{supplierCount === 1 ? '' : 's'} · <b>{money(basketTotal)}</b> <span style={{ color: 'var(--t3)' }}>ex VAT{basketVat > 0.005 ? ` · VAT ${money(basketVat)} · pay ${money(basketTotal + basketVat)}` : ''}</span></>}
+      {/* Basket bar — pinned: flexShrink:0 keeps it out of the scroll pane. */}
+      <div style={{ flexShrink: 0, borderTop: '1px solid var(--bdr)', background: 'var(--bg1)', padding: '13px 26px', display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+        <div style={{ fontSize: 13, color: basketCount === 0 ? 'var(--t3)' : 'var(--t1)' }}>
+          {basketCount === 0 ? 'Nothing in the basket yet' : <><b>{basketCount}</b> line{basketCount === 1 ? '' : 's'} · <b>{supplierCount}</b> supplier{supplierCount === 1 ? '' : 's'} · <b style={numCell}>{money(basketTotal)}</b> <span style={{ color: 'var(--t3)' }}>ex VAT{basketVat > 0.005 ? ` · VAT ${money(basketVat)} · pay ${money(basketTotal + basketVat)}` : ''}</span></>}
         </div>
         {supplierCount > 0 && <div style={{ fontSize: 12, color: 'var(--t3)' }}>{Object.entries(basket).map(([sid, ls]) => `${supName(sid)} (${ls.length})`).join(' · ')}</div>}
-        {minWarnings.length > 0 && <div style={{ fontSize: 12, color: 'var(--amb,#e8a020)' }}>⚠ below min order: {minWarnings.map(w => `${w.name} ${money(w.val)}/${money(w.min)}`).join(' · ')}</div>}
-        <button onClick={createOrders} disabled={busy || basketCount === 0} style={{ marginLeft: 'auto', padding: '11px 22px', borderRadius: 9, background: basketCount ? 'var(--grn, #16a34a)' : 'var(--bg3)', color: basketCount ? '#fff' : 'var(--t4)', border: 0, fontSize: 14, fontWeight: 700, cursor: basketCount ? 'pointer' : 'default' }}>
+        {/* --amber is only declared under [data-skin="servos"], so keep reportKit's fallback. */}
+        {minWarnings.length > 0 && <div style={{ fontSize: 12, color: 'var(--amber, #F5A623)', padding: '5px 10px', borderRadius: 9, background: 'color-mix(in srgb, var(--amber, #F5A623) 14%, transparent)' }}>⚠ below min order: {minWarnings.map(w => `${w.name} ${money(w.val)}/${money(w.min)}`).join(' · ')}</div>}
+        <button onClick={createOrders} disabled={busy || basketCount === 0} style={{ marginLeft: 'auto', padding: '11px 22px', borderRadius: 12, background: basketCount ? 'var(--grn)' : 'var(--bg3)', color: basketCount ? '#0b0c10' : 'var(--t4)', border: 0, fontFamily: 'inherit', fontSize: 14, fontWeight: 700, cursor: basketCount ? 'pointer' : 'default', flexShrink: 0 }}>
           {busy ? 'Creating…' : `Create ${supplierCount || ''} order${supplierCount === 1 ? '' : 's'}`}
         </button>
       </div>
