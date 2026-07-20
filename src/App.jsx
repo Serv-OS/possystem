@@ -94,6 +94,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.811', date: '20 Jul 2026', label: 'Menu — retire the Pizza product type',
+    changes: [
+      'Removed the "Pizza" product type from the item editor — the chip at the top of a product and the matching filter in the item list are gone, since it has not been used for a long time.',
+      'Product types are now: Simple, Modifiable, Has sizes, Combo and Sub item.',
+      'Any legacy Pizza item still opens and edits fine (its label and Pizza tab are kept) — you just can not create new Pizza items.',
+    ],
+  },
+  {
     version: '5.5.810', date: '20 Jul 2026', label: 'Reports catalog — Inventory & Marketing report tiles',
     changes: [
       'The Reports catalog now shows two more cards — "Inventory reports" and "Marketing reports" — so every report is discoverable from the one Reports screen.',

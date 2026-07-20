@@ -1286,7 +1286,6 @@ function ItemsLibrary() {
             <option value="simple">Simple</option>
             <option value="modifiable">Options (modifiable)</option>
             <option value="variants">Has sizes / variants</option>
-            <option value="pizza">Pizza</option>
             <option value="subitem">⊕ Sub items</option>
           </select>
           <select value={catFilter} onChange={e=>setCatFilter(e.target.value)} style={{ ...inp, width:'auto', cursor:'pointer', fontSize:11 }}>
@@ -1770,7 +1769,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
           <div style={{ flex:1, minWidth:0 }}>
             <div style={{ fontSize:14, fontWeight:800, color:'var(--t1)', lineHeight:1.3 }}>{item.menuName||item.name}</div>
             <div style={{ display:'flex', gap:5, marginTop:4, flexWrap:'wrap' }}>
-              {[['simple','Simple'],['modifiable','Modifiable'],['variants','Has sizes'],['pizza','Pizza'],['combo','Combo'],['subitem','Sub item']].map(([v,l]) => {
+              {[['simple','Simple'],['modifiable','Modifiable'],['variants','Has sizes'],['combo','Combo'],['subitem','Sub item']].map(([v,l]) => {
                 const act = (item.type||'simple')===v || (v==='variants'&&isParent&&item.type!=='pizza');
                 return <button key={v} onClick={()=>f('type',v)} style={{ padding:'2px 7px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', fontSize:9, fontWeight:act?700:400, border:`1px solid ${act?'var(--acc)':'var(--bdr)'}`, background:act?'var(--acc-d)':'var(--bg3)', color:act?'var(--acc)':'var(--t4)' }}>{l}</button>;
               })}
