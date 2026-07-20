@@ -257,6 +257,19 @@ function MenuTab() {
   const [editingCat, setEditingCat] = useState(null);
   const [movingCatId, setMovingCatId] = useState(null);
   const [addingCat, setAddingCat]   = useState(false);
+  // v5.5.815: category find-as-you-type + collapse/expand of parent groups.
+  // Collapsed state is per venue on this device (a view preference, not data).
+  const [catFilter, setCatFilter]   = useState('');
+  const [collapsed, setCollapsed]   = useState(() => {
+    try { const v = JSON.parse(localStorage.getItem(`rpos-cat-collapsed:${getActiveLocationSync() || 'default'}`) || '[]'); return new Set(Array.isArray(v) ? v : []); }
+    catch { return new Set(); }
+  });
+  const toggleCollapsed = (id) => setCollapsed(prev => {
+    const next = new Set(prev);
+    next.has(id) ? next.delete(id) : next.add(id);
+    try { localStorage.setItem(`rpos-cat-collapsed:${getActiveLocationSync() || 'default'}`, JSON.stringify([...next])); } catch {}
+    return next;
+  });
   // v4.7.5: cats↔menus join data, loaded on mount, mutated locally on link/unlink
   const [categoryLinks, setCategoryLinks] = useState([]);
   const [showLinkPicker, setShowLinkPicker] = useState(false);
@@ -607,9 +620,23 @@ function MenuTab() {
       {/* v5.5.813: widened toward the handoff's 336px so full category names
           render instead of truncating ("Burgers/Sandwiches", "Hot drinks"). */}
       <div style={{ width:300, borderRight:'1px solid var(--bdr)', display:'flex', flexDirection:'column', overflow:'hidden', background:'var(--bg1)', flexShrink:0 }}>
-        <div style={{ padding:'8px 10px', borderBottom:'1px solid var(--bdr)', display:'flex', gap:6, alignItems:'center', flexShrink:0 }}>
-          <span style={{ fontSize:12, fontWeight:700, color:'var(--t1)', flex:1 }}>Categories</span>
-          <button onClick={()=>setAddingCat(v=>!v)} style={{ width:24, height:24, borderRadius:6, cursor:'pointer', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:15, fontWeight:700, display:'flex', alignItems:'center', justifyContent:'center' }}>+</button>
+        <div style={{ padding:'8px 10px', borderBottom:'1px solid var(--bdr)', flexShrink:0 }}>
+          <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+            <span style={{ fontSize:12, fontWeight:700, color:'var(--t1)', flex:1 }}>Categories</span>
+            <button onClick={()=>setAddingCat(v=>!v)} style={{ width:24, height:24, borderRadius:6, cursor:'pointer', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:15, fontWeight:700, display:'flex', alignItems:'center', justifyContent:'center' }}>+</button>
+          </div>
+          {/* v5.5.815: find-as-you-type filter over the category tree */}
+          <div style={{ position:'relative', marginTop:7 }}>
+            <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:10, color:'var(--t4)', pointerEvents:'none' }}>🔍</span>
+            <input value={catFilter} onChange={e=>setCatFilter(e.target.value)}
+              onKeyDown={e=>{ if(e.key==='Escape'){ e.stopPropagation(); setCatFilter(''); } }}
+              placeholder="Filter categories…" aria-label="Filter categories"
+              style={{ ...inp, fontSize:11.5, padding:'5px 24px 5px 24px' }}/>
+            {catFilter && (
+              <button onClick={()=>setCatFilter('')} aria-label="Clear category filter" title="Clear"
+                style={{ position:'absolute', right:5, top:'50%', transform:'translateY(-50%)', width:16, height:16, borderRadius:4, border:'none', background:'var(--bg3)', color:'var(--t3)', cursor:'pointer', fontSize:10, lineHeight:1, display:'flex', alignItems:'center', justifyContent:'center' }}>×</button>
+            )}
+          </div>
         </div>
 
         {addingCat && (
@@ -694,8 +721,26 @@ function MenuTab() {
               .mm-catrow .mm-grip { opacity:.75; }
             }
           `}</style>
-          {roots.map(cat=>{
-            const children = menuCategories.filter(c=>c.parentId===cat.id).sort((a,b)=>(a.sortOrder||0)-(b.sortOrder||0));
+          {(() => {
+            // v5.5.815: find-as-you-type. A root shows if it matches OR any of its
+            // children match (so the hierarchy still reads); when a root matches,
+            // all its children stay visible.
+            const q = catFilter.trim().toLowerCase();
+            const hit = c => (c.label || '').toLowerCase().includes(q);
+            const kidsOf = id => menuCategories.filter(c => c.parentId === id).sort((a,b)=>(a.sortOrder||0)-(b.sortOrder||0));
+            const visibleRoots = q
+              ? roots.filter(r => hit(r) || kidsOf(r.id).some(hit))
+              : roots;
+            if (q && visibleRoots.length === 0) {
+              return <div style={{ textAlign:'center', padding:'20px 8px', color:'var(--t4)', fontSize:11 }}>No categories match “{catFilter.trim()}”</div>;
+            }
+            return visibleRoots.map(cat=>{
+            const allKids  = kidsOf(cat.id);
+            const children = q && !hit(cat) ? allKids.filter(hit) : allKids;
+            // Collapsed is ignored while searching, and a collapsed parent always
+            // opens if the selected category is one of its children — selection is
+            // never hidden behind a closed group.
+            const isCollapsed = !q && collapsed.has(cat.id) && !allKids.some(s=>s.id===selCatId);
             const count    = menuItems.filter(i=>!i.archived&&i.type!=='subitem'&&(i.cat===cat.id||children.some(s=>s.id===i.cat))).length;
             const active   = selCatId===cat.id;
             const over     = overCatId===cat.id;
@@ -709,6 +754,13 @@ function MenuTab() {
                 <div className="mm-catrow" draggable onDragStart={e=>{setDragCatId(cat.id);e.dataTransfer.effectAllowed='move';}} onDragOver={e=>{e.preventDefault();setOverCatId(cat.id);}} onDragEnd={()=>{setDragCatId(null);setOverCatId(null);}} onDrop={e=>onCatDrop(e,cat.id)} onClick={()=>{setSelCatId(cat.id);setSelItemId(null);setSearch('');}}
                   style={{ display:'flex', alignItems:'center', gap:7, height:40, padding:'0 8px', borderRadius:8, marginTop:6, cursor:'grab', userSelect:'none', border:`1.5px solid ${!isReorder&&over?'var(--acc)':active?color+'55':'transparent'}`, background:!isReorder&&over?'var(--acc-d)':active?color+'18':'transparent' }}>
                   <span className="mm-grip" style={{ fontSize:8, color:'var(--t4)', flexShrink:0 }}>⣿</span>
+                  {/* v5.5.815: collapse/expand — only on groups that have children */}
+                  {allKids.length > 0 ? (
+                    <button onClick={e=>{e.stopPropagation();toggleCollapsed(cat.id);}}
+                      title={isCollapsed ? 'Expand group' : 'Collapse group'}
+                      aria-label={isCollapsed ? 'Expand group' : 'Collapse group'}
+                      style={{ width:15, height:15, flexShrink:0, border:'none', background:'transparent', cursor:'pointer', color:'var(--t4)', fontSize:9, lineHeight:1, padding:0, display:'flex', alignItems:'center', justifyContent:'center', transform:isCollapsed?'rotate(-90deg)':'none', transition:'transform .14s' }}>▼</button>
+                  ) : <span style={{ width:15, flexShrink:0 }}/>}
                   <div style={{ width:8, height:8, borderRadius:3, background:color, flexShrink:0, boxShadow:'inset 0 0 0 1px rgba(0,0,0,.1)' }}/>
                   <CatGlyph cat={cat} size={20}/>
                   <span title={cat.label} style={{ fontSize:13.5, fontWeight:active?700:600, color:active?color:(count===0?'var(--t3)':'var(--t1)'), flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', minWidth:0 }}>{cat.label}</span>
@@ -722,8 +774,8 @@ function MenuTab() {
                     </span>
                   </span>
                 </div>
-                {/* Subcats */}
-                {children.map(sub=>{
+                {/* Subcats — hidden while the group is collapsed */}
+                {!isCollapsed && children.map(sub=>{
                   const sa = selCatId===sub.id;
                   const so = overCatId===sub.id;
                   const dc = menuCategories.find(c=>c.id===dragCatId);
@@ -754,7 +806,8 @@ function MenuTab() {
                 })}
               </div>
             );
-          })}
+            });
+          })()}
           {roots.length===0 && <div style={{ textAlign:'center', padding:'20px 6px', color:'var(--t4)', fontSize:10 }}>No categories.<br/>Click + to add one.</div>}
         </div>
       </div>

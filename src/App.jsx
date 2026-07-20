@@ -94,6 +94,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.815', date: '20 Jul 2026', label: 'Menu manager — collapse groups + filter categories',
+    changes: [
+      'Category groups now fold away. Click the arrow next to a parent (Mains, Drinks…) to collapse it, so a long menu fits on one screen instead of endless scrolling. Only groups that actually have sub-categories get an arrow.',
+      'Your collapsed groups are remembered per venue on this device, so the tree opens the way you left it.',
+      'New "Filter categories" box above the list — type any part of a name to jump straight to it. Searching a sub-category also shows its parent, so you can still see where it sits.',
+      'Safety nets: searching temporarily opens every group so matches are never hidden, and a collapsed group opens automatically if the category you have selected is inside it.',
+    ],
+  },
+  {
     version: '5.5.814', date: '20 Jul 2026', label: 'Menu manager — Sharing cards tidied',
     changes: [
       'Sharing (Local / Shared / Global) on an item is now three equal cards with a proper radio dot, so it is obvious which one is selected — it previously relied on a faint tint alone.',
