@@ -94,6 +94,21 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.813', date: '20 Jul 2026', label: 'Menu manager — visual polish + cost & GP%',
+    changes: [
+      'Items list now shows COST and GP % for every product. Cost is pulled from the linked recipe (never typed in here) and GP % is worked out for you — green when the margin is healthy (62%+), amber when it is thin. Items with no recipe show "No recipe", so costing gaps are visible instead of hidden.',
+      'GP % uses the ex-VAT price, exactly like Inventory → Reports → Recipe GP, so the two screens always agree on a dish\'s margin.',
+      'Prices no longer take their colour from the category — they were reading as clickable links. Prices are now plain, bold and column-aligned so you can scan down them quickly.',
+      'Modifier counts and product types are now quiet grey chips instead of coloured text. Red is reserved for out-of-stock and delete, so when you do see red it means something.',
+      'Category and menu rows: the edit / move / delete buttons are hidden until you hover the row (or tab to them), so full category names finally fit instead of being cut off. Buttons stay visible on touch screens.',
+      'Delete buttons are grey until you hover the delete button itself — no more wall of red down the category list.',
+      'Categories with no emoji now get a neat lettered tile instead of the generic cutlery icon, and empty categories are dimmed so stocked ones stand out.',
+      'Sub-categories are indented behind a guide line, and the categories column is wider — long names like "Burgers/Sandwiches" no longer truncate.',
+      'Item cards are equal height with a 2-line description, and an out-of-stock item now shows an "86" badge on the card itself, so you can see stock state while scanning.',
+      'Item panel: out-of-stock now reads "86 · Out of stock" instead of a bare red number, the tab strip lost its scrollbar (with a fade hinting at more tabs), and the "Also in" category list is capped at 9 with a "+ more" toggle so Sharing and Lock pricing are no longer pushed off screen.',
+    ],
+  },
+  {
     version: '5.5.812', date: '20 Jul 2026', label: 'Reports catalog — new two-pane design',
     changes: [
       'Reports catalog redesigned: a category rail down the side (All / Pinned / Recent, then every category with its report count) so you can jump straight to the reports you want.',
