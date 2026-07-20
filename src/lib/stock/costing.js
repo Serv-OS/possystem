@@ -285,3 +285,24 @@ function walk(recipe, outputItem, ctx, orderType, scale, out, stack) {
   }
   return attributed;
 }
+
+/**
+ * Which supplier does this stock item actually come from?
+ *
+ * `default_supplier_id` is an optional *preference* on the item — plenty of items
+ * never have it set even though you clearly buy them from someone, because the
+ * real purchasing link lives in `supplier_products`. Resolving only the default
+ * therefore reports "no supplier" for items that plainly have one.
+ *
+ * Order: explicit default → the pack flagged preferred → the only pack → first.
+ *
+ * @param {object} item inventory item with optional supplierProducts[]
+ * @returns {string|null} supplier id
+ */
+export function resolveItemSupplierId(item) {
+  if (!item) return null;
+  if (item.defaultSupplierId) return item.defaultSupplierId;
+  const packs = (item.supplierProducts || []).filter(p => p && p.supplierId);
+  if (!packs.length) return null;
+  return (packs.find(p => p.isPreferred) || packs[0]).supplierId;
+}

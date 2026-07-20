@@ -22,7 +22,7 @@ import { money, currencySymbol } from '../../lib/currency';
 import { toCsv, downloadCsv } from './reports/_csv';
 import { fetchInventoryItems, fetchMovementsRange, fetchSuppliers, movementLabel } from '../../lib/stock/data';
 import { fetchRecipes, buildCostingCtx, costRecipeWith } from '../../lib/stock/recipes';
-import { foodCostPct, gpAmount, gpPct, costBreakdownByPurchasedItem } from '../../lib/stock/costing';
+import { foodCostPct, gpAmount, gpPct, costBreakdownByPurchasedItem, resolveItemSupplierId } from '../../lib/stock/costing';
 import { fetchClosedChecksRange } from '../../lib/db';
 import { displayInUnits } from '../../lib/stock/uom';
 import { resolveTaxRate, netOf } from '../../lib/tax';
@@ -139,7 +139,7 @@ function Valuation({ items, supplierName }) {
     const oh = displayInUnits(Number(i.onHand) || 0, { baseUnit: i.baseUnit, formats: i.packaging || [] });
     return {
       id: i.id, name: i.name, category: i.category || '',
-      supplier: supplierName(i.defaultSupplierId) || null,
+      supplier: supplierName(resolveItemSupplierId(i)) || null,
       onHandRaw: Number(i.onHand) || 0, onHand: oh.qty, unit: oh.label,
       cost: i.currentCost == null ? null : Number(i.currentCost),
       value: r3((Number(i.onHand) || 0) * (Number(i.currentCost) || 0)),
@@ -426,7 +426,7 @@ function TheGap({ moves, itemName, itemUnit }) {
 function BySupplier({ items, suppliers, recipes, ctx, menuItems, taxRates, checks, periodLabel }) {
   const [sort, onSort] = useSort('gp');
   const byMenuId = useMemo(() => { const m = {}; menuItems.forEach(mi => { m[String(mi.id)] = mi; }); return m; }, [menuItems]);
-  const supOfItem = useMemo(() => { const m = {}; items.forEach(i => { m[i.id] = i.defaultSupplierId || null; }); return m; }, [items]);
+  const supOfItem = useMemo(() => { const m = {}; items.forEach(i => { m[i.id] = resolveItemSupplierId(i); }); return m; }, [items]);
   const supName = useMemo(() => { const m = {}; suppliers.forEach(s => { m[s.id] = s.name; }); return m; }, [suppliers]);
 
   const netSell = useCallback((mi) => {
@@ -463,7 +463,7 @@ function BySupplier({ items, suppliers, recipes, ctx, menuItems, taxRates, check
 
     // stock held
     items.filter(i => !i.archivedAt).forEach(i => {
-      bump(i.defaultSupplierId, { stockValue: (Number(i.onHand)||0) * (Number(i.currentCost)||0) });
+      bump(resolveItemSupplierId(i), { stockValue: (Number(i.onHand)||0) * (Number(i.currentCost)||0) });
     });
 
     // sales → split each dish's GP across the suppliers behind its plate cost

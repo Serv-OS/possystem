@@ -94,6 +94,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.819', date: '20 Jul 2026', label: 'Stock reports — supplier now shows on every item that has one',
+    changes: [
+      'Fixed: items showed "\u2014" in the Supplier column even when they clearly had a supplier. It was only reading the optional "default supplier" field on the item, and ignoring the actual purchasing link you set up when you added the supplier\u2019s pack and price.',
+      'It now falls back to that purchasing link (preferring the pack marked preferred), so an item like "Coffee Brothers 1KG Espresso" shows Coffee Brothers without you having to fill in anything extra.',
+      'This also fixes the By supplier tab, which was affected by the same thing \u2014 most stock was landing under "No supplier set", so the profit ranking was coming out empty.',
+    ],
+  },
+  {
     version: '5.5.818', date: '20 Jul 2026', label: 'Stock reports — new look + a By supplier view',
     changes: [
       'Stock reports rebuilt on a new report design: headline figures at the top, filter chips, search, sortable columns, inline bars showing how each row compares, and a totals line. This is the template the other reports will move to.',

@@ -22,6 +22,7 @@ import {
   gpPct,
   lineAppliesToOrderType,
   costBreakdownByPurchasedItem,
+  resolveItemSupplierId,
 } from './costing.js';
 
 const near = (a, b, eps = 1e-6) => assert.ok(Math.abs(a - b) <= eps, `expected ${a} ≈ ${b}`);
@@ -279,4 +280,20 @@ test('costBreakdownByPurchasedItem: honours wastage, usablePct and order-type sc
   const takeaway = costBreakdownByPurchasedItem(dish, ctx, 'takeaway');
   near(takeaway.byItem.box, 0.275);             // £0.25 + 10% wastage
   near(takeaway.total, recipeCost(dish, ctx, 'takeaway').totalCost);
+});
+
+test('resolveItemSupplierId: falls back to the purchasing link when no default is set', () => {
+  // the real-world case: an item you clearly buy from someone, but nobody ever
+  // filled in the optional "default supplier" field
+  assert.equal(resolveItemSupplierId({ supplierProducts:[{ supplierId:'coffee-bros' }] }), 'coffee-bros');
+  // explicit default always wins
+  assert.equal(resolveItemSupplierId({ defaultSupplierId:'bidfood', supplierProducts:[{ supplierId:'coffee-bros' }] }), 'bidfood');
+  // several packs → the preferred one
+  assert.equal(resolveItemSupplierId({ supplierProducts:[{ supplierId:'a' }, { supplierId:'b', isPreferred:true }] }), 'b');
+  // several, none preferred → first
+  assert.equal(resolveItemSupplierId({ supplierProducts:[{ supplierId:'a' }, { supplierId:'b' }] }), 'a');
+  // genuinely none
+  assert.equal(resolveItemSupplierId({ supplierProducts:[] }), null);
+  assert.equal(resolveItemSupplierId({}), null);
+  assert.equal(resolveItemSupplierId(null), null);
 });
