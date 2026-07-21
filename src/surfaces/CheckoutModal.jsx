@@ -1417,24 +1417,22 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
         tipBasisMinor: toMinor(total),
         dueMinor,
         currency: getActiveCurrencyCode?.() || 'GBP',
-        // skipTip is NOT a bypass of the terminal — it folds into the frozen
-        // config as enabled:false, so one rule lives in one place.
+        // v5.5.841 — NO tipConfig IS SENT. The bands are the TERMINAL'S, resolved
+        // server-side in terminal-job-create from terminal_devices.tip_config —
+        // the value Back Office writes, the value the operator can actually see,
+        // and the same column Table Pay freezes. Two clients building the same
+        // object from two different tables is how they came to disagree.
         //
-        // v5.5.838 — WRITE BOTH SPELLINGS. TipConfig.fromJobJson on the terminal
-        // reads "percentBands" or "tip_percentages" and nothing else; it does NOT
-        // read "percentages", which is what this object used to send. Because that
-        // parser FAILS CLOSED, the near-miss key name was indistinguishable from
-        // "this venue does not tip" — the customer simply never saw a tip prompt.
-        // Same dual shape set_terminal_settings normalises to.
-        tipConfig: {
-          enabled:             !skipTip && tipCfg?.tipping_enabled !== false,
-          tipping_enabled:     !skipTip && tipCfg?.tipping_enabled !== false,
-          percentBands:        tipCfg?.tip_percentages ?? null,
-          tip_percentages:     tipCfg?.tip_percentages ?? null,
-          allowCustom:         tipCfg?.allow_custom_tip ?? true,
-          allow_custom:        tipCfg?.allow_custom_tip ?? true,
-          smartThresholdMinor: tipCfg?.smart_tip_threshold_minor ?? null,
-        },
+        // What this modal used to send was
+        //   { enabled:true, percentages:null, … }
+        // and the terminal's parser reads only percentBands / tip_percentages, so
+        // it fell closed to "no bands" and showed the customer no tip prompt at
+        // all. The venue read that as "tipping is off".
+        //
+        // skipTip is still ours to decide — a bar tab, takeaway or collection
+        // takes no tip whatever the terminal is configured for — but it travels
+        // as a suppression flag, which can only ever make the job LESS tippable.
+        suppressTip: skipTip || tipCfg?.tipping_enabled === false,
         closedCheckId: `chk-${Date.now()}`,
         checkDraft: {
           tableId: tableId || null,

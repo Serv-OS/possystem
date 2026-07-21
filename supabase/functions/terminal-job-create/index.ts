@@ -26,6 +26,12 @@
 //   backstop. charge_minor is NEVER accepted from the client; it is written
 //   server-side by terminal_commit_tip once the tip settles.
 //
+// TIP CONFIG (v5.5.841)
+//   NOT accepted from the client any more. Resolved here from the TARGET
+//   TERMINAL'S OWN terminal_devices.tip_config — the value Back Office writes and
+//   the operator can see — and normalised into both spellings the terminal parses.
+//   See the block above `readBands` for the bug this replaces.
+//
 // IDEMPOTENCY
 //   The job id is minted by the POS before any network call. idx_tj_one_live_per_check
 //   makes a second live job for the same check_key impossible; on 23505 we return
@@ -68,10 +74,122 @@ interface Body {
   tip_basis_minor?: number;
   due_minor?: number;
   currency?: string;
-  tip_config?: Record<string, unknown>;
+  tip_config?: Record<string, unknown>;   // LEGACY — see the tip block below
+  suppress_tip?: boolean;                 // per-sale "no tip on this one" (bar tab / takeaway)
   closed_check_id?: string;
   check_draft?: Record<string, unknown>;
   training?: boolean;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TIP CONFIG — RESOLVED SERVER-SIDE, FROM THE TERMINAL'S OWN ROW
+//
+// v5.5.841. The bug this replaces: the POS built the frozen tip_config itself and
+// sent `{"enabled":true, "percentages":null, …}`. TipConfig.fromJobJson on the
+// terminal reads ONLY `percentBands` or `tip_percentages`, so it saw "tipping on,
+// no bands" and — correctly, fail-closed — rendered no tip prompt at all. To the
+// operator that is indistinguishable from tipping being switched off, at a venue
+// where Back Office says it is on.
+//
+// THE SOURCE OF TRUTH IS terminal_devices.tip_config. That is what Back Office
+// writes (set_terminal_settings, migration 20260723) and what the operator can
+// actually see and change, and it is already stored normalised by
+// _terminal_norm_tip_config. terminal_start_table_payment freezes the same column
+// onto the job row — so mode 1 and mode 3 now agree by construction instead of by
+// two clients happening to build the same object.
+//
+// normTipConfig below is a LINE-FOR-LINE PORT of _terminal_norm_tip_config
+// (supabase/migrations/20260723_terminal_settings.sql § 2). If you change one,
+// change both — a divergence here is a tip prompt that silently disappears.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** Bands, in the three spellings that have ever been written. First array wins. */
+function readBands(p: Record<string, unknown> | null): unknown[] | null {
+  if (!p) return null;
+  for (const k of ['percentBands', 'tip_percentages', 'percentages']) {
+    const v = (p as Record<string, unknown>)[k];
+    if (Array.isArray(v)) return v;
+  }
+  return null;
+}
+
+/** Postgres `(x)::boolean` semantics, plus the JSON `true`/`false` this actually sees. */
+function boolOf(v: unknown): boolean | null {
+  if (v === true || v === false) return v;
+  if (typeof v === 'string') {
+    const s = v.trim().toLowerCase();
+    if (s === 'true' || s === 't' || s === 'yes' || s === 'y' || s === '1') return true;
+    if (s === 'false' || s === 'f' || s === 'no' || s === 'n' || s === '0') return false;
+  }
+  return null;
+}
+
+/** The fail-closed shape. BOTH spellings, so neither parser has to guess. */
+const TIP_OFF = { enabled: false, tipping_enabled: false } as const;
+
+/**
+ * Port of _terminal_norm_tip_config. Emits BOTH vocabularies, or an explicit OFF.
+ * NEVER emits a null band list — that is the exact shape that caused this bug.
+ */
+function normTipConfig(p: Record<string, unknown> | null | undefined): Record<string, unknown> {
+  if (!p || typeof p !== 'object' || Array.isArray(p)) return { ...TIP_OFF };
+
+  const enabled = boolOf(p.enabled) ?? boolOf(p.tipping_enabled) ?? false;
+  if (!enabled) return { ...TIP_OFF };
+
+  const raw = readBands(p) ?? [];
+  const pcts: number[] = [];
+  for (const el of raw) {
+    const n = typeof el === 'number' ? el : Number(el);
+    // 0%, a negative, a NaN or an absurd band is a broken row, not a tip option.
+    if (!Number.isFinite(n) || n <= 0 || n > 100) continue;
+    if (pcts.length >= 5) break;      // 5 buttons is all the screen has
+    pcts.push(n);
+  }
+  // Tipping on with no usable band is not a state the terminal can render, and
+  // inventing 10/12.5/15 would put percentages in front of a customer nobody at
+  // the venue agreed to. Off is the honest answer.
+  if (pcts.length === 0) return { ...TIP_OFF };
+
+  const allowCustom = boolOf(p.allowCustom) ?? boolOf(p.allow_custom) ?? true;
+
+  let thresh: number | null = null;
+  const t = Number(p.smartThresholdMinor);
+  if (Number.isFinite(t) && Number.isInteger(t) && t >= 0) thresh = t;
+
+  return {
+    enabled: true,
+    tipping_enabled: true,      // Back Office vocabulary
+    percentBands: pcts,
+    tip_percentages: pcts,      // Back Office vocabulary
+    allowCustom,
+    allow_custom: allowCustom,
+    smartThresholdMinor: thresh,
+    // allowNoTip is NOT configurable and never will be. Trapping a customer on a
+    // tip screen is not a setting; the terminal hard-codes it true regardless.
+    allowNoTip: true,
+  };
+}
+
+/** Does a client-supplied config genuinely carry at least one usable band? */
+function carriesBands(p: Record<string, unknown> | null | undefined): boolean {
+  const arr = readBands((p ?? null) as Record<string, unknown> | null);
+  if (!arr) return false;
+  return arr.some((el) => {
+    const n = typeof el === 'number' ? el : Number(el);
+    return Number.isFinite(n) && n > 0 && n <= 100;
+  });
+}
+
+/** Did the caller explicitly ask for NO tip on this particular sale? */
+function tipSuppressed(body: Body): boolean {
+  if (body.suppress_tip === true) return true;
+  // Legacy clients express the same thing as enabled:false inside tip_config.
+  const c = body.tip_config;
+  if (!c || typeof c !== 'object') return false;
+  const e = boolOf((c as Record<string, unknown>).enabled)
+        ?? boolOf((c as Record<string, unknown>).tipping_enabled);
+  return e === false;
 }
 
 Deno.serve(async (req) => {
@@ -117,7 +235,7 @@ Deno.serve(async (req) => {
   // ── 1. The terminal row IS the location authority ──────────────────────────
   const { data: term, error: termErr } = await opsAdmin
     .from('terminal_devices')
-    .select('id, location_id, status, active, label')
+    .select('id, location_id, status, active, label, tip_config')
     .eq('id', target_terminal_id)
     .maybeSingle();
   if (termErr) return json({ error: termErr.message }, 500);
@@ -165,6 +283,44 @@ Deno.serve(async (req) => {
     }, 409);
   }
 
+  // ── 3b. Resolve the tip config. THE TERMINAL'S OWN ROW WINS ───────────────
+  //
+  // Precedence, highest first:
+  //   1. An explicit per-sale suppression (bar tab / takeaway / collection, or a
+  //      legacy client sending enabled:false). This can only ever make the job
+  //      LESS tippable, so it is always safe to honour and it is the one thing
+  //      the till genuinely knows that the terminal does not.
+  //   2. A client config that GENUINELY CARRIES BANDS — kept so a caller with a
+  //      real, deliberate override still works.
+  //   3. terminal_devices.tip_config — Back Office's own value, which is what the
+  //      operator sees and what terminal_start_table_payment already freezes.
+  //
+  // Whatever wins is normalised, so the row carries BOTH spellings the terminal
+  // parses and NEVER a null band list. There is no path out of here that writes
+  // "enabled with nothing to show".
+  const deviceTip = (term as any).tip_config as Record<string, unknown> | null;
+  let tipSource: string;
+  let tipInput: Record<string, unknown> | null;
+  if (tipSuppressed(body)) {
+    tipSource = 'suppressed-by-caller';
+    tipInput = null;
+  } else if (carriesBands(tip_config)) {
+    tipSource = 'client-override';
+    tipInput = tip_config as Record<string, unknown>;
+  } else {
+    tipSource = deviceTip ? 'terminal_devices.tip_config' : 'none-configured';
+    tipInput = deviceTip;
+  }
+  const resolvedTipConfig = normTipConfig(tipInput);
+  // Loud on purpose. "Tipping is off" was a silent branch for a week; an unlogged
+  // branch is a bug.
+  console.log('[terminal-job-create] tip_config resolved', JSON.stringify({
+    job_id, terminal: target_terminal_id, source: tipSource,
+    client_sent_bands: carriesBands(tip_config),
+    device_had_config: !!deviceTip,
+    result: resolvedTipConfig,
+  }));
+
   // ── 4. Insert. On 23505 return the EXISTING live job for this check ────────
   const row = {
     id: job_id,
@@ -176,7 +332,7 @@ Deno.serve(async (req) => {
     tip_basis_minor: tipBasis,
     due_minor: due,
     currency: String(body.currency || 'GBP').toUpperCase().slice(0, 3),
-    tip_config: tip_config ?? { enabled: false },
+    tip_config: resolvedTipConfig,
     closed_check_id,
     check_draft,
     status: 'pending',

@@ -18,6 +18,7 @@ import { getLocationProcessor } from '../../lib/payments/processor';
 import { stripeCurrency } from '../../lib/currency';
 import RyftTerminals from './RyftTerminals';
 import PaxTerminals from './PaxTerminals';
+import UnresolvedPayments from './UnresolvedPayments';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 
@@ -183,6 +184,12 @@ export default function CardReaders() {
 
       {/* PaxPay terminals — self-gating: renders once a location is resolved */}
       <PaxTerminals />
+
+      {/* Payments whose outcome was never established — self-gating: renders
+          nothing at all when there is nothing unresolved. Sits directly under the
+          terminals because that is where a manager goes when a card machine has
+          misbehaved. */}
+      <UnresolvedPayments />
 
       {error && <div style={S.errorBox}>{error}</div>}
 

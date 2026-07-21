@@ -220,7 +220,7 @@ export async function findPaxTerminal({ posDeviceId } = {}) {
  * @param {string} p.targetTerminalId
  * @param {number} p.tipBasisMinor   the BILL — tip % applies to this
  * @param {number} p.dueMinor        what the CARD must take, pre-tip
- * @param {object} p.tipConfig       frozen at dispatch
+ * @param {boolean} p.suppressTip    this ONE sale takes no tip (bar tab / takeaway)
  * @param {string} p.closedCheckId   pre-minted, so the check can close without the POS
  * @param {object} p.checkDraft      everything recordClosedCheck needs EXCEPT the tip
  * @returns {{job: object, existing: boolean}}
@@ -256,7 +256,24 @@ export async function dispatchTerminalJob(p) {
     tip_basis_minor: p.tipBasisMinor,
     due_minor: p.dueMinor,
     currency: p.currency || 'GBP',
-    tip_config: p.tipConfig ?? { enabled: false },
+    // v5.5.841 — THE POS NO LONGER SENDS A TIP CONFIG AT ALL.
+    //
+    // It used to build one from location_reader_settings and send it as the
+    // frozen config. That produced `{"enabled":true,"percentages":null,…}`, and
+    // TipConfig.fromJobJson on the terminal reads only `percentBands` /
+    // `tip_percentages` — so the terminal received "tipping on, no bands" and
+    // showed no tip options. Indistinguishable, to anyone watching, from tipping
+    // being switched off.
+    //
+    // The bands now come from terminal_devices.tip_config, resolved inside
+    // terminal-job-create. That is the value Back Office writes and the operator
+    // can see, and it is the same column terminal_start_table_payment freezes —
+    // so Table Pay and POS dispatch cannot drift apart. ONE source of truth.
+    //
+    // The only tip fact the till still owns is whether THIS sale takes a tip at
+    // all (a bar tab / takeaway / collection never does). That travels as a
+    // suppression flag, not as a config: it can only make the job less tippable.
+    suppress_tip: !!p.suppressTip,
     closed_check_id: closedCheckId,
     check_draft: p.checkDraft ?? {},
   });

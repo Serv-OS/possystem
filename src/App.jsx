@@ -94,6 +94,22 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.841', date: '21 Jul 2026', label: 'Card terminal \u2014 tipping fixed, and a counter terminal that is ready without being touched',
+    changes: [
+      'Fixed \u2014 tipping appeared to be switched off on payments sent from the till. The till was sending its own tip settings and the terminal could not read them, so the customer was never offered a tip. The tip buttons now come from the terminal\u2019s own settings, the ones you set in Card readers, so what you configure is what the customer sees.',
+      'The same tip settings are now used whether the payment is started on the terminal or sent from the till. There is only one place to set them and no way for the two to disagree.',
+      'A bar tab, takeaway or collection still takes no tip, exactly as before.',
+      'A card terminal set to only receive payments from the till no longer shows a button nobody is there to press. It goes straight to your screensaver, keeps listening in the background, and wakes into the payment the moment the till sends one. When the payment is done it goes back to the screensaver.',
+      'If no screensaver is set up, that terminal shows a plain "Ready" screen with your venue name instead.',
+      'On a payment sent from the till the customer now sees the amount first, then the tip, then pays. The "hand to customer" step has gone, because the terminal is already in front of them. Payments started on the terminal by a waiter still ask them to confirm the table first.',
+      'One payment that could not be confirmed used to take the whole card machine out of service until someone fixed it by hand. It no longer does \u2014 the machine carries on taking payments as normal.',
+      'New list in Card readers showing any payments where the machine never said what happened, so nobody knows if the customer was charged. It shows the amount, the table, the time, the machine and the reference to look up.',
+      'A manager checks each one against the card statement or the payment provider\u2019s dashboard, then says whether the customer was charged, was not charged, or was declined. Each choice explains what it does and is recorded against your name.',
+      'Payments that did go through but for an amount that does not match what we worked out are listed too. Those show both figures side by side, and a manager signs off having checked them \u2014 it does not change the payment.',
+      'The list only appears when there is something in it. Until a payment is confirmed, that table\u2019s bill still cannot be taken again, so a customer can never be charged twice by mistake.',
+    ],
+  },
+  {
     version: '5.5.840', date: '21 Jul 2026', label: 'Fixed \u2014 unpairing a card terminal, and a way to release a stuck one',
     changes: [
       'Unpairing a card terminal failed with a database error as soon as it had taken even one payment. It now retires the terminal instead of deleting it \u2014 the same physical machine can be paired again, and its payment history is kept.',
