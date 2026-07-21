@@ -16,9 +16,14 @@ public final class BuildVersion {
     private BuildVersion() {}
 
     /** Human-facing build id. "m1" = milestone 1 (G8:Cloud HTTP call still stubbed). */
-    public static final String VERSION = "1.1-m2";   // v5.5.839: was stale at 1.0-m1 while
+    public static final String VERSION = "1.3-m2";   // v5.5.839: was stale at 1.0-m1 while
                                                   // build.gradle said 1.1-m2, so the version
                                                   // reported to Back Office was a lie.
+                                                  // v5.5.841: 1.2-m2 = server-resolved tip
+                                                  // config + idle-first + POS-dispatch flow
+                                                  // order. versionCode is NOT bumped: no
+                                                  // release is being published, and
+                                                  // latest-paxpay.json still names code 2.
 
     /**
      * True while the G8:Cloud call is the stub rather than the real vendor API. Drives the

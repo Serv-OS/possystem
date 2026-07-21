@@ -142,7 +142,7 @@ public final class OpsApi {
     }
 
     // -------------------------------------------------------------------------------------
-    // Waiting for POS
+    // Ambient POS dispatch
     // -------------------------------------------------------------------------------------
 
     /**
@@ -172,10 +172,28 @@ public final class OpsApi {
      * it is a normal return value and not an exception.
      */
     public boolean claimJob(String jobId) throws Exception {
+        return claimJobReason(jobId) == null;
+    }
+
+    /**
+     * v5.5.841: returns NULL on a successful claim, otherwise the server's REASON.
+     *
+     * claimJob() used to collapse every failure to `false`, and the poller logged all of
+     * them as "already claimed elsewhere". That is only one of the reasons, and it was
+     * not the one actually happening: a job stuck in 'unknown' holds the
+     * idx_tj_one_live_per_terminal slot, so every new payment failed to claim while the
+     * log insisted another terminal had taken it. Hours went into that. Report what the
+     * server said, not what we assumed.
+     */
+    public String claimJobReason(String jobId) throws Exception {
         JSONObject p = new JSONObject();
         p.put("p_job_id", jobId);
         JSONObject r = sb.rpcObject("terminal_claim_job", p);
-        return r != null && r.optBoolean("ok", false);
+        if (r != null && r.optBoolean("ok", false)) return null;
+        String reason = r == null ? null : r.optString("reason", null);
+        return (reason == null || reason.isEmpty())
+                ? "claim rejected (already taken, or no longer pending)"
+                : reason;
     }
 
     // -------------------------------------------------------------------------------------

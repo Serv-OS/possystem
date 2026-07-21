@@ -42,6 +42,7 @@ import co.posup.rpos.paxpay.ui.DiagnosticsScreen;
 import co.posup.rpos.paxpay.ui.HomeScreen;
 import co.posup.rpos.paxpay.ui.PairingScreen;
 import co.posup.rpos.paxpay.ui.PinScreen;
+import co.posup.rpos.paxpay.ui.PosIdleScreen;
 import co.posup.rpos.paxpay.ui.ResultScreen;
 import co.posup.rpos.paxpay.ui.ScreensaverScreen;
 import co.posup.rpos.paxpay.ui.StatusScreen;
@@ -49,7 +50,6 @@ import co.posup.rpos.paxpay.ui.TableListScreen;
 import co.posup.rpos.paxpay.ui.TipScreen;
 import co.posup.rpos.paxpay.ui.Ui;
 import co.posup.rpos.paxpay.ui.UnresolvedScreen;
-import co.posup.rpos.paxpay.ui.WaitingForPosScreen;
 
 /**
  * Serv OS PaxPay — card payments on a PAX A920 Pro via the Ryft / STS "G8" stack.
@@ -123,6 +123,13 @@ public class MainActivity extends ComponentActivity {
      */
     private static final long SCREENSAVER_IDLE_MS = 60_000L;
 
+    /**
+     * How long an IDLE-FIRST terminal waits before trying to recover a lost session on its own.
+     * Long enough that a persistent failure cannot spin the CPU or the network; short enough that
+     * an unattended terminal is back in service well inside a service period.
+     */
+    private static final long IDLE_RECOVERY_MS = 15_000L;
+
     private final Diagnostics diag = new Diagnostics();
     private final Handler ui = new Handler(Looper.getMainLooper());
 
@@ -147,7 +154,8 @@ public class MainActivity extends ComponentActivity {
     private StaffSession staff;
     private PinScreen pinScreen;
     private TableListScreen tableScreen;
-    private WaitingForPosScreen waitingScreen;
+    /** v5.5.841 — the idle-first resting screen. Non-null only in POS-dispatch-only mode. */
+    private PosIdleScreen posIdleScreen;
     private StatusScreen statusScreen;
 
     /** The payment in progress, or null. */
@@ -255,6 +263,7 @@ public class MainActivity extends ComponentActivity {
     protected void onResume() {
         super.onResume();
         if (updateChecker != null) updateChecker.check(false);
+        ensureAmbientPolling();                                   // may have been torn down
         if (poller != null && poller.isRunning()) poller.nudge();
     }
 
@@ -316,6 +325,9 @@ public class MainActivity extends ComponentActivity {
                     stopPairingPoll();
                     startHeartbeat();
                     refreshSettings();          // v5.5.838: modes + idle screen
+                    // The terminal can receive from the till from this moment on, whatever is
+                    // drawn. This is the FIRST of the ambient poller's lifecycle call sites.
+                    ensureAmbientPolling();
                     if (advanceOnSuccess) runRecoveryThenContinue();
                 } else {
                     showPairing(null, false);
@@ -371,6 +383,9 @@ public class MainActivity extends ComponentActivity {
                     // v5.5.838: piggyback the settings refresh on the heartbeat, so a change made
                     // in Back Office reaches the terminal within a minute without a second timer.
                     refreshSettings();
+                    // v5.5.841: and the ambient poller's safety net. Whatever stopped it — a lost
+                    // session, a claim, an unhandled path — it is listening again within a minute.
+                    ensureAmbientPolling();
                 }
                 ui.postDelayed(this, HEARTBEAT_MS);
             }
@@ -407,26 +422,217 @@ public class MainActivity extends ComponentActivity {
     // Home
     // =========================================================================================
 
+    /**
+     * IDLE-FIRST (v5.5.841): is there NOTHING on this terminal for a human to start?
+     *
+     * Since POS dispatch stopped being a mode somebody enters, the home screen carries exactly
+     * two buttons — Table Pay and Manual payment. Switch both off and the screen has nothing on
+     * it worth showing: every payment this terminal will take is pushed from the till, and there
+     * is nobody standing at it to tap anything. So it skips the home screen and rests on the
+     * venue's screensaver instead, still receiving payments the whole time.
+     *
+     * This now falls out of the model rather than being a special case: pos_dispatch is what
+     * makes the terminal USABLE in that configuration, but it is not what puts a button on the
+     * screen, because it never had one.
+     */
+    private boolean isIdleFirst() {
+        return settings.posDispatch && !settings.tablePay && !settings.manual;
+    }
+
     private void showHome() {
-        stopPolling();
         staff = null;
         diag.staffName = null;
         diag.currentJobId = null;
         activeJob = null;
         activeLocalId = null;
 
+        if (isIdleFirst()) {
+            showPosIdle();
+            return;
+        }
+
+        diag.event("home: table=" + settings.tablePay + " manual=" + settings.manual
+                + " pos=" + settings.posDispatch + " (pos is ambient — no button)");
         setScreen(new HomeScreen(this, prefs.label(), jobLog.unfinishedCount(), settings,
                 new HomeScreen.Listener() {
                     @Override public void onTablePay() { showPin(null); }
                     @Override public void onManualPayment() { showAmountScreen(); }
-                    @Override public void onWaitForPos() { showWaitingForPos(); }
                     @Override public void onReviewUnresolved() {
                         showUnresolved(jobLog.unfinished());
                     }
                 }));
 
-        // THE ONLY PLACE THE SCREENSAVER TIMER IS EVER ARMED. See armScreensaver().
+        // ARMING SITE 1 OF 3. See armScreensaver().
         armScreensaver();
+    }
+
+    /**
+     * The idle-first resting state: the venue's branding, with the terminal receiving underneath.
+     *
+     * Reached ONLY through {@link #showHome}, which is what every "we are done, go back to a safe
+     * idle state" path in this class already calls — boot, cancel, and finishPayment. So the
+     * post-payment return lands here without a single extra call site, and the terminal goes back
+     * to the screensaver rather than to a button.
+     *
+     * NOTE it does NOT start the poller. Polling is ambient and screen-independent — see
+     * {@link #ensureAmbientPolling}. This method only decides what is drawn.
+     */
+    private void showPosIdle() {
+        if (prefs.deviceId() == null) {
+            showError("Not paired", "This terminal is not paired to a venue yet.", this::boot);
+            return;
+        }
+        // An unresolved payment outranks idling, exactly as it outranks the home screen.
+        if (jobLog.unfinishedCount() > 0) {
+            diag.event("idle-first: unresolved payments block idling");
+            showUnresolved(jobLog.unfinished());
+            return;
+        }
+
+        diag.event("idle-first: nothing for a human to start — resting, still receiving");
+        PosIdleScreen screen = new PosIdleScreen(this, prefs.label());
+        setScreen(screen);              // disarms any armed screensaver and clears posIdleScreen
+        posIdleScreen = screen;         // AFTER setScreen, which nulls the field
+
+        // ARMING SITE 2 OF 3, and the only one added by idle-first. Delay 0: there is nobody to
+        // interrupt on this terminal, so the branding goes up immediately rather than after the
+        // 60-second grace period the staff-facing home screen needs. The tick's guard is the same
+        // single predicate the claim uses — see armScreensaver().
+        armScreensaver(0L);
+    }
+
+    // =========================================================================================
+    // ★ THE ONE DEFINITION OF "IDLE" ★  (v5.5.841)
+    // =========================================================================================
+
+    /**
+     * Why this terminal may NOT take a payment pushed from the till right now — or null if it may.
+     *
+     * ─────────────────────────────────────────────────────────────────────────────────────────
+     * THIS IS THE ONLY PLACE "IDLE" IS DEFINED, AND IT HAS EXACTLY TWO CALLERS:
+     *
+     *   1. {@link JobPoller.Gate} — whether an arriving job may be CLAIMED
+     *   2. the {@link #armScreensaver} tick — whether the screensaver may be SHOWN
+     *
+     * They have to agree. Two subtly different notions of idle is precisely how a screensaver
+     * ends up over a live tip prompt, and how an arriving payment ends up tearing the screen away
+     * from a customer who is part-way through authorising a different one. One predicate, two
+     * callers, no ad-hoc surface tests anywhere else.
+     *
+     * A string rather than a boolean because the REASON is the valuable part: "a payment is
+     * waiting but the terminal is on the staff PIN screen" is a sentence somebody can act on,
+     * where a silent no-op reads as "the payment never arrived". {@link #canAcceptPosJob} is the
+     * boolean view for sites that do not need the reason.
+     * ─────────────────────────────────────────────────────────────────────────────────────────
+     *
+     * The screensaver needs no special case: it is an OVERLAY added at child index > 0, so the
+     * idle surface underneath is still child 0 and a screensaver'd terminal reads as idle — which
+     * it is. That is the whole point of it being an overlay rather than a screen.
+     */
+    private String posJobBusyReason() {
+        if (activeJob != null)   return "a payment is already in progress";
+        if (staff != null)       return "a member of staff is signed in for Table Pay";
+        if (jobLog.unfinishedCount() > 0) return "an unresolved payment is waiting to be checked";
+        if (content == null || content.getChildCount() == 0) return "the terminal is still starting up";
+        View top = content.getChildAt(0);
+        if (top instanceof HomeScreen || top instanceof PosIdleScreen) return null;   // IDLE
+        return "the terminal is on " + describeScreen(top);
+    }
+
+    /** Boolean view of {@link #posJobBusyReason}. */
+    private boolean canAcceptPosJob() {
+        return posJobBusyReason() == null;
+    }
+
+    /** Human-readable screen name, for the diagnostics line only. */
+    private static String describeScreen(View v) {
+        if (v == null)                        return "an unknown screen";
+        if (v instanceof PinScreen)           return "the staff PIN screen";
+        if (v instanceof TableListScreen)     return "the table list";
+        if (v instanceof AmountScreen)        return "the manual amount keypad";
+        if (v instanceof ConfirmScreen)       return "the confirm-bill screen";
+        if (v instanceof TipScreen)           return "the customer tip screen";
+        if (v instanceof StatusScreen)        return "a payment in progress";
+        if (v instanceof ResultScreen)        return "a payment result";
+        if (v instanceof UnresolvedScreen)    return "the unresolved-payments screen";
+        if (v instanceof DiagnosticsScreen)   return "the diagnostics screen";
+        if (v instanceof PairingScreen)       return "the pairing screen";
+        if (v instanceof ScrollView)          return "an error screen";
+        return v.getClass().getSimpleName();
+    }
+
+    // =========================================================================================
+    // Ambient POS dispatch (v5.5.841) — a capability, not a screen
+    // =========================================================================================
+
+    /**
+     * Poll for payments pushed from the till, continuously, for as long as this terminal is
+     * allowed to receive them.
+     *
+     * ─────────────────────────────────────────────────────────────────────────────────────────
+     * DELIBERATELY NOT TIED TO A SCREEN. A paired card reader on a counter does not have a "now
+     * start listening" state, and the version of this that did — a "Waiting for POS" button —
+     * meant a payment dispatched from the till landed on a terminal that was not polling because
+     * nobody had tapped anything. It simply never appeared, with no error anywhere.
+     *
+     * So this is called from LIFECYCLE points, never from a show*() method:
+     *   * pairing succeeded              (the terminal became able to receive at all)
+     *   * the 60-second heartbeat        (the safety net — restarts it whatever happened)
+     *   * a settings fetch landed        (pos_dispatch may have just been switched on or off)
+     *   * a payment finished             (the poller stops itself on claim; restart immediately
+     *                                     rather than waiting up to a minute for the heartbeat)
+     *   * onResume
+     * Idempotent, so calling it from all of them is free.
+     * ─────────────────────────────────────────────────────────────────────────────────────────
+     *
+     * SAFETY: this starts LOOKING, not claiming. Claiming is gated on {@link #canAcceptPosJob}.
+     */
+    private void ensureAmbientPolling() {
+        if (!settings.posDispatch) {
+            if (poller != null) {
+                diag.event("ambient polling OFF — pos_dispatch disabled in Back Office");
+                stopPolling();
+            }
+            return;
+        }
+        final String deviceId = prefs.deviceId();
+        if (deviceId == null) return;                       // not paired yet; pairing will call us
+        if (poller != null && poller.isRunning()) return;    // already listening
+
+        diag.event("ambient polling ON (terminal " + deviceId + ")");
+        poller = new JobPoller(sb, api, diag, deviceId,
+                this::posJobBusyReason,                      // ★ the single idle predicate ★
+                new JobPoller.Listener() {
+                    @Override public void onJobClaimed(TerminalJob job) { beginJob(job); }
+                    @Override public void onIdle(String detail) {
+                        // Only the idle screen has somewhere to put this. The home screen
+                        // deliberately shows no poll status: it is staff-facing furniture, and a
+                        // background poll is not their business.
+                        if (posIdleScreen != null) posIdleScreen.setStatus(detail);
+                    }
+                    @Override public void onProblem(String message) {
+                        // An AMBIENT poller must never take the screen. It runs behind a home
+                        // screen a waiter is reading and behind a screensaver a customer is
+                        // looking at; throwing up an error over either — repeatedly, every tick
+                        // — would be worse than the problem. It goes to diagnostics and to the
+                        // idle status line, and the terminal keeps trying.
+                        diag.lastRpcError = message;
+                        diag.event("ambient poll problem: " + message);
+                        if (posIdleScreen != null) posIdleScreen.setStatus(shortError(message));
+
+                        // JobPoller stops ITSELF on a lost session, which would otherwise mean a
+                        // terminal that silently never receives another payment. Re-run pairing
+                        // (the documented recovery path) after a pause long enough that a
+                        // persistent failure cannot spin.
+                        if (poller != null && !poller.isRunning()) {
+                            diag.event("poller stopped — re-pairing in " + IDLE_RECOVERY_MS + "ms");
+                            ui.postDelayed(() -> {
+                                if (canAcceptPosJob()) refreshPairing(true);
+                            }, IDLE_RECOVERY_MS);
+                        }
+                    }
+                });
+        poller.start();
     }
 
     // =========================================================================================
@@ -456,11 +662,21 @@ public class MainActivity extends ComponentActivity {
         if (id == null) return;
         sb.async(() -> api.fetchSettings(id), new SupabaseClient.Result<JSONObject>() {
             @Override public void onSuccess(JSONObject row) {
+                // v5.5.841: log the RAW result every time. The success path used to be
+                // silent unless the modes happened to change, so "settings are not
+                // taking effect" was indistinguishable from "settings were never
+                // fetched" — which cost hours. Never make a sync path invisible.
+                diag.event("settings fetch -> " + (row == null ? "NULL (no row readable for id " + id + ")" : row.toString()));
                 if (row == null) return;
                 TerminalSettings next = TerminalSettings.from(row);
+                diag.event("parsed modes: table=" + next.tablePay + " manual=" + next.manual
+                        + " pos=" + next.posDispatch + " idle=" + next.idleEnabled);
                 boolean modesChanged = next.tablePay != settings.tablePay
                         || next.manual != settings.manual
                         || next.posDispatch != settings.posDispatch;
+                boolean idleChanged = next.idleEnabled != settings.idleEnabled
+                        || !sameString(next.idleImageUrl, settings.idleImageUrl);
+                boolean wasIdleFirst = isIdleFirst();
                 settings = next;
                 prefs.saveSettingsJson(next.toJson().toString());
 
@@ -469,14 +685,49 @@ public class MainActivity extends ComponentActivity {
                 if (next.idleEnabled && next.idleImageUrl != null
                         && !ssCache.isCached(next.idleImageUrl)) {
                     final String url = next.idleImageUrl;
-                    sb.async(() -> ssCache.ensure(url), null);
+                    // v5.5.841: repaint WHEN THE DOWNLOAD LANDS. armScreensaver() refuses to arm
+                    // against an image that is not on disk, so on a cold start the first fetch
+                    // always loses that race — and with no callback here the terminal sat on a
+                    // bare idle screen until the next thing happened to repaint it. This goes
+                    // back through showHome(), so it adds no new arming site.
+                    sb.async(() -> ssCache.ensure(url), new SupabaseClient.Result<Boolean>() {
+                        @Override public void onSuccess(Boolean ok) {
+                            diag.event("screensaver image download -> " + ok);
+                            if (Boolean.TRUE.equals(ok) && canRepaintIdleSurface()) showHome();
+                        }
+                        @Override public void onError(String message) {
+                            diag.event("screensaver image download failed: " + message);
+                        }
+                    });
                 }
 
-                // Redraw only if the buttons actually changed, and only if the home screen is
-                // what is currently showing. Never yank the screen out from under a payment.
-                if (modesChanged && isShowingHome()) {
-                    diag.event("modes updated from Back Office");
-                    showHome();
+                // pos_dispatch may have just been switched on or off. Ambient polling follows the
+                // capability, not a screen, so this is one of its authoritative call sites.
+                ensureAmbientPolling();
+
+                // ── REPAINT DECISION ────────────────────────────────────────────────────────
+                // canRepaintIdleSurface() is false for every screen that is not an idle surface,
+                // and false while a screensaver is up — so a payment can never be yanked away.
+                //
+                // v5.5.838/841: on the BUTTON home screen the repaint is unconditional, because
+                // rebuilding two buttons is free and the alternative is an ordering bug —
+                // showHome() runs at startup from the Prefs cache, the fetch lands afterwards,
+                // and a cache that happened to match meant nothing ever repainted, so a terminal
+                // could sit offering a button Back Office had switched off.
+                //
+                // v5.5.841: on the IDLE-FIRST surface a repaint is NOT free — it rebuilds the
+                // surface under the screensaver — and this runs on every 60-second heartbeat, so
+                // an unconditional repaint there would flicker the branding once a minute.
+                // So: repaint only when something that changes what is on screen changed.
+                if (canRepaintIdleSurface()) {
+                    boolean wrongSurface = isIdleFirst() != isShowingPosIdle();
+                    boolean repaint = !isIdleFirst() || wrongSurface || modesChanged || idleChanged;
+                    if (repaint) {
+                        diag.event("repainting idle surface (idleFirst " + wasIdleFirst + "->"
+                                + isIdleFirst() + " wrongSurface=" + wrongSurface
+                                + " modes=" + modesChanged + " idle=" + idleChanged + ")");
+                        showHome();
+                    }
                 }
             }
             @Override public void onError(String message) {
@@ -491,10 +742,23 @@ public class MainActivity extends ComponentActivity {
     // Screensaver (v5.5.838)
     // =========================================================================================
 
-    /** Is the home screen the thing currently on display (and not a screensaver over it)? */
-    private boolean isShowingHome() {
-        if (content == null || screensaverShowing) return false;
-        return content.getChildCount() > 0 && content.getChildAt(0) instanceof HomeScreen;
+    /**
+     * May an idle surface be REPAINTED right now?
+     *
+     * Not a second definition of idle — it is {@link #canAcceptPosJob} plus one extra condition
+     * that belongs to repainting alone: never repaint out from under a screensaver, because
+     * rebuilding the surface underneath would tear the image off the screen for no reason.
+     * Claiming has no such restriction (a payment SHOULD replace the screensaver), which is
+     * exactly why this is a separate, strictly narrower question rather than a rival predicate.
+     */
+    private boolean canRepaintIdleSurface() {
+        return canAcceptPosJob() && !screensaverShowing;
+    }
+
+    /** Specifically the idle-first surface (not the button home screen). */
+    private boolean isShowingPosIdle() {
+        if (content == null || content.getChildCount() == 0) return false;
+        return content.getChildAt(0) instanceof PosIdleScreen;
     }
 
     /**
@@ -502,32 +766,65 @@ public class MainActivity extends ComponentActivity {
      *
      * A screensaver appearing over a tip prompt, a card read, or a "do not remove your card"
      * message is not a cosmetic bug — it is a customer being asked to authorise something they
-     * can no longer see. So there is exactly ONE arming site (the end of {@link #showHome}) and
-     * exactly ONE disarming site ({@link #setScreen}, which every other screen in this class goes
-     * through). Leaving the home screen therefore cancels the timer by construction, not by
+     * can no longer see. So arming is confined to a countable set of sites, and there is exactly
+     * ONE disarming site ({@link #setScreen}, which every other screen in this class goes
+     * through). Leaving an idle surface therefore cancels the timer by construction, not by
      * anybody remembering to.
+     *
+     * ARMING SITES — ALL OF THEM, AND KEEP IT THAT WAY:
+     *   1. the end of {@link #showHome}      — the staff-facing button screen, 60s delay
+     *   2. the end of {@link #showPosIdle}   — idle-first (v5.5.841), 0s delay
+     *   3. {@link #dismissScreensaver}       — re-arm after a tap woke the terminal
+     * Sites 1 and 2 are mutually exclusive: showHome() routes to exactly one of them per the
+     * terminal's modes. Site 3 can only fire while a screensaver was already legitimately up.
+     * DO NOT ADD A FOURTH. If a new mode needs idling, route it through showHome().
      *
      * On top of that structural guarantee the tick re-checks, at fire time, that:
      *   * no job is in flight        (activeJob == null)
      *   * nobody is logged in        (staff == null — a PIN'd-in session means Table Pay is live)
-     *   * the home screen is still what is showing
+     *   * an idle surface is still what is showing
      *   * nothing is unresolved      (an unresolved payment must stay in front of a human)
      *
      * Belt and braces on purpose: the structural rule is what makes it correct, and the runtime
-     * checks are what stop a future fourth mode from quietly breaking it.
+     * checks are what stop a future fourth mode from quietly breaking it. NOTE that the checks
+     * run at FIRE time, not at arm time — which is what makes the 0ms idle-first arm as safe as
+     * the 60s one, because a job claimed in the meantime still cancels it.
      */
     private void armScreensaver() {
+        armScreensaver(SCREENSAVER_IDLE_MS);
+    }
+
+    /**
+     * @param delayMs how long the terminal must sit untouched first. 0 = immediately, used ONLY
+     *                by idle-first, where there is no member of staff mid-read to interrupt.
+     */
+    private void armScreensaver(long delayMs) {
         disarmScreensaver();
-        if (!settings.idleEnabled || settings.idleImageUrl == null) return;
-        if (!ssCache.isCached(settings.idleImageUrl)) return;   // no image on disk: no screensaver
+        if (!settings.idleEnabled || settings.idleImageUrl == null) {
+            diag.event("screensaver not armed: " + (settings.idleEnabled
+                    ? "no image url configured" : "disabled in Back Office"));
+            return;
+        }
+        if (!ssCache.isCached(settings.idleImageUrl)) {
+            // Not an error: the download is in flight and refreshSettings re-arms when it lands.
+            diag.event("screensaver not armed: image not cached yet");
+            return;
+        }
         idleTick = () -> {
             idleTick = null;
-            if (activeJob != null || staff != null) return;
-            if (jobLog.unfinishedCount() > 0) return;
-            if (!isShowingHome()) return;
+            // ★ THE SAME PREDICATE THE CLAIM USES ★ — see posJobBusyReason(). It used to be four
+            // hand-written checks here; they were correct, but a second hand-written copy of
+            // "idle" is exactly how the two drift apart and a screensaver lands on a tip prompt.
+            String busy = posJobBusyReason();
+            if (busy != null) {
+                diag.event("screensaver suppressed — " + busy);
+                return;
+            }
+            if (screensaverShowing) return;   // already up
             showScreensaver();
         };
-        ui.postDelayed(idleTick, SCREENSAVER_IDLE_MS);
+        diag.event("screensaver armed in " + delayMs + "ms");
+        ui.postDelayed(idleTick, delayMs);
     }
 
     private void disarmScreensaver() {
@@ -539,7 +836,11 @@ public class MainActivity extends ComponentActivity {
 
     private void showScreensaver() {
         android.graphics.Bitmap bmp = ssCache.bitmap(settings.idleImageUrl);
-        if (bmp == null) return;                 // decode failed: stay on the home screen
+        if (bmp == null) {
+            diag.event("screensaver NOT shown: image failed to decode");
+            return;                              // decode failed: stay on the idle surface
+        }
+        diag.event("screensaver shown");
         screensaverShowing = true;
         // Added OVER the home screen rather than replacing it, so dismissing is instant and the
         // home screen never has to be rebuilt. content is a FrameLayout, so this stacks on top.
@@ -552,11 +853,15 @@ public class MainActivity extends ComponentActivity {
     private void dismissScreensaver() {
         if (!screensaverShowing) return;
         screensaverShowing = false;
-        // Remove the overlay only — index 0 is the home screen underneath, untouched.
+        diag.event("screensaver dismissed by touch");
+        // Remove the overlay only — index 0 is the idle surface underneath, untouched.
         for (int i = content.getChildCount() - 1; i >= 0; i--) {
             if (content.getChildAt(i) instanceof ScreensaverScreen) content.removeViewAt(i);
         }
-        armScreensaver();   // idle again from now
+        // ARMING SITE 3 OF 3. Full delay even in idle-first: somebody just physically touched
+        // this terminal, so give them the same grace period the home screen gets rather than
+        // dropping the image back over their hand.
+        armScreensaver();
     }
 
     // =========================================================================================
@@ -688,50 +993,54 @@ public class MainActivity extends ComponentActivity {
         showTip();
     }
 
-    // =========================================================================================
-    // MODE 3 — Waiting for POS
-    // =========================================================================================
-
-    private void showWaitingForPos() {
-        final String deviceId = prefs.deviceId();
-        if (deviceId == null) {
-            showError("Not paired", "This terminal is not paired to a venue yet.", this::boot);
-            return;
-        }
-        waitingScreen = new WaitingForPosScreen(this, prefs.label(), this::showHome);
-        setScreen(waitingScreen);
-
-        poller = new JobPoller(sb, api, diag, deviceId, new JobPoller.Listener() {
-            @Override public void onJobClaimed(TerminalJob job) { beginJob(job); }
-            @Override public void onIdle(String detail) {
-                if (waitingScreen != null) waitingScreen.setStatus(detail);
-            }
-            @Override public void onProblem(String message) {
-                showError("Cannot listen for payments", shortError(message),
-                        MainActivity.this::showHome);
-            }
-        });
-        poller.start();
-    }
-
+    /** Tear the ambient poller down. Only for pos_dispatch being switched off, and onDestroy. */
     private void stopPolling() {
         if (poller != null) { poller.stop(); poller = null; }
-        waitingScreen = null;
     }
 
     // =========================================================================================
     // The shared payment path — every mode converges here
     // =========================================================================================
 
-    /** A job-backed payment: show the waiter what they are about to hand over. */
+    /**
+     * A job-backed payment. WHERE IT STARTS DEPENDS ON WHO IS HOLDING THE TERMINAL (v5.5.841).
+     *
+     * ── TABLE PAY → confirm first ───────────────────────────────────────────────────────────
+     * A waiter picked a table on this device and is about to carry it across a room. The confirm
+     * screen is the last moment the person who knows which table they are standing at can catch a
+     * mis-tap; after it, a wrong table means a stranger is shown another party's bill and charged
+     * for it. Unchanged, deliberately.
+     *
+     * ── POS DISPATCH → straight to the customer-facing flow ─────────────────────────────────
+     * The terminal is ALREADY in front of the customer — that is the entire point of dispatching
+     * from the till — and the person who chose the check did so on the POS a second ago. A "Hand
+     * to customer" button is then asking the customer to confirm a hand-over that already
+     * happened, in front of a screen they have not been shown the total on yet.
+     *
+     * So the order for a pushed job is the one the customer needs:
+     *   1. the TOTAL, plainly       — TipScreen states the bill before it offers anything
+     *   2. the TIP                  — same screen, under the amount
+     *   3. the CHARGE               — via onTipChosen, which commits the tip FIRST
+     *
+     * ★ This changes only WHERE THE FLOW ENTERS. It does not touch the ordering rule: every path
+     *   below still goes showTip → onTipChosen → commitTip → launchCharge, in that order. ★
+     */
     private void beginJob(TerminalJob job) {
-        stopPolling();
+        // JobPoller stops itself the moment it claims, so there is nothing to tear down here.
         activeJob = job;
         activeLocalId = null;
         activeReference = job.jobId;
         diag.currentJobId = job.jobId;
-        diag.event("job ready: " + job.jobId + " due=" + job.dueMinor
-                + " basis=" + job.tipBasisMinor);
+        diag.event("job ready: " + job.jobId + " source=" + job.source
+                + " due=" + job.dueMinor + " basis=" + job.tipBasisMinor
+                + " tipping=" + job.tipConfig.enabled);
+
+        if (job.source == TerminalJob.Source.POS_PUSH) {
+            // No hand-over step: the customer is already looking at this screen.
+            diag.event("POS-dispatched — skipping hand-over, showing the total");
+            showTip();
+            return;
+        }
 
         setScreen(new ConfirmScreen(this, job, new ConfirmScreen.Listener() {
             @Override public void onConfirm() { showTip(); }
@@ -1058,6 +1367,9 @@ public class MainActivity extends ComponentActivity {
         activeReference = null;
         statusScreen = null;
         diag.currentJobId = null;
+        // The poller stopped itself when it claimed this job. Restart it now rather than waiting
+        // up to a minute for the heartbeat — the next customer may already be at the counter.
+        ensureAmbientPolling();
         // Opportunistic replay: a result that failed to report a moment ago usually lands now.
         runRecoveryThenContinue();
     }
@@ -1081,7 +1393,9 @@ public class MainActivity extends ComponentActivity {
     // =========================================================================================
 
     private void showUnresolved(final List<JobLog.Entry> entries) {
-        stopPolling();
+        // NOT stopPolling(): the poller is ambient now, and posJobBusyReason() already refuses
+        // to claim while the write-ahead log has anything unfinished. Killing it here would mean
+        // nothing restarts it once the human clears the queue.
         if (entries == null || entries.isEmpty()) { showHome(); return; }
 
         setScreen(new UnresolvedScreen(this, entries, new UnresolvedScreen.Listener() {
@@ -1248,6 +1562,11 @@ public class MainActivity extends ComponentActivity {
             if (previous != null) setScreen(previous);
             else showHome();
         }));
+    }
+
+    /** Null-safe equality — both null counts as the same. */
+    private static boolean sameString(String a, String b) {
+        return a == null ? b == null : a.equals(b);
     }
 
     /** Trim a server error to something an operator can act on, keeping the detail in diagnostics. */

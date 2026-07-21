@@ -11,8 +11,20 @@ import co.posup.rpos.paxpay.net.OpsApi;
 import co.posup.rpos.paxpay.net.SupabaseClient;
 
 /**
- * Mode 3 — "waiting for POS". Polls terminal_jobs for a job addressed to THIS terminal, claims
- * it, and hands it to the payment flow.
+ * AMBIENT POS DISPATCH. Polls terminal_jobs for a job addressed to THIS terminal, claims it, and
+ * hands it to the payment flow.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────────────────────
+ * v5.5.841 — THIS IS NO LONGER A MODE SOMEBODY ENTERS.
+ *
+ * It used to be started by a "Waiting for POS" button. A paired card reader does not have a "now
+ * start listening" state, and making it one meant a payment dispatched from the till landed on a
+ * terminal that was not polling — because nobody had tapped anything — and never appeared. So
+ * MainActivity now runs this continuously whenever modes.pos_dispatch is on, behind whatever is
+ * showing.
+ *
+ * LOOKING IS AMBIENT. CLAIMING IS GATED. See {@link Gate} — that split is the whole safety story.
+ * ─────────────────────────────────────────────────────────────────────────────────────────────
  *
  * ─────────────────────────────────────────────────────────────────────────────────────────────
  * WHY POLLING AND NOT REALTIME
@@ -49,16 +61,33 @@ public final class JobPoller {
     public interface Listener {
         /** A job was claimed by US and is ready to run. */
         void onJobClaimed(TerminalJob job);
-        /** Nothing yet. `detail` is a human-readable status for the waiting screen. */
+        /** Nothing yet. `detail` is a human-readable status for the idle screen. */
         void onIdle(String detail);
         /** Something is wrong that the operator should see (offline, session lost, bad row). */
         void onProblem(String message);
+    }
+
+    /**
+     * ★ THE SAFETY GATE ON CLAIMING (v5.5.841) ★
+     *
+     * Polling is AMBIENT — it runs behind whatever is on screen. Claiming is NOT. A job may only
+     * be claimed when the terminal is genuinely idle, because claiming is what hands the screen
+     * to a payment: taking a customer off a live tip prompt to start somebody else's payment is
+     * how the wrong amount gets charged to the wrong person.
+     *
+     * The owner of this interface (MainActivity) answers from ONE predicate. This poller must not
+     * form a second opinion about what "idle" means — it asks, and it believes the answer.
+     */
+    public interface Gate {
+        /** null when a POS job may be claimed right now, otherwise WHY it may not be. */
+        String busyReason();
     }
 
     private final SupabaseClient sb;
     private final OpsApi api;
     private final Diagnostics diag;
     private final String terminalId;
+    private final Gate gate;
     private final Listener listener;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -68,11 +97,12 @@ public final class JobPoller {
     private int consecutiveFailures = 0;
 
     public JobPoller(SupabaseClient sb, OpsApi api, Diagnostics diag,
-                     String terminalId, Listener listener) {
+                     String terminalId, Gate gate, Listener listener) {
         this.sb = sb;
         this.api = api;
         this.diag = diag;
         this.terminalId = terminalId;
+        this.gate = gate;
         this.listener = listener;
     }
 
@@ -104,22 +134,74 @@ public final class JobPoller {
         handler.postDelayed(this::poll, nextInterval());
     }
 
+    /**
+     * STEP 1 — LOOK. Never claims. Runs no matter what is on screen.
+     *
+     * Looking is free and side-effect-free, so it is not gated: the terminal should know a
+     * payment is waiting even while a waiter is mid-Table-Pay, because that is exactly the state
+     * worth logging. The gate is applied in step 2, on the main thread, where the answer is
+     * freshest and where claiming actually happens.
+     */
     private void poll() {
         if (!running || inFlight) return;
         inFlight = true;
         pollCount++;
 
+        sb.async(() -> api.pollPendingJob(terminalId), new SupabaseClient.Result<JSONObject>() {
+            @Override public void onSuccess(JSONObject row) {
+                inFlight = false;
+                consecutiveFailures = 0;
+                if (!running) return;
+
+                final String jobId = row == null ? null : row.optString("id", null);
+                if (jobId == null) {
+                    listener.onIdle("Checked " + pollCount + " time"
+                            + (pollCount == 1 ? "" : "s") + " · nothing waiting");
+                    schedule();
+                    return;
+                }
+
+                // ★ THE GATE ★ — main thread, immediately before the claim, and the ONLY place
+                // this class decides whether it may take over the terminal.
+                final String busy = gate == null ? null : gate.busyReason();
+                if (busy != null) {
+                    // LOUD, because the alternative reads as "the payment never arrived". The
+                    // job stays `pending` server-side: it is durable, the POS is already showing
+                    // its own waiting state, and the next tick will try again. Nothing is queued
+                    // in memory and nothing is pre-claimed.
+                    diag.event("job " + jobId + " SEEN but NOT CLAIMED — busy: " + busy);
+                    Log.i(TAG, "job " + jobId + " left pending: " + busy);
+                    listener.onIdle("A payment is waiting — " + busy);
+                    schedule();
+                    return;
+                }
+                claim(jobId, row);
+            }
+
+            @Override public void onError(String message) { transportFailure(message); }
+        });
+    }
+
+    /**
+     * STEP 2 — CLAIM. Only ever reached through the gate above.
+     *
+     * The claim is the atomic CAS (UPDATE … WHERE status='pending'), so two terminals racing the
+     * same job still resolve to one winner server-side. Parsing the money happens only AFTER the
+     * claim succeeds: if somebody else won, we should not even be looking at that check's amounts.
+     */
+    private void claim(final String jobId, final JSONObject row) {
+        inFlight = true;
         sb.async(() -> {
-            JSONObject row = api.pollPendingJob(terminalId);
-            if (row == null) return null;
-
-            String jobId = row.optString("id", null);
-            if (jobId == null) return null;
-
-            // Claim BEFORE parsing the money: if another terminal beat us to it, we should not
-            // even be looking at this check's amounts.
-            if (!api.claimJob(jobId)) {
-                Log.i(TAG, "job " + jobId + " already claimed elsewhere — ignoring");
+            String why = api.claimJobReason(jobId);
+            if (why != null) {
+                // Say WHY. "terminal already has a live job" means a previous payment is
+                // stuck and Back Office → Release stuck payment is the fix; that is a very
+                // different instruction from "another till got there first".
+                Log.i(TAG, "job " + jobId + " not claimed: " + why);
+                final String msg = why.contains("live job")
+                        ? "This terminal has a payment stuck from earlier.\n\nBack Office → Card readers → Release stuck payment."
+                        : why;
+                if (listener != null) handler.post(() -> listener.onProblem(msg));
                 return null;
             }
             return TerminalJob.fromRow(row);
@@ -128,44 +210,46 @@ public final class JobPoller {
                 inFlight = false;
                 consecutiveFailures = 0;
                 if (!running) return;
-
                 if (job == null) {
-                    listener.onIdle("Checked " + pollCount + " time"
-                            + (pollCount == 1 ? "" : "s") + " · nothing waiting");
+                    // Claim refused — onProblem has already been posted with the reason.
                     schedule();
                     return;
                 }
-                // A job arrived: stop polling and hand over. The poller does not run during a
-                // payment — the one-live-job-per-terminal rule is the server's, but there is no
-                // reason to be asking for a second one while a card is in the customer's hand.
+                // Claimed. Stop polling and hand over: there is no reason to be asking for a
+                // second job while a card is in the customer's hand. MainActivity restarts the
+                // ambient poll once the payment is finished.
                 stop();
                 diag.currentJobId = job.jobId;
-                diag.event("job claimed: " + job.jobId);
+                diag.event("job CLAIMED: " + job.jobId);
                 listener.onJobClaimed(job);
             }
 
-            @Override public void onError(String message) {
-                inFlight = false;
-                if (!running) return;
-
-                consecutiveFailures++;
-                diag.lastRpcError = message;
-
-                if (SupabaseClient.isSessionLost(message)) {
-                    stop();
-                    listener.onProblem("This terminal's pairing session was lost.\n\n" + message);
-                    return;
-                }
-                // A transport blip is normal on venue wifi — keep going quietly, and only speak
-                // up once it has clearly stopped being a blip.
-                if (consecutiveFailures >= OFFLINE_AFTER_FAILURES) {
-                    listener.onIdle("Offline — retrying. (" + message + ")");
-                } else {
-                    listener.onIdle("Reconnecting…");
-                }
-                schedule();
-            }
+            @Override public void onError(String message) { transportFailure(message); }
         });
+    }
+
+    /** Shared failure handling for both steps. Main thread. */
+    private void transportFailure(String message) {
+        inFlight = false;
+        if (!running) return;
+
+        consecutiveFailures++;
+        diag.lastRpcError = message;
+        diag.event("poll/claim failed (" + consecutiveFailures + "): " + message);
+
+        if (SupabaseClient.isSessionLost(message)) {
+            stop();
+            listener.onProblem("This terminal's pairing session was lost.\n\n" + message);
+            return;
+        }
+        // A transport blip is normal on venue wifi — keep going quietly, and only speak up once
+        // it has clearly stopped being a blip.
+        if (consecutiveFailures >= OFFLINE_AFTER_FAILURES) {
+            listener.onIdle("Offline — retrying. (" + message + ")");
+        } else {
+            listener.onIdle("Reconnecting…");
+        }
+        schedule();
     }
 
     /** Operator re-entered the screen: go back to the fast interval. */
