@@ -195,15 +195,22 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
     if (!trackRef || !p4 || !supabase) return;
     (async () => {
       try {
+        // v5.5.830 SECURITY: this gate used to SELECT the customer block and compare
+        // the last 4 digits in client JS — so the full phone number was already on the
+        // wire before the check, and the check could simply be skipped. It was also
+        // unscoped by location, and refs collide across venues (store/index.js:5019).
+        // Now: filter by location, never select `customer`, and let the DB do the
+        // match so no PII is returned on a failed attempt.
+        const digits = String(p4).replace(/\D/g, '').slice(-4);
+        if (!digits || !opsLocationId) return;
         const { data, error } = await supabase
-          .from('order_queue').select('ref, customer')
-          .eq('ref', trackRef).maybeSingle();
+          .from('order_queue').select('ref')
+          .eq('ref', trackRef)
+          .eq('location_id', opsLocationId)
+          .filter('customer->>phone', 'like', `%${digits}`)
+          .maybeSingle();
         if (error || !data) return;
-        const phone = String(data.customer?.phone || '').replace(/\D/g, '');
-        const last4 = phone.slice(-4);
-        if (last4 && last4 === String(p4).replace(/\D/g, '').slice(-4)) {
-          setTrackerRef(trackRef);
-        }
+        setTrackerRef(trackRef);
       } catch (e) { console.warn('[OnlineSurface] track lookup failed:', e?.message); }
     })();
   }, []);

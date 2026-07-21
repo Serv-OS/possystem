@@ -94,6 +94,16 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.832', date: '21 Jul 2026', label: 'SECURITY \u2014 online order tracking could show another venue\u2019s order',
+    changes: [
+      'Fixed a privacy issue in online order tracking. Order numbers are short and start again at each venue, so the same number exists at more than one site. The tracking page looked the order up by number ONLY \u2014 it did not check which venue \u2014 so entering a number could return a different venue\u2019s order, including the customer\u2019s name and phone number.',
+      'Order tracking now always checks the venue as well as the order number, and only requests the details it actually displays \u2014 never the customer\u2019s contact details.',
+      'The \u201clast 4 digits of your phone\u201d check on the tracking link is now done by the server. Previously the order was fetched first and the check happened in the browser, so the phone number was already sent before it was verified.',
+      'The live-updates channel had the same gap and has been fixed the same way.',
+      'No action needed by you, and no change to how customers track orders.',
+    ],
+  },
+  {
     version: '5.5.831', date: '21 Jul 2026', label: 'Runs on the card terminal — support for older browsers',
     changes: [
       'ServOS now works on the PAX A920 Pro card terminal. Its built-in browser dates from 2020 and could not read the newer code the app was built with, so it showed a black screen and closed.',

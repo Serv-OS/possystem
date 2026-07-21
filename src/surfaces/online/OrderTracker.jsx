@@ -33,9 +33,16 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose }) {
 
     const fetchOnce = async () => {
       try {
+        // v5.5.830 SECURITY: scope by location AND select only what we render.
+        // `ref` is a SHORT PER-VENUE SEQUENTIAL number (#1042) — store/index.js:5019
+        // documents that refs COLLIDE ACROSS LOCATIONS. Without the location filter
+        // this public, unauthenticated tracker returned another venue's order for a
+        // guessed ref, and select('*') handed over the customer block (name, phone)
+        // with it. Two other call sites already guard on location; this one did not.
         const { data, error } = await supabase
-          .from('order_queue').select('*')
-          .eq('ref', orderRef).maybeSingle();
+          .from('order_queue')
+          .select('ref, status, total, items, collection_time, is_asap')
+          .eq('ref', orderRef).eq('location_id', locationId).maybeSingle();
         if (!alive) return;
         if (error) {
           console.warn('[OrderTracker] poll error:', error.message);
@@ -60,10 +67,15 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose }) {
     fetchOnce();
 
     if (supabase) {
-      chan = supabase.channel(`order-tracker-${orderRef}`)
+      // v5.5.830: the realtime filter was scoped by ref ALONE, so a colliding ref at
+      // another venue pushed that venue's row straight to this customer. Realtime
+      // takes a single filter expression, so we scope to location_id (the selective
+      // half) and re-check ref in the handler.
+      chan = supabase.channel(`order-tracker-${locationId}-${orderRef}`)
         .on('postgres_changes', {
-          event: 'UPDATE', schema: 'public', table: 'order_queue', filter: `ref=eq.${orderRef}`,
+          event: 'UPDATE', schema: 'public', table: 'order_queue', filter: `location_id=eq.${locationId}`,
         }, (payload) => {
+          if (payload?.new?.ref !== orderRef) return;
           if (!alive) return;
           console.log('[OrderTracker] realtime UPDATE for', orderRef, '→', payload.new?.status);
           setOrder(payload.new);
@@ -81,7 +93,7 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose }) {
       clearInterval(poll);
       if (chan && supabase) supabase.removeChannel(chan);
     };
-  }, [orderRef]);
+  }, [orderRef, locationId]);
 
   // Live courier tracking for COURIER delivery orders (Stuart). Polls the anon-safe track_order
   // edge action for status + ETA + the live tracking-map URL.
