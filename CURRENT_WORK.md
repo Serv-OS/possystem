@@ -28,6 +28,12 @@
 5. `--bg0` is referenced by 8 stock screens but defined nowhere in globals.css — latent, wants one sweep.
 6. Ryft week-2 hardening (task #52) — auth fences, refund integrity, webhook durability, **kiosk is Stripe-only**.
 
+## Also queued
+- **Card fees on tips in reports** (raised 20 Jul). Fee on the tip portion is a VENUE COST — the Tipping Act
+  2023 forbids netting it off the tip. Needs: gross tip preserved for tronc, tip-portion fee as a P&L cost
+  line, and a note that on Ryft the tip split is OUR figure (their API reports only the single requested
+  amount), unlike Stripe which reports the tip separately. See [[project-uk-tipping-rules]].
+
 ## Watch out
 - Ryft **cannot do tipping at all** — verified exhaustively. Processor choice is per-venue now.
 - Edge-fn **deploy drift**: `payments-admin` sat a month behind source. Check deploy vs source dates first.
