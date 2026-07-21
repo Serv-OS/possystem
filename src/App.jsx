@@ -94,6 +94,17 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.829', date: '20 Jul 2026', label: 'Ryft tipping \u2014 the customer chooses on the customer display',
+    changes: [
+      'Ryft venues can now take card tips. When you press Card, the customer display asks the customer to choose a tip; the card is then charged for the bill plus tip in one go.',
+      'It uses YOUR tip settings from Card readers \u2192 Reader settings \u2014 the same percentages, smart-tip threshold and on/off switch your Stripe readers use.',
+      'The till shows a "Waiting for the customer" screen while they choose, with a "Skip tip \u00b7 take payment" button so a sale is never held up. It also gives up on its own after a minute and carries on without a tip.',
+      'Only appears where it can actually work: a Ryft venue, tipping switched on, and a customer display set up on that terminal. Otherwise it goes straight to the card as before.',
+      'Why it works this way: Ryft terminals cannot ask for a tip themselves \u2014 their system takes one amount and reports back only that amount \u2014 so the tip has to be agreed before the card is presented.',
+      'Known gap: a venue with no customer display still cannot take a card tip on Ryft. Raised with Ryft.',
+    ],
+  },
+  {
     version: '5.5.828', date: '20 Jul 2026', label: 'Removed the on-screen tip step on Ryft',
     changes: [
       'Removed the gratuity screen that appeared on the till before a Ryft card payment. Asking staff to key a tip on the POS before handing the terminal over is not how tipping should work, so it is gone \u2014 card now goes straight to the reader.',

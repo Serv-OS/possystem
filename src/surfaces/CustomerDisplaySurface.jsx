@@ -4,6 +4,9 @@
 //   • idle      → full-screen ad slideshow (customer_display_images) / branding
 //   • active    → SPLIT: LEFT = loyalty phone-capture keypad (if loyalty enabled),
 //                 RIGHT = live order (items + mods + total)
+//   • tip       → customer chooses a gratuity, then the POS charges bill+tip as ONE
+//                 amount. Exists because Ryft's terminal API has no on-reader tip
+//                 prompt; this screen is the customer's tip surface on Ryft venues.
 //   • paying    → "follow the card reader" + amount
 //   • approved/declined → full-screen ✓ / ✕
 //
@@ -17,7 +20,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { supabase, ensureAuthToken } from '../lib/supabase';
 import { money, setActiveCurrency } from '../lib/currency';
-import { subscribeDisplay, getDisplayTargetId, publishCustomerPhone, publishRedeemReward, isLoyaltyEnabled } from '../lib/customerDisplay';
+import { subscribeDisplay, getDisplayTargetId, publishCustomerPhone, publishRedeemReward, publishCustomerTip, isLoyaltyEnabled } from '../lib/customerDisplay';
 import { ServOSIcon } from '../components/ServOSBrand';
 
 const IDLE_AFTER_MS = 45000;
@@ -49,6 +52,8 @@ export default function CustomerDisplaySurface() {
   const [phoneInput, setPhoneInput] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [loyaltyResult, setLoyaltyResult] = useState(null);
+  // { total, cfg, nonce } while the POS is waiting on a gratuity choice
+  const [tipReq, setTipReq] = useState(null);
   const [theme, setTheme] = useState(() => { try { return localStorage.getItem('rpos-theme') || 'dark'; } catch { return 'dark'; } });
   const idleTimer = useRef(null);
   const terminalUntil = useRef(0);
@@ -107,6 +112,9 @@ export default function CustomerDisplaySurface() {
             if (resultTimer.current) clearTimeout(resultTimer.current);
             const ms = (r?.known && (r.rewards || []).length) ? 25000 : 9000; // longer while rewards are tappable
             resultTimer.current = setTimeout(() => setLoyaltyResult(null), ms);
+          },
+          (tr) => {  // POS is asking the customer to choose a gratuity
+            setTipReq(tr && typeof tr.total === 'number' ? tr : null);
           });
       }
     })();
@@ -167,6 +175,44 @@ export default function CustomerDisplaySurface() {
         <div style={{ marginTop: 10, fontSize: 15, color: C.dim, maxWidth: 520, lineHeight: 1.5 }}>
           Pair this device, or open with <code style={{ color: brand }}>?till=&lt;till id&gt;</code> to mirror a specific till.
         </div>
+      </div>
+    );
+  }
+
+  // ── Gratuity (full screen) ───────────────────────────────────────────────
+  // Ryft's terminal cannot prompt for a tip, so the customer chooses here and the
+  // POS then charges bill+tip as ONE amount. Shown ahead of every other state so a
+  // late cart broadcast can't yank the screen away mid-decision.
+  if (tipReq) {
+    const bill = Number(tipReq.total) || 0;
+    const cfg = tipReq.cfg || {};
+    const pcts = (cfg.tip_percentages?.length ? cfg.tip_percentages : [15, 18, 20]);
+    const smartMinor = cfg.smart_tip_threshold_minor ?? null;
+    const useFixed = smartMinor != null && Math.round(bill * 100) < smartMinor;
+    const opts = useFixed ? [1, 2, 3].map(a => ({ label: money(a), amt: a }))
+                          : pcts.map(p => ({ label: `${p}%`, amt: bill * p / 100 }));
+    const send = (amt) => { setTipReq(null); publishCustomerTip(Math.round(amt * 100) / 100, tipReq.nonce); };
+    return (
+      <div style={{ ...root, alignItems: 'center', justifyContent: 'center', textAlign: 'center', padding: 24 }}>
+        <div style={{ fontSize: 26, color: C.dim, fontWeight: 700 }}>Your bill</div>
+        <div style={{ fontSize: 68, fontWeight: 900, color: brand, fontVariantNumeric: 'tabular-nums', marginTop: 4 }}>{money(bill)}</div>
+        <div style={{ fontSize: 30, fontWeight: 800, marginTop: 26 }}>Would you like to add a tip?</div>
+        <div style={{ display: 'flex', gap: 16, marginTop: 26, flexWrap: 'wrap', justifyContent: 'center' }}>
+          {opts.map(o => (
+            <button key={o.label} onClick={() => send(o.amt)} style={{
+              minWidth: 168, padding: '26px 20px', borderRadius: 20, cursor: 'pointer', fontFamily: 'inherit',
+              border: `3px solid ${brand}`, background: 'transparent', color: C.fg,
+            }}>
+              <div style={{ fontSize: 34, fontWeight: 900, color: brand }}>{o.label}</div>
+              <div style={{ fontSize: 22, marginTop: 6, fontVariantNumeric: 'tabular-nums' }}>{money(o.amt)}</div>
+            </button>
+          ))}
+        </div>
+        <button onClick={() => send(0)} style={{
+          marginTop: 26, padding: '18px 44px', borderRadius: 16, cursor: 'pointer', fontFamily: 'inherit',
+          border: `2px solid ${C.dim}`, background: 'transparent', color: C.dim, fontSize: 22, fontWeight: 700,
+        }}>No tip</button>
+        <div style={{ marginTop: 22, fontSize: 18, color: C.dim }}>Choose an amount, then present your card</div>
       </div>
     );
   }

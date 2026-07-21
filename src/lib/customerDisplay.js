@@ -2,8 +2,15 @@
 //
 // Customer-facing DEDICATED display (Sunmi D3 Pro rear screen / external monitor).
 // Two-way over ONE Supabase Realtime *broadcast* channel per till (`display:<deviceId>`):
-//   POS  → display : 'display' (live cart + state), 'loyalty' (lookup result)
-//   display → POS  : 'customer-phone' (customer typed their number for rewards)
+//   POS  → display : 'display' (live cart + state), 'loyalty' (lookup result),
+//                    'tip-request' (ask the customer to choose a gratuity)
+//   display → POS  : 'customer-phone' (customer typed their number for rewards),
+//                    'customer-tip'   (customer chose a gratuity)
+//
+// The tip round-trip exists because Ryft's terminal API has NO on-reader tip
+// prompt (it takes one amount and reports back only that amount). So on Ryft the
+// customer chooses the tip HERE, and the POS then charges bill+tip as a single
+// amount. Stripe venues are unaffected — their reader still prompts.
 //
 // Sibling of readerDisplay.js (which targets the WisePOS E screen). Destination is
 // chosen per terminal via device_profiles.customer_display_mode (off|reader|screen|auto).
@@ -32,7 +39,7 @@ export function getDisplayTargetId() {
 function channelName(deviceId) { return `display:${deviceId}`; }
 
 // ── POS side: one channel — sends 'display'/'loyalty', receives 'customer-phone'
-const _pub = { channel: null, deviceId: null, joined: false, latest: null, onPhone: null, onRedeem: null };
+const _pub = { channel: null, deviceId: null, joined: false, latest: null, onPhone: null, onRedeem: null, onTip: null };
 
 function _send(event, payload) { try { _pub.channel?.send({ type: 'broadcast', event, payload }); } catch { /* offline */ } }
 
@@ -47,6 +54,9 @@ function _ensurePub(deviceId) {
   });
   _pub.channel.on('broadcast', { event: 'redeem-reward' }, (m) => {
     try { if (_pub.onRedeem) _pub.onRedeem(m.payload?.reward); } catch { /* noop */ }
+  });
+  _pub.channel.on('broadcast', { event: 'customer-tip' }, (m) => {
+    try { if (_pub.onTip) _pub.onTip(m.payload); } catch { /* noop */ }
   });
   _pub.channel.subscribe((status) => {
     if (status === 'SUBSCRIBED') { _pub.joined = true; if (_pub.latest) _send('display', _pub.latest); }
@@ -90,15 +100,39 @@ export function onCustomerPhone(cb) {
   return () => { _pub.onPhone = null; };
 }
 
+/** POS → display: ask the customer to choose a gratuity.
+ *  `cfg` carries the venue's own tipping rules (percentages / custom / smart
+ *  threshold) so the display shows exactly what the operator configured, and
+ *  `nonce` lets the POS ignore a stale reply from a previous sale. */
+export function publishTipRequest({ total, cfg, nonce }) {
+  if (isMock || !supabase) return;
+  const deviceId = getOwnDeviceId();
+  if (!deviceId) return;
+  _ensurePub(deviceId);
+  const send = () => _send('tip-request', { total, cfg, nonce });
+  if (_pub.joined) send(); else setTimeout(send, 800);
+}
+
+/** POS: handler for the customer's gratuity choice. Payload { tip, nonce }. */
+export function onCustomerTip(cb) {
+  if (isMock || !supabase) return () => {};
+  const deviceId = getOwnDeviceId();
+  if (!deviceId) return () => {};
+  _ensurePub(deviceId);
+  _pub.onTip = cb;
+  return () => { _pub.onTip = null; };
+}
+
 // ── Display side: one channel — receives 'display'/'loyalty', sends 'customer-phone'
 const _sub = { channel: null };
 
 /** Subscribe to a till's broadcast. onState(cart/state), onLoyalty(result). */
-export function subscribeDisplay(deviceId, onState, onLoyalty) {
+export function subscribeDisplay(deviceId, onState, onLoyalty, onTipRequest) {
   if (!supabase || !deviceId) return () => {};
   const ch = supabase.channel(channelName(deviceId), { config: { broadcast: { self: false } } });
   ch.on('broadcast', { event: 'display' }, (m) => { try { onState(m.payload || {}); } catch { /* noop */ } });
   ch.on('broadcast', { event: 'loyalty' }, (m) => { try { onLoyalty && onLoyalty(m.payload || {}); } catch { /* noop */ } });
+  ch.on('broadcast', { event: 'tip-request' }, (m) => { try { onTipRequest && onTipRequest(m.payload || {}); } catch { /* noop */ } });
   ch.subscribe();
   _sub.channel = ch;
   return () => { try { supabase.removeChannel(ch); } catch { /* noop */ } _sub.channel = null; };
@@ -114,6 +148,12 @@ export function publishCustomerPhone(phone) {
 export function publishRedeemReward(reward) {
   if (!reward || !_sub.channel) return;
   try { _sub.channel.send({ type: 'broadcast', event: 'redeem-reward', payload: { reward } }); } catch { /* noop */ }
+}
+
+/** Display: the customer chose a gratuity (or declined — tip 0). */
+export function publishCustomerTip(tip, nonce) {
+  if (!_sub.channel) return;
+  try { _sub.channel.send({ type: 'broadcast', event: 'customer-tip', payload: { tip, nonce } }); } catch { /* noop */ }
 }
 
 /** POS: register a handler for when the customer taps a reward on the display. */

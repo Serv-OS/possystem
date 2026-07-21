@@ -8,13 +8,13 @@ import {
   resolvePlatformLocationId,
   getAssignedNetworkReader,
 } from '../lib/networkReader';
-import { getActiveLocationSync, supabase, ensureAuthToken, isMock } from '../lib/supabase';
+import { getActiveLocationSync, supabase, platformSupabase, ensureAuthToken, isMock } from '../lib/supabase';
 import { getLocationProcessor, getLocationProcessorInfo } from '../lib/payments/processor';
 import { chargeRyftTerminal } from '../lib/payments/ryftTerminal';
 import { fetchCustomerByPhone } from '../lib/customerLookup';
 import { redeemLoyaltyReward } from '../lib/loyaltyRedeem';
 import { money, currencySymbol, stripeCurrency, getActiveCurrencyCode } from '../lib/currency';
-import { publishDisplay, displayUsesScreen } from '../lib/customerDisplay';
+import { publishDisplay, displayUsesScreen, publishTipRequest, onCustomerTip } from '../lib/customerDisplay';
 import { isTrainingMode } from '../lib/trainingMode';
 // (readerDisplay imports removed — cancel now lets the natural cart-change effect refresh the reader after onBack)
 
@@ -1241,11 +1241,28 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   // press, split card legs and the terminal flow all dispatch by this. Defaults
   // to 'stripe', so live Stripe venues are never affected by a failed lookup.
   const [cardProcessor, setCardProcessor] = useState('stripe');
+  // v5.5.829: Ryft has no on-reader tip prompt, so on Ryft venues WITH a customer
+  // display we ask the customer to choose a gratuity on their own screen, then
+  // charge bill+tip as one amount. tipCfg is the venue's own rules — the same row
+  // Stripe's Terminal Configuration is built from.
+  const [tipCfg, setTipCfg] = useState(null);
+  const [awaitingTip, setAwaitingTip] = useState(false);
+  const tipNonceRef = useRef(0);
   useEffect(() => {
     let alive = true;
     getLocationProcessor(getActiveLocationSync())
       .then(p => { if (alive) setCardProcessor(p); })
       .catch(() => { /* stays stripe */ });
+    (async () => {
+      try {
+        const locId = getActiveLocationSync();
+        if (!locId || !platformSupabase) { if (alive) setTipCfg({}); return; }
+        const { data } = await platformSupabase.from('location_reader_settings')
+          .select('tipping_enabled, tip_percentages, allow_custom_tip, smart_tip_threshold_minor')
+          .eq('location_id', locId).maybeSingle();
+        if (alive) setTipCfg(data || {});
+      } catch { if (alive) setTipCfg({}); }
+    })();
     return () => { alive = false; };
   }, []);
   const giftCredit = giftApplied?.applied ? giftApplied.applied / 100 : 0;
@@ -1321,14 +1338,45 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   // to card_terminal. The actual tip the customer chose comes back via the
   // payment intent's amount_received and is reflected in `complete()` below.
   // Ryft venues take no tip at all (see handleCardPress) — grand is just the bill.
+  // v5.5.829: on Ryft, ask the CUSTOMER for the tip on their own display, then
+  // charge bill+tip as one amount. Ryft's terminal API has no tip prompt and takes
+  // a single `amounts.requested`, so the tip must be settled BEFORE the charge —
+  // hence the wait. Staff can always skip, so a dead display never blocks a sale.
+  const askCustomerForTip = () => {
+    const nonce = ++tipNonceRef.current;
+    setAwaitingTip(true);
+    publishTipRequest({ total, cfg: tipCfg || {}, nonce });
+    // Don't strand the till if the customer wanders off or the screen is asleep.
+    setTimeout(() => {
+      setAwaitingTip(prev => {
+        if (prev && tipNonceRef.current === nonce) { setTipAmt(0); setScreen('card_terminal'); }
+        return false;
+      });
+    }, 60000);
+  };
+
   const handleCardPress = () => {
-    // NOTE: no tip step on Ryft. Ryft's terminal API has no tipping at all — the
-    // payment takes a single `amounts.requested` and reports back only that, so a
-    // tip could neither be prompted for on the reader nor read back if the device
-    // added one. An on-screen picker was tried and removed: asking staff to key a
-    // tip on the till before handing over the terminal is not how tipping works.
+    // Tipping is only offered on Ryft when the venue has it switched on AND has a
+    // customer-facing screen. Without a screen there is nowhere for the customer to
+    // choose (Ryft's reader can't ask), so we go straight to the card.
+    const canAskCustomer = cardProcessor === 'ryft' && !skipTip
+      && tipCfg?.tipping_enabled !== false && displayUsesScreen();
+    if (canAskCustomer) { askCustomerForTip(); return; }
     setScreen('card_terminal');
   };
+
+  // The customer's choice comes back over the display channel. The nonce guards
+  // against a late reply from a previous sale landing on this one.
+  useEffect(() => {
+    if (!awaitingTip) return undefined;
+    const off = onCustomerTip((p) => {
+      if (!p || p.nonce !== tipNonceRef.current) return;
+      setAwaitingTip(false);
+      setTipAmt(Math.max(0, Number(p.tip) || 0));
+      setScreen('card_terminal');
+    });
+    return off;
+  }, [awaitingTip]);
 
   const nonVoided = items.filter(i=>!i.voided);
 
@@ -1665,6 +1713,26 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
               </div>
               </div>
             </>
+          )}
+
+          {awaitingTip && (
+            <div style={{ textAlign:'center', padding:'40px 20px' }}>
+              <div style={{ fontSize:44, marginBottom:14 }}>💬</div>
+              <div style={{ fontSize:20, fontWeight:800, color:'var(--t1)' }}>Waiting for the customer</div>
+              <div style={{ fontSize:14, color:'var(--t3)', marginTop:8, lineHeight:1.5 }}>
+                They're choosing a tip on the customer display.<br/>The card total updates as soon as they pick.
+              </div>
+              <div style={{ display:'flex', gap:10, justifyContent:'center', marginTop:22 }}>
+                <button className="btn" style={{ height:44, padding:'0 18px' }}
+                  onClick={()=>{ tipNonceRef.current++; setAwaitingTip(false); setTipAmt(0); setScreen('card_terminal'); }}>
+                  Skip tip · take payment
+                </button>
+                <button className="btn" style={{ height:44, padding:'0 18px' }}
+                  onClick={()=>{ tipNonceRef.current++; setAwaitingTip(false); }}>
+                  Back
+                </button>
+              </div>
+            </div>
           )}
 
           {screen==='card_terminal' && (
