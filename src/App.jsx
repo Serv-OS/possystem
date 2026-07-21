@@ -94,6 +94,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.844', date: '21 Jul 2026', label: 'Urgent \u2014 a bill already paid on the card machine could be charged a second time',
+    changes: [
+      'Yesterday\u2019s fix for the "another payment was being set up" error went too far. It quietly started a fresh payment whenever the till was holding a used reference \u2014 including when that reference belonged to a bill the customer had ALREADY PAID on the card machine. That could take the money twice.',
+      'The till now checks what actually happened to the old payment before doing anything. If the card was declined, cancelled or timed out, nothing was charged and it quietly starts a new one as intended.',
+      'If the bill was already paid, it stops and says so: do not take payment again, refund it instead if that is what you meant.',
+      'If we cannot tell whether the customer was charged, it refuses too. An unproven payment is never retried \u2014 it goes to the unresolved list for a manager, which is what that list is for.',
+    ],
+  },
+  {
     version: '5.5.843', date: '21 Jul 2026', label: 'Fixed \u2014 "another payment was being set up" when sending a second payment for the same bill',
     changes: [
       'Sending a card payment sometimes failed with "another payment was being set up at the same moment", even when the previous payment for that table had long since finished and the amounts were completely different. Nothing was wrong with the payment \u2014 the till was still holding the reference of the finished one and reusing it.',

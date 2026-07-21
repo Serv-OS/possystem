@@ -122,6 +122,10 @@ async function callFn(name, body) {
     const err = new Error(j?.error || `HTTP ${res.status}`);
     err.status = res.status;
     err.code = j?.code ?? null;
+    // The settled job's OWN status. Without this the caller knows only THAT the
+    // reference was used, not whether a card was charged against it — and those
+    // two cases must be handled in opposite directions.
+    err.jobStatus = j?.job_status ?? null;
     throw err;
   }
   return j;
@@ -259,10 +263,45 @@ export async function dispatchTerminalJob(p) {
   // mint a fresh id, and go again — ONCE. Not a blind retry loop: any other
   // failure, and the second attempt too, surfaces normally. A payments path must
   // never quietly hammer away at something it does not understand.
+  // v5.5.844 — AND ONLY WHERE NO CARD WAS CHARGED.
+  //
+  // The 843 version retried on ANY settled status, which was my mistake. 'approved'
+  // is a settled status. So a bill that had ALREADY BEEN PAID on the card machine,
+  // whose handle was still on file, would mint a fresh id and take the money a
+  // SECOND time — silently, because the old error that used to stop it was the very
+  // thing I removed. That is worse than the bug it fixed: a confusing error message
+  // costs a member of staff ten seconds, a double charge costs a customer real money
+  // and us the chargeback.
+  //
+  // So the retry is now gated on the settled job's OWN status:
+  //   declined / cancelled / expired  -> no card was charged, the id is genuinely
+  //                                      spent bookkeeping. Heal it silently.
+  //   approved                        -> the customer HAS paid. Refund is the remedy,
+  //                                      never another charge. Say so in those words.
+  //   unknown                         -> we cannot prove either way. Never retry an
+  //                                      unproven charge; that is the whole reason the
+  //                                      reconcile queue exists.
+  const HEALABLE = ['declined', 'cancelled', 'expired'];
   try {
     return await send(jobId, closedCheckId);
   } catch (e) {
     if (e?.code !== 'JOB_ALREADY_SETTLED') throw e;
+
+    if (e.jobStatus === 'approved') {
+      const err = new Error(
+        'This bill has already been paid on the card machine. '
+        + 'Do NOT take payment again — refund it instead if that is what you meant.');
+      err.code = 'ALREADY_PAID';
+      err.jobStatus = 'approved';
+      throw err;
+    }
+    if (!HEALABLE.includes(e.jobStatus)) {
+      // Includes 'unknown', and any status added later that we have not thought
+      // about. Failing closed on an unrecognised state is the only safe default
+      // when the question is "has a card been charged?".
+      throw e;
+    }
+
     forgetJob(p.checkKey);
     const freshId = mintJobId();
     rememberJob({ checkKey: p.checkKey, jobId: freshId, closedCheckId: p.closedCheckId, locationId, at: Date.now() });
