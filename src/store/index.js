@@ -6,7 +6,7 @@ import { evaluateAutoDiscounts, toAppliedDiscount } from '../lib/discountEngine'
 import { buildScheduleCtx } from '../lib/locationTime';
 import { operatorSwitchPatch, logoutPatch } from '../lib/cartHold';
 import { kitchenOverride, receiptOverride } from '../lib/itemDisplay';
-import { upsertMenuItem, upsertFloorTable, deleteFloorTable, insertKDSTicket, insertClosedCheck, toggle86DB, getNextOrderRefLocal, updateClosedCheckRefunds, upsertStockLevel, deleteStockLevel, decrementStockRPC, restoreStockRPC } from '../lib/db';
+import { upsertMenuItem, upsertFloorTable, deleteFloorTable, insertKDSTicket, insertClosedCheck, toggle86DB, getNextOrderRefLocal, updateClosedCheckRefunds, upsertStockLevel, deleteStockLevel, decrementStockRPC, restoreStockRPC, upsertModifierGroup, deleteModifierGroup } from '../lib/db';
 import { printService } from '../lib/printer';
 import { hubrisePushStock, isHubriseConnected, hubrisePushStatus, isHubriseAutoReceipt } from '../lib/hubrise';
 import { logActivity } from '../lib/activity';
@@ -349,27 +349,38 @@ export const useStore = create((set, get) => ({
       updatedTables = [...updatedTables, ...newTables];
     }
 
+    // v5.5.833: every ARRAY slice below is guarded on `?.length`, NEVER on plain
+    // truthiness. An empty array is TRUTHY in JavaScript, so a partial or empty
+    // snapshot carrying e.g. `modifierGroupDefs: []` used to full-replace good data
+    // with nothing — that is the "modifier groups disappear on refresh" bug. Same
+    // trap applied to menuItems / menus / menuCategories / discounts / instructions.
+    // An absent-or-empty slice must be a NO-OP: keep what the store already has.
+    // Do NOT "simplify" these back to `snap.x ? ... : {}`.
+    // printRouting is an OBJECT (`{ centres, routing }`), so it gets the equivalent
+    // non-empty-object guard — `{}` is truthy too and would wipe the routing table.
+    const hasEntries = (o) => !!o && typeof o === 'object' && !Array.isArray(o) && Object.keys(o).length > 0;
+
     set({
       tables: updatedTables,
       // Sections
       locationSections: snap.locationSections || useStore.getState().locationSections,
       // Menu items — full replace with pushed version
-      ...(snap.menuItems ? { menuItems: snap.menuItems } : {}),
+      ...(snap.menuItems?.length ? { menuItems: snap.menuItems } : {}),
       // Menus list
-      ...(snap.menus ? { menus: snap.menus } : {}),
+      ...(snap.menus?.length ? { menus: snap.menus } : {}),
       // Menu categories — full replace
-      ...(snap.menuCategories ? { menuCategories: snap.menuCategories } : {}),
+      ...(snap.menuCategories?.length ? { menuCategories: snap.menuCategories } : {}),
       // Tax rates — full replace
       ...(snap.taxRates?.length ? { taxRates: snap.taxRates } : {}),
       // Discount presets + rules — full replace
-      ...(snap.discountPresets ? { discountPresets: snap.discountPresets } : {}),
-      ...(snap.discountRules ? { discountRules: snap.discountRules } : {}),
+      ...(snap.discountPresets?.length ? { discountPresets: snap.discountPresets } : {}),
+      ...(snap.discountRules?.length ? { discountRules: snap.discountRules } : {}),
       // Modifier + instruction groups — full replace
-      ...(snap.modifierGroupDefs ? { modifierGroupDefs: snap.modifierGroupDefs } : {}),
-      ...(snap.instructionGroupDefs ? { instructionGroupDefs: snap.instructionGroupDefs } : {}),
+      ...(snap.modifierGroupDefs?.length ? { modifierGroupDefs: snap.modifierGroupDefs } : {}),
+      ...(snap.instructionGroupDefs?.length ? { instructionGroupDefs: snap.instructionGroupDefs } : {}),
 
       // Print routing config from back office
-      ...(snap.printRouting ? { printRouting: snap.printRouting } : {}),
+      ...(hasEntries(snap.printRouting) ? { printRouting: snap.printRouting } : {}),
 
       // v5.5.799: takeaway customer-details level rides the push so tills pick
       // up a Location settings change without a reboot (boot path: SyncBridge).
@@ -380,7 +391,9 @@ export const useStore = create((set, get) => ({
       configUpdateSnapshot: null,
     });
     // Persist print routing to localStorage so it survives reload
-    if (snap.printRouting) {
+    // v5.5.833: same non-empty-object guard as the store write above — otherwise an
+    // empty `{}` would be cached to localStorage and re-hydrated as empty on next boot.
+    if (hasEntries(snap.printRouting)) {
       try { localStorage.setItem('rpos-print-routing', JSON.stringify(snap.printRouting)); } catch {}
     }
     // Sync printers registry to this device so FOH and print service can read them
@@ -670,31 +683,38 @@ export const useStore = create((set, get) => ({
   // Helper: persist a modifier group to Supabase (upsert by id).
   // Returns true on success, false on failure — callers that need to know
   // (the item-rename cascade) check it; existing callers ignore it.
+  // v5.5.834: was a raw fetch() that sent the ANON KEY as the bearer token, so the
+  // 13 Jul RLS lock (20260713f) 403'd every write — see db.upsertModifierGroup for
+  // the full story. Now goes through the authenticated client like every other
+  // writer in the app.
   _saveModGroup: async (group) => {
     if (isMock) return true;
     try {
-      const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-      const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
-      const locId = getActiveLocationSync() || await getLocationId();
-      const res = await fetch(`${SUPABASE_URL}/rest/v1/modifier_groups?on_conflict=id`, {
-        method: 'POST',
-        headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}`, 'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates,return=minimal' },
-        body: JSON.stringify([{ id: group.id, location_id: locId, name: group.name, min: group.min ?? 0, max: group.max ?? 1, selection_type: group.selectionType || 'single', options: group.options || [], sort_order: group.sortOrder || 0 }]),
-      });
-      if (!res.ok) console.warn('modifier group save failed:', res.status);
-      return res.ok;
+      const { error } = await upsertModifierGroup(group);
+      if (error) { console.warn('modifier group save failed:', error.message); return false; }
+      return true;
     } catch (e) { console.warn('modifier group save failed', e); return false; }
+  },
+
+  // v5.5.834: a failed modifier-group write must be VISIBLE. The old code
+  // console.warn'd and moved on, so the optimistic set() above it showed "saved"
+  // while the DB never changed — the operator only found out on the next refresh,
+  // which is what turned a hard regression into "a mysterious intermittent thing".
+  _saveModGroupOrWarn: (group) => {
+    useStore.getState()._saveModGroup(group).then(ok => {
+      if (!ok) useStore.getState().showToast?.(`"${group?.name || 'Modifier group'}" was NOT saved — your change is only on this screen. Check you're signed in, then try again`, 'error');
+    });
   },
 
   addModifierGroupDef: g => {
     const newGroup = { id: `mgd-${Date.now()}`, ...g };
     set(s => ({ modifierGroupDefs: [...s.modifierGroupDefs, newGroup] }));
-    useStore.getState()._saveModGroup(newGroup);
+    useStore.getState()._saveModGroupOrWarn(newGroup);
   },
   updateModifierGroupDef: (id, patch) => set(s => {
     const updated = s.modifierGroupDefs.map(g => g.id === id ? { ...g, ...patch } : g);
     const group = updated.find(g => g.id === id);
-    if (group) useStore.getState()._saveModGroup(group);
+    if (group) useStore.getState()._saveModGroupOrWarn(group);
     return { modifierGroupDefs: updated };
   }),
   updateModifierGroupOption: (groupId, optId, patch) => set(s => {
@@ -702,27 +722,36 @@ export const useStore = create((set, get) => ({
       g.id === groupId ? { ...g, options: (g.options||[]).map(o => o.id===optId ? { ...o, ...patch } : o) } : g
     );
     const group = updated.find(g => g.id === groupId);
-    if (group) useStore.getState()._saveModGroup(group);
+    if (group) useStore.getState()._saveModGroupOrWarn(group);
     return { modifierGroupDefs: updated };
   }),
   removeModifierGroupDef: id => {
+    const removed = useStore.getState().modifierGroupDefs.find(g => g.id === id);
     set(s => ({ modifierGroupDefs: s.modifierGroupDefs.filter(g => g.id !== id) }));
-    if (!isMock) {
-      const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-      const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
-      fetch(`${SUPABASE_URL}/rest/v1/modifier_groups?id=eq.${id}`, {
-        method: 'DELETE',
-        headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` },
-      }).catch(() => {});
-    }
+    if (isMock) return;
+    // v5.5.834: authenticated client + a location_id filter (the old raw fetch
+    // deleted on id ALONE — cross-tenant hazard) + a VISIBLE failure. The old
+    // .catch(() => {}) meant a 403'd delete looked done until the group came
+    // straight back on the next refresh.
+    const warn = () => useStore.getState().showToast?.(`"${removed?.name || 'Modifier group'}" was NOT deleted — it will come back on refresh. Check you're signed in, then try again`, 'error');
+    deleteModifierGroup(id)
+      .then(({ error }) => { if (error) { console.warn('modifier group delete failed:', error.message); warn(); } })
+      .catch(e => { console.warn('modifier group delete failed', e); warn(); });
   },
   reorderModifierGroupDefs: (fromIdx, toIdx) => set(s => {
     const arr = [...s.modifierGroupDefs];
     const [moved] = arr.splice(fromIdx, 1);
     arr.splice(toIdx, 0, moved);
-    // Save all with updated sort_order
-    arr.forEach((g, i) => useStore.getState()._saveModGroup({ ...g, sortOrder: i }));
-    return { modifierGroupDefs: arr };
+    // v5.5.834: RETURN the remapped array. Previously the DB was written with the
+    // new sortOrder while the store kept every group's STALE one, so store and DB
+    // disagreed about the order until the next boot re-read.
+    const remapped = arr.map((g, i) => ({ ...g, sortOrder: i }));
+    // One toast for the whole reorder, not one per group.
+    const warn = () => useStore.getState().showToast?.('Modifier group order was NOT saved — check you\'re signed in, then try again', 'error');
+    Promise.all(remapped.map(g => useStore.getState()._saveModGroup(g)))
+      .then(results => { if (results.some(r => r === false)) warn(); })
+      .catch(warn);
+    return { modifierGroupDefs: remapped };
   }),
 
   // ── Instruction groups — preparation instructions (no price change) ────────

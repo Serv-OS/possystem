@@ -2852,7 +2852,7 @@ function ModifiersTab() {
           {(groups||[]).map((g,gi)=>(
             <div key={g.id} draggable
               onDragStart={()=>setDragGIdx(gi)} onDragOver={e=>{e.preventDefault();setOverGIdx(gi);}}
-              onDrop={e=>{e.preventDefault();if(dragGIdx!==null&&dragGIdx!==gi)reorderModifierGroupDefs(dragGIdx,gi);setDragGIdx(null);setOverGIdx(null);}}
+              onDrop={e=>{e.preventDefault();if(dragGIdx!==null&&dragGIdx!==gi){reorderModifierGroupDefs(dragGIdx,gi);markBOChange();/* v5.5.834: was the only modifier-group mutation missing this — add/edit/delete all mark, so a reorder alone never lit the "Push to POS" badge */}setDragGIdx(null);setOverGIdx(null);}}
               onDragEnd={()=>{setDragGIdx(null);setOverGIdx(null);}}
               onClick={()=>setSelId(g.id===selId?null:g.id)}
               style={{ display:'flex', alignItems:'center', gap:7, padding:'8px 10px', marginBottom:3, borderRadius:9, cursor:'pointer',

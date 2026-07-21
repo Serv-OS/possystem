@@ -94,6 +94,30 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.834', date: '21 Jul 2026', label: 'Fixed \u2014 modifier groups were never actually being saved',
+    changes: [
+      'This is the real cause of modifier groups disappearing. Every time you added, edited, reordered or deleted a modifier group, the save was sent to the database WITHOUT your login attached. The database refused it. Since 13 July, not one modifier group change has been saved.',
+      'The screen still said it worked, because the group was updated on your screen before the save was sent \u2014 and when the save came back refused, the app threw the error away and told you nothing. So it looked saved until you refreshed, and then your work was gone.',
+      'Modifier groups are now saved as the signed-in user, exactly like menu items, categories and everything else in the back office. This was the only part of the system still doing it the old way.',
+      'If a save or a delete does fail from now on, you get a red message telling you it was NOT saved and that your change is only on the screen. No more silent losses.',
+      'Deleting a modifier group now sticks: deleting your last group used to leave it stuck on every till forever.',
+      'Deleting a group is now locked to your own venue \u2014 it could previously have removed a group with the same ID at another site.',
+      'Dragging groups into a new order now marks your setup as changed, so the Push to POS badge appears like it does for every other edit, and the new order is kept on screen as well as saved.',
+      'One slow or failed load at start-up no longer throws away everything else that loaded fine \u2014 each part is now applied on its own.',
+      'Please re-check your modifier groups: anything you changed since 13 July was not saved and needs entering again once. From then on it will persist.',
+    ],
+  },
+  {
+    version: '5.5.833', date: '21 Jul 2026', label: 'Fixed \u2014 modifier groups disappearing after a config push or refresh',
+    changes: [
+      'Fixed the long-standing problem where modifier groups vanished from the till, seemingly at random, after a refresh or a Push to POS.',
+      'The cause: when a config push arrived carrying an empty list of modifier groups, the till treated \u201cempty\u201d as \u201chere is the new list\u201d and replaced every group with nothing. An empty list and a missing list looked identical to the code.',
+      'A push that carries nothing for a section of your setup is now ignored for that section \u2014 the till keeps what it already has. It only replaces data when the push actually contains data.',
+      'The same fault could wipe menu items, menus, categories, discounts, discount rules, preparation instruction groups and print routing. All are now protected the same way.',
+      'Nothing changes about how you push config: a real push with real changes applies exactly as before. Tills need a reload to pick this up.',
+    ],
+  },
+  {
     version: '5.5.832', date: '21 Jul 2026', label: 'SECURITY \u2014 online order tracking could show another venue\u2019s order',
     changes: [
       'Fixed a privacy issue in online order tracking. Order numbers are short and start again at each venue, so the same number exists at more than one site. The tracking page looked the order up by number ONLY \u2014 it did not check which venue \u2014 so entering a number could return a different venue\u2019s order, including the customer\u2019s name and phone number.',

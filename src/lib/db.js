@@ -231,6 +231,58 @@ export const setMenuItemArchived = async (id, archived) => {
   return supabase.from('menu_items').update({ archived: !!archived, updated_at: new Date().toISOString() }).eq('id', id).eq('location_id', locationId);
 };
 
+// ── Modifier groups ───────────────────────────────────────────────────────────
+// v5.5.834: modifier_groups was the ONLY table in the app written by raw fetch()
+// instead of the authenticated Supabase client — and both writers sent the ANON
+// KEY as the bearer token. 20260713f_rls_lock_modifier_group_writes.sql (13 Jul)
+// gates every INSERT/UPDATE/DELETE on pos_can_access(location_id), which needs
+// auth.uid(); the anon key produces no session, so auth.uid() is NULL and every
+// write 403'd. SELECT survived (its policy is `true`), which is why groups looked
+// saved and then "reverted" on refresh instead of erroring. Route both writes
+// through the authenticated client like every other writer in this file.
+export const upsertModifierGroup = async (group, locationId = null) => {
+  if (isMock) return { data: null, error: null };
+  // THE loc-demo TRAP: modifier_groups.location_id is `text NOT NULL default
+  // 'loc-demo'`, so omitting it does NOT fail — the row silently lands on
+  // 'loc-demo' and is invisible to every real venue. 'loc-demo' is also truthy,
+  // so both checks below must test the literal as well as null/undefined/''.
+  if (!locationId || locationId === 'loc-demo') locationId = getActiveLocationSync() || await getLocationId();
+  if (!locationId || locationId === 'loc-demo') return { data: null, error: new Error('No location') };
+  // COLUMN NOTES (schema read from the live DB, 21 Jul 2026 — this table predates
+  // the migrations folder so there is no CREATE TABLE in the repo to check):
+  //   • There is NO `updated_at` column. Do not add one to this payload
+  //     speculatively — PostgREST rejects the whole upsert with PGRST204.
+  //   • The table carries BOTH `min`/`max` AND a legacy `min_select`/`max_select`
+  //     pair. Only `min`/`max` are written here and only `min`/`max` are read by
+  //     SyncBridge, which is the pre-existing behaviour — the `_select` pair is
+  //     dead and is deliberately left untouched (tech debt, not a hotfix job).
+  const row = {
+    id:             group.id,
+    location_id:    locationId,
+    name:           group.name,
+    min:            group.min ?? 0,
+    max:            group.max ?? 1,
+    selection_type: group.selectionType ?? group.selection_type ?? 'single',
+    options:        group.options || [],
+    sort_order:     group.sortOrder ?? group.sort_order ?? 0,
+  };
+  const result = await supabase.from('modifier_groups').upsert(row, { onConflict: 'id' });
+  if (result.error) console.error('[DB] modifier_groups upsert failed:', result.error.message, 'group:', group.id);
+  return result;
+};
+
+export const deleteModifierGroup = async (id, locationId = null) => {
+  if (isMock) return { data: null, error: null };
+  if (!locationId || locationId === 'loc-demo') locationId = getActiveLocationSync() || await getLocationId();
+  // v5.5.834: refuse an unscoped delete. The old raw fetch filtered on id ALONE
+  // (`?id=eq.<id>`) — a cross-tenant hazard the moment two venues share a group id.
+  // Same loc-demo trap as the upsert: the literal must be rejected, not just null.
+  if (!locationId || locationId === 'loc-demo') return { data: null, error: new Error('No location') };
+  const result = await supabase.from('modifier_groups').delete().eq('id', id).eq('location_id', locationId);
+  if (result.error) console.error('[DB] modifier_groups delete failed:', result.error.message, 'group:', id);
+  return result;
+};
+
 // ── Floor plan ────────────────────────────────────────────────────────────────
 export const fetchFloorPlan = async (locationId = null) => {
   if (isMock) return { data: null, error: null };

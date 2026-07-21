@@ -97,6 +97,7 @@ create policy subscriptions_tenant on public.subscriptions
 drop policy if exists staff_auth_events_insert on public.staff_auth_events;
 create policy staff_auth_events_insert on public.staff_auth_events
   for insert with check (pos_can_access(location_id) or is_super_admin());
+drop policy if exists staff_auth_events_read on public.staff_auth_events;
 create policy staff_auth_events_read on public.staff_auth_events
   for select using (pos_can_access(location_id) or is_super_admin());
 

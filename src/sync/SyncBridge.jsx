@@ -53,8 +53,11 @@ export default function SyncBridge({ onSyncPulse }) {
           delete parsed.menus;
           delete parsed.menuCategories;
           delete parsed.menuItems;
-          delete parsed.modifierGroups;
-          delete parsed.modifierOptions;
+          // v5.5.833: there is deliberately no `delete parsed.modifierGroupDefs` here.
+          // Menu data is never persisted to localStorage in real mode — SHARED_KEYS
+          // (see top of file) carries operational state only, so getSharedState() never
+          // writes any menu slice. The deletes above are belt-and-braces for legacy
+          // payloads written by older builds with a wider SHARED_KEYS.
           delete parsed.itemVariants;
           delete parsed.staff;
           delete parsed.tables;
@@ -141,17 +144,38 @@ export default function SyncBridge({ onSyncPulse }) {
 
           // Load floor plan + active sessions atomically — never set session:null then restore
           const { supabase: sb, getLocationId } = await import('../lib/supabase.js');
-          const [floorRes, itemsRes, catsRes, menusRes, sessionsRes, profilesRes, modGroupsRes, e86Res, stockRes] = await Promise.all([
+          // v5.5.834: allSettled, NOT all. Promise.all rejects on the first failing leg,
+          // so one thrown fetch (a dropped connection mid-boot) discarded the ENTIRE boot
+          // patch — no tables, no menu, no modifier groups — instead of just that slice.
+          // unwrap() puts every leg back into the familiar { data, error } shape, so a
+          // rejected leg reads as `data: null` and is skipped by the same guards below
+          // that already skip an empty read. Nothing downstream changes shape.
+          const [floorSt, itemsSt, catsSt, menusSt, sessionsSt, profilesSt, modGroupsSt, e86St, stockSt] = await Promise.allSettled([
             fetchFloorPlan(locationId),
             fetchMenuItems(locationId),
             fetchMenuCategories(locationId),
             fetchMenus(locationId),
             sb ? sb.from('active_sessions').select('table_id,session').eq('location_id', locationId) : Promise.resolve({ data: [] }),
             sb2 ? sb2.from('device_profiles').select('*').eq('location_id', locationId) : Promise.resolve({ data: [] }),
-            sb ? sb.from('modifier_groups').select('*').eq('location_id', locationId).order('sort_order') : Promise.resolve({ data: [] }),
+            // v5.5.834: `data: null` (not []) when there's no client — "no read happened",
+            // which the authoritative-empty-read guard below must NOT mistake for "no groups".
+            sb ? sb.from('modifier_groups').select('*').eq('location_id', locationId).order('sort_order') : Promise.resolve({ data: null }),
             fetch86List(locationId),                                  // v5.5.142: hydrate eightySixIds on boot
             fetchStockLevels(locationId),                             // v5.5.239: hydrate stock counts on boot
           ]);
+          const unwrap = (r) => (r.status === 'fulfilled' && r.value) ? r.value : { data: null, error: r.reason || new Error('boot fetch failed') };
+          const floorRes    = unwrap(floorSt);
+          const itemsRes    = unwrap(itemsSt);
+          const catsRes     = unwrap(catsSt);
+          const menusRes    = unwrap(menusSt);
+          const sessionsRes = unwrap(sessionsSt);
+          const profilesRes = unwrap(profilesSt);
+          const modGroupsRes = unwrap(modGroupsSt);
+          const e86Res      = unwrap(e86St);
+          const stockRes    = unwrap(stockSt);
+          [floorSt, itemsSt, catsSt, menusSt, sessionsSt, profilesSt, modGroupsSt, e86St, stockSt]
+            .filter(r => r.status === 'rejected')
+            .forEach(r => console.warn('[SyncBridge] boot fetch leg failed (other slices still applied):', r.reason?.message || r.reason));
           // v5.5.142: write fetched 86 list into the store immediately so
           // any items already 86'd at boot show OUT OF STOCK on Kiosk / MPOS
           // / POS without waiting for a realtime event that won't fire
@@ -348,7 +372,17 @@ export default function SyncBridge({ onSyncPulse }) {
             isSpecial: cat.is_special ?? cat.isSpecial ?? false,  // v5.5.316: map so POS/bar/inventory hide special cats
           }));
           if (menusRes.data?.length && !snapHas('menus')) patch.menus = menusRes.data;
-          if (modGroupsRes.data?.length && !snapHas('modifierGroupDefs')) patch.modifierGroupDefs = modGroupsRes.data.map(g => ({
+          // v5.5.834: a SUCCESSFUL read wins for this slice — INCLUDING an empty array.
+          // Modifier groups are written straight to modifier_groups and are never authored
+          // by the config push, so "snapshot wins" (the v5.5.734 guard) was always wrong
+          // here: a stale snapshot re-hydrated groups the operator had just deleted.
+          // `data: []` with no error is authoritative (there really are no groups);
+          // `data: null` means the read failed, so we leave the store alone.
+          // Pairs with v5.5.833's empty-array skip in applyConfigUpdate — without BOTH,
+          // deleting your LAST group makes it immortal on every till.
+          // Do NOT copy this to menuItems / menus / menuCategories: the snapHas guard
+          // there is the deliberate v5.5.734 anti-reflow fix.
+          if (modGroupsRes.data) patch.modifierGroupDefs = modGroupsRes.data.map(g => ({
             id: g.id, name: g.name,
             min: g.min ?? 0, max: g.max ?? 1,
             selectionType: g.selection_type ?? 'single',
