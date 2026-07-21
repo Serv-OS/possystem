@@ -106,11 +106,43 @@ public class MainActivity extends Activity {
             }
         });
 
-        webView.loadUrl(MPOS_URL);
+        // v1.3-diag: boot into a SELF-CONTAINED local page. It needs no network and
+        // no SPA bundle, so it isolates "can this terminal run our app at all?" from
+        // "can its WebView run our React build?". Tap through to try the real URL.
+        webView.addJavascriptInterface(new Object() {
+            @android.webkit.JavascriptInterface
+            public void loadReal() { runOnUiThread(() -> webView.loadUrl(MPOS_URL)); }
+        }, "Probe");
+        webView.loadDataWithBaseURL(null, bootProbeHtml(), "text/html", "utf-8", null);
 
         // Self-update: check shortly after launch (throttled, no-op when already current).
         updateChecker = new UpdateChecker(this);
         webView.postDelayed(() -> updateChecker.check(false), 8000);
+    }
+
+    /** Self-contained probe page: proves the WebView renders and reports the engine. */
+    private String bootProbeHtml() {
+        String ua = "unknown";
+        try { ua = new WebView(this).getSettings().getUserAgentString(); } catch (Throwable ignored) {}
+        String chrome = "not found";
+        try {
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("Chrome/(\\d+)").matcher(ua);
+            if (m.find()) chrome = m.group(1);
+        } catch (Throwable ignored) {}
+        return "<html><head><meta name=viewport content='width=device-width,initial-scale=1'></head>"
+            + "<body style=\"margin:0;background:#0d5c2f;color:#fff;font:15px -apple-system,Roboto,sans-serif;padding:18px\">"
+            + "<h2 style='margin:0 0 6px'>&#10003; WebView is alive</h2>"
+            + "<p style='margin:0 0 16px;opacity:.85'>This page is built into the app &mdash; no network, no bundle.</p>"
+            + "<div style='background:rgba(0,0,0,.25);border-radius:10px;padding:12px;line-height:1.7'>"
+            + "<b>Device</b><br>" + Build.MANUFACTURER + " " + Build.MODEL + "<br>"
+            + "Android " + Build.VERSION.RELEASE + " (SDK " + Build.VERSION.SDK_INT + ")<br><br>"
+            + "<b>WebView engine</b><br>Chrome " + chrome + "<br><br>"
+            + "<b>User agent</b><br><span style='font-size:11px;word-break:break-all;opacity:.8'>" + ua.replace("<","&lt;") + "</span>"
+            + "</div>"
+            + "<p style='margin:16px 0 8px;opacity:.85'>Chrome <b>&lt; 90</b> is likely too old for the ServOS bundle.</p>"
+            + "<button onclick='Probe.loadReal()' style=\"width:100%;padding:16px;border:0;border-radius:10px;"
+            + "background:#fff;color:#0d5c2f;font-size:16px;font-weight:700\">Now try loading ServOS &rarr;</button>"
+            + "</body></html>";
     }
 
     @Override
