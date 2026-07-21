@@ -1,3 +1,25 @@
+// Runtime APIs missing from the PAX terminal's Chrome 80 WebView. These are
+// FUNCTIONS, not syntax, so the build target cannot supply them — without these
+// the app parses fine and then throws the first time a stock/PO screen clones a
+// draft. Cheap, standards-shaped, and inert on modern browsers.
+if (typeof globalThis.structuredClone !== 'function') {
+  globalThis.structuredClone = (v) => (v === undefined ? undefined : JSON.parse(JSON.stringify(v)));
+}
+if (!Array.prototype.at) {
+  // eslint-disable-next-line no-extend-native
+  Object.defineProperty(Array.prototype, 'at', {
+    value(n) { n = Math.trunc(n) || 0; if (n < 0) n += this.length; return (n < 0 || n >= this.length) ? undefined : this[n]; },
+    writable: true, configurable: true,
+  });
+}
+if (!String.prototype.at) {
+  // eslint-disable-next-line no-extend-native
+  Object.defineProperty(String.prototype, 'at', {
+    value(n) { n = Math.trunc(n) || 0; if (n < 0) n += this.length; return (n < 0 || n >= this.length) ? undefined : this[n]; },
+    writable: true, configurable: true,
+  });
+}
+
 import { StrictMode, Component } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App.jsx'

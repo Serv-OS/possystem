@@ -94,6 +94,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.831', date: '21 Jul 2026', label: 'Runs on the card terminal — support for older browsers',
+    changes: [
+      'ServOS now works on the PAX A920 Pro card terminal. Its built-in browser dates from 2020 and could not read the newer code the app was built with, so it showed a black screen and closed.',
+      'The app is now built in a form that older browsers understand, and the few newer features it relies on are filled in automatically.',
+      'This also means ServOS works on older tablets and phones generally, not just the card terminal.',
+      'No change to how anything looks or works on modern devices.',
+    ],
+  },
+  {
     version: '5.5.830', date: '20 Jul 2026', label: 'Split payments on Ryft now ask for a tip too',
     changes: [
       'Fixed: split card payments on Ryft never offered a tip \u2014 every portion was recorded as \u00a30 gratuity. Each payer is now asked on the customer display before their share is charged, the same as a single card payment.',
