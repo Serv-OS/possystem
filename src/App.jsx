@@ -94,6 +94,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.840', date: '21 Jul 2026', label: 'Fixed \u2014 unpairing a card terminal, and a way to release a stuck one',
+    changes: [
+      'Unpairing a card terminal failed with a database error as soon as it had taken even one payment. It now retires the terminal instead of deleting it \u2014 the same physical machine can be paired again, and its payment history is kept.',
+      'New "Release stuck payment" button. If a terminal insists a payment is already in progress but nothing is happening, this frees it. No more being stuck with no way out.',
+      'Releasing a payment that could not be confirmed is recorded against your name, because it means someone decided the customer was not charged.',
+      'Abandoned payments are now cleared automatically every minute instead of blocking the terminal until someone fixed it by hand.',
+    ],
+  },
+  {
     version: '5.5.839', date: '21 Jul 2026', label: 'Fixed \u2014 screensaver upload on the card terminal',
     changes: [
       'Uploading an idle-screen image for the PAX card terminal failed with a database error. The image went up fine, but saving it against the venue did not.',

@@ -1,6 +1,7 @@
 package co.posup.rpos.paxpay;
 
 import android.os.Build;
+import android.util.Log;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -64,6 +65,11 @@ public final class Diagnostics {
     /** Timestamped event, newest last. Kept short — this is read on a 5" screen. */
     public synchronized void event(String message) {
         long since = launchedAtMs == 0 ? 0 : System.currentTimeMillis() - launchedAtMs;
+        // v5.5.839: MIRROR TO LOGCAT. These events used to exist only on the device's
+        // own diagnostics screen, which meant every silent failure was invisible to
+        // anyone holding a laptop and an adb cable. Debugging a terminal you cannot
+        // see is how a day gets lost. `adb logcat -s PaxPayDiag` now tails it.
+        Log.i("PaxPayDiag", message);
         events.add(String.format(Locale.UK, "[%+.1fs] %s", since / 1000f, message));
         if (events.size() > 40) events.remove(0);
         notifyChanged();

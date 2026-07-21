@@ -191,14 +191,50 @@ export default function PaxTerminals() {
     }
   };
 
+  // v5.5.840: RETIRE, don't delete. A hard delete failed the moment the terminal
+  // had taken a single payment —
+  //   "violates foreign key constraint terminal_jobs_target_terminal_id_fkey"
+  // — because terminal_jobs.target_terminal_id is NOT NULL and points here.
+  // Deleting is the wrong verb anyway: it would orphan the audit trail of real
+  // money. retire_terminal_device() sets status='retired', which frees the
+  // serial for re-pairing (the unique indexes are partial, WHERE status='paired')
+  // and keeps every job row.
   const retire = async (t) => {
-    if (!confirm(`Unpair "${t.label || t.serial_number}"? It will stop accepting payments for this venue and will show a fresh pairing code.`)) return;
+    if (!confirm(`Unpair "${t.label || t.serial_number}"? It stops taking payments for this venue and will show a fresh pairing code. Its payment history is kept.`)) return;
     setError('');
     try {
-      // DELETE is the only policy on this table, and it is scoped to the
-      // manager's own locations.
-      const { error: e } = await supabase.from('terminal_devices').delete().eq('id', t.id);
+      const { data, error: e } = await supabase.rpc('retire_terminal_device', { p_terminal_id: t.id });
       if (e) throw new Error(e.message);
+      if (data && data.ok === false) throw new Error(data.error || 'Could not unpair.');
+      setNotice('Terminal unpaired. Its payment history has been kept.');
+      await load();
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  // v5.5.840: the escape hatch. An abandoned payment leaves a job in a live
+  // state and the terminal then refuses every new one — "this terminal is
+  // already taking a payment" — with no way out but hand-written SQL. That is
+  // not something a venue can do mid-service.
+  //
+  // Releasing a quarantined ('unknown') job is a JUDGEMENT: it means nobody can
+  // prove whether a card was charged, and a person is asserting it is safe to
+  // move on. The RPC records who and when, so the assertion is auditable.
+  const release = async (t) => {
+    if (!confirm(
+      `Release "${t.label || t.serial_number}"?\n\n` +
+      `Use this if the terminal says a payment is already in progress but nothing is happening.\n\n` +
+      `If a payment could not be confirmed, releasing it means you are satisfied the customer was NOT charged. ` +
+      `Check your card statement first if you are unsure. This is recorded against your name.`
+    )) return;
+    setError('');
+    try {
+      const { data, error: e } = await supabase.rpc('release_terminal_jobs', { p_terminal_id: t.id, p_note: null });
+      if (e) throw new Error(e.message);
+      const n = (data?.expired || 0) + (data?.released || 0);
+      setNotice(n ? `Released ${n} stuck payment${n === 1 ? '' : 's'}. The terminal can take payments again.`
+                  : 'Nothing was stuck on this terminal.');
       await load();
     } catch (e) {
       setError(e.message);
@@ -261,6 +297,12 @@ export default function PaxTerminals() {
                     >
                       {openId === t.id ? 'Close' : 'Settings'}
                     </button>
+                    {/* v5.5.840: sits next to Unpair because that is where you go
+                        when the terminal is misbehaving. Ghost, not danger — it
+                        recovers a stuck terminal, it does not destroy anything. */}
+                    <button onClick={() => release(t)}
+                            title="Use if the terminal says a payment is already in progress but nothing is happening"
+                            style={{ ...S.btn, ...S.btnGhost, padding:'5px 10px', fontSize:12 }}>Release stuck payment</button>
                     <button onClick={() => retire(t)} style={{ ...S.btn, ...S.btnDan, padding:'5px 10px', fontSize:12 }}>Unpair</button>
                   </div>
                 </div>
