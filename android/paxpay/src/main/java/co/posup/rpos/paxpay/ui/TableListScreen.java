@@ -210,8 +210,22 @@ public final class TableListScreen extends SwipeRefreshLayout {
             // A trailing odd table keeps its column width — a lone full-bleed card at the bottom
             // of a grid reads as a different kind of thing, which it is not.
             View cell = idx < tables.size() ? tableCard(tables.get(idx)) : new View(ctx);
+            // HEIGHT IS WRAP_CONTENT, NOT MATCH_PARENT.
+            //
+            // These cards live inside a ScrollView, which measures its content with an UNBOUNDED
+            // height so the content can be taller than the screen and scroll. A child asking for
+            // MATCH_PARENT height against an unbounded parent resolves to ZERO — and because the
+            // resolution forces an exact 0/1px spec on the card, even its own setMinimumHeight(112)
+            // floor is overridden. The result was 9 cards, all one pixel tall: "9 OPEN" with a
+            // blank floor. Same failure as the home tiles — a weighted/MATCH_PARENT height with no
+            // bounded parent to resolve against.
+            //
+            // WRAP_CONTENT lets each card measure to its own content, and the 112dp minimum then
+            // applies as intended. The width weight is untouched, so the two columns still split
+            // evenly. Cards in a row size independently; with uniform card content their heights
+            // match anyway.
             r.addView(cell, new LinearLayout.LayoutParams(
-                    0, LinearLayout.LayoutParams.MATCH_PARENT, 1f));
+                    0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         }
         return r;
     }

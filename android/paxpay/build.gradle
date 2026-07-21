@@ -61,8 +61,8 @@ android {
         // ALSO: API 30+ package-visibility filtering means getLaunchIntentForPackage() returns
         // null for an unrelated package unless it is declared in <queries> — see the manifest.
         targetSdk 34
-        versionCode 3          // bump every release; UpdateChecker compares this to latest-paxpay.json
-        versionName "1.5-m2"   // m2 = milestone 2 (Table Pay + Manual + ambient POS dispatch; G8 stubbed)
+        versionCode 4          // bump every release; UpdateChecker compares this to latest-paxpay.json
+        versionName "1.5.1-m2"   // m2 = milestone 2 (Table Pay + Manual + ambient POS dispatch; G8 stubbed)
                                // Keep in step with BuildVersion.VERSION. versionCode is only
                                // bumped when a RELEASE is published to latest-paxpay.json.
 
