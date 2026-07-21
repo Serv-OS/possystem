@@ -12,11 +12,16 @@ import { supabase, getLocationId } from '../lib/supabase';
 import { queueWrite, isOnline } from './OfflineQueue';
 import { useStore } from '../store';
 import { isTrainingMode } from '../lib/trainingMode';
+import { sessionTotalsMinor } from '../lib/payments/checkTotals';
 
 let _locationId = null;
 let _debounceTimer = null;
 let _realtimeChannel = null;
 let _lastSent = {}; // table_id → JSON string, avoid redundant writes
+// v5.5.837: table_id → JSON of the last stamped {subtotalMinor,totalMinor}. Kept
+// OUT of _lastSent because that key doubles as the realtime echo-suppression
+// value and is written by several other paths in this file.
+let _lastTotals = {};
 let _clearedAt = {}; // table_id → timestamp when first noticed as available (grace period)
 let _graceTimer = null;
 
@@ -55,15 +60,48 @@ export async function flushSessions() {
   const upsertRows = [];
 
   // Upsert each occupied table (collect — single write issued after the delete pass)
+  // v5.5.837 (PaxPay): the authoritative bill, in minor units, stamped alongside
+  // the session. terminal_start_table_payment reads THIS and refuses if it is
+  // absent — a card terminal must never be told an amount by a client, and the
+  // POS is the only thing that owns the pricing engine.
+  //
+  // Deliberately separate COLUMNS, not fields inside the session jsonb: that blob
+  // is compared verbatim by the _lastSent latch below and by SessionReconciler's
+  // full-session diff, and "tables MUST never be lost between updates" outranks
+  // tidiness.
+  const _st = useStore.getState();
+  const _totalsOpts = {
+    deviceConfig: _st.deviceConfig,
+    discountRules: _st.discountRules,
+    timezone: _st.locationConfig?.timezone,
+  };
+
   for (const t of occupied) {
     delete _clearedAt[t.id]; // v5.5.283: clear grace period if table re-occupied
+    let totals = null;
+    try { totals = sessionTotalsMinor(t.session, _totalsOpts); }
+    catch (e) { console.warn('[SessionSync] totals stamp failed for', t.id, e?.message || e); }
     const payload = JSON.stringify(t.session);
-    if (_lastSent[t.id] === payload) { skipped++; continue; } // no change
+    // _lastSent keeps its EXACT historical format (JSON of the session alone) —
+    // it is also the realtime echo-suppression key at the bottom of this file and
+    // is written by four other call sites. Totals staleness is tracked separately
+    // so a device-profile or auto-discount-rule change (which moves the bill
+    // without touching the session) still forces a re-stamp: a stale total is a
+    // wrong amount on a card terminal.
+    const totalsKey = JSON.stringify(totals);
+    if (_lastSent[t.id] === payload && _lastTotals[t.id] === totalsKey) { skipped++; continue; } // no change
     _lastSent[t.id] = payload;
+    _lastTotals[t.id] = totalsKey;
     writesIssued++;
 
     _backup[t.id] = t.session; _backupDirty = true;   // batched backup (written once below)
-    const row = { location_id: _locationId, table_id: t.id, session: t.session, updated_at: new Date().toISOString() };
+    const row = {
+      location_id: _locationId, table_id: t.id, session: t.session,
+      subtotal_minor: totals?.subtotalMinor ?? null,
+      total_minor:    totals?.totalMinor ?? null,
+      totals_at:      totals ? new Date().toISOString() : null,
+      updated_at: new Date().toISOString(),
+    };
     queueWrite({ type: 'upsert', table: 'active_sessions', payload: row, onConflict: 'location_id,table_id' });
     upsertRows.push(row);
   }
@@ -173,6 +211,7 @@ export function scheduleFlush() {
 export function reassertSession(tableId) {
   if (!tableId) return;
   delete _lastSent[tableId];
+  delete _lastTotals[tableId];
   scheduleFlush();
 }
 
@@ -309,6 +348,7 @@ export function teardown() {
   clearTimeout(_graceTimer);
   if (_realtimeChannel) { supabase.removeChannel(_realtimeChannel); _realtimeChannel = null; }
   _lastSent = {};
+  _lastTotals = {};
   _clearedAt = {};
   _graceTimer = null;
   _locationId = null;

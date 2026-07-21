@@ -4,6 +4,7 @@ import { calculateOrderTax } from '../lib/tax';
 import { resolveServiceCharge } from '../lib/serviceCharge';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../lib/discountEngine';
 import { buildScheduleCtx } from '../lib/locationTime';
+import { computeCheckTotals } from '../lib/payments/checkTotals';
 import { operatorSwitchPatch, logoutPatch } from '../lib/cartHold';
 import { kitchenOverride, receiptOverride } from '../lib/itemDisplay';
 import { upsertMenuItem, upsertFloorTable, deleteFloorTable, insertKDSTicket, insertClosedCheck, toggle86DB, getNextOrderRefLocal, updateClosedCheckRefunds, upsertStockLevel, deleteStockLevel, decrementStockRPC, restoreStockRPC, upsertModifierGroup, deleteModifierGroup } from '../lib/db';
@@ -2390,44 +2391,17 @@ export const useStore = create((set, get) => ({
       covers = 1;
       serviceChargeWaived = walkInOrder?.serviceChargeWaived || false;
     }
-    // Subtotal — voided items excluded, item discounts applied
-    const subtotal = items.filter(i=>!i.voided).reduce((s,i)=>{
-      const base = i.price * i.qty;
-      if (!i.discount) return s + base;
-      return s + (i.discount.type==='percent' ? base*(1-i.discount.value/100) : Math.max(0,base-i.discount.value));
-    }, 0);
-    // Auto-discount rules (BOGO / bundle / scheduled) — evaluated live against the cart and folded
-    // in beside any manual check discounts. toAppliedDiscount emits the SAME {type:'amount',value}
-    // shape manual discounts use, so the reducer below + receipts/reports need no change. Channel
-    // 'pos'; each rule is gated by its schedule/expiry in location-local time.
-    const autoDiscounts = evaluateAutoDiscounts(items, get().discountRules, 'pos', buildScheduleCtx(get().locationConfig?.timezone))
-      .map(toAppliedDiscount);
-    const allCheckDiscounts = [...checkDiscounts, ...autoDiscounts];
-    // Check-level discounts (manual + auto)
-    const checkDiscount = allCheckDiscounts.reduce((s,d) => s + (d.type==='percent'?subtotal*d.value/100:d.value), 0);
-    const discountedSub = Math.max(0, subtotal - checkDiscount);
-
-    // Service charge — from device profile config, dine-in only, respects waived flag
-    const serviceRate = resolveServiceCharge({ deviceConfig, orderType, covers, waived: serviceChargeWaived });
-    const service = discountedSub * serviceRate;
-
-    // v5.5.646: address-based delivery surcharge (Uber Direct). The accepted quote is held
-    // on store.deliveryQuote (set by quoteDelivery()); only fold it in for delivery orders.
-    // customerFeeMinor is the policy-adjusted customer fee in pennies → £ here.
-    const dq = get().deliveryQuote;
-    const deliveryFee = (orderType === 'delivery' && dq?.available) ? (dq.customerFeeMinor || 0) / 100 : 0;
-
-    return {
-      subtotal, checkDiscount, discountedSub, service,
-      autoDiscounts,                      // applied auto-discount lines (display + receipt)
-      checkDiscounts: allCheckDiscounts,  // manual + auto merged (POS renders each line)
-      serviceChargeWaived,
-      serviceChargeApplicable: orderType === 'dine-in' && (deviceConfig?.serviceCharge?.enabled !== false),
-      deliveryFee,                        // customer-facing delivery surcharge (£)
-      deliveryQuote: orderType === 'delivery' ? (dq || null) : null,
-      total: discountedSub + service + deliveryFee,
-      itemCount: items.filter(i=>!i.voided).reduce((s,i)=>s+i.qty,0),
-    };
+    // v5.5.837: the maths itself now lives in lib/payments/checkTotals.js so that
+    // SessionSync can stamp the SAME figure onto active_sessions for PaxPay Table
+    // Pay. Behaviour is unchanged — this is a move, not a rewrite. Do not
+    // reintroduce a second copy of the pricing rules here.
+    return computeCheckTotals({
+      items, checkDiscounts, covers, serviceChargeWaived,
+      orderType, deviceConfig,
+      discountRules: get().discountRules,
+      timezone: get().locationConfig?.timezone,
+      deliveryQuote: get().deliveryQuote,
+    });
   },
 
   getPOSOrderNote: () => {
@@ -5326,7 +5300,12 @@ export const useStore = create((set, get) => ({
         },
       };
       const totals = { subtotal, service: Math.max(0, +(total - subtotal).toFixed(2)), tip: 0, grand: total };
-      await printService.printReceipt({ check, items, totals });
+      // v5.5.835: venue-scoped. A HubRise order belongs to the venue, not to a till,
+      // so there is no device assignment to resolve — use the venue default receipt
+      // printer (Back office → Production printing). Still a deliberate operator
+      // choice: if unset this prints nothing and warns rather than guessing.
+      const result = await printService.printReceipt({ check, items, totals }, null, { venueScope: true });
+      if (!result?.ok) get().showToast?.(`Receipt not printed: ${result?.error || 'no venue receipt printer set'}`, 'error');
     } catch (e) { console.warn('[hubrise] receipt print failed:', e?.message); }
   },
 
@@ -5363,7 +5342,9 @@ export const useStore = create((set, get) => ({
       // service = whatever's left after subtotal + delivery + tip (keeps a catering tip out of the
       // service line). Pennies-safe + never negative.
       const totals = { subtotal, service: Math.max(0, +((total - subtotal - deliveryFee - tip).toFixed(2))), delivery: deliveryFee || 0, tip, grand: total };
-      const result = await printService.printReceipt({ check, items, totals });
+      // v5.5.835: venue-scoped — an online / kiosk / QR / catering / HubRise order has no
+      // originating till, so it routes to the venue default receipt printer.
+      const result = await printService.printReceipt({ check, items, totals }, null, { venueScope: true });
       get().showToast?.(result?.ok ? 'Receipt sent to printer' : `Receipt print failed${result?.error ? ': ' + result.error : ''}`, result?.ok ? 'success' : 'error');
       return result || { ok: false };
     } catch (e) {

@@ -7,7 +7,7 @@ import { money } from '../lib/currency';
 
 // ── Receipt display & print ───────────────────────────────────────────────────
 export function ReceiptModal({ items, subtotal, service, total, checkDiscount, orderType, tableLabel, server, covers, customer, ref: checkRef, method, tip, onClose }) {
-  const { location, taxRates } = useStore();
+  const { location, taxRates, showToast } = useStore();
   const now = new Date();
   const nonVoided = items.filter(i => !i.voided);
   const [printing, setPrinting] = useState(false);
@@ -22,12 +22,25 @@ export function ReceiptModal({ items, subtotal, service, total, checkDiscount, o
   const handlePrint = async () => {
     setPrinting(true);
     try {
-      await printService.printReceipt({
+      const result = await printService.printReceipt({
         location,
         check: { ref: checkRef, server, tableLabel, orderType, covers, method },
         items: nonVoided,
         totals: { subtotal, service, tip: tip || 0, grand: total + (tip || 0), taxBreakdown },
+      }, null, {
+        // v5.5.835: user pressed Print in the receipt dialog. Receipts now fail closed
+        // when no printer is mapped, but this button is exactly how someone prints or
+        // saves a PDF from a back-office laptop with no thermal printer — so it keeps
+        // the browser-print fallback.
+        allowBrowserFallback: true,
       });
+      // v5.5.835: printReceipt returns { ok:false, error } rather than throwing when the
+      // job is rejected, so the catch below never saw it. This button used to report
+      // nothing at all in that case — the same silent-failure class as the modifier-group
+      // saves. The browser fallback above means ok:false here is a real submit failure.
+      if (!result?.ok) {
+        showToast?.(`Receipt print failed: ${result?.error || 'printer rejected the job'}`, 'error');
+      }
     } catch (err) {
       // Fallback to browser print on failure
       const win = window.open('', '_blank', 'width=380,height=700');

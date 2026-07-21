@@ -10,9 +10,10 @@
 // Sent items show as locked (status:'sent') — qty/remove blocked. Pending
 // items are editable. Manager-PIN-gated voids land in 1D.
 
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { useStore } from '../../store';
 import { calculateOrderTax } from '../../lib/tax';
+import { receiptTargetStatus } from '../../lib/printer';
 import { Sx, money, STATUS_PILL } from './MShellStyles';
 import MItemActions from './MItemActions';
 import MOrderActions from './MOrderActions';
@@ -29,6 +30,20 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
   // failure replaces it with an error toast. Server doesn't wait staring at
   // a disabled button for 3-5s while Supabase round-trips.
   const [printing, setPrinting] = useState(false);
+
+  // v5.5.835: receipts route to THIS device's assigned printer only — no venue-wide
+  // fallback. Keep the Print bill button but grey it with the reason when this
+  // handheld has no printer set, rather than firing a job that goes nowhere.
+  const [printable, setPrintable] = useState(receiptTargetStatus);
+  useEffect(() => {
+    const refresh = () => setPrintable(receiptTargetStatus());
+    window.addEventListener('rpos-receipt-target-updated', refresh);
+    window.addEventListener('rpos-printers-updated', refresh);
+    return () => {
+      window.removeEventListener('rpos-receipt-target-updated', refresh);
+      window.removeEventListener('rpos-printers-updated', refresh);
+    };
+  }, []);
 
   const printBill = () => {
     if (printing) return;
@@ -245,17 +260,19 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
           <div style={{ display:'flex', gap:8, marginTop:8 }}>
             <button
               onClick={printBill}
-              disabled={printing}
+              disabled={printing || !printable.ok}
+              title={printable.ok ? undefined : printable.reason}
               style={{
                 ...Sx.btnGhost, flex:1,
-                opacity: printing ? .55 : 1,
+                opacity: (printing || !printable.ok) ? .55 : 1,
+                cursor: printable.ok ? 'pointer' : 'not-allowed',
                 transform: printing ? 'scale(0.97)' : 'scale(1)',
                 transition: 'transform .12s ease, opacity .12s ease, background .12s ease',
                 background: printing ? 'var(--acc-d)' : Sx.btnGhost.background,
                 WebkitTapHighlightColor: 'transparent',
               }}
             >
-              {printing ? '⏳ Sending…' : '🧾 Print bill'}
+              {printing ? '⏳ Sending…' : printable.ok ? '🧾 Print bill' : '🧾 No printer set'}
             </button>
             <button onClick={onAddMore} style={{ ...Sx.btnGhost, flex:1 }}>+ Add items</button>
           </div>

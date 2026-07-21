@@ -4,11 +4,12 @@
 // print). Print routes a print_job to the location's receipt printer via the
 // existing PrintOrchestrator. None just skips and goes straight to MDone.
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useStore } from '../../store';
 import { sendEmailReceipt } from '../../lib/sendReceipt';
 import { getActiveLocationSync } from '../../lib/supabase';
 import { calculateOrderTax } from '../../lib/tax';
+import { receiptTargetStatus } from '../../lib/printer';
 import { Sx } from './MShellStyles';
 
 export default function MReceiptPrompt({ check, onDone }) {
@@ -17,6 +18,21 @@ export default function MReceiptPrompt({ check, onDone }) {
   const [email, setEmail] = useState(customer?.email || walkInOrder?.customer?.email || '');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+
+  // v5.5.835: can this handheld actually print? Receipts no longer fall back to
+  // "whatever printer the venue has" — an MPOS with no printer assigned prints
+  // nothing. Keep the button (it's a wanted feature) but grey it with the reason
+  // rather than letting the server tap it and silently lose the receipt.
+  const [printable, setPrintable] = useState(receiptTargetStatus);
+  useEffect(() => {
+    const refresh = () => setPrintable(receiptTargetStatus());
+    window.addEventListener('rpos-receipt-target-updated', refresh);
+    window.addEventListener('rpos-printers-updated', refresh);
+    return () => {
+      window.removeEventListener('rpos-receipt-target-updated', refresh);
+      window.removeEventListener('rpos-printers-updated', refresh);
+    };
+  }, []);
 
   const finish = (note) => onDone?.({ deliveredVia: note });
 
@@ -51,12 +67,19 @@ export default function MReceiptPrompt({ check, onDone }) {
       // breakdown stored on the check; recompute from items as a fallback.
       const taxBreakdown = check.taxBreakdown
         || (() => { try { return calculateOrderTax(check.items || [], taxRates, check.orderType || 'takeaway'); } catch { return null; } })();
-      await printCustomerReceipt?.({
+      const result = await printCustomerReceipt?.({
         location: locationConfig,
         check,
         items: check.items,
         totals: { subtotal: check.subtotal, tip: check.tip, total: check.total, taxBreakdown },
       });
+      // v5.5.835: printCustomerReceipt returns { ok, error? } — it does NOT throw on a
+      // routing failure. This used to call finish('printed') unconditionally, so a
+      // receipt that never printed still reported success to the server.
+      if (!result?.ok) {
+        setError(`${result?.error || 'No printer mapped to this device'} — try email instead.`);
+        return;
+      }
       finish('printed');
     } catch (e) {
       setError(e?.message || 'Print failed — try email instead');
@@ -84,7 +107,10 @@ export default function MReceiptPrompt({ check, onDone }) {
 
           <div style={{ padding:'14px 16px', display:'flex', flexDirection:'column', gap:8 }}>
             <Method icon="✉️" title="Email" desc="Send a digital receipt to the customer's inbox" onClick={() => setMode('email')} />
-            <Method icon="🧾" title="Print at counter" desc="Fire to the location's receipt printer" onClick={() => setMode('print')} />
+            <Method icon="🧾" title="Print at counter"
+              desc={printable.ok ? "Fire to the location's receipt printer" : printable.reason}
+              disabled={!printable.ok}
+              onClick={() => setMode('print')} />
             <Method icon="∅"  title="No receipt"      desc="Skip — customer doesn't want one"     onClick={() => finish('skipped')} />
           </div>
         </div>
@@ -169,19 +195,21 @@ export default function MReceiptPrompt({ check, onDone }) {
   return null;
 }
 
-function Method({ icon, title, desc, onClick }) {
+// v5.5.835: `disabled` greys the row and blocks the tap, but the row STAYS VISIBLE —
+// an operator needs to see that printing exists and why it isn't available.
+function Method({ icon, title, desc, onClick, disabled = false }) {
   return (
-    <button onClick={onClick} style={{
+    <button onClick={onClick} disabled={disabled} style={{
       padding:'14px 14px', borderRadius:14, border:'1px solid var(--bdr)',
-      background:'var(--bg2)', cursor:'pointer', fontFamily:'inherit', textAlign:'left',
-      display:'flex', alignItems:'center', gap:14, minHeight:72,
+      background:'var(--bg2)', cursor: disabled ? 'not-allowed' : 'pointer', fontFamily:'inherit', textAlign:'left',
+      display:'flex', alignItems:'center', gap:14, minHeight:72, opacity: disabled ? .5 : 1,
     }}>
       <div style={{ fontSize:30, flexShrink:0, width:48, textAlign:'center' }}>{icon}</div>
       <div style={{ flex:1, minWidth:0 }}>
         <div style={{ fontSize:15, fontWeight:800, color:'var(--t1)' }}>{title}</div>
-        <div style={{ fontSize:12, color:'var(--t3)', marginTop:2, lineHeight:1.4 }}>{desc}</div>
+        <div style={{ fontSize:12, color: disabled ? 'var(--red)' : 'var(--t3)', marginTop:2, lineHeight:1.4 }}>{desc}</div>
       </div>
-      <div style={{ fontSize:20, color:'var(--t4)' }}>›</div>
+      <div style={{ fontSize:20, color:'var(--t4)' }}>{disabled ? '' : '›'}</div>
     </button>
   );
 }

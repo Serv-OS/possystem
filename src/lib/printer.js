@@ -559,10 +559,98 @@ class PrintService {
   }
 
   // Find which printer to use for a given role ('receipt' | 'kitchen' | 'bar')
+  // v5.5.835: dropped the blind `|| this._printers[0]` tail. Falling back to
+  // "whatever printer happens to be first" is never a correct answer — if no
+  // printer carries the role, the caller should be told, not guessed at. The
+  // role scan itself stays: kitchen / bar / drawer routing still depends on it.
   _printerForRole(role, printerId = null) {
     this._refreshPrinters();
     if (printerId) return this._printers.find(p => p.id === printerId) || null;
-    return this._printers.find(p => p.roles?.includes(role)) || this._printers[0] || null;
+    return this._printers.find(p => p.roles?.includes(role)) || null;
+  }
+
+  // v5.5.835: CASH DRAWER — deliberately keeps the `|| this._printers[0]` fallback that
+  // _printerForRole just dropped. This is NOT a leftover. Do not "tidy" it to match.
+  //
+  // WHY: a drawer that won't open is an immediate physical failure mid-service — a member
+  // of staff at a till who cannot give change. `cashDrawerAttached` defaults to false, so
+  // any venue that never ticked that box in Back office → Printers is relying on this
+  // fallback chain to find the till printer the drawer is wired into. Removing it would
+  // silently break those venues.
+  //
+  // Receipts fail closed because printing to the WRONG printer is the bug being fixed and
+  // a mis-routed receipt is recoverable. A jammed-shut drawer is not the same trade-off,
+  // and the drawer was never part of the reported fault. Reproduces the pre-v5.5.835
+  // `_printerForRole('receipt', null)` semantics exactly: role scan → first printer → null.
+  _drawerPrinter() {
+    this._refreshPrinters();
+    return this._printers.find(p => p.roles?.includes('receipt')) || this._printers[0] || null;
+  }
+
+  // v5.5.835: RECEIPT ROUTING — deliberately separate from _printerForRole.
+  //
+  // A customer receipt belongs to the device that took the money, not to "whichever
+  // printer in the venue happens to carry the receipt role". The old role scan is why
+  // an unconfigured MPOS handheld printed to the counter: every printer is created
+  // with roles:['receipt'] by default, so the scan always matched something.
+  //
+  // Resolution order — no guessing at any step:
+  //   1. an explicit printerId argument (kitchen-style routing, reprints to a chosen printer)
+  //   2. opts.venueScope -> the venue default, and ONLY that. For receipts with no
+  //      originating device (HubRise / online / delivery orders fired from OrdersHub).
+  //   3. this device's assignment, hydrated from devices.receipt_printer_id at boot
+  //   4. nothing. Caller must surface this to the operator — never fall back.
+  //
+  // Returns { printer, src } where src is 'explicit'|'device'|'venue-default'|'none'.
+  _receiptTarget(printerId = null, opts = {}) {
+    this._refreshPrinters();
+
+    if (printerId) {
+      const p = this._printers.find(x => x.id === printerId) || null;
+      if (!p) console.warn(`[Print] Receipt: explicit printerId "${printerId}" is not in this venue's printer list.`);
+      return { printer: p, src: p ? 'explicit' : 'none' };
+    }
+
+    if (opts.venueScope) {
+      const vid = this._venueDefaultPrinterId();
+      if (!vid) {
+        console.warn('[Print] Receipt: no venue default receipt printer set. Back office → Production printing → Customer receipts. Order-source receipts (online / delivery / HubRise) will not print until one is chosen.');
+        return { printer: null, src: 'none' };
+      }
+      const p = this._printers.find(x => x.id === vid) || null;
+      if (!p) console.warn(`[Print] Receipt: venue default printer "${vid}" no longer exists in the printer list.`);
+      return { printer: p, src: p ? 'venue-default' : 'none' };
+    }
+
+    // Device-originated. The absence of the cache key and a null printerId inside it
+    // are different faults, so report them differently — one is "boot never ran",
+    // the other is "nobody has configured this till".
+    let cached = null;
+    let hydrated = false;
+    try {
+      const raw = localStorage.getItem('rpos-receipt-target');
+      if (raw) { cached = JSON.parse(raw); hydrated = true; }
+    } catch { /* corrupt cache — treat as unhydrated */ }
+
+    if (!hydrated) {
+      console.warn('[Print] Receipt: this device has no printer assignment cached (rpos-receipt-target missing — Supabase hydration has not run or failed). Refusing to guess a printer.');
+      return { printer: null, src: 'none' };
+    }
+    if (!cached?.printerId) {
+      console.warn(`[Print] Receipt: no receipt printer is set for this device (${cached?.deviceId || 'unknown'}). Back office → Devices → edit this terminal → Receipt printer.`);
+      return { printer: null, src: 'none' };
+    }
+    const p = this._printers.find(x => x.id === cached.printerId) || null;
+    if (!p) console.warn(`[Print] Receipt: this device is assigned printer "${cached.printerId}" but it is not in the venue printer list (deleted?).`);
+    return { printer: p, src: p ? 'device' : 'none' };
+  }
+
+  // v5.5.835: venue-wide default receipt printer, for receipts that have no originating
+  // device. Set in Back office → Production printing; persisted on ops
+  // locations.pos_settings.default_receipt_printer_id and mirrored to localStorage by
+  // useSupabaseInit so this stays a synchronous read.
+  _venueDefaultPrinterId() {
+    try { return localStorage.getItem('rpos-venue-receipt-printer') || null; } catch { return null; }
   }
 
   // v4.6.30: lightweight printer lookup helpers used by openCashDrawer.
@@ -923,18 +1011,34 @@ class PrintService {
       }
     }
 
-    const printer = this._printerForRole('receipt', printerId);
+    // v5.5.835: route by DEVICE assignment (or an explicit id / the venue default),
+    // never by a role scan across the whole venue. See _receiptTarget.
+    const { printer, src } = this._receiptTarget(printerId, opts);
     if (printer?.address) {
       const bytes = await buildCustomerReceipt({ location: locationWithBranding, check, items, totals });
       return this._submitJob(printer, 'receipt', bytes, {
         idempotencyKey: opts.idempotencyKey || (check?.ref ? `receipt-${check.ref}-${Date.now()}` : undefined),
-        metadata: { ref: check?.ref, total: totals?.grand, tableLabel: check?.tableLabel, orderType: check?.orderType, server: check?.server },
+        metadata: { ref: check?.ref, total: totals?.grand, tableLabel: check?.tableLabel, orderType: check?.orderType, server: check?.server, routedBy: src },
         label: `Receipt ${check?.ref || ''} — ${money((totals?.grand || 0))}`.trim(),
       });
     }
-    // Fallback: browser print
-    browserPrint(buildReceiptHtml({ location: locationWithBranding, check, items, totals }));
-    return { ok: true, transport: 'browser' };
+
+    // v5.5.835: FAIL CLOSED. The browser-print fallback used to fire automatically
+    // whenever no thermal printer resolved, which is half of why an unconfigured
+    // device still produced output. It is now opt-in and passed ONLY by the two
+    // user-initiated reprint buttons (ReceiptModal, CheckHistory) — that is how
+    // someone prints or PDFs a receipt from a laptop with no thermal printer.
+    if (opts.allowBrowserFallback) {
+      browserPrint(buildReceiptHtml({ location: locationWithBranding, check, items, totals }));
+      return { ok: true, transport: 'browser' };
+    }
+    const error = printer && !printer.address
+      ? `Receipt printer "${printer.name || printer.id}" has no address configured`
+      : opts.venueScope
+        ? 'No default receipt printer set for this venue'
+        : 'No receipt printer configured for this device';
+    console.warn(`[Print] Receipt not printed — ${error}.`);
+    return { ok: false, error, reason: 'no-printer' };
   }
 
   async printKitchenTicket(ticketData, printerId = null, opts = {}) {
@@ -999,9 +1103,12 @@ class PrintService {
     if (printerId) {
       printer = this._printerById ? this._printerById(printerId) : this._printerForRole('receipt', printerId);
     } else {
+      // v5.5.835: was _printerForRole('receipt', null). Pinned to _drawerPrinter() so the
+      // drawer keeps its original fallback chain even though _printerForRole no longer
+      // falls back to the first printer — see the comment on _drawerPrinter.
       const all = this._allPrinters ? this._allPrinters() : [];
       printer = all.find(p => p?.cashDrawerAttached && p?.address)
-             || this._printerForRole('receipt', null);
+             || this._drawerPrinter();
     }
     if (!printer?.address) throw new Error('No printer with cash drawer configured');
     const b = new EscPosBuilder();
@@ -1075,4 +1182,16 @@ class PrintService {
 }
 
 export const printService = new PrintService();
+
+// v5.5.835: can THIS device print a customer receipt right now? Used by the MPOS
+// receipt screens to disable (never hide) the "Print at counter" button with a real
+// reason, instead of letting a server tap it and have the receipt go nowhere.
+// Returns { ok, reason } — reason is null when ok.
+export function receiptTargetStatus() {
+  const { printer } = printService._receiptTarget();
+  if (!printer) return { ok: false, reason: 'No printer set for this device' };
+  if (!printer.address) return { ok: false, reason: `${printer.name || 'Assigned printer'} has no address set` };
+  return { ok: true, reason: null };
+}
+
 export { EscPosBuilder, isNativeBridgeAvailable };

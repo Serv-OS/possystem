@@ -122,7 +122,7 @@ export default function DeviceRegistry() {
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
   const [pairStep, setPairStep] = useState(1);
-  const [newDevice, setNewDevice] = useState({ name:'', type:'pos', profileId:'', centreId:'' });
+  const [newDevice, setNewDevice] = useState({ name:'', type:'pos', profileId:'', centreId:'', receiptPrinterId:'' });
   const [pairingCode, setPairingCode] = useState('');
   const [pairedDeviceId, setPairedDeviceId] = useState(null);
   const [editId, setEditId] = useState(null);
@@ -162,6 +162,10 @@ export default function DeviceRegistry() {
       pairing_code: code,
       profile_id: newDevice.type !== 'kds' ? (newDevice.profileId || null) : null,
       centre_id: newDevice.type === 'kds' ? (newDevice.centreId || null) : null,
+      // v5.5.835: receipts route to the printer set on the device — so a device created
+      // without one cannot print at all. Set it here at creation rather than making the
+      // operator go back into Edit afterwards.
+      receipt_printer_id: newDevice.type !== 'kds' ? (newDevice.receiptPrinterId || null) : null,
       status: 'unpaired',
     }).select().single();
     setWorking(false);
@@ -175,7 +179,7 @@ export default function DeviceRegistry() {
   const cancelPairing = async () => {
     if (pairedDeviceId) await supabase.from('devices').delete().eq('id', pairedDeviceId);
     setShowAdd(false); setPairStep(1); setPairingCode(''); setPairedDeviceId(null);
-    setNewDevice({ name:'', type:'pos', profileId:'' });
+    setNewDevice({ name:'', type:'pos', profileId:'', centreId:'', receiptPrinterId:'' });
     if (locationId) await loadDevices(locationId);
   };
 
@@ -267,6 +271,19 @@ export default function DeviceRegistry() {
                   )}
                 </div>
               </div>
+              {/* v5.5.835: receipt printer at creation time. KDS never prints receipts,
+                  so the field is hidden for it — same rule as the edit form. */}
+              {newDevice.type !== 'kds' && (
+                <div style={{ marginBottom:16, maxWidth:360 }}>
+                  <label style={S.label}>Receipt printer</label>
+                  <PrinterSelect value={newDevice.receiptPrinterId} onChange={v=>setNewDevice(d=>({...d,receiptPrinterId:v}))} />
+                  <div style={{ fontSize:11, color: newDevice.receiptPrinterId ? 'var(--t3)' : 'var(--red)', marginTop:5, lineHeight:1.5 }}>
+                    {newDevice.receiptPrinterId
+                      ? 'Customer receipts taken on this terminal print here.'
+                      : 'Without a printer this terminal cannot print customer receipts — it will show "No printer set" instead of printing to another till.'}
+                  </div>
+                </div>
+              )}
               {error && <div style={{ padding:'8px 12px', borderRadius:8, background:'#fef2f2', color:'#dc2626', fontSize:13, marginBottom:12 }}>{error}</div>}
               <div style={{ display:'flex', gap:8 }}>
                 <button onClick={startPairing} disabled={working} style={{ ...S.btn, ...S.btnPrimary }}>
@@ -293,7 +310,7 @@ export default function DeviceRegistry() {
                 </div>
               </div>
               <div style={{ display:'flex', gap:8 }}>
-                <button onClick={()=>{ setShowAdd(false); setPairStep(1); setPairingCode(''); setNewDevice({name:'',type:'pos',profileId:''}); }}
+                <button onClick={()=>{ setShowAdd(false); setPairStep(1); setPairingCode(''); setNewDevice({name:'',type:'pos',profileId:'',centreId:'',receiptPrinterId:''}); }}
                   style={{ ...S.btn, ...S.btnPrimary }}>Done</button>
                 <button onClick={cancelPairing} style={{ ...S.btn, ...S.btnGhost }}>Cancel pairing</button>
               </div>

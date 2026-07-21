@@ -136,10 +136,14 @@ export default function useSupabaseInit() {
       // back office) would never hydrate its own rpos-printers cache.
       if (locId && supabase) {
         try {
+          // v5.5.835: deterministic order. Without it Postgres may return the
+          // venue's printers in any order, so two tills resolving a printer by
+          // role could pick different ones from the same list.
           const { data: prows } = await supabase
             .from('printers')
             .select('*')
-            .eq('location_id', locId);
+            .eq('location_id', locId)
+            .order('created_at');
           if (Array.isArray(prows)) {
             const shaped = prows.map(r => ({
               id: r.id,
@@ -162,6 +166,52 @@ export default function useSupabaseInit() {
           }
         } catch (err) {
           console.warn('[useSupabaseInit] printers hydration failed:', err?.message || err);
+        }
+      }
+
+      // v5.5.835: hydrate THIS device's receipt-printer assignment. devices.receipt_printer_id
+      // has been writable in Back Office → Devices since it was added, but nothing ever READ it
+      // at print time — printer.js picked the first printer carrying the 'receipt' role from the
+      // whole venue list. That is why an MPOS handheld with no printer set still printed to the
+      // counter. Cached to localStorage because printer.js resolves synchronously.
+      // Lives here (not App.jsx) deliberately: MPOS returns before ValidatedPOSApp mounts, so
+      // useSupabaseInit is the only hook that runs on BOTH the desktop POS and MPOS.
+      if (locId && supabase) {
+        try {
+          const dev = JSON.parse(localStorage.getItem('rpos-device') || 'null');
+          if (dev?.id && dev.id !== 'admin' && !dev.adminMode) {
+            const { data: drow } = await supabase
+              .from('devices')
+              .select('receipt_printer_id')
+              .eq('id', dev.id)
+              .maybeSingle();
+            localStorage.setItem('rpos-receipt-target', JSON.stringify({
+              deviceId: dev.id,
+              printerId: drow?.receipt_printer_id || null,
+            }));
+            window.dispatchEvent(new Event('rpos-receipt-target-updated'));
+          }
+        } catch (err) {
+          console.warn('[useSupabaseInit] receipt target hydration failed:', err?.message || err);
+        }
+      }
+
+      // v5.5.835: venue default receipt printer — used ONLY for receipts with no
+      // originating device (online / delivery / HubRise, fired from the Orders Hub).
+      // Set in Back office → Production printing. Cached to localStorage so printer.js
+      // can resolve it synchronously.
+      if (locId && supabase) {
+        try {
+          const { data: locRow } = await supabase
+            .from('locations')
+            .select('pos_settings')
+            .eq('id', locId)
+            .maybeSingle();
+          const venuePrinterId = locRow?.pos_settings?.default_receipt_printer_id || null;
+          if (venuePrinterId) localStorage.setItem('rpos-venue-receipt-printer', venuePrinterId);
+          else localStorage.removeItem('rpos-venue-receipt-printer');
+        } catch (err) {
+          console.warn('[useSupabaseInit] venue receipt printer hydration failed:', err?.message || err);
         }
       }
 

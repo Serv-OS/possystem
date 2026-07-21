@@ -1,0 +1,7 @@
+{
+  "versionCode": 1,
+  "versionName": "1.0-m1",
+  "apkUrl": "https://tbetcegmszzotrwdtqhi.supabase.co/storage/v1/object/public/app-releases/paxpay.apk",
+  "mandatory": false,
+  "notes": "Milestone 1 — PAX A920 Pro card payments via Ryft/STS G8. Controller launch, DEVICE_CONNECTED receiver, tip screen and diagnostics are real; the G8:Cloud HTTP call is STUBBED pending the vendor API spec, so no card is charged."
+}

@@ -16,6 +16,10 @@ import { redeemLoyaltyReward } from '../lib/loyaltyRedeem';
 import { money, currencySymbol, stripeCurrency, getActiveCurrencyCode } from '../lib/currency';
 import { publishDisplay, displayUsesScreen, publishTipRequest, onCustomerTip } from '../lib/customerDisplay';
 import { isTrainingMode } from '../lib/trainingMode';
+import PaxTerminal from './PaxTerminal';
+import {
+  findPaxTerminal, dispatchTerminalJob, buildCheckKey, toMinor, forgetJob, getPosDeviceId,
+} from '../lib/payments/terminalJobs';
 // (readerDisplay imports removed — cancel now lets the natural cart-change effect refresh the reader after onBack)
 
 // ─── Tip picker ───────────────────────────────────────────────────────────────
@@ -1248,6 +1252,29 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   const [tipCfg, setTipCfg] = useState(null);
   const [awaitingTip, setAwaitingTip] = useState(false);
   const tipNonceRef = useRef(0);
+
+  // v5.5.837 (PaxPay mode 3): is there a PAX terminal at this venue to send the
+  // payment to? paxLookupDone gates the race — a card press BEFORE the lookup
+  // lands must not silently take the old path and produce a different tip on the
+  // same bill. Failure leaves paxTarget null, so every existing venue (Stripe
+  // readers, Ryft REST) behaves exactly as before.
+  const [paxTarget, setPaxTarget] = useState(null);
+  const [paxLookupDone, setPaxLookupDone] = useState(false);
+  const [paxJob, setPaxJob] = useState(null);
+  const [paxError, setPaxError] = useState('');
+  const [paxBusy, setPaxBusy] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    // A training till never even looks — it must not learn about, or reach, a
+    // real card terminal.
+    if (isTrainingMode()) { setPaxLookupDone(true); return () => { alive = false; }; }
+    findPaxTerminal({ posDeviceId: getPosDeviceId() })
+      .then(t => { if (alive) setPaxTarget(t); })
+      .catch(() => { /* stays null — existing paths unaffected */ })
+      .finally(() => { if (alive) setPaxLookupDone(true); });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   useEffect(() => {
     let alive = true;
     getLocationProcessor(getActiveLocationSync())
@@ -1355,7 +1382,86 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     }, 60000);
   };
 
+  // v5.5.837 (PaxPay mode 3): hand the whole payment to the PAX terminal.
+  //
+  // THE THREE AMOUNTS (spec § "The three amounts"):
+  //   tip basis = `total`  — the BILL. The tip is for the SERVICE, not for the
+  //               leftover balance. Using `grand` here would show "10% = 50p" on a
+  //               £50 meal that was mostly paid by gift card, and rob the staff.
+  //   due       = `grand`  — bill minus gift / loyalty / promo credit. What the
+  //               card must actually take. Charging the basis would take money the
+  //               gift card already paid — the customer pays twice, then charges back.
+  //   charge    = server-computed as due + tip, inside terminal_commit_tip. The POS
+  //               never sends a charge figure at all.
+  const startTerminalJob = async () => {
+    setPaxError(''); setPaxBusy(true);
+    try {
+      const locationId = getActiveLocationSync();
+      const session = tableId ? useStore.getState().tables.find(t => t.id === tableId)?.session : null;
+      const checkKey = buildCheckKey({ locationId, tableId, sessionId: session?.id });
+      const dueMinor = toMinor(grand);
+      if (!(dueMinor > 0)) throw new Error('Nothing left for the card to take.');
+
+      const { job } = await dispatchTerminalJob({
+        checkKey,
+        targetTerminalId: paxTarget.id,
+        posDeviceId: getPosDeviceId(),
+        tipBasisMinor: toMinor(total),
+        dueMinor,
+        currency: getActiveCurrencyCode?.() || 'GBP',
+        // skipTip is NOT a bypass of the terminal — it folds into the frozen
+        // config as enabled:false, so one rule lives in one place.
+        tipConfig: {
+          enabled: !skipTip && tipCfg?.tipping_enabled !== false,
+          percentages: tipCfg?.tip_percentages ?? null,
+          allowCustom: tipCfg?.allow_custom_tip ?? true,
+          smartThresholdMinor: tipCfg?.smart_tip_threshold_minor ?? null,
+        },
+        closedCheckId: `chk-${Date.now()}`,
+        checkDraft: {
+          tableId: tableId || null,
+          tableLabel: tableId || null,
+          sessionId: session?.id || null,
+          locationId,
+          orderType,
+          covers,
+          server: session?.server || null,
+          staffId: useStore.getState().staff?.id || null,
+          items: (items || []).filter(i => !i.voided),
+          discounts: session?.discounts || [],
+          subtotalMinor: toMinor(subtotal),
+          totalMinor: toMinor(total),
+          source: 'pos_send_to_terminal',
+        },
+      });
+      setPaxJob(job);
+      setScreen('pax_terminal');
+    } catch (e) {
+      setPaxError(e?.message || 'Could not send the payment to the card machine.');
+    } finally {
+      setPaxBusy(false);
+    }
+  };
+
   const handleCardPress = () => {
+    // TRAINING MODE — first, before anything else. A job row would dispatch a
+    // REAL charge to a REAL terminal, and the server-side close path bypasses the
+    // client-side commit gates entirely. Training keeps the existing simulated flow.
+    if (isTrainingMode()) { setScreen('card_terminal'); return; }
+
+    // PAX: the tip is chosen ON THE TERMINAL, in the customer's hand.
+    //
+    // LANDMINE (spec ⚠️ 1): displayUsesScreen() below asks "is there a stationary
+    // second screen at THIS till?". For a handheld the correct answer is no — and
+    // it is also irrelevant. A handheld's customer_display_mode is 'off' or
+    // 'reader'; even on 'auto' the tip request would be published to a screen back
+    // at the counter while the customer is holding the terminal at their table.
+    // Left in place, that gate BLOCKS table service entirely. Deliberately bypassed.
+    //
+    // paxLookupDone gates the race: a press before the lookup lands must NOT
+    // silently take the old path and produce a different tip on the same bill.
+    if (paxLookupDone && cardProcessor === 'ryft' && paxTarget) { startTerminalJob(); return; }
+
     // Tipping is only offered on Ryft when the venue has it switched on AND has a
     // customer-facing screen. Without a screen there is nowhere for the customer to
     // choose (Ryft's reader can't ask), so we go straight to the card.
@@ -1398,6 +1504,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   const SCREENS = {
     review:'Checkout',
     card_terminal:'Card payment', cash:'Cash payment',
+    pax_terminal:'Card machine',
     gift_card:'Gift card', loyalty_rewards:'Loyalty rewards',
   };
 
@@ -1648,9 +1755,17 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
               </div>
 
               {/* ── Primary payment buttons ── */}
+              {/* v5.5.837: a failed dispatch to the card machine must be LOUD. Silently
+                  falling back to another path is how the same bill gets taken twice. */}
+              {paxError && (
+                <div style={{
+                  marginBottom:10, padding:'10px 12px', borderRadius:10, fontSize:12, lineHeight:1.5,
+                  background:'var(--red-d)', color:'var(--red)', border:'1px solid var(--red-b)',
+                }}>{paxError}</div>
+              )}
               {/* v5.5.793: compact tiles (~half height) — icon + label on one row, single subtitle */}
               <div style={{ display:'flex', gap:10, marginBottom:10 }}>
-                <button onClick={handleCardPress} style={{
+                <button onClick={handleCardPress} disabled={paxBusy} style={{
                   flex:1, padding:compact?'9px 8px':'11px 12px', borderRadius:compact?12:14, cursor:'pointer', fontFamily:'inherit',
                   background:'var(--card-bg)', border:`1.5px solid var(--card-border)`,
                   display:'flex', flexDirection:'column', alignItems:'center', gap:3,
@@ -1660,10 +1775,18 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                 onMouseLeave={e=>{e.currentTarget.style.transform='';e.currentTarget.style.boxShadow='';}}>
                   <div style={{ display:'flex', alignItems:'center', gap:7 }}>
                     <span style={{ fontSize:compact?17:20 }}>💳</span>
-                    <span style={{ fontSize:compact?13:16, fontWeight:800, color:'var(--card-text)' }}>Card</span>
+                    <span style={{ fontSize:compact?13:16, fontWeight:800, color:'var(--card-text)' }}>
+                      {paxBusy ? 'Sending…' : 'Card'}
+                    </span>
                   </div>
-                  {/* v5.5.172: tip prompt is ON THE READER (Stripe). v5.5.808: Ryft terminals have no reader tip prompt — tip is picked on screen first. */}
-                  <div style={{ fontSize:compact?10:11, color:'var(--card-sub)', textAlign:'center' }}>{cardProcessor === 'ryft' ? 'Tap, chip, contactless · tip added on screen' : 'Tap, chip, contactless · tip prompt on reader'}</div>
+                  {/* v5.5.172: tip prompt is ON THE READER (Stripe). v5.5.808: Ryft terminals have no reader tip prompt — tip is picked on screen first.
+                      v5.5.837: with a paired PAX the whole thing (amount, tip, card) happens on the terminal in the customer's hand. */}
+                  <div style={{ fontSize:compact?10:11, color:'var(--card-sub)', textAlign:'center' }}>{
+                    (paxLookupDone && cardProcessor === 'ryft' && paxTarget)
+                      ? `Send to ${paxTarget.label || 'the card machine'} · tip on the terminal`
+                      : cardProcessor === 'ryft' ? 'Tap, chip, contactless · tip added on screen'
+                      : 'Tap, chip, contactless · tip prompt on reader'
+                  }</div>
                 </button>
 
                 {_canTakeCash && <button onClick={()=>setScreen('cash')} style={{
@@ -1748,13 +1871,47 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                 // on the POS screen (tipAmt), so record exactly that.
                 const receivedMinor = pi?.amountReceived ?? null;
                 const receivedGbp   = receivedMinor != null ? receivedMinor / 100 : null;
-                const realTip = pi?.processor === 'ryft'
-                  ? tipAmt
-                  : (receivedGbp != null ? Math.max(0, +(receivedGbp - total).toFixed(2)) : 0);
+                // v5.5.837 — LANDMINE (spec ⚠️ 2). Keyed on pi.tipMinor PRESENCE,
+                // not on the processor.
+                //
+                //   * PAX: the tip was chosen on the terminal, so `tipAmt` is 0
+                //     here. The old `processor === 'ryft' ? tipAmt` branch threw
+                //     the terminal's real figure away — £1.10 left the card and
+                //     `tip: 0` was written to the check. Silently. Every time.
+                //   * The display-based Ryft REST path (counter + second screen)
+                //     still has its tip in tipAmt and keeps working unchanged.
+                //   * Stripe: `grand`, not `total`. `grand` IS what we asked the
+                //     reader to capture; subtracting the GROSS bill understates
+                //     the tip by exactly any gift/loyalty/promo credit and Math.max
+                //     clamps it to 0. £50 bill + £45 gift + £5 tip recorded £0 —
+                //     a live bug on Stripe, fixed here.
+                const realTip =
+                    pi?.tipMinor != null     ? Math.max(0, pi.tipMinor / 100)                  // PAX — authoritative
+                  : pi?.processor === 'ryft' ? tipAmt                                          // Ryft REST — POS-chosen
+                  : receivedGbp != null      ? Math.max(0, +(receivedGbp - grand).toFixed(2))   // Stripe reader — FIXED
+                  : 0;
                 complete('card', realTip, null, pi?.paymentIntentId || null, pi?.card || null, pi?.processor || 'stripe',
                   Number.isFinite(receivedMinor) ? receivedMinor : null);
               }}
               onBack={()=>{ setTipAmt(0); setScreen('review'); }}
+            />
+          )}
+
+          {screen==='pax_terminal' && paxJob && (
+            <PaxTerminal
+              job={paxJob}
+              terminalLabel={paxTarget?.label || null}
+              onComplete={(pi)=>{
+                // Derive BOTH legs from the job's integers — tip_minor and
+                // charge_minor — so the recorded tip and the refundable leg are
+                // exactly what the card was asked for. Never round twice.
+                forgetJob(paxJob.check_key);
+                complete('card', Math.max(0, (pi.tipMinor ?? 0) / 100), null,
+                  pi.paymentIntentId || null, pi.card || null, 'ryft',
+                  Number.isFinite(pi.amountReceived) ? pi.amountReceived : null);
+              }}
+              onFailed={()=>{ forgetJob(paxJob.check_key); }}
+              onBack={()=>{ setPaxJob(null); setScreen('review'); }}
             />
           )}
 

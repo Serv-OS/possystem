@@ -3,10 +3,11 @@
 // full refund OR partial (pick items + qty). Routes through the same
 // store.refundCheck the desktop POS uses so the audit log is consistent.
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useStore } from '../../store';
 import { sendEmailReceipt } from '../../lib/sendReceipt';
 import { getActiveLocationSync } from '../../lib/supabase';
+import { receiptTargetStatus } from '../../lib/printer';
 import { Sx, money } from './MShellStyles';
 import MManagerPin, { getCachedManagerAuth } from './MManagerPin';
 
@@ -26,6 +27,20 @@ export default function MOrderDetail({ check, onBack }) {
   const items = useMemo(() => (live.items || []).filter(i => !i.voided), [live]);
   const refundedAmount = (live.refunds || []).reduce((s, r) => s + (Number(r.amount) || 0), 0);
   const remaining = (Number(live.total) || 0) - refundedAmount;
+
+  // v5.5.835: reprints route to THIS device's assigned printer only. Keep the
+  // Reprint button visible but greyed with the reason when none is set — Email
+  // is still available as the fallback path for the customer.
+  const [printable, setPrintable] = useState(receiptTargetStatus);
+  useEffect(() => {
+    const refresh = () => setPrintable(receiptTargetStatus());
+    window.addEventListener('rpos-receipt-target-updated', refresh);
+    window.addEventListener('rpos-printers-updated', refresh);
+    return () => {
+      window.removeEventListener('rpos-receipt-target-updated', refresh);
+      window.removeEventListener('rpos-printers-updated', refresh);
+    };
+  }, []);
 
   // ── Reprint receipt ──────────────────────────────────────────────────────
   // printCustomerReceipt returns { ok, error?, transport? } — it doesn't throw
@@ -355,8 +370,10 @@ export default function MOrderDetail({ check, onBack }) {
           <div style={{ padding:10, marginBottom:8, borderRadius:10, background:'var(--red-d)', color:'var(--red)', fontSize:12, border:'1px solid var(--red-b)' }}>{error}</div>
         )}
         <div style={{ display:'flex', gap:8, marginBottom:8 }}>
-          <button onClick={reprint} disabled={busy} style={{ ...Sx.btnGhost, flex:1 }}>
-            🧾 Reprint
+          <button onClick={reprint} disabled={busy || !printable.ok}
+            title={printable.ok ? undefined : printable.reason}
+            style={{ ...Sx.btnGhost, flex:1, opacity: printable.ok ? 1 : .55, cursor: printable.ok ? 'pointer' : 'not-allowed' }}>
+            {printable.ok ? '🧾 Reprint' : '🧾 No printer set'}
           </button>
           <button onClick={() => setView('resend-email')} style={{ ...Sx.btnGhost, flex:1 }}>
             ✉️ Email

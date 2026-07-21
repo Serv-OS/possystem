@@ -94,6 +94,50 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.837', date: '21 Jul 2026', label: 'New \u2014 send a payment straight to a card machine (and a tip fix worth reading)',
+    changes: [
+      'Groundwork for the handheld PAX card machine. You can now pair one in Back office \u2192 Card readers: the terminal shows a code on its screen, you type it in, and it is tied to that venue. The list shows whether each one is online.',
+      'On the till, if a card machine is paired, pressing Card sends the whole payment to it instead of asking at the counter. The customer confirms the amount, chooses a tip and taps their card, all in their own hand.',
+      'The tip is chosen on the machine, not on the till. That matters for table service \u2014 the old flow could only ask for a tip if the venue had a second screen bolted to the counter, which a handheld obviously does not.',
+      'FIXED \u2014 tips were being recorded as \u00a30 on card machine payments. The money left the customer\u2019s card correctly, but the check recorded no tip at all. That understates what staff are owed, and tips feed the tronc.',
+      'FIXED \u2014 the same \u00a30 tip fault on Stripe readers whenever a gift card, loyalty reward or promo code was also used. A \u00a350 bill paid with a \u00a345 gift card and a \u00a35 tip recorded the tip as nothing. This one was live and is now corrected.',
+      'The tip is worked out on the FULL bill, not on what is left after a gift card. A 10% tip on a \u00a350 meal is \u00a35, even if \u00a345 of it was on a gift card. It never quietly shrinks to 50p.',
+      'The card is only ever charged what is genuinely still owed, plus the tip. It cannot be charged for something a gift card already paid.',
+      'Every payment sent to a machine is written down before the card is touched, so a till that crashes, sleeps or loses wifi mid-sale does not lose the sale.',
+      'A payment can only ever be in progress on one machine, for one table, at a time \u2014 so a double press, a refresh, or a second till on the same table cannot take the money twice.',
+      'If we genuinely cannot tell whether a card was charged, the till says so plainly and refuses to take payment again. It does not retry, and it does not quietly give up. A manager resolves it.',
+      'Cancel is honest: once the card is actually being charged, the till will not tell you it cancelled.',
+      'A training till can never send a payment to a real card machine \u2014 it stays on the practice flow, as it does everywhere else.',
+      'Existing Stripe readers and the current Ryft flow are untouched and work exactly as before.',
+    ],
+  },
+  {
+    version: '5.5.836', date: '21 Jul 2026', label: 'Fixed \u2014 a reprinted receipt could come out with no VAT lines',
+    changes: [
+      'Reprinting a receipt from Check history loaded its tax working-out in a way that can fail in the live app. When it failed, the receipt still printed \u2014 just with the VAT lines missing, and with nothing on screen to say so.',
+      'That is the worst kind of fault for a receipt: it looks fine, it hands to the customer, and it is not a valid VAT receipt.',
+      'The tax working-out is now loaded with the rest of the app at start-up, so it cannot go missing at the moment you press Reprint. Reprints carry their VAT lines like the original.',
+      'The receipt window already did it this way \u2014 Check history was the odd one out. Both now match.',
+      'No change to what a receipt looks like or what it contains when it was already printing correctly.',
+    ],
+  },
+  {
+    version: '5.5.835', date: '21 Jul 2026', label: 'Fixed \u2014 receipts printed to the wrong printer',
+    changes: [
+      'The receipt printer you set against each device was never actually used. You could set it in Back office \u2192 Devices, it saved, and nothing ever read it back when a receipt printed.',
+      'Instead, every receipt went to whichever printer the app happened to find first in your venue\u2019s printer list. That is why a handheld with no printer set still printed at the counter \u2014 it was never really \u201cthe handheld printing\u201d, it was the app guessing.',
+      'Receipts now go only to the printer set on the device that took the payment. Nothing else is used as a stand-in.',
+      'If a device has no printer set, it prints nothing and tells you so \u2014 on screen, at the moment it happens. It will not quietly print somewhere else.',
+      'On the handheld, \u201cPrint at counter\u201d stays exactly where it is, but greys out with \u201cNo printer set for this device\u201d until you set one. Email the receipt still works as normal.',
+      'Adding a terminal now asks which receipt printer it uses, so a new device is ready to print from the moment it is paired instead of needing a second trip into Edit.',
+      'Online, delivery and HubRise receipts do not come from any one till, so they have their own setting: Back office \u2192 Production printing \u2192 Default receipt printer.',
+      'Your existing tills and kiosks are set automatically to the printer they were already using, so nothing changes for them. Handhelds start with no printer set \u2014 that was the fault being fixed.',
+      'Printing from the receipt window or from Check history on a back-office laptop still falls back to the normal browser print dialog, so you can still print or save a PDF without a till printer.',
+      'Cash drawers are deliberately untouched by this change and open exactly as before — the stricter rules apply to receipts only.',
+      'Kitchen, bar and delivery tickets are also unaffected: they already went to the printer set against each production centre.',
+    ],
+  },
+  {
     version: '5.5.834', date: '21 Jul 2026', label: 'Fixed \u2014 modifier groups were never actually being saved',
     changes: [
       'This is the real cause of modifier groups disappearing. Every time you added, edited, reordered or deleted a modifier group, the save was sent to the database WITHOUT your login attached. The database refused it. Since 13 July, not one modifier group change has been saved.',

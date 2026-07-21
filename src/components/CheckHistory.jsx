@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react';
 import { useStore } from '../store';
 import { printService } from '../lib/printer';
 import { money } from '../lib/currency';
+import { calculateOrderTax } from '../lib/tax';
 
 const REFUND_REASONS = [
   'Wrong item served','Quality issue','Customer complaint',
@@ -387,7 +388,6 @@ export default function CheckHistory(){
       let taxBreakdown = null;
       if (taxRates?.length) {
         try {
-          const { calculateOrderTax } = await import('../lib/tax');
           taxBreakdown = calculateOrderTax(nonVoided, taxRates, selectedCheck.orderType || 'dine-in');
         } catch {}
       }
@@ -418,6 +418,9 @@ export default function CheckHistory(){
         // Distinct idempotency key so a reprint is never deduped against the
         // original close-check print.
         idempotencyKey: `reprint-${selectedCheck.ref}-${Date.now()}`,
+        // v5.5.835: user-initiated reprint. Keeps the browser-print fallback so a
+        // back-office laptop with no thermal printer can still print / save a PDF.
+        allowBrowserFallback: true,
       });
       if (result?.ok === false) {
         showToast(`Reprint failed: ${result.error || 'unknown error'}`, 'error');

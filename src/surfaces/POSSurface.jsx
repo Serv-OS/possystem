@@ -788,8 +788,16 @@ export default function POSSurface() {
         console.info('[PayComplete] training mode — auto-print suppressed');
       } else {
         console.info('[PayComplete] dispatching auto-print with ref=', freshRef);
-        printService.printReceipt(receiptSnapshot).catch(err => {
+        // v5.5.835: printReceipt now returns { ok:false, reason:'no-printer' } instead of
+        // silently browser-printing when this till has no receipt printer mapped. Surface
+        // it — a receipt going nowhere with no warning is what caused this whole fix.
+        printService.printReceipt(receiptSnapshot).then(result => {
+          if (!result?.ok) {
+            useStore.getState().showToast?.(`Receipt not printed: ${result?.error || 'no printer set for this device'}`, 'error');
+          }
+        }).catch(err => {
           console.warn('[Print] Auto-print on close failed:', err?.message || err);
+          useStore.getState().showToast?.(`Receipt print failed: ${err?.message || err}`, 'error');
         });
       }
     } else {

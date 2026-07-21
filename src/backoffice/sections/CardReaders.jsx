@@ -17,6 +17,7 @@ import { resolvePlatformLocationId } from '../../lib/networkReader';
 import { getLocationProcessor } from '../../lib/payments/processor';
 import { stripeCurrency } from '../../lib/currency';
 import RyftTerminals from './RyftTerminals';
+import PaxTerminals from './PaxTerminals';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 
@@ -179,6 +180,9 @@ export default function CardReaders() {
 
       {/* Ryft terminals — self-gating: only renders when this location is on Ryft */}
       <RyftTerminals />
+
+      {/* PaxPay terminals — self-gating: renders once a location is resolved */}
+      <PaxTerminals />
 
       {error && <div style={S.errorBox}>{error}</div>}
 

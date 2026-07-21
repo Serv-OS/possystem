@@ -1,0 +1,119 @@
+// Serv OS PaxPay — native card-payment app for the PAX A920 Pro (Ryft / STS "G8" stack).
+//
+// Unlike :app, :mpos and :menuboard this module is NOT a WebView wrapper. The RPOS web SPA
+// does not run on this hardware (A920 Pro = Android 10, system WebView Chrome 80: the bundle
+// dies on `??=` and on ~2,292 flex `gap` rules), so the payment surface is written natively.
+//
+// It follows android/NEW_APP_CHECKLIST.md in every other respect: own applicationId, own icon,
+// own update channel (app-releases/latest-paxpay.json), own CI workflow, shared release keystore.
+//
+// LANGUAGE: Java, matching :app / :mpos / :menuboard. The vendor's sample snippets are Kotlin,
+// but the root android/build.gradle deliberately dropped the Kotlin plugin (see its header
+// comment, v5.5.58), and adding it back would mean editing a shared root file. Java it is.
+//
+// SIGNING: in-app auto-update only installs in place when every build is signed with the SAME
+// key. CI signs RELEASE builds with one fixed keystore from GitHub secrets (ANDROID_KEYSTORE_*).
+// If those secrets aren't present (e.g. a local build), it falls back to the debug key so the
+// build still succeeds — but such a build won't auto-update an install made with the real key.
+plugins {
+    id 'com.android.application'
+}
+
+def ksPath = System.getenv('ANDROID_KEYSTORE_FILE')
+def hasKeystore = ksPath != null && new File(ksPath).exists()
+
+// ── CONFIG, NOT SECRETS IN SOURCE ────────────────────────────────────────────────────────────
+// The terminal needs the Ops Supabase URL + anon key to call the terminal_* RPCs. Neither is
+// baked into a .java file. Both are resolved at build time, in this order:
+//
+//   1. a Gradle property   -> -Ppaxpay.supabaseUrl=... , or a line in ~/.gradle/gradle.properties
+//   2. an environment var  -> PAXPAY_SUPABASE_URL / PAXPAY_SUPABASE_ANON_KEY  (this is what CI uses)
+//   3. the fallback below
+//
+// The URL falls back to the Ops project because that host is ALREADY in this module's source
+// (UpdateChecker.MANIFEST_URL), so it is not a new disclosure. The ANON KEY deliberately falls
+// back to EMPTY: a build with no key configured must fail loudly on the device's first screen
+// rather than ship a key in git or, worse, silently point at nothing. See Config.java.
+//
+// The anon key is a PUBLIC key by design (it is served in the web bundle to every browser) —
+// it is RLS, not the key, that fences a terminal to its own row. Keeping it out of source is
+// about not committing environment config, not about hiding a credential.
+def cfgValue = { String propName, String envName, String fallback ->
+    def v = project.findProperty(propName) ?: System.getenv(envName)
+    return (v == null || v.toString().trim().isEmpty()) ? fallback : v.toString().trim()
+}
+def supabaseUrl = cfgValue('paxpay.supabaseUrl', 'PAXPAY_SUPABASE_URL',
+        'https://tbetcegmszzotrwdtqhi.supabase.co')
+def supabaseAnonKey = cfgValue('paxpay.supabaseAnonKey', 'PAXPAY_SUPABASE_ANON_KEY', '')
+
+android {
+    namespace 'co.posup.rpos.paxpay'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "co.posup.rpos.paxpay"
+        // minSdk matches :mpos (26). The PAX A920 Pro runs Android 10 = API 29, comfortably above.
+        minSdk 26
+        // targetSdk 34 (Android 14). CONSEQUENCE: runtime-registered receivers MUST pass an
+        // explicit exported flag (Android 13 / API 33+ enforcement). The DEVICE_CONNECTED
+        // broadcast comes from ANOTHER app, so it must be RECEIVER_EXPORTED — see
+        // PaymentFlow.java. Without it the receiver silently never fires.
+        // ALSO: API 30+ package-visibility filtering means getLaunchIntentForPackage() returns
+        // null for an unrelated package unless it is declared in <queries> — see the manifest.
+        targetSdk 34
+        versionCode 2          // bump every release; UpdateChecker compares this to latest-paxpay.json
+        versionName "1.1-m2"   // m2 = milestone 2 (three modes + pairing; G8:Cloud call still stubbed)
+
+        buildConfigField "String", "SUPABASE_URL", "\"${supabaseUrl}\""
+        buildConfigField "String", "SUPABASE_ANON_KEY", "\"${supabaseAnonKey}\""
+    }
+
+    buildFeatures {
+        // AGP 8 stopped generating BuildConfig unless asked. We need it for the two fields above.
+        buildConfig true
+    }
+
+    signingConfigs {
+        release {
+            if (hasKeystore) {
+                storeFile file(ksPath)
+                storePassword System.getenv('ANDROID_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('ANDROID_KEY_ALIAS')
+                keyPassword System.getenv('ANDROID_KEY_PASSWORD')
+                storeType 'PKCS12'
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            debuggable false
+            // Fixed release key when CI provides the keystore; debug key otherwise (so the
+            // build never fails — but only the keystore-signed build supports auto-update).
+            signingConfig hasKeystore ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    // Same single dependency as :mpos. No new third-party libraries were added for this module:
+    // ContextCompat.registerReceiver + FileProvider both come from androidx.core, which appcompat
+    // already pulls in. The G8:Cloud client will use java.net.HttpURLConnection (JDK, no dep),
+    // exactly as UpdateChecker already does.
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+
+    // ONE addition in milestone 2, and here is the justification the module's own rules demand.
+    // The table list is a REQUIREMENT with pull-to-refresh, and pull-to-refresh is the gesture
+    // staff will reach for when a table they just closed is still listed. Hand-rolling it means
+    // overriding overscroll on a ScrollView and getting the fling/nested-scroll interaction
+    // wrong on a 5" touchscreen used at speed. This is AndroidX — the same family as appcompat
+    // above, not a third-party framework — it is ~40KB, has no transitive tail beyond
+    // androidx.core (already present), and does exactly one thing.
+    implementation 'androidx.swiperefreshlayout:swiperefreshlayout:1.1.0'
+}

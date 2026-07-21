@@ -46,6 +46,46 @@ async function saveRoutingToDB(data) {
   } catch(e) { console.warn('routing save failed', e); }
 }
 
+// v5.5.835: VENUE DEFAULT RECEIPT PRINTER.
+// Receipts now route to the printer set on the originating DEVICE (Back office →
+// Devices), with no venue-wide fallback — that fallback is exactly what made an
+// unconfigured MPOS print to the counter. But receipts from online / delivery /
+// HubRise orders have no originating device: they belong to the venue. This setting
+// is where those go. Still an explicit operator choice — unset means they don't print.
+//
+// Persisted on the OPS locations.pos_settings jsonb (same key space as
+// printers.location_id and print_routing.location_id — no cross-DB join needed), and
+// mirrored to localStorage so printer.js can resolve it synchronously at print time.
+const VENUE_PRINTER_KEY = 'rpos-venue-receipt-printer';
+
+async function loadVenueReceiptPrinter() {
+  if (isMock || !supabase) { try { return localStorage.getItem(VENUE_PRINTER_KEY) || ''; } catch { return ''; } }
+  try {
+    const locationId = await getLocationId();
+    if (!locationId) return '';
+    const { data } = await supabase.from('locations').select('pos_settings').eq('id', locationId).maybeSingle();
+    const id = data?.pos_settings?.default_receipt_printer_id || '';
+    try { id ? localStorage.setItem(VENUE_PRINTER_KEY, id) : localStorage.removeItem(VENUE_PRINTER_KEY); } catch {}
+    return id;
+  } catch (e) { console.warn('venue receipt printer load failed', e); return ''; }
+}
+
+async function saveVenueReceiptPrinter(printerId) {
+  // Mirror locally first so the setting is live on this browser immediately.
+  try { printerId ? localStorage.setItem(VENUE_PRINTER_KEY, printerId) : localStorage.removeItem(VENUE_PRINTER_KEY); } catch {}
+  if (isMock || !supabase) return;
+  try {
+    const locationId = await getLocationId();
+    if (!locationId) return;
+    // Read-modify-merge so we never clobber other pos_settings keys (the pattern
+    // LocationSettings.jsx uses for takeaway_customer_details).
+    const { data } = await supabase.from('locations').select('pos_settings').eq('id', locationId).maybeSingle();
+    await supabase.from('locations').update({
+      pos_settings: { ...(data?.pos_settings || {}), default_receipt_printer_id: printerId || null },
+    }).eq('id', locationId);
+  } catch (e) { console.warn('venue receipt printer save failed', e); }
+}
+
 // Default routing entry for a centre
 const emptyRouting = () => ({ assignedCategories:[], excludedItems:[] });
 
@@ -200,6 +240,14 @@ export default function PrintRouting() {
   const [form, setForm] = useState({ name:'', icon:'🔥', type:'kitchen', printerId:'', kdsDeviceId:'', printAllergens:false });
   const [printers, setPrinters] = useState(() => { try { return JSON.parse(localStorage.getItem('rpos-printers')||'[]'); } catch { return []; } });
   const [_loaded, setLoaded] = useState(false);
+  // v5.5.835: venue default receipt printer (online / delivery / HubRise receipts)
+  const [venuePrinterId, setVenuePrinterId] = useState('');
+  useEffect(() => { loadVenueReceiptPrinter().then(setVenuePrinterId); }, []);
+  const changeVenuePrinter = (id) => {
+    setVenuePrinterId(id);
+    saveVenueReceiptPrinter(id);
+    markBOChange?.();
+  };
 
   // Load routing from Supabase on mount
   useEffect(() => {
@@ -414,6 +462,35 @@ export default function PrintRouting() {
         </div>
 
         <div style={{ flex:1, overflowY:'auto' }}>
+          {/* v5.5.835: venue-level receipt destination. Till + handheld receipts follow
+              the printer set on the device itself (Devices → edit terminal); this covers
+              the receipts that have no device — online, delivery and HubRise orders. */}
+          <div style={S.h2}>Customer receipts</div>
+          <div style={{ padding:'0 14px 14px' }}>
+            <label style={S.label}>Default receipt printer</label>
+            {printers.length === 0 ? (
+              <div style={{ fontSize:12, color:'var(--t3)', lineHeight:1.5 }}>
+                No printers added yet — go to <strong>Devices → Printers</strong> to add one first.
+              </div>
+            ) : (
+              <>
+                <select style={S.input} value={venuePrinterId} onChange={e=>changeVenuePrinter(e.target.value)}>
+                  <option value="">No default — these receipts won't print</option>
+                  {printers.map(p => (
+                    <option key={p.id} value={p.id}>
+                      🖨 {p.name}{p.location ? ` — ${p.location}` : ''}{p.address ? ` (${p.address})` : ''}
+                    </option>
+                  ))}
+                </select>
+                <div style={{ fontSize:11, color: venuePrinterId ? 'var(--t3)' : 'var(--red)', marginTop:6, lineHeight:1.5 }}>
+                  {venuePrinterId
+                    ? 'Used for online, delivery and HubRise receipts. Till and handheld receipts use the printer set on each device.'
+                    : 'Online, delivery and HubRise receipts have nowhere to print. Pick a printer above.'}
+                </div>
+              </>
+            )}
+          </div>
+
           <div style={S.h2}>Production centers</div>
           {data.centres.length === 0 && (
             <div style={{ padding:'12px 14px', fontSize:12, color:'var(--t3)' }}>No centers yet — add one below</div>

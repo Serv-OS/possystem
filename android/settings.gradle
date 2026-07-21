@@ -11,3 +11,6 @@ include ':app'
 // update channel). ':app' = POS. Add new surfaces (menuboard, kds, …) the same way.
 include ':menuboard'
 include ':mpos'
+// :paxpay = card payments on a PAX A920 Pro via the Ryft/STS "G8" stack. The only NATIVE
+// module (no WebView) — the RPOS SPA does not run on that hardware's Chrome 80 WebView.
+include ':paxpay'

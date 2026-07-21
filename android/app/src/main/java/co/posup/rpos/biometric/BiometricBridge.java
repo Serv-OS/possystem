@@ -31,6 +31,10 @@ public class BiometricBridge {
     // Flip to true once the SUNMI fingerprint SDK enroll/identify is wired into the TODOs below.
     private static final boolean SUNMI_SDK_WIRED = false;
 
+    // "Use PIN instead" was tapped. The framework reports it as error 13, but the constant lives on
+    // the hidden BiometricConstants (not on the public BiometricPrompt), so mirror the value here.
+    private static final int ERROR_NEGATIVE_BUTTON = 13;
+
     private final WebView webView;
     private final Activity activity;
 
@@ -79,7 +83,7 @@ public class BiometricBridge {
                         @Override public void onAuthenticationError(int code, CharSequence errString) {
                             boolean canceled = code == android.hardware.biometrics.BiometricPrompt.BIOMETRIC_ERROR_USER_CANCELED
                                 || code == android.hardware.biometrics.BiometricPrompt.BIOMETRIC_ERROR_CANCELED
-                                || code == android.hardware.biometrics.BiometricPrompt.BIOMETRIC_ERROR_NEGATIVE_BUTTON;
+                                || code == ERROR_NEGATIVE_BUTTON;
                             notifyJS(callbackId, false, "{\"error\":\"" + (canceled ? "canceled" : "auth_error") + "\"}");
                         }
                         // onAuthenticationFailed() = one bad read; the prompt keeps going. No callback.
