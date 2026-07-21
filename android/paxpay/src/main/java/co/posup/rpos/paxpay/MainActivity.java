@@ -979,7 +979,11 @@ public class MainActivity extends ComponentActivity {
     // =========================================================================================
 
     private void showAmountScreen() {
-        setScreen(new AmountScreen(this, this::beginManual));
+        setScreen(new AmountScreen(this, new AmountScreen.Listener() {
+            @Override public void onAmountEntered(long baseMinor) { beginManual(baseMinor); }
+            // Mis-tapped the home tile — nothing has been entered or charged, so just go back.
+            @Override public void onCancel() { showHome(); }
+        }));
     }
 
     private void beginManual(long amountMinor) {

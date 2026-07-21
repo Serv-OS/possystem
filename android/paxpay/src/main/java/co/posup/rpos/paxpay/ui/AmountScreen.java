@@ -30,18 +30,20 @@ import co.posup.rpos.paxpay.Money;
  * {@code baseMinor > 0}, and the listener is still handed the same long. Nothing on this screen
  * computes money; it collects digits and passes them on.
  *
- * ═══ ONE THING THE DESIGN ASKS FOR THAT THIS SIGNATURE CANNOT GIVE ══════════════════════════
- * Screen 04 draws the running head as "‹ HOME" — a back affordance. {@link Listener} has exactly
- * one method, {@code onAmountEntered}, and MainActivity constructs this screen with a method
- * reference ({@code new AmountScreen(this, this::beginManual)}), so there is no callback to route
- * a back tap to and no signature change is permitted here. A chevron that does nothing when
- * pressed is worse on a payment terminal than no chevron at all — the operator taps it twice and
- * concludes the terminal has frozen — so the head reads "MANUAL PAYMENT" instead. See the handoff
- * note for the one-line fix if the back affordance is wanted.
+ * ═══ THE BACK AFFORDANCE ════════════════════════════════════════════════════════════════════
+ * Screen 04 draws the running head as "‹ HOME". This screen is reachable by a single tap on the
+ * home tile, so a MIS-tap must have a way out — without one, and with no hardware-Back handling in
+ * this module, the only escapes are to charge an amount or to kill the app. So {@link Listener}
+ * carries {@code onCancel()} and the head is the back-tappable "‹ HOME". The tap is inert until
+ * MainActivity routes it home, so it is never a dead chevron.
  */
 public final class AmountScreen extends LinearLayout {
 
-    public interface Listener { void onAmountEntered(long baseMinor); }
+    public interface Listener {
+        void onAmountEntered(long baseMinor);
+        /** Left the screen without charging — a mis-tap on the home tile. Return to Home. */
+        void onCancel();
+    }
 
     /** £9,999.99 — a deliberately low cap; this is a test harness, not a real till. */
     private static final long MAX_MINOR = 999_999L;
@@ -61,7 +63,7 @@ public final class AmountScreen extends LinearLayout {
         // The CTA's green glow is drawn outside its own bounds; without this it is clipped away.
         setClipToPadding(false);
 
-        addView(Ui.runningHead(c, "MANUAL PAYMENT", "LIVE", true),
+        addView(Ui.runningHead(c, "Home", v -> listener.onCancel(), "LIVE", true),
                 Ui.lp(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
         addView(Ui.spacer(c, 14));
 
