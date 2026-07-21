@@ -1268,8 +1268,16 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     // A training till never even looks — it must not learn about, or reach, a
     // real card terminal.
     if (isTrainingMode()) { setPaxLookupDone(true); return () => { alive = false; }; }
+    // v5.5.838: findPaxTerminal now returns { terminal, reason }. `reason` is the
+    // "2 terminals here and none is assigned to this till" case — a real
+    // misconfiguration the manager has to fix, so it is shown rather than
+    // silently falling back to the old path with no explanation.
     findPaxTerminal({ posDeviceId: getPosDeviceId() })
-      .then(t => { if (alive) setPaxTarget(t); })
+      .then(({ terminal, reason }) => {
+        if (!alive) return;
+        setPaxTarget(terminal);
+        if (reason) setPaxError(reason);
+      })
       .catch(() => { /* stays null — existing paths unaffected */ })
       .finally(() => { if (alive) setPaxLookupDone(true); });
     return () => { alive = false; };
@@ -1411,10 +1419,20 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
         currency: getActiveCurrencyCode?.() || 'GBP',
         // skipTip is NOT a bypass of the terminal — it folds into the frozen
         // config as enabled:false, so one rule lives in one place.
+        //
+        // v5.5.838 — WRITE BOTH SPELLINGS. TipConfig.fromJobJson on the terminal
+        // reads "percentBands" or "tip_percentages" and nothing else; it does NOT
+        // read "percentages", which is what this object used to send. Because that
+        // parser FAILS CLOSED, the near-miss key name was indistinguishable from
+        // "this venue does not tip" — the customer simply never saw a tip prompt.
+        // Same dual shape set_terminal_settings normalises to.
         tipConfig: {
-          enabled: !skipTip && tipCfg?.tipping_enabled !== false,
-          percentages: tipCfg?.tip_percentages ?? null,
-          allowCustom: tipCfg?.allow_custom_tip ?? true,
+          enabled:             !skipTip && tipCfg?.tipping_enabled !== false,
+          tipping_enabled:     !skipTip && tipCfg?.tipping_enabled !== false,
+          percentBands:        tipCfg?.tip_percentages ?? null,
+          tip_percentages:     tipCfg?.tip_percentages ?? null,
+          allowCustom:         tipCfg?.allow_custom_tip ?? true,
+          allow_custom:        tipCfg?.allow_custom_tip ?? true,
           smartThresholdMinor: tipCfg?.smart_tip_threshold_minor ?? null,
         },
         closedCheckId: `chk-${Date.now()}`,

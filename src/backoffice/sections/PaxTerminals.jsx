@@ -1,19 +1,26 @@
 // src/backoffice/sections/PaxTerminals.jsx
 //
 // Pair a PAX card terminal (our own :paxpay app) to this location by claim code,
-// and see whether it is online. Self-contained and self-gating, exactly like
-// RyftTerminals — it renders nothing until it knows there is something to show.
+// see whether it is online, and configure what it does. Self-contained and
+// self-gating, exactly like RyftTerminals — it renders nothing until it knows
+// there is something to show.
 //
 // The terminal shows a code on its own screen; a manager types that code here.
 // That is the whole pairing ceremony: the code is a capability you have to be
 // physically standing in front of the device to read.
 //
-// SECURITY NOTE — nothing on this screen writes location_id. claim_terminal_device()
-// is a SECURITY DEFINER RPC that validates the manager's access to the location and
-// sets location_id itself. terminal_devices has no INSERT and no UPDATE policy at all.
+// SECURITY NOTE — nothing on this screen writes location_id, and nothing on this
+// screen writes terminal_devices directly. terminal_devices has NO INSERT and NO
+// UPDATE POLICY at all (every anonymous kiosk/QR/online session in this system
+// holds a valid auth.uid(), so a permissive policy on a payments table would be
+// unbounded public write access). Both writers are SECURITY DEFINER RPCs that
+// validate the manager's access server-side:
+//   claim_terminal_device(...)  — pairing; the only writer of location_id
+//   set_terminal_settings(...)  — everything on this screen
+// A supabase.from('terminal_devices').update(...) here would silently affect 0 rows.
 
 import { useEffect, useState } from 'react';
-import { supabase, getActiveLocationSync } from '../../lib/supabase';
+import { supabase, platformSupabase, getActiveLocationSync } from '../../lib/supabase';
 
 const S = {
   card:    { background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:14, padding:24, marginBottom:20 },
@@ -29,6 +36,10 @@ const S = {
   ok:      { padding:10, background:'var(--bg2)', color:'var(--grn)', borderRadius:8, fontSize:12, border:'1px solid var(--bdr)', marginTop:10 },
   pill:    { fontSize:11, padding:'2px 8px', borderRadius:99, background:'var(--bg3)', color:'var(--t2)', textTransform:'uppercase', letterSpacing:'.05em', fontWeight:700, border:'1px solid var(--bdr)' },
   mono:    { fontFamily:'var(--font-mono, monospace)' },
+  sub:     { fontSize:11, color:'var(--t4)', marginTop:6, lineHeight:1.5 },
+  box:     { padding:12, background:'var(--bg2)', border:'1px solid var(--bdr)', borderRadius:8, marginBottom:12 },
+  fieldset:{ marginTop:18, paddingTop:16, borderTop:'1px solid var(--bdr)' },
+  legend:  { fontSize:13, fontWeight:800, color:'var(--t1)', marginBottom:4 },
 };
 
 /** Online if we've heard from it in the last two minutes (heartbeat is ~30s). */
@@ -43,15 +54,55 @@ function onlineState(lastSeenAt) {
   return { online:false, text:`Last seen ${new Date(lastSeenAt).toLocaleDateString()}` };
 }
 
+// v5.5.838: the tip shape written onto terminal_devices.tip_config.
+//
+// REUSED, NOT REINVENTED. These are the same three controls, the same defaults
+// and the same wording as the Stripe reader's tipping block (Card readers →
+// "Reader settings"): an on/off, up to five percentage bands, and a custom-amount
+// flag. A manager who has configured tipping once should not have to learn a
+// second vocabulary for a second bit of hardware.
+//
+// The RPC normalises whatever we send into BOTH spellings the terminal parses
+// ("percentBands"/"enabled" and "tip_percentages"/"tipping_enabled"), so this
+// object is the editor's shape, not the wire shape.
+const TIP_DEFAULTS = { enabled: true, percentages: [15, 18, 20], allowCustom: true };
+
+/** NULL modes means every mode is on — see the column comment in 20260723. */
+function modesOf(t) {
+  const m = t?.modes || {};
+  return {
+    table_pay:    m.table_pay    !== false,
+    manual:       m.manual       !== false,
+    pos_dispatch: m.pos_dispatch !== false,
+  };
+}
+
+function tipOf(t) {
+  const c = t?.tip_config;
+  if (!c || typeof c !== 'object') return { ...TIP_DEFAULTS, enabled: false };
+  const pcts = Array.isArray(c.percentBands) ? c.percentBands
+             : Array.isArray(c.tip_percentages) ? c.tip_percentages
+             : Array.isArray(c.percentages) ? c.percentages
+             : TIP_DEFAULTS.percentages;
+  return {
+    enabled:     c.enabled ?? c.tipping_enabled ?? false,
+    percentages: pcts.length ? pcts : TIP_DEFAULTS.percentages,
+    allowCustom: c.allowCustom ?? c.allow_custom ?? true,
+  };
+}
+
 export default function PaxTerminals() {
   const [locationId, setLocationId] = useState(null);
   const [terminals, setTerminals] = useState([]);
+  const [posDevices, setPosDevices] = useState([]);
+  const [venueIdleImage, setVenueIdleImage] = useState(null);   // shared with the Stripe reader idle screen
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [code, setCode] = useState('');
   const [label, setLabel] = useState('');
   const [busy, setBusy] = useState(false);
+  const [openId, setOpenId] = useState(null);   // which terminal's settings are expanded
 
   const load = async () => {
     setError('');
@@ -62,12 +113,35 @@ export default function PaxTerminals() {
       // RLS scopes this to the manager's own locations — no filter can widen it.
       const { data, error: e } = await supabase
         .from('terminal_devices')
-        .select('id, label, serial_number, status, active, app_version, last_seen_at, claimed_at, bound_pos_device_id')
+        .select('id, label, serial_number, status, active, app_version, last_seen_at, claimed_at, bound_pos_device_id, tip_config, modes, idle_screen')
         .eq('location_id', locId)
         .neq('status', 'retired')
         .order('claimed_at', { ascending: false });
       if (e) throw new Error(e.message);
       setTerminals(data || []);
+
+      // The tills this terminal can be assigned to. type='pos' only — a kiosk or
+      // a KDS has no "send to card machine" button, and the RPC rejects them too.
+      const { data: devs } = await supabase
+        .from('devices')
+        .select('id, name, type')
+        .eq('location_id', locId)
+        .eq('type', 'pos')
+        .order('name');
+      setPosDevices(devs || []);
+
+      // v5.5.838: the venue's idle-screen image, shared with the Stripe reader
+      // screensaver (Card readers → "Idle screen / screensaver"). It lives on
+      // location_reader_settings in the PLATFORM DB; the PAX app can only reach
+      // the Ops project, so Back Office mirrors the URL onto the terminal row.
+      if (platformSupabase) {
+        const { data: rs } = await platformSupabase
+          .from('location_reader_settings')
+          .select('idle_screen_image_url')
+          .eq('location_id', locId)
+          .maybeSingle();
+        setVenueIdleImage(rs?.idle_screen_image_url || null);
+      }
     } catch (e) {
       setError(e.message);
     } finally {
@@ -77,10 +151,12 @@ export default function PaxTerminals() {
 
   useEffect(() => { load(); }, []);
   // Heartbeats land every ~30s; refresh the "online" column so it isn't lying.
+  // Skip while a settings panel is open — a reload underneath an editor would
+  // throw away whatever the manager is halfway through typing.
   useEffect(() => {
-    const t = setInterval(() => { load(); }, 30_000);
+    const t = setInterval(() => { if (!openId) load(); }, 30_000);
     return () => clearInterval(t);
-  }, []);
+  }, [openId]);
 
   const pair = async () => {
     setBusy(true); setError(''); setNotice('');
@@ -135,25 +211,57 @@ export default function PaxTerminals() {
           </div>
           {terminals.map(t => {
             const st = onlineState(t.last_seen_at);
+            const till = posDevices.find(d => d.id === t.bound_pos_device_id);
+            const m = modesOf(t);
+            const modeSummary = [
+              m.table_pay ? 'Table Pay' : null,
+              m.manual ? 'Manual' : null,
+              m.pos_dispatch ? 'Send from POS' : null,
+            ].filter(Boolean);
             return (
-              <div key={t.id} style={{ display:'grid', gridTemplateColumns:'1.4fr 1fr 1fr auto', fontSize:13, padding:'10px 14px', borderTop:'1px solid var(--bdr)', alignItems:'center' }}>
-                <div>
-                  <div style={{ color:'var(--t1)', fontWeight:600 }}>{t.label || 'Card terminal'}</div>
-                  <div style={{ fontSize:11, color:'var(--t4)' }}>
-                    {t.app_version ? `App ${t.app_version}` : 'Version unknown'}
+              <div key={t.id} style={{ borderTop:'1px solid var(--bdr)' }}>
+                <div style={{ display:'grid', gridTemplateColumns:'1.4fr 1fr 1fr auto', fontSize:13, padding:'10px 14px', alignItems:'center' }}>
+                  <div>
+                    <div style={{ color:'var(--t1)', fontWeight:600 }}>{t.label || 'Card terminal'}</div>
+                    <div style={{ fontSize:11, color:'var(--t4)' }}>
+                      {t.app_version ? `App ${t.app_version}` : 'Version unknown'}
+                      {' · '}
+                      {till ? `Till: ${till.name}` : 'Not assigned to a till'}
+                    </div>
+                    <div style={{ fontSize:11, color:'var(--t4)' }}>
+                      {modeSummary.length ? modeSummary.join(' · ') : 'No payment modes enabled'}
+                      {(tipOf(t).enabled ? ' · Tipping on' : ' · Tipping off')}
+                    </div>
+                  </div>
+                  <div style={{ ...S.mono, color:'var(--t2)', fontSize:12 }}>{t.serial_number || '—'}</div>
+                  <div style={{ display:'flex', alignItems:'center', gap:7 }}>
+                    <span style={{
+                      width:8, height:8, borderRadius:'50%', flexShrink:0,
+                      background: st.online ? 'var(--grn)' : 'var(--t4)',
+                    }} />
+                    <span style={{ fontSize:12, color: st.online ? 'var(--grn)' : 'var(--t3)' }}>{st.text}</span>
+                  </div>
+                  <div style={{ textAlign:'right', display:'flex', gap:6, justifyContent:'flex-end' }}>
+                    <button
+                      onClick={() => setOpenId(openId === t.id ? null : t.id)}
+                      style={{ ...S.btn, ...S.btnGhost, padding:'5px 10px', fontSize:12 }}
+                    >
+                      {openId === t.id ? 'Close' : 'Settings'}
+                    </button>
+                    <button onClick={() => retire(t)} style={{ ...S.btn, ...S.btnDan, padding:'5px 10px', fontSize:12 }}>Unpair</button>
                   </div>
                 </div>
-                <div style={{ ...S.mono, color:'var(--t2)', fontSize:12 }}>{t.serial_number || '—'}</div>
-                <div style={{ display:'flex', alignItems:'center', gap:7 }}>
-                  <span style={{
-                    width:8, height:8, borderRadius:'50%', flexShrink:0,
-                    background: st.online ? 'var(--grn)' : 'var(--t4)',
-                  }} />
-                  <span style={{ fontSize:12, color: st.online ? 'var(--grn)' : 'var(--t3)' }}>{st.text}</span>
-                </div>
-                <div style={{ textAlign:'right' }}>
-                  <button onClick={() => retire(t)} style={{ ...S.btn, ...S.btnDan, padding:'5px 10px', fontSize:12 }}>Unpair</button>
-                </div>
+                {openId === t.id && (
+                  <TerminalSettings
+                    key={`${t.id}:${t.claimed_at}`}
+                    terminal={t}
+                    posDevices={posDevices}
+                    locationId={locationId}
+                    venueIdleImage={venueIdleImage}
+                    onVenueIdleImage={setVenueIdleImage}
+                    onSaved={async () => { await load(); }}
+                  />
+                )}
               </div>
             );
           })}
@@ -192,6 +300,322 @@ export default function PaxTerminals() {
 
       {notice && <div style={S.ok}>{notice}</div>}
       {error && <div style={S.err}>{error}</div>}
+    </div>
+  );
+}
+
+// ─── Per-terminal settings ────────────────────────────────────────────────────
+// v5.5.838. Every save goes through set_terminal_settings, which is a WHOLE
+// SETTINGS WRITE — so this editor always sends the complete set, never a patch.
+//
+// FAILURES ARE LOUD. A silent save is what made "tipping is off" invisible for a
+// day: the panel appeared to work, the row never changed. Both the RPC error and
+// the "0 rows / no ok" case surface as red text that does not clear itself.
+function TerminalSettings({ terminal, posDevices, locationId, venueIdleImage, onVenueIdleImage, onSaved }) {
+  const initTip = tipOf(terminal);
+  const initModes = modesOf(terminal);
+
+  const [tipEnabled, setTipEnabled] = useState(initTip.enabled);
+  const [tipPcts, setTipPcts]       = useState(initTip.percentages);
+  const [allowCustom, setAllowCustom] = useState(initTip.allowCustom);
+  const [boundTill, setBoundTill]   = useState(terminal.bound_pos_device_id || '');
+  const [modes, setModes]           = useState(initModes);
+  const [name, setName]             = useState(terminal.label || '');
+  const [ssEnabled, setSsEnabled]   = useState(!!terminal.idle_screen?.enabled);
+  const [ssImage, setSsImage]       = useState(terminal.idle_screen?.imageUrl || venueIdleImage || null);
+  const [ssUploading, setSsUploading] = useState(false);
+
+  const [saving, setSaving] = useState(false);
+  const [err, setErr]       = useState('');
+  const [ok, setOk]         = useState('');
+
+  const setMode = (k, v) => setModes(m => ({ ...m, [k]: v }));
+
+  // Upload straight to the PUBLIC kiosk-assets bucket, the same pattern
+  // KioskSettings and DeviceProfiles use. Public-bucket objects are served from
+  // /storage/v1/object/public/… which does NOT consult storage RLS, so the PAX
+  // app can fetch the image over plain HTTPS with no session at all.
+  const uploadIdleImage = async (file) => {
+    setErr(''); setOk(''); setSsUploading(true);
+    try {
+      const allowed = ['image/png', 'image/jpeg', 'image/jpg'];
+      if (!allowed.includes(file.type)) throw new Error(`Unsupported image type: ${file.type}. Use PNG or JPEG.`);
+      if (file.size > 2 * 1024 * 1024) throw new Error(`Image too large (${Math.round(file.size / 1024)} KB). Max 2 MB.`);
+
+      const ext = file.type === 'image/png' ? 'png' : 'jpg';
+      const path = `terminal-idle/${locationId}-${Date.now()}.${ext}`;
+      const { error: upErr } = await supabase.storage
+        .from('kiosk-assets')
+        .upload(path, file, { cacheControl: '3600', upsert: true, contentType: file.type });
+      if (upErr) throw new Error(upErr.message);
+      const { data: pub } = supabase.storage.from('kiosk-assets').getPublicUrl(path);
+      const url = pub?.publicUrl;
+      if (!url) throw new Error('Upload succeeded but no public URL came back.');
+
+      // Share it with the venue's existing idle-screen setting so both bits of
+      // hardware show one image. idle_screen_image_url is already the
+      // human-viewable copy of that feature (Stripe reads idle_screen_file_id,
+      // not this), so writing it cannot change what a Stripe reader displays.
+      if (platformSupabase) {
+        const { error: rsErr } = await platformSupabase
+          .from('location_reader_settings')
+          .upsert({ location_id: locationId, idle_screen_image_url: url }, { onConflict: 'location_id' });
+        if (rsErr) throw new Error(`Image uploaded but the venue setting did not save: ${rsErr.message}`);
+      }
+
+      setSsImage(url);
+      setSsEnabled(true);
+      onVenueIdleImage?.(url);
+      setOk('Image uploaded. Tap Save to send it to this terminal.');
+    } catch (e) {
+      setErr(e?.message || 'Upload failed.');
+    } finally {
+      setSsUploading(false);
+    }
+  };
+
+  const save = async () => {
+    setSaving(true); setErr(''); setOk('');
+    try {
+      const cleanPcts = tipPcts
+        .map(p => Number(p))
+        .filter(p => Number.isFinite(p) && p > 0 && p <= 100)
+        .slice(0, 5);
+      if (tipEnabled && cleanPcts.length === 0) {
+        throw new Error('Tipping is on but no percentages are set. Add at least one, or turn tipping off.');
+      }
+
+      const { data, error } = await supabase.rpc('set_terminal_settings', {
+        p_terminal_id:         terminal.id,
+        p_tip_config:          { enabled: tipEnabled, percentages: cleanPcts, allowCustom },
+        p_bound_pos_device_id: boundTill || null,
+        p_modes:               modes,
+        p_label:               name.trim() || null,
+        p_idle_screen:         { enabled: ssEnabled, imageUrl: ssImage || null },
+      });
+      // Never swallow. An RPC that refuses (no access, wrong venue's till) must
+      // land in front of the manager, not in the console.
+      if (error) throw new Error(error.message);
+      if (!data?.ok) throw new Error('The terminal settings did not save — nothing was changed.');
+
+      setOk('Saved. The terminal picks this up on its next heartbeat (within a minute).');
+      await onSaved?.();
+    } catch (e) {
+      setErr(e?.message || 'Save failed.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const noModes = !modes.table_pay && !modes.manual && !modes.pos_dispatch;
+
+  return (
+    <div style={{ padding:'4px 14px 18px', background:'var(--bg2)', borderTop:'1px solid var(--bdr)' }}>
+
+      {/* ── Name ──────────────────────────────────────────────────────── */}
+      <div style={S.fieldset}>
+        <label style={S.label}>Terminal name</label>
+        <input value={name} onChange={e => setName(e.target.value)} placeholder="Handheld 1" style={{ ...S.input, maxWidth:320 }} />
+      </div>
+
+      {/* ── Tipping ───────────────────────────────────────────────────────
+          Same controls, defaults and wording as the Stripe reader's tipping
+          block in Card readers → Reader settings. One vocabulary, two devices. */}
+      <div style={S.fieldset}>
+        <div style={S.legend}>Tipping</div>
+        <div style={{ ...S.sub, marginBottom:12 }}>
+          Controls the tip prompt this terminal shows before the customer taps their card.
+        </div>
+
+        <div style={S.box}>
+          <label style={{ display:'flex', alignItems:'center', gap:10, cursor:'pointer' }}>
+            <input type="checkbox" checked={tipEnabled} onChange={e => setTipEnabled(e.target.checked)} style={{ width:16, height:16 }} />
+            <div>
+              <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)' }}>Enable tipping prompt on this terminal</div>
+              <div style={{ fontSize:11, color:'var(--t3)', marginTop:2 }}>
+                Customer sees tip percentage buttons before tapping their card. Disable for fast-casual /
+                counter service where tipping isn&apos;t appropriate.
+              </div>
+            </div>
+          </label>
+        </div>
+
+        {tipEnabled && (
+          <div style={{ paddingLeft:26 }}>
+            <div style={{ marginBottom:12 }}>
+              <label style={S.label}>Tip preset percentages (up to 5)</label>
+              <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+                {tipPcts.map((p, i) => (
+                  <input
+                    key={i}
+                    type="number"
+                    value={p}
+                    onChange={e => {
+                      const v = parseFloat(e.target.value);
+                      setTipPcts(prev => prev.map((x, idx) => idx === i ? (Number.isFinite(v) ? v : 0) : x));
+                    }}
+                    style={{ ...S.input, width:76, textAlign:'center' }}
+                    min={1} max={100} step="0.5"
+                  />
+                ))}
+                {tipPcts.length < 5 && (
+                  <button onClick={() => setTipPcts(prev => [...prev, 25])} style={{ ...S.btn, ...S.btnGhost, padding:'4px 10px', fontSize:12 }}>
+                    + Add
+                  </button>
+                )}
+                {tipPcts.length > 1 && (
+                  <button onClick={() => setTipPcts(prev => prev.slice(0, -1))} style={{ ...S.btn, ...S.btnGhost, padding:'4px 10px', fontSize:12 }}>
+                    − Remove last
+                  </button>
+                )}
+              </div>
+              <div style={S.sub}>
+                The terminal shows these as tap buttons. Common: 10 / 12.5 / 15.
+              </div>
+            </div>
+
+            <div style={{ marginBottom:4 }}>
+              <label style={{ display:'flex', alignItems:'center', gap:8, cursor:'pointer' }}>
+                <input type="checkbox" checked={allowCustom} onChange={e => setAllowCustom(e.target.checked)} style={{ width:14, height:14 }} />
+                <span style={{ fontSize:12, color:'var(--t1)' }}>Allow customer to enter a custom tip amount</span>
+              </label>
+            </div>
+            <div style={S.sub}>
+              A &quot;No tip&quot; option is always shown and is not configurable — a customer must never be
+              trapped on the tip screen.
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* ── Assign to a till ──────────────────────────────────────────── */}
+      <div style={S.fieldset}>
+        <div style={S.legend}>Assign to a till</div>
+        <div style={{ ...S.sub, marginBottom:10 }}>
+          When that till sends a payment from its checkout screen, it goes to this terminal.
+        </div>
+        <select value={boundTill} onChange={e => setBoundTill(e.target.value)} style={{ ...S.input, maxWidth:360 }}>
+          <option value="">— Not assigned —</option>
+          {posDevices.map(d => (
+            <option key={d.id} value={d.id}>{d.name || d.id}</option>
+          ))}
+        </select>
+        {posDevices.length === 0 && (
+          <div style={S.sub}>No POS tills are registered at this venue yet — add one in Devices first.</div>
+        )}
+        {!boundTill && posDevices.length > 1 && (
+          <div style={S.sub}>
+            Leave this unassigned only if there is one card terminal here. With more than one and none
+            assigned, a till cannot tell which machine to send to and will say so instead of guessing.
+          </div>
+        )}
+      </div>
+
+      {/* ── Modes ─────────────────────────────────────────────────────── */}
+      <div style={S.fieldset}>
+        <div style={S.legend}>What this terminal can do</div>
+        <div style={{ ...S.sub, marginBottom:10 }}>
+          Turn off anything this terminal shouldn&apos;t offer. Buttons that are off are hidden on the
+          terminal&apos;s home screen.
+        </div>
+        {[
+          ['table_pay',    'Table Pay',      'Staff pick an open table on the terminal and take the whole bill.'],
+          ['manual',       'Manual payment', 'Staff type an amount on the terminal.'],
+          ['pos_dispatch', 'Send from POS',  'A till pushes a payment to this terminal from its checkout screen.'],
+        ].map(([key, title, help]) => (
+          <div key={key} style={S.box}>
+            <label style={{ display:'flex', alignItems:'center', gap:10, cursor:'pointer' }}>
+              <input type="checkbox" checked={modes[key]} onChange={e => setMode(key, e.target.checked)} style={{ width:16, height:16 }} />
+              <div>
+                <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)' }}>{title}</div>
+                <div style={{ fontSize:11, color:'var(--t3)', marginTop:2 }}>{help}</div>
+              </div>
+            </label>
+          </div>
+        ))}
+        {noModes && (
+          <div style={{ ...S.sub, color:'var(--red)' }}>
+            All three are off — this terminal will not be able to take any payment.
+          </div>
+        )}
+      </div>
+
+      {/* ── Idle screen ───────────────────────────────────────────────────
+          Reuses the venue's existing idle-screen image, shared with the Stripe
+          reader screensaver. The on/off is per terminal. */}
+      <div style={S.fieldset}>
+        <div style={S.legend}>Idle screen / screensaver</div>
+        <div style={{ ...S.sub, marginBottom:10 }}>
+          Show a full-screen image on this terminal when it is sitting idle on the home screen. Any touch
+          dismisses it. It never appears during a payment. This is the same venue image as the card
+          reader idle screen (Card readers → Idle screen) — uploading here replaces it for both.
+        </div>
+
+        <div style={S.box}>
+          <label style={{ display:'flex', alignItems:'center', gap:10, cursor: ssImage ? 'pointer' : 'not-allowed', opacity: ssImage ? 1 : 0.6 }}>
+            <input
+              type="checkbox"
+              checked={ssEnabled}
+              disabled={!ssImage}
+              onChange={e => setSsEnabled(e.target.checked)}
+              style={{ width:16, height:16 }}
+            />
+            <div>
+              <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)' }}>Show the idle image on this terminal</div>
+              <div style={{ fontSize:11, color:'var(--t3)', marginTop:2 }}>
+                {ssImage
+                  ? 'An image is set for this venue. Toggle off to leave this terminal on its normal home screen.'
+                  : 'Upload an image below to display when this terminal is idle.'}
+              </div>
+            </div>
+          </label>
+        </div>
+
+        <div style={{ display:'flex', gap:16, alignItems:'flex-start', flexWrap:'wrap' }}>
+          {ssImage && (
+            <div style={{
+              width:120, height:180, borderRadius:10, overflow:'hidden',
+              border:'2px solid var(--bdr)', background:'var(--bg3)', flexShrink:0,
+            }}>
+              <img src={ssImage} alt="Idle screen preview" style={{ width:'100%', height:'100%', objectFit:'cover' }} />
+            </div>
+          )}
+          <div style={{ flex:1, minWidth:200 }}>
+            <label style={{
+              display:'flex', alignItems:'center', justifyContent:'center', gap:8,
+              padding:'14px 16px', borderRadius:10, cursor: ssUploading ? 'wait' : 'pointer',
+              border:'2px dashed var(--bdr)', background:'var(--bg)',
+              color:'var(--t2)', fontSize:13, fontWeight:600, fontFamily:'inherit',
+            }}>
+              <input
+                type="file"
+                accept="image/png,image/jpeg"
+                style={{ display:'none' }}
+                disabled={ssUploading}
+                onChange={e => { const f = e.target.files?.[0]; if (f) uploadIdleImage(f); e.target.value = ''; }}
+              />
+              <span style={{ fontSize:18 }}>{ssUploading ? '⏳' : '🖼️'}</span>
+              {ssUploading ? 'Uploading…' : ssImage ? 'Replace image' : 'Choose an image'}
+            </label>
+            <div style={S.sub}>
+              PNG or JPEG, max 2 MB. The terminal screen is tall and narrow — a portrait image fills it best.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Save ──────────────────────────────────────────────────────── */}
+      <div style={{ marginTop:18, display:'flex', gap:10, alignItems:'center', flexWrap:'wrap' }}>
+        <button onClick={save} disabled={saving} style={{ ...S.btn, ...S.btnPrim }}>
+          {saving ? 'Saving…' : 'Save settings'}
+        </button>
+        <span style={{ fontSize:11, color:'var(--t4)' }}>
+          Saves go through a server-side check that the till belongs to this venue.
+        </span>
+      </div>
+
+      {ok  && <div style={S.ok}>{ok}</div>}
+      {err && <div style={S.err}>{err}</div>}
     </div>
   );
 }

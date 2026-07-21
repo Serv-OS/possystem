@@ -127,15 +127,47 @@ async function callFn(name, body) {
   return j;
 }
 
+/** Seen in the last two minutes (the terminal heartbeats every ~60s). Same rule
+ *  Back Office uses for its green dot, so the two never disagree in front of staff. */
+const TERMINAL_ONLINE_MS = 2 * 60_000;
+function terminalIsOnline(t) {
+  if (!t?.last_seen_at) return false;
+  return Date.now() - new Date(t.last_seen_at).getTime() < TERMINAL_ONLINE_MS;
+}
+
 /**
  * Is there a PAX terminal at this location we can send a payment to?
- * Returns the terminal row, or null. Never throws — a lookup failure must not
- * take the card button down.
+ *
+ * Returns `{ terminal, reason }`. NEVER THROWS — a lookup failure must not take
+ * the card button down, so an unreachable server leaves `terminal: null` and
+ * every existing venue (Stripe readers, Ryft REST) behaves exactly as before.
+ *
+ * v5.5.838 — RESOLUTION IS NOW FORGIVING. It used to require an exact
+ * bound_pos_device_id match or fall through to `data[0]`, and NOTHING ever wrote
+ * bound_pos_device_id, so an unassigned terminal was effectively unreachable.
+ * The order now is:
+ *
+ *   1. A terminal bound to THIS till wins outright, online or not — a manager
+ *      assigned it on purpose and that decision outranks a heartbeat.
+ *   2. Nothing bound, exactly one terminal online → use it. The common case is
+ *      one machine behind one bar; making somebody assign it first is friction
+ *      with no safety value.
+ *   3. Nothing bound, several online → REFUSE, and say why. Picking "the most
+ *      recently seen" would hand a card to whichever machine happened to beat
+ *      last, which on a two-floor site means presenting a bill upstairs that was
+ *      rung up downstairs. A named error beats a silent wrong guess.
+ *   4. Nothing online at all but exactly one terminal exists → use it anyway.
+ *      That preserves the previous behaviour for a venue whose single terminal is
+ *      simply asleep; the job sits `pending` until it wakes, which is what the
+ *      15-minute dispatch lease is for.
+ *
+ * Terminals with "Send from POS" switched off in Back Office are excluded before
+ * any of that. `modes` absent (migration not yet applied) means all modes on.
  */
 export async function findPaxTerminal({ posDeviceId } = {}) {
-  if (isMock || !supabase) return null;
+  if (isMock || !supabase) return { terminal: null, reason: null };
   const locationId = getActiveLocationSync();
-  if (!locationId || locationId === 'loc-demo') return null;
+  if (!locationId || locationId === 'loc-demo') return { terminal: null, reason: null };
   try {
     await ensureAuthToken();
     // Through an RPC, not a direct select: a POS till runs on an ANONYMOUS
@@ -146,11 +178,37 @@ export async function findPaxTerminal({ posDeviceId } = {}) {
     const { data, error } = await supabase.rpc('terminal_targets_for_pos', {
       p_location_id: locationId,
     });
-    if (error || !data?.length) return null;
-    // Prefer a terminal bound to THIS till; otherwise the most recently seen one.
-    return data.find(d => posDeviceId && d.bound_pos_device_id === posDeviceId) || data[0];
+    if (error || !data?.length) return { terminal: null, reason: null };
+
+    const candidates = data.filter(d => d?.modes?.pos_dispatch !== false);
+    if (!candidates.length) return { terminal: null, reason: null };
+
+    // 1. bound to this till
+    const bound = posDeviceId
+      ? candidates.find(d => d.bound_pos_device_id === posDeviceId)
+      : null;
+    if (bound) return { terminal: bound, reason: null };
+
+    // 2 / 3. nothing bound — online terminals decide
+    const online = candidates.filter(terminalIsOnline);
+    if (online.length === 1) return { terminal: online[0], reason: null };
+    if (online.length > 1) {
+      return {
+        terminal: null,
+        reason: `${online.length} card terminals at this venue and none is assigned to this till. `
+              + 'Assign one in Back Office → Card readers → PAX card terminals → Settings.',
+      };
+    }
+
+    // 4. none online
+    if (candidates.length === 1) return { terminal: candidates[0], reason: null };
+    return {
+      terminal: null,
+      reason: `${candidates.length} card terminals at this venue, none online and none assigned to this till. `
+            + 'Assign one in Back Office → Card readers → PAX card terminals → Settings.',
+    };
   } catch {
-    return null;
+    return { terminal: null, reason: null };
   }
 }
 

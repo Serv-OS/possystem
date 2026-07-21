@@ -40,6 +40,12 @@ public final class Prefs {
     private static final String K_LOCATION_ID = "location_id";
     private static final String K_LABEL = "label";
 
+    // ---- v5.5.838 Back Office settings cache ------------------------------------------------
+    /** Serialised TerminalSettings — see the note under {@link #settingsJson()}. */
+    private static final String K_SETTINGS = "terminal_settings";
+    /** Which URL the file in ScreensaverCache currently holds. */
+    private static final String K_SS_URL = "screensaver_url";
+
     private final SharedPreferences sp;
 
     public Prefs(Context c) {
@@ -147,5 +153,32 @@ public final class Prefs {
                 .putString(K_LOCATION_ID, locationId)
                 .putString(K_LABEL, label)
                 .apply();
+    }
+
+    // -------------------------------------------------------------------------------------
+    // Back Office settings (v5.5.838)
+    // -------------------------------------------------------------------------------------
+
+    /**
+     * The last known mode toggles + idle-screen config, as JSON.
+     *
+     * Cached for the same reason the pairing is: so the home screen renders correctly the
+     * instant the app opens, rather than showing three buttons and then removing one a second
+     * later when the fetch lands. A terminal whose modes were narrowed must not flash the mode
+     * it is no longer allowed to offer.
+     *
+     * Never authoritative — the server row wins on every fetch. Absent = all modes enabled.
+     */
+    public String settingsJson() { return sp.getString(K_SETTINGS, null); }
+
+    public void saveSettingsJson(String json) {
+        if (json == null) sp.edit().remove(K_SETTINGS).apply();
+        else sp.edit().putString(K_SETTINGS, json).apply();
+    }
+
+    public String screensaverUrl() { return sp.getString(K_SS_URL, null); }
+
+    public void saveScreensaverUrl(String url) {
+        sp.edit().putString(K_SS_URL, url).apply();
     }
 }

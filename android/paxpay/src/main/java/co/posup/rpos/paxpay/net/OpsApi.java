@@ -30,6 +30,7 @@ import co.posup.rpos.paxpay.model.TerminalJob;
  *                          p_reported_minor, p_decline_reason)
  *
  * Job pickup is a filtered SELECT on terminal_jobs, not an RPC — see {@link #pollPendingJob}.
+ * Ditto the terminal's own settings row — see {@link #fetchSettings}.
  *
  * Every method here BLOCKS. Call them inside SupabaseClient.async().
  */
@@ -80,6 +81,26 @@ public final class OpsApi {
         p.put("p_device_id", deviceId);
         p.put("p_app_version", BuildVersion.VERSION);
         sb.rpcRaw("terminal_heartbeat", p, false);
+    }
+
+    /**
+     * v5.5.838: what Back Office says this terminal may do, and its idle image.
+     *
+     * A filtered select rather than an RPC, and that is safe here for one specific reason:
+     * terminal_devices' SELECT policy is `device_uid = auth.uid()`, so this query can only ever
+     * return OUR OWN row. Adding the id filter on top is belt and braces.
+     *
+     * Returns null when the row cannot be read — including on a database where 20260723 has not
+     * been applied and the columns do not exist yet. The caller treats null as "no settings", not
+     * as "everything off"; see TerminalSettings.allowAll().
+     */
+    public JSONObject fetchSettings(String deviceId) throws Exception {
+        String q = "terminal_devices"
+                + "?select=modes,idle_screen,label"
+                + "&id=eq." + Http.enc(deviceId)
+                + "&limit=1";
+        JSONArray arr = sb.select(q);
+        return arr.length() == 0 ? null : arr.optJSONObject(0);
     }
 
     // -------------------------------------------------------------------------------------

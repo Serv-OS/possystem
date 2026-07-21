@@ -94,6 +94,20 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.838', date: '21 Jul 2026', label: 'Card machine settings — tipping, which till it belongs to, and what it offers',
+    changes: [
+      'The card machine now has proper settings. Go to Back office → Card readers, find your PAX terminal in the list and press Settings.',
+      'FIXED — the card machine said tipping was off even at a venue with tipping switched on. There was nowhere to tell it otherwise: the setting existed in the database but nothing ever wrote to it. You can now set it, and the machine honours it.',
+      'Tipping on the machine works exactly like tipping on a card reader — an on/off switch, up to five percentage buttons, and whether the customer can type their own amount. Same settings, same words, so there is nothing new to learn.',
+      'A “No tip” option always shows and cannot be turned off. Trapping a customer on the tip screen is not something we will let a venue do.',
+      'You can now say which till a card machine belongs to. Press Card on that till and the payment goes to that machine.',
+      'If you only have one card machine you do not have to assign it — any till will find it. With more than one and none assigned, the till now says plainly that it does not know which machine to use, instead of doing nothing.',
+      'You can turn each of the machine’s three payment types on or off: taking a table’s bill, typing an amount by hand, and receiving a payment sent from a till. Anything switched off disappears from the machine’s home screen.',
+      'The card machine can now show your screensaver image when it is sitting idle, the same image the card readers use. Any touch wakes it. It will never appear during a payment.',
+      'Assigning a machine to a till is checked on the server, so a machine can never be tied to another venue’s till by mistake.',
+    ],
+  },
+  {
     version: '5.5.837', date: '21 Jul 2026', label: 'New \u2014 send a payment straight to a card machine (and a tip fix worth reading)',
     changes: [
       'Groundwork for the handheld PAX card machine. You can now pair one in Back office \u2192 Card readers: the terminal shows a code on its screen, you type it in, and it is tied to that venue. The list shows whether each one is online.',

@@ -888,8 +888,12 @@ function ReaderSettingsPanel({ locationId }) {
       {/* ── Screensaver / idle screen ──────────────────────────────── */}
       <div style={{ marginTop: 20, paddingTop: 18, borderTop: '1px solid var(--bdr)' }}>
         <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--t1)', marginBottom: 4 }}>Idle screen / screensaver</div>
+        {/* v5.5.838: this is no longer a Stripe-only setting. PAX card terminals
+            honour the same venue image (Card readers → PAX card terminals → Settings),
+            so the copy here is processor-neutral. */}
         <div style={{ fontSize: 12, color: 'var(--t3)', marginBottom: 14, lineHeight: 1.5 }}>
-          Display a custom image on the reader screen when no payment is in progress. Great for branding, promotions, or a welcome message. Image must be PNG or JPEG, max 512 KB.
+          Display a custom image on the card machine screen when no payment is in progress. Great for branding, promotions, or a welcome message. Image must be PNG or JPEG, max 512 KB.
+          {' '}PAX terminals use this same image — switch it on per terminal under PAX card terminals, below.
         </div>
 
         <div style={{ padding: 12, background: 'var(--bg2)', border: '1px solid var(--bdr)', borderRadius: 8, marginBottom: 12 }}>
@@ -899,7 +903,7 @@ function ReaderSettingsPanel({ locationId }) {
               <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)' }}>Enable idle screen image</div>
               <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2 }}>
                 {ssFileId
-                  ? 'A screensaver image is uploaded. Toggle off to show the default Stripe screen.'
+                  ? 'A screensaver image is uploaded. Toggle off to show the card machine’s default screen.'
                   : 'Upload an image below to display when the reader is idle.'}
               </div>
             </div>

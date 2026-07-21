@@ -30,10 +30,12 @@ import co.posup.rpos.paxpay.model.OpenTable;
 import co.posup.rpos.paxpay.model.Pairing;
 import co.posup.rpos.paxpay.model.StaffSession;
 import co.posup.rpos.paxpay.model.TerminalJob;
+import co.posup.rpos.paxpay.model.TerminalSettings;
 import co.posup.rpos.paxpay.net.OpsApi;
 import co.posup.rpos.paxpay.net.SupabaseClient;
 import co.posup.rpos.paxpay.store.JobLog;
 import co.posup.rpos.paxpay.store.Prefs;
+import co.posup.rpos.paxpay.store.ScreensaverCache;
 import co.posup.rpos.paxpay.ui.AmountScreen;
 import co.posup.rpos.paxpay.ui.ConfirmScreen;
 import co.posup.rpos.paxpay.ui.DiagnosticsScreen;
@@ -41,6 +43,7 @@ import co.posup.rpos.paxpay.ui.HomeScreen;
 import co.posup.rpos.paxpay.ui.PairingScreen;
 import co.posup.rpos.paxpay.ui.PinScreen;
 import co.posup.rpos.paxpay.ui.ResultScreen;
+import co.posup.rpos.paxpay.ui.ScreensaverScreen;
 import co.posup.rpos.paxpay.ui.StatusScreen;
 import co.posup.rpos.paxpay.ui.TableListScreen;
 import co.posup.rpos.paxpay.ui.TipScreen;
@@ -109,6 +112,17 @@ public class MainActivity extends ComponentActivity {
     /** Heartbeat cadence once paired. Cheap, and it is how Back Office shows "online". */
     private static final long HEARTBEAT_MS = 60_000L;
 
+    /**
+     * How long the terminal must sit untouched ON THE HOME SCREEN before the venue's idle image
+     * covers it. 60s is long enough that a member of staff reading the home screen mid-service is
+     * never interrupted, and short enough that a terminal parked on the bar is showing branding
+     * rather than a menu of payment buttons to whoever walks past.
+     *
+     * The timer is armed in exactly one place (the end of {@link #showHome}) and cancelled in
+     * exactly one place ({@link #setScreen}). See the safety note on {@link #armScreensaver}.
+     */
+    private static final long SCREENSAVER_IDLE_MS = 60_000L;
+
     private final Diagnostics diag = new Diagnostics();
     private final Handler ui = new Handler(Looper.getMainLooper());
 
@@ -151,6 +165,13 @@ public class MainActivity extends ComponentActivity {
     private Runnable pairingPoll;
     private Runnable heartbeatTick;
 
+    // ---- v5.5.838 Back Office settings + screensaver ----------------------------------------
+    /** What Back Office says this terminal may offer. NEVER null — allowAll() until told otherwise. */
+    private TerminalSettings settings = TerminalSettings.allowAll();
+    private ScreensaverCache ssCache;
+    private Runnable idleTick;
+    private boolean screensaverShowing;
+
     // =========================================================================================
     // Lifecycle
     // =========================================================================================
@@ -166,6 +187,12 @@ public class MainActivity extends ComponentActivity {
         sb = new SupabaseClient(this, prefs);
         api = new OpsApi(sb);
         recovery = new RecoveryRunner(sb, api, jobLog, diag);
+        ssCache = new ScreensaverCache(this, prefs);
+
+        // v5.5.838: render the home screen from the LAST KNOWN settings so a terminal whose
+        // modes were narrowed does not flash a button it is no longer allowed to offer. The
+        // server row replaces this on the first fetch; absent cache = all modes on.
+        settings = readCachedSettings();
 
         // ── the ONE construction site for the G8 client ─────────────────────────────────────
         // Swap StubG8CloudClient for the real HTTP implementation here and nothing else in the
@@ -288,6 +315,7 @@ public class MainActivity extends ComponentActivity {
                 if (p.isPaired()) {
                     stopPairingPoll();
                     startHeartbeat();
+                    refreshSettings();          // v5.5.838: modes + idle screen
                     if (advanceOnSuccess) runRecoveryThenContinue();
                 } else {
                     showPairing(null, false);
@@ -340,6 +368,9 @@ public class MainActivity extends ComponentActivity {
                 if (id != null) {
                     // Fire and forget. A failed heartbeat must never block or interrupt a payment.
                     sb.async(() -> { api.heartbeat(id); return null; }, null);
+                    // v5.5.838: piggyback the settings refresh on the heartbeat, so a change made
+                    // in Back Office reaches the terminal within a minute without a second timer.
+                    refreshSettings();
                 }
                 ui.postDelayed(this, HEARTBEAT_MS);
             }
@@ -384,7 +415,7 @@ public class MainActivity extends ComponentActivity {
         activeJob = null;
         activeLocalId = null;
 
-        setScreen(new HomeScreen(this, prefs.label(), jobLog.unfinishedCount(),
+        setScreen(new HomeScreen(this, prefs.label(), jobLog.unfinishedCount(), settings,
                 new HomeScreen.Listener() {
                     @Override public void onTablePay() { showPin(null); }
                     @Override public void onManualPayment() { showAmountScreen(); }
@@ -393,6 +424,139 @@ public class MainActivity extends ComponentActivity {
                         showUnresolved(jobLog.unfinished());
                     }
                 }));
+
+        // THE ONLY PLACE THE SCREENSAVER TIMER IS EVER ARMED. See armScreensaver().
+        armScreensaver();
+    }
+
+    // =========================================================================================
+    // Back Office settings (v5.5.838)
+    // =========================================================================================
+
+    private TerminalSettings readCachedSettings() {
+        try {
+            String json = prefs.settingsJson();
+            if (json == null) return TerminalSettings.allowAll();
+            return TerminalSettings.fromCache(new JSONObject(json));
+        } catch (Throwable t) {
+            return TerminalSettings.allowAll();
+        }
+    }
+
+    /**
+     * Re-read this terminal's own row: which modes it may offer, and its idle image.
+     *
+     * FAILURE IS A NO-OP, DELIBERATELY. If the row cannot be read — offline, a database without
+     * migration 20260723, an RLS change — we keep whatever we already had rather than falling
+     * back to any default. A settings fetch is not allowed to take a working terminal off the
+     * floor, and it is certainly not allowed to do so silently.
+     */
+    private void refreshSettings() {
+        final String id = prefs.deviceId();
+        if (id == null) return;
+        sb.async(() -> api.fetchSettings(id), new SupabaseClient.Result<JSONObject>() {
+            @Override public void onSuccess(JSONObject row) {
+                if (row == null) return;
+                TerminalSettings next = TerminalSettings.from(row);
+                boolean modesChanged = next.tablePay != settings.tablePay
+                        || next.manual != settings.manual
+                        || next.posDispatch != settings.posDispatch;
+                settings = next;
+                prefs.saveSettingsJson(next.toJson().toString());
+
+                // Pull the idle image down in the background so it is on disk BEFORE the terminal
+                // first goes idle — and so it survives the network dropping later.
+                if (next.idleEnabled && next.idleImageUrl != null
+                        && !ssCache.isCached(next.idleImageUrl)) {
+                    final String url = next.idleImageUrl;
+                    sb.async(() -> ssCache.ensure(url), null);
+                }
+
+                // Redraw only if the buttons actually changed, and only if the home screen is
+                // what is currently showing. Never yank the screen out from under a payment.
+                if (modesChanged && isShowingHome()) {
+                    diag.event("modes updated from Back Office");
+                    showHome();
+                }
+            }
+            @Override public void onError(String message) {
+                // Deliberately quiet: this is decoration, and the terminal keeps its last known
+                // settings. It lands in diagnostics for whoever goes looking.
+                diag.event("settings fetch failed: " + message);
+            }
+        });
+    }
+
+    // =========================================================================================
+    // Screensaver (v5.5.838)
+    // =========================================================================================
+
+    /** Is the home screen the thing currently on display (and not a screensaver over it)? */
+    private boolean isShowingHome() {
+        if (content == null || screensaverShowing) return false;
+        return content.getChildCount() > 0 && content.getChildAt(0) instanceof HomeScreen;
+    }
+
+    /**
+     * ★ THE SCREENSAVER SAFETY RULE ★
+     *
+     * A screensaver appearing over a tip prompt, a card read, or a "do not remove your card"
+     * message is not a cosmetic bug — it is a customer being asked to authorise something they
+     * can no longer see. So there is exactly ONE arming site (the end of {@link #showHome}) and
+     * exactly ONE disarming site ({@link #setScreen}, which every other screen in this class goes
+     * through). Leaving the home screen therefore cancels the timer by construction, not by
+     * anybody remembering to.
+     *
+     * On top of that structural guarantee the tick re-checks, at fire time, that:
+     *   * no job is in flight        (activeJob == null)
+     *   * nobody is logged in        (staff == null — a PIN'd-in session means Table Pay is live)
+     *   * the home screen is still what is showing
+     *   * nothing is unresolved      (an unresolved payment must stay in front of a human)
+     *
+     * Belt and braces on purpose: the structural rule is what makes it correct, and the runtime
+     * checks are what stop a future fourth mode from quietly breaking it.
+     */
+    private void armScreensaver() {
+        disarmScreensaver();
+        if (!settings.idleEnabled || settings.idleImageUrl == null) return;
+        if (!ssCache.isCached(settings.idleImageUrl)) return;   // no image on disk: no screensaver
+        idleTick = () -> {
+            idleTick = null;
+            if (activeJob != null || staff != null) return;
+            if (jobLog.unfinishedCount() > 0) return;
+            if (!isShowingHome()) return;
+            showScreensaver();
+        };
+        ui.postDelayed(idleTick, SCREENSAVER_IDLE_MS);
+    }
+
+    private void disarmScreensaver() {
+        if (idleTick != null) {
+            ui.removeCallbacks(idleTick);
+            idleTick = null;
+        }
+    }
+
+    private void showScreensaver() {
+        android.graphics.Bitmap bmp = ssCache.bitmap(settings.idleImageUrl);
+        if (bmp == null) return;                 // decode failed: stay on the home screen
+        screensaverShowing = true;
+        // Added OVER the home screen rather than replacing it, so dismissing is instant and the
+        // home screen never has to be rebuilt. content is a FrameLayout, so this stacks on top.
+        content.addView(new ScreensaverScreen(this, bmp, this::dismissScreensaver),
+                new FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        FrameLayout.LayoutParams.MATCH_PARENT));
+    }
+
+    private void dismissScreensaver() {
+        if (!screensaverShowing) return;
+        screensaverShowing = false;
+        // Remove the overlay only — index 0 is the home screen underneath, untouched.
+        for (int i = content.getChildCount() - 1; i >= 0; i--) {
+            if (content.getChildAt(i) instanceof ScreensaverScreen) content.removeViewAt(i);
+        }
+        armScreensaver();   // idle again from now
     }
 
     // =========================================================================================
@@ -958,6 +1122,12 @@ public class MainActivity extends ComponentActivity {
     }
 
     private void setScreen(View view) {
+        // v5.5.838 — THE ONLY PLACE THE SCREENSAVER TIMER IS EVER CANCELLED. Every screen in this
+        // class arrives through here, so leaving the home screen disarms the idle timer by
+        // construction. A payment screen cannot be covered by a screensaver because by the time
+        // it is on display the timer no longer exists. See armScreensaver().
+        disarmScreensaver();
+        screensaverShowing = false;
         content.removeAllViews();
         content.addView(view, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));

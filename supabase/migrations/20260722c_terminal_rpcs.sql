@@ -307,7 +307,11 @@ begin
            end
       from active_sessions a
       left join floor_tables f
-        on f.id = a.table_id and f.location_id = a.location_id
+        -- floor_tables.location_id is TEXT while active_sessions.location_id is
+        -- UUID (this schema is genuinely mixed). Cast the UUID side DOWN to text
+        -- rather than casting floor_tables up: that column legitimately holds
+        -- 'loc-demo', which is not a valid UUID, so ::uuid would throw 22P02.
+        on f.id = a.table_id and f.location_id = a.location_id::text
      where a.location_id = t.location_id
        and a.total_minor is not null
        and a.total_minor > 0
@@ -398,7 +402,8 @@ begin
     'id',          v_ccid,
     'tableId',     p_table_id,
     'tableLabel',  coalesce((select f.label from floor_tables f
-                              where f.id = p_table_id and f.location_id = t.location_id), p_table_id),
+                              -- same TEXT vs UUID mismatch as terminal_open_tables; cast down, not up
+                              where f.id = p_table_id and f.location_id = t.location_id::text), p_table_id),
     'locationId',  t.location_id,
     'sessionId',   a.session ->> 'id',
     'server',      coalesce(v_staff.name, a.session ->> 'server'),
