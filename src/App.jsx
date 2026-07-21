@@ -94,6 +94,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.843', date: '21 Jul 2026', label: 'Fixed \u2014 "another payment was being set up" when sending a second payment for the same bill',
+    changes: [
+      'Sending a card payment sometimes failed with "another payment was being set up at the same moment", even when the previous payment for that table had long since finished and the amounts were completely different. Nothing was wrong with the payment \u2014 the till was still holding the reference of the finished one and reusing it.',
+      'The till now notices when it is holding a reference that has already been used, quietly starts a new one, and sends the payment. Staff see the payment go through instead of an error they can do nothing about.',
+      'It only does this once. Any other problem is still shown, so a genuine fault is never hidden behind a silent retry.',
+      'Where a payment really is in progress, the message now says which table and how much is on the machine, so it is clear whether to wait or use another terminal.',
+    ],
+  },
+  {
     version: '5.5.841', date: '21 Jul 2026', label: 'Card terminal \u2014 tipping fixed, and a counter terminal that is ready without being touched',
     changes: [
       'Fixed \u2014 tipping appeared to be switched off on payments sent from the till. The till was sending its own tip settings and the terminal could not read them, so the customer was never offered a tip. The tip buttons now come from the terminal\u2019s own settings, the ones you set in Card readers, so what you configure is what the customer sees.',

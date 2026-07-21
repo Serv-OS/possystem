@@ -394,8 +394,33 @@ Deno.serve(async (req) => {
       }, 409);
     }
 
-    // 3. Neither — the conflicting row settled between the insert and this read.
-    //    Safe to retry, and say so rather than leaving the operator guessing.
+    // 3. THE PRIMARY KEY. id is POS-minted and deliberately reused for a check so
+    //    a retry is idempotent — but the POS keeps that handle in localStorage and
+    //    only clears it on certain exits. Close the modal another way and the NEXT
+    //    payment on the same check re-sends a SETTLED job's id, which collides on
+    //    the pkey. Both lookups above filter on live status, so they miss it and
+    //    the operator got "another payment was being set up" for what is really
+    //    "you already used that id".
+    //
+    //    Look it up with NO status filter and say so precisely, so the till can
+    //    drop the stale handle and retry with a fresh id instead of erroring at a
+    //    member of staff.
+    const { data: settled } = await opsAdmin
+      .from('terminal_jobs')
+      .select('id, status, charge_minor, due_minor')
+      .eq('id', job_id)
+      .maybeSingle();
+    if (settled) {
+      return json({
+        error: 'That payment reference has already been used and settled.',
+        code: 'JOB_ALREADY_SETTLED',
+        job_status: settled.status,
+        job_id: settled.id,
+      }, 409);
+    }
+
+    // 4. Genuinely nothing to find — the conflicting row settled between the
+    //    insert and these reads. Safe to retry.
     return json({
       error: 'Another payment was being set up at the same moment. Try again.',
       code: 'CONFLICT_RACE',

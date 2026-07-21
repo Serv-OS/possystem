@@ -247,39 +247,63 @@ export async function dispatchTerminalJob(p) {
   const closedCheckId = prior?.closedCheckId || p.closedCheckId;
   rememberJob({ checkKey: p.checkKey, jobId, closedCheckId, locationId, at: Date.now() });
 
-  const j = await callFn('terminal-job-create', {
-    job_id: jobId,
-    check_key: p.checkKey,
-    target_terminal_id: p.targetTerminalId,
-    location_id: locationId,          // cross-checked server-side, never trusted
-    pos_device_id: p.posDeviceId ?? null,
-    tip_basis_minor: p.tipBasisMinor,
-    due_minor: p.dueMinor,
-    currency: p.currency || 'GBP',
-    // v5.5.841 — THE POS NO LONGER SENDS A TIP CONFIG AT ALL.
-    //
-    // It used to build one from location_reader_settings and send it as the
-    // frozen config. That produced `{"enabled":true,"percentages":null,…}`, and
-    // TipConfig.fromJobJson on the terminal reads only `percentBands` /
-    // `tip_percentages` — so the terminal received "tipping on, no bands" and
-    // showed no tip options. Indistinguishable, to anyone watching, from tipping
-    // being switched off.
-    //
-    // The bands now come from terminal_devices.tip_config, resolved inside
-    // terminal-job-create. That is the value Back Office writes and the operator
-    // can see, and it is the same column terminal_start_table_payment freezes —
-    // so Table Pay and POS dispatch cannot drift apart. ONE source of truth.
-    //
-    // The only tip fact the till still owns is whether THIS sale takes a tip at
-    // all (a bar tab / takeaway / collection never does). That travels as a
-    // suppression flag, not as a config: it can only make the job less tippable.
-    suppress_tip: !!p.suppressTip,
-    closed_check_id: closedCheckId,
-    check_draft: p.checkDraft ?? {},
-  });
+  // v5.5.843: SELF-HEAL A STALE HANDLE.
+  //
+  // Reusing the id is what makes a retry idempotent, and that is worth keeping.
+  // But the handle lives in localStorage and is only cleared on certain exits, so
+  // closing the modal another way leaves a SETTLED job's id on file. The next
+  // payment for that check then collides on the primary key, and a member of
+  // staff sees a conflict error for something that is entirely our bookkeeping.
+  //
+  // The server now names that case (JOB_ALREADY_SETTLED). Drop the stale handle,
+  // mint a fresh id, and go again — ONCE. Not a blind retry loop: any other
+  // failure, and the second attempt too, surfaces normally. A payments path must
+  // never quietly hammer away at something it does not understand.
+  try {
+    return await send(jobId, closedCheckId);
+  } catch (e) {
+    if (e?.code !== 'JOB_ALREADY_SETTLED') throw e;
+    forgetJob(p.checkKey);
+    const freshId = mintJobId();
+    rememberJob({ checkKey: p.checkKey, jobId: freshId, closedCheckId: p.closedCheckId, locationId, at: Date.now() });
+    return await send(freshId, p.closedCheckId);
+  }
 
-  rememberJob({ checkKey: p.checkKey, jobId, closedCheckId, locationId, at: Date.now() });
-  return { job: j.job, existing: !!j.existing };
+  async function send(useJobId, useClosedCheckId) {
+    const j = await callFn('terminal-job-create', {
+      job_id: useJobId,
+      check_key: p.checkKey,
+      target_terminal_id: p.targetTerminalId,
+      location_id: locationId,          // cross-checked server-side, never trusted
+      pos_device_id: p.posDeviceId ?? null,
+      tip_basis_minor: p.tipBasisMinor,
+      due_minor: p.dueMinor,
+      currency: p.currency || 'GBP',
+      // v5.5.841 — THE POS NO LONGER SENDS A TIP CONFIG AT ALL.
+      //
+      // It used to build one from location_reader_settings and send it as the
+      // frozen config. That produced `{"enabled":true,"percentages":null,…}`, and
+      // TipConfig.fromJobJson on the terminal reads only `percentBands` /
+      // `tip_percentages` — so the terminal received "tipping on, no bands" and
+      // showed no tip options. Indistinguishable, to anyone watching, from tipping
+      // being switched off.
+      //
+      // The bands now come from terminal_devices.tip_config, resolved inside
+      // terminal-job-create. That is the value Back Office writes and the operator
+      // can see, and it is the same column terminal_start_table_payment freezes —
+      // so Table Pay and POS dispatch cannot drift apart. ONE source of truth.
+      //
+      // The only tip fact the till still owns is whether THIS sale takes a tip at
+      // all (a bar tab / takeaway / collection never does). That travels as a
+      // suppression flag, not as a config: it can only make the job less tippable.
+      suppress_tip: !!p.suppressTip,
+      closed_check_id: useClosedCheckId,
+      check_draft: p.checkDraft ?? {},
+    });
+
+    rememberJob({ checkKey: p.checkKey, jobId: useJobId, closedCheckId: useClosedCheckId, locationId, at: Date.now() });
+    return { job: j.job, existing: !!j.existing };
+  }
 }
 
 /** Read one job. Goes through the edge function, not RLS — see terminal-job-status. */
