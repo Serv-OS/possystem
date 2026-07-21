@@ -9,6 +9,13 @@ import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.webkit.WebResourceError;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
+import android.net.http.SslError;
+import android.webkit.SslErrorHandler;
+import android.util.Log;
+import android.os.Build;
 
 /**
  * Serv OS MPOS — mobile point-of-sale for a phone.
@@ -19,6 +26,7 @@ import android.webkit.WebViewClient;
  * hardware reader, or simulated in a browser); there is no native payment SDK in this app.
  */
 public class MainActivity extends Activity {
+    private static final String TAG = "ServOSMPOS";
     // To point at a different environment (e.g. production), change this and rebuild.
     private static final String MPOS_URL = "https://dev.serv-os.app/?mode=mpos";
     private WebView webView;
@@ -54,14 +62,48 @@ public class MainActivity extends Activity {
         cm.setAcceptCookie(true);
         cm.setAcceptThirdPartyCookies(webView, true);
 
+        // v1.2 DIAGNOSTIC: a WebView failure used to retry silently every 5s, which
+        // looks identical to a black screen. Surface the reason instead — on a PAX the
+        // usual causes are an ancient system WebView (our SPA needs a modern engine),
+        // no route to the host, or a TLS failure. Also stop swallowing JS console
+        // errors, which is what hides a bundle that failed to parse.
         webView.setWebViewClient(new WebViewClient() {
-            @Override
-            public void onReceivedError(WebView v, int code, String desc, String url) {
-                v.postDelayed(() -> v.loadUrl(MPOS_URL), 5000);
+            private void fail(WebView v, String what) {
+                Log.e(TAG, "LOAD FAIL: " + what);
+                final String ua = v.getSettings().getUserAgentString();
+                String html = "<html><body style='background:#111;color:#eee;font:14px -apple-system,sans-serif;padding:18px'>"
+                    + "<h2 style='color:#ff6b6b;margin:0 0 10px'>Could not load</h2>"
+                    + "<p style='margin:0 0 14px'><b>" + what.replace("<","&lt;") + "</b></p>"
+                    + "<p style='color:#9aa'>URL<br>" + MPOS_URL + "</p>"
+                    + "<p style='color:#9aa'>Android " + Build.VERSION.RELEASE + " (SDK " + Build.VERSION.SDK_INT + ")<br>"
+                    + Build.MANUFACTURER + " " + Build.MODEL + "</p>"
+                    + "<p style='color:#9aa;word-break:break-all'>WebView UA<br>" + ua.replace("<","&lt;") + "</p>"
+                    + "<p style='color:#666;margin-top:16px'>adb logcat -s ServOSMPOS  for detail</p>"
+                    + "</body></html>";
+                v.loadDataWithBaseURL(null, html, "text/html", "utf-8", null);
+            }
+            @Override public void onReceivedError(WebView v, int code, String desc, String url) {
+                fail(v, "Network error " + code + ": " + desc);
+            }
+            @Override public void onReceivedError(WebView v, WebResourceRequest req, WebResourceError err) {
+                if (req != null && req.isForMainFrame()) fail(v, "Network error " + err.getErrorCode() + ": " + err.getDescription());
+            }
+            @Override public void onReceivedHttpError(WebView v, WebResourceRequest req, WebResourceResponse res) {
+                if (req != null && req.isForMainFrame()) fail(v, "HTTP " + res.getStatusCode() + " from server");
+            }
+            @Override public void onReceivedSslError(WebView v, SslErrorHandler h, SslError e) {
+                h.cancel();
+                fail(v, "TLS/certificate error (" + e.getPrimaryError() + ") — the terminal may not trust this certificate");
+            }
+            @Override public void onPageFinished(WebView v, String url) {
+                Log.i(TAG, "page finished: " + url);
             }
         });
         webView.setWebChromeClient(new WebChromeClient() {
-            @Override public boolean onConsoleMessage(ConsoleMessage msg) { return true; }
+            @Override public boolean onConsoleMessage(ConsoleMessage msg) {
+                Log.e(TAG, "JS " + msg.messageLevel() + " line " + msg.lineNumber() + ": " + msg.message());
+                return true;
+            }
         });
 
         webView.loadUrl(MPOS_URL);
