@@ -96,6 +96,9 @@ export default function PaxTerminals() {
   const [terminals, setTerminals] = useState([]);
   const [posDevices, setPosDevices] = useState([]);
   const [venueIdleImage, setVenueIdleImage] = useState(null);   // shared with the Stripe reader idle screen
+  // v5.5.839: the PLATFORM DB's own id for this venue (locations.ops_location_id -> id).
+  // location_reader_settings lives in the Platform DB and its FK points at THAT id.
+  const [platformLocId, setPlatformLocId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -134,13 +137,23 @@ export default function PaxTerminals() {
       // screensaver (Card readers → "Idle screen / screensaver"). It lives on
       // location_reader_settings in the PLATFORM DB; the PAX app can only reach
       // the Ops project, so Back Office mirrors the URL onto the terminal row.
+      //
+      // v5.5.839: the Platform DB has its OWN location ids — the Ops id is stored
+      // there as locations.ops_location_id. Passing the Ops id straight through
+      // violated location_reader_settings_location_id_fkey and the save failed.
+      // Same ops→platform hop as BackOfficeApp.jsx:1153 and Challenge21.jsx:100.
       if (platformSupabase) {
-        const { data: rs } = await platformSupabase
-          .from('location_reader_settings')
-          .select('idle_screen_image_url')
-          .eq('location_id', locId)
-          .maybeSingle();
-        setVenueIdleImage(rs?.idle_screen_image_url || null);
+        const { data: ploc } = await platformSupabase
+          .from('locations').select('id').eq('ops_location_id', locId).maybeSingle();
+        setPlatformLocId(ploc?.id || null);
+        if (ploc?.id) {
+          const { data: rs } = await platformSupabase
+            .from('location_reader_settings')
+            .select('idle_screen_image_url')
+            .eq('location_id', ploc.id)
+            .maybeSingle();
+          setVenueIdleImage(rs?.idle_screen_image_url || null);
+        }
       }
     } catch (e) {
       setError(e.message);
@@ -257,6 +270,7 @@ export default function PaxTerminals() {
                     terminal={t}
                     posDevices={posDevices}
                     locationId={locationId}
+                    platformLocId={platformLocId}
                     venueIdleImage={venueIdleImage}
                     onVenueIdleImage={setVenueIdleImage}
                     onSaved={async () => { await load(); }}
@@ -311,7 +325,7 @@ export default function PaxTerminals() {
 // FAILURES ARE LOUD. A silent save is what made "tipping is off" invisible for a
 // day: the panel appeared to work, the row never changed. Both the RPC error and
 // the "0 rows / no ok" case surface as red text that does not clear itself.
-function TerminalSettings({ terminal, posDevices, locationId, venueIdleImage, onVenueIdleImage, onSaved }) {
+function TerminalSettings({ terminal, posDevices, locationId, platformLocId, venueIdleImage, onVenueIdleImage, onSaved }) {
   const initTip = tipOf(terminal);
   const initModes = modesOf(terminal);
 
@@ -356,11 +370,16 @@ function TerminalSettings({ terminal, posDevices, locationId, venueIdleImage, on
       // hardware show one image. idle_screen_image_url is already the
       // human-viewable copy of that feature (Stripe reads idle_screen_file_id,
       // not this), so writing it cannot change what a Stripe reader displays.
-      if (platformSupabase) {
+      // v5.5.839: MUST be the PLATFORM location id, not the Ops one. The Platform
+      // DB keys locations by its own uuid and stores the Ops id as ops_location_id;
+      // writing the Ops id here violated location_reader_settings_location_id_fkey.
+      // Non-fatal if the venue has no platform row — the image is already uploaded
+      // and the terminal reads it from its own Ops row, so don't lose the upload.
+      if (platformSupabase && platformLocId) {
         const { error: rsErr } = await platformSupabase
           .from('location_reader_settings')
-          .upsert({ location_id: locationId, idle_screen_image_url: url }, { onConflict: 'location_id' });
-        if (rsErr) throw new Error(`Image uploaded but the venue setting did not save: ${rsErr.message}`);
+          .upsert({ location_id: platformLocId, idle_screen_image_url: url }, { onConflict: 'location_id' });
+        if (rsErr) setErr(`Image uploaded and will work on this terminal, but sharing it with the Stripe reader failed: ${rsErr.message}`);
       }
 
       setSsImage(url);

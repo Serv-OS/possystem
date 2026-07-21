@@ -94,6 +94,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.839', date: '21 Jul 2026', label: 'Fixed \u2014 screensaver upload on the card terminal',
+    changes: [
+      'Uploading an idle-screen image for the PAX card terminal failed with a database error. The image went up fine, but saving it against the venue did not.',
+      'Cause: the venue settings live in a second database that has its own IDs for your venues, and we were sending it the ID from the first one. It now looks up the right one.',
+      'If sharing the image with a Stripe reader ever fails, the upload is kept and the terminal still gets it \u2014 you get told rather than losing the image.',
+    ],
+  },
+  {
     version: '5.5.838', date: '21 Jul 2026', label: 'Card machine settings — tipping, which till it belongs to, and what it offers',
     changes: [
       'The card machine now has proper settings. Go to Back office → Card readers, find your PAX terminal in the list and press Settings.',
