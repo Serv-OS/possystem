@@ -185,6 +185,37 @@ public final class OpsApi {
     }
 
     /**
+     * ★ THE POINT OF NO RETURN ★  charging_unsent → charging.
+     *
+     * ─────────────────────────────────────────────────────────────────────────────────────────
+     * NOT IN THE ORIGINAL EIGHT-RPC CONTRACT — but calling it is NOT optional, and here is why.
+     *
+     * terminal_commit_tip leaves the row in `charging_unsent`, which the server treats as
+     * DETERMINISTICALLY SAFE: terminal_jobs_sweep turns an expired `charging_unsent` row into
+     * **cancelled**, with the reason "tip taken but request never dispatched".
+     *
+     * So if this terminal dispatches a transaction and never says so, and the 5-minute claim
+     * lease then runs out — a slow customer, a re-tap, a card that needs a PIN — the sweeper
+     * records a real charge as a clean cancellation. That is a LOST SALE written down as if
+     * nothing happened, which is worse than an error: nobody goes looking for it.
+     *
+     * The same split is what keeps the human queue meaningful (spec rule 5 / risk 6): ordinary
+     * customer walk-aways settle as `cancelled` from charging_unsent, and only genuinely
+     * dispatched-then-silent jobs become `unknown`. Collapse the two and staff learn to
+     * rubber-stamp the queue, and then mis-resolve the one that mattered.
+     *
+     * Called at the exact moment the HTTP dispatch is issued — see PaymentFlow.onDispatching().
+     * ─────────────────────────────────────────────────────────────────────────────────────────
+     */
+    public boolean jobSent(String jobId, String transactionId) throws Exception {
+        JSONObject p = new JSONObject();
+        p.put("p_job_id", jobId);
+        p.put("p_transaction_id", transactionId == null ? JSONObject.NULL : transactionId);
+        JSONObject r = sb.rpcObject("terminal_job_sent", p);
+        return r != null && r.optBoolean("ok", false);
+    }
+
+    /**
      * Write the outcome back.
      *
      * reportedMinor is what THIS DEVICE believes was charged. The server stores it separately

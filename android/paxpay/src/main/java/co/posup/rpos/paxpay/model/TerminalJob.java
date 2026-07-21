@@ -123,13 +123,22 @@ public final class TerminalJob {
         String currency = Json.str(row, "currency");
         TipConfig cfg = TipConfig.fromJobJson(row.optJSONObject("tip_config"));
 
-        // The POS freezes a check snapshot on the row. We only want a human label off it; if it
-        // is absent, fall back to the check key so the waiter still sees SOMETHING identifying.
+        // The POS freezes a check snapshot on the row. We only want a human label off it.
+        //
+        // ⚠ camelCase FIRST, and that is not a style choice. check_draft is the jsonb the POS
+        // reconciler feeds straight back into recordClosedCheck(), so it follows the web app's
+        // convention — camelCase inside jsonb, snake_case only for real columns (see CLAUDE.md).
+        // terminal_start_table_payment writes `tableLabel`. Reading only `table_label` here
+        // silently falls through to the check key, and the waiter gets
+        // "7218c716-…:t12:sess-9" on the one screen whose entire job is letting them confirm
+        // they picked the right table. The snake_case spellings stay as tolerated fallbacks.
         String label = null;
         JSONObject draft = row.optJSONObject("check_draft");
         if (draft != null) {
-            label = Json.str(draft, "table_label");
+            label = Json.str(draft, "tableLabel");
+            if (label == null) label = Json.str(draft, "table_label");
             if (label == null) label = Json.str(draft, "label");
+            if (label == null) label = Json.str(draft, "tableName");
             if (label == null) label = Json.str(draft, "table_name");
         }
         if (label == null) label = Json.str(row, "check_key");

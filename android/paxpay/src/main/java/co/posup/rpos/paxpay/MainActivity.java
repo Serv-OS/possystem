@@ -480,18 +480,19 @@ public class MainActivity extends ComponentActivity {
 
         sb.async(() -> {
             TerminalJob job = api.startTablePayment(table.tableId, staff.staffId, table.label);
-            // Claim it as well. Unlike the poll path (where a false claim means another terminal
-            // got there first and we must walk away), here the server minted this job in reply to
-            // OUR call, so a false is far more likely to mean "already yours". We record it and
-            // continue rather than stranding a job nobody can then pay.
-            // ⚠ SERVER CONTRACT QUESTION: does terminal_start_table_payment already leave the row
-            // 'claimed' by the caller? If yes this call is a no-op and could be dropped.
-            try {
-                if (!api.claimJob(job.jobId)) {
-                    diag.event("claim returned false for our own table job " + job.jobId);
-                }
-            } catch (Exception e) {
-                diag.event("claim threw for our own table job: " + e.getMessage());
+
+            // The claim is REQUIRED, not belt-and-braces: terminal_start_table_payment inserts
+            // the row as 'pending', and terminal_commit_tip refuses anything not in
+            // ('claimed','tipping'). Skip this and the tip commit fails after the customer has
+            // already chosen a tip — the worst possible moment to discover it.
+            //
+            // Unlike the poll path, a `false` here does NOT mean another terminal won the race
+            // (this job was minted for us, seconds ago, in reply to our own call). The realistic
+            // cause is idx_tj_one_live_per_terminal — this PAX still holds a live job — and that
+            // is worth stopping for rather than pressing on into a commit that cannot succeed.
+            if (!api.claimJob(job.jobId)) {
+                throw new Exception("This terminal already has a payment in progress. "
+                        + "Finish or resolve it before starting another.");
             }
             return job;
         }, new SupabaseClient.Result<TerminalJob>() {
@@ -707,6 +708,9 @@ public class MainActivity extends ComponentActivity {
             @Override public void onDeviceConnected() {
                 setStatus("Terminal ready", "Starting the payment…");
             }
+            @Override public void onDispatching() {
+                markDispatched(job);
+            }
             @Override public void onTransactionStarted(String transactionId) {
                 setStatus("Present card", "Total " + Money.format(charge, job.currency));
             }
@@ -725,9 +729,68 @@ public class MainActivity extends ComponentActivity {
             return;
         }
 
-        // ── write-ahead: SENT. From this line on, the outcome is not knowable without asking. ──
-        jobLog.markSent(activeLocalId);
+        // NOTE: the write-ahead log is NOT moved to SENT here. Launching the controller is not
+        // the point of no return — the controller can sit there and time out without a single
+        // byte reaching the processor. SENT is stamped in markDispatched(), on the callback that
+        // fires as the start-transaction request is issued, which is the moment the outcome
+        // actually stops being knowable. This keeps the device's view and the server's
+        // charging_unsent/charging split in agreement about what "dispatched" means.
         controllerLauncher.launch(launch);
+    }
+
+    /**
+     * ★ THE POINT OF NO RETURN — both records stamped together ★
+     *
+     * Two things must be true from here on, and they must not disagree:
+     *   1. the local write-ahead log says SENT, so a process death resolves to "unknown"
+     *   2. the server row says `charging`, NOT `charging_unsent`
+     *
+     * (2) is the one that bites. terminal_jobs_sweep turns an expired `charging_unsent` row into
+     * **cancelled** — "tip taken but request never dispatched". If this terminal dispatches a
+     * charge and fails to say so, a real card payment gets written down as a clean cancellation
+     * the moment the claim lease runs out. Nobody ever goes looking for a cancelled job, so that
+     * is a lost sale that never surfaces.
+     *
+     * Hence the retries: this is a fire-and-forget call whose failure is expensive, so it gets
+     * three goes on the background thread rather than one. If all three fail the payment still
+     * proceeds — refusing to charge because a status ping failed would be worse — and the result
+     * write afterwards carries the truth anyway.
+     */
+    private void markDispatched(final TerminalJob job) {
+        if (activeLocalId == null) return;
+        jobLog.markSent(activeLocalId);
+        diag.event("dispatch — point of no return");
+
+        if (!job.hasServerJob()) return;
+        final String jobId = job.jobId;
+        sb.async(() -> {
+            Exception last = null;
+            for (int attempt = 1; attempt <= 3; attempt++) {
+                try {
+                    if (api.jobSent(jobId, null)) return Boolean.TRUE;
+                    // ok=false means the row was not in charging_unsent — already moved on, or
+                    // already swept. Retrying cannot change that, so stop.
+                    return Boolean.FALSE;
+                } catch (Exception e) {
+                    last = e;
+                    try { Thread.sleep(400L * attempt); } catch (InterruptedException ignored) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+            }
+            if (last != null) throw last;
+            return Boolean.FALSE;
+        }, new SupabaseClient.Result<Boolean>() {
+            @Override public void onSuccess(Boolean ok) {
+                diag.event("job_sent -> " + (Boolean.TRUE.equals(ok) ? "charging" : "not applied"));
+            }
+            @Override public void onError(String message) {
+                // Loud in diagnostics: this is the state where the sweeper could mis-resolve.
+                diag.lastRpcError = "job_sent: " + message;
+                diag.event("job_sent FAILED after retries: " + message);
+            }
+        });
     }
 
     // -----------------------------------------------------------------------------------------

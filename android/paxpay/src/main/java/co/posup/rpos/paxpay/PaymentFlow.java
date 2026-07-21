@@ -89,6 +89,16 @@ public final class PaymentFlow {
         void onConnecting();
         /** DEVICE_CONNECTED arrived; about to start the transaction over HTTP. */
         void onDeviceConnected();
+        /**
+         * ★ THE POINT OF NO RETURN ★
+         *
+         * Fired IMMEDIATELY BEFORE the start-transaction request is issued — not after it
+         * succeeds. That is deliberate: a request that times out may still have landed, so the
+         * moment the bytes leave is the moment the outcome stops being knowable. Everything the
+         * caller does to make a payment recoverable (write-ahead log, terminal_job_sent) belongs
+         * on this callback, not on onTransactionStarted.
+         */
+        void onDispatching();
         /** G8:Cloud accepted the transaction; the card is being taken on their screen. */
         void onTransactionStarted(String transactionId);
         /** Final outcome. */
@@ -258,6 +268,11 @@ public final class PaymentFlow {
         transactionStarted = true;
         diag.event("G8 startTransaction total=" + pendingRequest.totalMinor
                 + " (" + g8.describe() + ")");
+
+        // Point of no return, announced BEFORE the request goes out. The caller persists the
+        // fact that a dispatch is happening; from the next line on, "did the card get charged?"
+        // is a question only the processor can answer.
+        listener.onDispatching();
 
         g8.startTransaction(pendingRequest, new G8CloudClient.Callback<G8StartResponse>() {
             @Override public void onSuccess(G8StartResponse value) {
