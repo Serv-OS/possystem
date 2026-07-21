@@ -1,3 +1,41 @@
+# Session — 20 Jul 2026 (v5.5.809 → v5.5.828)
+
+## Shipped
+- **v5.5.809–812** Reports: "All reports" rename; catalog redesigned two-pane (rail, search, pinned, recent,
+  dense rows) mapped to theme tokens so dark mode holds.
+- **v5.5.813–817** Menu manager visual pass + COST/GP% on the Items list (recipe-derived, **ex-VAT net price**
+  so it agrees with Inventory → Reports → Recipe GP). Category filter + collapse/expand.
+  Item grid **locked to the POS's real 6-column grid** — it's a layout editor, so it must never reflow.
+- **v5.5.819** FIX: item supplier resolved from the purchasing link (`supplier_products`), not just the
+  optional `default_supplier_id`. Same bug had silently emptied the By-supplier GP ranking.
+- **v5.5.820** FIX: deleted dishes no longer haunt Recipe GP (archived items left orphan recipes).
+- **v5.5.823** Stock counts: delete a count / remove a line (guarded — APPROVED counts are ledger history).
+- **v5.5.824** Produce + Purchasing brought onto the shared visual standard (6 screens, 44 hardcoded colours
+  → 0). Surveyed first; deliberately did NOT force report chrome onto the master-detail editors.
+- **v5.5.825** FIX: un-86 now clears an exhausted count. POSSurface blocks `remaining <= 0` independently of
+  the 86 list, so un-86 was silently doing nothing.
+- **v5.5.826** Ryft: `adopt` an already-registered terminal (+ `available` listing).
+- **v5.5.827 → 828** Ryft tipping wired to location_reader_settings, then the on-screen picker REMOVED.
+
+## In progress / next
+1. **Tip on the customer-facing display** (agreed, not started) — see [[project-ryft-roadmap]] for the design
+   and the race condition to handle.
+2. **Disable PAX printer** — `receiptPrintingSource: 'PointOfSale'` + the two confirm-receipt calls.
+   Getting it wrong VOIDS transactions. Not to be rushed.
+3. **Hide Stripe-only reader settings on Ryft venues** (screensaver, live cart) — they currently save and
+   silently do nothing.
+4. **Untested on hardware:** decline (`4000000000001000` CVV 222), cancel mid-payment, split, refund.
+5. `--bg0` is referenced by 8 stock screens but defined nowhere in globals.css — latent, wants one sweep.
+6. Ryft week-2 hardening (task #52) — auth fences, refund integrity, webhook durability, **kiosk is Stripe-only**.
+
+## Watch out
+- Ryft **cannot do tipping at all** — verified exhaustively. Processor choice is per-venue now.
+- Edge-fn **deploy drift**: `payments-admin` sat a month behind source. Check deploy vs source dates first.
+- The `/functions/{slug}/body` API returns an **ESZIP archive**, not source — grepping it gives false negatives.
+
+
+---
+
 # Serv OS / RPOS — session handoff
 
 > **Current build: v5.5.807** · live: https://possystem-liard.vercel.app · dev: https://dev.serv-os.app · repo: **Serv-OS/possystem** (branch `develop`, Vercel auto-deploys).
