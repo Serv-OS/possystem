@@ -7,16 +7,20 @@ import {
 } from '../lib/networkReader';
 import { getLocationProcessorInfo } from '../lib/payments/processor';
 import { chargeRyftTerminal } from '../lib/payments/ryftTerminal';
+import { publishTipRequest, onCustomerTip, displayUsesScreen } from '../lib/customerDisplay';
+import { platformSupabase } from '../lib/supabase';
 import { money, currencySymbol, stripeCurrency } from '../lib/currency';
 import { isTrainingMode } from '../lib/trainingMode';
 
 // ─── v5.5.291: Card terminal for split portions ─────────────────────────────
 // Sends the portion amount to the card terminal — same flow as CheckoutModal's
 // CardTerminal but scoped to a single split portion. v5.5.808: dispatches by
-// the venue's processor — Ryft venues drive the PAX via chargeRyftTerminal
-// (no on-reader tip prompt on Ryft, so split card legs record tip 0).
+// the venue's processor — Ryft venues drive the PAX via chargeRyftTerminal.
+// v5.5.830: Ryft has no on-reader tip prompt, so each split payer is asked for a
+// gratuity on the CUSTOMER DISPLAY before their portion is charged — matching
+// Stripe splits, which pass skip_tipping:false so the reader asks per portion.
 function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
-  const [state, setState] = useState('resolving'); // resolving | starting | collecting | success | error | cancelling | simulated
+  const [state, setState] = useState('resolving'); // resolving | awaiting_tip | starting | collecting | success | error | cancelling | simulated
   const [statusMsg, setStatusMsg] = useState('Connecting to reader…');
   const [errorMsg, setErrorMsg] = useState(null);
   const [readerLabel, setReaderLabel] = useState('');
@@ -29,9 +33,47 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
   const processorRef = useRef('stripe');
   const ryftAbortRef = useRef(null);
   const ryftFlightRef = useRef(null);
+  const tipNonceRef = useRef(0);
+  const portionTipRef = useRef(0);   // gratuity for THIS portion, chosen on the display
+  const tipSkipRef = useRef(null);   // staff override while waiting on the customer
+
+  // Ask this payer for a gratuity on the customer display, then continue.
+  // Resolves to the tip (0 if declined, skipped, or nothing is listening).
+  const askPortionTip = (opsLocationId) => new Promise((resolve) => {
+    if (!displayUsesScreen()) return resolve(0);
+    (async () => {
+      let cfg = {};
+      try {
+        if (platformSupabase && opsLocationId) {
+          const { data } = await platformSupabase.from('location_reader_settings')
+            .select('tipping_enabled, tip_percentages, allow_custom_tip, smart_tip_threshold_minor')
+            .eq('location_id', opsLocationId).maybeSingle();
+          cfg = data || {};
+        }
+      } catch { /* fall through with defaults */ }
+      if (cfg.tipping_enabled === false) return resolve(0);
+
+      const nonce = ++tipNonceRef.current;
+      let settled = false;
+      const done = (v) => { if (settled) return; settled = true; off && off(); resolve(v); };
+      const off = onCustomerTip((pl) => {
+        if (!pl || pl.nonce !== nonce) return;
+        done(Math.max(0, Number(pl.tip) || 0));
+      });
+      setState('awaiting_tip');
+      setStatusMsg('Waiting for the customer to choose a tip…');
+      publishTipRequest({ total: amount, cfg, nonce });
+      setTimeout(() => done(0), 60000);   // never strand the till
+      tipSkipRef.current = () => done(0); // staff "Skip tip" button
+    })();
+  });
 
   // ─── Ryft terminal branch (v5.5.808) ──────────────────────────────────
   const runRyftPayment = async (opsLocationId) => {
+    // v5.5.830: settle the gratuity FIRST — Ryft takes one amount and cannot
+    // add a tip after the fact, so portion+tip must be known before charging.
+    const tip = await askPortionTip(opsLocationId);
+    portionTipRef.current = tip;
     setState('starting');
     setStatusMsg('Starting terminal payment…');
     setErrorMsg(null);
@@ -41,7 +83,7 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
     const flight = chargeRyftTerminal({
       locationId: opsLocationId,
       posDeviceId: (() => { try { return JSON.parse(localStorage.getItem('rpos-device') || 'null')?.id || null; } catch { return null; } })(),
-      amountMinor: Math.round(amount * 100),
+      amountMinor: Math.round((amount + portionTipRef.current) * 100),
       currency: stripeCurrency(),
       captureMethod: 'automatic',
       signal: controller.signal,
@@ -55,8 +97,8 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
       const result = await flight;
       setState('success');
       setStatusMsg('Payment approved');
-      // Ryft terminals have no on-reader tip prompt → split portion tip is 0.
-      setTimeout(() => onComplete('card', result.paymentSessionId, 0), 800);
+      // Tip was chosen by this payer on the customer display before charging.
+      setTimeout(() => onComplete('card', result.paymentSessionId, portionTipRef.current), 800);
     } catch (e) {
       if (e?.message === 'cancelled') return;   // staff cancel — handled by cancelReader
       setState('error');
@@ -295,6 +337,29 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
           <button className="btn btn-grn" style={{ height: 42, padding: '0 22px' }}
             onClick={() => { startedRef.current = false; pollAbortRef.current = false; setState('resolving'); setErrorMsg(null); setAttempt(a => a + 1); }}>
             Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // v5.5.830: waiting on this payer's gratuity choice on the customer display.
+  if (state === 'awaiting_tip') {
+    return (
+      <div style={{ textAlign: 'center', padding: '16px 0' }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 8 }}>
+          {portionLabel} — Gratuity
+        </div>
+        <div style={{ fontSize: 40, marginBottom: 8 }}>💬</div>
+        <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--t1)' }}>Waiting for the customer</div>
+        <div style={{ fontSize: 13, color: 'var(--t3)', marginTop: 6, lineHeight: 1.5 }}>
+          They're choosing a tip on the customer display for {money(amount)}.
+        </div>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'center', marginTop: 16 }}>
+          <button className="btn btn-ghost" style={{ height: 42 }} onClick={onBack}>← Back</button>
+          <button className="btn" style={{ height: 42, padding: '0 18px' }}
+            onClick={() => { try { tipSkipRef.current && tipSkipRef.current(); } catch { /* noop */ } }}>
+            Skip tip · take payment
           </button>
         </div>
       </div>

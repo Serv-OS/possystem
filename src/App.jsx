@@ -94,6 +94,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.830', date: '20 Jul 2026', label: 'Split payments on Ryft now ask for a tip too',
+    changes: [
+      'Fixed: split card payments on Ryft never offered a tip \u2014 every portion was recorded as \u00a30 gratuity. Each payer is now asked on the customer display before their share is charged, the same as a single card payment.',
+      'This matches how splits already behaved on Stripe, where the reader asks each payer in turn.',
+      'Each portion is charged for that person\u2019s share plus their own tip, and their tip is recorded against the check so tips and tronc stay correct.',
+      'Same safeguards: a "Skip tip \u00b7 take payment" button on the till, and it carries on by itself after a minute if nobody responds.',
+    ],
+  },
+  {
     version: '5.5.829', date: '20 Jul 2026', label: 'Ryft tipping \u2014 the customer chooses on the customer display',
     changes: [
       'Ryft venues can now take card tips. When you press Card, the customer display asks the customer to choose a tip; the card is then charged for the bill plus tip in one go.',
