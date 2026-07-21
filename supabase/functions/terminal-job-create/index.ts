@@ -350,14 +350,56 @@ Deno.serve(async (req) => {
   // failure and must surface — collapsing the two is how a caller comes to
   // believe a write landed when no row exists.
   if (insErr && insErr.code === '23505') {
-    const { data: existing } = await opsAdmin
+    // TWO unique indexes can raise this, and they mean COMPLETELY different things.
+    // The original handler only looked for the first, so the second surfaced as
+    // "a conflicting job exists but could not be read back" — which told the
+    // operator nothing and sent us chasing amounts that were never the problem.
+    //
+    //   idx_tj_one_live_per_check     -> the SAME BILL already has a live payment.
+    //                                    Idempotent: hand back the existing job so a
+    //                                    double-press re-attaches instead of double-charging.
+    //   idx_tj_one_live_per_terminal  -> a DIFFERENT bill is mid-payment on this terminal.
+    //                                    Not idempotent, not an error in the code — the
+    //                                    machine is simply busy, and the operator needs to
+    //                                    be told that in those words.
+
+    // 1. Same check — re-attach.
+    const { data: sameCheck } = await opsAdmin
       .from('terminal_jobs').select('*')
       .or(`id.eq.${job_id},check_key.eq.${check_key}`)
       .in('status', LIVE)
       .order('created_at', { ascending: false })
       .limit(1).maybeSingle();
-    if (existing) return json({ ok: true, job: existing, existing: true });
-    return json({ error: 'a conflicting job exists but could not be read back', code: '23505' }, 409);
+    if (sameCheck) return json({ ok: true, job: sameCheck, existing: true });
+
+    // 2. Terminal busy with another bill. Note the narrower status set: this index
+    //    deliberately excludes 'unknown' (20260725) — an unverified payment parks in
+    //    the reconcile queue and must never take a terminal out of service.
+    const { data: busy } = await opsAdmin
+      .from('terminal_jobs')
+      .select('id, check_key, status, due_minor, charge_minor, check_draft')
+      .eq('target_terminal_id', target_terminal_id)
+      .in('status', ['claimed', 'tipping', 'charging_unsent', 'charging'])
+      .order('created_at', { ascending: false })
+      .limit(1).maybeSingle();
+    if (busy) {
+      const where = (busy.check_draft as Record<string, unknown> | null)?.tableLabel;
+      const amt = ((busy.charge_minor ?? busy.due_minor ?? 0) as number) / 100;
+      return json({
+        error: `That card machine is already taking a payment${where ? ` for ${where}` : ''}`
+             + ` (£${amt.toFixed(2)}). Wait for it to finish, or send this one to another terminal.`,
+        code: 'TERMINAL_BUSY',
+        busy_job_id: busy.id,
+        busy_status: busy.status,
+      }, 409);
+    }
+
+    // 3. Neither — the conflicting row settled between the insert and this read.
+    //    Safe to retry, and say so rather than leaving the operator guessing.
+    return json({
+      error: 'Another payment was being set up at the same moment. Try again.',
+      code: 'CONFLICT_RACE',
+    }, 409);
   }
 
   return json({ error: insErr?.message ?? 'insert failed', code: insErr?.code ?? null }, 500);

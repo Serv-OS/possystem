@@ -334,6 +334,30 @@ public final class PaymentFlow {
             //
             // ASK RYFT: does the controller ever return RESULT_CANCELED after a successful
             // tender, and can we tell the two apart? A yes here removes a whole class of noise.
+            // v1.4-m2 — SIMULATED BUILDS RESOLVE INSTEAD OF QUARANTINING.
+            //
+            // In a stub build there is no processor and no card: G8CloudClient fabricates the
+            // transaction, so "we cannot tell whether the card was charged" is simply untrue
+            // here — we know nothing was. Declaring UNKNOWN wedged the terminal after EVERY
+            // test run and made the thing untestable.
+            //
+            // Rather than special-case an outcome, we ASK: fetchResult(ref). The stub answers,
+            // the normal success path runs, the check closes. That is deliberately the exact
+            // shape of the recovery we are asking Ryft for — "given our reference, what
+            // happened?" — so when the real client lands, this branch keeps working and stops
+            // being a simulation crutch. It is the single most valuable question on the Ryft
+            // list precisely because it turns this class of unknown into a lookup.
+            //
+            // GUARDED ON BuildVersion.SIMULATED. The moment a real G8 client ships, that flag
+            // goes false in the same commit and a live timeout quarantines exactly as before —
+            // a real card genuinely may have been charged and must never be assumed otherwise.
+            if (transactionStarted && transactionId != null && BuildVersion.SIMULATED) {
+                diag.event("SIMULATED build — resolving the timeout by asking for the result "
+                        + "instead of quarantining (no card exists)");
+                fetchResult();
+                return;
+            }
+
             Outcome outcome = (transactionStarted && transactionId != null)
                     ? Outcome.UNKNOWN : Outcome.SAFE_NO_CHARGE;
             if (outcome == Outcome.UNKNOWN) {
