@@ -37,6 +37,36 @@ function pickAddress(account: any, fallback: any) {
   return { lineOne: a.lineOne, ...(a.lineTwo ? { lineTwo: a.lineTwo } : {}), city: a.city, country: a.country, postalCode: a.postalCode };
 }
 
+// Stamp the OPS terminal_devices row with its Ryft terminal id — the value the
+// PaxPay charge path (terminal-job-charge) fails CLOSED without. Prefer an EXPLICIT
+// ops terminal id (the paired PAX row the operator is connecting) over serial
+// matching: the paxpay app freezes an ops serial (AID-…/UUID-…) in a DIFFERENT
+// namespace from the hardware serial typed into the Ryft form, so a serial stamp
+// silently no-ops — the historical cause of the ops/platform drift + the 404s.
+// First release this Ryft id from any OTHER paired row at this venue (idx_td_ryft
+// allows only one paired holder) so re-linking to a different PAX can't 23505.
+async function stampOpsRyftLink(
+  terminalId: string,
+  opts: { opsTerminalDeviceId?: string | null; serial?: string | null; opsLocationId: string },
+): Promise<boolean> {
+  try {
+    await opsAdmin.from('terminal_devices')
+      .update({ ryft_terminal_id: null, updated_at: new Date().toISOString() })
+      .eq('location_id', opts.opsLocationId).eq('status', 'paired').eq('ryft_terminal_id', terminalId);
+
+    let q = opsAdmin.from('terminal_devices')
+      .update({ ryft_terminal_id: terminalId, updated_at: new Date().toISOString() })
+      .eq('location_id', opts.opsLocationId).eq('status', 'paired');
+    if (opts.opsTerminalDeviceId) q = q.eq('id', opts.opsTerminalDeviceId);
+    else if (opts.serial) q = q.eq('serial_number', opts.serial);
+    else return false;
+    const { data } = await q.select('id').maybeSingle();
+    return !!data;
+  } catch (_e) {
+    return false; // never let a link failure abort the Ryft-side registration
+  }
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
@@ -81,7 +111,34 @@ Deno.serve(async (req) => {
       await deleteTerminal(body.terminal_id, { accountId: mra.ryft_account_id }); // best-effort
     }
     if (dev?.id) await platformAdmin.from('payment_devices').delete().eq('id', dev.id);
+    // Clear the OPS link too. A dangling ryft_terminal_id survives terminal-job-charge's
+    // not-linked gate and then 404s at Ryft (the terminal no longer exists); nulling it
+    // makes the terminal fail closed cleanly with terminal_not_linked instead.
+    await opsAdmin.from('terminal_devices')
+      .update({ ryft_terminal_id: null, updated_at: new Date().toISOString() })
+      .eq('location_id', opsLocationId).eq('status', 'paired').eq('ryft_terminal_id', body.terminal_id);
     return json({ success: true });
+  }
+
+  // ── backfill: link the ONE paired PAX terminal to the ONE Ryft registration ──
+  // Super-admin repair for venues paired before the explicit-link flow existed. Only
+  // acts when the mapping is unambiguous (exactly one paired null-link ops terminal AND
+  // exactly one ryft payment_devices row) — the same "single terminal at location"
+  // assumption the charge-path reconcile already trusts. Multi-terminal venues are left
+  // to the manual Connect-to-Ryft flow (there is no safe automatic pairing there).
+  if (action === 'backfill') {
+    if (prof?.role !== 'super_admin') return json({ error: 'super admin only' }, 403);
+    const { data: opsRows } = await opsAdmin.from('terminal_devices')
+      .select('id, ryft_terminal_id').eq('location_id', opsLocationId).eq('status', 'paired');
+    const nullLinked = (opsRows ?? []).filter((r: any) => !r.ryft_terminal_id);
+    const { data: pds } = await platformAdmin.from('payment_devices')
+      .select('ryft_terminal_id').eq('location_id', loc.id).eq('processor', 'ryft').not('ryft_terminal_id', 'is', null);
+    const ids = (pds ?? []).map((r: any) => r.ryft_terminal_id as string);
+    if (nullLinked.length === 1 && ids.length === 1) {
+      const linked = await stampOpsRyftLink(ids[0], { opsTerminalDeviceId: nullLinked[0].id, opsLocationId });
+      return json({ success: true, backfilled: linked, terminal_id: ids[0], ops_terminal_device_id: nullLinked[0].id });
+    }
+    return json({ success: true, backfilled: false, reason: `paired-null-link=${nullLinked.length}, ryft-registrations=${ids.length} (need exactly 1 of each)` });
   }
 
   // ── register: ensure iploc, register terminal, store it ─────────────────
@@ -122,16 +179,14 @@ Deno.serve(async (req) => {
     }, { onConflict: 'ryft_terminal_id' });
     if (upErr) return json({ error: `stored at Ryft but local save failed: ${upErr.message}`, terminal_id: terminalId }, 500);
 
-    // Stamp the OPS pairing row too. terminal_devices.ryft_terminal_id (20260722) has had
-    // ZERO writers until now, and the PaxPay charge path (terminal-job-charge) fails closed
-    // without it — a paired PAX with no Ryft link can show tips but never charge. Soft-fail:
-    // a serial with no paired ops row just reports ops_linked:false so the operator can see it.
-    const { data: opsRow } = await opsAdmin.from('terminal_devices')
-      .update({ ryft_terminal_id: terminalId, updated_at: new Date().toISOString() })
-      .eq('serial_number', serial).eq('status', 'paired')
-      .select('id').maybeSingle();
+    // Link the OPS pairing row to this Ryft terminal — by the EXPLICIT paired-terminal
+    // id the unified UI sends (ops_terminal_device_id), falling back to serial for any
+    // legacy caller. Soft-fail: no matching paired row just reports ops_linked:false.
+    const opsLinked = await stampOpsRyftLink(terminalId, {
+      opsTerminalDeviceId: body.ops_terminal_device_id, serial, opsLocationId,
+    });
 
-    return json({ success: true, terminal_id: terminalId, iploc, ops_linked: !!opsRow });
+    return json({ success: true, terminal_id: terminalId, iploc, ops_linked: opsLinked });
   }
 
   // ── available: terminals that exist at RYFT for this venue's account ──────
@@ -186,16 +241,13 @@ Deno.serve(async (req) => {
     }, { onConflict: 'ryft_terminal_id' });
     if (upErr) return json({ error: `local save failed: ${upErr.message}` }, 500);
 
-    // Same ops stamp as 'register' — the PaxPay charge path needs terminal_devices.ryft_terminal_id.
-    let opsLinked = false;
-    const adoptSerial = (match.serialNumber as string) ?? null;
-    if (adoptSerial) {
-      const { data: opsRow } = await opsAdmin.from('terminal_devices')
-        .update({ ryft_terminal_id: terminalId, updated_at: new Date().toISOString() })
-        .eq('serial_number', adoptSerial).eq('status', 'paired')
-        .select('id').maybeSingle();
-      opsLinked = !!opsRow;
-    }
+    // Same ops link as 'register' — by explicit ops_terminal_device_id (preferred),
+    // else the Ryft record's serial. The PaxPay charge path needs terminal_devices.ryft_terminal_id.
+    const opsLinked = await stampOpsRyftLink(terminalId, {
+      opsTerminalDeviceId: body.ops_terminal_device_id,
+      serial: (match.serialNumber as string) ?? null,
+      opsLocationId,
+    });
 
     return json({ success: true, terminal_id: terminalId, serial_number: match.serialNumber ?? null, adopted: true, ops_linked: opsLinked });
   }

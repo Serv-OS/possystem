@@ -6,6 +6,8 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 
 import androidx.core.content.ContextCompat;
@@ -51,6 +53,26 @@ public final class PaymentFlow {
      * server result lookup. The stub never needed more than 30s because nothing real happened.
      */
     public static final long TENDER_TIMEOUT_MS = 120_000L;
+
+    /**
+     * How long we wait for the vendor's DEVICE_CONNECTED broadcast before starting the charge
+     * ANYWAY.
+     *
+     * ⚠ THIS IS THE FIX FOR "stuck on 'waiting for merchant app'". The G8-Hybrid-Intents doc
+     * describes an app-switching flow where the controller broadcasts DEVICE_CONNECTED once its
+     * socket is up and we THEN start the transaction. But Ryft's in-person model initiates the
+     * payment over their standard REST API (which our server calls) and pushes it to the terminal;
+     * the controller is launched only to bring its card UI to the foreground, and in that model it
+     * does NOT reliably broadcast DEVICE_CONNECTED. Gating the charge on a broadcast that never
+     * arrives is precisely why the terminal sat on "waiting for merchant app" and the server saw
+     * ZERO charge calls.
+     *
+     * So: honour DEVICE_CONNECTED if it comes (the fastest path, and correct for a controller that
+     * does broadcast it), but if it hasn't arrived by the time the controller should be
+     * foregrounded and connected, start the charge anyway. Firing exactly once is guaranteed by
+     * the `transactionStarted` guard shared by onDeviceConnected() and startTransactionOverHttp().
+     */
+    public static final long DEVICE_CONNECTED_FALLBACK_MS = 4_000L;
 
     /**
      * The broadcast the controller sends when it is ready to take a transaction.
@@ -116,12 +138,15 @@ public final class PaymentFlow {
     private final Diagnostics diag;
     private final G8CloudClient g8;
     private final Listener listener;
+    private final Handler main = new Handler(Looper.getMainLooper());
 
     private BroadcastReceiver receiver;
     private G8SaleRequest pendingRequest;
     private String transactionId;
     private boolean transactionStarted;
     private boolean finished;
+    /** Posted in start(); fires the charge if DEVICE_CONNECTED never arrives. Cancelled once used. */
+    private Runnable connectFallback;
 
     public PaymentFlow(Activity activity, Diagnostics diag, G8CloudClient g8, Listener listener) {
         this.activity = activity;
@@ -191,6 +216,21 @@ public final class PaymentFlow {
         diag.event("launching controller, timeout=" + TENDER_TIMEOUT_MS + "ms");
 
         listener.onConnecting();
+
+        // Do NOT depend on DEVICE_CONNECTED (see DEVICE_CONNECTED_FALLBACK_MS). Give the controller
+        // a moment to foreground and confirm its socket, then start the charge over REST whether or
+        // not the broadcast arrived. If DEVICE_CONNECTED wins first, startTransactionOverHttp()
+        // cancels this and the guard makes the late runnable a no-op — the charge fires exactly once.
+        connectFallback = () -> {
+            connectFallback = null;
+            if (finished || transactionStarted) return;
+            diag.event("DEVICE_CONNECTED not seen in " + DEVICE_CONNECTED_FALLBACK_MS
+                    + "ms — starting the charge over REST anyway (Ryft in-person model)");
+            Log.i(TAG, "no DEVICE_CONNECTED — firing charge via REST fallback");
+            startTransactionOverHttp();
+        };
+        main.postDelayed(connectFallback, DEVICE_CONNECTED_FALLBACK_MS);
+
         return launch;
     }
 
@@ -266,6 +306,10 @@ public final class PaymentFlow {
     // -------------------------------------------------------------------------------------
 
     private void startTransactionOverHttp() {
+        // Whichever path got here first (DEVICE_CONNECTED or the fallback timer), the other must
+        // not also fire. Cancelling the pending runnable is belt-and-braces on top of the
+        // transactionStarted guard below.
+        cancelConnectFallback();
         if (pendingRequest == null) {
             fail("Internal error: no sale request to start.", Outcome.SAFE_NO_CHARGE);
             return;
@@ -427,7 +471,15 @@ public final class PaymentFlow {
      * unregistering on pause would drop the one broadcast the whole flow depends on.
      */
     public void dispose() {
+        cancelConnectFallback();
         unregisterReceiver();
+    }
+
+    private void cancelConnectFallback() {
+        if (connectFallback != null) {
+            main.removeCallbacks(connectFallback);
+            connectFallback = null;
+        }
     }
 
     private void unregisterReceiver() {

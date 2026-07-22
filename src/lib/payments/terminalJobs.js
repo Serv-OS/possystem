@@ -132,9 +132,10 @@ async function callFn(name, body) {
 }
 
 /** Seen in the last two minutes (the terminal heartbeats every ~60s). Same rule
- *  Back Office uses for its green dot, so the two never disagree in front of staff. */
+ *  Back Office uses for its green dot, so the two never disagree in front of staff.
+ *  Exported for the POS status drawer — one threshold, never forked. */
 const TERMINAL_ONLINE_MS = 2 * 60_000;
-function terminalIsOnline(t) {
+export function terminalIsOnline(t) {
   if (!t?.last_seen_at) return false;
   return Date.now() - new Date(t.last_seen_at).getTime() < TERMINAL_ONLINE_MS;
 }

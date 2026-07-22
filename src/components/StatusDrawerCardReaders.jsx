@@ -1,10 +1,18 @@
 // src/components/StatusDrawerCardReaders.jsx
 // v5.5.58: WiFi-only — Bluetooth pairing UI removed. The network reader is
 // assigned in BO; this drawer just shows its status to the cashier.
+//
+// Pairing consolidation: the drawer is now PROCESSOR-AWARE. Alongside the Stripe
+// network-reader block it shows the PAX card terminal this till would actually
+// dispatch to — resolved by the SAME findPaxTerminal() the checkout button uses,
+// so the drawer and the Card button can never disagree in front of staff. It
+// shows liveness (same 2-minute heartbeat rule as Back Office) and whether the
+// terminal is connected to Ryft (without which it cannot take a card).
 
 import { useState, useEffect, useCallback } from 'react';
 import { getPosDeviceId, resolvePlatformLocationId } from '../lib/networkReader';
 import { getActiveLocationSync, platformSupabase } from '../lib/supabase';
+import { findPaxTerminal, terminalIsOnline, getPosDeviceId as getPaxPosDeviceId } from '../lib/payments/terminalJobs';
 
 const Sx = {
   pill:    { fontSize: 10, padding: '2px 7px', borderRadius: 99, background: 'var(--bg3)', color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.06em', fontWeight: 700, border: '1px solid var(--bdr)' },
@@ -37,6 +45,8 @@ export default function StatusDrawerCardReaders() {
   const [readers, setReaders] = useState([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  // The PAX terminal THIS till dispatches to — same resolver as the Card button.
+  const [pax, setPax] = useState(null);           // { terminal, reason } | null
 
   useEffect(() => {
     (async () => {
@@ -46,6 +56,12 @@ export default function StatusDrawerCardReaders() {
       setPlatformLocationId(platformId);
     })();
   }, []);
+
+  const loadPax = useCallback(async () => {
+    try { setPax(await findPaxTerminal({ posDeviceId: getPaxPosDeviceId() })); }
+    catch { setPax(null); }   // findPaxTerminal never throws, but stay defensive
+  }, []);
+  useEffect(() => { loadPax(); }, [loadPax]);
 
   const loadReaders = useCallback(async () => {
     if (!platformLocationId || !platformSupabase) return;
@@ -81,13 +97,65 @@ export default function StatusDrawerCardReaders() {
   const assigned = readers.filter(r => r.bound_pos_device_id === posDeviceId);
   const others = readers.filter(r => r.bound_pos_device_id !== posDeviceId);
 
+  const paxTerminal = pax?.terminal || null;
+  const paxOnline = paxTerminal ? terminalIsOnline(paxTerminal) : false;
+  const paxRyftLinked = !!paxTerminal?.ryft_terminal_id;
+  const paxBoundToThisTill = !!(paxTerminal && paxTerminal.bound_pos_device_id
+    && paxTerminal.bound_pos_device_id === getPaxPosDeviceId());
+
   return (
     <div>
+      {/* ── PAX card terminal — what the Card button will actually use ─────── */}
+      {(paxTerminal || pax?.reason) && (
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.06em', marginBottom:8 }}>
+            Card terminal
+          </div>
+          {paxTerminal ? (
+            <div style={{ ...Sx.rowCard, borderColor: paxBoundToThisTill ? 'var(--acc)' : 'var(--bdr)' }}>
+              <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:4, flexWrap:'wrap' }}>
+                <span style={{
+                  width:8, height:8, borderRadius:'50%', flexShrink:0,
+                  background: paxOnline ? 'var(--grn)' : 'var(--t4)',
+                }} />
+                <span style={{ fontSize:13, fontWeight:700, color:'var(--t1)' }}>
+                  {paxTerminal.label || 'Card terminal'}
+                </span>
+                <span style={{ ...Sx.pill,
+                  background: paxOnline ? 'var(--grn-d)' : 'var(--bg3)',
+                  color:      paxOnline ? 'var(--grn)'   : 'var(--t3)',
+                  borderColor:paxOnline ? 'var(--grn-b)' : 'var(--bdr)' }}>
+                  {paxOnline ? 'online' : 'offline'}
+                </span>
+                {paxBoundToThisTill
+                  ? <span style={{ ...Sx.pill, background:'var(--acc)', color:'#0b0c10', borderColor:'var(--acc)' }}>This till</span>
+                  : paxTerminal.bound_pos_device_id
+                    ? <span style={{ ...Sx.pill }}>assigned to another till</span>
+                    : <span style={{ ...Sx.pill }}>unassigned — only terminal here</span>}
+              </div>
+              <div style={{ fontSize:11, color:'var(--t3)', display:'flex', flexWrap:'wrap', gap:'2px 12px' }}>
+                <span>
+                  Processor:{' '}
+                  <strong style={{ color: paxRyftLinked ? 'var(--grn)' : 'var(--red)' }}>
+                    {paxRyftLinked ? 'Connected to Ryft ✓' : 'Not connected — cannot take card'}
+                  </strong>
+                </span>
+                <span>Last seen: <strong style={{ color:'var(--t2)' }}>{relTime(paxTerminal.last_seen_at)}</strong></span>
+              </div>
+            </div>
+          ) : (
+            <div style={{ ...Sx.rowCard, fontSize:12, color:'var(--t3)', lineHeight:1.5 }}>
+              {pax.reason}
+            </div>
+          )}
+        </div>
+      )}
+
       <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:8 }}>
         <div style={{ fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.06em' }}>
           Network reader
         </div>
-        <button style={{ ...Sx.btnXs, ...Sx.btnGhost }} disabled={busy} onClick={refreshStatus}>
+        <button style={{ ...Sx.btnXs, ...Sx.btnGhost }} disabled={busy} onClick={() => { refreshStatus(); loadPax(); }}>
           {busy ? 'Checking…' : 'Refresh status'}
         </button>
       </div>
@@ -100,8 +168,10 @@ export default function StatusDrawerCardReaders() {
 
       {assigned.length === 0 && others.length === 0 && (
         <div style={{ ...Sx.rowCard, fontSize:12, color:'var(--t3)', textAlign:'center', padding:'14px 12px' }}>
-          No network readers registered for this location.<br/>
-          <span style={{ fontSize:11, color:'var(--t4)' }}>Admin can add one in Back office → Card readers.</span>
+          {paxTerminal
+            ? <>No Stripe network readers here — this venue takes card on the PAX terminal above.</>
+            : <>No card readers registered for this location.<br/>
+               <span style={{ fontSize:11, color:'var(--t4)' }}>Admin can add one in Back office → Card readers.</span></>}
         </div>
       )}
 

@@ -94,6 +94,16 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.858', date: '22 Jul 2026', label: 'ONE terminal-pairing flow + Table-Pay double-charge guard',
+    changes: [
+      'Terminal pairing consolidated: "PAX card terminals" is now the single pairing surface. Pair by claim code as before, then a per-terminal "Connect to Ryft" panel registers (by the serial printed on the device) or links an already-registered reader — and stamps the Ryft link onto EXACTLY that paired terminal by id. The standalone "Ryft card readers" panel is sunset: its serial-matched link could never land (the app\'s ops serial and the hardware serial live in different namespaces), which is the drift that made the terminal 404 at Ryft.',
+      'Re-pairing keeps the Ryft link: claim_terminal_device now carries ryft_terminal_id forward from the retiring row, so a reinstall/re-pair no longer silently disconnects the terminal from card payments. Disconnecting (unregister) now also clears the ops link so the terminal fails closed cleanly instead of erroring at Ryft.',
+      'POS status drawer is processor-aware: it shows the PAX terminal this till would actually dispatch to (same resolver as the Card button, so they can never disagree), with live online/offline from its heartbeat, whether it is Connected to Ryft, and an honest "This till / assigned to another till / unassigned" tag. Terminal rows in Back Office show "Connected to Ryft ✓ / Not connected — cannot take card" at a glance.',
+      'MONEY: closed the Table-Pay double-charge window (migration 20260730) — a bill already paid on the terminal ("approved", close still recording) now refuses a second Table-Pay start and is not offered in the open-tables list, instead of staying chargeable for the reconciliation gap. Transient by design: the block releases the moment the check closes. Counter/walk-in sales unaffected.',
+      'Groundwork: terminal_targets_for_pos now returns ryft_terminal_id (grants re-issued); ryft-terminals gains a super-admin backfill action that links the one paired terminal to the one Ryft registration at single-terminal venues; the live A920\'s link was backfilled to the current Ryft terminal id.',
+    ],
+  },
+  {
     version: '5.5.857', date: '22 Jul 2026', label: 'VAT: "Use default" now actually applies the venue default rate (was booking £0)',
     changes: [
       'CRITICAL tax fix: an item left on "Use default" in the menu editor booked ZERO VAT on every surface — the tax engine never implemented the default fallback the UI promised. Live repro from today: a £36 ribeye on "Use default" booked £0.48 VAT on a £38.85 check instead of £6.48; £49 of desserts booked £0.00. From now, no explicit rate = the venue’s default tax rate (the one marked Default in Settings → Taxes), exactly as the editor says. Deliberate zero-tax is still the explicit Zero Rate; per-order-type overrides still win; a venue with no default rate behaves as before. Historic checks are not restated.',

@@ -16,7 +16,6 @@ import { supabase, platformSupabase, getActiveLocationSync } from '../../lib/sup
 import { resolvePlatformLocationId } from '../../lib/networkReader';
 import { getLocationProcessor } from '../../lib/payments/processor';
 import { stripeCurrency } from '../../lib/currency';
-import RyftTerminals from './RyftTerminals';
 import PaxTerminals from './PaxTerminals';
 import UnresolvedPayments from './UnresolvedPayments';
 
@@ -179,10 +178,11 @@ export default function CardReaders() {
         Network readers (Stripe Reader S700, WisePOS E in WiFi mode) are registered here and serve all POS terminals at this location.
       </div>
 
-      {/* Ryft terminals — self-gating: only renders when this location is on Ryft */}
-      <RyftTerminals />
-
-      {/* PaxPay terminals — self-gating: renders once a location is resolved */}
+      {/* PaxPay terminals — the ONE pairing surface (self-gating: renders once a
+          location is resolved). Ryft register/adopt is folded into each paired
+          terminal's "Connect to Ryft" panel; the standalone "Ryft card readers"
+          panel was sunset with it (its serial-matched ops link never landed —
+          the drift behind the charge 404s). */}
       <PaxTerminals />
 
       {/* Payments whose outcome was never established — self-gating: renders

@@ -1242,27 +1242,39 @@ public class MainActivity extends ComponentActivity {
     }
 
     /**
-     * ★ THE POINT OF NO RETURN — both records stamped together ★
+     * ★ THE POINT OF NO RETURN — local write-ahead stamped here ★
      *
-     * Two things must be true from here on, and they must not disagree:
-     *   1. the local write-ahead log says SENT, so a process death resolves to "unknown"
-     *   2. the server row says `charging`, NOT `charging_unsent`
+     * The local write-ahead log is stamped SENT so a process death from here on resolves to
+     * "unknown" (never a silent clean cancel). That is unconditional.
      *
-     * (2) is the one that bites. terminal_jobs_sweep turns an expired `charging_unsent` row into
-     * **cancelled** — "tip taken but request never dispatched". If this terminal dispatches a
-     * charge and fails to say so, a real card payment gets written down as a clean cancellation
-     * the moment the claim lease runs out. Nobody ever goes looking for a cancelled job, so that
-     * is a lost sale that never surfaces.
+     * The SERVER-side charging_unsent → charging transition is subtler, and depends on which
+     * charge path is live:
      *
-     * Hence the retries: this is a fire-and-forget call whose failure is expensive, so it gets
-     * three goes on the background thread rather than one. If all three fail the payment still
-     * proceeds — refusing to charge because a status ping failed would be worse — and the result
-     * write afterwards carries the truth anyway.
+     *   • REAL path (ServerG8CloudClient → terminal-job-charge): that edge function does its OWN
+     *     CAS `SET status='charging' WHERE status='charging_unsent'` as the first act of 'start',
+     *     BEFORE it ever touches Ryft — that CAS is the idempotency layer that guarantees exactly
+     *     one caller reaches the processor. If we ALSO flipped the row to 'charging' here, we would
+     *     win that transition first and the charge function would find 'charging', conclude another
+     *     caller is already in flight, and return `in_flight` WITHOUT calling Ryft — the card screen
+     *     never appears and the bill sits unpaid. So on the real path we must NOT call terminal_job_sent;
+     *     the charge function owns the transition, and it flips to 'charging' at exactly the moment
+     *     Ryft is engaged, which is precisely what the sweeper invariant needs.
+     *
+     *   • SIMULATED path (StubG8CloudClient): nothing else advances the row, so we keep stamping it
+     *     here. terminal_jobs_sweep turns an expired `charging_unsent` row into **cancelled**, so a
+     *     stubbed charge that never reached 'charging' would be written down as a clean cancellation
+     *     — a lost sale that never surfaces. Hence the three retries: expensive to miss.
      */
     private void markDispatched(final TerminalJob job) {
         if (activeLocalId == null) return;
         jobLog.markSent(activeLocalId);
         diag.event("dispatch — point of no return");
+
+        // Real path: terminal-job-charge's own CAS owns charging_unsent -> charging (see above).
+        if (!BuildVersion.SIMULATED) {
+            diag.event("job_sent skipped — charge fn owns charging_unsent -> charging");
+            return;
+        }
 
         if (!job.hasServerJob()) return;
         final String jobId = job.jobId;
