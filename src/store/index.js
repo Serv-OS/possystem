@@ -9,7 +9,7 @@ import { operatorSwitchPatch, logoutPatch } from '../lib/cartHold';
 import { kitchenOverride, receiptOverride } from '../lib/itemDisplay';
 import { upsertMenuItem, upsertFloorTable, deleteFloorTable, insertKDSTicket, insertClosedCheck, upsertClosedCheck, toggle86DB, getNextOrderRefLocal, updateClosedCheckRefunds, upsertStockLevel, deleteStockLevel, decrementStockRPC, restoreStockRPC, upsertModifierGroup, deleteModifierGroup } from '../lib/db';
 import { isSessionClosed } from '../sync/sessionClosure';
-import { markJobReconciled, flagJobStale } from '../lib/payments/terminalJobs';
+import { markJobReconciled, flagJobStale, recallJob, forgetJob, cancelTerminalJob, buildCheckKey } from '../lib/payments/terminalJobs';
 import { printService } from '../lib/printer';
 import { hubrisePushStock, isHubriseConnected, hubrisePushStatus, isHubriseAutoReceipt } from '../lib/hubrise';
 import { logActivity } from '../lib/activity';
@@ -1331,6 +1331,25 @@ export const useStore = create((set, get) => ({
         !i.voided && (i.status === 'pending' || (i.status === 'sent' && !i.fired)));
       if (hasUnfired) get().sendToKitchen({ fireAll: true, tableId });
     }
+    // v5.5.851: closing the check by ANY tender cancels a terminal job still live for
+    // it. Live wedge this fixes: staff sent the bill to the PAX, customer paid cash
+    // instead, staff cashed off — the claimed job then held BOTH the reader and the
+    // POS panel forever. The pax path itself can't self-cancel here: PaxTerminal
+    // forgets its handle BEFORE complete() runs, so recallJob finds nothing. And
+    // terminal_job_cancel is safe by construction — the server refuses the moment a
+    // card may have been charged, so a mid-charge job is never yanked.
+    try {
+      const _locId = getActiveLocationSync();
+      const _sess = get().tables.find(t => t.id === tableId)?.session;
+      const _key = buildCheckKey({ locationId: _locId, tableId, sessionId: _sess?.id });
+      const _handle = recallJob(_key);
+      if (_handle?.jobId) {
+        cancelTerminalJob(_handle.jobId)
+          .then(r => { if (!r?.ok) console.warn('[clearTable] terminal job not cancellable:', r?.reason || r?.status); })
+          .catch(() => {});
+        forgetJob(_key);
+      }
+    } catch { /* never block a cash-off on cleanup */ }
     get().recordClosedCheck(tableId, paymentInfo);
     get()._dropTableFromFloor(tableId);
   },
@@ -4256,7 +4275,28 @@ export const useStore = create((set, get) => ({
                    ...evaluateAutoDiscounts(session.items.filter(i=>!i.voided), get().discountRules, 'pos', buildScheduleCtx(get().locationConfig?.timezone)).map(toAppliedDiscount),
                    ...promoDiscountEntry(paymentInfo.promoRedemption)],
       subtotal:   session.subtotal || 0,
-      service:    (session.subtotal || 0) * 0.125,
+      // v5.5.851: service comes from the REAL pricing engine, never a hardcoded rate.
+      // The old `subtotal * 0.125` booked a phantom 12.5% service on EVERY dine-in
+      // close — including venues/orders with no service charge at all (live repro: a
+      // £2.85 walk-through sale grew ~36p of service in history that was never
+      // charged). computeCheckTotals -> resolveServiceCharge is the same maths the
+      // checkout screen showed the operator, honouring the device profile config,
+      // covers threshold and the waived flag. paymentInfo.service (if a caller
+      // supplies the figure it actually charged) wins outright.
+      service:    paymentInfo.service != null ? Number(paymentInfo.service) : (() => {
+        try {
+          return computeCheckTotals({
+            items: session.items.filter(i => !i.voided),
+            checkDiscounts: session.discounts || [],
+            covers: session.covers || 1,
+            serviceChargeWaived: session.serviceChargeWaived || false,
+            orderType: 'dine-in',
+            deviceConfig: get().deviceConfig,
+            discountRules: get().discountRules,
+            timezone: get().locationConfig?.timezone,
+          }).service || 0;
+        } catch { return 0; }   // fail toward NO phantom fee, never toward one
+      })(),
       tip:        paymentInfo.tip || 0,
       total:      paymentInfo.grand || session.total || 0,
       taxAmount:  taxBreakdown?.totalTax != null ? taxBreakdown.totalTax : null,  // v4.6.19
@@ -4400,7 +4440,11 @@ export const useStore = create((set, get) => ({
         server: d.server || 'Staff', staffId: d.staffId || null,
         covers: d.covers || 1, orderType: 'dine-in',
         items, discounts: Array.isArray(d.discounts) ? d.discounts : [],
-        subtotal, service: subtotal * 0.125,
+        // v5.5.851: the frozen draft carries the POS's OWN stamped totals — the delta
+        // between total and subtotal IS whatever service was genuinely on the bill
+        // (zero when none was). Never a guessed rate (the old `subtotal * 0.125`
+        // invented a fee the customer was never charged).
+        subtotal, service: Math.max(0, ((d.totalMinor ?? 0) - (d.subtotalMinor ?? 0))) / 100,
         tip: (job.tip_minor ?? 0) / 100,
         total: (job.charge_minor ?? 0) / 100,
         taxAmount: null,
@@ -4418,7 +4462,7 @@ export const useStore = create((set, get) => ({
     record.source = 'pax_table_pay';   // tag both paths so reports attribute it correctly
 
     // ── ELECT THE SINGLE CLOSER — the closed_checks PK does the arbitration ────
-    const { created } = await upsertClosedCheck(record);
+    const { ok, created } = await upsertClosedCheck(record);
 
     // Idempotent on every caller: prepend the tombstone.
     set(s => ({ closedChecks: s.closedChecks.some(c => c.id === record.id) ? s.closedChecks : [record, ...s.closedChecks] }));
@@ -4435,7 +4479,17 @@ export const useStore = create((set, get) => ({
         get().attributeOrderToCustomer({ customer: table.session.customer, orderRecord: record }).catch(() => {});
       }
     }
-    await markJobReconciled(job.id).catch(() => {});   // housekeeping — insert-first, so a crash here just retries
+    // v5.5.851: ONLY when the check row provably landed server-side. The 846 version
+    // marked the job reconciled unconditionally — so a failed/offline-queued upsert
+    // (ok:false) pulled the job out of the retry queue with the sale recorded NOWHERE
+    // except this device's localStorage safety net (live case: a £2.85 Table-Pay sale
+    // vanished from history). ok:false now leaves the job 'approved': the next tick —
+    // on any till — retries the idempotent upsert until it lands, then marks done.
+    if (ok) {
+      await markJobReconciled(job.id).catch(() => {});   // housekeeping — insert-first, so a crash here just retries
+    } else {
+      console.warn('[closeApprovedTerminalJob] check write did not land for', job.closed_check_id, '— job left approved for retry');
+    }
   },
 
   // Redeem a held promo code against a recorded check — atomic + race-safe server-side, bound to the

@@ -94,6 +94,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.851', date: '22 Jul 2026', label: 'Three payment-integrity fixes: phantom service charge, lost terminal sale, wedged reader',
+    changes: [
+      'Killed a phantom 12.5% service charge: every dine-in close was booking service at a HARDCODED 12.5% of the subtotal — even when no service was on the order (a £2.85 sale grew ~36p of service in history). Service now comes from the same pricing engine the checkout screen shows, honouring the venue\u2019s service-charge settings, covers and the waived flag. Terminal-paid closes use the bill\u2019s own stamped totals.',
+      'A terminal-paid sale can no longer vanish from history: the reconciler was marking a payment \u201cdone\u201d even when the history write failed, pulling it out of the retry queue with the sale recorded nowhere. It now only marks done when the write provably landed; otherwise any till retries until it does.',
+      'Cashing a bill off by another method (cash, manual card) now automatically cancels a payment still sitting on the card terminal for it \u2014 the reader and the POS panel clear instead of holding the job forever. The cancel is refused server-side the moment a card may have been charged, so it can never kill a live charge.',
+    ],
+  },
+  {
     version: '5.5.850', date: '22 Jul 2026', label: 'HubRise punch-list — partial payments, payment refs, connection cleanup, smarter menu push',
     changes: [
       'Partial payments now show correctly: a delivery-channel order that is only part-paid no longer wrongly reads PAID. The order card shows an amber PART-PAID badge with the amount still due, and the kitchen ticket + receipt print "PART-PAID £x — COLLECT £y" instead of PAID.',
