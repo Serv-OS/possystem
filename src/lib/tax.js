@@ -22,7 +22,14 @@ export function resolveTaxRate(item, taxRates = [], orderType = 'dine-in') {
   // Check for order-type specific override (e.g. takeaway = zero-rated)
   const overrideId = item.taxOverrides?.[orderType];
   const rateId = overrideId !== undefined ? overrideId : item.taxRateId;
-  if (!rateId) return null;
+  // v5.5.857: no rate set = the item editor's "Use default" — which the engine NEVER
+  // honoured: it returned null and the line booked £0 VAT (live repro: a £36 ribeye on
+  // "Use default" booked zero on a real check). Now it resolves the venue's default
+  // rate, as the UI has always promised. Deliberate zero-tax stays the explicit Zero
+  // Rate. A rate id that matches nothing still returns null (that's how channel lines
+  // whose ref isn't in our menu opt OUT of the default — never guess someone else's
+  // tax), and a venue with no default rate configured behaves exactly as before.
+  if (!rateId) return taxRates.find(r => (r.isDefault || r.is_default) && r.active !== false) || null;
   return taxRates.find(r => r.id === rateId && r.active !== false) || null;
 }
 

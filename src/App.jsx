@@ -94,6 +94,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.857', date: '22 Jul 2026', label: 'VAT: "Use default" now actually applies the venue default rate (was booking £0)',
+    changes: [
+      'CRITICAL tax fix: an item left on "Use default" in the menu editor booked ZERO VAT on every surface — the tax engine never implemented the default fallback the UI promised. Live repro from today: a £36 ribeye on "Use default" booked £0.48 VAT on a £38.85 check instead of £6.48; £49 of desserts booked £0.00. From now, no explicit rate = the venue’s default tax rate (the one marked Default in Settings → Taxes), exactly as the editor says. Deliberate zero-tax is still the explicit Zero Rate; per-order-type overrides still win; a venue with no default rate behaves as before. Historic checks are not restated.',
+      'The HubRise catalog push mirrors the same rule — products on "Use default" now publish the default rate per service type instead of omitting tax information.',
+      'Channel order lines whose ref is NOT in our menu still book zero VAT — the default applies to our own untagged items, never to items we don’t recognise.',
+      'Locked in by unit tests (default fallback, explicit-rate wins, override wins, unknown-ref opt-out, no-default venue unchanged). Note: recipe GP% figures for previously-untagged items will shift — their net selling price is now correctly ex-VAT.',
+    ],
+  },
+  {
     version: '5.5.856', date: '22 Jul 2026', label: 'NEW "Order sources" report + dashboard splits each delivery platform',
     changes: [
       'Reports → Sales → "Order sources": a dedicated report breaking sales down by where the order was taken — POS till, mobile POS, kiosk, online, QR, catering, and EACH delivery platform by name (Deliveroo / Uber Eats / Just Eat…). Revenue tiles, a stacked source-mix chart over time (by hour for a single day), a per-source table with checks / revenue / avg check / share / period-on-period compare, and CSV export. Moved out of the Order types report, which goes back to being purely about order types.',

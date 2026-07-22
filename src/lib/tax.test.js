@@ -44,6 +44,34 @@ test('purchaseNet keeps ex-VAT prices and strips inc-VAT prices', () => {
   near(purchaseNet(10, false, 0), 10);
 });
 
+// ── v5.5.857: the "Use default" contract ─────────────────────────────────────
+// The item editor has always offered "Use default" (taxRateId null) but the engine
+// returned null and booked £0 VAT (live repro: a £36 ribeye on "Use default" booked
+// zero). These pin the fix and its two deliberate opt-outs.
+const DEFAULTED = [
+  { id: 'vat20', rate: 0.20, type: 'inclusive', active: true, isDefault: true },
+  { id: 'zero',  rate: 0,    type: 'inclusive', active: true, isDefault: false },
+];
+
+test('null taxRateId resolves the venue default rate ("Use default")', () => {
+  assert.equal(resolveTaxRate({ taxRateId: null }, DEFAULTED, 'dine-in').id, 'vat20');
+});
+
+test('an unmatched rate id resolves NOTHING — never the default (channel unknown-ref opt-out)', () => {
+  assert.equal(resolveTaxRate({ taxRateId: '__not_in_menu__' }, DEFAULTED, 'delivery'), null);
+});
+
+test('no default configured keeps the old behaviour (null)', () => {
+  const noDefault = DEFAULTED.map(r => ({ ...r, isDefault: false }));
+  assert.equal(resolveTaxRate({ taxRateId: null }, noDefault, 'dine-in'), null);
+});
+
+test('explicit Zero Rate still beats the default (deliberate zero-tax)', () => {
+  const item = { taxRateId: null, taxOverrides: { takeaway: 'zero' } };
+  assert.equal(resolveTaxRate(item, DEFAULTED, 'takeaway').id, 'zero');
+  assert.equal(resolveTaxRate(item, DEFAULTED, 'dine-in').id, 'vat20'); // dine-in falls to default
+});
+
 test('purchaseNet returns null for a non-numeric price', () => {
   assert.equal(purchaseNet(null, true, 0.2), null);
   assert.equal(purchaseNet('', false, 0.2), null);

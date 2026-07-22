@@ -89,7 +89,11 @@ export function buildChannelCloseFields(order, { menuItems = [], taxRates = [] }
     return {
       price: Number(it.price) || 0,   // already folded above — mods inherit the line's rate
       qty: Number(it.qty) || 1,
-      taxRateId: mi?.taxRateId ?? null,
+      // Matched item: its rate (null = venue default, resolved by the engine v5.5.857).
+      // UNKNOWN ref: a sentinel id that matches no rate → resolves null → books ZERO.
+      // A line that isn't in our menu must never inherit our default rate — we don't
+      // guess tax for items we don't recognise (also the sheet answer to HubRise).
+      taxRateId: mi ? (mi.taxRateId ?? null) : '__not_in_menu__',
       taxOverrides: mi?.taxOverrides || {},
     };
   });

@@ -150,16 +150,23 @@ export function buildCatalog(opts: {
   };
   const hasTaxConfig = (it: any): boolean =>
     !!it && (it.tax_rate_id != null || Object.keys(it.tax_overrides || {}).length > 0);
+  // v5.5.857: mirror lib/tax.js resolveTaxRate exactly — no rate set = the venue's
+  // DEFAULT rate (the item editor's "Use default", now honoured by the booking engine
+  // too). A venue with no default rate keeps the old behaviour (0 / omitted).
+  const defaultRate = taxRates.find((r: any) => r.is_default && r.active !== false) || null;
   const resolveTaxFrac = (it: any, orderType: string): number => {
     const ov = (it && it.tax_overrides) || {};
     const rid = ov[orderType] !== undefined ? ov[orderType] : (it ? it.tax_rate_id : null);
-    const r = rid != null ? rateById.get(String(rid)) : null;
+    const r = rid != null ? rateById.get(String(rid)) : defaultRate;
     return r && r.active !== false ? (parseFloat(r.rate) || 0) : 0;
   };
   const productTaxRate = (it: any, kids: any[]): Record<string, string> | null => {
     // Variant CHILDREN are the skus an inbound order books against, so they carry the
     // authoritative tax config — first child with any config wins, else the parent.
-    const src = (kids || []).find(hasTaxConfig) || (hasTaxConfig(it) ? it : null);
+    // With a venue default rate every product resolves; only a venue with NO default
+    // and an unconfigured item omits the object.
+    const src = (kids || []).find(hasTaxConfig) || (hasTaxConfig(it) ? it : null) ||
+                (defaultRate ? (it || null) : null);
     if (!src) return null;
     const out: Record<string, string> = {};
     for (const [hrKey, ours] of HR_TAX_KEYS) out[hrKey] = pctString(resolveTaxFrac(src, ours));
