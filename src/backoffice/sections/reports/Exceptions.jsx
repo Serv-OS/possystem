@@ -21,9 +21,12 @@ function flattenEvents(checks) {
     }
     (c.discounts||[]).forEach(d => {
       events.push({
+        // v5.5.853: label first — POS manual/auto discounts and channel promos all carry
+        // `label` (name was only ever set on channel entries), so the real discount name
+        // shows instead of the generic 'Discount'.
         type:'discount', amount: d.amount || d.value || 0, ts: c.closedAt, ref: c.ref || c.id,
         server: c.server || '—', tableLabel: c.tableLabel || c.customer || '—',
-        reason: d.name || d.reason || 'Discount', approvedBy: d.appliedBy || d.by || null,
+        reason: d.label || d.name || d.reason || 'Discount', approvedBy: d.appliedBy || d.by || null,
       });
     });
     (c.refunds||[]).forEach(r => {

@@ -97,7 +97,15 @@ export async function sendEmailReceipt({ to, locationId, check, locationLabel, b
   itemLines.push('');
   itemLines.push(`Subtotal: ${money(subtotal)}`);
   if (service > 0) itemLines.push(`Service charge: ${money(service)}`);
-  if (discount > 0) itemLines.push(`Discount: -${money(discount)}`);
+  // v5.5.853: named discount lines from the check's discounts array (POS + channel promos);
+  // the single discountAmount figure stays as the legacy fallback.
+  const discountRows = (Array.isArray(check.discounts) ? check.discounts : [])
+    .map(d => ({ label: d.label || d.name || 'Discount', amount: Number(d.amount ?? d.value) || 0 }))
+    .filter(d => d.amount > 0);
+  if (discountRows.length) discountRows.forEach(d => itemLines.push(`${d.label}: -${money(d.amount)}`));
+  else if (discount > 0) itemLines.push(`Discount: -${money(discount)}`);
+  const deliveryFee = Number(check.customer?.delivery_fee ?? check.deliveryFee) || 0;
+  if (deliveryFee > 0) itemLines.push(`Delivery: ${money(deliveryFee)}`);
   if (tip > 0) itemLines.push(`Gratuity: ${money(tip)}`);
   if (taxBk?.breakdown?.length) {
     itemLines.push('');
@@ -255,7 +263,15 @@ function buildReceiptHtml({ check, locationLabel, branding, greetingText }) {
     <div style="${S.divider}padding-top:12px;font-size:13px;">
       <div style="${S.row}margin-bottom:4px;"><span>Subtotal</span><span style="${S.mono}">${money(subtotal)}</span></div>
       ${service > 0 ? `<div style="${S.row}margin-bottom:4px;${S.muted}"><span>Service charge</span><span style="${S.mono}">${money(service)}</span></div>` : ''}
-      ${discount > 0 ? `<div style="${S.row}margin-bottom:4px;color:#dc2626;"><span>Discount</span><span style="${S.mono}">-${money(discount)}</span></div>` : ''}
+      ${(() => {
+        // v5.5.853: named discount lines (POS + channel); single-figure fallback kept.
+        const rows = (Array.isArray(check.discounts) ? check.discounts : [])
+          .map(d => ({ label: d.label || d.name || 'Discount', amount: Number(d.amount ?? d.value) || 0 }))
+          .filter(d => d.amount > 0);
+        if (rows.length) return rows.map(d => `<div style="${S.row}margin-bottom:4px;color:#dc2626;"><span>${d.label}</span><span style="${S.mono}">-${money(d.amount)}</span></div>`).join('');
+        return discount > 0 ? `<div style="${S.row}margin-bottom:4px;color:#dc2626;"><span>Discount</span><span style="${S.mono}">-${money(discount)}</span></div>` : '';
+      })()}
+      ${(Number(check.customer?.delivery_fee ?? check.deliveryFee) || 0) > 0 ? `<div style="${S.row}margin-bottom:4px;${S.muted}"><span>Delivery</span><span style="${S.mono}">${money(Number(check.customer?.delivery_fee ?? check.deliveryFee))}</span></div>` : ''}
       ${tip > 0 ? `<div style="${S.row}margin-bottom:4px;${S.muted}"><span>Gratuity</span><span style="${S.mono}">${money(tip)}</span></div>` : ''}
 
       <!-- Total -->
@@ -384,7 +400,14 @@ function buildReceiptText({ check, locationLabel, branding }) {
   lines.push('-'.repeat(44));
   lines.push(pad('Subtotal', money(subtotal)));
   if (service > 0) lines.push(pad('Service charge', money(service)));
-  if (discount > 0) lines.push(pad('Discount', `-${money(discount)}`));
+  // v5.5.853: named discount lines (POS + channel); single-figure fallback kept.
+  const discRows = (Array.isArray(check.discounts) ? check.discounts : [])
+    .map(d => ({ label: d.label || d.name || 'Discount', amount: Number(d.amount ?? d.value) || 0 }))
+    .filter(d => d.amount > 0);
+  if (discRows.length) discRows.forEach(d => lines.push(pad(d.label.substring(0, 28), `-${money(d.amount)}`)));
+  else if (discount > 0) lines.push(pad('Discount', `-${money(discount)}`));
+  const delFee = Number(check.customer?.delivery_fee ?? check.deliveryFee) || 0;
+  if (delFee > 0) lines.push(pad('Delivery', money(delFee)));
   if (tip > 0) lines.push(pad('Gratuity', money(tip)));
   lines.push('='.repeat(44));
   lines.push(pad('TOTAL', money(total)));

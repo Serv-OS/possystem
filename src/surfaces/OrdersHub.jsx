@@ -23,7 +23,7 @@ import { getDeliveryDetail } from '../lib/delivery/deliveryConfig';
 import { dispatchDelivery, sendDeliveryTrackingSMS } from '../lib/delivery/dispatch';
 import { statusLabel, statusColor, statusIcon } from '../lib/delivery/status';
 import { courierPhase, courierLegs, courierLateness } from '../lib/delivery/courierTimes';
-import { calculateOrderTax } from '../lib/tax';
+import { buildChannelCloseFields } from '../lib/channelMoney';
 import CourierTrackingQR from '../components/CourierTrackingQR';
 
 // ── Channel definitions ────────────────────────────────────────────────────────
@@ -355,46 +355,26 @@ export default function OrdersHub() {
   // Book a completed HubRise order into closed_checks so it lands in sales history + reports
   // (channel orders are pre-paid sales; they aren't written to closed_checks anywhere else).
   // Idempotent via the deterministic id (a duplicate insert just errors and is ignored).
+  // v5.5.853: ALL money fields come from lib/channelMoney buildChannelCloseFields — the
+  // same builder the POS balance-collect path uses — so a channel check books identically
+  // whichever path closes it: subtotal incl mods, named discounts, delivery charges into
+  // customer.delivery_fee (the slot online/catering delivery already uses), tip-type
+  // charges into tip, remaining charges into service, VAT from our tax engine.
   const bookHubriseSale = async (o) => {
     try {
       const locId = getActiveLocationSync();
-      const items = (o.items || []).map(i => ({ ...i, voided: false }));
-      const lineTotal = items.reduce((s, it) => s + (Number(it.qty) || 1) * ((Number(it.price) || 0) + (it.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0)), 0);
-      const total = Number(o.total) || 0;
-      const paid = !!(o.customer?.paid);
-      // v5.5.847: carry the channel's order-level discounts onto the check (was hardcoded
-      // []) in the same {label, amount} shape POS discounts use, so Exceptions/EOD see
-      // them. And book charges EXPLICITLY as the service figure: the old
-      // `service = total − items` maths broke the moment a discount existed (the discount
-      // ate the delivery fee, clamped at 0) — with both decoded, items − discounts +
-      // charges reconciles to the headline total instead of hiding the difference.
-      const chDiscounts = (o.customer?.discounts || [])
-        .filter(d => Number(d.amount))
-        .map(d => ({ label: d.name || 'Channel discount', type: 'amount',
-                     value: Number(d.amount), amount: Number(d.amount),
-                     scope: 'check', source: 'channel' }));
-      const chCharges = (o.customer?.charges || []).filter(c => Number(c.amount));
-      const chargeSum = chCharges.reduce((s, c) => s + Number(c.amount), 0);
-      // v5.5.850: real VAT on the booking — sku_ref == our menu_item id, so each line resolves
-      // OUR tax rate (with per-order-type overrides) via lib/tax at booking time. Mods inherit
-      // the parent line's rate by folding their price into the line gross (same as lineTotal).
-      // Unknown refs resolve no rate -> 0 tax for that line (conservative, never over-declares).
       const { menuItems = [], taxRates = [] } = useStore.getState();
-      const taxItems = items.map(it => {
-        const mi = menuItems.find(m => m.id === (it.itemId || it.id));
-        const modSum = (it.mods || []).reduce((s, m) => s + (Number(m.price) || 0), 0);
-        return { price: (Number(it.price) || 0) + modSum, qty: Number(it.qty) || 1, taxRateId: mi?.taxRateId ?? null, taxOverrides: mi?.taxOverrides || {} };
-      });
-      const svc = o.channel || o.type;
-      const hrOrderType = svc === 'collection' ? 'takeaway' : svc === 'dine-in' ? 'dine-in' : 'delivery';
-      const tb = taxRates.length ? calculateOrderTax(taxItems, taxRates, hrOrderType) : null;
+      const f = buildChannelCloseFields(o, { menuItems, taxRates });
       await supabase.from('closed_checks').insert({
         id: `chk-hr-${o.ref}`, ref: o.ref, location_id: locId,
         server: o.customer?.channel || 'HubRise', staff_id: null, covers: 1,
-        order_type: o.channel || o.type || 'delivery', customer: o.customer || {}, items,
-        discounts: chDiscounts, subtotal: +lineTotal.toFixed(2),
-        service: chCharges.length ? +chargeSum.toFixed(2) : Math.max(0, +(total - lineTotal).toFixed(2)),
-        tip: 0, tax_amount: tb ? +tb.totalTax.toFixed(2) : null, total, method: paid ? 'card' : 'cash',
+        order_type: o.channel || o.type || 'delivery',
+        customer: { ...(o.customer || {}), ...(f.deliveryFee > 0 ? { delivery_fee: f.deliveryFee } : {}) },
+        items: f.items,
+        discounts: f.discounts, subtotal: f.subtotal,
+        service: f.service, tip: f.tip,
+        tax_amount: f.taxAmount, tax_breakdown: f.taxBreakdown, total: f.total,
+        method: f.channelPaid ? 'card' : 'cash',
         closed_at: new Date().toISOString(), status: 'paid', refunds: [], table_id: null,
         table_label: `${o.customer?.channel || 'HubRise'} ${o.customer?.collectionCode || o.ref}`,
         source: 'hubrise',
@@ -782,6 +762,56 @@ export default function OrdersHub() {
     // tabs) and HubRise (test/manual orders) stay flag-driven so genuinely unpaid ones remain payable.
     else if (o.paid || o.customer?.paid || ['online', 'kiosk'].includes(o.source)) { setViewOrder(o); }
     else {
+      // v5.5.853: an unpaid / PART-PAID channel order must charge exactly what is still
+      // OWED — never a cart recomputation. The generic walk-in load fed channel items
+      // (base price + priced mods) into checkTotals, whose line maths is price×qty with
+      // mods ignored (POS-native lines fold mods into price) → a £50.60 order with
+      // £33.85 already paid on the channel asked for £37.85. The payment COPY below makes
+      // the existing maths produce the true balance:
+      //   · mod prices folded into each line's unit price (mods kept at £0 for display)
+      //   · one line per channel charge (delivery fee etc.), one NEGATIVE line per
+      //     channel payment ("Paid — Cash (1008)  −£33.85") so staff see why
+      //   · channel discounts as real check discounts (netted by checkTotals)
+      //   · itemId stripped so auto-discount rules can never phantom-fire on a channel
+      //     order; lines are status sent + fired so pay-time fireAll never re-prints
+      //   · serviceChargeWaived + deliveryQuote cleared — no venue add-ons on top
+      // Booking does NOT read this copy: recordWalkInClosed intercepts _channelRef and
+      // books from the queue row via buildChannelCloseFields (same figures as the
+      // prepaid path), then pushes 'collected' to HubRise.
+      if (o.source === 'hubrise') {
+        const f = buildChannelCloseFields(o, { menuItems: [], taxRates: [] });
+        const lock = { itemId: null, status: 'sent', fired: true, voided: false };
+        const payItems = [
+          ...f.items.map((i, n) => ({ ...i, ...lock, uid: `hrpay-i${n}` })),
+          ...f.charges.map((ch, n) => ({
+            uid: `hrpay-c${n}`, ...lock, name: ch.name || 'Charge',
+            price: Number(ch.amount) || 0, qty: 1, mods: [], notes: '',
+          })),
+          ...f.payments.map((p, n) => ({
+            uid: `hrpay-p${n}`, ...lock,
+            name: `Paid — ${p.name || 'Channel'}${p.ref ? ` (${p.ref})` : ''}`,
+            price: -(Number(p.amount) || 0), qty: 1, mods: [], notes: '',
+          })),
+        ];
+        useStore.setState({
+          walkInOrder: {
+            id: `ORD-${(o.ref || '').replace('#', '')}`,
+            ref: o.ref,
+            _channelRef: o.ref,
+            items: payItems,
+            discounts: f.discounts,
+            serviceChargeWaived: true,
+            sentAt: o.sentAt,
+            total: f.due,
+          },
+          customer: o.customer || null,
+          orderType: o._raw?.type || o.type || 'delivery',
+          activeTableId: null,
+          deliveryQuote: null,
+        });
+        setSurface('pos');
+        return;
+      }
       // A pay-later CATERING order opened for payment BEFORE its scheduled fire time would, on
       // close, delete its order_queue row before releaseDueCateringOrders fires it → silent
       // kitchen miss. Fire it now (idempotent: routeKioskOrderPrints' kitchen_routed_at claim

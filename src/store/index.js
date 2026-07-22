@@ -12,6 +12,7 @@ import { isSessionClosed } from '../sync/sessionClosure';
 import { markJobReconciled, flagJobStale, recallJob, forgetJob, cancelTerminalJob, buildCheckKey } from '../lib/payments/terminalJobs';
 import { printService } from '../lib/printer';
 import { hubrisePushStock, isHubriseConnected, hubrisePushStatus, isHubriseAutoReceipt } from '../lib/hubrise';
+import { buildChannelCloseFields } from '../lib/channelMoney';
 import { logActivity } from '../lib/activity';
 import { depleteForSale, reverseForSale } from '../lib/stock/deplete';
 import { setTrainingMode as applyTrainingFlag, isTrainingMode } from '../lib/trainingMode';
@@ -4546,6 +4547,77 @@ export const useStore = create((set, get) => ({
 
   recordWalkInClosed: (walkInOrder, orderType, customer, paymentInfo = {}) => {
     if (!walkInOrder?.items?.length) return;
+    // v5.5.853: a channel (HubRise) order paid at the till books via the SAME money
+    // builder as the prepaid "collected" path (lib/channelMoney) — from the QUEUE row's
+    // decoded figures, never from the payment cart (see OrdersHub.openOrder: that cart
+    // is a display/charge copy with folded mods + negative already-paid lines). This is
+    // the only way subtotal/discounts/delivery/VAT/total come out identical whichever
+    // path closes the order. Also pushes 'collected' to HubRise, which the old generic
+    // path never did (channel showed the order stuck forever after a till payment).
+    if (walkInOrder._channelRef) {
+      const o = get().orderQueue.find(q => q.ref === walkInOrder._channelRef);
+      if (o) {
+        const { staff, menuItems, taxRates } = get();
+        const f = buildChannelCloseFields(o, { menuItems: menuItems || [], taxRates: taxRates || [] });
+        const record = {
+          id: `chk-hr-${o.ref}`,            // deterministic — same id as the prepaid booking path
+          ref: o.ref,
+          tableId: null,
+          tableLabel: `${o.customer?.channel || 'HubRise'} ${o.customer?.collectionCode || o.ref}`,
+          locationId: getActiveLocationSync() || null,
+          server: staff?.name || o.customer?.channel || 'HubRise',
+          staffId: staff?.id || null,
+          covers: 1,
+          orderType: o._raw?.type || o.type || 'delivery',
+          // Payment story on the check: the channel legs + the balance taken at the till.
+          customer: {
+            ...(o.customer || {}),
+            ...(f.deliveryFee > 0 ? { delivery_fee: f.deliveryFee } : {}),
+            payments: [...f.payments, { name: `POS ${paymentInfo.method || 'card'}`, ref: null, amount: f.due }],
+            paidAmount: f.total, due: 0, paid: true,
+          },
+          items: f.items,
+          discounts: f.discounts,
+          subtotal: f.subtotal,
+          service: f.service,
+          tip: f.tip,
+          total: f.total,
+          taxAmount: f.taxAmount,
+          taxBreakdown: f.taxBreakdown,
+          method: paymentInfo.method || 'card',
+          giftCard: paymentInfo.giftCard || null,
+          stripePaymentIntentId: paymentInfo.stripePaymentIntentId || paymentInfo.paymentIntentId || null,
+          processor: paymentInfo.processor || 'stripe',
+          paymentIntents: attachCardToIntents(derivePaymentIntents(paymentInfo), paymentInfo.cardReceipt),
+          cardReceipt: paymentInfo.cardReceipt || null,
+          drawerId: get().myDrawer?.()?.id || null,
+          shiftId: get().currentShift?.id || null,
+          closedAt: Date.now(),
+          status: 'paid',
+          refunds: [],
+          source: 'hubrise',
+        };
+        set(s => ({ closedChecks: [record, ...s.closedChecks] }));
+        get().removeFromQueue(o.ref);      // local + DB delete
+        insertClosedCheck(record);          // training/mock gated at the leaf
+        if (record.method === 'cash') {
+          // Drawer opens for the money actually taken at the till (the balance), not
+          // the channel's headline total.
+          get().openCashDrawer({
+            type: 'cash_sale', amount: f.due,
+            reason: `Cash sale · ${record.tableLabel}`.trim(), ref: record.ref, force: true,
+          });
+        }
+        if (!isTrainingMode()) {
+          hubrisePushStatus(record.locationId, o.ref, 'collected').catch(() => {});
+        }
+        get().maybeAutoSignout('pay');
+        return record;
+      }
+      // Queue row already gone (another till closed it) — fall through to the generic
+      // path would double-book; just clear the cart state and stop.
+      return null;
+    }
     // v5.5.792: PAYING MUST GUARANTEE PRODUCTION. Counter/walk-up staff often take
     // payment without ever tapping Send — the check used to close paid with NO KDS
     // ticket and no kitchen print. If any line was never fired (never sent, or

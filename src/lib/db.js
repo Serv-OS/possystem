@@ -528,6 +528,7 @@ function closedCheckRow(check, locationId) {
     service:      check.service,
     tip:          check.tip,
     tax_amount:   check.taxAmount != null ? check.taxAmount : null,  // v4.6.19 — stored explicitly
+    tax_breakdown: check.taxBreakdown || null,  // v5.5.853: was computed+carried but never mapped — per-rate VAT now persists
     total:        check.total,
     method:       check.method,
     drawer_id:    check.drawerId || null,   // v4.6.37

@@ -94,6 +94,17 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.853', date: '22 Jul 2026', label: 'Channel-order money model — one builder, financially exact',
+    changes: [
+      'ONE money builder (lib/channelMoney) now produces every figure a delivery-channel sale books: subtotal including modifiers, named discounts, delivery charge, service, tip, VAT from our tax engine, and the paid/due split — whether the order completes prepaid or is paid at the till. The invariant: items − discounts + delivery + service + tip = the channel’s headline total, always.',
+      'Paying a part-paid channel order at the till now charges exactly the BALANCE DUE (a £50.60 order with £33.85 paid on the platform asked for £37.85 — the pay flow dropped modifier prices and knew nothing about channel discounts, charges or part-payments). The bill now shows each item at its true price, the delivery charge, each channel payment as a negative "Paid — …" line, and the discounts — landing on the exact amount owed.',
+      'Paying at the till also books the SAME closed check as the prepaid path (identical id, so never double-booked), records the full payment story (platform legs + till payment), pushes "collected" to the channel (it used to stay stuck on the platform forever), and opens the cash drawer for the amount actually taken, not the headline total.',
+      'Delivery charge money is now RECORDED as delivery money — booked to the same field online/catering delivery orders use, shown on receipts as "Delivery", and a new "Delivery charges" line in the Sales Summary ladder + CSV sums it across every source. Tip-type channel charges book as tips; only genuine service-type charges book as service.',
+      'Discounts now show up with their real names everywhere: itemised on the printed customer receipt (which previously showed a Subtotal→Total drop with no explanation — POS discounts included), on email/SMS/text receipts, and in the Exceptions report (which showed the generic "Discount" for every POS discount because it only read a field channel entries had).',
+      'Printed receipts: the hardcoded "Service (12.5%)" label is now just "Service" (the rate has been configurable since v5.5.851), and channel orders paid in parts print each payment leg. Per-rate VAT breakdown now persists to the database for all sources (it was computed but never saved).',
+    ],
+  },
+  {
     version: '5.5.852', date: '22 Jul 2026', label: 'Accept-with-delay on the new-order popup',
     changes: [
       'The ⏱ Delay button (accept a channel order but tell the platform the kitchen is running +10/15/20/30 minutes behind) now also appears on the full-screen new-order popup — not just the Orders Hub card. Staff accept from the popup in practice, so the delay option was effectively unreachable. Same one-tap flow: ⏱ Delay → pick +N minutes → accepted and the channel is told the later time.',

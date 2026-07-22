@@ -189,7 +189,13 @@ export async function buildCustomerReceipt({ location, check, items, totals }) {
 
   b.divider();
   if(totals.subtotal!==totals.grand) b.twoCol('Subtotal',`\xA3${totals.subtotal.toFixed(2)}`);
-  if(totals.service>0) b.twoCol('Service (12.5%)',`\xA3${totals.service.toFixed(2)}`);
+  // v5.5.853: itemised discount lines (POS manual/auto + channel promos) — the customer
+  // could see a Subtotal→TOTAL drop with no explanation. Named, one line each.
+  (Array.isArray(check?.discounts) ? check.discounts : []).forEach(d => {
+    const amt = Number(d.amount ?? d.value) || 0;
+    if (amt > 0) b.twoCol((d.label || d.name || 'Discount').substring(0, 34), `-\xA3${amt.toFixed(2)}`);
+  });
+  if(totals.service>0) b.twoCol('Service',`\xA3${totals.service.toFixed(2)}`);
   if(totals.tip>0) b.twoCol('Tip',`\xA3${totals.tip.toFixed(2)}`);
   // v5.5.657: delivery fee line (online/POS/catering delivery orders)
   const _delFee = Number(check?.customer?.delivery_fee ?? check?.delivery?.deliveryFee ?? check?.deliveryFee ?? 0) || 0;
@@ -220,7 +226,14 @@ export async function buildCustomerReceipt({ location, check, items, totals }) {
    .twoCol('TOTAL',`\xA3${totals.grand.toFixed(2)}`)
    .normal();
 
-  if(check?.method) b.divider().twoCol('Payment',check.method.toUpperCase()).twoCol('Status','PAID');
+  // v5.5.853: channel orders can be paid in legs (part on the platform, balance at the
+  // till) — print each decoded payment so the receipt tells the whole money story.
+  const _chPays = Array.isArray(check?.customer?.payments) ? check.customer.payments.filter(p => Number(p.amount)) : [];
+  if (_chPays.length) {
+    b.divider();
+    _chPays.forEach(p => b.twoCol(`${p.name || 'Payment'}${p.ref ? ` (${p.ref})` : ''}`.substring(0, 30), `\xA3${Number(p.amount).toFixed(2)}`));
+    b.twoCol('Status','PAID');
+  } else if(check?.method) b.divider().twoCol('Payment',check.method.toUpperCase()).twoCol('Status','PAID');
 
   // ── Card-scheme block (UK receipt rules: masked PAN, scheme, auth code, entry/CVM, AID) ──
   const cardLines = cardReceiptLines(check);

@@ -20,6 +20,7 @@ import { toCsv, downloadCsv } from './_csv';
 export function computeSalesStats(checks) {
   let gross=0, discounts=0, refunds=0, voids=0, service=0, tips=0, taxTotal=0, total=0, covers=0, count=0;
   let taxStored=0, taxDerived=0;  // diagnostic split
+  let deliveryFees=0;             // v5.5.853: customer-facing delivery charges (POS/online/catering + channel)
   (checks||[]).forEach(c => {
     const sub = c.subtotal || 0;
     const tip = c.tip || 0;
@@ -36,12 +37,13 @@ export function computeSalesStats(checks) {
     if (c.status === 'voided') voids += tot;
     service    += svc;
     tips       += tip;
+    deliveryFees += Number(c.customer?.delivery_fee ?? c.deliveryFee) || 0;
     taxTotal   += tax;
     total      += tot;
     if (c.status !== 'voided') { covers += c.covers || 1; count += 1; }
   });
   const net = gross - discounts - voids - refunds;
-  return { gross, discounts, voids, refunds, service, tips, tax: taxTotal, taxStored, taxDerived, total, covers, count, net };
+  return { gross, discounts, voids, refunds, service, tips, deliveryFees, tax: taxTotal, taxStored, taxDerived, total, covers, count, net };
 }
 
 export default function SalesSummary({ checks, prevChecks, fmt, fmtN, locationConfig }) {
@@ -86,6 +88,7 @@ export default function SalesSummary({ checks, prevChecks, fmt, fmtN, locationCo
       { metric:'Net sales',         current: cur.net,       previous: prev.net       },
       { metric:'Tax',                current: cur.tax,       previous: prev.tax       },
       { metric:'Service',           current: cur.service,   previous: prev.service   },
+      { metric:'Delivery charges',  current: cur.deliveryFees, previous: prev.deliveryFees },
       { metric:'Tips',              current: cur.tips,      previous: prev.tips      },
       { metric:'Total collected',   current: cur.total,     previous: prev.total     },
       { metric:'Covers',            current: cur.covers,    previous: prev.covers    },
@@ -156,6 +159,7 @@ export default function SalesSummary({ checks, prevChecks, fmt, fmtN, locationCo
           <LadderRow label="Net sales"           value={fmt(cur.net)}         prominence="sub" border/>
           <LadderRow label="plus Tax"            value={fmt(cur.tax)}/>
           <LadderRow label="plus Service"        value={fmt(cur.service)}/>
+          {cur.deliveryFees > 0 && <LadderRow label="plus Delivery charges" value={fmt(cur.deliveryFees)}/>}
           <LadderRow label="plus Tips"           value={fmt(cur.tips)}/>
           <LadderRow label="Total collected"     value={fmt(cur.total)}       prominence="head" tone="good" border/>
         </div>
