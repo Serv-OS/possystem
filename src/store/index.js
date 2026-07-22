@@ -5291,6 +5291,19 @@ export const useStore = create((set, get) => ({
       // doesn't produce duplicate KDS tickets if it fires twice locally.
       const COL_MISSING = (err) => err?.message?.includes('kitchen_routed_at')
         && err?.message?.includes('schema cache');
+      // v5.5.860: DURABLE per-device dedup. The in-memory _routedRefs fallback dies on
+      // every page refresh — live repro tonight: a claim error on one device left
+      // kitchen_routed_at NULL, so EVERY Back-Office refresh re-ran the master backfill
+      // and printed the same channel order again. This device never re-prints a ref it
+      // already dispatched, claim or no claim (localStorage, bounded, offline-cache
+      // category — cross-device dedup is still the DB claim).
+      const ROUTED_LS = 'rpos-routed-refs';
+      const routedBefore = (ref) => { try { return JSON.parse(localStorage.getItem(ROUTED_LS) || '[]').includes(ref); } catch { return false; } };
+      const markRouted = (ref) => { try { const a = JSON.parse(localStorage.getItem(ROUTED_LS) || '[]'); if (!a.includes(ref)) { a.push(ref); while (a.length > 300) a.shift(); localStorage.setItem(ROUTED_LS, JSON.stringify(a)); } } catch {} };
+      if (!order.force && routedBefore(order.ref)) {
+        console.log('[routeKioskOrderPrints] already printed on this device — skipping', order.ref);
+        return;
+      }
       // v5.5.279: CRITICAL — add location_id guard. `ref` is a short sequential
       // number (#1042) that WILL collide across locations; without this guard,
       // routing at Location A could claim Location B's order_queue row.
@@ -5320,9 +5333,11 @@ export const useStore = create((set, get) => ({
         if (!useStore._routedRefs) useStore._routedRefs = new Set();
         if (useStore._routedRefs.has(order.ref)) return;
         useStore._routedRefs.add(order.ref);
+        markRouted(order.ref);   // v5.5.860: survives refresh — the in-memory set doesn't
       } else {
         if (r.error) { console.warn('[routeKioskOrderPrints] claim failed', r.error); return; }
         if (!r.data?.length) return; // Another device already routed
+        markRouted(order.ref);   // v5.5.860: claim won — remember locally too, so a later claim-reset can never re-print here
       }
 
       // Routing config + cat parent map (mirror getCentresForItem from sendToKitchen)

@@ -94,6 +94,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.860', date: '22 Jul 2026', label: 'Fix: same channel order re-printing on every Back Office refresh',
+    changes: [
+      'A channel order whose print-claim failed to save (a transient database error on one device) was re-printed by the boot backfill on EVERY page refresh — the duplicate-print memory only lived in RAM, so a refresh wiped it. Each device now keeps a durable record of orders it has already printed (survives refreshes and restarts, bounded to the last 300); a ref this device has dispatched is never printed here again, claim or no claim. Cross-device dedup is still the database claim.',
+      'The stuck order from tonight (kq64b93) was stamped as routed directly, so it cannot replay under any circumstances.',
+    ],
+  },
+  {
     version: '5.5.859', date: '22 Jul 2026', label: 'Terminal assignment is a fence — a till can no longer use another till\'s card machine',
     changes: [
       'A card terminal assigned to a specific till now takes payments from THAT till only. The resolver\'s single-terminal convenience fallbacks apply to UNASSIGNED terminals alone — previously any till whose own lookup fell through could pull another till\'s machine (live repro: "TEst 1" sending to the A920 assigned to "Sunmi"). Unassigned terminals still work from any till, so single-machine venues lose nothing.',
