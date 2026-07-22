@@ -1,3 +1,61 @@
+# Session — 22 Jul 2026 evening (v5.5.852 → v5.5.855) — HubRise sign-off sheet, live tests with Peter
+
+## Shipped (all deployed + live-verified against real orders)
+- **v5.5.852** ⏱ Delay pills (+10/15/20/30) added to the full-screen new-order POPUP (v5.5.849 only
+  put them on the Orders Hub card; staff accept from the popup). PROVEN live: plain accept →
+  confirmed_time None (order evm3rbb); delay +15 → confirmed_time = tap+15m store-local (kq64b93).
+- **Catalog tax-rate push** (edge fn only, commit 30f1214): every product publishes HubRise's
+  product-level `tax_rate {delivery, collection, eat_in}` resolved from OUR tax_rates +
+  menu_items.tax_overrides — same chain the booking engine uses. Verified in the live catalog
+  (39/85 products; Slaw = 0/0/20 override case). ⚠ 72/135 items (46/85 published) have NO tax
+  rate in BO → publish nothing + book £0 VAT. Peter owes a tagging sweep (offered to list them).
+- **v5.5.853 — channel money model.** NEW `src/lib/channelMoney.js` buildChannelCloseFields =
+  THE single builder for every figure a HubRise sale books (invariant: items(incl mods) −
+  discounts + delivery + service + tip = headline total; paid/due from decoded payments[]).
+  Booked items follow the NATIVE line contract (unit price incl mods — checkTotals/receipts/
+  refunds all do price×qty). Used by: Orders-Hub collected path AND a new recordWalkInClosed
+  `_channelRef` intercept (charging a part-paid channel order at the till: charges exactly the
+  DUE, books the same deterministic `chk-hr-<ref>` id, pushes 'collected', drawer opens for the
+  amount taken). openOrder builds a payment COPY (folded mods, one line per charge, NEGATIVE
+  "Paid — X" line per channel payment, channel discounts as check discounts, itemId stripped so
+  auto-discounts can't fire, serviceChargeWaived). Receipts: named discount lines print/email/SMS
+  (was NOTHING itemised, even for POS discounts), Delivery line, per-leg payments, "Service"
+  label un-hardcoded from "(12.5%)". Reports: Exceptions reads d.label (real names — was generic
+  for ALL discounts), SalesSummary + CSV gain "plus Delivery charges" (reads customer.delivery_fee,
+  all sources). db.js closedCheckRow now maps tax_breakdown (was computed, NEVER persisted).
+  LIVE-VERIFIED end-to-end on HR-8qjnnyy: 61.75 − 12.65 + 1.50 = 50.60; Cash 33.85 + POS cash
+  16.75; HubRise → completed.
+- **v5.5.854** (a) removed-ingredient options decode as "No X" + removed:true (was showing
+  "Mozzarella" as an ADDED topping — allergen safety); (b) fully-PAID channel orders book at
+  ACCEPT (store bookChannelSale; idempotent deterministic id; OrdersHub collected call = safety
+  net; hubrise-ingest VOIDS the booked check server-side on channel cancel); (c) Order types
+  report gains a BY-SOURCE table + CSV (POS/kiosk/online/QR/catering + each platform BY NAME);
+  (d) POSSurface auto-courier-quote skipped for `_channelRef` orders (was quoting OUR Stuart on
+  Deliveroo's address → "Delivery unavailable — out of range" + payment block).
+- **v5.5.855** Transactions: channel sales were badged "POS" (label map fallback) → now the
+  platform name; filter gains Delivery channels/Catering buckets.
+- **hubrise-map.ts** also: option_list_name decoded onto mods as groupLabel (tickets still print
+  option-name-only per v4.6.10).
+- **CRM upsert verified live** (task #68): "Thomas B." +353768887706 → customers + customer_locations
+  (visit 1, £38.70) + customer_orders on the first with-identifier order after deploy.
+
+## Open / next
+1. **Real-VAT live proof needs an injector client** — Dev Tools sends canned unknown refs (tax
+   books £0 conservatively). Peter to create a 2nd OAuth client (manager.hubrise.com → SETTINGS →
+   DEVELOPER), then I drive the OAuth once and can fire real-menu orders (Og Wings + Slaw case:
+   expect £3.33 VAT — builder unit-verified). My direct-token order 7qj99bg sits invisible in
+   HubRise ('new', a client never gets its own events) — cancel it when the injector exists.
+2. **kq64b93** (−£5.31, paid) still open in queue — mark collected (or leave; books via safety net).
+3. **Tax-rate tagging sweep** — list the 72 untagged items for Peter.
+4. Sheet rows answered this session (paste-ready copy given): confirmed_time, invalid sku_refs,
+   tax rates (push-not-decode), options decode + invalid-ref display, discounts decode/ref usage.
+5. Still on the sheet: #59 variants per (menu × service type), #60 push OUR orders into HubRise,
+   redirect-URI check at manager.hubrise.com, Peter's owner cells.
+6. Mod qty >1 nuance: channelMoney counts mod qty; OrdersHub card/kitchen line sums ignore it
+   (kiosk/online mods have no qty — only exotic channel orders could differ). Flag if seen.
+
+---
+
 # Session — 20 Jul 2026 (v5.5.809 → v5.5.828)
 
 ## Shipped
