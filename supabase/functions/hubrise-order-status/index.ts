@@ -4,16 +4,18 @@
 // channel) via PATCH /locations/:id/orders/:id. The access token stays server-side,
 // so the OrdersHub client calls this on each advance / accept / reject.
 //
-// POST { ops_location_id, ref, action, prep_minutes?, reason? }
+// POST { ops_location_id, ref, action, delay_minutes?, reason? }
 //   action: accept | prep | ready | collected | reject | cancel
-//   accept -> HubRise 'accepted' + confirmed_time = now + prep_minutes (the merchant ETA)
+//   accept -> HubRise 'accepted'. NO confirmed_time unless delay_minutes is given
+//   (per HubRise: only send a confirmed_time when the restaurant is DELAYING; it is
+//   then formatted in the store's local offset, not UTC).
 // Monotonic: a status whose rank is below what we last pushed is ignored (unless terminal),
 // so a stale/duplicate advance can't regress the channel's view.
 // Auth: signed-in user with location access, or service role.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { queueToHrStatus, hrStatusRank } from '../_shared/hubrise-map.ts';
-import { patchOrderStatus } from '../_shared/hubrise-ingest.ts';
+import { patchOrderStatus, toStoreLocalIso } from '../_shared/hubrise-ingest.ts';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -71,13 +73,19 @@ Deno.serve(async (req) => {
     return json({ ok: true, skipped: `not regressing ${link.pushed_status} -> ${hrStatus}` });
   }
 
+  // Per HubRise's sign-off review (22 Jul 2026): a plain accept sends NO confirmed_time —
+  // accepting is implicit confirmation of the requested/ASAP time. confirmed_time is sent
+  // ONLY when the restaurant is explicitly DELAYING (delay_minutes), and then in the
+  // STORE'S LOCAL time (offset borrowed from HubRise's own timestamps on the order), not
+  // UTC, for readability on their side. prep_minutes no longer implies a confirmed_time.
   let confirmedTime: string | null = null;
-  if (hrStatus === 'accepted') {
-    const prep = Number.isFinite(body?.prep_minutes) ? Math.max(0, Math.round(body.prep_minutes)) : 20;
-    confirmedTime = new Date(Date.now() + prep * 60_000).toISOString();
-    // confirmed_time is sent in UTC (HubRise converts to the channel's local zone). Log a
-    // human-readable "now + prep" alongside the UTC value for readability (per HubRise guidance).
-    console.log(`[hubrise-order-status] ${ref} accepted — confirmed_time ${confirmedTime} (now +${prep}m)`);
+  if (hrStatus === 'accepted' && Number.isFinite(body?.delay_minutes)) {
+    const delay = Math.max(0, Math.round(body.delay_minutes));
+    const { data: q } = await sb.from('order_queue')
+      .select('created_at, customer').eq('ref', ref).maybeSingle();
+    const refIso = q?.customer?.expectedTime || q?.created_at || null;
+    confirmedTime = toStoreLocalIso(new Date(Date.now() + delay * 60_000), refIso);
+    console.log(`[hubrise-order-status] ${ref} accepted with DELAY — confirmed_time ${confirmedTime} (now +${delay}m, store-local)`);
   }
 
   try {

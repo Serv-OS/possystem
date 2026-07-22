@@ -94,6 +94,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.848', date: '22 Jul 2026', label: 'HubRise sign-off changes — no private refs, local times, confirmed time only on a delay',
+    changes: [
+      'Three changes requested by HubRise in the sign-off review, all live:',
+      'Stopped sending our internal reference (private_ref) on status updates — HubRise confirmed it is not needed; our own link table already maps orders both ways.',
+      'Accepting an order no longer sends a confirmed time at all. Accepting IS the confirmation of the requested/ASAP time — a confirmed time is only for telling the channel the kitchen is running behind, and the system now only sends one when a delay is explicitly given.',
+      'When a delay time IS sent, it goes in the venue’s local time (matching the times HubRise sends us) instead of UTC, so their side reads naturally.',
+    ],
+  },
+  {
     version: '5.5.847', date: '22 Jul 2026', label: 'Delivery-channel discounts + charges now SHOW on the order, the ticket and the books',
     changes: [
       'A Deliveroo/Uber Eats/Just Eat order with a promo discount looked wrong: the discount was captured but never displayed, so the items added up to more than the (already-discounted) order total. Orders Hub now lists each channel discount (in green, with its name) and each channel charge (delivery fee, bag fee, service fee) under the items.',

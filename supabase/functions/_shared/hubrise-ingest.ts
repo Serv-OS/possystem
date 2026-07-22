@@ -56,19 +56,38 @@ export async function ingestOrder(sb: any, opsLocationId: string, order: any, ev
 
   // COMPLIANCE — acknowledge a new order back to HubRise. HubRise requires the EPOS to move
   // new -> 'received' on ingest (suppresses the channel's "order not picked up" alerts). If the
-  // venue auto-accepts, jump straight to 'accepted' + confirmed_time. private_ref carries our
-  // ref for HubRise's ID-mapping/dedup. Best-effort: failures are retried by the reconcile cron.
+  // venue auto-accepts, jump straight to 'accepted'.
+  //
+  // Per HubRise's sign-off review (22 Jul 2026):
+  //   - NO private_ref: not needed — our ref already lives on hubrise_order_links, and
+  //     HubRise dedups on its own order id.
+  //   - NO confirmed_time on a plain accept: confirmed_time is ONLY for telling the channel
+  //     the restaurant is DELAYING beyond the requested/ASAP time. Accepting on time is
+  //     implicit confirmation of the requested time. (When one IS sent — the explicit-delay
+  //     path in hubrise-order-status — it goes in STORE-LOCAL time, not UTC.)
+  // Best-effort: failures are retried by the reconcile cron.
   if (incomingNew && conn?.access_token && !(existingLink && existingLink.pushed_status)) {
     try {
-      if (autoAccept) {
-        const prep = Number.isFinite(conn.default_prep_minutes) ? conn.default_prep_minutes : 20;
-        const ct = new Date(Date.now() + prep * 60_000).toISOString();
-        await patchOrderStatus(sb, row.ref, 'accepted', ct, null, { private_ref: row.ref });
-      } else {
-        await patchOrderStatus(sb, row.ref, 'received', null, null, { private_ref: row.ref });
-      }
+      await patchOrderStatus(sb, row.ref, autoAccept ? 'accepted' : 'received', null, null);
     } catch { /* reconcile retries via link.push_error */ }
   }
+}
+
+/**
+ * Format a Date as an ISO-8601 string in the STORE'S local offset, borrowed from one of
+ * HubRise's own timestamps on the order (they arrive store-local with offset, e.g.
+ * "2026-07-22T19:30:00+01:00"). HubRise accepts UTC too, but their integration review
+ * asked for local time for readability. No offset to borrow -> fall back to UTC.
+ */
+export function toStoreLocalIso(d: Date, refIso?: string | null): string {
+  const m = typeof refIso === 'string' ? refIso.match(/([+-]\d{2}):?(\d{2})$/) : null;
+  if (!m) return d.toISOString();
+  const sign = m[1].startsWith('-') ? -1 : 1;
+  const offMin = sign * (Math.abs(parseInt(m[1], 10)) * 60 + parseInt(m[2], 10));
+  const t = new Date(d.getTime() + offMin * 60_000);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${t.getUTCFullYear()}-${p(t.getUTCMonth() + 1)}-${p(t.getUTCDate())}`
+    + `T${p(t.getUTCHours())}:${p(t.getUTCMinutes())}:${p(t.getUTCSeconds())}${m[1]}:${m[2]}`;
 }
 
 /** Fetch the full order then ingest (used by the passive-event reconcile path). */
@@ -117,7 +136,7 @@ export async function patchOrderStatus(sb: any, ref: string, hrStatus: string, c
   const body: Record<string, unknown> = { status: hrStatus };
   if (confirmedTime) body.confirmed_time = confirmedTime;
   if (reason) body.seller_notes = reason;
-  if (extra) Object.assign(body, extra);   // e.g. private_ref for ID mapping
+  if (extra) Object.assign(body, extra);   // extra top-level PATCH fields (rarely needed)
   const now = new Date().toISOString();
   try {
     await patchOrder(conn.access_token, link.hubrise_location_id, link.hubrise_order_id, body);

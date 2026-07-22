@@ -5622,7 +5622,10 @@ export const useStore = create((set, get) => ({
     if (o.source === 'hubrise') {
       if (isHubriseAutoReceipt(locId)) get().printHubriseReceipt?.(o);
       get().updateQueueStatus(o.ref, 'prep');
-      hubrisePushStatus(locId, o.ref, 'accept', { prep_minutes: 20 }).catch(() => {});
+      // Plain accept = implicit confirmation of the requested/ASAP time. Per HubRise's
+      // sign-off review, a confirmed_time is only sent when the restaurant explicitly
+      // DELAYS (pass { delay_minutes: N }); a delay affordance on Accept is future UI.
+      hubrisePushStatus(locId, o.ref, 'accept').catch(() => {});
     } else {
       get().updateQueueStatus(o.ref, 'prep');
     }
