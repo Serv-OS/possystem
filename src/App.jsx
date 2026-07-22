@@ -94,6 +94,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.860', date: '22 Jul 2026', label: 'Paid-table guard is occupation-aware — recurring order numbers can no longer false-block a new party',
+    changes: [
+      'HOTFIX: the new "already been paid" guard matched by check key alone, and session ids (ORD-1001…) recur after a till reload — so a parked approved payment from a PREVIOUS party could refuse a brand-new transaction on the same table (live repro within hours of shipping). The guard now blocks only for the SAME occupation: the paid job\u2019s seatedAt must match the live session (Table Pay), or a no-seatedAt job (send-to-terminal) must be under 2 hours old. The genuine double-charge window sits fully inside both branches; a stale artifact can never block a new party again.',
+      'Stale parked approved test payments retired to reconciled with an audit note. Root cause queued: send-to-terminal jobs never leave approved because the reconciler only closes Table-Pay jobs (the durable cash-off fix, next up).',
+    ],
+  },
+  {
     version: '5.5.860', date: '22 Jul 2026', label: 'Fix: same channel order re-printing on every Back Office refresh',
     changes: [
       'A channel order whose print-claim failed to save (a transient database error on one device) was re-printed by the boot backfill on EVERY page refresh — the duplicate-print memory only lived in RAM, so a refresh wiped it. Each device now keeps a durable record of orders it has already printed (survives refreshes and restarts, bounded to the last 300); a ref this device has dispatched is never printed here again, claim or no claim. Cross-device dedup is still the database claim.',
