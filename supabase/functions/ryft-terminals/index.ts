@@ -122,7 +122,16 @@ Deno.serve(async (req) => {
     }, { onConflict: 'ryft_terminal_id' });
     if (upErr) return json({ error: `stored at Ryft but local save failed: ${upErr.message}`, terminal_id: terminalId }, 500);
 
-    return json({ success: true, terminal_id: terminalId, iploc });
+    // Stamp the OPS pairing row too. terminal_devices.ryft_terminal_id (20260722) has had
+    // ZERO writers until now, and the PaxPay charge path (terminal-job-charge) fails closed
+    // without it — a paired PAX with no Ryft link can show tips but never charge. Soft-fail:
+    // a serial with no paired ops row just reports ops_linked:false so the operator can see it.
+    const { data: opsRow } = await opsAdmin.from('terminal_devices')
+      .update({ ryft_terminal_id: terminalId, updated_at: new Date().toISOString() })
+      .eq('serial_number', serial).eq('status', 'paired')
+      .select('id').maybeSingle();
+
+    return json({ success: true, terminal_id: terminalId, iploc, ops_linked: !!opsRow });
   }
 
   // ── available: terminals that exist at RYFT for this venue's account ──────
@@ -177,7 +186,18 @@ Deno.serve(async (req) => {
     }, { onConflict: 'ryft_terminal_id' });
     if (upErr) return json({ error: `local save failed: ${upErr.message}` }, 500);
 
-    return json({ success: true, terminal_id: terminalId, serial_number: match.serialNumber ?? null, adopted: true });
+    // Same ops stamp as 'register' — the PaxPay charge path needs terminal_devices.ryft_terminal_id.
+    let opsLinked = false;
+    const adoptSerial = (match.serialNumber as string) ?? null;
+    if (adoptSerial) {
+      const { data: opsRow } = await opsAdmin.from('terminal_devices')
+        .update({ ryft_terminal_id: terminalId, updated_at: new Date().toISOString() })
+        .eq('serial_number', adoptSerial).eq('status', 'paired')
+        .select('id').maybeSingle();
+      opsLinked = !!opsRow;
+    }
+
+    return json({ success: true, terminal_id: terminalId, serial_number: match.serialNumber ?? null, adopted: true, ops_linked: opsLinked });
   }
 
   return json({ error: `unknown action: ${action}` }, 400);
