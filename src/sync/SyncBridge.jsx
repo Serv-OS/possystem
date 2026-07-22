@@ -7,6 +7,7 @@ import { loadWaitlistSync, scheduleWaitlistFlush, teardownWaitlistSync } from '.
 import { initOfflineQueue } from './OfflineQueue';
 import { isMock, supabase, getActiveLocationSync } from '../lib/supabase';
 import { startSessionReconciler, stopSessionReconciler } from './SessionReconciler';
+import { startTerminalJobReconciler, stopTerminalJobReconciler } from './TerminalJobReconciler';
 // v4.6.27: static import per ADR-008. Dynamic imports inside callbacks silently
 // fail in production bundles and have caused multiple data-loss bugs.
 import { reconcilePendingChecks, onReconnect, periodicSync } from './DataSafe.js';
@@ -448,6 +449,7 @@ export default function SyncBridge({ onSyncPulse }) {
     // This is the reliable fix for cross-device close sync
     // Realtime DELETE events are unreliable; polling guarantees consistency
     if (!isMock) startSessionReconciler();
+    if (!isMock) startTerminalJobReconciler();   // v5.5.846 — close tables paid on the PAX
 
     // v5.5.740: table reservations sync via their own dedicated table + realtime channel, isolated
     // from the active_sessions / order-sync path (a reservation never touches a table with a live order).
@@ -780,7 +782,7 @@ export default function SyncBridge({ onSyncPulse }) {
       }, 80);
     });
 
-    return () => { clearTimeout(timer); channelInstance?.close(); channelInstance = null; unsub(); unsubSessions(); unsubQueues(); unsubWaitlist(); unsubReservations(); stopSessionReconciler(); if (!isMock) { teardownSessions(); teardownQueueSync(); teardownWaitlistSync(); teardownReservations(); } };
+    return () => { clearTimeout(timer); channelInstance?.close(); channelInstance = null; unsub(); unsubSessions(); unsubQueues(); unsubWaitlist(); unsubReservations(); stopSessionReconciler(); stopTerminalJobReconciler(); if (!isMock) { teardownSessions(); teardownQueueSync(); teardownWaitlistSync(); teardownReservations(); } };
   }, []);
 
   return null;

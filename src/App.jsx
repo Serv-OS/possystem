@@ -94,6 +94,16 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.846', date: '22 Jul 2026', label: 'A table paid ON the card terminal now closes itself on the till',
+    changes: [
+      'When a waiter takes a table\u2019s payment on the PAX terminal (Table Pay), the card is charged but \u2014 until now \u2014 the table stayed open on the till and had to be cashed off by hand, and could even be paid a second time. The till now watches for these terminal payments and closes the matching table automatically: it writes the check, records the card details, depletes stock and clears the table, exactly like paying on the till does.',
+      'It closes each payment once and only once, no matter how many tills are open \u2014 the payment\u2019s own reference is the lock, so two devices can\u2019t both cash it off.',
+      'Safety rail on the amount: if the bill grew after the terminal froze its total (an item added mid-payment), it does NOT close at the wrong figure \u2014 it parks the payment in Unresolved payments for a manager to settle the difference, then closes at exactly what the card was charged.',
+      'Also fixed a latent bug where two table payments started in the same millisecond could share a reference and silently swallow the second sale.',
+      'Terminal side (app 1.6-m2): the Open tables list refreshes every 12s while it\u2019s on screen, so a table cleared anywhere drops off the terminal within seconds.',
+    ],
+  },
+  {
     version: '5.5.845', date: '21 Jul 2026', label: 'Fixed \u2014 a table cashed off on the till kept coming back onto the floor',
     changes: [
       'A table you paid and cleared could reappear on the floor plan minutes later \u2014 sometimes again and again \u2014 because another device (a second till, a phone, another tab) that still had that table open kept quietly re-uploading it. The safeguard that stops tables being LOST could not tell a deliberate cash-off from an accidental deletion, so it faithfully brought the paid table back.',

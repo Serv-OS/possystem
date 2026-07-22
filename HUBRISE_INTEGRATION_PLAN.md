@@ -1,9 +1,15 @@
 # HubRise Integration — Architecture, Data Model & Build Plan
 
-> Status: **code-complete, ready to deploy** (built v5.5.547). Go-live needs the operator
-> to register a HubRise OAuth app + set secrets, then apply the migration and deploy the
-> edge functions (see **Go-live runbook** at the bottom). All facts below are from the
-> official HubRise docs (`www.hubrise.com/developers/*`) captured during research.
+> Status: **DEPLOYED LIVE** to the Ops project (`tbetcegmszzotrwdtqhi`) on **21 Jun 2026** (built
+> v5.5.547). Migration applied (4 tables), secrets set, all 6 edge functions deployed +
+> smoke-tested; a live Dev Tools test order was received and status pushed back. HubRise's
+> integration team reviewed us and their punch-list was addressed + redeployed (**v5.5.642 /
+> v5.5.643**); the Integration Sheet is filled. **Remaining (owner actions, not code):** a
+> real-menu live order test; set Vercel `HUBRISE_RECONCILE_SECRET` + redeploy to activate the
+> 2-min reconcile cron; share the completed Integration Sheet + fill the owner-only cells;
+> rotate the HubRise `client_secret` and revoke the setup PAT. The **Go-live runbook** at the
+> bottom is the original build-time procedure and is kept for reference. All facts below are from
+> the official HubRise docs (`www.hubrise.com/developers/*`) captured during research.
 
 ## What this is
 

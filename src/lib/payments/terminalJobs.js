@@ -408,3 +408,40 @@ export async function cancelTerminalJob(jobId) {
     return { ok: false, reason: e?.message || 'cancel failed' };
   }
 }
+
+// ── Table-Pay reconciler support (v5.5.846) ─────────────────────────────────────
+// The POS closes a table paid ON the PAX (source='pax_table_pay'). The POS has NO
+// direct SELECT on terminal_jobs by design, so discovery goes through the fenced
+// terminal-job-status edge fn; the two housekeeping RPCs are fenced like
+// terminal_job_cancel. needs_human jobs are excluded (an amount mismatch already
+// parked for a manager). The source filter keeps this disjoint from Mode 3
+// (pos_send_to_terminal, which the till already closes) — no double-write.
+
+export async function fetchApprovedTablePayJobs(locationId) {
+  if (!locationId) return [];
+  const j = await callFn('terminal-job-status', { location_id: locationId, statuses: ['approved'], limit: 50 });
+  // status + charge re-checked CLIENT-side too: under deploy skew a stale edge fn
+  // ignores the statuses param and returns pending/tipping jobs (charge_minor null) —
+  // trusting the remote filter alone would book £0 sales. closeApprovedTerminalJob
+  // enforces the same guards again; belt and braces on a money path.
+  return (j.jobs ?? []).filter(
+    x => x?.status === 'approved'
+      && Number(x?.charge_minor) > 0
+      && x?.needs_human === false
+      && x?.check_draft?.source === 'pax_table_pay',
+  );
+}
+
+export async function markJobReconciled(jobId) {
+  if (!supabase) throw new Error('offline');
+  const { data, error } = await supabase.rpc('terminal_pos_mark_reconciled', { p_job_id: jobId });
+  if (error) throw error;
+  return data;
+}
+
+export async function flagJobStale(jobId, note) {
+  if (!supabase) throw new Error('offline');
+  const { data, error } = await supabase.rpc('terminal_pos_flag_stale', { p_job_id: jobId, p_note: note ?? null });
+  if (error) throw error;
+  return data;
+}

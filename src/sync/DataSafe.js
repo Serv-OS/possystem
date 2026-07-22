@@ -62,6 +62,40 @@ export async function safeInsertClosedCheck(check, row) {
   }
 }
 
+/**
+ * Idempotent sibling of safeInsertClosedCheck for the terminal-job reconciler, where
+ * MANY devices may race to close the SAME job. The row's id is the job's pre-minted
+ * closed_check_id — identical on every device — so an ON CONFLICT DO NOTHING upsert
+ * elects exactly one closer: the one whose INSERT physically lands gets a row back
+ * (created:true) and owns the non-idempotent side effects (stock, loyalty); everyone
+ * else gets an empty array (created:false) and no-ops. There is at most one
+ * closed_checks row for a job, ever — a duplicate is a DB no-op, not a stuck 23505.
+ */
+export async function safeUpsertClosedCheck(check, row) {
+  const pending = getPendingChecks();
+  if (!pending.find(c => c.id === check.id)) {
+    pending.push({ ...check, _savedAt: Date.now() });
+    setPendingChecks(pending);
+  }
+  try {
+    const { data, error } = await supabase
+      .from('closed_checks')
+      .upsert(row, { onConflict: 'id', ignoreDuplicates: true })
+      .select('id');
+    if (error) {
+      console.warn('[DataSafe] upsert failed, check queued for retry:', error.message);
+      return { ok: false, queued: true, created: false };
+    }
+    removePendingCheck(check.id);
+    // RETURNING yields a row ONLY for the INSERT that actually landed — that caller
+    // is the elected single closer; a conflict returns [].
+    return { ok: true, queued: false, created: (data?.length ?? 0) === 1 };
+  } catch (e) {
+    console.warn('[DataSafe] upsert unreachable, check queued:', e.message);
+    return { ok: false, queued: true, created: false };
+  }
+}
+
 function removePendingCheck(checkId) {
   const pending = getPendingChecks().filter(c => c.id !== checkId);
   setPendingChecks(pending);

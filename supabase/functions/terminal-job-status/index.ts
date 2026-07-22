@@ -39,6 +39,7 @@ const COLS = 'id, check_key, location_id, target_terminal_id, pos_device_id, tra
   + ' tip_basis_minor, due_minor, tip_minor, charge_minor, reported_minor, currency,'
   + ' tip_config, closed_check_id, check_draft, status, processor, transaction_id,'
   + ' auth_code, card, decline_reason, simulated, needs_human, last_error,'
+  + ' acknowledged_total_minor,'
   + ' created_at, dispatched_at, charged_at, settled_at, updated_at';
 
 /** Can this caller see jobs at this location? Same fence as terminal-job-create. */
@@ -109,5 +110,35 @@ Deno.serve(async (req) => {
   if (Array.isArray(body?.statuses) && body.statuses.length) q = q.in('status', body.statuses.slice(0, 12));
   const { data, error } = await q.order('created_at', { ascending: false }).limit(Math.min(Number(body?.limit) || 100, 200));
   if (error) return json({ error: error.message }, 500);
-  return json({ jobs: data ?? [] });
+
+  const jobs = data ?? [];
+
+  // v5.5.846: attach the CURRENT server-side bill so the POS reconciler can refuse to
+  // close a Table-Pay job whose live total moved after the terminal froze its amount.
+  // Runs under service role (reading active_sessions is already authorised here), so
+  // this exposes no new payments-read surface — it is exactly the figure the till
+  // itself would compute. Matched on the SAME occupation (session id): a re-seat mints
+  // a new session whose total is a different bill, so a stale row never masquerades as
+  // the live one. No live match → null → the reconciler closes from the frozen draft.
+  if (jobs.length && Array.isArray(body?.statuses) && body.statuses.includes('approved')) {
+    const tableIds = [...new Set(
+      jobs.map((j: any) => j?.check_draft?.tableId).filter(Boolean),
+    )];
+    if (tableIds.length) {
+      const { data: sess } = await opsAdmin.from('active_sessions')
+        .select('table_id, session, total_minor')
+        .eq('location_id', locationId)
+        .in('table_id', tableIds as string[]);
+      const byTable = new Map((sess ?? []).map((r: any) => [r.table_id, r]));
+      for (const j of jobs as any[]) {
+        const row = j?.check_draft?.tableId ? byTable.get(j.check_draft.tableId) : null;
+        j.live_total_minor =
+          (row && String(row.session?.id) === String(j?.check_draft?.sessionId))
+            ? row.total_minor
+            : null;
+      }
+    }
+  }
+
+  return json({ jobs });
 });

@@ -503,7 +503,17 @@ export const insertClosedCheck = async (check, locationId = null) => {
     return { data: null, error: new Error('No locationId') };
   }
 
-  const row = {
+  const row = closedCheckRow(check, locationId);
+
+  // Use DataSafe triple-write: localStorage → Supabase (queued if offline)
+  const { safeInsertClosedCheck } = await import('../sync/DataSafe.js');
+  return safeInsertClosedCheck(check, row);
+};
+
+// The one camelCase→snake_case closed_check row map, shared by insert (normal closes)
+// and upsert (the terminal-job reconciler). One shape, so the two can never drift.
+function closedCheckRow(check, locationId) {
+  return {
     id:           check.id,
     location_id:  locationId,
     ref:          check.ref,
@@ -535,10 +545,31 @@ export const insertClosedCheck = async (check, locationId = null) => {
     payment_intents: check.paymentIntents || null,  // v5.5.323: ALL card PIs (split portions + bar tabs) for multi-card refund
     processor:    check.processor || 'stripe',   // which processor took the payment — refund routes by this
   };
+}
 
-  // Use DataSafe triple-write: localStorage → Supabase (queued if offline)
-  const { safeInsertClosedCheck } = await import('../sync/DataSafe.js');
-  return safeInsertClosedCheck(check, row);
+// Idempotent closed_check write for the terminal-job reconciler. Same training gate
+// and locationId resolution as insertClosedCheck, but goes through the ON CONFLICT DO
+// NOTHING upsert and RETURNS its { ok, queued, created } — `created` is the
+// single-closer election result (see DataSafe.safeUpsertClosedCheck).
+export const upsertClosedCheck = async (check, locationId = null) => {
+  if (isMock) return { ok: false, queued: false, created: false };
+  if (isTrainingMode()) return { ok: false, queued: false, created: false };
+  if (!locationId || locationId === 'loc-demo') {
+    locationId = await getLocationId().catch(() => null);
+  }
+  if (!locationId || locationId === 'loc-demo') {
+    try {
+      const dev = JSON.parse(localStorage.getItem('rpos-device') || '{}');
+      locationId = dev.locationId || null;
+    } catch {}
+  }
+  if (!locationId) {
+    console.error('[DB] upsertClosedCheck: could not resolve locationId — check will be lost');
+    return { ok: false, queued: false, created: false };
+  }
+  const row = closedCheckRow(check, locationId);
+  const { safeUpsertClosedCheck } = await import('../sync/DataSafe.js');
+  return safeUpsertClosedCheck(check, row);
 };
 
 /**

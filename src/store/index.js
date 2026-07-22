@@ -7,7 +7,9 @@ import { buildScheduleCtx } from '../lib/locationTime';
 import { computeCheckTotals } from '../lib/payments/checkTotals';
 import { operatorSwitchPatch, logoutPatch } from '../lib/cartHold';
 import { kitchenOverride, receiptOverride } from '../lib/itemDisplay';
-import { upsertMenuItem, upsertFloorTable, deleteFloorTable, insertKDSTicket, insertClosedCheck, toggle86DB, getNextOrderRefLocal, updateClosedCheckRefunds, upsertStockLevel, deleteStockLevel, decrementStockRPC, restoreStockRPC, upsertModifierGroup, deleteModifierGroup } from '../lib/db';
+import { upsertMenuItem, upsertFloorTable, deleteFloorTable, insertKDSTicket, insertClosedCheck, upsertClosedCheck, toggle86DB, getNextOrderRefLocal, updateClosedCheckRefunds, upsertStockLevel, deleteStockLevel, decrementStockRPC, restoreStockRPC, upsertModifierGroup, deleteModifierGroup } from '../lib/db';
+import { isSessionClosed } from '../sync/sessionClosure';
+import { markJobReconciled, flagJobStale } from '../lib/payments/terminalJobs';
 import { printService } from '../lib/printer';
 import { hubrisePushStock, isHubriseConnected, hubrisePushStatus, isHubriseAutoReceipt } from '../lib/hubrise';
 import { logActivity } from '../lib/activity';
@@ -1330,6 +1332,13 @@ export const useStore = create((set, get) => ({
       if (hasUnfired) get().sendToKitchen({ fireAll: true, tableId });
     }
     get().recordClosedCheck(tableId, paymentInfo);
+    get()._dropTableFromFloor(tableId);
+  },
+
+  // Remove a table (and its children) from the floor and clear it as the active table.
+  // Extracted from clearTable so the terminal-job reconciler can drop a table it has
+  // closed WITHOUT re-recording the check. Idempotent — a table already gone is a no-op.
+  _dropTableFromFloor: (tableId) => {
     const table = get().tables.find(t => t.id === tableId);
 
     if (table?.parentId) {
@@ -4208,11 +4217,12 @@ export const useStore = create((set, get) => ({
     if (resetCounter && cfg) set({ challenge21Config: { ...cfg, counter: 0 } });
   },
 
-  recordClosedCheck: (tableId, paymentInfo = {}) => {
-    const { tables, staff, taxRates } = get();
-    const table = tables.find(t => t.id === tableId);
-    const session = table?.session;
-    if (!session) return;
+  // Build the closed_check record for a table session. Its only effect is consuming
+  // one local order ref; it writes no state. Shared by recordClosedCheck (mints a
+  // chk-<ts> id) and closeApprovedTerminalJob (passes idOverride = the terminal job's
+  // pre-minted closed_check_id), so both paths produce one identical record shape.
+  buildCloseRecord: (session, table, paymentInfo = {}, { idOverride } = {}) => {
+    const { staff, taxRates } = get();
 
     // Calculate tax breakdown at point of close
     let taxBreakdown = null;
@@ -4228,10 +4238,10 @@ export const useStore = create((set, get) => ({
     // "exclude other locations" filter for EVERY location → report bleed.
     let recLocId = getActiveLocationSync();
     if (!recLocId) { try { recLocId = localStorage.getItem('rpos-active-location') || null; } catch {} }
-    const record = {
-      id: `chk-${Date.now()}`,
+    return {
+      id: idOverride || `chk-${Date.now()}`,
       ref,
-      tableId,
+      tableId: table.id,
       tableLabel: table.label,
       locationId: recLocId,
       server:     session.server || staff?.name || 'Staff',
@@ -4263,6 +4273,14 @@ export const useStore = create((set, get) => ({
       refunds:    [],
       taxBreakdown,
     };
+  },
+
+  recordClosedCheck: (tableId, paymentInfo = {}) => {
+    const { tables } = get();
+    const table = tables.find(t => t.id === tableId);
+    const session = table?.session;
+    if (!session) return;
+    const record = get().buildCloseRecord(session, table, paymentInfo);
     set(s => ({ closedChecks: [record, ...s.closedChecks] }));
     insertClosedCheck(record);
     depleteForSale(record);   // v5.5.565: deplete recipe ingredients from the stock ledger (theoretical COGS); fire-and-forget no-op if no recipe
@@ -4290,6 +4308,134 @@ export const useStore = create((set, get) => ({
     }
     get().maybeAutoSignout('pay');   // v5.5.731 per-device sign-out-on-payment
     return record;
+  },
+
+  // v5.5.846 — close a table that was PAID ON THE PAX terminal (source='pax_table_pay').
+  // The terminal charges the card but never closes the table; this is the POS half the
+  // server always expected. Driven by TerminalJobReconciler over the terminal-job-status
+  // edge fn (the POS has no direct read on terminal_jobs).
+  //
+  // SINGLE CLOSER, no double-write: record.id === the job's pre-minted closed_check_id,
+  // written through upsertClosedCheck (INSERT ... ON CONFLICT DO NOTHING). Exactly one
+  // caller's insert lands (created:true) and owns the non-idempotent effects (stock,
+  // loyalty); every other device/tab/retry no-ops. The floor-clear + tombstone are
+  // idempotent and safe to run everywhere.
+  closeApprovedTerminalJob: async (job) => {
+    if (isTrainingMode()) return;                                  // training tills never write money
+    const d = job.check_draft || {};
+    const tableId = d.tableId;
+    if (!tableId || !job.closed_check_id) return;
+
+    // Fail closed, INDEPENDENT of the edge fn: only ever close a job the card actually
+    // APPROVED, for a real charged amount. Without this, a stale (pre-846) edge fn under
+    // deploy skew could return a still-pending job (charge_minor null) → we'd book a £0
+    // sale and yank a live mid-payment table off the floor. The money-writer must enforce
+    // its own name, not trust a remote filter.
+    if (job.status !== 'approved') return;
+    if (!(Number(job.charge_minor) > 0)) return;
+
+    const { tables, closedChecks } = get();
+    if (closedChecks.some(c => c.id === job.closed_check_id)) return;   // already closed on this device
+    const table = tables.find(t => t.id === tableId);
+    if (table?.session && isSessionClosed(tableId, table.session)) return;
+
+    // Is the party live at this table NOW the SAME occupation the card paid for? The draft
+    // froze the paying occupation's identity (sessionId + seatedAt); a re-seat mints a fresh
+    // id + seatedAt, so a mismatch means a DIFFERENT party is seated — and must never be
+    // closed, dropped, or attributed by this job (that would destroy their live unpaid order,
+    // breaching "tables MUST never be lost"). Same predicate terminal-job-status uses.
+    const liveIsPayingOccupation = !!table?.session
+      && String(table.session.id) === String(d.sessionId)
+      && (d.seatedAt == null || Number(table.session.seatedAt) === Number(d.seatedAt));
+
+    // ── stale-total guard — never close at a wrong amount ──────────────────────
+    // A manager who reconciles a mismatch acknowledges it; resolve_terminal_job then
+    // captures the live total AT THAT MOMENT into acknowledged_total_minor. The override
+    // is scoped to THAT exact figure — so it (a) doesn't fire for an unrelated
+    // device-reporting acknowledge, and (b) re-arms if the bill grows AGAIN afterwards.
+    const acknowledged = job.acknowledged_total_minor != null
+      && Number(job.live_total_minor) === Number(job.acknowledged_total_minor);
+    if (!acknowledged && job.live_total_minor != null
+        && Number(job.live_total_minor) !== Number(job.due_minor)) {
+      await flagJobStale(job.id,
+        `bill changed after payment frozen: due ${job.due_minor}, live ${job.live_total_minor}`).catch(() => {});
+      return;                                                      // leave the table SEATED for a human
+    }
+
+    // ── card block from the job (brand/last4/auth for the receipt) ─────────────
+    const c = job.card || {};
+    const cardReceipt = (job.card || job.auth_code) ? {
+      brand: c.brand || c.scheme || null,
+      last4: c.last4 || c.last_4 || null,
+      auth:  job.auth_code || null,
+      aid:   c.aid || null,
+      cvm:   c.cvm || null,
+      entryMode: c.entry_mode || c.entryMode || null,
+    } : null;
+
+    const termPay = {
+      method: 'card',
+      processor: job.processor || 'ryft',
+      grand: (job.charge_minor ?? 0) / 100,     // base + tip = what the card was charged
+      tip:   (job.tip_minor ?? 0) / 100,
+      stripePaymentIntentId: job.transaction_id || null,
+      cardReceipt,
+    };
+
+    // Rich path ONLY when the live occupation IS the one that paid → full-fidelity record
+    // (fresh tax, customer, ref) off THAT session. Otherwise (no live session, or a
+    // DIFFERENT party re-seated here) build headless from the frozen draft — never off a
+    // stranger's session.
+    let record;
+    if (liveIsPayingOccupation) {
+      record = get().buildCloseRecord(table.session, table, termPay, { idOverride: job.closed_check_id });
+    } else {
+      const items = Array.isArray(d.items) ? d.items.filter(i => !i?.voided).map(i => ({ ...i })) : [];
+      const subtotal = (d.subtotalMinor ?? 0) / 100;
+      record = {
+        id: job.closed_check_id,
+        ref: getNextOrderRefLocal(),
+        tableId, tableLabel: d.tableLabel || tableId,
+        locationId: d.locationId || null,
+        server: d.server || 'Staff', staffId: d.staffId || null,
+        covers: d.covers || 1, orderType: 'dine-in',
+        items, discounts: Array.isArray(d.discounts) ? d.discounts : [],
+        subtotal, service: subtotal * 0.125,
+        tip: (job.tip_minor ?? 0) / 100,
+        total: (job.charge_minor ?? 0) / 100,
+        taxAmount: null,
+        method: 'card', giftCard: null,
+        stripePaymentIntentId: job.transaction_id || null,
+        processor: job.processor || 'ryft',
+        paymentIntents: null, cardReceipt,
+        loyaltyRedemption: null,
+        closedAt: Date.now(),
+        seatedAt: d.seatedAt ? Number(d.seatedAt) : null,
+        status: 'paid', refunds: [],
+        taxBreakdown: null,
+      };
+    }
+    record.source = 'pax_table_pay';   // tag both paths so reports attribute it correctly
+
+    // ── ELECT THE SINGLE CLOSER — the closed_checks PK does the arbitration ────
+    const { created } = await upsertClosedCheck(record);
+
+    // Idempotent on every caller: prepend the tombstone.
+    set(s => ({ closedChecks: s.closedChecks.some(c => c.id === record.id) ? s.closedChecks : [record, ...s.closedChecks] }));
+    // Drop the floor slot ONLY if it is empty or still held by the paying occupation —
+    // a table re-seated by a NEW party keeps its live order untouched.
+    if (!table?.session || liveIsPayingOccupation) get()._dropTableFromFloor(tableId);
+
+    // Non-idempotent effects fire for EXACTLY the elected closer.
+    if (created) {
+      depleteForSale(record);
+      get().triggerChallenge21Check?.(record);
+      // Attribute loyalty only to the occupation that actually paid — never a re-seated party.
+      if (liveIsPayingOccupation && table?.session?.customer?.phone) {
+        get().attributeOrderToCustomer({ customer: table.session.customer, orderRecord: record }).catch(() => {});
+      }
+    }
+    await markJobReconciled(job.id).catch(() => {});   // housekeeping — insert-first, so a crash here just retries
   },
 
   // Redeem a held promo code against a recorded check — atomic + race-safe server-side, bound to the
