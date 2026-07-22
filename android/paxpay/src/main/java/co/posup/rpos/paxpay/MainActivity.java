@@ -154,6 +154,24 @@ public class MainActivity extends ComponentActivity {
     private StaffSession staff;
     private PinScreen pinScreen;
     private TableListScreen tableScreen;
+    /** v1.6-m2 — refreshes the open-tables list while it is on screen, so a table paid or cleared
+     *  on another device (or on the till) drops off this terminal within ~12s instead of lingering
+     *  until the operator leaves and re-opens the list. terminal_open_tables reads active_sessions
+     *  live, so a re-poll is all that is needed — the row is already gone server-side. */
+    private final android.os.Handler tablesPoll =
+            new android.os.Handler(android.os.Looper.getMainLooper());
+    private static final long TABLES_POLL_MS = 12_000;
+    private final Runnable tablesPollTick = new Runnable() {
+        @Override public void run() {
+            // Only while the list is actually the visible screen. getParent() goes null the moment
+            // setScreen() swaps it out, so this self-stops on navigate-away with no extra bookkeeping.
+            if (tableScreen != null && tableScreen.getParent() != null) {
+                diag.event("open-tables auto-refresh");
+                loadTables();
+                tablesPoll.postDelayed(this, TABLES_POLL_MS);
+            }
+        }
+    };
     /** v5.5.841 — the idle-first resting screen. Non-null only in POS-dispatch-only mode. */
     private PosIdleScreen posIdleScreen;
     private StatusScreen statusScreen;
@@ -927,6 +945,8 @@ public class MainActivity extends ComponentActivity {
         setScreen(tableScreen);
         tableScreen.setTables(null, null);
         loadTables();
+        // Keep it live while it is up (setScreen already cleared any prior schedule).
+        tablesPoll.postDelayed(tablesPollTick, TABLES_POLL_MS);
     }
 
     private void loadTables() {
@@ -1445,6 +1465,9 @@ public class MainActivity extends ComponentActivity {
         // construction. A payment screen cannot be covered by a screensaver because by the time
         // it is on display the timer no longer exists. See armScreensaver().
         disarmScreensaver();
+        // Leaving any screen stops the open-tables poll; showTables() re-arms it. (The getParent()
+        // check in the tick is the backstop; removing here stops it promptly.)
+        tablesPoll.removeCallbacksAndMessages(null);
         screensaverShowing = false;
         content.removeAllViews();
         content.addView(view, new FrameLayout.LayoutParams(
