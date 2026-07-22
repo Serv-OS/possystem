@@ -227,6 +227,36 @@ Deno.serve(async (req) => {
     const { data: ploc } = await platformAdmin.from('locations')
       .select('id').eq('ops_location_id', job.location_id).maybeSingle();
     const platformLocId = ploc?.id ?? job.location_id;
+
+    // ── Authoritative Ryft terminal id ──────────────────────────────────────────
+    // The Ryft terminal id lives in TWO places that can drift: ops
+    // terminal_devices.ryft_terminal_id (stamped by ryft-terminals at pair time)
+    // and platform payment_devices.ryft_terminal_id (written by the "Ryft card
+    // reader" pairing flow). Re-pairing through the reader flow updates only the
+    // latter, leaving the ops column pointing at a terminal Ryft no longer knows —
+    // an initiate 404 ("resource not found"), the exact failure this guards.
+    // payment_devices is the source of truth the WORKING path
+    // (ryft-terminal-payment) already trusts, so reconcile to it here rather than
+    // trusting a column that silently goes stale on every re-pair.
+    let ryftTerminalId = term.ryft_terminal_id as string;
+    {
+      const { data: pds } = await platformAdmin.from('payment_devices')
+        .select('ryft_terminal_id')
+        .eq('location_id', platformLocId).eq('processor', 'ryft')
+        .not('ryft_terminal_id', 'is', null);
+      const ids = Array.isArray(pds)
+        ? pds.map((r) => r.ryft_terminal_id as string).filter(Boolean)
+        : [];
+      if (ids.includes(ryftTerminalId)) {
+        // ops and platform agree — nothing to reconcile.
+      } else if (ids.length === 1) {
+        console.log(`terminal-job-charge: ops ryft id ${ryftTerminalId} absent from payment_devices; using authoritative ${ids[0]} (drift, job ${job.id})`);
+        ryftTerminalId = ids[0];
+      } else if (ids.length > 1) {
+        console.log(`terminal-job-charge: ${ids.length} ryft terminals at location and ops id ${ryftTerminalId} matches none — keeping ops id (job ${job.id})`);
+      }
+      // ids.length === 0 → nothing better to use; keep the ops id.
+    }
     const { data: mra } = await platformAdmin.from('merchant_ryft_accounts')
       .select('ryft_account_id, markup_percent, markup_fixed_pence')
       .eq('location_id', platformLocId).maybeSingle();
@@ -255,7 +285,7 @@ Deno.serve(async (req) => {
 
     let res;
     try {
-      res = await createTerminalPayment(term.ryft_terminal_id, {
+      res = await createTerminalPayment(ryftTerminalId, {
         // THE AMOUNT IS THE DB'S, NEVER THE CALLER'S. tj_charge_identity has
         // already proven charge = due + tip on this row.
         amounts: { requested: chargeMinor },

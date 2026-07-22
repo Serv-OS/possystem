@@ -94,6 +94,16 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.854', date: '22 Jul 2026', label: 'Channel orders: removed ingredients read correctly, revenue counts at accept, source breakdown report',
+    changes: [
+      'SAFETY: a channel order’s REMOVED ingredient (e.g. Deliveroo "Ingredient removed: Mozzarella") displayed as a bare "Mozzarella" — reading as an ADDED topping. It now decodes as "No Mozzarella" everywhere it shows or prints. Critical for allergen removals.',
+      'Fully-PAID channel orders now book into sales/order reports the moment they are ACCEPTED — a prepaid order is revenue when the venue commits to it, not when someone taps "collected". If the channel later cancels, the booked check is automatically voided server-side so reports and end-of-day still reconcile. Unpaid/part-paid orders still book when the balance is taken at the till.',
+      'Order types report now also breaks orders down BY SOURCE — POS till, kiosk, online, QR code, catering, and each delivery platform by name (Deliveroo, Uber Eats, …) — with checks, revenue, average check, share and period-on-period compare, included in the CSV export.',
+      'Opening a channel order for payment no longer runs OUR courier quote against the platform’s delivery address ("Delivery unavailable — out of range" — the channel delivers its own orders), which could even block taking payment.',
+      'Item-level customer notes from channel orders (e.g. "Extra crispy") were already decoded and shown under the item — confirmed correct, they come from the customer’s note on the platform.',
+    ],
+  },
+  {
     version: '5.5.853', date: '22 Jul 2026', label: 'Channel-order money model — one builder, financially exact',
     changes: [
       'ONE money builder (lib/channelMoney) now produces every figure a delivery-channel sale books: subtotal including modifiers, named discounts, delivery charge, service, tip, VAT from our tax engine, and the paid/due split — whether the order completes prepaid or is paid at the till. The invariant: items − discounts + delivery + service + tip = the channel’s headline total, always.',

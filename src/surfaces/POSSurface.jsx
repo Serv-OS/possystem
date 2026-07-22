@@ -315,6 +315,10 @@ export default function POSSurface() {
   const _addrKey = orderType === 'delivery' ? JSON.stringify(customer?.address || null) : '';
   useEffect(() => {
     if (orderType !== 'delivery' || !customer?.address || items.length === 0) return;
+    // v5.5.854: never quote OUR courier for a channel order loaded for payment — the
+    // channel (Deliveroo/UberEats) delivers it. The quote was failing on the channel's
+    // address ("Delivery unavailable — out of range") and its gate blocked payment.
+    if (useStore.getState().walkInOrder?._channelRef) return;
     const t = setTimeout(() => { quoteDelivery?.(); }, 450);
     return () => clearTimeout(t);
   }, [orderType, _addrKey, subtotal, items.length]);

@@ -352,35 +352,11 @@ export default function OrdersHub() {
     rejectOrderByRef(o.ref);
   };
 
-  // Book a completed HubRise order into closed_checks so it lands in sales history + reports
-  // (channel orders are pre-paid sales; they aren't written to closed_checks anywhere else).
-  // Idempotent via the deterministic id (a duplicate insert just errors and is ignored).
-  // v5.5.853: ALL money fields come from lib/channelMoney buildChannelCloseFields — the
-  // same builder the POS balance-collect path uses — so a channel check books identically
-  // whichever path closes it: subtotal incl mods, named discounts, delivery charges into
-  // customer.delivery_fee (the slot online/catering delivery already uses), tip-type
-  // charges into tip, remaining charges into service, VAT from our tax engine.
-  const bookHubriseSale = async (o) => {
-    try {
-      const locId = getActiveLocationSync();
-      const { menuItems = [], taxRates = [] } = useStore.getState();
-      const f = buildChannelCloseFields(o, { menuItems, taxRates });
-      await supabase.from('closed_checks').insert({
-        id: `chk-hr-${o.ref}`, ref: o.ref, location_id: locId,
-        server: o.customer?.channel || 'HubRise', staff_id: null, covers: 1,
-        order_type: o.channel || o.type || 'delivery',
-        customer: { ...(o.customer || {}), ...(f.deliveryFee > 0 ? { delivery_fee: f.deliveryFee } : {}) },
-        items: f.items,
-        discounts: f.discounts, subtotal: f.subtotal,
-        service: f.service, tip: f.tip,
-        tax_amount: f.taxAmount, tax_breakdown: f.taxBreakdown, total: f.total,
-        method: f.channelPaid ? 'card' : 'cash',
-        closed_at: new Date().toISOString(), status: 'paid', refunds: [], table_id: null,
-        table_label: `${o.customer?.channel || 'HubRise'} ${o.customer?.collectionCode || o.ref}`,
-        source: 'hubrise',
-      });
-    } catch (e) { console.warn('[hubrise] book sale failed:', e?.message); }
-  };
+  // Book a completed HubRise order into closed_checks. v5.5.854: booking moved to the
+  // store's bookChannelSale (paid orders book at ACCEPT now); this call on 'collected'
+  // is the idempotent safety net — the deterministic check id makes double-booking
+  // impossible, so orders accepted before accept-time booking shipped still land.
+  const bookHubriseSale = (o) => useStore.getState().bookChannelSale(o);
 
   // v5.5.157: force-close a POOLED QR tab (multiple rounds aggregated by
   // payment_intent_id). Sums totals across all rounds, applies the auto-

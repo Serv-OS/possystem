@@ -389,7 +389,11 @@ export function orderToQueueRow(order: any, opts: { locationId: string }): { row
     qty: Math.round(Number(it.quantity) || 1),
     price: parseMoney(it.price).amount,
     mods: (it.options || []).map((op: any) => ({
-      label: op.name,
+      // removed:true = an ingredient TAKEN OFF (HubRise sends e.g. "Ingredient removed:
+      // Mozzarella"). Displaying the bare name read as an ADDED topping — safety issue
+      // for allergen removals — so the label carries the negation everywhere it prints.
+      label: op.removed === true ? `No ${op.name}` : op.name,
+      removed: op.removed === true,
       groupLabel: op.option_list_name || null,   // decoded for completeness; tickets deliberately print the option name only (v4.6.10)
       itemId: op.ref || null,
       qty: Number(op.quantity) || 1,

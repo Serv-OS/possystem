@@ -5771,6 +5771,12 @@ export const useStore = create((set, get) => ({
       if (isHubriseAutoReceipt(locId)) get().printHubriseReceipt?.(o);
       get().updateQueueStatus(o.ref, 'prep');
       hubrisePushStatus(locId, o.ref, 'accept', delayMinutes ? { delay_minutes: delayMinutes } : {}).catch(() => {});
+      // v5.5.854: a FULLY-PAID channel order is revenue the moment the venue accepts
+      // it — book it now so sales/order reports see it immediately, not only after
+      // someone remembers to tap "collected". Unpaid/part-paid orders book when the
+      // balance is taken (recordWalkInClosed intercept). A later channel cancellation
+      // voids the booked check server-side (hubrise-ingest).
+      if (o.customer?.paid) get().bookChannelSale(o);
     } else {
       get().updateQueueStatus(o.ref, 'prep');
     }
@@ -5785,6 +5791,35 @@ export const useStore = create((set, get) => ({
   acceptOrderByRef: (ref) => get()._acceptOrderCore(ref, null),
   // Accept but tell the channel the kitchen is running behind by <minutes>.
   acceptOrderByRefWithDelay: (ref, minutes) => get()._acceptOrderCore(ref, Number(minutes) || null),
+
+  // v5.5.854: book a channel (HubRise) sale into closed_checks — THE single writer for
+  // prepaid channel revenue. Idempotent: the deterministic id means a duplicate insert
+  // just errors and is swallowed, so accept-time booking and the 'collected' safety-net
+  // call can never double-book. Money fields come from lib/channelMoney (the same
+  // builder the till balance-collection path uses). Gated: training tills and mock mode
+  // book nothing.
+  bookChannelSale: async (o) => {
+    if (!o || o.source !== 'hubrise' || !supabase || isTrainingMode()) return;
+    try {
+      const locId = getActiveLocationSync();
+      const { menuItems = [], taxRates = [] } = get();
+      const f = buildChannelCloseFields(o, { menuItems, taxRates });
+      await supabase.from('closed_checks').insert({
+        id: `chk-hr-${o.ref}`, ref: o.ref, location_id: locId,
+        server: o.customer?.channel || 'HubRise', staff_id: null, covers: 1,
+        order_type: o._raw?.type || o.type || 'delivery',
+        customer: { ...(o.customer || {}), ...(f.deliveryFee > 0 ? { delivery_fee: f.deliveryFee } : {}) },
+        items: f.items,
+        discounts: f.discounts, subtotal: f.subtotal,
+        service: f.service, tip: f.tip,
+        tax_amount: f.taxAmount, tax_breakdown: f.taxBreakdown, total: f.total,
+        method: f.channelPaid ? 'card' : 'cash',
+        closed_at: new Date().toISOString(), status: 'paid', refunds: [], table_id: null,
+        table_label: `${o.customer?.channel || 'HubRise'} ${o.customer?.collectionCode || o.ref}`,
+        source: 'hubrise',
+      });
+    } catch { /* duplicate id = already booked — exactly what we want */ }
+  },
   rejectOrderByRef: (ref) => {
     const o = (get().orderQueue || []).find(x => x.ref === ref);
     if (!o) return;

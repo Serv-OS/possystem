@@ -60,6 +60,17 @@ export async function ingestOrder(sb: any, opsLocationId: string, order: any, ev
     last_event_created_at: eventCreatedAt || new Date().toISOString(), updated_at: new Date().toISOString(),
   }, { onConflict: 'ref' });
 
+  // Paid channel orders book into closed_checks at ACCEPT (v5.5.854) — so a channel-side
+  // cancellation/rejection arriving after that must VOID the booked check or reports and
+  // EOD overstate revenue. Voiding (not deleting) keeps the audit trail; SalesSummary /
+  // Exceptions already treat status='voided' as a void. Idempotent + best-effort.
+  if (terminal) {
+    try {
+      await sb.from('closed_checks').update({ status: 'voided' })
+        .eq('id', `chk-hr-${row.ref}`).eq('source', 'hubrise').eq('status', 'paid');
+    } catch { /* never fail ingest on this */ }
+  }
+
   // CRM — flow the channel customer into the venue customer DB (Back Office → Customers),
   // mirroring the online-checkout attribution path. Runs ONLY on FIRST sight of the order
   // (existingRow null) so webhook retries and reconcile replays can never double-count a
