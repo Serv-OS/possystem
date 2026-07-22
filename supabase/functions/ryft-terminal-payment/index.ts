@@ -53,11 +53,12 @@ Deno.serve(async (req) => {
   let terminalId = body.terminal_id;
   let accountId: string | undefined;
   let platformFee: number | undefined;
+  let platformLocId: string | null = null;
   if (!terminalId) {
     if (!location_id) return json({ error: 'location_id or terminal_id required' }, 400);
     // Ops location → Platform location (ops_location_id) → Ryft terminal.
     const { data: ploc } = await platformAdmin.from('locations').select('id').eq('ops_location_id', location_id).maybeSingle();
-    const platformLocId = ploc?.id ?? location_id;
+    platformLocId = ploc?.id ?? location_id ?? null;
     let q = platformAdmin.from('payment_devices')
       .select('ryft_terminal_id, bound_pos_device_id')
       .eq('location_id', platformLocId).eq('processor', 'ryft').not('ryft_terminal_id', 'is', null);
@@ -65,6 +66,28 @@ Deno.serve(async (req) => {
     const match = (devices ?? []).find((d: any) => pos_device_id && d.bound_pos_device_id === pos_device_id) ?? (devices ?? [])[0];
     if (!match?.ryft_terminal_id) return json({ error: 'no Ryft terminal registered for this location' }, 400);
     terminalId = match.ryft_terminal_id;
+  } else {
+    // THE LIVE-TEST 404 (22 Jul 2026). An explicit terminal_id used to skip this
+    // whole block, so the request carried NO `Account` header — but a terminal is
+    // registered UNDER the merchant sub-account (ryft-terminals passes
+    // { accountId } to POST /in-person/terminals), and Ryft scopes the terminal
+    // lookup to the account in that header. Looked up as the platform account,
+    // tml_… does not exist → {code:"404", errors:[{code:"not_found"}]} on the
+    // (otherwise correct) POST /in-person/terminals/{id}/payment. It also meant
+    // no platformFee was ever booked on this path. So: resolve the OWNING
+    // sub-account from our own payment_devices row for this terminal (falling
+    // back to body.location_id), and only go headerless when the terminal truly
+    // has no merchant account — i.e. it lives on the platform account itself.
+    const { data: dev } = await platformAdmin.from('payment_devices')
+      .select('location_id').eq('processor', 'ryft').eq('ryft_terminal_id', terminalId).maybeSingle();
+    platformLocId = dev?.location_id ?? null;
+    if (!platformLocId && location_id) {
+      const { data: ploc } = await platformAdmin.from('locations').select('id').eq('ops_location_id', location_id).maybeSingle();
+      platformLocId = ploc?.id ?? location_id ?? null;
+    }
+  }
+
+  if (platformLocId) {
     const { data: mra } = await platformAdmin.from('merchant_ryft_accounts')
       .select('ryft_account_id, markup_percent, markup_fixed_pence').eq('location_id', platformLocId).maybeSingle();
     accountId = mra?.ryft_account_id ?? undefined;
