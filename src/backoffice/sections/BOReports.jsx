@@ -30,6 +30,7 @@ import MenuEngineering from './reports/MenuEngineering';
 import Servers      from './reports/Servers';
 import Tips         from './reports/Tips';
 import OrderTypes   from './reports/OrderTypes';
+import OrderSources from './reports/OrderSources';
 import Tables       from './reports/Tables';
 import KDSPerformance from './reports/KDSPerformance';
 import ZReport      from './reports/ZReport';
@@ -282,6 +283,7 @@ export default function BOReports({ setSection } = {}) {
           {view === 'servers'     && <Servers      checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN}/>}
           {view === 'tips'        && <Tips         checks={filtered} fmt={fmt} fmtN={fmtN}/>}
           {view === 'order_types' && <OrderTypes   checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN}/>}
+          {view === 'order_sources' && <OrderSources checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN}/>}
           {view === 'tables'      && <Tables       checks={filtered} fmt={fmt} fmtN={fmtN}/>}
           {view === 'kds_perf'    && <KDSPerformance kdsTickets={kdsTickets || []} fmt={fmt} fmtN={fmtN}/>}
           {view === 'zreport'     && <ZReport      checks={filtered} periodLabelText={periodLabel(period, customRange, range)} rangeFrom={range.from} rangeTo={range.to} fmt={fmt} fmtN={fmtN}/>}

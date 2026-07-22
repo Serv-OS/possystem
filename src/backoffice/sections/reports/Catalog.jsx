@@ -70,6 +70,7 @@ export const CATEGORIES = [
       { id:'items',       label:'Product mix',      desc:'Items, categories, modifiers and 86\'d — with time of day' },
       { id:'menu_eng',    label:'Menu engineering', desc:'Stars / Plow Horses / Puzzles / Dogs 2×2 matrix' },
       { id:'order_types', label:'Order types',      desc:'Channel mix over time with period compare' },
+      { id:'order_sources', label:'Order sources',  desc:'Sales by till/surface and each delivery platform (Deliveroo, Uber Eats…)' },
       { id:'daypart',     label:'Daypart',          desc:'Hour × day-of-week revenue heatmap' },
     ],
   },

@@ -989,9 +989,11 @@ function BOOverview({ setSection, orgCtx }) {
     const sources = {}, users = {}, products = {}, methods = {}, types = {};
     let discTotal = 0, discCount = 0, tips = 0, refunds = 0;
     todayChecks.forEach(c => {
-      // HubRise channel orders (Deliveroo/Uber Eats/Just Eat) roll up under the "Delivery apps" row.
+      // v5.5.856: channel orders bucket by their PLATFORM (Deliveroo / Uber Eats / Just
+      // Eat…) — 'hubrise' is the pipe, not a source. Prefixed so a platform name can
+      // never collide with a built-in source key.
       const _src = (c.source || 'pos').toLowerCase();
-      const _bucket = _src === 'hubrise' ? 'delivery' : _src;
+      const _bucket = _src === 'hubrise' ? `hr:${c.customer?.channel || 'Delivery apps'}` : _src;
       sources[_bucket] = (sources[_bucket] || 0) + (c.total || 0);
       const u = c.server || 'Unknown';
       users[u] = (users[u] || 0) + (c.total || 0);
@@ -1094,7 +1096,12 @@ function BOOverview({ setSection, orgCtx }) {
       <div style={{ fontSize:13, fontWeight:700, color:'var(--t2)', marginBottom:12 }}>Today's snapshot</div>
       <div style={{ display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:12, marginBottom:28 }}>
         <SnapCard title="Sales by order source" onClick={() => setSection('reports')}
-          rows={SOURCE_META.map(s => { const v = snap.sources[s.key] || 0; return { label:s.label, value: s.soon ? 0 : v, color:s.color, soon:s.soon, display: s.soon ? 'Not connected' : money(v) }; })}/>
+          rows={[
+            ...SOURCE_META.filter(s => s.key !== 'delivery').map(s => { const v = snap.sources[s.key] || 0; return { label:s.label, value: s.soon ? 0 : v, color:s.color, soon:s.soon, display: s.soon ? 'Not connected' : money(v) }; }),
+            // v5.5.856: one row PER delivery platform (was a single "Delivery apps" roll-up)
+            ...Object.entries(snap.sources).filter(([k]) => k.startsWith('hr:')).sort((a, b) => b[1] - a[1])
+              .map(([k, v]) => ({ label: k.slice(3), value: v, color:'#ef4444', display: money(v) })),
+          ]}/>
         <SnapCard title="Sales by user" onClick={() => setSection('reports')} empty="No sales yet today"
           rows={Object.entries(snap.users).sort((a,b)=>b[1]-a[1]).slice(0,6).map(([name,total]) => ({ label:name, value:total, display:money(total) }))}/>
         <SnapCard title="Top sellers" onClick={() => setSection('reports')} empty="No items sold yet today"

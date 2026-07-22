@@ -94,6 +94,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.856', date: '22 Jul 2026', label: 'NEW "Order sources" report + dashboard splits each delivery platform',
+    changes: [
+      'Reports → Sales → "Order sources": a dedicated report breaking sales down by where the order was taken — POS till, mobile POS, kiosk, online, QR, catering, and EACH delivery platform by name (Deliveroo / Uber Eats / Just Eat…). Revenue tiles, a stacked source-mix chart over time (by hour for a single day), a per-source table with checks / revenue / avg check / share / period-on-period compare, and CSV export. Moved out of the Order types report, which goes back to being purely about order types.',
+      'The Overview dashboard’s "Sales by channel" card no longer rolls every platform into one "Delivery apps" row — each platform now gets its own row and bar.',
+    ],
+  },
+  {
     version: '5.5.855', date: '22 Jul 2026', label: 'Transactions: channel sales show the platform as their source (they showed as "POS")',
     changes: [
       'The Back Office Transactions table labelled every delivery-channel sale "POS" (the source badge only knew pos/kiosk/online/qr and silently fell back). A channel sale’s source is the platform that took the order — the badge now shows Deliveroo / Uber Eats / Just Eat by name, the source filter gains "Delivery channels" and "Catering", and an unmapped source shows its raw value rather than masquerading as POS.',

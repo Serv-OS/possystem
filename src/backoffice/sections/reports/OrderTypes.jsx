@@ -24,20 +24,8 @@ const TYPE_STYLE = {
 
 const styleFor = (t) => TYPE_STYLE[t] || TYPE_STYLE.other;
 
-// v5.5.854: order SOURCE mix — which till/surface/channel the sale came through.
-// closed_checks.source: null/'pos' = POS till, plus kiosk/online/qr/catering; 'hubrise'
-// splits into the actual delivery platform (Deliveroo / Uber Eats / …) from the order.
-const SOURCE_STYLE = {
-  pos:      { label:'POS',      color:'#e8a020', icon:'🖥' },
-  kiosk:    { label:'Kiosk',    color:'#0ea5e9', icon:'📟' },
-  online:   { label:'Online',   color:'#10b981', icon:'🌐' },
-  qr:       { label:'QR code',  color:'#a855f7', icon:'📱' },
-  catering: { label:'Catering', color:'#f97316', icon:'🍽' },
-};
-const srcKey = (c) => c.source === 'hubrise' ? (c.customer?.channel || 'Delivery channel') : (c.source || 'pos');
-const srcStyle = (k) => SOURCE_STYLE[k] || { label: k, color:'#3b82f6', icon:'🛵' };
-
-function aggregate(checks, keyFn) {
+// Exported (v5.5.856) — shared with the Order sources report (keyFn = grouping).
+export function aggregate(checks, keyFn) {
   const byType = {};
   checks.filter(c => c.status !== 'voided').forEach(c => {
     const t = keyFn(c);
@@ -52,8 +40,6 @@ export default function OrderTypes({ checks, prevChecks, fmt, fmtN }) {
   const typeKey = (c) => c.orderType || 'dine-in';
   const cur  = useMemo(() => aggregate(checks,     typeKey), [checks]);
   const prev = useMemo(() => aggregate(prevChecks, typeKey), [prevChecks]);
-  const srcCur  = useMemo(() => aggregate(checks,     srcKey), [checks]);
-  const srcPrev = useMemo(() => aggregate(prevChecks, srcKey), [prevChecks]);
 
   const allTypes = Array.from(new Set([...Object.keys(cur), ...Object.keys(prev)]));
 
@@ -73,21 +59,6 @@ export default function OrderTypes({ checks, prevChecks, fmt, fmtN }) {
       avgCheck: c.checks ? c.revenue / c.checks : 0,
     };
   }).sort((a, b) => b.revenue - a.revenue), [allTypes, cur, prev, totalRev]);
-
-  // v5.5.854: by-source rows (POS / kiosk / online / QR / catering / each delivery platform)
-  const srcRows = useMemo(() => {
-    const keys = Array.from(new Set([...Object.keys(srcCur), ...Object.keys(srcPrev)]));
-    return keys.map(k => {
-      const c = srcCur[k]  || { checks: 0, revenue: 0 };
-      const p = srcPrev[k] || { checks: 0, revenue: 0 };
-      return {
-        type: k, checks: c.checks, revenue: c.revenue, prevRevenue: p.revenue,
-        revDelta: pctDelta(c.revenue, p.revenue),
-        share: totalRev > 0 ? (c.revenue / totalRev) * 100 : 0,
-        avgCheck: c.checks ? c.revenue / c.checks : 0,
-      };
-    }).sort((a, b) => b.revenue - a.revenue);
-  }, [srcCur, srcPrev, totalRev]);
 
   // Time series — group by day; if the range is a single day, group by hour
   const { series, xLabels, isHourly } = useMemo(() => {
@@ -126,19 +97,15 @@ export default function OrderTypes({ checks, prevChecks, fmt, fmtN }) {
   }), [series, isHourly]);
 
   const onExport = () => {
-    const cols = (labelFn) => [
-      { label:'Channel',          key: r => labelFn(r.type) },
+    const csv = toCsv(rows, [
+      { label:'Order type',       key: r => styleFor(r.type).label },
       { label:'Checks',           key:'checks' },
       { label:'Revenue',          key: r => r.revenue.toFixed(2) },
       { label:'Avg check',        key: r => r.avgCheck.toFixed(2) },
       { label:'Share %',          key: r => r.share.toFixed(2) },
       { label:'Previous revenue', key: r => r.prevRevenue.toFixed(2) },
       { label:'Change %',         key: r => r.revDelta === null ? '' : r.revDelta.toFixed(2) },
-    ];
-    const csv = [
-      'Order types', toCsv(rows, cols(t => styleFor(t).label)),
-      '', 'Order sources', toCsv(srcRows, cols(k => srcStyle(k).label)),
-    ].join('\n');
+    ]);
     downloadCsv(`order-types-${new Date().toISOString().slice(0,10)}.csv`, csv);
   };
 
@@ -208,39 +175,14 @@ export default function OrderTypes({ checks, prevChecks, fmt, fmtN }) {
           );
         })}
       </div>
-
-      {/* v5.5.854: per-SOURCE breakdown — which surface/platform took the order
-          (POS till, kiosk, online, QR, catering, and each delivery platform by name). */}
-      <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:12, overflow:'hidden', marginTop:14 }}>
-        <div style={{ display:'grid', gridTemplateColumns:'50px 1.3fr 80px 110px 90px 80px 100px', padding:'9px 14px', background:'var(--bg3)', borderBottom:'1px solid var(--bdr)', fontSize:10, fontWeight:700, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.06em', gap:8 }}>
-          <span/>
-          <span>Order source</span>
-          <span style={{ textAlign:'right' }}>Checks</span>
-          <span style={{ textAlign:'right' }}>Revenue</span>
-          <span style={{ textAlign:'right' }}>Avg check</span>
-          <span style={{ textAlign:'right' }}>Share</span>
-          <span>vs previous</span>
-        </div>
-        {srcRows.map(r => {
-          const st = srcStyle(r.type);
-          return (
-            <div key={r.type} style={{ display:'grid', gridTemplateColumns:'50px 1.3fr 80px 110px 90px 80px 100px', padding:'10px 14px', borderBottom:'1px solid var(--bdr)', fontSize:12, alignItems:'center', gap:8 }}>
-              <span style={{ fontSize:16, textAlign:'center' }}>{st.icon}</span>
-              <span style={{ color:'var(--t1)', fontWeight:600 }}>{st.label}</span>
-              <span style={{ textAlign:'right', color:'var(--t2)', fontFamily:'var(--font-mono)' }}>{r.checks}</span>
-              <span style={{ textAlign:'right', color: st.color, fontFamily:'var(--font-mono)', fontWeight:700 }}>{fmt(r.revenue)}</span>
-              <span style={{ textAlign:'right', color:'var(--t2)', fontFamily:'var(--font-mono)' }}>{fmt(r.avgCheck)}</span>
-              <span style={{ textAlign:'right', color:'var(--t3)', fontFamily:'var(--font-mono)' }}>{r.share.toFixed(1)}%</span>
-              <span><CompareChip pct={r.revDelta}/></span>
-            </div>
-          );
-        })}
-      </div>
     </div>
   );
 }
 
-function StackedBarChart({ series, xKeys, xLabels, types, fmt }) {
+// Exported (v5.5.856) — shared with the Order sources report; styleFor is injectable
+// so each report supplies its own key→{label,color} resolver.
+export function StackedBarChart({ series, xKeys, xLabels, types, fmt, styleFor: styleForProp }) {
+  const styleFor = styleForProp || ((t) => TYPE_STYLE[t] || TYPE_STYLE.other);
   const W = 720, H = 220;
   const padL = 40, padR = 12, padT = 12, padB = 30;
   const chartW = W - padL - padR;
