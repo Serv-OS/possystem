@@ -94,6 +94,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.861', date: '22 Jul 2026', label: 'Paid-table guard indexed + payment invariants documented',
+    changes: [
+      'Adversarial review of the occupation-aware guard: CONFIRM-SAFE (double-charge protection intact incl. outages; errs toward refusal, never a charge). Its follow-ups landed: a partial index for the guard\u2019s approved-status lookup (was an unindexed scan of an append-only table, once per open table per terminal poll), and three payment invariants written into INVARIANTS.md — seatedAt is write-once per occupation (now load-bearing for a money guard), terminal assignment is a fence, and the Ryft link is stamped by explicit id only.',
+    ],
+  },
+  {
     version: '5.5.860', date: '22 Jul 2026', label: 'Paid-table guard is occupation-aware — recurring order numbers can no longer false-block a new party',
     changes: [
       'HOTFIX: the new "already been paid" guard matched by check key alone, and session ids (ORD-1001…) recur after a till reload — so a parked approved payment from a PREVIOUS party could refuse a brand-new transaction on the same table (live repro within hours of shipping). The guard now blocks only for the SAME occupation: the paid job\u2019s seatedAt must match the live session (Table Pay), or a no-seatedAt job (send-to-terminal) must be under 2 hours old. The genuine double-charge window sits fully inside both branches; a stale artifact can never block a new party again.',
