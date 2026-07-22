@@ -235,7 +235,7 @@ Deno.serve(async (req) => {
   // ── 1. The terminal row IS the location authority ──────────────────────────
   const { data: term, error: termErr } = await opsAdmin
     .from('terminal_devices')
-    .select('id, location_id, status, active, label, tip_config')
+    .select('id, location_id, status, active, label, tip_config, bound_pos_device_id')
     .eq('id', target_terminal_id)
     .maybeSingle();
   if (termErr) return json({ error: termErr.message }, 500);
@@ -280,6 +280,21 @@ Deno.serve(async (req) => {
     return json({
       error: 'training mode — this till cannot dispatch a payment to a card terminal',
       training: true,
+    }, 409);
+  }
+
+  // ── 3a. Assignment fence (v5.5.859) — server-side twin of findPaxTerminal's
+  // rule. A terminal a manager assigned to a specific till takes payments from
+  // THAT till only; the client resolver already refuses, but a stale bundle or a
+  // hand-rolled caller must not be able to route around an assignment. Unassigned
+  // terminals stay open to any till at the venue. Service-role callers (server
+  // automation, admin tooling) bypass, same as the caller fence above.
+  const boundTill = (term as any).bound_pos_device_id as string | null;
+  if (!isServiceRole && boundTill && boundTill !== pos_device_id) {
+    return json({
+      error: `${term.label || 'This card terminal'} is assigned to a different till. `
+           + 'Use that till, or reassign the terminal in Back Office → Card readers.',
+      code: 'TERMINAL_ASSIGNED_ELSEWHERE',
     }, 409);
   }
 

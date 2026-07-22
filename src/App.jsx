@@ -94,6 +94,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.859', date: '22 Jul 2026', label: 'Terminal assignment is a fence — a till can no longer use another till\'s card machine',
+    changes: [
+      'A card terminal assigned to a specific till now takes payments from THAT till only. The resolver\'s single-terminal convenience fallbacks apply to UNASSIGNED terminals alone — previously any till whose own lookup fell through could pull another till\'s machine (live repro: "TEst 1" sending to the A920 assigned to "Sunmi"). Unassigned terminals still work from any till, so single-machine venues lose nothing.',
+      'Enforced server-side too (terminal-job-create 409 TERMINAL_ASSIGNED_ELSEWHERE): a stale POS bundle or hand-rolled caller cannot route around an assignment. The Card button and status drawer explain where the terminal is assigned and how to reassign it (Back Office → Card readers).',
+    ],
+  },
+  {
     version: '5.5.858', date: '22 Jul 2026', label: 'ONE terminal-pairing flow + Table-Pay double-charge guard',
     changes: [
       'Terminal pairing consolidated: "PAX card terminals" is now the single pairing surface. Pair by claim code as before, then a per-terminal "Connect to Ryft" panel registers (by the serial printed on the device) or links an already-registered reader — and stamps the Ryft link onto EXACTLY that paired terminal by id. The standalone "Ryft card readers" panel is sunset: its serial-matched link could never land (the app\'s ops serial and the hardware serial live in different namespaces), which is the drift that made the terminal 404 at Ryft.',

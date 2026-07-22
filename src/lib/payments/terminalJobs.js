@@ -194,8 +194,24 @@ export async function findPaxTerminal({ posDeviceId } = {}) {
       : null;
     if (bound) return { terminal: bound, reason: null };
 
-    // 2 / 3. nothing bound — online terminals decide
-    const online = candidates.filter(terminalIsOnline);
+    // v5.5.859 — AN ASSIGNMENT IS A FENCE, NOT A PREFERENCE. A terminal bound to a
+    // DIFFERENT till is excluded from every fallback below: rule 1's own rationale
+    // ("a manager assigned it on purpose and that decision outranks a heartbeat")
+    // has to cut both ways, or any till in the venue could pull another till's
+    // machine the moment its own resolution falls through — the exact live repro:
+    // "TEst 1" sending to the A920 that was assigned to "Sunmi". Only UNASSIGNED
+    // terminals remain fair game for the single-terminal conveniences.
+    const unassigned = candidates.filter(d => !d.bound_pos_device_id);
+    if (!unassigned.length) {
+      return {
+        terminal: null,
+        reason: 'Every card terminal at this venue is assigned to another till. '
+              + 'Assign one to this till in Back Office → Card readers → PAX card terminals → Settings.',
+      };
+    }
+
+    // 2 / 3. nothing bound here — unassigned online terminals decide
+    const online = unassigned.filter(terminalIsOnline);
     if (online.length === 1) return { terminal: online[0], reason: null };
     if (online.length > 1) {
       return {
@@ -206,10 +222,10 @@ export async function findPaxTerminal({ posDeviceId } = {}) {
     }
 
     // 4. none online
-    if (candidates.length === 1) return { terminal: candidates[0], reason: null };
+    if (unassigned.length === 1) return { terminal: unassigned[0], reason: null };
     return {
       terminal: null,
-      reason: `${candidates.length} card terminals at this venue, none online and none assigned to this till. `
+      reason: `${unassigned.length} card terminals at this venue, none online and none assigned to this till. `
             + 'Assign one in Back Office → Card readers → PAX card terminals → Settings.',
     };
   } catch {
