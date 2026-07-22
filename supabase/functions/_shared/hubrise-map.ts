@@ -46,6 +46,43 @@ function hrTimeLabel(iso: unknown, createdIso?: unknown): string | null {
 
 // ── 1. Catalog builder ───────────────────────────────────────────────────────
 
+// Normalise a free-text allergen name from Menu Manager onto HubRise's EXACT allergen
+// vocabulary (scraped from their catalog docs — the values are granular: gluten is split
+// per grain, tree nuts per species; 'gluten' alone is REJECTED, verified live via a 422).
+// A generic name expands to ALL its variants — over-declaring is the food-safe direction
+// for allergy sufferers. Returns [] when nothing maps; the caller keeps those as tags so
+// an unrecognised value can never abort the whole-document catalog PUT.
+const HR_GLUTEN = ['gluten_barley', 'gluten_khorasan', 'gluten_oats', 'gluten_rye', 'gluten_spelt', 'gluten_wheat'];
+const HR_NUTS = ['nuts_almond', 'nuts_brazil', 'nuts_cashew', 'nuts_hazelnut', 'nuts_macadamia_or_queensland', 'nuts_pecan', 'nuts_pistachio', 'nuts_walnut'];
+function hubriseAllergen(raw: string): string[] {
+  const k = raw.trim().toLowerCase().replace(/[\s-]+/g, '_');
+  const MAP: Record<string, string[]> = {
+    gluten: HR_GLUTEN, cereals_containing_gluten: HR_GLUTEN,
+    wheat: ['gluten_wheat'], barley: ['gluten_barley'], oats: ['gluten_oats'],
+    rye: ['gluten_rye'], spelt: ['gluten_spelt'],
+    crustaceans: ['crustaceans'], crustacean: ['crustaceans'], shellfish: ['crustaceans'],
+    eggs: ['eggs'], egg: ['eggs'],
+    fish: ['fish'],
+    peanuts: ['peanuts'], peanut: ['peanuts'],
+    soybeans: ['soybeans'], soya: ['soybeans'], soy: ['soybeans'],
+    milk: ['milk'], dairy: ['milk'], lactose: ['milk'],
+    nuts: HR_NUTS, tree_nuts: HR_NUTS, nut: HR_NUTS,
+    almonds: ['nuts_almond'], almond: ['nuts_almond'],
+    hazelnuts: ['nuts_hazelnut'], hazelnut: ['nuts_hazelnut'],
+    cashews: ['nuts_cashew'], cashew: ['nuts_cashew'],
+    walnuts: ['nuts_walnut'], walnut: ['nuts_walnut'],
+    pecans: ['nuts_pecan'], pistachios: ['nuts_pistachio'],
+    celery: ['celery'],
+    mustard: ['mustard'],
+    sesame_seeds: ['sesame_seeds'], sesame: ['sesame_seeds'],
+    sulphites: ['sulphur_dioxide_sulphites'], sulfites: ['sulphur_dioxide_sulphites'],
+    sulphur_dioxide: ['sulphur_dioxide_sulphites'], sulphur_dioxide_sulphites: ['sulphur_dioxide_sulphites'], so2: ['sulphur_dioxide_sulphites'],
+    lupin: ['lupin'],
+    molluscs: ['molluscs'], mollusc: ['molluscs'], mollusks: ['molluscs'],
+  };
+  return MAP[k] ?? [];
+}
+
 export function buildCatalog(opts: {
   categories: any[];
   items: any[];
@@ -205,7 +242,22 @@ export function buildCatalog(opts: {
     const catRef = it.cat ? String(it.cat) : (Array.isArray(it.cats) && it.cats[0] ? String(it.cats[0]) : null);
     if (catRef && catRefSet.has(catRef)) product.category_ref = catRef;
     if (it.description) product.description = it.description;
-    if (Array.isArray(it.allergens) && it.allergens.length) product.tags = it.allergens.map(String);
+    // v5.5.852 (HubRise sign-off): allergens belong in product.nutrition.allergens, not
+    // tags. Names are normalised onto HubRise's EU-14 vocabulary; anything that doesn't
+    // map stays as a TAG instead — the catalog is a whole-document PUT, so an invalid
+    // allergen value must never be able to abort the entire publish. Info is never lost:
+    // mapped -> nutrition, unmapped -> tags (as before).
+    if (Array.isArray(it.allergens) && it.allergens.length) {
+      const mapped: string[] = [];
+      const unmapped: string[] = [];
+      for (const raw of it.allergens) {
+        const hits = hubriseAllergen(String(raw));
+        if (hits.length) { for (const a of hits) if (!mapped.includes(a)) mapped.push(a); }
+        else unmapped.push(String(raw));
+      }
+      if (mapped.length) product.nutrition = { allergens: mapped };
+      if (unmapped.length) product.tags = unmapped;
+    }
     const imgId = imageIdByItem[String(it.id)];
     if (imgId) product.image_ids = [imgId];
     products.push(product);
