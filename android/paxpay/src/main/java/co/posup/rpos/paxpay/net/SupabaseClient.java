@@ -235,6 +235,38 @@ public final class SupabaseClient {
         return new org.json.JSONArray(body);
     }
 
+    /**
+     * Call a Supabase EDGE FUNCTION (POST /functions/v1/&lt;name&gt;). BLOCKING — background
+     * thread only.
+     *
+     * Reuses the device's session token and the single 401 → refresh → retry, exactly like
+     * {@link #send}, but with ONE deliberate difference: a non-2xx response is RETURNED, not
+     * thrown. Edge functions speak JSON on their error statuses — terminal-job-charge answers
+     * 409 { error:'in_flight' } and 502 { error:'…outcome unknown' } — and the caller must read
+     * that body to act safely on money. Only a genuine transport failure throws
+     * ({@link TransportException}), preserving the retry-forever-vs-never taxonomy.
+     */
+    public Http.Response postFunction(String name, JSONObject jsonBody) throws Exception {
+        String url = Config.url() + "/functions/v1/" + name;
+        String body = jsonBody == null ? "{}" : jsonBody.toString();
+
+        String token = ensureSession(false);
+        Http.Response r = Http.request("POST", url, headers(token), body);
+
+        if (r.code == 401) {
+            prefs.clearAccessToken();
+            token = ensureSession(false);
+            r = Http.request("POST", url, headers(token), body);
+        }
+
+        if (r.isTransportFailure()) {
+            lastError = r.describe();
+            throw new TransportException(r.describe());
+        }
+        if (!r.ok()) lastError = r.describe();
+        return r;
+    }
+
     /** Filtered table read. BLOCKING — background thread only. */
     public org.json.JSONArray select(String pathAndQuery) throws Exception {
         Http.Response r = send("GET", Config.url() + "/rest/v1/" + pathAndQuery, null, false);

@@ -15,20 +15,21 @@ package co.posup.rpos.paxpay;
 public final class BuildVersion {
     private BuildVersion() {}
 
-    /** Human-facing build id. "m1" = milestone 1 (G8:Cloud HTTP call still stubbed). */
-    public static final String VERSION = "1.6-m2";   // v5.5.839: was stale at 1.0-m1 while
-                                                  // build.gradle said 1.1-m2, so the version
-                                                  // reported to Back Office was a lie.
-                                                  // v5.5.841: 1.2-m2 = server-resolved tip
-                                                  // config + idle-first + POS-dispatch flow
-                                                  // order. versionCode is NOT bumped: no
-                                                  // release is being published, and
-                                                  // latest-paxpay.json still names code 2.
+    /**
+     * Human-facing build id. "2.0-rc1" = the first REAL-CHARGE candidate: ServerG8CloudClient
+     * proxies every charge through the terminal-job-charge edge function, and SIMULATED is off.
+     */
+    public static final String VERSION = "2.0-rc1";
 
     /**
-     * True while the G8:Cloud call is the stub rather than the real vendor API. Drives the
+     * True while the G8:Cloud call is the stub rather than a real charge path. Drives the
      * "SIMULATED — NO CARD CHARGED" banner. Flip to false in the same commit that lands a real
      * G8CloudClient implementation, so a real build can never quietly look like a fake one.
+     *
+     * v2.0-rc1: FALSE — that commit is this one. ServerG8CloudClient is the real
+     * implementation (charges via terminal-job-charge; the server refuses simulated jobs), and
+     * MainActivity's construction seam is fenced on this flag, so flipping it back to true
+     * restores the stub bench build in one line.
      */
-    public static final boolean SIMULATED = true;
+    public static final boolean SIMULATED = false;
 }

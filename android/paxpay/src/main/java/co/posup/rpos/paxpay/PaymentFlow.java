@@ -39,13 +39,18 @@ public final class PaymentFlow {
     /**
      * Value of the `timeout` extra on the controller launch intent, in ms.
      *
-     * 30s on the vendor's recommendation: their doc calls for a generous timeout because the
-     * controller has to reach G8:Cloud over the venue's connection, and hospitality venues are
-     * routinely on poor connectivity (thick walls, contended wifi, basement bars). Too short and
-     * the controller gives up before it has connected, which surfaces to us as RESULT_CANCELED —
-     * indistinguishable from the customer simply not presenting a card.
+     * A generous timeout, per the vendor's own guidance: the controller has to reach G8:Cloud
+     * over the venue's connection, and hospitality venues are routinely on poor connectivity
+     * (thick walls, contended wifi, basement bars). Too short and the controller gives up before
+     * it has connected, which surfaces to us as RESULT_CANCELED — indistinguishable from the
+     * customer simply not presenting a card.
+     *
+     * v2.0-rc1: raised 30s → 120s for REAL cards. A live payment is insert-or-tap + PIN entry +
+     * the terminal printing its own receipt, and a slow customer must time out exceptionally,
+     * not routinely — every expiry lands in the RESULT_CANCELED branch below, which now costs a
+     * server result lookup. The stub never needed more than 30s because nothing real happened.
      */
-    public static final long TENDER_TIMEOUT_MS = 30_000L;
+    public static final long TENDER_TIMEOUT_MS = 120_000L;
 
     /**
      * The broadcast the controller sends when it is ready to take a transaction.
@@ -320,40 +325,27 @@ public final class PaymentFlow {
                       + "connection.";
             diag.event("treated as: timed out waiting for tender");
 
-            // ⚠ ASSUMPTION, AND THE MOST DEBATABLE LINE IN THIS FILE.
+            // If a transaction was already dispatched, RESULT_CANCELED does NOT reliably mean
+            // "no card was presented" — the customer may have tapped at the last instant, and
+            // the controller does not tell us apart. So once a transaction id exists we do not
+            // guess: we ASK.
             //
-            // If a transaction was already dispatched to G8:Cloud, RESULT_CANCELED does NOT
-            // reliably mean "no card was presented". The vendor doc says it means the controller
-            // timed out waiting for tender, but it does not say what happens if the customer taps
-            // at the last instant, nor whether the controller distinguishes the two. So once a
-            // transaction id exists we treat this as UNKNOWN.
+            // v2.0-rc1 — THIS IS NO LONGER A SIMULATION CRUTCH. fetchResult() is now a genuine,
+            // non-mutating, server-verified lookup: ServerG8CloudClient polls terminal-job-charge
+            // { action:'result' }, which reads the Ryft payment session and settles through the
+            // one processor-verified writer. A last-instant tap comes back 'approved'; an
+            // ordinary walk-away comes back 'processing' until the sweeper cancels it, or
+            // 'cancelled' outright — so the class of noise this branch used to dump into the
+            // human queue (risk 6) resolves itself instead.
             //
-            // The cost is real and the spec names it (risk 6): ordinary customer walk-aways will
-            // land in the human queue and staff may start rubber-stamping it. The alternative
-            // cost is a customer charged twice. Until Ryft answer, we take the noise.
-            //
-            // ASK RYFT: does the controller ever return RESULT_CANCELED after a successful
-            // tender, and can we tell the two apart? A yes here removes a whole class of noise.
-            // v1.4-m2 — SIMULATED BUILDS RESOLVE INSTEAD OF QUARANTINING.
-            //
-            // In a stub build there is no processor and no card: G8CloudClient fabricates the
-            // transaction, so "we cannot tell whether the card was charged" is simply untrue
-            // here — we know nothing was. Declaring UNKNOWN wedged the terminal after EVERY
-            // test run and made the thing untestable.
-            //
-            // Rather than special-case an outcome, we ASK: fetchResult(ref). The stub answers,
-            // the normal success path runs, the check closes. That is deliberately the exact
-            // shape of the recovery we are asking Ryft for — "given our reference, what
-            // happened?" — so when the real client lands, this branch keeps working and stops
-            // being a simulation crutch. It is the single most valuable question on the Ryft
-            // list precisely because it turns this class of unknown into a lookup.
-            //
-            // GUARDED ON BuildVersion.SIMULATED. The moment a real G8 client ships, that flag
-            // goes false in the same commit and a live timeout quarantines exactly as before —
-            // a real card genuinely may have been charged and must never be assumed otherwise.
-            if (transactionStarted && transactionId != null && BuildVersion.SIMULATED) {
-                diag.event("SIMULATED build — resolving the timeout by asking for the result "
-                        + "instead of quarantining (no card exists)");
+            // The guard that was here ("&& BuildVersion.SIMULATED", v1.4-m2) is gone by its own
+            // contract: it existed because the stub's answer was fabricated and a real card
+            // "may have been charged" could not be looked up. Now it can be. The floor has not
+            // moved, though — if fetchResult itself FAILS, its onError path below still
+            // quarantines as UNKNOWN, exactly as before. Asking is safe; assuming never was.
+            if (transactionStarted && transactionId != null) {
+                diag.event("controller timed out after dispatch — asking the server for the "
+                        + "result instead of quarantining");
                 fetchResult();
                 return;
             }

@@ -25,6 +25,7 @@ import java.util.UUID;
 import co.posup.rpos.paxpay.g8.G8CloudClient;
 import co.posup.rpos.paxpay.g8.G8SaleRequest;
 import co.posup.rpos.paxpay.g8.G8TransactionResult;
+import co.posup.rpos.paxpay.g8.ServerG8CloudClient;
 import co.posup.rpos.paxpay.g8.StubG8CloudClient;
 import co.posup.rpos.paxpay.model.OpenTable;
 import co.posup.rpos.paxpay.model.Pairing;
@@ -221,9 +222,11 @@ public class MainActivity extends ComponentActivity {
         settings = readCachedSettings();
 
         // ── the ONE construction site for the G8 client ─────────────────────────────────────
-        // Swap StubG8CloudClient for the real HTTP implementation here and nothing else in the
-        // app needs to change. Then set BuildVersion.SIMULATED = false.
-        g8 = new StubG8CloudClient();
+        // The real implementation (v2.0-rc1): every charge is proxied through our own
+        // terminal-job-charge edge function — the device never holds a Ryft key and never
+        // supplies an amount. The stub stays, fenced behind the flag, so a SIMULATED bench
+        // build still exercises the whole flow with no card and no processor.
+        g8 = BuildVersion.SIMULATED ? new StubG8CloudClient() : new ServerG8CloudClient(sb);
 
         // Manual payments have no job row, so they have no frozen tip config. These local
         // defaults are the only place TipConfig.defaults() is still used — a job-backed payment
@@ -1185,7 +1188,10 @@ public class MainActivity extends ComponentActivity {
                 activeReference == null ? activeLocalId : activeReference,
                 // The job id IS the idempotency key. One logical sale, one key, surviving a
                 // retry — which is why it is minted server-side and not with randomUUID().
-                activeLocalId);
+                activeLocalId,
+                // The server job this charge belongs to — null ONLY for a manual sale, which
+                // the real charge path refuses cleanly (it charges BY job row, nothing else).
+                job.jobId);
 
         // Belt and braces on the one number that reaches the card.
         if (request.totalMinor != charge) {

@@ -44,7 +44,7 @@ public final class StubG8CloudClient implements G8CloudClient {
         Log.w(TAG, "STUB startTransaction — NO REAL CHARGE. total=" + request.totalMinor
                 + " " + request.currency + " (base=" + request.baseMinor
                 + " tip=" + request.tipMinor + ") ref=" + request.reference
-                + " idem=" + request.idempotencyKey + " -> " + txnId);
+                + " idem=" + request.idempotencyKey + " job=" + request.jobId + " -> " + txnId);
         main.postDelayed(() -> callback.onSuccess(new G8StartResponse(txnId)), START_DELAY_MS);
     }
 

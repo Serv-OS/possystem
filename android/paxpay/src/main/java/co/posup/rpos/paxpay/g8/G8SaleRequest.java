@@ -29,13 +29,24 @@ public final class G8SaleRequest {
     /** Unique per logical sale; MUST survive a retry of the same sale. */
     public final String idempotencyKey;
 
+    /**
+     * terminal_jobs.id, or null for a manual sale that has no server row.
+     *
+     * The REAL charge path (ServerG8CloudClient → terminal-job-charge) charges BY job id and
+     * nothing else: the amount the card takes is the row's server-computed charge_minor, never
+     * a number from this device. A null here means the server proxy cannot take the payment —
+     * it refuses cleanly rather than inventing a job.
+     */
+    public final String jobId;
+
     public G8SaleRequest(long baseMinor, long tipMinor, String currency,
-                         String reference, String idempotencyKey) {
+                         String reference, String idempotencyKey, String jobId) {
         this.baseMinor = baseMinor;
         this.tipMinor = tipMinor;
         this.totalMinor = baseMinor + tipMinor;
         this.currency = currency;
         this.reference = reference;
         this.idempotencyKey = idempotencyKey;
+        this.jobId = jobId;
     }
 }
