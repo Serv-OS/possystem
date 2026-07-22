@@ -146,6 +146,20 @@ export async function forceSyncFromSupabase() {
     const store = useStore.getState();
     const patch = {};
 
+    // Set of occupations (table_id + seatedAt) already cashed off, built from the checks
+    // we JUST fetched — NOT from the store, whose closedChecks are updated further down.
+    // Used so the keep-local branch below never preserves a ghost of a paid table.
+    const closedOcc = new Set();
+    (checksRes.data || []).forEach(c => {
+      const tid = c.table_id ?? c.tableId;
+      const s = c.seated_at ?? c.seatedAt;
+      if (tid && s != null) closedOcc.add(`${tid}:${new Date(s).getTime()}`);
+    });
+    const occClosed = (tableId, sess) => {
+      const s = sess?.seatedAt;
+      return !!(tableId && s && closedOcc.has(`${tableId}:${s}`));
+    };
+
     // Reconcile sessions — merge Supabase with local, preserving newer local data
     if (sessionsRes.data) {
       const sessionMap = {};
@@ -157,7 +171,10 @@ export async function forceSyncFromSupabase() {
         // v5.5.283: Don't destroy local sessions that are newer or have unflushed data.
         // Previous behavior treated Supabase as fully authoritative, which wiped
         // local sessions that hadn't been synced yet.
-        if (!remote && local?.items?.length > 0) {
+        // ...UNLESS this occupation was already cashed off — then the local copy is a
+        // ghost and preserving it is exactly the "table won't die" bug. Let it fall
+        // through to clear (remote is null → session null → available).
+        if (!remote && local?.items?.length > 0 && !occClosed(t.id, local)) {
           // Local has an active order but Supabase row is missing — keep local.
           // It will be flushed to Supabase on the next scheduleFlush() cycle.
           return t;
@@ -178,6 +195,9 @@ export async function forceSyncFromSupabase() {
       const supabaseChecks = checksRes.data.map(c => ({
         ...c,
         closedAt: c.closed_at ? new Date(c.closed_at).getTime() : null,
+        // seatedAt (epoch ms) lets isSessionClosed tombstone the paid occupation on
+        // every device that boots or force-syncs, not just the one that took payment.
+        seatedAt: c.seated_at ? new Date(c.seated_at).getTime() : (c.seatedAt || null),
         method: c.payment_method || c.method,
         orderType: c.order_type,
         tableLabel: c.table_label,

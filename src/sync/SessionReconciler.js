@@ -10,6 +10,7 @@
 import { supabase, getLocationId } from '../lib/supabase';
 import { useStore } from '../store';
 import { reassertSession } from './SessionSync';
+import { isSessionClosed } from './sessionClosure';
 
 // v5.5.639: a table held occupied locally but missing from the DB poll is re-published only if its
 // session is genuinely LIVE — has items, is the active table, or was seated within the business day.
@@ -40,16 +41,27 @@ export async function startSessionReconciler() {
       const store = useStore.getState();
       const tables = store.tables || [];
 
-      // Build map of what Supabase says is open (session + updated_at)
+      // Build map of what Supabase says is open (session + updated_at).
+      // A row for an already-cashed-off occupation is a GHOST — another device
+      // re-published it after the close before it learned the table was paid. Exclude
+      // it from "open" (so it is never re-added to the floor) and delete it, so the
+      // shared table + the PAX terminal's open-tables list stop showing it too.
       const supabaseOpen = new Map();
+      const ghostRows = [];
       data.forEach(row => {
         if (row.table_id && row.session) {
+          if (isSessionClosed(row.table_id, row.session)) { ghostRows.push(row.table_id); return; }
           supabaseOpen.set(row.table_id, {
             session: row.session,
             updatedAt: row.updated_at ? new Date(row.updated_at).getTime() : 0,
           });
         }
       });
+      if (ghostRows.length && supabase) {
+        console.warn(`[SessionReconciler] deleting ${ghostRows.length} cashed-off ghost row(s):`, ghostRows.join(', '));
+        Promise.resolve(supabase.from('active_sessions').delete().eq('location_id', _locationId).in('table_id', ghostRows))
+          .catch(e => console.warn('[SessionReconciler] ghost delete threw —', e?.message || e));
+      }
 
       let changed = false;
       const now = Date.now();
@@ -86,7 +98,10 @@ export async function startSessionReconciler() {
             (sess.items?.length > 0) || isActive ||
             (sess.seatedAt && (now - sess.seatedAt) < SELF_HEAL_MAX_AGE_MS)
           );
-          if (live) healIds.push(t.id);
+          // Never self-heal an occupation that has already been cashed off — the row
+          // is missing BECAUSE it was closed, not because of a stale sweep. reassert
+          // itself refuses too, but skipping here avoids the needless flush churn.
+          if (live && !isSessionClosed(t.id, sess)) healIds.push(t.id);
         }
 
         if (!inStore && inSupabase) {

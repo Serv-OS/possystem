@@ -94,6 +94,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.845', date: '21 Jul 2026', label: 'Fixed \u2014 a table cashed off on the till kept coming back onto the floor',
+    changes: [
+      'A table you paid and cleared could reappear on the floor plan minutes later \u2014 sometimes again and again \u2014 because another device (a second till, a phone, another tab) that still had that table open kept quietly re-uploading it. The safeguard that stops tables being LOST could not tell a deliberate cash-off from an accidental deletion, so it faithfully brought the paid table back.',
+      'The till now records that an occupation was paid (using the closed check it already writes) and every device respects it: once a table is cashed off, no device will re-publish or re-add it, and any copy another device puts back is cleared within a few seconds.',
+      'It is matched on the exact seating, so re-seating the same table with a new party is never affected \u2014 a fresh party always shows normally.',
+      'No settings to change; applies to every till and phone at the venue on next load.',
+    ],
+  },
+  {
     version: '5.5.844', date: '21 Jul 2026', label: 'Urgent \u2014 a bill already paid on the card machine could be charged a second time',
     changes: [
       'Yesterday\u2019s fix for the "another payment was being set up" error went too far. It quietly started a fresh payment whenever the till was holding a used reference \u2014 including when that reference belonged to a bill the customer had ALREADY PAID on the card machine. That could take the money twice.',

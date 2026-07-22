@@ -593,6 +593,13 @@ export const fetchClosedChecks = async (locationId = null, limit = 500, sinceDat
       taxAmount: c.tax_amount,
       method: c.method,
       closedAt: c.closed_at ? new Date(c.closed_at).getTime() : null,
+      // v5.5.845: MUST map seated_at → seatedAt. fetchClosedChecks is the BOOT loader
+      // (SyncBridge + useSupabaseInit); without this, a table cashed off on another
+      // device before this one booted/refreshed/woke has no seatedAt key, so
+      // isSessionClosed can't tombstone it and the paid table climbs back onto the
+      // floor — the exact bug the tombstone fixes, on the exact paths it exists for.
+      // Epoch ms, matching the live session's seatedAt.
+      seatedAt: c.seated_at ? new Date(c.seated_at).getTime() : null,
       status: c.status, refunds: c.refunds || [],
       tableId: c.table_id, tableLabel: c.table_label,
       giftCard: c.gift_card || null,
@@ -629,6 +636,13 @@ export const fetchClosedChecksRange = async (locationId = null, fromDate, toDate
       taxAmount: c.tax_amount,
       method: c.method,
       closedAt: c.closed_at ? new Date(c.closed_at).getTime() : null,
+      // v5.5.845: MUST map seated_at → seatedAt. fetchClosedChecks is the BOOT loader
+      // (SyncBridge + useSupabaseInit); without this, a table cashed off on another
+      // device before this one booted/refreshed/woke has no seatedAt key, so
+      // isSessionClosed can't tombstone it and the paid table climbs back onto the
+      // floor — the exact bug the tombstone fixes, on the exact paths it exists for.
+      // Epoch ms, matching the live session's seatedAt.
+      seatedAt: c.seated_at ? new Date(c.seated_at).getTime() : null,
       status: c.status, refunds: c.refunds || [],
       tableId: c.table_id, tableLabel: c.table_label,
       giftCard: c.gift_card || null,

@@ -13,6 +13,7 @@ import { queueWrite, isOnline } from './OfflineQueue';
 import { useStore } from '../store';
 import { isTrainingMode } from '../lib/trainingMode';
 import { sessionTotalsMinor } from '../lib/payments/checkTotals';
+import { isSessionClosed } from './sessionClosure';
 
 let _locationId = null;
 let _debounceTimer = null;
@@ -210,6 +211,32 @@ export function scheduleFlush() {
 // session, so this never resurrects a legitimately-closed/empty table.
 export function reassertSession(tableId) {
   if (!tableId) return;
+  // TOMBSTONE GUARD — the one place that stops a cashed-off table being resurrected.
+  // Every "the shared row vanished, put ours back" path funnels through here: the
+  // SessionReconciler self-heal and both realtime DELETE handlers. If this occupation
+  // has already been closed (a matching closed_check exists), the vanished row was a
+  // DELIBERATE close, not a stale sweep — so do NOT re-publish it. Drop the ghost
+  // locally instead, which is what the close was trying to make happen everywhere.
+  // Matched on seatedAt, so a genuine re-seat (new seatedAt) is never blocked.
+  const t = (useStore.getState().tables || []).find(x => x.id === tableId);
+  if (t?.session && isSessionClosed(tableId, t.session)) {
+    _lastSent[tableId] = 'cleared';       // don't let the next flush re-upsert it
+    delete _lastTotals[tableId];
+    try {
+      const backup = JSON.parse(localStorage.getItem('rpos-session-backup') || '{}');
+      if (backup[tableId] !== undefined) {
+        delete backup[tableId];
+        localStorage.setItem('rpos-session-backup', JSON.stringify(backup));
+      }
+    } catch { /* backup best-effort */ }
+    useStore.setState(s => ({
+      tables: s.tables.map(x =>
+        x.id === tableId && x.session === t.session
+          ? { ...x, session: null, status: 'available' }
+          : x),
+    }));
+    return;
+  }
   delete _lastSent[tableId];
   delete _lastTotals[tableId];
   scheduleFlush();
@@ -269,6 +296,9 @@ export async function loadSessions() {
   for (const row of data) {
     const idx = tables.findIndex(t => t.id === row.table_id);
     if (idx === -1) continue;
+    // Don't load a cashed-off ghost as occupied — a row that lingered because another
+    // device re-published it after the close (cleaned up by the reconciler shortly).
+    if (isSessionClosed(row.table_id, row.session)) continue;
     // Only apply if the session is newer than what we have
     const existing = tables[idx].session;
     const incomingTime = new Date(row.updated_at).getTime();
@@ -332,6 +362,9 @@ export async function subscribeToSessions() {
         if (!table_id || !session) return;
         const idx = tables.findIndex(t => t.id === table_id);
         if (idx === -1) return;
+        // Ignore a cashed-off ghost re-published by another device that hadn't yet
+        // learned of the close — otherwise it flickers back onto the floor.
+        if (isSessionClosed(table_id, session)) return;
         // Don't overwrite our own writes
         if (_lastSent[table_id] === JSON.stringify(session)) return;
         tables[idx] = { ...tables[idx], session, status: 'occupied' };

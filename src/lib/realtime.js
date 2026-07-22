@@ -12,6 +12,7 @@ import { supabase, isMock, LOCATION_ID } from './supabase';
 import { applyQueueRealtimeEvent, applyTabRealtimeEvent } from '../sync/QueueSync';
 import { applyWaitlistRealtimeEvent } from '../sync/WaitlistSync';
 import { reassertSession } from '../sync/SessionSync';
+import { isSessionClosed } from '../sync/sessionClosure';
 import { playOrderChime } from './orderChime';
 import { isHubriseAutoReceipt } from './hubrise';
 
@@ -233,6 +234,9 @@ export function startRealtime(store, locationId = LOCATION_ID) {
       filter: `location_id=eq.${locationId}`,
     }, ({ new: row }) => {
       if (!row?.table_id) return;
+      // Ignore a cashed-off ghost re-published by a device that hadn't yet learned of
+      // the close — this is a re-add door for a resurrected table (see sessionClosure).
+      if (isSessionClosed(row.table_id, row.session)) return;
       const state = store.getState();
       // Skip echo-back: when we open a table, flushSessions writes to Supabase.
       // The INSERT echo arrives AFTER we've added the first item, overwriting it.
@@ -263,6 +267,8 @@ export function startRealtime(store, locationId = LOCATION_ID) {
       // INSERT handler — skip if this is the currently active table on this
       // device, or if our local session is newer than the incoming one.
       if (!row?.table_id) return;
+      // A cashed-off ghost UPDATE'd by another device must not repaint the floor.
+      if (isSessionClosed(row.table_id, row.session)) return;
       const state = store.getState();
       if (row.table_id === state.activeTableId) return;
       const existing = (state.tables || []).find(t => t.id === row.table_id);
@@ -338,6 +344,9 @@ export function startRealtime(store, locationId = LOCATION_ID) {
         subtotal: check.subtotal, service: check.service, tip: check.tip, total: check.total,
         method: check.method,
         closedAt: check.closed_at ? new Date(check.closed_at).getTime() : null,
+        // Carry the occupation's seatedAt (epoch ms) so isSessionClosed can tombstone
+        // the exact session that was paid — this is how the close reaches other devices.
+        seatedAt: check.seated_at ? new Date(check.seated_at).getTime() : (check.seatedAt || null),
         status: check.status, refunds: check.refunds || [],
         tableId: check.table_id, tableLabel: check.table_label,
       };
