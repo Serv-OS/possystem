@@ -48,7 +48,13 @@ function StatusBadge({ status }) {
 }
 
 // ── Source label ─────────────────────────────────────────────────────
-const SOURCE_LABELS = { pos: 'POS', kiosk: 'Kiosk', online: 'Online', qr: 'QR' };
+const SOURCE_LABELS = { pos: 'POS', kiosk: 'Kiosk', online: 'Online', qr: 'QR', catering: 'Catering', hubrise: 'Delivery channels' };
+// v5.5.855: the ORDER SOURCE for a delivery-channel sale is the platform that took the
+// order (Deliveroo / Uber Eats / Just Eat) — 'hubrise' is just the pipe. Unmapped
+// sources show their raw value, never a silent 'POS'.
+const sourceLabel = (c) =>
+  c.source === 'hubrise' ? (c.customer?.channel || 'Delivery channel')
+    : (SOURCE_LABELS[c.source || 'pos'] || c.source || 'POS');
 
 // ═════════════════════════════════════════════════════════════════════
 // MAIN COMPONENT
@@ -326,7 +332,7 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
                       <span style={{
                         fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 4,
                         background: 'var(--bg3, #f3f4f6)', color: 'var(--t2, #374151)',
-                      }}>{SOURCE_LABELS[c.source || 'pos'] || 'POS'}</span>
+                      }}>{sourceLabel(c)}</span>
                     </td>
                     <td style={tdStyle}>{(c.method || '').charAt(0).toUpperCase() + (c.method || '').slice(1)}</td>
                     <td style={{ ...tdStyle, textAlign: 'right', fontFamily: 'var(--font-mono, ui-monospace, monospace)' }}>{fmt(c.subtotal)}</td>

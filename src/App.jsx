@@ -94,6 +94,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.855', date: '22 Jul 2026', label: 'Transactions: channel sales show the platform as their source (they showed as "POS")',
+    changes: [
+      'The Back Office Transactions table labelled every delivery-channel sale "POS" (the source badge only knew pos/kiosk/online/qr and silently fell back). A channel sale’s source is the platform that took the order — the badge now shows Deliveroo / Uber Eats / Just Eat by name, the source filter gains "Delivery channels" and "Catering", and an unmapped source shows its raw value rather than masquerading as POS.',
+    ],
+  },
+  {
     version: '5.5.854', date: '22 Jul 2026', label: 'Channel orders: removed ingredients read correctly, revenue counts at accept, source breakdown report',
     changes: [
       'SAFETY: a channel order’s REMOVED ingredient (e.g. Deliveroo "Ingredient removed: Mozzarella") displayed as a bare "Mozzarella" — reading as an ADDED topping. It now decodes as "No Mozzarella" everywhere it shows or prints. Critical for allergen removals.',
