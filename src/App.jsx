@@ -94,6 +94,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.847', date: '22 Jul 2026', label: 'Delivery-channel discounts + charges now SHOW on the order, the ticket and the books',
+    changes: [
+      'A Deliveroo/Uber Eats/Just Eat order with a promo discount looked wrong: the discount was captured but never displayed, so the items added up to more than the (already-discounted) order total. Orders Hub now lists each channel discount (in green, with its name) and each channel charge (delivery fee, bag fee, service fee) under the items.',
+      'The kitchen/packing ticket prints the same lines, so the packer sees exactly the breakdown the customer saw.',
+      'The books were quietly wrong too: when the order completed, its sale record saved with NO discounts (hardcoded empty) and the delivery charge could be swallowed by the discount in the service column. The check now carries the channel discounts in the same shape as till discounts (so the Exceptions/EOD reports count them) and books the charges explicitly — items − discounts + charges reconciles to the headline total.',
+    ],
+  },
+  {
     version: '5.5.846', date: '22 Jul 2026', label: 'A table paid ON the card terminal now closes itself on the till',
     changes: [
       'When a waiter takes a table\u2019s payment on the PAX terminal (Table Pay), the card is charged but \u2014 until now \u2014 the table stayed open on the till and had to be cashed off by hand, and could even be paid a second time. The till now watches for these terminal payments and closes the matching table automatically: it writes the check, records the card details, depletes stock and clears the table, exactly like paying on the till does.',

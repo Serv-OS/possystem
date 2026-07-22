@@ -354,11 +354,25 @@ export default function OrdersHub() {
       const lineTotal = items.reduce((s, it) => s + (Number(it.qty) || 1) * ((Number(it.price) || 0) + (it.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0)), 0);
       const total = Number(o.total) || 0;
       const paid = !!(o.customer?.paid);
+      // v5.5.847: carry the channel's order-level discounts onto the check (was hardcoded
+      // []) in the same {label, amount} shape POS discounts use, so Exceptions/EOD see
+      // them. And book charges EXPLICITLY as the service figure: the old
+      // `service = total − items` maths broke the moment a discount existed (the discount
+      // ate the delivery fee, clamped at 0) — with both decoded, items − discounts +
+      // charges reconciles to the headline total instead of hiding the difference.
+      const chDiscounts = (o.customer?.discounts || [])
+        .filter(d => Number(d.amount))
+        .map(d => ({ label: d.name || 'Channel discount', type: 'amount',
+                     value: Number(d.amount), amount: Number(d.amount),
+                     scope: 'check', source: 'channel' }));
+      const chCharges = (o.customer?.charges || []).filter(c => Number(c.amount));
+      const chargeSum = chCharges.reduce((s, c) => s + Number(c.amount), 0);
       await supabase.from('closed_checks').insert({
         id: `chk-hr-${o.ref}`, ref: o.ref, location_id: locId,
         server: o.customer?.channel || 'HubRise', staff_id: null, covers: 1,
         order_type: o.channel || o.type || 'delivery', customer: o.customer || {}, items,
-        discounts: [], subtotal: +lineTotal.toFixed(2), service: Math.max(0, +(total - lineTotal).toFixed(2)),
+        discounts: chDiscounts, subtotal: +lineTotal.toFixed(2),
+        service: chCharges.length ? +chargeSum.toFixed(2) : Math.max(0, +(total - lineTotal).toFixed(2)),
         tip: 0, tax_amount: null, total, method: paid ? 'card' : 'cash',
         closed_at: new Date().toISOString(), status: 'paid', refunds: [], table_id: null,
         table_label: `${o.customer?.channel || 'HubRise'} ${o.customer?.collectionCode || o.ref}`,
@@ -1230,6 +1244,23 @@ function OrderCardInner({ order, onAdvance, onAccept, onReject, onOpen, onForceC
             {items.length > 4 && <div style={{ fontSize:10, color:'var(--t4)', marginTop:3 }}>+{items.length - 4} more…</div>}
           </>
         )}
+        {/* v5.5.847: channel charges + order-level discounts (HubRise orders carry them
+            on customer jsonb). Without these lines a discounted Deliveroo order looked
+            mispriced — items summed higher than the (already-netted) order total. */}
+        {(order.customer?.charges || []).filter(ch => Number(ch.amount)).map((ch, i) => (
+          <div key={`ch${i}`} style={{ display:'flex', gap:6, marginTop:2, alignItems:'baseline' }}>
+            <span style={{ minWidth:18, flexShrink:0 }}/>
+            <span style={{ fontSize:11, color:'var(--t3)', flex:1, fontStyle:'italic' }}>{ch.name || 'Charge'}</span>
+            <span style={{ fontSize:11, color:'var(--t3)', fontFamily:'var(--font-mono)', flexShrink:0 }}>{money(Number(ch.amount))}</span>
+          </div>
+        ))}
+        {(order.customer?.discounts || []).filter(d => Number(d.amount)).map((d, i) => (
+          <div key={`di${i}`} style={{ display:'flex', gap:6, marginTop:2, alignItems:'baseline' }}>
+            <span style={{ minWidth:18, flexShrink:0 }}/>
+            <span style={{ fontSize:11, color:'#22c55e', flex:1, fontWeight:700 }}>{d.name || 'Discount'}</span>
+            <span style={{ fontSize:11, color:'#22c55e', fontFamily:'var(--font-mono)', fontWeight:700, flexShrink:0 }}>−{money(Number(d.amount))}</span>
+          </div>
+        ))}
       </div>
 
       {/* Footer */}

@@ -313,6 +313,17 @@ export function buildKitchenTicket({ table, server, covers, course, centreName, 
       [a.line1, a.line2, [a.city, a.postcode].filter(Boolean).join(' ')].filter(Boolean).forEach(l => b.line(l));
     }
     if (delivery.deliveryFee != null && Number(delivery.deliveryFee) > 0) b.fontB().line(`Delivery fee: \xA3${Number(delivery.deliveryFee).toFixed(2)}`).fontA();
+    // v5.5.847: channel charges + discounts (Deliveroo/UberEats/JustEat via HubRise).
+    // The order total already nets these — printing them means the packer sees the same
+    // breakdown the customer saw, and a promo order no longer looks mispriced.
+    (delivery.charges || []).forEach(ch => {
+      const amt = Number(ch.amount) || 0;
+      if (amt !== 0) b.fontB().line(`${ch.name || 'Charge'}: \xA3${amt.toFixed(2)}`).fontA();
+    });
+    (delivery.discounts || []).forEach(d => {
+      const amt = Number(d.amount) || 0;
+      if (amt !== 0) b.fontB().bold(true).line(`${d.name || 'Discount'}: -\xA3${amt.toFixed(2)}`).bold(false).fontA();
+    });
     if (delivery.notes) b.red().bold(true).underline(true).line(delivery.notes).underline(false).bold(false).black();
     b.divider();
   }

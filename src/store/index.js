@@ -5285,6 +5285,11 @@ export const useStore = create((set, get) => ({
         address: order.customer?.address,
         notes: order.customer?.notes,
         deliveryFee: order.customer?.delivery_fee != null ? Number(order.customer.delivery_fee) : null,
+        // v5.5.847: channel charges (delivery/bag/service fees) + order-level discounts,
+        // decoded off the HubRise order — printed on the ticket so the packer sees the
+        // same breakdown the customer saw. Absent for non-channel orders.
+        charges:   Array.isArray(order.customer?.charges)   && order.customer.charges.length   ? order.customer.charges   : null,
+        discounts: Array.isArray(order.customer?.discounts) && order.customer.discounts.length ? order.customer.discounts : null,
         expected: order.isASAP ? 'ASAP' : (() => {
           const ct = order.collectionTime; if (!ct) return null;
           const d = new Date(ct);
