@@ -54,11 +54,12 @@ export async function pushCatalog(loc: string, force = false): Promise<{ catalog
   if (!conn?.access_token) throw new Error('not connected');
   const token = conn.access_token;
 
-  const [{ data: categories }, { data: items }, { data: groups }, { data: snapRow }] = await Promise.all([
+  const [{ data: categories }, { data: items }, { data: groups }, { data: snapRow }, { data: taxRates }] = await Promise.all([
     sb.from('menu_categories').select('*').eq('location_id', loc),
     sb.from('menu_items').select('*').eq('location_id', loc),
     sb.from('modifier_groups').select('*').eq('location_id', loc),
     sb.from('config_pushes').select('snapshot').eq('location_id', loc).order('created_at', { ascending: false }).limit(1).maybeSingle(),
+    sb.from('tax_rates').select('*').eq('location_id', loc),
   ]);
   // Cooking-instruction groups live in the latest config-push snapshot, not a table.
   const instructionGroups = snapRow?.snapshot?.instructionGroupDefs || [];
@@ -136,7 +137,7 @@ export async function pushCatalog(loc: string, force = false): Promise<{ catalog
     const data = buildCatalog({
       categories: cats, items: items || [], modifierGroups: groups || [],
       currency: conn.currency || 'GBP', publishIds, itemMenuId, channel: 'delivery',
-      instructionGroups, imageIdByItem,
+      instructionGroups, imageIdByItem, taxRates: taxRates || [],
     });
 
     await putCatalog(token, catalogId!, name, data);

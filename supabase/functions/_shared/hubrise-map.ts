@@ -131,6 +131,41 @@ export function buildCatalog(opts: {
   const childrenOf = (parentId: string) =>
     items.filter((c) => c.parent_id === parentId && !c.archived);
 
+  // Publish per-service-type tax rates with each product so the channel-side rates can
+  // never drift from what our tax engine books into reports. HubRise tax_rate is
+  // PRODUCT-level: {delivery, collection, eat_in} decimal-string percentages ("20.0"),
+  // all three keys present or the object omitted. Resolution mirrors lib/tax.js
+  // resolveTaxRate exactly (per-order-type override -> item default rate; no resolve = 0,
+  // which is also what the booking engine charges). An item with NO tax config at all
+  // omits the object — "unspecified" must not become an affirmative 0% declaration.
+  const taxRates = opts.taxRates || [];
+  const rateById = new Map<string, any>(taxRates.map((r: any) => [String(r.id), r]));
+  const HR_TAX_KEYS: Array<[string, string]> = [
+    ['delivery', 'delivery'], ['collection', 'takeaway'], ['eat_in', 'dine-in'],
+  ];
+  const pctString = (frac: number): string => {
+    const pct = Math.round(frac * 100 * 1000) / 1000;
+    const s = String(pct);
+    return s.includes('.') ? s : s + '.0';
+  };
+  const hasTaxConfig = (it: any): boolean =>
+    !!it && (it.tax_rate_id != null || Object.keys(it.tax_overrides || {}).length > 0);
+  const resolveTaxFrac = (it: any, orderType: string): number => {
+    const ov = (it && it.tax_overrides) || {};
+    const rid = ov[orderType] !== undefined ? ov[orderType] : (it ? it.tax_rate_id : null);
+    const r = rid != null ? rateById.get(String(rid)) : null;
+    return r && r.active !== false ? (parseFloat(r.rate) || 0) : 0;
+  };
+  const productTaxRate = (it: any, kids: any[]): Record<string, string> | null => {
+    // Variant CHILDREN are the skus an inbound order books against, so they carry the
+    // authoritative tax config — first child with any config wins, else the parent.
+    const src = (kids || []).find(hasTaxConfig) || (hasTaxConfig(it) ? it : null);
+    if (!src) return null;
+    const out: Record<string, string> = {};
+    for (const [hrKey, ours] of HR_TAX_KEYS) out[hrKey] = pctString(resolveTaxFrac(src, ours));
+    return out;
+  };
+
   // Link a modifier option to a sold-alone item by explicit itemId, else by NAME match
   // (the donut options carry itemId=null). The option then SHARES the item's ref, so an
   // inbound order's option maps to the real item (KDS routing) and 86/stock on the item
@@ -218,8 +253,8 @@ export function buildCatalog(opts: {
     const optionListRefs = [...skuOptionRefs(it), ...instructionRefs(it)];
     let skus: any[];
     const parentMenuId = itemMenuId[String(it.id)] ?? null;
+    const kids = it.type === 'variants' ? childrenOf(String(it.id)) : [];
     if (it.type === 'variants') {
-      const kids = childrenOf(String(it.id));
       skus = (kids.length ? kids : [it]).map((k) => ({
         ref: String(k.id),
         name: k === it ? undefined : displayName(k),
@@ -238,6 +273,8 @@ export function buildCatalog(opts: {
       name: displayName(it),
       skus,
     };
+    const taxRate = productTaxRate(it, kids);
+    if (taxRate) product.tax_rate = taxRate;
     // Only reference a category that actually made it into the catalog (no dangling refs).
     const catRef = it.cat ? String(it.cat) : (Array.isArray(it.cats) && it.cats[0] ? String(it.cats[0]) : null);
     if (catRef && catRefSet.has(catRef)) product.category_ref = catRef;
