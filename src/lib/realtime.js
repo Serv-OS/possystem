@@ -432,6 +432,21 @@ export function startRealtime(store, locationId = LOCATION_ID) {
     .on('postgres_changes', { event: '*', schema: 'public', table: 'order_queue', filter: `location_id=eq.${locationId}` }, (payload) => {
       if (payload.eventType === 'DELETE' && payload.old?.location_id && payload.old.location_id !== locationId) return;
       applyQueueRealtimeEvent(payload);
+      // v5.5.850: Cross-device popup clear — another till decided this order: accepted it
+      // (status → prep/ready/collected) or rejected/removed it (row DELETE). Take this
+      // device's new-order popup down too. 'cancelled' is deliberately excluded: the
+      // v5.5.550 block below REPLACES the popup with the red cancel card. kind:'cancel'
+      // cards are never auto-cleared (staff must reconcile).
+      {
+        const alert = store.getState().orderAlert;
+        const evRef = payload.new?.ref || payload.old?.ref;
+        if (alert && !alert.kind && evRef && alert.ref === evRef) {
+          const decided = payload.eventType === 'DELETE'
+            || (payload.eventType === 'UPDATE'
+                && ['prep', 'ready', 'collected'].includes(payload.new?.status));
+          if (decided) store.getState().dismissOrderAlert?.();
+        }
+      }
       // v5.5.122: every NEW order from a customer surface (kiosk / online /
       // QR table-side) fires the loud chime + a top-of-screen OrderAlert
       // banner that stays for 5s and is dismissable. Online orders are

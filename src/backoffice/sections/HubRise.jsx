@@ -1,15 +1,15 @@
 // src/backoffice/sections/HubRise.jsx
 //
 // Back Office → Channels → "Delivery channels (HubRise)".
-// Connect a venue to HubRise (OAuth or a pasted access token), publish the menu,
-// resync stock, set the accept policy, and see sync status. The access token lives
-// server-side only — this screen talks to the hubrise-* edge functions.
+// Connect a venue to HubRise (OAuth only — v5.5.850 removed the personal-token path),
+// publish the menu, resync stock, set the accept policy, and see sync status. The access
+// token lives server-side only — this screen talks to the hubrise-* edge functions.
 
 import { useEffect, useState, useCallback } from 'react';
-import { getActiveLocationSync, platformSupabase, supabase } from '../../lib/supabase';
+import { getActiveLocationSync, supabase } from '../../lib/supabase';
 import {
-  hubriseStatus, hubriseOAuthStart, hubriseConnectToken, hubriseSetPolicy, hubriseSetMenus,
-  hubriseRegister, hubriseDisconnect, hubrisePushCatalog, hubriseResyncStock,
+  hubriseStatus, hubriseOAuthStart, hubriseSetPolicy, hubriseSetMenus,
+  hubriseDisconnect, hubrisePushCatalog, hubriseResyncStock,
   setHubriseConnected, setHubriseAutoReceipt,
 } from '../../lib/hubrise';
 
@@ -50,12 +50,10 @@ function Res({ k, name, id, fallback }) {
 
 export default function HubRise() {
   const [locId, setLocId] = useState(null);
-  const [venueName, setVenueName] = useState('');
   const [status, setStatus] = useState(null);
   const [menus, setMenus] = useState([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState('');
-  const [token, setToken] = useState('');
   const [msg, setMsg] = useState(null); // {kind, text}
 
   const refresh = useCallback(async (id) => {
@@ -101,10 +99,6 @@ export default function HubRise() {
       const id = await getActiveLocationSync();
       setLocId(id);
       if (!id) { setLoading(false); return; }
-      try {
-        const { data: pl } = await platformSupabase.from('locations').select('name').or(`ops_location_id.eq.${id},id.eq.${id}`).limit(1).maybeSingle();
-        setVenueName(pl?.name || '');
-      } catch { /* name optional */ }
       try {
         const { data: ms } = await supabase.from('menus').select('id, name, is_active').eq('location_id', id).order('sort_order', { ascending: true });
         setMenus(ms || []);
@@ -171,9 +165,6 @@ export default function HubRise() {
             <div style={{ ...S.row, marginTop: 14 }}>
               <a href={status.manager_url || 'https://manager.hubrise.com'} target="_blank" rel="noopener noreferrer"
                  style={{ ...S.btnGhost, textDecoration: 'none', display: 'inline-block' }}>Manage in HubRise ↗</a>
-              <button style={S.btnGhost} disabled={busy === 'reg'} onClick={() => run('reg', () => hubriseRegister(locId), 'Order callbacks re-registered.')}>
-                {busy === 'reg' ? '…' : 'Re-register callbacks'}
-              </button>
               <button style={S.btnDanger} disabled={busy === 'disc'} onClick={() => {
                 if (!confirm('Disconnect this venue from HubRise? Channels will stop receiving orders and the menu will no longer update.')) return;
                 run('disc', () => hubriseDisconnect(locId), 'Disconnected from HubRise.');
@@ -183,21 +174,13 @@ export default function HubRise() {
         ) : (
           <>
             <div style={{ ...S.sub, marginTop: 0, marginBottom: 14 }}>
-              Link your HubRise account. The quickest path is to authorize in HubRise; or paste a
-              personal access token created in your HubRise back office (Settings → Developer).
+              Link your HubRise account — authorize in HubRise.
             </div>
             <div style={S.row}>
               <button style={S.btn} disabled={busy === 'oauth'} onClick={() => run('oauth', async () => {
-                const r = await hubriseOAuthStart(locId, venueName);
+                const r = await hubriseOAuthStart(locId);
                 if (r?.url) window.location.href = r.url; else throw new Error('Could not start authorization');
               })}>{busy === 'oauth' ? '…' : 'Connect with HubRise'}</button>
-            </div>
-            <div style={{ ...S.label, marginTop: 16 }}>…or paste a personal access token</div>
-            <div style={S.row}>
-              <input style={{ ...S.input, flex: 1, minWidth: 240 }} placeholder="HubRise access token" value={token} onChange={(e) => setToken(e.target.value)} />
-              <button style={S.btnGhost} disabled={busy === 'tok' || !token.trim()} onClick={() => run('tok', async () => {
-                await hubriseConnectToken(locId, token.trim()); setToken('');
-              }, 'Connected to HubRise.')}>{busy === 'tok' ? '…' : 'Connect'}</button>
             </div>
           </>
         )}

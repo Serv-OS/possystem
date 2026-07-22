@@ -3,7 +3,6 @@
 // HubRise connection lifecycle for a venue:
 //   POST { action }:
 //     oauth_start      -> { url }      (BO opens it; operator authorizes at HubRise)
-//     connect_token    -> connect with a personal access token (no OAuth round-trip)
 //     status           -> non-secret connection status for the BO
 //     register_callbacks -> (re)register active+passive order callbacks
 //     set_policy       -> auto_accept / default_prep_minutes
@@ -151,6 +150,9 @@ Deno.serve(async (req) => {
 
   // ── GET ?action=oauth_callback — browser redirect back from HubRise ──────────
   if (req.method === 'GET' && url.searchParams.get('action') === 'oauth_callback') {
+    // v5.5.850: fail loudly if the redirect target isn't configured — Response.redirect
+    // throws on a relative URL, which previously surfaced as an opaque 500 after authorize.
+    if (!APP_BASE) return json({ error: 'HUBRISE_APP_BASE not configured' }, 500);
     const code = url.searchParams.get('code');
     const state = url.searchParams.get('state');
     const fail = (msg: string) => Response.redirect(`${APP_BASE}${APP_BASE.includes('?') ? '&' : '?'}hubrise=error&msg=${encodeURIComponent(msg)}`, 302);
@@ -186,18 +188,15 @@ Deno.serve(async (req) => {
         if (!CLIENT_ID) return json({ error: 'HubRise app not configured (HUBRISE_CLIENT_ID)' }, 500);
         const state = randState();
         await sb.from('hubrise_oauth_pending').insert({ state, location_id: opsLocationId });
+        // v5.5.850: the HubRise connection/location created during authorize is always
+        // named "ServOS" — no venue-name passthrough (sign-off requirement).
         const u = authorizeUrl(CLIENT_ID, REDIRECT_URI, HUBRISE_SCOPE, state, {
-          name: 'ServOS', location_name: body?.location_name || '',
+          name: 'ServOS', location_name: 'ServOS',
         });
         return json({ ok: true, url: u });
       }
-      case 'connect_token': {
-        const token = String(body?.access_token || '').trim();
-        if (!token) return json({ error: 'access_token required' }, 400);
-        await storeConnection(opsLocationId, token, {}, access.userId);
-        const { data: c } = await sb.from('hubrise_connections').select('*').eq('location_id', opsLocationId).maybeSingle();
-        return json({ ok: true, status: publicStatus(c) });
-      }
+      // v5.5.850: connect_token removed — OAuth is the only connect path (per the HubRise
+      // sign-off review; pasting arbitrary personal tokens is no longer offered).
       case 'register_callbacks': {
         const { data: c } = await sb.from('hubrise_connections').select('access_token').eq('location_id', opsLocationId).maybeSingle();
         if (!c?.access_token) return json({ error: 'not connected' }, 400);

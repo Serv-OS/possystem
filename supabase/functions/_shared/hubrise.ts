@@ -114,7 +114,8 @@ export function createLocationCatalog(token: string, name: string, data: unknown
 export function putCatalog(token: string, catalogId: string, name: string, data: unknown) {
   return hr(token, 'PUT', `/catalogs/${catalogId}`, { name, data });
 }
-export const getCatalog = (token: string, catalogId: string) => hr(token, 'GET', `/catalogs/${catalogId}`);
+// v5.5.850: getCatalog removed — HubRise guidance is no GET before publishing; image-id
+// reuse now runs off the catalog_image_ids cache on hubrise_connections (pure push).
 
 /** Upload a binary image to a catalog and return its image id (for product.image_ids). */
 export async function uploadCatalogImage(token: string, catalogId: string, bytes: Uint8Array, contentType: string): Promise<string | null> {

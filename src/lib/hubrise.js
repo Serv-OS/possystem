@@ -18,12 +18,13 @@ async function call(fn, body) {
 }
 
 // ── Connection lifecycle (Back Office) ──────────────────────────────────────
+// v5.5.850: connect_token + register_callbacks wrappers removed — OAuth is the only
+// connect path (the location name is forced to "ServOS" server-side) and callbacks
+// auto-register on connect.
 export const hubriseStatus       = (locId) => call('hubrise-connect', { action: 'status', ops_location_id: locId });
-export const hubriseOAuthStart   = (locId, locationName) => call('hubrise-connect', { action: 'oauth_start', ops_location_id: locId, location_name: locationName || '' });
-export const hubriseConnectToken = (locId, accessToken) => call('hubrise-connect', { action: 'connect_token', ops_location_id: locId, access_token: accessToken });
+export const hubriseOAuthStart   = (locId) => call('hubrise-connect', { action: 'oauth_start', ops_location_id: locId });
 export const hubriseSetPolicy    = (locId, patch) => call('hubrise-connect', { action: 'set_policy', ops_location_id: locId, ...patch });
 export const hubriseSetMenus     = (locId, menuIds) => call('hubrise-connect', { action: 'set_policy', ops_location_id: locId, menu_ids: menuIds });
-export const hubriseRegister     = (locId) => call('hubrise-connect', { action: 'register_callbacks', ops_location_id: locId });
 export const hubriseDisconnect   = (locId) => call('hubrise-connect', { action: 'disconnect', ops_location_id: locId });
 
 // ── Catalog + inventory ─────────────────────────────────────────────────────

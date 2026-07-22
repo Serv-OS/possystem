@@ -27,6 +27,12 @@ export async function ingestOrder(sb: any, opsLocationId: string, order: any, ev
   if (!order?.id) return;
   const { row, link } = orderToQueueRow(order, { locationId: opsLocationId });
 
+  // Ref surfacing for the HubRise sign-off: log per-channel payment name/ref codes so they are
+  // visible in the edge-fn logs (webhook + reconcile both funnel through here).
+  if (row.customer?.payments?.length) {
+    console.log('[hubrise] payments', row.customer.channel, JSON.stringify(row.customer.payments));
+  }
+
   const { data: existingLink } = await sb.from('hubrise_order_links')
     .select('last_event_created_at, pushed_status').eq('hubrise_order_id', order.id).maybeSingle();
   if (existingLink?.last_event_created_at && eventCreatedAt &&

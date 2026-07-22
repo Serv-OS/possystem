@@ -164,7 +164,8 @@ export async function buildCustomerReceipt({ location, check, items, totals }) {
     const d = check.delivery;
     b.divider();
     if (d.channel) b.bold(true).line(String(d.channel).toUpperCase() + (d.serviceType ? `  ·  ${String(d.serviceType).toUpperCase()}` : '')).bold(false);
-    b.line(d.paid ? 'PAID online' : 'UNPAID — collect on delivery');
+    // v5.5.850: 3-state — a partial channel payment prints the amount still to collect.
+    b.line(d.paid ? 'PAID online' : (Number(d.paidAmount) > 0 ? `PART-PAID \xA3${(+d.paidAmount).toFixed(2)} — COLLECT \xA3${(+d.due).toFixed(2)}` : 'UNPAID — collect on delivery'));
     if (d.expected) b.fontB().line(`Wanted: ${d.expected}`).fontA();
     if (d.name) b.line(d.name);
     if (d.phone) b.line(d.phone);
@@ -304,7 +305,8 @@ export function buildKitchenTicket({ table, server, covers, course, centreName, 
     const st = delivery.serviceType === 'delivery' ? 'DELIVERY'
       : delivery.serviceType === 'collection' ? 'COLLECTION'
       : delivery.serviceType === 'eat_in' ? 'EAT IN' : 'ORDER';
-    b.bold(true).line(`${st}  ·  ${delivery.paid ? 'PAID' : 'UNPAID — COLLECT'}`).bold(false);
+    // v5.5.850: 3-state — partial channel payments show what's paid vs what to collect.
+    b.bold(true).line(`${st}  ·  ${delivery.paid ? 'PAID' : (Number(delivery.paidAmount) > 0 ? `PART \xA3${(+delivery.paidAmount).toFixed(2)} — COLLECT \xA3${(+delivery.due).toFixed(2)}` : 'UNPAID — COLLECT')}`).bold(false);
     if (delivery.expected) b.fontB().line(`Wanted: ${delivery.expected}`).fontA();
     if (delivery.name) b.line(delivery.name);
     if (delivery.phone) b.line(delivery.phone);

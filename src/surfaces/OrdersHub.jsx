@@ -23,6 +23,7 @@ import { getDeliveryDetail } from '../lib/delivery/deliveryConfig';
 import { dispatchDelivery, sendDeliveryTrackingSMS } from '../lib/delivery/dispatch';
 import { statusLabel, statusColor, statusIcon } from '../lib/delivery/status';
 import { courierPhase, courierLegs, courierLateness } from '../lib/delivery/courierTimes';
+import { calculateOrderTax } from '../lib/tax';
 import CourierTrackingQR from '../components/CourierTrackingQR';
 
 // ── Channel definitions ────────────────────────────────────────────────────────
@@ -80,8 +81,12 @@ export default function OrdersHub() {
     showToast, setSurface, setActiveTableId,
     acceptOrderByRef, acceptOrderByRefWithDelay, rejectOrderByRef,
     reprintOrderReceipt,
-    staff,
+    staff, menuItems,
   } = useStore();
+
+  // v5.5.850: known menu-item ids — flags HubRise order lines whose sku_ref isn't in our
+  // catalog ("not in menu" chip on the card) so staff see a stale published menu at a glance.
+  const knownIds = useMemo(() => new Set((menuItems || []).map(m => m.id)), [menuItems]);
 
   const [filter, setFilter]     = useState('all');
   const [search, setSearch]     = useState('');
@@ -370,13 +375,26 @@ export default function OrdersHub() {
                      scope: 'check', source: 'channel' }));
       const chCharges = (o.customer?.charges || []).filter(c => Number(c.amount));
       const chargeSum = chCharges.reduce((s, c) => s + Number(c.amount), 0);
+      // v5.5.850: real VAT on the booking — sku_ref == our menu_item id, so each line resolves
+      // OUR tax rate (with per-order-type overrides) via lib/tax at booking time. Mods inherit
+      // the parent line's rate by folding their price into the line gross (same as lineTotal).
+      // Unknown refs resolve no rate -> 0 tax for that line (conservative, never over-declares).
+      const { menuItems = [], taxRates = [] } = useStore.getState();
+      const taxItems = items.map(it => {
+        const mi = menuItems.find(m => m.id === (it.itemId || it.id));
+        const modSum = (it.mods || []).reduce((s, m) => s + (Number(m.price) || 0), 0);
+        return { price: (Number(it.price) || 0) + modSum, qty: Number(it.qty) || 1, taxRateId: mi?.taxRateId ?? null, taxOverrides: mi?.taxOverrides || {} };
+      });
+      const svc = o.channel || o.type;
+      const hrOrderType = svc === 'collection' ? 'takeaway' : svc === 'dine-in' ? 'dine-in' : 'delivery';
+      const tb = taxRates.length ? calculateOrderTax(taxItems, taxRates, hrOrderType) : null;
       await supabase.from('closed_checks').insert({
         id: `chk-hr-${o.ref}`, ref: o.ref, location_id: locId,
         server: o.customer?.channel || 'HubRise', staff_id: null, covers: 1,
         order_type: o.channel || o.type || 'delivery', customer: o.customer || {}, items,
         discounts: chDiscounts, subtotal: +lineTotal.toFixed(2),
         service: chCharges.length ? +chargeSum.toFixed(2) : Math.max(0, +(total - lineTotal).toFixed(2)),
-        tip: 0, tax_amount: null, total, method: paid ? 'card' : 'cash',
+        tip: 0, tax_amount: tb ? +tb.totalTax.toFixed(2) : null, total, method: paid ? 'card' : 'cash',
         closed_at: new Date().toISOString(), status: 'paid', refunds: [], table_id: null,
         table_label: `${o.customer?.channel || 'HubRise'} ${o.customer?.collectionCode || o.ref}`,
         source: 'hubrise',
@@ -885,14 +903,14 @@ export default function OrdersHub() {
             {tableOrders.length > 0 && (
               <Section title="Tables" icon="⬚" color="#3b82f6" count={tableOrders.length}>
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))', gap:10 }}>
-                  {tableOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onAcceptDelay={(mins)=>acceptHubriseDelay(o, mins)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref}/>)}
+                  {tableOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onAcceptDelay={(mins)=>acceptHubriseDelay(o, mins)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref} knownIds={knownIds}/>)}
                 </div>
               </Section>
             )}
             {barOrders.length > 0 && (
               <Section title="Bar tabs" icon="🍸" color="#a855f7" count={barOrders.length}>
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))', gap:10 }}>
-                  {barOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onAcceptDelay={(mins)=>acceptHubriseDelay(o, mins)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref}/>)}
+                  {barOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onAcceptDelay={(mins)=>acceptHubriseDelay(o, mins)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref} knownIds={knownIds}/>)}
                 </div>
               </Section>
             )}
@@ -915,7 +933,7 @@ export default function OrdersHub() {
             {queueOrders.length > 0 && (
               <Section title="Walk-in / Takeaway / Delivery" icon="🏷" color="#22d3ee" count={queueOrders.length}>
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))', gap:10 }}>
-                  {queueOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onAcceptDelay={(mins)=>acceptHubriseDelay(o, mins)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref}/>)}
+                  {queueOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onAcceptDelay={(mins)=>acceptHubriseDelay(o, mins)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref} knownIds={knownIds}/>)}
                 </div>
               </Section>
             )}
@@ -923,7 +941,7 @@ export default function OrdersHub() {
         ) : (
           // Flat filtered view
           <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))', gap:10 }}>
-            {filtered.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onAcceptDelay={(mins)=>acceptHubriseDelay(o, mins)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref}/>)}
+            {filtered.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onAcceptDelay={(mins)=>acceptHubriseDelay(o, mins)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref} knownIds={knownIds}/>)}
           </div>
         )}
       </div>
@@ -968,7 +986,8 @@ export default function OrdersHub() {
                 <div key={i} style={{ display:'flex', justifyContent:'space-between', gap:10, fontSize:13 }}>
                   <div style={{ color:'var(--t1)' }}>
                     <span style={{ color:'var(--t3)' }}>{it.qty || 1}× </span>{it.name}
-                    {(it.mods || []).length > 0 && <div style={{ fontSize:11, color:'var(--t3)', paddingLeft:14 }}>{it.mods.map(m => m.name).join(', ')}</div>}
+                    {/* v5.5.850: HubRise mods carry `label` not `name` — key on the decoded label so channel options always display */}
+                    {(it.mods || []).length > 0 && <div style={{ fontSize:11, color:'var(--t3)', paddingLeft:14 }}>{it.mods.map(m => (typeof m === 'string' ? m : (m.label || m.name))).filter(Boolean).join(', ')}</div>}
                     {it.notes && <div style={{ fontSize:11, color:'var(--t3)', paddingLeft:14, fontStyle:'italic' }}>{it.notes}</div>}
                   </div>
                   <div style={{ color:'var(--t2)', whiteSpace:'nowrap' }}>{money(((it.price || 0) + (it.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0)) * (it.qty || 1))}</div>
@@ -978,6 +997,20 @@ export default function OrdersHub() {
             <div style={{ display:'flex', justifyContent:'space-between', borderTop:'1px solid var(--bdr)', marginTop:12, paddingTop:12, fontSize:15, fontWeight:800, color:'var(--t1)' }}>
               <span>Total</span><span>{money(viewOrder.total || 0)}</span>
             </div>
+
+            {/* v5.5.850: decoded channel payments — method name + platform ref code + amount. */}
+            {(viewOrder.customer?.payments || []).length > 0 && (
+              <div style={{ marginTop:8, display:'flex', flexDirection:'column', gap:3 }}>
+                {viewOrder.customer.payments.map((p, i) => (
+                  <div key={i} style={{ display:'flex', gap:8, alignItems:'baseline', fontSize:12 }}>
+                    <span style={{ color:'var(--t2)' }}>{p.name || 'Payment'}</span>
+                    {p.ref && <span style={{ color:'var(--t4)', fontFamily:'var(--font-mono)', fontSize:11, flex:1, minWidth:0, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{p.ref}</span>}
+                    {!p.ref && <span style={{ flex:1 }}/>}
+                    <span style={{ color:'var(--t2)', fontFamily:'var(--font-mono)', whiteSpace:'nowrap' }}>{money(Number(p.amount) || 0)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
 
             {/* Courier (Stuart): expected→actual time ladder + live status + native-safe QR. */}
             {viewIsCourier && (() => {
@@ -1156,7 +1189,7 @@ function OrderCard(props) {
   );
 }
 
-function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, onOpen, onForceClose, closingTab }) {
+function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, onOpen, onForceClose, closingTab, knownIds }) {
   // v5.5.849: "Accept with delay" — ⏱ Delay expands inline to +10/+15/+20/+30 min pills.
   // Choosing one accepts the order AND tells the channel the kitchen is running behind.
   const [delayOpen, setDelayOpen] = useState(false);
@@ -1219,6 +1252,8 @@ function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, o
             {order.source === 'kiosk' && <span style={{ fontSize:9, fontWeight:700, padding:'1px 6px', borderRadius:8, background:'#8b5cf618', border:'1px solid #8b5cf644', color:'#8b5cf6' }}>KIOSK</span>}
             {order.source === 'hubrise' && <span style={{ fontSize:9, fontWeight:800, padding:'1px 6px', borderRadius:8, background:'#ef444418', border:'1px solid #ef444455', color:'#ef4444', letterSpacing:'.03em' }}>{(order.customer?.channel || 'HUBRISE').toUpperCase()}</span>}
             {(order.paid || order.customer?.paid) && <span style={{ fontSize:9, fontWeight:700, padding:'1px 6px', borderRadius:8, background:'#22c55e18', border:'1px solid #22c55e44', color:'#22c55e' }}>PAID</span>}
+            {/* v5.5.850: a HubRise partial payment no longer reads as PAID — amber badge with the balance due */}
+            {!(order.paid || order.customer?.paid) && Number(order.customer?.paidAmount) > 0 && <span style={{ fontSize:9, fontWeight:700, padding:'1px 6px', borderRadius:8, background:'#f59e0b18', border:'1px solid #f59e0b44', color:'#f59e0b' }}>PART-PAID · {money(Number(order.customer?.due) || 0)} due</span>}
           </div>
           <div style={{ display:'flex', gap:8, marginTop:3, flexWrap:'wrap' }}>
             {order.server  && <span style={{ fontSize:10, color:'var(--t3)' }}>👤 {order.server}</span>}
@@ -1239,12 +1274,24 @@ function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, o
         ) : (
           <>
             {items.slice(0, 4).map((item, i) => (
-              <div key={i} style={{ display:'flex', gap:6, marginBottom:2, alignItems:'baseline' }}>
-                <span style={{ fontSize:11, fontWeight:800, color:'var(--t4)', fontFamily:'var(--font-mono)', minWidth:18, textAlign:'right', flexShrink:0 }}>{item.qty}×</span>
-                <span style={{ fontSize:12, color:'var(--t1)', flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-                  {item.kitchenName || item.receiptName || item.name}
-                </span>
-                <span style={{ fontSize:11, color:'var(--t3)', fontFamily:'var(--font-mono)', flexShrink:0 }}>{money(item.price * item.qty)}</span>
+              <div key={i} style={{ marginBottom:2 }}>
+                <div style={{ display:'flex', gap:6, alignItems:'baseline' }}>
+                  <span style={{ fontSize:11, fontWeight:800, color:'var(--t4)', fontFamily:'var(--font-mono)', minWidth:18, textAlign:'right', flexShrink:0 }}>{item.qty}×</span>
+                  <span style={{ fontSize:12, color:'var(--t1)', flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                    {item.kitchenName || item.receiptName || item.name}
+                  </span>
+                  {/* v5.5.850: channel line whose sku_ref isn't in our catalog — flag it (it still prints via the default-centre fallback) */}
+                  {order.source === 'hubrise' && knownIds && !knownIds.has(item.itemId || item.id) && (
+                    <span style={{ fontSize:9, fontWeight:700, padding:'1px 5px', borderRadius:8, background:'#f59e0b18', border:'1px solid #f59e0b44', color:'#f59e0b', flexShrink:0 }}>not in menu</span>
+                  )}
+                  <span style={{ fontSize:11, color:'var(--t3)', fontFamily:'var(--font-mono)', flexShrink:0 }}>{money(item.price * item.qty)}</span>
+                </div>
+                {/* v5.5.850: options visible BEFORE Accept/Reject — display keys only on the decoded label, never an id lookup */}
+                {(item.mods || []).length > 0 && (
+                  <div style={{ fontSize:10, color:'var(--t3)', paddingLeft:24, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                    {item.mods.map(m => typeof m === 'string' ? m : (m.label || m.name)).filter(Boolean).join(', ')}
+                  </div>
+                )}
               </div>
             ))}
             {items.length > 4 && <div style={{ fontSize:10, color:'var(--t4)', marginTop:3 }}>+{items.length - 4} more…</div>}

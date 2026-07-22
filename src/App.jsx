@@ -94,6 +94,19 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.850', date: '22 Jul 2026', label: 'HubRise punch-list — partial payments, payment refs, connection cleanup, smarter menu push',
+    changes: [
+      'Partial payments now show correctly: a delivery-channel order that is only part-paid no longer wrongly reads PAID. The order card shows an amber PART-PAID badge with the amount still due, and the kitchen ticket + receipt print "PART-PAID £x — COLLECT £y" instead of PAID.',
+      'Each channel payment is now fully decoded — the payment method name and the platform\'s reference code are stored on the order and shown in the order view (and logged server-side), which HubRise asked for in the sign-off.',
+      'Connection screen cleaned up: the "paste a personal access token" box and the "Re-register callbacks" button are gone — connecting is OAuth-only (callbacks register automatically) and the HubRise connection/location is always named "ServOS".',
+      'Menu publish no longer reads the catalog back from HubRise before pushing (their guidance: pure push). Uploaded image ids are remembered on our side — and a changed item image now re-uploads automatically instead of staying stale forever.',
+      'Unknown channel items are handled loudly: an item whose ref isn\'t in our menu still prints (routed to the default kitchen centre even in a mixed order), the master till gets a warning toast naming the item, and the order card flags it "not in menu".',
+      'Channel order options (e.g. "No onions") now show on the order card BEFORE you accept, and in the order view — they were invisible on HubRise orders.',
+      'Delivery-channel sales booked into the reports now carry real VAT (worked out from each item\'s tax rate at collection time) instead of no tax at all.',
+      'A till that accepts or rejects a channel order now clears the new-order popup on every OTHER till too — no more stale Accept/Reject buttons left on screen across devices.',
+    ],
+  },
+  {
     version: '5.5.849', date: '22 Jul 2026', label: 'Accept with delay — tell the delivery channel the kitchen is running behind',
     changes: [
       'Orders Hub: new ⏱ Delay button next to Accept on Deliveroo/Uber Eats/Just Eat orders. Tap it, pick +10/+15/+20/+30 minutes, and the order is accepted with the channel told the kitchen is running behind by that much.',

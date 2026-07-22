@@ -5248,13 +5248,15 @@ export const useStore = create((set, get) => ({
         });
       });
 
-      // v5.5.555: FALLBACK — a channel/online order whose items match no centre (e.g. a
-      // HubRise sku_ref that isn't in our catalog) must STILL print, not silently drop
-      // (HubRise rule: handle unknown items gracefully). Route everything to a default
-      // kitchen centre (first with a printer, else first centre).
-      if (Object.keys(byCentre).length === 0 && order.items.length && routingConfig.centres?.length) {
+      // v5.5.850 (supersedes v5.5.555's whole-order-only fallback): PER-ITEM fallback — any
+      // item that matched no centre (e.g. a HubRise sku_ref that isn't in our catalog) still
+      // prints at a default centre (first with a printer, else first centre) instead of
+      // silently dropping off a MIXED order's tickets (HubRise rule: handle unknown items
+      // gracefully). Identity check is safe — same object refs from order.items.
+      const unrouted = order.items.filter(it => !Object.values(byCentre).some(arr => arr.includes(it)));
+      if (unrouted.length && routingConfig.centres?.length) {
         const fb = routingConfig.centres.find(c => c.printer?.id) || routingConfig.centres[0];
-        if (fb) byCentre[fb.id] = [...order.items];
+        if (fb) byCentre[fb.id] = [...(byCentre[fb.id] || []), ...unrouted];
       }
 
       // v5.5.126: source-correct labels so the kitchen ticket / KDS card says
@@ -5266,6 +5268,15 @@ export const useStore = create((set, get) => ({
         ? `Table ${order.tableLabel}`
         : `${srcLabel} ${order.ref}`;
       const serverName = order.customer?.name || `${srcLabel} ${order.ref}`;
+
+      // v5.5.850: operator signal for unknown channel refs — the item still prints (per-item
+      // fallback above) but the master till is told the published catalog is out of sync.
+      if (order.source === 'hubrise') {
+        const unknown = order.items.filter(i => !allMenuItems.find(m => m.id === (i.itemId || i.id)));
+        if (unknown.length) {
+          showToast?.(`⚠ ${srcLabel} ${order.ref}: ${unknown.length} item(s) not in our menu (${unknown.map(i => i.name).join(', ')}) — sent to default centre. Re-push the HubRise catalog.`, 'warning');
+        }
+      }
       const sentAt = order.sentAt || Date.now();
 
       // Delivery / collection context printed on each centre's kitchen ticket.
@@ -5279,6 +5290,9 @@ export const useStore = create((set, get) => ({
         channel: order.customer?.channel || (order.source && order.source !== 'hubrise' ? srcLabel : null),
         serviceType: _svcType,
         paid: order.customer?.paid != null ? order.customer.paid : (order.source !== 'hubrise'),  // online/kiosk/catering are pre-paid
+        // v5.5.850: partial channel payments — printed as PART-PAID £x / COLLECT £y (printer.js)
+        paidAmount: order.customer?.paidAmount ?? null,
+        due: order.customer?.due ?? null,
         collectionCode: order.customer?.collectionCode || null,
         name: order.customer?.name,
         phone: order.customer?.phone,
@@ -5446,6 +5460,7 @@ export const useStore = create((set, get) => ({
         method: c.paid ? 'card' : null,
         delivery: {
           channel: c.channel, serviceType: c.serviceType, paid: !!c.paid,
+          paidAmount: c.paidAmount ?? null, due: c.due ?? null,   // v5.5.850 partial payments
           name: c.name, phone: c.phone, address: addr, notes: c.notes,
           expected: order.isASAP ? 'ASAP' : (order.collectionTime ? new Date(order.collectionTime).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : null),
         },
@@ -5486,6 +5501,7 @@ export const useStore = create((set, get) => ({
         deliveryFee: deliveryFee || 0,   // so the receipt builder prints a Delivery line (printer.js)
         delivery: (svcType === 'delivery' || svcType === 'collection' || c.delivery_fee != null) ? {
           channel: c.channel || SRC[order.source] || null, serviceType: svcType, paid: !!(c.paid || order.paid),
+          paidAmount: c.paidAmount ?? null, due: c.due ?? null,   // v5.5.850 partial payments
           name: c.name, phone: c.phone, address: addr, notes: c.notes, deliveryFee: deliveryFee || 0,
           expected: order.isASAP ? 'ASAP' : (order.collectionTime ? new Date(order.collectionTime).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : null),
         } : null,

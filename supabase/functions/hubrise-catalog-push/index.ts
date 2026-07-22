@@ -8,7 +8,7 @@
 // POST { ops_location_id }. Auth: signed-in user with location access, or service role.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { createLocationCatalog, putCatalog, uploadCatalogImage, getCatalog } from '../_shared/hubrise.ts';
+import { createLocationCatalog, putCatalog, uploadCatalogImage } from '../_shared/hubrise.ts';
 import { buildCatalog } from '../_shared/hubrise-map.ts';
 import { resyncInventory } from '../_shared/hubrise-ingest.ts';
 
@@ -92,34 +92,28 @@ export async function pushCatalog(loc: string, force = false): Promise<{ catalog
 
   const name = `${conn.hubrise_location_name || 'ServOS'} menu`;
   let catalogId = conn.hubrise_catalog_id;
+
+  // Product images: HubRise needs uploaded image ids, not URLs. Per HubRise's guidance we
+  // do NOT GET the catalog before publishing (pure push) — already-uploaded image ids are
+  // cached on hubrise_connections.catalog_image_ids, keyed per item on the source URL at
+  // upload time. Same URL -> reuse the id; changed URL -> re-upload (fixes the stale-image
+  // bug the old pre-publish GET had, where a changed image never re-uploaded).
+  let cached: Record<string, { id: string; url: string }> = (!force && conn.catalog_image_ids) || {};
+
   try {
     // Ensure the catalog exists first — image upload (POST /catalogs/:id/images) needs its id.
     if (!catalogId) {
       const created = await createLocationCatalog(token, name, EMPTY_CATALOG);
       catalogId = created?.id;
+      cached = {}; // a new catalog invalidates any previously cached image ids
       await sb.from('hubrise_connections').update({
-        hubrise_catalog_id: catalogId, hubrise_catalog_name: name, updated_at: new Date().toISOString(),
+        hubrise_catalog_id: catalogId, hubrise_catalog_name: name, catalog_image_ids: {},
+        updated_at: new Date().toISOString(),
       }).eq('location_id', loc);
     }
 
-    // Product images: HubRise needs uploaded image ids, not URLs. Per HubRise's catalog-update
-    // guidance, REUSE images already uploaded on the previous catalog rather than re-uploading
-    // every push. We read the current catalog's products (ref == our item id) and reuse their
-    // existing image_id; only items that gained an image (or `force`) actually upload bytes.
-    // (No GET /inventory or GET /callback — only this GET /catalogs/:id, which is allowed.)
-    const existingImageIdByRef: Record<string, string> = {};
-    if (!force) {
-      try {
-        const cur = await getCatalog(token, catalogId!);
-        for (const p of (cur?.data?.products || [])) {
-          const ref = p?.ref != null ? String(p.ref) : null;
-          const imgId = Array.isArray(p?.image_ids) ? p.image_ids[0] : null;
-          if (ref && imgId) existingImageIdByRef[ref] = imgId;
-        }
-      } catch { /* first push / no catalog yet — upload everything */ }
-    }
-
     const imageIdByItem: Record<string, string> = {};
+    const nextCache: Record<string, { id: string; url: string }> = {};
     let imagesReused = 0;
     for (const it of (items || [])) {
       // Match buildCatalog.publishable — incl. sold-alone sub-items (donuts) so their images upload too.
@@ -128,10 +122,15 @@ export async function pushCatalog(loc: string, force = false): Promise<{ catalog
       if (publishIds && !publishIds.has(String(it.id))) continue;
       if (!it.image) continue;
       const ref = String(it.id);
-      const existing = existingImageIdByRef[ref];
-      if (existing) { imageIdByItem[ref] = existing; imagesReused++; continue; } // reuse — no re-upload
-      const id = await uploadImageFromUrl(token, catalogId!, String(it.image));
-      if (id) imageIdByItem[ref] = id;
+      const url = String(it.image);
+      const hit = cached[ref];
+      if (hit?.id && hit.url === url) {
+        imageIdByItem[ref] = hit.id; imagesReused++;   // reuse — no re-upload
+      } else {
+        const id = await uploadImageFromUrl(token, catalogId!, url);
+        if (id) imageIdByItem[ref] = id;
+      }
+      if (imageIdByItem[ref]) nextCache[ref] = { id: imageIdByItem[ref], url };
     }
 
     const data = buildCatalog({
@@ -143,7 +142,8 @@ export async function pushCatalog(loc: string, force = false): Promise<{ catalog
     await putCatalog(token, catalogId!, name, data);
     await sb.from('hubrise_connections').update({
       hubrise_catalog_name: name, catalog_pushed_at: new Date().toISOString(),
-      catalog_push_error: null, updated_at: new Date().toISOString(),
+      catalog_push_error: null, catalog_image_ids: nextCache,   // drops removed items; force rebuilds fully
+      updated_at: new Date().toISOString(),
     }).eq('location_id', loc);
 
     // HubRise guidance: PUT /inventory immediately after every catalog update, so the 86/stock

@@ -278,7 +278,19 @@ export function orderToQueueRow(order: any, opts: { locationId: string }): { row
   const serviceType = order.service_type || 'collection';
   const type = SERVICE_TYPE_TO_QUEUE[serviceType] || 'collection';
   const ref = `HR-${order.id}`;
-  const paid = Array.isArray(order.payments) && order.payments.length > 0;
+  // Decode payments[] fully. HubRise derives PAID from payments, but a non-empty list can be a
+  // PARTIAL payment — paid means the sum of (non-deleted) payments covers the order total.
+  // Each payment is {name, ref, amount, info?, deleted?}; deleted:true = removed entry.
+  const total = parseMoney(order.total).amount;
+  const payments = (Array.isArray(order.payments) ? order.payments : [])
+    .filter((p: any) => p && p.deleted !== true)
+    .map((p: any) => ({
+      name: p.name || p.type || 'Payment',
+      ref: p.ref || null,
+      amount: parseMoney(p.amount).amount,
+    }));
+  const paidAmount = +payments.reduce((s: number, p: any) => s + p.amount, 0).toFixed(2);
+  const paid = payments.length > 0 && paidAmount >= total - 0.005; // epsilon for float pennies
   const name = [c.first_name, c.last_name].filter(Boolean).join(' ').trim() || 'HubRise customer';
   const channel = order.channel || order.created_by || 'HubRise';
 
@@ -345,6 +357,9 @@ export function orderToQueueRow(order: any, opts: { locationId: string }): { row
     collectionCode: order.collection_code || order.ref || null,
     serviceType,
     paid,
+    ...(payments.length ? { payments } : {}),
+    paidAmount,
+    due: +(Math.max(0, total - paidAmount)).toFixed(2),
     ...(charges.length ? { charges } : {}),
     ...(discounts.length ? { discounts } : {}),
     source_label: channel,
@@ -361,7 +376,7 @@ export function orderToQueueRow(order: any, opts: { locationId: string }): { row
     type,
     customer,
     items,
-    total: parseMoney(order.total).amount,
+    total,
     status: hrToQueueStatus(order.status || 'new'),
     source: 'hubrise',
     is_asap: !!order.asap,
