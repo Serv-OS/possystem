@@ -390,6 +390,7 @@ export function orderToQueueRow(order: any, opts: { locationId: string }): { row
     price: parseMoney(it.price).amount,
     mods: (it.options || []).map((op: any) => ({
       label: op.name,
+      groupLabel: op.option_list_name || null,   // decoded for completeness; tickets deliberately print the option name only (v4.6.10)
       itemId: op.ref || null,
       qty: Number(op.quantity) || 1,
       price: parseMoney(op.price).amount,
