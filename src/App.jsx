@@ -94,6 +94,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.852', date: '22 Jul 2026', label: 'Accept-with-delay on the new-order popup',
+    changes: [
+      'The ⏱ Delay button (accept a channel order but tell the platform the kitchen is running +10/15/20/30 minutes behind) now also appears on the full-screen new-order popup — not just the Orders Hub card. Staff accept from the popup in practice, so the delay option was effectively unreachable. Same one-tap flow: ⏱ Delay → pick +N minutes → accepted and the channel is told the later time.',
+    ],
+  },
+  {
     version: '5.5.851', date: '22 Jul 2026', label: 'Three payment-integrity fixes: phantom service charge, lost terminal sale, wedged reader',
     changes: [
       'Killed a phantom 12.5% service charge: every dine-in close was booking service at a HARDCODED 12.5% of the subtotal — even when no service was on the order (a £2.85 sale grew ~36p of service in history). Service now comes from the same pricing engine the checkout screen shows, honouring the venue\u2019s service-charge settings, covers and the waived flag. Terminal-paid closes use the bill\u2019s own stamped totals.',
@@ -10054,8 +10060,12 @@ function orderAlertBtn(bg) {
 }
 function OrderAlert({ alert, onDismiss, setSurface }) {
   const acceptOrderByRef = useStore(s => s.acceptOrderByRef);
+  const acceptOrderByRefWithDelay = useStore(s => s.acceptOrderByRefWithDelay);
   const rejectOrderByRef = useStore(s => s.rejectOrderByRef);
   const order = useStore(s => (s.orderQueue || []).find(o => o.ref === alert.ref));
+  // v5.5.852: ⏱ Delay on the popup too — staff accept from here in practice, so the
+  // accept-with-delay path (v5.5.849, Orders Hub card) must also exist on this card.
+  const [delayOpen, setDelayOpen] = useState(false);
 
   const SOURCE_META = {
     kiosk:  { icon: '📟', label: 'Kiosk',    bg: '#0ea5e9' },  // sky-500
@@ -10075,6 +10085,7 @@ function OrderAlert({ alert, onDismiss, setSurface }) {
     && !['prep', 'ready', 'collected', 'cancelled'].includes(alert.status);
 
   const accept = () => { acceptOrderByRef?.(alert.ref); onDismiss(); };
+  const acceptDelay = (mins) => { acceptOrderByRefWithDelay?.(alert.ref, mins); onDismiss(); };
   const reject = () => {
     if (!confirm(`Reject ${alert.who || 'this'} order ${alert.ref}? The channel will be notified.`)) return;
     rejectOrderByRef?.(alert.ref); onDismiss();
@@ -10133,12 +10144,29 @@ function OrderAlert({ alert, onDismiss, setSurface }) {
         )}
 
         {/* Actions */}
+        {needsDecision && delayOpen && (
+          <div style={{ padding: '12px 16px 0', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--t2)' }}>Kitchen running behind — accept for:</span>
+            {[10, 15, 20, 30].map(mins => (
+              <button key={mins} onClick={() => acceptDelay(mins)}
+                style={{ padding: '8px 14px', borderRadius: 999, cursor: 'pointer', fontFamily: 'inherit',
+                  background: 'var(--bg1)', border: '1px solid var(--acc)', color: 'var(--acc)',
+                  fontSize: 13, fontWeight: 800, whiteSpace: 'nowrap' }}>
+                +{mins}m
+              </button>
+            ))}
+          </div>
+        )}
         <div style={{ padding: 16, display: 'flex', gap: 10 }}>
           {isCancel ? (
             <button onClick={onDismiss} style={orderAlertBtn('#475569')}>Dismiss</button>
           ) : needsDecision ? (
             <>
               <button onClick={reject} style={orderAlertBtn('#dc2626')}>Reject</button>
+              <button onClick={() => setDelayOpen(v => !v)}
+                style={{ ...orderAlertBtn(delayOpen ? '#b45309' : '#d97706'), flex: '0 0 auto', padding: '0 16px' }}>
+                ⏱ Delay
+              </button>
               <button onClick={accept} style={orderAlertBtn('#16a34a')}>Accept</button>
             </>
           ) : (
