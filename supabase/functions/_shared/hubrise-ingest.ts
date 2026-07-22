@@ -60,6 +60,23 @@ export async function ingestOrder(sb: any, opsLocationId: string, order: any, ev
     last_event_created_at: eventCreatedAt || new Date().toISOString(), updated_at: new Date().toISOString(),
   }, { onConflict: 'ref' });
 
+  // CRM — flow the channel customer into the venue customer DB (Back Office → Customers),
+  // mirroring the online-checkout attribution path. Runs ONLY on FIRST sight of the order
+  // (existingRow null) so webhook retries and reconcile replays can never double-count a
+  // visit. An order that arrives already-cancelled still records the contact, but not a
+  // visit/spend. Best-effort by doctrine: a CRM blip must never fail order ingest.
+  if (!existingRow) {
+    try {
+      await upsertChannelCustomer(sb, opsLocationId, row, {
+        countOrder: !terminal,
+        firstName: order?.customer?.first_name || null,
+        lastName: order?.customer?.last_name || null,
+      });
+    } catch (e) {
+      console.warn('[hubrise] customer upsert failed:', e instanceof Error ? e.message : String(e));
+    }
+  }
+
   // COMPLIANCE — acknowledge a new order back to HubRise. HubRise requires the EPOS to move
   // new -> 'received' on ingest (suppresses the channel's "order not picked up" alerts). If the
   // venue auto-accepts, jump straight to 'accepted'.
@@ -76,6 +93,124 @@ export async function ingestOrder(sb: any, opsLocationId: string, order: any, ev
     try {
       await patchOrderStatus(sb, row.ref, autoAccept ? 'accepted' : 'received', null, null);
     } catch { /* reconcile retries via link.push_error */ }
+  }
+}
+
+// ── Channel-order CRM upsert ─────────────────────────────────────────────────
+// Server-side mirror of the online-checkout attribution path (attributeOnlineOrder in
+// src/lib/customerLookup.js) and the wifi-capture edge fn: the venue customer DB is the
+// ops `customers` table keyed by (org_id, phone) — email as fallback key — with
+// fill-blanks-only patches, then customer_locations visit stats + a denormalised
+// customer_orders history row. Same lookup-then-insert/update pattern as every existing
+// writer (no reliance on a unique constraint).
+//
+// Channel specifics:
+//   - phone is already E.164-normalised by orderToQueueRow's toE164 (same key space as
+//     the POS/online normalisers); channel PROXY numbers are stored as-is — no extra
+//     validity rules invented here.
+//   - the 'HubRise customer' placeholder name is never written, so it can never mask or
+//     block a real name (insert stores null; patch only fills a blank with a real name).
+//   - marketing consent is one-way: a channel pref can GRANT opt-in, never withdraw one.
+//   - customers has NO address columns (see 20260615_wifi_capture.sql header) — delivery
+//     addresses stay on order_queue.customer.address, like the online path.
+const HR_PLACEHOLDER_NAME = 'HubRise customer';
+
+export async function upsertChannelCustomer(
+  sb: any, opsLocationId: string, row: any,
+  opts?: { countOrder?: boolean; firstName?: string | null; lastName?: string | null },
+) {
+  const c = row?.customer || {};
+  const phone = String(c.phone || '').trim();
+  const email = String(c.email || '').trim().toLowerCase().slice(0, 200);
+  if (!phone && !email) return;                      // nothing to key on → skip (task rule)
+
+  // org_id (ops locations) is the customers tenant key — same resolution as wifi-capture.
+  const { data: loc } = await sb.from('locations').select('org_id').eq('id', opsLocationId).maybeSingle();
+  const orgId = loc?.org_id;
+  if (!orgId) { console.warn('[hubrise] customer upsert skipped — no org_id for location', opsLocationId); return; }
+
+  const rawName = String(c.name || '').trim();
+  const name = rawName && rawName !== HR_PLACEHOLDER_NAME ? rawName.slice(0, 120) : null;
+  const firstName = opts?.firstName ? String(opts.firstName).trim().slice(0, 80) : null;
+  const lastName = opts?.lastName ? String(opts.lastName).trim().slice(0, 80) : null;
+  const phoneRaw = phone ? String(c.phoneRaw || phone).slice(0, 40) : null;
+  const source = `hubrise:${c.channel || 'HubRise'}`;  // e.g. hubrise:Deliveroo
+  const optIn = c.marketingPrefs?.sms === true || c.marketingPrefs?.email === true;
+  const nowIso = new Date().toISOString();
+
+  // Match by phone first, else by (org_id, lower(email)) — same order as wifi-capture.
+  const COLS = 'id, name, first_name, last_name, email, phone, marketing_opt_in, source, sources';
+  let existing: any = null;
+  if (phone) {
+    const { data } = await sb.from('customers').select(COLS)
+      .eq('org_id', orgId).eq('phone', phone).is('deleted_at', null).maybeSingle();
+    existing = data || null;
+  }
+  if (!existing && email) {
+    const { data } = await sb.from('customers').select(COLS)
+      .eq('org_id', orgId).ilike('email', email).is('deleted_at', null).maybeSingle();
+    existing = data || null;
+  }
+
+  let customerId: string | null = null;
+  if (existing) {
+    // Fill blanks only — never clobber operator-curated data.
+    const patch: Record<string, unknown> = { updated_at: nowIso };
+    if (name && !existing.name) patch.name = name;
+    if (firstName && !existing.first_name) patch.first_name = firstName;
+    if (lastName && !existing.last_name) patch.last_name = lastName;
+    if (email && !existing.email) patch.email = email;
+    if (phone && !existing.phone) { patch.phone = phone; patch.phone_raw = phoneRaw; }
+    const sources: string[] = Array.isArray(existing.sources) ? existing.sources : [];
+    if (!sources.includes(source)) patch.sources = [...sources, source];
+    if (!existing.source) patch.source = source;
+    if (optIn && !existing.marketing_opt_in) { patch.marketing_opt_in = true; patch.marketing_opt_in_at = nowIso; }
+    const { error } = await sb.from('customers').update(patch).eq('id', existing.id);
+    if (error) { console.warn('[hubrise] customer update failed:', error.message); return; }
+    customerId = existing.id;
+  } else {
+    const { data: ins, error } = await sb.from('customers').insert({
+      org_id: orgId,
+      phone: phone || null, phone_raw: phoneRaw,
+      email: email || null,
+      name, first_name: firstName, last_name: lastName,
+      source, sources: [source],
+      marketing_opt_in: optIn, marketing_opt_in_at: optIn ? nowIso : null,
+    }).select('id').single();
+    if (error) { console.warn('[hubrise] customer insert failed:', error.message); return; }
+    customerId = ins?.id || null;
+  }
+  if (!customerId || opts?.countOrder === false) return;
+
+  // Visit stats + order history — read-then-write like both existing paths. The caller
+  // only invokes this on first sight of the order, which is the idempotency guarantee.
+  try {
+    const total = Number(row.total) || 0;
+    const { data: cl } = await sb.from('customer_locations')
+      .select('visit_count, lifetime_revenue')
+      .eq('customer_id', customerId).eq('location_id', opsLocationId).maybeSingle();
+    if (cl) {
+      await sb.from('customer_locations').update({
+        visit_count: (Number(cl.visit_count) || 0) + 1,
+        lifetime_revenue: (Number(cl.lifetime_revenue) || 0) + total,
+        last_visit_at: nowIso,
+      }).eq('customer_id', customerId).eq('location_id', opsLocationId);
+    } else {
+      await sb.from('customer_locations').insert({
+        customer_id: customerId, location_id: opsLocationId,
+        visit_count: 1, lifetime_revenue: total,
+        first_visit_at: nowIso, last_visit_at: nowIso,
+      });
+    }
+    await sb.from('customer_orders').insert({
+      customer_id: customerId, location_id: opsLocationId,
+      closed_check_id: row.ref || null,                // HR-<order id> — audit link back to the queue row
+      ordered_at: row.created_at || nowIso,
+      total, channel: source,
+      item_summary: (row.items || []).map((i: any) => ({ name: i.name, qty: i.qty, price: i.price })),
+    });
+  } catch (e) {
+    console.warn('[hubrise] visit/order attribution failed:', e instanceof Error ? e.message : String(e));
   }
 }
 
