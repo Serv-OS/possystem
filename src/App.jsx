@@ -101,6 +101,12 @@ const CHANGELOG = [
     ],
   },
   {
+    version: '5.5.861', date: '22 Jul 2026', label: 'Fix: repeated "Routing …" notification for the same order on every refresh',
+    changes: [
+      'The on-screen "Routing HUBRISE HR-…" toast fired at the START of the print-routing check — before the already-printed / held-as-stale / claimed-by-another-device guards — so every Back Office refresh re-notified the same order even when nothing was going to print. The toast now fires only at the point a print is actually committed on this device; skipped passes stay silent.',
+    ],
+  },
+  {
     version: '5.5.860', date: '22 Jul 2026', label: 'Fix: same channel order re-printing on every Back Office refresh',
     changes: [
       'A channel order whose print-claim failed to save (a transient database error on one device) was re-printed by the boot backfill on EVERY page refresh — the duplicate-print memory only lived in RAM, so a refresh wiped it. Each device now keeps a durable record of orders it has already printed (survives refreshes and restarts, bounded to the last 300); a ref this device has dispatched is never printed here again, claim or no claim. Cross-device dedup is still the database claim.',

@@ -5237,13 +5237,15 @@ export const useStore = create((set, get) => ({
     // device — DevTools isn't accessible on Sunmi/Android-APK installs.
     const showToast = useStore.getState().showToast;
     const srcLabel = order.source ? order.source.toUpperCase() : 'ORDER';
-    // Log AND toast the entry so the operator sees the order arrive.
+    // v5.5.861: console entry log stays here, but the on-screen "Routing …" toast moved
+    // BELOW the dedup/staleness/claim guards — it used to fire on every backfill pass
+    // (every Back Office refresh re-toasted the same held/already-printed order, reading
+    // as a repeated new-order notification).
     console.log('[routeKioskOrderPrints] ENTRY', order.ref, 'source:', order.source,
       'items:', order.items.map(i => ({
         id: i.id || i.itemId, name: i.name, cat: i.cat, cats: i.cats,
         parentId: i.parentId || i.parent_id,
       })));
-    showToast?.(`Routing ${srcLabel} ${order.ref}…`, 'info');
     try {
       // v5.5.126: scheduled-order deferral. order_queue.sent_at is the
       // kitchen-fire moment (collection_time − online_collection_lead_min).
@@ -5339,6 +5341,10 @@ export const useStore = create((set, get) => ({
         if (!r.data?.length) return; // Another device already routed
         markRouted(order.ref);   // v5.5.860: claim won — remember locally too, so a later claim-reset can never re-print here
       }
+      // v5.5.861: we are now COMMITTED to printing this order on this device — this is
+      // the only point the operator-facing toast belongs (skipped/held/claimed-elsewhere
+      // passes above stay silent instead of re-notifying on every boot).
+      showToast?.(`Routing ${srcLabel} ${order.ref}…`, 'info');
 
       // Routing config + cat parent map (mirror getCentresForItem from sendToKitchen)
       let routingConfig = useStore.getState().printRouting;
