@@ -5607,7 +5607,13 @@ export const useStore = create((set, get) => ({
   //   Accept → print + KDS tickets + flip to 'prep'; HubRise orders also confirm a
   //            prep time back to the channel (+ optional dispatch receipt).
   //   Reject → tell the channel (HubRise) and drop the order from the queue.
-  acceptOrderByRef: (ref) => {
+  // v5.5.849: shared accept body (find-order + print + status flip + toast) for both the
+  // plain Accept and Accept-with-delay paths. delayMinutes only applies to HubRise orders:
+  // it rides to the edge fn as { delay_minutes }, which then sends
+  // confirmed_time = now + delay in store-local time. Plain accept (delayMinutes null)
+  // sends NO confirmed_time — per HubRise's sign-off review, a plain accept implicitly
+  // confirms the requested/ASAP time; a confirmed time is ONLY for a kitchen delay.
+  _acceptOrderCore: (ref, delayMinutes) => {
     const o = (get().orderQueue || []).find(x => x.ref === ref);
     if (!o) return;
     const locId = getActiveLocationSync();
@@ -5622,15 +5628,21 @@ export const useStore = create((set, get) => ({
     if (o.source === 'hubrise') {
       if (isHubriseAutoReceipt(locId)) get().printHubriseReceipt?.(o);
       get().updateQueueStatus(o.ref, 'prep');
-      // Plain accept = implicit confirmation of the requested/ASAP time. Per HubRise's
-      // sign-off review, a confirmed_time is only sent when the restaurant explicitly
-      // DELAYS (pass { delay_minutes: N }); a delay affordance on Accept is future UI.
-      hubrisePushStatus(locId, o.ref, 'accept').catch(() => {});
+      hubrisePushStatus(locId, o.ref, 'accept', delayMinutes ? { delay_minutes: delayMinutes } : {}).catch(() => {});
     } else {
       get().updateQueueStatus(o.ref, 'prep');
     }
-    get().showToast?.(`Accepted ${o.customer?.channel || o.customer?.name || 'order'} ${o.ref}`, 'success');
+    const who = o.customer?.channel || o.customer?.name || 'order';
+    get().showToast?.(
+      delayMinutes
+        ? `Accepted ${who} ${o.ref} — kitchen running +${delayMinutes}m (channel notified)`
+        : `Accepted ${who} ${o.ref}`,
+      'success',
+    );
   },
+  acceptOrderByRef: (ref) => get()._acceptOrderCore(ref, null),
+  // Accept but tell the channel the kitchen is running behind by <minutes>.
+  acceptOrderByRefWithDelay: (ref, minutes) => get()._acceptOrderCore(ref, Number(minutes) || null),
   rejectOrderByRef: (ref) => {
     const o = (get().orderQueue || []).find(x => x.ref === ref);
     if (!o) return;

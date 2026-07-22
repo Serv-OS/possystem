@@ -94,6 +94,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.849', date: '22 Jul 2026', label: 'Accept with delay — tell the delivery channel the kitchen is running behind',
+    changes: [
+      'Orders Hub: new ⏱ Delay button next to Accept on Deliveroo/Uber Eats/Just Eat orders. Tap it, pick +10/+15/+20/+30 minutes, and the order is accepted with the channel told the kitchen is running behind by that much.',
+      'The delayed ready time is sent in the venue\'s local time, matching the times the channel sends us.',
+      'Plain Accept is unchanged and still sends no time at all — per HubRise guidance, accepting IS the confirmation of the requested/ASAP time.',
+    ],
+  },
+  {
     version: '5.5.848', date: '22 Jul 2026', label: 'HubRise sign-off changes — no private refs, local times, confirmed time only on a delay',
     changes: [
       'Three changes requested by HubRise in the sign-off review, all live:',

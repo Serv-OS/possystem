@@ -78,7 +78,7 @@ export default function OrdersHub() {
     tables, tabs, orderQueue,
     updateQueueStatus, removeFromQueue,
     showToast, setSurface, setActiveTableId,
-    acceptOrderByRef, rejectOrderByRef,
+    acceptOrderByRef, acceptOrderByRefWithDelay, rejectOrderByRef,
     reprintOrderReceipt,
     staff,
   } = useStore();
@@ -339,6 +339,9 @@ export default function OrdersHub() {
   // Logic lives in the store (acceptOrderByRef/rejectOrderByRef) so the new-order
   // popup can run the exact same path from any surface.
   const acceptHubrise = (o) => acceptOrderByRef(o.ref);
+  // v5.5.849: accept but tell the channel the kitchen is running +mins behind
+  // (edge fn sends confirmed_time = now + mins in store-local time).
+  const acceptHubriseDelay = (o, mins) => acceptOrderByRefWithDelay(o.ref, mins);
   const rejectHubrise = (o) => {
     if (!confirm(`Reject ${o.customer?.channel || 'this'} order ${o.ref}? The channel will be notified.`)) return;
     rejectOrderByRef(o.ref);
@@ -882,14 +885,14 @@ export default function OrdersHub() {
             {tableOrders.length > 0 && (
               <Section title="Tables" icon="⬚" color="#3b82f6" count={tableOrders.length}>
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))', gap:10 }}>
-                  {tableOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref}/>)}
+                  {tableOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onAcceptDelay={(mins)=>acceptHubriseDelay(o, mins)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref}/>)}
                 </div>
               </Section>
             )}
             {barOrders.length > 0 && (
               <Section title="Bar tabs" icon="🍸" color="#a855f7" count={barOrders.length}>
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))', gap:10 }}>
-                  {barOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref}/>)}
+                  {barOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onAcceptDelay={(mins)=>acceptHubriseDelay(o, mins)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref}/>)}
                 </div>
               </Section>
             )}
@@ -912,7 +915,7 @@ export default function OrdersHub() {
             {queueOrders.length > 0 && (
               <Section title="Walk-in / Takeaway / Delivery" icon="🏷" color="#22d3ee" count={queueOrders.length}>
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))', gap:10 }}>
-                  {queueOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref}/>)}
+                  {queueOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onAcceptDelay={(mins)=>acceptHubriseDelay(o, mins)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref}/>)}
                 </div>
               </Section>
             )}
@@ -920,7 +923,7 @@ export default function OrdersHub() {
         ) : (
           // Flat filtered view
           <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))', gap:10 }}>
-            {filtered.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref}/>)}
+            {filtered.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onAcceptDelay={(mins)=>acceptHubriseDelay(o, mins)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref}/>)}
           </div>
         )}
       </div>
@@ -1153,7 +1156,10 @@ function OrderCard(props) {
   );
 }
 
-function OrderCardInner({ order, onAdvance, onAccept, onReject, onOpen, onForceClose, closingTab }) {
+function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, onOpen, onForceClose, closingTab }) {
+  // v5.5.849: "Accept with delay" — ⏱ Delay expands inline to +10/+15/+20/+30 min pills.
+  // Choosing one accepts the order AND tells the channel the kitchen is running behind.
+  const [delayOpen, setDelayOpen] = useState(false);
   // v5.5.150: QR open-tab detection. Customer set tab_open=true at tab
   // creation; we surface a "Close & charge" button so the operator can
   // capture the pre-auth at end-of-meal.
@@ -1273,7 +1279,7 @@ function OrderCardInner({ order, onAdvance, onAccept, onReject, onOpen, onForceC
             background:'#fde68a', color:'#78350f', border:'1px solid #f59e0b', letterSpacing:'.04em',
           }}>TAB · {currencySymbol()}{order.customer?.pre_auth_amount ?? '?'} HELD</span>
         )}
-        <div style={{ marginLeft:'auto', display:'flex', gap:5 }}>
+        <div style={{ marginLeft:'auto', display:'flex', gap:5, flexWrap:'wrap', justifyContent:'flex-end' }}>
           <button onClick={onOpen} style={{ padding:'4px 10px', borderRadius:7, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr2)', color:'var(--t2)', fontSize:11, fontWeight:600 }}>
             Open →
           </button>
@@ -1295,6 +1301,22 @@ function OrderCardInner({ order, onAdvance, onAccept, onReject, onOpen, onForceC
               <button onClick={onReject} style={{ padding:'4px 10px', borderRadius:7, cursor:'pointer', fontFamily:'inherit', background:'transparent', border:'1px solid #ef444455', color:'#ef4444', fontSize:11, fontWeight:700 }}>
                 Reject
               </button>
+              {/* v5.5.849: Accept with delay — one tap opens the +N min pills, one tap on a
+                  pill accepts AND notifies the channel of the later time. Tapping ⏱ Delay
+                  again (or choosing) collapses. Plain Accept is untouched. */}
+              <button onClick={() => setDelayOpen(v => !v)} style={{ padding:'4px 10px', borderRadius:7, cursor:'pointer', fontFamily:'inherit',
+                background: delayOpen ? 'var(--bg1)' : 'transparent', border:`1px solid ${delayOpen ? 'var(--acc)' : 'var(--bdr)'}`,
+                color: delayOpen ? 'var(--acc)' : 'var(--t1)', fontSize:11, fontWeight:700, whiteSpace:'nowrap' }}>
+                ⏱ Delay
+              </button>
+              {delayOpen && [10, 15, 20, 30].map(m => (
+                <button key={m} onClick={() => { setDelayOpen(false); onAcceptDelay?.(m); }}
+                  style={{ padding:'4px 9px', borderRadius:999, cursor:'pointer', fontFamily:'inherit',
+                    background:'var(--bg1)', border:'1px solid var(--acc)', color:'var(--acc)',
+                    fontSize:10, fontWeight:800, whiteSpace:'nowrap' }}>
+                  +{m}m
+                </button>
+              ))}
               <button onClick={onAccept} style={{ padding:'4px 12px', borderRadius:7, cursor:'pointer', fontFamily:'inherit', background:'#22c55e', border:'none', color:'#0b0c10', fontSize:11, fontWeight:800 }}>
                 Accept →
               </button>
