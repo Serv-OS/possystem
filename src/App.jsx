@@ -94,6 +94,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.878', date: '23 Jul 2026', label: 'FIX — verification SMS really shows your business name now (root cause: Twilio service was named "POSUP")',
+    changes: [
+      'Root cause found: the SMS name came from the Twilio Verify SERVICE’s own name ("POSUP") — Twilio ignores the per-send name our code passes, so every earlier fix was overridden by Twilio config.',
+      'The Verify service has been renamed to the saved business name ("Mozz Provo") — codes now read "Your Mozz Provo verification code is: …".',
+      'Durable: saving the Business name in Messages → Verification Code now ALSO renames the Twilio service (and reports an error if that fails, instead of pretending it saved). "Reset to venue name" reverts Twilio to your venue name from Location Settings.',
+      'Server-side only — no till update needed for the SMS name to be right.',
+    ],
+  },
+  {
     version: '5.5.877', date: '23 Jul 2026', label: 'FIX — sharing a product to your other locations now copies it correctly: sizes, category and modifiers all follow',
     changes: [
       'SIZES NOW FOLLOW THE PRODUCT. Sharing a product that has sizes (Small/Medium/Large) used to leave the other locations with just an empty shell — or, if you then shared each size by hand, three separate standalone products. Now every size is copied as a size UNDER the product at each location, however the product is set up (this also works for combos and any parent whose type never got flagged). Changing the sharing on a size now applies to the whole product, so you can’t accidentally split it.',

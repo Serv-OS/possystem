@@ -15,7 +15,7 @@
 // Deploys to Ops DB project (tbetcegmszzotrwdtqhi).
 
 import {
-  cors, json, platformAdmin,
+  cors, json, platformAdmin, opsAdmin,
   authenticateCaller, resolveCompanyForLocation,
 } from '../_shared/gift-card-utils.ts';
 import {
@@ -23,6 +23,7 @@ import {
   getMessageType, getDefaultTemplate, buildSampleData,
 } from '../_shared/message-types.ts';
 import { substituteTags, wrapInEmailHtml } from '../_shared/template-resolver.ts';
+import { setVerifyServiceName } from '../_shared/twilio-verify.ts';
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -189,6 +190,17 @@ async function handleSave(companyId: string, body: Record<string, unknown>) {
     return json({ error: `Save failed: ${error.message}` }, 500);
   }
 
+  // Name-editable provider types (loyalty_otp): the name that actually shows in the code SMS is
+  // the Twilio Verify SERVICE's friendly name (Twilio ignores the per-request override on this
+  // service) — so push the saved name to Twilio too, and surface a failure honestly.
+  if (mt.nameEditable) {
+    const tw = await setVerifyServiceName(cleanBody);
+    if (!tw.ok) {
+      console.error('[message-templates] verify rename failed:', tw.error);
+      return json({ error: `Name saved, but updating the SMS service failed: ${tw.error}. Try again.` }, 502);
+    }
+  }
+
   return json({ ok: true, id: data.id });
 }
 
@@ -213,6 +225,22 @@ async function handleReset(companyId: string, body: Record<string, unknown>) {
   if (error) {
     console.error('[message-templates] reset error:', error);
     return json({ error: `Reset failed: ${error.message}` }, 500);
+  }
+
+  // Name-editable provider types: "reset" means "use the venue name" — revert the Twilio Verify
+  // service name to ops locations.name so the code SMS actually follows.
+  const mt = getMessageType(messageType);
+  if (mt?.nameEditable) {
+    let venueName = '';
+    const locationId = body.location_id as string | undefined;
+    if (locationId) {
+      const { data: loc } = await opsAdmin.from('locations').select('name').eq('id', locationId).maybeSingle();
+      if (loc?.name) venueName = loc.name;
+    }
+    if (venueName) {
+      const tw = await setVerifyServiceName(venueName);
+      if (!tw.ok) console.error('[message-templates] verify rename on reset failed:', tw.error);
+    }
   }
 
   return json({ ok: true });

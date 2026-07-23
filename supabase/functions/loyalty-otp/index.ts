@@ -135,10 +135,11 @@ Deno.serve(async (req) => {
     }
 
     // Resolve the venue name so the code SMS reads "Your <venue> verification code is ...".
-    // The friendlyName is the ONLY part of the Twilio Verify template we control (it fills the
-    // "{{friendlyName}}" slot). Prefer the OPS venue name — locations.name is exactly what the
-    // operator edits in Location Settings (e.g. "Provo test"), matching send-welcome's venue_name.
-    // Fall back to the platform company name, then a generic label.
+    // NOTE: in practice Twilio stamps the Verify SERVICE's friendly name into the SMS and ignores
+    // this per-request CustomFriendlyName — the name that actually shows is synced onto the
+    // service by message-templates save/reset (setVerifyServiceName). We still pass it here as
+    // belt-and-braces: if Twilio ever honours it, it resolves to the same name.
+    // Chain: operator override → ops locations.name → platform company name → generic label.
     const locationId = body.location_id as string | undefined;
     let venueName = '';
     // 1. Operator override — the "Business name shown in the verification text" set in BO →

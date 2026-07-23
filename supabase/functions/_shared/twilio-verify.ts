@@ -83,6 +83,30 @@ export async function startVerification(
   }
 }
 
+// Rename the Verify SERVICE itself. Twilio stamps the service's friendly name into the code SMS
+// ("Your <friendly_name> verification code is ..."), and in practice ignores the per-request
+// CustomFriendlyName on this service — so the service-level name is the one that actually shows.
+// Called when the operator saves/resets the business name in BO → Messages → Verification Code.
+export async function setVerifyServiceName(name: string): Promise<VerifyResult> {
+  if (!verifyConfigured()) return { ok: false, error: 'Verify not configured', code: 'not_configured' };
+  const clean = String(name || '').trim().slice(0, 30);
+  if (!clean) return { ok: false, error: 'name required', code: 'invalid' };
+  const form = new URLSearchParams();
+  form.append('FriendlyName', clean);
+  try {
+    const res = await fetch(`https://verify.twilio.com/v2/Services/${VERIFY_SERVICE_SID}`, {
+      method: 'POST',
+      headers: { 'Authorization': authHeader(), 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: form.toString(),
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, error: (j as { message?: string })?.message || `Twilio HTTP ${res.status}`, code: 'send_failed', httpStatus: res.status };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: (e as Error)?.message || String(e), code: 'send_failed' };
+  }
+}
+
 // Check a code. ok===true (status 'approved') means the code was correct. Twilio enforces expiry
 // and per-verification attempt limits itself (404 once expired/consumed, 429 on too many checks).
 export async function checkVerification(to: string, codeInput: string): Promise<VerifyResult> {
