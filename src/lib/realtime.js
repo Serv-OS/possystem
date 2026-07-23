@@ -441,9 +441,17 @@ export function startRealtime(store, locationId = LOCATION_ID) {
         const alert = store.getState().orderAlert;
         const evRef = payload.new?.ref || payload.old?.ref;
         if (alert && !alert.kind && evRef && alert.ref === evRef) {
+          // v5.5.869: dismiss ONLY on a genuine status TRANSITION. Online orders are born
+          // 'prep', and the master's kitchen_routed_at claim (~0.4s after the INSERT) is an
+          // UPDATE that leaves status unchanged (prep→prep) — that was matching this condition
+          // and tearing the just-shown new-order banner down in a split second. Requiring
+          // old.status !== new.status (order_queue is REPLICA IDENTITY FULL, so old.status is
+          // present) means only a real accept/advance by another till clears it; the banner now
+          // runs its full 5s. DELETE (rejected/removed) still clears immediately.
           const decided = payload.eventType === 'DELETE'
             || (payload.eventType === 'UPDATE'
-                && ['prep', 'ready', 'collected'].includes(payload.new?.status));
+                && ['prep', 'ready', 'collected'].includes(payload.new?.status)
+                && payload.old?.status !== payload.new?.status);
           if (decided) store.getState().dismissOrderAlert?.();
         }
       }

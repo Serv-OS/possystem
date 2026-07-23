@@ -94,6 +94,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.869', date: '23 Jul 2026', label: 'New-order pop-up no longer flashes off in a split second',
+    changes: [
+      'The new-order banner for online/kiosk/QR orders was vanishing almost instantly. The cross-till “someone else accepted it, take my pop-up down” logic fired on ANY update to an order already in prep — and an online order is born in prep, so the master’s own kitchen-routing claim (a fraction of a second after the order lands) counted as “decided” and cleared the banner. It now clears only on a genuine status change (a real accept/advance by another till) or if the order is removed, so the banner stays its full time.',
+    ],
+  },
+  {
     version: '5.5.868', date: '23 Jul 2026', label: 'Channel orders route with the LIVE printing config — a stale copy on the routing till can no longer drop the kitchen ticket',
     changes: [
       'Online/kiosk/QR/HubRise kitchen tickets are routed by the master till. It was matching items against whatever production-printing config it had cached at boot — so if the routing was edited afterwards, or the master isn’t a till that keeps the config loaded, items matched no centre and NOTHING printed (the order still showed as routed). The router now reads the live print_routing config straight from the database on every channel order, falling back to the cached copy only if the fetch fails. A stale or missing local copy can no longer silently drop the ticket.',
