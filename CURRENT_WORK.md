@@ -1,6 +1,6 @@
-# Session — 23 Jul 2026 (v5.5.877) — share-product data-integrity fix (3 bugs) — NOT yet deployed/live-verified
+# Session — 23 Jul 2026 (v5.5.877) — share-product data-integrity fix (3 bugs) — DEPLOYED + LIVE-VERIFIED by Peter ✅
 
-## Built (build clean, 256/256 existing tests pass, no new lint errors) — on branch claude/epic-nightingale-81e085 (based on develop)
+## Shipped (commit c2200cd on develop; build clean, 256/256 tests pass, no new lint errors)
 Three confirmed bugs in the "share a product to another location" flow (`setMenuItemScope` /
 `setMenuCategoryScope` in `src/lib/db.js`). v5.5.12 was a PARTIAL fix; these finish it.
 - **Bug 1 — variants.** (a) Children are now fetched by `parent_id` ALWAYS (was gated on the exact
@@ -20,11 +20,18 @@ Three confirmed bugs in the "share a product to another location" flow (`setMenu
 - Idempotent (all upserts by deterministic id). LIMITATION: items shared BEFORE v5.5.877 keep their
   old incomplete copies — demote to Local, then re-share, to pull sizes/menu-placement/modifiers.
 
-## Still to do
-- **LIVE VERIFY (not done).** Needs deploy of develop + a real 2-location org, then Management-API
-  (User-Agent: Mozilla/5.0) read-back of the peer rows, OR read-only inspection of an existing
-  shared product to confirm the pre-fix symptoms. Not pushed/committed — awaiting Peter's go-ahead.
-- Diagnosis was code+schema+git+2 read-path/modifier agents; conclusive but not yet DB-confirmed live.
+## Verified
+- **LIVE-VERIFIED 23 Jul 2026 by Peter on dev.serv-os.app** ("yes that worked!") — shared a product
+  across locations end-to-end: sizes mapped under the master, item in its category, modifiers present.
+- Version raced twice with parallel sessions (5.5.874 and 5.5.876 both got claimed mid-session) —
+  landed as v5.5.877, rebased onto the loyalty-SMS + Stripe-admin commits.
+
+## Remaining (small)
+- Products shared BEFORE v5.5.877 still have incomplete peer copies. Repair per product:
+  Local → Shared again. A bulk "re-share all" sweep would be nicer — deferred.
+- MPOS is the only surface with the `!c.menuId` null-menu escape hatch (MMenu.jsx:91) — a category
+  with no menu shows there but nowhere else. Inconsistent read rule, worth unifying someday.
+- POSSurface.jsx:1384 sidebar count only checks `i.cat`, ignores `i.cats[]` — cosmetic count drift.
 
 ---
 
