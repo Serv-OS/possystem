@@ -23,6 +23,7 @@ if (!String.prototype.at) {
 import { StrictMode, Component } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App.jsx'
+import UpdateGuard from './components/UpdateGuard.jsx'
 
 class ErrorBoundary extends Component {
   constructor(props) { super(props); this.state = { error: null }; }
@@ -43,6 +44,9 @@ class ErrorBoundary extends Component {
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
+    {/* Mounted OUTSIDE the ErrorBoundary on purpose: if a bad deploy makes App throw, the guard
+        keeps polling and auto-updates the device once a fix ships — self-healing a bricked build. */}
+    <UpdateGuard />
     <ErrorBoundary>
       <App />
     </ErrorBoundary>

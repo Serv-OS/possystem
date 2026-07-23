@@ -77,6 +77,30 @@ export async function startMasterHeartbeat({ deviceId, locationId, deviceName, v
   console.log('[MasterSync] Heartbeat started — this device is MASTER');
 }
 
+// ── Child: report own heartbeat (v5.5.870 — fleet version visibility) ──────────
+// Children never used to write a heartbeat, so Back Office → Network Status could only see the
+// master. Now every child reports its version too (role:'child', every ~30s), so a till running
+// stale code is visible venue-wide — the exact blind spot behind today's silent-stale-master bug.
+let _childBeatTimer = null;
+export async function startChildHeartbeat({ deviceId, locationId, deviceName, version }) {
+  if (isMock || !supabase || !deviceId) return;
+  const beat = async () => {
+    try {
+      await supabase.from('device_heartbeats').upsert({
+        device_id:   deviceId,
+        location_id: locationId,
+        device_name: deviceName,
+        role:        'child',
+        last_seen:   new Date().toISOString(),
+        version,
+        open_tables: 0,
+      }, { onConflict: 'device_id' });
+    } catch {}
+  };
+  await beat();
+  _childBeatTimer = setInterval(beat, jittered(30_000));
+}
+
 // ── Child: monitor master heartbeat ───────────────────────────────────────────
 export async function startChildMonitor({ locationId }) {
   if (isMock || !supabase) return;
@@ -123,8 +147,10 @@ export function getMasterStatus() {
 export function stopMasterSync() {
   clearInterval(_heartbeatTimer);
   clearInterval(_checkTimer);
+  clearInterval(_childBeatTimer);
   _heartbeatTimer = null;
   _checkTimer = null;
+  _childBeatTimer = null;
 }
 
 // ── Force sync: pull authoritative state from Supabase ────────────────────────

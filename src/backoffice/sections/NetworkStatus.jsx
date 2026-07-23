@@ -2,6 +2,14 @@ import { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabase';
 import { forceSyncFromSupabase, getMasterStatus } from '../../sync/MasterSync';
 
+// Numeric semver compare: returns >0 if a is newer than b. (v5.5.870 fleet version flagging)
+function cmpVersion(a, b) {
+  const pa = String(a || '').split('.').map(n => parseInt(n, 10) || 0);
+  const pb = String(b || '').split('.').map(n => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) { const d = (pa[i] || 0) - (pb[i] || 0); if (d) return d; }
+  return 0;
+}
+
 export default function NetworkStatus() {
   const [devices, setDevices] = useState([]);
   const [syncing, setSyncing] = useState(false);
@@ -40,6 +48,9 @@ export default function NetworkStatus() {
   };
 
   const now = Date.now();
+  // The newest version any till reports is the target; anything behind it is flagged OUT OF DATE.
+  // (Tills self-update via UpdateGuard, but this makes a device that can't/won't update visible.)
+  const targetVersion = devices.reduce((m, d) => (cmpVersion(d.version, m) > 0 ? d.version : m), '0.0.0');
 
   return (
     <div style={{ padding: '24px', maxWidth: 700 }}>
@@ -68,11 +79,13 @@ export default function NetworkStatus() {
               const ageSec = Math.round((now - new Date(d.last_seen).getTime()) / 1000);
               const online = ageSec < 30;
               const isMaster = d.role === 'master';
+              const outOfDate = d.version && cmpVersion(d.version, targetVersion) < 0;
               return (
                 <div key={d.device_id} style={{
                   display: 'flex', alignItems: 'center', gap: 14,
                   padding: '14px 16px', borderRadius: 12,
-                  background: 'var(--bg2)', border: `1.5px solid ${online ? (isMaster ? 'var(--acc-b)' : 'var(--grn-b)') : 'var(--bdr)'}`,
+                  background: outOfDate ? 'var(--red-d, #3a1a1a)' : 'var(--bg2)',
+                  border: `1.5px solid ${outOfDate ? 'var(--red, #dc2626)' : online ? (isMaster ? 'var(--acc-b)' : 'var(--grn-b)') : 'var(--bdr)'}`,
                 }}>
                   {/* Status dot */}
                   <div style={{ width: 10, height: 10, borderRadius: '50%', flexShrink: 0, background: online ? (isMaster ? 'var(--acc)' : 'var(--grn)') : 'var(--t4)' }} />
@@ -80,6 +93,7 @@ export default function NetworkStatus() {
                     <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--t1)', display: 'flex', gap: 8, alignItems: 'center' }}>
                       {d.device_name || d.device_id}
                       {isMaster && <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 20, background: 'var(--acc-d)', color: 'var(--acc)', border: '1px solid var(--acc-b)' }}>MASTER</span>}
+                      {outOfDate && <span style={{ fontSize: 10, fontWeight: 800, padding: '2px 7px', borderRadius: 20, background: 'var(--red, #dc2626)', color: '#fff' }}>⚠ OUT OF DATE — restart this till</span>}
                     </div>
                     <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 2 }}>
                       {online ? `Active · ${ageSec}s ago` : `Offline · ${ageSec > 60 ? Math.round(ageSec/60)+'m' : ageSec+'s'} ago`}

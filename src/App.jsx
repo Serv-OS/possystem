@@ -94,6 +94,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.870', date: '23 Jul 2026', label: 'Tills now auto-update, and any that are behind show up in Network Status — no more silent stale devices',
+    changes: [
+      'Every till now keeps ITSELF up to date. It checks for a new version every few minutes and, when it finds one, shows an unmissable banner with a short countdown then reloads to the latest code — clearing its cache so even a Sunmi (whose WebView otherwise keeps old code in memory on a refresh) actually updates. The countdown pauses during an active payment, and customer-facing pages are never interrupted. This is the fix for today’s root cause: a stale till was silently running old code and broke online kitchen printing.',
+      'Back Office → Network Status now shows EVERY till (not just the master) with the version it is running, and paints any that are behind with a red “⚠ OUT OF DATE — restart this till” badge. A stale device is now impossible to miss.',
+      'ONE-TIME: because the auto-updater ships IN this version, each till needs a single manual restart to pick it up (force-close & reopen, or wait for the banner if it appears). From v5.5.870 onward, updates are automatic.',
+    ],
+  },
+  {
     version: '5.5.869', date: '23 Jul 2026', label: 'New-order pop-up no longer flashes off in a split second',
     changes: [
       'The new-order banner for online/kiosk/QR orders was vanishing almost instantly. The cross-till “someone else accepted it, take my pop-up down” logic fired on ANY update to an order already in prep — and an online order is born in prep, so the master’s own kitchen-routing claim (a fraction of a second after the order lands) counted as “decided” and cleared the banner. It now clears only on a genuine status change (a real accept/advance by another till) or if the order is removed, so the banner stays its full time.',
@@ -9471,7 +9479,7 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
         const locId = await getLocationId().catch(() => null);
         if (!locId || stopped) return;
 
-        const { startMasterHeartbeat, startChildMonitor } = await import('./sync/MasterSync.js');
+        const { startMasterHeartbeat, startChildMonitor, startChildHeartbeat } = await import('./sync/MasterSync.js');
 
         // isMaster is written to rpos-device-config during device validation (refreshDevice)
         // which queries device_profiles from Supabase — always authoritative
@@ -9487,7 +9495,9 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
             version: VERSION,
           });
         } else {
-          // Child: wait 20s before first check so master has time to write heartbeat on startup
+          // Child: report our own heartbeat (v5.5.870 — so Network Status sees this till's version
+          // too), then wait 20s before monitoring the master (gives it time to write on startup).
+          startChildHeartbeat({ deviceId: pairedDevice.id, locationId: locId, deviceName: pairedDevice.name, version: VERSION });
           await new Promise(r => setTimeout(r, 20_000));
           if (!stopped) startChildMonitor({ locationId: locId });
         }

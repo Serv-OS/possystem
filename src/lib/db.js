@@ -10,6 +10,7 @@
 
 import { supabase, isMock, getLocationId, getActiveLocationSync } from './supabase';
 import { logActivity } from './activity';
+import { VERSION } from './version';
 import { getTodayStartFallback } from './locationTime';
 import { isTrainingMode } from './trainingMode';
 import { describeMenuChange } from './menuDiff';
@@ -754,7 +755,9 @@ export const updateDeviceHeartbeat = async (deviceId) => {
   if (isMock) return { data: null, error: null };
   // v5.5.279: location_id guard on device heartbeat
   const locationId = getActiveLocationSync() || await getLocationId();
-  return supabase.from('devices').update({ status: 'online', last_seen: new Date().toISOString() }).eq('id', deviceId).eq('location_id', locationId);
+  // v5.5.870: report the running app version so Back Office → Network Status can flag a till that
+  // is behind (a stale device silently breaking online printing/payments was invisible before).
+  return supabase.from('devices').update({ status: 'online', last_seen: new Date().toISOString(), app_version: VERSION }).eq('id', deviceId).eq('location_id', locationId);
 };
 
 export const fetchDevices = async (locationId = null) => {
