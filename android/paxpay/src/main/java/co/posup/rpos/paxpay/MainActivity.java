@@ -115,14 +115,15 @@ public class MainActivity extends ComponentActivity {
 
     /**
      * How long the terminal must sit untouched ON THE HOME SCREEN before the venue's idle image
-     * covers it. 60s is long enough that a member of staff reading the home screen mid-service is
-     * never interrupted, and short enough that a terminal parked on the bar is showing branding
-     * rather than a menu of payment buttons to whoever walks past.
+     * covers it. v2.0-rc9: the owner wants the venue's screensaver/branding to appear almost
+     * immediately when the terminal is set down, so this is 5s (was 60s). It fires ONLY on the
+     * idle Home / PosIdle surface, any touch wakes it, and an incoming payment overrides it — so a
+     * short delay costs nothing in service: the screensaver is never shown during a payment.
      *
      * The timer is armed in exactly one place (the end of {@link #showHome}) and cancelled in
      * exactly one place ({@link #setScreen}). See the safety note on {@link #armScreensaver}.
      */
-    private static final long SCREENSAVER_IDLE_MS = 60_000L;
+    private static final long SCREENSAVER_IDLE_MS = 5_000L;
 
     /**
      * How long an IDLE-FIRST terminal waits before trying to recover a lost session on its own.
