@@ -94,6 +94,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.866', date: '23 Jul 2026', label: 'PAX Table-Pay durable close — a paid table always closes, never stranded over a penny, and closes on every device instantly',
+    changes: [
+      'A card charged on the PAX for a table always CLOSES the table now. Previously, if the live bill drifted from the amount frozen at payment (a scheduled price/discount/service-charge rule crossing a time boundary between starting the payment and the POS closing it, a second till re-pricing the shared session, or items edited after payment started), the close was WITHHELD — money taken, table stuck open, sale stranded. The reconciler now always books at exactly the amount the card captured and posts a non-blocking advisory to the activity feed for a manager to review the difference.',
+      'The paid table’s session row is now deleted SERVER-SIDE the instant the sale is booked (new fenced RPC terminal_pos_close_session), so the table closes on every device immediately instead of lingering until an awake till’s 10-second floor-sweep fired (the PAX runs no sweep) — which is why a paid table could re-appear open on the floor. The delete only ever touches the exact paid occupation (session id + seatedAt) with a booked closed_check, so a re-seated different party is never affected.',
+      'Backstop for a terminal that dies mid-tender: the Ryft webhook (PaymentSession.captured/voided) now settles the matching terminal job, so a charge that captured while the PAX app was killed / backgrounded / offline is still driven to approved and closed by the POS — no more captured-but-never-closed table. Idempotent: a webhook racing the device is a harmless no-op.',
+      'Responsive UI scaling so the whole PAX app fits smaller terminals (A50 480×854); the running head now shows the real device model instead of a hardcoded “A920” (paxpay 2.0-rc8).',
+    ],
+  },
+  {
     version: '5.5.862', date: '22 Jul 2026', label: 'Order sources: internal payment stamps no longer appear as sources',
     changes: [
       'The Order sources report and dashboard bucketed by whatever the check\u2019s source field contained \u2014 which sometimes carries internal payment-path stamps (pos_send_to_terminal, pax_table_pay). Sources are now a whitelist: kiosk, online, QR, catering and the delivery platforms keep their own rows; everything else \u2014 including those stamps \u2014 counts as POS, which is what those sales are.',

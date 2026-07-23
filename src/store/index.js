@@ -9,7 +9,7 @@ import { operatorSwitchPatch, logoutPatch } from '../lib/cartHold';
 import { kitchenOverride, receiptOverride } from '../lib/itemDisplay';
 import { upsertMenuItem, upsertFloorTable, deleteFloorTable, insertKDSTicket, insertClosedCheck, upsertClosedCheck, toggle86DB, getNextOrderRefLocal, updateClosedCheckRefunds, upsertStockLevel, deleteStockLevel, decrementStockRPC, restoreStockRPC, upsertModifierGroup, deleteModifierGroup } from '../lib/db';
 import { isSessionClosed } from '../sync/sessionClosure';
-import { markJobReconciled, flagJobStale, recallJob, forgetJob, cancelTerminalJob, buildCheckKey } from '../lib/payments/terminalJobs';
+import { markJobReconciled, closeTerminalSession, recallJob, forgetJob, cancelTerminalJob, buildCheckKey } from '../lib/payments/terminalJobs';
 import { printService } from '../lib/printer';
 import { hubrisePushStock, isHubriseConnected, hubrisePushStatus, isHubriseAutoReceipt } from '../lib/hubrise';
 import { buildChannelCloseFields } from '../lib/channelMoney';
@@ -4401,19 +4401,25 @@ export const useStore = create((set, get) => ({
       && d.seatedAt != null
       && Number(table.session.seatedAt) === Number(d.seatedAt);
 
-    // ── stale-total guard — never close at a wrong amount ──────────────────────
-    // A manager who reconciles a mismatch acknowledges it; resolve_terminal_job then
-    // captures the live total AT THAT MOMENT into acknowledged_total_minor. The override
-    // is scoped to THAT exact figure — so it (a) doesn't fire for an unrelated
-    // device-reporting acknowledge, and (b) re-arms if the bill grows AGAIN afterwards.
+    // ── amount drift → NEVER withhold the close (v5.5.866) ─────────────────────
+    // The card CAPTURED job.charge_minor and the table MUST close — you can never book a
+    // number different from what you actually took. If the live bill drifted from the frozen
+    // due (a scheduled price/discount/service-charge rule crossing a time boundary between
+    // freeze and reconcile, a second till re-pricing the shared session, or items edited on
+    // the table after payment started), we STILL close: booking EXACTLY the charged amount via
+    // the frozen-draft (headless) path — never a live session total that differs from the
+    // capture — and we surface the delta as a NON-BLOCKING advisory for a manager.
+    //
+    // The old code called flagJobStale here and RETURNED, leaving the table SEATED with the
+    // money already taken. flagJobStale set the blocking needs_human that then hid the job from
+    // the reconciler's filter FOREVER — the precise "paid but stuck open, sale stranded"
+    // failure. acknowledged_total_minor is still honoured (a manager who already reconciled a
+    // mismatch pinned that exact figure), it just no longer gates the close.
     const acknowledged = job.acknowledged_total_minor != null
       && Number(job.live_total_minor) === Number(job.acknowledged_total_minor);
-    if (!acknowledged && job.live_total_minor != null
-        && Number(job.live_total_minor) !== Number(job.due_minor)) {
-      await flagJobStale(job.id,
-        `bill changed after payment frozen: due ${job.due_minor}, live ${job.live_total_minor}`).catch(() => {});
-      return;                                                      // leave the table SEATED for a human
-    }
+    const driftMinor = (!acknowledged && job.live_total_minor != null)
+      ? (Number(job.live_total_minor) - Number(job.due_minor)) : 0;
+    const hasDrift = Number.isFinite(driftMinor) && driftMinor !== 0;
 
     // ── card block from the job (brand/last4/auth for the receipt) ─────────────
     const c = job.card || {};
@@ -4440,9 +4446,12 @@ export const useStore = create((set, get) => ({
     // DIFFERENT party re-seated here) build headless from the frozen draft — never off a
     // stranger's session.
     let record;
-    if (liveIsPayingOccupation) {
+    if (liveIsPayingOccupation && !hasDrift) {
       record = get().buildCloseRecord(table.session, table, termPay, { idOverride: job.closed_check_id });
     } else {
+      // Headless whenever there is drift (even for the paying occupation): book the FROZEN
+      // draft so the itemisation is internally consistent with the charged amount, rather than
+      // a live session whose total no longer matches what the card took.
       const items = Array.isArray(d.items) ? d.items.filter(i => !i?.voided).map(i => ({ ...i })) : [];
       const subtotal = (d.subtotalMinor ?? 0) / 100;
       record = {
@@ -4505,6 +4514,33 @@ export const useStore = create((set, get) => ({
     // vanished from history). ok:false now leaves the job 'approved': the next tick —
     // on any till — retries the idempotent upsert until it lands, then marks done.
     if (ok) {
+      // v5.5.866 — delete the paid occupation's active_sessions row SERVER-SIDE now, so the table
+      // closes on EVERY device immediately rather than lingering until an awake device's 10s
+      // ghost-sweep fires (the A50 runs no sweep; the table then re-hydrated on the floor). Same
+      // occupation gate as the floor drop; the RPC itself also refuses anything but the exact paid
+      // occupation (session id + seatedAt) with a booked closed_check. SessionReconciler stays the backstop.
+      if (tableId && (!table?.session || liveIsPayingOccupation)) {
+        closeTerminalSession({
+          locationId: record.locationId || d.locationId || null,
+          tableId,
+          sessionId: d.sessionId,
+          seatedAt: d.seatedAt,
+          closedCheckId: record.id,
+        }).catch(() => { /* best-effort — ghost-sweep backstop remains */ });
+      }
+      if (hasDrift) {
+        // NON-BLOCKING advisory (v5.5.866): the sale IS booked at the charged amount; a manager
+        // reviews the delta from the activity feed. This replaces the old flagJobStale-and-strand.
+        logActivity(record.locationId || d.locationId || null, {
+          kind: 'system', severity: 'action',
+          title: 'Table Pay — bill differed from amount charged',
+          body: `${d.tableLabel || tableId || 'Counter'}: charged £${((job.charge_minor ?? 0) / 100).toFixed(2)}, `
+            + `live bill £${(Number(job.live_total_minor) / 100).toFixed(2)} `
+            + `(${driftMinor > 0 ? '+' : '−'}£${Math.abs(driftMinor / 100).toFixed(2)}). `
+            + `Booked at the charged amount — review.`,
+          refType: 'closed_check', refId: record.id,
+        }).catch(() => {});
+      }
       await markJobReconciled(job.id).catch(() => {});   // housekeeping — insert-first, so a crash here just retries
       // v5.5.862: the sale is durably recorded — release this device's payment-
       // reference handle for the check. A stale handle here is what produced

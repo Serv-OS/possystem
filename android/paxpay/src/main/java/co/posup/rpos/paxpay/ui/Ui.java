@@ -17,6 +17,7 @@ import android.text.TextPaint;
 import android.text.style.AbsoluteSizeSpan;
 import android.text.style.ForegroundColorSpan;
 import android.text.style.MetricAffectingSpan;
+import android.util.DisplayMetrics;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
@@ -196,18 +197,50 @@ public final class Ui {
     /** Card padding. 28px. */
     public static final int PAD_CARD = 14;
 
+    // ═══ RESPONSIVE SCALE ═════════════════════════════════════════════════════════════════════
+    //
+    // The whole design is authored for the A920 Pro's ~360×640dp panel. Smaller / shorter
+    // terminals (the A50 is 480×854px @ 1.5× = 320×569dp) can't fit those fixed heights and
+    // paddings and the UI overflows. Rather than special-case every screen, we compute ONE
+    // uniform scale from the device's own dp size against that baseline and fold it into dp()
+    // and sp() — so EVERY size in the system (text, spacing, heights, radii, icons) shrinks in
+    // proportion and the layout keeps its shape on any panel. Clamped to ≤1.0 so a full-size or
+    // larger screen (the A920) is never scaled UP and renders byte-for-byte as before.
+
+    /** The A920 Pro design canvas, in dp. */
+    private static final float BASE_W_DP = 360f, BASE_H_DP = 640f;
+    private static volatile float sScale = 0f;   // 0 = not yet computed
+
+    /**
+     * Uniform layout scale for THIS device: min(1.0, screenDp / designDp), floored so nothing
+     * becomes unreadably small. Computed once (the panel size doesn't change under the app) and
+     * cached. 1.0 on the A920 (no change); ~0.89 on the A50.
+     */
+    public static float scale(Context c) {
+        float s = sScale;
+        if (s <= 0f) {
+            DisplayMetrics m = c.getResources().getDisplayMetrics();
+            float wDp = m.widthPixels / m.density;
+            float hDp = m.heightPixels / m.density;
+            s = Math.min(wDp / BASE_W_DP, hDp / BASE_H_DP);
+            s = Math.max(0.72f, Math.min(1.0f, s));
+            sScale = s;
+        }
+        return s;
+    }
+
     // ═══ PRIMITIVES ═══════════════════════════════════════════════════════════════════════════
 
     public static int dp(Context c, float v) {
         Type.init(c);   // the cheapest place to guarantee the font cache is primed
         return Math.round(TypedValue.applyDimension(
-                TypedValue.COMPLEX_UNIT_DIP, v, c.getResources().getDisplayMetrics()));
+                TypedValue.COMPLEX_UNIT_DIP, v * scale(c), c.getResources().getDisplayMetrics()));
     }
 
     /** sp → px. Needed where a span wants absolute pixels (see modeButton). */
     public static int sp(Context c, float v) {
         return Math.round(TypedValue.applyDimension(
-                TypedValue.COMPLEX_UNIT_SP, v, c.getResources().getDisplayMetrics()));
+                TypedValue.COMPLEX_UNIT_SP, v * scale(c), c.getResources().getDisplayMetrics()));
     }
 
     /** One physical hairline. 1px in the 720px design space is 1px on this panel. */
@@ -258,7 +291,7 @@ public final class Ui {
         Type.init(c);
         TextView t = new TextView(c);
         t.setText(s);
-        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, sizeSp);
+        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, sizeSp * scale(c));
         t.setTextColor(colour);
         t.setTypeface(Type.ui(bold ? 700 : 400));
         return t;
@@ -283,7 +316,7 @@ public final class Ui {
         Type.init(c);
         TextView t = new TextView(c);
         t.setText(s);
-        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, sizeSp);
+        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, sizeSp * scale(c));
         t.setTextColor(colour);
         t.setTypeface(Type.mono());
         Type.trackingPx(t, trackingDesignPx, fontDesignPx);
@@ -311,7 +344,8 @@ public final class Ui {
         try {
             // API 26+. setTextSize must not be called after this, so it goes last.
             t.setAutoSizeTextTypeUniformWithConfiguration(
-                    24, (int) SP_BIG_AMOUNT, 1, TypedValue.COMPLEX_UNIT_SP);
+                    Math.max(1, (int) (24 * scale(c))),
+                    Math.max(2, (int) (SP_BIG_AMOUNT * scale(c))), 1, TypedValue.COMPLEX_UNIT_SP);
         } catch (Throwable ignored) {
             // Fixed size is a perfectly good fallback; never fail constructing a payment screen.
         }
@@ -499,7 +533,7 @@ public final class Ui {
         b.setAllCaps(false);
         b.setText(label);
         b.setTextColor(fg);
-        b.setTextSize(TypedValue.COMPLEX_UNIT_SP, sizeSp);
+        b.setTextSize(TypedValue.COMPLEX_UNIT_SP, sizeSp * scale(c));
         b.setTypeface(Type.ui(weight));
         b.setStateListAnimator(null);   // we own elevation; the stock lift fights the green glow
         b.setOnClickListener(onClick);

@@ -145,8 +145,9 @@ public final class PosIdleScreen extends LinearLayout {
         facts.setGravity(Gravity.CENTER);
         facts.addView(Ui.dot(c, Ui.SIGNAL, 5, false));
         facts.addView(Ui.spacerH(c, 7));
+        String model = android.os.Build.MODEL == null ? "TERMINAL" : android.os.Build.MODEL.trim().toUpperCase();
         TextView factsText = Ui.mono(c,
-                "PAIRED · A920 · CTRL " + (BuildVersion.SIMULATED ? "SANDBOX" : "LIVE"),
+                "PAIRED · " + model + " · CTRL " + (BuildVersion.SIMULATED ? "SANDBOX" : "LIVE"),
                 Ui.SP_META, Ui.ASH, 2f, 21f);
         factsText.setAllCaps(true);
         facts.addView(factsText);

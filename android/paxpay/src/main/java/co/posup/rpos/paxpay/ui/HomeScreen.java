@@ -74,7 +74,11 @@ public final class HomeScreen extends LinearLayout {
         TerminalSettings s = settings == null ? TerminalSettings.allowAll() : settings;
 
         // ---- running head ---------------------------------------------------------------------
-        addView(Ui.runningHead(c, "A920 · TERMINAL", "LIVE", true),
+        // Label with the ACTUAL device model (A920, A50, …) — this app ships to more than one PAX
+        // model now, so a hardcoded "A920" mislabels an A50.
+        String deviceLabel = (android.os.Build.MODEL == null ? "TERMINAL"
+                : android.os.Build.MODEL.trim().toUpperCase()) + " · TERMINAL";
+        addView(Ui.runningHead(c, deviceLabel, "LIVE", true),
                 Ui.lp(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
         addView(Ui.spacer(c, 12));
 

@@ -72,6 +72,27 @@ async function alertDispute(d: any, accountId: string | undefined, platformLocat
   await sendMerchantEmail(accountId, platformLocationId, 'Action needed: a card payment was disputed', html);
 }
 
+// UK card-receipt block from a PaymentSession — best-effort, kept in step with cardOf()
+// in terminal-job-charge so a webhook-settled job carries the same card block on its receipt.
+function cardOfSession(d: any): { card: Record<string, unknown> | null; authCode: string | null; txnId: string | null } {
+  let card: Record<string, unknown> | null = null;
+  let authCode: string | null = null;
+  let txnId: string | null = null;
+  try {
+    const pm = d?.paymentMethod ?? {};
+    const c = pm.card ?? d?.card ?? {};
+    const tx = d?.lastPaymentTransaction ?? d?.transaction ?? {};
+    const brand = c.scheme ?? c.brand ?? pm.scheme ?? null;
+    const last4 = c.last4 ?? c.lastFour ?? null;
+    authCode = tx.approvalCode ?? tx.authorizationCode ?? d?.approvalCode ?? d?.authorizationCode ?? null;
+    txnId = tx.id ?? null;
+    if (brand || last4 || authCode) {
+      card = { brand, last4, auth_code: authCode, read_method: d?.entryMode ?? tx.entryMode ?? null, aid: null, application_name: null, cvm: null, account_type: null };
+    }
+  } catch { /* best-effort */ }
+  return { card, authCode, txnId };
+}
+
 // Reconcile a PaymentSession outcome (captured / refunded / voided) against our
 // records. Writes a server-truth row to ryft_payments (Platform DB) and, on a
 // refund, reflects it in the matching closed_check (Ops DB) — so a refund issued
@@ -132,6 +153,35 @@ async function reconcilePayment(evt: any, type: string) {
     ...(status === 'Captured' ? { captured_at: nowIso } : {}),
     ...(isRefund ? { refunded_at: nowIso } : {}),
   }, { onConflict: 'payment_session_id' });
+
+  // v5.5.866 — B1 BACKSTOP. Settle the matching terminal_job so a PAX Table-Pay whose device
+  // DIED mid-tender (app killed / backgrounded / network lost after the tap but before the
+  // result-poll settled) is still driven to 'approved' server-side. terminal_job_settle_from_processor
+  // is the ONE settlement writer; the POS reconciler then books the pre-minted closed_check and
+  // closes the table. terminal_jobs.payment_session_id is unique; the RPC is idempotent on a
+  // terminal status, so a webhook racing the device or the sweeper is a harmless no-op. Refund
+  // events NEVER settle a job (the job settled long before any refund). Captured→approved, Voided→declined.
+  if (!isRefund) {
+    try {
+      const { data: tj } = await opsAdmin
+        .from('terminal_jobs').select('id').eq('payment_session_id', psId).maybeSingle();
+      if (tj?.id) {
+        const { card, authCode, txnId } = cardOfSession(ps);
+        const { error: settleErr } = await opsAdmin.rpc('terminal_job_settle_from_processor', {
+          p_job_id: tj.id,
+          p_outcome: isVoid ? 'declined' : 'approved',
+          p_payment_session_id: psId,
+          p_transaction_id: txnId,
+          p_auth_code: authCode,
+          p_card: card,
+          p_decline_reason: isVoid ? 'voided at processor' : null,
+          p_source: 'webhook',
+          p_session_amount_minor: Math.round(Number(ps?.amount ?? 0)),
+        });
+        if (settleErr) console.error('[ryft-webhook] terminal_job settle rpc', settleErr.message);
+      }
+    } catch (e) { console.error('[ryft-webhook] terminal_job settle', (e as Error).message); }
+  }
 
   // Reflect a Ryft-side refund into the closed_check without double-counting a
   // refund our own app already recorded. refundedAmount is CUMULATIVE, so we

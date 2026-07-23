@@ -450,10 +450,16 @@ export async function fetchApprovedTablePayJobs(locationId) {
   // ignores the statuses param and returns pending/tipping jobs (charge_minor null) —
   // trusting the remote filter alone would book £0 sales. closeApprovedTerminalJob
   // enforces the same guards again; belt and braces on a money path.
+  // v5.5.866 — DO NOT exclude needs_human here. A card that CAPTURED (status='approved',
+  // charge_minor>0) MUST always close; needs_human is advisory (an amount-drift or settle-time
+  // discrepancy parked for a manager), never a gate that strands a paid table + taken money on
+  // the floor forever. closeApprovedTerminalJob books at the charged amount and logs the delta.
+  // The money guards STAY strict: only status==='approved' && charge_minor>0 (so a 'charging'/
+  // 'unknown' B1 job with charge_minor null is NEVER auto-closed — it still routes to the human
+  // queue), and only the two reconcilable sources.
   return (j.jobs ?? []).filter(
     x => x?.status === 'approved'
       && Number(x?.charge_minor) > 0
-      && x?.needs_human === false
       && RECONCILABLE_SOURCES.includes(x?.check_draft?.source),
   );
 }
@@ -461,6 +467,24 @@ export async function fetchApprovedTablePayJobs(locationId) {
 export async function markJobReconciled(jobId) {
   if (!supabase) throw new Error('offline');
   const { data, error } = await supabase.rpc('terminal_pos_mark_reconciled', { p_job_id: jobId });
+  if (error) throw error;
+  return data;
+}
+
+// v5.5.866 — delete the paid occupation's active_sessions row SERVER-SIDE at close time, so a
+// Table-Pay'd table closes on every device immediately instead of lingering until some awake
+// device's 10s ghost-sweep fires. The RPC is fenced (anon till / BO user) and deletes ONLY the
+// exact occupation (session id + seatedAt) AND only when the closed_check exists — a re-seated
+// different party is never touched. Best-effort: SessionReconciler's ghost-sweep stays the backstop.
+export async function closeTerminalSession({ locationId, tableId, sessionId, seatedAt, closedCheckId }) {
+  if (!supabase) return { ok: false };
+  const { data, error } = await supabase.rpc('terminal_pos_close_session', {
+    p_location_id: locationId,
+    p_table_id: tableId,
+    p_session_id: sessionId == null ? null : String(sessionId),
+    p_seated_at: seatedAt == null ? null : Number(seatedAt),
+    p_closed_check_id: closedCheckId,
+  });
   if (error) throw error;
   return data;
 }
