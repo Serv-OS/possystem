@@ -94,6 +94,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.867', date: '23 Jul 2026', label: 'Online/kiosk/QR/HubRise orders print to the kitchen again + receipts print from the till you’re on',
+    changes: [
+      'CRITICAL FIX — channel orders (online, kiosk, QR, HubRise) had stopped printing kitchen/production tickets and reaching the KDS since v5.5.861. The order was marked routed but nothing came out. Cause: a duplicate variable name (srcLabel) put the “Routing…” toast in a JavaScript temporal dead zone, throwing a silent error AFTER the order was claimed but BEFORE the ticket + KDS were written — so the claim blocked any retry and the kitchen never saw it. Renamed the variable; channel orders route, print and hit the KDS again.',
+      'Receipts: “Print receipt” now prints to the receipt printer of the TILL you press it on, and auto order-source receipts print on the device handling the order — falling back to the venue default only if that device has none. You no longer need to set a separate venue-wide “default receipt printer” just to reprint an online/collection receipt from a till that already has a printer.',
+    ],
+  },
+  {
     version: '5.5.866', date: '23 Jul 2026', label: 'PAX Table-Pay durable close — a paid table always closes, never stranded over a penny, and closes on every device instantly',
     changes: [
       'A card charged on the PAX for a table always CLOSES the table now. Previously, if the live bill drifted from the amount frozen at payment (a scheduled price/discount/service-charge rule crossing a time boundary between starting the payment and the POS closing it, a second till re-pricing the shared session, or items edited after payment started), the close was WITHHELD — money taken, table stuck open, sale stranded. The reconciler now always books at exactly the amount the card captured and posts a non-blocking advisory to the activity feed for a manager to review the difference.',

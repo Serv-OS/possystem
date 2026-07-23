@@ -5294,7 +5294,12 @@ export const useStore = create((set, get) => ({
     // v5.5.131: surface routing diagnostics as on-screen toasts on the master
     // device — DevTools isn't accessible on Sunmi/Android-APK installs.
     const showToast = useStore.getState().showToast;
-    const srcLabel = order.source ? order.source.toUpperCase() : 'ORDER';
+    // NB: named srcUpper, NOT srcLabel. A second `const srcLabel` is declared later INSIDE the
+    // try block (SRC_LABEL[...]); reusing the name here put the "Routing …" toast below in that
+    // inner const's temporal dead zone → a silent ReferenceError AFTER the kitchen_routed_at
+    // claim but BEFORE the KDS/print writes, so channel orders claimed-but-never-printed (v5.5.861
+    // regression, fixed v5.5.867). Keep these two names distinct.
+    const srcUpper = order.source ? order.source.toUpperCase() : 'ORDER';
     // v5.5.861: console entry log stays here, but the on-screen "Routing …" toast moved
     // BELOW the dedup/staleness/claim guards — it used to fire on every backfill pass
     // (every Back Office refresh re-toasted the same held/already-printed order, reading
@@ -5402,7 +5407,7 @@ export const useStore = create((set, get) => ({
       // v5.5.861: we are now COMMITTED to printing this order on this device — this is
       // the only point the operator-facing toast belongs (skipped/held/claimed-elsewhere
       // passes above stay silent instead of re-notifying on every boot).
-      showToast?.(`Routing ${srcLabel} ${order.ref}…`, 'info');
+      showToast?.(`Routing ${srcUpper} ${order.ref}…`, 'info');
 
       // Routing config + cat parent map (mirror getCentresForItem from sendToKitchen)
       let routingConfig = useStore.getState().printRouting;
@@ -5671,12 +5676,11 @@ export const useStore = create((set, get) => ({
         },
       };
       const totals = { subtotal, service: Math.max(0, +(total - subtotal).toFixed(2)), tip: 0, grand: total };
-      // v5.5.835: venue-scoped. A HubRise order belongs to the venue, not to a till,
-      // so there is no device assignment to resolve — use the venue default receipt
-      // printer (Back office → Production printing). Still a deliberate operator
-      // choice: if unset this prints nothing and warns rather than guessing.
-      const result = await printService.printReceipt({ check, items, totals }, null, { venueScope: true });
-      if (!result?.ok) get().showToast?.(`Receipt not printed: ${result?.error || 'no venue receipt printer set'}`, 'error');
+      // v5.5.867: print on the device handling this order — its own receipt printer — falling
+      // back to the venue default if it has none (was venue-default-only). If nothing is set
+      // anywhere it prints nothing and warns rather than guessing.
+      const result = await printService.printReceipt({ check, items, totals }, null);
+      if (!result?.ok) get().showToast?.(`Receipt not printed: ${result?.error || 'no receipt printer set'}`, 'error');
     } catch (e) { console.warn('[hubrise] receipt print failed:', e?.message); }
   },
 
@@ -5714,9 +5718,10 @@ export const useStore = create((set, get) => ({
       // service = whatever's left after subtotal + delivery + tip (keeps a catering tip out of the
       // service line). Pennies-safe + never negative.
       const totals = { subtotal, service: Math.max(0, +((total - subtotal - deliveryFee - tip).toFixed(2))), delivery: deliveryFee || 0, tip, grand: total };
-      // v5.5.835: venue-scoped — an online / kiosk / QR / catering / HubRise order has no
-      // originating till, so it routes to the venue default receipt printer.
-      const result = await printService.printReceipt({ check, items, totals }, null, { venueScope: true });
+      // v5.5.867: print to THIS till's own receipt printer — the device the operator pressed
+      // "Print receipt" on — falling back to the venue default only if this till has none. No
+      // separate venue-default is required: a till connected to a printer just prints.
+      const result = await printService.printReceipt({ check, items, totals }, null);
       get().showToast?.(result?.ok ? 'Receipt sent to printer' : `Receipt print failed${result?.error ? ': ' + result.error : ''}`, result?.ok ? 'success' : 'error');
       return result || { ok: false };
     } catch (e) {

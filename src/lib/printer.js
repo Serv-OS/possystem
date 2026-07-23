@@ -648,27 +648,29 @@ class PrintService {
       return { printer: p, src: p ? 'venue-default' : 'none' };
     }
 
-    // Device-originated. The absence of the cache key and a null printerId inside it
-    // are different faults, so report them differently — one is "boot never ran",
-    // the other is "nobody has configured this till".
+    // Device-originated — and the manual "Print receipt" reprint. Print to THIS till's OWN
+    // receipt printer: the device you pressed Print on. v5.5.867: if this device has no printer
+    // of its own, fall back to the venue default rather than failing — so a reprint on any till
+    // that is connected to a printer just works, and the venue default is a convenience, not a
+    // prerequisite. Only "nothing configured anywhere" returns none.
     let cached = null;
-    let hydrated = false;
     try {
       const raw = localStorage.getItem('rpos-receipt-target');
-      if (raw) { cached = JSON.parse(raw); hydrated = true; }
-    } catch { /* corrupt cache — treat as unhydrated */ }
-
-    if (!hydrated) {
-      console.warn('[Print] Receipt: this device has no printer assignment cached (rpos-receipt-target missing — Supabase hydration has not run or failed). Refusing to guess a printer.');
-      return { printer: null, src: 'none' };
+      if (raw) cached = JSON.parse(raw);
+    } catch { /* corrupt cache — treat as unset */ }
+    if (cached?.printerId) {
+      const p = this._printers.find(x => x.id === cached.printerId) || null;
+      if (p) return { printer: p, src: 'device' };
+      console.warn(`[Print] Receipt: this device is assigned printer "${cached.printerId}" but it is not in the venue printer list (deleted?) — trying the venue default.`);
     }
-    if (!cached?.printerId) {
-      console.warn(`[Print] Receipt: no receipt printer is set for this device (${cached?.deviceId || 'unknown'}). Back office → Devices → edit this terminal → Receipt printer.`);
-      return { printer: null, src: 'none' };
+    // Fall back to the venue default receipt printer, if one is set.
+    const vid = this._venueDefaultPrinterId();
+    if (vid) {
+      const vp = this._printers.find(x => x.id === vid) || null;
+      if (vp) return { printer: vp, src: 'venue-default' };
     }
-    const p = this._printers.find(x => x.id === cached.printerId) || null;
-    if (!p) console.warn(`[Print] Receipt: this device is assigned printer "${cached.printerId}" but it is not in the venue printer list (deleted?).`);
-    return { printer: p, src: p ? 'device' : 'none' };
+    console.warn('[Print] Receipt: no receipt printer set for this till (Back office → Devices → Receipt printer) and no venue default. Refusing to guess.');
+    return { printer: null, src: 'none' };
   }
 
   // v5.5.835: venue-wide default receipt printer, for receipts that have no originating
