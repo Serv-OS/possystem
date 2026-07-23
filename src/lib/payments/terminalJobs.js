@@ -410,19 +410,41 @@ export async function pollTerminalJob(jobId, { onUpdate, intervalMs = 1000, time
 
 /**
  * Cancel a job. The SERVER decides whether that is allowed — it refuses once
- * charged_at is set. Returns { ok, reason?, status }.
+ * charged_at is set. Returns { ok, reason?, status, code? }.
  *
  * The POS must not tell staff "cancelled" until it has observed that status
  * coming back (spec rule 15).
+ *
+ * v5.5.871 — GOES THROUGH terminal-job-cancel, NOT the bare RPC.
+ *
+ * The RPC (terminal_job_cancel) only flips a PRE-charge row; it refuses once the
+ * card is being taken (charged_at set) and, crucially, never voided the LIVE
+ * in-person action on the PAX — so a "cancelled" bill left the card prompt up on
+ * the terminal and a force-close/relaunch of paxpay resurrected it. The edge fn
+ * runs that same fenced RPC first (pre-charge fast path) and, when the job is live,
+ * aborts the action at Ryft (cancel-action) and settles from the SESSION verdict
+ * (a card that captured anyway comes back code:'ALREADY_CAPTURED', never cancelled).
  */
 export async function cancelTerminalJob(jobId) {
   if (!supabase) return { ok: false, reason: 'offline' };
   try {
-    const { data, error } = await supabase.rpc('terminal_job_cancel', { p_job_id: jobId });
-    if (error) return { ok: false, reason: error.message };
-    return data ?? { ok: false };
+    return await callFn('terminal-job-cancel', { job_id: jobId });
   } catch (e) {
-    return { ok: false, reason: e?.message || 'cancel failed' };
+    // A STRUCTURED refusal (e.g. ALREADY_CAPTURED, or a live-job 409) is a real
+    // answer from the server, not a transport failure — surface it, don't retry
+    // as a bare cancel that could mislabel a paid bill.
+    if (e?.code) return { ok: false, code: e.code, reason: e.message, status: e.jobStatus ?? null };
+    // Transport / deploy-drift only: fall back to the pure DB pre-charge cancel so
+    // a not-yet-charging job can still be cancelled. This canNOT void Ryft — it is
+    // the old behaviour, kept solely so the button never dies when the edge fn is
+    // briefly unreachable.
+    try {
+      const { data, error } = await supabase.rpc('terminal_job_cancel', { p_job_id: jobId });
+      if (error) return { ok: false, reason: error.message };
+      return data ?? { ok: false };
+    } catch (e2) {
+      return { ok: false, reason: e?.message || e2?.message || 'cancel failed' };
+    }
   }
 }
 

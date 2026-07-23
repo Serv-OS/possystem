@@ -13,7 +13,7 @@
 */
 
 import { useState, useEffect, useCallback } from 'react';
-import { supabase } from '../lib/supabase';
+import { supabase, ensureAuthToken } from '../lib/supabase';
 import KioskApp from './KioskApp';
 import { getLocationConfig } from '../lib/locationTime';
 import { isOpenNow, nextOpensAt, formatHoursPreview } from '../lib/openingHours';
@@ -62,6 +62,22 @@ export default function KioskSurface() {
         setError('Invalid code. Check the back office for the correct code.');
         return;
       }
+
+      // v5.5.871: bind this kiosk's anonymous auth session to its devices row
+      // server-side (devices.device_uid = auth.uid()), the SAME identity the POS
+      // gets from claim_device. Without it the kiosk can't use the Ryft PAX
+      // "send to terminal" path — terminal_targets_for_pos and terminal-job-create
+      // both fence on devices.device_uid = auth.uid(). Run it BEFORE the update
+      // below clears pairing_code (claim_device matches on the code). Best-effort:
+      // Stripe-reader kiosks never needed it, so a failure here must not block
+      // pairing — only Ryft card payments depend on it.
+      try {
+        await ensureAuthToken();
+        await supabase.rpc('claim_device', { p_code: codeNorm });
+      } catch (e) {
+        console.warn('[KioskSurface] claim_device (device_uid stamp) failed — Ryft terminal payments will be unavailable until re-pair:', e?.message);
+      }
+
       const token = (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)) + '.' + Date.now();
       const { error: e2 } = await supabase
         .from('devices').update({

@@ -178,6 +178,20 @@ Deno.serve(async (req) => {
     return json({ success: true });
   }
 
+  // ── stripe_unlink: detach the Stripe account row (does NOT delete it at Stripe) ──
+  //    merchant_stripe_accounts is RLS service-role-WRITE (SELECT-only for anon),
+  //    so the admin app's anonymous platform client cannot delete the row — its
+  //    delete silently affected 0 rows and returned no error, so "Unlink" looked
+  //    like it worked but the link survived. Do it here with the service role,
+  //    keyed on location_id (the link's unique key), mirroring ryft_unlink. The
+  //    Stripe account itself is left intact upstream (a shared/admin-pasted acct_
+  //    must never be deleted from under other users).
+  if (action === 'stripe_unlink') {
+    const { error } = await platformAdmin.from('merchant_stripe_accounts').delete().eq('location_id', loc.id);
+    if (error) return json({ error: `unlink failed: ${error.message}` }, 500);
+    return json({ success: true });
+  }
+
   // Everything below talks to Ryft.
   if (!ryftConfigured()) return json({ error: 'Ryft not configured (RYFT_SECRET_KEY missing)' }, 500);
 

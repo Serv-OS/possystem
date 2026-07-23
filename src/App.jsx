@@ -94,6 +94,16 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.876', date: '23 Jul 2026', label: 'Five card-terminal fixes: bar-tab pre-auth, Ryft cancel/void, kiosk PAX pairing, clean Stripe reader removal, Stripe account unlink',
+    changes: [
+      'Bar-tab card pre-authorisation no longer silently opens a tab with NO hold on a Ryft/PAX venue. A card hold is a Stripe-Terminal-only feature (Ryft’s in-person terminals have no card-hold capability), so on a Ryft venue the pre-auth screen now says so plainly and lets staff open the tab without a hold — instead of looking like a hold was placed when nothing was held. Stripe venues are unchanged: the hold works exactly as before.',
+      'Cancelling a card payment sent to a Ryft PAX terminal now actually clears it OFF the machine. Before, cancelling only marked the payment cancelled in our records while the card prompt stayed live on the terminal, and force-closing the payment app re-opened the unfinished payment on next launch. Cancel now voids the live action at the processor, settles the payment from what actually happened on the card (a card that was taken comes back as “already paid — refund instead”, never a false cancel), and the terminal app clears its recovery record instead of resurrecting it. NEEDS the payment-app rebuild + a real terminal tap to confirm end-to-end.',
+      'A kiosk can now take card payments on a paired Ryft PAX terminal, not just a Stripe reader. Assign the terminal to the kiosk in Back Office → Kiosks → Settings → Card terminal; the kiosk then sends the card payment to that PAX (its own tip screen still handles tipping). NEEDS a real terminal + kiosk to verify end-to-end.',
+      'Removing a Stripe card reader now leaves the physical device clean instead of stuck on the venue’s idle background. Removal cancels any in-progress action and, when it’s the last reader at that location, strips the custom idle splash off the shared reader configuration so the device returns to its default idle screen (and a replacement reader no longer inherits the old splash). NEEDS a real reader to confirm the on-screen repaint timing.',
+      'Unlinking a Stripe account in the admin billing screen now actually disconnects it. The old “Unlink” quietly did nothing (the delete was blocked by database permissions and reported no error, so the account stayed linked); it now goes through the same secure server path the Ryft unlink uses, so the link is genuinely cleared.',
+    ],
+  },
+  {
     version: '5.5.875', date: '23 Jul 2026', label: 'Loyalty verification code: you can now edit the business name shown in the text (no longer locked)',
     changes: [
       'Messages → Loyalty → Verification Code is editable again — but as the ONE thing that can actually change: a "Business name shown in the verification text" field. The rest of the wording stays fixed by the SMS verification service (Twilio Verify), which is why the full body can’t be free-typed.',

@@ -199,9 +199,14 @@ export default function AdminBillingManager({ authUser }) {
           onLink={() => setLinkModalLoc(loc)}
           onUnlink={async () => {
             if (!confirm(`Unlink Stripe account from ${loc.name}? Future payments will fail until re-linked.`)) return;
-            const { error } = await platformSupabase.from('merchant_stripe_accounts').delete().eq('id', msaByLoc[loc.id].id);
-            if (error) alert(`Unlink failed: ${error.message}`);
-            else refresh();
+            // merchant_stripe_accounts is RLS service-role-WRITE — a direct delete
+            // from this anonymous platform client silently affects 0 rows and
+            // returns no error, so the row (the link) survived and "Unlink" did
+            // nothing. Route through the super_admin edge fn like ryft_unlink.
+            try {
+              await callPaymentsAdmin('stripe_unlink', { location_id: loc.id });
+              setMsaByLoc(prev => { const n = { ...prev }; delete n[loc.id]; return n; });
+            } catch (e) { setError(`Unlink failed: ${e.message}`); }
           }}
           onSavePricing={async ({ cardpresent, online, notes }) => {
             const patch = {
