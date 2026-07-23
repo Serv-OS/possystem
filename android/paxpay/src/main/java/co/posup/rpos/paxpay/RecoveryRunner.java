@@ -81,6 +81,15 @@ public final class RecoveryRunner {
                             resolveIntent(e);
                             break;
                         case JobLog.STATE_SENT:
+                            // v5.5.871: ask the server what actually happened BEFORE
+                            // quarantining. If the POS cancelled/voided (or the sale
+                            // already settled) while we were dead, the outcome is
+                            // established — clear the local row and do NOT block. Only a
+                            // genuinely-still-unresolved (or unreadable) row falls through
+                            // to the quarantine that blocks the terminal.
+                            if (reconcileSentAgainstServer(e)) {
+                                break;
+                            }
                             quarantineUnknown(e);
                             needingHuman.add(e);
                             break;
@@ -161,6 +170,53 @@ public final class RecoveryRunner {
                         : "Terminal restarted before the card was presented.");
         log.markReported(e.jobId);
         diag.event("cancelled un-launched intent " + e.jobId);
+    }
+
+    /**
+     * v5.5.871 — RECONCILE A 'SENT' ROW AGAINST THE SERVER BEFORE QUARANTINING IT.
+     *
+     * The bug this closes: a SENT row (controller launched, outcome unseen) was
+     * quarantined 'unknown' on EVERY boot and cleared only by a human tap — even after
+     * the POS had already cancelled the payment. The new POS cancel path voids the live
+     * Ryft action AND settles the job, so the outcome is now knowable; ask for it:
+     *
+     *   cancelled / expired / declined → no money is owed on this terminal. Clear the
+     *       write-ahead row and do NOT block. THIS is the fix for "force-close reopens
+     *       the cancelled payment".
+     *   approved / reconciled → the card WAS charged and the server already recorded it
+     *       (settled from the session — its source of truth). The stale local row is
+     *       cleared; the sale is closed on the till side.
+     *   anything still live/unknown, or an unreadable/absent row → fall through to the
+     *       existing quarantine. We NEVER assume an outcome we cannot prove.
+     *
+     * Manual sales have no server row and keep today's behaviour. Any read failure is
+     * treated as "cannot prove" → quarantine, never as a clear.
+     *
+     * @return true if the row was resolved and cleared here (skip the quarantine).
+     */
+    private boolean reconcileSentAgainstServer(JobLog.Entry e) {
+        if (isManual(e)) return false;
+        String serverStatus;
+        try {
+            serverStatus = api.fetchJobStatus(e.jobId);
+        } catch (Exception ex) {
+            Log.w(TAG, "sent-row server status check failed for " + e.jobId + ": " + ex.getMessage());
+            return false;   // cannot prove → quarantine as before
+        }
+        if (serverStatus == null) return false;
+        switch (serverStatus) {
+            case "cancelled":
+            case "expired":
+            case "declined":
+            case "approved":
+            case "reconciled":
+                log.markReported(e.jobId);   // outcome established server-side — clear the WAL
+                diag.event("sent row " + e.jobId + " reconciled from server as '"
+                        + serverStatus + "', cleared (no block)");
+                return true;
+            default:
+                return false;   // pending/claimed/tipping/charging(_unsent)/unknown → still unresolved
+        }
     }
 
     /**

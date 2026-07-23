@@ -49,16 +49,64 @@ Deno.serve(async (req) => {
   if (!reader_id) return json({ error: 'reader_id required' }, 400);
 
   const { data: rdr, error: lookupErr } = await platformAdmin.from('payment_devices')
-    .select('id, stripe_reader_id, stripe_account_id, connection_kind, label')
+    .select('id, stripe_reader_id, stripe_account_id, connection_kind, label, location_id')
     .eq('id', reader_id).maybeSingle();
 
   if (lookupErr || !rdr) return json({ error: 'reader not found' }, 404);
 
   let stripeDeleted = false;
+  let idleScreenCleared = false;
   if (rdr.connection_kind === 'network'
       && rdr.stripe_reader_id?.startsWith('rdr_')
       && rdr.stripe_account_id
       && rdr.stripe_account_id !== 'unknown') {
+
+    // v5.5.871 — LEAVE THE PHYSICAL READER CLEAN, not wedged on the venue's idle
+    // splash (the "ServOS background"). Removal used to just delete the reader,
+    // orphaning the device on its last-cached splashscreen with no handle left to
+    // reset it — and a re-registered reader re-inherited the same splash because
+    // it is pinned on the location-shared Terminal Configuration. Before deleting,
+    // best-effort:
+    //   (1) cancel any live action so the device isn't frozen mid-transaction;
+    //   (2) if this is the LAST network reader at its terminal-location, strip the
+    //       idle splashscreen off the shared Configuration so the device reverts to
+    //       the factory idle screen. Guarded to the last reader because the config
+    //       is shared — clearing it with siblings present would blank their idle
+    //       screen too. Everything here is wrapped: cleanup must NEVER block removal.
+    try {
+      await stripe.terminal.readers.cancelAction(rdr.stripe_reader_id, undefined, {
+        stripeAccount: rdr.stripe_account_id,
+      });
+    } catch { /* no live action to cancel — fine */ }
+
+    try {
+      let lastAtLocation = true;
+      if (rdr.location_id) {
+        const { data: siblings } = await platformAdmin.from('payment_devices')
+          .select('id')
+          .eq('location_id', rdr.location_id)
+          .eq('connection_kind', 'network')
+          .neq('id', reader_id);
+        lastAtLocation = !(siblings && siblings.length);
+      }
+      if (lastAtLocation && rdr.location_id) {
+        const { data: lrs } = await platformAdmin.from('location_reader_settings')
+          .select('stripe_configuration_id').eq('location_id', rdr.location_id).maybeSingle();
+        if (lrs?.stripe_configuration_id) {
+          await stripe.terminal.configurations.update(
+            lrs.stripe_configuration_id,
+            // Empty string clears the splash — same lever stripe-sync-location-reader-config
+            // uses when idle_screen_enabled is off. Tipping/other config untouched.
+            { bbpos_wisepos_e: { splashscreen: '' }, stripe_s700: { splashscreen: '' } } as any,
+            { stripeAccount: rdr.stripe_account_id },
+          );
+          idleScreenCleared = true;
+        }
+      }
+    } catch (e) {
+      console.warn('[unregister] idle-splash clear failed (continuing to delete):', (e as Error).message);
+    }
+
     try {
       await stripe.terminal.readers.del(rdr.stripe_reader_id, {
         stripeAccount: rdr.stripe_account_id,
@@ -94,5 +142,6 @@ Deno.serve(async (req) => {
     deleted_id: reader_id,
     connection_kind: rdr.connection_kind,
     stripe_deleted: stripeDeleted,
+    idle_screen_cleared: idleScreenCleared,
   });
 });

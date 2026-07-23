@@ -165,6 +165,31 @@ public final class OpsApi {
     }
 
     /**
+     * v5.5.871: read the SERVER's current status for one job this terminal owns.
+     *
+     * Recovery uses this to reconcile a SENT write-ahead row against the server BEFORE
+     * quarantining it. If the POS cancelled/voided the payment while this terminal was
+     * dead (the new POS cancel path voids the live Ryft action AND settles the row),
+     * the outcome is ESTABLISHED — so the local row can be cleared instead of blocking
+     * the terminal on every boot forever. A filtered select, same as pollPendingJob;
+     * terminal_jobs' SELECT policy fences it to jobs addressed to this terminal, so a
+     * row we may not see returns null and recovery falls back to today's quarantine.
+     *
+     * Returns the status string (e.g. "cancelled","approved","charging"), or null if
+     * the row cannot be read.
+     */
+    public String fetchJobStatus(String jobId) throws Exception {
+        String q = "terminal_jobs"
+                + "?select=status,charged_at"
+                + "&id=eq." + Http.enc(jobId)
+                + "&limit=1";
+        JSONArray arr = sb.select(q);
+        if (arr.length() == 0) return null;
+        JSONObject o = arr.optJSONObject(0);
+        return o == null ? null : o.optString("status", null);
+    }
+
+    /**
      * Take ownership. Returns TRUE only if this terminal now holds the job.
      *
      * A job another device claimed between our poll and our claim comes back not-ok, and the

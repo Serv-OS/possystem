@@ -394,6 +394,11 @@ export default function KioskSettings({ kioskId, onBack }) {
             />
           </Section>
 
+          {/* ── Card terminal (Ryft PAX) ── */}
+          <Section title="Card terminal" desc="On a Ryft venue, assign the PAX card terminal this kiosk sends card payments to. (Stripe-reader venues take card automatically — this is only for a paired Ryft terminal.)">
+            <KioskCardTerminalSection kioskId={kioskId} locationId={device.location_id} />
+          </Section>
+
         </div>
 
         {/* RIGHT — live preview */}
@@ -493,6 +498,88 @@ function ToggleRow({ checked, onChange, title, desc }) {
         <span style={{ fontSize: 11, color: 'var(--t3)' }}>{desc}</span>
       </span>
     </button>
+  );
+}
+
+// v5.5.871 — assign a paired Ryft PAX terminal to this kiosk (bind_pos_device_id →
+// the kiosk's devices.id) via the dedicated set_terminal_bound_device RPC. Binding
+// is immediate (not part of the profile Save). On a Stripe venue there are no
+// terminal_devices rows, so the list is empty and the section is a no-op.
+function KioskCardTerminalSection({ kioskId, locationId }) {
+  const [terminals, setTerminals] = useState(null); // null = loading
+  const [busy, setBusy] = useState(null);           // terminal id being (un)bound
+  const [err, setErr] = useState(null);
+
+  const load = useCallback(async () => {
+    setErr(null);
+    try {
+      const { data, error } = await supabase.rpc('terminal_targets_for_pos', { p_location_id: locationId });
+      if (error) throw error;
+      setTerminals(Array.isArray(data) ? data : []);
+    } catch (e) {
+      setErr(e?.message || 'Could not load card terminals');
+      setTerminals([]);
+    }
+  }, [locationId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const bind = async (terminalId, assign) => {
+    setBusy(terminalId); setErr(null);
+    try {
+      const { error } = await supabase.rpc('set_terminal_bound_device', {
+        p_terminal_id: terminalId,
+        p_bound_pos_device_id: assign ? kioskId : null,
+      });
+      if (error) throw error;
+      await load();
+    } catch (e) {
+      setErr(e?.message || 'Could not update the terminal assignment');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  if (terminals === null) return <div style={{ fontSize: 12, color: 'var(--t3)' }}>Loading terminals…</div>;
+  return (
+    <div>
+      {err && <div style={alertStyle('error')}>{err}</div>}
+      {terminals.length === 0 ? (
+        <div style={{ fontSize: 12.5, color: 'var(--t3)' }}>
+          No PAX card terminals are paired at this venue. Pair one in Back Office → Card readers → PAX card terminals, then assign it here.
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {terminals.map(t => {
+            const mine = t.bound_pos_device_id === kioskId;
+            const other = t.bound_pos_device_id && !mine;
+            const linked = !!t.ryft_terminal_id;
+            return (
+              <div key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', background: 'var(--bg2)', border: '1.5px solid ' + (mine ? 'var(--acc)' : 'var(--bdr)'), borderRadius: 8 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>{t.label || 'Card terminal'}</div>
+                  <div style={{ fontSize: 11, color: 'var(--t3)' }}>
+                    {mine ? 'Assigned to this kiosk' : other ? 'Assigned to another till' : 'Unassigned'}
+                    {!linked && ' · ⚠ not connected to Ryft (cannot take card yet)'}
+                  </div>
+                </div>
+                {mine ? (
+                  <button onClick={() => bind(t.id, false)} disabled={busy === t.id} style={btnGhost()}>
+                    {busy === t.id ? '…' : 'Unassign'}
+                  </button>
+                ) : (
+                  <button onClick={() => bind(t.id, true)} disabled={busy === t.id || !!other}
+                    title={other ? 'Unassign it from the other till first' : ''}
+                    style={Object.assign({}, btnPrimary(busy === t.id), { opacity: (busy === t.id || other) ? 0.5 : 1 })}>
+                    {busy === t.id ? '…' : 'Assign to this kiosk'}
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }
 

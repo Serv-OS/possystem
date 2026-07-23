@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { getActiveLocationSync, ensureAuthToken } from '../lib/supabase';
 import { resolvePlatformLocationId, getAssignedNetworkReader } from '../lib/networkReader';
+import { getLocationProcessorInfo } from '../lib/payments/processor';
 import { money, stripeCurrency } from '../lib/currency';
 import { isTrainingMode } from '../lib/trainingMode';
 import { useStore } from '../store';
@@ -20,7 +21,7 @@ import { useStore } from '../store';
 // No reader assigned → 'simulated' state: we can't really hold a card, so we
 // offer to open the tab WITHOUT a hold (the pre-v5.5.324 behaviour).
 export default function TabPreAuthTerminal({ amountMinor, guestName, onAuthorized, onSkip, onCancel }) {
-  const [state, setState] = useState('resolving'); // resolving | starting | collecting | success | error | cancelling | simulated
+  const [state, setState] = useState('resolving'); // resolving | starting | collecting | success | error | cancelling | simulated | ryft_unsupported
   const [statusMsg, setStatusMsg] = useState('Connecting to reader…');
   const [errorMsg, setErrorMsg] = useState(null);
   const [readerLabel, setReaderLabel] = useState('');
@@ -56,6 +57,19 @@ export default function TabPreAuthTerminal({ amountMinor, guestName, onAuthorize
         }
         const opsLocationId = getActiveLocationSync();
         if (!opsLocationId) { setState('error'); setErrorMsg('Location not resolved'); return; }
+
+        // v5.5.871: a card HOLD (pre-auth) is a Stripe-Terminal-only capability.
+        // Ryft's in-person / PAX API has no auth-only primitive (captureFlow is
+        // online-only — see supabase/functions/_shared/ryft.ts), so on a Ryft
+        // venue this component previously fell through to getAssignedNetworkReader()
+        // → null → 'simulated' and silently opened the tab WITHOUT any hold, which
+        // reads to staff as "pre-auth done" when nothing was held. Tell the truth
+        // instead. Only a DEFINITIVE 'ryft' answer diverts — a lookup blip must
+        // never break the live Stripe hold path (it falls through as before).
+        const procInfo = await getLocationProcessorInfo(opsLocationId);
+        if (cancelled) return;
+        if (procInfo.definitive && procInfo.processor === 'ryft') { setState('ryft_unsupported'); return; }
+
         const platformId = await resolvePlatformLocationId(opsLocationId);
         if (cancelled) return;
         platformLocRef.current = platformId;
@@ -210,6 +224,19 @@ export default function TabPreAuthTerminal({ amountMinor, guestName, onAuthorize
           <>
             <div style={{ fontSize: 13, color: 'var(--t3)', marginBottom: 16 }}>
               No card reader is assigned to this terminal, so a card can't be held here.
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <button className="btn btn-acc btn-full" onClick={() => onSkip?.()}>Open tab without a hold</button>
+              <button className="btn btn-ghost btn-full" onClick={() => onCancel?.()}>Cancel</button>
+            </div>
+          </>
+        )}
+
+        {state === 'ryft_unsupported' && (
+          <>
+            <div style={{ fontSize: 13, color: 'var(--t3)', marginBottom: 16 }}>
+              Card pre-authorisation (a card hold) isn't available on this venue's card
+              terminal. Open the tab without a hold — the full amount is taken when the tab closes.
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               <button className="btn btn-acc btn-full" onClick={() => onSkip?.()}>Open tab without a hold</button>

@@ -94,6 +94,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.882', date: '23 Jul 2026', label: 'Card-terminal fixes: honest bar-tab pre-auth on Ryft venues, Ryft cancel/void, kiosk PAX pairing, clean Stripe reader removal',
+    changes: [
+      'Bar-tab card pre-authorisation no longer silently opens a tab with NO hold on a Ryft/PAX venue. A card hold is a Stripe-Terminal-only feature (Ryft’s in-person terminals have no card-hold capability), so on a Ryft venue the pre-auth screen now says so plainly and lets staff open the tab without a hold — instead of looking like a hold was placed when nothing was held. Stripe venues are unchanged: the hold works exactly as before.',
+      'Cancelling a card payment sent to a Ryft PAX terminal now actually clears it OFF the machine. Before, cancelling only marked the payment cancelled in our records while the card prompt stayed live on the terminal, and force-closing the payment app re-opened the unfinished payment on next launch. Cancel now voids the live action at the processor, settles the payment from what actually happened on the card (a card that was taken comes back as “already paid — refund instead”, never a false cancel), and the terminal app clears its recovery record instead of resurrecting it. NEEDS the payment-app rebuild + a real terminal tap to confirm end-to-end.',
+      'A kiosk can now take card payments on a paired Ryft PAX terminal, not just a Stripe reader. Assign the terminal to the kiosk in Back Office → Kiosks → Settings → Card terminal; the kiosk then sends the card payment to that PAX (its own tip screen still handles tipping). NEEDS a real terminal + kiosk to verify end-to-end.',
+      'Removing a Stripe card reader now leaves the physical device clean instead of stuck on the venue’s idle background. Removal cancels any in-progress action and, when it’s the last reader at that location, strips the custom idle splash off the shared reader configuration so the device returns to its default idle screen (and a replacement reader no longer inherits the old splash). NEEDS a real reader to confirm the on-screen repaint timing.',
+    ],
+  },
+  {
     version: '5.5.881', date: '23 Jul 2026', label: 'Order Confirmation + Order Ready messages are now REALLY sent — every channel, wired at the database',
     changes: [
       'The Messages → Orders section is now actually wired: Order Confirmation (email + SMS) sends when an order is placed, and Order Ready (SMS) sends when staff mark it ready in the orders screen. Before this, the kiosk sent nothing at all and the online confirmation SMS had silently broken (its send was rejected server-side with no error shown) — zero rows in the SMS log all day.',
