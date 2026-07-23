@@ -191,17 +191,39 @@ async function handleSave(companyId: string, body: Record<string, unknown>) {
   }
 
   // Name-editable provider types (loyalty_otp): the name that actually shows in the code SMS is
-  // the Twilio Verify SERVICE's friendly name (Twilio ignores the per-request override on this
-  // service) — so push the saved name to Twilio too, and surface a failure honestly.
+  // the Twilio Verify SERVICE's friendly name — push the saved name to THIS COMPANY's own service.
+  // Never touch the shared fallback service (renaming it would change every venue's SMS). If the
+  // company has no service yet, skip — its next OTP send creates one named from this override.
   if (mt.nameEditable) {
-    const tw = await setVerifyServiceName(cleanBody);
-    if (!tw.ok) {
-      console.error('[message-templates] verify rename failed:', tw.error);
-      return json({ error: `Name saved, but updating the SMS service failed: ${tw.error}. Try again.` }, 502);
+    const ownSid = await getCompanyVerifySid(companyId);
+    if (ownSid) {
+      const tw = await setVerifyServiceName(cleanBody, ownSid);
+      if (!tw.ok) {
+        console.error('[message-templates] verify rename failed:', tw.error);
+        return json({ error: `Name saved, but updating the SMS service failed: ${tw.error}. Try again.` }, 502);
+      }
     }
   }
 
   return json({ ok: true, id: data.id });
+}
+
+// The company's own Twilio Verify service sid — hidden config row written by loyalty-otp
+// (message_type 'loyalty_otp_service'; see that function for the full scheme).
+async function getCompanyVerifySid(companyId: string): Promise<string | null> {
+  try {
+    const { data } = await platformAdmin
+      .from('message_templates')
+      .select('body_text')
+      .eq('company_id', companyId)
+      .eq('message_type', 'loyalty_otp_service')
+      .eq('channel', 'sms')
+      .maybeSingle();
+    const sid = String(data?.body_text || '').trim();
+    return sid.startsWith('VA') ? sid : null;
+  } catch {
+    return null;
+  }
 }
 
 // ── RESET ────────────────────────────────────────────────────────────────────
@@ -213,6 +235,10 @@ async function handleReset(companyId: string, body: Record<string, unknown>) {
 
   if (!messageType || !channel) {
     return json({ error: 'message_type and channel required' }, 400);
+  }
+  // Only registered types are resettable — protects hidden config rows (loyalty_otp_service).
+  if (!getMessageType(messageType)) {
+    return json({ error: `Unknown message type: ${messageType}` }, 400);
   }
 
   const { error } = await platformAdmin
@@ -227,18 +253,19 @@ async function handleReset(companyId: string, body: Record<string, unknown>) {
     return json({ error: `Reset failed: ${error.message}` }, 500);
   }
 
-  // Name-editable provider types: "reset" means "use the venue name" — revert the Twilio Verify
-  // service name to ops locations.name so the code SMS actually follows.
+  // Name-editable provider types: "reset" means "use the venue name" — revert THIS COMPANY's own
+  // Twilio Verify service to ops locations.name. Never rename the shared fallback service.
   const mt = getMessageType(messageType);
   if (mt?.nameEditable) {
+    const ownSid = await getCompanyVerifySid(companyId);
     let venueName = '';
     const locationId = body.location_id as string | undefined;
     if (locationId) {
       const { data: loc } = await opsAdmin.from('locations').select('name').eq('id', locationId).maybeSingle();
       if (loc?.name) venueName = loc.name;
     }
-    if (venueName) {
-      const tw = await setVerifyServiceName(venueName);
+    if (ownSid && venueName) {
+      const tw = await setVerifyServiceName(venueName, ownSid);
       if (!tw.ok) console.error('[message-templates] verify rename on reset failed:', tw.error);
     }
   }

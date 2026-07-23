@@ -20,7 +20,7 @@
 // needed. The portal sends this token on subsequent requests (refresh / update_profile).
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { startVerification, checkVerification, verifyConfigured } from '../_shared/twilio-verify.ts';
+import { startVerification, checkVerification, verifyConfigured, createVerifyService, setVerifyServiceName } from '../_shared/twilio-verify.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -46,6 +46,55 @@ const platformAdmin = createClient(
 
 const OPS_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const OTP_SECRET = Deno.env.get('OTP_HMAC_SECRET') ?? Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? 'fallback-secret';
+
+// ── Per-company Verify service ──────────────────────────────────────────
+// Each company gets its OWN Twilio Verify service so its code SMS carries ITS name — one shared
+// service would mean ONE name for every venue on the platform (the "POSUP" bug at scale). The
+// VA… sid is stored as a hidden config row in message_templates (message_type
+// 'loyalty_otp_service') — company-scoped + unique, invisible to the BO editor (which only lists
+// types registered in message-types.ts). Companies without a row fall back to the shared env
+// service, and get their own created on their next OTP send.
+const VERIFY_SID_TYPE = 'loyalty_otp_service';
+
+async function getCompanyVerifySid(companyId: string): Promise<string | null> {
+  try {
+    const { data } = await platformAdmin
+      .from('message_templates')
+      .select('body_text')
+      .eq('company_id', companyId)
+      .eq('message_type', VERIFY_SID_TYPE)
+      .eq('channel', 'sms')
+      .maybeSingle();
+    const sid = String(data?.body_text || '').trim();
+    return sid.startsWith('VA') ? sid : null;
+  } catch {
+    return null;
+  }
+}
+
+async function ensureCompanyVerifySid(companyId: string, desiredName: string): Promise<string | null> {
+  const existing = await getCompanyVerifySid(companyId);
+  if (existing) return existing;
+  const created = await createVerifyService(desiredName);
+  if (!created.ok || !created.sid) {
+    console.error('[loyalty-otp] create verify service failed:', created.error);
+    return null; // fall back to the shared service — codes still deliver
+  }
+  // Race-safe store: (company_id, message_type, channel) is UNIQUE, so if two sends race,
+  // one insert loses — re-read and use the winner's sid.
+  const { error } = await platformAdmin.from('message_templates').insert({
+    company_id: companyId,
+    message_type: VERIFY_SID_TYPE,
+    channel: 'sms',
+    body_text: created.sid,
+    enabled: true,
+  });
+  if (error) {
+    const winner = await getCompanyVerifySid(companyId);
+    return winner || created.sid;
+  }
+  return created.sid;
+}
 // OTP code generation/expiry/attempt-limits now live in Twilio Verify (see _shared/twilio-verify.ts).
 // The session token below is still ours (HMAC of customer+company), used post-verification.
 
@@ -173,7 +222,14 @@ Deno.serve(async (req) => {
     }
     if (!venueName) venueName = 'our venue';
 
-    const r = await startVerification(phone!, { channel: 'sms', friendlyName: venueName });
+    // Send from THIS company's own Verify service (created on first use) so the SMS carries this
+    // venue's name — Twilio stamps the SERVICE's friendly name into the message. Stamp the current
+    // name on every send (idempotent) so BO/venue-name edits always take effect. Only company-owned
+    // services are renamed — never the shared fallback (renaming it would change everyone's SMS).
+    const serviceSid = await ensureCompanyVerifySid(companyId, venueName);
+    if (serviceSid) await setVerifyServiceName(venueName, serviceSid);
+
+    const r = await startVerification(phone!, { channel: 'sms', friendlyName: venueName, serviceSid: serviceSid || undefined });
     if (!r.ok) {
       if (r.code === 'rate_limited') {
         return json({ error: 'A code was just sent. Please wait a moment before requesting another.' }, 429);
@@ -202,7 +258,10 @@ Deno.serve(async (req) => {
     // Twilio Verify validates the code. Twilio owns the code's expiry AND the per-verification
     // attempt limit (it returns 404 once expired/consumed, 429 on too many checks), so the old
     // loyalty_otp_codes lookup + brute-force/attempt handling is no longer needed.
-    const vr = await checkVerification(phone!, code);
+    // Check against the SAME per-company service that sent the code (verifications are
+    // service-scoped); companies without their own service check the shared fallback.
+    const verifySid = await getCompanyVerifySid(companyId);
+    const vr = await checkVerification(phone!, code, verifySid || undefined);
     if (!vr.ok) {
       if (vr.code === 'max_attempts') {
         return json({ error: 'Too many incorrect attempts. Request a new code.', code: 'otp_locked' }, 429);

@@ -94,6 +94,16 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.879', date: '23 Jul 2026', label: 'Multi-tenant verification SMS: every venue now gets its OWN sender service, so 100 locations = 100 correct names',
+    changes: [
+      'Each company now gets its OWN Twilio Verify service, auto-created on its first OTP send and named after that venue — one shared service would mean ONE name for the whole platform (the "POSUP" bug at scale).',
+      'The venue name is re-stamped on the company service at every send, so Back Office name edits and Location Settings renames always take effect — self-healing, no manual sync.',
+      'Code checks run against the same per-company service that sent the code; venues without their own service yet fall back to the shared one, so nothing breaks mid-rollout.',
+      'Saving/resetting the Business name in Messages now renames only YOUR company service — never the shared one. The service id is stored per-company (hidden config row in message_templates; protected from the editor).',
+      'Server-side only (edge functions) — no till update needed.',
+    ],
+  },
+  {
     version: '5.5.878', date: '23 Jul 2026', label: 'FIX — verification SMS really shows your business name now (root cause: Twilio service was named "POSUP")',
     changes: [
       'Root cause found: the SMS name came from the Twilio Verify SERVICE’s own name ("POSUP") — Twilio ignores the per-send name our code passes, so every earlier fix was overridden by Twilio config.',

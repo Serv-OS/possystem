@@ -37,24 +37,47 @@ export interface VerifyResult {
 // Some Verify Services reject the CustomFriendlyName parameter (Twilio error 60204 "Custom friendly
 // name not allowed" — e.g. when the service uses a custom message template). That param is only a
 // nicety ("Your <venue> verification code is …"); getting the code DELIVERED matters far more. So we
-// remember, per warm instance, once a service has rejected it and stop sending it.
-let friendlyNameBlocked = false;
+// remember, per warm instance + per service, once a service has rejected it and stop sending it.
+const friendlyNameBlockedSids = new Set<string>();
+
+// Create a NEW Verify service (per-company isolation — each venue's codes carry ITS name).
+// Returns the VA… sid. Services are free; billing is per verification.
+export async function createVerifyService(name: string): Promise<{ ok: boolean; sid?: string; error?: string }> {
+  if (!SID || !TOKEN) return { ok: false, error: 'Twilio not configured' };
+  const clean = String(name || '').trim().slice(0, 30) || 'our venue';
+  const form = new URLSearchParams();
+  form.append('FriendlyName', clean);
+  try {
+    const res = await fetch('https://verify.twilio.com/v2/Services', {
+      method: 'POST',
+      headers: { 'Authorization': authHeader(), 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: form.toString(),
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok || !j?.sid) return { ok: false, error: j?.message || `Twilio HTTP ${res.status}` };
+    return { ok: true, sid: j.sid as string };
+  } catch (e) {
+    return { ok: false, error: (e as Error)?.message || String(e) };
+  }
+}
 
 // Start a verification — Twilio sends the code over `channel` to `to`.
+// `serviceSid` targets a specific (per-company) Verify service; defaults to the shared env service.
 // `friendlyName` overrides {{friendly_name}} in Twilio's default template so the SMS reads
 // "Your <venue> verification code is 123456" — but only when the service permits it (see above).
 export async function startVerification(
   to: string,
-  opts: { channel?: string; friendlyName?: string } = {},
+  opts: { channel?: string; friendlyName?: string; serviceSid?: string } = {},
 ): Promise<VerifyResult> {
-  if (!verifyConfigured()) return { ok: false, error: 'Verify not configured', code: 'not_configured' };
+  if (!verifyConfigured() && !opts.serviceSid) return { ok: false, error: 'Verify not configured', code: 'not_configured' };
+  const svc = opts.serviceSid || VERIFY_SERVICE_SID;
 
   const post = async (withFriendly: boolean) => {
     const form = new URLSearchParams();
     form.append('To', to);
     form.append('Channel', opts.channel || 'sms');
     if (withFriendly && opts.friendlyName) form.append('CustomFriendlyName', opts.friendlyName.slice(0, 30));
-    const res = await fetch(`https://verify.twilio.com/v2/Services/${VERIFY_SERVICE_SID}/Verifications`, {
+    const res = await fetch(`https://verify.twilio.com/v2/Services/${svc}/Verifications`, {
       method: 'POST',
       headers: { 'Authorization': authHeader(), 'Content-Type': 'application/x-www-form-urlencoded' },
       body: form.toString(),
@@ -64,11 +87,11 @@ export async function startVerification(
   };
 
   try {
-    const useFriendly = !friendlyNameBlocked && !!opts.friendlyName;
+    const useFriendly = !friendlyNameBlockedSids.has(svc) && !!opts.friendlyName;
     let { res, j } = await post(useFriendly);
     // Custom friendly name rejected → this service doesn't allow it. Remember + retry without it.
     if (!res.ok && Number(j?.code) === 60204 && useFriendly) {
-      friendlyNameBlocked = true;
+      friendlyNameBlockedSids.add(svc);
       ({ res, j } = await post(false));
     }
     if (!res.ok) {
@@ -87,14 +110,14 @@ export async function startVerification(
 // ("Your <friendly_name> verification code is ..."), and in practice ignores the per-request
 // CustomFriendlyName on this service — so the service-level name is the one that actually shows.
 // Called when the operator saves/resets the business name in BO → Messages → Verification Code.
-export async function setVerifyServiceName(name: string): Promise<VerifyResult> {
-  if (!verifyConfigured()) return { ok: false, error: 'Verify not configured', code: 'not_configured' };
+export async function setVerifyServiceName(name: string, serviceSid?: string): Promise<VerifyResult> {
+  if (!verifyConfigured() && !serviceSid) return { ok: false, error: 'Verify not configured', code: 'not_configured' };
   const clean = String(name || '').trim().slice(0, 30);
   if (!clean) return { ok: false, error: 'name required', code: 'invalid' };
   const form = new URLSearchParams();
   form.append('FriendlyName', clean);
   try {
-    const res = await fetch(`https://verify.twilio.com/v2/Services/${VERIFY_SERVICE_SID}`, {
+    const res = await fetch(`https://verify.twilio.com/v2/Services/${serviceSid || VERIFY_SERVICE_SID}`, {
       method: 'POST',
       headers: { 'Authorization': authHeader(), 'Content-Type': 'application/x-www-form-urlencoded' },
       body: form.toString(),
@@ -109,13 +132,13 @@ export async function setVerifyServiceName(name: string): Promise<VerifyResult> 
 
 // Check a code. ok===true (status 'approved') means the code was correct. Twilio enforces expiry
 // and per-verification attempt limits itself (404 once expired/consumed, 429 on too many checks).
-export async function checkVerification(to: string, codeInput: string): Promise<VerifyResult> {
-  if (!verifyConfigured()) return { ok: false, error: 'Verify not configured', code: 'not_configured' };
+export async function checkVerification(to: string, codeInput: string, serviceSid?: string): Promise<VerifyResult> {
+  if (!verifyConfigured() && !serviceSid) return { ok: false, error: 'Verify not configured', code: 'not_configured' };
   const form = new URLSearchParams();
   form.append('To', to);
   form.append('Code', codeInput);
   try {
-    const res = await fetch(`https://verify.twilio.com/v2/Services/${VERIFY_SERVICE_SID}/VerificationCheck`, {
+    const res = await fetch(`https://verify.twilio.com/v2/Services/${serviceSid || VERIFY_SERVICE_SID}/VerificationCheck`, {
       method: 'POST',
       headers: { 'Authorization': authHeader(), 'Content-Type': 'application/x-www-form-urlencoded' },
       body: form.toString(),
