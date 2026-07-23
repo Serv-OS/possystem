@@ -94,6 +94,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.865', date: '23 Jul 2026', label: 'No more PAX receipt printing — receiptPrintingSource=PointOfSale with the correct confirm-receipt handshake (VERIFIED live)',
+    changes: [
+      'The PAX no longer prints a receipt or shows any print-confirm screens on a card payment. terminal-job-charge now initiates with receiptPrintingSource=PointOfSale and, during the tender, drives Ryft\u2019s confirm-receipt handshake automatically: it reads data.action.transaction.receiptDetail and confirms the MERCHANT copy then the CUSTOMER copy, each only when its status is \u201cRequired\u201d, one at a time. The customer receipt prints from the POS as normal, with the card block it already carries.',
+      'Verified end-to-end on a real A920 (job da28591c, Visa, approved, verified via session; server logs show both confirm-receipt calls returning HTTP 200 in order). This is the correct, Ryft-documented contract — my two earlier attempts failed because they used the wrong JSON path and sent both copies at once; both were adversarially probed against the live terminal before this shipped.',
+      'Added a temporary ryft-terminal-debug edge function (probe: initiate PointOfSale / get raw terminal / confirm merchant|customer / cancel) used to capture Ryft\u2019s exact shapes without burning live taps. Safe to delete once the flow is proven in production for a few days.',
+    ],
+  },
+  {
     version: '5.5.864', date: '22 Jul 2026', label: 'Terminal 2.0-rc6: hands-free result screen + parallel charge (published OTA)',
     changes: [
       'The PAX result screen now returns to the payment screen BY ITSELF (approved ~2s, declined ~4.5s so the reason is readable) — the terminal is customer-facing at the counter and staff should never have to touch it between payments. The next payment flows immediately; the Outcome-unknown safety screen still waits for a human by design.',

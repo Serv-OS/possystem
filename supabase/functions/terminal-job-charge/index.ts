@@ -300,7 +300,7 @@ Deno.serve(async (req) => {
         // controller wait: either the app polling result concurrently with the
         // tender, or a terminal.action_updated webhook watcher. Do NOT flip this
         // back without one of those in place and proven on hardware.
-        settings: { receiptPrintingSource: 'Terminal' },
+        settings: { receiptPrintingSource: 'PointOfSale' },
         paymentSession: {
           ...(platformFee != null ? { platformFee } : {}),
           ...(accountId ? { paymentSettings: { platform: { paymentFees: { combined: { bookTo: accountId } } } } } : {}),
@@ -361,6 +361,42 @@ Deno.serve(async (req) => {
     return json({ ok: true, state: 'processing', status: 'processing' });
   }
 
+  // ── PointOfSale receipt confirmation (v5.5.865 — probe-verified shapes) ──────
+  // With receiptPrintingSource:'PointOfSale' a tapped card is authorised but the
+  // terminal WAITS on confirm-receipt before completing; unconfirmed → Ryft VOIDS
+  // (the v5.5.862 live failures). Ryft's contract, confirmed against a real A50:
+  //   GET /in-person/terminals/{id} → data.action.transaction.receiptDetail
+  //        .merchantCopy.status / .customerCopy.status  (NotRequired → Required)
+  //   confirm ONE copy at a time, MERCHANT FIRST, only when its status=='Required'.
+  // Run this on EVERY result poll (the device pumps it ~1s during the tender),
+  // BEFORE reading the session — the session won't reach Captured until both are
+  // confirmed. Idempotent: once a copy leaves 'Required' we don't resend it. All
+  // errors swallowed so a receipt hiccup never breaks the result poll.
+  if (term.ryft_terminal_id) {
+    try {
+      const t = await getTerminal(term.ryft_terminal_id, job.account_id ? { accountId: job.account_id } : {});
+      const act = (t.data as any)?.action ?? null;
+      const txn = act?.transaction ?? null;
+      if (t.ok && txn && txn.paymentSessionId === job.payment_session_id) {
+        const rd = txn.receiptDetail ?? {};
+        const mStatus = rd?.merchantCopy?.status ?? null;
+        const cStatus = rd?.customerCopy?.status ?? null;
+        const opts = job.account_id ? { accountId: job.account_id } : {};
+        if (mStatus === 'Required') {
+          const m = await confirmTerminalReceipt(term.ryft_terminal_id, { merchantCopy: { status: 'Succeeded' } }, opts);
+          console.log(`terminal-job-charge: confirmed merchant receipt for job ${job.id} (http ${m.status})`);
+        } else if (cStatus === 'Required') {
+          // Only after the merchant copy has left 'Required' does Ryft ask for the
+          // customer copy — so this branch is reached on a later poll, in order.
+          const c = await confirmTerminalReceipt(term.ryft_terminal_id, { customerCopy: { status: 'Succeeded' } }, opts);
+          console.log(`terminal-job-charge: confirmed customer receipt for job ${job.id} (http ${c.status})`);
+        }
+      }
+    } catch (e) {
+      console.log(`terminal-job-charge: receipt-confirm poll failed for job ${job.id}: ${(e as Error).message}`);
+    }
+  }
+
   let got;
   try {
     got = await getPaymentSession(job.payment_session_id, job.account_id ? { accountId: job.account_id } : {});
@@ -374,33 +410,6 @@ Deno.serve(async (req) => {
   const d = got.data ?? {};
   const sessionState = stateOf(d.status ?? 'PendingPayment', d.lastError ?? null);
   if (sessionState === 'processing') {
-    // ── PointOfSale receipt confirmation (v5.5.862) ─────────────────────────
-    // With receiptPrintingSource:'PointOfSale' the card can be APPROVED while the
-    // terminal action sits waiting for confirm-receipt — and if never confirmed
-    // the transaction is VOIDED. The session alone won't advance, so ask the
-    // TERMINAL what it's waiting on; when its current transaction is ours and the
-    // session hasn't settled, send the two confirms Ryft requires, in their
-    // documented order (merchantCopy then customerCopy, both 'Succeeded' — our
-    // POS prints the customer receipt from the closed check; a merchant copy is
-    // not legally required in the UK). Idempotent by construction: once the
-    // action completes, the confirms 4xx harmlessly and the session reads
-    // Approved on the device's next 1.5s poll.
-    if (term.ryft_terminal_id) {
-      try {
-        const t = await getTerminal(term.ryft_terminal_id, job.account_id ? { accountId: job.account_id } : {});
-        const act = (t.data as any)?.actions?.transaction ?? null;
-        if (t.ok && act && (act.paymentSessionId === job.payment_session_id)) {
-          console.log(`terminal-job-charge: action state for job ${job.id}: ${JSON.stringify({ status: act.status, type: act.type ?? null })}`);
-          const opts = job.account_id ? { accountId: job.account_id } : {};
-          const m = await confirmTerminalReceipt(term.ryft_terminal_id, { merchantCopy: { status: 'Succeeded' } }, opts);
-          const c = await confirmTerminalReceipt(term.ryft_terminal_id, { customerCopy: { status: 'Succeeded' } }, opts);
-          console.log(`terminal-job-charge: receipt confirms for job ${job.id}: merchant=${m.status} customer=${c.status}`);
-        }
-      } catch (e) {
-        // Never let a receipt confirm break the result poll — the next poll retries.
-        console.log(`terminal-job-charge: receipt confirm attempt failed for job ${job.id}: ${(e as Error).message}`);
-      }
-    }
     return json({ ok: true, state: 'processing', status: 'processing', session_status: d.status ?? null });
   }
 
