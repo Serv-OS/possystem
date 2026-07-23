@@ -3,10 +3,11 @@
 // merchant account link/onboarding for whichever is active, negotiated markup %
 // (the platform fee), and — for Ryft — a recorded buy rate for margin visibility.
 //
-// Stripe side is unchanged (markup only, client-side writes as before). Ryft
-// account lifecycle + pricing + the processor toggle all go through the
-// service-role `payments-admin` edge function (super_admin only), so the Ryft
-// account/pricing tables stay service-role-write.
+// Both processors' writes go through the service-role `payments-admin` edge
+// function (super_admin only): Stripe markup pricing + unlink, plus Ryft account
+// lifecycle + pricing + the processor toggle. The account/pricing tables are RLS
+// select-only for the anon platform client, so client-side writes silently
+// no-op — reads stay direct, writes go through the edge fn.
 //
 // Themed with the same CSS variables as the customer back office.
 
@@ -199,19 +200,23 @@ export default function AdminBillingManager({ authUser }) {
           onLink={() => setLinkModalLoc(loc)}
           onUnlink={async () => {
             if (!confirm(`Unlink Stripe account from ${loc.name}? Future payments will fail until re-linked.`)) return;
-            const { error } = await platformSupabase.from('merchant_stripe_accounts').delete().eq('id', msaByLoc[loc.id].id);
-            if (error) alert(`Unlink failed: ${error.message}`);
-            else refresh();
+            // Same RLS reason as onSavePricing: a direct client .delete() no-ops
+            // (0 rows, no error), so the account never actually detaches. Route
+            // the delete through the service-role payments-admin edge fn.
+            try { await callPaymentsAdmin('stripe_unlink', { location_id: loc.id }); refresh(); }
+            catch (e) { setError(`Unlink failed: ${e.message}`); }
           }}
           onSavePricing={async ({ cardpresent, online, notes }) => {
+            // merchant_stripe_accounts is RLS select-only for the anon platform
+            // client, so a direct .update() here silently affects 0 rows. Route
+            // the write through the service-role payments-admin edge fn.
             const patch = {
               cardpresent_markup_percent: cardpresent === '' ? null : Number(cardpresent),
               online_markup_percent:      online      === '' ? null : Number(online),
               pricing_notes: notes || null,
             };
-            const { error } = await platformSupabase.from('merchant_stripe_accounts')
-              .update(patch).eq('id', msaByLoc[loc.id].id);
-            if (error) { alert(`Save failed: ${error.message}`); return false; }
+            try { await callPaymentsAdmin('stripe_pricing', { location_id: loc.id, cardpresent, online, notes }); }
+            catch (e) { setError(`Save failed: ${e.message}`); return false; }
             upsertMsaPatch(loc.id, patch);
             return true;
           }}

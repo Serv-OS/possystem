@@ -1,10 +1,15 @@
 // supabase/functions/payments-admin/index.ts
 //
 // Admin-portal payments mutations (super_admin only). One function, several
-// actions, all writing the Platform DB with the service role so merchant_ryft_*
-// stays service-role-write (tighter than the legacy client-side Stripe writes):
+// actions, all writing the Platform DB with the service role so the merchant
+// account tables (merchant_ryft_* AND merchant_stripe_accounts) stay
+// service-role-write. The admin app's platform client is anonymous, and these
+// tables are RLS select-only for authenticated — so a client-side .update() /
+// .delete() is silently dropped (0 rows, no error). Route those writes here.
 //
 //   set_processor        { location_id, processor }                 → locations.payment_processor
+//   stripe_pricing       { location_id, cardpresent, online, notes } → merchant_stripe_accounts markup
+//   stripe_unlink        { location_id }                            → detach merchant_stripe_accounts row
 //   ryft_create          { location_id, entity_type?, email?, business?, individual?, redirect_url? }
 //   ryft_link            { location_id, ryft_account_id, redirect_url? }
 //   ryft_sync            { location_id }
@@ -174,6 +179,29 @@ Deno.serve(async (req) => {
   // ── ryft_unlink: detach the account row (does NOT delete it at Ryft) ─────
   if (action === 'ryft_unlink') {
     const { error } = await platformAdmin.from('merchant_ryft_accounts').delete().eq('location_id', loc.id);
+    if (error) return json({ error: `unlink failed: ${error.message}` }, 500);
+    return json({ success: true });
+  }
+
+  // ── stripe_pricing (our MARKUP on top: card-present % + online %; null = platform default) ──
+  //    Mirrors ryft_pricing. merchant_stripe_accounts is RLS select-only for the
+  //    anon admin client, so this write MUST run with the service role here.
+  if (action === 'stripe_pricing') {
+    const numOrNull = (v: unknown) => (v === '' || v === null || v === undefined ? null : Number(v));
+    const patch: Record<string, unknown> = {
+      cardpresent_markup_percent: numOrNull(body.cardpresent),
+      online_markup_percent:      numOrNull(body.online),
+      pricing_notes: body.notes || null,
+    };
+    const { error } = await platformAdmin.from('merchant_stripe_accounts').update(patch).eq('location_id', loc.id);
+    if (error) return json({ error: `pricing update failed: ${error.message}` }, 500);
+    return json({ success: true });
+  }
+
+  // ── stripe_unlink: detach the merchant account row (mirror of ryft_unlink) ──
+  //    Same RLS reason as stripe_pricing — the client .delete() silently no-ops.
+  if (action === 'stripe_unlink') {
+    const { error } = await platformAdmin.from('merchant_stripe_accounts').delete().eq('location_id', loc.id);
     if (error) return json({ error: `unlink failed: ${error.message}` }, 500);
     return json({ success: true });
   }

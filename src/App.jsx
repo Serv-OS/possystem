@@ -94,6 +94,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.876', date: '23 Jul 2026', label: 'FIX — admin Payments: Stripe markup pricing now saves, and Unlink actually unlinks',
+    changes: [
+      'FIX: in Admin → Payments, editing a Stripe location’s card-present / online markup % (and pricing notes) and hitting Save appeared to work but never persisted — reloading showed the old values. Same cause for the Stripe “Unlink” button: it looked like it unlinked but the account stayed connected, so you couldn’t unpair and re-pair.',
+      'Cause: the admin app writes the platform database as an anonymous client, and merchant_stripe_accounts is read-only for that client (writes are allowed only from the secure server side). The direct save/delete silently changed 0 rows with no error — so the UI showed success while nothing was written.',
+      'Both writes now go through the service-role payments-admin edge function (super_admin only), matching how the Ryft pricing/unlink already work. Reads are unchanged.',
+    ],
+  },
+  {
     version: '5.5.875', date: '23 Jul 2026', label: 'Loyalty verification code: you can now edit the business name shown in the text (no longer locked)',
     changes: [
       'Messages → Loyalty → Verification Code is editable again — but as the ONE thing that can actually change: a "Business name shown in the verification text" field. The rest of the wording stays fixed by the SMS verification service (Twilio Verify), which is why the full body can’t be free-typed.',
