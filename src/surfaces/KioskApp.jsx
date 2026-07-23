@@ -447,10 +447,35 @@ export default function KioskApp({ kioskId, onUnpair }) {
     // v5.3.1: include sub-categories (Coffee under Drinks, etc). Only filter out is_special.
     // v5.5.788: also include a sub-category whose PARENT is linked to the active menu
     // (matches OnlineSurface/POS — the sub follows its parent into the menu).
-    return categories
+    const eligible = categories
       .filter(c => !c.is_special)
-      .filter(c => !activeMenuId || c.menu_id === activeMenuId || linkedIds.has(c.id) || (c.parent_id && linkedIds.has(c.parent_id)))
-      .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+      .filter(c => !activeMenuId || c.menu_id === activeMenuId || linkedIds.has(c.id) || (c.parent_id && linkedIds.has(c.parent_id)));
+    // v5.5.873: order as a TREE, not a flat sort. A sub-category's sort_order is scoped WITHIN its
+    // parent (0,1,2…), so a flat global sort scattered subs among the top-level categories and the
+    // sidebar stopped matching Back Office (e.g. a sub at sort_order 0 jumped above its parent at 2).
+    // Emit each top-level category (by sort_order) IMMEDIATELY followed by its own sub-categories
+    // (by their sort_order) — the Back Office / POS tree order.
+    const eligibleIds = new Set(eligible.map(c => c.id));
+    const byParent = new Map();
+    for (const c of eligible) {
+      // A sub whose parent isn't eligible/loaded is treated as a root so it never disappears.
+      const key = (c.parent_id && eligibleIds.has(c.parent_id)) ? c.parent_id : '__root__';
+      if (!byParent.has(key)) byParent.set(key, []);
+      byParent.get(key).push(c);
+    }
+    byParent.forEach(arr => arr.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)));
+    const out = [];
+    const seen = new Set();
+    const walk = (key) => {
+      for (const c of (byParent.get(key) || [])) {
+        if (seen.has(c.id)) continue;   // defensive against a cyclic parent_id
+        seen.add(c.id);
+        out.push(c);
+        walk(c.id);
+      }
+    };
+    walk('__root__');
+    return out;
   }, [categories, links, activeMenuId]);
 
   const visibleItems = useMemo(() => {

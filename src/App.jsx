@@ -94,6 +94,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.873', date: '23 Jul 2026', label: 'Kiosk category sidebar now follows the Back Office order (sub-categories under their parent)',
+    changes: [
+      'The kiosk’s left category sidebar wasn’t matching the Back Office order — sub-categories were scattered among the top-level categories. Cause: it sorted every category by one flat “sort order”, but a sub-category’s sort order runs 0,1,2… WITHIN its parent, so a sub at 0 jumped above its parent at 2. The sidebar now walks the menu as a tree — each top-level category is followed immediately by its own sub-categories, exactly as arranged in Back Office (same order the POS and online store use).',
+    ],
+  },
+  {
     version: '5.5.872', date: '23 Jul 2026', label: 'Online ordering can no longer oversell — quantity now capped at the stock count',
     changes: [
       'Online ordering only blocked an item when it was FULLY sold out (0 left) — it never stopped a customer ordering MORE than the stock count (e.g. 3 of a donut with 2 in stock, or 8 of a pizza with 7). Now every stock-tracked item is capped at the POS remaining minus what is already in the basket, whether it is ordered on its own OR chosen inside an option/box (so a “Box of 3” can’t pull more of a filling than exist). The + button stops at the limit and the Add button reads “Only N left”.',
