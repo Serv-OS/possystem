@@ -47,22 +47,25 @@ const platformAdmin = createClient(
 const OPS_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const OTP_SECRET = Deno.env.get('OTP_HMAC_SECRET') ?? Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? 'fallback-secret';
 
-// ── Per-company Verify service ──────────────────────────────────────────
-// Each company gets its OWN Twilio Verify service so its code SMS carries ITS name — one shared
-// service would mean ONE name for every venue on the platform (the "POSUP" bug at scale). The
-// VA… sid is stored as a hidden config row in message_templates (message_type
-// 'loyalty_otp_service') — company-scoped + unique, invisible to the BO editor (which only lists
-// types registered in message-types.ts). Companies without a row fall back to the shared env
-// service, and get their own created on their next OTP send.
+// ── Per-LOCATION Verify service ─────────────────────────────────────────
+// Each LOCATION gets its OWN Twilio Verify service so its code SMS carries ITS name — one shared
+// service means one name for everyone (the "POSUP" bug), and even one per COMPANY clobbers
+// sister venues (a multi-site company saw location B's name on location A's codes). The VA… sid
+// is stored as a hidden config row in message_templates (message_type
+// 'loyalty_otp_service:<locationId>'; legacy company-wide rows use the bare type) — invisible to
+// the BO editor (which only lists types registered in message-types.ts). Locations without a row
+// fall back to the shared env service and get their own created on their next OTP send.
 const VERIFY_SID_TYPE = 'loyalty_otp_service';
+const sidRowType = (locationId?: string | null) =>
+  locationId ? `${VERIFY_SID_TYPE}:${locationId}` : VERIFY_SID_TYPE;
 
-async function getCompanyVerifySid(companyId: string): Promise<string | null> {
+async function getVerifySidRow(companyId: string, rowType: string): Promise<string | null> {
   try {
     const { data } = await platformAdmin
       .from('message_templates')
       .select('body_text')
       .eq('company_id', companyId)
-      .eq('message_type', VERIFY_SID_TYPE)
+      .eq('message_type', rowType)
       .eq('channel', 'sms')
       .maybeSingle();
     const sid = String(data?.body_text || '').trim();
@@ -72,8 +75,9 @@ async function getCompanyVerifySid(companyId: string): Promise<string | null> {
   }
 }
 
-async function ensureCompanyVerifySid(companyId: string, desiredName: string): Promise<string | null> {
-  const existing = await getCompanyVerifySid(companyId);
+async function ensureVerifySid(companyId: string, locationId: string | null, desiredName: string): Promise<string | null> {
+  const rowType = sidRowType(locationId);
+  const existing = await getVerifySidRow(companyId, rowType);
   if (existing) return existing;
   const created = await createVerifyService(desiredName);
   if (!created.ok || !created.sid) {
@@ -84,16 +88,34 @@ async function ensureCompanyVerifySid(companyId: string, desiredName: string): P
   // one insert loses — re-read and use the winner's sid.
   const { error } = await platformAdmin.from('message_templates').insert({
     company_id: companyId,
-    message_type: VERIFY_SID_TYPE,
+    message_type: rowType,
     channel: 'sms',
     body_text: created.sid,
     enabled: true,
   });
   if (error) {
-    const winner = await getCompanyVerifySid(companyId);
+    const winner = await getVerifySidRow(companyId, rowType);
     return winner || created.sid;
   }
   return created.sid;
+}
+
+// Every Verify service this company has (all locations + legacy company row), newest first —
+// used on `verify` to find the service the code was sent from without the client naming it.
+async function listCompanyVerifySids(companyId: string): Promise<string[]> {
+  try {
+    const { data } = await platformAdmin
+      .from('message_templates')
+      .select('body_text, updated_at')
+      .eq('company_id', companyId)
+      .like('message_type', `${VERIFY_SID_TYPE}%`)
+      .eq('channel', 'sms')
+      .order('updated_at', { ascending: false });
+    const sids = (data || []).map(r => String(r.body_text || '').trim()).filter(s => s.startsWith('VA'));
+    return [...new Set(sids)];
+  } catch {
+    return [];
+  }
 }
 // OTP code generation/expiry/attempt-limits now live in Twilio Verify (see _shared/twilio-verify.ts).
 // The session token below is still ours (HMAC of customer+company), used post-verification.
@@ -189,23 +211,29 @@ Deno.serve(async (req) => {
     // service by message-templates save/reset (setVerifyServiceName). We still pass it here as
     // belt-and-braces: if Twilio ever honours it, it resolves to the same name.
     // Chain: operator override → ops locations.name → platform company name → generic label.
-    const locationId = body.location_id as string | undefined;
+    const locationId = (body.location_id as string | undefined) || null;
     let venueName = '';
     // 1. Operator override — the "Business name shown in the verification text" set in BO →
-    //    Messages → Verification Code (message_templates.body_text for loyalty_otp/sms,
-    //    company-scoped). Blank/absent = fall through to the venue name below.
-    try {
-      const { data: ov } = await platformAdmin
-        .from('message_templates')
-        .select('body_text, enabled')
-        .eq('company_id', companyId)
-        .eq('message_type', 'loyalty_otp')
-        .eq('channel', 'sms')
-        .maybeSingle();
-      if (ov && ov.enabled !== false && ov.body_text && String(ov.body_text).trim()) {
-        venueName = String(ov.body_text).trim();
-      }
-    } catch { /* override is best-effort */ }
+    //    Messages → Verification Code. Stored PER LOCATION (message_type 'loyalty_otp:<loc>').
+    //    When the caller names a location, the legacy company-wide 'loyalty_otp' row is ignored
+    //    (it's what let one venue's name clobber its sister venues); it remains only as the
+    //    fallback for stale clients that don't send location_id yet.
+    const readOverride = async (rowType: string): Promise<string> => {
+      try {
+        const { data: ov } = await platformAdmin
+          .from('message_templates')
+          .select('body_text, enabled')
+          .eq('company_id', companyId)
+          .eq('message_type', rowType)
+          .eq('channel', 'sms')
+          .maybeSingle();
+        if (ov && ov.enabled !== false && ov.body_text && String(ov.body_text).trim()) {
+          return String(ov.body_text).trim();
+        }
+      } catch { /* override is best-effort */ }
+      return '';
+    };
+    venueName = locationId ? await readOverride(`loyalty_otp:${locationId}`) : await readOverride('loyalty_otp');
     // 2. Venue name — ops locations.name, exactly what the operator edits in Location Settings.
     if (!venueName && locationId) {
       try {
@@ -222,11 +250,11 @@ Deno.serve(async (req) => {
     }
     if (!venueName) venueName = 'our venue';
 
-    // Send from THIS company's own Verify service (created on first use) so the SMS carries this
+    // Send from THIS LOCATION's own Verify service (created on first use) so the SMS carries this
     // venue's name — Twilio stamps the SERVICE's friendly name into the message. Stamp the current
-    // name on every send (idempotent) so BO/venue-name edits always take effect. Only company-owned
+    // name on every send (idempotent) so BO/venue-name edits always take effect. Only owned
     // services are renamed — never the shared fallback (renaming it would change everyone's SMS).
-    const serviceSid = await ensureCompanyVerifySid(companyId, venueName);
+    const serviceSid = await ensureVerifySid(companyId, locationId, venueName);
     if (serviceSid) await setVerifyServiceName(venueName, serviceSid);
 
     const r = await startVerification(phone!, { channel: 'sms', friendlyName: venueName, serviceSid: serviceSid || undefined });
@@ -258,10 +286,16 @@ Deno.serve(async (req) => {
     // Twilio Verify validates the code. Twilio owns the code's expiry AND the per-verification
     // attempt limit (it returns 404 once expired/consumed, 429 on too many checks), so the old
     // loyalty_otp_codes lookup + brute-force/attempt handling is no longer needed.
-    // Check against the SAME per-company service that sent the code (verifications are
-    // service-scoped); companies without their own service check the shared fallback.
-    const verifySid = await getCompanyVerifySid(companyId);
-    const vr = await checkVerification(phone!, code, verifySid || undefined);
+    // Verifications are service-scoped and the code was sent from ONE of this company's
+    // per-location services (clients don't send location_id on verify) — so try each candidate,
+    // newest first, then the shared fallback. A 404 means "no verification on this service" (and
+    // consumes no attempts there) → try the next; any other answer came from the right service.
+    const candidates = await listCompanyVerifySids(companyId);
+    candidates.push(''); // '' = shared env service
+    let vr = await checkVerification(phone!, code, candidates[0] || undefined);
+    for (let i = 1; i < candidates.length && !vr.ok && vr.httpStatus === 404; i++) {
+      vr = await checkVerification(phone!, code, candidates[i] || undefined);
+    }
     if (!vr.ok) {
       if (vr.code === 'max_attempts') {
         return json({ error: 'Too many incorrect attempts. Request a new code.', code: 'otp_locked' }, 429);

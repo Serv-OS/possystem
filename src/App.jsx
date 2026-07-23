@@ -94,6 +94,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.880', date: '23 Jul 2026', label: 'Verification SMS name is now PER LOCATION — sister venues under one company no longer clobber each other',
+    changes: [
+      'FIX: with two locations under one company, sending a code from location B renamed location A’s verification texts too (per-company was still too coarse). Each LOCATION now has its own Twilio Verify service and its own saved Business name.',
+      'The Messages → Verification Code name field is now per-location: it shows, saves and resets the name for the location you have selected in the Back Office — other locations are untouched.',
+      'Code checks automatically find which location’s service sent the code (tried newest-first), so verification keeps working across locations and through the migration.',
+      'No name saved for a location = that location’s venue name from Location Settings. Server-side only — no till update needed.',
+    ],
+  },
+  {
     version: '5.5.879', date: '23 Jul 2026', label: 'Multi-tenant verification SMS: every venue now gets its OWN sender service, so 100 locations = 100 correct names',
     changes: [
       'Each company now gets its OWN Twilio Verify service, auto-created on its first OTP send and named after that venue — one shared service would mean ONE name for the whole platform (the "POSUP" bug at scale).',

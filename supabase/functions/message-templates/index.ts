@@ -49,7 +49,7 @@ Deno.serve(async (req) => {
 
   switch (action) {
     case 'list':
-      return handleList(companyId);
+      return handleList(companyId, locationId);
     case 'save':
       return handleSave(companyId, body);
     case 'reset':
@@ -65,7 +65,7 @@ Deno.serve(async (req) => {
 // Returns every message type with its channels, merge tags, and either the
 // custom template or the built-in default.
 
-async function handleList(companyId: string) {
+async function handleList(companyId: string, locationId: string) {
   // Load all custom templates for this company
   const { data: customs } = await platformAdmin
     .from('message_templates')
@@ -105,12 +105,27 @@ async function handleList(companyId: string) {
       }
 
       // Name-editable provider-managed types (e.g. loyalty_otp): the editable value is the
-      // business NAME, not the whole body. Expose the fixed body separately for the preview,
-      // and make body_text hold ONLY the name — the custom row's body_text, or '' when unset
-      // (so the editor shows an empty name field, not the fixed sentence).
+      // business NAME, not the whole body — and it is PER LOCATION (stored under message_type
+      // '<type>:<locationId>'). Expose the fixed body separately for the preview, and make
+      // body_text hold ONLY this location's name — '' when unset (so the editor shows an empty
+      // name field, not the fixed sentence). The legacy company-wide row is ignored here: it's
+      // what let one venue's name clobber its sister venues.
       if (mt.nameEditable) {
+        const locCustom = customMap.get(`${mt.type}:${locationId}:${ch}`);
+        if (locCustom && locCustom.body_text) {
+          templates[ch] = {
+            id: locCustom.id,
+            subject: null,
+            body_text: locCustom.body_text,
+            enabled: locCustom.enabled,
+            isCustom: true,
+            updated_at: locCustom.updated_at,
+          };
+        } else {
+          templates[ch].isCustom = false;
+          templates[ch].body_text = '';
+        }
         templates[ch].fixedBody = def?.body || '';
-        if (!templates[ch].isCustom) templates[ch].body_text = '';
       }
     }
 
@@ -168,12 +183,17 @@ async function handleSave(companyId: string, body: Record<string, unknown>) {
     return json({ error: 'Enter a business name, or reset to use your venue name.' }, 400);
   }
 
+  // Name-editable types store PER LOCATION — each venue keeps its own name (a company-wide row
+  // let one venue's save clobber its sister venues' verification texts).
+  const saveLocationId = body.location_id as string;
+  const storageType = mt.nameEditable ? `${messageType}:${saveLocationId}` : messageType;
+
   const { data, error } = await platformAdmin
     .from('message_templates')
     .upsert(
       {
         company_id: companyId,
-        message_type: messageType,
+        message_type: storageType,
         channel,
         subject: channel === 'email' ? (subject || null) : null,
         body_text: cleanBody,
@@ -191,11 +211,11 @@ async function handleSave(companyId: string, body: Record<string, unknown>) {
   }
 
   // Name-editable provider types (loyalty_otp): the name that actually shows in the code SMS is
-  // the Twilio Verify SERVICE's friendly name — push the saved name to THIS COMPANY's own service.
-  // Never touch the shared fallback service (renaming it would change every venue's SMS). If the
-  // company has no service yet, skip — its next OTP send creates one named from this override.
+  // the Twilio Verify SERVICE's friendly name — push the saved name to THIS LOCATION's own
+  // service. Never touch the shared fallback or another location's service. If this location has
+  // no service yet, skip — its next OTP send creates one named from this override.
   if (mt.nameEditable) {
-    const ownSid = await getCompanyVerifySid(companyId);
+    const ownSid = await getLocationVerifySid(companyId, saveLocationId);
     if (ownSid) {
       const tw = await setVerifyServiceName(cleanBody, ownSid);
       if (!tw.ok) {
@@ -208,15 +228,15 @@ async function handleSave(companyId: string, body: Record<string, unknown>) {
   return json({ ok: true, id: data.id });
 }
 
-// The company's own Twilio Verify service sid — hidden config row written by loyalty-otp
-// (message_type 'loyalty_otp_service'; see that function for the full scheme).
-async function getCompanyVerifySid(companyId: string): Promise<string | null> {
+// This location's own Twilio Verify service sid — hidden config row written by loyalty-otp
+// (message_type 'loyalty_otp_service:<locationId>'; see that function for the full scheme).
+async function getLocationVerifySid(companyId: string, locationId: string): Promise<string | null> {
   try {
     const { data } = await platformAdmin
       .from('message_templates')
       .select('body_text')
       .eq('company_id', companyId)
-      .eq('message_type', 'loyalty_otp_service')
+      .eq('message_type', `loyalty_otp_service:${locationId}`)
       .eq('channel', 'sms')
       .maybeSingle();
     const sid = String(data?.body_text || '').trim();
@@ -237,15 +257,20 @@ async function handleReset(companyId: string, body: Record<string, unknown>) {
     return json({ error: 'message_type and channel required' }, 400);
   }
   // Only registered types are resettable — protects hidden config rows (loyalty_otp_service).
-  if (!getMessageType(messageType)) {
+  const mt = getMessageType(messageType);
+  if (!mt) {
     return json({ error: `Unknown message type: ${messageType}` }, 400);
   }
+
+  // Name-editable types store per location — delete this location's row only.
+  const locationId = body.location_id as string;
+  const storageType = mt.nameEditable ? `${messageType}:${locationId}` : messageType;
 
   const { error } = await platformAdmin
     .from('message_templates')
     .delete()
     .eq('company_id', companyId)
-    .eq('message_type', messageType)
+    .eq('message_type', storageType)
     .eq('channel', channel);
 
   if (error) {
@@ -253,13 +278,11 @@ async function handleReset(companyId: string, body: Record<string, unknown>) {
     return json({ error: `Reset failed: ${error.message}` }, 500);
   }
 
-  // Name-editable provider types: "reset" means "use the venue name" — revert THIS COMPANY's own
+  // Name-editable provider types: "reset" means "use the venue name" — revert THIS LOCATION's own
   // Twilio Verify service to ops locations.name. Never rename the shared fallback service.
-  const mt = getMessageType(messageType);
-  if (mt?.nameEditable) {
-    const ownSid = await getCompanyVerifySid(companyId);
+  if (mt.nameEditable) {
+    const ownSid = await getLocationVerifySid(companyId, locationId);
     let venueName = '';
-    const locationId = body.location_id as string | undefined;
     if (locationId) {
       const { data: loc } = await opsAdmin.from('locations').select('name').eq('id', locationId).maybeSingle();
       if (loc?.name) venueName = loc.name;
