@@ -28,6 +28,12 @@ export interface MessageTypeDef {
     email?: ChannelDefault;
     sms?: ChannelDefault;
   };
+  // When true, the message body is fixed by an external provider (e.g. Twilio Verify)
+  // and cannot be freely edited — only the merge-tag values (venue name) vary. The BO
+  // editor shows `providerNote` instead of a dead free-text field. The `defaults` body
+  // is still used as the read-only preview of what the customer receives.
+  providerManaged?: boolean;
+  providerNote?: string;
 }
 
 // ── Merge tag libraries ─────────────────────────────────────────────────────
@@ -267,6 +273,11 @@ Earn points on every order · Redeem rewards · Birthday treats · Gift card bal
     category: 'Loyalty',
     channels: ['sms'],
     mergeTags: [TAG_VENUE_NAME, TAG_OTP_CODE],
+    providerManaged: true,
+    providerNote: 'For security and reliable delivery, verification codes are sent by our '
+      + 'trusted SMS verification service — the wording and expiry are fixed and can’t be edited. '
+      + 'The only part that changes is your venue name, which is taken from your venue name in '
+      + 'Location Settings. Update it there and the verification text will follow.',
     defaults: {
       sms: {
         body: `Your {{venue_name}} verification code is: {{otp_code}}. Valid for 5 minutes.`,

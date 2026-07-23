@@ -174,6 +174,7 @@ export default function CustomerPortal({ location }) {
         action: 'send',
         phone: clean,
         company_id: location.company_id,
+        location_id: location.ops_location_id || location.id,
       });
       setScreen('otp');
     } catch (e) {
@@ -321,6 +322,7 @@ export default function CustomerPortal({ location }) {
                     action: 'send',
                     phone: data.phone.replace(/\s+/g, ''),
                     company_id: location.company_id,
+                    location_id: location.ops_location_id || location.id,
                   });
                   setOtpCode('');
                   setScreen('register_otp');

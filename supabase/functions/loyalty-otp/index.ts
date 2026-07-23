@@ -135,13 +135,27 @@ Deno.serve(async (req) => {
     }
 
     // Resolve the venue name so the code SMS reads "Your <venue> verification code is ...".
-    let companyName = 'our venue';
-    try {
-      const { data: co } = await platformAdmin.from('companies').select('name').eq('id', companyId).maybeSingle();
-      if (co?.name) companyName = co.name;
-    } catch { /* friendly name is best-effort */ }
+    // The friendlyName is the ONLY part of the Twilio Verify template we control (it fills the
+    // "{{friendlyName}}" slot). Prefer the OPS venue name — locations.name is exactly what the
+    // operator edits in Location Settings (e.g. "Provo test"), matching send-welcome's venue_name.
+    // Fall back to the platform company name, then a generic label.
+    const locationId = body.location_id as string | undefined;
+    let venueName = '';
+    if (locationId) {
+      try {
+        const { data: loc } = await opsAdmin.from('locations').select('name').eq('id', locationId).maybeSingle();
+        if (loc?.name) venueName = loc.name;
+      } catch { /* best-effort */ }
+    }
+    if (!venueName) {
+      try {
+        const { data: co } = await platformAdmin.from('companies').select('name').eq('id', companyId).maybeSingle();
+        if (co?.name) venueName = co.name;
+      } catch { /* friendly name is best-effort */ }
+    }
+    if (!venueName) venueName = 'our venue';
 
-    const r = await startVerification(phone!, { channel: 'sms', friendlyName: companyName });
+    const r = await startVerification(phone!, { channel: 'sms', friendlyName: venueName });
     if (!r.ok) {
       if (r.code === 'rate_limited') {
         return json({ error: 'A code was just sent. Please wait a moment before requesting another.' }, 429);

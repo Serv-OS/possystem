@@ -2935,7 +2935,7 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
     setOtpStep('sending');
     setOtpError('');
     try {
-      await callLoyaltyOtp({ action: 'send', phone: clean, company_id: companyId });
+      await callLoyaltyOtp({ action: 'send', phone: clean, company_id: companyId, location_id: locationId });
       setOtpStep('code');
     } catch (e) {
       setOtpError(e.message);

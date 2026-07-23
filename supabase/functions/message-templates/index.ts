@@ -111,6 +111,8 @@ async function handleList(companyId: string) {
       category: mt.category,
       channels: mt.channels,
       mergeTags: mt.mergeTags,
+      providerManaged: mt.providerManaged || false,
+      providerNote: mt.providerNote || null,
       templates,
     };
   });
@@ -140,6 +142,11 @@ async function handleSave(companyId: string, body: Record<string, unknown>) {
   if (!mt) return json({ error: `Unknown message type: ${messageType}` }, 400);
   if (!mt.channels.includes(channel as any)) {
     return json({ error: `Channel ${channel} not supported for ${messageType}` }, 400);
+  }
+  // Provider-managed types (e.g. verification codes via Twilio Verify) have a fixed body
+  // that isn't sent from message_templates — reject saves so we never persist a dead custom row.
+  if (mt.providerManaged) {
+    return json({ error: `${messageType} is managed by our verification service and can’t be edited.` }, 400);
   }
 
   const { data, error } = await platformAdmin

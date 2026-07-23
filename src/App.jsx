@@ -94,6 +94,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.874', date: '23 Jul 2026', label: 'Loyalty verification text now shows YOUR venue name (not "POSUP"); Messages screen explains the code SMS is provider-managed',
+    changes: [
+      'FIX — the loyalty phone-verification SMS was reading "Your POSUP verification code…" instead of your venue name. It now uses your venue name from Location Settings (e.g. "Provo test").',
+      'loyalty-otp edge fn resolves the Twilio Verify friendlyName from ops locations.name (matching send-welcome), falling back to the company name then a generic label.',
+      'All four OTP send call sites (kiosk, online storefront, online checkout, customer portal) now pass location_id so the venue name can be resolved.',
+      'Messages → Loyalty → Verification Code is now shown as provider-managed: a clear note explains the wording/expiry are fixed by our secure SMS verification service and only the venue name varies (edited in Location Settings), with a read-only preview. Saving a custom body is blocked server-side so no dead template can be stored.',
+    ],
+  },
+  {
     version: '5.5.873', date: '23 Jul 2026', label: 'Kiosk category sidebar now follows the Back Office order (sub-categories under their parent)',
     changes: [
       'The kiosk’s left category sidebar wasn’t matching the Back Office order — sub-categories were scattered among the top-level categories. Cause: it sorted every category by one flat “sort order”, but a sub-category’s sort order runs 0,1,2… WITHIN its parent, so a sub at 0 jumped above its parent at 2. The sidebar now walks the menu as a tree — each top-level category is followed immediately by its own sub-categories, exactly as arranged in Back Office (same order the POS and online store use).',

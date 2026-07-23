@@ -619,6 +619,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
         {showLoyalty && (
           <LoyaltyModal theme={theme} cardBdr={cardBdr} muted={muted}
             companyId={location.company_id}
+            locationId={location.ops_location_id || location.id}
             onClose={() => setShowLoyalty(false)}
             onVerified={(phone, data) => { setLoyalty({ phone, verified: true, ...data }); setShowLoyalty(false); }}/>
         )}
@@ -890,6 +891,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
       {showLoyalty && (
         <LoyaltyModal theme={theme} cardBdr={cardBdr} muted={muted}
           companyId={location.company_id}
+          locationId={location.ops_location_id || location.id}
           onClose={() => setShowLoyalty(false)}
           onVerified={(phone, data) => { setLoyalty({ phone, verified: true, ...data }); setShowLoyalty(false); }}/>
       )}
@@ -1067,7 +1069,7 @@ function AllergyPickerModal({ theme, cardBdr, all, active, onClose, onSave }) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Loyalty modal — phone capture + SMS OTP verification via loyalty-otp edge function.
-function LoyaltyModal({ theme, cardBdr, muted, companyId, onClose, onVerified }) {
+function LoyaltyModal({ theme, cardBdr, muted, companyId, locationId, onClose, onVerified }) {
   const [step, setStep] = useState('phone'); // phone | code | done
   const [phone, setPhone] = useState('');
   const [code, setCode] = useState('');
@@ -1088,7 +1090,7 @@ function LoyaltyModal({ theme, cardBdr, muted, companyId, onClose, onVerified })
       const res = await fetch(otpUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'send', phone: cleaned, company_id: companyId }),
+        body: JSON.stringify({ action: 'send', phone: cleaned, company_id: companyId, location_id: locationId }),
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);

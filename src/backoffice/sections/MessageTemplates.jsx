@@ -215,6 +215,16 @@ export default function MessageTemplates() {
   const charCount = selectedChannel === 'sms' ? editBody.length : 0;
   const smsSegments = selectedChannel === 'sms' ? Math.ceil(charCount / 160) || 1 : 0;
 
+  // Provider-managed types (e.g. loyalty_otp via Twilio Verify) can't be freely edited — build a
+  // read-only preview from the fixed body with example merge-tag values filled in.
+  const providerPreviewText = currentMt?.providerManaged
+    ? String(currentMt.templates?.[currentMt.channels[0]]?.body_text || '')
+        .replace(/\{\{(\w+)\}\}/g, (_m, k) => {
+          const tag = currentMt.mergeTags.find(t => t.tag === k);
+          return tag ? tag.example : `{{${k}}}`;
+        })
+    : '';
+
   // ── Render ────────────────────────────────────────────────────────────────
 
   if (loading) {
@@ -324,6 +334,35 @@ export default function MessageTemplates() {
               </p>
             </div>
 
+            {/* Provider-managed types (verification codes) — read-only, with an explanation */}
+            {currentMt.providerManaged ? (
+              <div style={{ marginBottom: 24 }}>
+                <div style={{
+                  padding: '14px 16px', borderRadius: 10, marginBottom: 18,
+                  background: 'rgba(245,158,11,0.10)', border: '1px solid rgba(245,158,11,0.35)',
+                  display: 'flex', gap: 10, alignItems: 'flex-start',
+                }}>
+                  <span style={{ fontSize: 18, lineHeight: 1 }}>🔒</span>
+                  <div style={{ fontSize: 13, lineHeight: 1.55, color: 'var(--t1)' }}>
+                    {currentMt.providerNote}
+                  </div>
+                </div>
+                <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--t4)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  What your customer receives
+                </label>
+                <div style={{ padding: 20, background: 'var(--bg2)', borderRadius: 10 }}>
+                  <div style={{
+                    maxWidth: 320, padding: '12px 16px',
+                    background: '#dcf8c6', borderRadius: '12px 12px 12px 4px',
+                    color: '#111', fontSize: 14, lineHeight: 1.5,
+                    boxShadow: '0 1px 2px rgba(0,0,0,0.1)',
+                  }}>
+                    {providerPreviewText}
+                  </div>
+                </div>
+              </div>
+            ) : (
+            <>
             {/* Channel tabs */}
             {currentMt.channels.length > 1 && (
               <div style={{ display: 'flex', gap: 0, marginBottom: 20, borderRadius: 8, overflow: 'hidden', border: '1px solid var(--bdr)' }}>
@@ -507,6 +546,8 @@ export default function MessageTemplates() {
                 ? `Custom template · Last edited ${currentTpl.updated_at ? new Date(currentTpl.updated_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'recently'}`
                 : 'Using default template'}
             </div>
+            </>
+            )}
 
             {/* Preview panel */}
             {showPreview && previewData && (

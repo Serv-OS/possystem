@@ -385,7 +385,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     try {
       const res = await fetch(otpUrl, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'send', phone: cleaned, company_id: companyId }),
+        body: JSON.stringify({ action: 'send', phone: cleaned, company_id: companyId, location_id: location.ops_location_id || location.id }),
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
