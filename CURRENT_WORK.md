@@ -1,3 +1,33 @@
+# Session — 23 Jul 2026 (v5.5.877) — share-product data-integrity fix (3 bugs) — NOT yet deployed/live-verified
+
+## Built (build clean, 256/256 existing tests pass, no new lint errors) — on branch claude/epic-nightingale-81e085 (based on develop)
+Three confirmed bugs in the "share a product to another location" flow (`setMenuItemScope` /
+`setMenuCategoryScope` in `src/lib/db.js`). v5.5.12 was a PARTIAL fix; these finish it.
+- **Bug 1 — variants.** (a) Children are now fetched by `parent_id` ALWAYS (was gated on the exact
+  string `type==='variants'`, so combo/pizza/mis-typed parents copied to peers with no sizes). (b)
+  Sharing a variant CHILD directly used to build `parent_id:null` → standalone product at peers;
+  `setMenuItemScope` now redirects a child to its parent (`_depth`-bounded), and the BO Sharing
+  control is hidden on children (`!item.parentId`, MenuManager ~2136).
+- **Bug 2 — category not in menu.** Peer categories were written with `menu_id:null` and NO
+  `menu_category_links` row → invisible on POS/Bar/Kiosk/Online/Catering whenever a menu is pinned
+  (only MPOS's `!c.menuId` escape hatch showed them). `setMenuCategoryScope` now attaches each peer
+  category to that location's default menu (`resolvePeerDefaultMenu`) via BOTH `menu_id` and a
+  `linkCategoryToMenu` row, and rewrites `parent_id` to the peer parent so sub-cats stay nested.
+- **Bug 3 — modifiers.** New `shareModifierGroupsToLocation` recursively copies each assigned
+  `modifier_groups` row (+ nested `subGroupId` groups + sold-alone `itemId` sub-items) to each peer
+  with deterministic ids `<srcId>_<peerSuffix>` (no scope/master_id column on modifier_groups — the
+  id IS the link), and repoints the peer item's/variant's `assigned_modifier_groups` at them.
+- Idempotent (all upserts by deterministic id). LIMITATION: items shared BEFORE v5.5.877 keep their
+  old incomplete copies — demote to Local, then re-share, to pull sizes/menu-placement/modifiers.
+
+## Still to do
+- **LIVE VERIFY (not done).** Needs deploy of develop + a real 2-location org, then Management-API
+  (User-Agent: Mozilla/5.0) read-back of the peer rows, OR read-only inspection of an existing
+  shared product to confirm the pre-fix symptoms. Not pushed/committed — awaiting Peter's go-ahead.
+- Diagnosis was code+schema+git+2 read-path/modifier agents; conclusive but not yet DB-confirmed live.
+
+---
+
 # Session — 22 Jul 2026 evening (v5.5.852 → v5.5.855) — HubRise sign-off sheet, live tests with Peter
 
 ## Shipped (all deployed + live-verified against real orders)

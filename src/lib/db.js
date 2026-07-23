@@ -914,6 +914,143 @@ const getOrgPeerLocations = async (currentLocationId) => {
 };
 
 /**
+ * v5.5.877 (Bug 2) — Resolve the menu a shared category should join at a peer
+ * location: the default-flagged menu, else the first menu by sort order, else
+ * null. A menu-less location shows all categories regardless of membership, so
+ * null is a safe fallback there.
+ */
+const resolvePeerDefaultMenu = async (peerLocId) => {
+  if (isMock || !supabase || !peerLocId) return null;
+  const { data: menus, error } = await supabase
+    .from('menus').select('id, is_default, sort_order')
+    .eq('location_id', peerLocId).order('sort_order', { ascending: true });
+  if (error || !menus?.length) return null;
+  const def = menus.find(m => m.is_default);
+  return (def || menus[0]).id;
+};
+
+/**
+ * v5.5.877 (Bug 3) — Copy a set of modifier groups, plus everything they
+ * transitively reference (nested sub-groups via option.subGroupId, and the
+ * sold-alone sub-items via option.itemId), from a source location to ONE peer
+ * location. Deterministic, idempotent peer ids so re-running is a no-op.
+ *
+ * modifier_groups has no scope/master_id column, so the id
+ * `<sourceGroupId>_<peerSuffix>` IS the cross-location link. Sold-alone
+ * sub-items are real menu_items rows and reuse the item peer-id scheme
+ * `<masterId>_<peerSuffix>`. Option name/price are denormalised into the option
+ * so they copy verbatim; itemId only drives 86/stock, and rewriting it to the
+ * peer sub-item keeps stock decrements working at the peer too.
+ *
+ * Cross-tenant safe: every SOURCE read is filtered by the source location_id
+ * (see the db.js:279 hazard note — never fetch a group by bare id across venues).
+ *
+ * Returns Map(sourceGroupId -> peerGroupId) so the caller can repoint each peer
+ * item's assigned_modifier_groups.
+ */
+const shareModifierGroupsToLocation = async (groupIds, sourceLocId, peerLocId, orgId, scope) => {
+  const idMap = new Map();
+  if (isMock || !supabase) return idMap;
+  if (!Array.isArray(groupIds) || groupIds.length === 0 || !peerLocId || !sourceLocId) return idMap;
+  const peerSuffix = peerLocId.slice(-8);
+  const seenGroups = new Set();
+  const seenItems = new Set();
+
+  const rewriteAssigned = (assigned) => (Array.isArray(assigned) ? assigned : []).map(ag => {
+    const gid = typeof ag === 'string' ? ag : ag?.groupId;
+    if (!gid) return ag;
+    const peerGid = idMap.get(gid) || `${gid}_${peerSuffix}`;
+    return typeof ag === 'string' ? peerGid : { ...ag, groupId: peerGid };
+  });
+
+  // Copy a sold-alone sub-item (menu_items row) to the peer. Returns peer item id.
+  const copySubItem = async (itemId) => {
+    if (!itemId) return null;
+    const { data: si, error: siErr } = await supabase.from('menu_items').select('*')
+      .eq('id', itemId).eq('location_id', sourceLocId).maybeSingle();
+    if (siErr || !si) { if (siErr) console.warn('[shareModifierGroups] subitem fetch failed', itemId, siErr); return null; }
+    const subMasterId = si.master_id || si.id;
+    const peerItemId = `${subMasterId}_${peerSuffix}`;
+    if (seenItems.has(peerItemId)) return peerItemId; // already copied this run
+    seenItems.add(peerItemId);
+    // A sub-item may itself carry modifier groups — copy those first so its
+    // rewritten assigned_modifier_groups point at peer groups. Guarded by
+    // seenGroups, so a group<->item cycle terminates.
+    for (const ag of (Array.isArray(si.assigned_modifier_groups) ? si.assigned_modifier_groups : [])) {
+      await copyGroup(typeof ag === 'string' ? ag : ag?.groupId);
+    }
+    const peerSub = {
+      id: peerItemId,
+      location_id: peerLocId,
+      name: si.name,
+      menu_name: si.menu_name ?? null,
+      receipt_name: si.receipt_name ?? null,
+      kitchen_name: si.kitchen_name ?? null,
+      description: si.description ?? null,
+      type: si.type ?? 'subitem',
+      cat: null,           // sub-items never render in a grid — keep them out of categories
+      cats: [],
+      parent_id: null,
+      pricing: si.pricing ?? { base: 0 },
+      allergens: si.allergens ?? [],
+      assigned_modifier_groups: rewriteAssigned(si.assigned_modifier_groups),
+      sort_order: si.sort_order ?? 999,
+      image: si.image ?? null,
+      sold_alone: si.sold_alone ?? true,
+      visibility: si.visibility ?? { pos: true, kiosk: true, online: true },
+      tax_rate_id: si.tax_rate_id ?? null,
+      scope: scope || 'shared',
+      org_id: orgId,
+      master_id: subMasterId,
+      updated_at: new Date().toISOString(),
+    };
+    const { error: upErr } = await supabase.from('menu_items').upsert(peerSub, { onConflict: 'id' });
+    if (upErr) console.warn('[shareModifierGroups] peer subitem upsert failed', peerItemId, upErr);
+    return peerItemId;
+  };
+
+  // Copy one group (recursing into nested sub-groups + option sub-items).
+  const copyGroup = async (gid) => {
+    if (!gid || seenGroups.has(gid)) return;
+    seenGroups.add(gid);
+    const { data: g, error: gErr } = await supabase.from('modifier_groups').select('*')
+      .eq('id', gid).eq('location_id', sourceLocId).maybeSingle();
+    if (gErr || !g) { if (gErr) console.warn('[shareModifierGroups] group fetch failed', gid, gErr); return; }
+    const peerGid = `${gid}_${peerSuffix}`;
+    idMap.set(gid, peerGid);
+    const peerOptions = [];
+    for (const opt of (Array.isArray(g.options) ? g.options : [])) {
+      const peerOpt = { ...opt };
+      if (opt?.subGroupId) {
+        await copyGroup(opt.subGroupId);
+        peerOpt.subGroupId = idMap.get(opt.subGroupId) || `${opt.subGroupId}_${peerSuffix}`;
+      }
+      if (opt?.itemId) {
+        const peerItemId = await copySubItem(opt.itemId);
+        if (peerItemId) peerOpt.itemId = peerItemId;
+      }
+      peerOptions.push(peerOpt);
+    }
+    const peerRow = {
+      id: peerGid,
+      location_id: peerLocId,
+      name: g.name,
+      min: g.min ?? 0,
+      max: g.max ?? 1,
+      selection_type: g.selection_type ?? 'single',
+      options: peerOptions,
+      sort_order: g.sort_order ?? 0,
+      // NB: modifier_groups has NO updated_at column — including it → PGRST204.
+    };
+    const { error: upErr } = await supabase.from('modifier_groups').upsert(peerRow, { onConflict: 'id' });
+    if (upErr) console.warn('[shareModifierGroups] peer group upsert failed', peerGid, upErr);
+  };
+
+  for (const gid of groupIds) await copyGroup(gid);
+  return idMap;
+};
+
+/**
  * Promote a local item to shared (or global). Creates copies at every other
  * location in the org. Source row gets master_id = source.id; copies share
  * the same master_id. Each copy gets a deterministic id <masterId>_<locShort>.
@@ -921,7 +1058,7 @@ const getOrgPeerLocations = async (currentLocationId) => {
  * If the item is already shared/global, just changes scope on all linked rows.
  * If demoting (newScope = 'local'), only clears flags on the source row.
  */
-export const setMenuItemScope = async (item, newScope) => {
+export const setMenuItemScope = async (item, newScope, _depth = 0) => {
   if (isMock) return { ok: true };
   if (!supabase) return { ok: false, error: 'no supabase' };
   if (!item?.id) return { ok: false, error: 'no item id' };
@@ -930,6 +1067,24 @@ export const setMenuItemScope = async (item, newScope) => {
   const currentScope = item.scope || 'local';
   const sourceLocId = item.location_id || (await getLocationId());
   if (!sourceLocId) return { ok: false, error: 'no location id' };
+
+  // ── VARIANT CHILD SHARED DIRECTLY → redirect to the parent (v5.5.877, Bug 1b) ──
+  // Scope is a PRODUCT-level property. A variant child (a row with parent_id set)
+  // must never be scoped on its own: the old code built its peer copy with
+  // parent_id:null, so the child landed at peer locations as a standalone product
+  // ("Small"/"Medium"/"Large" as separate items) instead of a size under the
+  // master. Apply any scope change to the whole family via the parent — which
+  // copies every child under the peer master. _depth bounds recursion in case of
+  // corrupt multi-level parent_id data (the UI only ever nests one level).
+  const _childParentId = item.parentId ?? item.parent_id ?? null;
+  if (_childParentId && _depth < 4) {
+    const { data: parentRow, error: pErr } = await supabase
+      .from('menu_items').select('*')
+      .eq('id', _childParentId).eq('location_id', sourceLocId).maybeSingle();
+    if (pErr) { console.warn('[setMenuItemScope] parent fetch failed for child', item.id, pErr); return { ok: false, error: pErr }; }
+    if (parentRow) return setMenuItemScope({ ...parentRow }, newScope, _depth + 1);
+    // Parent missing (orphaned child) — fall through and treat as a standalone item.
+  }
 
   // ── DEMOTE → local ──
   if (newScope === 'local') {
@@ -1022,23 +1177,38 @@ export const setMenuItemScope = async (item, newScope) => {
   let updatedSiblings = 0;
 
   if (isFirstPromotion) {
-    // v5.5.12: also fetch variant children (rows with parent_id = item.id) so
-    // we can replicate them at each peer location with rewritten parent_id.
-    // Without this, parent items of type='variants' got copied without any
-    // children, leaving an unselectable parent at the peer location.
+    // v5.5.877 (Bug 1a): fetch variant children by parent_id ALWAYS — not only
+    // when type==='variants'. Real Supabase data uses several parent types
+    // (combo/pizza, or a parent whose type flip never persisted), and every read
+    // surface groups children by parent_id, not the type string (App.jsx:6063).
+    // The old `if (item.type === 'variants')` gate copied such a parent to peers
+    // with NO children, so the operator then shared each size individually and
+    // each became a standalone product (Bug 1b). Detecting by parent_id matches
+    // the read model; the location_id filter keeps the fetch tenant-safe.
     let variants = [];
-    if (item.type === 'variants') {
+    {
       const { data: vData, error: vErr } = await supabase
         .from('menu_items')
         .select('*')
         .eq('parent_id', item.id)
+        .eq('location_id', sourceLocId)
         .eq('archived', false);
-      if (vErr) {
-        console.warn('[setMenuItemScope] variant fetch error:', vErr);
-      } else {
-        variants = vData || [];
-      }
+      if (vErr) console.warn('[setMenuItemScope] variant fetch error:', vErr);
+      else variants = vData || [];
     }
+
+    // v5.5.877 (Bug 3): gather every modifier group referenced by the master AND
+    // its variant children, so each peer location gets its own copy of the groups
+    // (plus nested sub-groups and sold-alone option sub-items) and the peer item
+    // rows can point at the peer-side group ids. assigned_modifier_groups is an
+    // array of OBJECTS ({groupId, min?, max?}); tolerate legacy string entries.
+    const collectGroupIds = (assigned) => (Array.isArray(assigned) ? assigned : [])
+      .map(ag => (typeof ag === 'string' ? ag : ag?.groupId)).filter(Boolean);
+    const parentAssigned = item.assignedModifierGroups ?? item.assigned_modifier_groups ?? [];
+    const allGroupIds = [...new Set([
+      ...collectGroupIds(parentAssigned),
+      ...variants.flatMap(v => collectGroupIds(v.assigned_modifier_groups)),
+    ])];
 
     // 2) First-time promotion: copy this item to every peer location.
     //    Build a deterministic id per peer so re-promoting later is idempotent.
@@ -1054,7 +1224,7 @@ export const setMenuItemScope = async (item, newScope) => {
       // v4.7.1 fix: 'price' column does NOT exist on menu_items — only 'pricing' jsonb.
       // Including it caused PGRST204 "column not found" error which silently failed every promote.
       allergens: item.allergens ?? [],
-      assigned_modifier_groups: item.assignedModifierGroups ?? item.assigned_modifier_groups ?? [],
+      // assigned_modifier_groups is rewritten per-peer below (Bug 3) — not here.
       sort_order: item.sortOrder ?? item.sort_order ?? 999,
       image: item.image ?? null,
       // The shared metadata
@@ -1076,12 +1246,23 @@ export const setMenuItemScope = async (item, newScope) => {
       const peerCats = Array.isArray(item.cats)
         ? item.cats.map(c => peerCatForSourceCat(c, peerLocSuffix)).filter(Boolean)
         : [];
+      // v5.5.877 (Bug 3): copy the modifier groups to THIS peer and get a
+      // source→peer group-id map, then repoint assigned_modifier_groups so the
+      // peer item references groups that actually exist at the peer location.
+      const modIdMap = await shareModifierGroupsToLocation(allGroupIds, sourceLocId, peerLocId, org_id, newScope);
+      const rewriteAssigned = (assigned) => (Array.isArray(assigned) ? assigned : []).map(ag => {
+        const gid = typeof ag === 'string' ? ag : ag?.groupId;
+        if (!gid) return ag;
+        const peerGid = modIdMap.get(gid) || `${gid}_${peerLocSuffix}`;
+        return typeof ag === 'string' ? peerGid : { ...ag, groupId: peerGid };
+      });
       const peerRow = {
         ...baseRow,
         id: peerId,
         location_id: peerLocId,
         cat: peerCat,
         cats: peerCats,
+        assigned_modifier_groups: rewriteAssigned(parentAssigned),
       };
       const { error } = await supabase.from('menu_items').upsert(peerRow);
       if (error) {
@@ -1115,7 +1296,8 @@ export const setMenuItemScope = async (item, newScope) => {
           cats: [],
           pricing: v.pricing ?? { base: 0 },
           allergens: v.allergens ?? [],
-          assigned_modifier_groups: v.assigned_modifier_groups ?? [],
+          // v5.5.877 (Bug 3): variants can carry their own modifier groups — repoint them too.
+          assigned_modifier_groups: rewriteAssigned(v.assigned_modifier_groups),
           sort_order: v.sort_order ?? 999,
           image: v.image ?? null,
           scope: newScope,
@@ -1199,7 +1381,7 @@ export const propagateGlobalEdit = async (item, payload) => {
 // v4.7.3 — Category promote/demote, mirrors setMenuItemScope.
 // ──────────────────────────────────────────────────────────────────
 
-export const setMenuCategoryScope = async (cat, newScope) => {
+export const setMenuCategoryScope = async (cat, newScope, _visited = new Set()) => {
   if (isMock) return { ok: true };
   if (!supabase) return { ok: false, error: 'no supabase' };
   if (!cat?.id) return { ok: false, error: 'no cat id' };
@@ -1231,6 +1413,28 @@ export const setMenuCategoryScope = async (cat, newScope) => {
   let updatedSiblings = 0;
 
   if (isFirstPromotion) {
+    _visited.add(cat.id);
+    // v5.5.877 (Bug 2, hierarchy): if this is a SUB-category, promote its parent
+    // first so the peer sub-category can nest under the peer parent instead of
+    // being flattened to a root. Bounded by _visited — category trees are acyclic,
+    // and this also guards against corrupt self-referential data.
+    let parentMasterId = null;
+    const srcParentId = cat.parent_id ?? cat.parentId ?? null;
+    if (srcParentId && !_visited.has(srcParentId)) {
+      try {
+        const { data: parentCat } = await supabase.from('menu_categories').select('*')
+          .eq('id', srcParentId).eq('location_id', sourceLocId).maybeSingle();
+        if (parentCat) {
+          if ((parentCat.scope || 'local') === 'local') {
+            await setMenuCategoryScope(parentCat, newScope, _visited);
+          }
+          const { data: pFresh } = await supabase.from('menu_categories')
+            .select('master_id, id').eq('id', srcParentId).maybeSingle();
+          parentMasterId = pFresh?.master_id || pFresh?.id || parentCat.id;
+        }
+      } catch (e) { console.warn('[setMenuCategoryScope] parent promote threw:', e?.message || e); }
+    }
+
     const baseRow = {
       label: cat.label,
       icon: cat.icon ?? null,
@@ -1240,8 +1444,6 @@ export const setMenuCategoryScope = async (cat, newScope) => {
       is_special: cat.is_special ?? cat.isSpecial ?? false,
       default_course: cat.default_course ?? cat.defaultCourse ?? 1,
       spacer_slots: cat.spacer_slots ?? cat.spacerSlots ?? [],
-      parent_id: null,
-      menu_id: null,
       scope: newScope,
       org_id,
       master_id: masterId,
@@ -1249,11 +1451,27 @@ export const setMenuCategoryScope = async (cat, newScope) => {
       updated_at: new Date().toISOString(),
     };
     for (const peerLocId of otherLocationIds) {
-      const peerId = `${masterId}_${peerLocId.slice(-8)}`;
-      const peerRow = { ...baseRow, id: peerId, location_id: peerLocId };
+      const peerSuffix = peerLocId.slice(-8);
+      const peerId = `${masterId}_${peerSuffix}`;
+      // v5.5.877 (Bug 2): give the peer category real MENU MEMBERSHIP. The old
+      // code wrote menu_id:null with NO menu_category_links row, so on every
+      // surface that pins a menu (POS/Bar/Kiosk/Online/Catering) the peer category
+      // — and therefore the shared item inside it — was invisible; it only showed
+      // on MPOS (its null-menu escape hatch) or when no menu was pinned. Attach the
+      // peer category to the peer location's default menu (or its first menu) via
+      // BOTH menu_id and a link row: read paths accept either, so writing both is
+      // robust to convention drift. parent_id is rewritten to the peer parent so
+      // sub-categories stay nested rather than flattening to roots.
+      const peerMenuId = await resolvePeerDefaultMenu(peerLocId);
+      const peerParentId = parentMasterId ? `${parentMasterId}_${peerSuffix}` : null;
+      const peerRow = { ...baseRow, id: peerId, location_id: peerLocId, menu_id: peerMenuId, parent_id: peerParentId };
       const { error } = await supabase.from('menu_categories').upsert(peerRow);
-      if (error) console.warn('[setMenuCategoryScope] peer upsert failed for', peerLocId, error);
-      else createdCount++;
+      if (error) { console.warn('[setMenuCategoryScope] peer upsert failed for', peerLocId, error); continue; }
+      createdCount++;
+      if (peerMenuId) {
+        const linkRes = await linkCategoryToMenu(peerMenuId, peerId, baseRow.sort_order ?? 0);
+        if (!linkRes?.ok) console.warn('[setMenuCategoryScope] peer menu link failed for', peerLocId, linkRes?.error);
+      }
     }
   } else {
     const { error, count } = await supabase.from('menu_categories')

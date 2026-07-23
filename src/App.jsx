@@ -94,6 +94,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.877', date: '23 Jul 2026', label: 'FIX — sharing a product to your other locations now copies it correctly: sizes, category and modifiers all follow',
+    changes: [
+      'SIZES NOW FOLLOW THE PRODUCT. Sharing a product that has sizes (Small/Medium/Large) used to leave the other locations with just an empty shell — or, if you then shared each size by hand, three separate standalone products. Now every size is copied as a size UNDER the product at each location, however the product is set up (this also works for combos and any parent whose type never got flagged). Changing the sharing on a size now applies to the whole product, so you can’t accidentally split it.',
+      'THE PRODUCT NOW LANDS IN ITS CATEGORY EVERYWHERE. When a shared category was copied to another location it wasn’t attached to any menu there, so on the till, kiosk, online store, bar and catering screens the category — and the product inside it — simply didn’t appear (it only showed on the phone/MPOS). The copied category is now added to that location’s default menu (and nested under its parent if it’s a sub-category), so the shared product shows up in the right place on every surface.',
+      'MODIFIERS NOW COME ACROSS. Sharing a product carried the NAMES of its modifier groups but not the groups themselves, so at the other locations the till showed no options at all. Now every modifier group is copied to each location — including nested groups (an option that opens another group) and the sold-alone items behind options — and the product is re-pointed at the local copies. Options, prices and add-ons appear exactly as at the original site.',
+      'Re-running a share is safe: it updates the existing copies rather than making duplicates. NOTE: products shared BEFORE this version keep their old (incomplete) copies — to pull sizes/menu-placement/modifiers across for one of those, set it back to Local and share it again.',
+    ],
+  },
+  {
     version: '5.5.876', date: '23 Jul 2026', label: 'FIX — admin Payments: Stripe markup pricing now saves, and Unlink actually unlinks',
     changes: [
       'FIX: in Admin → Payments, editing a Stripe location’s card-present / online markup % (and pricing notes) and hitting Save appeared to work but never persisted — reloading showed the old values. Same cause for the Stripe “Unlink” button: it looked like it unlinked but the account stayed connected, so you couldn’t unpair and re-pair.',

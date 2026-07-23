@@ -2133,7 +2133,11 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
 
             {/* v4.6.2b: visibility (POS/Kiosk/Online/Delivery) UI removed — surface targeting will move to per-menu assignment in v4.6.3+. Existing visibility data preserved on items. */}
             {/* v4.6.3: Sharing & ownership scope. Only shown on top-level items (variants inherit). */}
-            {!isSub && (
+            {/* v5.5.877 (Bug 1b): also hide on variant children (parentId set) — scope is a
+                product-level property; sharing a child directly used to create a standalone
+                product at peer locations. setMenuItemScope now redirects a child to its parent,
+                but hiding the control keeps the operator on the correct (parent) row. */}
+            {!isSub && !item.parentId && (
               <div>
                 <span style={lbl}>Sharing</span>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginTop: 4 }}>
