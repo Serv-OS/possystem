@@ -992,7 +992,10 @@ function BOOverview({ setSection, orgCtx }) {
       // v5.5.856: channel orders bucket by their PLATFORM (Deliveroo / Uber Eats / Just
       // Eat…) — 'hubrise' is the pipe, not a source. Prefixed so a platform name can
       // never collide with a built-in source key.
-      const _src = (c.source || 'pos').toLowerCase();
+      // v5.5.862: whitelist, not passthrough — `source` can carry internal payment-path
+      // stamps (pos_send_to_terminal, pax_table_pay); those are POS sales.
+      const _raw = (c.source || 'pos').toLowerCase();
+      const _src = ['kiosk', 'online', 'qr', 'catering', 'hubrise'].includes(_raw) ? _raw : 'pos';
       const _bucket = _src === 'hubrise' ? `hr:${c.customer?.channel || 'Delivery apps'}` : _src;
       sources[_bucket] = (sources[_bucket] || 0) + (c.total || 0);
       const u = c.server || 'Unknown';

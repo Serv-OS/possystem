@@ -94,6 +94,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.862', date: '22 Jul 2026', label: 'Order sources: internal payment stamps no longer appear as sources',
+    changes: [
+      'The Order sources report and dashboard bucketed by whatever the check\u2019s source field contained \u2014 which sometimes carries internal payment-path stamps (pos_send_to_terminal, pax_table_pay). Sources are now a whitelist: kiosk, online, QR, catering and the delivery platforms keep their own rows; everything else \u2014 including those stamps \u2014 counts as POS, which is what those sales are.',
+    ],
+  },
+  {
     version: '5.5.865', date: '23 Jul 2026', label: 'No more PAX receipt printing — receiptPrintingSource=PointOfSale with the correct confirm-receipt handshake (VERIFIED live)',
     changes: [
       'The PAX no longer prints a receipt or shows any print-confirm screens on a card payment. terminal-job-charge now initiates with receiptPrintingSource=PointOfSale and, during the tender, drives Ryft\u2019s confirm-receipt handshake automatically: it reads data.action.transaction.receiptDetail and confirms the MERCHANT copy then the CUSTOMER copy, each only when its status is \u201cRequired\u201d, one at a time. The customer receipt prints from the POS as normal, with the card block it already carries.',

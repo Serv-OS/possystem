@@ -23,7 +23,14 @@ const SOURCE_STYLE = {
 // Distinct colours for the delivery platforms (assigned in revenue order).
 const PLATFORM_COLORS = ['#ef4444', '#3b82f6', '#84cc16', '#ec4899', '#14b8a6', '#eab308'];
 
-export const srcKey = (c) => c.source === 'hubrise' ? (c.customer?.channel || 'Delivery channel') : (c.source || 'pos');
+// v5.5.862: bucket by WHITELIST, not passthrough. `source` sometimes carries internal
+// payment-path stamps (e.g. pos_send_to_terminal, pax_table_pay from the terminal-job
+// flows) — those are ordinary POS sales and must never appear as their own "source".
+// Only genuine customer surfaces keep their own bucket; everything else is POS.
+const CUSTOMER_SOURCES = new Set(['kiosk', 'online', 'qr', 'catering']);
+export const srcKey = (c) => c.source === 'hubrise'
+  ? (c.customer?.channel || 'Delivery channel')
+  : (CUSTOMER_SOURCES.has(c.source) ? c.source : 'pos');
 
 export default function OrderSources({ checks, prevChecks, fmt, fmtN }) {
   const cur  = useMemo(() => aggregate(checks,     srcKey), [checks]);
