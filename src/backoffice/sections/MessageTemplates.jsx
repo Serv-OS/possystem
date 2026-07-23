@@ -120,6 +120,14 @@ export default function MessageTemplates() {
 
   const handleSave = async () => {
     if (!selectedType || !selectedChannel) return;
+    // Name-editable provider types: a blank name means "use the venue name" — clear any override
+    // (reset) rather than saving an empty value (which the server rejects).
+    if (currentMt?.nameEditable && !editBody.trim()) {
+      if (currentTpl?.isCustom) return handleReset();
+      showToast?.('Using your venue name', 'info');
+      setDirty(false);
+      return;
+    }
     try {
       setSaving(true);
       await callApi('save', {
@@ -215,15 +223,18 @@ export default function MessageTemplates() {
   const charCount = selectedChannel === 'sms' ? editBody.length : 0;
   const smsSegments = selectedChannel === 'sms' ? Math.ceil(charCount / 160) || 1 : 0;
 
-  // Provider-managed types (e.g. loyalty_otp via Twilio Verify) can't be freely edited — build a
-  // read-only preview from the fixed body with example merge-tag values filled in.
-  const providerPreviewText = currentMt?.providerManaged
-    ? String(currentMt.templates?.[currentMt.channels[0]]?.body_text || '')
-        .replace(/\{\{(\w+)\}\}/g, (_m, k) => {
-          const tag = currentMt.mergeTags.find(t => t.tag === k);
-          return tag ? tag.example : `{{${k}}}`;
-        })
+  // Provider-managed types (e.g. loyalty_otp via Twilio Verify) have a fixed body — build a live
+  // read-only preview from that fixed body. The venue_name slot reflects the name being typed
+  // (or "your venue name" when blank); other tags use their example values.
+  const providerCh = currentMt?.channels?.[0];
+  const providerFixedBody = currentMt?.providerManaged
+    ? String(currentMt.templates?.[providerCh]?.fixedBody || currentMt.templates?.[providerCh]?.body_text || '')
     : '';
+  const providerPreviewText = providerFixedBody.replace(/\{\{(\w+)\}\}/g, (_m, k) => {
+    if (k === 'venue_name') return (editBody && editBody.trim()) || 'your venue name';
+    const tag = currentMt.mergeTags.find(t => t.tag === k);
+    return tag ? tag.example : `{{${k}}}`;
+  });
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -334,19 +345,45 @@ export default function MessageTemplates() {
               </p>
             </div>
 
-            {/* Provider-managed types (verification codes) — read-only, with an explanation */}
+            {/* Provider-managed types (verification codes): fixed body, but the business NAME
+                inside it stays editable when nameEditable is set. */}
             {currentMt.providerManaged ? (
               <div style={{ marginBottom: 24 }}>
                 <div style={{
                   padding: '14px 16px', borderRadius: 10, marginBottom: 18,
-                  background: 'rgba(245,158,11,0.10)', border: '1px solid rgba(245,158,11,0.35)',
+                  background: 'rgba(59,130,246,0.10)', border: '1px solid rgba(59,130,246,0.35)',
                   display: 'flex', gap: 10, alignItems: 'flex-start',
                 }}>
-                  <span style={{ fontSize: 18, lineHeight: 1 }}>🔒</span>
+                  <span style={{ fontSize: 18, lineHeight: 1 }}>ℹ️</span>
                   <div style={{ fontSize: 13, lineHeight: 1.55, color: 'var(--t1)' }}>
                     {currentMt.providerNote}
                   </div>
                 </div>
+
+                {currentMt.nameEditable && (
+                  <div style={{ marginBottom: 18 }}>
+                    <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--t4)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                      {currentMt.nameLabel || 'Business name'}
+                    </label>
+                    <input
+                      type="text"
+                      value={editBody}
+                      maxLength={30}
+                      onChange={e => { setEditBody(e.target.value); setDirty(true); }}
+                      placeholder={currentMt.namePlaceholder || 'Leave blank to use your venue name'}
+                      style={{
+                        width: '100%', padding: '10px 14px', fontSize: 14,
+                        background: 'var(--bg2)', border: '1px solid var(--bdr)',
+                        borderRadius: 8, color: 'var(--t1)', outline: 'none',
+                        boxSizing: 'border-box',
+                      }}
+                    />
+                    <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 6 }}>
+                      {editBody.length}/30 · appears as the business name inside the code text
+                    </div>
+                  </div>
+                )}
+
                 <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--t4)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                   What your customer receives
                 </label>
@@ -360,6 +397,37 @@ export default function MessageTemplates() {
                     {providerPreviewText}
                   </div>
                 </div>
+
+                {currentMt.nameEditable && (
+                  <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
+                    <button
+                      onClick={handleSave}
+                      disabled={saving || !dirty}
+                      style={{
+                        padding: '10px 24px', fontSize: 14, fontWeight: 700,
+                        background: dirty ? 'var(--acc)' : 'var(--bg3)',
+                        color: dirty ? '#0b0c10' : 'var(--t4)',
+                        border: 'none', borderRadius: 8, cursor: dirty ? 'pointer' : 'default',
+                        opacity: saving ? 0.6 : 1,
+                      }}
+                    >
+                      {saving ? 'Saving...' : 'Save name'}
+                    </button>
+                    {currentTpl?.isCustom && (
+                      <button
+                        onClick={handleReset}
+                        disabled={saving}
+                        style={{
+                          padding: '10px 24px', fontSize: 14, fontWeight: 600,
+                          background: 'transparent', color: '#ef4444',
+                          border: '1px solid #ef4444', borderRadius: 8, cursor: 'pointer',
+                        }}
+                      >
+                        Reset to venue name
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
             ) : (
             <>

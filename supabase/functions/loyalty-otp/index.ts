@@ -141,12 +141,29 @@ Deno.serve(async (req) => {
     // Fall back to the platform company name, then a generic label.
     const locationId = body.location_id as string | undefined;
     let venueName = '';
-    if (locationId) {
+    // 1. Operator override — the "Business name shown in the verification text" set in BO →
+    //    Messages → Verification Code (message_templates.body_text for loyalty_otp/sms,
+    //    company-scoped). Blank/absent = fall through to the venue name below.
+    try {
+      const { data: ov } = await platformAdmin
+        .from('message_templates')
+        .select('body_text, enabled')
+        .eq('company_id', companyId)
+        .eq('message_type', 'loyalty_otp')
+        .eq('channel', 'sms')
+        .maybeSingle();
+      if (ov && ov.enabled !== false && ov.body_text && String(ov.body_text).trim()) {
+        venueName = String(ov.body_text).trim();
+      }
+    } catch { /* override is best-effort */ }
+    // 2. Venue name — ops locations.name, exactly what the operator edits in Location Settings.
+    if (!venueName && locationId) {
       try {
         const { data: loc } = await opsAdmin.from('locations').select('name').eq('id', locationId).maybeSingle();
         if (loc?.name) venueName = loc.name;
       } catch { /* best-effort */ }
     }
+    // 3. Company name, then a generic fallback.
     if (!venueName) {
       try {
         const { data: co } = await platformAdmin.from('companies').select('name').eq('id', companyId).maybeSingle();

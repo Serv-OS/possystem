@@ -28,12 +28,18 @@ export interface MessageTypeDef {
     email?: ChannelDefault;
     sms?: ChannelDefault;
   };
-  // When true, the message body is fixed by an external provider (e.g. Twilio Verify)
-  // and cannot be freely edited — only the merge-tag values (venue name) vary. The BO
-  // editor shows `providerNote` instead of a dead free-text field. The `defaults` body
-  // is still used as the read-only preview of what the customer receives.
+  // When true, the message BODY is fixed by an external provider (e.g. Twilio Verify)
+  // and cannot be freely edited. The BO editor shows `providerNote` + a read-only preview
+  // built from the `defaults` body instead of a dead free-text field.
   providerManaged?: boolean;
   providerNote?: string;
+  // When true (only meaningful with providerManaged), the operator CAN still edit the one
+  // part that varies — the business/venue name shown inside the fixed body. The editor
+  // renders a single-line name input; the stored value goes in message_templates.body_text
+  // and is read at send time as the Twilio Verify friendlyName. Empty = use the venue name.
+  nameEditable?: boolean;
+  nameLabel?: string;
+  namePlaceholder?: string;
 }
 
 // ── Merge tag libraries ─────────────────────────────────────────────────────
@@ -274,10 +280,12 @@ Earn points on every order · Redeem rewards · Birthday treats · Gift card bal
     channels: ['sms'],
     mergeTags: [TAG_VENUE_NAME, TAG_OTP_CODE],
     providerManaged: true,
+    nameEditable: true,
+    nameLabel: 'Business name shown in the verification text',
+    namePlaceholder: 'Leave blank to use your venue name',
     providerNote: 'For security and reliable delivery, verification codes are sent by our '
-      + 'trusted SMS verification service — the wording and expiry are fixed and can’t be edited. '
-      + 'The only part that changes is your venue name, which is taken from your venue name in '
-      + 'Location Settings. Update it there and the verification text will follow.',
+      + 'trusted SMS verification service, so the wording and expiry are fixed. You can still '
+      + 'set the business name that appears in the text below — leave it blank to use your venue name.',
     defaults: {
       sms: {
         body: `Your {{venue_name}} verification code is: {{otp_code}}. Valid for 5 minutes.`,

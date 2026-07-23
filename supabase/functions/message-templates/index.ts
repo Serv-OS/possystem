@@ -102,6 +102,15 @@ async function handleList(companyId: string) {
           updated_at: null,
         };
       }
+
+      // Name-editable provider-managed types (e.g. loyalty_otp): the editable value is the
+      // business NAME, not the whole body. Expose the fixed body separately for the preview,
+      // and make body_text hold ONLY the name — the custom row's body_text, or '' when unset
+      // (so the editor shows an empty name field, not the fixed sentence).
+      if (mt.nameEditable) {
+        templates[ch].fixedBody = def?.body || '';
+        if (!templates[ch].isCustom) templates[ch].body_text = '';
+      }
     }
 
     return {
@@ -113,6 +122,9 @@ async function handleList(companyId: string) {
       mergeTags: mt.mergeTags,
       providerManaged: mt.providerManaged || false,
       providerNote: mt.providerNote || null,
+      nameEditable: mt.nameEditable || false,
+      nameLabel: mt.nameLabel || null,
+      namePlaceholder: mt.namePlaceholder || null,
       templates,
     };
   });
@@ -143,10 +155,16 @@ async function handleSave(companyId: string, body: Record<string, unknown>) {
   if (!mt.channels.includes(channel as any)) {
     return json({ error: `Channel ${channel} not supported for ${messageType}` }, 400);
   }
-  // Provider-managed types (e.g. verification codes via Twilio Verify) have a fixed body
-  // that isn't sent from message_templates — reject saves so we never persist a dead custom row.
-  if (mt.providerManaged) {
+  // Provider-managed types (e.g. verification codes via Twilio Verify) have a fixed body that
+  // isn't sent from message_templates. Reject a free-text body save UNLESS the type is
+  // nameEditable — in which case body_text carries only the short business name override
+  // (read at send time as the Verify friendlyName). Cap it so it can't hold a whole message.
+  if (mt.providerManaged && !mt.nameEditable) {
     return json({ error: `${messageType} is managed by our verification service and can’t be edited.` }, 400);
+  }
+  const cleanBody = mt.nameEditable ? bodyText.trim().slice(0, 30) : bodyText;
+  if (mt.nameEditable && !cleanBody) {
+    return json({ error: 'Enter a business name, or reset to use your venue name.' }, 400);
   }
 
   const { data, error } = await platformAdmin
@@ -157,7 +175,7 @@ async function handleSave(companyId: string, body: Record<string, unknown>) {
         message_type: messageType,
         channel,
         subject: channel === 'email' ? (subject || null) : null,
-        body_text: bodyText,
+        body_text: cleanBody,
         enabled,
         updated_at: new Date().toISOString(),
       },

@@ -94,6 +94,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.875', date: '23 Jul 2026', label: 'Loyalty verification code: you can now edit the business name shown in the text (no longer locked)',
+    changes: [
+      'Messages → Loyalty → Verification Code is editable again — but as the ONE thing that can actually change: a "Business name shown in the verification text" field. The rest of the wording stays fixed by the SMS verification service (Twilio Verify), which is why the full body can’t be free-typed.',
+      'Type a name (max 30 chars) and the live preview updates; leave it blank to use your venue name from Location Settings. "Reset to venue name" clears the override.',
+      'loyalty-otp now resolves the name as: your saved override → venue name (ops locations.name) → company name → generic. So the code SMS shows exactly the name you set.',
+      'The name override is stored per-company in message_templates (body_text for loyalty_otp/sms) and read at send time as the Twilio Verify friendlyName; the save path caps it to 30 chars.',
+    ],
+  },
+  {
     version: '5.5.874', date: '23 Jul 2026', label: 'Loyalty verification text now shows YOUR venue name (not "POSUP"); Messages screen explains the code SMS is provider-managed',
     changes: [
       'FIX — the loyalty phone-verification SMS was reading "Your POSUP verification code…" instead of your venue name. It now uses your venue name from Location Settings (e.g. "Provo test").',
