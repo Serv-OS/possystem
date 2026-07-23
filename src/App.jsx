@@ -94,6 +94,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.863', date: '22 Jul 2026', label: 'PAX receipt printing restored (PointOfSale parked pending Ryft answers)',
+    changes: [
+      'The no-merchant-receipt mode (PointOfSale + server confirm-receipt) failed twice on live taps — the terminal held "please wait"/"remove card" until Ryft voided the payment, and the confirm attempts left no observable server evidence to diagnose against. Reverted to Terminal printing (the PAX prints again, temporarily) so payments are reliable; every voided tap took no money.',
+      'Kept: the terminal app\u2019s receipt pump (2.0-rc5) — a harmless 1.2s result ping during the card wait — which becomes the delivery mechanism once the exact confirm contract is verified against Ryft directly rather than guessed. Do not re-enable PointOfSale until a debug probe has captured Ryft\u2019s real action states without using live taps as the test.',
+    ],
+  },
+  {
     version: '5.5.862', date: '22 Jul 2026', label: 'No more PAX merchant receipts + much faster terminal payments + durable cash-off',
     changes: [
       'RECEIPTS: the PAX no longer prints merchant receipts or shows its two print-confirm screens. Terminal payments now run receiptPrintingSource=PointOfSale and the server auto-confirms both receipt copies with Ryft the moment the card is taken (required, or Ryft voids the transaction) — your receipt prints from the POS as normal, with the card block it already carries.',

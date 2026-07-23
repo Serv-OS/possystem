@@ -129,6 +129,23 @@ public interface G8CloudClient {
      */
     void fetchResult(String transactionId, Callback<G8TransactionResult> callback);
 
+    /**
+     * Fire-and-forget ping of the result endpoint WHILE the controller still holds the
+     * customer's tap (v2.0-rc5).
+     *
+     * Why this exists: with receiptPrintingSource=PointOfSale the controller waits ON-DEVICE
+     * for Ryft's confirm-receipt before completing — and the server only sends those confirms
+     * when the result endpoint is polled. fetchResult() only starts AFTER the controller
+     * returns, so nobody polled during the wait, nothing confirmed, and Ryft voided real taps
+     * (the v5.5.862 live failure). This nudge closes that loop: PaymentFlow calls it on a
+     * short timer between "transaction started" and "controller returned"; the server's
+     * result path sends the confirms the moment the transaction awaits them.
+     *
+     * MUST be side-effect-free on the caller: no callback, no outcome interpretation, all
+     * errors swallowed. The authoritative result still comes only from fetchResult().
+     */
+    default void nudgeResult(String transactionId) { /* stub: nothing to nudge */ }
+
     /** Short label for the diagnostics screen, e.g. "STUB (no card charged)". */
     String describe();
 }

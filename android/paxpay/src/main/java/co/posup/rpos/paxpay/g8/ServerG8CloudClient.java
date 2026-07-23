@@ -85,6 +85,29 @@ public final class ServerG8CloudClient implements G8CloudClient {
         this.sb = sb;
     }
 
+    /**
+     * v2.0-rc5 — the receipt-confirm pump. A single fire-and-forget 'result' call: its ONLY
+     * job is to make the server look at the in-flight transaction, because that look is what
+     * sends Ryft's confirm-receipt while the controller holds the tap (PointOfSale receipts).
+     * Response and errors are deliberately discarded — the authoritative outcome still comes
+     * exclusively from fetchResult() after the controller returns.
+     */
+    @Override
+    public void nudgeResult(String handle) {
+        final String jobId = handle == null ? null : jobByHandle.getOrDefault(handle, handle);
+        if (jobId == null || jobId.isEmpty()) return;
+        executor.execute(() -> {
+            try {
+                JSONObject body = new JSONObject();
+                body.put("action", "result");
+                body.put("job_id", jobId);
+                sb.postFunction(FUNCTION, body);
+            } catch (Exception ignored) {
+                // Best-effort by contract: the next nudge or fetchResult() retries.
+            }
+        });
+    }
+
     // -------------------------------------------------------------------------------------
     // Step 4 — start
     // -------------------------------------------------------------------------------------

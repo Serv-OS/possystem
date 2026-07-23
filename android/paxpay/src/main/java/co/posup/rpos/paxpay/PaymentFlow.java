@@ -147,6 +147,15 @@ public final class PaymentFlow {
     private boolean finished;
     /** Posted in start(); fires the charge if DEVICE_CONNECTED never arrives. Cancelled once used. */
     private Runnable connectFallback;
+    /**
+     * v2.0-rc5 — repeats while the CONTROLLER holds the card (transaction started, controller
+     * not yet returned). Each tick is a fire-and-forget result ping whose server side sends
+     * Ryft's confirm-receipt the moment the tap awaits it (PointOfSale receipts). Without
+     * this, the controller waits for a confirmation nobody sends and Ryft voids the tap —
+     * the v5.5.862 live failure. Cancelled on controller return, failure, and dispose.
+     */
+    private Runnable receiptPump;
+    private static final long RECEIPT_PUMP_MS = 1_200L;
 
     public PaymentFlow(Activity activity, Diagnostics diag, G8CloudClient g8, Listener listener) {
         this.activity = activity;
@@ -329,6 +338,7 @@ public final class PaymentFlow {
                 diag.lastTransactionId = transactionId;
                 diag.event("transaction started: " + transactionId);
                 listener.onTransactionStarted(transactionId);
+                startReceiptPump();
             }
             @Override public void onError(String message) {
                 diag.lastError = "startTransaction: " + message;
@@ -354,6 +364,7 @@ public final class PaymentFlow {
         diag.event("controller returned: " + diag.lastResultCode);
         Log.i(TAG, "controller result: " + diag.lastResultCode);
 
+        stopReceiptPump();   // fetchResult owns the outcome from here
         if (finished) return;
 
         if (resultCode == Activity.RESULT_CANCELED) {
@@ -472,6 +483,7 @@ public final class PaymentFlow {
      */
     public void dispose() {
         cancelConnectFallback();
+        stopReceiptPump();
         unregisterReceiver();
     }
 
@@ -479,6 +491,26 @@ public final class PaymentFlow {
         if (connectFallback != null) {
             main.removeCallbacks(connectFallback);
             connectFallback = null;
+        }
+    }
+
+    private void startReceiptPump() {
+        stopReceiptPump();
+        receiptPump = new Runnable() {
+            @Override public void run() {
+                if (finished || receiptPump == null) return;
+                if (transactionId != null) g8.nudgeResult(transactionId);
+                main.postDelayed(this, RECEIPT_PUMP_MS);
+            }
+        };
+        main.postDelayed(receiptPump, RECEIPT_PUMP_MS);
+        diag.event("receipt pump started (" + RECEIPT_PUMP_MS + "ms)");
+    }
+
+    private void stopReceiptPump() {
+        if (receiptPump != null) {
+            main.removeCallbacks(receiptPump);
+            receiptPump = null;
         }
     }
 

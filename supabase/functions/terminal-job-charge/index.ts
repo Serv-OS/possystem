@@ -290,13 +290,17 @@ Deno.serve(async (req) => {
         // already proven charge = due + tip on this row.
         amounts: { requested: chargeMinor },
         currency: String(job.currency || 'GBP').toUpperCase(),
-        // 'PointOfSale' (v5.5.862): OUR printer prints the receipt from the closed
-        // check — the PAX must not self-print a merchant copy or show its two
-        // print-confirm screens (owner requirement, UK rules don't demand a
-        // merchant copy). The action then WAITS for confirm-receipt, which the
-        // 'result' path below sends the moment it sees the transaction awaiting
-        // it — same 1.5s device poll, no extra round-trips.
-        settings: { receiptPrintingSource: 'PointOfSale' },
+        // 'PointOfSale' (v5.5.863, second attempt — WITH the receipt pump). The first
+        // attempt (v5.5.862) deadlocked BY CONSTRUCTION: the controller waits
+        // ON-DEVICE for confirm-receipt BEFORE returning to our app, but our
+        // confirms rode the device's result poll, which only starts AFTER the
+        // controller returns. Nobody confirmed → Ryft voided real taps →
+        // "declined / cannot confirm" on live payments. Killing the PAX merchant
+        // receipt (owner requirement) needs the confirms to arrive DURING the
+        // controller wait: either the app polling result concurrently with the
+        // tender, or a terminal.action_updated webhook watcher. Do NOT flip this
+        // back without one of those in place and proven on hardware.
+        settings: { receiptPrintingSource: 'Terminal' },
         paymentSession: {
           ...(platformFee != null ? { platformFee } : {}),
           ...(accountId ? { paymentSettings: { platform: { paymentFees: { combined: { bookTo: accountId } } } } } : {}),
