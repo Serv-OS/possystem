@@ -94,6 +94,14 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.864', date: '22 Jul 2026', label: 'Terminal 2.0-rc6: hands-free result screen + parallel charge (published OTA)',
+    changes: [
+      'The PAX result screen now returns to the payment screen BY ITSELF (approved ~2s, declined ~4.5s so the reason is readable) — the terminal is customer-facing at the counter and staff should never have to touch it between payments. The next payment flows immediately; the Outcome-unknown safety screen still waits for a human by design.',
+      'The Ryft charge now fires IN PARALLEL with launching the card screen (was serialised behind a connect handshake, then a 2s fallback) — up to 2s faster to PRESENT CARD on every payment; the A50 (whose controller never sends the handshake broadcast) benefits most.',
+      'Published to the OTA channel (app-releases/latest-paxpay.json, versionCode 12) — the A920 self-updates without a cable. Also: A50 paired + Ryft-connected via the new one-screen flow (first-try ops_linked:true), proving the consolidated pairing end-to-end on fresh hardware.',
+    ],
+  },
+  {
     version: '5.5.863', date: '22 Jul 2026', label: 'PAX receipt printing restored (PointOfSale parked pending Ryft answers)',
     changes: [
       'The no-merchant-receipt mode (PointOfSale + server confirm-receipt) failed twice on live taps — the terminal held "please wait"/"remove card" until Ryft voided the payment, and the confirm attempts left no observable server evidence to diagnose against. Reverted to Terminal printing (the PAX prints again, temporarily) so payments are reliable; every voided tap took no money.',

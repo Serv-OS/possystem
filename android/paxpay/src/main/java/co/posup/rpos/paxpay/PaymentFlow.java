@@ -226,19 +226,21 @@ public final class PaymentFlow {
 
         listener.onConnecting();
 
-        // Do NOT depend on DEVICE_CONNECTED (see DEVICE_CONNECTED_FALLBACK_MS). Give the controller
-        // a moment to foreground and confirm its socket, then start the charge over REST whether or
-        // not the broadcast arrived. If DEVICE_CONNECTED wins first, startTransactionOverHttp()
-        // cancels this and the guard makes the late runnable a no-op — the charge fires exactly once.
+        // v2.0-rc6 — LAUNCH AND CHARGE IN PARALLEL. The REST initiate takes ~5s at Ryft while
+        // the controller foregrounds and connects in well under 1.5s — so serialising them
+        // (rc2 waited for DEVICE_CONNECTED or a fallback timer) only added dead time. Fire the
+        // charge NOW, on the next main-loop tick; by the time Ryft processes it and pushes to
+        // the device, the controller has been connected for seconds. DEVICE_CONNECTED (if it
+        // ever arrives first, which it can't at delay 0) stays harmless behind the
+        // transactionStarted guard — the charge still fires exactly once.
         connectFallback = () -> {
             connectFallback = null;
             if (finished || transactionStarted) return;
-            diag.event("DEVICE_CONNECTED not seen in " + DEVICE_CONNECTED_FALLBACK_MS
-                    + "ms — starting the charge over REST anyway (Ryft in-person model)");
-            Log.i(TAG, "no DEVICE_CONNECTED — firing charge via REST fallback");
+            diag.event("charging in parallel with the controller launch");
+            Log.i(TAG, "firing charge in parallel with controller launch");
             startTransactionOverHttp();
         };
-        main.postDelayed(connectFallback, DEVICE_CONNECTED_FALLBACK_MS);
+        main.post(connectFallback);
 
         return launch;
     }

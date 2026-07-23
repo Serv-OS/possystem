@@ -1358,6 +1358,18 @@ public class MainActivity extends ComponentActivity {
         }
 
         setScreen(new ResultScreen(this, job.dueMinor, job.tipMinor(), result, this::finishPayment));
+
+        // v2.0-rc6 — AUTO-RETURN. The terminal is customer-facing at the counter; staff must
+        // not have to touch it between payments. Show the outcome long enough to read (a
+        // decline gets longer so the reason lands), then return to the payment screen by
+        // ourselves so the NEXT payment can flow immediately. Guarded on activeLocalId: if
+        // staff tapped Done first (finishPayment nulls it) or a new payment already started
+        // (different id), this delayed call is a no-op. The Outcome-unknown screen is NOT
+        // this path — it still requires a human, by design.
+        final long autoMs = approved ? 2_000L : 4_500L;
+        ui.postDelayed(() -> {
+            if (localId.equals(activeLocalId)) finishPayment();
+        }, autoMs);
     }
 
     private void handleFailure(String message, PaymentFlow.Outcome outcome) {
