@@ -817,6 +817,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           item={openItem} theme={theme} allItems={items} orderType={orderType}
           instGroupDefs={instGroupDefs}
           eightySixIds={eightySixIds}
+          stockLevels={stockLevels} cart={cart}
           onClose={() => setOpenItem(null)}
           onAdd={(item, mods, qty, notes) => addToCart(item, mods, qty, notes)}
         />

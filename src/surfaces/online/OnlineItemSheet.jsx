@@ -8,7 +8,7 @@ import { supabase } from '../../lib/supabase';
 import { money } from '../../lib/currency';
 import { dietaryBadges, DIET_LABELS } from '../../lib/dietary';
 
-export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs = [], eightySixIds = [], onClose, onAdd }) {
+export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs = [], eightySixIds = [], stockLevels = {}, cart = [], onClose, onAdd }) {
   const [qty, setQty]               = useState(1);
   const [modGroups, setModGroups]   = useState([]);  // top-level groups assigned to item
   const [allModGroups, setAllModGroups] = useState([]); // includes nested sub-groups (lookup)
@@ -238,8 +238,71 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selections, subPicks, qtyPicks, eightySixIds, subitemByName, modGroups, allModGroups]);
 
+  // v5.5.872: QUANTITY-aware stock cap. 86 only blocks at remaining<=0; without a qty cap a
+  // customer could order MORE than the POS has (e.g. 3 of a donut with 2 in stock), directly OR
+  // via a modifier option. Cap every stock-tracked item this line consumes at (remaining minus
+  // what is already in the cart — counting both line items AND modifier picks).
+  const remainingFor = (id) => {
+    const s = id != null ? stockLevels[id] : null;
+    return (s && typeof s.remaining === 'number') ? s.remaining : Infinity;
+  };
+  const cartQtyFor = (id) => {
+    if (id == null) return 0;
+    let n = 0;
+    for (const line of (cart || [])) {
+      const lq = Number(line.qty) || 1;
+      if (line.itemId === id) n += lq;                                                  // base item line
+      for (const m of (line.mods || [])) if (m?.itemId === id) n += (Number(m.qty) || 1) * lq;  // modifier pick(s)
+    }
+    return n;
+  };
+  // How many of each stock-tracked item THIS sheet's current selection would consume
+  // (main item × qty, plus each picked modifier option × qty — the line qty multiplies mods).
+  const consumedInSheet = useMemo(() => {
+    const m = {};
+    const add = (id, n) => { if (id != null && n) m[id] = (m[id] || 0) + n; };
+    add(effectiveItem.id, qty);
+    Object.entries(selections).forEach(([gid, val]) => {
+      (Array.isArray(val) ? val : (val ? [val] : [])).forEach(o => {
+        add(resolveOptItemId(o), qty);
+        const subPick = subPicks[`${gid}:${o?.id || o?.name}`];
+        if (subPick) add(resolveOptItemId(subPick), qty);
+      });
+    });
+    Object.entries(qtyPicks).forEach(([gid, picks]) => {
+      const grp = (allModGroups || modGroups).find(g => g.id === gid);
+      Object.entries(picks || {}).forEach(([optId, count]) => {
+        const opt = grp?.options?.find(o => (o.id || o.name) === optId);
+        add(resolveOptItemId(opt), qty * (Number(count) || 0));
+      });
+    });
+    return m;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectiveItem.id, qty, selections, subPicks, qtyPicks, allModGroups, modGroups, subitemByName]);
+  // Stock-tracked items the sheet+cart would oversell. avail = remaining − already-in-cart.
+  const stockShort = useMemo(() => {
+    const bad = [];
+    Object.entries(consumedInSheet).forEach(([id, want]) => {
+      const cap = remainingFor(id);
+      if (cap === Infinity) return;
+      const avail = Math.max(0, cap - cartQtyFor(id));
+      if (want > avail) {
+        const it = (allItems || []).find(x => x.id === id);
+        bad.push({ id, name: it?.menu_name || it?.name || 'item', avail });
+      }
+    });
+    return bad;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [consumedInSheet, cart, stockLevels, allItems]);
+  // Cap for the +/- stepper on the MAIN item (modifier oversell is caught by stockShort → Add block).
+  const mainMax = (() => {
+    const cap = remainingFor(effectiveItem.id);
+    return cap === Infinity ? Infinity : Math.max(0, cap - cartQtyFor(effectiveItem.id));
+  })();
+
   // v5.5.141: block Add when the resolved item (variant or base) is 86'd.
-  const canAdd = validationErrors.length === 0 && !effectiveIs86 && !has86Selection;
+  // v5.5.872: also block when it would oversell any stock-tracked item.
+  const canAdd = validationErrors.length === 0 && !effectiveIs86 && !has86Selection && stockShort.length === 0;
 
   const handleAdd = () => {
     if (!canAdd) { setErrors(validationErrors); return; }
@@ -606,8 +669,9 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
                 ...stepBtn, background: inputBg, color: theme.fg, opacity: qty <= 1 ? .4 : 1,
               }}>−</button>
               <span style={{ fontSize: 18, fontWeight: 800, minWidth: 28, textAlign: 'center' }}>{qty}</span>
-              <button onClick={() => setQty(q => q + 1)} style={{
-                ...stepBtn, background: inputBg, color: theme.fg,
+              <button onClick={() => setQty(q => Math.min(q + 1, mainMax))} disabled={qty >= mainMax} style={{
+                ...stepBtn, background: inputBg, color: theme.fg, opacity: qty >= mainMax ? .4 : 1,
+                cursor: qty >= mainMax ? 'not-allowed' : 'pointer',
               }}>+</button>
             </div>
           </div>
@@ -627,7 +691,7 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
             fontFamily: 'inherit',
             display: 'flex', justifyContent: 'space-between', alignItems: 'center',
           }}>
-            <span>{effectiveIs86 ? 'Out of stock' : has86Selection ? 'Option out of stock' : `Add ${qty} to basket`}</span>
+            <span>{effectiveIs86 ? 'Out of stock' : has86Selection ? 'Option out of stock' : stockShort.length ? `Only ${stockShort[0].avail} ${stockShort[0].name} left` : `Add ${qty} to basket`}</span>
             <span>{money(lineTotal)}</span>
           </button>
         </div>

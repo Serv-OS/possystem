@@ -94,6 +94,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.872', date: '23 Jul 2026', label: 'Online ordering can no longer oversell — quantity now capped at the stock count',
+    changes: [
+      'Online ordering only blocked an item when it was FULLY sold out (0 left) — it never stopped a customer ordering MORE than the stock count (e.g. 3 of a donut with 2 in stock, or 8 of a pizza with 7). Now every stock-tracked item is capped at the POS remaining minus what is already in the basket, whether it is ordered on its own OR chosen inside an option/box (so a “Box of 3” can’t pull more of a filling than exist). The + button stops at the limit and the Add button reads “Only N left”.',
+      'The kiosk already enforced this the same way (main item and modifier options, from the same live stock count); this brings online ordering in line.',
+    ],
+  },
+  {
     version: '5.5.871', date: '23 Jul 2026', label: 'FIX — a single item sent to the kitchen no longer vanishes from the table',
     changes: [
       'DATA-LOSS FIX: on a table with exactly ONE item, hitting Send (which printed the ticket) and leaving could make the item disappear when you reopened the table. Cause: the sent item wasn’t saved to the database before you left, and the 10-second background sync then overwrote your till’s copy with the stale, empty version of the table. Fixed three ways: (1) a Send now saves the table to the database IMMEDIATELY instead of on a delay; (2) every table edit now carries a “last changed” timestamp; and (3) the background sync now compares that timestamp and will never overwrite a newer local edit with an older database copy — it re-publishes the newer one instead. A genuine change made on another till still wins (it’s newer), so voids/discounts still sync correctly.',
