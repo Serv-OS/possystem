@@ -718,13 +718,11 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           },
         }).catch(() => {});
       }
-      const toPhone = (customer?.phone || '').trim();
-      if (toPhone && supabase) {
-        supabase.functions.invoke('send-sms', {
-          body: { to: toPhone, location_id: opsLocationId, type: 'order_confirmation',
-            message: `Thanks for ordering with ${location?.name || 'us'}! Order ${ref} is confirmed — we'll let you know when it's ready.` },
-        }).catch(() => {});
-      }
+      // v5.5.881: the confirmation SMS is now sent SERVER-SIDE by the order-notify edge fn
+      // (fired by a DB trigger on the order_queue insert) — covers every channel, uses the
+      // editable Messages template, and is idempotent. The old client-side send here silently
+      // broke when send-sms auth was hardened (anonymous callers 401) and would double-text
+      // if revived — removed.
     } catch { /* best-effort */ }
   };
 

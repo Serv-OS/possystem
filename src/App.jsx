@@ -94,6 +94,17 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.881', date: '23 Jul 2026', label: 'Order Confirmation + Order Ready messages are now REALLY sent — every channel, wired at the database',
+    changes: [
+      'The Messages → Orders section is now actually wired: Order Confirmation (email + SMS) sends when an order is placed, and Order Ready (SMS) sends when staff mark it ready in the orders screen. Before this, the kiosk sent nothing at all and the online confirmation SMS had silently broken (its send was rejected server-side with no error shown) — zero rows in the SMS log all day.',
+      'Wired at the DATABASE (a trigger on the order queue fires the new order-notify function), so EVERY channel is covered with no till updates: online, kiosk, QR, POS phone orders. Exclusions: 3rd-party channels (they message their own customers), catering confirmations (already has its own branded email), and delivery orders skip "ready" (they get courier tracking instead).',
+      'Honors the Messages editor: your custom wording is used, and switching a message OFF really stops it sending. Venue name, order number, items and total fill in automatically; phone numbers are normalised (07… → +44).',
+      'Idempotent: each order can only ever get one confirmation and one ready message (claim-before-send stamps on the order row). Every SMS is logged in the sms_messages audit table.',
+      'Live-verified end-to-end: real order OL-2US11 → SMS delivered ("Thanks Peter! Order #OL-2US11 confirmed at Provo. Total: £19.00.") + email sent + duplicate send correctly refused.',
+      'Removed the dead client-side confirmation SMS in online checkout (it would double-text if revived).',
+    ],
+  },
+  {
     version: '5.5.880', date: '23 Jul 2026', label: 'Verification SMS name is now PER LOCATION — sister venues under one company no longer clobber each other',
     changes: [
       'FIX: with two locations under one company, sending a code from location B renamed location A’s verification texts too (per-company was still too coarse). Each LOCATION now has its own Twilio Verify service and its own saved Business name.',
