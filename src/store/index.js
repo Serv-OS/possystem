@@ -5409,11 +5409,25 @@ export const useStore = create((set, get) => ({
       // passes above stay silent instead of re-notifying on every boot).
       showToast?.(`Routing ${srcUpper} ${order.ref}…`, 'info');
 
-      // Routing config + cat parent map (mirror getCentresForItem from sendToKitchen)
-      let routingConfig = useStore.getState().printRouting;
+      // Routing config + cat parent map (mirror getCentresForItem from sendToKitchen).
+      // v5.5.868: load the routing config FRESH from the DB. The device that routes a channel
+      // order is the MASTER, which is not necessarily a POS till that has printRouting loaded in
+      // memory — and even a loaded copy can be STALE (config edited after that device booted, as
+      // happened here: routing saved at 19:04:08, order at 19:04:11, master never reloaded). A
+      // stale/empty copy matches no centre → nothing prints. The print_routing table is the source
+      // of truth; fall back to the in-memory / localStorage copy only if the fetch fails.
+      let routingConfig = null;
+      try {
+        const { data: prCfg } = await supabase
+          .from('print_routing').select('centres, routing').eq('location_id', locId).maybeSingle();
+        if (prCfg?.centres?.length) routingConfig = { centres: prCfg.centres, routing: prCfg.routing || {} };
+      } catch (e) { console.warn('[routeKioskOrderPrints] print_routing DB fetch failed:', e?.message || e); }
       if (!routingConfig?.centres?.length) {
-        try { routingConfig = JSON.parse(localStorage.getItem('rpos-print-routing') || 'null') || { centres:[], routing:{} }; }
-        catch { routingConfig = { centres:[], routing:{} }; }
+        routingConfig = useStore.getState().printRouting;
+        if (!routingConfig?.centres?.length) {
+          try { routingConfig = JSON.parse(localStorage.getItem('rpos-print-routing') || 'null') || { centres:[], routing:{} }; }
+          catch { routingConfig = { centres:[], routing:{} }; }
+        }
       }
       let parentMap = {};
       try {

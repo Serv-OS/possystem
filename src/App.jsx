@@ -94,6 +94,12 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.868', date: '23 Jul 2026', label: 'Channel orders route with the LIVE printing config — a stale copy on the routing till can no longer drop the kitchen ticket',
+    changes: [
+      'Online/kiosk/QR/HubRise kitchen tickets are routed by the master till. It was matching items against whatever production-printing config it had cached at boot — so if the routing was edited afterwards, or the master isn’t a till that keeps the config loaded, items matched no centre and NOTHING printed (the order still showed as routed). The router now reads the live print_routing config straight from the database on every channel order, falling back to the cached copy only if the fetch fails. A stale or missing local copy can no longer silently drop the ticket.',
+    ],
+  },
+  {
     version: '5.5.867', date: '23 Jul 2026', label: 'Online/kiosk/QR/HubRise orders print to the kitchen again + receipts print from the till you’re on',
     changes: [
       'CRITICAL FIX — channel orders (online, kiosk, QR, HubRise) had stopped printing kitchen/production tickets and reaching the KDS since v5.5.861. The order was marked routed but nothing came out. Cause: a duplicate variable name (srcLabel) put the “Routing…” toast in a JavaScript temporal dead zone, throwing a silent error AFTER the order was claimed but BEFORE the ticket + KDS were written — so the claim blocked any retry and the kitchen never saw it. Renamed the variable; channel orders route, print and hit the KDS again.',
