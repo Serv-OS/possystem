@@ -273,8 +273,13 @@ export function startRealtime(store, locationId = LOCATION_ID) {
       if (row.table_id === state.activeTableId) return;
       const existing = (state.tables || []).find(t => t.id === row.table_id);
       const localUpdated = existing?.session?.lastUpdated || existing?.session?.seatedAt || 0;
-      const incomingUpdated = row.session?.lastUpdated || row.session?.seatedAt || 0;
-      if (localUpdated > incomingUpdated) return;
+      const incomingUpdated = row.session?.lastUpdated
+        || (row.updated_at ? new Date(row.updated_at).getTime() : 0)
+        || row.session?.seatedAt || 0;
+      // v5.5.871: local is newer than this incoming row → do NOT overwrite it (that was the
+      // stale-seat-row wipe of a just-sent single item). Keep local and re-publish so the shared
+      // row reconverges to our newer session instead of lingering stale and re-triggering the wipe.
+      if (localUpdated > incomingUpdated) { reassertSession(row.table_id); return; }
       store.setState(s => ({
         tables: s.tables.map(t =>
           t.id === row.table_id

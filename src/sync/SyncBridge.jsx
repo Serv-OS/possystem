@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useStore } from '../store';
-import { subscribeToSessions, scheduleFlush, teardown as teardownSessions } from './SessionSync';
+import { subscribeToSessions, scheduleFlush, flushSessions, teardown as teardownSessions } from './SessionSync';
 import { loadReservations, scheduleReservationFlush, subscribeToReservations, teardownReservations } from './ReservationSync';
 import { loadQueues, scheduleQueueFlush, teardownQueueSync } from './QueueSync';
 import { loadWaitlistSync, scheduleWaitlistFlush, teardownWaitlistSync } from './WaitlistSync';
@@ -714,7 +714,20 @@ export default function SyncBridge({ onSyncPulse }) {
         } catch (e) {
           console.warn('[SyncBridge] v4.5.2 emergency snapshot failed:', e?.message || e);
         }
-        scheduleFlush();
+        // v5.5.871: when an item was just SENT to the kitchen (pending→sent), flush IMMEDIATELY
+        // rather than on the 600ms debounce. A single sent item was being lost: the send often
+        // de-activates the table (auto-signout / leaving), and the debounced flush lost the race
+        // to the recency-blind reconciler, which then overwrote the live item with the stale empty
+        // seat-time DB row. An immediate flush lands the sent session in active_sessions before the
+        // table can be handed to any overwrite. Every other change stays on the debounce.
+        const sawSend = state.tables.some((t, i) => {
+          const p = prev.tables[i];
+          if (!p || !t.session) return false;
+          const tSent = (t.session.items || []).filter(x => x.status === 'sent').length;
+          const pSent = (p.session?.items || []).filter(x => x.status === 'sent').length;
+          return tSent > pSent;
+        });
+        if (sawSend) flushSessions(); else scheduleFlush();
       }
     }) : () => {};
 

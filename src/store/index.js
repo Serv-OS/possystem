@@ -1614,7 +1614,7 @@ export const useStore = create((set, get) => ({
           const session = t.session || { id:`ORD-${++_orderNum}`, items:[], firedCourses:[], sentAt:null, covers:2, server:staff?.name||'Staff', seatedAt:Date.now(), note:'', orderNote:'', subtotal:0, total:0 };
           const items = [...session.items, newItem];
           const subtotal = items.reduce((s,i)=>s+i.price*i.qty, 0);
-          return { ...t, status:t.status==='available'?'open':t.status, session:{ ...session, items, subtotal, total:subtotal*1.125 } };
+          return { ...t, status:t.status==='available'?'open':t.status, session:{ ...session, items, subtotal, total:subtotal*1.125, lastUpdated: Date.now() } };
         }),
       }));
     } else {
@@ -1636,7 +1636,7 @@ export const useStore = create((set, get) => ({
         const session = t.session||{ id:`ORD-${++_orderNum}`, items:[], firedCourses:[], sentAt:null, covers:2, server:staff?.name||'Staff', seatedAt:Date.now(), note:'', orderNote:'', subtotal:0, total:0 };
         const items=[...session.items, newItem];
         const subtotal=items.reduce((s,i)=>s+i.price*i.qty,0);
-        return {...t, session:{...session, items, subtotal, total:subtotal*1.125}};
+        return {...t, session:{...session, items, subtotal, total:subtotal*1.125, lastUpdated: Date.now()}};
       }) }));
     } else {
       set(s=>{const items=[...(s.walkInOrder?.items||[]),newItem];return{walkInOrder:{...(s.walkInOrder||{id:`ORD-${++_orderNum}`}),items}};});
@@ -1998,7 +1998,7 @@ export const useStore = create((set, get) => ({
             return { ...i, fired: firedCourses.includes(i.course), status: 'sent' };
           });
           const subtotal=items.reduce((s,i)=>s+i.price*i.qty,0);
-          return {...t, status:'occupied', session:{...t.session, items, firedCourses, sentAt:t.session.sentAt||Date.now(), server:staff?.name||t.session.server, subtotal, total:subtotal*1.125 }};
+          return {...t, status:'occupied', session:{...t.session, items, firedCourses, sentAt:t.session.sentAt||Date.now(), server:staff?.name||t.session.server, subtotal, total:subtotal*1.125, lastUpdated: Date.now() }};
         }),
         kdsTickets: [...s.kdsTickets, ...newTickets],
       }));

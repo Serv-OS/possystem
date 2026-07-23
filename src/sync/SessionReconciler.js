@@ -112,18 +112,30 @@ export async function startSessionReconciler() {
         }
 
         if (inStore && inSupabase && !isActive) {
-          // v5.5.283: Full session comparison — not just item count.
-          // Previous code only synced when Supabase had MORE items, missing
-          // voids, modifications, discount changes, and all non-count diffs.
-          // Now: if sessions differ at all, take the Supabase version (written
-          // by whichever device made the last change via flushSessions).
+          // v5.5.283: take the Supabase version when sessions differ, to propagate a remote
+          // device's voids / removals / discounts (where the DB legitimately has FEWER items).
+          // v5.5.871: but arbitrate by WRITE RECENCY, not blindly. The old blind take-DB wiped a
+          // just-SENT single item: local held 1 sent item, the DB still held the empty seat-time
+          // row, JSON differed → it overwrote local with empty. Now: a genuine remote edit carries
+          // a NEWER session.lastUpdated (stamped on every mutation) and still wins; a STALER DB row
+          // (older stamp) can no longer beat a newer local edit — we KEEP local and re-publish
+          // (healIds) so active_sessions reconverges to our newer session instead of losing the item.
           const entry = supabaseOpen.get(t.id);
           const supabaseSession = entry.session;
           const localJSON = JSON.stringify(t.session);
           const supabaseJSON = JSON.stringify(supabaseSession);
           if (localJSON !== supabaseJSON) {
-            changed = true;
-            return { ...t, session: supabaseSession, status: 'occupied' };
+            const localStamp = t.session?.lastUpdated || t.session?.seatedAt || 0;
+            const dbStamp    = supabaseSession?.lastUpdated || entry.updatedAt || 0;
+            if (dbStamp >= localStamp) {
+              // DB is newer-or-equal (real remote change, or legacy un-stamped tie) → take it.
+              changed = true;
+              return { ...t, session: supabaseSession, status: 'occupied' };
+            }
+            // Local is strictly newer than the DB row → never wipe it. Keep local and re-publish
+            // so the shared row catches up (reassert carries the closed-check tombstone guard, so
+            // this can never resurrect a cashed-off table).
+            if (!isSessionClosed(t.id, t.session)) healIds.push(t.id);
           }
         }
 

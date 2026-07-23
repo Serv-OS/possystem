@@ -94,6 +94,13 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.871', date: '23 Jul 2026', label: 'FIX — a single item sent to the kitchen no longer vanishes from the table',
+    changes: [
+      'DATA-LOSS FIX: on a table with exactly ONE item, hitting Send (which printed the ticket) and leaving could make the item disappear when you reopened the table. Cause: the sent item wasn’t saved to the database before you left, and the 10-second background sync then overwrote your till’s copy with the stale, empty version of the table. Fixed three ways: (1) a Send now saves the table to the database IMMEDIATELY instead of on a delay; (2) every table edit now carries a “last changed” timestamp; and (3) the background sync now compares that timestamp and will never overwrite a newer local edit with an older database copy — it re-publishes the newer one instead. A genuine change made on another till still wins (it’s newer), so voids/discounts still sync correctly.',
+      'Note: an item already lost this way (e.g. the T5 pepperoni) is gone from the live order but was still printed to the kitchen and logged — re-add it from the printed ticket. From this version on, it can’t happen again.',
+    ],
+  },
+  {
     version: '5.5.870', date: '23 Jul 2026', label: 'Tills now auto-update, and any that are behind show up in Network Status — no more silent stale devices',
     changes: [
       'Every till now keeps ITSELF up to date. It checks for a new version every few minutes and, when it finds one, shows an unmissable banner with a short countdown then reloads to the latest code — clearing its cache so even a Sunmi (whose WebView otherwise keeps old code in memory on a refresh) actually updates. The countdown pauses during an active payment, and customer-facing pages are never interrupted. This is the fix for today’s root cause: a stale till was silently running old code and broke online kitchen printing.',
