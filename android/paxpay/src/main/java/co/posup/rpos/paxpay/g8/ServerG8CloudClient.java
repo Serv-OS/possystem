@@ -60,7 +60,7 @@ public final class ServerG8CloudClient implements G8CloudClient {
     private static final String FUNCTION = "terminal-job-charge";
 
     /** Gap between 'result' polls. The session verify is ~300-800ms server-side. */
-    private static final long RESULT_POLL_MS = 1_500L;
+    private static final long RESULT_POLL_MS = 1_000L;
 
     /**
      * Total polling budget behind one fetchResult call. Expiry is NOT a verdict — it surfaces

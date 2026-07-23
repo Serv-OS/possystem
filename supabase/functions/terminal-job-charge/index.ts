@@ -38,7 +38,7 @@
 // Spec: docs/PAXPAY_TRANSPORT_SPEC.md; plan: Ryft slices 2-3.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { createTerminalPayment, getPaymentSession, ryftConfigured } from '../_shared/ryft.ts';
+import { createTerminalPayment, getPaymentSession, getTerminal, confirmTerminalReceipt, ryftConfigured } from '../_shared/ryft.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -290,9 +290,13 @@ Deno.serve(async (req) => {
         // already proven charge = due + tip on this row.
         amounts: { requested: chargeMinor },
         currency: String(job.currency || 'GBP').toUpperCase(),
-        // 'Terminal': the PAX self-prints. 'PointOfSale' would block the action
-        // waiting for a confirm-receipt call we never make (see ryft-terminal-payment).
-        settings: { receiptPrintingSource: 'Terminal' },
+        // 'PointOfSale' (v5.5.862): OUR printer prints the receipt from the closed
+        // check — the PAX must not self-print a merchant copy or show its two
+        // print-confirm screens (owner requirement, UK rules don't demand a
+        // merchant copy). The action then WAITS for confirm-receipt, which the
+        // 'result' path below sends the moment it sees the transaction awaiting
+        // it — same 1.5s device poll, no extra round-trips.
+        settings: { receiptPrintingSource: 'PointOfSale' },
         paymentSession: {
           ...(platformFee != null ? { platformFee } : {}),
           ...(accountId ? { paymentSettings: { platform: { paymentFees: { combined: { bookTo: accountId } } } } } : {}),
@@ -366,6 +370,33 @@ Deno.serve(async (req) => {
   const d = got.data ?? {};
   const sessionState = stateOf(d.status ?? 'PendingPayment', d.lastError ?? null);
   if (sessionState === 'processing') {
+    // ── PointOfSale receipt confirmation (v5.5.862) ─────────────────────────
+    // With receiptPrintingSource:'PointOfSale' the card can be APPROVED while the
+    // terminal action sits waiting for confirm-receipt — and if never confirmed
+    // the transaction is VOIDED. The session alone won't advance, so ask the
+    // TERMINAL what it's waiting on; when its current transaction is ours and the
+    // session hasn't settled, send the two confirms Ryft requires, in their
+    // documented order (merchantCopy then customerCopy, both 'Succeeded' — our
+    // POS prints the customer receipt from the closed check; a merchant copy is
+    // not legally required in the UK). Idempotent by construction: once the
+    // action completes, the confirms 4xx harmlessly and the session reads
+    // Approved on the device's next 1.5s poll.
+    if (term.ryft_terminal_id) {
+      try {
+        const t = await getTerminal(term.ryft_terminal_id, job.account_id ? { accountId: job.account_id } : {});
+        const act = (t.data as any)?.actions?.transaction ?? null;
+        if (t.ok && act && (act.paymentSessionId === job.payment_session_id)) {
+          console.log(`terminal-job-charge: action state for job ${job.id}: ${JSON.stringify({ status: act.status, type: act.type ?? null })}`);
+          const opts = job.account_id ? { accountId: job.account_id } : {};
+          const m = await confirmTerminalReceipt(term.ryft_terminal_id, { merchantCopy: { status: 'Succeeded' } }, opts);
+          const c = await confirmTerminalReceipt(term.ryft_terminal_id, { customerCopy: { status: 'Succeeded' } }, opts);
+          console.log(`terminal-job-charge: receipt confirms for job ${job.id}: merchant=${m.status} customer=${c.status}`);
+        }
+      } catch (e) {
+        // Never let a receipt confirm break the result poll — the next poll retries.
+        console.log(`terminal-job-charge: receipt confirm attempt failed for job ${job.id}: ${(e as Error).message}`);
+      }
+    }
     return json({ ok: true, state: 'processing', status: 'processing', session_status: d.status ?? null });
   }
 

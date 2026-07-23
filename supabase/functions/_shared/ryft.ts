@@ -103,6 +103,13 @@ export const registerTerminal = (input: { serialNumber: string; locationId: stri
 export const listTerminals = (opts: RyftOpts = {}) =>
   ryftFetch('GET', '/in-person/terminals', undefined, opts);
 
+// Retrieve one terminal — actions.transaction carries the LATEST transaction on
+// the device (id, status, paymentSessionId). This is Ryft's own recovery/lookup
+// primitive for in-progress payments, and where a PointOfSale-receipt payment
+// waits for confirm-receipt.
+export const getTerminal = (terminalId: string, opts: RyftOpts = {}) =>
+  ryftFetch('GET', `/in-person/terminals/${terminalId}`, undefined, opts);
+
 export const deleteTerminal = (terminalId: string, opts: RyftOpts = {}) =>
   ryftFetch('DELETE', `/in-person/terminals/${terminalId}`, undefined, opts);
 

@@ -46,14 +46,24 @@ public final class JobPoller {
     private static final String TAG = "PaxPayPoller";
 
     /** First few polls after entering the screen — the waiter is standing there waiting. */
-    private static final long INTERVAL_FAST_MS = 4_000L;
+    private static final long INTERVAL_FAST_MS = 2_000L;
     /** After a quiet minute. Still well inside "walk to the table" time. */
-    private static final long INTERVAL_SLOW_MS = 12_000L;
-    /** After a quiet ten minutes — the terminal is parked on a shelf. */
-    private static final long INTERVAL_IDLE_MS = 30_000L;
+    private static final long INTERVAL_SLOW_MS = 5_000L;
+    /**
+     * After a quiet ten minutes — the terminal is parked on a shelf.
+     *
+     * v2.0-rc4: 30s → 6s. The 30s idle step meant a payment sent to a parked
+     * terminal waited up to half a minute BEFORE anything visible happened, which
+     * staff read as "the machine is broken" (owner: "transactions need to be sped
+     * up vastly"). 6s keeps worst-case pickup inside a natural glance-at-the-screen
+     * beat. Poll cost is a single index point-lookup; the scale audit put the
+     * fleet ceiling far above this cadence. The durable end-state remains Realtime
+     * push with the poll as the floor.
+     */
+    private static final long INTERVAL_IDLE_MS = 6_000L;
 
-    private static final int FAST_POLLS = 15;   // ~1 minute at 4s
-    private static final int SLOW_POLLS = 50;   // ~10 more minutes at 12s
+    private static final int FAST_POLLS = 30;   // ~1 minute at 2s
+    private static final int SLOW_POLLS = 120;  // ~10 more minutes at 5s
 
     /** Consecutive TRANSPORT failures before we tell the operator the terminal is offline. */
     private static final int OFFLINE_AFTER_FAILURES = 3;

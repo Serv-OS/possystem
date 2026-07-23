@@ -1263,6 +1263,16 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   const [paxJob, setPaxJob] = useState(null);
   const [paxError, setPaxError] = useState('');
   const [paxBusy, setPaxBusy] = useState(false);
+  // v5.5.862: ONE check id per checkout, minted on the first send and held for the
+  // life of this modal. It does two jobs: (a) it is the pre-minted closed_check_id
+  // (was re-minted `chk-${Date.now()}` on EVERY press, breaking idempotent retry),
+  // and (b) for a COUNTER sale it becomes the check-key leg, so every counter sale
+  // gets its OWN key instead of the constant `<loc>:walkin:-` that every sale at
+  // the venue shared. That shared key is why a finished sale's remembered job id
+  // collided with the next customer's payment ("reference has already been used" /
+  // "already been paid") until localStorage was cleared by hand. A retry within
+  // THIS checkout reuses the ref → same key + id → re-attaches idempotently.
+  const paxCheckIdRef = useRef(null);
   useEffect(() => {
     let alive = true;
     // A training till never even looks — it must not learn about, or reach, a
@@ -1406,7 +1416,16 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     try {
       const locationId = getActiveLocationSync();
       const session = tableId ? useStore.getState().tables.find(t => t.id === tableId)?.session : null;
-      const checkKey = buildCheckKey({ locationId, tableId, sessionId: session?.id });
+      // Mint once per checkout (see paxCheckIdRef). Table checks keep the shared
+      // table:session key (two tills on one table MUST collide); counter sales get
+      // a per-sale leg so they never share a key with a previous customer.
+      if (!paxCheckIdRef.current) {
+        paxCheckIdRef.current = `chk-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+      }
+      const checkKey = buildCheckKey({
+        locationId, tableId, sessionId: session?.id,
+        leg: tableId ? undefined : paxCheckIdRef.current,
+      });
       const dueMinor = toMinor(grand);
       if (!(dueMinor > 0)) throw new Error('Nothing left for the card to take.');
 
@@ -1433,7 +1452,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
         // takes no tip whatever the terminal is configured for — but it travels
         // as a suppression flag, which can only ever make the job LESS tippable.
         suppressTip: skipTip || tipCfg?.tipping_enabled === false,
-        closedCheckId: `chk-${Date.now()}`,
+        closedCheckId: paxCheckIdRef.current,
         checkDraft: {
           tableId: tableId || null,
           tableLabel: tableId || null,
@@ -1447,6 +1466,11 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
           discounts: session?.discounts || [],
           subtotalMinor: toMinor(subtotal),
           totalMinor: toMinor(total),
+          // v5.5.862: the occupation identity. The paid-table guard and the durable
+          // reconciler both prove "same party" by seatedAt (session ids recur);
+          // without it a table check falls to the conservative headless/time-window
+          // paths. Counter sales have no session — stays null.
+          seatedAt: session?.seatedAt ?? null,
           source: 'pos_send_to_terminal',
         },
       });

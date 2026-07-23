@@ -4364,8 +4364,12 @@ export const useStore = create((set, get) => ({
   closeApprovedTerminalJob: async (job) => {
     if (isTrainingMode()) return;                                  // training tills never write money
     const d = job.check_draft || {};
-    const tableId = d.tableId;
-    if (!tableId || !job.closed_check_id) return;
+    const tableId = d.tableId || null;
+    // v5.5.862: tableId is no longer required — a Mode-3 COUNTER sale (walk-in /
+    // takeaway) has none, and those are exactly the jobs that used to park in
+    // 'approved' forever. closed_check_id stays mandatory: it is the single-closer
+    // election key.
+    if (!job.closed_check_id) return;
 
     // Fail closed, INDEPENDENT of the edge fn: only ever close a job the card actually
     // APPROVED, for a real charged amount. Without this, a stale (pre-846) edge fn under
@@ -4377,17 +4381,25 @@ export const useStore = create((set, get) => ({
 
     const { tables, closedChecks } = get();
     if (closedChecks.some(c => c.id === job.closed_check_id)) return;   // already closed on this device
-    const table = tables.find(t => t.id === tableId);
+    const table = tableId ? tables.find(t => t.id === tableId) : null;
     if (table?.session && isSessionClosed(tableId, table.session)) return;
 
     // Is the party live at this table NOW the SAME occupation the card paid for? The draft
     // froze the paying occupation's identity (sessionId + seatedAt); a re-seat mints a fresh
     // id + seatedAt, so a mismatch means a DIFFERENT party is seated — and must never be
     // closed, dropped, or attributed by this job (that would destroy their live unpaid order,
-    // breaching "tables MUST never be lost"). Same predicate terminal-job-status uses.
+    // breaching "tables MUST never be lost").
+    //
+    // v5.5.862 — seatedAt is now REQUIRED for a match, not optional. Session ids are
+    // ORD-<counter> and the counter resets on reload, so id-alone can collide with a
+    // DIFFERENT party (the same recurrence that false-tripped the paid-table guard).
+    // Table-Pay drafts always carry seatedAt (the RPC writes it), so this changes
+    // nothing for them; a draft WITHOUT seatedAt (older Mode-3) simply takes the
+    // headless path below and leaves any live table untouched — safe by construction.
     const liveIsPayingOccupation = !!table?.session
       && String(table.session.id) === String(d.sessionId)
-      && (d.seatedAt == null || Number(table.session.seatedAt) === Number(d.seatedAt));
+      && d.seatedAt != null
+      && Number(table.session.seatedAt) === Number(d.seatedAt);
 
     // ── stale-total guard — never close at a wrong amount ──────────────────────
     // A manager who reconciles a mismatch acknowledges it; resolve_terminal_job then
@@ -4439,7 +4451,10 @@ export const useStore = create((set, get) => ({
         tableId, tableLabel: d.tableLabel || tableId,
         locationId: d.locationId || null,
         server: d.server || 'Staff', staffId: d.staffId || null,
-        covers: d.covers || 1, orderType: 'dine-in',
+        covers: d.covers || 1,
+        // v5.5.862: honour the draft's own order type — a counter sale is not
+        // 'dine-in'. Table-Pay drafts say 'dine-in'; Mode-3 drafts carry the till's.
+        orderType: d.orderType || (tableId ? 'dine-in' : 'takeaway'),
         items, discounts: Array.isArray(d.discounts) ? d.discounts : [],
         // v5.5.851: the frozen draft carries the POS's OWN stamped totals — the delta
         // between total and subtotal IS whatever service was genuinely on the bill
@@ -4460,7 +4475,9 @@ export const useStore = create((set, get) => ({
         taxBreakdown: null,
       };
     }
-    record.source = 'pax_table_pay';   // tag both paths so reports attribute it correctly
+    // Tag with the job's REAL source so reports distinguish Table Pay from a POS
+    // send-to-terminal (both card-on-PAX, different flows).
+    record.source = d.source || 'pax_table_pay';
 
     // ── ELECT THE SINGLE CLOSER — the closed_checks PK does the arbitration ────
     const { ok, created } = await upsertClosedCheck(record);
@@ -4468,8 +4485,9 @@ export const useStore = create((set, get) => ({
     // Idempotent on every caller: prepend the tombstone.
     set(s => ({ closedChecks: s.closedChecks.some(c => c.id === record.id) ? s.closedChecks : [record, ...s.closedChecks] }));
     // Drop the floor slot ONLY if it is empty or still held by the paying occupation —
-    // a table re-seated by a NEW party keeps its live order untouched.
-    if (!table?.session || liveIsPayingOccupation) get()._dropTableFromFloor(tableId);
+    // a table re-seated by a NEW party keeps its live order untouched. (Counter sales
+    // have no floor slot at all.)
+    if (tableId && (!table?.session || liveIsPayingOccupation)) get()._dropTableFromFloor(tableId);
 
     // Non-idempotent effects fire for EXACTLY the elected closer.
     if (created) {
@@ -4488,6 +4506,10 @@ export const useStore = create((set, get) => ({
     // on any till — retries the idempotent upsert until it lands, then marks done.
     if (ok) {
       await markJobReconciled(job.id).catch(() => {});   // housekeeping — insert-first, so a crash here just retries
+      // v5.5.862: the sale is durably recorded — release this device's payment-
+      // reference handle for the check. A stale handle here is what produced
+      // "payment reference has already been used" on the NEXT sale sharing the key.
+      if (job.check_key) { try { forgetJob(job.check_key); } catch { /* best-effort */ } }
     } else {
       console.warn('[closeApprovedTerminalJob] check write did not land for', job.closed_check_id, '— job left approved for retry');
     }

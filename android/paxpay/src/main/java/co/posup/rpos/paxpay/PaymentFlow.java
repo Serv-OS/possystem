@@ -72,7 +72,7 @@ public final class PaymentFlow {
      * foregrounded and connected, start the charge anyway. Firing exactly once is guaranteed by
      * the `transactionStarted` guard shared by onDeviceConnected() and startTransactionOverHttp().
      */
-    public static final long DEVICE_CONNECTED_FALLBACK_MS = 4_000L;
+    public static final long DEVICE_CONNECTED_FALLBACK_MS = 2_000L;
 
     /**
      * The broadcast the controller sends when it is ready to take a transaction.

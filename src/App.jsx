@@ -94,6 +94,16 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.862', date: '22 Jul 2026', label: 'No more PAX merchant receipts + much faster terminal payments + durable cash-off',
+    changes: [
+      'RECEIPTS: the PAX no longer prints merchant receipts or shows its two print-confirm screens. Terminal payments now run receiptPrintingSource=PointOfSale and the server auto-confirms both receipt copies with Ryft the moment the card is taken (required, or Ryft voids the transaction) — your receipt prints from the POS as normal, with the card block it already carries.',
+      'SPEED (terminal app 2.0-rc4): a payment sent to an idle terminal is picked up in ~6s worst case (was up to 30s); active pickup 2s (was 4s); charge fallback 2s (was 4s); result confirmed at 1s cadence on both the terminal and the POS (was 1.5-2s). Net: tens of seconds off a typical transaction.',
+      'DURABLE CASH-OFF: send-to-terminal payments now close the check even if nobody is watching the checkout screen — the reconciler that already closed Table-Pay sales now closes POS-dispatched ones too (counter sales included), books them under their real order type, and releases the payment reference so "reference has already been used" cannot recur. Single-closer election unchanged: watched sales still close instantly from the modal, never twice.',
+      'COUNTER KEYS: every counter sale now gets its own payment key (was one shared key per venue — a finished sale\u2019s remembered reference collided with the next customer\u2019s payment). Table checks keep the shared table key on purpose (two tills on one table must collide). Retries within one checkout re-attach idempotently.',
+      'Occupation identity: send-to-terminal drafts now carry seatedAt, so the paid-table guard and the reconciler can prove same-party for table checks paid from the POS.',
+    ],
+  },
+  {
     version: '5.5.861', date: '22 Jul 2026', label: 'Paid-table guard indexed + payment invariants documented',
     changes: [
       'Adversarial review of the occupation-aware guard: CONFIRM-SAFE (double-charge protection intact incl. outages; errs toward refusal, never a charge). Its follow-ups landed: a partial index for the guard\u2019s approved-status lookup (was an unindexed scan of an append-only table, once per open table per terminal poll), and three payment invariants written into INVARIANTS.md — seatedAt is write-once per occupation (now load-bearing for a money guard), terminal assignment is a fence, and the Ryft link is stamped by explicit id only.',

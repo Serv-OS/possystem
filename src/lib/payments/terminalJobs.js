@@ -382,7 +382,7 @@ export async function fetchJobs(jobIds) {
  * keep polling and let the caller's own timeout decide, because inferring failure
  * from a network blip is how a charged sale gets recorded as declined.
  */
-export async function pollTerminalJob(jobId, { onUpdate, intervalMs = 2000, timeoutMs = 5 * 60_000, signal } = {}) {
+export async function pollTerminalJob(jobId, { onUpdate, intervalMs = 1000, timeoutMs = 5 * 60_000, signal } = {}) {
   const started = Date.now();
   let last = null;
   for (;;) {
@@ -426,13 +426,22 @@ export async function cancelTerminalJob(jobId) {
   }
 }
 
-// ── Table-Pay reconciler support (v5.5.846) ─────────────────────────────────────
-// The POS closes a table paid ON the PAX (source='pax_table_pay'). The POS has NO
-// direct SELECT on terminal_jobs by design, so discovery goes through the fenced
-// terminal-job-status edge fn; the two housekeeping RPCs are fenced like
-// terminal_job_cancel. needs_human jobs are excluded (an amount mismatch already
-// parked for a manager). The source filter keeps this disjoint from Mode 3
-// (pos_send_to_terminal, which the till already closes) — no double-write.
+// ── Terminal-payment reconciler support (v5.5.846, widened v5.5.862) ────────────
+// The POS durably closes checks paid on the PAX. The POS has NO direct SELECT on
+// terminal_jobs by design, so discovery goes through the fenced terminal-job-status
+// edge fn; the two housekeeping RPCs are fenced like terminal_job_cancel.
+// needs_human jobs are excluded (an amount mismatch already parked for a manager).
+//
+// v5.5.862 — BOTH sources now reconcile. The old filter kept Mode 3
+// (pos_send_to_terminal) out on the theory that "the till already closes it" —
+// true only while the checkout screen stays open watching the job. Close the modal,
+// crash the till, or walk away, and the sale sat in 'approved' FOREVER: money taken,
+// check never recorded, the stale handle then refusing the next sale ("payment
+// reference has already been used") and the paid-guard false-matching recurring
+// keys. The reconciler is the durable close for BOTH; double-writes are impossible
+// because closed_checks' PK elects a single closer (upsertClosedCheck created flag)
+// and the modal path uses the same pre-minted closed_check_id.
+const RECONCILABLE_SOURCES = ['pax_table_pay', 'pos_send_to_terminal'];
 
 export async function fetchApprovedTablePayJobs(locationId) {
   if (!locationId) return [];
@@ -445,7 +454,7 @@ export async function fetchApprovedTablePayJobs(locationId) {
     x => x?.status === 'approved'
       && Number(x?.charge_minor) > 0
       && x?.needs_human === false
-      && x?.check_draft?.source === 'pax_table_pay',
+      && RECONCILABLE_SOURCES.includes(x?.check_draft?.source),
   );
 }
 
