@@ -346,7 +346,7 @@ Local `.env.local` has placeholder values — `isMock=true` locally, real values
 
 **Every deploy MUST:**
 1. Update `src/lib/version.js` with new version string
-2. Add a new entry at the top of `CHANGELOG` in `src/App.jsx`
+2. Add a new entry at the top of `CHANGELOG` in `src/lib/changelog.js` (moved out of App.jsx in v5.5.890 — it lazy-loads with the What's New modal)
 3. `npm run build` — verify clean before pushing
 
 ---
@@ -357,7 +357,7 @@ Local `.env.local` has placeholder values — `isMock=true` locally, real values
 - **Static imports only in bundled code.** Dynamic `import(...).then()` silently fails in the Vite bundle. Use static `import` at the top of the file.
 - **No localStorage for persistent data.** Everything must go to Supabase. localStorage is only for offline fallback caching.
 - **Always resolve locationId before any DB write.** Never use `LOCATION_ID = 'loc-demo'` as a real value.
-- **Version bump on every deploy** — `version.js` + `CHANGELOG` in `App.jsx`.
+- **Version bump on every deploy** — `version.js` + `CHANGELOG` in `src/lib/changelog.js`.
 - **No TypeScript, no tests** — be careful with types, validate manually.
 - **CSS custom properties** — use `var(--bg)`, `var(--acc)`, `var(--t1)` etc., never hardcode colours.
 - **Kiosk/online use anonymous auth** — `signInAnonymously()`. Edge functions accept both authenticated and anonymous callers.
@@ -417,7 +417,7 @@ Tables MUST never be lost between updates (config push, refresh, wake-from-sleep
 4. Prefer small, reviewable diffs — fix one thing at a time.
 5. If a change would violate `INVARIANTS.md`, stop and ask.
 6. Update `CURRENT_WORK.md` at the end of each session with what was done, what's in progress, and what's next.
-7. Every deploy: update `src/lib/version.js` AND add a top-of-CHANGELOG entry in `src/App.jsx`.
+7. Every deploy: update `src/lib/version.js` AND add a top-of-CHANGELOG entry in `src/lib/changelog.js` (NOT App.jsx — moved v5.5.890).
 8. Never use dynamic imports inside bundled component code — static imports only.
 9. Never write `loc-demo` to Supabase — always resolve the real locationId first.
 10. When adding a DB column, update: the SQL schema, `sbUpsertCategory`/`upsertMenuCategory` (both!), and the SyncBridge mapping.

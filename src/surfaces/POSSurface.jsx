@@ -86,20 +86,14 @@ export default function POSSurface() {
   const [cashActionReason, setCashActionReason] = useState('');
   useEffect(() => {
     if (typeof loadCurrentDrawerSession === 'function') loadCurrentDrawerSession();
-    // v4.6.52: periodic poll
-    const _lockPoll = setInterval(() => {
-      try {
-        if (typeof useStore.getState().loadCashDrawers === 'function') useStore.getState().loadCashDrawers();
-        if (typeof loadCurrentDrawerSession === 'function') loadCurrentDrawerSession();
-      } catch {}
-    }, 15000);
-    // capture cleanup for unmount
-    window.__rposLockPollClean = () => clearInterval(_lockPoll);
+    // v5.5.890: the old v4.6.52 15s "_lockPoll" here did the SAME work as the poll below,
+    // and its cleanup lived on window.__rposLockPollClean which nothing ever called — so it
+    // LEAKED a permanent 15s DB poll on every POS mount (stacking on each surface switch).
+    // That leak is what actually generated the 394k cash_drawers calls in pg_stat_statements.
+    // Deleted; the interval below is the one poll.
     // v4.6.49: periodic poll of cashDrawers + drawer session. Catches remote
     // changes from the back office (manager cashes up / cashes in a drawer)
-    // without needing to refresh the POS. v5.5.889: 15s → 60s — this poll was the
-    // single busiest app query in pg_stat_statements (394k calls) and a manager
-    // cash-up reaching the till within a minute is plenty.
+    // without needing to refresh the POS. v5.5.889: 15s → 60s.
     const _poll = setInterval(async () => {
       try {
         if (typeof useStore.getState().loadCashDrawers === 'function') await useStore.getState().loadCashDrawers();
@@ -247,6 +241,31 @@ export default function POSSurface() {
       price: getItemPrice ? getItemPrice(i, orderType, deviceMenuId) : (i.pricing?.base ?? i.price ?? 0),
     })), [rawItems, orderType]);
 
+  // v5.5.890: index lookups the product grid used to do INLINE per tile per render —
+  // menuCategories.find + MENU_ITEMS.filter were O(tiles × menu size) on every keystroke
+  // and every store write, the prime tap/type-lag suspect on Sunmi WebViews. Display-only.
+  const catById = useMemo(() => new Map((menuCategories || []).map(c => [c.id, c])), [menuCategories]);
+  const childrenByParent = useMemo(() => {
+    const m = new Map();
+    for (const it of MENU_ITEMS) {
+      if (!it.parentId || it.archived) continue;
+      const arr = m.get(it.parentId);
+      if (arr) arr.push(it); else m.set(it.parentId, [it]);
+    }
+    return m;
+  }, [MENU_ITEMS]);
+  // v5.5.890: per-category eligible-item counts in ONE pass — the category rail used to run a
+  // full MENU_ITEMS.filter per category per render. Same predicate as before; sub-category
+  // counts roll up via the subIds sum at the call site.
+  const directCountByCat = useMemo(() => {
+    const m = new Map();
+    for (const i of MENU_ITEMS) {
+      if (i.archived || i.parentId || (i.type === 'subitem' && !i.soldAlone)) continue;
+      m.set(i.cat, (m.get(i.cat) || 0) + 1);
+    }
+    return m;
+  }, [MENU_ITEMS]);
+
   // Order types this terminal is allowed to show (from device profile)
   const allowedOrderTypes = deviceConfig?.enabledOrderTypes || ['dine-in', 'takeaway', 'collection'];
 
@@ -312,6 +331,14 @@ export default function POSSurface() {
   const activeTable = activeTableId ? tables.find(t=>t.id===activeTableId) : null;
   const session = activeTable?.session;
   const items = getPOSItems();
+  // v5.5.890: footer tax breakdown was an un-memoized IIFE in the totals JSX — recomputed the
+  // whole tax engine on every render (every keystroke / store write). Same memo pattern as
+  // CheckoutModal. Display-only.
+  const footerTaxBreakdown = useMemo(() => {
+    if (!taxRates?.length || !items.length) return null;
+    try { return calculateOrderTax(items.filter(i => !i.voided), taxRates, orderType || 'dine-in'); }
+    catch { return null; }
+  }, [items, taxRates, orderType]);
   const { subtotal, service, total, itemCount, checkDiscount, discountedSub, serviceChargeWaived, serviceChargeApplicable, autoDiscounts = [], deliveryFee = 0, deliveryQuote = null } = getPOSTotals();
   // v5.5.646: auto-fetch an Uber Direct delivery quote when a delivery order has an
   // address + items, so the surcharge is on the bill BEFORE checkout. Debounced; the
@@ -1262,24 +1289,17 @@ export default function POSSurface() {
                     Below the {deliveryQuote.minOrderMinor != null ? money(deliveryQuote.minOrderMinor/100) : ''} delivery minimum
                   </div>
                 )}
-                {/* Tax breakdown — shown below service charge */}
-                {taxRates?.length > 0 && items.length > 0 && (() => {
-                  try {
-                    const tb = calculateOrderTax(items.filter(i=>!i.voided), taxRates, orderType || 'dine-in');
-                    if (!tb?.breakdown?.length) return null;
-                    const hasExcl = tb.hasExclusiveTax;
-                    return tb.breakdown.filter(b => b.tax >= 0).map(b => {
-                      const pct = (b.rate.rate*100).toFixed(1).replace('.0','');
-                      const label = hasExcl ? `+ ${b.rate.name} (${pct}%)` : `incl. ${b.rate.name} (${pct}%)`;
-                      return (
-                        <div key={b.rate.id} style={{display:'flex',justifyContent:'space-between',fontSize:11,color:'var(--t4)',marginBottom:2}}>
-                          <span>{label}</span>
-                          <span style={{fontFamily:'var(--font-mono)'}}>{money(b.tax)}</span>
-                        </div>
-                      );
-                    });
-                  } catch { return null; }
-                })()}
+                {/* Tax breakdown — shown below service charge (memoized v5.5.890) */}
+                {footerTaxBreakdown?.breakdown?.length > 0 && footerTaxBreakdown.breakdown.filter(b => b.tax >= 0).map(b => {
+                  const pct = (b.rate.rate*100).toFixed(1).replace('.0','');
+                  const label = footerTaxBreakdown.hasExclusiveTax ? `+ ${b.rate.name} (${pct}%)` : `incl. ${b.rate.name} (${pct}%)`;
+                  return (
+                    <div key={b.rate.id} style={{display:'flex',justifyContent:'space-between',fontSize:11,color:'var(--t4)',marginBottom:2}}>
+                      <span>{label}</span>
+                      <span style={{fontFamily:'var(--font-mono)'}}>{money(b.tax)}</span>
+                    </div>
+                  );
+                })}
                 <div style={{display:'flex',justifyContent:'space-between',fontSize:22,fontWeight:800,marginTop:8,paddingTop:8,borderTop:'1px solid var(--bdr)'}}>
                   <span>Total</span>
                   <span style={{color:'var(--acc)',fontFamily:'var(--font-mono)',letterSpacing:'-.01em'}}>{money(total)}</span>
@@ -1383,9 +1403,10 @@ export default function POSSurface() {
             const isActive = cat === c.id && !search;
             const color = c.color || 'var(--acc)';
             const subIds = menuCategories.filter(s => s.parentId === c.id).map(s => s.id);
+            // v5.5.890: one-pass memoized counts (was a full MENU_ITEMS.filter per category per render)
             const count = c.id === 'quick'
               ? quickItems.length
-              : MENU_ITEMS.filter(i => !i.archived && !i.parentId && (i.type !== 'subitem' || i.soldAlone) && (i.cat === c.id || subIds.includes(i.cat))).length;
+              : (directCountByCat.get(c.id) || 0) + subIds.reduce((s, id) => s + (directCountByCat.get(id) || 0), 0);
             const hasSubcats = subIds.length > 0;
             return (
               <button key={c.id} onClick={() => { setCat(c.id); setSearch(''); }} className="cat-btn" style={{
@@ -1523,7 +1544,8 @@ export default function POSSurface() {
                   if (item._spacer) return <div key={item.id} style={{ borderRadius:14, background:'transparent', pointerEvents:'none' }}/>;
 
                   // Resolve category colour/icon from store (Menu Manager categories)
-                  const storeCat = menuCategories.find(c => c.id === item.cat);
+                  // v5.5.890: Map lookups (memoized above) — was a full scan per tile per render.
+                  const storeCat = catById.get(item.cat);
                   const legacyMeta = CAT_META[item.cat] || CAT_META.quick;
                   const catColor = storeCat?.color || legacyMeta.color || 'var(--acc)';
                   const catIcon  = storeCat?.icon  || legacyMeta.icon  || '🍽';
@@ -1531,7 +1553,7 @@ export default function POSSurface() {
                   const is86=eightySixIds.includes(item.id);
                   const rank=cat==='quick'?QUICK_IDS.indexOf(item.id):-1;
                   const isHot=rank>=0&&rank<3;
-                  const variantKids=MENU_ITEMS.filter(c=>c.parentId===item.id&&!c.archived);
+                  const variantKids=childrenByParent.get(item.id)||[];
                   const isVariantParent=variantKids.length>0||item.type==='variants';
                   const fromPrice=isVariantParent&&variantKids.length>0
                     ? Math.min(...variantKids.map(c=>c.pricing?.base??c.price??0))

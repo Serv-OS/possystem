@@ -16,6 +16,14 @@ import {
 } from './db';
 import { getLocationConfig, getBusinessDayStart } from './locationTime';
 
+// v5.5.890: run-once guard. On MPOS this hook is mounted TWICE in the same render pass
+// (App() calls it unconditionally AND MPOSSurface kept its own v5.5.79-era call), so the
+// entire ~14-query init sequence ran twice concurrently on every MPOS boot — including
+// reconcileShiftOnMount, which has no concurrency guard and could double-open a shift.
+// The flag flips synchronously before any await, so the second mount is a clean no-op.
+// Neither call site is removed (each is load-bearing for a different device mode).
+let _initRan = false;
+
 export default function useSupabaseInit() {
   const { menuItems, setMenuItems } = useStore.getState?.() || {};
 
@@ -23,6 +31,8 @@ export default function useSupabaseInit() {
     if (isMock) return;
 
     async function init() {
+      if (_initRan) return;
+      _initRan = true;
       const store = useStore.getState();
 
       // v5.5.184: POS devices (paired via pairing code) have no Supabase Auth

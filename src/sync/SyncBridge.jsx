@@ -624,6 +624,7 @@ export default function SyncBridge({ onSyncPulse }) {
       if (state.tables === prev.tables) return;
       const meaningful = state.tables.some((t, i) => {
         const p = prev.tables[i];
+        if (t === p) return false; // v5.5.890: untouched table (ref-equal) — skip deep compare
         if (!p) return true;
         if ((t.session == null) !== (p.session == null)) return true; // open/close
         if (t.session?.covers !== p.session?.covers) return true;     // covers
@@ -722,6 +723,7 @@ export default function SyncBridge({ onSyncPulse }) {
         // table can be handed to any overwrite. Every other change stays on the debounce.
         const sawSend = state.tables.some((t, i) => {
           const p = prev.tables[i];
+          if (t === p) return false; // v5.5.890: ref-equal — nothing changed here
           if (!p || !t.session) return false;
           const tSent = (t.session.items || []).filter(x => x.status === 'sent').length;
           const pSent = (p.session?.items || []).filter(x => x.status === 'sent').length;
@@ -771,6 +773,7 @@ export default function SyncBridge({ onSyncPulse }) {
       if (onlyTables) {
         const qtyOnly = !state.tables.some((t, i) => {
           const p = prev.tables[i];
+          if (t === p) return false; // v5.5.890: ref-equal — no structural change
           if (!p) return true;
           if ((t.session == null) !== (p.session == null)) return true;
           const tCount = (t.session?.items || []).filter(i => !i.voided).length;
