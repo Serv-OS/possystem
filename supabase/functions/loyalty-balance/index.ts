@@ -171,6 +171,45 @@ Deno.serve(async (req) => {
         completed_count: progressMap[p.id]?.completed_count || 0,
         last_stamp_at: progressMap[p.id]?.last_stamp_at || null,
       }));
+
+      // Earned rewards = completed cards MINUS redeemed (redeem ledger = ops stamp_transactions
+      // type='redeem' rows, written by loyalty-redeem). Completing a card mints nothing else —
+      // this derived count IS the customer's reward balance, so it must be on every card here
+      // or completed cards never show up as redeemable anywhere (the original bug).
+      for (const sc of stampCards) {
+        if (!sc.completed_count) { sc.rewards_available = 0; continue; }
+        const { count } = await opsAdmin
+          .from('stamp_transactions')
+          .select('id', { count: 'exact', head: true })
+          .eq('customer_id', membership.customer_id)
+          .eq('program_id', sc.id)
+          .eq('type', 'redeem');
+        sc.rewards_available = Math.max(0, (sc.completed_count || 0) - (count || 0));
+      }
+    }
+  } catch {}
+
+  // Fetch reward_config for programs with an earned reward — the POS needs eligible_items to
+  // apply the free-item discount. (Kept out of the main select to leave its shape untouched.)
+  const stampRewards: any[] = [];
+  try {
+    const withRewards = stampCards.filter((sc: any) => (sc.rewards_available || 0) > 0);
+    if (withRewards.length) {
+      const { data: cfgs } = await platformAdmin
+        .from('stamp_card_programs')
+        .select('id, reward_config')
+        .in('id', withRewards.map((sc: any) => sc.id));
+      const cfgMap: Record<string, any> = {};
+      (cfgs || []).forEach((c: any) => { cfgMap[c.id] = c.reward_config || {}; });
+      for (const sc of withRewards) {
+        stampRewards.push({
+          program_id: sc.id,
+          name: sc.reward_description || sc.name,
+          reward_type: sc.reward_type || 'free_item',
+          reward_config: cfgMap[sc.id] || {},
+          available: sc.rewards_available,
+        });
+      }
     }
   } catch {}
 
@@ -240,6 +279,9 @@ Deno.serve(async (req) => {
     last_earn_at: membership.last_earn_at,
     // v5.5.264: stamp cards and gift cards for kiosk/online surfaces
     stamp_cards: stampCards,
+    // v5.5.884: earned stamp-card rewards (completed cards not yet redeemed) — the POS/portal
+    // rewards lists were points-only, so a completed card never appeared anywhere.
+    stamp_rewards: stampRewards,
     gift_cards: giftCards,
     // v5.5.218: referral_code and birthday redacted from public endpoint.
     // These are returned by the authenticated loyalty-member-lookup instead.

@@ -117,15 +117,31 @@ export async function fetchCustomerByPhone(rawPhone, locationId) {
         if (balRes.ok) {
           loyaltyData = await balRes.json();
           credit = loyaltyData.points_balance || 0;
-          rewards = (loyaltyData.rewards_available || []).map(r => ({
-            id: r.id,
-            label: r.name,
-            description: r.description || '',
-            icon: r.icon || 'gift',
-            pointsCost: r.points_cost,
-            type: r.reward_type,
-            value: r.reward_value,
-          }));
+          // Earned stamp-card rewards come FIRST — a completed card is already paid for
+          // (v5.5.884: these never appeared anywhere before; the list was points-only).
+          rewards = [
+            ...(loyaltyData.stamp_rewards || []).map(sr => ({
+              id: `stamp:${sr.program_id}`,
+              label: sr.name,
+              description: sr.available > 1 ? `Stamp card reward · ${sr.available} available` : 'Stamp card reward',
+              icon: '🎟️',
+              pointsCost: 0,
+              type: sr.reward_type,
+              value: sr.reward_config || {},
+              stamp: true,
+              stampProgramId: sr.program_id,
+              available: sr.available,
+            })),
+            ...(loyaltyData.rewards_available || []).map(r => ({
+              id: r.id,
+              label: r.name,
+              description: r.description || '',
+              icon: r.icon || 'gift',
+              pointsCost: r.points_cost,
+              type: r.reward_type,
+              value: r.reward_value,
+            })),
+          ];
         }
       }
     } catch (loyaltyErr) {

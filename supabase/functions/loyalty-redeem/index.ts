@@ -38,6 +38,7 @@ Deno.serve(async (req) => {
     customer_id,
     location_id,
     reward_id,
+    stamp_program_id,   // redeem an EARNED stamp-card reward instead of a points reward
     channel = 'pos',
     closed_check_id,
     staff_id,
@@ -45,12 +46,103 @@ Deno.serve(async (req) => {
 
   if (!customer_id) return json({ error: 'customer_id required' }, 400);
   if (!location_id) return json({ error: 'location_id required' }, 400);
-  if (!reward_id) return json({ error: 'reward_id required' }, 400);
+  if (!reward_id && !stamp_program_id) return json({ error: 'reward_id or stamp_program_id required' }, 400);
 
   // ── Resolve company ────────────────────────────────────────────────────
   const resolved = await resolveCompanyForLocation(caller.id, location_id);
   if (resolved instanceof Response) return resolved;
   const companyId = resolved;
+
+  // ── Stamp-card reward redemption ───────────────────────────────────────
+  // A completed stamp card IS the reward — there is no voucher row. Availability is derived:
+  // customer_stamp_cards.completed_count MINUS redeem rows in ops stamp_transactions. Redeeming
+  // appends a type='redeem' ledger row (idempotent, race-guarded), costing zero points.
+  if (stamp_program_id) {
+    const { data: prog } = await platformAdmin
+      .from('stamp_card_programs')
+      .select('id, name, reward_type, reward_description, reward_config, active')
+      .eq('id', stamp_program_id)
+      .eq('company_id', companyId)
+      .maybeSingle();
+    if (!prog || prog.active === false) return json({ error: 'Stamp card programme not found or inactive' }, 404);
+
+    const rewardInfo = {
+      id: `stamp:${prog.id}`,
+      name: prog.reward_description || prog.name,
+      type: prog.reward_type || 'free_item',
+      value: prog.reward_config || {},
+      points_cost: 0,
+    };
+
+    const countRedeemed = async (): Promise<number> => {
+      const { count } = await opsAdmin
+        .from('stamp_transactions')
+        .select('id', { count: 'exact', head: true })
+        .eq('customer_id', customer_id)
+        .eq('program_id', prog.id)
+        .eq('type', 'redeem');
+      return count || 0;
+    };
+
+    const { data: card } = await platformAdmin
+      .from('customer_stamp_cards')
+      .select('completed_count')
+      .eq('customer_id', customer_id)
+      .eq('program_id', prog.id)
+      .maybeSingle();
+    const completed = card?.completed_count || 0;
+    if (completed - (await countRedeemed()) <= 0) {
+      return json({ error: 'No stamp card reward available for this customer' }, 400);
+    }
+
+    // Idempotency — same double-tap shape as the points path.
+    const idemKey = closed_check_id
+      ? `stampredeem:${closed_check_id}:${prog.id}`
+      : `stampredeem:${customer_id}:${prog.id}:${Math.floor(Date.now() / 30000)}`;
+    const { data: dup } = await opsAdmin
+      .from('stamp_transactions')
+      .select('id')
+      .eq('idempotency_key', idemKey)
+      .maybeSingle();
+    if (dup) {
+      return json({ status: 'already_processed', stamp: true, points_deducted: 0, balance: null, reward: rewardInfo, idempotency_key: idemKey });
+    }
+
+    const { data: ins, error: insErr } = await opsAdmin
+      .from('stamp_transactions')
+      .insert({
+        customer_id,
+        program_id: prog.id,
+        location_id,
+        stamps: 0,
+        type: 'redeem',
+        note: `Redeemed: ${rewardInfo.name}${staff_id ? ` (staff ${staff_id})` : ''}`,
+        order_ref: closed_check_id || null,
+        idempotency_key: idemKey,
+      })
+      .select('id')
+      .single();
+    if (insErr || !ins) {
+      console.error('[loyalty-redeem] stamp redeem insert failed:', insErr?.message);
+      return json({ error: 'Failed to record redemption' }, 500);
+    }
+
+    // Race guard: two concurrent redeems can both pass the pre-check — recount after insert
+    // and roll back our own row if the ledger over-shot the completed count.
+    if ((await countRedeemed()) > completed) {
+      await opsAdmin.from('stamp_transactions').delete().eq('id', ins.id);
+      return json({ error: 'Reward already redeemed' }, 409);
+    }
+
+    return json({
+      status: 'redeemed',
+      stamp: true,
+      points_deducted: 0,
+      balance: null,
+      reward: rewardInfo,
+      idempotency_key: idemKey,
+    });
+  }
 
   // ── Get reward ─────────────────────────────────────────────────────────
   const { data: reward } = await platformAdmin

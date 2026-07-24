@@ -94,6 +94,16 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.884', date: '23 Jul 2026', label: 'FIX — completed stamp cards now become redeemable rewards (POS + customer portal)',
+    changes: [
+      'Root cause: completing a stamp card only bumped a counter — no reward was minted anywhere, no redemption existed, and every rewards list (POS checkout, portal, kiosk) was points-only. The earn half worked; the redeem half was never built.',
+      'A completed card now IS a reward: availability = completed cards minus redeemed (ledger = redeem rows in stamp_transactions — no schema change). loyalty-balance returns stamp_rewards, so every surface reading it sees them.',
+      'POS checkout → Loyalty rewards now lists earned stamp rewards as FREE (🎟️, "stamp card ×N") alongside points rewards; redeeming records the redemption (race-safe, idempotent, zero points) and applies the free-item discount using the programme\'s eligible items — same maths as points free-item rewards.',
+      'Customer portal → Rewards shows an "Earned rewards" section ("Stamp card complete — show this at the till"); the Rewards tab now also appears on stamps-only venues when a reward is earned; the Home rewards count includes them.',
+      'Live-verified: Peter\'s completed "Test Stamp Card" now returns "your 11th coffee on us - FREE Small Latte" (1 available) from loyalty-balance. Redemption left for a real till test.',
+    ],
+  },
+  {
     version: '5.5.883', date: '23 Jul 2026', label: 'FIX — customer allergens now actually save to the customer profile from a sale',
     changes: [
       'Root cause: the POS detected "customer attached + allergens set" and showed a "Save to profile?" toast with a Save button — but the toast system only accepts a message and a type, so the button (and the save behind it) was silently discarded. The save code was UNREACHABLE; the feature never worked.',

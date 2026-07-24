@@ -1005,7 +1005,10 @@ function LoyaltyRewardsEntry({ customer, loyaltyData, items = [], total, onAppli
         body: JSON.stringify({
           customer_id: loyaltyData.customerId || customer?.customerId,
           location_id: getActiveLocationSync(),
-          reward_id: reward.id,
+          // Stamp-card rewards redeem by programme (zero points); points rewards by reward id.
+          ...(reward.stamp
+            ? { stamp_program_id: reward.stampProgramId }
+            : { reward_id: reward.id }),
           channel: 'pos',
         }),
       });
@@ -1134,10 +1137,19 @@ function LoyaltyRewardsEntry({ customer, loyaltyData, items = [], total, onAppli
             )}
           </div>
           <div style={{ textAlign: 'right', flexShrink: 0 }}>
-            <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--acc)', fontFamily: 'var(--font-mono)' }}>
-              {r.pointsCost}
-            </div>
-            <div style={{ fontSize: 10, color: 'var(--t4)' }}>pts</div>
+            {r.stamp ? (
+              <>
+                <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--grn)' }}>FREE</div>
+                <div style={{ fontSize: 10, color: 'var(--t4)' }}>stamp card{r.available > 1 ? ` ×${r.available}` : ''}</div>
+              </>
+            ) : (
+              <>
+                <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--acc)', fontFamily: 'var(--font-mono)' }}>
+                  {r.pointsCost}
+                </div>
+                <div style={{ fontSize: 10, color: 'var(--t4)' }}>pts</div>
+              </>
+            )}
           </div>
           {redeeming === r.id && <div style={{ fontSize: 11, color: 'var(--t3)', marginLeft: 6 }}>...</div>}
         </button>

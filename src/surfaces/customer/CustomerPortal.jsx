@@ -878,9 +878,12 @@ function Dashboard({ t, location, customer, loyalty, giftCards, stampCards, tab,
   const stampsEnabled = loyalty?.stamps_enabled !== false;
 
   const hasStamps = stampsEnabled && stampCards && stampCards.length > 0;
+  // Earned stamp-card rewards must surface even on a stamps-only venue (the Rewards tab used
+  // to be points-gated, so a completed card's free item was invisible — the original bug).
+  const hasStampRewards = (loyalty?.stamp_rewards || []).length > 0;
   const tabs = [
     { id: 'home', label: 'Home', icon: '🏠' },
-    ...(pointsEnabled ? [{ id: 'rewards', label: 'Rewards', icon: '🎁' }] : []),
+    ...(pointsEnabled || hasStampRewards ? [{ id: 'rewards', label: 'Rewards', icon: '🎁' }] : []),
     ...(hasStamps ? [{ id: 'stamps', label: 'Stamps', icon: '☕' }] : []),
     ...(pointsEnabled ? [{ id: 'history', label: 'History', icon: '📋' }] : []),
     { id: 'cards', label: 'Gift Cards', icon: '💳' },
@@ -916,7 +919,7 @@ function Dashboard({ t, location, customer, loyalty, giftCards, stampCards, tab,
       </div>
 
       {tab === 'home' && <HomeTab t={t} loyalty={loyalty} customer={customer} giftCards={giftCards} stampCards={stampCards} setTab={setTab} walletAvail={walletAvail} walletLoading={walletLoading} addToWallet={addToWallet} pointsEnabled={pointsEnabled} stampsEnabled={stampsEnabled} />}
-      {tab === 'rewards' && pointsEnabled && <RewardsTab t={t} loyalty={loyalty} />}
+      {tab === 'rewards' && (pointsEnabled || hasStampRewards) && <RewardsTab t={t} loyalty={loyalty} pointsEnabled={pointsEnabled} />}
       {tab === 'stamps' && stampsEnabled && <StampCardsTab t={t} stampCards={stampCards} />}
       {tab === 'history' && pointsEnabled && <HistoryTab t={t} loyalty={loyalty} />}
       {tab === 'cards' && <GiftCardsTab t={t} giftCards={giftCards} />}
@@ -965,7 +968,8 @@ function PointsHero({ t, loyalty, customer }) {
 
 // ── Home Tab ─────────────────────────────────────────────────────────────
 function HomeTab({ t, loyalty, customer, giftCards, stampCards, setTab, walletAvail, walletLoading, addToWallet, pointsEnabled = true, stampsEnabled = true }) {
-  const rewardsAvail = loyalty?.rewards_available?.length || 0;
+  const rewardsAvail = (loyalty?.rewards_available?.length || 0)
+    + (loyalty?.stamp_rewards || []).reduce((s, r) => s + (r.available || 0), 0);
   const giftActive = giftCards?.length || 0;
   const totalBalance = giftCards.reduce((s, c) => s + (c.balance || 0), 0);
   const activeStamps = stampsEnabled ? (stampCards || []).filter(sc => sc.stamps_collected > 0) : [];
@@ -1104,15 +1108,37 @@ function HomeTab({ t, loyalty, customer, giftCards, stampCards, setTab, walletAv
 }
 
 // ── Rewards Tab ──────────────────────────────────────────────────────────
-function RewardsTab({ t, loyalty }) {
+function RewardsTab({ t, loyalty, pointsEnabled = true }) {
   if (!loyalty) return <Card t={t}><EmptyState icon="🎁" text="Loyalty not available yet" /></Card>;
 
   const available = loyalty.rewards_available || [];
   const all = loyalty.all_rewards || [];
   const locked = all.filter(r => !available.find(a => a.id === r.id));
+  const stampRewards = loyalty.stamp_rewards || [];
 
   return (
     <>
+      {stampRewards.length > 0 && (
+        <>
+          <SectionTitle t={t}>Earned rewards</SectionTitle>
+          {stampRewards.map(sr => (
+            <Card key={sr.program_id} t={t} style={{ marginBottom: 10 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <span style={{ fontSize: 26 }}>🎟️</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 800, fontSize: 14 }}>
+                    {sr.name}{sr.available > 1 ? ` ×${sr.available}` : ''}
+                  </div>
+                  <div style={{ fontSize: 12, color: t.textMuted, marginTop: 2 }}>
+                    Stamp card complete — show this at the till to redeem
+                  </div>
+                </div>
+              </div>
+            </Card>
+          ))}
+        </>
+      )}
+
       {available.length > 0 && (
         <>
           <SectionTitle t={t}>Ready to redeem</SectionTitle>
@@ -1131,7 +1157,7 @@ function RewardsTab({ t, loyalty }) {
         </>
       )}
 
-      {all.length === 0 && (
+      {all.length === 0 && stampRewards.length === 0 && (
         <Card t={t}><EmptyState icon="🎁" text="No rewards set up yet. Keep earning points!" /></Card>
       )}
     </>
