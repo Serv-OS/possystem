@@ -98,6 +98,9 @@ const CHANGELOG = [
     changes: [
       'Card readers \u2192 PAX terminal \u2192 Settings: the \u201cAssign to a till\u201d dropdown is now \u201cAssign to a POS till or kiosk\u201d and lists the venue\u2019s kiosks alongside POS tills \u2014 pick the kiosk and the terminal is bound to it, one place for all assignments.',
       'FIX: a terminal assigned to a kiosk could not save ANY settings \u2014 every save failed with \u201cthat till is not a POS device at this terminal\u2019s venue\u201d. The server-side settings write now accepts kiosk bindings (applied to the live database).',
+    ],
+  },
+  {
     version: '5.5.884', date: '23 Jul 2026', label: 'FIX — completed stamp cards now become redeemable rewards (POS + customer portal)',
     changes: [
       'Root cause: completing a stamp card only bumped a counter — no reward was minted anywhere, no redemption existed, and every rewards list (POS checkout, portal, kiosk) was points-only. The earn half worked; the redeem half was never built.',
