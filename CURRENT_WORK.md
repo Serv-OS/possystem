@@ -1,3 +1,45 @@
+# Session — 24 Jul 2026 (v5.5.887 review → v5.5.888) — promo codes on kiosk + online: verified + hardened
+
+## Context
+Task: promo/offer code entry on KIOSK + ONLINE checkout (field existed only on POS/catering). A
+parallel session shipped the feature as v5.5.887 (`2e176f2`) mid-review; this session verified that
+implementation line-by-line against the promo-redeem edge fn + POS reference wiring, found 3 real
+defects, and shipped the fixes as v5.5.888 (`26af53c`). Build clean, pushed to develop.
+
+## v5.5.887 (parallel session) — verified sound
+- One field takes gift card OR promo on both surfaces (kiosk: gift-redeem fails → promo validate
+  fallthrough, no length gate so short codes work; online: <16 chars straight to promo, 16+ falls
+  through on gift-lookup miss). Discount lines + removable ×, correct totals math on both
+  (kiosk `grandTotal`, online `remainingMinor`), promo on kiosk `closed_checks.promo` + online
+  Stripe metadata, redeem AFTER order success at ALL success paths (incl. online no-card
+  `fullyPaid → onGiftOnlyPayment` when a promo covers the whole bill). No training mode on kiosk
+  surface at all — nothing to gate (POS store path already gated).
+
+## v5.5.888 (this session) — 3 defects fixed
+- **Online redeem omitted `customer_id`** (validate sent it, redeem didn't): a customer-locked
+  (personal) code granted the discount then redeem silently failed `customer_required` — code
+  stayed live for reuse; per-customer limits lost ledger attribution. Now passes
+  `loyalty?.loyalty?.customer_id` + warns on refused redeem instead of discarding the response.
+- **Kiosk idempotency key `${ref}:${code}` collides**: order refs recycle R1–R99
+  (`next_order_number` counter % 99), so a multi-use campaign code silently skipped uses_count +
+  ledger rows once a ref repeated (approaches ~50% skip rate at 50+ redemptions). Key now carries a
+  per-submission `crypto.randomUUID()` — correct scope, since kiosk fires redeem exactly once per
+  submission (fire-and-forget, no retry; a full submitOrder retry gets a NEW ref anyway, so the old
+  key never provided retry-dedup).
+- **Kiosk sent no `customer_id` at validate or redeem**: personal codes were unusable at kiosk even
+  when OTP-signed-in. Both calls now pass `verifiedLoyalty?.customer?.id` (+ added to submitOrder deps).
+
+## Remaining / notes
+- Kiosk validate basket = `total` (post-tip, post-credit) — matches the POS reference
+  (CheckoutModal:1341 passes its running total) but differs from online (goods subtotal). Server
+  uses it only for min_spend + percent math; consistent-enough, left as-is.
+- Cosmetic: online gift-step button says "Continue to card payment" when a promo fully covers the
+  bill on a no-loyalty venue (it actually places the order directly). Rare (100%-off promo), not fixed.
+- NOT live-tested: needs a real promo code on dev.serv-os.app (local is mock mode — edge fns
+  unreachable). Suggest Peter test: short code at kiosk pay screen + online gift step.
+
+---
+
 # Session — 23 Jul 2026 (v5.5.877) — share-product data-integrity fix (3 bugs) — DEPLOYED + LIVE-VERIFIED by Peter ✅
 
 ## Shipped (commit c2200cd on develop; build clean, 256/256 tests pass, no new lint errors)
