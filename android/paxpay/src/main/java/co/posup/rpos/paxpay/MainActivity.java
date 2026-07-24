@@ -276,9 +276,11 @@ public class MainActivity extends ComponentActivity {
 
         boot();
 
-        // Self-update, exactly as :mpos does (throttled; no-op when already current).
+        // Self-update. v2.0-rc10: cold start FORCES a check — the 3h throttle is persisted in
+        // prefs, so "force-stop + reopen to get the update" silently did nothing (owner-reported).
+        // A cold start is rare + deliberate; the throttle still governs onResume re-checks.
         updateChecker = new UpdateChecker(this);
-        content.postDelayed(() -> updateChecker.check(false), 8000);
+        content.postDelayed(() -> updateChecker.check(true), 8000);
     }
 
     @Override
