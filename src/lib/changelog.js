@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.891', date: '24 Jul 2026', label: 'SPEED part 3: faster customer pages + faster loyalty sign-in',
+    changes: [
+      'Online ordering + catering first load no longer downloads the ENTIRE menu snapshot just to read the instruction-group list — it now fetches only that one array.',
+      'Menu photos load lazily as you scroll (real <img loading=lazy>) instead of every photo at full resolution on first paint.',
+      'Customer page address resolution: three follow-up venue reads now run together instead of one-after-another — up to 3 round-trips shaved off before first paint.',
+      'Loyalty sign-in: the OTP send did up to four database reads one-after-another before the SMS could start — now one batch; the venue-name stamp is skipped when the SMS service was just created (already named). The code text reaching your phone is unchanged.',
+      'Loyalty balance no longer runs one count query per stamp programme (N+1) — one grouped query. Live-verified: Peter\'s free-latte reward returns identically.',
+    ],
+  },
+  {
     version: '5.5.890', date: '24 Jul 2026', label: 'SPEED part 2: app download now 70% smaller than yesterday + the real POS lag fixes',
     changes: [
       'Entry download now 1,533KB (gzip 375KB) — was 5,164KB (gzip 1,372KB) yesterday. The 1MB version-history list ships only when you open "What\'s new", and Back Office + customer pages load separately (v5.5.889).',

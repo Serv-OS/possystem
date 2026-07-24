@@ -176,15 +176,23 @@ Deno.serve(async (req) => {
       // type='redeem' rows, written by loyalty-redeem). Completing a card mints nothing else —
       // this derived count IS the customer's reward balance, so it must be on every card here
       // or completed cards never show up as redeemable anywhere (the original bug).
-      for (const sc of stampCards) {
-        if (!sc.completed_count) { sc.rewards_available = 0; continue; }
-        const { count } = await opsAdmin
+      // v5.5.891: ONE grouped query (was a COUNT round-trip per programme — N+1 on a
+      // customer-blocking path).
+      const withCompleted = stampCards.filter((sc: any) => sc.completed_count);
+      const redeemedByProg: Record<string, number> = {};
+      if (withCompleted.length) {
+        const { data: redeems } = await opsAdmin
           .from('stamp_transactions')
-          .select('id', { count: 'exact', head: true })
+          .select('program_id')
           .eq('customer_id', membership.customer_id)
-          .eq('program_id', sc.id)
-          .eq('type', 'redeem');
-        sc.rewards_available = Math.max(0, (sc.completed_count || 0) - (count || 0));
+          .eq('type', 'redeem')
+          .in('program_id', withCompleted.map((sc: any) => sc.id));
+        for (const r of (redeems || [])) redeemedByProg[r.program_id] = (redeemedByProg[r.program_id] || 0) + 1;
+      }
+      for (const sc of stampCards) {
+        sc.rewards_available = sc.completed_count
+          ? Math.max(0, (sc.completed_count || 0) - (redeemedByProg[sc.id] || 0))
+          : 0;
       }
     }
   } catch {}

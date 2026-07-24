@@ -179,38 +179,24 @@ export async function lookupLocationBySlug(slug, platformSupabase) {
       _slugCache.set(slug, { row: null, at: Date.now() });
       return null;
     }
-    // v5.5.145: defensively probe QR-mode settings in a second SELECT so a
-    // missing-column error (venue's platform.locations hasn't run the QR
-    // migration yet) only loses the QR fields — not the entire location.
-    // The first SELECT keeps the customer surface working unchanged.
-    try {
-      const { data: qrRow } = await platformSupabase
-        .from('locations')
+    // v5.5.891: the three follow-up reads (QR settings, tab guardrails, company name) are
+    // independent and were run SEQUENTIALLY — 4 round-trips before a customer page could
+    // paint. Now fired together; each stays individually defensive (a missing-column error
+    // on a partially-migrated venue only loses its own fields, exactly as before).
+    const [qrRes, tabRes, coRes] = await Promise.allSettled([
+      platformSupabase.from('locations')
         .select('qr_payment_mode, qr_table_mode, qr_service_charge_pct')
-        .eq('id', data.id)
-        .maybeSingle();
-      if (qrRow) Object.assign(data, qrRow);
-    } catch { /* columns not yet migrated — fall back to defaults at use site */ }
-    // v5.5.149: open-tab guardrails — separate defensive SELECT so missing
-    // columns from a partial migration don't poison the rest of the load.
-    try {
-      const { data: tabRow } = await platformSupabase
-        .from('locations')
+        .eq('id', data.id).maybeSingle(),
+      platformSupabase.from('locations')
         .select('qr_tab_pre_auth_amount, qr_tab_warning_message, qr_tab_left_open_surcharge_pct, qr_tab_left_open_surcharge_fixed, qr_tab_force_close_after_minutes')
-        .eq('id', data.id)
-        .maybeSingle();
-      if (tabRow) Object.assign(data, tabRow);
-    } catch { /* columns not yet migrated */ }
-    // v5.5.208: Fetch company name for customer-facing gift card pages.
-    // Gift cards are org-level, so show company name instead of location name.
-    if (data.company_id) {
-      try {
-        const { data: co } = await platformSupabase
-          .from('companies').select('name')
-          .eq('id', data.company_id).maybeSingle();
-        if (co?.name) data.company_name = co.name;
-      } catch { /* not critical — surfaces fall back to location.name */ }
-    }
+        .eq('id', data.id).maybeSingle(),
+      data.company_id
+        ? platformSupabase.from('companies').select('name').eq('id', data.company_id).maybeSingle()
+        : Promise.resolve({ data: null }),
+    ]);
+    if (qrRes.status === 'fulfilled' && qrRes.value?.data) Object.assign(data, qrRes.value.data);
+    if (tabRes.status === 'fulfilled' && tabRes.value?.data) Object.assign(data, tabRes.value.data);
+    if (coRes.status === 'fulfilled' && coRes.value?.data?.name) data.company_name = coRes.value.data.name;
     _slugCache.set(slug, { row: data, at: Date.now() });
     return data;
   } catch (e) {

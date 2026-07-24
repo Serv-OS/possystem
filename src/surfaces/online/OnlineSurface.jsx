@@ -236,7 +236,10 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           onlineMenuId
             ? supabase.from('menu_category_links').select('category_id').eq('menu_id', onlineMenuId)
             : Promise.resolve({ data: null }),
-          supabase.from('config_pushes').select('snapshot')
+          // v5.5.891: select ONLY the instruction defs — the full snapshot is the entire menu
+          // (~13KB+ per row) and this was downloaded on every storefront first load just to
+          // read one array.
+          supabase.from('config_pushes').select('snapshot->instructionGroupDefs')
             .eq('location_id', opsLocationId).order('created_at', { ascending: false }).limit(1).maybeSingle(),
           // v5.5.141: live 86 list — manual operator 86s + auto-86s when
           // dailyCounts.remaining hits 0 both land in this table.
@@ -252,7 +255,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
         const categoriesData = cRes.value?.data || [];
         const linksData      = mRes.value?.data || null;
         const brandingData   = lRes.value?.data?.receipt_branding || null;
-        const snap           = pRes.value?.data?.snapshot || null;
+        const snap           = pRes.value?.data || null; // v5.5.891: row IS { instructionGroupDefs } now
 
         let cats = categoriesData;
         if (linksData) {
@@ -1502,12 +1505,11 @@ function ItemCard({ item, theme, cardBg, cardBdr, muted, onPick, variantInfo, is
           backdropFilter: 'blur(4px)',
         }}>Only {stock.remaining} left</div>
       )}
+      {/* v5.5.891: real <img> with native lazy-loading — the background-image divs loaded
+          EVERY menu photo eagerly at full upload resolution on first paint */}
       {item.image && (
-        <div style={{
-          width: '100%', height: 160, flexShrink: 0,
-          backgroundImage: `url(${item.image})`,
-          backgroundSize: 'cover', backgroundPosition: 'center',
-        }}/>
+        <img src={item.image} loading="lazy" decoding="async" alt=""
+          style={{ width: '100%', height: 160, flexShrink: 0, objectFit: 'cover', display: 'block' }} />
       )}
       <div style={{ flex: 1, minWidth: 0, padding: 16, display: 'flex', flexDirection: 'column', gap: 4 }}>
         <div style={{ fontSize: 15, fontWeight: 700, lineHeight: 1.3, textDecoration: is86 ? 'line-through' : undefined }}>

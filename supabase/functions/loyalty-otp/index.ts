@@ -233,29 +233,34 @@ Deno.serve(async (req) => {
       } catch { /* override is best-effort */ }
       return '';
     };
-    venueName = locationId ? await readOverride(`loyalty_otp:${locationId}`) : await readOverride('loyalty_otp');
-    // 2. Venue name — ops locations.name, exactly what the operator edits in Location Settings.
-    if (!venueName && locationId) {
-      try {
-        const { data: loc } = await opsAdmin.from('locations').select('name').eq('id', locationId).maybeSingle();
-        if (loc?.name) venueName = loc.name;
-      } catch { /* best-effort */ }
-    }
-    // 3. Company name, then a generic fallback.
-    if (!venueName) {
-      try {
-        const { data: co } = await platformAdmin.from('companies').select('name').eq('id', companyId).maybeSingle();
-        if (co?.name) venueName = co.name;
-      } catch { /* friendly name is best-effort */ }
-    }
+    // v5.5.891: the override/venue/company/sid reads are independent — they ran as up to four
+    // SEQUENTIAL round-trips before the customer's code could even start sending. One batch now.
+    const [ovRes, locRes, coRes, sidRes] = await Promise.allSettled([
+      readOverride(locationId ? `loyalty_otp:${locationId}` : 'loyalty_otp'),
+      locationId
+        ? opsAdmin.from('locations').select('name').eq('id', locationId).maybeSingle()
+        : Promise.resolve({ data: null }),
+      platformAdmin.from('companies').select('name').eq('id', companyId).maybeSingle(),
+      getVerifySidRow(companyId, sidRowType(locationId)),
+    ]);
+    venueName = (ovRes.status === 'fulfilled' ? ovRes.value : '') || '';
+    if (!venueName && locRes.status === 'fulfilled' && locRes.value?.data?.name) venueName = locRes.value.data.name;
+    if (!venueName && coRes.status === 'fulfilled' && coRes.value?.data?.name) venueName = coRes.value.data.name;
     if (!venueName) venueName = 'our venue';
 
     // Send from THIS LOCATION's own Verify service (created on first use) so the SMS carries this
     // venue's name — Twilio stamps the SERVICE's friendly name into the message. Stamp the current
     // name on every send (idempotent) so BO/venue-name edits always take effect. Only owned
     // services are renamed — never the shared fallback (renaming it would change everyone's SMS).
-    const serviceSid = await ensureVerifySid(companyId, locationId, venueName);
-    if (serviceSid) await setVerifyServiceName(venueName, serviceSid);
+    // The rename MUST complete before startVerification (the SMS renders the service's CURRENT
+    // name) — but it's skipped when the service was just CREATED, since creation already named it.
+    let serviceSid = sidRes.status === 'fulfilled' ? sidRes.value : null;
+    let createdNow = false;
+    if (!serviceSid) {
+      serviceSid = await ensureVerifySid(companyId, locationId, venueName);
+      createdNow = !!serviceSid;
+    }
+    if (serviceSid && !createdNow) await setVerifyServiceName(venueName, serviceSid);
 
     const r = await startVerification(phone!, { channel: 'sms', friendlyName: venueName, serviceSid: serviceSid || undefined });
     if (!r.ok) {
