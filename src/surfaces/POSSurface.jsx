@@ -97,13 +97,15 @@ export default function POSSurface() {
     window.__rposLockPollClean = () => clearInterval(_lockPoll);
     // v4.6.49: periodic poll of cashDrawers + drawer session. Catches remote
     // changes from the back office (manager cashes up / cashes in a drawer)
-    // without needing to refresh the POS. 15s cadence — cheap single-table read.
+    // without needing to refresh the POS. v5.5.889: 15s → 60s — this poll was the
+    // single busiest app query in pg_stat_statements (394k calls) and a manager
+    // cash-up reaching the till within a minute is plenty.
     const _poll = setInterval(async () => {
       try {
         if (typeof useStore.getState().loadCashDrawers === 'function') await useStore.getState().loadCashDrawers();
         if (typeof loadCurrentDrawerSession === 'function') await loadCurrentDrawerSession();
       } catch {}
-    }, 15000);
+    }, 60000);
     return () => clearInterval(_poll);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

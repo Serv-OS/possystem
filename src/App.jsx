@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef, lazy, Suspense } from 'react';
 import './styles/globals.css';
 // v5.5.3: TENANT FENCE. Run BEFORE any other module that reads location-scoped
 // localStorage. Compares the currently-active location to the last-recorded
@@ -33,7 +33,11 @@ import ManagerSurface from './surfaces/ManagerSurface';
 import KioskAutoUpdate from './components/KioskAutoUpdate';
 import OnboardingSignSurface from './surfaces/OnboardingSignSurface';
 import RyftTestSurface from './surfaces/RyftTestSurface';
-import CustomerBoot from './surfaces/CustomerBoot';
+// v5.5.889: customer web routes are LAZY — they were riding in the one 5.1MB bundle every
+// till and kiosk downloaded. Customer sessions are short + fresh-loaded, so a split chunk is
+// safe there; operational surfaces (POS/kiosk/KDS/…) stay static so a mid-shift till never
+// has to fetch a chunk after a deploy.
+const CustomerBoot = lazy(() => import('./surfaces/CustomerBoot'));
 import GroupOrderSurface from './surfaces/GroupOrderSurface';
 import { parseCustomerUrl as parseCustomerUrlForBoot } from './lib/customerUrl';
 import AIChat from './components/AIChat';
@@ -72,7 +76,10 @@ function AIAssistantSurface() {
     </div>
   );
 }
-import BackOfficeApp from './backoffice/BackOfficeApp';
+// v5.5.889: Back Office is LAZY — it's ~60% of the app (menu manager, 20+ reports, workforce,
+// all admin screens) and tills/kiosks never open it. Splitting it out is the single biggest
+// first-load win for every operational device and customer page.
+const BackOfficeApp = lazy(() => import('./backoffice/BackOfficeApp'));
 import { isMock, supabase } from './lib/supabase';
 import PairingScreen from './surfaces/PairingScreen';
 import ModeSelector from './surfaces/ModeSelector';
@@ -93,6 +100,15 @@ import { ServOSIcon } from './components/ServOSBrand';
 import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
+  {
+    version: '5.5.889', date: '24 Jul 2026', label: 'SPEED: app download HALVED (5.1MB → 2.6MB) + database chatter cut — overnight scale hardening, part 1',
+    changes: [
+      'The app shipped as ONE 5.1MB file that every till, kiosk and customer phone had to download. The Back Office (~60% of the app — menu manager, 20+ reports, workforce, admin) is now a separate download that only loads when a manager opens it, and customer web pages split out too. Main download: 2,555KB (was 5,164KB); over-the-wire 734KB (was 1,372KB). Verified in the built app: Back Office lazy-loads and renders, POS/pairing boots from the main bundle, zero console errors.',
+      'Operational surfaces (POS, kiosk, KDS, bar, tables) deliberately stay in the main bundle — a mid-shift till never has to fetch a code chunk after a deploy.',
+      'Cash-drawer poll on every POS slowed 15s → 60s — it was the single busiest app query in the database statistics (394,000 calls), for a screen that changes a few times a day.',
+      'STAGED (needs owner sign-off to apply): migration 20260804b_realtime_prune.sql — stops realtime broadcast work for 5 tables NO client listens to (terminal heartbeats/jobs, dead nudges, config tables). Realtime decoding is the #1 database load; this is config-only, tables and reads/writes untouched.',
+    ],
+  },
   {
     version: '5.5.888', date: '24 Jul 2026', label: 'Promo code hardening on kiosk + online — personal codes burn correctly, multi-use counts never skip',
     changes: [
@@ -9496,7 +9512,11 @@ export default function App() {
         variant={customerCtx.mode === 'group_catering' ? 'catering' : 'online'} />;
     }
     if (customerCtx?.slug && CUSTOMER_MODES.includes(customerCtx.mode)) {
-      return <CustomerBoot slug={customerCtx.slug} mode={customerCtx.mode} tableId={customerCtx.tableId} />;
+      return (
+        <Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--t3, #888)', fontSize: 15 }}>Loading…</div>}>
+          <CustomerBoot slug={customerCtx.slug} mode={customerCtx.mode} tableId={customerCtx.tableId} />
+        </Suspense>
+      );
     }
   }
 
@@ -9564,7 +9584,7 @@ export default function App() {
   if (deviceMode === 'manager') return <><KioskAutoUpdate /><ManagerSurface /></>;
 
   // Back office mode — go to email login (no pairing needed)
-  if (deviceMode === 'backoffice' || deviceMode === 'office') return <><SyncBridge onSyncPulse={handleSyncPulse}/><BackOfficeApp /></>;
+  if (deviceMode === 'backoffice' || deviceMode === 'office') return <><SyncBridge onSyncPulse={handleSyncPulse}/><Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--t3, #888)', fontSize: 15 }}>Loading Back Office…</div>}><BackOfficeApp /></Suspense></>;
 
   // POS / MPOS modes both need a paired device for locationId resolution
   const pairedDevice = (() => { try { return JSON.parse(localStorage.getItem('rpos-device') || 'null'); } catch { return null; } })();
