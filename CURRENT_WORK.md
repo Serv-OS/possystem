@@ -670,3 +670,10 @@ A Supabase **Personal Access Token** was used 13 Jun 2026 to deploy `trading-rep
 **FAILED (twice, reverted, parked):** PointOfSale receipts — controller awaits confirm-receipt DURING tender; both attempts voided live taps; controller settings PIN unknown (1111/1234 wrong); A50 never receives payment pushes. → Ryft email drafted (receipts config + confirm contract + A50 binding). PAX prints again temporarily.
 **IN FLIGHT:** #73 🔴 reconciled-without-closed_checks-row bug (job ae318770 £2.85 recovered to 'approved'; suspects: 862 close changes × upsertClosedCheck ok-semantics × dropTableFromFloor) — FIX FIRST. #64 failed-payments route (owner sign-off directive): safe:true→SAFE_NO_CHARGE, webhook settles terminal_jobs, evidence-based sweeper, WAL latch server-clear. #74 hot-swap-safe readers (dispatch handshake, visible routing, one-action replace, no double-binding).
 **Fleet state:** A920 = only dispatch terminal, unbound (all tills). A50 pos_dispatch=false until Ryft fixes push binding. Both rc6.
+
+## 24 Jul 2026 (overnight) — speed & scale hardening (v5.5.889–891)
+- Bundle split: main 5,164KB → 1,533KB (lazy BackOfficeApp + CustomerBoot + WhatsNewModal/CHANGELOG → src/lib/changelog.js — CONVENTION MOVED, see CLAUDE.md rule 7).
+- Killed leaked 15s cash-drawer poll (the real 394k-call source), POS grid/tax/counts memos, MPOS double-init guard, SyncBridge ref-equal short-circuits.
+- Customer pages: narrowed config_pushes select (online+catering), lazy images, parallel slug reads. Edge: loyalty-otp send reads batched, loyalty-balance N+1 removed (deployed + regression-verified).
+- STAGED awaiting owner: migrations/20260804b_realtime_prune.sql (ALTER PUBLICATION blocked overnight).
+- Full prioritized backlog + stage-release safety punch list: MORNING_BRIEF.md.
