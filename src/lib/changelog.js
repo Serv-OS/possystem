@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.892', date: '24 Jul 2026', label: 'SPEED part 4: half the sync writes, tiny reconciler polls, PAX poller only where needed + a real PRICING fix',
+    changes: [
+      'Every table-session write was sent to the server TWICE — once directly and again by the offline-queue replay ~1 second later. The queue is now strictly a fallback (offline, or the direct write fails). Write volume halved; as a bonus, stale queued deletes (the old "tables vanish" hazard class) can no longer replay minutes later.',
+      'The 10-second session reconciler downloaded EVERY open check\'s full data on EVERY device, every poll. Now a two-phase delta poll: a tiny id+timestamp list, full data fetched only for rows that actually changed. Ghost sweep + conflict arbitration behave identically.',
+      'PRICING FIX: switching a till\'s menu kept STALE PRICES on the product grid until an unrelated re-render — the price cache was missing the menu id from its refresh triggers. Found by the overnight review; worth testing: switch device menu → prices update immediately.',
+      'The PAX terminal-job reconciler polled an edge function every ~8s on EVERY device — including Stripe venues where those jobs can never exist. Now it checks the venue processor once and stays idle on non-Ryft venues.',
+    ],
+  },
+  {
     version: '5.5.891', date: '24 Jul 2026', label: 'SPEED part 3: faster customer pages + faster loyalty sign-in',
     changes: [
       'Online ordering + catering first load no longer downloads the ENTIRE menu snapshot just to read the instruction-group list — it now fetches only that one array.',

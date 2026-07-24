@@ -16,6 +16,7 @@
 import { getLocationId, supabase } from '../lib/supabase';
 import { useStore } from '../store';
 import { fetchApprovedTablePayJobs } from '../lib/payments/terminalJobs';
+import { getLocationProcessor } from '../lib/payments/processor';
 
 let _timer = null;
 let _locationId = null;
@@ -27,6 +28,19 @@ export async function startTerminalJobReconciler() {
 
   _locationId = await getLocationId().catch(() => null);
   if (!_locationId || !supabase) { _running = false; return; }
+
+  // v5.5.892: terminal_jobs are a PAX/Ryft-only mechanism — on a Stripe venue this poller
+  // called the terminal-job-status edge fn every ~8s on every device for jobs that can never
+  // exist. Gate on the venue processor once at start (processor changes require BO work + a
+  // till restart anyway, which re-runs this).
+  try {
+    const proc = await getLocationProcessor(_locationId);
+    if (proc !== 'ryft') {
+      console.log('[TerminalJobReconciler] venue processor is', proc, '— PAX job reconciler not needed, staying idle');
+      _running = false;
+      return;
+    }
+  } catch { /* unknown processor — keep the reconciler running (fail open, PAX venues must close jobs) */ }
 
   const tick = async () => {
     // An offline till cannot be the closer; the job stays approved and any online

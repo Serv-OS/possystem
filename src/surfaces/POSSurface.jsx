@@ -239,7 +239,10 @@ export default function POSSurface() {
       ...i,
       name: i.menuName || i.name,
       price: getItemPrice ? getItemPrice(i, orderType, deviceMenuId) : (i.pricing?.base ?? i.price ?? 0),
-    })), [rawItems, orderType]);
+      // v5.5.892: deviceMenuId was MISSING from the deps — switching the device's menu (or a
+      // per-menu tier resolving to a different menu) kept STALE PRICES until an unrelated
+      // rerender happened to rebuild the memo. Pricing correctness bug, not just perf.
+    })), [rawItems, orderType, deviceMenuId, getItemPrice]);
 
   // v5.5.890: index lookups the product grid used to do INLINE per tile per render —
   // menuCategories.find + MENU_ITEMS.filter were O(tiles × menu size) on every keystroke

@@ -103,7 +103,10 @@ export async function flushSessions() {
       totals_at:      totals ? new Date().toISOString() : null,
       updated_at: new Date().toISOString(),
     };
-    queueWrite({ type: 'upsert', table: 'active_sessions', payload: row, onConflict: 'location_id,table_id' });
+    // v5.5.892: no unconditional queueWrite here any more — every session write was hitting
+    // Supabase TWICE (direct batch below + the queue's replay ~1s later), doubling write volume
+    // AND realtime WAL decode. The queue is now the FALLBACK: rows are enqueued only when
+    // offline or when the direct batch fails (see the bottom of flushSessions).
     upsertRows.push(row);
   }
 
@@ -168,25 +171,39 @@ export async function flushSessions() {
       delete _clearedAt[tid];
       _lastSent[tid] = 'cleared';
       if (_backup[tid] !== undefined) { delete _backup[tid]; _backupDirty = true; }   // batched backup removal
-      queueWrite({ type: 'delete', table: 'active_sessions', match: { location_id: _locationId, table_id: tid } });
+      // v5.5.892: delete goes through the direct batch below; queued only offline/on-failure.
+      // Bonus: a queued delete replaying MINUTES later was exactly the stale-delete hazard the
+      // v5.5.639 quarantine had to defend against — now it can only replay when it was real.
       toDelete.push(tid);
     }
   }
 
   // ── one backup write + one batched upsert + one batched delete (was per-row) ──
   if (_backupDirty) { try { localStorage.setItem('rpos-session-backup', JSON.stringify(_backup)); } catch {} }
+  // v5.5.892: the OfflineQueue is now strictly a FALLBACK — enqueue only when offline or when
+  // the direct batch fails. Previously every row was ALSO queued up-front, so each write hit
+  // Supabase twice (direct + replay) and a queued delete could replay stale minutes later.
+  const _queueUpserts = () => {
+    for (const r of upsertRows) queueWrite({ type: 'upsert', table: 'active_sessions', payload: r, onConflict: 'location_id,table_id' });
+  };
+  const _queueDeletes = () => {
+    for (const tid of toDelete) queueWrite({ type: 'delete', table: 'active_sessions', match: { location_id: _locationId, table_id: tid } });
+  };
   if (isOnline()) {
     if (upsertRows.length) {
       Promise.resolve(supabase.from('active_sessions').upsert(upsertRows, { onConflict: 'location_id,table_id' }))
-        .then(res => { if (res?.error) console.warn('[SessionSync] batch upsert error —', res.error.message || res.error);
+        .then(res => { if (res?.error) { console.warn('[SessionSync] batch upsert error — queueing for replay:', res.error.message || res.error); _queueUpserts(); }
                        else console.log('[SessionSync] ✓ wrote ' + upsertRows.length + ' session(s) to active_sessions'); })
-        .catch(e => console.warn('[SessionSync] batch upsert threw —', e?.message || e));
+        .catch(e => { console.warn('[SessionSync] batch upsert threw — queueing for replay:', e?.message || e); _queueUpserts(); });
     }
     if (toDelete.length) {
       Promise.resolve(supabase.from('active_sessions').delete().eq('location_id', _locationId).in('table_id', toDelete))
-        .then(res => { if (res?.error) console.warn('[SessionSync] batch delete error —', res.error.message || res.error); })
-        .catch(e => console.warn('[SessionSync] batch delete threw —', e?.message || e));
+        .then(res => { if (res?.error) { console.warn('[SessionSync] batch delete error — queueing for replay:', res.error.message || res.error); _queueDeletes(); } })
+        .catch(e => { console.warn('[SessionSync] batch delete threw — queueing for replay:', e?.message || e); _queueDeletes(); });
     }
+  } else {
+    _queueUpserts();
+    _queueDeletes();
   }
   // v4.5.0: summary line so we can see at a glance whether the flush actually fired
   console.log('[SessionSync] flushSessions done — issued ' + writesIssued + ' write(s), skipped ' + skipped + ' (unchanged), occupied tables: ' + occupied.length);

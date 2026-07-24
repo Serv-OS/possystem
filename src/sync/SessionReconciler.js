@@ -21,6 +21,9 @@ const SELF_HEAL_MAX_AGE_MS = 12 * 60 * 60 * 1000; // 12h — never auto-revive a
 let _timer = null;
 let _locationId = null;
 let _running = false;
+// v5.5.892: per-table cache of the last-fetched DB session, keyed by updated_at — lets the 10s
+// poll fetch heavy session jsonb blobs ONLY for rows that actually changed (see reconcile()).
+const _dbCache = new Map(); // table_id → { session, updatedAtStr }
 
 export async function startSessionReconciler() {
   if (_running) return;
@@ -31,33 +34,59 @@ export async function startSessionReconciler() {
 
   const reconcile = async () => {
     try {
-      const { data, error } = await supabase
+      // v5.5.892: two-phase DELTA poll. Phase 1 fetches ONLY (table_id, updated_at) — tiny.
+      // The heavy session jsonb blobs are fetched in phase 2 solely for rows whose updated_at
+      // moved since the last poll, then cached. Downstream logic reads the cache, so the ghost
+      // sweep + recency arbitration see exactly the data they always did — this device just
+      // stops re-downloading every open check on every device every 10 seconds.
+      const { data: heads, error } = await supabase
         .from('active_sessions')
-        .select('table_id, session, updated_at')
+        .select('table_id, updated_at')
         .eq('location_id', _locationId);
 
-      if (error || !data) return;
+      if (error || !heads) return;
+
+      const presentIds = new Set();
+      const changedIds = [];
+      for (const h of heads) {
+        if (!h.table_id) continue;
+        presentIds.add(h.table_id);
+        const c = _dbCache.get(h.table_id);
+        if (!c || c.updatedAtStr !== (h.updated_at || '')) changedIds.push(h.table_id);
+      }
+      for (const id of [..._dbCache.keys()]) { if (!presentIds.has(id)) _dbCache.delete(id); }
+      if (changedIds.length) {
+        const { data: blobs, error: bErr } = await supabase
+          .from('active_sessions')
+          .select('table_id, session, updated_at')
+          .eq('location_id', _locationId)
+          .in('table_id', changedIds);
+        if (bErr) return; // next poll retries; the cache still holds the last coherent view
+        for (const row of (blobs || [])) {
+          _dbCache.set(row.table_id, { session: row.session, updatedAtStr: row.updated_at || '' });
+        }
+      }
 
       const store = useStore.getState();
       const tables = store.tables || [];
 
-      // Build map of what Supabase says is open (session + updated_at).
+      // Build map of what Supabase says is open (session + updated_at) — from the cache.
       // A row for an already-cashed-off occupation is a GHOST — another device
       // re-published it after the close before it learned the table was paid. Exclude
       // it from "open" (so it is never re-added to the floor) and delete it, so the
       // shared table + the PAX terminal's open-tables list stop showing it too.
       const supabaseOpen = new Map();
       const ghostRows = [];
-      data.forEach(row => {
-        if (row.table_id && row.session) {
-          if (isSessionClosed(row.table_id, row.session)) { ghostRows.push(row.table_id); return; }
-          supabaseOpen.set(row.table_id, {
-            session: row.session,
-            updatedAt: row.updated_at ? new Date(row.updated_at).getTime() : 0,
-          });
-        }
-      });
+      for (const [tid, c] of _dbCache) {
+        if (!c.session) continue;
+        if (isSessionClosed(tid, c.session)) { ghostRows.push(tid); continue; }
+        supabaseOpen.set(tid, {
+          session: c.session,
+          updatedAt: c.updatedAtStr ? new Date(c.updatedAtStr).getTime() : 0,
+        });
+      }
       if (ghostRows.length && supabase) {
+        ghostRows.forEach(id => _dbCache.delete(id)); // don't re-issue the delete every poll
         console.warn(`[SessionReconciler] deleting ${ghostRows.length} cashed-off ghost row(s):`, ghostRows.join(', '));
         Promise.resolve(supabase.from('active_sessions').delete().eq('location_id', _locationId).in('table_id', ghostRows))
           .catch(e => console.warn('[SessionReconciler] ghost delete threw —', e?.message || e));
