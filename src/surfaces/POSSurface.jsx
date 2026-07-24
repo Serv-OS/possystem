@@ -111,41 +111,43 @@ export default function POSSurface() {
   const _needsCashIn = typeof needsCashIn === 'function' ? needsCashIn() : false;
   const _canCashup = Array.isArray(staff?.permissions) && staff.permissions.includes('cashup');
 
-  // v4.6.67: when filter changes AND a customer is attached AND filter differs from
-  // the customer's stored allergens, prompt to save. One-shot per filter change.
-  const _lastAllergenPromptRef = useRef('');
+  // v5.5.882: when the allergen filter changes AND a customer is attached AND the filter differs
+  // from the customer's stored allergens, AUTO-SAVE to the customer profile (debounced so rapid
+  // toggling settles into one write). This used to "prompt to save" via a showToast action button —
+  // but showToast only takes (msg, type), so the button was silently discarded and the save was
+  // UNREACHABLE (the feature never worked). Auto-save matches the intended behaviour: attach a
+  // customer, record their allergens, the profile remembers. Clearing the filter to empty never
+  // auto-removes stored allergens (safety: removal is a deliberate act, done in BO → Customers).
+  const _lastAllergenSaveRef = useRef('');
   useEffect(() => {
     if (!customer?.phone) return;
     if (!Array.isArray(allergens) || allergens.length === 0) return;
     const filterKey = [...allergens].sort().join(',');
     const storedKey = (customer.allergens || []).slice().sort().join(',');
-    if (filterKey === storedKey) return;            // already matches — nothing to ask
-    if (_lastAllergenPromptRef.current === filterKey) return;  // already asked this round
-    _lastAllergenPromptRef.current = filterKey;
-    // Prompt — replicate showToast pattern with action button via store helper if available.
-    const labels = allergens.map(a => (ALLERGENS.find(x => x.id === a)?.label || a)).join(', ');
-    if (typeof useStore.getState().showToast === 'function') {
-      useStore.getState().showToast(
-        `Save ${labels} to ${customer.name}'s profile?`,
-        'info',
-        {
-          action: 'Save',
-          onAction: async () => {
-            const updatedId = await useStore.getState().saveAllergensToCustomer(customer);
-            if (updatedId) {
-              // Update local customer state so we don't ask again this session.
-              setCustomer({ ...customer, allergens: [...allergens] });
-              // Persist to current table session as well.
-              if (activeTableId) {
-                const t = tables.find(x => x.id === activeTableId);
-                if (t) saveTableSession(activeTableId, { ...t.session, customer: { ...customer, allergens: [...allergens] } });
-              }
-              useStore.getState().showToast(`Allergens saved to ${customer.name}`, 'success');
-            }
-          },
+    if (filterKey === storedKey) return;                        // already matches
+    if (_lastAllergenSaveRef.current === filterKey) return;     // already saved this exact set
+    const timer = setTimeout(async () => {
+      const st = useStore.getState();
+      const list = st.allergens || [];
+      if (!list.length) return;
+      const savedKey = [...list].sort().join(',');
+      const updatedId = await st.saveAllergensToCustomer(customer);
+      if (updatedId) {
+        _lastAllergenSaveRef.current = savedKey;
+        const updatedCustomer = { ...customer, allergens: [...list] };
+        setCustomer(updatedCustomer);
+        // Persist to the current table session too, so re-seating carries them. (The old code
+        // passed a session object into saveTableSession's COVERS slot — setSessionCustomer is
+        // the real session.customer writer.)
+        const tblId = st.activeTableId;
+        if (tblId && (st.tables || []).find(x => x.id === tblId)?.session) {
+          st.setSessionCustomer(tblId, updatedCustomer);
         }
-      );
-    }
+        const labels = list.map(a => (ALLERGENS.find(x => x.id === a)?.label || a)).join(', ');
+        st.showToast(`${labels} saved to ${customer.name}'s profile`, 'success');
+      }
+    }, 1200);
+    return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allergens, customer?.phone]);
 

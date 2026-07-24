@@ -94,6 +94,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.883', date: '23 Jul 2026', label: 'FIX — customer allergens now actually save to the customer profile from a sale',
+    changes: [
+      'Root cause: the POS detected "customer attached + allergens set" and showed a "Save to profile?" toast with a Save button — but the toast system only accepts a message and a type, so the button (and the save behind it) was silently discarded. The save code was UNREACHABLE; the feature never worked.',
+      'Now it saves AUTOMATICALLY: attach a customer to a sale, set their allergens, and ~1 second later they are written to the customer profile (visible in Back Office → Customers) with a confirmation toast. Rapid toggling settles into one write.',
+      'Also carried onto the table session via the proper setSessionCustomer action — the old code was corrupting the covers count with a session object.',
+      'Safety: clearing the allergen filter to empty never auto-removes stored allergens — removing an allergen from a profile is a deliberate act, done in Back Office → Customers.',
+    ],
+  },
+  {
     version: '5.5.882', date: '23 Jul 2026', label: 'Card-terminal fixes: honest bar-tab pre-auth on Ryft venues, Ryft cancel/void, kiosk PAX pairing, clean Stripe reader removal',
     changes: [
       'Bar-tab card pre-authorisation no longer silently opens a tab with NO hold on a Ryft/PAX venue. A card hold is a Stripe-Terminal-only feature (Ryft’s in-person terminals have no card-hold capability), so on a Ryft venue the pre-auth screen now says so plainly and lets staff open the tab without a hold — instead of looking like a hold was placed when nothing was held. Stripe venues are unchanged: the hold works exactly as before.',
