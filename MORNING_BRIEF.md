@@ -54,23 +54,23 @@ the #1 database load. Tables + reads/writes completely untouched.
 ## 4. Remaining verified backlog (priority order)
 
 1. ~~Every table-sync write goes to the server TWICE~~ ✅ fixed v5.5.892 — direct batch + OfflineQueue replay ~1s later (`SessionSync.js:106`). Halving write volume = the single biggest scale lever left.
-2. **SessionReconciler downloads every session blob every 10s on every device** — duplicates the realtime channel it already has (`SessionReconciler.js:34`). Needs a delta/timestamp guard.
+2. ~~SessionReconciler full-blob downloads every 10s~~ ✅ fixed v5.5.892 (two-phase delta poll)
 3. **POSSurface subscribes to the whole store** — every store write re-renders the entire 2,400-line surface (`POSSurface.jsx:44-75`). Selector migration = the big render win. Same for the open CheckoutModal during payment.
 4. **SyncBridge remounts on every PIN sign-in/out** → full boot reload each time (`App.jsx:9989`).
 5. **Boot runs twice** — useSupabaseInit duplicates six SyncBridge fetches on every POS start; both are also fully sequential (~14 awaited round-trips).
-6. **TerminalJobReconciler polls every ~8s even on venues with no PAX terminal.**
+6. ~~TerminalJobReconciler on non-PAX venues~~ ✅ fixed v5.5.892 (processor gate)
 7. ~~Config snapshot never cached on-device~~ ✅ fixed v5.5.893 (cache-first boot)
 8. ~~MENU_ITEMS price memo stale deps~~ ✅ fixed v5.5.892 — REAL pricing bug, please live-test menu switching
 9. Customers still download the 2.55MB→1.53MB *operational* chunk before their page's chunk — a separate customer entry point would fix; bigger job.
 
-## 4. Stage-release safety punch list (before real customers)
+## 5. Stage-release safety punch list (before real customers)
 
 - **Public checklist-photo bucket** (v5.5.617) — must be made private/signed-URL before prod.
 - **POS-core RLS gap** (10 Jun audit, CRITICAL) + **cross-tenant stock-table RLS leak** (found during ops module) — both pre-date tonight; real-customer blockers.
 - **Tills must reach v5.5.889+ once** (manual full restart on Sunmi) — after that auto-update handles itself. Fleet versions visible in BO → Network status.
 - Marketing-blast concurrency: built, still undeployed — deploy before any big blast.
 
-## 5. 20-minute test list for the tills (yesterday's fixes needing live taps)
+## 6. 20-minute test list for the tills (yesterday's fixes needing live taps)
 
 1. **Stamp reward** — sign in as Peter Roberts at POS checkout → FREE Small Latte listed → redeem → applies + disappears.
 2. **Promo code** — create an offer code → kiosk pay screen + online gift step → "gift card or promo code" field → discount applies; second use refused.
