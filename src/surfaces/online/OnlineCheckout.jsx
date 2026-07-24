@@ -97,6 +97,9 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
 
   // v5.5.243: Loyalty reward redemption
   const [rewardApplied, setRewardApplied] = useState(null); // { reward_id, reward_name, points_deducted, discount_type, discount_value, idempotency_key }
+  // v5.5.887: promo/offer code — validated at entry (no write); REDEEMED once the order is
+  // placed (promo-redeem is race-safe + idempotent). amount is in MAJOR units.
+  const [promoApplied, setPromoApplied] = useState(null); // { code, code_id, offer_id, label, amount }
   const [rewardLoading, setRewardLoading] = useState(false);
   const [rewardError, setRewardError] = useState('');
   const [availableRewards, setAvailableRewards] = useState(null); // fetched when entering rewards step
@@ -202,6 +205,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   // v5.5.243: Combined deduction calculation (auto-discount → gift card → loyalty reward)
   const giftAppliedMinor = giftApplied?.applied || 0;
   const rewardDiscountMinor = rewardApplied?.discount_value || 0;
+  const promoAppliedMinor = promoApplied ? Math.round((promoApplied.amount || 0) * 100) : 0;
   const subtotalMinor = Math.round(subtotal * 100);
   // Auto-discounts reduce the goods first; gift/loyalty then apply to the discounted bill.
   const discountedSubtotalMinor = Math.max(0, subtotalMinor - autoDiscountMinor);
@@ -233,7 +237,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orderType, _delivAddrKey, discountedSubtotalMinor, opsLocationId]);
   const deliveryFeeMinor = (orderType === 'delivery' && deliveryQuote?.available) ? (deliveryQuote.customerFeeMinor || 0) : 0;
-  const remainingMinor = Math.max(0, discountedSubtotalMinor - giftAppliedMinor - rewardDiscountMinor) + deliveryFeeMinor;
+  const remainingMinor = Math.max(0, discountedSubtotalMinor - giftAppliedMinor - rewardDiscountMinor - promoAppliedMinor) + deliveryFeeMinor;
   const fullyPaid = remainingMinor <= 0;
   const giftCoversAll = giftAppliedMinor >= discountedSubtotalMinor && deliveryFeeMinor === 0; // gift-only (no-card) path
 
@@ -435,12 +439,49 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     }
   };
 
-  // ── Gift card lookup ──────────────────────────────────────────────────
+  // ── Promo/offer code validate (no write — redeemed after the order is placed) ──
+  const tryPromoCode = async (code) => {
+    try {
+      const token = await getAuthToken();
+      const baseUrl = import.meta.env.VITE_SUPABASE_URL;
+      const res = await fetch(`${baseUrl}/functions/v1/promo-redeem`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'authorization': `Bearer ${token}` },
+        body: JSON.stringify({
+          action: 'validate', code, location_id: opsLocationId,
+          customer_id: loyalty?.loyalty?.customer_id || null,
+          basket: { subtotal: discountedSubtotalMinor / 100 },
+        }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (res.ok && j.valid) {
+        setPromoApplied({
+          code,
+          code_id: j.code_id,
+          offer_id: j.offer?.id || null,
+          label: j.discount?.label || j.offer?.name || 'Promo code',
+          amount: j.discount?.amount || 0,
+        });
+        setGiftCode('');
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  };
+
+  // ── Gift card OR promo code lookup — one field handles both ───────────
   const lookupGiftCard = async () => {
     const clean = giftCode.replace(/[\s-]/g, '');
-    if (clean.length < 16) { setGiftError('Enter the full 16-character code'); return; }
+    if (clean.length < 3) { setGiftError('Enter a code'); return; }
     setGiftLoading(true); setGiftError(''); setGiftCard(null);
     try {
+      // Short codes can't be gift cards (16 chars) — try promo directly.
+      if (clean.length < 16) {
+        if (await tryPromoCode(clean.toUpperCase())) return;
+        throw new Error('Code not recognised');
+      }
       const token = await getAuthToken();
       const baseUrl = import.meta.env.VITE_SUPABASE_URL;
       const res = await fetch(`${baseUrl}/functions/v1/gift-lookup`, {
@@ -449,7 +490,11 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         body: JSON.stringify({ code: clean, location_id: opsLocationId }),
       });
       const j = await res.json();
-      if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
+      if (!res.ok || j.error) {
+        // Not a gift card — try the same code as a promo before erroring.
+        if (!promoApplied && await tryPromoCode(clean.toUpperCase())) return;
+        throw new Error(j.error === 'Card not found' ? 'Code not recognised' : (j.error || `HTTP ${res.status}`));
+      }
       if (j.status !== 'active') throw new Error(`Card is ${j.status}`);
       if (j.balance <= 0) throw new Error('Card has zero balance');
       setGiftCard(j);
@@ -583,6 +628,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     const parts = [];
     if (giftApplied) parts.push('gift card');
     if (rewardApplied) parts.push('loyalty');
+    if (promoApplied) parts.push('promo');
     const desc = `Online order ${ref} · ${customer.name}${parts.length ? ` (partial ${parts.join(' + ')})` : ''}`;
     const piRes = await createPaymentIntent({
       authToken: token,
@@ -602,6 +648,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         order_type: orderType,
         ...(giftApplied ? { gift_card_applied: String(giftApplied.applied) } : {}),
         ...(rewardApplied ? { loyalty_reward: rewardApplied.reward_name, loyalty_discount: String(rewardApplied.discount_value) } : {}),
+        ...(promoApplied ? { promo_code: promoApplied.code, promo_discount: String(promoAppliedMinor) } : {}),
       },
     });
     if (!piRes?.client_secret) throw new Error('Payment could not start. Please try again.');
@@ -718,6 +765,29 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     setRewardError('');
   };
 
+  // v5.5.887: record the promo redemption once the order exists. Server-side it's race-safe
+  // (compare-and-swap) + idempotent on `online-<ref>:<code>` — a retry can't burn the code twice.
+  const redeemPromoAfterOrder = () => {
+    if (!promoApplied?.code) return;
+    (async () => {
+      try {
+        const token = await getAuthToken();
+        const baseUrl = import.meta.env.VITE_SUPABASE_URL;
+        await fetch(`${baseUrl}/functions/v1/promo-redeem`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'authorization': `Bearer ${token}` },
+          body: JSON.stringify({
+            action: 'redeem', code: promoApplied.code, location_id: opsLocationId,
+            order_id: `online-${orderShape.ref}`, basket_value: discountedSubtotalMinor / 100,
+            channel: 'online', idempotency_key: `online-${orderShape.ref}:${promoApplied.code}`,
+          }),
+        });
+      } catch (e) {
+        console.warn('[OnlineCheckout] promo redeem failed:', e?.message);
+      }
+    })();
+  };
+
   // Email + SMS the customer their order confirmation / receipt (best-effort; never blocks the
   // on-screen confirmation). Reuses the same receipt pipeline as catering/POS. The just-inserted
   // closed_checks row clears the send-receipt tenant fence via check_id.
@@ -823,6 +893,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         depleteForSaleServer({ id: closedCheck.id, items: cart.map(l => ({ itemId: l.itemId, qty: l.qty })), orderType });
         // v5.5.677: email + SMS the customer their confirmation/receipt (gift-only path).
         sendOrderConfirmation(closedCheck);
+        redeemPromoAfterOrder();
       } catch (e) {
         console.warn('[OnlineCheckout] closed_checks write threw:', e?.message);
       }
@@ -946,6 +1017,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         depleteForSaleServer({ id: closedCheck.id, items: cart.map(l => ({ itemId: l.itemId, qty: l.qty })), orderType });
         // v5.5.677: email + SMS the customer their confirmation/receipt (was never wired for online).
         sendOrderConfirmation(closedCheck);
+        redeemPromoAfterOrder();
       } catch (e) {
         console.warn('[OnlineCheckout] closed_checks write threw:', e?.message);
       }
@@ -1013,6 +1085,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
               {isDelivery ? 'Delivery' : 'Collection'} · {cart.length} item{cart.length === 1 ? '' : 's'} · {money(subtotal)}
               {autoDiscountMinor > 0 ? ` · Offers -${money((autoDiscountMinor / 100))}` : ''}
               {giftApplied ? ` · Gift card -${money((giftApplied.applied / 100))}` : ''}
+              {promoApplied ? ` · ${promoApplied.code} -${money((promoAppliedMinor / 100))}` : ''}
               {rewardApplied ? ` · Reward -${money((rewardApplied.discount_value / 100))}` : ''}
               {deliveryFeeMinor > 0 ? ` · Delivery +${money((deliveryFeeMinor / 100))}` : (isDelivery && deliveryQuote?.available && deliveryQuote.freeDelivery ? ' · Delivery free' : '')}
               {isDelivery && deliveryQuote?.belowMinimum ? ` · Min order ${deliveryQuote.minOrderMinor != null ? money(deliveryQuote.minOrderMinor / 100) : ''}` : ''}
@@ -1083,8 +1156,8 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
                   type="text"
                   value={giftCode}
                   onChange={e => setGiftCode(e.target.value.toUpperCase())}
-                  placeholder="XXXX XXXX XXXX XXXX"
-                  maxLength={19}
+                  placeholder="Gift card or promo code"
+                  maxLength={24}
                   style={{
                     flex: 1, padding: '13px 14px', borderRadius: 10,
                     background: inputBg, color: theme.fg, border: `1.5px solid ${cardBdr}`,
@@ -1094,7 +1167,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
                 />
                 <button
                   onClick={lookupGiftCard}
-                  disabled={giftLoading || giftCode.replace(/[\s-]/g, '').length < 16}
+                  disabled={giftLoading || giftCode.replace(/[\s-]/g, '').length < 3}
                   className="op-btn"
                   style={{
                     padding: '0 18px', borderRadius: 10,
@@ -1144,6 +1217,25 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
                 </div>
               )}
             </>
+          )}
+
+          {/* Applied promo code */}
+          {promoApplied && (
+            <div style={{
+              background: '#f59e0b18', border: '1.5px solid #f59e0b50',
+              borderRadius: 12, padding: '14px 16px',
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            }}>
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 700 }}>🏷️ {promoApplied.label}</div>
+                <div style={{ fontSize: 12, color: muted, marginTop: 2 }}>
+                  Code {promoApplied.code} · −{money(promoAppliedMinor / 100)}
+                </div>
+              </div>
+              <button onClick={() => setPromoApplied(null)} style={{
+                background: 'none', border: 'none', color: muted, fontSize: 18, cursor: 'pointer', padding: 4,
+              }}>×</button>
+            </div>
           )}
 
           {/* Applied confirmation */}

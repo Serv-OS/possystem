@@ -387,6 +387,9 @@ export default function KioskApp({ kioskId, onUnpair }) {
   // loyaltyRedemption: { reward_id, reward_name, points_deducted, discount_type, discount_value, idempotency_key, balance_after }
   // v5.5.265: Gift card payment applied at checkout
   const [giftCardPayment, setGiftCardPayment] = useState(null);
+  // v5.5.887: promo/offer code — validated at entry (no write), REDEEMED in submitOrder once
+  // the order exists (promo-redeem is race-safe + idempotent on `${ref}:${code}`).
+  const [promoApplied, setPromoApplied] = useState(null); // { code, code_id, offer_id, label, amount }
   // giftCardPayment: { card_id, code, applied (minor), remaining_balance }
   // v5.5.265: Verified customer loyalty data (from OTP flow)
   const [verifiedLoyalty, setVerifiedLoyalty] = useState(null);
@@ -584,6 +587,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
     setSelectedCategoryId(null);
     setLoyaltyRedemption(null);
     setGiftCardPayment(null);
+    setPromoApplied(null);
     setVerifiedLoyalty(null);
     setAllergenFilter(new Set());
     setShowAllergenPicker(false);
@@ -659,7 +663,11 @@ export default function KioskApp({ kioskId, onUnpair }) {
   // v5.5.219: Loyalty credit reduces the total paid by card
   const loyaltyCredit = loyaltyRedemption?.discount_value ? loyaltyRedemption.discount_value / 100 : 0;
   const giftCardCredit = giftCardPayment?.applied ? giftCardPayment.applied / 100 : 0;
-  const grandTotal = Math.max(0, total - loyaltyCredit - giftCardCredit);
+  // Promo discount (major units, from promo-redeem validate) — capped at what's left to pay.
+  const promoCredit = promoApplied
+    ? Math.min(promoApplied.amount || 0, Math.max(0, total - loyaltyCredit - giftCardCredit))
+    : 0;
+  const grandTotal = Math.max(0, total - loyaltyCredit - giftCardCredit - promoCredit);
 
   // On 'simulate paid' → write closed_checks + kds_tickets row, set orderNumber, advance.
   const submitOrder = useCallback(async (nameOverride, phoneOverride) => {
@@ -705,8 +713,8 @@ export default function KioskApp({ kioskId, onUnpair }) {
         total: grandTotal,
         order_type: orderTypeOut,
         status: 'paid',
-        payment_method: (loyaltyCredit > 0 || giftCardCredit > 0) ? 'split' : 'card-external',
-        method: (loyaltyCredit > 0 || giftCardCredit > 0) ? 'split' : 'card',
+        payment_method: (loyaltyCredit > 0 || giftCardCredit > 0 || promoCredit > 0) ? 'split' : 'card-external',
+        method: (loyaltyCredit > 0 || giftCardCredit > 0 || promoCredit > 0) ? 'split' : 'card',
         closed_at: new Date().toISOString(),
         source: 'kiosk',
         kiosk_id: kioskId,
@@ -726,6 +734,13 @@ export default function KioskApp({ kioskId, onUnpair }) {
           card_id: giftCardPayment.card_id,
           applied: giftCardPayment.applied,
           remaining_balance: giftCardPayment.remaining_balance,
+        } : null,
+        // v5.5.887: promo/offer code on the check for receipt / refund / reporting use
+        promo: promoApplied ? {
+          code: promoApplied.code,
+          offer_id: promoApplied.offer_id || null,
+          label: promoApplied.label || null,
+          discount_value: promoCredit,
         } : null,
       });
       if (e1) throw e1;
@@ -750,7 +765,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
             tip: tip,
             subtotal: subtotal,
             items: itemsPayload,
-            method: (loyaltyCredit > 0 || giftCardCredit > 0) ? 'split' : 'card',
+            method: (loyaltyCredit > 0 || giftCardCredit > 0 || promoCredit > 0) ? 'split' : 'card',
             order_type: orderTypeOut,
             location_id: locationId,
             closedAt: Date.now(),
@@ -793,10 +808,27 @@ export default function KioskApp({ kioskId, onUnpair }) {
         is_asap: true,
         source: 'kiosk',
         paid: true,
-        payment_method: (loyaltyCredit > 0 || giftCardCredit > 0) ? 'split' : 'card-external',
+        payment_method: (loyaltyCredit > 0 || giftCardCredit > 0 || promoCredit > 0) ? 'split' : 'card-external',
       });
       if (e3) console.warn('[kiosk] order_queue insert failed:', e3);
       else { try { logOrderActivity(locationId, { source: 'kiosk', total: grandTotal, ref: num, customer: { name: (nameOverride ?? customerName) || null } }); } catch { /* feed best-effort */ } }
+      // v5.5.887: promo code — record the redemption now the order exists. Server-side it's
+      // race-safe (compare-and-swap on uses_count) + idempotent on `${ref}:${code}`, so a
+      // retry can never burn the code twice. Fire-and-forget: never blocks the order.
+      if (promoApplied?.code) {
+        try {
+          const pToken = await ensureAuthToken();
+          fetch(`${OPS_URL}/functions/v1/promo-redeem`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', authorization: `Bearer ${pToken}` },
+            body: JSON.stringify({
+              action: 'redeem', code: promoApplied.code, location_id: locationId,
+              order_id: num, basket_value: subtotal, channel: 'kiosk',
+              idempotency_key: `${num}:${promoApplied.code}`,
+            }),
+          }).catch(err => console.warn('[kiosk] promo redeem failed:', err?.message));
+        } catch (pe) { console.warn('[kiosk] promo redeem dispatch failed:', pe?.message); }
+      }
       // 4. Heartbeat
       await supabase.from('devices').update({ last_seen: new Date().toISOString() }).eq('id', kioskId);
       // 5. v5.5.287: Decrement stock for each item + modifier in the order.
@@ -833,7 +865,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
     } finally {
       setSubmitting(false);
     }
-  }, [submitting, kioskId, locationId, cart, subtotal, total, grandTotal, loyaltyCredit, giftCardCredit, loyaltyRedemption, giftCardPayment, tip, orderType, customerName, customerPhone, customerEmail, customerMarketingOptIn, tableNumber, resetSession]);
+  }, [submitting, kioskId, locationId, cart, subtotal, total, grandTotal, loyaltyCredit, giftCardCredit, promoCredit, promoApplied, loyaltyRedemption, giftCardPayment, tip, orderType, customerName, customerPhone, customerEmail, customerMarketingOptIn, tableNumber, resetSession]);
 
   // ─── Loading + error gates ───
   if (profLoading || menuLoading) {
@@ -882,7 +914,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
       {screen === 'tip' && <ScreenTip brandColor={brandColor} subtotal={subtotal} tipPresets={tipPresets} tip={tip} onSetTip={setTip} onContinue={() => { if (loyaltyEnabled) setScreen('loyalty'); else setScreen('pay'); }} onBack={() => setScreen('cart')} onCancel={resetSession} />}
       {/* v5.5.219: loyalty/customer-details BEFORE pay so reward discount adjusts amount due */}
       {screen === 'loyalty' && <ScreenLoyalty brandColor={brandColor} customerName={customerName} customerPhone={customerPhone} customerEmail={customerEmail} marketingOptIn={customerMarketingOptIn} locationId={locationId} companyId={companyId} subtotal={subtotal} loyaltyRedemption={loyaltyRedemption} onLoyaltyRedeem={setLoyaltyRedemption} verifiedLoyalty={verifiedLoyalty} onVerifiedLoyalty={setVerifiedLoyalty} onName={setCustomerName} onPhone={setCustomerPhone} onEmail={setCustomerEmail} onMarketingOptIn={setCustomerMarketingOptIn} onContinue={() => { const ret = loyaltyReturnScreen; setLoyaltyReturnScreen(null); setScreen(ret || 'pay'); }} onSkip={() => { const ret = loyaltyReturnScreen; setLoyaltyReturnScreen(null); setScreen(ret || 'pay'); }} submitting={submitting} placeOrderLabel={labelPlaceOrder} earlySignIn={!!loyaltyReturnScreen} onCancel={resetSession} />}
-      {screen === 'pay' && <ScreenPay brandColor={brandColor} total={grandTotal} loyaltyCredit={loyaltyCredit} giftCardCredit={giftCardCredit} verifiedLoyalty={verifiedLoyalty} giftCardPayment={giftCardPayment} onGiftCardApply={setGiftCardPayment} locationId={locationId} kioskId={kioskId} cart={cart} submitting={submitting} error={submitError} onPaid={() => submitOrder(customerName, customerPhone)} onBack={() => { if (loyaltyEnabled) setScreen('loyalty'); else setScreen('tip'); }} loyaltyRedemption={loyaltyRedemption} onCancel={resetSession} />}
+      {screen === 'pay' && <ScreenPay brandColor={brandColor} total={grandTotal} loyaltyCredit={loyaltyCredit} giftCardCredit={giftCardCredit} promoCredit={promoCredit} promoApplied={promoApplied} onPromoApply={setPromoApplied} verifiedLoyalty={verifiedLoyalty} giftCardPayment={giftCardPayment} onGiftCardApply={setGiftCardPayment} locationId={locationId} kioskId={kioskId} cart={cart} submitting={submitting} error={submitError} onPaid={() => submitOrder(customerName, customerPhone)} onBack={() => { if (loyaltyEnabled) setScreen('loyalty'); else setScreen('tip'); }} loyaltyRedemption={loyaltyRedemption} onCancel={resetSession} />}
       {screen === 'done' && <ScreenDone brandColor={brandColor} customerName={customerName} customerPhone={customerPhone} orderNumber={orderNumber} orderType={orderType} tableNumber={tableNumber} avgWaitMinutes={avgWaitMinutes} banner={bannerFor('done')} onDone={resetSession} />}
 
       {/* v5.4.0: Allergen picker overlay */}
@@ -2363,7 +2395,7 @@ function ScreenTip({ brandColor, subtotal, tipPresets, tip, onSetTip, onContinue
 // ============================================================
 // SCREEN: PAY
 // ============================================================
-function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, verifiedLoyalty, giftCardPayment, onGiftCardApply, locationId, kioskId, cart, submitting, error, onPaid, onBack, loyaltyRedemption, onCancel }) {
+function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, promoCredit = 0, promoApplied = null, onPromoApply, verifiedLoyalty, giftCardPayment, onGiftCardApply, locationId, kioskId, cart, submitting, error, onPaid, onBack, loyaltyRedemption, onCancel }) {
   const [cardState, setCardState] = useState('idle'); // idle | processing | collecting | success | error | declined
   const [cardError, setCardError] = useState(null);
   const [cardStatusMsg, setCardStatusMsg] = useState('');
@@ -2514,7 +2546,29 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, verifiedL
         j = await res2.json().catch(() => ({}));
         if (!res2.ok) throw new Error(j.error || `HTTP ${res2.status}`);
       } else if (!res.ok) {
-        throw new Error(j.error || `HTTP ${res.status}`);
+        // v5.5.887: not a usable gift card — try the SAME code as a promo/offer code before
+        // erroring, so one field handles both (mirrors the POS GiftCardEntry fallthrough).
+        if (!promoApplied && typeof onPromoApply === 'function') {
+          const pv = await fetch(`${OPS_URL}/functions/v1/promo-redeem`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+            body: JSON.stringify({ action: 'validate', code, location_id: locationId, basket: { subtotal: total } }),
+          });
+          const pj = await pv.json().catch(() => ({}));
+          if (pv.ok && pj.valid) {
+            onPromoApply({
+              code,
+              code_id: pj.code_id,
+              offer_id: pj.offer?.id || null,
+              label: pj.discount?.label || pj.offer?.name || 'Promo code',
+              amount: pj.discount?.amount || 0,
+            });
+            setManualGCCode('');
+            setManualGCOpen(false);
+            return;
+          }
+        }
+        throw new Error(j.error === 'Card not found' ? 'Code not recognised' : (j.error || `HTTP ${res.status}`));
       }
 
       onGiftCardApply({
@@ -2737,7 +2791,7 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, verifiedL
       <div style={{ flex: 1, padding: '4vh 5vw', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 'clamp(16px, 2.5vh, 28px)' }}>
 
         {/* Discounts summary */}
-        {(loyaltyCredit > 0 || giftCardCredit > 0) && (
+        {(loyaltyCredit > 0 || giftCardCredit > 0 || promoCredit > 0) && (
           <div style={{ width: '100%', maxWidth: 440, display: 'flex', flexDirection: 'column', gap: 6 }}>
             {loyaltyCredit > 0 && (
               <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 14px', borderRadius: 10, background: '#22c55e15', border: '1px solid #22c55e33' }}>
@@ -2749,6 +2803,15 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, verifiedL
               <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 14px', borderRadius: 10, background: brandColor + '15', border: '1px solid ' + brandColor + '33' }}>
                 <span style={{ fontSize: 14, fontWeight: 700, color: brandColor }}>✓ Gift card applied</span>
                 <span style={{ fontSize: 14, fontWeight: 800, color: brandColor }}>-{money(giftCardCredit)}</span>
+              </div>
+            )}
+            {promoCredit > 0 && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 14px', borderRadius: 10, background: '#f59e0b15', border: '1px solid #f59e0b33' }}>
+                <span style={{ fontSize: 14, fontWeight: 700, color: '#f59e0b' }}>✓ {promoApplied?.label || 'Promo code'} ({promoApplied?.code})</span>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span style={{ fontSize: 14, fontWeight: 800, color: '#f59e0b' }}>-{money(promoCredit)}</span>
+                  <button onClick={() => onPromoApply && onPromoApply(null)} style={{ background: 'none', border: 'none', color: '#f59e0b', fontSize: 16, cursor: 'pointer', padding: 0, lineHeight: 1 }}>×</button>
+                </span>
               </div>
             )}
           </div>
@@ -2810,11 +2873,11 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, verifiedL
                 cursor: 'pointer', fontFamily: 'inherit', fontSize: 14, fontWeight: 600,
                 color: brandColor, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
               }}>
-                🎁 Have a gift card?
+                🎁 Have a gift card or promo code?
               </button>
             ) : (
               <div style={{ padding: 16, borderRadius: 14, background: 'var(--kSurfaceRaised)', border: '1.5px solid ' + brandColor + '33' }}>
-                <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--kFg)', marginBottom: 10 }}>Enter gift card code</div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--kFg)', marginBottom: 10 }}>Enter gift card or promo code</div>
                 {giftError && (
                   <div style={{ padding: 8, borderRadius: 8, marginBottom: 8, fontSize: 13, color: '#e55', background: '#e5555515', border: '1px solid #e5555533', fontWeight: 600 }}>{giftError}</div>
                 )}

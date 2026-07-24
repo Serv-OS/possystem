@@ -94,6 +94,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.887', date: '24 Jul 2026', label: 'Promo codes now work on the KIOSK and ONLINE ordering — one field takes gift cards AND promo codes',
+    changes: [
+      'Kiosk pay screen: the code entry is now "Have a gift card or promo code?" — type either; gift cards are tried first and anything else is checked as a promo/offer code. A valid promo shows as a discount line (removable ×) and comes off the amount due.',
+      'Online checkout: same one-field treatment on the gift card step — short codes go straight to promo lookup, unknown 16-character codes fall through to promo. Applied promos show with the discount and reduce the card charge.',
+      'Redemption is recorded server-side AFTER the order is placed, using the existing race-safe engine (one-use codes can never be burned twice, retries are idempotent). Kiosk checks carry the promo on the record for receipts/reporting; online carries it in the payment metadata + redemption ledger.',
+      'This closes the gap where offer codes from marketing campaigns could only be used at the till (POS/catering) — customers can now use them on every self-serve channel.',
+    ],
+  },
+  {
     version: '5.5.886', date: '24 Jul 2026', label: 'Stamp rewards redeemable on KIOSK + ONLINE too; kiosk rewards no longer hidden on stamps-only venues',
     changes: [
       'Kiosk and online checkout now list earned stamp-card rewards as FREE (🎟️) alongside points rewards, and redeeming them applies the free-item discount — same engine as the POS (v5.5.884).',
