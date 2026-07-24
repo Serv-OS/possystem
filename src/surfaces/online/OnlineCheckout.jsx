@@ -773,15 +773,21 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       try {
         const token = await getAuthToken();
         const baseUrl = import.meta.env.VITE_SUPABASE_URL;
-        await fetch(`${baseUrl}/functions/v1/promo-redeem`, {
+        const res = await fetch(`${baseUrl}/functions/v1/promo-redeem`, {
           method: 'POST',
           headers: { 'content-type': 'application/json', 'authorization': `Bearer ${token}` },
           body: JSON.stringify({
             action: 'redeem', code: promoApplied.code, location_id: opsLocationId,
+            // v5.5.888: same customer identity as validate — without it a customer-locked
+            // code fails redeem with customer_required AFTER the discount was granted,
+            // and per-customer limits lose their attribution in the ledger.
+            customer_id: loyalty?.loyalty?.customer_id || null,
             order_id: `online-${orderShape.ref}`, basket_value: discountedSubtotalMinor / 100,
             channel: 'online', idempotency_key: `online-${orderShape.ref}:${promoApplied.code}`,
           }),
         });
+        const rj = await res.json().catch(() => ({}));
+        if (!rj.ok) console.warn('[OnlineCheckout] promo redeem not recorded:', rj.reason || res.status);
       } catch (e) {
         console.warn('[OnlineCheckout] promo redeem failed:', e?.message);
       }

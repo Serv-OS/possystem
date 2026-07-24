@@ -813,8 +813,11 @@ export default function KioskApp({ kioskId, onUnpair }) {
       if (e3) console.warn('[kiosk] order_queue insert failed:', e3);
       else { try { logOrderActivity(locationId, { source: 'kiosk', total: grandTotal, ref: num, customer: { name: (nameOverride ?? customerName) || null } }); } catch { /* feed best-effort */ } }
       // v5.5.887: promo code — record the redemption now the order exists. Server-side it's
-      // race-safe (compare-and-swap on uses_count) + idempotent on `${ref}:${code}`, so a
-      // retry can never burn the code twice. Fire-and-forget: never blocks the order.
+      // race-safe (compare-and-swap on uses_count). Fire-and-forget: never blocks the order.
+      // v5.5.888: the idempotency key carries a per-submission UUID — order refs recycle
+      // R1–R99 (next_order_number), so a `${ref}:${code}` key silently skips counting a
+      // multi-use code the second time the same ref comes around. Redeem fires exactly once
+      // per submission, so a unique key is the correct dedup scope here.
       if (promoApplied?.code) {
         try {
           const pToken = await ensureAuthToken();
@@ -823,8 +826,9 @@ export default function KioskApp({ kioskId, onUnpair }) {
             headers: { 'content-type': 'application/json', authorization: `Bearer ${pToken}` },
             body: JSON.stringify({
               action: 'redeem', code: promoApplied.code, location_id: locationId,
+              customer_id: verifiedLoyalty?.customer?.id || null,
               order_id: num, basket_value: subtotal, channel: 'kiosk',
-              idempotency_key: `${num}:${promoApplied.code}`,
+              idempotency_key: `${num}:${promoApplied.code}:${crypto.randomUUID()}`,
             }),
           }).catch(err => console.warn('[kiosk] promo redeem failed:', err?.message));
         } catch (pe) { console.warn('[kiosk] promo redeem dispatch failed:', pe?.message); }
@@ -865,7 +869,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
     } finally {
       setSubmitting(false);
     }
-  }, [submitting, kioskId, locationId, cart, subtotal, total, grandTotal, loyaltyCredit, giftCardCredit, promoCredit, promoApplied, loyaltyRedemption, giftCardPayment, tip, orderType, customerName, customerPhone, customerEmail, customerMarketingOptIn, tableNumber, resetSession]);
+  }, [submitting, kioskId, locationId, cart, subtotal, total, grandTotal, loyaltyCredit, giftCardCredit, promoCredit, promoApplied, verifiedLoyalty, loyaltyRedemption, giftCardPayment, tip, orderType, customerName, customerPhone, customerEmail, customerMarketingOptIn, tableNumber, resetSession]);
 
   // ─── Loading + error gates ───
   if (profLoading || menuLoading) {
@@ -2552,7 +2556,13 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, promoCred
           const pv = await fetch(`${OPS_URL}/functions/v1/promo-redeem`, {
             method: 'POST',
             headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-            body: JSON.stringify({ action: 'validate', code, location_id: locationId, basket: { subtotal: total } }),
+            body: JSON.stringify({
+              action: 'validate', code, location_id: locationId,
+              // v5.5.888: OTP-verified customer identity — lets customer-locked (personal)
+              // codes validate at the kiosk and per-customer limits count correctly.
+              customer_id: verifiedLoyalty?.customer?.id || null,
+              basket: { subtotal: total },
+            }),
           });
           const pj = await pv.json().catch(() => ({}));
           if (pv.ok && pj.valid) {

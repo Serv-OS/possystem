@@ -94,6 +94,15 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
+    version: '5.5.888', date: '24 Jul 2026', label: 'Promo code hardening on kiosk + online — personal codes burn correctly, multi-use counts never skip',
+    changes: [
+      'Online: the redemption record now carries the signed-in customer, matching the validation step. Before, a customer-locked (personal) code would grant the discount but silently fail to burn — the code stayed live for reuse. Per-customer limits are attributed in the ledger too.',
+      'Kiosk: redemption idempotency no longer keys on the order number. Order numbers recycle R1–R99, so a busy venue running a multi-use campaign code would silently stop counting redemptions once a number came around again — uses and the redemption ledger undercounted. Each submission now carries a unique key.',
+      'Kiosk: promo validation and redemption pass the OTP-verified loyalty customer — personal codes issued to a specific customer can now be used at the kiosk when signed in, and per-customer limits count correctly.',
+      'Online: the redeem response is checked and logged when a redemption is refused, instead of being discarded.',
+    ],
+  },
+  {
     version: '5.5.887', date: '24 Jul 2026', label: 'Promo codes now work on the KIOSK and ONLINE ordering — one field takes gift cards AND promo codes',
     changes: [
       'Kiosk pay screen: the code entry is now "Have a gift card or promo code?" — type either; gift cards are tried first and anything else is checked as a promo/offer code. A valid promo shows as a discount line (removable ×) and comes off the amount due.',
