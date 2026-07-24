@@ -242,10 +242,12 @@ public final class TableListScreen extends SwipeRefreshLayout {
         applyCardSkin(card, false);
         card.setMinimumHeight(Ui.dp(ctx, CARD_MIN_H));
 
-        // ── top row: "TABLE 12" + pill ───────────────────────────────────────────────────────
+        // ── top row: "T12" + pill ────────────────────────────────────────────────────────────
+        // v2.0-rc10: the table label IS what a waiter scans the grid for — it was 9.5sp micro
+        // mono (unreadable at arm's length on an A50, owner-reported). Now tile-title size,
+        // bold, high-contrast; the amount stays big below it.
         LinearLayout top = Ui.rowCentered(ctx);
-        TextView label = Ui.mono(ctx, t.label, Ui.SP_META_SMALL, Ui.ASH, 1.5f, 19f);
-        label.setAllCaps(true);
+        TextView label = Ui.text(ctx, t.label, Ui.SP_TILE_TITLE, Ui.MIST, 800);
         label.setMaxLines(1);
         label.setEllipsize(TextUtils.TruncateAt.END);
         top.addView(label, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f));
@@ -276,7 +278,8 @@ public final class TableListScreen extends SwipeRefreshLayout {
         String footer = footerFor(t);
         if (footer != null) {
             card.addView(Ui.spacer(ctx, 8));
-            TextView meta = Ui.mono(ctx, footer, Ui.SP_META_SMALL, Ui.ASH, 1f, 19f);
+            // v2.0-rc10: 9.5sp → 13sp — the server + time were as unreadable as the label was.
+            TextView meta = Ui.mono(ctx, footer, 13f, Ui.ASH, 1f, 19f);
             meta.setAllCaps(true);
             meta.setMaxLines(1);
             meta.setEllipsize(TextUtils.TruncateAt.END);

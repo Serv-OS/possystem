@@ -61,8 +61,8 @@ android {
         // ALSO: API 30+ package-visibility filtering means getLaunchIntentForPackage() returns
         // null for an unrelated package unless it is declared in <queries> — see the manifest.
         targetSdk 34
-        versionCode 15         // bump every release; UpdateChecker compares this to latest-paxpay.json
-        versionName "2.0-rc9"  // real-charge candidate: ServerG8CloudClient → terminal-job-charge,
+        versionCode 16         // bump every release; UpdateChecker compares this to latest-paxpay.json
+        versionName "2.0-rc10"  // real-charge candidate: ServerG8CloudClient → terminal-job-charge,
                                // SIMULATED off. Keep in step with BuildVersion.VERSION. versionCode
                                // is only bumped when a RELEASE is published to latest-paxpay.json.
 
