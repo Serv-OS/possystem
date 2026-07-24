@@ -123,6 +123,24 @@ export default function SyncBridge({ onSyncPulse }) {
             });
           }
 
+          // v5.5.893: CACHE-FIRST boot. Real-mode devices had NO local snapshot cache (only mock
+          // did) — every boot blocked the menu on a network fetch, and an offline boot had no menu
+          // at all. Apply the last snapshot for THIS location instantly, then let the network
+          // fetch below re-apply the fresh one when it lands (same idempotent path a live config
+          // push uses). Keyed by location so the v5.5.238 cross-location purge stays honoured —
+          // offline-fallback caching in localStorage is the sanctioned exception (CLAUDE.md).
+          try {
+            const cachedRaw = localStorage.getItem('rpos-config-cache');
+            if (cachedRaw) {
+              const cached = JSON.parse(cachedRaw);
+              if (cached?.locationId === locationId && cached?.snapshot) {
+                useStore.getState().setConfigUpdate(cached.snapshot);
+                useStore.getState().applyConfigUpdate();
+                console.log('[SyncBridge] applied cached config snapshot (instant boot) — network refresh follows');
+              }
+            }
+          } catch { /* cache is best-effort */ }
+
           const { fetchLatestConfigPush, fetchFloorPlan, fetchMenuItems, fetchMenuCategories, fetchMenus, fetch86List, fetchStockLevels } = await import('../lib/db.js');
           const { supabase: sb2 } = await import('../lib/supabase.js');
 
@@ -131,6 +149,7 @@ export default function SyncBridge({ onSyncPulse }) {
           if (data?.snapshot) {
             useStore.getState().setConfigUpdate(data.snapshot);
             useStore.getState().applyConfigUpdate();
+            try { localStorage.setItem('rpos-config-cache', JSON.stringify({ locationId, snapshot: data.snapshot, at: Date.now() })); } catch {}
           }
 
           // v5.5.734: the pushed config snapshot is the AUTHORITATIVE cache for menu data. Below we

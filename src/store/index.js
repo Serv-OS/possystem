@@ -332,6 +332,17 @@ export const useStore = create((set, get) => ({
     const snap = useStore.getState().configUpdateSnapshot;
     if (!snap) return;
 
+    // v5.5.893: keep the boot cache fresh on EVERY apply (boot fetch, live config push) so the
+    // next boot paints the newest menu instantly and an offline boot still has one. Offline-
+    // fallback caching is the sanctioned localStorage exception. Best-effort; keyed by location
+    // so the SyncBridge cache-apply honours the cross-location purge guard.
+    try {
+      const locId = getActiveLocationSync();
+      if (locId && locId !== 'loc-demo') {
+        localStorage.setItem('rpos-config-cache', JSON.stringify({ locationId: locId, snapshot: snap, at: Date.now() }));
+      }
+    } catch { /* cache is best-effort */ }
+
     // Tables: merge layout into existing live tables, AND add new tables from snapshot
     let updatedTables = useStore.getState().tables;
     if (snap.tables) {

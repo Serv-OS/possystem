@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.893', date: '24 Jul 2026', label: 'Instant menu on boot — tills cache the config snapshot locally',
+    changes: [
+      'POS/till boot no longer waits on the network to show the menu: the last config snapshot is cached on-device (per location) and applies INSTANTLY, then the fresh one loads behind it. An offline boot now has a menu at all (previously: blank until connectivity).',
+      'The cache refreshes on every config push, so it is never staler than the last "Push to POS".',
+    ],
+  },
+  {
     version: '5.5.892', date: '24 Jul 2026', label: 'SPEED part 4: half the sync writes, tiny reconciler polls, PAX poller only where needed + a real PRICING fix',
     changes: [
       'Every table-session write was sent to the server TWICE — once directly and again by the offline-queue replay ~1 second later. The queue is now strictly a fallback (offline, or the direct write fails). Write volume halved; as a bonus, stale queued deletes (the old "tables vanish" hazard class) can no longer replay minutes later.',
