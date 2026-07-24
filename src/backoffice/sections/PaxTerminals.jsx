@@ -144,13 +144,15 @@ export default function PaxTerminals() {
       if (e) throw new Error(e.message);
       setTerminals(data || []);
 
-      // The tills this terminal can be assigned to. type='pos' only — a kiosk or
-      // a KDS has no "send to card machine" button, and the RPC rejects them too.
+      // The devices this terminal can be assigned to. POS tills AND kiosks
+      // (v5.5.884 — a kiosk sends card payments to its assigned PAX via the same
+      // terminal-jobs path; set_terminal_settings accepts both types now). KDS
+      // and other device types stay excluded — they have no payment flow.
       const { data: devs } = await supabase
         .from('devices')
         .select('id, name, type')
         .eq('location_id', locId)
-        .eq('type', 'pos')
+        .in('type', ['pos', 'kiosk'])
         .order('name');
       setPosDevices(devs || []);
 
@@ -726,20 +728,20 @@ function TerminalSettings({ terminal, posDevices, locationId, platformLocId, ven
         )}
       </div>
 
-      {/* ── Assign to a till ──────────────────────────────────────────── */}
+      {/* ── Assign to a POS till or kiosk ─────────────────────────────── */}
       <div style={S.fieldset}>
-        <div style={S.legend}>Assign to a till</div>
+        <div style={S.legend}>Assign to a POS till or kiosk</div>
         <div style={{ ...S.sub, marginBottom:10 }}>
-          When that till sends a payment from its checkout screen, it goes to this terminal.
+          When that device sends a payment from its checkout screen, it goes to this terminal.
         </div>
         <select value={boundTill} onChange={e => setBoundTill(e.target.value)} style={{ ...S.input, maxWidth:360 }}>
           <option value="">— Not assigned —</option>
           {posDevices.map(d => (
-            <option key={d.id} value={d.id}>{d.name || d.id}</option>
+            <option key={d.id} value={d.id}>{d.type === 'kiosk' ? `🖥 ${d.name || d.id} (kiosk)` : (d.name || d.id)}</option>
           ))}
         </select>
         {posDevices.length === 0 && (
-          <div style={S.sub}>No POS tills are registered at this venue yet — add one in Devices first.</div>
+          <div style={S.sub}>No POS tills or kiosks are registered at this venue yet — add one in Devices first.</div>
         )}
         {!boundTill && posDevices.length > 1 && (
           <div style={S.sub}>
