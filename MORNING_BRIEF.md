@@ -18,7 +18,24 @@ One 30-second sign-off needed from you (below), then a 20-minute test list.**
 **Database findings (from live query statistics):** the database itself is tiny and healthy —
 the load was realtime broadcast decode + chatty clients. Indexes were already good; none needed.
 
-## 2. ⚠ Needs YOU — 30 seconds
+## 2. ⚠ DATA BLEED — the big one (needs your decision, NOT applied)
+
+A 26-agent adversarial audit confirmed **22 cross-venue data-bleed holes, 3 CRITICAL**:
+**customers, active_sessions and order_queue have "allow all" policies** — any anonymous
+session (every kiosk/online/QR visitor is one) can read/write ANY venue's rows. This is the
+"POS-core RLS gap" from the June audit, now fully mapped.
+
+- **Staged, ready:** `supabase/migrations/20260804c_rls_hardening.sql` — closes the SAFE set
+  (bar_tabs, floor_tables write-side, menu_items write, +more) using the same policy pattern
+  already live on 15 POS tables. **Not applied** — RLS on the live floor while you slept +
+  the tables-never-lost invariant = your call. Say "apply the RLS hardening" after coffee.
+- **The 3 CRITICALs are deliberately deferred:** fixing them requires moving the anonymous
+  customer flows (QR tabs, online order tracking, kiosk order insert, POS customer search)
+  behind fenced server functions FIRST — otherwise paid customers lose live order status and
+  charged-but-unsaved orders become possible. That's the #1 workstream before real customers;
+  the audit's per-path break analysis is preserved so nothing gets guessed.
+
+## 2b. ⚠ Needs YOU — 30 seconds
 
 **Apply the realtime prune migration** (I'm blocked from infra changes overnight — deliberately):
 `supabase/migrations/20260804b_realtime_prune.sql` — paste into the Supabase SQL editor (ops
@@ -26,16 +43,24 @@ project) or tell me "apply the prune" and I'll run it with you awake. It stops b
 for 5 tables **nothing listens to** (terminal heartbeats/jobs, dead nudges, 2 config tables) —
 the #1 database load. Tables + reads/writes completely untouched.
 
-## 3. Confirmed problems for TODAY's bug-fixing (verified by adversarial review, in priority order)
+## 3. Overnight round 2 — ALSO SHIPPED (v5.5.892–893) after your "everything" message
 
-1. **Every table-sync write goes to the server TWICE** — direct batch + OfflineQueue replay ~1s later (`SessionSync.js:106`). Halving write volume = the single biggest scale lever left.
+- **Sync write volume HALVED** — the offline queue double-send is gone (fallback-only now); stale-replay deletes (the old "tables vanish" hazard) can no longer happen.
+- **Reconciler polls are now tiny** — id+timestamp list every 10s; full session data only when something changed.
+- **PRICING FIX** — switching a till's menu kept stale prices (missing dependency). TEST THIS: switch device menu → prices update instantly.
+- **PAX job poller** now idle on Stripe venues (was hitting an edge fn every 8s fleet-wide).
+- **Instant menu on boot** — tills cache the config snapshot locally; offline boots have a menu.
+
+## 4. Remaining verified backlog (priority order)
+
+1. ~~Every table-sync write goes to the server TWICE~~ ✅ fixed v5.5.892 — direct batch + OfflineQueue replay ~1s later (`SessionSync.js:106`). Halving write volume = the single biggest scale lever left.
 2. **SessionReconciler downloads every session blob every 10s on every device** — duplicates the realtime channel it already has (`SessionReconciler.js:34`). Needs a delta/timestamp guard.
 3. **POSSurface subscribes to the whole store** — every store write re-renders the entire 2,400-line surface (`POSSurface.jsx:44-75`). Selector migration = the big render win. Same for the open CheckoutModal during payment.
 4. **SyncBridge remounts on every PIN sign-in/out** → full boot reload each time (`App.jsx:9989`).
 5. **Boot runs twice** — useSupabaseInit duplicates six SyncBridge fetches on every POS start; both are also fully sequential (~14 awaited round-trips).
 6. **TerminalJobReconciler polls every ~8s even on venues with no PAX terminal.**
-7. **Config snapshot never cached on-device** — every boot waits on the network for the menu.
-8. **MENU_ITEMS price memo has stale deps** — per-menu price tiers may not refresh on menu change (possible **pricing bug**, not just perf — check first).
+7. ~~Config snapshot never cached on-device~~ ✅ fixed v5.5.893 (cache-first boot)
+8. ~~MENU_ITEMS price memo stale deps~~ ✅ fixed v5.5.892 — REAL pricing bug, please live-test menu switching
 9. Customers still download the 2.55MB→1.53MB *operational* chunk before their page's chunk — a separate customer entry point would fix; bigger job.
 
 ## 4. Stage-release safety punch list (before real customers)
