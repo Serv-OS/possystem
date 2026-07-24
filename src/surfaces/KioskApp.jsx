@@ -3007,10 +3007,18 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
     ...(verifiedLoyalty.customer || {}),
     credit: verifiedLoyalty.loyalty?.points_balance || 0,
     tier: verifiedLoyalty.loyalty?.tier || null,
-    rewards: (verifiedLoyalty.loyalty?.rewards_available || []).map(r => ({
-      id: r.id, label: r.name, description: r.description || '', icon: r.icon || 'gift',
-      pointsCost: r.points_cost, type: r.reward_type, value: r.reward_value,
-    })),
+    rewards: [
+      // v5.5.885: earned stamp-card rewards first — a completed card is already paid for.
+      ...(verifiedLoyalty.loyalty?.stamp_rewards || []).map(sr => ({
+        id: `stamp:${sr.program_id}`, label: sr.name, description: 'Stamp card reward',
+        icon: '🎟️', pointsCost: 0, type: sr.reward_type, value: sr.reward_config || {},
+        stamp: true, stampProgramId: sr.program_id, available: sr.available,
+      })),
+      ...(verifiedLoyalty.loyalty?.rewards_available || []).map(r => ({
+        id: r.id, label: r.name, description: r.description || '', icon: r.icon || 'gift',
+        pointsCost: r.points_cost, type: r.reward_type, value: r.reward_value,
+      })),
+    ],
     stampCards: verifiedLoyalty.stampCards || [],
     giftCards: verifiedLoyalty.giftCards || [],
     // v5.5.x: independent points / stamp-card toggles. Missing => treat as enabled.
@@ -3063,10 +3071,18 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
           marketingOptIn: data.customer?.marketing_opt_in || false,
           credit: data.loyalty?.points_balance || 0,
           tier: data.loyalty?.tier || null,
-          rewards: (data.loyalty?.rewards_available || []).map(r => ({
-            id: r.id, label: r.name, description: r.description || '', icon: r.icon || 'gift',
-            pointsCost: r.points_cost, type: r.reward_type, value: r.reward_value,
-          })),
+          rewards: [
+            // v5.5.885: earned stamp-card rewards first — a completed card is already paid for.
+            ...(data.loyalty?.stamp_rewards || []).map(sr => ({
+              id: `stamp:${sr.program_id}`, label: sr.name, description: 'Stamp card reward',
+              icon: '🎟️', pointsCost: 0, type: sr.reward_type, value: sr.reward_config || {},
+              stamp: true, stampProgramId: sr.program_id, available: sr.available,
+            })),
+            ...(data.loyalty?.rewards_available || []).map(r => ({
+              id: r.id, label: r.name, description: r.description || '', icon: r.icon || 'gift',
+              pointsCost: r.points_cost, type: r.reward_type, value: r.reward_value,
+            })),
+          ],
           stampCards: data.stamp_cards || [],
           giftCards: data.gift_cards || [],
           // v5.5.x: independent points / stamp-card toggles. Read from loyalty
@@ -3128,7 +3144,10 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
           body: JSON.stringify({
             customer_id: customerLookup.customerId,
             location_id: locationId,
-            reward_id: reward.id,
+            // Stamp-card rewards redeem by programme (zero points); points rewards by reward id.
+            ...(reward.stamp
+              ? { stamp_program_id: reward.stampProgramId }
+              : { reward_id: reward.id }),
             channel: 'kiosk',
           }),
         }
@@ -3558,7 +3577,10 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
             )}
 
             {/* v5.5.219: Redeemable rewards — customer can tap to redeem */}
-            {pointsEnabled && hasRewards && !loyaltyRedemption && (
+            {/* v5.5.885: rewards list shows whenever the member HAS rewards — the old
+                pointsEnabled gate hid earned STAMP rewards on stamps-only venues. The rewards
+                array already contains only what's redeemable (stamp + affordable points). */}
+            {hasRewards && !loyaltyRedemption && (
               <div style={{ marginTop: 12 }}>
                 <div style={{
                   fontSize: 'clamp(11px, 1.3vw, 13px)',
@@ -3615,7 +3637,7 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
                       <div style={{ flex: 1, textAlign: 'left' }}>
                         <div style={{ fontSize: 'clamp(13px, 1.5vw, 16px)', fontWeight: 700, color: 'var(--kFg)' }}>{r.label}</div>
                         <div style={{ fontSize: 'clamp(11px, 1.2vw, 13px)', color: 'var(--kFgMuted)', marginTop: 1 }}>
-                          {r.pointsCost} points
+                          {r.stamp ? <span style={{ color: '#22c55e', fontWeight: 700 }}>FREE · stamp card{r.available > 1 ? ` ×${r.available}` : ''}</span> : `${r.pointsCost} points`}
                           {r.type === 'discount_fixed' && r.value?.amount_minor && (
                             <span style={{ color: brandColor, fontWeight: 700, marginLeft: 6 }}>
                               · {String.fromCodePoint(0x00A3)}{(r.value.amount_minor / 100).toFixed(2)} off

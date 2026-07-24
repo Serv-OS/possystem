@@ -115,9 +115,11 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   // rewards routing / progress indicator can treat a stamps-only venue as
   // "no points rewards here".
   // (stamps_enabled is read but unused for layout — checkout shows no stamp UI.)
-  // The rewards (points-redemption) step only applies when a member is signed
-  // in AND the venue runs points — a stamps-only venue skips straight to pay.
-  const rewardsAvailable = hasLoyalty && pointsEnabled;
+  // The rewards step applies when a member is signed in AND the venue runs points — OR the
+  // member has an EARNED stamp-card reward to spend (v5.5.885: previously points-gated, so a
+  // completed stamp card was invisible at online checkout even on a stamps-only venue).
+  const memberStampRewards = loyalty?.loyalty?.stamp_rewards || [];
+  const rewardsAvailable = hasLoyalty && (pointsEnabled || memberStampRewards.length > 0);
   const [loyaltyHintDismissed, setLoyaltyHintDismissed] = useState(false);
   // v5.5.249: gate prompt — shown when user clicks Continue and phone is a loyalty member
   const [showLoyaltyGate, setShowLoyaltyGate] = useState(false);
@@ -620,10 +622,23 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         });
         const j = await res.json();
         if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
-        setAvailableRewards(j.rewards || []);
+        // Earned stamp-card rewards first (already paid for — zero points), then the catalog.
+        setAvailableRewards([
+          ...memberStampRewards.map(sr => ({
+            id: `stamp:${sr.program_id}`, stamp: true, stamp_program_id: sr.program_id,
+            name: sr.name, points_cost: 0, reward_type: sr.reward_type,
+            reward_value: sr.reward_config || {}, available: sr.available,
+          })),
+          ...(j.rewards || []),
+        ]);
       } catch (e) {
         console.warn('[OnlineCheckout] fetch rewards failed:', e?.message);
-        setAvailableRewards([]);
+        // Catalog fetch failing must not hide EARNED stamp rewards.
+        setAvailableRewards(memberStampRewards.map(sr => ({
+          id: `stamp:${sr.program_id}`, stamp: true, stamp_program_id: sr.program_id,
+          name: sr.name, points_cost: 0, reward_type: sr.reward_type,
+          reward_value: sr.reward_config || {}, available: sr.available,
+        })));
       } finally {
         setRewardLoading(false);
       }
@@ -642,7 +657,12 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         body: JSON.stringify({
           company_id: loyalty.loyalty.company_id,
           customer_id: loyalty.loyalty.customer_id,
-          reward_id: reward.id,
+          // v5.5.885: loyalty-redeem REQUIRES location_id (it 400s without one — online
+          // redemption was silently failing). Stamp rewards redeem by programme, zero points.
+          location_id: opsLocationId,
+          ...(reward.stamp
+            ? { stamp_program_id: reward.stamp_program_id }
+            : { reward_id: reward.id }),
           order_id: `online-${orderShape.ref}`,
           channel: 'online',
           idempotency_key: idempotencyKey,
@@ -1257,7 +1277,9 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
                               <div style={{ fontSize: 12, color: muted, marginTop: 2 }}>{reward.description}</div>
                             )}
                             <div style={{ fontSize: 12, color: theme.accent, fontWeight: 600, marginTop: 4 }}>
-                              {reward.points_cost} points
+                              {reward.stamp
+                                ? `FREE · stamp card reward${reward.available > 1 ? ` ×${reward.available}` : ''}`
+                                : `${reward.points_cost} points`}
                               {(reward.reward_type === 'discount_fixed' || reward.discount_type === 'fixed') && ` · ${money(((reward.reward_value?.amount_minor || 0) / 100))} off`}
                               {(reward.reward_type === 'discount_percent' || reward.discount_type === 'percentage') && ` · ${reward.reward_value?.percent || reward.discount_value || 0}% off`}
                               {(reward.reward_type === 'free_item' || reward.discount_type === 'free_item') && ' · Free item'}

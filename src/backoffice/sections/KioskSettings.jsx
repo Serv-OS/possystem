@@ -383,8 +383,8 @@ export default function KioskSettings({ kioskId, onBack }) {
             <ToggleRow
               checked={!!draft.kiosk_loyalty_enabled}
               onChange={v => setField('kiosk_loyalty_enabled', v)}
-              title="Loyalty / receipt screen"
-              desc="Capture name and phone after pay for SMS receipts (when SMS provider added)"
+              title="Loyalty sign-in & rewards"
+              desc="Customers can sign in with their phone before paying to earn points/stamps, redeem rewards and use linked gift cards. Turning this OFF removes the whole loyalty step from the kiosk."
             />
             <ToggleRow
               checked={!!draft.kiosk_allergen_required}

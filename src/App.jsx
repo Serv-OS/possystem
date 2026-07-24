@@ -94,10 +94,20 @@ import { Icon } from './components/ServOSIcons';
 
 const CHANGELOG = [
   {
-    version: '5.5.885', date: '23 Jul 2026', label: 'Assign a PAX card terminal to a KIOSK from the terminal\u2019s own Settings',
+    version: '5.5.886', date: '24 Jul 2026', label: 'Stamp rewards redeemable on KIOSK + ONLINE too; kiosk rewards no longer hidden on stamps-only venues',
     changes: [
-      'Card readers \u2192 PAX terminal \u2192 Settings: the \u201cAssign to a till\u201d dropdown is now \u201cAssign to a POS till or kiosk\u201d and lists the venue\u2019s kiosks alongside POS tills \u2014 pick the kiosk and the terminal is bound to it, one place for all assignments.',
-      'FIX: a terminal assigned to a kiosk could not save ANY settings \u2014 every save failed with \u201cthat till is not a POS device at this terminal\u2019s venue\u201d. The server-side settings write now accepts kiosk bindings (applied to the live database).',
+      'Kiosk and online checkout now list earned stamp-card rewards as FREE (🎟️) alongside points rewards, and redeeming them applies the free-item discount — same engine as the POS (v5.5.884).',
+      'FIX: the kiosk rewards list was gated on points being enabled, so a stamps-only venue could NEVER show a reward even after sign-in. Now it shows whenever the member has anything redeemable.',
+      'FIX: online reward redemption was silently failing — the redeem call never sent location_id, which the server requires. Points rewards online were broken too; both work now.',
+      'Back Office → Kiosks: the "Loyalty / receipt screen" toggle was mislabeled as receipt capture — renamed "Loyalty sign-in & rewards" and now says plainly that turning it off removes the whole loyalty step.',
+      'The phone sign-in (OTP) response now carries earned stamp rewards, so every OTP-gated surface sees them.',
+    ],
+  },
+  {
+    version: '5.5.885', date: '23 Jul 2026', label: 'Assign a PAX card terminal to a KIOSK from the terminal’s own Settings',
+    changes: [
+      'Card readers → PAX terminal → Settings: the “Assign to a till” dropdown is now “Assign to a POS till or kiosk” and lists the venue’s kiosks alongside POS tills — pick the kiosk and the terminal is bound to it, one place for all assignments.',
+      'FIX: a terminal assigned to a kiosk could not save ANY settings — every save failed with “that till is not a POS device at this terminal’s venue”. The server-side settings write now accepts kiosk bindings (applied to the live database).',
     ],
   },
   {

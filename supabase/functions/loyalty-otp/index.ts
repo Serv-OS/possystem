@@ -505,6 +505,40 @@ Deno.serve(async (req) => {
       }
     } catch {}
 
+    // Earned stamp rewards = completed cards − redeem-ledger rows (ops stamp_transactions).
+    // Kiosk + online read this payload — without it a completed card is invisible at checkout.
+    const stampRewardsVerify: any[] = [];
+    try {
+      const withCompleted = stampCardsVerify.filter((sc: any) => (sc.completed_count || 0) > 0);
+      if (withCompleted.length) {
+        const { data: cfgs } = await platformAdmin
+          .from('stamp_card_programs')
+          .select('id, reward_config')
+          .in('id', withCompleted.map((sc: any) => sc.id));
+        const cfgMap: Record<string, any> = {};
+        (cfgs || []).forEach((c: any) => { cfgMap[c.id] = c.reward_config || {}; });
+        for (const sc of withCompleted) {
+          const { count } = await opsAdmin
+            .from('stamp_transactions')
+            .select('id', { count: 'exact', head: true })
+            .eq('customer_id', customer.id)
+            .eq('program_id', sc.id)
+            .eq('type', 'redeem');
+          const available = Math.max(0, (sc.completed_count || 0) - (count || 0));
+          sc.rewards_available = available;
+          if (available > 0) {
+            stampRewardsVerify.push({
+              program_id: sc.id,
+              name: sc.reward_description || sc.name,
+              reward_type: sc.reward_type || 'free_item',
+              reward_config: cfgMap[sc.id] || {},
+              available,
+            });
+          }
+        }
+      }
+    } catch {}
+
     // ── Create session token ─────────────────────────────────────────
     const token = await createSessionToken(customer.id, companyId);
 
@@ -537,6 +571,9 @@ Deno.serve(async (req) => {
           icon: r.icon, points_cost: r.points_cost,
           reward_type: r.reward_type,
         })),
+        // v5.5.885: earned stamp-card rewards (completed cards not yet redeemed) — checkout
+        // surfaces list these as FREE alongside points rewards.
+        stamp_rewards: stampRewardsVerify,
         all_rewards: allRewards.map(r => ({
           id: r.id, name: r.name, description: r.description,
           icon: r.icon, points_cost: r.points_cost,
