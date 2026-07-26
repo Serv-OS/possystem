@@ -977,82 +977,19 @@ function LoyaltyRewardsEntry({ customer, loyaltyData, items = [], total, onAppli
   const rewards = loyaltyData?.rewards || [];
 
   const redeem = async (reward) => {
-    setRedeeming(reward.id);
     setError('');
-    // TRAINING MODE: apply the reward's discount in-memory but NEVER deduct real
-    // loyalty points (no loyalty-redeem call). Mirrors the discount math below.
-    if (isTrainingMode()) {
-      const rv = reward.value || {};
-      let discountMinor = 0;
-      if (reward.type === 'discount_fixed') discountMinor = rv.amount_minor || 0;
-      else if (reward.type === 'discount_percent') discountMinor = Math.round(total * 100 * (rv.percent || 0) / 100);
-      else if (reward.type === 'free_item') {
-        const eligibleIds = new Set((rv.eligible_items || []).map(ei => ei.id));
-        const matching = (items || []).filter(i => !i.voided && eligibleIds.has(i.itemId));
-        if (matching.length > 0) discountMinor = Math.round(matching.reduce((a, b) => (a.price < b.price ? a : b)).price * 100);
-      }
-      discountMinor = Math.min(discountMinor, Math.round(total * 100));
-      onApplied({ reward_id: reward.id, reward_name: reward.label, points_deducted: reward.pointsCost || 0, discount_type: reward.type, discount_value: discountMinor, idempotency_key: null, balance_after: null });
-      setRedeeming(null);
-      return;
-    }
+    setRedeeming(reward.id);
     try {
-      const token = await ensureAuthToken();
-      if (!token) throw new Error('Not authenticated');
-      const res = await fetch(`${FUNCTIONS_URL_LOYALTY}/loyalty-redeem`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          customer_id: loyaltyData.customerId || customer?.customerId,
-          location_id: getActiveLocationSync(),
-          // Stamp-card rewards redeem by programme (zero points); points rewards by reward id.
-          ...(reward.stamp
-            ? { stamp_program_id: reward.stampProgramId }
-            : { reward_id: reward.id }),
-          channel: 'pos',
-        }),
+      // v5.5.896: APPLY-ONLY — nothing is consumed server-side until the check commits
+      // (store.redeemLoyaltyAtCommit, promo-code pattern). Free-item rewards refuse to
+      // apply until an eligible item is in the basket, with a clear message.
+      const applied = await redeemLoyaltyReward(reward, {
+        customerId: loyaltyData.customerId || customer?.customerId,
+        items, total,
       });
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
-
-      // Calculate the discount value in minor units based on reward type
-      let discountMinor = 0;
-      const rv = j.reward?.value || reward.value || {};
-      if (j.reward?.type === 'discount_fixed' || reward.type === 'discount_fixed') {
-        discountMinor = rv.amount_minor || 0;
-      } else if (j.reward?.type === 'discount_percent' || reward.type === 'discount_percent') {
-        discountMinor = Math.round(total * 100 * (rv.percent || 0) / 100);
-      } else if (j.reward?.type === 'free_delivery' || reward.type === 'free_delivery') {
-        discountMinor = 0; // handled separately
-      } else if (j.reward?.type === 'free_item' || reward.type === 'free_item') {
-        // v5.5.247: free item — find the cheapest eligible item in the order
-        const eligibleIds = new Set((rv.eligible_items || []).map(ei => ei.id));
-        if (eligibleIds.size > 0) {
-          // Find cheapest matching item in the current order
-          const matching = (items || []).filter(i => !i.voided && eligibleIds.has(i.itemId));
-          if (matching.length > 0) {
-            const cheapest = matching.reduce((a, b) => (a.price < b.price ? a : b));
-            discountMinor = Math.round(cheapest.price * 100);
-          }
-        }
-      } else {
-        // custom — show on receipt but no automatic discount
-        discountMinor = 0;
-      }
-      // Don't discount more than the total
-      discountMinor = Math.min(discountMinor, Math.round(total * 100));
-
-      onApplied({
-        reward_id: reward.id,
-        reward_name: j.reward?.name || reward.label,
-        points_deducted: j.points_deducted || reward.pointsCost,
-        discount_type: j.reward?.type || reward.type,
-        discount_value: discountMinor,
-        idempotency_key: j.idempotency_key || null,
-        balance_after: j.balance,
-      });
+      onApplied(applied);
     } catch (e) {
-      setError(e?.message || 'Redemption failed');
+      setError(e?.message || 'Could not apply reward');
     } finally {
       setRedeeming(null);
     }
@@ -1150,6 +1087,10 @@ function LoyaltyRewardsEntry({ customer, loyaltyData, items = [], total, onAppli
                 <div style={{ fontSize: 10, color: 'var(--t4)' }}>pts</div>
               </>
             )}
+            {/* v5.5.896: explicit affordance — staff didn't realise rows were tappable */}
+            <div style={{ marginTop: 5, fontSize: 9, fontWeight: 800, letterSpacing: '.05em', color: 'var(--grn)', border: '1px solid rgba(34,197,94,.4)', borderRadius: 6, padding: '2px 7px', whiteSpace: 'nowrap' }}>
+              TAP TO REDEEM
+            </div>
           </div>
           {redeeming === r.id && <div style={{ fontSize: 11, color: 'var(--t3)', marginLeft: 6 }}>...</div>}
         </button>

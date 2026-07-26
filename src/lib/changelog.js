@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.896', date: '24 Jul 2026', label: 'FIX — loyalty rewards no longer burn on tap; they redeem at CHECKOUT (like promo codes)',
+    changes: [
+      'Owner-reported: tapping a reward with no eligible item in the basket consumed the stamp card server-side for a £0 discount. Tapping now only STAGES the discount — nothing is consumed until the check actually commits.',
+      'Free-item rewards refuse to apply until the eligible item is in the order, with a clear message ("Add Latte — Small to the order first — the reward makes it free").',
+      'The real redemption fires at check commit on both POS payment paths (same pattern as promo codes), is idempotent on the check id (retries can never double-deduct), and is skipped in training mode.',
+      'Rewards list: every reward row now carries an explicit green "TAP TO REDEEM" pill so it is obvious they are redeemable.',
+      'Peter Roberts\' wrongly-consumed free latte has been restored (the stray redemption row was removed).',
+      'NOTE: kiosk + online still redeem at the rewards step (pre-payment) — moving them to post-payment commit is queued next.',
+    ],
+  },
+  {
     version: '5.5.895', date: '24 Jul 2026', label: 'FIX — stamp-card rewards can now actually be REDEEMED at the POS',
     changes: [
       'The POS checkout loyalty panel only appeared when the customer had POINTS credit, and the rewards screen was points-gated too — so a member with a completed stamp card but no points (like a stamps-only earner) could never see or redeem their free item. Same gate bug as the kiosk fix in v5.5.886, now closed at the POS.',

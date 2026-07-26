@@ -4349,6 +4349,7 @@ export const useStore = create((set, get) => ({
     insertClosedCheck(record);
     depleteForSale(record);   // v5.5.565: deplete recipe ingredients from the stock ledger (theoretical COGS); fire-and-forget no-op if no recipe
     if (paymentInfo.promoRedemption) get().redeemPromoCode?.(paymentInfo.promoRedemption, record, session.customer);
+    if (paymentInfo.loyaltyRedemption?.pending_commit) get().redeemLoyaltyAtCommit?.(paymentInfo.loyaltyRedemption, record, session.customer);
     // v5.5.163: Challenge 21 — increment alcohol counter; fire prompt at threshold.
     get().triggerChallenge21Check?.(record);
     // v4.6.65: dine-in customer attribution. Reads session.customer (attached
@@ -4576,6 +4577,28 @@ export const useStore = create((set, get) => ({
 
   // Redeem a held promo code against a recorded check — atomic + race-safe server-side, bound to the
   // order id. Fire-and-forget: validate already confirmed eligibility at apply time; never blocks a sale.
+  // v5.5.896: loyalty rewards redeem AT COMMIT, exactly like promo codes. The checkout tap
+  // only stages the discount in-memory (lib/loyaltyRedeem.js is apply-only now) — so a
+  // mis-tap or abandoned checkout can never consume points or a stamp card. loyalty-redeem
+  // is idempotent on closed_check_id server-side, so a retry can't double-deduct.
+  redeemLoyaltyAtCommit: (loy, record, customer) => {
+    if (!loy?.pending_commit || !supabase || !record?.id) return;
+    if (!loy.stampProgramId && !loy.reward_id) return;
+    if (isTrainingMode()) return;   // TRAINING MODE: never consume real points/stamps
+    const { staff } = get();
+    let locId = getActiveLocationSync(); if (!locId) { try { locId = localStorage.getItem('rpos-active-location') || null; } catch {} }
+    supabase.functions.invoke('loyalty-redeem', { body: {
+      customer_id: loy.customer_id || customer?.customerId || customer?.id || null,
+      location_id: locId,
+      ...(loy.stampProgramId ? { stamp_program_id: loy.stampProgramId } : { reward_id: loy.reward_id }),
+      channel: 'pos',
+      closed_check_id: record.id,
+      staff_id: staff?.id || null,
+    } }).then(({ data, error }) => {
+      if (error || data?.error) console.warn('[loyalty redeem@commit]', error?.message || data?.error);
+    }).catch(err => console.warn('[loyalty redeem@commit]', err?.message || err));
+  },
+
   redeemPromoCode: (promo, record, customer) => {
     if (!promo?.code || !supabase || !record?.id) return;
     if (isTrainingMode()) return;   // TRAINING MODE: don't consume a one-time / limited promo code
@@ -4809,6 +4832,7 @@ export const useStore = create((set, get) => ({
       set({ deliveryQuote: null });
     }
     if (paymentInfo.promoRedemption) get().redeemPromoCode?.(paymentInfo.promoRedemption, record, customer);
+    if (paymentInfo.loyaltyRedemption?.pending_commit) get().redeemLoyaltyAtCommit?.(paymentInfo.loyaltyRedemption, record, customer);
     // v5.5.163: Challenge 21 — alcohol counter + prompt
     get().triggerChallenge21Check?.(record);
     get().maybeAutoSignout('pay');   // v5.5.731 per-device sign-out-on-payment (walk-in path)
