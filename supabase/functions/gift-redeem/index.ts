@@ -3,7 +3,17 @@
 // Redeem (debit) a gift card. Idempotent via idempotency_key.
 //
 // Body: { code, amount, order_id, location_id, channel,
-//         idempotency_key, staff_id? }
+//         idempotency_key, closed_check_id?, staff_id? }
+//
+// v5.5.901: optional `closed_check_id`. When present the idempotency key is DERIVED
+// server-side as `giftcommit:<closed_check_id>:<card_id>` and the caller's
+// idempotency_key is ignored — the same pattern loyalty-redeem uses
+// (`redeem:<closed_check_id>:<reward_id>`). Kiosk + online now debit the card at ORDER
+// COMMIT rather than at apply time, so a retry of that commit MUST NOT debit twice even
+// if the client mints a fresh key. Callers that don't send closed_check_id (POS checkout,
+// split payments) are completely unaffected — they keep their own key.
+// NOTE: this deliberately keys on the CHECK id, never on order_id — the POS passes a
+// table_id as order_id, which is reused for every order that table ever takes.
 //
 // v5.5.197: Company resolution now falls back to looking up the company_id
 // from the location_id via the Platform DB locations table. This fixes POS
@@ -35,7 +45,8 @@ Deno.serve(async (req) => {
   try { body = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
 
   const {
-    code, card_id, amount, order_id, location_id, channel, idempotency_key, staff_id,
+    code, card_id, amount, order_id, location_id, channel, idempotency_key,
+    closed_check_id, staff_id,
   } = body as any;
 
   // v5.5.207: resolve company via location_id (reliable) with user fallback
@@ -48,7 +59,9 @@ Deno.serve(async (req) => {
   // returns the card_id) but code_plain might be null.
   if (!code && !card_id) return json({ error: 'code or card_id required' }, 400);
   if (!amount) return json({ error: 'amount required' }, 400);
-  if (!idempotency_key) return json({ error: 'idempotency_key required' }, 400);
+  if (!idempotency_key && !closed_check_id) {
+    return json({ error: 'idempotency_key required' }, 400);
+  }
   if (!channel) return json({ error: 'channel required' }, 400);
 
   const amountMinor = Math.round(Number(amount));
@@ -122,12 +135,20 @@ Deno.serve(async (req) => {
     return json({ error: 'Card not found' }, 404);
   }
 
+  // ── Idempotency key ───────────────────────────────────────────────────
+  // v5.5.901: a commit-time caller (kiosk/online) supplies the closed-check id; the key is
+  // then DERIVED from it, so every retry of that commit collapses onto one debit no matter
+  // what key the client sent. Everyone else keeps their own key (unchanged behaviour).
+  const idemKey = closed_check_id
+    ? `giftcommit:${closed_check_id}:${card.id}`
+    : idempotency_key;
+
   // ── Idempotency check ─────────────────────────────────────────────────
   const { data: existingTx } = await platformAdmin
     .from('gift_card_transactions')
     .select('*')
     .eq('card_id', card.id)
-    .eq('idempotency_key', idempotency_key)
+    .eq('idempotency_key', idemKey)
     .maybeSingle();
 
   if (existingTx) {
@@ -137,6 +158,9 @@ Deno.serve(async (req) => {
       remaining_balance: existingTx.balance_after_minor,
       status: 'already_applied',
       currency: config.currency,
+      // v5.5.901: the key the ledger row actually carries — gift-reverse-redeem needs the
+      // EXACT key to find the transaction, and a commit-time caller's key was derived here.
+      idempotency_key: idemKey,
       idempotent: true,
     });
   }
@@ -159,9 +183,9 @@ Deno.serve(async (req) => {
     p_card_id: card.id,
     p_company_id: companyId,
     p_amount_minor: amountMinor,
-    p_idempotency_key: idempotency_key,
+    p_idempotency_key: idemKey,
     p_location_id: location_id || null,
-    p_order_id: order_id || null,
+    p_order_id: order_id || closed_check_id || null,
     p_channel: channel,
     p_staff_id: staff_id || null,
   });
@@ -182,6 +206,7 @@ Deno.serve(async (req) => {
       remaining_balance: result.balance_after_minor,
       status: 'already_applied',
       currency: config.currency,
+      idempotency_key: idemKey,
       idempotent: true,
     });
   }
@@ -192,5 +217,6 @@ Deno.serve(async (req) => {
     remaining_balance: result.balance_after_minor,
     status: result.new_status || 'active',
     currency: config.currency,
+    idempotency_key: idemKey,
   });
 });

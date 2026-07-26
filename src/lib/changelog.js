@@ -7,6 +7,18 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.901', date: '26 Jul 2026', label: 'FIX — a gift card is no longer spent until the order is actually placed (kiosk + online)',
+    changes: [
+      'THE BUG: entering a gift card at the kiosk or online DEBITED IT IMMEDIATELY — before the order existed. Walk away from the kiosk, time out on the idle screen, or have your card declined at the reader, and the gift-card money was simply gone: no order, no receipt, no automatic refund (only a POS refund of a real check restores a balance). v5.5.900 made it worse by giving every kiosk guest a gift/promo step, so far more customers reached the entry box.',
+      'FIXED: applying a gift card now only CHECKS THE BALANCE and stages the discount on screen. The card is debited at the moment the order commits — the same apply-now / redeem-at-commit pattern promo codes and loyalty rewards already use (v5.5.896–898). An abandoned basket costs the customer nothing.',
+      'Retries can never double-spend a card: the redemption is keyed to the order\'s check id server-side, so the same order collapses onto ONE debit however many times it is retried.',
+      'Partial balances behave exactly as before — a card worth less than the bill pays what it can and the rest goes to the card reader / card payment. One gift card per order is unchanged.',
+      'A staged gift card can now be REMOVED with × before paying (it could not be before — the money had already left the card).',
+      'Expired or voided cards are caught at entry with a clear message instead of failing later, and the check now records the amount the server ACTUALLY took, so reports never overstate gift-card takings.',
+      'Fully-covered orders (gift card pays everything, no card payment) are protected both ways: if the balance has changed since it was applied, the order is NOT placed and nothing is debited — the customer is sent back to pay, with their card balance untouched.',
+    ],
+  },
+  {
     version: '5.5.900', date: '26 Jul 2026', label: 'FIX — kiosk gift cards & promo codes are finally REACHABLE: their own checkout step before payment',
     changes: [
       'Owner-reported: "I cannot see anywhere to actually redeem" on the kiosk. The gift card / promo code entry did exist — but it lived on the PAYMENT screen, which starts the card reader the instant it opens. The entry vanished within a frame, so any customer without a linked gift card could never reach it.',

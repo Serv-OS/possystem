@@ -29,6 +29,7 @@ import { getLocationProcessor } from '../../lib/payments/processor';
 import RyftPaymentForm from '../../components/RyftPaymentForm';
 import AddressAutocomplete from '../../components/AddressAutocomplete';
 import { attributeOnlineOrder } from '../../lib/customerLookup';
+import { stageGiftCard, commitGiftCard, giftCardCheckRecord } from '../../lib/giftCommit';
 import { getDeliveryQuote, recordDeliverySurcharge } from '../../lib/delivery/quoteService';
 import { dispatchDelivery } from '../../lib/delivery/dispatch';
 import { sendEmailReceipt } from '../../lib/sendReceipt';
@@ -506,42 +507,42 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     }
   };
 
-  // ── Gift card redeem + continue ───────────────────────────────────────
-  const applyGiftCard = async () => {
+  // ── Gift card apply (staging only) ────────────────────────────────────
+  // v5.5.901: APPLY-ONLY, mirroring promo codes + loyalty rewards. This used to call
+  // gift-redeem with the balance debited immediately — so a customer who applied a card and
+  // then abandoned checkout (or whose payment failed) lost the money with no order and no
+  // reversal. The real debit now fires in commitGift() once the order exists.
+  const applyGiftCard = () => {
     if (!giftCard) return;
-    setGiftLoading(true); setGiftError('');
-    try {
-      const redeemAmount = Math.min(giftCard.balance, discountedSubtotalMinor); // v5.5.787: never redeem more than the discounted bill
-      if (redeemAmount <= 0) { setGiftError('Nothing to redeem'); setGiftLoading(false); return; }
-      const idempotencyKey = `online:${orderShape.ref}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
-      const token = await getAuthToken();
-      const baseUrl = import.meta.env.VITE_SUPABASE_URL;
-      const res = await fetch(`${baseUrl}/functions/v1/gift-redeem`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'authorization': `Bearer ${token}` },
-        body: JSON.stringify({
-          code: giftCode.replace(/[\s-]/g, ''),
-          amount: redeemAmount,
-          order_id: `online-${orderShape.ref}`,
-          location_id: opsLocationId,
-          channel: 'online',
-          idempotency_key: idempotencyKey,
-        }),
-      });
-      const j = await res.json();
-      if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
-      setGiftApplied({
-        card_id: j.card_id,
-        applied: j.applied,
-        remaining_balance: j.remaining_balance,
-        idempotency_key: idempotencyKey,
-        code_last4: giftCard.code_last4 || giftCode.slice(-4),
-      });
-    } catch (e) {
-      setGiftError(e?.message || 'Could not redeem gift card');
-    } finally {
-      setGiftLoading(false);
-    }
+    setGiftError('');
+    // v5.5.787: never apply more than the discounted bill. v5.5.901: also net off an
+    // already-applied promo/reward, so the card is never over-drawn for credit the
+    // customer isn't actually using.
+    const amountDueMinor = Math.max(0, discountedSubtotalMinor - promoAppliedMinor - rewardDiscountMinor);
+    if (Math.min(giftCard.balance, amountDueMinor) <= 0) { setGiftError('Nothing to redeem'); return; }
+    setGiftApplied(stageGiftCard({
+      cardId: giftCard.card_id,
+      code: giftCode.replace(/[\s-]/g, ''),
+      codeLast4: giftCard.code_last4 || giftCode.slice(-4),
+      balanceMinor: giftCard.balance,
+      amountDueMinor,
+    }));
+  };
+
+  // v5.5.901: fire the real gift-card debit. `online-<ref>` is the idempotency scope —
+  // orderShape (and so ref) is frozen per step, so a retry of the same commit reuses it and
+  // gift-redeem collapses the second attempt onto the first. Never throws.
+  const commitGift = async ({ allowPartial = true } = {}) => {
+    if (!giftApplied?.pending_commit) return null;
+    const token = await getAuthToken().catch(() => null);
+    return commitGiftCard(giftApplied, {
+      functionsUrl: FUNCTIONS_URL,
+      token,
+      locationId: opsLocationId,
+      channel: 'online',
+      closedCheckId: `online-${orderShape.ref}`,
+      allowPartial,
+    });
   };
 
   // Gift step → rewards (if loyalty) or pay
@@ -852,6 +853,20 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     if (gate) { setError(gate); setStep('details'); return; }
     try {
       const { ref, collectionAt, sentAt, customer, items } = orderShape;
+      // v5.5.901: this is the NO-CARD path — the gift card IS the payment. Debit it BEFORE
+      // the order is written (INVARIANTS.md: "gift card redeem before order close") and bail
+      // out if it fails, so a card that's been drained elsewhere can't buy a free order.
+      // The card-paid path below is the opposite: money is already taken, the order must land.
+      const giftCommit = await commitGift({ allowPartial: false });
+      if (giftCommit && !giftCommit.ok) {
+        setError(giftCommit.error === 'Insufficient balance'
+          ? 'That gift card no longer has enough balance. Please go back and try another payment method.'
+          : `Gift card could not be applied: ${giftCommit.error}`);
+        setStep('gift');
+        setGiftApplied(null);
+        setGiftCard(null);
+        return;
+      }
       const collectionTimeLabel = collectionAt.toLocaleTimeString('en-GB', {
         timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false,
       });
@@ -901,11 +916,9 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           table_id: null,
           table_label: `Online ${ref}`,
           source: 'online',
-          gift_card: giftApplied ? {
-            card_id: giftApplied.card_id,
-            idempotency_key: giftApplied.idempotency_key,
-            amount: giftApplied.applied,
-          } : null,
+          // v5.5.901: `applied` = what the server ACTUALLY debited; `idempotency_key` = the
+          // key on the ledger row (gift-reverse-redeem needs it verbatim on a POS refund).
+          gift_card: giftApplied ? giftCardCheckRecord(giftApplied, giftCommit) : null,
           // v5.5.671: the column is `loyalty` (NOT loyalty_reward) — the wrong key made Postgres
           // reject the WHOLE insert ("column loyalty_reward does not exist"), silently caught, so
           // NO online order ever reached closed_checks (history / reports / EOD). Fixed.
@@ -987,6 +1000,18 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       }
       try { logOrderActivity(opsLocationId, queueRow); } catch { /* feed best-effort */ }
 
+      // v5.5.901: gift card — debit at COMMIT, like promo + loyalty below. The card leg is
+      // already captured and the order is already queued, so the debit CANNOT block or fail
+      // the order; it's awaited only so the closed_check records what was actually taken.
+      // Before this, the debit happened the moment the customer applied the card — an
+      // abandoned checkout or a declined card burned the balance with no order to show for it.
+      const giftCommit = await commitGift();
+      if (giftCommit && !giftCommit.ok) {
+        console.error('[OnlineCheckout] gift card commit FAILED — order stands, card not debited:', giftCommit.error);
+      } else if (giftCommit?.shortfall > 0) {
+        console.warn('[OnlineCheckout] gift card commit partial — uncollected minor:', giftCommit.shortfall);
+      }
+
       // v5.5.127: also write to closed_checks so the paid online order shows
       // up in History / EOD / Payments reports identically to in-store paid
       // orders. status='paid' (not 'open') because Stripe already collected.
@@ -1027,11 +1052,8 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           table_id: null,
           table_label: `Online ${ref}`,
           source: 'online', // v5.5.140: tag closed_checks for report filtering
-          gift_card: giftApplied ? {
-            card_id: giftApplied.card_id,
-            idempotency_key: giftApplied.idempotency_key,
-            amount: giftApplied.applied,
-          } : null,
+          // v5.5.901: actual debited amount + the ledger row's key (see the gift-only path).
+          gift_card: giftApplied ? giftCardCheckRecord(giftApplied, giftCommit) : null,
           // v5.5.671: the column is `loyalty` (NOT loyalty_reward) — the wrong key made Postgres
           // reject the WHOLE insert ("column loyalty_reward does not exist"), silently caught, so
           // NO online order ever reached closed_checks (history / reports / EOD). Fixed.
@@ -1280,10 +1302,17 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
                 <span style={{ fontSize: 18 }}>✅</span>
-                <span style={{ fontSize: 14, fontWeight: 700 }}>Gift card applied</span>
+                <span style={{ fontSize: 14, fontWeight: 700, flex: 1 }}>Gift card applied</span>
+                {/* v5.5.901: removable — apply no longer debits the card, so taking it off
+                    costs the customer nothing. */}
+                {giftApplied.pending_commit && (
+                  <button onClick={() => { setGiftApplied(null); setGiftCard(null); setGiftError(''); }} style={{
+                    background: 'none', border: 'none', color: muted, fontSize: 18, cursor: 'pointer', padding: 4,
+                  }}>×</button>
+                )}
               </div>
               <div style={{ fontSize: 13, color: muted }}>
-                {money((giftApplied.applied / 100))} deducted from card ····{giftApplied.code_last4}
+                {money((giftApplied.applied / 100))} from card ····{giftApplied.code_last4}
               </div>
               {!giftCoversAll && (
                 <div style={{ fontSize: 13, color: muted, marginTop: 4 }}>

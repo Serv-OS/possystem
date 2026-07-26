@@ -30,6 +30,7 @@ import KioskProductModal from './KioskProductModal';
 import { t, setLang, useKioskLang, LANGUAGES, getLanguageMeta } from '../lib/i18n';
 import { displayName, kitchenOverride, receiptOverride } from '../lib/itemDisplay';
 import { fetchCustomerByPhone } from '../lib/customerLookup';
+import { stageGiftCard, commitGiftCard, giftCardCheckRecord } from '../lib/giftCommit';
 import { money, stripeCurrency } from '../lib/currency';
 import { getLocationProcessor } from '../lib/payments/processor';
 import { findPaxTerminal, dispatchTerminalJob, pollTerminalJob, cancelTerminalJob, buildCheckKey } from '../lib/payments/terminalJobs';
@@ -386,7 +387,14 @@ export default function KioskApp({ kioskId, onUnpair }) {
   const [loyaltyRedemption, setLoyaltyRedemption] = useState(null);
   // loyaltyRedemption: { reward_id, reward_name, points_deducted, discount_type, discount_value, idempotency_key, balance_after }
   // v5.5.265: Gift card payment applied at checkout
+  // v5.5.901: APPLY-ONLY staging — { card_id, code, code_last4, applied (minor),
+  // balance_at_apply, remaining_balance, commit_key, pending_commit }. Nothing is debited
+  // until submitOrder fires gift-redeem against checkIdRef.
   const [giftCardPayment, setGiftCardPayment] = useState(null);
+  // v5.5.901: the closed-check id is minted ONCE per basket (not per submitOrder call), so a
+  // retried submit reuses it — that id is the server-side idempotency scope for the gift-card
+  // debit, and a fresh id per attempt would let a retry debit the card twice.
+  const checkIdRef = useRef(null);
   // v5.5.887: promo/offer code — validated at entry (no write), REDEEMED in submitOrder once
   // the order exists (promo-redeem is race-safe + idempotent on `${ref}:${code}`).
   const [promoApplied, setPromoApplied] = useState(null); // { code, code_id, offer_id, label, amount }
@@ -587,6 +595,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
     setSelectedCategoryId(null);
     setLoyaltyRedemption(null);
     setGiftCardPayment(null);
+    checkIdRef.current = null;
     setPromoApplied(null);
     setVerifiedLoyalty(null);
     setAllergenFilter(new Set());
@@ -676,7 +685,48 @@ export default function KioskApp({ kioskId, onUnpair }) {
     setSubmitting(true);
     setSubmitError(null);
     try {
-      const checkId = (crypto.randomUUID ? crypto.randomUUID() : 'cc-' + Date.now());
+      // v5.5.901: stable across retries — see checkIdRef.
+      if (!checkIdRef.current) {
+        checkIdRef.current = (crypto.randomUUID ? crypto.randomUUID() : 'cc-' + Date.now());
+      }
+      const checkId = checkIdRef.current;
+      // v5.5.901: GIFT CARD — debit at COMMIT, like the promo code and loyalty reward below.
+      // The apply step only staged the discount, so an abandoned basket / idle timeout /
+      // declined card can no longer burn the card's value. Awaited (not fire-and-forget) so
+      // the closed_check records what the server ACTUALLY debited, and ordered BEFORE the
+      // closed_checks insert per INVARIANTS.md ("gift card redeem before order close").
+      // commitGiftCard never throws: the customer has already paid the card leg, so a gift
+      // failure must never cost them the order — it is recorded on the check instead.
+      let giftCommit = null;
+      if (giftCardPayment?.pending_commit) {
+        // Gift-covers-everything means NO card leg was charged — so a failed debit must
+        // abort the order (otherwise the kiosk gives away free food) and a partial debit is
+        // refused outright, leaving the balance intact for the customer to pay by card.
+        const giftOnly = grandTotal <= 0.005;
+        const gToken = await ensureAuthToken().catch(() => null);
+        giftCommit = await commitGiftCard(giftCardPayment, {
+          functionsUrl: `${OPS_URL}/functions/v1`,
+          token: gToken,
+          locationId,
+          channel: 'kiosk',
+          closedCheckId: checkId,
+          allowPartial: !giftOnly,
+        });
+        if (!giftCommit.ok && giftOnly) {
+          console.error('[kiosk] gift-only order aborted — gift commit failed:', giftCommit.error);
+          setGiftCardPayment(null);   // frees the amount back up so the reader can take it
+          setSubmitError(giftCommit.error === 'Insufficient balance'
+            ? 'That gift card no longer has enough balance. Please try another card or pay at the reader.'
+            : `Gift card could not be applied: ${giftCommit.error}`);
+          setScreen('gift');
+          return;
+        }
+        if (!giftCommit.ok) {
+          console.error('[kiosk] gift card commit FAILED — order proceeds, card not debited:', giftCommit.error);
+        } else if (giftCommit.shortfall > 0) {
+          console.warn('[kiosk] gift card commit partial — uncollected minor:', giftCommit.shortfall);
+        }
+      }
       // v5.5.8: use atomic per-location counter instead of (Date.now() % 1000).
       // Old approach collided every ~1 second (millis-of-current-second wraps fast)
       // and gave 3-digit numbers that customers found confusing. New format: R1-R99
@@ -731,11 +781,9 @@ export default function KioskApp({ kioskId, onUnpair }) {
           discount_value: loyaltyRedemption.discount_value,
           idempotency_key: loyaltyRedemption.idempotency_key,
         } : null,
-        gift_card: giftCardPayment ? {
-          card_id: giftCardPayment.card_id,
-          applied: giftCardPayment.applied,
-          remaining_balance: giftCardPayment.remaining_balance,
-        } : null,
+        // v5.5.901: `applied` is what the server actually debited (giftCardCheckRecord),
+        // so reports never overstate gift-card revenue when a commit came up short.
+        gift_card: giftCardPayment ? giftCardCheckRecord(giftCardPayment, giftCommit) : null,
         // v5.5.887: promo/offer code on the check for receipt / refund / reporting use
         promo: promoApplied ? {
           code: promoApplied.code,
@@ -947,8 +995,8 @@ export default function KioskApp({ kioskId, onUnpair }) {
       {/* v5.5.900: gift card / promo code step BEFORE payment (mirrors online ordering) —
           the old entry lived on the pay screen, which auto-starts the card reader on mount,
           so guests never saw it. */}
-      {screen === 'gift' && <ScreenGiftPromo brandColor={brandColor} total={grandTotal} loyaltyCredit={loyaltyCredit} giftCardCredit={giftCardCredit} promoCredit={promoCredit} promoApplied={promoApplied} onPromoApply={setPromoApplied} verifiedLoyalty={verifiedLoyalty} giftCardPayment={giftCardPayment} onGiftCardApply={setGiftCardPayment} locationId={locationId} loyaltyRedemption={loyaltyRedemption} onContinue={() => setScreen('pay')} onBack={() => { if (loyaltyEnabled) setScreen('loyalty'); else setScreen('tip'); }} onCancel={resetSession} />}
-      {screen === 'pay' && <ScreenPay brandColor={brandColor} total={grandTotal} loyaltyCredit={loyaltyCredit} giftCardCredit={giftCardCredit} promoCredit={promoCredit} promoApplied={promoApplied} locationId={locationId} kioskId={kioskId} cart={cart} submitting={submitting} error={submitError} onPaid={() => submitOrder(customerName, customerPhone)} onBack={() => setScreen('gift')} loyaltyRedemption={loyaltyRedemption} onCancel={resetSession} />}
+      {screen === 'gift' && <ScreenGiftPromo brandColor={brandColor} total={grandTotal} loyaltyCredit={loyaltyCredit} giftCardCredit={giftCardCredit} promoCredit={promoCredit} promoApplied={promoApplied} onPromoApply={setPromoApplied} verifiedLoyalty={verifiedLoyalty} giftCardPayment={giftCardPayment} onGiftCardApply={setGiftCardPayment} locationId={locationId} loyaltyRedemption={loyaltyRedemption} notice={submitError || ''} onContinue={() => { setSubmitError(null); setScreen('pay'); }} onBack={() => { setSubmitError(null); if (loyaltyEnabled) setScreen('loyalty'); else setScreen('tip'); }} onCancel={resetSession} />}
+      {screen === 'pay' && <ScreenPay brandColor={brandColor} total={grandTotal} loyaltyCredit={loyaltyCredit} giftCardCredit={giftCardCredit} promoCredit={promoCredit} promoApplied={promoApplied} locationId={locationId} kioskId={kioskId} cart={cart} submitting={submitting} error={submitError} onPaid={() => submitOrder(customerName, customerPhone)} onBack={() => { setSubmitError(null); setScreen('gift'); }} loyaltyRedemption={loyaltyRedemption} onCancel={resetSession} />}
       {screen === 'done' && <ScreenDone brandColor={brandColor} customerName={customerName} customerPhone={customerPhone} orderNumber={orderNumber} orderType={orderType} tableNumber={tableNumber} avgWaitMinutes={avgWaitMinutes} banner={bannerFor('done')} onDone={resetSession} />}
 
       {/* v5.4.0: Allergen picker overlay */}
@@ -2433,58 +2481,41 @@ function ScreenTip({ brandColor, subtotal, tipPresets, tip, onSetTip, onContinue
 // cardState === 'idle', but that screen auto-starts the card reader on mount,
 // so guests never saw it. Sits AFTER the loyalty screen because linked gift
 // cards ride in on the OTP-verified loyalty payload. ONE field takes a gift
-// card OR promo code (gift-redeem fail → promo validate fallthrough, same as
-// the POS GiftCardEntry). NOTE gift-redeem consumes balance at APPLY time
-// (unchanged behaviour); promo codes only validate here and redeem at
-// submitOrder.
+// card OR promo code (gift lookup miss → promo validate fallthrough, same as
+// the POS GiftCardEntry).
+//
+// v5.5.901: gift cards are APPLY-ONLY here, like promo codes and loyalty rewards.
+// This screen only LOOKS UP the balance (gift-lookup — read-only) and stages the
+// discount; the debit fires at submitOrder. Until now gift-redeem was called with
+// `order_id: null` the moment a code was entered, so an abandoned basket, an idle
+// timeout or a declined card burned the card's value with no order and no reversal.
 // ============================================================
-function ScreenGiftPromo({ brandColor, total, loyaltyCredit, giftCardCredit, promoCredit = 0, promoApplied = null, onPromoApply, verifiedLoyalty, giftCardPayment, onGiftCardApply, locationId, loyaltyRedemption, onContinue, onBack, onCancel }) {
+function ScreenGiftPromo({ brandColor, total, loyaltyCredit, giftCardCredit, promoCredit = 0, promoApplied = null, onPromoApply, verifiedLoyalty, giftCardPayment, onGiftCardApply, locationId, loyaltyRedemption, notice = '', onContinue, onBack, onCancel }) {
   const [giftApplying, setGiftApplying] = useState(false);
-  const [giftError, setGiftError] = useState('');
+  // v5.5.901: `notice` carries a commit-time failure back here (a gift-only order whose card
+  // came up short at submit) so the guest is told why they're being asked to pay after all.
+  const [giftError, setGiftError] = useState(notice);
   const [manualGCCode, setManualGCCode] = useState('');
 
   // Linked gift cards from OTP-verified loyalty data (one gift card per order)
   const availableGiftCards = verifiedLoyalty?.giftCards?.filter(gc => (gc.balance || 0) > 0) || [];
   const hasGiftCards = availableGiftCards.length > 0 && !giftCardPayment;
 
-  // v5.5.265: Apply a linked gift card to this order
-  const applyGiftCard = async (gc) => {
-    setGiftApplying(true);
+  // v5.5.265: Apply a linked gift card to this order.
+  // v5.5.901: staging only — the balance rode in on the OTP-verified loyalty payload, so
+  // there is nothing to fetch and nothing to debit until the order commits. Both code and
+  // card_id are carried through: code_plain is null on some cards, card_id always works.
+  const applyGiftCard = (gc) => {
     setGiftError('');
-    try {
-      const token = await ensureAuthToken();
-      if (!token) throw new Error('Auth unavailable');
-      const amountDueMinor = Math.round(total * 100);
-      const applyAmount = Math.min(gc.balance, amountDueMinor);
-      const idempKey = `kiosk-gc-${gc.id}-${Date.now()}`;
-      // v5.5.281: send both code and card_id — gift-redeem accepts either.
-      // code_plain may be null for some cards; card_id always available.
-      const res = await fetch(`${OPS_URL}/functions/v1/gift-redeem`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          code: gc.code || undefined,
-          card_id: gc.id,
-          amount: applyAmount,
-          order_id: null,
-          location_id: locationId,
-          channel: 'kiosk',
-          idempotency_key: idempKey,
-        }),
-      });
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
-      onGiftCardApply({
-        card_id: j.card_id || gc.id,
-        code: gc.code,
-        applied: j.applied || applyAmount,
-        remaining_balance: j.remaining_balance ?? (gc.balance - applyAmount),
-      });
-    } catch (e) {
-      setGiftError(e?.message || 'Could not apply gift card');
-    } finally {
-      setGiftApplying(false);
-    }
+    const amountDueMinor = Math.round(total * 100);
+    if (amountDueMinor <= 0) { setGiftError('Nothing left to pay on this order.'); return; }
+    onGiftCardApply(stageGiftCard({
+      cardId: gc.id,
+      code: gc.code || null,
+      codeLast4: gc.last4 || null,
+      balanceMinor: gc.balance || 0,
+      amountDueMinor,
+    }));
   };
 
   // Validate a code as a promo/offer. Returns true when it was applied. Promo codes only
@@ -2520,15 +2551,15 @@ function ScreenGiftPromo({ brandColor, total, loyaltyCredit, giftCardCredit, pro
     return false;
   };
 
-  // v5.5.281: Redeem a gift card by manually entered code (guest checkout)
-  // v5.5.290: If the card has insufficient balance for the full order,
-  // automatically apply whatever balance IS available and let the customer
-  // pay the remainder by card — no error shown, just partial credit.
-  // v5.5.900: ONE gift card per order. gift-redeem debits the card server-side at APPLY
-  // time, and giftCardPayment holds a single card — so a second gift-redeem would overwrite
-  // the first record and silently destroy money the customer had already spent. The old pay
-  // screen enforced this by hiding the field entirely (`showManualGC = !giftCardPayment`);
-  // this step keeps the field usable for a PROMO code instead of dead-ending the customer.
+  // v5.5.281: Apply a gift card by manually entered code (guest checkout)
+  // v5.5.290: If the card has insufficient balance for the full order, apply whatever
+  // balance IS available and let the customer pay the remainder by card — no error shown,
+  // just partial credit. That now falls out of stageGiftCard's min(balance, due).
+  // v5.5.900: ONE gift card per order — giftCardPayment holds a single card, so a second
+  // one would overwrite the first. The old pay screen enforced this by hiding the field
+  // entirely; this step keeps it usable for a PROMO code instead of dead-ending the guest.
+  // v5.5.901: gift-lookup (READ-ONLY) replaces the old gift-redeem call. Nothing is debited
+  // until submitOrder, so a guest who walks away keeps every penny on their card.
   const redeemManualGiftCard = async () => {
     const code = manualGCCode.trim();
     if (!code) return;
@@ -2539,60 +2570,44 @@ function ScreenGiftPromo({ brandColor, total, loyaltyCredit, giftCardCredit, pro
       const token = await ensureAuthToken();
       if (!token) throw new Error('Auth unavailable');
       const amountDueMinor = Math.round(total * 100);
-      // A gift card is already applied → this code can only be a promo. NEVER call
-      // gift-redeem again (it would debit a second card whose value we'd then drop).
+      // A gift card is already applied → this code can only be a promo.
       if (giftCardPayment) {
         const ok = await tryPromoCode(code, token);
         if (!ok) setGiftError('Code not recognised. One gift card per order — this can be a promo code.');
         return;
       }
-      const idempKey = `kiosk-gc-manual-${code}-${Date.now()}`;
-      const res = await fetch(`${OPS_URL}/functions/v1/gift-redeem`, {
+      // Gift codes are exactly 16 chars once separators are stripped (gift-lookup rejects
+      // anything else). Shorter input can only be a promo — don't waste a round trip.
+      const stripped = code.replace(/[\s-]/g, '').toUpperCase();
+      if (stripped.length !== 16) {
+        if (await tryPromoCode(code, token)) return;
+        throw new Error('Code not recognised');
+      }
+      const res = await fetch(`${OPS_URL}/functions/v1/gift-lookup`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          code,
-          amount: amountDueMinor,
-          order_id: null,
-          location_id: locationId,
-          channel: 'kiosk',
-          idempotency_key: idempKey,
-        }),
+        body: JSON.stringify({ code: stripped, location_id: locationId }),
       });
-      let j = await res.json().catch(() => ({}));
-
-      // v5.5.290: Insufficient balance → retry with the available balance.
-      // The edge function returns { error, balance, requested } on 400.
-      if (!res.ok && j.error === 'Insufficient balance' && j.balance > 0) {
-        const partialAmount = j.balance; // what the card actually has
-        const retryKey = `kiosk-gc-manual-${code}-partial-${Date.now()}`;
-        const res2 = await fetch(`${OPS_URL}/functions/v1/gift-redeem`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-          body: JSON.stringify({
-            code,
-            amount: partialAmount,
-            order_id: null,
-            location_id: locationId,
-            channel: 'kiosk',
-            idempotency_key: retryKey,
-          }),
-        });
-        j = await res2.json().catch(() => ({}));
-        if (!res2.ok) throw new Error(j.error || `HTTP ${res2.status}`);
-      } else if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || j.error) {
         // v5.5.887: not a usable gift card — try the SAME code as a promo/offer code before
         // erroring, so one field handles both (mirrors the POS GiftCardEntry fallthrough).
         if (await tryPromoCode(code, token)) return;
         throw new Error(j.error === 'Card not found' ? 'Code not recognised' : (j.error || `HTTP ${res.status}`));
       }
+      if (j.status !== 'active') throw new Error(`Card is ${j.status}`);
+      if (!(j.balance > 0)) throw new Error('Card has zero balance');
+      // gift-redeem rejects an expired card at commit; catch it here so the guest finds out
+      // now rather than after they've paid the reduced amount on the reader.
+      if (j.expires_at && new Date(j.expires_at) < new Date()) throw new Error('Card has expired');
 
-      onGiftCardApply({
-        card_id: j.card_id,
-        code,
-        applied: j.applied || amountDueMinor,
-        remaining_balance: j.remaining_balance ?? 0,
-      });
+      onGiftCardApply(stageGiftCard({
+        cardId: j.card_id,
+        code: stripped,
+        codeLast4: j.code_last4,
+        balanceMinor: j.balance,
+        amountDueMinor,
+      }));
       setManualGCCode('');
     } catch (e) {
       setGiftError(e?.message || 'Could not apply gift card');
@@ -2618,9 +2633,17 @@ function ScreenGiftPromo({ brandColor, total, loyaltyCredit, giftCardCredit, pro
               </div>
             )}
             {giftCardCredit > 0 && (
-              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 14px', borderRadius: 10, background: brandColor + '15', border: '1px solid ' + brandColor + '33' }}>
-                <span style={{ fontSize: 14, fontWeight: 700, color: brandColor }}>✓ Gift card applied</span>
-                <span style={{ fontSize: 14, fontWeight: 800, color: brandColor }}>-{money(giftCardCredit)}</span>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 14px', borderRadius: 10, background: brandColor + '15', border: '1px solid ' + brandColor + '33' }}>
+                <span style={{ fontSize: 14, fontWeight: 700, color: brandColor }}>
+                  ✓ Gift card applied{giftCardPayment?.code_last4 ? ` ···${giftCardPayment.code_last4}` : ''}
+                </span>
+                {/* v5.5.901: removable now that apply consumes nothing — the card is only
+                    debited at submitOrder, so taking it off costs the customer nothing. */}
+                <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span style={{ fontSize: 14, fontWeight: 800, color: brandColor }}>-{money(giftCardCredit)}</span>
+                  <button onClick={() => { setGiftError(''); onGiftCardApply(null); }}
+                    style={{ background: 'none', border: 'none', color: brandColor, fontSize: 16, cursor: 'pointer', padding: 0, lineHeight: 1 }}>×</button>
+                </span>
               </div>
             )}
             {promoCredit > 0 && (

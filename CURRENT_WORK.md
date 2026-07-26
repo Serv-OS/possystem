@@ -1,3 +1,65 @@
+# Session — 26 Jul 2026 (v5.5.901) — gift cards redeem at COMMIT, not at apply (kiosk + online)
+
+## Context
+Closes the ⚠ KNOWN issue logged in the v5.5.900 session below. `gift-redeem` was called with
+`order_id: null` the instant a customer entered/tapped a card — the balance was debited before an
+order existed. Abandon the basket, idle out, or fail the card payment and the money was GONE, with
+no order and no reversal (the only `gift-reverse-redeem` caller is the POS refund path,
+`store/index.js` ~4898). v5.5.900 widened the blast radius by routing EVERY kiosk guest through
+the new gift/promo step. Same fix pattern as loyalty v5.5.896/898.
+
+## What was done
+- **NEW `src/lib/giftCommit.js`** (the gift twin of `lib/loyaltyRedeem.js`):
+  - `stageGiftCard({cardId, code, codeLast4, balanceMinor, amountDueMinor})` — pure, no server.
+    `applied = min(balance, due)` keeps partial-balance behaviour. Mints `commit_key` ONCE.
+  - `commitGiftCard(staged, {functionsUrl, token, locationId, channel, closedCheckId, allowPartial})`
+    — fires the real debit. **NEVER THROWS** (the customer has already paid the card leg, so a gift
+    failure must never cost them the order). On `Insufficient balance` it retries with whatever IS
+    left — unless `allowPartial:false` (gift-ONLY orders, where a short card must debit nothing).
+  - `giftCardCheckRecord(staged, commit)` → the `closed_checks.gift_card` jsonb: `applied` is what
+    the server ACTUALLY debited, `idempotency_key` is the key on the LEDGER ROW (see below), and a
+    failed commit leaves the key null so a later refund skips the reversal instead of 404ing.
+- **Kiosk** (`ScreenGiftPromo` + `submitOrder`):
+  - Linked cards: staged from the OTP payload, ZERO network calls. Manual codes: `gift-lookup`
+    (read-only) replaces `gift-redeem`; non-16-char input goes straight to the promo path;
+    void / zero-balance / **expired** are caught at entry.
+  - `submitOrder` commits the card BEFORE the `closed_checks` insert (INVARIANTS.md "gift card
+    redeem before order close") and stamps the ACTUAL applied amount.
+  - **checkIdRef**: the check id is minted once per basket, not per `submitOrder` call — it IS the
+    server-side idempotency scope, so a retry with a fresh id would have double-debited.
+  - Gift-covers-everything (no card leg) ABORTS the order if the commit fails: clears the staged
+    card, sends the guest back to the gift step with the reason, balance untouched.
+  - Applied gift card is now removable (`×`) — impossible before, since the money had already gone.
+- **Online** (`OnlineCheckout`): `applyGiftCard` stages only (the `gift-lookup` step already
+  existed); `commitGift()` fires in BOTH order paths — before the queue insert on the gift-only
+  path (abort on failure, `allowPartial:false`), after it on the card-paid path (money already
+  taken, the order must land). Apply now also nets off an applied promo/reward, so a card can't be
+  over-drawn. Same `×` remove. `closed_checks.gift_card` moved to `giftCardCheckRecord` (the old
+  `amount` key was read by nothing — only `card_id` + `idempotency_key` are consumed, by the POS
+  refund reversal).
+- **Edge fn `supabase/functions/gift-redeem/index.ts`** — optional `closed_check_id`. When present
+  the idempotency key is DERIVED server-side (`giftcommit:<check>:<card>`), exactly like
+  `loyalty-redeem`'s `redeem:<check>:<reward>`, so a client that mints a fresh key on retry still
+  can't double-debit. Deliberately keys on the CHECK id, **never** `order_id` — the POS passes a
+  `table_id` there, reused for every order that table ever takes. The response now echoes the
+  effective `idempotency_key` (gift-reverse-redeem needs it verbatim). POS/split callers unaffected.
+
+## ⚠ DEPLOY STEP FOR PETER
+`gift-redeem` must be redeployed via the Supabase dashboard Code editor (CLI needs
+`SUPABASE_ACCESS_TOKEN`). **The client is safe either way**: against the OLD function the stable
+`commit_key` minted at apply time is still the idempotency key, so retries can't double-debit —
+redeploying only adds the second (server-derived) belt.
+
+## Remaining / notes
+- NOT live-tested (local is mock mode — edge fns unreachable). Peter to test on a real kiosk +
+  online: apply a card then WALK AWAY (balance must be untouched), partial-balance card, card that
+  covers everything, and a POS refund of a kiosk gift order (reversal must still find the ledger row).
+- **POS is NOT fixed** — `CheckoutModal`'s `GiftCardEntry` and `SplitModal` still debit at apply, so
+  cancelling a POS checkout after applying a card burns it. Staff-mediated and out of this scope;
+  spawned as its own task.
+
+---
+
 # Session — 26 Jul 2026 (v5.5.900) — kiosk gift card / promo code get their OWN checkout step
 
 ## Context
