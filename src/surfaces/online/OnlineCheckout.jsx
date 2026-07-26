@@ -13,7 +13,8 @@
 //   - Phone → loyalty member detection: debounced lookup on phone input,
 //     shows "You're a member! Sign in" banner if found.
 //   - Rewards step: browse available rewards, redeem for a discount.
-//     Calls loyalty-redeem edge fn. Discount applied like gift cards.
+//     Apply-only: the discount is staged locally; loyalty-redeem fires
+//     after payment succeeds and the order exists (v5.5.897).
 
 import { useEffect, useMemo, useState } from 'react';
 import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js';
@@ -693,30 +694,14 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   }, [step, rewardsAvailable]);
 
   // ── Redeem a loyalty reward ───────────────────────────────────────────
-  const redeemReward = async (reward) => {
+  // v5.5.897: APPLY-ONLY (mirrors POS lib/loyaltyRedeem.js). Tapping a reward just
+  // computes + stages the discount — NOTHING is consumed server-side. The real
+  // redemption fires in redeemLoyaltyAfterOrder once the order exists, exactly like
+  // promo codes — so an abandoned or failed payment can never burn points or a stamp
+  // card (the old flow consumed the reward at the rewards step, BEFORE payment).
+  const redeemReward = (reward) => {
     setRewardLoading(true); setRewardError('');
     try {
-      const token = await getAuthToken();
-      const idempotencyKey = `online:${orderShape.ref}:reward:${Date.now()}`;
-      const res = await fetch(`${FUNCTIONS_URL}/loyalty-redeem`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          company_id: loyalty.loyalty.company_id,
-          customer_id: loyalty.loyalty.customer_id,
-          // v5.5.885: loyalty-redeem REQUIRES location_id (it 400s without one — online
-          // redemption was silently failing). Stamp rewards redeem by programme, zero points.
-          location_id: opsLocationId,
-          ...(reward.stamp
-            ? { stamp_program_id: reward.stamp_program_id }
-            : { reward_id: reward.id }),
-          order_id: `online-${orderShape.ref}`,
-          channel: 'online',
-          idempotency_key: idempotencyKey,
-        }),
-      });
-      const j = await res.json();
-      if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
       // Calculate discount value in minor units
       // v5.5.247: normalise field names (DB uses reward_type/reward_value, some
       // legacy code used discount_type/discount_value)
@@ -728,14 +713,20 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       } else if (rType === 'discount_percent' || rType === 'percentage') {
         discountMinor = Math.round(discountedSubtotalMinor * (rValue.percent || reward.discount_value || 0) / 100);
       } else if (rType === 'free_item') {
-        // v5.5.247: free item — find cheapest eligible item in cart
+        // v5.5.247: free item — find cheapest eligible item in cart. Block when the
+        // eligible item isn't in the basket (previously the server consumed the reward
+        // anyway, for a £0 discount).
         const eligibleIds = new Set((rValue.eligible_items || []).map(ei => ei.id));
-        if (eligibleIds.size > 0) {
-          const matching = cart.filter(l => eligibleIds.has(l.itemId));
-          if (matching.length > 0) {
-            const cheapest = matching.reduce((a, b) => (a.price < b.price ? a : b));
-            discountMinor = Math.round(cheapest.price * 100);
-          }
+        const matching = cart.filter(l => eligibleIds.has(l.itemId));
+        if (eligibleIds.size > 0 && matching.length === 0) {
+          const names = (rValue.eligible_items || []).map(ei => ei.name).filter(Boolean).join(', ');
+          throw new Error(names
+            ? `Add ${names} to your order first — the reward makes it free.`
+            : 'Add the eligible item to your order first.');
+        }
+        if (matching.length > 0) {
+          const cheapest = matching.reduce((a, b) => (a.price < b.price ? a : b));
+          discountMinor = Math.round(cheapest.price * 100);
         } else {
           // No eligible items configured — fallback to cheapest in cart
           const cheapest = [...cart].sort((a, b) => a.price - b.price)[0];
@@ -744,13 +735,14 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       }
       discountMinor = Math.min(discountMinor, discountedSubtotalMinor - giftAppliedMinor); // can't exceed remaining
       setRewardApplied({
-        reward_id: reward.id,
+        reward_id: reward.stamp ? null : reward.id,
+        stamp_program_id: reward.stamp ? reward.stamp_program_id : null,
         reward_name: reward.name,
-        points_deducted: j.points_deducted || reward.points_cost || 0,
+        points_deducted: reward.points_cost || 0,
         discount_type: reward.reward_type || reward.discount_type,
         discount_value: discountMinor,
-        idempotency_key: idempotencyKey,
-        redemption_id: j.redemption_id || j.id,
+        idempotency_key: null,
+        pending_commit: true,
       });
     } catch (e) {
       setRewardError(e?.message || 'Could not redeem reward');
@@ -790,6 +782,38 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         if (!rj.ok) console.warn('[OnlineCheckout] promo redeem not recorded:', rj.reason || res.status);
       } catch (e) {
         console.warn('[OnlineCheckout] promo redeem failed:', e?.message);
+      }
+    })();
+  };
+
+  // v5.5.897: record the loyalty redemption once the order exists — the rewards-step tap
+  // is apply-only now (nothing consumed server-side), so an abandoned/failed payment can
+  // never burn points or a stamp card. Idempotent server-side on closed_check_id, so a
+  // retry can't double-deduct. Fire-and-forget: never blocks the confirmation flow.
+  const redeemLoyaltyAfterOrder = (closedCheckId) => {
+    if (!rewardApplied?.pending_commit) return;
+    if (!rewardApplied.stamp_program_id && !rewardApplied.reward_id) return;
+    (async () => {
+      try {
+        const token = await getAuthToken();
+        const res = await fetch(`${FUNCTIONS_URL}/loyalty-redeem`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+          body: JSON.stringify({
+            customer_id: loyalty?.loyalty?.customer_id || null,
+            // v5.5.885: loyalty-redeem REQUIRES location_id (it 400s without one).
+            location_id: opsLocationId,
+            ...(rewardApplied.stamp_program_id
+              ? { stamp_program_id: rewardApplied.stamp_program_id }
+              : { reward_id: rewardApplied.reward_id }),
+            channel: 'online',
+            closed_check_id: closedCheckId || `online-${orderShape.ref}`,
+          }),
+        });
+        const rj = await res.json().catch(() => ({}));
+        if (!res.ok || rj.error) console.warn('[OnlineCheckout] loyalty redeem not recorded:', rj.error || res.status);
+      } catch (e) {
+        console.warn('[OnlineCheckout] loyalty redeem failed:', e?.message);
       }
     })();
   };
@@ -887,6 +911,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           // NO online order ever reached closed_checks (history / reports / EOD). Fixed.
           loyalty: rewardApplied ? {
             reward_id: rewardApplied.reward_id,
+            stamp_program_id: rewardApplied.stamp_program_id || null,
             reward_name: rewardApplied.reward_name,
             points_deducted: rewardApplied.points_deducted,
             discount_value: rewardApplied.discount_value,
@@ -900,6 +925,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         // v5.5.677: email + SMS the customer their confirmation/receipt (gift-only path).
         sendOrderConfirmation(closedCheck);
         redeemPromoAfterOrder();
+        redeemLoyaltyAfterOrder(closedCheck.id);
       } catch (e) {
         console.warn('[OnlineCheckout] closed_checks write threw:', e?.message);
       }
@@ -1011,6 +1037,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           // NO online order ever reached closed_checks (history / reports / EOD). Fixed.
           loyalty: rewardApplied ? {
             reward_id: rewardApplied.reward_id,
+            stamp_program_id: rewardApplied.stamp_program_id || null,
             reward_name: rewardApplied.reward_name,
             points_deducted: rewardApplied.points_deducted,
             discount_value: rewardApplied.discount_value,
@@ -1024,6 +1051,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         // v5.5.677: email + SMS the customer their confirmation/receipt (was never wired for online).
         sendOrderConfirmation(closedCheck);
         redeemPromoAfterOrder();
+        redeemLoyaltyAfterOrder(closedCheck.id);
       } catch (e) {
         console.warn('[OnlineCheckout] closed_checks write threw:', e?.message);
       }

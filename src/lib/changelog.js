@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.898', date: '26 Jul 2026', label: 'FIX — kiosk + online loyalty rewards no longer burn before payment; they redeem when the order commits',
+    changes: [
+      'Completes v5.5.896 (POS): the kiosk loyalty screen and the online rewards step used to consume points / stamp cards the moment a reward was tapped — BEFORE payment. An abandoned basket or failed card payment burned the reward. Tapping now only STAGES the discount; the real redemption fires once the order actually exists (same pattern as promo codes), idempotent on the check id so retries can never double-deduct.',
+      'Free-item rewards on kiosk + online now refuse to apply until the eligible item is in the basket, with a clear message ("Add Latte to your order first — the reward makes it free"). Previously the server consumed the reward for a £0 discount.',
+      'Kiosk bug fixed in passing: tapping a free-item reward crashed the redeem handler (the cart was never passed to the loyalty screen) — AFTER the server had already taken the stamp/points.',
+      'The check record now also carries the stamp programme id alongside the reward, for receipts/refunds/reporting.',
+    ],
+  },
+  {
     version: '5.5.897', date: '24 Jul 2026', label: 'Appearance hub slice 1 — loyalty portal, signup + gift pages now wear YOUR brand',
     changes: [
       'One theme everywhere: the loyalty portal, signup screens, gift card purchase/balance pages and the customer loading/closed screens now read the same Menu-appearance theme as your online menu — colour by colour, with your gift-card settings as fallback. Before, one missing value dropped whole pages to a dark default with an orange nobody chose.',
