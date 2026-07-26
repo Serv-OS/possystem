@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.900', date: '26 Jul 2026', label: 'FIX — kiosk gift cards & promo codes are finally REACHABLE: their own checkout step before payment',
+    changes: [
+      'Owner-reported: "I cannot see anywhere to actually redeem" on the kiosk. The gift card / promo code entry did exist — but it lived on the PAYMENT screen, which starts the card reader the instant it opens. The entry vanished within a frame, so any customer without a linked gift card could never reach it.',
+      'Gift cards and promo codes now get their own checkout step BEFORE payment, exactly like online ordering: basket → tip → loyalty → GIFT CARD / PROMO CODE → pay. The code box is open and ready on arrival; one field takes either a gift card or a promo code.',
+      'Signed-in members still see their linked gift cards to tap-and-apply, and can also type a different code.',
+      'The step shows what is already applied (loyalty reward, gift card, promo) and the amount left to pay, then continues to the card reader with the final figure. A promo can be removed here — on the payment screen the amount is now fixed, since it has already gone to the reader.',
+    ],
+  },
+  {
     version: '5.5.899', date: '24 Jul 2026', label: 'The APPEARANCE HUB — one editor for every customer-facing screen',
     changes: [
       'Back Office → Channels → Appearance (was "Menu appearance") now has four sections: Brand basics · Storefront · Loyalty portal · Gift cards — each with a LIVE preview rendered by the exact same theme engine customers see, so preview = reality.',

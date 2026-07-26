@@ -910,8 +910,11 @@ export default function KioskApp({ kioskId, onUnpair }) {
   }
 
   // ─── Render ───
+  // v5.5.900: keyboard/input events count as activity too — taps on the on-screen keyboard land
+  // on the IME overlay, NOT the React tree, so onPointerDown alone let the idle timer fire while
+  // a customer was transcribing a gift-card code (or a phone number on the loyalty step).
   return (
-    <div onPointerDown={resetIdle} data-kiosk-theme={isLight ? "light" : "dark"} style={kioskShell(brandColor, effectiveBg, brandAccent)}>
+    <div onPointerDown={resetIdle} onKeyDown={resetIdle} onInput={resetIdle} data-kiosk-theme={isLight ? "light" : "dark"} style={kioskShell(brandColor, effectiveBg, brandAccent)}>
       {screen === 'attract' && <ScreenAttract brandName={brandName} brandColor={brandColor} brandAccent={brandAccent} brandLogoUrl={brandLogoUrl} attractVideoUrl={attractVideoUrl} avgWaitMinutes={avgWaitMinutes} banner={bannerFor('attract')} ctaLabel={labelTapToOrder} onStart={() => { resetIdle(); setScreen('orderType'); }} />}
       {screen === 'orderType' && <ScreenOrderType brandColor={brandColor} brandLogoUrl={brandLogoUrl} brandName={brandName} tableMode={tableMode} lang={lang} onOpenLanguagePicker={() => setShowLangPicker(true)} loyaltyEnabled={loyaltyEnabled} customerName={customerName} onLoyaltySignIn={() => { setLoyaltyReturnScreen('orderType'); setScreen('loyalty'); }} onPick={(t) => {
         setOrderType(t);
@@ -938,10 +941,14 @@ export default function KioskApp({ kioskId, onUnpair }) {
         />
       )}
       {screen === 'cart' && <ScreenCart brandColor={brandColor} cart={cart} subtotal={subtotal} cartItemCount={cartItemCount} orderType={orderType} onUpdate={updateCartQty} onAddMore={() => setScreen('menu')} onContinue={() => setScreen('tip')} onShowAllergenPicker={() => setShowAllergenPicker(true)} onBack={() => setScreen('menu')} onCancel={resetSession} dailyCounts={dailyCounts} />}
-      {screen === 'tip' && <ScreenTip brandColor={brandColor} subtotal={subtotal} tipPresets={tipPresets} tip={tip} onSetTip={setTip} onContinue={() => { if (loyaltyEnabled) setScreen('loyalty'); else setScreen('pay'); }} onBack={() => setScreen('cart')} onCancel={resetSession} />}
+      {screen === 'tip' && <ScreenTip brandColor={brandColor} subtotal={subtotal} tipPresets={tipPresets} tip={tip} onSetTip={setTip} onContinue={() => { if (loyaltyEnabled) setScreen('loyalty'); else setScreen('gift'); }} onBack={() => setScreen('cart')} onCancel={resetSession} />}
       {/* v5.5.219: loyalty/customer-details BEFORE pay so reward discount adjusts amount due */}
-      {screen === 'loyalty' && <ScreenLoyalty brandColor={brandColor} customerName={customerName} customerPhone={customerPhone} customerEmail={customerEmail} marketingOptIn={customerMarketingOptIn} locationId={locationId} companyId={companyId} subtotal={subtotal} cart={cart} loyaltyRedemption={loyaltyRedemption} onLoyaltyRedeem={setLoyaltyRedemption} verifiedLoyalty={verifiedLoyalty} onVerifiedLoyalty={setVerifiedLoyalty} onName={setCustomerName} onPhone={setCustomerPhone} onEmail={setCustomerEmail} onMarketingOptIn={setCustomerMarketingOptIn} onContinue={() => { const ret = loyaltyReturnScreen; setLoyaltyReturnScreen(null); setScreen(ret || 'pay'); }} onSkip={() => { const ret = loyaltyReturnScreen; setLoyaltyReturnScreen(null); setScreen(ret || 'pay'); }} submitting={submitting} placeOrderLabel={labelPlaceOrder} earlySignIn={!!loyaltyReturnScreen} onCancel={resetSession} />}
-      {screen === 'pay' && <ScreenPay brandColor={brandColor} total={grandTotal} loyaltyCredit={loyaltyCredit} giftCardCredit={giftCardCredit} promoCredit={promoCredit} promoApplied={promoApplied} onPromoApply={setPromoApplied} verifiedLoyalty={verifiedLoyalty} giftCardPayment={giftCardPayment} onGiftCardApply={setGiftCardPayment} locationId={locationId} kioskId={kioskId} cart={cart} submitting={submitting} error={submitError} onPaid={() => submitOrder(customerName, customerPhone)} onBack={() => { if (loyaltyEnabled) setScreen('loyalty'); else setScreen('tip'); }} loyaltyRedemption={loyaltyRedemption} onCancel={resetSession} />}
+      {screen === 'loyalty' && <ScreenLoyalty brandColor={brandColor} customerName={customerName} customerPhone={customerPhone} customerEmail={customerEmail} marketingOptIn={customerMarketingOptIn} locationId={locationId} companyId={companyId} subtotal={subtotal} cart={cart} loyaltyRedemption={loyaltyRedemption} onLoyaltyRedeem={setLoyaltyRedemption} verifiedLoyalty={verifiedLoyalty} onVerifiedLoyalty={setVerifiedLoyalty} onName={setCustomerName} onPhone={setCustomerPhone} onEmail={setCustomerEmail} onMarketingOptIn={setCustomerMarketingOptIn} onContinue={() => { const ret = loyaltyReturnScreen; setLoyaltyReturnScreen(null); setScreen(ret || 'gift'); }} onSkip={() => { const ret = loyaltyReturnScreen; setLoyaltyReturnScreen(null); setScreen(ret || 'gift'); }} submitting={submitting} placeOrderLabel={labelPlaceOrder} earlySignIn={!!loyaltyReturnScreen} onCancel={resetSession} />}
+      {/* v5.5.900: gift card / promo code step BEFORE payment (mirrors online ordering) —
+          the old entry lived on the pay screen, which auto-starts the card reader on mount,
+          so guests never saw it. */}
+      {screen === 'gift' && <ScreenGiftPromo brandColor={brandColor} total={grandTotal} loyaltyCredit={loyaltyCredit} giftCardCredit={giftCardCredit} promoCredit={promoCredit} promoApplied={promoApplied} onPromoApply={setPromoApplied} verifiedLoyalty={verifiedLoyalty} giftCardPayment={giftCardPayment} onGiftCardApply={setGiftCardPayment} locationId={locationId} loyaltyRedemption={loyaltyRedemption} onContinue={() => setScreen('pay')} onBack={() => { if (loyaltyEnabled) setScreen('loyalty'); else setScreen('tip'); }} onCancel={resetSession} />}
+      {screen === 'pay' && <ScreenPay brandColor={brandColor} total={grandTotal} loyaltyCredit={loyaltyCredit} giftCardCredit={giftCardCredit} promoCredit={promoCredit} promoApplied={promoApplied} locationId={locationId} kioskId={kioskId} cart={cart} submitting={submitting} error={submitError} onPaid={() => submitOrder(customerName, customerPhone)} onBack={() => setScreen('gift')} loyaltyRedemption={loyaltyRedemption} onCancel={resetSession} />}
       {screen === 'done' && <ScreenDone brandColor={brandColor} customerName={customerName} customerPhone={customerPhone} orderNumber={orderNumber} orderType={orderType} tableNumber={tableNumber} avgWaitMinutes={avgWaitMinutes} banner={bannerFor('done')} onDone={resetSession} />}
 
       {/* v5.4.0: Allergen picker overlay */}
@@ -2420,14 +2427,308 @@ function ScreenTip({ brandColor, subtotal, tipPresets, tip, onSetTip, onContinue
 }
 
 // ============================================================
+// SCREEN: GIFT CARD / PROMO CODE (v5.5.900)
+// Dedicated checkout step BEFORE payment starts — mirrors online ordering's
+// gift step. The entry point used to live on the pay screen gated on
+// cardState === 'idle', but that screen auto-starts the card reader on mount,
+// so guests never saw it. Sits AFTER the loyalty screen because linked gift
+// cards ride in on the OTP-verified loyalty payload. ONE field takes a gift
+// card OR promo code (gift-redeem fail → promo validate fallthrough, same as
+// the POS GiftCardEntry). NOTE gift-redeem consumes balance at APPLY time
+// (unchanged behaviour); promo codes only validate here and redeem at
+// submitOrder.
+// ============================================================
+function ScreenGiftPromo({ brandColor, total, loyaltyCredit, giftCardCredit, promoCredit = 0, promoApplied = null, onPromoApply, verifiedLoyalty, giftCardPayment, onGiftCardApply, locationId, loyaltyRedemption, onContinue, onBack, onCancel }) {
+  const [giftApplying, setGiftApplying] = useState(false);
+  const [giftError, setGiftError] = useState('');
+  const [manualGCCode, setManualGCCode] = useState('');
+
+  // Linked gift cards from OTP-verified loyalty data (one gift card per order)
+  const availableGiftCards = verifiedLoyalty?.giftCards?.filter(gc => (gc.balance || 0) > 0) || [];
+  const hasGiftCards = availableGiftCards.length > 0 && !giftCardPayment;
+
+  // v5.5.265: Apply a linked gift card to this order
+  const applyGiftCard = async (gc) => {
+    setGiftApplying(true);
+    setGiftError('');
+    try {
+      const token = await ensureAuthToken();
+      if (!token) throw new Error('Auth unavailable');
+      const amountDueMinor = Math.round(total * 100);
+      const applyAmount = Math.min(gc.balance, amountDueMinor);
+      const idempKey = `kiosk-gc-${gc.id}-${Date.now()}`;
+      // v5.5.281: send both code and card_id — gift-redeem accepts either.
+      // code_plain may be null for some cards; card_id always available.
+      const res = await fetch(`${OPS_URL}/functions/v1/gift-redeem`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          code: gc.code || undefined,
+          card_id: gc.id,
+          amount: applyAmount,
+          order_id: null,
+          location_id: locationId,
+          channel: 'kiosk',
+          idempotency_key: idempKey,
+        }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+      onGiftCardApply({
+        card_id: j.card_id || gc.id,
+        code: gc.code,
+        applied: j.applied || applyAmount,
+        remaining_balance: j.remaining_balance ?? (gc.balance - applyAmount),
+      });
+    } catch (e) {
+      setGiftError(e?.message || 'Could not apply gift card');
+    } finally {
+      setGiftApplying(false);
+    }
+  };
+
+  // Validate a code as a promo/offer. Returns true when it was applied. Promo codes only
+  // VALIDATE here — the redemption is recorded at submitOrder, so an abandoned basket costs
+  // the customer nothing (unlike gift cards, which the server debits on apply).
+  const tryPromoCode = async (code, token) => {
+    if (promoApplied || typeof onPromoApply !== 'function') return false;
+    try {
+      const pv = await fetch(`${OPS_URL}/functions/v1/promo-redeem`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          action: 'validate', code, location_id: locationId,
+          // v5.5.888: OTP-verified customer identity — lets customer-locked (personal)
+          // codes validate at the kiosk and per-customer limits count correctly.
+          customer_id: verifiedLoyalty?.customer?.id || null,
+          basket: { subtotal: total },
+        }),
+      });
+      const pj = await pv.json().catch(() => ({}));
+      if (pv.ok && pj.valid) {
+        onPromoApply({
+          code,
+          code_id: pj.code_id,
+          offer_id: pj.offer?.id || null,
+          label: pj.discount?.label || pj.offer?.name || 'Promo code',
+          amount: pj.discount?.amount || 0,
+        });
+        setManualGCCode('');
+        return true;
+      }
+    } catch { /* fall through to the caller's error */ }
+    return false;
+  };
+
+  // v5.5.281: Redeem a gift card by manually entered code (guest checkout)
+  // v5.5.290: If the card has insufficient balance for the full order,
+  // automatically apply whatever balance IS available and let the customer
+  // pay the remainder by card — no error shown, just partial credit.
+  // v5.5.900: ONE gift card per order. gift-redeem debits the card server-side at APPLY
+  // time, and giftCardPayment holds a single card — so a second gift-redeem would overwrite
+  // the first record and silently destroy money the customer had already spent. The old pay
+  // screen enforced this by hiding the field entirely (`showManualGC = !giftCardPayment`);
+  // this step keeps the field usable for a PROMO code instead of dead-ending the customer.
+  const redeemManualGiftCard = async () => {
+    const code = manualGCCode.trim();
+    if (!code) return;
+    if (total <= 0) { setGiftError('Nothing left to pay on this order.'); return; }
+    setGiftApplying(true);
+    setGiftError('');
+    try {
+      const token = await ensureAuthToken();
+      if (!token) throw new Error('Auth unavailable');
+      const amountDueMinor = Math.round(total * 100);
+      // A gift card is already applied → this code can only be a promo. NEVER call
+      // gift-redeem again (it would debit a second card whose value we'd then drop).
+      if (giftCardPayment) {
+        const ok = await tryPromoCode(code, token);
+        if (!ok) setGiftError('Code not recognised. One gift card per order — this can be a promo code.');
+        return;
+      }
+      const idempKey = `kiosk-gc-manual-${code}-${Date.now()}`;
+      const res = await fetch(`${OPS_URL}/functions/v1/gift-redeem`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          code,
+          amount: amountDueMinor,
+          order_id: null,
+          location_id: locationId,
+          channel: 'kiosk',
+          idempotency_key: idempKey,
+        }),
+      });
+      let j = await res.json().catch(() => ({}));
+
+      // v5.5.290: Insufficient balance → retry with the available balance.
+      // The edge function returns { error, balance, requested } on 400.
+      if (!res.ok && j.error === 'Insufficient balance' && j.balance > 0) {
+        const partialAmount = j.balance; // what the card actually has
+        const retryKey = `kiosk-gc-manual-${code}-partial-${Date.now()}`;
+        const res2 = await fetch(`${OPS_URL}/functions/v1/gift-redeem`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+          body: JSON.stringify({
+            code,
+            amount: partialAmount,
+            order_id: null,
+            location_id: locationId,
+            channel: 'kiosk',
+            idempotency_key: retryKey,
+          }),
+        });
+        j = await res2.json().catch(() => ({}));
+        if (!res2.ok) throw new Error(j.error || `HTTP ${res2.status}`);
+      } else if (!res.ok) {
+        // v5.5.887: not a usable gift card — try the SAME code as a promo/offer code before
+        // erroring, so one field handles both (mirrors the POS GiftCardEntry fallthrough).
+        if (await tryPromoCode(code, token)) return;
+        throw new Error(j.error === 'Card not found' ? 'Code not recognised' : (j.error || `HTTP ${res.status}`));
+      }
+
+      onGiftCardApply({
+        card_id: j.card_id,
+        code,
+        applied: j.applied || amountDueMinor,
+        remaining_balance: j.remaining_balance ?? 0,
+      });
+      setManualGCCode('');
+    } catch (e) {
+      setGiftError(e?.message || 'Could not apply gift card');
+    } finally {
+      setGiftApplying(false);
+    }
+  };
+
+  const fullyCovered = total <= 0;
+
+  return (
+    <div style={fullScreen()}>
+      <ScreenHeader title="Gift card or promo code?" subtitle="Apply a code below, or continue straight to payment" onBack={onBack} onCancel={onCancel} brandColor={brandColor} />
+      <div style={{ flex: 1, overflowY: 'auto', padding: '3vh 5vw', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'clamp(12px, 2vh, 20px)' }}>
+
+        {/* Applied credits */}
+        {(loyaltyCredit > 0 || giftCardCredit > 0 || promoCredit > 0) && (
+          <div style={{ width: '100%', maxWidth: 440, display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {loyaltyCredit > 0 && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 14px', borderRadius: 10, background: '#22c55e15', border: '1px solid #22c55e33' }}>
+                <span style={{ fontSize: 14, fontWeight: 700, color: '#22c55e' }}>✓ {loyaltyRedemption?.reward_name || 'Loyalty reward'}</span>
+                <span style={{ fontSize: 14, fontWeight: 800, color: '#22c55e' }}>-{money(loyaltyCredit)}</span>
+              </div>
+            )}
+            {giftCardCredit > 0 && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 14px', borderRadius: 10, background: brandColor + '15', border: '1px solid ' + brandColor + '33' }}>
+                <span style={{ fontSize: 14, fontWeight: 700, color: brandColor }}>✓ Gift card applied</span>
+                <span style={{ fontSize: 14, fontWeight: 800, color: brandColor }}>-{money(giftCardCredit)}</span>
+              </div>
+            )}
+            {promoCredit > 0 && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 14px', borderRadius: 10, background: '#f59e0b15', border: '1px solid #f59e0b33' }}>
+                <span style={{ fontSize: 14, fontWeight: 700, color: '#f59e0b' }}>✓ {promoApplied?.label || 'Promo code'} ({promoApplied?.code})</span>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span style={{ fontSize: 14, fontWeight: 800, color: '#f59e0b' }}>-{money(promoCredit)}</span>
+                  <button onClick={() => onPromoApply && onPromoApply(null)} style={{ background: 'none', border: 'none', color: '#f59e0b', fontSize: 16, cursor: 'pointer', padding: 0, lineHeight: 1 }}>×</button>
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Linked gift cards (OTP-signed-in members) */}
+        {hasGiftCards && (
+          <div style={{ width: '100%', maxWidth: 440 }}>
+            <div style={{ fontSize: 'clamp(12px, 1.4vw, 14px)', fontWeight: 700, color: brandColor, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 8 }}>
+              Your gift cards
+            </div>
+            {availableGiftCards.map(gc => (
+              <button key={gc.id} onClick={() => applyGiftCard(gc)} disabled={giftApplying}
+                style={{
+                  width: '100%', padding: 'clamp(12px, 1.6vw, 16px)', borderRadius: 14, marginBottom: 8,
+                  border: '1.5px solid ' + brandColor + '44', background: 'var(--kSurfaceRaised)',
+                  cursor: giftApplying ? 'wait' : 'pointer', fontFamily: 'inherit',
+                  display: 'flex', alignItems: 'center', gap: 12, opacity: giftApplying ? 0.6 : 1,
+                }}>
+                <span style={{ fontSize: 22 }}>💳</span>
+                <div style={{ flex: 1, textAlign: 'left' }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--kFg)' }}>Gift Card {gc.last4 ? `···${gc.last4}` : ''}</div>
+                  <div style={{ fontSize: 12, color: 'var(--kFgMuted)' }}>Balance: {money(((gc.balance || 0) / 100))}</div>
+                </div>
+                <span style={{ fontSize: 14, fontWeight: 800, color: brandColor }}>{giftApplying ? '...' : 'Apply'}</span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Manual code entry — open on arrival (the whole point of this step).
+            Hidden once BOTH a gift card and a promo are applied: nothing left to accept. */}
+        {!(giftCardPayment && promoApplied) && total > 0 && (
+          <div style={{ width: '100%', maxWidth: 440 }}>
+            <div style={{ padding: 16, borderRadius: 14, background: 'var(--kSurfaceRaised)', border: '1.5px solid ' + brandColor + '33' }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--kFg)', marginBottom: 10 }}>
+                {giftCardPayment ? '🏷️ Enter a promo code' : '🎁 Enter gift card or promo code'}
+              </div>
+              {giftError && (
+                <div style={{ padding: 8, borderRadius: 8, marginBottom: 8, fontSize: 13, color: '#e55', background: '#e5555515', border: '1px solid #e5555533', fontWeight: 600 }}>{giftError}</div>
+              )}
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input
+                  type="text"
+                  value={manualGCCode}
+                  onChange={e => setManualGCCode(e.target.value.toUpperCase())}
+                  placeholder={giftCardPayment ? 'e.g. WELCOME10' : 'e.g. ABCD-1234-EFGH'}
+                  style={{
+                    flex: 1, padding: '12px 14px', borderRadius: 10, fontSize: 16, fontWeight: 600,
+                    fontFamily: 'var(--font-mono, monospace)', letterSpacing: '.05em', textTransform: 'uppercase',
+                    border: '1.5px solid var(--kBorder)', background: 'var(--kSurface)', color: 'var(--kFg)',
+                    outline: 'none',
+                  }}
+                  onKeyDown={e => { if (e.key === 'Enter' && manualGCCode.trim()) redeemManualGiftCard(); }}
+                />
+                <button onClick={redeemManualGiftCard} disabled={giftApplying || !manualGCCode.trim()}
+                  style={{
+                    padding: '12px 20px', borderRadius: 10, border: 'none',
+                    background: manualGCCode.trim() ? brandColor : brandColor + '44',
+                    color: '#fff', fontWeight: 800, fontSize: 14, cursor: giftApplying ? 'wait' : 'pointer',
+                    fontFamily: 'inherit', opacity: giftApplying ? 0.6 : 1,
+                  }}>
+                  {giftApplying ? '...' : 'Apply'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Amount remaining */}
+        <div style={{ textAlign: 'center', marginTop: 'clamp(4px, 1vh, 10px)' }}>
+          <div style={{ fontSize: 13, color: 'var(--kFgMuted)', letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 4 }}>
+            {fullyCovered ? 'Nothing left to pay' : 'Left to pay'}
+          </div>
+          <div style={{ fontSize: 'clamp(32px, 6vw, 48px)', fontWeight: 900, letterSpacing: '-0.03em', fontVariantNumeric: 'tabular-nums', color: fullyCovered ? '#22c55e' : 'var(--kFg)' }}>
+            {money(Math.max(0, total))}
+          </div>
+        </div>
+      </div>
+
+      {/* Bottom CTA — disabled while a gift card apply is in flight, otherwise the customer
+          can advance to the reader before `total` has dropped and be charged the pre-gift amount. */}
+      <div style={{ padding: '14px 22px 22px', flexShrink: 0 }}>
+        <button onClick={onContinue} disabled={giftApplying}
+          style={{ ...primaryCta(brandColor), width: '100%', opacity: giftApplying ? 0.5 : 1, cursor: giftApplying ? 'wait' : 'pointer' }}>
+          {giftApplying ? 'Applying code…' : fullyCovered ? 'Continue →' : `Continue to payment · ${money(total)} →`}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
 // SCREEN: PAY
 // ============================================================
-function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, promoCredit = 0, promoApplied = null, onPromoApply, verifiedLoyalty, giftCardPayment, onGiftCardApply, locationId, kioskId, cart, submitting, error, onPaid, onBack, loyaltyRedemption, onCancel }) {
+function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, promoCredit = 0, promoApplied = null, locationId, kioskId, cart, submitting, error, onPaid, onBack, loyaltyRedemption, onCancel }) {
   const [cardState, setCardState] = useState('idle'); // idle | processing | collecting | success | error | declined
   const [cardError, setCardError] = useState(null);
   const [cardStatusMsg, setCardStatusMsg] = useState('');
-  const [giftApplying, setGiftApplying] = useState(false);
-  const [giftError, setGiftError] = useState('');
   const pollAbortRef = useRef(false);
   const activeReaderRef = useRef(null); // track reader ID for cancel on timeout/unmount
   const activePiRef = useRef(null);     // track PI ID for cancel
@@ -2435,15 +2736,8 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, promoCred
   const activeRyftJobRef = useRef(null);        // live terminal_jobs id, for cancel on abort
   const ryftAbortRef = useRef(null);            // AbortController for pollTerminalJob
   const payNonceRef = useRef(0);                // unique leg per payment attempt (checkKey mutex)
-
-  // Available gift cards from verified loyalty data
-  const availableGiftCards = verifiedLoyalty?.giftCards?.filter(gc => (gc.balance || 0) > 0) || [];
-  const hasGiftCards = availableGiftCards.length > 0 && !giftCardPayment;
-
-  // v5.5.281: Manual gift card code entry — for guests or cards not linked to an account
-  const [manualGCCode, setManualGCCode] = useState('');
-  const [manualGCOpen, setManualGCOpen] = useState(false);
-  const showManualGC = !giftCardPayment && cardState === 'idle';
+  // v5.5.900: gift card / promo entry moved to its own checkout step (ScreenGiftPromo)
+  // BEFORE this screen — it was unreachable here because card payment auto-starts on mount.
 
   // Cancel active reader action (timeout, unmount, or back navigation).
   // v5.5.871: handles BOTH processors — a Stripe reader action AND a live Ryft PAX
@@ -2485,139 +2779,6 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, promoCred
     cancelReaderAction();
   }, []);
 
-  // v5.5.265: Apply gift card to this order
-  const applyGiftCard = async (gc) => {
-    setGiftApplying(true);
-    setGiftError('');
-    try {
-      const token = await ensureAuthToken();
-      if (!token) throw new Error('Auth unavailable');
-      const amountDueMinor = Math.round(total * 100);
-      const applyAmount = Math.min(gc.balance, amountDueMinor);
-      const idempKey = `kiosk-gc-${gc.id}-${Date.now()}`;
-      // v5.5.281: send both code and card_id — gift-redeem accepts either.
-      // code_plain may be null for some cards; card_id always available.
-      const res = await fetch(`${OPS_URL}/functions/v1/gift-redeem`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          code: gc.code || undefined,
-          card_id: gc.id,
-          amount: applyAmount,
-          order_id: null,
-          location_id: locationId,
-          channel: 'kiosk',
-          idempotency_key: idempKey,
-        }),
-      });
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
-      onGiftCardApply({
-        card_id: j.card_id || gc.id,
-        code: gc.code,
-        applied: j.applied || applyAmount,
-        remaining_balance: j.remaining_balance ?? (gc.balance - applyAmount),
-      });
-    } catch (e) {
-      setGiftError(e?.message || 'Could not apply gift card');
-    } finally {
-      setGiftApplying(false);
-    }
-  };
-
-  // v5.5.281: Redeem a gift card by manually entered code (guest checkout)
-  // v5.5.290: If the card has insufficient balance for the full order,
-  // automatically apply whatever balance IS available and let the customer
-  // pay the remainder by card — no error shown, just partial credit.
-  const redeemManualGiftCard = async () => {
-    const code = manualGCCode.trim();
-    if (!code) return;
-    setGiftApplying(true);
-    setGiftError('');
-    try {
-      const token = await ensureAuthToken();
-      if (!token) throw new Error('Auth unavailable');
-      const amountDueMinor = Math.round(total * 100);
-      const idempKey = `kiosk-gc-manual-${code}-${Date.now()}`;
-      const res = await fetch(`${OPS_URL}/functions/v1/gift-redeem`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          code,
-          amount: amountDueMinor,
-          order_id: null,
-          location_id: locationId,
-          channel: 'kiosk',
-          idempotency_key: idempKey,
-        }),
-      });
-      let j = await res.json().catch(() => ({}));
-
-      // v5.5.290: Insufficient balance → retry with the available balance.
-      // The edge function returns { error, balance, requested } on 400.
-      if (!res.ok && j.error === 'Insufficient balance' && j.balance > 0) {
-        const partialAmount = j.balance; // what the card actually has
-        const retryKey = `kiosk-gc-manual-${code}-partial-${Date.now()}`;
-        const res2 = await fetch(`${OPS_URL}/functions/v1/gift-redeem`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-          body: JSON.stringify({
-            code,
-            amount: partialAmount,
-            order_id: null,
-            location_id: locationId,
-            channel: 'kiosk',
-            idempotency_key: retryKey,
-          }),
-        });
-        j = await res2.json().catch(() => ({}));
-        if (!res2.ok) throw new Error(j.error || `HTTP ${res2.status}`);
-      } else if (!res.ok) {
-        // v5.5.887: not a usable gift card — try the SAME code as a promo/offer code before
-        // erroring, so one field handles both (mirrors the POS GiftCardEntry fallthrough).
-        if (!promoApplied && typeof onPromoApply === 'function') {
-          const pv = await fetch(`${OPS_URL}/functions/v1/promo-redeem`, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-            body: JSON.stringify({
-              action: 'validate', code, location_id: locationId,
-              // v5.5.888: OTP-verified customer identity — lets customer-locked (personal)
-              // codes validate at the kiosk and per-customer limits count correctly.
-              customer_id: verifiedLoyalty?.customer?.id || null,
-              basket: { subtotal: total },
-            }),
-          });
-          const pj = await pv.json().catch(() => ({}));
-          if (pv.ok && pj.valid) {
-            onPromoApply({
-              code,
-              code_id: pj.code_id,
-              offer_id: pj.offer?.id || null,
-              label: pj.discount?.label || pj.offer?.name || 'Promo code',
-              amount: pj.discount?.amount || 0,
-            });
-            setManualGCCode('');
-            setManualGCOpen(false);
-            return;
-          }
-        }
-        throw new Error(j.error === 'Card not found' ? 'Code not recognised' : (j.error || `HTTP ${res.status}`));
-      }
-
-      onGiftCardApply({
-        card_id: j.card_id,
-        code,
-        applied: j.applied || amountDueMinor,
-        remaining_balance: j.remaining_balance ?? 0,
-      });
-      setManualGCCode('');
-      setManualGCOpen(false);
-    } catch (e) {
-      setGiftError(e?.message || 'Could not apply gift card');
-    } finally {
-      setGiftApplying(false);
-    }
-  };
 
   // v5.5.871: Ryft PAX terminal payment — reuses the POS "send to terminal" job
   // path (findPaxTerminal → dispatchTerminalJob → pollTerminalJob) as a pure charge
@@ -2799,21 +2960,14 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, promoCred
     }
   };
 
-  // Auto-start card payment if no gift cards to show, no manual entry open, and total > 0
+  // Auto-start card payment on arrival — gift cards / promo codes were already
+  // offered on the preceding ScreenGiftPromo step (v5.5.900), so `total` here is
+  // final and there is nothing left to interrupt the reader for.
   useEffect(() => {
-    if (cardState === 'idle' && total > 0 && !hasGiftCards && !manualGCOpen) {
+    if (cardState === 'idle' && total > 0) {
       startCardPayment();
     }
   }, []);
-
-  // v5.5.290: Auto-start card reader after a partial gift card is applied.
-  // giftCardPayment changes from null → object, total drops but stays > 0.
-  // The mount effect above won't re-fire, so this handles the transition.
-  useEffect(() => {
-    if (giftCardPayment && cardState === 'idle' && total > 0) {
-      startCardPayment();
-    }
-  }, [giftCardPayment]);
 
   const cardDueAmount = total;
   const fullyPaid = total <= 0;
@@ -2838,13 +2992,12 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, promoCred
                 <span style={{ fontSize: 14, fontWeight: 800, color: brandColor }}>-{money(giftCardCredit)}</span>
               </div>
             )}
+            {/* v5.5.900: read-only here — the amount is already committed to the card
+                reader. Removing a promo happens on the preceding gift/promo step. */}
             {promoCredit > 0 && (
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 14px', borderRadius: 10, background: '#f59e0b15', border: '1px solid #f59e0b33' }}>
                 <span style={{ fontSize: 14, fontWeight: 700, color: '#f59e0b' }}>✓ {promoApplied?.label || 'Promo code'} ({promoApplied?.code})</span>
-                <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <span style={{ fontSize: 14, fontWeight: 800, color: '#f59e0b' }}>-{money(promoCredit)}</span>
-                  <button onClick={() => onPromoApply && onPromoApply(null)} style={{ background: 'none', border: 'none', color: '#f59e0b', fontSize: 16, cursor: 'pointer', padding: 0, lineHeight: 1 }}>×</button>
-                </span>
+                <span style={{ fontSize: 14, fontWeight: 800, color: '#f59e0b' }}>-{money(promoCredit)}</span>
               </div>
             )}
           </div>
@@ -2860,147 +3013,6 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, promoCred
           </div>
         </div>
 
-        {/* Gift card offer — show before card payment starts */}
-        {hasGiftCards && cardState === 'idle' && (
-          <div style={{ width: '100%', maxWidth: 440 }}>
-            <div style={{ fontSize: 'clamp(12px, 1.4vw, 14px)', fontWeight: 700, color: brandColor, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 8 }}>
-              Apply gift card
-            </div>
-            {giftError && (
-              <div style={{ padding: 8, borderRadius: 8, marginBottom: 8, fontSize: 13, color: '#e55', background: '#e5555515', border: '1px solid #e5555533', fontWeight: 600 }}>{giftError}</div>
-            )}
-            {availableGiftCards.map(gc => (
-              <button key={gc.id} onClick={() => applyGiftCard(gc)} disabled={giftApplying}
-                style={{
-                  width: '100%', padding: 'clamp(12px, 1.6vw, 16px)', borderRadius: 14, marginBottom: 8,
-                  border: '1.5px solid ' + brandColor + '44', background: 'var(--kSurfaceRaised)',
-                  cursor: giftApplying ? 'wait' : 'pointer', fontFamily: 'inherit',
-                  display: 'flex', alignItems: 'center', gap: 12, opacity: giftApplying ? 0.6 : 1,
-                }}>
-                <span style={{ fontSize: 22 }}>💳</span>
-                <div style={{ flex: 1, textAlign: 'left' }}>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--kFg)' }}>Gift Card {gc.last4 ? `···${gc.last4}` : ''}</div>
-                  <div style={{ fontSize: 12, color: 'var(--kFgMuted)' }}>Balance: {money(((gc.balance || 0) / 100))}</div>
-                </div>
-                <span style={{ fontSize: 14, fontWeight: 800, color: brandColor }}>{giftApplying ? '...' : 'Apply'}</span>
-              </button>
-            ))}
-            <button onClick={startCardPayment} style={{
-              width: '100%', padding: 'clamp(12px, 1.6vw, 16px)', borderRadius: 14,
-              border: 'none', background: brandColor, color: '#fff',
-              cursor: 'pointer', fontFamily: 'inherit', fontSize: 16, fontWeight: 800,
-              marginTop: 8,
-            }}>
-              Skip — pay full amount by card →
-            </button>
-          </div>
-        )}
-
-        {/* v5.5.281: Manual gift card entry — works for guests and unlinked cards */}
-        {showManualGC && !hasGiftCards && cardState === 'idle' && (
-          <div style={{ width: '100%', maxWidth: 440, marginBottom: 12 }}>
-            {!manualGCOpen ? (
-              <button onClick={() => { setManualGCOpen(true); setGiftError(''); }} style={{
-                width: '100%', padding: 'clamp(12px, 1.6vw, 16px)', borderRadius: 14,
-                border: '1.5px dashed ' + brandColor + '44', background: 'transparent',
-                cursor: 'pointer', fontFamily: 'inherit', fontSize: 14, fontWeight: 600,
-                color: brandColor, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-              }}>
-                🎁 Have a gift card or promo code?
-              </button>
-            ) : (
-              <div style={{ padding: 16, borderRadius: 14, background: 'var(--kSurfaceRaised)', border: '1.5px solid ' + brandColor + '33' }}>
-                <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--kFg)', marginBottom: 10 }}>Enter gift card or promo code</div>
-                {giftError && (
-                  <div style={{ padding: 8, borderRadius: 8, marginBottom: 8, fontSize: 13, color: '#e55', background: '#e5555515', border: '1px solid #e5555533', fontWeight: 600 }}>{giftError}</div>
-                )}
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <input
-                    type="text"
-                    value={manualGCCode}
-                    onChange={e => setManualGCCode(e.target.value.toUpperCase())}
-                    placeholder="e.g. ABCD-1234-EFGH"
-                    autoFocus
-                    style={{
-                      flex: 1, padding: '12px 14px', borderRadius: 10, fontSize: 16, fontWeight: 600,
-                      fontFamily: 'var(--font-mono, monospace)', letterSpacing: '.05em', textTransform: 'uppercase',
-                      border: '1.5px solid var(--kBorder)', background: 'var(--kSurface)', color: 'var(--kFg)',
-                      outline: 'none',
-                    }}
-                    onKeyDown={e => { if (e.key === 'Enter' && manualGCCode.trim()) redeemManualGiftCard(); }}
-                  />
-                  <button onClick={redeemManualGiftCard} disabled={giftApplying || !manualGCCode.trim()}
-                    style={{
-                      padding: '12px 20px', borderRadius: 10, border: 'none',
-                      background: manualGCCode.trim() ? brandColor : brandColor + '44',
-                      color: '#fff', fontWeight: 800, fontSize: 14, cursor: giftApplying ? 'wait' : 'pointer',
-                      fontFamily: 'inherit', opacity: giftApplying ? 0.6 : 1,
-                    }}>
-                    {giftApplying ? '...' : 'Apply'}
-                  </button>
-                </div>
-                <button onClick={() => { setManualGCOpen(false); setGiftError(''); startCardPayment(); }}
-                  style={{
-                    width: '100%', padding: 10, marginTop: 10, borderRadius: 10,
-                    border: 'none', background: 'transparent', cursor: 'pointer',
-                    fontFamily: 'inherit', fontSize: 13, fontWeight: 600, color: 'var(--kFgMuted)',
-                  }}>
-                  Skip — pay by card →
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Also show "Have a gift card?" on the linked cards screen */}
-        {showManualGC && hasGiftCards && cardState === 'idle' && !manualGCOpen && (
-          <div style={{ width: '100%', maxWidth: 440, marginTop: -4, marginBottom: 8 }}>
-            <button onClick={() => { setManualGCOpen(true); setGiftError(''); }} style={{
-              width: '100%', padding: 10, borderRadius: 10, border: 'none',
-              background: 'transparent', cursor: 'pointer', fontFamily: 'inherit',
-              fontSize: 13, fontWeight: 600, color: brandColor, textDecoration: 'underline',
-            }}>
-              Enter a different gift card code
-            </button>
-          </div>
-        )}
-
-        {/* Manual gift card entry inline when linked cards are showing */}
-        {showManualGC && hasGiftCards && manualGCOpen && cardState === 'idle' && (
-          <div style={{ width: '100%', maxWidth: 440, marginBottom: 12 }}>
-            <div style={{ padding: 16, borderRadius: 14, background: 'var(--kSurfaceRaised)', border: '1.5px solid ' + brandColor + '33' }}>
-              <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--kFg)', marginBottom: 10 }}>Enter gift card code</div>
-              {giftError && (
-                <div style={{ padding: 8, borderRadius: 8, marginBottom: 8, fontSize: 13, color: '#e55', background: '#e5555515', border: '1px solid #e5555533', fontWeight: 600 }}>{giftError}</div>
-              )}
-              <div style={{ display: 'flex', gap: 8 }}>
-                <input type="text" value={manualGCCode} onChange={e => setManualGCCode(e.target.value.toUpperCase())}
-                  placeholder="e.g. ABCD-1234-EFGH" autoFocus
-                  style={{
-                    flex: 1, padding: '12px 14px', borderRadius: 10, fontSize: 16, fontWeight: 600,
-                    fontFamily: 'var(--font-mono, monospace)', letterSpacing: '.05em', textTransform: 'uppercase',
-                    border: '1.5px solid var(--kBorder)', background: 'var(--kSurface)', color: 'var(--kFg)', outline: 'none',
-                  }}
-                  onKeyDown={e => { if (e.key === 'Enter' && manualGCCode.trim()) redeemManualGiftCard(); }}
-                />
-                <button onClick={redeemManualGiftCard} disabled={giftApplying || !manualGCCode.trim()}
-                  style={{
-                    padding: '12px 20px', borderRadius: 10, border: 'none',
-                    background: manualGCCode.trim() ? brandColor : brandColor + '44',
-                    color: '#fff', fontWeight: 800, fontSize: 14, cursor: giftApplying ? 'wait' : 'pointer',
-                    fontFamily: 'inherit', opacity: giftApplying ? 0.6 : 1,
-                  }}>
-                  {giftApplying ? '...' : 'Apply'}
-                </button>
-              </div>
-              <button onClick={() => setManualGCOpen(false)} style={{
-                width: '100%', padding: 8, marginTop: 8, borderRadius: 8, border: 'none',
-                background: 'transparent', cursor: 'pointer', fontFamily: 'inherit',
-                fontSize: 12, fontWeight: 600, color: 'var(--kFgMuted)',
-              }}>Cancel</button>
-            </div>
-          </div>
-        )}
 
         {/* Card payment — connecting to reader */}
         {cardState === 'processing' && (
