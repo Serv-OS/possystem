@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.899', date: '24 Jul 2026', label: 'The APPEARANCE HUB — one editor for every customer-facing screen',
+    changes: [
+      'Back Office → Channels → Appearance (was "Menu appearance") now has four sections: Brand basics · Storefront · Loyalty portal · Gift cards — each with a LIVE preview rendered by the exact same theme engine customers see, so preview = reality.',
+      'Brand basics: brand colour, logo + shape, a DISPLAY NAME override (your trading name everywhere — no more legal-company-name leaking onto customer screens), and a "Powered by Serv OS" on/off switch.',
+      'Loyalty portal: colour scheme (match storefront / light / dark), optional background override, optional hero banner from your storefront header photo.',
+      'Gift cards: upload card art (shown on the purchase page; email art next) + a plain-English note on where each piece of branding comes from.',
+      'Everything saves to the ONE theme record that every customer surface reads (v5.5.897) — set it once, storefront + portal + signup + gift cards all match.',
+    ],
+  },
+  {
     version: '5.5.898', date: '26 Jul 2026', label: 'FIX — kiosk + online loyalty rewards no longer burn before payment; they redeem when the order commits',
     changes: [
       'Completes v5.5.896 (POS): the kiosk loyalty screen and the online rewards step used to consume points / stamp cards the moment a reward was tapped — BEFORE payment. An abandoned basket or failed card payment burned the reward. Tapping now only STAGES the discount; the real redemption fires once the order actually exists (same pattern as promo codes), idempotent on the check id so retries can never double-deduct.',
