@@ -1,3 +1,49 @@
+# Session — 26 Jul 2026 (v5.5.898) — kiosk + online loyalty rewards redeem at COMMIT, not tap
+
+## Context
+Completes v5.5.896 (POS): kiosk loyalty screen + online rewards step consumed points/stamp cards
+the moment a reward was TAPPED — before payment — so an abandoned basket or failed card payment
+burned the reward. Both now mirror the POS pattern: tap is apply-only (stages the discount
+locally), the real `loyalty-redeem` fires once the order exists, idempotent on `closed_check_id`.
+Server needed NO changes. Shipped `5e8ceee`, build clean, pushed to develop.
+
+## What was done
+- **Kiosk** (`src/surfaces/KioskApp.jsx`):
+  - `redeemReward` in ScreenLoyalty rewritten apply-only, mirroring `lib/loyaltyRedeem.js` math
+    (fixed/percent/free-item; free-item BLOCKS with "Add X to your order first" when the eligible
+    item isn't in the cart; discount capped at subtotal). Stages
+    `{reward_id|stampProgramId, customer_id, pending_commit:true, …}` into `loyaltyRedemption`.
+  - Fixed latent crash in passing: ScreenLoyalty never received `cart` (ReferenceError inside the
+    old free-item branch — AFTER the server had consumed the reward). Now passed as a prop.
+  - `submitOrder`: fires `loyalty-redeem` next to the promo-redeem call with
+    `closed_check_id: checkId`, `channel:'kiosk'`, stamp vs points branch, customer_id from the
+    staged reward (fallback `verifiedLoyalty?.customer?.id`). Fire-and-forget.
+  - `closed_checks.loyalty` payload now also carries `stamp_program_id`.
+- **Online** (`src/surfaces/online/OnlineCheckout.jsx`):
+  - `redeemReward` apply-only (same math, `eligibleIds` vs `l.itemId`, kept the existing
+    cheapest-in-cart fallback when no eligible items configured; kept the
+    `discountedSubtotalMinor - giftAppliedMinor` cap). Free-item now blocks like kiosk/POS.
+  - New `redeemLoyaltyAfterOrder(closedCheckId)` beside `redeemPromoAfterOrder`; called at BOTH
+    payment-success sites (`onGiftOnlyPayment` + `onPaymentSuccess`) with `closedCheck.id`
+    (fallback `online-<ref>`), `channel:'online'`, `location_id: opsLocationId` (server 400s
+    without it). Both `closed_checks.loyalty` payloads carry `stamp_program_id`.
+
+## Concurrent-session note (important)
+A parallel session committed `3e0587f` (v5.5.897, appearance hub) from the SAME working tree
+mid-edit — it swept the finished KioskApp loyalty changes into that commit. Nothing lost; the
+kiosk half shipped in 3e0587f, the online half + version/changelog in `5e8ceee` (v5.5.898).
+
+## Remaining / notes
+- NOT live-tested (local is mock mode — edge fns unreachable). Suggest Peter test on
+  dev.serv-os.app: OTP sign-in at kiosk + online, tap a stamp reward, abandon → balance intact;
+  complete an order → exactly one redemption row keyed to the check id.
+- `removeReward` online now genuinely costs nothing (previously removing an applied reward did
+  NOT refund the already-consumed points — that bug disappears with apply-only).
+- Kiosk applied-reward confirmation box is still gated on `pointsEnabled` (pre-existing quirk;
+  stamp-only venues don't see the green "applied!" box — the discount still applies).
+
+---
+
 # Session — 24 Jul 2026 (v5.5.887 review → v5.5.888) — promo codes on kiosk + online: verified + hardened
 
 ## Context
