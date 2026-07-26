@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.895', date: '24 Jul 2026', label: 'FIX — stamp-card rewards can now actually be REDEEMED at the POS',
+    changes: [
+      'The POS checkout loyalty panel only appeared when the customer had POINTS credit, and the rewards screen was points-gated too — so a member with a completed stamp card but no points (like a stamps-only earner) could never see or redeem their free item. Same gate bug as the kiosk fix in v5.5.886, now closed at the POS.',
+      'The panel now appears whenever the member has anything redeemable; stamp rewards show as FREE 🎟️; the counter reads "1 reward available" instead of "0 points".',
+      'HOW TO REDEEM: attach the customer at checkout → the loyalty banner shows "1 reward available" → tap Redeem → pick the stamp reward → the free item comes off the bill.',
+    ],
+  },
+  {
     version: '5.5.894', date: '24 Jul 2026', label: 'Pulling up a customer now RE-ATTACHES their allergens + warns staff loudly',
     changes: [
       'Attaching a saved customer to a sale now automatically applies their stored allergens to the POS allergen filter (flagged items light up red) — before, the saved allergens never came back.',

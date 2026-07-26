@@ -1659,9 +1659,11 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                 ))}
               </div>
 
-              {/* v5.5.218: Loyalty banner — show when customer has loyalty data.
-                  Points UI is gated on pointsEnabled (hidden for stamps-only venues). */}
-              {pointsEnabled && loyaltyData && loyaltyData.credit > 0 && (
+              {/* v5.5.218: Loyalty banner. v5.5.895: ALSO shows when the member has redeemable
+                  rewards with zero points — a completed STAMP card was invisible here (the panel
+                  required credit > 0 and the rewards screen was points-gated), so stamp rewards
+                  could never be redeemed at the POS. Same gate bug fixed on the kiosk in v5.5.886. */}
+              {loyaltyData && ((pointsEnabled && loyaltyData.credit > 0) || loyaltyData.rewards?.length > 0) && (
                 <div style={{
                   display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12,
                   padding: '10px 14px', borderRadius: 10,
@@ -1674,8 +1676,8 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                       {loyaltyData.tier && <span style={{ marginLeft: 8, fontSize: 11, color: loyaltyData.tier.color || 'var(--t3)' }}>({loyaltyData.tier.name})</span>}
                     </div>
                     <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2 }}>
-                      {loyaltyData.credit} points
-                      {loyaltyData.rewards?.length > 0 && ` · ${loyaltyData.rewards.length} reward${loyaltyData.rewards.length !== 1 ? 's' : ''} available`}
+                      {pointsEnabled && loyaltyData.credit > 0 ? `${loyaltyData.credit} points` : ''}
+                      {loyaltyData.rewards?.length > 0 && `${pointsEnabled && loyaltyData.credit > 0 ? ' · ' : ''}${loyaltyData.rewards.length} reward${loyaltyData.rewards.length !== 1 ? 's' : ''} available`}
                     </div>
                   </div>
                   {loyaltyData.rewards?.length > 0 && !loyaltyApplied && (
@@ -1975,7 +1977,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
             />
           )}
 
-          {screen==='loyalty_rewards' && pointsEnabled && loyaltyData && (
+          {screen==='loyalty_rewards' && loyaltyData && (
             <LoyaltyRewardsEntry
               customer={customer}
               loyaltyData={loyaltyData}
