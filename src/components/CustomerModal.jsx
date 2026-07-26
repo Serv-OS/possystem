@@ -86,6 +86,9 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
     let finalName = name.trim();
     let finalEmail = email.trim();
     let finalNotes = notes.trim();
+    // v5.5.894: allergens must SURVIVE the rebuild — this modal used to construct a fresh
+    // customer object and silently drop them, so a pulled-up profile lost its allergy record.
+    let finalAllergens = Array.isArray(existing?.allergens) ? existing.allergens : [];
     if (phone.trim()) try {
       const live = typeof searchCustomersLive === 'function' ? await searchCustomersLive(phone.trim()) : [];
       const phoneDigits = phone.trim().replace(/[^\d+]/g, '');
@@ -101,11 +104,13 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
         finalName = name.trim() || match.name || 'Customer';
         finalEmail = email.trim() || match.email || '';
         finalNotes = notes.trim() || match.notes || '';
+        if (Array.isArray(match.allergens) && match.allergens.length) finalAllergens = match.allergens;
         showToast(`Matched existing customer: ${match.name}`, 'success');
       }
     } catch {}
     const customer = {
       name: finalName, phone: phone.trim(), email: finalEmail, notes: finalNotes,
+      ...(finalAllergens.length ? { allergens: finalAllergens } : {}),
       isASAP,
       collectionTime: isASAP ? slots[0]?.label : slots[slotIdx]?.label,
       collectionISO:  isASAP ? slots[0]?.value  : slots[slotIdx]?.value,

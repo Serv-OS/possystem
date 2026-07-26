@@ -135,7 +135,7 @@ const sbUpsertMenuItem = async (item) => {
     updated_at: new Date().toISOString()
   });
 };
-import { INITIAL_KDS, SHIFT, MENU_ITEMS, CATEGORIES, STAFF as STAFF_SEED, QUICK_IDS } from '../data/seed';
+import { INITIAL_KDS, SHIFT, MENU_ITEMS, CATEGORIES, STAFF as STAFF_SEED, QUICK_IDS, ALLERGENS as ALLERGEN_DEFS } from '../data/seed';
 import { money } from '../lib/currency';
 
 // ─── ID helpers ──────────────────────────────────────────────────────────────
@@ -2496,7 +2496,19 @@ export const useStore = create((set, get) => ({
     return { orderType:t, tables, walkInOrder, ...(t !== 'delivery' ? { deliveryQuote: null } : {}) };
   }),
   customer: null,
-  setCustomer: c => set({ customer:c }),
+  // v5.5.894: pulling a customer up RE-ATTACHES their stored allergens — the saved profile
+  // allergens now apply to the POS allergen filter automatically, and staff get a loud red
+  // warning. Attaching a customer WITHOUT allergens (or clearing) leaves the filter alone.
+  setCustomer: c => {
+    if (c && Array.isArray(c.allergens) && c.allergens.length) {
+      set({ customer: c, allergens: [...c.allergens] });
+      const labels = c.allergens.map(a => (ALLERGEN_DEFS.find(x => x.id === a)?.label || a)).join(', ');
+      const st = get();
+      if (typeof st.showToast === 'function') st.showToast(`⚠️ ALLERGY — ${c.name || 'Customer'}: ${labels}`, 'error');
+    } else {
+      set({ customer: c });
+    }
+  },
   clearCustomer: () => set({ customer:null, pendingLoyaltyReward:null }),
 
   // ── Delivery (Uber Direct) — address-based quote + surcharge ───────────────

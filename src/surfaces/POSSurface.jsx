@@ -1131,6 +1131,12 @@ export default function POSSurface() {
                   <div style={{flex:1,minWidth:0}}>
                     <div style={{fontSize:13,fontWeight:700,color:'var(--t1)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{customer.name}</div>
                     <div style={{fontSize:11,color:'var(--t3)'}}>{customer.phone}{orderType==='collection'?` · ${customer.isASAP?'⚡ ASAP':`🕐 ${customer.collectionTime}`}`:orderType==='dine-in'?' · Named order':''}</div>
+                    {/* v5.5.894: persistent allergy warning — the attach toast is only ~3s */}
+                    {Array.isArray(customer.allergens)&&customer.allergens.length>0&&(
+                      <div style={{fontSize:11,fontWeight:800,color:'var(--red)',marginTop:2}}>
+                        ⚠ ALLERGY: {customer.allergens.map(a=>(ALLERGENS.find(x=>x.id===a)?.label||a)).join(', ')}
+                      </div>
+                    )}
                   </div>
                   <button onClick={()=>{setShowCustomerModal(true);setPendingOrderType(orderType);}} style={{fontSize:11,fontWeight:700,color:'var(--acc)',background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',padding:0,flexShrink:0}}>Edit</button>
                 </div>

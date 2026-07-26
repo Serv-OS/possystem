@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.894', date: '24 Jul 2026', label: 'Pulling up a customer now RE-ATTACHES their allergens + warns staff loudly',
+    changes: [
+      'Attaching a saved customer to a sale now automatically applies their stored allergens to the POS allergen filter (flagged items light up red) — before, the saved allergens never came back.',
+      'Staff get a red ⚠️ ALLERGY toast the moment the customer is attached, AND a persistent red "⚠ ALLERGY: Gluten, Milk" line on the customer chip — visible for the whole order, not just 3 seconds.',
+      'FIX: the customer details modal was rebuilding the customer object and silently DROPPING allergens on every attach/edit — even when it matched the existing profile. They now survive the rebuild (matched profile first, previous attach as fallback).',
+      'Works everywhere setCustomer runs: search attach, phone-match attach, table re-entry (already worked), walk-in orders.',
+    ],
+  },
+  {
     version: '5.5.893', date: '24 Jul 2026', label: 'Instant menu on boot — tills cache the config snapshot locally',
     changes: [
       'POS/till boot no longer waits on the network to show the menu: the last config snapshot is cached on-device (per location) and applies INSTANTLY, then the fresh one loads behind it. An offline boot now has a menu at all (previously: blank until connectivity).',
