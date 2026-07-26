@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.897', date: '24 Jul 2026', label: 'Appearance hub slice 1 — loyalty portal, signup + gift pages now wear YOUR brand',
+    changes: [
+      'One theme everywhere: the loyalty portal, signup screens, gift card purchase/balance pages and the customer loading/closed screens now read the same Menu-appearance theme as your online menu — colour by colour, with your gift-card settings as fallback. Before, one missing value dropped whole pages to a dark default with an orange nobody chose.',
+      'Unbranded venues now get the same warm-light look as the storefront everywhere (the old dark look is still available per-venue: Appearance → Loyalty portal → scheme "dark").',
+      'New theme powers (editor screen lands in the next drop): display/trading name override (fixes LTD-company-name leaking onto customer screens), "Powered by Serv OS" can be switched off, optional hero banner on the portal.',
+      'Customer loading and "we\'re closed" screens show your logo, name and colours instead of a generic dark card.',
+    ],
+  },
+  {
     version: '5.5.896', date: '24 Jul 2026', label: 'FIX — loyalty rewards no longer burn on tap; they redeem at CHECKOUT (like promo codes)',
     changes: [
       'Owner-reported: tapping a reward with no eligible item in the basket consumed the stamp card server-side for a £0 discount. Tapping now only STAGES the discount — nothing is consumed until the check actually commits.',

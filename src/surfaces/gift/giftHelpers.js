@@ -87,17 +87,33 @@ const DEFAULT_THEME = {
  * @param {object} [giftBranding] - gift_brand_config.branding (per-feature override)
  */
 export function buildGiftTheme(location, giftBranding) {
-  // v5.5.747: Menu appearance (online_branding) is the SINGLE customer-facing branding source, so the
-  // loyalty portal / registration + gift pages match the online menu. The old per-company
-  // gift_brand_config is only a fallback now (kept so nothing breaks if online_branding is empty).
-  const b = location?.online_branding || giftBranding;
-  if (!b) return { ...DEFAULT_THEME, companyName: location?.company_name || null };
-  const bg = b.background || DEFAULT_THEME.bg;
-  const accent = b.brand_color || b.accent_color || DEFAULT_THEME.accent;   // brand_color = the Menu appearance colour
+  // v5.5.897 (Appearance hub, slice 1): PER-KEY resolution — the previous
+  // `online_branding || giftBranding` took whichever object existed WHOLESALE, so a venue
+  // with only (say) a logo set lost its gift accent AND fell to the dark default for
+  // everything else. Every key now resolves independently:
+  //     online_branding.key → gift_brand_config.branding.key → legacy alias → STOREFRONT default
+  // The unbranded default is now the same warm-light storefront palette customers see on the
+  // online menu (#f6f2ec / #e2581f) — ONE unbranded look everywhere. Venues that want the old
+  // dark look set online_branding.portal.scheme = 'dark' in Appearance → Loyalty portal.
+  const b1 = location?.online_branding || {};
+  const b2 = giftBranding || {};
+  const pb = b1.portal || {};   // portal/gift page overrides: { scheme, background, show_hero }
+
+  // Background: portal override → scheme forcing → per-key chain → warm storefront default.
+  const scheme = ['match', 'light', 'dark'].includes(pb.scheme) ? pb.scheme : 'match';
+  let bg;
+  if (pb.background) bg = pb.background;
+  else if (scheme === 'dark') bg = '#0e0e10';
+  else if (scheme === 'light') bg = '#f6f2ec';
+  else bg = b1.background || b2.background || '#f6f2ec';
+
+  // Accent: one brand colour drives everything (legacy gift accent as fallback only).
+  const accent = b1.brand_color || b2.accent_color || b2.brand_color || '#e2581f';
+
   const bgLum = luminance(bg);
   const isDark = bgLum < 0.45;
-  // Auto-contrast text against the chosen background (Menu appearance has no separate text control,
-  // and a stale foreground could otherwise be unreadable).
+  // Auto-contrast text against the chosen background (a stale stored foreground could
+  // otherwise be unreadable — deliberate, unchanged behaviour).
   const fg = isDark ? '#ffffff' : '#16191c';
   return {
     bg,
@@ -116,9 +132,13 @@ export function buildGiftTheme(location, giftBranding) {
     error: '#ff4466',
     success: '#22c55e',
     radius: 14,
-    logo: b.logo_url || null,
-    hero: b.hero_url || null,
-    companyName: location?.company_name || null,
+    logo: b1.logo_url || b2.logo_url || null,
+    hero: b1.hero_url || b2.hero_url || null,
+    showHero: pb.show_hero === true,   // portal/gift pages render the hero banner only when opted in
+    isDark,                            // consumers use this instead of sniffing bg === '#0e0e10'
+    // Display name: trading name override → venue name → company (legal) name.
+    companyName: b1.display_name || location?.name || location?.company_name || null,
+    showPoweredBy: b1.show_powered_by !== false,
   };
 }
 

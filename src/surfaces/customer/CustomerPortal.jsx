@@ -270,6 +270,13 @@ export default function CustomerPortal({ location }) {
       display: 'flex', flexDirection: 'column', alignItems: 'center',
       padding: '40px 20px 60px',
     }}>
+      {/* v5.5.897: optional hero banner — Appearance → Loyalty portal → "Show hero banner" */}
+      {t.showHero && t.hero && (
+        <div style={{
+          width: 'calc(100% + 40px)', margin: '-40px -20px 24px', height: 150,
+          backgroundImage: `url(${t.hero})`, backgroundSize: 'cover', backgroundPosition: 'center',
+        }}/>
+      )}
       {/* Header */}
       <div style={{ textAlign: 'center', marginBottom: 28, flexShrink: 0 }}>
         {t.logo && (
@@ -514,7 +521,7 @@ function RegisterFormScreen({ t, location, loading, error, onSubmit }) {
       <input
         type="date" value={birthday}
         onChange={e => setBirthday(e.target.value)}
-        style={{ ...inputStyle(t), colorScheme: t.bg === '#0e0e10' ? 'dark' : 'light' }}
+        style={{ ...inputStyle(t), colorScheme: t.isDark ? 'dark' : 'light' /* v5.5.897: real flag, not a bg sniff */ }}
       />
       <div style={{ fontSize: 11, color: t.textDim, marginTop: 4 }}>
         We'll send you a birthday treat!
@@ -702,7 +709,7 @@ function RegisterScreen({ t, location, token, customer, loyalty, onComplete }) {
           type="date"
           value={birthday}
           onChange={e => setBirthday(e.target.value)}
-          style={{ ...inputStyle(t), colorScheme: t.bg === '#0e0e10' ? 'dark' : 'light' }}
+          style={{ ...inputStyle(t), colorScheme: t.isDark ? 'dark' : 'light' /* v5.5.897: real flag, not a bg sniff */ }}
         />
         <div style={{ fontSize: 11, color: t.textDim, marginTop: 4 }}>
           We'll send you a birthday treat!
@@ -1541,7 +1548,7 @@ function ProfileTab({ t, customer, loyalty, token, location, onRefresh, onLogout
           type="date"
           value={birthday}
           onChange={e => setBirthday(e.target.value)}
-          style={{ ...inputStyle(t), colorScheme: t.bg === '#0e0e10' ? 'dark' : 'light' }}
+          style={{ ...inputStyle(t), colorScheme: t.isDark ? 'dark' : 'light' /* v5.5.897: real flag, not a bg sniff */ }}
         />
 
         {/* Marketing opt-in */}

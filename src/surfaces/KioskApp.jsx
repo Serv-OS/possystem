@@ -725,6 +725,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
         // v5.5.219: Stamp loyalty redemption on check for receipt / refund use
         loyalty: loyaltyRedemption ? {
           reward_id: loyaltyRedemption.reward_id,
+          stamp_program_id: loyaltyRedemption.stampProgramId || null,
           reward_name: loyaltyRedemption.reward_name,
           points_deducted: loyaltyRedemption.points_deducted,
           discount_value: loyaltyRedemption.discount_value,
@@ -833,6 +834,28 @@ export default function KioskApp({ kioskId, onUnpair }) {
           }).catch(err => console.warn('[kiosk] promo redeem failed:', err?.message));
         } catch (pe) { console.warn('[kiosk] promo redeem dispatch failed:', pe?.message); }
       }
+      // v5.5.897: loyalty reward — redeem at COMMIT, exactly like the promo code above.
+      // The loyalty-screen tap is apply-only now (stages the discount, consumes nothing),
+      // so an abandoned/failed payment can never burn points or a stamp card. loyalty-redeem
+      // is idempotent on closed_check_id server-side, so a retry can't double-deduct.
+      if (loyaltyRedemption?.pending_commit && (loyaltyRedemption.stampProgramId || loyaltyRedemption.reward_id)) {
+        try {
+          const lToken = await ensureAuthToken();
+          fetch(`${OPS_URL}/functions/v1/loyalty-redeem`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', authorization: `Bearer ${lToken}` },
+            body: JSON.stringify({
+              customer_id: loyaltyRedemption.customer_id || verifiedLoyalty?.customer?.id || null,
+              location_id: locationId,
+              ...(loyaltyRedemption.stampProgramId
+                ? { stamp_program_id: loyaltyRedemption.stampProgramId }
+                : { reward_id: loyaltyRedemption.reward_id }),
+              channel: 'kiosk',
+              closed_check_id: checkId,
+            }),
+          }).catch(err => console.warn('[kiosk] loyalty redeem failed:', err?.message));
+        } catch (le) { console.warn('[kiosk] loyalty redeem dispatch failed:', le?.message); }
+      }
       // 4. Heartbeat
       await supabase.from('devices').update({ last_seen: new Date().toISOString() }).eq('id', kioskId);
       // 5. v5.5.287: Decrement stock for each item + modifier in the order.
@@ -917,7 +940,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
       {screen === 'cart' && <ScreenCart brandColor={brandColor} cart={cart} subtotal={subtotal} cartItemCount={cartItemCount} orderType={orderType} onUpdate={updateCartQty} onAddMore={() => setScreen('menu')} onContinue={() => setScreen('tip')} onShowAllergenPicker={() => setShowAllergenPicker(true)} onBack={() => setScreen('menu')} onCancel={resetSession} dailyCounts={dailyCounts} />}
       {screen === 'tip' && <ScreenTip brandColor={brandColor} subtotal={subtotal} tipPresets={tipPresets} tip={tip} onSetTip={setTip} onContinue={() => { if (loyaltyEnabled) setScreen('loyalty'); else setScreen('pay'); }} onBack={() => setScreen('cart')} onCancel={resetSession} />}
       {/* v5.5.219: loyalty/customer-details BEFORE pay so reward discount adjusts amount due */}
-      {screen === 'loyalty' && <ScreenLoyalty brandColor={brandColor} customerName={customerName} customerPhone={customerPhone} customerEmail={customerEmail} marketingOptIn={customerMarketingOptIn} locationId={locationId} companyId={companyId} subtotal={subtotal} loyaltyRedemption={loyaltyRedemption} onLoyaltyRedeem={setLoyaltyRedemption} verifiedLoyalty={verifiedLoyalty} onVerifiedLoyalty={setVerifiedLoyalty} onName={setCustomerName} onPhone={setCustomerPhone} onEmail={setCustomerEmail} onMarketingOptIn={setCustomerMarketingOptIn} onContinue={() => { const ret = loyaltyReturnScreen; setLoyaltyReturnScreen(null); setScreen(ret || 'pay'); }} onSkip={() => { const ret = loyaltyReturnScreen; setLoyaltyReturnScreen(null); setScreen(ret || 'pay'); }} submitting={submitting} placeOrderLabel={labelPlaceOrder} earlySignIn={!!loyaltyReturnScreen} onCancel={resetSession} />}
+      {screen === 'loyalty' && <ScreenLoyalty brandColor={brandColor} customerName={customerName} customerPhone={customerPhone} customerEmail={customerEmail} marketingOptIn={customerMarketingOptIn} locationId={locationId} companyId={companyId} subtotal={subtotal} cart={cart} loyaltyRedemption={loyaltyRedemption} onLoyaltyRedeem={setLoyaltyRedemption} verifiedLoyalty={verifiedLoyalty} onVerifiedLoyalty={setVerifiedLoyalty} onName={setCustomerName} onPhone={setCustomerPhone} onEmail={setCustomerEmail} onMarketingOptIn={setCustomerMarketingOptIn} onContinue={() => { const ret = loyaltyReturnScreen; setLoyaltyReturnScreen(null); setScreen(ret || 'pay'); }} onSkip={() => { const ret = loyaltyReturnScreen; setLoyaltyReturnScreen(null); setScreen(ret || 'pay'); }} submitting={submitting} placeOrderLabel={labelPlaceOrder} earlySignIn={!!loyaltyReturnScreen} onCancel={resetSession} />}
       {screen === 'pay' && <ScreenPay brandColor={brandColor} total={grandTotal} loyaltyCredit={loyaltyCredit} giftCardCredit={giftCardCredit} promoCredit={promoCredit} promoApplied={promoApplied} onPromoApply={setPromoApplied} verifiedLoyalty={verifiedLoyalty} giftCardPayment={giftCardPayment} onGiftCardApply={setGiftCardPayment} locationId={locationId} kioskId={kioskId} cart={cart} submitting={submitting} error={submitError} onPaid={() => submitOrder(customerName, customerPhone)} onBack={() => { if (loyaltyEnabled) setScreen('loyalty'); else setScreen('tip'); }} loyaltyRedemption={loyaltyRedemption} onCancel={resetSession} />}
       {screen === 'done' && <ScreenDone brandColor={brandColor} customerName={customerName} customerPhone={customerPhone} orderNumber={orderNumber} orderType={orderType} tableNumber={tableNumber} avgWaitMinutes={avgWaitMinutes} banner={bannerFor('done')} onDone={resetSession} />}
 
@@ -3058,10 +3081,10 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, promoCred
 // fetchCustomerByPhone() looks up the customers table for the active org
 // + fetches live loyalty data (points, rewards, tier) from loyalty-balance.
 // On match: pre-fills name + email, shows "Welcome back" + points balance,
-// and lists redeemable rewards. Customer taps a reward → loyalty-redeem is
-// called → discount applied as a credit deduction on the order total.
+// and lists redeemable rewards. Customer taps a reward → the discount is staged
+// locally (apply-only); loyalty-redeem fires at submitOrder once the order exists.
 // ============================================================
-function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail, marketingOptIn, locationId, companyId, subtotal, loyaltyRedemption, onLoyaltyRedeem, verifiedLoyalty, onVerifiedLoyalty, onName, onPhone, onEmail, onMarketingOptIn, onContinue, onSkip, submitting, placeOrderLabel, earlySignIn, onCancel }) {
+function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail, marketingOptIn, locationId, companyId, subtotal, cart, loyaltyRedemption, onLoyaltyRedeem, verifiedLoyalty, onVerifiedLoyalty, onName, onPhone, onEmail, onMarketingOptIn, onContinue, onSkip, submitting, placeOrderLabel, earlySignIn, onCancel }) {
   // Local field state mirrors props on mount; we lift back to parent on submit.
   const [name, setName] = useState(customerName || '');
   const [phone, setPhone] = useState(customerPhone || '');
@@ -3203,63 +3226,54 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
   };
 
   // v5.5.219: Redeem a loyalty reward
-  const redeemReward = async (reward) => {
+  // v5.5.897: APPLY-ONLY (mirrors POS lib/loyaltyRedeem.js). Tapping a reward now just
+  // computes + stages the discount — NOTHING is consumed server-side. The real redemption
+  // fires in submitOrder once the order exists, exactly like promo codes — so an abandoned
+  // or failed payment can never burn points or a stamp card. Free-item rewards with no
+  // eligible item in the cart are BLOCKED with a message (previously the server consumed
+  // the reward first, then this handler crashed on the unpassed `cart` — a £0 redemption).
+  const redeemReward = (reward) => {
     setRedeeming(reward.id);
     setRedeemError('');
     try {
-      const token = await ensureAuthToken();
-      if (!token) throw new Error('Auth unavailable');
-      const res = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/loyalty-redeem`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-          body: JSON.stringify({
-            customer_id: customerLookup.customerId,
-            location_id: locationId,
-            // Stamp-card rewards redeem by programme (zero points); points rewards by reward id.
-            ...(reward.stamp
-              ? { stamp_program_id: reward.stampProgramId }
-              : { reward_id: reward.id }),
-            channel: 'kiosk',
-          }),
-        }
-      );
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
-
-      // Calculate discount value in minor units based on reward type
+      const rv = reward.value || {};
       let discountMinor = 0;
-      const rv = j.reward?.value || reward.value || {};
-      if (j.reward?.type === 'discount_fixed' || reward.type === 'discount_fixed') {
+      if (reward.type === 'discount_fixed') {
         discountMinor = rv.amount_minor || 0;
-      } else if (j.reward?.type === 'discount_percent' || reward.type === 'discount_percent') {
+      } else if (reward.type === 'discount_percent') {
         discountMinor = Math.round((subtotal || 0) * 100 * (rv.percent || 0) / 100);
-      } else if (j.reward?.type === 'free_item' || reward.type === 'free_item') {
-        // v5.5.247: free item — find cheapest eligible item in cart
+      } else if (reward.type === 'free_item') {
         const eligibleIds = new Set((rv.eligible_items || []).map(ei => ei.id));
-        if (eligibleIds.size > 0) {
-          const matching = cart.filter(l => eligibleIds.has(l.item?.id));
-          if (matching.length > 0) {
-            const cheapest = matching.reduce((a, b) => (a.linePrice < b.linePrice ? a : b));
-            discountMinor = Math.round((cheapest.linePrice || 0) * 100);
-          }
+        const matching = (cart || []).filter(l => eligibleIds.has(l.item?.id));
+        if (eligibleIds.size > 0 && matching.length === 0) {
+          const names = (rv.eligible_items || []).map(ei => ei.name).filter(Boolean).join(', ');
+          throw new Error(names
+            ? `Add ${names} to your order first — the reward makes it free.`
+            : 'Add the eligible item to your order first.');
+        }
+        if (matching.length > 0) {
+          const cheapest = matching.reduce((a, b) => ((a.linePrice || 0) < (b.linePrice || 0) ? a : b));
+          discountMinor = Math.round((cheapest.linePrice || 0) * 100);
         }
       }
+      // free_delivery / custom → no automatic line discount.
       // Don't discount more than the subtotal
       discountMinor = Math.min(discountMinor, Math.round((subtotal || 0) * 100));
 
       onLoyaltyRedeem({
-        reward_id: reward.id,
-        reward_name: j.reward?.name || reward.label,
-        points_deducted: j.points_deducted || reward.pointsCost,
-        discount_type: j.reward?.type || reward.type,
+        reward_id: reward.stamp ? null : reward.id,
+        stampProgramId: reward.stamp ? (reward.stampProgramId || String(reward.id).replace(/^stamp:/, '')) : null,
+        customer_id: customerLookup?.customerId || customerLookup?.id || null,
+        reward_name: reward.label,
+        points_deducted: reward.stamp ? 0 : (reward.pointsCost || 0),
+        discount_type: reward.type,
         discount_value: discountMinor,
-        idempotency_key: j.idempotency_key || null,
-        balance_after: j.balance,
+        idempotency_key: null,
+        balance_after: null,
+        pending_commit: true,
       });
     } catch (e) {
-      console.warn('[kiosk] loyalty redeem failed:', e?.message || e);
+      console.warn('[kiosk] loyalty apply failed:', e?.message || e);
       setRedeemError(e?.message || 'Could not redeem reward');
     } finally {
       setRedeeming(null);

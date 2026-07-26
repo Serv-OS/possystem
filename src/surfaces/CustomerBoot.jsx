@@ -19,6 +19,7 @@ import { isOpenNow, nextOpensAt, formatHoursPreview } from '../lib/openingHours'
 import { readTheme, deriveVars, readableOn, DISPLAY_FONT, BODY_FONT } from './menu/menuTheme';
 import MenuHeader from './menu/MenuHeader';
 import OnlineSurface from './online/OnlineSurface';
+import { buildGiftTheme } from './gift/giftHelpers';
 import GiftPurchaseSurface from './gift/GiftPurchaseSurface';
 import GiftBalanceSurface from './gift/GiftBalanceSurface';
 import GiftSuccessSurface from './gift/GiftSuccessSurface';
@@ -137,17 +138,24 @@ export default function CustomerBoot({ slug, mode, tableId }) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 function CustomerShell({ children, location }) {
+  // v5.5.897: shells carry the venue's Appearance theme the moment the location row is
+  // loaded — the hardcoded dark shell only remains for a FAILED slug (no venue to theme by).
+  const t = location ? buildGiftTheme(location) : null;
   return (
     <div style={{
-      minHeight:'100vh', background:'#0e0e10', color:'#fff', fontFamily:'system-ui, -apple-system, sans-serif',
+      minHeight:'100vh', background: t?.bg || '#0e0e10', color: t?.text || '#fff',
+      fontFamily:'system-ui, -apple-system, sans-serif',
       display:'flex', flexDirection:'column', alignItems:'center', padding:'40px 20px',
     }}>
       {location && (
         <div style={{ marginBottom:24, textAlign:'center' }}>
-          <div style={{ fontSize:24, fontWeight:800 }}>{location.name}</div>
-          <div style={{ fontSize:12, color:'#777', marginTop:4 }}>
-            Powered by Serv OS
-          </div>
+          {t?.logo && <img src={t.logo} alt="" style={{ height:52, maxWidth:180, objectFit:'contain', marginBottom:10 }}/>}
+          <div style={{ fontSize:24, fontWeight:800 }}>{t?.companyName || location.name}</div>
+          {(t?.showPoweredBy !== false) && (
+            <div style={{ fontSize:12, opacity:.55, marginTop:4 }}>
+              Powered by Serv OS
+            </div>
+          )}
         </div>
       )}
       <div style={{ width:'100%', maxWidth:480 }}>
@@ -168,10 +176,10 @@ function Spinner({ label }) {
 
 function ErrorState({ icon, title, body }) {
   return (
-    <div style={{ textAlign:'center', padding:'40px 24px', background:'#16161a', border:'1px solid #2a2a30', borderRadius:14 }}>
+    <div style={{ textAlign:'center', padding:'40px 24px', background:'rgba(127,127,127,0.10)', border:'1px solid rgba(127,127,127,0.25)', borderRadius:14 }}>
       <div style={{ fontSize:42, marginBottom:14 }}>{icon}</div>
       <div style={{ fontSize:18, fontWeight:800, marginBottom:8 }}>{title}</div>
-      <div style={{ fontSize:13, color:'#aaa', lineHeight:1.6 }}>{body}</div>
+      <div style={{ fontSize:13, opacity:.7, lineHeight:1.6 }}>{body}</div>
     </div>
   );
 }
@@ -182,13 +190,13 @@ function ClosedBanner({ location, nextOpensAt }) {
     ? new Intl.DateTimeFormat('en-GB', { timeZone: tz, weekday:'long', hour:'numeric', minute:'2-digit', hour12:true }).format(nextOpensAt)
     : null;
   return (
-    <div style={{ textAlign:'center', padding:'40px 24px', background:'#16161a', border:'1px solid #2a2a30', borderRadius:14 }}>
+    <div style={{ textAlign:'center', padding:'40px 24px', background:'rgba(127,127,127,0.10)', border:'1px solid rgba(127,127,127,0.25)', borderRadius:14 }}>
       <div style={{ fontSize:42, marginBottom:14 }}>🌙</div>
       <div style={{ fontSize:18, fontWeight:800, marginBottom:8 }}>We're closed</div>
-      <div style={{ fontSize:13, color:'#aaa', marginBottom:16 }}>
-        {fmt ? <>Opens <b style={{ color:'#fff' }}>{fmt}</b></> : 'Hours not set yet — please come back later.'}
+      <div style={{ fontSize:13, opacity:.7, marginBottom:16 }}>
+        {fmt ? <>Opens <b>{fmt}</b></> : 'Hours not set yet — please come back later.'}
       </div>
-      <div style={{ fontSize:11, color:'#666', marginTop:18 }}>
+      <div style={{ fontSize:11, opacity:.55, marginTop:18 }}>
         {formatHoursPreview(location.opening_hours)}
       </div>
     </div>
@@ -262,7 +270,7 @@ function ClosedScreen({ location, nextOpens, canOrderAhead, onEnter }) {
 // ── Phase 3 stubs ───────────────────────────────────────────────────────────
 function OnlineStub({ location }) {
   return (
-    <div style={{ padding:'30px 24px', background:'#16161a', border:'1px solid #2a2a30', borderRadius:14 }}>
+    <div style={{ padding:'30px 24px', background:'rgba(127,127,127,0.10)', border:'1px solid rgba(127,127,127,0.25)', borderRadius:14 }}>
       <div style={{ fontSize:11, color:'#e8a020', fontWeight:800, letterSpacing:'.08em', textTransform:'uppercase', marginBottom:8 }}>
         Online Ordering
       </div>
@@ -280,7 +288,7 @@ function OnlineStub({ location }) {
 
 function QrStub({ location, tableId }) {
   return (
-    <div style={{ padding:'30px 24px', background:'#16161a', border:'1px solid #2a2a30', borderRadius:14 }}>
+    <div style={{ padding:'30px 24px', background:'rgba(127,127,127,0.10)', border:'1px solid rgba(127,127,127,0.25)', borderRadius:14 }}>
       <div style={{ fontSize:11, color:'#e8a020', fontWeight:800, letterSpacing:'.08em', textTransform:'uppercase', marginBottom:8 }}>
         Table-side
       </div>
