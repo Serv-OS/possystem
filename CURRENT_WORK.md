@@ -1,3 +1,61 @@
+# Session — 26 Jul 2026 (v5.5.900) — kiosk gift card / promo code get their OWN checkout step
+
+## Context
+Owner: "I thought we had a way to redeem gift cards and promos on the Kiosk but I cannot see
+anywhere to actually redeem." The UI existed (v5.5.281 / v5.5.887) but was **unreachable**: it
+lived inside ScreenPay gated on `cardState === 'idle'`, and ScreenPay auto-starts the card reader
+on mount → `startCardPayment()` flips cardState to 'processing' within a frame. Only a signed-in
+member holding a linked gift card (which suppressed auto-start) ever saw it. Shipped `3d1cd18`,
+build clean, pushed to develop.
+
+## What was done (src/surfaces/KioskApp.jsx)
+- **NEW `ScreenGiftPromo`** + screen key `'gift'`, mirroring OnlineCheckout's gift step:
+  `cart → tip → [loyalty if enabled] → gift → pay → done`. Code box is OPEN on arrival; ONE field
+  takes a gift card or a promo code; linked cards still tap-to-apply; shows applied credits +
+  "left to pay"; CTA `Continue to payment · £X →`.
+- **ScreenPay slimmed**: lost props `onPromoApply / verifiedLoyalty / giftCardPayment /
+  onGiftCardApply`, its gift state + both gift handlers, and the "auto-start reader after partial
+  gift card applied" effect. Auto-start is now just `(cardState === 'idle' && total > 0)`. Its
+  promo chip is read-only (the amount is already committed to the reader).
+- Back: `pay → gift → loyalty|tip`. Early sign-in (`loyaltyReturnScreen`) still returns to orderType.
+
+## Adversarial review caught 3 defects in the first cut (all fixed before push)
+Ran an 11-agent workflow (4 review lenses → 7 verifications). 6 confirmed, 1 refuted.
+- **ONE GIFT CARD PER ORDER** (found by all 4 lenses independently, HIGH). The moved block lost the
+  old `showManualGC = !giftCardPayment && …` guard. `gift-redeem` debits server-side at apply and
+  `giftCardPayment` REPLACES rather than accumulates → a second code silently destroyed the first
+  card's balance (£20 order: card A £5 debited, then card B £10 debited, state = B only, guest pays
+  £10 → £25 surrendered, £5 gone, closed check records only B). Fixed: once a gift card is applied
+  the field only accepts a PROMO — `gift-redeem` is never called twice. Extracted `tryPromoCode()`
+  so the fallthrough and the gift-applied path share one validate.
+- **CTA race** (HIGH): "Continue to payment" was tappable while an apply was in flight → ScreenPay
+  mounts and arms the reader at the PRE-gift amount. Fixed with `disabled={giftApplying}`.
+- **Codes accepted with nothing left to pay** (MEDIUM): a single-use promo burned for zero benefit.
+  Fixed with a `total <= 0` guard.
+- **Idle timer ignored typing**: `onPointerDown` on the shell was the only activity signal, but
+  on-screen-keyboard taps land on the IME overlay outside the React tree — the timer could fire
+  mid-code-entry and wipe the basket. Shell now also resets on `onKeyDown` / `onInput` (helps the
+  loyalty phone entry too).
+
+## ⚠ KNOWN, PRE-EXISTING — NOT fixed here (spawned as its own task)
+`gift-redeem` consumes balance at **APPLY** time (`order_id: null`), so abandoning / idle-timeout /
+failed payment after applying FORFEITS the customer's gift-card money, with no reversal (the only
+`gift-reverse-redeem` caller is the POS refund path, store/index.js ~4898). Verifiers ruled this
+pre-existing, not a regression — but v5.5.900 routes EVERY guest through the step, widening
+exposure. Proper fix = the v5.5.898 loyalty pattern (stage at apply, redeem at commit keyed to the
+check id, idempotent server-side). Same issue exists on ONLINE.
+
+## Remaining / notes
+- NOT live-tested (local is mock mode — edge fns unreachable). Peter to test on a real kiosk:
+  guest with a gift card code, guest with a promo code, member with a linked card, and a
+  gift-card-covers-everything order (should reach pay showing "Fully covered → Place order").
+- 5 lower-severity findings were NOT verified (workflow verified the top 7 of 12 by severity).
+- Unrelated pre-existing bug surfaced by the review: `loyaltyReturnScreen` is not cleared by
+  `resetSession`, so a stale value can make the NEXT customer's loyalty CTA read "Continue to
+  menu →" and bounce them to orderType. Not touched.
+
+---
+
 # Session — 26 Jul 2026 (v5.5.898) — kiosk + online loyalty rewards redeem at COMMIT, not tap
 
 ## Context
