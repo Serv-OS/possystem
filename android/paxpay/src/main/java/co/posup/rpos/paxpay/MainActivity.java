@@ -195,6 +195,13 @@ public class MainActivity extends ComponentActivity {
 
     /** The payment in progress, or null. */
     private TerminalJob activeJob;
+    // v2.0-rc12 — TILL-CANCEL WATCHER. Nothing on this terminal knew a job had been cancelled:
+    // the POS marks terminal_jobs.status='cancelled' server-side (verified working — the row
+    // flips in ~9s), but the terminal had already claimed the job and handed off to the STS
+    // controller, so the card prompt stayed up in front of the customer with no way to call it
+    // off. Owner-reported: "the cancel did not cancel the payment from the PDQ."
+    private Runnable cancelWatch;
+    private boolean cancelWatchStop;
     /** Write-ahead-log key for {@link #activeJob}. Equals the job id, or a local id for manual. */
     private String activeLocalId;
     /** Reference sent to the processor. Job id where there is one. */
@@ -270,6 +277,7 @@ public class MainActivity extends ComponentActivity {
                 new ActivityResultContracts.StartActivityForResult(),
                 result -> {
                     // The STS controller has finished and handed control back to us.
+                    stopCancelWatch();   // v2.0-rc12: the payment resolved; stop watching
                     if (flow != null) flow.onControllerResult(result.getResultCode());
                 });
 
@@ -1191,6 +1199,7 @@ public class MainActivity extends ComponentActivity {
         // drawn, so the customer sees the amount rather than a dark panel. Polling continues
         // while asleep (JobPoller is only stopped in onDestroy), which is what makes this work.
         wakeScreen("job " + job.jobId);
+        startCancelWatch(job.jobId);   // v2.0-rc12: stand down if the till cancels
         // JobPoller stops itself the moment it claims, so there is nothing to tear down here.
         activeJob = job;
         activeLocalId = null;
@@ -1677,6 +1686,71 @@ public class MainActivity extends ComponentActivity {
     }
 
     /** Failure screen. Deliberately verbose — this device is tested without a debugger attached. */
+    /**
+     * Poll THIS job's status while it is live on the terminal, and stand down if the till
+     * cancelled it.
+     *
+     * WHY POLLING: the terminal has already launched the STS controller by this point, so it is
+     * backgrounded and cannot receive anything push-based we own. terminal_jobs is not in the
+     * realtime publication either (deliberately — it is polled everywhere else too). A 2s read
+     * of one row by one device is cheap and only runs while a payment is actually in flight.
+     *
+     * WHAT "STAND DOWN" CAN AND CANNOT DO: we cannot force-finish another app's activity. What
+     * we CAN do — and what actually matters to the customer standing there — is pull ourselves
+     * back in front of the controller and say the payment was cancelled, so nobody is looking at
+     * a live card prompt for a bill the till has abandoned. The controller then times out behind
+     * us on its own TENDER_TIMEOUT_MS. The charge is separately guarded server-side: cancel
+     * voids at the processor and re-reads the session, so a tap that beats us still settles
+     * correctly rather than vanishing.
+     */
+    private void startCancelWatch(String jobId) {
+        stopCancelWatch();
+        if (jobId == null) return;
+        cancelWatchStop = false;
+        cancelWatch = new Runnable() {
+            @Override public void run() {
+                if (cancelWatchStop) return;
+                new Thread(() -> {
+                    String status = null;
+                    try { status = api.fetchJobStatus(jobId); } catch (Exception ignored) { /* offline: try again */ }
+                    final String st = status;
+                    ui.post(() -> {
+                        if (cancelWatchStop) return;
+                        if ("cancelled".equals(st)) {
+                            diag.event("job cancelled at the till — standing down");
+                            stopCancelWatch();
+                            onCancelledAtTill();
+                        } else {
+                            ui.postDelayed(cancelWatch, 2_000L);
+                        }
+                    });
+                }).start();
+            }
+        };
+        ui.postDelayed(cancelWatch, 2_000L);
+    }
+
+    private void stopCancelWatch() {
+        cancelWatchStop = true;
+        if (cancelWatch != null) { ui.removeCallbacks(cancelWatch); cancelWatch = null; }
+    }
+
+    /** The till cancelled while we were showing (or about to show) a card prompt. */
+    private void onCancelledAtTill() {
+        activeJob = null;
+        diag.currentJobId = null;
+        // Come back to the front OVER the STS controller so the customer is not left looking at
+        // a live card prompt. This is the only lever we have on another app's screen.
+        try {
+            startActivity(new Intent(this, MainActivity.class)
+                    .addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP));
+        } catch (Exception e) {
+            diag.event("could not bring to front: " + e.getMessage());
+        }
+        showError("Payment cancelled", "The till cancelled this payment. Do not take a card.", this::showHome);
+        ensureAmbientPolling();   // back to listening for the next job
+    }
+
     private void showError(String title, String message, Runnable onDismiss) {
         setScreen(errorView(title, message, "Start again", onDismiss, null));
     }

@@ -19,7 +19,7 @@ public final class BuildVersion {
      * Human-facing build id. "2.0-rc1" = the first REAL-CHARGE candidate: ServerG8CloudClient
      * proxies every charge through the terminal-job-charge edge function, and SIMULATED is off.
      */
-    public static final String VERSION = "2.0-rc11";
+    public static final String VERSION = "2.0-rc12";
 
     /**
      * True while the G8:Cloud call is the stub rather than a real charge path. Drives the
