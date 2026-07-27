@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.914', date: '27 Jul 2026', label: 'KDS — the "to make" list is now a full-height panel showing everything, and timers no longer read NaNm',
+    changes: [
+      'THE RUNNING TOTAL IS NOW A PROPER PANEL DOWN THE SIDE. As a strip along the top it ran out of width after four or five items and quietly hid the rest — which defeated the point of having it. It is now a full-height column on the right listing every outstanding item with its quantity and modifiers, so the whole prep list is visible in one look. On a test board of four tickets that is all sixteen items on screen at once, where the strip showed five.',
+      'It only scrolls in the extreme case, it disappears when the kitchen is clear, and each station still totals only its own work.',
+      'FIXED — EVERY TICKET TIMER COULD READ "NaNm". If a ticket reached the screen without a usable sent-time, the age showed as the literal text "NaNm" instead of a number. Worse than ugly: that ticket was also sorted into the wrong urgency bucket, so the on-time / warning / late counts along the top were quietly wrong. An unknown age is now treated as brand new.',
+      'READY TO TEST: open a kitchen screen with a few tickets on it. The TO MAKE column on the right should list every item, and the quantities should match what you can count on the tickets.',
+    ],
+  },
+  {
     version: '5.5.913', date: '27 Jul 2026', label: 'KDS — tickets past the bottom of the screen were unreachable, plus a running "to make" total',
     changes: [
       'ON A KITCHEN SCREEN, ANY TICKET BELOW THE FOLD WAS LOST. Not hard to reach — genuinely unreachable. There was no scrollbar and no amount of swiping helped. The board was built to scroll, but on a paired kitchen display it was sitting in a container with no height of its own, so it simply grew to the full height of every ticket and the screen chopped off whatever did not fit. Measured on a 1024x600 screen with 40 tickets: over 2,000 pixels of tickets with no way to see them. On a busy service that is orders the kitchen never knew existed.',

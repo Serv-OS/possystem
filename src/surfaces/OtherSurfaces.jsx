@@ -542,6 +542,11 @@ export function KDSSurface() {
 
   function getLiveMinutes(ticket) {
     const ts = ticket.sentAt instanceof Date ? ticket.sentAt.getTime() : typeof ticket.sentAt === 'string' ? new Date(ticket.sentAt).getTime() : Number(ticket.sentAt);
+    // v5.5.914: a missing or unparseable sentAt used to fall straight through —
+    // Math.max(0, Math.floor(NaN)) is still NaN, so the card read "NaNm" on the wall AND
+    // urgency(NaN) put the ticket in the wrong bucket, quietly skewing the on-time counts
+    // in the header. Treat an unknown age as brand new rather than as garbage.
+    if (!Number.isFinite(ts)) return 0;
     return Math.max(0, Math.floor((Date.now() - ts) / 60000));
   }
 
@@ -777,32 +782,8 @@ export function KDSSurface() {
         </div>
       </div>
 
-      {/* Running roll-up band. Fixed height + no wrap + overflow hidden so it can never grow
-          and push tickets off a screen nobody can scroll. Hidden entirely when there is
-          nothing to make, and while History is open. */}
-      {!showHistory && rollUp.length>0 && (
-        <div style={{ flexShrink:0, height:46, display:'flex', alignItems:'center', gap:8,
-          padding:'0 14px', borderBottom:'1px solid var(--bdr)', background:'var(--bg2)', overflow:'hidden' }}>
-          <div style={{ flexShrink:0, fontSize:10, fontWeight:800, letterSpacing:'.08em', color:'var(--t4)' }}>
-            TO MAKE · {rollUpTotal}
-          </div>
-          <div style={{ flex:1, display:'flex', gap:8, overflow:'hidden' }}>
-            {rollUp.map(r => (
-              <div key={r.key} style={{ display:'flex', alignItems:'center', gap:7, flexShrink:0,
-                padding:'5px 11px', borderRadius:9, background:'var(--bg3)', border:'1px solid var(--bdr)' }}>
-                <span style={{ fontSize:17, fontWeight:800, color:'var(--acc)' }}>{r.qty}</span>
-                <span style={{ fontSize:14, fontWeight:700, color:'var(--t1)', whiteSpace:'nowrap' }}>{r.name}</span>
-                {r.mods.length>0 && (
-                  <span style={{ fontSize:11, fontWeight:600, color:'var(--t4)', whiteSpace:'nowrap' }}>{r.mods.join(' · ')}</span>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
       {showHistory?(
-        <div style={{ flex:1, overflowY:'auto', padding:14 }}>
+        <div style={{ flex:1, overflowY:'auto', padding:14, minHeight:0 }}>
           <div style={{ fontSize:12, fontWeight:700, color:'var(--t3)', marginBottom:12 }}>Bumped tickets — tap Recall to bring back</div>
           {historyTickets.length===0?(
             <div style={{ textAlign:'center', padding:'60px', color:'var(--t4)', fontSize:13 }}>No history yet</div>
@@ -813,7 +794,11 @@ export function KDSSurface() {
           )}
         </div>
       ):(
-        <div style={{ flex:1, overflowY:'auto', padding:14 }}>
+        // v5.5.914: board and the TO MAKE list sit side by side. A horizontal strip could only
+        // ever show four or five items before running out of width; a full-height column shows
+        // the entire prep list at once, which is the whole reason the total exists.
+        <div style={{ flex:1, display:'flex', minHeight:0 }}>
+        <div style={{ flex:1, overflowY:'auto', padding:14, minHeight:0 }}>
           {heldTickets.length>0&&(
             <div style={{ marginBottom:16 }}>
               <div style={{ fontSize:11, fontWeight:800, color:'#a78bfa', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:8 }}>⏸ On hold</div>
@@ -833,6 +818,41 @@ export function KDSSurface() {
             )}
             {displayed.map(t=><TicketCard key={t.id} ticket={t}/>)}
           </div>
+        </div>
+
+        {/* ── TO MAKE — the whole outstanding prep list, always fully visible ──────
+            A full-height column rather than a strip along the top: a strip runs out of
+            width after four or five items, which is exactly the thing being complained
+            about. This shows every line at once, and only scrolls in the extreme case. */}
+        {rollUp.length>0 && (
+          <div style={{ width:250, flexShrink:0, borderLeft:'1px solid var(--bdr)',
+            background:'var(--bg1)', display:'flex', flexDirection:'column', minHeight:0 }}>
+            <div style={{ flexShrink:0, padding:'12px 14px 10px', borderBottom:'1px solid var(--bdr)' }}>
+              <div style={{ fontSize:10, fontWeight:800, letterSpacing:'.1em', color:'var(--t4)' }}>TO MAKE</div>
+              <div style={{ fontSize:26, fontWeight:800, color:'var(--t1)', lineHeight:1.1, marginTop:2 }}>
+                {rollUpTotal}<span style={{ fontSize:12, fontWeight:700, color:'var(--t4)', marginLeft:6 }}>
+                  item{rollUpTotal===1?'':'s'}</span>
+              </div>
+            </div>
+            <div style={{ flex:1, overflowY:'auto', minHeight:0, padding:'6px 0' }}>
+              {rollUp.map(r => (
+                <div key={r.key} style={{ display:'flex', alignItems:'baseline', gap:10,
+                  padding:'8px 14px', borderBottom:'1px solid var(--bdr)' }}>
+                  <span style={{ fontSize:22, fontWeight:800, color:'var(--acc)', minWidth:32,
+                    textAlign:'right', flexShrink:0 }}>{r.qty}</span>
+                  <div style={{ minWidth:0 }}>
+                    <div style={{ fontSize:14, fontWeight:700, color:'var(--t1)', lineHeight:1.25 }}>{r.name}</div>
+                    {r.mods.length>0 && (
+                      <div style={{ fontSize:11, fontWeight:600, color:'var(--t4)', lineHeight:1.35, marginTop:1 }}>
+                        {r.mods.join(' · ')}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         </div>
       )}
     </div>
