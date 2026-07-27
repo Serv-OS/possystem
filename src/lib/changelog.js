@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.906', date: '27 Jul 2026', label: 'FIX — split card legs failed with "…are required" on the first hardware test',
+    changes: [
+      'Yesterday\'s split-to-terminal work (v5.5.904) fell at the last step: the send was missing one required field (the check reference), so the server rejected it and the till showed "Payment failed — job_id, check_key, target_terminal_id, closed_check_id and check_draft are required". Nothing reached the terminal.',
+      'A split leg has no closed check of its own — the portions only become one check once every portion is paid — so it now carries a per-leg reference, the same way the kiosk does for its own charges.',
+      'RETEST: split a bill, pay one portion by card — the amount should now appear on the terminal.',
+    ],
+  },
+  {
     version: '5.5.905', date: '27 Jul 2026', label: 'FIX — you can now cancel a card payment that is live on the terminal',
     changes: [
       'Cancel used to DISAPPEAR the instant the payment reached the terminal — which is exactly when staff need it. The result: an amount sitting on the machine with no way to call it off. The server-side cancel (which voids the payment at the processor) was complete and live the whole time and simply had no button reaching it.',

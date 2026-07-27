@@ -100,12 +100,21 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
       const dueMinor = toMinor(amount);
       const checkKey = buildCheckKey({ locationId: opsLocationId, tableId: null,
                                        sessionId: null, leg: legKeyRef.current });
+      // v5.5.906: closed_check_id is REQUIRED by terminal-job-create (the server 400s without
+      // it — that was the "job_id, check_key, target_terminal_id, closed_check_id and
+      // check_draft are required" failure on the first hardware test). A split LEG has no
+      // closed check of its own: the legs combine into ONE check only once every portion is
+      // paid, which happens after this. So carry a synthetic per-leg id, exactly as the kiosk
+      // does for its own no-check-yet charges. Safe because source='pos_split_leg' is a source
+      // TerminalJobReconciler deliberately ignores — nothing will try to close a check by it.
+      const closedCheckId = `chk-split-${legKeyRef.current}`;
       const { job } = await dispatchTerminalJob({
         checkKey,
         targetTerminalId: terminal.id,
         posDeviceId: getPosDeviceId(),
         tipBasisMinor: dueMinor,
         dueMinor,
+        closedCheckId,
         currency: stripeCurrency(),
         // 'pos_split_leg' is deliberately NOT 'pax_table_pay': TerminalJobReconciler filters
         // on that source to auto-close a WHOLE check, which must never happen for one leg.
