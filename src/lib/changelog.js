@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.905', date: '27 Jul 2026', label: 'FIX — you can now cancel a card payment that is live on the terminal',
+    changes: [
+      'Cancel used to DISAPPEAR the instant the payment reached the terminal — which is exactly when staff need it. The result: an amount sitting on the machine with no way to call it off. The server-side cancel (which voids the payment at the processor) was complete and live the whole time and simply had no button reaching it.',
+      'Cancel is now offered for the whole time a payment is live on the terminal. The server decides the outcome: it voids the action, then re-reads what actually happened — if the customer already tapped and paid, it says "That card has already paid — refund it instead" rather than pretending it was cancelled.',
+      'Back / × are now blocked on the PAX screen while a payment is live (they already were for Stripe readers — the PAX was missed). Staff can no longer walk the till away from a terminal that is still collecting a card.',
+      'Server: cancel now repairs a stale terminal link BEFORE giving up, instead of refusing with "terminal not linked" in exactly the case that leaves a live card prompt stranded.',
+      'NEEDS A HARDWARE TEST: send a payment to the A50, then hit Cancel while it is asking for the card — the prompt should clear on the machine.',
+    ],
+  },
+  {
     version: '5.5.904', date: '27 Jul 2026', label: 'FIX — split-check card legs now actually reach the card terminal',
     changes: [
       'Splitting a bill and paying a portion by card sent NOTHING to the PAX terminal. A full payment creates a terminal job (the only thing the terminal app listens for); a split leg used an older direct route that creates no job — so the terminal never woke. Every split type was affected.',

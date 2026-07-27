@@ -1714,11 +1714,17 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                 HIDE both the Back chevron and the X close button. The only
                 way out is the explicit Cancel payment button inside the
                 CardTerminal screen — prevents the cashier accidentally
-                dismissing the modal while the customer is mid-tap. */}
-            {screen!=='review' && screen!=='card_terminal' && (
+                dismissing the modal while the customer is mid-tap.
+                v5.5.905: 'pax_terminal' was MISSING from both guards, so the whole rule
+                applied to Stripe readers and not to the PAX. Staff could Back/× out of a
+                live PAX prompt, leaving the terminal collecting a card for a check the till
+                had already walked away from — the job stays live, the customer can still
+                tap, and nothing on the POS is listening for the result. Both screens are
+                now treated identically: the in-screen Cancel is the only way out. */}
+            {screen!=='review' && screen!=='card_terminal' && screen!=='pax_terminal' && (
               <button className="btn btn-ghost btn-sm" onClick={()=>setScreen('review')}>← Back</button>
             )}
-            {screen!=='card_terminal' && (
+            {screen!=='card_terminal' && screen!=='pax_terminal' && (
               <button onClick={onClose} style={{ width:32, height:32, borderRadius:9, border:'1px solid var(--bdr2)', background:'transparent', color:'var(--t3)', cursor:'pointer', fontFamily:'inherit', fontSize:18, display:'flex', alignItems:'center', justifyContent:'center' }}>×</button>
             )}
           </div>

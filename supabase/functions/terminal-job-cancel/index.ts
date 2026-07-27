@@ -131,9 +131,15 @@ Deno.serve(async (req) => {
   const { data: term } = await opsAdmin
     .from('terminal_devices').select('id, ryft_terminal_id')
     .eq('id', job.target_terminal_id).maybeSingle();
-  if (!term?.ryft_terminal_id) return json({ ok: false, error: 'terminal_not_linked' }, 409);
 
-  let ryftTerminalId = term.ryft_terminal_id as string;
+  // v5.5.905 — RECONCILE FIRST, THEN FAIL CLOSED. This used to return 409 terminal_not_linked
+  // BEFORE the payment_devices reconcile below, which meant cancel refused in exactly the
+  // drift case the reconcile exists to repair: an ops row whose ryft_terminal_id went stale
+  // or null on a re-pair. Refusing to cancel leaves a LIVE card prompt on the terminal with
+  // no way to call it off — the worst possible failure for this endpoint. The platform
+  // payment_devices row is the source of truth the charging path already trusts, so consult
+  // it first and only give up if it cannot name a terminal either.
+  let ryftTerminalId = (term?.ryft_terminal_id as string) || '';
   const { data: ploc } = await platformAdmin.from('locations')
     .select('id').eq('ops_location_id', job.location_id).maybeSingle();
   const platformLocId = ploc?.id ?? job.location_id;
@@ -143,8 +149,10 @@ Deno.serve(async (req) => {
       .eq('location_id', platformLocId).eq('processor', 'ryft')
       .not('ryft_terminal_id', 'is', null);
     const ids = Array.isArray(pds) ? pds.map((r) => r.ryft_terminal_id as string).filter(Boolean) : [];
-    if (!ids.includes(ryftTerminalId) && ids.length === 1) ryftTerminalId = ids[0];
+    if (!ryftTerminalId && ids.length === 1) ryftTerminalId = ids[0];
+    else if (ryftTerminalId && !ids.includes(ryftTerminalId) && ids.length === 1) ryftTerminalId = ids[0];
   }
+  if (!ryftTerminalId) return json({ ok: false, error: 'terminal_not_linked' }, 409);
   const opts = job.account_id ? { accountId: job.account_id } : {};
 
   // ── 2. Abort the LIVE action on the terminal ────────────────────────────────

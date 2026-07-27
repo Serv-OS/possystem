@@ -91,9 +91,22 @@ export default function PaxTerminal({ job: initialJob, terminalLabel, onComplete
   const status = job?.status ?? 'pending';
   const copy = STATUS_COPY[status] ?? STATUS_COPY.pending;
   const blocked = status === 'unknown' || (status === 'approved' && job?.needs_human);
-  // Cancel is only OFFERED while it can still be honoured. charged_at is stamped
-  // before the controller is launched, so its presence means hands off.
-  const canOfferCancel = !job?.charged_at && ['pending', 'claimed', 'tipping'].includes(status);
+  // v5.5.905 — CANCEL MUST BE AVAILABLE WHILE THE CARD PROMPT IS LIVE. It used to be hidden
+  // the instant charged_at appeared — but charged_at is stamped BEFORE the controller is
+  // launched, so the button vanished at exactly the moment staff need it: the amount is on
+  // the terminal, the customer is standing there, and nothing can call it off. That is the
+  // owner-reported "cancelling doesn't close the payment off the machine": the server-side
+  // void has been complete and deployed all along, and simply had no caller.
+  //
+  // THE SERVER IS THE AUTHORITY, not this flag. terminal-job-cancel voids the live action at
+  // the processor, then re-reads the payment session and settles from what ACTUALLY happened
+  // — a card that already paid comes back as already_captured ("refund instead"), never a
+  // false cancel. So the client offers it for every LIVE status and lets the server rule.
+  const LIVE = ['pending', 'claimed', 'tipping', 'charging_unsent', 'charging'];
+  const canOfferCancel = LIVE.includes(status) && !blocked;
+  // Once the terminal is holding a card, say so on the button — cancelling then is a real
+  // processor void, not a quiet local abort.
+  const cancelIsLive = !!job?.charged_at;
 
   const doCancel = async () => {
     setCancelBusy(true); setCancelMsg('');
@@ -102,8 +115,13 @@ export default function PaxTerminal({ job: initialJob, terminalLabel, onComplete
       // Re-read rather than assuming — we report what the server says happened.
       const fresh = await fetchJob(job.id).catch(() => null);
       if (fresh) setJob(fresh);
+    } else if (r?.error === 'already_captured' || r?.reason === 'already_captured') {
+      // The tap beat the cancel. Never imply it was called off — the money moved.
+      setCancelMsg('That card has already paid — refund it instead of cancelling.');
+      const fresh = await fetchJob(job.id).catch(() => null);
+      if (fresh) setJob(fresh);
     } else {
-      setCancelMsg(r?.reason || 'Could not cancel — the payment is already going through.');
+      setCancelMsg(r?.reason || r?.error || 'Could not cancel — check the terminal screen before retrying.');
     }
     setCancelBusy(false);
   };
