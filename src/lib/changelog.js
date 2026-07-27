@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.904', date: '27 Jul 2026', label: 'FIX — split-check card legs now actually reach the card terminal',
+    changes: [
+      'Splitting a bill and paying a portion by card sent NOTHING to the PAX terminal. A full payment creates a terminal job (the only thing the terminal app listens for); a split leg used an older direct route that creates no job — so the terminal never woke. Every split type was affected.',
+      'Split card legs now dispatch a real terminal job, exactly like a full payment: the amount appears on the terminal, the customer taps, the tip is taken ON the terminal, and the leg completes from the terminal\'s own figures.',
+      'Cancelling a split leg now cancels it ON the terminal (server-side void) instead of walking away from a live card prompt; if the card already paid it says so and tells you to refund instead.',
+      'Tills with no terminal assigned fall back to the previous behaviour, so nothing changes for them.',
+      'NEEDS A HARDWARE TEST before you rely on it — split a bill, pay one portion by card on the A50.',
+    ],
+  },
+  {
     version: '5.5.903', date: '27 Jul 2026', label: 'FIX — a gift card is put BACK on the card when a card-machine payment is declined or cancelled',
     changes: [
       'THE BUG (the last of the gift-card timing windows, after v5.5.901–902): when a bill is sent to the PAX card machine, the gift card is debited as the payment is sent — it has to be, because the terminal is handed an amount already reduced by the gift, and another till can finish the sale without this one. But if the customer\'s card was then DECLINED, they cancelled on the terminal, or it timed out, the gift-card money had already gone with no check to refund it. Narrow — the customer is stood at the terminal paying — but the balance was simply lost.',

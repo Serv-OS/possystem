@@ -7,6 +7,9 @@ import {
 } from '../lib/networkReader';
 import { getLocationProcessorInfo } from '../lib/payments/processor';
 import { chargeRyftTerminal } from '../lib/payments/ryftTerminal';
+// v5.5.904: split legs dispatch a REAL terminal job, exactly like a full payment.
+import { findPaxTerminal, dispatchTerminalJob, buildCheckKey, toMinor, getPosDeviceId,
+         pollTerminalJob, cancelTerminalJob } from '../lib/payments/terminalJobs';
 import { publishTipRequest, onCustomerTip, displayUsesScreen } from '../lib/customerDisplay';
 import { platformSupabase } from '../lib/supabase';
 import { money, currencySymbol, stripeCurrency } from '../lib/currency';
@@ -27,6 +30,16 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
   const [readerLabel, setReaderLabel] = useState('');
   const [attempt, setAttempt] = useState(0);       // v5.5.808: bump to re-run the flow (Retry)
   const pollAbortRef = useRef(false);
+  // v5.5.904 — PAX job path. legKey is minted ONCE per mount: SplitModal is given no check
+  // or table id, and portion ids ('p0','s3'…) recycle on every split at the venue, so a
+  // portion-derived key would collide two different tables' legs and trip the remembered-job
+  // ALREADY_PAID guard in terminalJobs.js. A per-mount uuid cannot collide.
+  const paxJobRef = useRef(null);
+  const legKeyRef = useRef(null);
+  if (legKeyRef.current == null) {
+    legKeyRef.current = (typeof crypto !== 'undefined' && crypto.randomUUID)
+      ? crypto.randomUUID() : `leg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  }
   const piIdRef = useRef(null);
   const readerIdRef = useRef(null);
   const platformLocRef = useRef(null);
@@ -68,6 +81,62 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
       tipSkipRef.current = () => done(0); // staff "Skip tip" button
     })();
   });
+
+  // ─── PAX terminal job branch (v5.5.904) ───────────────────────────────
+  // THE FIX: a split card leg now creates a terminal_jobs row, which is the ONLY thing
+  // paxpay's JobPoller reads. Before this, splits called chargeRyftTerminal directly (the
+  // pre-v5.5.837 REST route), so no job row existed and the terminal never woke — a full
+  // payment landed on the PAX and a split leg silently did not.
+  //
+  // NOTE: no askPortionTip here. The PAX collects the tip itself (bands come from
+  // terminal_devices.tip_config), so prompting on the customer display too would ask twice
+  // and desync the amount. askPortionTip stays on the legacy fallback below.
+  const runPaxJob = async (opsLocationId, terminal) => {
+    setState('starting');
+    setStatusMsg('Sending to the card terminal…');
+    setErrorMsg(null);
+    setReaderLabel(terminal.label || 'Card terminal');
+    try {
+      const dueMinor = toMinor(amount);
+      const checkKey = buildCheckKey({ locationId: opsLocationId, tableId: null,
+                                       sessionId: null, leg: legKeyRef.current });
+      const { job } = await dispatchTerminalJob({
+        checkKey,
+        targetTerminalId: terminal.id,
+        posDeviceId: getPosDeviceId(),
+        tipBasisMinor: dueMinor,
+        dueMinor,
+        currency: stripeCurrency(),
+        // 'pos_split_leg' is deliberately NOT 'pax_table_pay': TerminalJobReconciler filters
+        // on that source to auto-close a WHOLE check, which must never happen for one leg.
+        checkDraft: { source: 'pos_split_leg', portionLabel, totalMinor: dueMinor },
+      });
+      paxJobRef.current = job?.id || job?.jobId || null;
+      setState('collecting');
+      setStatusMsg('Ask the customer to present their card');
+      const finished = await pollTerminalJob(paxJobRef.current, {
+        onUpdate: (j) => {
+          if (j.status === 'tipping') setStatusMsg('Customer is choosing a tip…');
+          else if (j.status === 'claimed') setStatusMsg('Ask the customer to present their card');
+        },
+      });
+      if (finished?.status === 'approved' && !finished.needs_human) {
+        const tipGbp = (finished.tip_minor ?? 0) / 100;
+        portionTipRef.current = tipGbp;
+        setState('success');
+        setStatusMsg('Payment approved');
+        setTimeout(() => onComplete('card', finished.payment_session_id || null, tipGbp), 800);
+        return;
+      }
+      setState('error');
+      setErrorMsg(finished?.status === 'declined'
+        ? (finished.decline_reason ? `Declined — ${finished.decline_reason}` : 'Card declined — try another card')
+        : `Terminal did not complete (${finished?.status || 'no response'}) — check the terminal screen.`);
+    } catch (e) {
+      setState('error');
+      setErrorMsg(e?.training ? 'Training mode — no card payment sent' : (e?.message || 'Could not send to the terminal'));
+    }
+  };
 
   // ─── Ryft terminal branch (v5.5.808) ──────────────────────────────────
   const runRyftPayment = async (opsLocationId) => {
@@ -133,7 +202,20 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
         if (cancelled) return;
         processorRef.current = procInfo.processor;
         if (procInfo.processor === 'ryft') {
-          if (!startedRef.current) { startedRef.current = true; runRyftPayment(opsLocationId); }
+          if (!startedRef.current) {
+            startedRef.current = true;
+            // v5.5.904: prefer the terminal-job path (same as a full payment). Only fall
+            // back to the direct REST charge when this till has no PAX bound to it.
+            let target = null, why = null;
+            try { const r = await findPaxTerminal({ posDeviceId: getPosDeviceId() }); target = r?.terminal || null; why = r?.reason || null; }
+            catch { /* fall through to legacy */ }
+            if (cancelled) return;
+            if (target) runPaxJob(opsLocationId, target);
+            else {
+              if (why) console.warn('[split] no PAX terminal —', why);
+              runRyftPayment(opsLocationId);
+            }
+          }
           return;
         }
         const platformId = await resolvePlatformLocationId(opsLocationId);
@@ -277,6 +359,27 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
     // v5.5.808: Ryft branch — abort the in-flight charge and WAIT for the
     // cancel to be confirmed before leaving (same rule as the main checkout:
     // never walk away from a PAX that might still be live collecting).
+    // v5.5.904: a dispatched PAX job is cancelled server-side (which voids the live action
+    // at the processor); never just walk away from a terminal that may still be collecting.
+    if (paxJobRef.current) {
+      try {
+        const r = await cancelTerminalJob(paxJobRef.current);
+        if (r && r.ok === false) {
+          setState('error');
+          setErrorMsg(r.error === 'already_captured'
+            ? 'That card already paid — refund it instead of cancelling.'
+            : `Could not cancel on the terminal (${r.error || 'unknown'}) — check the terminal screen.`);
+          return;
+        }
+      } catch (e) {
+        setState('error');
+        setErrorMsg('Could not confirm the terminal cancel — check the terminal screen before retrying.');
+        return;
+      }
+      paxJobRef.current = null;
+      onBack();
+      return;
+    }
     if (processorRef.current === 'ryft') {
       try { ryftAbortRef.current?.abort(); } catch { /* */ }
       const flight = ryftFlightRef.current;
