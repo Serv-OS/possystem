@@ -20,6 +20,7 @@ import { isTrainingMode } from '../lib/trainingMode';
 import PaxTerminal from './PaxTerminal';
 import {
   findPaxTerminal, dispatchTerminalJob, buildCheckKey, toMinor, forgetJob, getPosDeviceId,
+  fetchJobs,
 } from '../lib/payments/terminalJobs';
 // (readerDisplay imports removed — cancel now lets the natural cart-change effect refresh the reader after onBack)
 
@@ -2227,13 +2228,33 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
             // card leg can be auto-refunded to its own card. The captured amount
             // per leg is base + reader tip, so the refundable amountMinor must
             // include the tip.
+            // v5.5.908 — THE SERVER ROW IS THE RECORD, NOT REACT STATE. A split leg's tip
+            // lives on terminal_jobs.tip_minor (written by terminal_commit_tip BEFORE the
+            // card is touched, and never rewritten). Unlike a whole-bill PAX payment there
+            // is NO reconciler behind a split leg (terminalJobs.js:466 excludes
+            // 'pos_split_leg'), so if the browser's copy is lost the gratuity exists
+            // nowhere on the check — money the customer paid and staff never see. Re-read
+            // every card leg's job and take the tip off the row; fall back to the value the
+            // leg handed up if we're offline.
+            const legJobIds = (portions||[]).map(p => p?.terminalJob?.jobId).filter(Boolean);
+            let jobById = new Map();
+            if (legJobIds.length) {
+              try { jobById = new Map((await fetchJobs(legJobIds)).map(j => [j.id, j])); }
+              catch (e) { console.warn('[split] leg job re-read failed, using local tips', e?.message || e); }
+            }
+            const legTip = (p) => {
+              const j = p?.terminalJob?.jobId ? jobById.get(p.terminalJob.jobId) : null;
+              if (j?.status === 'approved' && j.tip_minor != null) return Number(j.tip_minor) / 100;
+              if (p?.terminalJob?.tipMinor != null) return Number(p.terminalJob.tipMinor) / 100;
+              return Number(p?.tip) || 0;
+            };
             const paymentIntents = (portions||[])
               .filter(p => p?.method === 'card' && p.paymentIntentId)
-              .map(p => ({ id: p.paymentIntentId, amountMinor: Math.round(((p.total||0)+(p.tip||0))*100) }));
+              .map(p => ({ id: p.paymentIntentId, amountMinor: Math.round(((p.total||0)+legTip(p))*100) }));
             // v5.5.332: sum the reader-collected tips across portions so the
             // closed check records the real tip (reports + reconciliation),
             // matching the main checkout flow. grand = base bill + total tips.
-            const tipTotal = +((portions||[]).reduce((s,p)=>s+(Number(p.tip)||0),0)).toFixed(2);
+            const tipTotal = +((portions||[]).reduce((s,p)=>s+legTip(p),0)).toFixed(2);
             // v5.5.808: stamp which processor took the card legs — refunds route
             // by check.processor, so a Ryft split must not default to 'stripe'.
             onComplete({ method:'split', tip:tipTotal, grand:total+tipTotal, portions, paymentIntents, stripePaymentIntentId: paymentIntents[0]?.id || null, processor: cardProcessor || 'stripe', printReceipt,

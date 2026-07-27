@@ -129,12 +129,34 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
           else if (j.status === 'claimed') setStatusMsg('Ask the customer to present their card');
         },
       });
-      if (finished?.status === 'approved' && !finished.needs_human) {
+      // v5.5.908 — APPROVED MEANS THE MONEY MOVED. `needs_human` is ADVISORY: the settle
+      // RPC only sets it on an amount/session mismatch AFTER it has already resolved the
+      // job to 'approved' (20260729_terminal_jobs_ryft_settle.sql:145-156) — the card was
+      // captured for due + tip either way. Treating it as a failure dead-ended the leg into
+      // "Terminal did not complete", so the portion never marked paid and the gratuity the
+      // customer typed on the PAX was discarded. Retrying then throws ALREADY_PAID, so the
+      // only way to finish the bill was to re-tender that portion by another method — which
+      // books tip 0. Whole-bill PAX payments never hit this because they have a second,
+      // server-driven writer (TerminalJobReconciler → store/index.js:4483); a split leg is
+      // excluded from it (terminalJobs.js:466 RECONCILABLE_SOURCES) and has no backstop.
+      if (finished?.status === 'approved') {
         const tipGbp = (finished.tip_minor ?? 0) / 100;
         portionTipRef.current = tipGbp;
         setState('success');
-        setStatusMsg('Payment approved');
-        setTimeout(() => onComplete('card', finished.payment_session_id || null, tipGbp), 800);
+        setStatusMsg(finished.needs_human
+          ? 'Approved — flagged for review (Back Office → Unresolved payments)'
+          : 'Payment approved');
+        // transaction_id, NOT payment_session_id: terminal-job-status does not return
+        // payment_session_id (its COLS list, index.ts:38-43), so this was ALWAYS undefined
+        // — every PAX split leg recorded a null card reference, dropped out of the
+        // refundable-legs filter (CheckoutModal.jsx:2231) and could never be refunded to
+        // its own card. Matches what the whole-bill path stores (store/index.js:4484).
+        setTimeout(() => onComplete('card', finished.transaction_id || null, tipGbp, {
+          jobId:       finished.id,
+          tipMinor:    finished.tip_minor ?? 0,
+          chargeMinor: finished.charge_minor ?? null,
+          needsHuman:  !!finished.needs_human,
+        }), 800);
         return;
       }
       setState('error');
@@ -740,7 +762,7 @@ function PortionTender({ portion, portionNum, total, canTakeCash = true, onCompl
         <SplitCardTerminal
           amount={portion.total}
           portionLabel={`Portion ${portionNum} — ${portion.label}`}
-          onComplete={(method, piId, tip) => onComplete(method, null, null, piId, tip)}
+          onComplete={(method, piId, tip, leg) => onComplete(method, null, null, piId, tip, null, leg)}
           onBack={() => setScreen('method')}
         />
       )}
@@ -867,8 +889,11 @@ export default function SplitModal({ items, total, covers, canTakeCash = true, o
   // card) so the closed check can auto-refund each card leg to its own card.
   // v5.5.902: `giftCard` is the STAGED card for a gift-tendered portion (nothing debited
   // yet). CheckoutModal commits every staged leg when the split closes.
-  const handlePortionPaid = (idx, method, tendered, change, paymentIntentId = null, tip = 0, giftCard = null) => {
-    setPortions(p => p.map((portion, i) => i===idx ? { ...portion, paid:true, method, tendered, change, paymentIntentId: paymentIntentId || null, tip: tip || 0, giftCard: giftCard || null } : portion));
+  // v5.5.908: `terminalJob` is the settled PAX job behind a card leg ({ jobId, tipMinor,
+  // chargeMinor, needsHuman }). Carried so the close can re-read the tip from the SERVER
+  // row rather than trusting this browser copy — a split leg has no reconciler behind it.
+  const handlePortionPaid = (idx, method, tendered, change, paymentIntentId = null, tip = 0, giftCard = null, terminalJob = null) => {
+    setPortions(p => p.map((portion, i) => i===idx ? { ...portion, paid:true, method, tendered, change, paymentIntentId: paymentIntentId || null, tip: tip || 0, giftCard: giftCard || null, terminalJob: terminalJob || null } : portion));
     setTenderingIdx(null);
   };
 
@@ -1166,7 +1191,7 @@ export default function SplitModal({ items, total, covers, canTakeCash = true, o
               portionNum={tenderingIdx+1}
               total={total}
               canTakeCash={canTakeCash}
-              onComplete={(method, tendered, change, piId, tip, staged) => handlePortionPaid(tenderingIdx, method, tendered, change, piId, tip, staged)}
+              onComplete={(method, tendered, change, piId, tip, staged, leg) => handlePortionPaid(tenderingIdx, method, tendered, change, piId, tip, staged, leg)}
               onBack={() => setTenderingIdx(null)}
             />
           )}
