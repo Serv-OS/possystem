@@ -1,7 +1,10 @@
 package co.posup.rpos.paxpay;
 
 import android.content.Intent;
+import android.graphics.Color;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.PowerManager;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.Gravity;
@@ -124,6 +127,18 @@ public class MainActivity extends ComponentActivity {
      * exactly one place ({@link #setScreen}). See the safety note on {@link #armScreensaver}.
      */
     private static final long SCREENSAVER_IDLE_MS = 5_000L;
+    /**
+     * v2.0-rc11 — DEEP SLEEP. How long the screensaver image may sit on the panel before the
+     * terminal genuinely sleeps: black overlay + zero window brightness + FLAG_KEEP_SCREEN_ON
+     * CLEARED so the OS display timeout can power the panel down.
+     *
+     * WHY THIS EXISTS: onCreate used to set FLAG_KEEP_SCREEN_ON unconditionally and never clear
+     * it, so these terminals ran their backlight 24/7 and the screensaver merely painted a
+     * STATIC image over a permanently-lit panel — which is precisely how an A920 got burn-in
+     * ("screen bleed") and was written off. A payment terminal must not sleep mid-transaction;
+     * it must absolutely sleep when nothing has happened for minutes.
+     */
+    private static final long SCREEN_SLEEP_AFTER_MS = 3L * 60 * 1000;
 
     /**
      * How long an IDLE-FIRST terminal waits before trying to recover a lost session on its own.
@@ -199,6 +214,9 @@ public class MainActivity extends ComponentActivity {
     private ScreensaverCache ssCache;
     private Runnable idleTick;
     private boolean screensaverShowing;
+    private Runnable sleepTick;          // screensaver → deep sleep countdown
+    private boolean deepAsleep;          // panel is dark; any touch or inbound job wakes it
+    private View sleepOverlay;           // plain black view over the screensaver image
 
     // =========================================================================================
     // Lifecycle
@@ -207,7 +225,9 @@ public class MainActivity extends ComponentActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        // A payment terminal must not dim or sleep mid-transaction.
+        // A payment terminal must not dim or sleep mid-transaction — but it MUST sleep when it
+        // has been idle for minutes (v2.0-rc11). This flag is now cleared in enterDeepSleep()
+        // and restored in wakeScreen(); see SCREEN_SLEEP_AFTER_MS for the burn-in history.
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
         prefs = new Prefs(this);
@@ -824,14 +844,20 @@ public class MainActivity extends ComponentActivity {
      */
     private void armScreensaver(long delayMs) {
         disarmScreensaver();
+        // v2.0-rc11 — NO IMAGE STILL MEANS SLEEP. Every early return below used to leave the
+        // terminal awake forever: a venue that never uploaded idle artwork (or whose download
+        // hadn't landed) kept FLAG_KEEP_SCREEN_ON lit 24/7 on whatever was last drawn. That is
+        // the burn-in path that cost an A920. The screensaver IMAGE is optional; sleeping is not.
         if (!settings.idleEnabled || settings.idleImageUrl == null) {
-            diag.event("screensaver not armed: " + (settings.idleEnabled
-                    ? "no image url configured" : "disabled in Back Office"));
+            diag.event("screensaver not armed (" + (settings.idleEnabled
+                    ? "no image url configured" : "disabled in Back Office") + ") — sleeping anyway");
+            armDeepSleep();
             return;
         }
         if (!ssCache.isCached(settings.idleImageUrl)) {
             // Not an error: the download is in flight and refreshSettings re-arms when it lands.
-            diag.event("screensaver not armed: image not cached yet");
+            diag.event("screensaver not armed: image not cached yet — sleeping anyway");
+            armDeepSleep();
             return;
         }
         idleTick = () -> {
@@ -856,6 +882,109 @@ public class MainActivity extends ComponentActivity {
             ui.removeCallbacks(idleTick);
             idleTick = null;
         }
+        disarmDeepSleep();
+    }
+
+    // =========================================================================================
+    // Deep sleep (v2.0-rc11) — the panel actually goes dark, and comes back on a job
+    // =========================================================================================
+
+    /** Countdown from "screensaver visible" to "panel dark". Re-armed on every wake. */
+    private void armDeepSleep() {
+        disarmDeepSleep();
+        sleepTick = () -> { sleepTick = null; enterDeepSleep(); };
+        ui.postDelayed(sleepTick, SCREEN_SLEEP_AFTER_MS);
+    }
+
+    private void disarmDeepSleep() {
+        if (sleepTick != null) {
+            ui.removeCallbacks(sleepTick);
+            sleepTick = null;
+        }
+    }
+
+    /**
+     * Go dark. Three independent measures, because no single one is guaranteed on a locked-down
+     * PAX build: (1) a BLACK overlay so no static artwork is being burned into the panel even if
+     * the backlight stays on, (2) window brightness to zero, (3) FLAG_KEEP_SCREEN_ON cleared so
+     * the OS display timeout is finally allowed to run.
+     *
+     * SAFETY: reuses the SAME predicate as the screensaver itself (posJobBusyReason) at FIRE
+     * time, so a payment claimed during the countdown cancels the sleep rather than darkening a
+     * live card prompt.
+     */
+    private void enterDeepSleep() {
+        if (deepAsleep) return;
+        String busy = posJobBusyReason();
+        if (busy != null) { diag.event("deep sleep suppressed — " + busy); return; }
+        // NOTE: deliberately does NOT require screensaverShowing — a terminal with no idle
+        // artwork must still go dark. posJobBusyReason() already guarantees an idle surface is
+        // what is on screen, which is the condition that actually matters for safety.
+
+        deepAsleep = true;
+        sleepOverlay = new View(this);
+        sleepOverlay.setBackgroundColor(Color.BLACK);
+        // Consume touches so the tap that WAKES the terminal cannot fall through to whatever is
+        // underneath; dismissScreensaver() then does the reveal.
+        sleepOverlay.setOnClickListener(v -> dismissScreensaver());
+        content.addView(sleepOverlay, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+
+        WindowManager.LayoutParams lp = getWindow().getAttributes();
+        lp.screenBrightness = 0f;                 // darkest this window may ask for
+        getWindow().setAttributes(lp);
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        diag.event("deep sleep — panel dark, keep-screen-on released");
+    }
+
+    /**
+     * Bring the panel back. Called by touch, by any screen transition, and — the one that
+     * matters for "wake up when a till sends a payment" — by beginJob().
+     *
+     * The JobPoller keeps running while the screen is off (it is only stopped in onDestroy), so
+     * a job still lands here; this method is what makes it VISIBLE. Uses a wake lock with
+     * ACQUIRE_CAUSES_WAKEUP because window flags alone do not turn a screen back on for an
+     * activity that is already resumed.
+     */
+    private void wakeScreen(String reason) {
+        disarmDeepSleep();
+        if (!deepAsleep) return;
+        deepAsleep = false;
+        diag.event("wake — " + reason);
+
+        if (sleepOverlay != null) {
+            content.removeView(sleepOverlay);
+            sleepOverlay = null;
+        }
+        WindowManager.LayoutParams lp = getWindow().getAttributes();
+        lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE;   // back to system
+        getWindow().setAttributes(lp);
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+
+        if (Build.VERSION.SDK_INT >= 27) {
+            setTurnScreenOn(true);
+            setShowWhenLocked(true);
+        }
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+                | WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD);
+        try {
+            PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+            if (pm != null) {
+                PowerManager.WakeLock wl = pm.newWakeLock(
+                        PowerManager.SCREEN_BRIGHT_WAKE_LOCK | PowerManager.ACQUIRE_CAUSES_WAKEUP,
+                        "paxpay:wake");
+                wl.acquire(3_000L);               // auto-released; FLAG_KEEP_SCREEN_ON holds it after
+            }
+        } catch (Exception e) {
+            diag.event("wake lock failed: " + e.getMessage());   // flags above still did their part
+        }
+    }
+
+    /** Any physical touch anywhere keeps the terminal awake and restarts both countdowns. */
+    @Override
+    public void onUserInteraction() {
+        super.onUserInteraction();
+        if (deepAsleep) wakeScreen("user interaction");
     }
 
     private void showScreensaver() {
@@ -866,6 +995,7 @@ public class MainActivity extends ComponentActivity {
         }
         diag.event("screensaver shown");
         screensaverShowing = true;
+        armDeepSleep();                    // v2.0-rc11: the image must not sit here for hours
         // Added OVER the home screen rather than replacing it, so dismissing is instant and the
         // home screen never has to be rebuilt. content is a FrameLayout, so this stacks on top.
         content.addView(new ScreensaverScreen(this, bmp, this::dismissScreensaver),
@@ -876,6 +1006,7 @@ public class MainActivity extends ComponentActivity {
 
     private void dismissScreensaver() {
         if (!screensaverShowing) return;
+        wakeScreen("touch");               // v2.0-rc11: undo deep sleep before revealing anything
         screensaverShowing = false;
         diag.event("screensaver dismissed by touch");
         // Remove the overlay only — index 0 is the idle surface underneath, untouched.
@@ -1056,6 +1187,10 @@ public class MainActivity extends ComponentActivity {
      *   below still goes showTip → onTipChosen → commitTip → launchCharge, in that order. ★
      */
     private void beginJob(TerminalJob job) {
+        // v2.0-rc11: a till just sent a payment to this terminal — light it up BEFORE anything is
+        // drawn, so the customer sees the amount rather than a dark panel. Polling continues
+        // while asleep (JobPoller is only stopped in onDestroy), which is what makes this work.
+        wakeScreen("job " + job.jobId);
         // JobPoller stops itself the moment it claims, so there is nothing to tear down here.
         activeJob = job;
         activeLocalId = null;
@@ -1498,10 +1633,12 @@ public class MainActivity extends ComponentActivity {
         // construction. A payment screen cannot be covered by a screensaver because by the time
         // it is on display the timer no longer exists. See armScreensaver().
         disarmScreensaver();
+        wakeScreen("screen change");    // v2.0-rc11: never draw a screen onto a dark panel
         // Leaving any screen stops the open-tables poll; showTables() re-arms it. (The getParent()
         // check in the tick is the backstop; removing here stops it promptly.)
         tablesPoll.removeCallbacksAndMessages(null);
         screensaverShowing = false;
+        sleepOverlay = null;            // content.removeAllViews() below drops it with everything else
         content.removeAllViews();
         content.addView(view, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));

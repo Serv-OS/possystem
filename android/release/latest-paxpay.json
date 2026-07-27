@@ -1,7 +1,7 @@
 {
-  "versionCode": 16,
-  "versionName": "2.0-rc10",
+  "versionCode": 17,
+  "versionName": "2.0-rc11",
   "apkUrl": "https://tbetcegmszzotrwdtqhi.supabase.co/storage/v1/object/public/app-releases/paxpay.apk",
   "mandatory": false,
-  "notes": "rc10 \u2014 readable type on the Open Tables screen: table number is now the card headline (22sp bold, was 9.5sp micro-print) and the server/time footer bumped to 13sp. Owner-reported: staff could not read table numbers at arm's length on the A50."
+  "notes": "rc11 \u2014 terminals now SLEEP. FLAG_KEEP_SCREEN_ON was set at startup and never cleared, so the panel ran lit 24/7 and the screensaver only painted a static image over a permanently-on screen \u2014 that is how an A920 got burn-in. Now: idle -> screensaver -> after 3 min the panel goes black (zero brightness + keep-screen-on released so the OS timeout can power it down). Terminals with NO idle image sleep too (previously they never slept at all). Wakes instantly on a job sent from a till (polling continues while dark) or on any touch."
 }
