@@ -367,6 +367,11 @@ export function TablesSurface() {
 // ══════════════════════════════════════════════════════════════════════════════
 // KDS Surface — redesigned
 // ══════════════════════════════════════════════════════════════════════════════
+// v5.5.913: mods arrive as plain strings from the till, but as OBJECTS from the catering
+// release path. Rendering an object as a React child throws and the wall screen dies into an
+// error page that survives reload — so coerce at every read site.
+const modText = (m) => String(m?.name ?? m?.label ?? m ?? '').trim();
+
 export function KDSSurface() {
   const { kdsTickets: storeTickets, bumpTicket, showToast, deviceConfig } = useStore();
 
@@ -441,9 +446,15 @@ export function KDSSurface() {
           setLiveTickets(prev => prev ? prev.filter(t => t.id !== payload.new.id) : prev);
           setHeldTickets(prev => prev.filter(t => t.id !== payload.new.id));
         } else if (payload.new.status === 'held') {
+          // v5.5.913: the INSERT handler filters by centre but this one never did, so ANY
+          // per-item tick anywhere in the venue appended a foreign ticket to this screen.
+          // The bumped branch above stays unguarded on purpose — it still needs to clean up
+          // rows that leaked in before this fix.
+          if (centreId && updated.centreId !== centreId) return;
           setLiveTickets(prev => prev ? prev.filter(t => t.id !== payload.new.id) : prev);
           setHeldTickets(prev => { const ex=prev.some(t=>t.id===updated.id); return ex?prev.map(t=>t.id===updated.id?updated:t):[...prev,updated]; });
         } else if (payload.new.status === 'pending') {
+          if (centreId && updated.centreId !== centreId) return;
           setHeldTickets(prev => prev.filter(t => t.id !== payload.new.id));
           setLiveTickets(prev => prev ? (prev.some(t=>t.id===updated.id)?prev.map(t=>t.id===updated.id?updated:t):[...prev,updated]) : [updated]);
         } else {
@@ -541,6 +552,38 @@ export function KDSSurface() {
 
   const stations = ['all', ...new Set(tickets.map(t=>t.centreId||t.station||'pc1').filter(Boolean))];
   const displayed = tickets.filter(t => filter==='all' || (t.centreId||t.station||'pc1')===filter);
+
+  // ── RUNNING ROLL-UP — everything this screen still has to make (v5.5.913) ──────
+  // A chef looking at 20 tickets cannot see that eight of them want fries. This totals
+  // the outstanding work into one line: "12 Margherita, 8 Fries".
+  //
+  // Aggregated over `displayed` — the EXACT array the cards render from — so the total can
+  // never disagree with what is on screen. Deliberately TICKET-level, not item-level: the
+  // production centre lives on the ticket (kds_tickets.centre_id), and catering tickets are
+  // written with centre_id null and items that carry no centre at all, so an item-level test
+  // would show an empty summary on the very screen that has that food.
+  const rollUp = (() => {
+    const map = new Map();
+    for (const tk of displayed) {
+      let items = tk.items || [];
+      if (typeof items === 'string') { try { items = JSON.parse(items); } catch { items = []; } }
+      const fired = tk.firedCourses || [0, 1];
+      for (const it of items) {
+        if (it._bumped) continue;                          // already made — never say cook it again
+        if (it.voided) continue;
+        if (!fired.includes(it.course ?? 1)) continue;      // held course: not to be fired yet
+        const name = String(it.name || 'Item');
+        const mods = (Array.isArray(it.mods) ? it.mods : (it.mods ? [it.mods] : []))
+          .map(modText).filter(Boolean);
+        const key = name + '||' + mods.slice().sort().join('~');
+        const qty = Number(it.qty) || 0;                   // sum QTY, never row count — one line can be 12
+        const row = map.get(key);
+        if (row) row.qty += qty; else map.set(key, { key, name, mods, qty });
+      }
+    }
+    return [...map.values()].sort((a,b) => b.qty - a.qty || a.name.localeCompare(b.name));
+  })();
+  const rollUpTotal = rollUp.reduce((sum, r) => sum + r.qty, 0);
   const counts = {
     urgent:  displayed.filter(t=>urgency(getLiveMinutes(t))==='urgent').length,
     warning: displayed.filter(t=>urgency(getLiveMinutes(t))==='warning').length,
@@ -581,7 +624,7 @@ export function KDSSurface() {
         <div style={{ flex:1, minWidth:0 }}>
           <div style={{ fontSize:16, fontWeight:700, color:item._bumped?'var(--t4)':'var(--t1)', lineHeight:1.3, textDecoration:item._bumped?'line-through':'' }}>{item.name}</div>
           {(Array.isArray(item.mods)?item.mods:(item.mods?[item.mods]:[])).map((mod,mi)=>(
-            <div key={mi} style={{ fontSize:13, color:'var(--acc)', fontWeight:600, marginTop:3, lineHeight:1.4 }}>{mod}</div>
+            <div key={mi} style={{ fontSize:13, color:'var(--acc)', fontWeight:600, marginTop:3, lineHeight:1.4 }}>{modText(mod)}</div>
           ))}
         </div>
       </div>
@@ -607,7 +650,7 @@ export function KDSSurface() {
     return (
       <div style={{ background:'var(--bg1)', border:cardBorder, borderRadius:14, overflow:'hidden',
         boxShadow:urg==='urgent'?`0 0 24px ${u.color}33`:'none', opacity:isHeld?0.92:1,
-        display:'flex', flexDirection:'column', maxHeight:'calc(100vh - 140px)' }}>
+        display:'flex', flexDirection:'column', maxHeight:'calc(100vh - 190px)' }}>
 
         <div style={{ padding:'14px 16px 12px', borderBottom:'1px solid var(--bdr)', flexShrink:0, display:'flex', alignItems:'flex-start', gap:12 }}>
           <div style={{ flex:1, minWidth:0 }}>
@@ -692,7 +735,19 @@ export function KDSSurface() {
   };
 
   return (
-    <div style={{ display:'flex', flex:1, flexDirection:'column', overflow:'hidden', background:'var(--bg)' }}>
+    // v5.5.913 — WHY height:100% AND minHeight:0 ARE LOAD-BEARING.
+    // On a paired kitchen screen App.jsx renders KDSSurface as a DIRECT child of #root, and
+    // #root is display:block (globals.css). `flex:1` is inert without a flex parent, so this
+    // div's height resolved to auto and grew to the full height of all the tickets. The board
+    // below (flex:1, overflowY:auto) was therefore exactly as tall as its own content and NEVER
+    // had anything to scroll — the excess spilled onto #root{overflow:hidden} and was hard
+    // clipped. Measured on a 1024x600 screen with 40 tickets: 2044px of tickets unreachable,
+    // no scrollbar anywhere, no input could ever get to them.
+    // height:100% resolves against #root's own height:100% on that path, AND against the
+    // stretched flex parent on the in-app path — so it is correct under both, which is why the
+    // fix belongs here rather than at the three call sites.
+    <div style={{ display:'flex', flex:1, flexDirection:'column', height:'100%', minHeight:0,
+                  overflow:'hidden', background:'var(--bg)' }}>
       <div style={{ height:52, display:'flex', alignItems:'center', gap:14, padding:'0 18px', borderBottom:'1px solid var(--bdr)', background:'var(--bg1)', flexShrink:0 }}>
         <div>
           <div style={{ fontSize:14, fontWeight:800, color:'var(--t1)', letterSpacing:'-.01em' }}>{kdsName}</div>
@@ -721,6 +776,30 @@ export function KDSSurface() {
           ))}
         </div>
       </div>
+
+      {/* Running roll-up band. Fixed height + no wrap + overflow hidden so it can never grow
+          and push tickets off a screen nobody can scroll. Hidden entirely when there is
+          nothing to make, and while History is open. */}
+      {!showHistory && rollUp.length>0 && (
+        <div style={{ flexShrink:0, height:46, display:'flex', alignItems:'center', gap:8,
+          padding:'0 14px', borderBottom:'1px solid var(--bdr)', background:'var(--bg2)', overflow:'hidden' }}>
+          <div style={{ flexShrink:0, fontSize:10, fontWeight:800, letterSpacing:'.08em', color:'var(--t4)' }}>
+            TO MAKE · {rollUpTotal}
+          </div>
+          <div style={{ flex:1, display:'flex', gap:8, overflow:'hidden' }}>
+            {rollUp.map(r => (
+              <div key={r.key} style={{ display:'flex', alignItems:'center', gap:7, flexShrink:0,
+                padding:'5px 11px', borderRadius:9, background:'var(--bg3)', border:'1px solid var(--bdr)' }}>
+                <span style={{ fontSize:17, fontWeight:800, color:'var(--acc)' }}>{r.qty}</span>
+                <span style={{ fontSize:14, fontWeight:700, color:'var(--t1)', whiteSpace:'nowrap' }}>{r.name}</span>
+                {r.mods.length>0 && (
+                  <span style={{ fontSize:11, fontWeight:600, color:'var(--t4)', whiteSpace:'nowrap' }}>{r.mods.join(' · ')}</span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {showHistory?(
         <div style={{ flex:1, overflowY:'auto', padding:14 }}>

@@ -7,6 +7,18 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.913', date: '27 Jul 2026', label: 'KDS — tickets past the bottom of the screen were unreachable, plus a running "to make" total',
+    changes: [
+      'ON A KITCHEN SCREEN, ANY TICKET BELOW THE FOLD WAS LOST. Not hard to reach — genuinely unreachable. There was no scrollbar and no amount of swiping helped. The board was built to scroll, but on a paired kitchen display it was sitting in a container with no height of its own, so it simply grew to the full height of every ticket and the screen chopped off whatever did not fit. Measured on a 1024x600 screen with 40 tickets: over 2,000 pixels of tickets with no way to see them. On a busy service that is orders the kitchen never knew existed.',
+      'One line fixes it, and it is now correct on both a dedicated kitchen screen and the in-app view. Individual tickets were never the problem — a long ticket already scrolled inside its own card.',
+      'NEW: A RUNNING "TO MAKE" TOTAL ALONG THE TOP. A chef looking at twenty tickets cannot see that eight of them want fries. The screen now totals everything still outstanding into one line — "12 Margherita, 8 Fries, 5 Wings" — so you can see the shape of the work, not just the queue. Same items with the same modifiers add up together, and it counts quantities, so a single line asking for twelve shows as twelve.',
+      'IT COUNTS THE RIGHT THINGS, WHICH IS THE WHOLE POINT. Anything already ticked off is excluded, so it never tells you to cook something twice. Courses being held back are excluded until they are fired — otherwise the kitchen would start desserts alongside mains. And it is built from exactly the tickets on that screen, so the total can never disagree with what is in front of you. Each station sees only its own work.',
+      'ALSO FIXED — STATIONS WERE SEEING EACH OTHER\'S TICKETS. New tickets were correctly filtered to the right station, but any later change to a ticket was not, so ticking one item off in the kitchen could make that ticket appear on the bar screen. The station counts along the top have been quietly wrong because of it.',
+      'ALSO FIXED — A CATERING ORDER COULD KILL THE SCREEN OUTRIGHT. Modifiers arrive in a different shape from catering than from the till, and the screen could not render that shape: it crashed to an error page, and reloading crashed it again, permanently, until someone cleared the order from another device.',
+      'READY TO TEST: load a kitchen screen with more tickets than fit and scroll to the bottom. The "TO MAKE" line should match what you can count on the tickets. NOTE — a Sunmi screen needs a FULL app force-stop, not a refresh, to pick this up.',
+    ],
+  },
+  {
     version: '5.5.912', date: '27 Jul 2026', label: 'KIOSK — the customer now picks their table from the ones that actually exist',
     changes: [
       'A KIOSK ORDER COULD NAME A TABLE THAT DOES NOT EXIST. The kiosk asked the customer to type a table number on a keypad that only offered digits — no letters. A venue with a bar and a restaurant has a B5 and a T5, so someone sat at B5 could only ever type "5", which matches neither. The order then carried a table label nothing in the system recognised, and staff had to guess which "5" the food belonged to.',
