@@ -30,6 +30,7 @@ import KioskProductModal from './KioskProductModal';
 import { t, setLang, useKioskLang, LANGUAGES, getLanguageMeta } from '../lib/i18n';
 import { displayName, kitchenOverride, receiptOverride } from '../lib/itemDisplay';
 import { fetchCustomerByPhone } from '../lib/customerLookup';
+import { fetchKioskTables, groupKioskTables } from '../lib/kioskTables';
 import { stageGiftCard, commitGiftCard, giftCardCheckRecord } from '../lib/giftCommit';
 import { money, stripeCurrency } from '../lib/currency';
 import { getLocationProcessor } from '../lib/payments/processor';
@@ -1005,7 +1006,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
         if (t === 'dineIn' && (tableMode === 'enter' || tableMode === 'either')) setScreen('tableNumber');
         else setScreen('menu');
       }} onBack={() => setScreen('attract')} onCancel={resetSession} />}
-      {screen === 'tableNumber' && <ScreenTableNumber brandColor={brandColor} value={tableNumber} onChange={setTableNumber} onContinue={() => setScreen('menu')} onBack={() => setScreen('orderType')} onCancel={resetSession} />}
+      {screen === 'tableNumber' && <ScreenTableNumber brandColor={brandColor} locationId={locationId} value={tableNumber} onChange={setTableNumber} onContinue={() => setScreen('menu')} onBack={() => setScreen('orderType')} onCancel={resetSession} />}
       {screen === 'menu' && <ScreenMenu brandColor={brandColor} brandAccent={brandAccent} categories={visibleCategories} items={visibleItems} selectedCategoryId={selectedCategoryId} onSelectCategory={setSelectedCategoryId} onSelectItem={(item) => { setSelectedItem(item); setScreen('item'); }} cartItemCount={cartItemCount} subtotal={subtotal} onCart={() => setScreen('cart')} orderType={orderType} activeMenuId={activeMenuId} banner={bannerFor('menu')} allergenFilter={allergenFilter} onShowAllergenPicker={() => setShowAllergenPicker(true)} eightySixIds={eightySixIds} dailyCounts={dailyCounts} onBack={() => setScreen('orderType')} onCancel={resetSession} />}
       {screen === 'item' && selectedItem && (
         <KioskProductModal
@@ -1490,11 +1491,98 @@ function ScreenLanguagePicker({ brandColor, currentLang, onPick, onClose }) {
 // centered on the full viewport. Back button is absolute-positioned
 // so it doesn't displace the centered content column.
 // ============================================================
-function ScreenTableNumber({ brandColor, value, onChange, onContinue, onBack, onCancel }) {
+function ScreenTableNumber({ brandColor, value, onChange, onContinue, onBack, onCancel, locationId }) {
   const [val, setVal] = useState(value || '');
   const press = (k) => setVal(v => k === '⌫' ? v.slice(0, -1) : (v.length < 4 ? v + k : v));
   const submit = () => { if (val.trim()) { onChange(val.trim()); onContinue(); } };
   const canSubmit = !!val.trim();
+
+  // v5.5.912 — SHOW THE TABLES THAT ACTUALLY EXIST.
+  // The keypad below is digits-only, so at a venue with a bar AND a restaurant a
+  // customer at "B5" could only ever type "5" — a label no table has. Staff then had to
+  // guess between B5 and T5. The labels themselves are already unambiguous (Back Office
+  // refuses duplicates across a location), so the fix is simply to show them.
+  //
+  // The keypad is KEPT as the fallback, never removed: if the venue has configured no
+  // tables, or the list cannot be read, a customer standing at the kiosk must still be
+  // able to order. Losing the picker is an inconvenience; losing the order is not.
+  const [tableList, setTableList] = useState(null);   // null = still loading
+  useEffect(() => {
+    let alive = true;
+    fetchKioskTables(locationId)
+      .then(r => { if (alive) setTableList(r.ok && r.tables.length ? r : { tables: [], sectionLabels: {} }); })
+      .catch(() => { if (alive) setTableList({ tables: [], sectionLabels: {} }); });
+    return () => { alive = false; };
+  }, [locationId]);
+
+  const pickTable = (label) => { onChange(label); onContinue(); };
+
+  if (tableList && tableList.tables.length) {
+    const groups = groupKioskTables(tableList.tables, tableList.sectionLabels);
+    return (
+      <div style={fullScreen()}>
+        <button
+          onClick={onBack}
+          aria-label={t('common.back')}
+          style={{ ...iconBtn(), position: 'absolute', top: 20, left: 22, zIndex: 5 }}
+        >{'←'}</button>
+        <div style={{ position: 'absolute', top: 20, right: 22, zIndex: 5 }}>
+          <CancelOrderBtn onClick={onCancel} />
+        </div>
+
+        <div style={{
+          flex: 1, padding: 'clamp(74px, 9vh, 104px) 6vw clamp(28px, 4vh, 44px)',
+          width: '100%', maxWidth: 1100, marginLeft: 'auto', marginRight: 'auto',
+          boxSizing: 'border-box', overflowY: 'auto',
+        }}>
+          <div style={{ paddingBottom: 'clamp(18px, 2.6vh, 30px)', textAlign: 'center' }}>
+            <div style={{
+              fontSize: 'clamp(34px, 5.4vw, 56px)', fontWeight: 800,
+              letterSpacing: '-0.01em', color: brandColor, lineHeight: 1.15,
+            }}>{t('tableNumber.title')}</div>
+          </div>
+
+          {groups.map((g, gi) => (
+            <div key={g.sectionId || gi} style={{ marginBottom: 'clamp(18px, 2.4vh, 28px)' }}>
+              {g.label && (
+                <div style={{
+                  fontSize: 'clamp(16px, 1.9vw, 22px)', fontWeight: 700, color: 'var(--kFgMuted)',
+                  textTransform: 'uppercase', letterSpacing: '0.06em',
+                  margin: '0 0 clamp(10px, 1.4vh, 16px) 4px',
+                }}>{g.label}</div>
+              )}
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fill, minmax(clamp(120px, 15vw, 180px), 1fr))',
+                gap: 'clamp(10px, 1.4vw, 18px)',
+              }}>
+                {g.tables.map(tb => (
+                  <button
+                    key={tb.id}
+                    onClick={() => pickTable(tb.label)}
+                    style={{
+                      background: 'var(--kSurfaceRaised)',
+                      border: `1.5px solid ${val === tb.label ? brandColor : 'var(--kBorder2)'}`,
+                      borderRadius: 20,
+                      padding: 'clamp(22px, 2.8vw, 34px) 10px',
+                      fontSize: 'clamp(22px, 2.6vw, 32px)',
+                      fontWeight: 700,
+                      color: 'var(--kFg)',
+                      cursor: 'pointer',
+                      fontFamily: 'inherit',
+                      minHeight: 'clamp(84px, 10vh, 118px)',
+                      wordBreak: 'break-word',
+                    }}
+                  >{tb.label}</button>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={fullScreen()}>
       {/* Back button: absolute-positioned so it doesn't displace centered content */}

@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.912', date: '27 Jul 2026', label: 'KIOSK — the customer now picks their table from the ones that actually exist',
+    changes: [
+      'A KIOSK ORDER COULD NAME A TABLE THAT DOES NOT EXIST. The kiosk asked the customer to type a table number on a keypad that only offered digits — no letters. A venue with a bar and a restaurant has a B5 and a T5, so someone sat at B5 could only ever type "5", which matches neither. The order then carried a table label nothing in the system recognised, and staff had to guess which "5" the food belonged to.',
+      'THE TABLES THEMSELVES WERE NEVER THE PROBLEM. Back Office already refuses to let you create two tables with the same name anywhere in a venue, so B5 and T5 have always been distinct and unambiguous. The kiosk simply never showed the customer what the real names were. Now it lists them as large touch buttons — grouped under their area name (Bar, Restaurant) where the venue has set areas up, and sorted naturally so T2 comes before T10 rather than after it.',
+      'THE KEYPAD IS STILL THERE AS THE FALLBACK, DELIBERATELY. If a venue has not set its floor plan up yet, or the list cannot be loaded for any reason, the old keypad appears exactly as before. A customer standing at a kiosk must never be blocked from ordering because a table lookup failed — losing the picker is an inconvenience, losing the order is not.',
+      'No database change and no new setup. It reads the same floor plan the tills use.',
+    ],
+  },
+  {
     version: '5.5.911', date: '27 Jul 2026', label: 'GIFT CARDS CAN NOW BE SOLD ON RYFT, NOT JUST STRIPE',
     changes: [
       'A RYFT VENUE COULD NOT SELL A GIFT CARD AT ALL. The gift page had exactly one payment route — hand off to Stripe\'s hosted checkout page — and it refused any venue without a Stripe account with "Payments not configured for this venue". Ryft venues were simply shut out.',
