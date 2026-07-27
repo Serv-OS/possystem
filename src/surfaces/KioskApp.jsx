@@ -749,6 +749,17 @@ export default function KioskApp({ kioskId, onUnpair }) {
         // POS expects mods as array of { label, price, groupLabel }
         mods: Array.isArray(l.modsArray) ? l.modsArray : [],
         cat: l.item.cat,
+        // KIOSK NEVER HOLDS COURSES. A kiosk order is paid and gone — there is no
+        // server to fire course 2, so every line must be produced in one go. Stamped
+        // at SOURCE (same three fields online sets, OnlineCheckout.jsx:316-318) so it
+        // holds no matter which downstream path picks the order up: routeKioskOrderPrints
+        // already forces course 1, but fireScheduledOrder (store/index.js:2165) replays a
+        // scheduled order through the normal walk-in sendToKitchen, where
+        // computeFiredOnSend honours per-line courses and would hold anything above the
+        // lowest occupied course.
+        status: 'sent',
+        fired: true,
+        course: 1,
       }));
       // 1. closed_checks
       const { error: e1 } = await supabase.from('closed_checks').insert({

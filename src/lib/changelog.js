@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.907', date: '27 Jul 2026', label: 'KIOSK — never holds a course, and why a paid check can still print a kitchen ticket',
+    changes: [
+      'KIOSK ORDERS NOW FIRE EVERYTHING AT ONCE, STAMPED AT SOURCE. Online ordering was fixed for this a while back — every line it books is marked course 1, already fired. The kiosk was booking its lines with no course on them at all, so each downstream path had to guess. The main kitchen-routing path guessed right (it forces course 1), but the scheduled-order replay path does not: it runs a kiosk order back through the normal till "send to kitchen" logic, which honours courses and holds anything above the lowest one. A kiosk customer has already paid and walked away — there is no server standing there to fire course 2 — so the food would simply sit on hold. Kiosk lines now carry course 1 / fired / sent from the moment the order is created, so no path can hold them.',
+      'WHY TWO CASHED-OFF CHECKS PRINTED A KITCHEN TICKET AFTERWARDS — this is v5.5.792 working as designed, not a fault. When a check is paid, any line the kitchen has not actually been told to make yet (never sent, or sent but sitting on a held course) is fired in one combined send at that moment. It exists because counter staff regularly take the money without ever tapping Send, and the check used to close paid with no kitchen ticket at all. On both of those checks a course 2 was still on hold, so paying released it. The ticket printed roughly two seconds after the check closed, which is the giveaway.',
+    ],
+  },
+  {
     version: '5.5.906', date: '27 Jul 2026', label: 'FIX — split card legs failed with "…are required" on the first hardware test',
     changes: [
       'Yesterday\'s split-to-terminal work (v5.5.904) fell at the last step: the send was missing one required field (the check reference), so the server rejected it and the till showed "Payment failed — job_id, check_key, target_terminal_id, closed_check_id and check_draft are required". Nothing reached the terminal.',
