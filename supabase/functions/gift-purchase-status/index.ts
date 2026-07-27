@@ -30,18 +30,22 @@ Deno.serve(async (req) => {
   let body: Record<string, unknown>;
   try { body = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
 
-  const sessionId = body.session_id as string;
-  const companyId = body.company_id as string;
+  const sessionId  = body.session_id as string | undefined;
+  // v5.5.911: a Ryft purchase has NO Stripe session id — it is looked up by our own
+  // purchase id instead. The company_id fence below is unchanged and still applies to
+  // both, so a bare purchase_id can never read another tenant's row.
+  const purchaseId = body.purchase_id as string | undefined;
+  const companyId  = body.company_id as string;
 
-  if (!sessionId) return json({ error: 'session_id required' }, 400);
+  if (!sessionId && !purchaseId) return json({ error: 'session_id or purchase_id required' }, 400);
   if (!companyId) return json({ error: 'company_id required' }, 400);
 
-  const { data: purchase } = await platformAdmin
+  let q = platformAdmin
     .from('gift_card_purchases')
     .select('id, status, amount_minor, currency, recipient_name, recipient_email, code_last4, delivery_type, sender_name')
-    .eq('stripe_session_id', sessionId)
-    .eq('company_id', companyId)
-    .maybeSingle();
+    .eq('company_id', companyId);
+  q = purchaseId ? q.eq('id', purchaseId) : q.eq('stripe_session_id', sessionId!);
+  const { data: purchase } = await q.maybeSingle();
 
   if (!purchase) {
     return json({ error: 'Purchase not found', status: 'not_found' }, 404);

@@ -35,6 +35,15 @@ export default function RyftPaymentForm({
   merchantName = '',            // venue name shown on the Apple/Google Pay sheet
   wallets = true,               // show Apple/Google Pay buttons when supported
   payLabel,
+  // v5.5.911 — a session the SERVER already created. The gift-card purchase page needs
+  // this: its page is public (anon key, no user JWT), so it cannot call
+  // ryft-create-payment-session itself, and the amount + purchase_id must be set
+  // server-side where a customer cannot forge them. Every existing caller omits it and
+  // takes the unchanged create-it-here path below.
+  session: presetSession = null,
+  // The raw session id is engineering detail. Useful on an internal till, wrong on a
+  // customer-facing page — off unless a caller asks for it.
+  showSessionId = true,
   onSuccess,
   onError,
 }) {
@@ -76,7 +85,9 @@ export default function RyftPaymentForm({
       try {
         const [Ryft, s] = await Promise.all([
           loadRyft(),
-          createRyftSession({ amountMinor, currency, locationId, captureMethod, customerEmail, closedCheckId, channel }),
+          presetSession
+            ? Promise.resolve(presetSession)
+            : createRyftSession({ amountMinor, currency, locationId, captureMethod, customerEmail, closedCheckId, channel }),
         ]);
         if (!mounted.current) return;
         setSession({ sessionId: s.sessionId, status: s.status });
@@ -167,7 +178,7 @@ export default function RyftPaymentForm({
       >
         {phase === 'paying' ? 'Processing…' : phase === 'done' ? 'Paid ✓' : (payLabel || `Pay ${amountLabel}`)}
       </button>
-      {session?.sessionId && <div style={{ fontSize: 10.5, color: 'var(--t4)', fontFamily: 'var(--font-mono)' }}>Ryft session {session.sessionId}</div>}
+      {showSessionId && session?.sessionId && <div style={{ fontSize: 10.5, color: 'var(--t4)', fontFamily: 'var(--font-mono)' }}>Ryft session {session.sessionId}</div>}
     </form>
   );
 }

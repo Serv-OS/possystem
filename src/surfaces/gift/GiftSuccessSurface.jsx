@@ -18,12 +18,16 @@ export default function GiftSuccessSurface({ location }) {
   const [purchase, setPurchase] = useState(null);
   const [error, setError] = useState('');
 
-  const sessionId = new URLSearchParams(window.location.search).get('session_id');
+  const _qs = new URLSearchParams(window.location.search);
+  const sessionId = _qs.get('session_id');
+  // v5.5.911: Stripe returns its own session id; a Ryft purchase comes back with OUR
+  // purchase id instead. Either identifies the row.
+  const purchaseId = _qs.get('purchase_id');
 
   useEffect(() => {
-    if (!sessionId) {
+    if (!sessionId && !purchaseId) {
       setStatus('error');
-      setError('No session ID — you may have arrived here by mistake.');
+      setError('No order reference — you may have arrived here by mistake.');
       return;
     }
 
@@ -34,7 +38,8 @@ export default function GiftSuccessSurface({ location }) {
     const poll = async () => {
       try {
         const data = await callGiftPublic('gift-purchase-status', {
-          session_id: sessionId,
+          session_id: sessionId || undefined,
+          purchase_id: purchaseId || undefined,
           company_id: location.company_id,
         });
         if (cancelled) return;
@@ -73,7 +78,7 @@ export default function GiftSuccessSurface({ location }) {
 
     poll();
     return () => { cancelled = true; };
-  }, [sessionId, location.company_id]);
+  }, [sessionId, purchaseId, location.company_id]);
 
   return (
     <div style={{

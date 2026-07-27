@@ -11,6 +11,7 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import { callGiftPublic, formatAmount, PRESET_AMOUNTS, buildGiftTheme, fetchGiftBranding, giftUrl } from './giftHelpers';
+import RyftPaymentForm from '../../components/RyftPaymentForm';
 
 export default function GiftPurchaseSurface({ location }) {
   const [giftBranding, setGiftBranding] = useState(null);
@@ -37,6 +38,9 @@ export default function GiftPurchaseSurface({ location }) {
   // State
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  // v5.5.911: a Ryft venue pays IN-PAGE — Ryft has no hosted checkout page to redirect
+  // to. The server hands back a payment session it created; this holds it.
+  const [ryftSession, setRyftSession] = useState(null);
 
   // Resolve the amount
   const amountMinor = useMemo(() => {
@@ -76,8 +80,12 @@ export default function GiftPurchaseSurface({ location }) {
         cancel_url: giftUrl('/gift'),
       };
       const data = await callGiftPublic('gift-checkout-session', body);
-      if (data.checkout_url) {
-        window.location.href = data.checkout_url;
+      // v5.5.911 — the SERVER decides the processor, and answers in one of two shapes.
+      if (data.processor === 'ryft' && data.clientSecret) {
+        setRyftSession(data);     // stay on the page; the embedded form takes it from here
+        setLoading(false);
+      } else if (data.checkout_url) {
+        window.location.href = data.checkout_url;      // Stripe — unchanged
       } else {
         throw new Error('No checkout URL returned');
       }
@@ -230,8 +238,44 @@ export default function GiftPurchaseSurface({ location }) {
           )}
         </Section>
 
+        {/* ── Ryft: pay in-page (v5.5.911) ────────────────
+            Ryft has no hosted checkout page to redirect to, so once the server has
+            created the payment session the customer pays right here. onSuccess ONLY
+            navigates — the card is issued by ryft-webhook on PaymentSession.captured,
+            never from this callback, which the browser could assert. */}
+        {ryftSession && (
+          <div style={{
+            background: t.card, border: `1px solid ${t.border}`, borderRadius: t.radius,
+            padding: '20px 24px', marginBottom: 16,
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+              <span style={{ fontSize: 14, fontWeight: 600, color: t.textMuted }}>Paying</span>
+              <span style={{ fontSize: 22, fontWeight: 800 }}>{formatAmount(amountMinor)}</span>
+            </div>
+            <RyftPaymentForm
+              session={ryftSession}
+              amountMinor={amountMinor}
+              currency={ryftSession.currency || 'gbp'}
+              locationId={location?.id}
+              channel="online"
+              merchantName={t.displayName || location?.name || ''}
+              customerEmail={senderEmail.trim()}
+              showSessionId={false}
+              payLabel={`Pay ${formatAmount(amountMinor)}`}
+              onSuccess={() => {
+                // giftUrl() adds its own ?loc= for the multi-location case, so append
+                // with the right separator rather than a second '?'.
+                const base = giftUrl('/gift/success');
+                window.location.href =
+                  `${base}${base.includes('?') ? '&' : '?'}purchase_id=${encodeURIComponent(ryftSession.purchase_id)}`;
+              }}
+              onError={(e) => setError(e?.message || 'Payment failed — please try again')}
+            />
+          </div>
+        )}
+
         {/* ── Summary + buy button ───────────────────────── */}
-        {amountMinor > 0 && (
+        {!ryftSession && amountMinor > 0 && (
           <div style={{
             background: t.card, border: `1px solid ${t.border}`, borderRadius: t.radius,
             padding: '20px 24px', marginBottom: 16,

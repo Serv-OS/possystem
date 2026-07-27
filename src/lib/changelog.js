@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.911', date: '27 Jul 2026', label: 'GIFT CARDS CAN NOW BE SOLD ON RYFT, NOT JUST STRIPE',
+    changes: [
+      'A RYFT VENUE COULD NOT SELL A GIFT CARD AT ALL. The gift page had exactly one payment route — hand off to Stripe\'s hosted checkout page — and it refused any venue without a Stripe account with "Payments not configured for this venue". Ryft venues were simply shut out.',
+      'RYFT CUSTOMERS NOW PAY ON THE PAGE. Ryft has no hosted checkout page to send anyone to, so the card details are taken in place using the same secure embedded form that online ordering, QR ordering and catering already use. Nothing about the Stripe route changes: a Stripe venue still redirects exactly as before.',
+      'THE VENUE\'S PROCESSOR IS DECIDED ON THE SERVER, NOT IN THE BROWSER. That way the amount and the order reference come from us and cannot be altered by someone editing the request. If the processor cannot be determined for any reason, it falls back to Stripe and behaves exactly as it does today — a lookup blip must never take a venue\'s gift sales offline.',
+      'THE PART THAT MATTERS MOST — THE CARD ACTUALLY GETS ISSUED. A gift card is created by a message from the payment provider confirming the money was taken, never by the customer\'s browser saying so. Stripe had that wiring; Ryft had none. Adding the payment form without it would have taken the customer\'s money and issued nothing. The Ryft side now has the same trigger, it refuses to issue a card worth more than was actually captured, and if the issuing step itself fails the order is left ready for the Manual Fulfil button in Back Office rather than lost.',
+      'The confirmation page now works for both — a Stripe order is found by its Stripe reference, a Ryft order by our own order reference. Each is still fenced to the venue that owns it.',
+      'NEEDS BEFORE IT WORKS LIVE: one migration on the platform database and three edge functions deployed (gift-checkout-session, ryft-webhook, gift-purchase-status). Edge functions do NOT deploy with the app. Also confirm the Ryft dashboard is subscribed to the payment-captured event — that message is what issues the card.',
+    ],
+  },
+  {
     version: '5.5.910', date: '27 Jul 2026', label: 'FIX — "This bill has already been paid" on a bill nobody had paid',
     changes: [
       'SENDING A NEW BILL TO THE CARD MACHINE COULD BE REFUSED AS ALREADY PAID. Staff would send, say, £14.00 to the A50 on a fresh order and get "This bill has already been paid on the card machine — do NOT take payment again". Nothing was wrong with the order and no card had been touched.',

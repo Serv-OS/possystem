@@ -98,6 +98,59 @@ function cardOfSession(d: any): { card: Record<string, unknown> | null; authCode
 // refund, reflects it in the matching closed_check (Ops DB) — so a refund issued
 // in the Ryft dashboard shows up in our reports, and a captured payment with no
 // closed_check stays visible as an orphan (matched_closed_check = null).
+// ── GIFT CARD FULFILMENT ─────────────────────────────────────────────────────
+// v5.5.911 — the gift card is issued by a WEBHOOK, never by the browser. On Stripe
+// that trigger is stripe-webhook-connect's `checkout.session.completed`; Ryft had no
+// equivalent, which is precisely why gift purchases were Stripe-only. Wiring the Ryft
+// purchase flow WITHOUT this would charge the customer and issue nothing.
+//
+// Deliberately NOT called from the client's success callback: that value is asserted by
+// the browser, and a second automatic caller would race this one — gift-fulfill's
+// idempotency is a read-then-insert, not a claim, so two callers can double-issue.
+// This webhook is signature-verified and deduped on event_id upstream, so it is the one
+// trustworthy trigger.
+async function maybeFulfilGift(evt: any) {
+  const ps: any = evt?.data ?? {};
+  const meta = ps?.metadata ?? {};
+  if (meta.type !== 'gift_card_purchase' || !meta.purchase_id) return;
+
+  const { data: p } = await platformAdmin
+    .from('gift_card_purchases')
+    .select('id, amount_minor, status')
+    .eq('id', meta.purchase_id)
+    .maybeSingle();
+  if (!p) { console.error('[ryft-webhook] gift purchase not found', meta.purchase_id); return; }
+  if (p.status === 'fulfilled') return;                       // already issued — nothing to do
+
+  // AMOUNT FENCE. The session is created server-side, but this costs nothing and closes
+  // the whole class: never issue a card worth more than the money actually captured.
+  const captured = Math.round(Number(ps?.amount ?? 0));
+  if (!captured || captured < Number(p.amount_minor)) {
+    console.error('[ryft-webhook] gift amount mismatch — NOT issuing', p.id, captured, p.amount_minor);
+    return;
+  }
+
+  await platformAdmin.from('gift_card_purchases')
+    .update({ status: 'paid', ryft_payment_session_id: ps.id ?? null })
+    .eq('id', p.id);
+
+  try {
+    const r = await fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/gift-fulfill`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''}`,
+      },
+      body: JSON.stringify({ purchase_id: p.id }),
+    });
+    if (!r.ok) console.error('[ryft-webhook] gift-fulfill failed', p.id, await r.text());
+  } catch (e) {
+    // The purchase is left at 'paid', so Back Office -> Gift cards -> Manual Fulfill can
+    // finish it. Never throw: a 500 here makes Ryft retry the whole event.
+    console.error('[ryft-webhook] gift-fulfill error', p.id, (e as Error).message);
+  }
+}
+
 async function reconcilePayment(evt: any, type: string) {
   const dataPs: any = evt?.data ?? {};
   const psId: string | undefined = dataPs.id;
@@ -340,6 +393,10 @@ Deno.serve(async (req) => {
     } else if (/^PaymentSession\.(captured|refunded|voided)$/.test(type)) {
       // Reconcile the money movement to our records (ledger + closed_check).
       await reconcilePayment(evt, type);
+      // v5.5.911: a captured payment carrying gift metadata must ISSUE THE CARD.
+      // This is the Ryft twin of stripe-webhook-connect's checkout.session.completed
+      // branch. Without it a Ryft venue takes the customer's money and issues nothing.
+      if (type === 'PaymentSession.captured') await maybeFulfilGift(evt);
     } else if (/^(PaymentSession|Person)\./.test(type)) {
       // Other lifecycle events (approved/declined, person updates) — just touch
       // last_webhook_at so we can see the account is active. Best-effort.

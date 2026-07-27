@@ -87,6 +87,98 @@ Deno.serve(async (req) => {
     return json({ error: `Amount exceeds maximum` }, 400);
   }
 
+  // ── PROCESSOR GATE (v5.5.911) ──────────────────────────────────────────────
+  // Gift cards were Stripe-only: the lookup just below hard-requires a
+  // merchant_stripe_accounts row, so a Ryft venue could never sell one. Ryft has no
+  // hosted checkout page, so its customers pay IN-PAGE via the embedded SDK — the same
+  // component online / QR / catering already use.
+  //
+  // The decision is made HERE, on the server, not in the browser: the amount and the
+  // purchase_id then come from us and cannot be forged by a customer editing a request.
+  //
+  // FAIL-SAFE: anything other than a definitive 'ryft' — lookup error, missing row,
+  // column unset — falls through to the Stripe path, which behaves exactly as it always
+  // has. A blip must never take a working venue's gift sales offline.
+  let processor = 'stripe';
+  try {
+    const { data: locRow } = await platformAdmin
+      .from('locations').select('payment_processor').eq('id', location_id).maybeSingle();
+    if (locRow?.payment_processor === 'ryft') processor = 'ryft';
+  } catch { /* stay on stripe */ }
+
+  if (processor === 'ryft') {
+    const { data: mra } = await platformAdmin
+      .from('merchant_ryft_accounts')
+      .select('ryft_account_id, charges_enabled')
+      .eq('location_id', location_id)
+      .maybeSingle();
+    if (!mra?.ryft_account_id || mra.charges_enabled === false) {
+      return json({ error: 'Payments not configured for this venue' }, 400);
+    }
+
+    const { data: rPurchase, error: rErr } = await platformAdmin
+      .from('gift_card_purchases')
+      .insert({
+        company_id, location_id, amount_minor: amt,
+        currency: config.currency || 'gbp',
+        sender_name, sender_email, sender_phone: sender_phone || null,
+        recipient_name, recipient_email, message: message || null,
+        delivery_type, status: 'pending', processor: 'ryft',
+      })
+      .select('id')
+      .single();
+    if (rErr) return json({ error: `Failed to create purchase record: ${rErr.message}` }, 500);
+
+    // Reuse ryft-create-payment-session verbatim — sub-account routing and the platform
+    // markup live there, and duplicating fee maths is how the two drift apart. It is
+    // auth-gated, and this page is public (anon key, no user JWT), which is exactly why
+    // the call is made server-to-server with the service-role key.
+    try {
+      const r = await fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/ryft-create-payment-session`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''}`,
+        },
+        body: JSON.stringify({
+          location_id,
+          amount_minor: amt,
+          currency: config.currency || 'gbp',
+          channel: 'online',
+          capture_method: 'automatic',
+          customer_email: sender_email,
+          // THIS METADATA IS THE WHOLE FULFILMENT CONTRACT. ryft-webhook reads it on
+          // PaymentSession.captured and calls gift-fulfill. Change these two keys and a
+          // paying customer silently receives no card.
+          metadata: { type: 'gift_card_purchase', purchase_id: rPurchase.id },
+        }),
+      });
+      const sess = await r.json();
+      if (!r.ok || !sess?.clientSecret) throw new Error(sess?.error || 'Could not start Ryft payment');
+
+      await platformAdmin.from('gift_card_purchases')
+        .update({ ryft_payment_session_id: sess.sessionId })
+        .eq('id', rPurchase.id);
+
+      return json({
+        processor: 'ryft',
+        purchase_id: rPurchase.id,
+        sessionId: sess.sessionId,
+        clientSecret: sess.clientSecret,
+        publicKey: sess.publicKey,
+        accountId: sess.accountId,
+        status: sess.status,
+        currency: config.currency || 'gbp',
+        amount_minor: amt,
+      });
+    } catch (e) {
+      // Never strand a pending purchase row for a payment that was never started —
+      // it would sit in Back Office looking like a customer who paid and got nothing.
+      await platformAdmin.from('gift_card_purchases').delete().eq('id', rPurchase.id);
+      return json({ error: `Payment setup failed: ${(e as Error).message}` }, 500);
+    }
+  }
+
   // Look up the merchant's Stripe account for this location
   const { data: msa } = await platformAdmin
     .from('merchant_stripe_accounts')
@@ -125,6 +217,7 @@ Deno.serve(async (req) => {
       message: message || null,
       delivery_type,
       status: 'pending',
+      processor: 'stripe',
     })
     .select('id')
     .single();
