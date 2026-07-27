@@ -1,3 +1,60 @@
+# Session — 27 Jul 2026 (v5.5.903) — the PAX cancel window: a dead terminal job gives the gift card back
+
+## Context
+Closes the "⚠ Remaining" bullet logged by v5.5.902 below: **PAX cancel-after-dispatch**. The PAX path
+debits at DISPATCH by design (the terminal is handed a due already net of the gift, and
+`TerminalJobReconciler` can close the check from any till without the modal — a commit-time debit
+would be skipped and the discount given away). The cost was that a job which then declined /
+cancelled / timed out had already taken the balance with no check for `refundCheck` to reverse.
+
+## What was done
+- **NEW `reverseGiftCard()` in `lib/giftCommit.js`** — the mirror of `commitGiftCard`, and now the
+  ONE `gift-reverse-redeem` request shape. NEVER THROWS; a null `idempotency_key` (failed commit =
+  nothing debited) is skipped rather than 404'd. `store.refundCheck` was refactored onto it — it had
+  been the only caller, and a second hand-rolled copy is how two callers drift apart.
+- **`CheckoutModal.reverseDispatchedGift()`** — `paxGiftRef` holds what `startTerminalJob` debited.
+  Fired from `PaxTerminal`'s `onFailed` (server-SETTLED declined/cancelled/expired) and again from
+  its `onBack` (same states only — the retry staff get if the first attempt hit a network blip).
+  Un-stages the card **synchronously first** so a cash tender landing mid-reversal can't book the leg
+  AND hand the balance back. `onComplete` (approved) drops the handle — that debit is paid for.
+- **`store.clearTable` → `_reverseTerminalJobGift(jobId, claimedKeys, reason)`** — cashing a table off
+  while a job is live already cancelled the job (v5.5.851); it now reverses the gift the job debited,
+  read from `check_draft.giftCard` via the fenced `fetchJob`. Two hard gates: only on `r.ok` (a
+  server-CONFIRMED cancel is the only proof no card was charged), and never for a key the check being
+  recorded already claims.
+- **A successful reversal retires the check id.** The redeem row survives its own reversal, so
+  re-applying the same card under the same check id derives the same `giftcommit:<check>:<card>` key,
+  comes back `already_applied` and discounts the bill while debiting NOTHING. A failed reversal does
+  the opposite — keeps the id and puts the leg back on the bill, so value the customer has already
+  spent is still honoured (and lands on the check, where a refund can reverse it).
+- **Bug found in passing (money):** `giftCardCheckRecord` only fell back to `staged.commit_key`, so
+  re-staging an ALREADY-COMMITTED record (the failed-reversal path, and the documented "legacy
+  consume-at-apply shape") wrote `idempotency_key: null` — the check showed the discount with nothing
+  for a refund to reverse. Fallback chain now matches `commitGiftCard`'s.
+
+## Verified
+- `npm run build` clean. 16 logic checks on the pure helpers pass: request shape byte-identical to the
+  old `refundCheck` body, null-key skip, no-token, 404, transport blow-up, `already_reversed` on a
+  double call, the claimed-key guard (none / same leg / different card / split legs / failed leg), and
+  the re-stage pass-through keeping its ledger key.
+- **NOT live-tested** — local is mock, edge fns unreachable, and this needs real PAX hardware. Peter to
+  test on a real till: apply a gift card → send to the PAX → **decline or cancel on the terminal** (the
+  balance must come straight back and the card come off the bill), then re-apply and pay for real (the
+  second redemption must actually debit); and send to the PAX then cash the table off instead.
+
+## ⚠ Remaining / known edges
+- **Modal closed (×) while the job is still LIVE, and it later dies on the terminal.** No reversal
+  fires — nothing is watching the job, and cancelling on × would break the deliberate v5.5.862 design
+  where jobs survive a modal close and the reconciler finishes them. Covered only if the table is
+  later cashed off (`clearTable`). A background sweep for dead jobs holding a gift leg would close it.
+- **A dispatch whose response was lost after the gift committed** is deliberately NOT reversed: the job
+  row may exist and still be paid. The staged card stays put, so a retry or a cash tender re-commits
+  idempotently onto the same check id and books it correctly.
+- Counter/walk-in sales have no `clearTable` equivalent; the modal's `onFailed` / `onBack` cover them.
+- `gift-redeem` still needs its v5.5.901 redeploy (see below) — unchanged by this session.
+
+---
+
 # Session — 27 Jul 2026 (v5.5.902) — the POS half: gift cards redeem at COMMIT (till + splits)
 
 ## Context
@@ -55,9 +112,8 @@ reversal. Ported the v5.5.901 `lib/giftCommit.js` pattern to the till.
   server-derived key. The client is safe either way (the stable `commit_key` minted at apply is the
   key against the old function) — EXCEPT that split legs then key on the client key rather than
   `<check>:<portion>`, which is still unique per leg, so no collision either way.
-- **PAX cancel-after-dispatch**: if a job is cancelled/declined after dispatch, the gift is already
-  debited with no check. Much narrower than the old apply-time window (the customer is at the
-  terminal paying) but not zero — a reversal on `onFailed` would close it.
+- ~~**PAX cancel-after-dispatch**~~ — **DONE in v5.5.903** (section above): a settled declined/
+  cancelled/expired job, and a confirmed cancel from `clearTable`, now reverse the debit.
 - **Partial gift on a split portion still marks the portion fully paid** (v5.5.199 behaviour,
   deliberately untouched here). The uncollected remainder is at least now visible on the check.
 

@@ -9,7 +9,7 @@ import { operatorSwitchPatch, logoutPatch } from '../lib/cartHold';
 import { kitchenOverride, receiptOverride } from '../lib/itemDisplay';
 import { upsertMenuItem, upsertFloorTable, deleteFloorTable, insertKDSTicket, insertClosedCheck, upsertClosedCheck, toggle86DB, getNextOrderRefLocal, updateClosedCheckRefunds, upsertStockLevel, deleteStockLevel, decrementStockRPC, restoreStockRPC, upsertModifierGroup, deleteModifierGroup } from '../lib/db';
 import { isSessionClosed } from '../sync/sessionClosure';
-import { markJobReconciled, closeTerminalSession, recallJob, forgetJob, cancelTerminalJob, buildCheckKey } from '../lib/payments/terminalJobs';
+import { markJobReconciled, closeTerminalSession, recallJob, forgetJob, cancelTerminalJob, buildCheckKey, fetchJob } from '../lib/payments/terminalJobs';
 import { printService } from '../lib/printer';
 import { hubrisePushStock, isHubriseConnected, hubrisePushStatus, isHubriseAutoReceipt } from '../lib/hubrise';
 import { buildChannelCloseFields } from '../lib/channelMoney';
@@ -19,7 +19,7 @@ import { setTrainingMode as applyTrainingFlag, isTrainingMode } from '../lib/tra
 import { getDeliveryQuote, recordDeliverySurcharge } from '../lib/delivery/quoteService';
 import { dispatchDelivery, sendDeliveryTrackingSMS } from '../lib/delivery/dispatch';
 import { STALE_ORDER_FLOOR_MS } from '../sync/staleness';
-import { giftRecordFrom, giftLegs } from '../lib/giftCommit';
+import { giftRecordFrom, giftLegs, reverseGiftCard } from '../lib/giftCommit';
 import { waitlistSlice } from './waitlistSlice';
 
 // ── Payment-intent normaliser ────────────────────────────────────────────────
@@ -1357,8 +1357,25 @@ export const useStore = create((set, get) => ({
       const _key = buildCheckKey({ locationId: _locId, tableId, sessionId: _sess?.id });
       const _handle = recallJob(_key);
       if (_handle?.jobId) {
-        cancelTerminalJob(_handle.jobId)
-          .then(r => { if (!r?.ok) console.warn('[clearTable] terminal job not cancellable:', r?.reason || r?.status); })
+        const _jobId = _handle.jobId;
+        // v5.5.903: that job may have DEBITED A GIFT CARD when it was dispatched — the
+        // PAX path commits at dispatch, not at close (CheckoutModal.startTerminalJob).
+        // Cancelling it leaves the debit with no check to live on, so it has to go back
+        // on the card. EXCEPT where the check we are recording instead legitimately
+        // claims the same leg (staff backed out to cash, and the idempotent re-commit
+        // booked it here): reversing that one would hand the customer the goods AND
+        // their balance back.
+        const _claimedKeys = giftLegs({ giftCard: giftRecordFrom(paymentInfo) })
+          .map(g => g?.idempotency_key).filter(Boolean);
+        cancelTerminalJob(_jobId)
+          .then(r => {
+            // ONLY a server-confirmed cancel proves no card was charged. A refusal
+            // (ALREADY_CAPTURED, or mid-charge) means the sale may still settle and be
+            // closed by the reconciler WITH that gift leg recorded on it — never
+            // reverse on a refusal, or the card is credited for a check that kept it.
+            if (!r?.ok) { console.warn('[clearTable] terminal job not cancellable:', r?.reason || r?.status); return undefined; }
+            return get()._reverseTerminalJobGift(_jobId, _claimedKeys, 'Card machine payment cancelled at the till');
+          })
           .catch(() => {});
         forgetJob(_key);
       }
@@ -4583,6 +4600,58 @@ export const useStore = create((set, get) => ({
     }
   },
 
+  /**
+   * v5.5.903 — put a terminal job's DISPATCH-TIME gift-card debit back on the card.
+   *
+   * The PAX / send-to-terminal path debits the gift card as the job is dispatched rather
+   * than at close, because the check can be closed from any till by TerminalJobReconciler
+   * without the checkout modal (v5.5.902). The cost of that is this: a job that never
+   * completes has already taken the balance, and with no check written there is nothing
+   * for refundCheck to reverse. This is the undo.
+   *
+   * CALL ONLY WITH A JOB PROVEN DEAD — a server-confirmed cancel, or a settled
+   * declined/cancelled/expired status. A live job may still be paid, and the reconciler
+   * would then close it with this exact leg on the check.
+   *
+   * @param {string} jobId
+   * @param {string[]} claimedKeys idempotency keys the check being recorded instead already
+   *        claims — those legs are accounted for and must NOT be reversed.
+   * @param {string} reason        stamped on the gift-card ledger row.
+   */
+  _reverseTerminalJobGift: async (jobId, claimedKeys = [], reason) => {
+    if (!jobId || !supabase) return;
+    if (isTrainingMode()) return;   // TRAINING MODE: nothing real was ever debited
+    try {
+      // The job row is the record of what was debited — check_draft.giftCard is written
+      // at dispatch precisely so a device without the modal can still read (and now
+      // reverse) it. The POS has no direct SELECT on terminal_jobs; fetchJob is fenced.
+      const job = await fetchJob(jobId).catch(() => null);
+      const leg = job?.check_draft?.giftCard || null;
+      // No key = the commit failed = nothing was debited (giftCardCheckRecord nulls it),
+      // so there is nothing to restore and a reversal would 404.
+      if (!leg?.card_id || !leg?.idempotency_key) return;
+      if (claimedKeys.includes(leg.idempotency_key)) return;
+      const token = await ensureAuthToken();
+      if (!token) { console.warn('[reverseTerminalJobGift] skipped — no auth token'); return; }
+      const r = await reverseGiftCard(leg, {
+        functionsUrl: `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`,
+        token,
+        locationId: getActiveLocationSync(),
+        reason: reason || 'Card machine payment cancelled',
+        staffId: get().staff?.id || null,
+      });
+      if (r.ok && !r.skipped) {
+        console.info('[reverseTerminalJobGift] gift card reversed:', r.status, 'restored:', r.restored);
+        get().showToast?.('Gift card balance restored — the card machine payment was cancelled.', 'info');
+      } else if (!r.ok) {
+        console.warn('[reverseTerminalJobGift] gift reversal failed:', r.error);
+        get().showToast?.('Could not restore a gift card from the cancelled card-machine payment — check the balance in Back Office.', 'error');
+      }
+    } catch (e) {
+      console.warn('[reverseTerminalJobGift] gift reversal failed:', e?.message || e);
+    }
+  },
+
   // Redeem a held promo code against a recorded check — atomic + race-safe server-side, bound to the
   // order id. Fire-and-forget: validate already confirmed eligibility at apply time; never blocks a sale.
   // v5.5.896: loyalty rewards redeem AT COMMIT, exactly like promo codes. The checkout tap
@@ -4912,31 +4981,19 @@ export const useStore = create((set, get) => ({
           const token = await ensureAuthToken();
           if (!token) { console.warn('[refundCheck] gift reversal skipped — no auth token'); return; }
           for (const leg of legsToReverse) {
-            try {
-              const res = await fetch(
-                `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/gift-reverse-redeem`,
-                {
-                  method: 'POST',
-                  headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-                  body: JSON.stringify({
-                    card_id: leg.card_id,
-                    original_idempotency_key: leg.idempotency_key,
-                    reason: `POS refund: ${reason || 'refund'}`,
-                    staff_id: manager?.id || null,
-                    location_id: getActiveLocationSync(),
-                  }),
-                }
-              );
-              const j = await res.json().catch(() => ({}));
-              if (res.ok) {
-                console.info('[refundCheck] gift card reversed:', j.status || 'ok', 'restored:', j.restored);
-              } else {
-                console.warn('[refundCheck] gift reversal HTTP error:', res.status, j.error || '');
-              }
-            } catch (e) {
-              // One bad leg must not strand the others.
-              console.warn('[refundCheck] gift reversal failed for leg:', e?.message || e);
-            }
+            // v5.5.903: one request shape, shared with the PAX cancel path — this used to
+            // be the only gift-reverse-redeem caller, and a second hand-rolled copy is
+            // exactly how two callers drift apart. reverseGiftCard NEVER throws, so one
+            // bad leg still cannot strand the others.
+            const r = await reverseGiftCard(leg, {
+              functionsUrl: `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`,
+              token,
+              locationId: getActiveLocationSync(),
+              reason: `POS refund: ${reason || 'refund'}`,
+              staffId: manager?.id || null,
+            });
+            if (r.ok) console.info('[refundCheck] gift card reversed:', r.status || 'ok', 'restored:', r.restored);
+            else console.warn('[refundCheck] gift reversal failed for leg:', r.error);
           }
         } catch (e) {
           console.warn('[refundCheck] gift reversal failed:', e?.message || e);

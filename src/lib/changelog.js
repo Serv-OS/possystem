@@ -7,6 +7,19 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.903', date: '27 Jul 2026', label: 'FIX — a gift card is put BACK on the card when a card-machine payment is declined or cancelled',
+    changes: [
+      'THE BUG (the last of the gift-card timing windows, after v5.5.901–902): when a bill is sent to the PAX card machine, the gift card is debited as the payment is sent — it has to be, because the terminal is handed an amount already reduced by the gift, and another till can finish the sale without this one. But if the customer\'s card was then DECLINED, they cancelled on the terminal, or it timed out, the gift-card money had already gone with no check to refund it. Narrow — the customer is stood at the terminal paying — but the balance was simply lost.',
+      'FIXED: a card-machine payment that comes back declined, cancelled or timed out now puts the gift-card balance straight back on the card, and takes the card off the bill so staff can apply it again to whatever they take instead. Staff see "Gift card balance restored".',
+      'Cashing a table off by another tender while a payment is still sitting on the card machine does the same: the job is cancelled and any gift card it debited is restored — unless the check being closed is itself recording that gift card, in which case it stays where it belongs.',
+      'It is only ever restored where the card machine PROVABLY took nothing. A payment that may have gone through is never reversed — the sale is left to complete and close normally, so a customer can never end up with both the goods and their balance back.',
+      'If the balance cannot be put back (network down), the gift card is left applied to the bill instead of vanishing, so the customer still gets the value they have already paid — and staff are told.',
+      'Restoring a balance and re-applying the same card on the same bill now takes the money properly the second time (it would previously have been treated as the same redemption and taken nothing).',
+      'Also fixed: a gift card re-applied to a bill after a failed reversal was recorded on the check without its ledger reference, so refunding that check could not put the money back. It now always carries it.',
+      'Training tills still never touch a real balance.',
+    ],
+  },
+  {
     version: '5.5.902', date: '27 Jul 2026', label: 'FIX — the till now spends a gift card when the check is PAID, not when staff apply it',
     changes: [
       'THE BUG (the till half of v5.5.901): tapping Apply on a gift card at the POS debited it immediately. Cancel the checkout, back out of a split, or have the customer change their mind, and the balance was gone — no check, no receipt, and nothing for a refund to reverse. Same on every portion of a split check.',

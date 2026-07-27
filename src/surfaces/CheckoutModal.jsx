@@ -13,7 +13,7 @@ import { getLocationProcessor, getLocationProcessorInfo } from '../lib/payments/
 import { chargeRyftTerminal } from '../lib/payments/ryftTerminal';
 import { fetchCustomerByPhone } from '../lib/customerLookup';
 import { redeemLoyaltyReward } from '../lib/loyaltyRedeem';
-import { stageGiftCard, commitGiftCard, giftCardCheckRecord } from '../lib/giftCommit';
+import { stageGiftCard, commitGiftCard, giftCardCheckRecord, reverseGiftCard } from '../lib/giftCommit';
 import { money, currencySymbol, stripeCurrency, getActiveCurrencyCode } from '../lib/currency';
 import { publishDisplay, displayUsesScreen, publishTipRequest, onCustomerTip } from '../lib/customerDisplay';
 import { isTrainingMode } from '../lib/trainingMode';
@@ -1343,6 +1343,61 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     return { record: giftCardCheckRecord(staged, commit), ok: commit.ok, error: commit.error };
   };
 
+  // ── v5.5.903: undo a DISPATCH-TIME debit when the terminal job dies ────────────
+  // The PAX path is the one path that debits before there is a check to refund (see
+  // startTerminalJob for why it has to). paxGiftRef holds what it debited, so a job that
+  // comes back declined / cancelled / expired can put the money back on the card — until
+  // now the balance was simply gone, with no check for store.refundCheck to reverse.
+  const paxGiftRef = useRef(null);
+  // Serialises the reversal: onFailed fires it, and the Back button can fire it again.
+  const reversingGiftRef = useRef(false);
+
+  const reverseDispatchedGift = useCallback(async (why) => {
+    const record = paxGiftRef.current;
+    if (!record?.card_id || !record?.idempotency_key || reversingGiftRef.current) return;
+    reversingGiftRef.current = true;
+    // Un-stage FIRST, and synchronously. Until the money is provably back on the card,
+    // no payment taken in this modal may claim it — a cash tender landing mid-reversal
+    // would otherwise record the leg on the check AND hand the balance back.
+    applyGift(null);
+    try {
+      // A training till staged and "debited" in memory only — there is nothing to undo.
+      if (isTrainingMode()) { paxGiftRef.current = null; return; }
+      const token = await ensureAuthToken().catch(() => null);
+      const r = await reverseGiftCard(record, {
+        functionsUrl: GIFT_FUNCTIONS_URL,
+        token,
+        locationId: getActiveLocationSync(),
+        reason: why || 'Card machine payment did not complete',
+        staffId: useStore.getState().staff?.id || null,
+      });
+      if (r.ok) {
+        paxGiftRef.current = null;
+        // RETIRE THE CHECK ID WITH THE REVERSAL. The debit was keyed
+        // `giftcommit:<checkId>:<cardId>` server-side, and the redeem row survives its own
+        // reversal — so re-applying the SAME card in THIS checkout would derive that same
+        // key, come back `already_applied`, debit NOTHING and still discount the bill.
+        // A fresh id makes a re-apply a genuinely new redemption. Safe to mint: no check
+        // has been recorded under the old id (the job died), and the next dispatch
+        // re-keys its own job from it.
+        checkIdRef.current = null;
+        setGiftError('');
+        try { useStore.getState().showToast?.('Gift card balance restored — apply it again if you need to.', 'info'); } catch {}
+      } else {
+        // The money is still OFF the card. Put the leg back on the bill: whatever staff
+        // take next then honours it (and lands it on the check, where a refund can still
+        // reverse it) instead of charging the customer for value they have already spent.
+        // The record has no `pending_commit`, so commitGift passes it straight through as
+        // the already-debited leg it is. paxGiftRef keeps it — Back retries the reversal.
+        console.error('[checkout] gift card reversal FAILED:', r.error);
+        applyGift(record);
+        try { useStore.getState().showToast?.('Could not restore the gift card — it is still applied to this bill.', 'error'); } catch {}
+      }
+    } finally {
+      reversingGiftRef.current = false;
+    }
+  }, [applyGift]);
+
   // Guards the window between "commit started" and "modal unmounted" — a second tap on
   // Complete must not fire a second commit (the derived key makes the server idempotent,
   // but the check must not be recorded twice either).
@@ -1497,6 +1552,12 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
         });
         if (!ok) throw new Error(`Gift card could not be applied: ${error}. Remove it and take the full amount.`);
         paxGiftRecord = record;
+        // v5.5.903: hold the debited leg for the failure paths (PaxTerminal onFailed /
+        // Back). Set BEFORE the dispatch on purpose — the debit is real from this line
+        // on, whatever the dispatch does next. It is only ever CONSUMED once a job is
+        // proven dead, so a dispatch whose response was merely lost (the job may exist
+        // and still be paid) never triggers a reversal.
+        paxGiftRef.current = paxGiftRecord;
       }
 
       const { job } = await dispatchTerminalJob({
@@ -2038,12 +2099,29 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                 // charge_minor — so the recorded tip and the refundable leg are
                 // exactly what the card was asked for. Never round twice.
                 forgetJob(paxJob.check_key);
+                // v5.5.903: the card was APPROVED — the dispatch-time gift debit is paid
+                // for and belongs on this check (complete() re-commits it idempotently and
+                // books it). Drop the reversal handle so nothing can hand it back.
+                paxGiftRef.current = null;
                 complete('card', Math.max(0, (pi.tipMinor ?? 0) / 100), null,
                   pi.paymentIntentId || null, pi.card || null, 'ryft',
                   Number.isFinite(pi.amountReceived) ? pi.amountReceived : null);
               }}
-              onFailed={()=>{ forgetJob(paxJob.check_key); }}
-              onBack={()=>{ setPaxJob(null); setScreen('review'); }}
+              // v5.5.903: declined / cancelled / expired — the server has SETTLED the job
+              // and no card was charged. That is the proof the reversal needs: the gift
+              // debited at dispatch has no check to live on, so put it back on the card
+              // and un-stage it for staff to re-apply against whatever they take instead.
+              onFailed={(job)=>{
+                forgetJob(paxJob.check_key);
+                reverseDispatchedGift(`Card machine payment ${job?.status || 'did not complete'}`);
+              }}
+              // Only reachable in those same settled states (PaxTerminal renders Back for
+              // nothing else), so it is safe to retry here — and worth it: this is the
+              // one retry staff get if the reversal above failed on a network blip.
+              onBack={()=>{
+                reverseDispatchedGift('Card machine payment abandoned');
+                setPaxJob(null); setScreen('review');
+              }}
             />
           )}
 
