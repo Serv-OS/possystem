@@ -348,6 +348,7 @@ Local `.env.local` has placeholder values — `isMock=true` locally, real values
 1. Update `src/lib/version.js` with new version string
 2. Add a new entry at the top of `CHANGELOG` in `src/lib/changelog.js` (moved out of App.jsx in v5.5.890 — it lazy-loads with the What's New modal)
 3. `npm run build` — verify clean before pushing
+4. **Deploy any edge function you changed** — `npx supabase functions deploy <name> --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt`. The web app auto-deploys on push; **edge functions DO NOT**. Committed-but-undeployed is invisible in git and is how "gift cards redeem at COMMIT" (v5.5.901) sat dead for 59 days while everyone believed it shipped. Audit anytime with `SUPABASE_ACCESS_TOKEN=... node scripts/check-deploys.mjs` (add `--deploy` to ship the drift).
 
 ---
 
