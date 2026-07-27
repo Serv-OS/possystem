@@ -172,6 +172,7 @@ export function giftCardCheckRecord(staged, commit) {
   const failed = !!commit && !commit.ok;
   return {
     card_id: commit?.card_id || staged.card_id || null,
+    code_last4: staged.code_last4 || null,
     applied: commit?.applied ?? staged.applied ?? 0,
     remaining_balance: commit?.remaining_balance ?? staged.remaining_balance ?? null,
     // Nothing was debited on a failed commit — leave the key null so a later refund SKIPS
@@ -180,4 +181,31 @@ export function giftCardCheckRecord(staged, commit) {
     ...(failed ? { commit_error: commit.error } : {}),
     ...(commit && commit.shortfall > 0 ? { uncollected: commit.shortfall } : {}),
   };
+}
+
+/**
+ * v5.5.902 — the value for `closed_checks.gift_card`.
+ *
+ * ONE record for a normal check; the primary leg carrying `legs[]` when a SPLIT check was
+ * part-paid by more than one gift card. Deliberately NOT a new column: `gift_card` keeps
+ * its exact existing shape at the top level (card_id + idempotency_key, which the POS
+ * refund reversal reads), so this ships with no migration to run first.
+ *
+ * @param {{giftCard?:object, giftCards?:Array}} paymentInfo
+ */
+export function giftRecordFrom(paymentInfo = {}) {
+  const legs = (paymentInfo.giftCards || []).filter(Boolean);
+  if (legs.length > 1) return { ...legs[0], legs };
+  if (legs.length === 1) return legs[0];
+  return paymentInfo.giftCard || null;
+}
+
+/**
+ * Every gift card that paid toward a check — the one reader of the `legs` shape above.
+ * A pre-v5.5.902 check has a bare record and no `legs`, so it yields exactly itself.
+ */
+export function giftLegs(check) {
+  const g = check?.giftCard;
+  if (!g) return [];
+  return Array.isArray(g.legs) && g.legs.length ? g.legs : [g];
 }

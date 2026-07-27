@@ -13,6 +13,7 @@ import { getLocationProcessor, getLocationProcessorInfo } from '../lib/payments/
 import { chargeRyftTerminal } from '../lib/payments/ryftTerminal';
 import { fetchCustomerByPhone } from '../lib/customerLookup';
 import { redeemLoyaltyReward } from '../lib/loyaltyRedeem';
+import { stageGiftCard, commitGiftCard, giftCardCheckRecord } from '../lib/giftCommit';
 import { money, currencySymbol, stripeCurrency, getActiveCurrencyCode } from '../lib/currency';
 import { publishDisplay, displayUsesScreen, publishTipRequest, onCustomerTip } from '../lib/customerDisplay';
 import { isTrainingMode } from '../lib/trainingMode';
@@ -701,8 +702,20 @@ const GIFT_FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 // by shape — gift codes are exactly 16 chars of the gift alphabet (separators stripped); promo codes
 // are short and usually hyphenated (e.g. BDAY-7F3K9). Try gift first ONLY when the input is 16 gift-
 // chars; on a clean "not found" fall through to a promo validate. Promo apply is delegated to the
-// parent (onPromoCode) which reuses the slice-1 promo wiring; gift redeem is unchanged.
-function GiftCardEntry({ totalMinor, giftAlreadyApplied, onApplied, onBack, tableId, orderType, promoAlreadyApplied, onPromoCode }) {
+// parent (onPromoCode) which reuses the slice-1 promo wiring.
+//
+// v5.5.902: APPLY-ONLY, the kiosk/online pattern from v5.5.901. Applying a card now only
+// LOOKS THE BALANCE UP (gift-lookup — read-only) and stages the discount; the real debit
+// fires at check commit (see `complete` below). Before this, staff tapping Apply debited the
+// card immediately with `order_id: tableId || walkin-<ts>` — close the modal, walk away, or
+// have the remainder declined and the customer's balance was gone, with no check and nothing
+// for the refund path to reverse.
+//
+// `totalMinor` is the amount the gift card may be applied against — the parent nets off any
+// loyalty reward / promo code first, so a card can never be over-drawn (the online half of
+// v5.5.901 fixed the same over-draw). It deliberately does NOT net off a card already staged
+// here: entering a card REPLACES the staged one, so the full bill is available again.
+function GiftCardEntry({ totalMinor, giftAlreadyApplied, onApplied, onRemove, onBack, promoAlreadyApplied, onPromoCode }) {
   const compact = useCompact();
   const [code, setCode] = useState('');
   const [loading, setLoading] = useState(false);
@@ -763,68 +776,26 @@ function GiftCardEntry({ totalMinor, giftAlreadyApplied, onApplied, onBack, tabl
     }
   };
 
-  // Step 2: redeem
-  const handleRedeem = async () => {
+  // Step 2: STAGE the card. Pure — no server call, nothing debited. `stageGiftCard`
+  // keeps the partial-balance behaviour (applied = min(balance, due)) and mints the
+  // commit key ONCE, so every retry of this check's commit reuses it.
+  const handleApply = () => {
     if (!cardInfo) return;
-    setError(null); setLoading(true);
-    try {
-      const alreadyApplied = giftAlreadyApplied?.applied || 0;
-      const remainingDue = totalMinor - alreadyApplied;
-      const redeemAmount = Math.min(cardInfo.balance, remainingDue);
-      if (redeemAmount <= 0) { setError('Nothing to redeem'); setLoading(false); return; }
-
-      const idempotencyKey = `pos:${tableId || 'walkin'}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
-
-      // TRAINING MODE: never deduct a real gift-card balance. The lookup above is
-      // read-only; here we mock the redemption so the UI applies it in-memory only.
-      if (isTrainingMode()) {
-        onApplied({
-          card_id: cardInfo.card_id || 'gift_training',
-          code_last4: cardInfo.code_last4,
-          applied: redeemAmount,
-          remaining_balance: Math.max(0, cardInfo.balance - redeemAmount),
-          idempotency_key: idempotencyKey,
-          currency: cardInfo.currency || 'gbp',
-        });
-        setLoading(false);
-        return;
-      }
-
-      const { data: session } = await supabase.auth.getSession();
-      const token = session?.session?.access_token;
-      const res = await fetch(`${GIFT_FUNCTIONS_URL}/gift-redeem`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          code: code.replace(/[\s-]/g, ''),
-          amount: redeemAmount,
-          order_id: tableId || `walkin-${Date.now()}`,
-          location_id: getActiveLocationSync(),
-          channel: 'pos',
-          idempotency_key: idempotencyKey,
-        }),
-      });
-      const j = await res.json();
-      if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
-
-      onApplied({
-        card_id: j.card_id,
-        code_last4: cardInfo.code_last4,
-        applied: j.applied,
-        remaining_balance: j.remaining_balance,
-        idempotency_key: idempotencyKey,
-        currency: j.currency || 'gbp',
-      });
-    } catch (e) {
-      setError(String(e?.message ?? e));
-    } finally {
-      setLoading(false);
-    }
+    setError(null);
+    const staged = stageGiftCard({
+      cardId: cardInfo.card_id,
+      code: code.replace(/[\s-]/g, ''),
+      codeLast4: cardInfo.code_last4,
+      balanceMinor: cardInfo.balance,
+      amountDueMinor: totalMinor,
+    });
+    if (staged.applied <= 0) { setError('Nothing to redeem'); return; }
+    onApplied(staged);
   };
 
   const sym = String.fromCodePoint(0x00A3);
   const alreadyAppliedAmt = (giftAlreadyApplied?.applied || 0) / 100;
-  const remainingDue = (totalMinor - (giftAlreadyApplied?.applied || 0)) / 100;
+  const remainingDue = totalMinor / 100;
 
   return (
     <div>
@@ -833,12 +804,35 @@ function GiftCardEntry({ totalMinor, giftAlreadyApplied, onApplied, onBack, tabl
         <div style={{ fontSize:compact?18:24, fontWeight:800, color:'var(--t1)' }}>
           {sym}{remainingDue.toFixed(2)} due
         </div>
-        {alreadyAppliedAmt > 0 && (
-          <div style={{ fontSize:12, color:'var(--grn)', marginTop:4 }}>
-            {sym}{alreadyAppliedAmt.toFixed(2)} already applied from gift card
-          </div>
-        )}
       </div>
+
+      {/* A card is already staged. Nothing has been debited yet, so it can simply be
+          taken off — and entering another REPLACES it (one gift card per check, same
+          as kiosk + online). Stated plainly so staff aren't left thinking they stack. */}
+      {alreadyAppliedAmt > 0 && (
+        <div style={{
+          marginBottom:12, padding:'10px 12px', borderRadius:12,
+          background:'var(--grn-d)', border:'1px solid var(--grn-b)',
+          display:'flex', alignItems:'center', justifyContent:'space-between', gap:10,
+        }}>
+          <div>
+            <div style={{ fontSize:13, fontWeight:700, color:'var(--grn)' }}>
+              {String.fromCodePoint(0x1F381)} {sym}{alreadyAppliedAmt.toFixed(2)} applied
+              {giftAlreadyApplied?.code_last4 ? ` · ...${giftAlreadyApplied.code_last4}` : ''}
+            </div>
+            <div style={{ fontSize:11, color:'var(--t3)', marginTop:2 }}>
+              Not charged yet — entering another card replaces this one.
+            </div>
+          </div>
+          {onRemove && (
+            <button onClick={onRemove} style={{
+              flexShrink:0, padding:'6px 12px', borderRadius:9,
+              border:'1px solid var(--bdr2)', background:'transparent',
+              color:'var(--t3)', fontSize:12, fontWeight:700, cursor:'pointer', fontFamily:'inherit',
+            }}>Remove</button>
+          )}
+        </div>
+      )}
 
       {/* Code entry */}
       {!cardInfo && (
@@ -913,7 +907,7 @@ function GiftCardEntry({ totalMinor, giftAlreadyApplied, onApplied, onBack, tabl
           </div>
 
           <button
-            onClick={handleRedeem}
+            onClick={handleApply}
             disabled={loading}
             style={{
               width:'100%', marginTop:14, padding:'14px', borderRadius:12,
@@ -922,8 +916,11 @@ function GiftCardEntry({ totalMinor, giftAlreadyApplied, onApplied, onBack, tabl
               opacity: loading ? 0.5 : 1,
             }}
           >
-            {loading ? 'Processing...' : `Apply ${sym}${(Math.min(cardInfo.balance, Math.round(remainingDue * 100)) / 100).toFixed(2)} from gift card`}
+            {`Apply ${sym}${(Math.min(cardInfo.balance, Math.round(remainingDue * 100)) / 100).toFixed(2)} from gift card`}
           </button>
+          <div style={{ fontSize:11, color:'var(--t4)', marginTop:6, textAlign:'center' }}>
+            The card is only charged when the check is paid.
+          </div>
 
           <button
             onClick={() => { setCardInfo(null); setCode(''); setError(null); }}
@@ -1145,8 +1142,18 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   }, []);
 
   // v5.5.193: gift card partial payment state
+  // v5.5.902: this now holds a STAGED card (lib/giftCommit.stageGiftCard) —
+  // { card_id, code, code_last4, applied, balance_at_apply, remaining_balance,
+  //   commit_key, pending_commit:true }. Nothing is debited until `complete` runs.
   const [giftApplied, setGiftApplied] = useState(null);
-  // giftApplied: { card_id, code_last4, applied, remaining_balance, idempotency_key, currency }
+  const [giftError, setGiftError] = useState('');
+  // The state value is read by render; the REF is read by `complete`. They must both
+  // exist: the gift-covers-everything path calls complete() from inside the same tick
+  // as setGiftApplied, so the closure still holds the OLD state. That staleness is why
+  // a fully-gift-paid POS check recorded `giftCard: undefined` and could never be
+  // reversed on refund — the ref closes that hole.
+  const giftRef = useRef(null);
+  const applyGift = useCallback((staged) => { giftRef.current = staged; setGiftApplied(staged); }, []);
 
   // v5.5.218: loyalty state
   const [loyaltyData, setLoyaltyData] = useState(null); // { credit, rewards, memberCode, tier, ... }
@@ -1225,7 +1232,20 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   // collided with the next customer's payment ("reference has already been used" /
   // "already been paid") until localStorage was cleared by hand. A retry within
   // THIS checkout reuses the ref → same key + id → re-attaches idempotently.
-  const paxCheckIdRef = useRef(null);
+  //
+  // v5.5.902: promoted from PAX-only to THE check id for this checkout. It rides out
+  // on paymentInfo.closedCheckId and the store adopts it as the closed_check row id,
+  // so the gift-card debit — which is keyed to the closed check id server-side
+  // (`giftcommit:<check>:<card>`) — lands on the same id the refund reversal later
+  // reads back off the check. Side benefit: the modal-driven close and the terminal-job
+  // reconciler now agree on one id instead of minting two for the same PAX sale.
+  const checkIdRef = useRef(null);
+  const getCheckId = useCallback(() => {
+    if (!checkIdRef.current) {
+      checkIdRef.current = `chk-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+    }
+    return checkIdRef.current;
+  }, []);
   useEffect(() => {
     let alive = true;
     // A training till never even looks — it must not learn about, or reach, a
@@ -1299,11 +1319,81 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   const hasTax = taxBreakdown?.breakdown?.length > 0;
   const hasExclusive = taxBreakdown?.hasExclusiveTax;
 
-  const complete = (method, tip=tipAmt, tendered=null, stripePaymentIntentId=null, cardReceipt=null, paidProcessor=null, capturedMinor=null) => {
-    const hasGift = !!giftApplied;
+  // v5.5.902: fire the real gift-card debit. Never throws (commitGiftCard swallows
+  // everything) and NEVER touches the server in training mode — a training till stages
+  // and records the card in memory only, exactly as it did when the apply-time redeem
+  // was mocked. Returns the closed_checks.gift_card record: what was ACTUALLY debited
+  // plus the ledger row's idempotency key, which store.refundCheck needs verbatim.
+  const commitGift = async (staged, { closedCheckId, allowPartial }) => {
+    if (!staged) return { record: null, ok: true };
+    if (!staged.pending_commit || isTrainingMode()) {
+      return { record: giftCardCheckRecord(staged, null), ok: true };
+    }
+    const token = await ensureAuthToken().catch(() => null);
+    const commit = await commitGiftCard(staged, {
+      functionsUrl: GIFT_FUNCTIONS_URL,
+      token,
+      locationId: getActiveLocationSync(),
+      channel: 'pos',
+      closedCheckId,
+      allowPartial,
+    });
+    if (!commit.ok) console.error('[checkout] gift card commit FAILED:', commit.error);
+    else if (commit.shortfall > 0) console.warn('[checkout] gift commit partial — uncollected minor:', commit.shortfall);
+    return { record: giftCardCheckRecord(staged, commit), ok: commit.ok, error: commit.error };
+  };
+
+  // Guards the window between "commit started" and "modal unmounted" — a second tap on
+  // Complete must not fire a second commit (the derived key makes the server idempotent,
+  // but the check must not be recorded twice either).
+  const completingRef = useRef(false);
+
+  const complete = async (method, tip=tipAmt, tendered=null, stripePaymentIntentId=null, cardReceipt=null, paidProcessor=null, capturedMinor=null) => {
+    if (completingRef.current) return;
+    completingRef.current = true;
+
+    const staged = giftRef.current;
+    const checkId = getCheckId();
+
+    // Was there anything left for cash / the card AFTER the gift card? Computed against
+    // the tip we were actually handed (the reader's figure), not the `tipAmt` in state —
+    // a gift that cleared the bill but left a reader tip to charge is NOT gift-only.
+    const dueAfterGift = Math.max(0, total + tip - ((staged?.applied || 0) / 100) - loyaltyCredit - promoCredit);
+    const giftOnly = !!staged && dueAfterGift <= 0.005;
+
+    // ── GIFT CARD DEBITS HERE, at commit — not when staff tapped Apply ──────────
+    // Ordered BEFORE onComplete (which writes closed_checks) per INVARIANTS.md
+    // "gift card redeem before order close".
+    //
+    // Gift-covers-everything means NO cash or card leg was taken, so a failed or short
+    // debit must ABORT the close: the customer's balance stays intact and staff are sent
+    // back to take payment another way. Where money HAS already been taken (cash in the
+    // drawer, card captured) the check must still be recorded — a gift failure can't be
+    // allowed to lose the sale — so we book what the server actually gave us and the
+    // shortfall rides on the record as `uncollected`.
+    let giftRecord;
+    if (staged) {
+      const { record, ok, error } = await commitGift(staged, {
+        closedCheckId: checkId,
+        allowPartial: !giftOnly,
+      });
+      if (!ok && giftOnly) {
+        applyGift(null);
+        setGiftError(error === 'Insufficient balance'
+          ? 'That gift card no longer has enough balance — take payment another way.'
+          : `Gift card could not be applied: ${error}`);
+        setScreen('gift_card');
+        completingRef.current = false;
+        return;
+      }
+      giftRecord = record;
+    }
+
+    const hasGift = !!staged;
     const hasLoyalty = !!loyaltyApplied;
     let finalMethod = method;
-    if (hasGift && grand > 0) finalMethod = `gift_card+${method}`;
+    // Gift + something else only when the gift genuinely left a balance to take.
+    if (hasGift && !giftOnly) finalMethod = `gift_card+${method}`;
     else if (hasGift) finalMethod = 'gift_card';
     if (hasLoyalty) finalMethod = `loyalty+${finalMethod}`;
     if (promoApplied) finalMethod = `promo+${finalMethod}`;
@@ -1313,7 +1403,10 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
       grand: total+tip,
       tendered,
       printReceipt,
-      giftCard: giftApplied || undefined,
+      // v5.5.902: the store adopts this as the closed_check id, so it matches the id the
+      // gift debit above was keyed to (and the id the PAX job pre-minted).
+      closedCheckId: checkId,
+      giftCard: giftRecord || undefined,
       loyaltyRedemption: loyaltyApplied || undefined,
       promoRedemption: promoApplied || undefined,
       stripePaymentIntentId,
@@ -1369,18 +1462,42 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     try {
       const locationId = getActiveLocationSync();
       const session = tableId ? useStore.getState().tables.find(t => t.id === tableId)?.session : null;
-      // Mint once per checkout (see paxCheckIdRef). Table checks keep the shared
+      // Mint once per checkout (see checkIdRef). Table checks keep the shared
       // table:session key (two tills on one table MUST collide); counter sales get
       // a per-sale leg so they never share a key with a previous customer.
-      if (!paxCheckIdRef.current) {
-        paxCheckIdRef.current = `chk-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-      }
+      const checkId = getCheckId();
       const checkKey = buildCheckKey({
         locationId, tableId, sessionId: session?.id,
-        leg: tableId ? undefined : paxCheckIdRef.current,
+        leg: tableId ? undefined : checkId,
       });
       const dueMinor = toMinor(grand);
       if (!(dueMinor > 0)) throw new Error('Nothing left for the card to take.');
+
+      // ── v5.5.902: the gift card commits HERE on the PAX path, not in complete() ──
+      // Handing the job to the terminal is this path's real point of no return: the
+      // terminal charges `dueMinor` (already net of the gift), and from that moment the
+      // check can be closed WITHOUT this modal — TerminalJobReconciler closes an approved
+      // job on any till. Leave the debit in complete() and closing the modal mid-payment
+      // would give the discount away and never take it off the card.
+      //
+      // Same checkId as complete() uses, so gift-redeem derives the SAME key: whichever
+      // path runs second gets `already_applied` back, never a second debit.
+      //
+      // A failure ABORTS the dispatch. Nothing has been charged yet, so stopping here is
+      // free — whereas sending a job whose due was discounted by a gift card we could not
+      // actually debit leaves the venue short by exactly that amount. For the same reason
+      // allowPartial is FALSE: `dueMinor` above was already frozen net of the full staged
+      // amount, so taking "whatever is left" off a card that lost value would under-charge
+      // the terminal by the difference. Refuse, and let staff re-apply against the truth.
+      let paxGiftRecord = null;
+      if (giftRef.current) {
+        const { record, ok, error } = await commitGift(giftRef.current, {
+          closedCheckId: checkId,
+          allowPartial: false,
+        });
+        if (!ok) throw new Error(`Gift card could not be applied: ${error}. Remove it and take the full amount.`);
+        paxGiftRecord = record;
+      }
 
       const { job } = await dispatchTerminalJob({
         checkKey,
@@ -1405,7 +1522,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
         // takes no tip whatever the terminal is configured for — but it travels
         // as a suppression flag, which can only ever make the job LESS tippable.
         suppressTip: skipTip || tipCfg?.tipping_enabled === false,
-        closedCheckId: paxCheckIdRef.current,
+        closedCheckId: checkId,
         checkDraft: {
           tableId: tableId || null,
           tableLabel: tableId || null,
@@ -1424,6 +1541,12 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
           // without it a table check falls to the conservative headless/time-window
           // paths. Counter sales have no session — stays null.
           seatedAt: session?.seatedAt ?? null,
+          // v5.5.902: the gift card debited above, in the closed_checks.gift_card shape —
+          // card_id, amount applied and the ledger row's idempotency key. No code, no
+          // balance: nothing here is a secret the job row shouldn't hold. This is what
+          // lets closeApprovedTerminalJob record (and therefore later REVERSE) a gift card
+          // on a check it closed without this modal — it booked giftCard:null before.
+          giftCard: paxGiftRecord,
           source: 'pos_send_to_terminal',
         },
       });
@@ -1702,7 +1825,9 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                 )}
                 {giftApplied && (
                   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginTop:4 }}>
-                    <span style={{ fontSize:13, color:'var(--grn)', fontWeight:600 }}>{String.fromCodePoint(0x1F381)} Gift card (...{giftApplied.code_last4})</span>
+                    {/* v5.5.902: removable — the card has not been debited yet, so taking it
+                        off costs the customer nothing (before, the money had already gone). */}
+                    <span style={{ fontSize:13, color:'var(--grn)', fontWeight:600 }}>{String.fromCodePoint(0x1F381)} Gift card (...{giftApplied.code_last4}) <button onClick={()=>{ applyGift(null); setGiftError(''); }} style={{ marginLeft:6, background:'none', border:'none', color:'var(--t3)', cursor:'pointer', fontSize:12, textDecoration:'underline' }}>remove</button></span>
                     <span style={{ fontSize:14, fontWeight:700, color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{String.fromCodePoint(0x2212)}{String.fromCodePoint(0x00A3)}{giftCredit.toFixed(2)}</span>
                   </div>
                 )}
@@ -1817,7 +1942,19 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                 </button>
 
                 {/* Split — secondary */}
-                <button onClick={()=>setShowSplit(true)} style={{
+                {/* v5.5.902: SplitModal divides the GROSS `total`, so a check-level gift
+                    card has no meaning once you split — the portions already add up to the
+                    whole bill. Drop it (nothing has been debited) and say so, rather than
+                    leave it staged and silently ignored. Staff apply the card to a portion
+                    instead. Before this the staged card was ALREADY debited, so the same
+                    sequence charged the customer their gift balance AND the full bill. */}
+                <button onClick={()=>{
+                  if (giftRef.current) {
+                    applyGift(null);
+                    try { useStore.getState().showToast?.('Gift card removed — apply it to a split portion instead.', 'info'); } catch {}
+                  }
+                  setShowSplit(true);
+                }} style={{
                   flex:1, minWidth:0, padding:'12px 8px', borderRadius:13, cursor:'pointer', fontFamily:'inherit',
                   background:'var(--bg3)', border:'1.5px solid var(--bdr2)',
                   display:'flex', alignItems:'center', justifyContent:'center', gap:8,
@@ -1933,26 +2070,39 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
           )}
 
           {screen==='gift_card' && (
-            <GiftCardEntry
-              totalMinor={Math.round((total + tipAmt) * 100)}
-              giftAlreadyApplied={giftApplied}
-              onApplied={(result) => {
-                setGiftApplied(result);
-                const remainingDue = Math.round((total + tipAmt) * 100) - result.applied;
-                if (remainingDue <= 0) {
-                  // Gift card covers full amount
-                  complete('gift_card', tipAmt);
-                } else {
-                  // Partial: go back to review to pay remainder
-                  setScreen('review');
-                }
-              }}
-              onBack={()=>setScreen('review')}
-              tableId={tableId}
-              orderType={orderType}
-              promoAlreadyApplied={promoApplied}
-              onPromoCode={async (code) => { const r = await applyPromoCode(code); if (r?.ok) setScreen('review'); return r; }}
-            />
+            <>
+              {/* Why the last commit attempt failed (gift-only close aborted). */}
+              {giftError && (
+                <div style={{ marginBottom:12, padding:12, borderRadius:10, background:'var(--red-d)', color:'var(--red)', fontSize:13, border:'1px solid var(--red-b)' }}>
+                  {giftError}
+                </div>
+              )}
+              <GiftCardEntry
+                // v5.5.902: the gift card applies against what is ACTUALLY left to pay —
+                // net of an applied loyalty reward and promo code. Passing the gross bill
+                // let a card be over-drawn by exactly those credits (same over-draw the
+                // online half of v5.5.901 fixed). Any card already staged is EXCLUDED:
+                // entering another replaces it, so the whole bill is available again.
+                totalMinor={Math.round(Math.max(0, total + tipAmt - loyaltyCredit - promoCredit) * 100)}
+                giftAlreadyApplied={giftApplied}
+                onRemove={() => { applyGift(null); setGiftError(''); }}
+                onApplied={(staged) => {
+                  applyGift(staged);
+                  setGiftError('');
+                  const remainingDue = Math.round(Math.max(0, total + tipAmt - loyaltyCredit - promoCredit) * 100) - staged.applied;
+                  if (remainingDue <= 0) {
+                    // Gift card covers the lot — close now. The debit fires inside complete().
+                    complete('gift_card', tipAmt);
+                  } else {
+                    // Partial: go back to review to pay the remainder.
+                    setScreen('review');
+                  }
+                }}
+                onBack={()=>setScreen('review')}
+                promoAlreadyApplied={promoApplied}
+                onPromoCode={async (code) => { const r = await applyPromoCode(code); if (r?.ok) setScreen('review'); return r; }}
+              />
+            </>
           )}
         </div>
       </div>
@@ -1963,8 +2113,32 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
           total={total}
           covers={covers}
           canTakeCash={_canTakeCash}
-          onComplete={(portions)=>{
+          onComplete={async (portions)=>{
+            if (completingRef.current) return;
+            completingRef.current = true;
             setShowSplit(false);
+            // ── v5.5.902: split gift-card legs debit HERE, at the close ───────────────
+            // Each portion only STAGED its card when it was tendered, so abandoning a
+            // half-tendered split no longer burns anyone's balance.
+            //
+            // KEYING: gift-redeem derives its idempotency key from closed_check_id as
+            // `giftcommit:<check>:<card>`, so the check id ALONE is wrong here — one card
+            // legitimately used on two portions of the same check would collapse onto a
+            // single debit. The portion id alone is worse still: they are positional
+            // (`p0`, `s3`, `ip0`, `ca0`) and repeat on every split at the venue, so it
+            // would collide across DIFFERENT checks and hand the second customer a free
+            // meal. The scope that is actually unique is the pair — `<check>:<portion>`.
+            const giftLegs = [];
+            for (const p of (portions || [])) {
+              if (!p?.giftCard) continue;
+              const { record } = await commitGift(p.giftCard, {
+                closedCheckId: `${getCheckId()}:${p.id}`,
+                // The portion is already marked paid and the split has closed, so recover
+                // whatever IS left on a card that lost value since it was tendered.
+                allowPartial: true,
+              });
+              if (record) giftLegs.push({ ...record, portion_id: p.id, portion_label: p.label || null });
+            }
             // v5.5.323/332: collect every card portion's PaymentIntent so each
             // card leg can be auto-refunded to its own card. The captured amount
             // per leg is base + reader tip, so the refundable amountMinor must
@@ -1978,7 +2152,12 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
             const tipTotal = +((portions||[]).reduce((s,p)=>s+(Number(p.tip)||0),0)).toFixed(2);
             // v5.5.808: stamp which processor took the card legs — refunds route
             // by check.processor, so a Ryft split must not default to 'stripe'.
-            onComplete({ method:'split', tip:tipTotal, grand:total+tipTotal, portions, paymentIntents, stripePaymentIntentId: paymentIntents[0]?.id || null, processor: cardProcessor || 'stripe', printReceipt });
+            onComplete({ method:'split', tip:tipTotal, grand:total+tipTotal, portions, paymentIntents, stripePaymentIntentId: paymentIntents[0]?.id || null, processor: cardProcessor || 'stripe', printReceipt,
+              closedCheckId: getCheckId(),
+              // v5.5.902: split gift legs — the store folds these into the check's
+              // gift_card jsonb so a refund can reverse every card that part-paid it.
+              // Before this they were recorded NOWHERE and could never be reversed.
+              giftCards: giftLegs.length ? giftLegs : undefined });
           }}
           onClose={()=>setShowSplit(false)}
         />

@@ -7,6 +7,23 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.902', date: '27 Jul 2026', label: 'FIX — the till now spends a gift card when the check is PAID, not when staff apply it',
+    changes: [
+      'THE BUG (the till half of v5.5.901): tapping Apply on a gift card at the POS debited it immediately. Cancel the checkout, back out of a split, or have the customer change their mind, and the balance was gone — no check, no receipt, and nothing for a refund to reverse. Same on every portion of a split check.',
+      'FIXED: applying a gift card now only CHECKS THE BALANCE and holds the discount on screen. The card is debited at the moment the check actually closes — the same apply-now / redeem-at-commit pattern the kiosk, online ordering, promo codes and loyalty rewards already use.',
+      'A staged gift card can now be REMOVED with "remove" before paying — it could not be before, because the money had already left the card.',
+      'Retries cannot double-spend: the debit is keyed to the check id server-side, so however many times a payment is retried the card is only ever charged once.',
+      'SPLIT CHECKS: each portion\'s gift card is debited when the whole split closes, keyed to that portion of that check. Two people paying with the SAME card on one bill are correctly charged twice; the same portion number on a different bill can never be mistaken for a repeat.',
+      'Split gift-card payments are now RECORDED ON THE CHECK. They were not before — so refunding a split check silently failed to put the money back on the card. A refund now restores every gift card that paid toward it.',
+      'A gift card that covers the WHOLE bill is protected both ways: if the balance has changed since it was applied, the check is NOT closed and nothing is debited — staff are told why and take payment another way, balance untouched. Where a card or cash leg has already been taken, the sale is always recorded and the check shows exactly what the card gave.',
+      'A gift card can no longer be over-drawn past a loyalty reward or promo code already on the bill (it was applying against the gross total).',
+      'A fully gift-paid till check now records the card at all — a stale-state bug meant it was written as blank, so those checks could never be refunded back to the card.',
+      'Applying a gift card and then splitting the check used to charge the customer their gift balance AND the full split. The card is now taken off (nothing having been debited) with a prompt to apply it to a portion instead.',
+      'Card-machine (PAX) payments: the gift card is debited as the payment is sent to the terminal, and is recorded on the check even when the till is closed mid-payment and another device finishes the sale. If the card cannot be debited, the payment is never sent — so the terminal can never be asked for a discounted amount the venue did not collect.',
+      'Training tills still never touch a real balance.',
+    ],
+  },
+  {
     version: '5.5.901', date: '26 Jul 2026', label: 'FIX — a gift card is no longer spent until the order is actually placed (kiosk + online)',
     changes: [
       'THE BUG: entering a gift card at the kiosk or online DEBITED IT IMMEDIATELY — before the order existed. Walk away from the kiosk, time out on the idle screen, or have your card declined at the reader, and the gift-card money was simply gone: no order, no receipt, no automatic refund (only a POS refund of a real check restores a balance). v5.5.900 made it worse by giving every kiosk guest a gift/promo step, so far more customers reached the entry box.',

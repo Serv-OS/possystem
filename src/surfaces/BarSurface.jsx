@@ -10,6 +10,7 @@ import { getActiveLocationSync, ensureAuthToken } from '../lib/supabase';
 import { isTrainingMode } from '../lib/trainingMode';
 import { money, currencySymbol } from '../lib/currency';
 import { kitchenOverride, receiptOverride } from '../lib/itemDisplay';
+import { giftRecordFrom } from '../lib/giftCommit';
 
 const CAT_META = {
   quick:    { icon:'⚡', color:'#e8a020' },
@@ -352,6 +353,10 @@ export default function BarSurface() {
     const allItems = tab.rounds.flatMap(r => r.items.filter(i => !i.voided));
     const subtotal = tab.total || 0;
     recordWalkInClosedCheck({
+      // v5.5.902: adopt CheckoutModal's pre-minted check id when it sent one — it is the
+      // id the gift-card debit was keyed to, so a later refund can find the ledger row.
+      // (The held-card capture path at line ~461 sends none and keeps the store's chk-<ts>.)
+      ...(payInfo?.closedCheckId ? { id: payInfo.closedCheckId } : {}),
       ref: 'TAB-' + getNextOrderRefLocal().slice(1),  // 'TAB-' + numeric portion of R<n>
       server: staff?.name || 'Staff',
       covers: 1,
@@ -364,7 +369,9 @@ export default function BarSurface() {
       tip: payInfo?.tip || 0,
       total: payInfo?.grand != null ? payInfo.grand : subtotal,
       method: payInfo?.method || 'card',
-      giftCard: payInfo?.giftCard || null,
+      // v5.5.902: giftRecordFrom also folds in the per-portion legs of a SPLIT bar tab,
+      // which used to be dropped here entirely (nothing to reverse on a refund).
+      giftCard: giftRecordFrom(payInfo || {}),
       // v5.5.808: stamp WHICH processor took the card + the card-scheme receipt
       // block. Without these a Ryft bar-tab payment recorded processor 'stripe',
       // so a later refund routed to Stripe with a ps_ id and silently failed —

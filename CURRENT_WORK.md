@@ -1,3 +1,68 @@
+# Session — 27 Jul 2026 (v5.5.902) — the POS half: gift cards redeem at COMMIT (till + splits)
+
+## Context
+Closes the "**POS is NOT fixed**" item left open by v5.5.901 below. `CheckoutModal`'s `GiftCardEntry`
+and `SplitModal`'s `SplitGiftCardTender` still called `gift-redeem` the instant staff tapped Apply —
+with `order_id: tableId || 'walkin-<ts>'` and `order_id: portionId` respectively. Cancel the checkout
+modal, or back out of a half-tendered split, and the customer's balance was gone with no check and no
+reversal. Ported the v5.5.901 `lib/giftCommit.js` pattern to the till.
+
+## What was done
+- **`CheckoutModal` apply → `stageGiftCard`.** The `gift-lookup` call it already made is read-only and
+  returns `card_id` + `balance` + `code_last4`, so the apply step needed no new network call — the old
+  `gift-redeem` POST was simply deleted. The training-mode mock went with it (nothing reaches the
+  server at apply any more); training is gated at COMMIT instead.
+- **`complete()` is now async and commits first**, before `onComplete` writes the check (INVARIANTS
+  "gift card redeem before order close"). Gift-covers-everything ⇒ `allowPartial:false` and a failed
+  debit ABORTS the close, clears the staged card and returns staff to the gift screen with the reason.
+  Any other leg (cash in the drawer, card captured) ⇒ `allowPartial:true` and the check is always
+  recorded, with the shortfall stamped as `uncollected`.
+- **`checkIdRef` / `getCheckId()`** — `paxCheckIdRef` promoted from PAX-only to THE check id for the
+  checkout. It rides out as `paymentInfo.closedCheckId`; `buildCloseRecord`, `recordWalkInClosed` and
+  `BarSurface.recordTabClosedCheck` adopt it as `closed_checks.id`. This is what makes the server's
+  derived key (`giftcommit:<check>:<card>`) match the id `refundCheck` reads back off the check.
+  Side benefit: the modal close and the terminal-job reconciler now agree on one id per PAX sale
+  instead of minting two.
+- **Splits key on `<checkId>:<portionId>`** — see INVARIANTS for why neither half alone is safe.
+  `SplitGiftCardTender` stages; `CheckoutModal`'s SplitModal `onComplete` commits every leg as the
+  split closes. Legs now land on the check (`giftCards` → `giftRecordFrom` → `gift_card.legs`), where
+  they were recorded NOWHERE before — so a refund of a split check silently failed to restore anything.
+- **`refundCheck` reverses every leg** via `giftLegs()`, skipping any leg whose commit failed
+  (null key = nothing was debited = reversing would 404).
+- **PAX debits at dispatch**, `allowPartial:false`, record into `check_draft.giftCard`, and
+  `closeApprovedTerminalJob` books it (both the rich and headless paths booked `giftCard: null`).
+  A failed debit aborts the dispatch — nothing is charged yet, so stopping is free.
+- **Three bugs found and fixed in passing** (all pre-existing, all money):
+  1. A fully gift-paid till check recorded `giftCard: undefined` — `complete()` read `giftApplied`
+     state in the same tick it was set. Never refundable to the card. Fixed with `giftRef`.
+  2. The gift card applied against the GROSS bill, so it could be over-drawn past an applied loyalty
+     reward / promo code (the same over-draw the online half of v5.5.901 fixed).
+  3. Apply a gift card then hit Split and the customer was charged their gift balance AND the full
+     split. Splitting now removes the staged card with a toast (nothing has been debited).
+- Also: staged card is removable (× on review, Remove on the gift screen); `SplitModal`'s
+  `if (allPaid) setTimeout(onComplete)` fires once (it runs during render — every re-render used to
+  queue another close, which is now money, not just a duplicate row).
+
+## Verified
+- `npm run build` clean. Logic checks on the pure helpers all pass (staging maths incl. partial
+  balances, record shapes, training shape, single-vs-legs, refund unwrapping, and the four keying
+  collision cases). Walked the real UI in mock mode: checkout modal, gift screen, card payment,
+  bar-tab close — no console errors.
+- **NOT live-tested** (local is mock; edge fns unreachable). Peter to test on a real till.
+
+## ⚠ Remaining / known edges
+- **`gift-redeem` still needs its v5.5.901 redeploy** via the Supabase dashboard for the
+  server-derived key. The client is safe either way (the stable `commit_key` minted at apply is the
+  key against the old function) — EXCEPT that split legs then key on the client key rather than
+  `<check>:<portion>`, which is still unique per leg, so no collision either way.
+- **PAX cancel-after-dispatch**: if a job is cancelled/declined after dispatch, the gift is already
+  debited with no check. Much narrower than the old apply-time window (the customer is at the
+  terminal paying) but not zero — a reversal on `onFailed` would close it.
+- **Partial gift on a split portion still marks the portion fully paid** (v5.5.199 behaviour,
+  deliberately untouched here). The uncollected remainder is at least now visible on the check.
+
+---
+
 # Session — 26 Jul 2026 (v5.5.901) — gift cards redeem at COMMIT, not at apply (kiosk + online)
 
 ## Context
@@ -54,9 +119,8 @@ redeploying only adds the second (server-derived) belt.
 - NOT live-tested (local is mock mode — edge fns unreachable). Peter to test on a real kiosk +
   online: apply a card then WALK AWAY (balance must be untouched), partial-balance card, card that
   covers everything, and a POS refund of a kiosk gift order (reversal must still find the ledger row).
-- **POS is NOT fixed** — `CheckoutModal`'s `GiftCardEntry` and `SplitModal` still debit at apply, so
-  cancelling a POS checkout after applying a card burns it. Staff-mediated and out of this scope;
-  spawned as its own task.
+- ~~**POS is NOT fixed**~~ — **DONE in v5.5.902** (section above): `CheckoutModal` and `SplitModal`
+  now stage at apply and debit at commit too.
 
 ---
 

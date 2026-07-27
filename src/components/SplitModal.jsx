@@ -11,6 +11,7 @@ import { publishTipRequest, onCustomerTip, displayUsesScreen } from '../lib/cust
 import { platformSupabase } from '../lib/supabase';
 import { money, currencySymbol, stripeCurrency } from '../lib/currency';
 import { isTrainingMode } from '../lib/trainingMode';
+import { stageGiftCard } from '../lib/giftCommit';
 
 // ─── v5.5.291: Card terminal for split portions ─────────────────────────────
 // Sends the portion amount to the card terminal — same flow as CheckoutModal's
@@ -455,7 +456,7 @@ function SplitCashTender({ amount, onComplete, onBack }) {
 // ─── Gift card tender for a split portion (v5.5.199) ─────────────────────────
 const GIFT_FN_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 
-function SplitGiftCardTender({ amount, onComplete, onBack, portionId }) {
+function SplitGiftCardTender({ amount, onComplete, onBack }) {
   const [code, setCode] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -489,43 +490,29 @@ function SplitGiftCardTender({ amount, onComplete, onBack, portionId }) {
     }
   };
 
-  const handleRedeem = async () => {
+  // v5.5.902: STAGE only — nothing is debited here. This used to call gift-redeem the
+  // moment staff tendered the portion, with `order_id: portionId` (a positional `p0` /
+  // `s3` shared by every split at the venue). Back out of a half-tendered split and the
+  // customer's balance was gone with no check to show for it. The real debit now fires
+  // when the whole split closes, keyed to `<check>:<portion>` — see CheckoutModal's
+  // SplitModal onComplete.
+  const handleApply = () => {
     if (!cardInfo) return;
-    setError(null); setLoading(true);
-    try {
-      const amountMinor = Math.round(amount * 100);
-      const redeemAmount = Math.min(cardInfo.balance, amountMinor);
-      if (redeemAmount <= 0) { setError('Nothing to redeem'); setLoading(false); return; }
-      const idempotencyKey = `split:${portionId}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
-      const { data: session } = await supabase.auth.getSession();
-      const token = session?.session?.access_token;
-      const res = await fetch(`${GIFT_FN_URL}/gift-redeem`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          code: code.replace(/[\s-]/g, ''),
-          amount: redeemAmount,
-          order_id: portionId,
-          location_id: getActiveLocationSync(),
-          channel: 'pos',
-          idempotency_key: idempotencyKey,
-        }),
-      });
-      const j = await res.json();
-      if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
-
-      // If gift card covers full portion
-      if (redeemAmount >= amountMinor) {
-        onComplete(0, 0); // tendered=0, change=0 — gift card covers it
-      } else {
-        // Partial coverage — still counts as paid
-        onComplete(0, 0);
-      }
-    } catch (e) {
-      setError(String(e?.message ?? e));
-    } finally {
-      setLoading(false);
-    }
+    setError(null);
+    const staged = stageGiftCard({
+      cardId: cardInfo.card_id,
+      code: code.replace(/[\s-]/g, ''),
+      codeLast4: cardInfo.code_last4,
+      balanceMinor: cardInfo.balance,
+      amountDueMinor: Math.round(amount * 100),
+    });
+    if (staged.applied <= 0) { setError('Nothing to redeem'); return; }
+    // tendered=0, change=0 — unchanged: a gift card takes no cash and gives no change.
+    // NOTE (pre-existing, untouched): a card that only PART-covers the portion still
+    // marks it paid, so the remainder is never collected. Staging doesn't introduce
+    // that — it is the v5.5.199 behaviour — but it is now visible on the check as
+    // `uncollected` rather than silently lost.
+    onComplete(0, 0, staged);
   };
 
   const amountMinor = Math.round(amount * 100);
@@ -576,8 +563,8 @@ function SplitGiftCardTender({ amount, onComplete, onBack, portionId }) {
           {error && <div style={{ padding:8, background:'var(--red-d)', borderRadius:8, border:'1px solid var(--red-b)', color:'var(--red)', fontSize:12, marginBottom:10 }}>{error}</div>}
           <div style={{ display:'flex', gap:8 }}>
             <button className="btn btn-ghost" style={{ flex:1 }} onClick={() => { setCardInfo(null); setCode(''); setError(null); }}>← Different card</button>
-            <button className="btn btn-grn" style={{ flex:2, height:42 }} disabled={loading} onClick={handleRedeem}>
-              {loading ? 'Processing...' : `Apply ${money((canCover / 100))} from gift card`}
+            <button className="btn btn-grn" style={{ flex:2, height:42 }} disabled={loading} onClick={handleApply}>
+              {`Apply ${money((canCover / 100))} from gift card`}
             </button>
           </div>
         </>
@@ -632,8 +619,8 @@ function PortionTender({ portion, portionNum, total, canTakeCash = true, onCompl
       {screen === 'gift_card' && (
         <SplitGiftCardTender
           amount={portion.total}
-          portionId={portion.id}
-          onComplete={(tendered, change) => onComplete('gift_card', tendered, change)}
+          // v5.5.902: `staged` rides up to the portion; the debit fires at close.
+          onComplete={(tendered, change, staged) => onComplete('gift_card', tendered, change, null, 0, staged)}
           onBack={() => setScreen('method')}
         />
       )}
@@ -766,8 +753,10 @@ export default function SplitModal({ items, total, covers, canTakeCash = true, o
   // ─ Handle tender completion ─────────────────────────────────────────────────
   // v5.5.323: capture the card PaymentIntent id (if this portion was paid by
   // card) so the closed check can auto-refund each card leg to its own card.
-  const handlePortionPaid = (idx, method, tendered, change, paymentIntentId = null, tip = 0) => {
-    setPortions(p => p.map((portion, i) => i===idx ? { ...portion, paid:true, method, tendered, change, paymentIntentId: paymentIntentId || null, tip: tip || 0 } : portion));
+  // v5.5.902: `giftCard` is the STAGED card for a gift-tendered portion (nothing debited
+  // yet). CheckoutModal commits every staged leg when the split closes.
+  const handlePortionPaid = (idx, method, tendered, change, paymentIntentId = null, tip = 0, giftCard = null) => {
+    setPortions(p => p.map((portion, i) => i===idx ? { ...portion, paid:true, method, tendered, change, paymentIntentId: paymentIntentId || null, tip: tip || 0, giftCard: giftCard || null } : portion));
     setTenderingIdx(null);
   };
 
@@ -776,7 +765,13 @@ export default function SplitModal({ items, total, covers, canTakeCash = true, o
   const paidAmount = portions.filter(p => p.paid).reduce((s,p) => s+p.total, 0);
   const remaining = total - paidAmount;
 
-  if (allPaid) {
+  // v5.5.902: fire ONCE. This runs during render, so every re-render between the last
+  // portion being paid and the 500ms handoff used to queue another onComplete — each one
+  // recording the check again. Now that the close also commits the staged gift-card legs,
+  // a repeat is money, not just a duplicate row.
+  const completedRef = useRef(false);
+  if (allPaid && !completedRef.current) {
+    completedRef.current = true;
     setTimeout(() => onComplete(portions), 500);
   }
 
@@ -1059,7 +1054,7 @@ export default function SplitModal({ items, total, covers, canTakeCash = true, o
               portionNum={tenderingIdx+1}
               total={total}
               canTakeCash={canTakeCash}
-              onComplete={(method, tendered, change, piId, tip) => handlePortionPaid(tenderingIdx, method, tendered, change, piId, tip)}
+              onComplete={(method, tendered, change, piId, tip, staged) => handlePortionPaid(tenderingIdx, method, tendered, change, piId, tip, staged)}
               onBack={() => setTenderingIdx(null)}
             />
           )}

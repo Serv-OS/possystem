@@ -19,6 +19,7 @@ import { setTrainingMode as applyTrainingFlag, isTrainingMode } from '../lib/tra
 import { getDeliveryQuote, recordDeliverySurcharge } from '../lib/delivery/quoteService';
 import { dispatchDelivery, sendDeliveryTrackingSMS } from '../lib/delivery/dispatch';
 import { STALE_ORDER_FLOOR_MS } from '../sync/staleness';
+import { giftRecordFrom, giftLegs } from '../lib/giftCommit';
 import { waitlistSlice } from './waitlistSlice';
 
 // ── Payment-intent normaliser ────────────────────────────────────────────────
@@ -4264,6 +4265,8 @@ export const useStore = create((set, get) => ({
   // one local order ref; it writes no state. Shared by recordClosedCheck (mints a
   // chk-<ts> id) and closeApprovedTerminalJob (passes idOverride = the terminal job's
   // pre-minted closed_check_id), so both paths produce one identical record shape.
+  // v5.5.902: paymentInfo.closedCheckId is CheckoutModal's pre-minted id — the same id
+  // the gift-card debit was keyed to, so the refund reversal can find the ledger row.
   buildCloseRecord: (session, table, paymentInfo = {}, { idOverride } = {}) => {
     const { staff, taxRates } = get();
 
@@ -4282,7 +4285,7 @@ export const useStore = create((set, get) => ({
     let recLocId = getActiveLocationSync();
     if (!recLocId) { try { recLocId = localStorage.getItem('rpos-active-location') || null; } catch {} }
     return {
-      id: idOverride || `chk-${Date.now()}`,
+      id: idOverride || paymentInfo.closedCheckId || `chk-${Date.now()}`,
       ref,
       tableId: table.id,
       tableLabel: table.label,
@@ -4325,7 +4328,7 @@ export const useStore = create((set, get) => ({
       total:      paymentInfo.grand || session.total || 0,
       taxAmount:  taxBreakdown?.totalTax != null ? taxBreakdown.totalTax : null,  // v4.6.19
       method:     paymentInfo.method || 'card',
-      giftCard:   paymentInfo.giftCard || null,                  // v5.5.217: gift card reversal on refund
+      giftCard:   giftRecordFrom(paymentInfo),                   // v5.5.217 refund reversal; v5.5.902 also carries split legs
       stripePaymentIntentId: paymentInfo.stripePaymentIntentId || paymentInfo.paymentIntentId || null,  // v5.5.301: for card refunds
       processor:  paymentInfo.processor || 'stripe',             // which processor took the payment (refund routes by this)
       paymentIntents: attachCardToIntents(derivePaymentIntents(paymentInfo), paymentInfo.cardReceipt),  // v5.5.323 legs + v5.5.719 card block persisted on the leg
@@ -4463,6 +4466,11 @@ export const useStore = create((set, get) => ({
       tip:   (job.tip_minor ?? 0) / 100,
       stripePaymentIntentId: job.transaction_id || null,
       cardReceipt,
+      // v5.5.902: the gift card the POS debited BEFORE dispatching this job (the job's
+      // due was already net of it). Recording it here is what makes a refund of a
+      // reconciler-closed check restore the balance — this path booked null before, so
+      // the money came off the card with nothing on the check to reverse it by.
+      giftCard: d.giftCard || null,
     };
 
     // Rich path ONLY when the live occupation IS the one that paid → full-fidelity record
@@ -4497,7 +4505,7 @@ export const useStore = create((set, get) => ({
         tip: (job.tip_minor ?? 0) / 100,
         total: (job.charge_minor ?? 0) / 100,
         taxAmount: null,
-        method: 'card', giftCard: null,
+        method: 'card', giftCard: d.giftCard || null,   // v5.5.902 — see termPay above
         stripePaymentIntentId: job.transaction_id || null,
         processor: job.processor || 'ryft',
         paymentIntents: null, cardReceipt,
@@ -4689,7 +4697,7 @@ export const useStore = create((set, get) => ({
           taxAmount: f.taxAmount,
           taxBreakdown: f.taxBreakdown,
           method: paymentInfo.method || 'card',
-          giftCard: paymentInfo.giftCard || null,
+          giftCard: giftRecordFrom(paymentInfo),
           stripePaymentIntentId: paymentInfo.stripePaymentIntentId || paymentInfo.paymentIntentId || null,
           processor: paymentInfo.processor || 'stripe',
           paymentIntents: attachCardToIntents(derivePaymentIntents(paymentInfo), paymentInfo.cardReceipt),
@@ -4748,7 +4756,8 @@ export const useStore = create((set, get) => ({
     // random ref for genuinely-new walk-ins.
     const existingRef = walkInOrder.ref || null;
     const record = {
-      id: `chk-${Date.now()}`,
+      // v5.5.902: adopt CheckoutModal's pre-minted id (see buildCloseRecord).
+      id: paymentInfo.closedCheckId || `chk-${Date.now()}`,
       ref: existingRef || getNextOrderRefLocal(),
       tableId: null,
       tableLabel: null,
@@ -4769,7 +4778,7 @@ export const useStore = create((set, get) => ({
       taxAmount: taxBreakdown?.totalTax != null ? taxBreakdown.totalTax : null, // v4.6.19
       taxBreakdown,                                                                  // v5.5.341: store full breakdown so receipts/reports show VAT lines (walk-in/MPOS)
       method: paymentInfo.method || 'card',
-      giftCard: paymentInfo.giftCard || null,                                        // v5.5.217
+      giftCard: giftRecordFrom(paymentInfo),                                         // v5.5.217 / v5.5.902
       stripePaymentIntentId: paymentInfo.stripePaymentIntentId || paymentInfo.paymentIntentId || null,              // v5.5.301
       processor: paymentInfo.processor || 'stripe',                                  // refund routes by this
       paymentIntents: attachCardToIntents(derivePaymentIntents(paymentInfo), paymentInfo.cardReceipt),  // v5.5.323 legs + v5.5.719 card block
@@ -4889,30 +4898,45 @@ export const useStore = create((set, get) => ({
     // over-refunding. Partial refunds of gift-paid checks need a dedicated
     // amount-aware flow (flagged for follow-up); for now they don't auto-reverse
     // the gift card.
-    if (check?.giftCard?.card_id && check.giftCard.idempotency_key && isFullRefund) {
+    //
+    // v5.5.902: reverse EVERY gift card that paid toward the check, not just one. A split
+    // check can carry a leg per portion (giftLegs unwraps both shapes). A leg with a null
+    // idempotency_key is one whose commit FAILED — nothing was debited, so there is nothing
+    // to restore and reversing would 404 against a transaction that never existed.
+    const legsToReverse = isFullRefund
+      ? giftLegs(check).filter(g => g?.card_id && g.idempotency_key)
+      : [];
+    if (legsToReverse.length) {
       (async () => {
         try {
           const token = await ensureAuthToken();
           if (!token) { console.warn('[refundCheck] gift reversal skipped — no auth token'); return; }
-          const res = await fetch(
-            `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/gift-reverse-redeem`,
-            {
-              method: 'POST',
-              headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-              body: JSON.stringify({
-                card_id: check.giftCard.card_id,
-                original_idempotency_key: check.giftCard.idempotency_key,
-                reason: `POS refund: ${reason || 'refund'}`,
-                staff_id: manager?.id || null,
-                location_id: getActiveLocationSync(),
-              }),
+          for (const leg of legsToReverse) {
+            try {
+              const res = await fetch(
+                `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/gift-reverse-redeem`,
+                {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+                  body: JSON.stringify({
+                    card_id: leg.card_id,
+                    original_idempotency_key: leg.idempotency_key,
+                    reason: `POS refund: ${reason || 'refund'}`,
+                    staff_id: manager?.id || null,
+                    location_id: getActiveLocationSync(),
+                  }),
+                }
+              );
+              const j = await res.json().catch(() => ({}));
+              if (res.ok) {
+                console.info('[refundCheck] gift card reversed:', j.status || 'ok', 'restored:', j.restored);
+              } else {
+                console.warn('[refundCheck] gift reversal HTTP error:', res.status, j.error || '');
+              }
+            } catch (e) {
+              // One bad leg must not strand the others.
+              console.warn('[refundCheck] gift reversal failed for leg:', e?.message || e);
             }
-          );
-          const j = await res.json().catch(() => ({}));
-          if (res.ok) {
-            console.info('[refundCheck] gift card reversed:', j.status || 'ok', 'restored:', j.restored);
-          } else {
-            console.warn('[refundCheck] gift reversal HTTP error:', res.status, j.error || '');
           }
         } catch (e) {
           console.warn('[refundCheck] gift reversal failed:', e?.message || e);
