@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.910', date: '27 Jul 2026', label: 'FIX — "This bill has already been paid" on a bill nobody had paid',
+    changes: [
+      'SENDING A NEW BILL TO THE CARD MACHINE COULD BE REFUSED AS ALREADY PAID. Staff would send, say, £14.00 to the A50 on a fresh order and get "This bill has already been paid on the card machine — do NOT take payment again". Nothing was wrong with the order and no card had been touched.',
+      'WHY. A table check deliberately shares one payment reference per table and sitting, so two tills working the same table collide with each other instead of both charging it. That is correct. But it means the NEXT party sat at that table produces the same reference, picks up the PREVIOUS bill\'s finished payment, and is told — correctly, about that old payment — that it has already been taken. The only escape was clearing the till\'s browser storage.',
+      'THE FIX. Each bill already carries its own check reference, so the till now compares that too: same bill means a genuine retry and the payment reference is reused exactly as before, which is what keeps a retry from charging twice; a different bill means the leftover reference belongs to a finished sale and is simply discarded. If either reference is unknown the old behaviour is kept, because reusing a reference is the safe direction.',
+      'THIS DOES NOT WEAKEN THE DOUBLE-CHARGE GUARD. A bill that genuinely WAS paid on the terminal keeps its own reference, so trying it again is still refused with the same message and still points staff at a refund. All that has gone is the false alarm on a new bill.',
+      'READY TO TEST: send any table order to the terminal. It should go straight through, including on a table whose previous bill was paid by card.',
+    ],
+  },
+  {
     version: '5.5.909', date: '27 Jul 2026', label: 'KIOSK — gift-card orders failed at Send on a missing column; bar tabs no longer offer a hold Ryft cannot take',
     changes: [
       'THE KIOSK COULD TAKE THE MONEY AND THEN LOSE THE ORDER. Paying at the kiosk with a gift card got as far as "Fully covered!" and then failed on Send with "Could not find the \'promo\' column of closed_checks". The gift card was already debited at that point — the customer had paid and the sale existed nowhere: no check, no kitchen ticket, no receipt. Cause: v5.5.887 added promo codes to every channel and started recording the code on the check, but the column that holds it was never added to the database. It fails even when there is no promo, because the database checks the shape of what you send before it looks at the values.',

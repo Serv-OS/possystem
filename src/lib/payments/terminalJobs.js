@@ -264,8 +264,38 @@ export async function dispatchTerminalJob(p) {
   // Mint + persist BEFORE the network call, and reuse any id we already minted
   // for this check — that is what makes a retry idempotent.
   const prior = recallJob(p.checkKey);
-  const jobId = prior?.jobId || mintJobId();
-  const closedCheckId = prior?.closedCheckId || p.closedCheckId;
+
+  // v5.5.910 — A HANDLE IS ONLY A RETRY IF IT IS THE SAME BILL.
+  //
+  // A table check deliberately shares ONE check key per table+session, so two tills working
+  // the same table collide instead of double-charging it. That is right, but it makes the key
+  // a poor identity for "this bill": the next party sat at T3 derives the SAME key, picks up
+  // the PREVIOUS bill's job id, and the server answers — correctly, for that job — "already
+  // settled: approved". Staff then see "This bill has already been paid on the card machine"
+  // on a bill nobody has paid, and the only escape is clearing browser storage.
+  //
+  // closedCheckId IS per-bill (CheckoutModal mints one per checkout), so compare on that:
+  //   same closedCheckId      -> a genuine retry of the same bill. Reuse the job id; that
+  //                              reuse is exactly what makes a retry idempotent. UNCHANGED.
+  //   different closedCheckId -> a different bill. The handle is spent bookkeeping, not a
+  //                              paid check. Drop it and mint fresh.
+  // Only ever discard when BOTH ids are known. If either is missing we cannot prove they are
+  // different bills, so we keep the prior handle — reusing an id is the safe direction, and
+  // the approved-guard below still stops a double charge.
+  //
+  // This does NOT weaken that guard. A bill genuinely paid on the terminal keeps its own
+  // closedCheckId, so a retry of THAT bill still reuses the id, still gets ALREADY_PAID, and
+  // is still refused. All this removes is the false positive on a new bill.
+  const staleBill = !!(prior?.closedCheckId && p.closedCheckId
+                       && prior.closedCheckId !== p.closedCheckId);
+  if (staleBill) {
+    console.warn('[terminalJobs] dropping a handle from a previous bill on this key —',
+      'prior check', prior.closedCheckId, 'now', p.closedCheckId);
+    forgetJob(p.checkKey);
+  }
+  const reusable = staleBill ? null : prior;
+  const jobId = reusable?.jobId || mintJobId();
+  const closedCheckId = reusable?.closedCheckId || p.closedCheckId;
   rememberJob({ checkKey: p.checkKey, jobId, closedCheckId, locationId, at: Date.now() });
 
   // v5.5.843: SELF-HEAL A STALE HANDLE.
