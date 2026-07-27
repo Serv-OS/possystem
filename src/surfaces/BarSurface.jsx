@@ -7,6 +7,7 @@ import CheckoutModal from './CheckoutModal';
 import TabPreAuthTerminal from '../components/TabPreAuthTerminal';
 import { getNextOrderRefLocal, fetchMenuCategoryLinks } from '../lib/db';
 import { getActiveLocationSync, ensureAuthToken } from '../lib/supabase';
+import { getLocationProcessorInfo } from '../lib/payments/processor';
 import { isTrainingMode } from '../lib/trainingMode';
 import { money, currencySymbol } from '../lib/currency';
 import { kitchenOverride, receiptOverride } from '../lib/itemDisplay';
@@ -39,7 +40,11 @@ function timeOpen(date) {
 }
 
 // ─── Open Tab Modal ──────────────────────────────────────────────────────────
-function OpenTabModal({ onConfirm, onCancel }) {
+// v5.5.909: `canPreAuth` is resolved ONCE by BarSurface (below) and passed in, rather than
+// looked up here — the lookup is async, so doing it in the modal would render the pre-auth
+// toggle for a frame and then yank it away, which is exactly the "offered then withdrawn"
+// behaviour we are removing.
+function OpenTabModal({ onConfirm, onCancel, canPreAuth = true }) {
   const { tables, tabs } = useStore();
   const [name, setName]           = useState('');
   const [seatId, setSeatId]       = useState('');
@@ -113,6 +118,13 @@ function OpenTabModal({ onConfirm, onCancel }) {
             <input className="input" placeholder="Birthday, celebrating, VIP..." value={note} onChange={e=>setNote(e.target.value)}/>
           </div>
 
+          {/* v5.5.909 — NEVER OFFER A HOLD WE CANNOT TAKE. Ryft in-person terminals have no
+              card-hold capability at all (pre-auth is Stripe-Terminal-only), so on a Ryft venue
+              this toggle could only ever lead to a dead end. There WAS a guard, but it fired in
+              TabPreAuthTerminal AFTER staff had flipped the toggle and pressed "Open tab" — they
+              were still offered something that always failed. Hidden at source now. Tabs still
+              open normally on Ryft, just without a hold. */}
+          {canPreAuth && (
           <div style={{ background:'var(--bg3)', borderRadius:12, padding:'12px 14px', border:'1px solid var(--bdr)' }}>
             <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom: preAuth ? 10 : 0 }}>
               <div>
@@ -142,6 +154,7 @@ function OpenTabModal({ onConfirm, onCancel }) {
               </div>
             )}
           </div>
+          )}
         </div>
 
         <div style={{ display:'flex', gap:8, marginTop:20 }}>
@@ -170,6 +183,19 @@ export default function BarSurface() {
   const { tabs, activeTabId, setActiveTab, openTab, addRoundToTab, updateTabNote, updateTabStatus, setTabHold, closeTab, voidTabRound, seedTabs, showToast, eightySixIds, allergens, setPendingItem, clearPendingItem, pendingItem, menuCategories, quickScreenIds, menuItems: storeMenuItems, modifierGroupDefs, menus, deviceConfig, staff, recordWalkInClosedCheck } = useStore();
 
   const [showOpenModal, setShowOpenModal]   = useState(false);
+  // v5.5.909: can this venue take a card hold at all? Ryft in-person cannot — pre-auth is
+  // Stripe-Terminal-only. Resolved once here (the helper caches per location) so the modal
+  // never flashes a toggle it is about to remove. Defaults TRUE and only ever goes false on a
+  // DEFINITIVE 'ryft': getLocationProcessorInfo returns { processor:'stripe', definitive:false }
+  // on any lookup blip, and a blip must never hide a working Stripe venue's pre-auth.
+  const [canPreAuth, setCanPreAuth] = useState(true);
+  useEffect(() => {
+    let alive = true;
+    getLocationProcessorInfo(getActiveLocationSync())
+      .then(info => { if (alive) setCanPreAuth(!(info?.definitive && info.processor === 'ryft')); })
+      .catch(() => { /* leave it enabled — fail open to today's Stripe behaviour */ });
+    return () => { alive = false; };
+  }, []);
   const [cat, setCat]                       = useState('all');
   const [search, setSearch]                 = useState('');
   const [roundItems, setRoundItems]         = useState([]);  // items being built for next round
@@ -779,7 +805,7 @@ export default function BarSurface() {
       </div>
 
       {/* Modals */}
-      {showOpenModal&&<OpenTabModal onConfirm={handleOpenTab} onCancel={()=>setShowOpenModal(false)}/>}
+      {showOpenModal&&<OpenTabModal onConfirm={handleOpenTab} onCancel={()=>setShowOpenModal(false)} canPreAuth={canPreAuth}/>}
       {/* v5.5.324: card pre-auth hold collected on the reader before the tab opens */}
       {pendingTabOpts&&(
         <TabPreAuthTerminal

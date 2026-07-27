@@ -762,7 +762,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
         course: 1,
       }));
       // 1. closed_checks
-      const { error: e1 } = await supabase.from('closed_checks').insert({
+      const checkRow = {
         id: checkId,
         location_id: locationId,
         ref: num,
@@ -795,14 +795,39 @@ export default function KioskApp({ kioskId, onUnpair }) {
         // v5.5.901: `applied` is what the server actually debited (giftCardCheckRecord),
         // so reports never overstate gift-card revenue when a commit came up short.
         gift_card: giftCardPayment ? giftCardCheckRecord(giftCardPayment, giftCommit) : null,
-        // v5.5.887: promo/offer code on the check for receipt / refund / reporting use
-        promo: promoApplied ? {
-          code: promoApplied.code,
-          offer_id: promoApplied.offer_id || null,
-          label: promoApplied.label || null,
-          discount_value: promoCredit,
-        } : null,
-      });
+        // v5.5.887: promo/offer code on the check for receipt / refund / reporting use.
+        // v5.5.909: SPREAD, not a plain `promo: … : null`. PostgREST validates every KEY in
+        // the payload against its schema cache before it looks at any value, so shipping
+        // `promo: null` on a venue without the column fails the whole insert — the money is
+        // already taken (gift card debited, card charged) and the check never lands. Only
+        // send the key when there is actually a promo to record.
+        ...(promoApplied ? {
+          promo: {
+            code: promoApplied.code,
+            offer_id: promoApplied.offer_id || null,
+            label: promoApplied.label || null,
+            discount_value: promoCredit,
+          },
+        } : {}),
+      };
+      // v5.5.909 — A PAID ORDER MUST NEVER BE LOST TO A MISSING OPTIONAL COLUMN.
+      // By the time we get here the customer's money is GONE: the gift card is debited, the
+      // promo is redeemed, the card is charged. If this insert fails the sale exists nowhere
+      // — no check, no kitchen ticket, no receipt — and the customer is standing there having
+      // paid. A venue whose DB is missing a column we added later (`promo`, v5.5.887) took the
+      // whole insert down. PostgREST reports that as PGRST204 and names the column, so strip
+      // the ones it does not know and retry rather than dropping the sale. The order is
+      // recorded; only the extra detail is lost, and the console says exactly which column to
+      // add. Same shape as the kitchen_routed_at graceful fallback in routeKioskOrderPrints.
+      let e1 = (await supabase.from('closed_checks').insert(checkRow)).error;
+      for (let attempt = 0; e1 && attempt < 4; attempt++) {
+        const missing = /Could not find the '([^']+)' column/.exec(e1.message || '')?.[1];
+        if (!missing || !(missing in checkRow)) break;
+        console.error(`[kiosk] closed_checks has no '${missing}' column — dropping it so the paid `
+          + `order still records. FIX THE DB: alter table closed_checks add column if not exists ${missing} jsonb;`);
+        delete checkRow[missing];
+        e1 = (await supabase.from('closed_checks').insert(checkRow)).error;
+      }
       if (e1) throw e1;
       // v5.5.583: deplete recipe ingredients from the stock ledger (server-side, since
       // kiosk runs anonymously). Fire-and-forget — never blocks the order.
