@@ -1419,7 +1419,12 @@ function ItemsLibrary() {
   const totalVariants = menuItems.filter(i=>!i.archived&&i.parentId).length;
 
   const addNewItem = () => {
-    const defCat = catFilter!=='all' ? catFilter : (allCats.find(c=>!c.parentId)?.id||'');
+    // v5.5.915: no arbitrary default category. It used to fall back to whichever root category
+    // happened to be FIRST, so adding a product from the "All" view silently filed it under
+    // something unrelated and nobody noticed until it turned up on the wrong screen. Adding
+    // while a category is selected still lands in that category — that is the context you are
+    // working in, not a guess — but from "All" the primary category is now left empty to choose.
+    const defCat = catFilter!=='all' ? catFilter : '';
     const created = addMenuItem({ name:'New item', menuName:'New item', receiptName:'New item', kitchenName:'New item',
       type:'simple', cat:defCat, allergens:[], pricing:{base:0},
       assignedModifierGroups:[], assignedInstructionGroups:[], cats:[], sortOrder:999 });

@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.915', date: '27 Jul 2026', label: 'Cooking preferences now come first when ordering; new products no longer land in a category you did not pick',
+    changes: [
+      'COOKING PREFERENCES NOW APPEAR FIRST, NOT LAST. Instructions like "medium rare" or "no ice" were rendering underneath every modifier group, so on an item with a few option groups the kitchen-critical choice was the last thing the server saw — and on a smaller till it was off the bottom of the screen entirely. They now sit at the top, above the options. Back Office lets you drag modifier groups into whatever order you like, but instruction groups are a separate list with no way to sort them above those, which is exactly why this is now fixed in the ordering screen itself rather than left to be set up per item.',
+      'ADDING A PRODUCT NO LONGER PICKS A CATEGORY FOR YOU. From the "All products" view, a new product was quietly filed under whichever category happened to be first in the list — so it would appear somewhere you never chose, and usually you would not find out until it showed up on the wrong screen. The primary category is now left empty for you to set. Adding a product while you have a category selected still files it there, because that is the context you are working in rather than a guess.',
+    ],
+  },
+  {
     version: '5.5.914', date: '27 Jul 2026', label: 'KDS — the "to make" list is now a full-height panel showing everything, and timers no longer read NaNm',
     changes: [
       'THE RUNNING TOTAL IS NOW A PROPER PANEL DOWN THE SIDE. As a strip along the top it ran out of width after four or five items and quietly hid the rest — which defeated the point of having it. It is now a full-height column on the right listing every outstanding item with its quantity and modifiers, so the whole prep list is visible in one look. On a test board of four tickets that is all sixteen items on screen at once, where the strip showed five.',
