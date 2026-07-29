@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.928', date: '29 Jul 2026', label: 'WASTE — recording from the till actually saves now (it was being refused silently)',
+    changes: [
+      'RECORDING WASTE FROM THE TILL WAS BEING REFUSED — QUIETLY. The waste record table was still Back-Office-only in the database, so when a till tried to save, the database said no, the screen stayed open, and the only sign was a brief error message that was easy to miss. Nothing had been recorded — and because the event saves first, no stock moved either, so the ledger never lied; it just recorded nothing.',
+      'FIXED IN THE DATABASE (applied live, no app update needed): tills can now record and view waste for THEIR OWN venue. Editing or deleting waste history stays Back-Office-only — a till records waste, it does not rewrite it.',
+      'AND IF A TILL IS EVER REFUSED AGAIN, IT SAYS SO IN ENGLISH: "This till is not allowed to record waste — re-pair the device or record it in Back Office → Wastage" instead of a raw database error.',
+      'ON THE TENANT WALLS QUESTION: every permission added this week is per-venue by construction — a till only ever passes the check for rows carrying ITS OWN venue id, and Back Office users only for venues on their own access list. Nobody sees anyone else\'s items, recipes, waste or stock. The remaining known gaps are the three OLD tables flagged in the June audit (customers, active sessions, order queue) — unchanged this week, still on the board, and they need their rewiring job before Stage.',
+      'READY TO TEST: POS → Waste tab → record a wasted burger. The screen should close with a green confirmation, the patty stock drops, and the entry appears in Back Office → Wastage.',
+    ],
+  },
+  {
     version: '5.5.927', date: '29 Jul 2026', label: 'WASTE — button moved next to Deliveries on the POS; Back Office can now waste selling items',
     changes: [
       'THE WASTE BUTTON IS NOW WHERE STAFF CAN SEE IT. It was buried inside the cash-drawer menu — a waste button nobody can find is a waste ledger that lies. It now sits in the POS tab bar next to Deliveries, one tap, opens the same recording screen.',

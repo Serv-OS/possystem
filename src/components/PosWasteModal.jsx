@@ -109,7 +109,16 @@ export default function PosWasteModal({ open, onClose, locationId, showToast }) 
         ingredients: impact.ingredients, reason, note: note.trim() || null, source: 'pos',
       }, loc);
       setBusy(false);
-      if (error) { showToast?.(error.message || 'Could not log waste', 'error'); return; }
+      if (error) {
+        // v5.5.928: never surface a raw RLS string to staff — it reads as gibberish and the
+        // open modal gives no clue whether anything saved. (It has not: the event insert is
+        // first, so a refusal here means NOTHING recorded.)
+        const msg = /row-level security/i.test(error.message || '')
+          ? 'This till is not allowed to record waste — re-pair the device or record it in Back Office → Wastage'
+          : (error.message || 'Could not log waste');
+        showToast?.(msg, 'error');
+        return;
+      }
       showToast?.(`Waste logged — ${n}× ${product.label} · lost sale ${money(impact.lostSale)}`, 'success');
       onClose?.();
     } catch (e) { setBusy(false); showToast?.(e?.message || 'Could not log waste', 'error'); }
