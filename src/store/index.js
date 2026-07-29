@@ -22,6 +22,10 @@ import { STALE_ORDER_FLOOR_MS } from '../sync/staleness';
 import { giftRecordFrom, giftLegs, reverseGiftCard } from '../lib/giftCommit';
 import { waitlistSlice } from './waitlistSlice';
 
+// v5.5.944: terminal jobs whose closed_check upsert failed and were flagged to the
+// activity feed — once per job per boot, so the 8s retry loop doesn't spam the feed.
+const _closeFailFlagged = new Set();
+
 // ── Payment-intent normaliser ────────────────────────────────────────────────
 // v5.5.323: a check can have MULTIPLE card PaymentIntents — one per card portion
 // of a split. Collapse whatever the checkout flow handed us into a single array
@@ -4540,6 +4544,30 @@ export const useStore = create((set, get) => ({
     // ── ELECT THE SINGLE CLOSER — the closed_checks PK does the arbitration ────
     const { ok, created } = await upsertClosedCheck(record);
 
+    // ── v5.5.944: a FAILED upsert must leave this device able to retry ─────────
+    // The old order prepended the local tombstone and dropped the floor slot even when
+    // ok:false. That local tombstone then tripped the "already closed on this device"
+    // guard above on every subsequent tick — so the v5.5.851 promise ("job left
+    // approved for retry") was a lie on the one till that had already tried, which is
+    // usually the ONLY awake till. Live case (29 Jul, B2 £57.55 on the A50): sale in
+    // the till's History, closed_checks row nowhere, job stuck 'approved' with zero
+    // reconcile attempts, and the local-only floor drop set off the session
+    // delete/resurrect tug-of-war that put B2 back on the floor. On failure: touch
+    // NOTHING local, flag it once where a human can see it, and let the next tick retry.
+    if (!ok) {
+      console.warn('[closeApprovedTerminalJob] check write did not land for', job.closed_check_id, '— job left approved for retry');
+      if (!_closeFailFlagged.has(job.id)) {
+        _closeFailFlagged.add(job.id);
+        logActivity(record.locationId || d.locationId || null, {
+          kind: 'system', severity: 'action',
+          title: 'Card taken — sale not yet recorded',
+          body: `${d.tableLabel || tableId || 'Counter'}: £${((job.charge_minor ?? 0) / 100).toFixed(2)} captured on the terminal but the sale record has not saved yet. Retrying automatically — if this persists, check the till's connection.`,
+          refType: 'terminal_job', refId: job.id,
+        }).catch(() => {});
+      }
+      return;
+    }
+
     // Idempotent on every caller: prepend the tombstone.
     set(s => ({ closedChecks: s.closedChecks.some(c => c.id === record.id) ? s.closedChecks : [record, ...s.closedChecks] }));
     // Drop the floor slot ONLY if it is empty or still held by the paying occupation —
@@ -4562,42 +4590,40 @@ export const useStore = create((set, get) => ({
     // except this device's localStorage safety net (live case: a £2.85 Table-Pay sale
     // vanished from history). ok:false now leaves the job 'approved': the next tick —
     // on any till — retries the idempotent upsert until it lands, then marks done.
-    if (ok) {
-      // v5.5.866 — delete the paid occupation's active_sessions row SERVER-SIDE now, so the table
-      // closes on EVERY device immediately rather than lingering until an awake device's 10s
-      // ghost-sweep fires (the A50 runs no sweep; the table then re-hydrated on the floor). Same
-      // occupation gate as the floor drop; the RPC itself also refuses anything but the exact paid
-      // occupation (session id + seatedAt) with a booked closed_check. SessionReconciler stays the backstop.
-      if (tableId && (!table?.session || liveIsPayingOccupation)) {
-        closeTerminalSession({
-          locationId: record.locationId || d.locationId || null,
-          tableId,
-          sessionId: d.sessionId,
-          seatedAt: d.seatedAt,
-          closedCheckId: record.id,
-        }).catch(() => { /* best-effort — ghost-sweep backstop remains */ });
-      }
-      if (hasDrift) {
-        // NON-BLOCKING advisory (v5.5.866): the sale IS booked at the charged amount; a manager
-        // reviews the delta from the activity feed. This replaces the old flagJobStale-and-strand.
-        logActivity(record.locationId || d.locationId || null, {
-          kind: 'system', severity: 'action',
-          title: 'Table Pay — bill differed from amount charged',
-          body: `${d.tableLabel || tableId || 'Counter'}: charged £${((job.charge_minor ?? 0) / 100).toFixed(2)}, `
-            + `live bill £${(Number(job.live_total_minor) / 100).toFixed(2)} `
-            + `(${driftMinor > 0 ? '+' : '−'}£${Math.abs(driftMinor / 100).toFixed(2)}). `
-            + `Booked at the charged amount — review.`,
-          refType: 'closed_check', refId: record.id,
-        }).catch(() => {});
-      }
-      await markJobReconciled(job.id).catch(() => {});   // housekeeping — insert-first, so a crash here just retries
-      // v5.5.862: the sale is durably recorded — release this device's payment-
-      // reference handle for the check. A stale handle here is what produced
-      // "payment reference has already been used" on the NEXT sale sharing the key.
-      if (job.check_key) { try { forgetJob(job.check_key); } catch { /* best-effort */ } }
-    } else {
-      console.warn('[closeApprovedTerminalJob] check write did not land for', job.closed_check_id, '— job left approved for retry');
+    // v5.5.866 — delete the paid occupation's active_sessions row SERVER-SIDE now, so the table
+    // closes on EVERY device immediately rather than lingering until an awake device's 10s
+    // ghost-sweep fires (the A50 runs no sweep; the table then re-hydrated on the floor). Same
+    // occupation gate as the floor drop; the RPC itself also refuses anything but the exact paid
+    // occupation (session id + seatedAt) with a booked closed_check. SessionReconciler stays the backstop.
+    // (v5.5.944: the ok:false branch returns above, so everything from here runs only
+    // once the closed_check row provably landed server-side.)
+    if (tableId && (!table?.session || liveIsPayingOccupation)) {
+      closeTerminalSession({
+        locationId: record.locationId || d.locationId || null,
+        tableId,
+        sessionId: d.sessionId,
+        seatedAt: d.seatedAt,
+        closedCheckId: record.id,
+      }).catch(() => { /* best-effort — ghost-sweep backstop remains */ });
     }
+    if (hasDrift) {
+      // NON-BLOCKING advisory (v5.5.866): the sale IS booked at the charged amount; a manager
+      // reviews the delta from the activity feed. This replaces the old flagJobStale-and-strand.
+      logActivity(record.locationId || d.locationId || null, {
+        kind: 'system', severity: 'action',
+        title: 'Table Pay — bill differed from amount charged',
+        body: `${d.tableLabel || tableId || 'Counter'}: charged £${((job.charge_minor ?? 0) / 100).toFixed(2)}, `
+          + `live bill £${(Number(job.live_total_minor) / 100).toFixed(2)} `
+          + `(${driftMinor > 0 ? '+' : '−'}£${Math.abs(driftMinor / 100).toFixed(2)}). `
+          + `Booked at the charged amount — review.`,
+        refType: 'closed_check', refId: record.id,
+      }).catch(() => {});
+    }
+    await markJobReconciled(job.id).catch(() => {});   // housekeeping — insert-first, so a crash here just retries
+    // v5.5.862: the sale is durably recorded — release this device's payment-
+    // reference handle for the check. A stale handle here is what produced
+    // "payment reference has already been used" on the NEXT sale sharing the key.
+    if (job.check_key) { try { forgetJob(job.check_key); } catch { /* best-effort */ } }
   },
 
   /**

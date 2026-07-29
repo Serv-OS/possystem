@@ -78,6 +78,19 @@ export async function flushSessions() {
   };
 
   for (const t of occupied) {
+    // v5.5.944: NEVER publish a closed occupation. The whole-floor sweep had no
+    // tombstone check, so a till that missed the close events (asleep, dropped
+    // websocket) re-upserted the paid table on its next flush of ANYTHING — the
+    // resurrection half of the B2 tug-of-war (29 Jul: paid on the A50, deleted,
+    // re-published, deleted again, flapping). reassertSession's tombstone branch
+    // does the right thing instead: clear it locally, latch 'cleared', purge the
+    // backup. Matched on seatedAt, so a genuine re-seat is never blocked.
+    if (isSessionClosed(t.id, t.session)) {
+      reassertSession(t.id);
+      delete _backup[t.id]; _backupDirty = true;   // our pre-read copy must not resurrect it below
+      skipped++;
+      continue;
+    }
     delete _clearedAt[t.id]; // v5.5.283: clear grace period if table re-occupied
     let totals = null;
     try { totals = sessionTotalsMinor(t.session, _totalsOpts); }
@@ -275,6 +288,9 @@ export async function flushSingleSession(tableId) {
   if (!_locationId) return;
   const t = (useStore.getState().tables || []).find((x) => x.id === tableId);
   if (!t || !t.session) return;
+  // v5.5.944: same tombstone rule as flushSessions — a closed occupation is never
+  // re-published, from any surface (the host stand's 30s poll snapshot can be stale).
+  if (isSessionClosed(t.id, t.session)) { reassertSession(t.id); return; }
 
   _lastSent[t.id] = JSON.stringify(t.session);
   try {

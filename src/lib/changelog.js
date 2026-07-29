@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.944', date: '29 Jul 2026', label: 'Table-Pay close could silently lose the sale and resurrect the table (B2)',
+    changes: [
+      'Found from tonight\'s B2: the card charged on the A50 (£57.55, webhook-verified), but the till\'s one attempt to save the sale failed — and the old code still marked it "closed on this device", so it never retried. Result: sale visible only in that till\'s local History, missing from the real records, and the half-closed table flapping back onto the floor.',
+      'Two fixes. (1) A failed save now changes NOTHING on the till — no local history entry, no floor clear — so it genuinely retries every 8 seconds until the record lands, and posts a visible "Card taken — sale not yet recorded" alert to the activity feed on the first failure. (2) No till can ever re-publish a table whose bill is already closed — the sync sweep now checks the closed-check tombstone before writing, which ends the delete/re-publish tug-of-war that kept bringing B2 back.',
+      'The missing £57.55 sale itself needs a one-off recovery insert (Claude has the SQL ready — needs your go-ahead).',
+      'TEST (A50): open a table, pay it off with Table Pay → table drops everywhere and the sale appears in Back Office → Transactions within ~10s. Then re-test with the till\'s WiFi briefly off at the moment of payment — the table stays until the till reconnects, then closes and books exactly once.',
+    ],
+  },
+  {
     version: '5.5.943', date: '29 Jul 2026', label: 'Cash change stays on screen until you tap it away',
     changes: [
       'Cashing off a sale flashed the change for a moment and then it was gone — staff counting coins out of the drawer had to remember the figure. Now a full-screen CHANGE DUE takes over the till after every cash sale with change, and stays there until somebody taps.',
