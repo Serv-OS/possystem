@@ -5,10 +5,10 @@
 
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useStore } from '../../store';
-import { getActiveLocationSync, getLocationId } from '../../lib/supabase';
+import { getActiveLocationSync, getLocationId, supabase } from '../../lib/supabase';
 import { money, currencySymbol } from '../../lib/currency';
 import { fetchSuppliers, fetchInventoryItems } from '../../lib/stock/data';
-import { fetchPurchaseOrders, savePurchaseOrder, setPOStatus, receivePurchaseOrder } from '../../lib/stock/purchasing';
+import { fetchPurchaseOrders, savePurchaseOrder, setPOStatus, receivePurchaseOrder, attachInvoiceToPO, fetchPOInvoices } from '../../lib/stock/purchasing';
 import { PageHeader, PrimaryBtn, Tag } from './reports/reportKit';
 
 const field = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '8px 10px', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
@@ -34,6 +34,10 @@ export default function PurchaseOrders() {
   // own tabs. This is the owner's "one constant list" complaint fixed at the root.
   const [tab, setTab] = useState('open');           // 'open' | 'done' | 'all'
   const [q, setQ] = useState('');
+  // v5.5.921 — the "accept into stock" panel: per-line received qty + delivery-note price.
+  // null = closed; otherwise { [lineId]: { qtyPacks, unitPrice } } seeded from the order.
+  const [receiving, setReceiving] = useState(null);
+  const [poInvoices, setPoInvoices] = useState([]);
 
   const reload = useCallback(async (keepId) => {
     const loc = locId || getActiveLocationSync() || await getLocationId().catch(() => null);
@@ -80,19 +84,71 @@ export default function PurchaseOrders() {
     const { data, error } = await savePurchaseOrder({ ...draft, status: status || draft.status }, draft.lines, locId);
     setBusy(false);
     if (error) { showToast?.(error.message, 'error'); return; }
-    showToast?.(status === 'SENT' ? 'PO sent' : 'Saved', 'success');
+    showToast?.(status === 'SENT' ? 'Marked sent' : 'Saved', 'success');
     await reload(data?.id || selId);
+    return data;
   };
-  const receive = async () => {
-    if (!draft?.id) return;
-    if (!confirm('Receive this whole order into stock? This adds stock and updates costs.')) return;
+  // v5.5.921 — actually SEND the order. Saves first (so what the supplier gets is what is on
+  // screen), then po-send emails the order table and flips the status server-side only after
+  // the email succeeded — SENT finally means sent. Falls back to mark-sent when the supplier
+  // has no email on file.
+  const supplierEmail = suppliers.find(sp => sp.id === draft?.supplierId)?.email || null;
+  const sendToSupplier = async () => {
+    const saved = await save('DRAFT');
+    if (!saved?.id) return;
     setBusy(true);
-    const { error } = await receivePurchaseOrder(draft.id, locId);
+    const { data: res, error } = await supabase.functions.invoke('po-send', {
+      body: { po_id: saved.id, location_id: locId },
+    });
+    setBusy(false);
+    if (error || res?.error) {
+      const msg = res?.error === 'supplier_has_no_email'
+        ? 'This supplier has no email on file — add one in Suppliers, or use Mark sent.'
+        : (res?.error || error?.message || 'Send failed');
+      showToast?.(msg, 'error'); return;
+    }
+    showToast?.(`Order emailed to ${res?.to}`, 'success');
+    await reload(saved.id);
+  };
+  const openReceive = () => {
+    // Seed with what was ordered — staff correct only what differs, which for a clean
+    // delivery is nothing. Prices pre-filled from the PO so variance is one edit away.
+    const seed = {};
+    (draft.lines || []).forEach(l => { seed[l.id] = { qtyPacks: String(l.qtyPacks), unitPrice: String(l.unitPrice) }; });
+    setReceiving(seed);
+  };
+  const acceptIntoStock = async () => {
+    if (!draft?.id || !receiving) return;
+    const receipts = (draft.lines || []).map(l => ({
+      lineId: l.id,
+      qtyPacks: Number(receiving[l.id]?.qtyPacks ?? l.qtyPacks) || 0,
+      unitPrice: receiving[l.id]?.unitPrice ?? l.unitPrice,
+    }));
+    setBusy(true);
+    const { error, data } = await receivePurchaseOrder(draft.id, locId, receipts);
     setBusy(false);
     if (error) { showToast?.(error.message, 'error'); return; }
-    showToast?.('Received into stock', 'success');
+    setReceiving(null);
+    showToast?.(data?.shortedCount
+      ? `Received — ${data.shortedCount} shorted line${data.shortedCount === 1 ? '' : 's'} moved to a balance order`
+      : 'Received into stock', 'success');
     await reload(draft.id);
   };
+  const attachInvoice = async (file) => {
+    if (!draft?.id || !file) return;
+    setBusy(true);
+    const { error } = await attachInvoiceToPO(draft.id, file, { supplierId: draft.supplierId }, locId);
+    setBusy(false);
+    if (error) { showToast?.(error.message, 'error'); return; }
+    showToast?.('Invoice attached', 'success');
+    const { data } = await fetchPOInvoices(draft.id, locId);
+    setPoInvoices(data);
+  };
+  useEffect(() => {
+    setReceiving(null);
+    if (draft?.id) fetchPOInvoices(draft.id, locId).then(({ data }) => setPoInvoices(data)); else setPoInvoices([]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft?.id]);
   const cancel = async () => { if (draft?.id) { await setPOStatus(draft.id, 'CANCELLED', locId); await reload(draft.id); } };
 
   const editable = !draft?.id || draft.status === 'DRAFT';
@@ -173,10 +229,64 @@ export default function PurchaseOrders() {
                 {vatTotal > 0.005 && <span style={{ color: 'var(--t3)' }}> · VAT {money(vatTotal)} · <b style={{ color: 'var(--t1)' }}>pay {money(total + vatTotal)}</b></span>}
               </div>
               {editable && <button onClick={() => save('DRAFT')} disabled={busy} style={{ padding: '9px 16px', borderRadius: 8, background: 'var(--bg2)', border: '1px solid var(--bdr)', color: 'var(--t1)', fontSize: 13, cursor: 'pointer' }}>Save draft</button>}
-              {editable && <PrimaryBtn onClick={() => save('SENT')} disabled={busy || !draft.lines.length}>Save &amp; mark sent</PrimaryBtn>}
-              {draft.id && (draft.status === 'SENT' || draft.status === 'PARTIAL') && <PrimaryBtn onClick={receive} disabled={busy}>Receive into stock</PrimaryBtn>}
+              {editable && supplierEmail && <PrimaryBtn onClick={sendToSupplier} disabled={busy || !draft.lines.length}>Send to supplier</PrimaryBtn>}
+              {editable && <button onClick={() => save('SENT')} disabled={busy || !draft.lines.length} style={{ padding: '9px 16px', borderRadius: 8, background: supplierEmail ? 'var(--bg2)' : 'var(--acc)', border: supplierEmail ? '1px solid var(--bdr)' : 0, color: supplierEmail ? 'var(--t1)' : '#0b0c10', fontSize: 13, fontWeight: 700, cursor: 'pointer', opacity: busy || !draft.lines.length ? 0.6 : 1 }} title={supplierEmail ? 'Mark sent without emailing' : 'No supplier email on file — marks the order sent without emailing'}>Mark sent</button>}
+              {draft.id && (draft.status === 'SENT' || draft.status === 'PARTIAL') && !receiving && <PrimaryBtn onClick={openReceive} disabled={busy}>Accept delivery…</PrimaryBtn>}
               {draft.id && draft.status !== 'RECEIVED' && draft.status !== 'CANCELLED' && <button onClick={cancel} style={{ padding: '9px 14px', borderRadius: 8, background: 'transparent', border: '1px solid var(--bdr)', color: 'var(--t3)', fontSize: 13, cursor: 'pointer' }}>Cancel order</button>}
             </div>
+            {receiving && (
+              <div style={{ marginTop: 16, border: '1px solid var(--acc)', borderRadius: 10, padding: 16, background: 'var(--bg1)' }}>
+                <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--t1)', marginBottom: 4 }}>Accept delivery into stock</div>
+                <div style={{ fontSize: 11.5, color: 'var(--t3)', marginBottom: 12 }}>
+                  Check off against the delivery note — correct any quantity that differs and any price that changed.
+                  Shorted lines automatically move to a balance order. Each line can only be received once.
+                </div>
+                {(draft.lines || []).map(l => {
+                  const r = receiving[l.id] || {};
+                  const short = Number(r.qtyPacks) < Number(l.qtyPacks);
+                  const priceChanged = Number(r.unitPrice) !== Number(l.unitPrice);
+                  return (
+                    <div key={l.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 0', borderBottom: '1px solid var(--bdr)' }}>
+                      <span style={{ flex: 1, fontSize: 13, color: 'var(--t1)' }}>{l.description || itemName(l.inventoryItemId)}</span>
+                      <span style={{ fontSize: 11, color: 'var(--t3)' }}>ordered {l.qtyPacks}</span>
+                      <input type="number" min="0" step="any" value={r.qtyPacks ?? ''} onChange={e => setReceiving(x => ({ ...x, [l.id]: { ...x[l.id], qtyPacks: e.target.value } }))}
+                        style={{ ...field, width: 74, borderColor: short ? 'var(--org, #f59e0b)' : 'var(--bdr)' }} title="packs received" />
+                      <span style={{ fontSize: 11, color: 'var(--t3)' }}>@</span>
+                      <input type="number" min="0" step="any" value={r.unitPrice ?? ''} onChange={e => setReceiving(x => ({ ...x, [l.id]: { ...x[l.id], unitPrice: e.target.value } }))}
+                        style={{ ...field, width: 84, borderColor: priceChanged ? 'var(--org, #f59e0b)' : 'var(--bdr)' }} title="pack price on the delivery note, ex VAT" />
+                      {short && <span style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--org, #f59e0b)' }}>short</span>}
+                    </div>
+                  );
+                })}
+                <div style={{ display: 'flex', gap: 10, marginTop: 14, alignItems: 'center' }}>
+                  <label style={{ fontSize: 12, color: 'var(--t3)', cursor: 'pointer', border: '1px dashed var(--bdr)', borderRadius: 7, padding: '7px 12px' }}>
+                    📎 Attach invoice
+                    <input type="file" accept="image/*,.pdf" style={{ display: 'none' }} onChange={e => { const f = e.target.files?.[0]; if (f) attachInvoice(f); e.target.value = ''; }} />
+                  </label>
+                  <div style={{ marginRight: 'auto' }} />
+                  <button onClick={() => setReceiving(null)} style={{ padding: '9px 14px', borderRadius: 8, background: 'transparent', border: '1px solid var(--bdr)', color: 'var(--t3)', fontSize: 13, cursor: 'pointer' }}>Back</button>
+                  <PrimaryBtn onClick={acceptIntoStock} disabled={busy}>Accept into stock</PrimaryBtn>
+                </div>
+              </div>
+            )}
+            {poInvoices.length > 0 && (
+              <div style={{ marginTop: 12, fontSize: 12, color: 'var(--t3)' }}>
+                📎 {poInvoices.length} invoice{poInvoices.length === 1 ? '' : 's'} attached
+                {draft.status === 'RECEIVED' && (
+                  <label style={{ marginLeft: 10, cursor: 'pointer', textDecoration: 'underline' }}>
+                    add another<input type="file" accept="image/*,.pdf" style={{ display: 'none' }} onChange={e => { const f = e.target.files?.[0]; if (f) attachInvoice(f); e.target.value = ''; }} />
+                  </label>
+                )}
+              </div>
+            )}
+            {draft.status === 'RECEIVED' && poInvoices.length === 0 && (
+              <div style={{ marginTop: 12, fontSize: 12, color: 'var(--t3)' }}>
+                <label style={{ cursor: 'pointer', textDecoration: 'underline' }}>📎 Attach the supplier invoice
+                  <input type="file" accept="image/*,.pdf" style={{ display: 'none' }} onChange={e => { const f = e.target.files?.[0]; if (f) attachInvoice(f); e.target.value = ''; }} />
+                </label>
+                {' '}— paperwork only, the stock is already in.
+              </div>
+            )}
             {draft.status === 'RECEIVED' && <div style={{ marginTop: 12, fontSize: 12, color: 'var(--grn)' }}>✓ Received into stock — costs updated. See each item's Stock tab for the delivery movement.</div>}
           </div>
         )}

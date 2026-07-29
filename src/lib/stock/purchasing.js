@@ -148,31 +148,96 @@ export const setPOStatus = async (poId, status, locationId = null) => {
   return supabase.from('purchase_orders').update(patch).eq('location_id', locationId).eq('id', poId);
 };
 
-/** Receive a PO in full: post receipts for every line's outstanding packs + mark RECEIVED. */
-export const receivePurchaseOrder = async (poId, locationId = null) => {
+/**
+ * Receive a PO into stock.
+ *
+ * receipts = null  → receive IN FULL, exactly the pre-v5.5.921 behaviour. The ops
+ *                    goods-in flow (src/lib/ops/data.js) calls with no receipts and
+ *                    must keep working unchanged.
+ * receipts = [{ lineId, qtyPacks, unitPrice }]
+ *                  → LINE-BY-LINE ACCEPT. qtyPacks is what actually arrived (0 = the
+ *                    line was shorted entirely); unitPrice is the price on the delivery
+ *                    note, which overrides the ordered price — this is where price
+ *                    variance is captured, and where a manager-raised £0 PO finally
+ *                    gets a real cost. Shorted lines spawn a BALANCE PO (status SENT)
+ *                    for the remainder rather than leaving this one PARTIAL — the
+ *                    Order Pad's on-order maths then stays correct with no extra state.
+ *
+ * INVARIANTS this function must never break:
+ * - po_lines are UPDATED IN PLACE. savePurchaseOrder deletes+reinserts lines, which
+ *   changes their ids — routing a receive through it would orphan the `po:<po>:<line>`
+ *   idempotency keys and qty_received. Never call it from here.
+ * - One receipt per line under the EXISTING key `po:<poId>:<lineId>`. A line receives
+ *   once; retries dedupe server-side. Collect final qty+price BEFORE calling.
+ * - One shared itemMap for the whole loop: applyReceipt mutates its item snapshot so
+ *   the same item on two lines moving-averages correctly.
+ * - The zero-price guard in applyReceipt stays: a line left at £0 moves stock at the
+ *   item's known cost and does NOT re-cost it.
+ */
+export const receivePurchaseOrder = async (poId, locationId = null, receipts = null) => {
   if (isMock || !supabase) return { error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { error: new Error('No locationId') };
-  const { data: lines } = await supabase.from('po_lines').select('*').eq('location_id', locationId).eq('po_id', poId);
+  const [{ data: lines }, { data: poRow }] = await Promise.all([
+    supabase.from('po_lines').select('*').eq('location_id', locationId).eq('po_id', poId),
+    supabase.from('purchase_orders').select('*').eq('location_id', locationId).eq('id', poId).maybeSingle(),
+  ]);
   if (!lines?.length) return { error: new Error('No lines') };
+  const byLine = receipts ? Object.fromEntries(receipts.map(r => [String(r.lineId), r])) : null;
   const map = await itemMap(locationId, lines.map(l => l.inventory_item_id));
+  const ratesById = receipts ? await fetchTaxRateMap(locationId) : null;
+  const shorted = [];
+  let acceptedSubtotal = 0, acceptedTax = 0;
   for (const l of lines) {
     const item = map[l.inventory_item_id];
     if (!item) continue;
-    const outstanding = Number(l.qty_packs) - Number(l.qty_received);
-    if (!(outstanding > 0)) continue;
+    const r = byLine ? byLine[String(l.id)] : null;
+    const ordered = Number(l.qty_packs);
+    // Full receive: everything outstanding. Line receive: exactly what staff counted in.
+    const accepted = byLine ? Math.max(0, Number(r?.qtyPacks ?? 0)) : (ordered - Number(l.qty_received));
+    const price = byLine && r?.unitPrice != null && r.unitPrice !== '' ? Number(r.unitPrice) : Number(l.unit_price);
     let baseContentPerPack;
     try { baseContentPerPack = convert(Number(l.pack_qty) * Number(l.inner_qty), l.inner_unit, item.baseUnit, { itemConversions: item.conversions }); }
     catch { continue; }
     if (!(baseContentPerPack > 0)) continue;
-    const recvBase = outstanding * baseContentPerPack;
-    const unitCostPerBase = Number(l.unit_price) / baseContentPerPack;
-    await applyReceipt(locationId, item, l.inventory_item_id, recvBase, unitCostPerBase, 'purchase_order', poId, `po:${poId}:${l.id}`);
-    await supabase.from('po_lines').update({ qty_received: Number(l.qty_packs) }).eq('location_id', locationId).eq('id', l.id);
+    if (accepted > 0) {
+      const recvBase = accepted * baseContentPerPack;
+      const unitCostPerBase = price / baseContentPerPack;
+      await applyReceipt(locationId, item, l.inventory_item_id, recvBase, unitCostPerBase, 'purchase_order', poId, `po:${poId}:${l.id}`);
+    }
+    if (byLine) {
+      const rate = Number(ratesById[l.purchase_tax_rate_id] || 0);
+      const netLine = accepted * price;
+      const lineTax = Math.round(netLine * rate * 100) / 100;
+      acceptedSubtotal += netLine; acceptedTax += lineTax;
+      await supabase.from('po_lines').update({ qty_received: accepted, unit_price: price, line_tax: lineTax })
+        .eq('location_id', locationId).eq('id', l.id);
+      if (accepted < ordered) {
+        shorted.push({
+          inventoryItemId: l.inventory_item_id, supplierProductId: l.supplier_product_id,
+          description: l.description, qtyPacks: ordered - accepted, packQty: Number(l.pack_qty),
+          innerQty: Number(l.inner_qty), innerUnit: l.inner_unit, unitPrice: price,
+          purchaseTaxRateId: l.purchase_tax_rate_id || null,
+        });
+      }
+    } else {
+      await supabase.from('po_lines').update({ qty_received: ordered }).eq('location_id', locationId).eq('id', l.id);
+    }
   }
-  await supabase.from('purchase_orders').update({ status: 'RECEIVED', received_at: nowIso(), updated_at: nowIso() })
-    .eq('location_id', locationId).eq('id', poId);
-  return { error: null };
+  const patch = { status: 'RECEIVED', received_at: nowIso(), updated_at: nowIso() };
+  if (byLine) { patch.subtotal = Math.round(acceptedSubtotal * 100) / 100; patch.tax = Math.round(acceptedTax * 100) / 100; }
+  await supabase.from('purchase_orders').update(patch).eq('location_id', locationId).eq('id', poId);
+  // Balance PO for whatever the supplier shorted — born SENT so it counts as on-order.
+  let balancePoId = null;
+  if (shorted.length && poRow) {
+    const { data: bal } = await savePurchaseOrder({
+      supplierId: poRow.supplier_id, status: 'SENT',
+      reference: `${poRow.reference || 'PO'} balance`, expectedDate: null,
+      notes: `Balance of shorted lines from ${poRow.reference || poId}`,
+    }, shorted, locationId);
+    balancePoId = bal?.id || null;
+  }
+  return { error: null, data: { balancePoId, shortedCount: shorted.length } };
 };
 
 /**
@@ -195,6 +260,42 @@ export const createOrdersFromBasket = async (lines, status = 'DRAFT', locationId
     if (!error) created++;
   }
   return { data: { created }, error: null };
+};
+
+/**
+ * Attach a supplier invoice image to a PO — record only, NEVER a stock posting.
+ * The PO receive is the single stock writer for PO-linked deliveries; the standalone
+ * Invoices scan→post flow posts its own `inv:` receipts and using both for one delivery
+ * double-counts the stock. This writes supplier_invoices { po_id, status: 'REVIEW' } so
+ * the paperwork lives on the order without touching the ledger.
+ */
+export const attachInvoiceToPO = async (poId, file, { supplierId = null, total = null } = {}, locationId = null) => {
+  if (isMock || !supabase) return { data: null, error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: null, error: new Error('No locationId') };
+  if (!file) return { data: null, error: new Error('No file') };
+  const ext = (file.name?.split('.').pop() || 'jpg').toLowerCase().replace('jpeg', 'jpg');
+  const safeExt = ['jpg', 'png', 'webp', 'pdf'].includes(ext) ? ext : 'jpg';
+  const path = `${locationId}/po/${poId}/${Date.now()}.${safeExt}`;
+  const { error: upErr } = await supabase.storage.from('invoice-scans').upload(path, file, {
+    upsert: false, contentType: file.type || 'image/jpeg', cacheControl: '3600',
+  });
+  if (upErr) return { data: null, error: upErr };
+  const { data, error } = await supabase.from('supplier_invoices').insert({
+    location_id: locationId, po_id: poId, supplier_id: supplierId,
+    image_path: path, status: 'REVIEW', total: total == null ? null : Number(total),
+  }).select().maybeSingle();
+  return { data, error };
+};
+
+/** Invoices already attached to a PO (paperwork listing on the PO screen). */
+export const fetchPOInvoices = async (poId, locationId = null) => {
+  if (isMock || !supabase) return { data: [], error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: [], error: null };
+  const { data, error } = await supabase.from('supplier_invoices').select('id,image_path,total,status,created_at')
+    .eq('location_id', locationId).eq('po_id', poId).order('created_at', { ascending: false });
+  return { data: data || [], error };
 };
 
 // ── Invoices (scan → review → post) ───────────────────────────────────────────

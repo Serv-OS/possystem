@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.921', date: '29 Jul 2026', label: 'PURCHASING — accept deliveries line by line, attach the invoice, and "Send" actually emails the supplier',
+    changes: [
+      'ACCEPT DELIVERY, LINE BY LINE. "Receive into stock" was all-or-nothing — one confirm box received every line in full at the ordered price, with no way to record that the supplier sent nine cases instead of ten or changed a price. Now: Accept delivery opens a check-off panel seeded with what was ordered, so a clean delivery is two taps; correct any quantity or price that differs and the changed ones highlight. Each line can only ever be received once, so a retry or double-tap cannot double the stock.',
+      'SHORTED LINES BECOME A BALANCE ORDER AUTOMATICALLY. Accept 9 of 10 and the missing case moves to a fresh order (already marked sent) so it stays counted as on-order and nothing gets forgotten. The received order closes properly either way, and its totals are recalculated to what actually arrived.',
+      'THE PRICE YOU ENTER AT THE DOOR BECOMES THE COST. Delivery-note prices flow straight into item costs (weighted average as always), which also means orders raised from the Manager app with no prices finally get real costs the day the goods arrive. A line left at £0 still moves the stock without corrupting the item\'s cost — same guard as before.',
+      'ATTACH THE INVOICE ON THE SAME SCREEN. Photo or PDF, stored against the order — paperwork only, it never posts stock. This is the fix for the double-count warned about in v5.5.920: for a delivery received against an order, attach the invoice HERE and do not run it through the separate invoice scanning screen, which posts its own stock. The scanning screen remains for purchases with no order behind them.',
+      '"SEND TO SUPPLIER" NOW SENDS. When a supplier has an email on file, the button emails them the order as a clean table — items, packs, prices, requested delivery date — and only marks the order Sent after the email actually went. Reply-to comes back to you. Suppliers without an email keep the old mark-sent button.',
+      'NEEDS NOTHING FROM YOU: no migration, and the email function is already deployed. READY TO TEST: raise a small order for a supplier with an email → Send to supplier → check their inbox; then Accept delivery, short one line, and watch the balance order appear under Awaiting.',
+    ],
+  },
+  {
     version: '5.5.920', date: '29 Jul 2026', label: 'PURCHASING — the order list is now a work queue, not one endless list',
     changes: [
       'PURCHASE ORDERS NOW OPEN ON "AWAITING" — just the orders that still need something: drafts to send and deliveries to receive. Received orders have their own tab, "All" shows everything, and there is a supplier/reference search. Before this, every order ever raised sat in one flat list with finished ones mixed among live ones.',
