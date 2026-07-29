@@ -264,22 +264,18 @@ export default function OrderPad() {
                     <td style={{ ...cell, ...numCell, textAlign: 'right' }}>{oh.qty} <span style={{ color: 'var(--t4)' }}>{oh.label}</span></td>
                     <td style={{ ...cell, ...numCell, textAlign: 'right', color: 'var(--t3)' }}>
                       {r.avgDaily > 0 || r.prof ? `${r2(use.qty)} ${use.label}` : '—'}
-                      {/* v5.5.926: the weekday shape — "12 on Fri, 3 on Tue" at a glance. Count
-                          units, Mon-first (UK reading order; the profile array is Sun-first). */}
-                      {r.prof && (
-                        <div style={{ display: 'flex', gap: 3, justifyContent: 'flex-end', marginTop: 2 }}
-                          title="average daily usage by weekday (Mon–Sun)">
-                          {[1, 2, 3, 4, 5, 6, 0].map(d => {
-                            const v = displayInUnits(r.prof[d], r.it).qty;
-                            const max = Math.max(...r.prof.map(x => displayInUnits(x, r.it).qty), 0.001);
-                            const hot = v >= max * 0.8 && v > 0;
-                            return <span key={d} style={{ fontSize: 9, fontWeight: hot ? 800 : 500, minWidth: 15, textAlign: 'center',
-                              color: hot ? 'var(--acc)' : v > 0 ? 'var(--t3)' : 'var(--t4)' }}>
-                              {'MTWTFSS'[[1,2,3,4,5,6,0].indexOf(d)]}{r2(v)}
-                            </span>;
-                          })}
-                        </div>
-                      )}
+                      {/* v5.5.934: the old strip rendered "M0 T0 W0…" — seven 9px letter+number
+                          pairs that read as gibberish. Show only what matters: the busiest days,
+                          in words, at a readable size. Quiet days are silence, not zeros. */}
+                      {r.prof && (() => {
+                        const DAY = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+                        const busy = r.prof.map((v, d) => ({ d, q: displayInUnits(v, r.it).qty }))
+                          .filter(x => x.q >= 0.5).sort((a, b) => b.q - a.q).slice(0, 3);
+                        if (!busy.length) return null;
+                        return <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 3, whiteSpace: 'nowrap' }}>
+                          busiest {busy.map(x => `${DAY[x.d]} ${r2(x.q)}`).join(' · ')}
+                        </div>;
+                      })()}
                     </td>
                     <td style={{ ...cell, ...numCell, textAlign: 'right', color: 'var(--t4)', fontSize: 12 }} title={r.sched != null ? `Covers to the supplier’s second delivery (${nextDel.map(d => DAY_LBL[d] || d).join('/')}) + ${safetyDays}d safety` : `No delivery schedule — default ${days}d + ${safetyDays}d safety`}>
                       {r.effCover}d{r.sched != null ? ' 🚚' : ''}

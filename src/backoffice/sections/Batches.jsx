@@ -157,6 +157,12 @@ export default function Batches() {
 
   return (
     <div style={{ height: '100%', overflowY: 'auto', background: 'var(--bg0)', padding: '22px 26px' }}>
+      <PageHeader
+        eyebrow="PRODUCE"
+        title="Batches"
+        subtitle="Make a prep/sub-recipe item — consumes the ingredients and adds the made item to stock at production cost."
+      />
+
       {/* ── THE BATCH QUEUE (v5.5.933) — the schedule builds these; completing one
           moves the stock. Filters so a kitchen with many cooks can find theirs. */}
       <div style={{ border: '1px solid var(--bdr)', borderRadius: 12, padding: '14px 18px', margin: '14px 0', background: 'var(--bg1)' }}>
@@ -215,11 +221,6 @@ export default function Batches() {
           ))}
         </div>
       )}
-      <PageHeader
-        eyebrow="PRODUCE"
-        title="Batches"
-        subtitle="Make a prep/sub-recipe item — consumes the ingredients and adds the made item to stock at production cost."
-      />
 
       {/* New batch */}
       <div style={{ background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 12, padding: 18, maxWidth: 880, marginBottom: 26 }}>

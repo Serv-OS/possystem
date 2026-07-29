@@ -147,9 +147,18 @@ export const completePlannedBatch = async (batchId, actualQty, locationId = null
   if (!rec?.output_item_id) return { data: null, error: new Error('Recipe has no output stock item') };
   const recipe = { outputItemId: rec.output_item_id, yieldQty: Number(rec.yield_qty), yieldUnit: rec.yield_unit, wastagePct: Number(rec.wastage_pct) || 0 };
   const mappedLines = (lines || []).map(l => ({ componentItemId: l.component_item_id, qty: Number(l.qty), unit: l.unit, usablePct: l.usable_pct == null ? 100 : Number(l.usable_pct) }));
-  let plan;
-  try { plan = planBatch(recipe, mappedLines, actualQty, b.output_unit || rec.yield_unit, ctx); }
-  catch (e) { return { data: null, error: e }; }
+  // v5.5.934 — schedules store operator-friendly units ('ea', 'portions', 'trays')
+  // that the conversion engine does not know. A unit it cannot read must not kill the
+  // Done button: normalise the obvious ones, then walk fallbacks — the batch's own
+  // unit, the recipe's yield unit, plain 'each'. First one that converts wins.
+  const norm = (u) => ({ ea: 'each', portion: 'each', portions: 'each', trays: 'each', batch: rec.yield_unit }[String(u || '').toLowerCase()] || u);
+  const candidates = [...new Set([norm(b.output_unit), rec.yield_unit, 'each'].filter(Boolean))];
+  let plan = null, planErr = null;
+  for (const u of candidates) {
+    try { plan = planBatch(recipe, mappedLines, actualQty, u, ctx); planErr = null; break; }
+    catch (e) { planErr = e; }
+  }
+  if (!plan) return { data: null, error: new Error(`Cannot work out the quantity: "${b.output_unit}" is not a unit this item understands (${planErr?.message || ''})`) };
 
   for (const c of plan.consume) {
     if (!(c.qtyBase > 0)) continue;

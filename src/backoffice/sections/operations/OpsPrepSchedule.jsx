@@ -14,7 +14,7 @@ const lbl = { display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t3)
 const th = { padding: '8px 10px', borderBottom: '1px solid var(--bdr)', fontWeight: 600, color: 'var(--t3)', textAlign: 'left', fontSize: 11, textTransform: 'uppercase', letterSpacing: '.04em' };
 const td = { padding: '9px 10px', borderBottom: '1px solid var(--bg2)', fontSize: 13, color: 'var(--t1)' };
 const DAYS = [[1, 'Mon'], [2, 'Tue'], [3, 'Wed'], [4, 'Thu'], [5, 'Fri'], [6, 'Sat'], [0, 'Sun']];
-const UNITS = ['L', 'kg', 'g', 'ml', 'ea', 'portions', 'trays', 'batch'];
+const UNITS = ['L', 'kg', 'g', 'ml', 'each', 'portions', 'trays', 'batch'];
 const blank = () => ({ id: null, name: '', qty: '', unit: 'L', dueTime: '', daysOfWeek: [], active: true, outputItemId: '', recipeId: '' });
 const daysLabel = (a) => (!a || a.length === 0 ? 'Every day' : DAYS.filter(([n]) => a.includes(n)).map(([, l]) => l).join(' '));
 
@@ -129,7 +129,22 @@ export default function OpsPrepSchedule() {
               </div>
               <div style={{ flex: 1 }}>
                 <label style={lbl}>Due by</label>
-                <input type="time" value={editing.dueTime} onChange={(e) => setEditing({ ...editing, dueTime: e.target.value })} style={field} />
+                {/* v5.5.934: was <input type=time> — Safari reports a partially-entered
+                    time as EMPTY, so "due by" silently saved as blank. Two dropdowns
+                    cannot half-exist. */}
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <select value={(editing.dueTime || '').slice(0, 2)} onChange={(e) => {
+                    const h = e.target.value;
+                    setEditing({ ...editing, dueTime: h === '' ? '' : `${h}:${(editing.dueTime || '').slice(3, 5) || '00'}` });
+                  }} style={field}>
+                    <option value="">— no due time —</option>
+                    {Array.from({ length: 24 }, (_, h) => String(h).padStart(2, '0')).map(h => <option key={h} value={h}>{h}</option>)}
+                  </select>
+                  <select value={(editing.dueTime || '').slice(3, 5)} disabled={!editing.dueTime}
+                    onChange={(e) => setEditing({ ...editing, dueTime: `${(editing.dueTime || '').slice(0, 2)}:${e.target.value}` })} style={field}>
+                    {['00', '15', '30', '45'].map(mnt => <option key={mnt} value={mnt}>{mnt}</option>)}
+                  </select>
+                </div>
               </div>
             </div>
 

@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.934', date: '29 Jul 2026', label: 'FIXES — batch Done button, prep due-time saving, and two unreadable bits of UI',
+    changes: [
+      'THE DONE BUTTON ON A PLANNED BATCH WORKS NOW. It was dying on the unit: schedules store kitchen units like "ea", "portions" or "trays" that the stock maths did not recognise, so completing the patty batch failed. Those units are now understood (they read as "each"), and if a unit genuinely cannot be worked out the button says so in English instead of doing nothing. The units list also now says "each" rather than "ea".',
+      'PREP "DUE BY" SAVES NOW. Safari treats a half-entered time as empty, so the due time was silently saving as blank — confirmed in the database, not guessed. The time is now two dropdowns (hour and minutes), which cannot half-exist in any browser.',
+      'THE ORDER PAD USAGE LINE IS READABLE. The seven tiny letter-number pairs ("M0 T0 W0…") were unreadable gibberish. Each product now shows a single plain line — "busiest Fri 12 · Sat 14" — only when there is real usage, only the days that matter, at a size you can read.',
+      'THE BATCHES PAGE IS IN THE RIGHT ORDER. Title first, then the To-make queue, then Needed-today, then the ad-hoc batch form and history — instead of panels floating above the page title.',
+      'READY TO TEST: Batches → complete the patty batch (Done should move stock and flip it to Done); Prep schedule → set a due time, save, reopen — it stays; Order pad → the usage line reads as words.',
+    ],
+  },
+  {
     version: '5.5.933', date: '29 Jul 2026', label: 'BATCHES — the schedule now BUILDS the batches: a to-make queue with complete status and filters',
     changes: [
       'THE SCHEDULE AND THE BATCHES ARE FINALLY ONE THING. When a prep schedule exists, the system now creates the actual batches to make: each scheduled cook appears on its day as a PLANNED batch — what to make, how much, by when — in Produce → Batches. No more plan in one place and history in another with nothing in between.',
