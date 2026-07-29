@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.916', date: '27 Jul 2026', label: 'SaaS billing — foundations (plan ladder + usage counter + simulation). NOT YET COLLECTING MONEY.',
+    changes: [
+      'THE PLAN LADDER, AS AGREED: Free (up to £8,000 monthly gross takings, 2 devices), Growth £149 (£8,000.01–£15,000, 5 devices), Scale £299 (above £15,000, 10 devices). Counted PER VENUE, on gross takings INCLUDING VAT across every tender and channel — cash included, not just card.',
+      'A COUNTER THAT ACTUALLY COUNTS. There was already a usage figure in the system with an admin screen showing it — and it has never once been incremented. The function meant to add to it was written months ago and never connected to anything, so every venue has read zero since the day it was added, and any threshold built on it would simply never have fired. This release replaces it with a real, versioned one, and every closed check is recorded exactly once — a till retrying, an offline queue catching up, or two devices closing the same check cannot inflate a venue\'s total and push them into a higher plan.',
+      'A VENUE CAN BE CHARGED AT MOST ONCE PER MONTH, AND THAT IS ENFORCED BY THE DATABASE — not by code that could be interrupted halfway. Double-charging a customer is the one failure this design refuses to allow.',
+      'SIMULATION FIRST, AS ASKED. A dry run proves the ladder before any money moves, testing the pounds either side of every threshold — £7,999.99 and £8,000.01, £14,999.99 and £15,000.01 — and that the bands leave no gap and no overlap. All twelve checks pass. Charges can also be written as "simulated", so a full end-to-end run can be rehearsed and repeated without taking a penny.',
+      'NOT YET DOING: no money is collected. Collection from the Ryft balance, the monthly run itself, and the admin screens are the next step, and nothing here can charge anyone.',
+      'STILL TO DECIDE: whether the £149/£299 are inclusive of VAT or plus VAT (deliberately left explicit rather than guessed — a wrong assumption is a 20% error on every invoice), and what exactly counts as a "device" against the 2/5/10 allowance.',
+    ],
+  },
+  {
     version: '5.5.915', date: '27 Jul 2026', label: 'Cooking preferences now come first when ordering; new products no longer land in a category you did not pick',
     changes: [
       'COOKING PREFERENCES NOW APPEAR FIRST, NOT LAST. Instructions like "medium rare" or "no ice" were rendering underneath every modifier group, so on an item with a few option groups the kitchen-critical choice was the last thing the server saw — and on a smaller till it was off the bottom of the screen entirely. They now sit at the top, above the options. Back Office lets you drag modifier groups into whatever order you like, but instruction groups are a separate list with no way to sort them above those, which is exactly why this is now fixed in the ordering screen itself rather than left to be set up per item.',
