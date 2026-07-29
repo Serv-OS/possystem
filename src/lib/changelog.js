@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.918', date: '29 Jul 2026', label: 'FIX — Manager app checklist PHOTOS: managers could not upload evidence ("violates row-level security policy")',
+    changes: [
+      'THE REAL CAUSE, FOUND AND FIXED LIVE. The checklist photo bucket had lopsided permissions: VIEWING a photo allowed either a paired ops tablet or a signed-in Back Office user — but ADDING one allowed only the tablet. A manager using the app under their own Back Office login (which is how the Manager app commonly runs) could tick tasks fine, then hit the photo step and get the raw "new row violates row-level security policy" from storage. Ticks touch tables, photos touch storage — which is why everything else worked and only the image failed.',
+      'This is also why re-pairing the device changed nothing: the session doing the upload was the manager\'s own login, not the tablet\'s. The upload and overwrite rules now accept the same two identities the viewing rule always has. Applied directly to the live database and committed as a migration.',
+      'HONESTY NOTE: v5.5.917 blamed the wrong thing (the venue not being published by the Manager app) — that change has been reverted. The error-message guards it added stay: staff should never see raw database policy text.',
+      'READY TO TEST NOW — no app update needed, the fix is server-side: Manager app → Opening checklist → "Photo: handwash station stocked" → take/add the photo. It should attach and the checklist should sign off.',
+    ],
+  },
+  {
     version: '5.5.917', date: '27 Jul 2026', label: 'FIX — Manager app: checklists could not be ticked ("violates row-level security policy")',
     changes: [
       'TICKING A CHECKLIST TASK OR ADDING A PHOTO FAILED WITH A RAW DATABASE ERROR. The Opening checklist loaded, showed all its tasks, and then refused every tick with "new row violates row-level security policy". Nothing was wrong with anyone\'s permissions.',
