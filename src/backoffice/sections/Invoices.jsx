@@ -120,7 +120,7 @@ export default function Invoices() {
       if (chg > 0.05) flag = `↑ ${(chg * 100).toFixed(0)}%`;
       else if (chg < -0.05) flag = `↓ ${(Math.abs(chg) * 100).toFixed(0)}%`;
     }
-    return { newCost, flag };
+    return { newCost, flag, wasCost: it.currentCost > 0 ? Number(it.currentCost) : null };
   };
 
   const post = async () => {
@@ -253,6 +253,7 @@ export default function Invoices() {
                     <td style={{ padding: '7px 10px', borderBottom: '1px solid var(--bdr)', whiteSpace: 'nowrap' }}>
                       {info.newCost == null ? '—' : currencySymbol() + info.newCost.toFixed(4).replace(/0+$/, '').replace(/\.$/, '')}
                       {info.flag && <span style={{ marginLeft: 6, fontSize: 11, fontWeight: 700, color: info.flag.startsWith('↑') || info.flag === 'NEW' ? 'var(--red)' : info.flag.startsWith('↓') ? 'var(--grn)' : 'var(--t3)' }}>{info.flag === 'NEW' ? 'new item' : info.flag === 'UNIT?' ? 'unit?' : info.flag}</span>}
+                      {info.flag && info.wasCost != null && info.flag !== 'NEW' && info.flag !== 'UNIT?' && <span style={{ marginLeft: 5, fontSize: 10.5, color: 'var(--t4)' }} title="cost before this invoice">was {currencySymbol()}{info.wasCost.toFixed(4).replace(/0+$/, '').replace(/\.$/, '')}</span>}
                     </td>
                     <td style={{ padding: '7px 10px', borderBottom: '1px solid var(--bdr)' }}><button onClick={() => rmLine(i)} style={{ background: 'transparent', border: 0, color: 'var(--t3)', cursor: 'pointer', fontSize: 15 }}>×</button></td>
                   </tr>

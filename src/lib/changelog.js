@@ -7,6 +7,12 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.924', date: '29 Jul 2026', label: 'Invoice review — the old price now shows next to every price-change flag',
+    changes: [
+      'The invoice scan review already flagged any line more than 5% off the product\'s current cost — it now also shows what that cost WAS, right next to the flag, so you can judge the change without opening the product.',
+    ],
+  },
+  {
     version: '5.5.923', date: '29 Jul 2026', label: 'PURCHASING — four fixes from the reports audit, including a Xero £0-bill trap',
     changes: [
       'After the purchasing rework shipped, every report that touches stock or purchasing data was audited end to end. The good news first: all five stock reports, the stock overview, the order pad maths, the manager app and the daily P&L all read the new flow correctly — deliveries, balance orders and cost updates land exactly where they should. Four real problems were found and are fixed here.',
