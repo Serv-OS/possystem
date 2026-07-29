@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.926', date: '29 Jul 2026', label: 'PREDICTIVE ORDERING — the Order pad now knows Friday from Tuesday',
+    changes: [
+      'THE ORDER PAD NOW SUGGESTS FROM YOUR ACTUAL WEEKLY PATTERN, NOT A FLAT AVERAGE. A venue selling 12 bottles on a Friday and 3 on a Tuesday used to be told "6.4 a day" — over-ordered for Monday, under-ordered for the weekend. The pad now walks the real calendar days each order has to cover (until the supplier\'s next delivery, plus your safety days) and adds up what each of those days actually tends to use, from the last 8 weeks of sales and production.',
+      'YOU CAN SEE THE PATTERN. Each product\'s row shows a small Mon–Sun line of its average daily usage, with the busy days highlighted — "12 on Fri, 3 on Tue" at a glance, in bottles not millilitres.',
+      'IT DEGRADES SAFELY. A brand-new item with no history, or a venue that has not applied the database update, falls back to the flat average exactly as before — the suggestion never goes blank.',
+      'The database function behind it is applied and verified live (it is already returning usage for this venue). Usage counts sales and batch production; waste is deliberately excluded — waste is loss, not demand.',
+      'This is the deterministic half of predictive ordering. The AI layer on top — trends, events, "you always run short on Saturdays" — comes once a few weeks of real trading data has accumulated for it to read.',
+      'READY TO TEST: open the Order pad — items with sales history show the Mon–Sun usage line, and suggested quantities now depend on which day of the week you order.',
+    ],
+  },
+  {
     version: '5.5.925', date: '29 Jul 2026', label: 'MADE-HERE ITEMS — recipe edited on the item, no supplier asked for, batch language, out of the Order pad',
     changes: [
       'A MADE-HERE ITEM NO LONGER PRETENDS TO BE A PURCHASED ONE. Choosing "Made here" on a stock item now changes the screen to match: the Suppliers tab disappears (a burger patty has no supplier), and in its place is a RECIPE tab — what goes into a batch and how much a batch makes, edited right there on the item. Saving the recipe rolls the ingredient costs up into the item, so its stock value is real. No separate screen to know about.',

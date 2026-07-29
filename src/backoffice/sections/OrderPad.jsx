@@ -23,7 +23,7 @@ import { useStore } from '../../store';
 import { getActiveLocationSync, getLocationId , supabase } from '../../lib/supabase';
 import { money } from '../../lib/currency';
 import { displayInUnits } from '../../lib/stock/uom';
-import { fetchInventoryItems, fetchSuppliers, fetchUsageRates } from '../../lib/stock/data';
+import { fetchInventoryItems, fetchSuppliers, fetchUsageRates, fetchUsageByWeekday } from '../../lib/stock/data';
 import { fetchParLevels } from '../../lib/stock/counts';
 import { fetchPurchaseOrders, createOrdersFromBasket, setPOStatus } from '../../lib/stock/purchasing';
 import { PageHeader, PrimaryBtn, SearchField, Chips } from './reports/reportKit';
@@ -63,6 +63,7 @@ export default function OrderPad() {
   const [suppliers, setSuppliers] = useState([]);
   const [pars, setPars] = useState({});
   const [usage, setUsage] = useState({});       // itemId -> avg daily base
+  const [weekday, setWeekday] = useState(null); // itemId -> [sun..sat avg daily base]; null until the RPC is migrated
   const [onOrder, setOnOrder] = useState({});   // itemId -> base on order
   const [loading, setLoading] = useState(true);
   const [days, setDays] = useState(7);          // default cover for unscheduled suppliers
@@ -77,15 +78,15 @@ export default function OrderPad() {
   const reload = useCallback(async () => {
     const loc = locId || getActiveLocationSync() || await getLocationId().catch(() => null);
     if (loc && loc !== locId) setLocId(loc);
-    const [{ data: its }, { data: sup }, { data: par }, { data: rate }, { data: pos }] = await Promise.all([
-      fetchInventoryItems(loc), fetchSuppliers(loc), fetchParLevels(loc), fetchUsageRates(USAGE_DAYS, loc), fetchPurchaseOrders(loc),
+    const [{ data: its }, { data: sup }, { data: par }, { data: rate }, { data: pos }, { data: wk }] = await Promise.all([
+      fetchInventoryItems(loc), fetchSuppliers(loc), fetchParLevels(loc), fetchUsageRates(USAGE_DAYS, loc), fetchPurchaseOrders(loc), fetchUsageByWeekday(8, loc),
     ]);
     // on order from open POs (outstanding packs × base content per pack)
     const oo = {};
     (pos || []).filter(p => ['DRAFT', 'SENT', 'PARTIAL'].includes(p.status)).forEach(p => {
       (p.lines || []).forEach(l => { if (!l.inventoryItemId) return; const out = (Number(l.qtyPacks) || 0) - (Number(l.qtyReceived) || 0); if (out > 0) oo[l.inventoryItemId] = (oo[l.inventoryItemId] || 0) + out * (Number(l.packQty) || 1) * (Number(l.innerQty) || 0); });
     });
-    setItems(its || []); setSuppliers(sup || []); setPars(par || {}); setUsage(rate || {}); setOnOrder(oo); setLoading(false);
+    setItems(its || []); setSuppliers(sup || []); setPars(par || {}); setUsage(rate || {}); setWeekday(wk); setOnOrder(oo); setLoading(false);
   }, [locId]);
   useEffect(() => { reload(); /* eslint-disable-next-line */ }, []);
 
@@ -107,11 +108,25 @@ export default function OrderPad() {
     const sched = sp ? coverDaysFromSchedule(supById[sp.supplierId]?.deliveryDays) : null;
     const coverDays = sched != null ? sched : days;
     const effCover = coverDays + (Number(safetyDays) || 0);
-    let needBase = avgDaily > 0 ? (avgDaily * effCover - onHand - oo) : (par != null ? (par - onHand - oo) : 0);
+    // v5.5.926 — WALK THE ACTUAL DAYS, don't multiply a flat average. A venue selling
+    // 12 on Fridays and 3 on Tuesdays was told "6.4/day": over-ordered for Monday,
+    // under-ordered for the weekend. When the weekday profile exists we sum expected
+    // usage for each real calendar day this order has to cover, starting tomorrow.
+    // No profile (RPC not migrated / brand-new item) -> the flat average, as before.
+    const prof = weekday?.[it.id];
+    const hasShape = Array.isArray(prof) && prof.some(v => v > 0);
+    let expectedBase = 0;
+    if (hasShape) {
+      const todayDow = new Date().getDay();
+      for (let d = 1; d <= effCover; d++) expectedBase += prof[(todayDow + d) % 7] || 0;
+    } else {
+      expectedBase = avgDaily * effCover;
+    }
+    let needBase = (avgDaily > 0 || hasShape) ? (expectedBase - onHand - oo) : (par != null ? (par - onHand - oo) : 0);
     if (!(needBase > 0)) needBase = 0;
     const suggestedPacks = (sp && perPack > 0) ? Math.ceil(needBase / perPack) : 0;
-    return { it, allSps, sp, perPack, onHand, avgDaily, par, oo, sched, coverDays, effCover, needBase, suggestedPacks };
-  }), [items, usage, pars, onOrder, days, safetyDays, supplierOverride, supById]);
+    return { it, allSps, sp, perPack, onHand, avgDaily, prof: hasShape ? prof : null, par, oo, sched, coverDays, effCover, needBase, suggestedPacks };
+  }), [items, usage, weekday, pars, onOrder, days, safetyDays, supplierOverride, supById]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -247,7 +262,25 @@ export default function OrderPad() {
                   <tr key={r.it.id} style={{ color: 'var(--t1)' }}>
                     <td style={{ ...cell, fontWeight: 500 }}>{r.it.name}{low && <span style={{ color: 'var(--red)', fontSize: 10.5, fontWeight: 700, marginLeft: 7, padding: '2px 6px', borderRadius: 6, background: 'var(--red-d)', border: '1px solid var(--red-b)', textTransform: 'uppercase', letterSpacing: '.04em' }}>low</span>}</td>
                     <td style={{ ...cell, ...numCell, textAlign: 'right' }}>{oh.qty} <span style={{ color: 'var(--t4)' }}>{oh.label}</span></td>
-                    <td style={{ ...cell, ...numCell, textAlign: 'right', color: 'var(--t3)' }}>{r.avgDaily > 0 ? `${r2(use.qty)} ${use.label}` : '—'}</td>
+                    <td style={{ ...cell, ...numCell, textAlign: 'right', color: 'var(--t3)' }}>
+                      {r.avgDaily > 0 || r.prof ? `${r2(use.qty)} ${use.label}` : '—'}
+                      {/* v5.5.926: the weekday shape — "12 on Fri, 3 on Tue" at a glance. Count
+                          units, Mon-first (UK reading order; the profile array is Sun-first). */}
+                      {r.prof && (
+                        <div style={{ display: 'flex', gap: 3, justifyContent: 'flex-end', marginTop: 2 }}
+                          title="average daily usage by weekday (Mon–Sun)">
+                          {[1, 2, 3, 4, 5, 6, 0].map(d => {
+                            const v = displayInUnits(r.prof[d], r.it).qty;
+                            const max = Math.max(...r.prof.map(x => displayInUnits(x, r.it).qty), 0.001);
+                            const hot = v >= max * 0.8 && v > 0;
+                            return <span key={d} style={{ fontSize: 9, fontWeight: hot ? 800 : 500, minWidth: 15, textAlign: 'center',
+                              color: hot ? 'var(--acc)' : v > 0 ? 'var(--t3)' : 'var(--t4)' }}>
+                              {'MTWTFSS'[[1,2,3,4,5,6,0].indexOf(d)]}{r2(v)}
+                            </span>;
+                          })}
+                        </div>
+                      )}
+                    </td>
                     <td style={{ ...cell, ...numCell, textAlign: 'right', color: 'var(--t4)', fontSize: 12 }} title={r.sched != null ? `Covers to the supplier’s second delivery (${nextDel.map(d => DAY_LBL[d] || d).join('/')}) + ${safetyDays}d safety` : `No delivery schedule — default ${days}d + ${safetyDays}d safety`}>
                       {r.effCover}d{r.sched != null ? ' 🚚' : ''}
                     </td>
