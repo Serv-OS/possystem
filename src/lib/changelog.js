@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.945', date: '29 Jul 2026', label: 'Item sales trend — variants named properly (Latte — Large, not "Large")',
+    changes: [
+      'The Item sales trend report resolved each sold line back to its menu item for rename-stable grouping — but a variant\'s own menu name is just "Large" or "Double", so variant sales showed as bare "Large"/"Small" rows disconnected from their product. Variants now display parent-qualified: Latte — Large, Espresso — Double, one row per variant.',
+      'A bare "Espresso" row can still appear for older sales where the till recorded the product without a variant — those sales genuinely carry no size, so they are shown as-is rather than guessed.',
+      'TEST: Back Office → Reports → Item sales trend → every variant row reads "Product — Variant"; no stray "Large"/"Small"/"Double" rows.',
+    ],
+  },
+  {
     version: '5.5.944', date: '29 Jul 2026', label: 'Table-Pay close could silently lose the sale and resurrect the table (B2)',
     changes: [
       'Found from tonight\'s B2: the card charged on the A50 (£57.55, webhook-verified), but the till\'s one attempt to save the sale failed — and the old code still marked it "closed on this device", so it never retried. Result: sale visible only in that till\'s local History, missing from the real records, and the half-closed table flapping back onto the floor.',

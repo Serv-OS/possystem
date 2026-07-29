@@ -143,7 +143,20 @@ export default function ItemTrend({ checks, fmt, fmtN, rangeFrom, rangeTo }) {
     // for renamed items. Without this, "Donut 1 → Bueno Filled" shows
     // up as two rows: standalone under the new name, mod-resolved under
     // the stale `name` column (which lags menuName).
-    const canonicalName = (mItem) => mItem?.menuName || mItem?.name || 'Unknown';
+    //
+    // v5.5.945: variant children are PARENT-QUALIFIED. A variant menu item's own
+    // name is just "Large" / "Double" — resolving a sold line back to it was
+    // REPLACING the check line's good combined name ("Latte — Large") with the
+    // bare variant word, so the report showed "Large" and "Latte" as unrelated
+    // rows. Same qualified-name rule as Inventory/Recipes/PosWasteModal; skipped
+    // when the variant's name already contains the parent's ("Latte Large").
+    const canonicalName = (mItem) => {
+      const own = mItem?.menuName || mItem?.name || 'Unknown';
+      const parent = mItem?.parentId ? menuById[mItem.parentId] : null;
+      const parentName = parent ? (parent.menuName || parent.name || '') : '';
+      if (!parentName || own.toLowerCase().includes(parentName.toLowerCase())) return own;
+      return `${parentName} — ${own}`;
+    };
 
     const bump = (key, name, cat, qty, rev, dayKey, source) => {
       if (!map[key]) {
