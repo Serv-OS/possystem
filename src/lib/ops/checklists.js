@@ -141,6 +141,14 @@ export const completeTask = async (runId, taskId, { done = true, valueText, phot
   // TRAINING MODE: don't record a real task completion.
   if (isTrainingMode()) return { error: null };
   locationId = await ensureLoc(locationId);
+  // v5.5.917 — THIS GUARD IS THE WHOLE BUG. ensureLoc() returns null when the venue cannot be
+  // resolved, and every READ path already checks for that. This write did not: it carried on and
+  // sent location_id: null, which fails the row-level security check on the table and surfaced to
+  // staff as the raw database message "new row violates row-level security policy" under an
+  // otherwise working checklist. Nothing was wrong with their permissions — the venue simply had
+  // not resolved yet. Fail with something a manager can act on instead.
+  if (!locationId) return { error: new Error('Venue not resolved yet — reopen the checklist and try again') };
+  if (!runId || !taskId) return { error: new Error('Missing run or task') };
   return supabase.from('ops_task_completions').upsert({
     location_id: locationId, run_id: runId, task_id: taskId, done, value_text: valueText || null,
     photo_url: photoUrl || null, completed_by: byId || null, completed_by_name: by || null, completed_at: nowIso(),
@@ -151,6 +159,10 @@ export const signOffRun = async (runId, by, byId, locationId = null) => {
   // TRAINING MODE: don't sign off (or write an ops_audit row for) a live run.
   if (isTrainingMode()) return { error: null };
   locationId = await ensureLoc(locationId);
+  // Same guard as completeTask: without it the sign-off silently matched zero rows (the .eq on a
+  // null location_id) and then tried to write an audit row with a null location, which RLS
+  // refused — so a checklist could LOOK signed off and have recorded nothing.
+  if (!locationId) return { error: new Error('Venue not resolved yet — reopen the checklist and try again') };
   const { error } = await supabase.from('ops_checklist_runs').update({ status: 'complete', completed_by: byId || null, completed_by_name: by || null, completed_at: nowIso() }).eq('location_id', locationId).eq('id', runId);
   if (!error) await supabase.from('ops_audit').insert({ location_id: locationId, actor_id: byId || null, actor_name: by || null, action: 'checklist_signoff', entity_type: 'ops_checklist_run', entity_id: runId });
   return { error };

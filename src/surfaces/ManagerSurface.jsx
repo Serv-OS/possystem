@@ -47,6 +47,26 @@ export default function ManagerSurface() {
     return () => { if (prevSkin) el.setAttribute('data-skin', prevSkin); else el.removeAttribute('data-skin'); if (prevTheme) el.setAttribute('data-theme', prevTheme); else el.removeAttribute('data-theme'); };
   }, [dark]);
 
+
+// v5.5.917 — PUBLISH THE PAIRED VENUE SO THE SHARED DATA LAYER CAN SEE IT.
+// The Manager app pairs through its OWN ops_devices record, and until now it kept the resolved
+// location in React state only. Everything under src/lib/ops resolves the venue with
+// getActiveLocationSync(), which reads localStorage 'rpos-device' — a key this surface never
+// wrote. So on a manager tablet the venue resolved to NULL, every ops write went out with
+// location_id: null, and row-level security refused it. Staff saw the raw
+// "new row violates row-level security policy" under a checklist that otherwise looked fine.
+// Merge rather than overwrite: a tablet that is ALSO paired as a till must keep its own record.
+function publishManagerLocation(locationId, venueName) {
+  if (!locationId) return;
+  try {
+    const prev = JSON.parse(localStorage.getItem('rpos-device') || '{}') || {};
+    if (prev.locationId === locationId) return;
+    localStorage.setItem('rpos-device', JSON.stringify({
+      ...prev, locationId, locationName: venueName || prev.locationName || null,
+    }));
+  } catch { /* storage unavailable — the ops writes will surface a clear error instead */ }
+}
+
   // boot: anon session → heartbeat → claimed? PIN : pair
   useEffect(() => {
     let live = true;
@@ -55,7 +75,7 @@ export default function ManagerSurface() {
       if (!live) return;
       const { data } = await opsHeartbeat();
       if (!live) return;
-      if (data?.claimed && data.location_id) { setLoc(data.location_id); setVenueName(data.name || ''); setStage('pin'); }
+      if (data?.claimed && data.location_id) { publishManagerLocation(data.location_id, data.name); setLoc(data.location_id); setVenueName(data.name || ''); setStage('pin'); }
       else { const reg = await opsRegisterDevice(); if (!live) return; setClaimCode(reg.data?.claim_code || ''); setStage('pair'); }
     })();
     return () => { live = false; };
@@ -66,7 +86,7 @@ export default function ManagerSurface() {
     if (stage !== 'pair') return;
     const t = setInterval(async () => {
       const { data } = await opsHeartbeat();
-      if (data?.claimed && data.location_id) { setLoc(data.location_id); setVenueName(data.name || ''); setStage('pin'); }
+      if (data?.claimed && data.location_id) { publishManagerLocation(data.location_id, data.name); setLoc(data.location_id); setVenueName(data.name || ''); setStage('pin'); }
     }, 5000);
     return () => clearInterval(t);
   }, [stage]);

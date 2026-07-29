@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.917', date: '27 Jul 2026', label: 'FIX — Manager app: checklists could not be ticked ("violates row-level security policy")',
+    changes: [
+      'TICKING A CHECKLIST TASK OR ADDING A PHOTO FAILED WITH A RAW DATABASE ERROR. The Opening checklist loaded, showed all its tasks, and then refused every tick with "new row violates row-level security policy". Nothing was wrong with anyone\'s permissions.',
+      'THE CAUSE. The Manager app pairs to a venue through its own device record and kept that venue in memory only — it never told the rest of the app which venue it was. Everything in the Operations module asks a shared helper for the current venue, and that helper reads the same place a till writes when it pairs. On a manager tablet that place was empty, so every checklist write went out with no venue attached and the database refused it, correctly. The tasks still LISTED because reading takes a different route. The Manager app now publishes its venue as soon as it is paired, and merges rather than overwrites, so a tablet that doubles as a till keeps its own pairing.',
+      'AND IT NO LONGER SHOWS DATABASE JARGON TO STAFF. The write paths did not check whether the venue had resolved before writing, unlike every read path, which is how a database policy message ended up in front of a manager. They now stop with something actionable — "Venue not resolved yet — reopen the checklist and try again".',
+      'SIGN-OFF HAD THE SAME HOLE, AND IT WAS WORSE. Without a venue, signing off a checklist quietly matched no rows at all and then failed to write its audit record — so a checklist could appear signed off having recorded nothing. Compliance evidence you would only discover was missing when someone asked for it.',
+      'READY TO TEST: open the Manager app on the ops tablet, run the Opening checklist, tick a task and add the handwash photo. Both should save, and sign-off should stick after a reload.',
+    ],
+  },
+  {
     version: '5.5.916', date: '27 Jul 2026', label: 'SaaS billing — foundations (plan ladder + usage counter + simulation). NOT YET COLLECTING MONEY.',
     changes: [
       'THE PLAN LADDER, AS AGREED: Free (up to £8,000 monthly gross takings, 2 devices), Growth £149 (£8,000.01–£15,000, 5 devices), Scale £299 (above £15,000, 10 devices). Counted PER VENUE, on gross takings INCLUDING VAT across every tender and channel — cash included, not just card.',
