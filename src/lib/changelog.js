@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.932', date: '29 Jul 2026', label: 'REPORTS — Production tab: every batch, plan vs actual, yield and cost',
+    changes: [
+      'Stock reports gain a PRODUCTION tab: every completed batch over the last 7/30/90 days — when it was made, what and how much, planned versus actual with a yield percentage per batch and overall, the ingredient cost, cost per unit, and the lot code for traceability. This is the batch-by-batch explanation of numbers the other tabs already count.',
+      'And to be clear about what needed no change: production was ALREADY correctly inside the money reports — batch output counts as stock in, ingredients consumed count as stock out, in Valuation, Movements and The Gap alike. Verified, not assumed. The chain is now visible end to end: schedule → cook recorded → ingredients out, product in → sold or wasted → all in one ledger, all in the reports.',
+      'READY TO TEST: record a linked cook (or produce a batch), then Inventory → Stock reports → Production.',
+    ],
+  },
+  {
     version: '5.5.931', date: '29 Jul 2026', label: 'BATCH SCHEDULING — plan cooks by weekday, recorded cooks move real stock, and "needed today" knows your sales',
     changes: [
       'YOU CAN NOW ACTUALLY SCHEDULE A BATCH. Back Office → Operations → Prep schedule: each scheduled cook can be linked to a made-here stock item — pick the item, the batch recipe wires up automatically, choose the weekdays and quantity. That is "we make these on this day and this many", written down once.',

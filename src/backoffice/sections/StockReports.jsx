@@ -21,6 +21,7 @@ import { getActiveLocationSync, getLocationId } from '../../lib/supabase';
 import { money, currencySymbol } from '../../lib/currency';
 import { toCsv, downloadCsv } from './reports/_csv';
 import { fetchInventoryItems, fetchMovementsRange, fetchSuppliers, movementLabel } from '../../lib/stock/data';
+import { fetchBatches } from '../../lib/stock/production';
 import { fetchRecipes, buildCostingCtx, costRecipeWith } from '../../lib/stock/recipes';
 import { foodCostPct, gpAmount, gpPct, costBreakdownByPurchasedItem, resolveItemSupplierId } from '../../lib/stock/costing';
 import { fetchClosedChecksRange } from '../../lib/db';
@@ -32,7 +33,7 @@ import {
   ReportTable, SubToolbar, useSort, sortRows,
 } from './reports/reportKit';
 
-const TABS = ['Valuation', 'Recipe GP', 'Movements', 'The Gap', 'By supplier'];
+const TABS = ['Valuation', 'Recipe GP', 'Production', 'Movements', 'The Gap', 'By supplier'];
 const fmtCost = (v) => (v == null || !Number.isFinite(Number(v)) ? '—' : currencySymbol() + Number(v).toFixed(4).replace(/0+$/, '').replace(/\.$/, ''));
 const r3 = (v) => Math.round((Number(v) || 0) * 1000) / 1000;
 const INBOUND = new Set(['PURCHASE_RECEIPT', 'TRANSFER_IN', 'RETURN', 'PRODUCTION_OUTPUT', 'OPENING_BALANCE']);
@@ -118,6 +119,7 @@ export default function StockReports() {
       {loading && <div style={{ color:'var(--t3)', fontSize:13 }}>Loading…</div>}
       {!loading && tab === 'Valuation'   && <Valuation items={items} supplierName={supplierName}/>}
       {!loading && tab === 'Recipe GP'   && <RecipeGP recipes={recipes} ctx={ctx} menuItems={menuItems} taxRates={taxRates}/>}
+      {!loading && tab === 'Production'  && <ProductionReport itemName={itemName}/>}
       {!loading && tab === 'Movements'   && <Movements moves={moves} itemName={itemName}/>}
       {!loading && tab === 'The Gap'     && <TheGap moves={moves} itemName={itemName} itemUnit={itemUnit}/>}
       {!loading && tab === 'By supplier' && (
@@ -321,6 +323,69 @@ function RecipeGP({ recipes, ctx, menuItems, taxRates = [] }) {
 
 /* ── 3. Movements ───────────────────────────────────────────────────────────*/
 const TYPE_TONE = (label) => /waste/i.test(label) ? 'warn' : /count/i.test(label) ? 'good' : 'neutral';
+
+// ── Production (v5.5.932) — every batch, plan vs actual, cost and yield ────────
+// Reads production_batches directly: each row IS the audit record the produce flow
+// wrote (planned qty, actual qty, ingredient cost, output unit cost, lot, who/when).
+// The ledger reports already count the stock effect (PRODUCTION_OUTPUT inbound,
+// PRODUCTION_CONSUME outbound) — this view explains it batch by batch.
+function ProductionReport({ itemName }) {
+  const [days, setDays] = useState(30);
+  const [batches, setBatches] = useState(null);
+  useEffect(() => {
+    fetchBatches(null, 500).then(({ data }) => setBatches(data || []));
+  }, []);
+  const view = useMemo(() => {
+    const since = Date.now() - days * 86400000;
+    return (batches || []).filter(b => b.status === 'COMPLETED' && b.producedAt && new Date(b.producedAt).getTime() >= since);
+  }, [batches, days]);
+  const tot = useMemo(() => ({
+    runs: view.length,
+    cost: view.reduce((s, b) => s + (Number(b.actualCost) || 0), 0),
+    yieldPct: (() => {
+      const planned = view.reduce((s, b) => s + (Number(b.plannedQty) || 0), 0);
+      const actual = view.reduce((s, b) => s + (Number(b.actualQty) || 0), 0);
+      return planned > 0 ? Math.round((actual / planned) * 1000) / 10 : null;
+    })(),
+  }), [view]);
+  if (batches == null) return <div style={{ color: 'var(--t3)', fontSize: 13, padding: 20 }}>Loading…</div>;
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', margin: '4px 0 14px' }}>
+        <select value={days} onChange={e => setDays(Number(e.target.value))}
+          style={{ background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '7px 10px', fontSize: 13, cursor: 'pointer' }}>
+          <option value={7}>Last 7 days</option><option value={30}>Last 30 days</option><option value={90}>Last 90 days</option>
+        </select>
+        <span style={{ fontSize: 12.5, color: 'var(--t3)' }}>
+          <b style={{ color: 'var(--t1)' }}>{tot.runs}</b> batch{tot.runs === 1 ? '' : 'es'} ·
+          ingredient cost <b style={{ color: 'var(--t1)' }}><Money v={tot.cost}/></b>
+          {tot.yieldPct != null && <> · overall yield <b style={{ color: tot.yieldPct >= 97 ? 'var(--grn)' : 'var(--amb,#e8a020)' }}>{tot.yieldPct}%</b> of plan</>}
+        </span>
+      </div>
+      {view.length === 0 ? (
+        <div style={{ color: 'var(--t3)', fontSize: 13, padding: '26px 0' }}>No completed batches in this window. Batches appear here as cooks are recorded (Manager app → Kitchen) or produced in Back Office → Batches.</div>
+      ) : (
+        <ReportTable
+          columns={[
+            { key: 'when', label: 'Produced', sortable: true, render: b => new Date(b.producedAt).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) },
+            { key: 'item', label: 'Item', sortable: true, render: b => <b style={{ color: 'var(--t1)' }}>{b.outputName || itemName(b.outputItemId)}</b> },
+            { key: 'planned', label: 'Planned', align: 'right', render: b => b.plannedQty != null ? `${b.plannedQty} ${b.outputUnit}` : '—' },
+            { key: 'actual', label: 'Made', align: 'right', render: b => <b>{b.actualQty} {b.outputUnit}</b> },
+            { key: 'yield', label: 'Yield', align: 'right', render: b => {
+                if (!(Number(b.plannedQty) > 0)) return '—';
+                const pct = Math.round((Number(b.actualQty) / Number(b.plannedQty)) * 100);
+                return <Tag label={`${pct}%`} tone={pct >= 97 ? 'good' : pct >= 85 ? 'neutral' : 'bad'}/>;
+              } },
+            { key: 'cost', label: 'Ingredients', align: 'right', render: b => <Money v={b.actualCost}/> },
+            { key: 'unit', label: 'Cost / unit', align: 'right', render: b => <Money v={b.outputUnitCost}/> },
+            { key: 'lot', label: 'Lot', render: b => b.lotCode || '—' },
+          ]}
+          rows={view}
+        />
+      )}
+    </div>
+  );
+}
 
 function Movements({ moves, itemName }) {
   const [search, setSearch] = useState('');
