@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.919', date: '29 Jul 2026', label: 'STOCK — par levels are set in bottles and cases now, not millilitres',
+    changes: [
+      'PAR LEVEL AND REORDER POINT NOW USE THE UNIT YOU COUNT IN. A wine you buy by the bottle was asking for its par in millilitres — "par: 4500" when every human thinks "par: 6 bottles". Both fields now use the same unit picker as Set count (Bottle, Case, Keg…), with the base-unit equivalent shown underneath for reference.',
+      'NOTHING SHIFTS UNDERNEATH. The stored value is still the base unit, so suggested ordering, the low-stock warning and all existing pars are untouched — they simply display back-calculated into the sensible unit. Pack conversions are exact multiplies, so no rounding drift.',
+      'READY TO TEST: Stock items → any bottled/cased product → Stock tab. Par should read in bottles; type 6 and the hint should show the ml equivalent.',
+    ],
+  },
+  {
     version: '5.5.918', date: '29 Jul 2026', label: 'FIX — Manager app checklist PHOTOS: managers could not upload evidence ("violates row-level security policy")',
     changes: [
       'THE REAL CAUSE, FOUND AND FIXED LIVE. The checklist photo bucket had lopsided permissions: VIEWING a photo allowed either a paired ops tablet or a signed-in Back Office user — but ADDING one allowed only the tablet. A manager using the app under their own Back Office login (which is how the Manager app commonly runs) could tick tasks fine, then hit the photo step and get the raw "new row violates row-level security policy" from storage. Ticks touch tables, photos touch storage — which is why everything else worked and only the image failed.',

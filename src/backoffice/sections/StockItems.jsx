@@ -31,7 +31,7 @@ import {
   setInventoryOnHand, fetchItemMovements, movementLabel,
 } from '../../lib/stock/data';
 import { fetchParLevels, upsertParLevel } from '../../lib/stock/counts';
-import { toBase, unitOptions, formatToken, unitLabel, displayInUnits } from '../../lib/stock/uom';
+import { toBase, fromBase, unitOptions, formatToken, unitLabel, displayInUnits } from '../../lib/stock/uom';
 
 const KINDS = [
   { id: 'PURCHASED', label: 'Purchased', desc: 'Bought from a supplier — cost comes from invoices/packs.' },
@@ -346,7 +346,11 @@ function StockTab({ draft, locId, onChanged, showToast }) {
   const [moves, setMoves] = useState(null);
   const [count, setCount] = useState('');
   const [busy, setBusy] = useState(false);
-  const [par, setPar] = useState({ parLevel: '', reorderPoint: '' });
+  // v5.5.919 — par/reorder are STORED in base units (the order-pad maths and the low-stock
+  // alert depend on that contract) but EDITED in the unit the operator actually thinks in.
+  // parBase mirrors the server; parEdit holds what is in the inputs, in `countUnit`.
+  const [parBase, setParBase] = useState({ parLevel: '', reorderPoint: '' });
+  const [parEdit, setParEdit] = useState({ parLevel: '', reorderPoint: '' });
   const [countUnit, setCountUnit] = useState(() => { const fmts = draft.packaging || []; const cd = fmts.find(f => f.isCountDefault) || fmts[0]; return cd ? formatToken(cd.id) : draft.baseUnit; });
 
   const loadMoves = useCallback(async () => {
@@ -358,7 +362,7 @@ function StockTab({ draft, locId, onChanged, showToast }) {
     if (!draft.id) return;
     const { data } = await fetchParLevels(locId);
     const p = data?.[draft.id];
-    setPar({ parLevel: p?.parLevel ?? '', reorderPoint: p?.reorderPoint ?? '' });
+    setParBase({ parLevel: p?.parLevel ?? '', reorderPoint: p?.reorderPoint ?? '' });
   }, [draft.id, locId]);
   useEffect(() => { loadMoves(); loadPar(); }, [loadMoves, loadPar]);
 
@@ -366,8 +370,7 @@ function StockTab({ draft, locId, onChanged, showToast }) {
 
   const onHand = Number(draft.onHand || 0);
   const cost = draft.currentCost;
-  const savePar = async (next) => { setPar(next); await upsertParLevel(draft.id, next, locId); };
-  const belowReorder = par.reorderPoint !== '' && onHand <= Number(par.reorderPoint);
+  const belowReorder = parBase.reorderPoint !== '' && onHand <= Number(parBase.reorderPoint);
 
   // Count in whatever unit the operator picks (Keg / Case / base) — convert to base.
   const uomItem = {
@@ -381,6 +384,29 @@ function StockTab({ draft, locId, onChanged, showToast }) {
     : [{ token: uomItem.baseUnit, label: uomItem.baseUnit }];
   let countBase = null;
   if (count !== '' && Number(count) >= 0) { try { countBase = toBase(Number(count), countUnit, uomItem); } catch { countBase = null; } }
+
+  // Par shown in the same unit the operator counts in (Bottle, Case…), never raw ml/g.
+  // fromBase/toBase are exact multiply/divide against the pack size, so round-tripping a
+  // whole number of bottles is lossless. Stored values remain BASE UNITS — see above.
+  const parToEdit = (base) => {
+    if (base === '' || base == null) return '';
+    const v = fromBase(Number(base), countUnit, uomItem);
+    return v == null ? String(base) : String(Math.round(v * 1000) / 1000);
+  };
+  useEffect(() => {
+    setParEdit({ parLevel: parToEdit(parBase.parLevel), reorderPoint: parToEdit(parBase.reorderPoint) });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [parBase.parLevel, parBase.reorderPoint, countUnit]);
+  const savePar = async (edit) => {
+    const conv = (v) => {
+      if (v === '' || v == null) return '';
+      try { const b = toBase(Number(v), countUnit, uomItem); return Number.isFinite(b) ? b : ''; } catch { return ''; }
+    };
+    const nextBase = { parLevel: conv(edit.parLevel), reorderPoint: conv(edit.reorderPoint) };
+    setParBase(nextBase);
+    await upsertParLevel(draft.id, nextBase, locId);
+  };
+  const parUnitLabel = (countOpts.find(o => o.token === countUnit)?.label) || draft.baseUnit;
 
   const applyCount = async () => {
     if (countBase == null || !(countBase >= 0)) { showToast?.('Enter a count', 'error'); return; }
@@ -416,12 +442,18 @@ function StockTab({ draft, locId, onChanged, showToast }) {
 
       {/* Par & reorder (drives low-stock + future suggested ordering) */}
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: 12, marginBottom: 18, flexWrap: 'wrap' }}>
-        <Field label={`Par level (${draft.baseUnit})`}>
-          <input type="number" min="0" step="any" value={par.parLevel} onChange={e => setPar(p => ({ ...p, parLevel: e.target.value }))} onBlur={() => savePar(par)} placeholder="target" style={{ ...fieldStyle, width: 120 }} />
+        <Field label={`Par level (${parUnitLabel})`}>
+          <input type="number" min="0" step="any" value={parEdit.parLevel} onChange={e => setParEdit(p => ({ ...p, parLevel: e.target.value }))} onBlur={() => savePar(parEdit)} placeholder="target" style={{ ...fieldStyle, width: 120 }} />
         </Field>
-        <Field label={`Reorder at (${draft.baseUnit})`}>
-          <input type="number" min="0" step="any" value={par.reorderPoint} onChange={e => setPar(p => ({ ...p, reorderPoint: e.target.value }))} onBlur={() => savePar(par)} placeholder="min before reorder" style={{ ...fieldStyle, width: 140 }} />
+        <Field label={`Reorder at (${parUnitLabel})`}>
+          <input type="number" min="0" step="any" value={parEdit.reorderPoint} onChange={e => setParEdit(p => ({ ...p, reorderPoint: e.target.value }))} onBlur={() => savePar(parEdit)} placeholder="min before reorder" style={{ ...fieldStyle, width: 140 }} />
         </Field>
+        {countUnit !== draft.baseUnit && parBase.parLevel !== '' && (
+          <div style={{ fontSize: 11, color: 'var(--t4)', paddingBottom: 10 }}>
+            = {Math.round(Number(parBase.parLevel) * 1000) / 1000} {draft.baseUnit} par
+            {parBase.reorderPoint !== '' && <> · reorder at {Math.round(Number(parBase.reorderPoint) * 1000) / 1000} {draft.baseUnit}</>}
+          </div>
+        )}
         {belowReorder && <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--red, #ef4444)', paddingBottom: 8 }}>⚠ at/below reorder point — time to order</div>}
       </div>
 
