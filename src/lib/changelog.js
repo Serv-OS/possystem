@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.940', date: '29 Jul 2026', label: 'FIXED — supplier order emails now actually send (verified delivered)',
+    changes: [
+      'Found and fixed by reproducing the whole chain with a real login rather than guessing: the order-email function was rejecting every genuine Back Office session at its front door, so no supplier email was ever attempted — the orders were quietly marked Sent by the fallback. The email pipeline itself was healthy all along (receipts have been sending for days).',
+      'The session check now validates the caller with two plain, direct calls — the same ones proven to work — instead of the client library whose server-side session handling was rejecting valid tokens. Deployed, re-tested end to end: the Milk Supplier order email SENT and is recorded in the audit trail.',
+      'The Meat Supplier order genuinely has no email address on file — add one to that supplier and use ✉ Resend on the order.',
+      'READY TO CONFIRM: the Milk order email should be in peter+milk@serv-os.app now. Future orders email at create time as designed, and any failure names its real reason with a Resend button to retry.',
+    ],
+  },
+  {
     version: '5.5.939', date: '29 Jul 2026', label: 'ORDER EMAILS — a Resend button, and honest errors instead of a misleading toast',
     changes: [
       'Supplier emails from tonight\'s test orders never arrived, and the audit trail shows the send step was never reached — the orders were quietly marked Sent by the fallback while the toast claimed "no supplier email on file", which was untrue and hid the real failure.',

@@ -42,14 +42,19 @@ Deno.serve(async (req) => {
   const bearer = (req.headers.get('authorization') || '').replace(/^Bearer\s+/i, '');
   const isService = bearer === SERVICE_KEY;
   if (!isService) {
-    const caller = createClient(SUPABASE_URL, Deno.env.get('SUPABASE_ANON_KEY') ?? '', {
-      global: { headers: { authorization: `Bearer ${bearer}` } },
-    });
-    const { data: u } = await caller.auth.getUser();
-    if (!u?.user) return json({ error: 'unauthorized — sign in to Back Office again (session token was not accepted)' }, 401);
-    const { data: loc } = await caller.from('user_locations').select('location_id')
-      .eq('user_id', u.user.id).eq('location_id', location_id).maybeSingle();
-    if (!loc) return json({ error: `not authorized for location ${location_id || '(none sent)'}` }, 403);
+    // v5.5.940 — PLAIN HTTP, NO SDK. supabase-js's server-side session handling rejected
+    // provably-valid tokens here (fresh login, auth/user 200, REST visible — fn still
+    // 401'd). These two raw calls are byte-for-byte what the working curl does: validate
+    // the token with GoTrue, then ask PostgREST — under the CALLER's own token and the
+    // key the BROWSER sent — whether they hold this location. RLS answers, not us.
+    const apikey = req.headers.get('apikey') || Deno.env.get('SUPABASE_ANON_KEY') || '';
+    const ures = await fetch(`${SUPABASE_URL}/auth/v1/user`, { headers: { authorization: `Bearer ${bearer}`, apikey } });
+    if (!ures.ok) return json({ error: `unauthorized — session rejected (auth ${ures.status}). Sign in to Back Office again.` }, 401);
+    const u = await ures.json();
+    const lres = await fetch(`${SUPABASE_URL}/rest/v1/user_locations?select=location_id&user_id=eq.${u.id}&location_id=eq.${encodeURIComponent(location_id)}&limit=1`,
+      { headers: { authorization: `Bearer ${bearer}`, apikey } });
+    const rows = lres.ok ? await lres.json() : [];
+    if (!Array.isArray(rows) || !rows.length) return json({ error: `not authorized for location ${location_id || '(none sent)'}` }, 403);
   }
 
   // ── Load the order, its lines, the supplier and the venue name.
