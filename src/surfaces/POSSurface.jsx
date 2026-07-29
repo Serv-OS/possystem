@@ -1465,11 +1465,15 @@ export default function POSSurface() {
 
         {/* Tab bar */}
         <div style={{padding:'0 14px',borderBottom:'1px solid var(--glass-border)',background:'transparent',flexShrink:0,display:'flex',alignItems:'center',gap:0}}>
-          {[['menu','Menu'],['history','History'],['deliveries','Deliveries']].map(([t,l])=>{
+          {/* v5.5.927: Waste sits IN the tab bar next to Deliveries. It was buried inside
+              the cash-drawer menu — staff could not find it, and a waste button nobody can
+              find is a waste ledger that lies. It opens the modal rather than switching
+              tabs: recording waste is an action, not a place. */}
+          {[['menu','Menu'],['history','History'],['deliveries','Deliveries'],['waste','Waste']].map(([t,l])=>{
             const isActive = rightTab===t;
             const badge = t==='orders' ? orderQueue.filter(o=>o.status!=='collected').length : 0;
             return (
-              <button key={t} onClick={()=>setRightTab(t)} style={{
+              <button key={t} onClick={()=>{ if(t==='waste'){ setShowWaste(true); return; } setRightTab(t); }} style={{
                 padding:'11px 16px',cursor:'pointer',fontFamily:'inherit',border:'none',
                 borderBottom:`2px solid ${isActive?'var(--acc)':'transparent'}`,
                 background:'transparent',

@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.927', date: '29 Jul 2026', label: 'WASTE — button moved next to Deliveries on the POS; Back Office can now waste selling items',
+    changes: [
+      'THE WASTE BUTTON IS NOW WHERE STAFF CAN SEE IT. It was buried inside the cash-drawer menu — a waste button nobody can find is a waste ledger that lies. It now sits in the POS tab bar next to Deliveries, one tap, opens the same recording screen.',
+      'BACK OFFICE CAN NOW WASTE A SELLING ITEM, NOT JUST STOCK. Inventory → Wastage has a "Waste a menu item…" button — the same screen the POS uses, so a dropped burger behaves identically everywhere: the recipe is exploded (the patty is deducted, not the beef — that left at batch time), the ingredient cost AND the lost sale value are recorded, and it all lands in the same waste ledger the P&L reads.',
+      'READY TO TEST: POS → the Waste tab is beside Deliveries. Back Office → Inventory → Wastage → "Waste a menu item…" — waste a burger and watch the patty stock drop.',
+    ],
+  },
+  {
     version: '5.5.926', date: '29 Jul 2026', label: 'PREDICTIVE ORDERING — the Order pad now knows Friday from Tuesday',
     changes: [
       'THE ORDER PAD NOW SUGGESTS FROM YOUR ACTUAL WEEKLY PATTERN, NOT A FLAT AVERAGE. A venue selling 12 bottles on a Friday and 3 on a Tuesday used to be told "6.4 a day" — over-ordered for Monday, under-ordered for the weekend. The pad now walks the real calendar days each order has to cover (until the supplier\'s next delivery, plus your safety days) and adds up what each of those days actually tends to use, from the last 8 weeks of sales and production.',

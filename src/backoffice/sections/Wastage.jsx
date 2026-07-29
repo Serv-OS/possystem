@@ -10,6 +10,7 @@ import { getActiveLocationSync, getLocationId } from '../../lib/supabase';
 import { money } from '../../lib/currency';
 import { UNITS, DIMENSIONS } from '../../lib/stock/units';
 import { fetchInventoryItems } from '../../lib/stock/data';
+import PosWasteModal from '../../components/PosWasteModal';
 import { logWaste, fetchWaste, WASTE_REASONS } from '../../lib/stock/waste';
 
 const field = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '8px 10px', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
@@ -22,6 +23,7 @@ export default function Wastage() {
   const showToast = useStore(s => s.showToast);
   const [locId, setLocId] = useState(getActiveLocationSync());
   const [items, setItems] = useState([]);
+  const [showProductWaste, setShowProductWaste] = useState(false);
   const [log, setLog] = useState([]);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState('');
@@ -64,7 +66,15 @@ export default function Wastage() {
 
       {/* Log form */}
       <div style={{ background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 12, padding: 18, marginBottom: 24 }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)', marginBottom: 12 }}>Log waste</div>
+        <div style={{ display: 'flex', alignItems: 'center', marginBottom: 12 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)', marginRight: 'auto' }}>Log waste</div>
+          {/* v5.5.927: BO could only waste STOCK items. Wasting a SELLING item (a dropped
+              burger) goes through the same modal the POS uses — recipe explosion deducts
+              the patty, records cost AND the lost sale. One behaviour everywhere. */}
+          <button onClick={() => setShowProductWaste(true)} style={{ padding: '7px 13px', borderRadius: 8, background: 'var(--bg2)', border: '1px solid var(--bdr)', color: 'var(--t1)', fontSize: 12.5, fontWeight: 600, cursor: 'pointer' }}>
+            Waste a menu item…
+          </button>
+        </div>
         {!row.item ? (
           <div style={{ position: 'relative', maxWidth: 360 }}>
             <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search a stock item…" style={field} />
@@ -117,6 +127,7 @@ export default function Wastage() {
           ))}</tbody>
         </table>
       )}
+      <PosWasteModal open={showProductWaste} onClose={() => { setShowProductWaste(false); reload(); }} showToast={showToast} />
     </div>
   );
 }
