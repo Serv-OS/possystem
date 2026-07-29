@@ -46,10 +46,10 @@ Deno.serve(async (req) => {
       global: { headers: { authorization: `Bearer ${bearer}` } },
     });
     const { data: u } = await caller.auth.getUser();
-    if (!u?.user) return json({ error: 'unauthorized' }, 401);
+    if (!u?.user) return json({ error: 'unauthorized — sign in to Back Office again (session token was not accepted)' }, 401);
     const { data: loc } = await caller.from('user_locations').select('location_id')
       .eq('user_id', u.user.id).eq('location_id', location_id).maybeSingle();
-    if (!loc) return json({ error: 'not authorized for this location' }, 403);
+    if (!loc) return json({ error: `not authorized for location ${location_id || '(none sent)'}` }, 403);
   }
 
   // ── Load the order, its lines, the supplier and the venue name.

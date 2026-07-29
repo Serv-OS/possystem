@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.939', date: '29 Jul 2026', label: 'ORDER EMAILS — a Resend button, and honest errors instead of a misleading toast',
+    changes: [
+      'Supplier emails from tonight\'s test orders never arrived, and the audit trail shows the send step was never reached — the orders were quietly marked Sent by the fallback while the toast claimed "no supplier email on file", which was untrue and hid the real failure.',
+      'Fixed the visibility, so the cause names itself: any SENT order now has a "✉ Resend to supplier" button; pressing it either emails the order (and says who to) or shows the REAL reason it cannot, in plain words. The create-orders message does the same — no more claiming a missing email when the send simply failed.',
+      'TO DIAGNOSE YOURS: open the Milk Supplier order → Resend to supplier → the toast will either deliver the email or name exactly what is broken. Tell me what it says and the next fix is precise instead of guessed.',
+    ],
+  },
+  {
     version: '5.5.938', date: '29 Jul 2026', label: 'Prep schedule and Batches now use the identical item label',
     changes: [
       'The prep schedule picker said "Burger Patty" while the Batches dropdown said "Burger Patty (100g Burger Patty)". Both now render the exact same string: the stock item\'s name, with the recipe\'s name in brackets when it differs. Two screens, one label.',

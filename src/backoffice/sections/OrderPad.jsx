@@ -174,20 +174,26 @@ export default function OrderPad() {
     // says so — silence here would read as "sent" when nothing left the building.
     const { data, error } = await createOrdersFromBasket(lines, 'DRAFT', locId);
     if (error) { setBusy(false); showToast?.(error.message, 'error'); return; }
-    let emailed = 0, markedOnly = 0;
+    let emailed = 0, markedOnly = 0; let lastErr = '';
     for (const poId of (data.poIds || [])) {
       const { data: res, error: sendErr } = await supabase.functions.invoke('po-send', {
         body: { po_id: poId, location_id: locId },
       });
       if (!sendErr && res?.ok) emailed++;
-      else { await setPOStatus(poId, 'SENT', locId); markedOnly++; }
+      else {
+        // v5.5.939: keep the order on the books either way, but STOP claiming "no email
+        // on file" for every failure — that wording hid a real send outage. Carry the
+        // actual reason into the toast; Orders has a Resend button for the retry.
+        try { lastErr = res?.error || (sendErr?.context ? (await sendErr.context.json())?.error : sendErr?.message) || lastErr; } catch { lastErr = sendErr?.message || lastErr; }
+        await setPOStatus(poId, 'SENT', locId); markedOnly++;
+      }
     }
     setBusy(false);
     showToast?.(
       markedOnly
-        ? `${emailed} order${emailed === 1 ? '' : 's'} emailed · ${markedOnly} marked sent (no supplier email on file)`
+        ? `${emailed} emailed · ${markedOnly} NOT emailed (${lastErr || 'send failed'}) — use Resend on the order`
         : `${emailed} order${emailed === 1 ? '' : 's'} emailed to suppliers — now in Orders awaiting delivery`,
-      'success');
+      markedOnly ? 'error' : 'success');
     setQty({}); await reload();
   };
 

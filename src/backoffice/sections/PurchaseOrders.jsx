@@ -237,6 +237,19 @@ export default function PurchaseOrders() {
               {editable && <button onClick={() => save('DRAFT')} disabled={busy} style={{ padding: '9px 16px', borderRadius: 8, background: 'var(--bg2)', border: '1px solid var(--bdr)', color: 'var(--t1)', fontSize: 13, cursor: 'pointer' }}>Save draft</button>}
               {editable && supplierEmail && <PrimaryBtn onClick={sendToSupplier} disabled={busy || !draft.lines.length}>Send to supplier</PrimaryBtn>}
               {editable && <button onClick={() => save('SENT')} disabled={busy || !draft.lines.length} style={{ padding: '9px 16px', borderRadius: 8, background: supplierEmail ? 'var(--bg2)' : 'var(--acc)', border: supplierEmail ? '1px solid var(--bdr)' : 0, color: supplierEmail ? 'var(--t1)' : '#0b0c10', fontSize: 13, fontWeight: 700, cursor: 'pointer', opacity: busy || !draft.lines.length ? 0.6 : 1 }} title={supplierEmail ? 'Mark sent without emailing' : 'No supplier email on file — marks the order sent without emailing'}>Mark sent</button>}
+              {draft.id && (draft.status === 'SENT' || draft.status === 'PARTIAL') && !receiving && (
+                <button onClick={async () => {
+                  setBusy(true);
+                  const { data: res, error: e } = await supabase.functions.invoke('po-send', { body: { po_id: draft.id, location_id: locId } });
+                  setBusy(false);
+                  let msg = '';
+                  if (!e && res?.ok) msg = `Emailed to ${res.to}`;
+                  else { try { msg = res?.error || (e?.context ? (await e.context.json())?.error : e?.message) || 'send failed'; } catch { msg = e?.message || 'send failed'; } }
+                  showToast?.(msg, (!e && res?.ok) ? 'success' : 'error');
+                }} disabled={busy} style={{ padding: '9px 14px', borderRadius: 8, background: 'var(--bg2)', border: '1px solid var(--bdr)', color: 'var(--t1)', fontSize: 13, cursor: 'pointer' }}>
+                  ✉ Resend to supplier
+                </button>
+              )}
               {draft.id && (draft.status === 'SENT' || draft.status === 'PARTIAL') && !receiving && <PrimaryBtn onClick={openReceive} disabled={busy}>Accept delivery…</PrimaryBtn>}
               {draft.id && draft.status !== 'RECEIVED' && draft.status !== 'CANCELLED' && <button onClick={cancel} style={{ padding: '9px 14px', borderRadius: 8, background: 'transparent', border: '1px solid var(--bdr)', color: 'var(--t3)', fontSize: 13, cursor: 'pointer' }}>Cancel order</button>}
             </div>
