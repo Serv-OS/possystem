@@ -61,7 +61,7 @@ Deno.serve(async (req) => {
   const [{ data: po }, { data: lines }, { data: locRow }] = await Promise.all([
     admin.from('purchase_orders').select('*').eq('location_id', location_id).eq('id', po_id).maybeSingle(),
     admin.from('po_lines').select('*').eq('location_id', location_id).eq('po_id', po_id).order('sort_order'),
-    admin.from('locations').select('name,address,phone').eq('id', location_id).maybeSingle(),
+    admin.from('locations').select('name,address').eq('id', location_id).maybeSingle(),
   ]);
   if (!po) return json({ error: 'PO not found' }, 404);
   if (po.status === 'RECEIVED' || po.status === 'CANCELLED') return json({ error: `PO is ${po.status}` }, 409);
@@ -87,7 +87,7 @@ Deno.serve(async (req) => {
     <h2 style="margin:0 0 4px">Purchase order — ${esc(venue)}</h2>
     <p style="margin:0 0 8px;color:#555">Ref ${esc(ref)}${po.expected_date ? ` · requested delivery ${esc(po.expected_date)}` : ''}</p>
     ${supplier.account_number ? `<p style="margin:0 0 4px;font-size:14px"><b>Account no:</b> ${esc(supplier.account_number)}</p>` : ''}
-    <p style="margin:0 0 14px;font-size:14px"><b>Deliver to:</b> ${esc(venue)}${locRow?.address ? `, ${esc(locRow.address)}` : ''}${locRow?.phone ? ` · ${esc(locRow.phone)}` : ''}</p>
+    <p style="margin:0 0 14px;font-size:14px"><b>Deliver to:</b> ${esc(venue)}${locRow?.address ? `, ${esc(locRow.address)}` : ''}</p>
     <table style="border-collapse:collapse;width:100%;font-size:14px">
       <thead><tr style="text-align:left;color:#555">
         <th style="padding:6px 10px;border-bottom:2px solid #333">Item</th>

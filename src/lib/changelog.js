@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.942', date: '29 Jul 2026', label: 'Venue address — editable in Location settings, printed on supplier order emails',
+    changes: [
+      'There was no way to set the venue address — the order email\'s deliver-to line read from a field no screen edited. Location settings now has a Venue address box (saved to the same place the email reads), and the email prints it under "Deliver to".',
+      'Also fixed from the same test: the email lookup asked for a phone column that does not exist, which blanked the whole deliver-to line regardless. Both ends verified against the live database this time.',
+      'TEST: Location settings → set the real address → Save → open the Milk order → ✉ Resend → the email shows "Deliver to: <venue>, <address>" and the account number.',
+    ],
+  },
+  {
     version: '5.5.941', date: '29 Jul 2026', label: 'Order emails now carry the delivery address and your account number',
     changes: [
       'The supplier order email now says who and where it is for: your ACCOUNT NUMBER with that supplier (from the supplier record) and the DELIVER-TO line — venue name, address and phone from the venue settings. Deployed.',

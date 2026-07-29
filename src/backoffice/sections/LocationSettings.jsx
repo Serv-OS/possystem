@@ -92,6 +92,7 @@ export default function LocationSettings() {
   const [collectionLeadMin, setCollectionLeadMin] = useState(30);
   const [shifts, setShifts]         = useState([]);
   const [showItemImages, setShowItemImages] = useState(false);
+  const [venueAddress, setVenueAddress] = useState('');   // OPS locations.address — printed on supplier order emails
   const [loadingImageSetting, setLoadingImageSetting] = useState(true);
   // v5.5.799: takeaway/collection customer-details level on the POS (ops DB
   // locations.pos_settings.takeaway_customer_details). Keep the raw jsonb so
@@ -227,9 +228,10 @@ export default function LocationSettings() {
     (async () => {
       const locId = await getLocationId().catch(() => null);
       if (!locId || !supabase) { setLoadingImageSetting(false); return; }
-      const { data } = await supabase.from('locations').select('show_item_images, pos_settings').eq('id', locId).single();
+      const { data } = await supabase.from('locations').select('show_item_images, pos_settings, address').eq('id', locId).single();
       if (data) {
         setShowItemImages(data.show_item_images ?? false);
+        setVenueAddress(data.address || '');
         setPosSettingsRaw(data.pos_settings || {});
         setTakeawayDetails(['full','name','none'].includes(data.pos_settings?.takeaway_customer_details) ? data.pos_settings.takeaway_customer_details : 'full');
       }
@@ -303,6 +305,7 @@ export default function LocationSettings() {
       try {
         await supabase.from('locations').update({
           show_item_images: showItemImages,
+          address: venueAddress.trim() || null,
           pos_settings: { ...(posSettingsRaw || {}), takeaway_customer_details: takeawayDetails },
         }).eq('id', locId);
       } catch {}
@@ -447,6 +450,15 @@ export default function LocationSettings() {
       {/* Business day start */}
       <div style={S.card}>
         <div style={S.h2}>⏰ Business day start</div>
+        <label style={S.label}>Venue address</label>
+        <div style={S.desc}>
+          Printed on supplier order emails as the <strong>deliver-to</strong> address, so drivers
+          and suppliers know where the goods go.
+        </div>
+        <input style={{ ...S.input, width:'100%', maxWidth:460, boxSizing:'border-box', marginBottom:18 }}
+          value={venueAddress} onChange={e => setVenueAddress(e.target.value)}
+          placeholder="e.g. 12 High Street, Provo, PR1 2AB"/>
+
         <div style={S.desc}>
           The time a new reporting day begins. Checks closed before this time are attributed to the previous day.
           Set to <strong>06:00</strong> for a standard restaurant. Nightclubs or late bars might use <strong>04:00</strong>.
