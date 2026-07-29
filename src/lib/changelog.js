@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.931', date: '29 Jul 2026', label: 'BATCH SCHEDULING — plan cooks by weekday, recorded cooks move real stock, and "needed today" knows your sales',
+    changes: [
+      'YOU CAN NOW ACTUALLY SCHEDULE A BATCH. Back Office → Operations → Prep schedule: each scheduled cook can be linked to a made-here stock item — pick the item, the batch recipe wires up automatically, choose the weekdays and quantity. That is "we make these on this day and this many", written down once.',
+      'RECORDING A COOK NOW MOVES REAL STOCK. The Manager app\'s batch cooks used to be a tick-list — recording one changed nothing in stock. A linked cook now produces a real batch on record: ingredients consumed (the minced beef), output stocked (the patties), at true cost. If the stock side ever fails, the cook still logs — staff did make the food — and the error is reported rather than hidden. Unlinked rows keep working exactly as before.',
+      'NEEDED TODAY — THE TOP-UP BRAIN. Produce → Batches now opens with a "Needed today" panel for every made item: what is on hand, what today\'s plan says to make, what sales patterns expect you to use before the NEXT scheduled cook (the weekday model from v5.5.926), and the top-up to make if that comes up short. "We make patties Mondays and Thursdays, but Saturday was big" is now a number, not a feeling.',
+      'One unification behind this: the venue-access check now recognises manager tablets as well as tills, so every paired device sees exactly its own venue\'s data — nothing anyone else\'s. Database changes applied live.',
+      'READY TO TEST: Operations → Prep schedule → link a cook to the burger patty with weekdays + qty. Then Manager app → Kitchen → record it: patty stock rises, beef falls. Produce → Batches shows the Needed-today maths.',
+    ],
+  },
+  {
     version: '5.5.930', date: '29 Jul 2026', label: 'FIX — Recipe tab crash, second cause (the real one this time)',
     changes: [
       'The Recipe tab on a made-here item was crashing for TWO reasons stacked on top of each other. v5.5.929 fixed the first (a missing import). This fixes the second: the tab styled its input boxes with a name that does not exist in that file — five references to a style called by the wrong name. Same "App Error" screen, different missing variable, which is why it looked identical.',

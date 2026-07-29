@@ -5,6 +5,8 @@ import { useEffect, useState, useCallback } from 'react';
 import { useStore } from '../../../store';
 import { getActiveLocationSync, getLocationId } from '../../../lib/supabase';
 import { fetchPrepSchedule, savePrepItem, deletePrepItem } from '../../../lib/prep';
+import { fetchInventoryItems } from '../../../lib/stock/data';
+import { fetchRecipes } from '../../../lib/stock/recipes';
 import { Icon } from '../../../components/ServOSIcons';
 
 const field = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 8, padding: '8px 10px', fontSize: 13, outline: 'none', boxSizing: 'border-box', fontFamily: 'inherit' };
@@ -13,7 +15,7 @@ const th = { padding: '8px 10px', borderBottom: '1px solid var(--bdr)', fontWeig
 const td = { padding: '9px 10px', borderBottom: '1px solid var(--bg2)', fontSize: 13, color: 'var(--t1)' };
 const DAYS = [[1, 'Mon'], [2, 'Tue'], [3, 'Wed'], [4, 'Thu'], [5, 'Fri'], [6, 'Sat'], [0, 'Sun']];
 const UNITS = ['L', 'kg', 'g', 'ml', 'ea', 'portions', 'trays', 'batch'];
-const blank = () => ({ id: null, name: '', qty: '', unit: 'L', dueTime: '', daysOfWeek: [], active: true });
+const blank = () => ({ id: null, name: '', qty: '', unit: 'L', dueTime: '', daysOfWeek: [], active: true, outputItemId: '', recipeId: '' });
 const daysLabel = (a) => (!a || a.length === 0 ? 'Every day' : DAYS.filter(([n]) => a.includes(n)).map(([, l]) => l).join(' '));
 
 export default function OpsPrepSchedule() {
@@ -21,7 +23,18 @@ export default function OpsPrepSchedule() {
   const [locId, setLocId] = useState(getActiveLocationSync());
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [editing, setEditing] = useState(null);   // item being edited, or blank() for new
+  const [editing, setEditing] = useState(null);
+  const [madeItems, setMadeItems] = useState([]);
+  const [recipesByOutput, setRecipesByOutput] = useState({});
+  useEffect(() => {
+    const loc = getActiveLocationSync();
+    if (!loc) return;
+    fetchInventoryItems(loc).then(({ data }) => setMadeItems((data || []).filter(i => i.kind === 'MADE' && !i.archivedAt)));
+    fetchRecipes(loc).then(({ data }) => {
+      const m = {}; (data || []).forEach(r => { if (r.outputItemId && !r.archivedAt) m[r.outputItemId] = r; });
+      setRecipesByOutput(m);
+    });
+  }, []);   // item being edited, or blank() for new
   const [busy, setBusy] = useState(false);
 
   const reload = useCallback(async () => {
@@ -88,6 +101,19 @@ export default function OpsPrepSchedule() {
             <h3 style={{ margin: '0 0 16px', fontSize: 17, color: 'var(--t1)' }}>{editing.id ? 'Edit prep item' : 'New prep item'}</h3>
 
             <label style={lbl}>Name</label>
+            {/* v5.5.931 — link the cook to a MADE stock item. Picking one wires the batch
+                recipe: recording the cook then consumes ingredients and stocks the output.
+                "Not linked" keeps the old behaviour (a log-only reminder). */}
+            <select value={editing.outputItemId || ''} onChange={(e) => {
+              const it = madeItems.find(m => m.id === e.target.value);
+              const rec = it ? recipesByOutput[it.id] : null;
+              setEditing({ ...editing, outputItemId: it?.id || '', recipeId: rec?.id || '',
+                name: it ? it.name : editing.name, unit: rec?.yieldUnit || it?.baseUnit || editing.unit });
+            }} style={{ ...field, marginBottom: 8 }}>
+              <option value="">— not linked to stock (reminder only) —</option>
+              {madeItems.map(m => <option key={m.id} value={m.id}>{m.name}{recipesByOutput[m.id] ? '' : ' (no recipe yet)'}</option>)}
+            </select>
+            {editing.outputItemId && !editing.recipeId && <div style={{ fontSize: 11, color: 'var(--amb,#e8a020)', marginBottom: 8 }}>⚠ This item has no batch recipe — add one on the item's Recipe tab, or the cook will log without moving stock.</div>}
             <input value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} placeholder="e.g. Chicken stock" style={field} autoFocus />
 
             <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>

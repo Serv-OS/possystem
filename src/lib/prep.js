@@ -4,6 +4,7 @@
 // Location-fenced server-side by RLS (prep_schedule = users with location access; prep_log =
 // ops_can_write, i.e. BO users OR a claimed ops/manager device). camelCase here ↔ snake_case in DB.
 import { supabase, isMock } from './supabase';
+import { produceBatch } from './stock/production';
 import { isTrainingMode } from './trainingMode';
 
 const schedFromRow = (r) => ({
@@ -15,6 +16,7 @@ const schedFromRow = (r) => ({
   daysOfWeek: Array.isArray(r.days_of_week) ? r.days_of_week : [],
   active: r.active !== false,
   sortOrder: r.sort_order ?? 0,
+  outputItemId: r.output_item_id || null, recipeId: r.recipe_id || null,
 });
 
 /** All prep-schedule items for a location (Back Office editor). */
@@ -36,6 +38,10 @@ export async function savePrepItem(item, locationId) {
     days_of_week: Array.isArray(item.daysOfWeek) && item.daysOfWeek.length ? item.daysOfWeek : null,
     active: item.active !== false,
     sort_order: item.sortOrder ?? 0,
+    // v5.5.931: the link that makes a scheduled cook REAL — which made item (and its
+    // batch recipe) this cook produces. Null = legacy free-text row, logs only.
+    output_item_id: item.outputItemId || null,
+    recipe_id: item.recipeId || null,
     updated_at: new Date().toISOString(),
   };
   const real = item.id && !String(item.id).startsWith('tmp-');
@@ -62,5 +68,25 @@ export async function recordPrep({ scheduleId, name, prepDate, actualQty, unit, 
   };
   const { error } = await supabase.from('prep_log').upsert(row, { onConflict: 'location_id,schedule_id,prep_date' });
   if (error) return { ok: false, error: error.message };
-  return { ok: true };
+  // v5.5.931 — A LINKED COOK PRODUCES A REAL BATCH. If the schedule row names a recipe,
+  // recording the cook consumes the ingredients and stocks the output at true cost via
+  // the SAME produceBatch path Back Office uses. The log row above stays the source of
+  // "done today" for the Manager app; the batch is the stock truth. Best-effort by
+  // design: a batch failure must never un-record the cook (staff DID make the food) —
+  // it reports back so the caller can surface "logged, but stock not updated".
+  let produced = null, produceError = null;
+  if (scheduleId) {
+    try {
+      const { data: sched } = await supabase.from('prep_schedule')
+        .select('recipe_id, output_item_id').eq('location_id', locationId).eq('id', scheduleId).maybeSingle();
+      if (sched?.recipe_id && actualQty != null && actualQty !== '' && Number(actualQty) > 0) {
+        const { data: batch, error: bErr } = await produceBatch({
+          recipeId: sched.recipe_id, actualQty: Number(actualQty), outputUnit: unit || undefined,
+          notes: `Scheduled cook — ${name || 'prep'}`,
+        }, locationId);
+        if (bErr) produceError = bErr.message; else produced = batch;
+      }
+    } catch (e) { produceError = e?.message || 'batch production failed'; }
+  }
+  return { ok: true, produced, produceError };
 }

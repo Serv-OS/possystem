@@ -9,7 +9,7 @@
 
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useStore } from '../../store';
-import { getActiveLocationSync, getLocationId } from '../../lib/supabase';
+import { getActiveLocationSync, getLocationId , isMock } from '../../lib/supabase';
 import { money, currencySymbol } from '../../lib/currency';
 import { buildCostingCtx } from '../../lib/stock/recipes';
 import { fetchRecipes } from '../../lib/stock/recipes';
@@ -21,6 +21,47 @@ const field = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', bor
 const lbl = { display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 5 };
 
 export default function Batches() {
+  // v5.5.931 — "needed today" suggestion inputs
+  const [needed, setNeeded] = useState([]);
+  const r1 = (v) => Math.round(Number(v) * 10) / 10;
+  useEffect(() => {
+    (async () => {
+      const loc = getActiveLocationSync() || await getLocationId().catch(() => null);
+      if (!loc || isMock || !supabase) return;
+      const dow = new Date().getDay();
+      const [{ data: its }, { data: scheds }, prof] = await Promise.all([
+        fetchInventoryItems(loc),
+        supabase.from('prep_schedule').select('output_item_id, qty, unit, days_of_week, active').eq('location_id', loc).eq('active', true),
+        supabase.rpc('stock_usage_by_weekday', { p_location_id: loc, p_weeks: 8 }).then(r => r.data || []),
+      ]);
+      const profByItem = {};
+      prof.forEach(r => { (profByItem[r.inventory_item_id] ??= [0,0,0,0,0,0,0])[r.dow] = Number(r.avg_daily_base) || 0; });
+      const made = (its || []).filter(i => i.kind === 'MADE' && !i.archivedAt);
+      const DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+      const out = [];
+      for (const item of made) {
+        const p = profByItem[item.id];
+        const myScheds = (scheds || []).filter(x => x.output_item_id === item.id);
+        const cookDays = new Set(myScheds.flatMap(x => (Array.isArray(x.days_of_week) && x.days_of_week.length) ? x.days_of_week : [0,1,2,3,4,5,6]));
+        // horizon: today up to (exclusive) the NEXT scheduled cook day; no schedule = today only
+        let span = 1;
+        if (cookDays.size) { for (let d = 1; d <= 7; d++) { if (cookDays.has((dow + d) % 7)) { span = d; break; } } }
+        let expected = 0;
+        if (p) for (let d = 0; d < span; d++) expected += p[(dow + d) % 7] || 0;
+        const scheduled = myScheds.filter(x => !Array.isArray(x.days_of_week) || !x.days_of_week.length || x.days_of_week.includes(dow))
+          .reduce((sum, x) => sum + (Number(x.qty) || 0), 0);
+        const onHand = Number(item.onHand) || 0;
+        const topUp = Math.max(0, expected - onHand - scheduled);
+        if (expected > 0 || scheduled > 0) out.push({
+          item, onHand, scheduled, expected, topUp, unit: item.baseUnit,
+          horizon: span === 1 ? 'end of today' : DAYS[(dow + span) % 7],
+        });
+      }
+      out.sort((a, b) => b.topUp - a.topUp);
+      setNeeded(out);
+    })();
+  }, []);
+
   const showToast = useStore(s => s.showToast);
   const [locId, setLocId] = useState(getActiveLocationSync());
   const [recipes, setRecipes] = useState([]);
@@ -92,6 +133,26 @@ export default function Batches() {
 
   return (
     <div style={{ height: '100%', overflowY: 'auto', background: 'var(--bg0)', padding: '22px 26px' }}>
+      {/* ── NEEDED TODAY (v5.5.931) — the plan + the top-up, from real data ─────────
+          For each made-here item: what today's schedule says to make, PLUS a top-up when
+          expected usage (weekday pattern, v5.5.926) up to the next scheduled cook exceeds
+          what is on hand + planned. The exact "we make these on Mondays but sales might
+          need more" ask. Suggestions only — producing stays a human decision. */}
+      {needed.length > 0 && (
+        <div style={{ border: '1px solid var(--acc)', borderRadius: 12, padding: '14px 18px', margin: '14px 0', background: 'var(--bg1)' }}>
+          <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: '.06em', color: 'var(--t4)', marginBottom: 10 }}>NEEDED TODAY</div>
+          {needed.map(n => (
+            <div key={n.item.id} style={{ display: 'flex', alignItems: 'baseline', gap: 10, padding: '6px 0', borderBottom: '1px solid var(--bdr)', fontSize: 13 }}>
+              <b style={{ color: 'var(--t1)', flex: 1 }}>{n.item.name}</b>
+              <span style={{ color: 'var(--t3)' }}>on hand {r1(n.onHand)}</span>
+              {n.scheduled > 0 && <span style={{ color: 'var(--t3)' }}>· planned {r1(n.scheduled)}</span>}
+              <span style={{ color: 'var(--t3)' }}>· expect to use {r1(n.expected)} by {n.horizon}</span>
+              <b style={{ color: n.topUp > 0 ? 'var(--amb,#e8a020)' : 'var(--grn)' }}>
+                {n.topUp > 0 ? `make ${r1(n.topUp)} ${n.unit}` : 'covered'}</b>
+            </div>
+          ))}
+        </div>
+      )}
       <PageHeader
         eyebrow="PRODUCE"
         title="Batches"
