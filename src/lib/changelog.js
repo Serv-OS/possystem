@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.941', date: '29 Jul 2026', label: 'Order emails now carry the delivery address and your account number',
+    changes: [
+      'The supplier order email now says who and where it is for: your ACCOUNT NUMBER with that supplier (from the supplier record) and the DELIVER-TO line — venue name, address and phone from the venue settings. Deployed.',
+      'Worth checking: the venue address in Location settings, and each supplier\'s account number in Suppliers — the email shows exactly what is on file, and skips the account line if none is set.',
+      'TEST: hit ✉ Resend on the Milk order — the new email should carry both lines.',
+    ],
+  },
+  {
     version: '5.5.940', date: '29 Jul 2026', label: 'FIXED — supplier order emails now actually send (verified delivered)',
     changes: [
       'Found and fixed by reproducing the whole chain with a real login rather than guessing: the order-email function was rejecting every genuine Back Office session at its front door, so no supplier email was ever attempted — the orders were quietly marked Sent by the fallback. The email pipeline itself was healthy all along (receipts have been sending for days).',

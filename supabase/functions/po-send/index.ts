@@ -61,13 +61,13 @@ Deno.serve(async (req) => {
   const [{ data: po }, { data: lines }, { data: locRow }] = await Promise.all([
     admin.from('purchase_orders').select('*').eq('location_id', location_id).eq('id', po_id).maybeSingle(),
     admin.from('po_lines').select('*').eq('location_id', location_id).eq('po_id', po_id).order('sort_order'),
-    admin.from('locations').select('name').eq('id', location_id).maybeSingle(),
+    admin.from('locations').select('name,address,phone').eq('id', location_id).maybeSingle(),
   ]);
   if (!po) return json({ error: 'PO not found' }, 404);
   if (po.status === 'RECEIVED' || po.status === 'CANCELLED') return json({ error: `PO is ${po.status}` }, 409);
   if (!lines?.length) return json({ error: 'PO has no lines' }, 400);
 
-  const { data: supplier } = await admin.from('suppliers').select('name,email')
+  const { data: supplier } = await admin.from('suppliers').select('name,email,account_number')
     .eq('location_id', location_id).eq('id', po.supplier_id).maybeSingle();
   if (!supplier?.email) return json({ error: 'supplier_has_no_email' }, 422);
 
@@ -85,7 +85,9 @@ Deno.serve(async (req) => {
   const html = `
   <div style="font-family:Arial,sans-serif;max-width:640px">
     <h2 style="margin:0 0 4px">Purchase order — ${esc(venue)}</h2>
-    <p style="margin:0 0 14px;color:#555">Ref ${esc(ref)}${po.expected_date ? ` · requested delivery ${esc(po.expected_date)}` : ''}</p>
+    <p style="margin:0 0 8px;color:#555">Ref ${esc(ref)}${po.expected_date ? ` · requested delivery ${esc(po.expected_date)}` : ''}</p>
+    ${supplier.account_number ? `<p style="margin:0 0 4px;font-size:14px"><b>Account no:</b> ${esc(supplier.account_number)}</p>` : ''}
+    <p style="margin:0 0 14px;font-size:14px"><b>Deliver to:</b> ${esc(venue)}${locRow?.address ? `, ${esc(locRow.address)}` : ''}${locRow?.phone ? ` · ${esc(locRow.phone)}` : ''}</p>
     <table style="border-collapse:collapse;width:100%;font-size:14px">
       <thead><tr style="text-align:left;color:#555">
         <th style="padding:6px 10px;border-bottom:2px solid #333">Item</th>
