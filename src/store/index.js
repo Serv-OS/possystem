@@ -5956,6 +5956,19 @@ export const useStore = create((set, get) => ({
   },
   showToast: (msg,type='info') => { set({ toast:{ msg,type,key:Date.now() } }); setTimeout(()=>set({toast:null}),2800); },
 
+  // ── Change due (v5.5.943) ─────────────────
+  // A cash sale's change used to flash past on the tender screen and die with the
+  // modal. This holds it for the full-screen ChangeDueOverlay (App.jsx), which stays
+  // up until staff tap — no timer, counting change out of a drawer takes as long as
+  // it takes. Global (not POSSurface) state because a table cash-off immediately
+  // switches surface to the floor plan.
+  changeDue: null,
+  showChangeDue: (amount) => {
+    const a = Math.round(Number(amount) * 100) / 100;
+    if (a >= 0.01) set({ changeDue: { amount: a, key: Date.now() } });
+  },
+  clearChangeDue: () => set({ changeDue: null }),
+
   // ── Order alert (big top-of-screen banner for new customer orders) ─────
   // Set by realtime.js when a new kiosk / online / QR order arrives.
   // Shape: { source: 'kiosk'|'online'|'qr', who: 'name or table label', ref, total, key }
@@ -6063,3 +6076,8 @@ export const useStore = create((set, get) => ({
   clearPendingItem: () => set({ pendingItem:null }),
 }));
 // NOTE: these are appended but the store is defined above — we patch via the create callback
+
+// Mock-mode-only debug handle so local preview sessions can drive store state the
+// mock DB can't reach (e.g. bind a cash drawer to test the cash flow). Never set
+// on a real till: isMock is false everywhere Supabase keys exist.
+if (typeof window !== 'undefined' && isMock) window.__rposStore = useStore;

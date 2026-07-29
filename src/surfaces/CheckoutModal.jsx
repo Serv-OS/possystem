@@ -1453,6 +1453,14 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     else if (hasGift) finalMethod = 'gift_card';
     if (hasLoyalty) finalMethod = `loyalty+${finalMethod}`;
     if (promoApplied) finalMethod = `promo+${finalMethod}`;
+    // v5.5.943: cash change goes to the global tap-to-dismiss overlay. `tendered` is
+    // only ever non-null on the cash path, and dueAfterGift is the figure the tender
+    // screen showed as owed — in pence, same idiom as the tender screen's maths.
+    if (tendered != null) {
+      useStore.getState().showChangeDue?.(
+        Math.max(0, Math.round(tendered * 100) - Math.round(dueAfterGift * 100)) / 100
+      );
+    }
     onComplete({
       method: finalMethod,
       tip,

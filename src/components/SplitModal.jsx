@@ -1,4 +1,5 @@
 import { useState, useMemo, useRef, useEffect } from 'react';
+import { useStore } from '../store';
 import { supabase, isMock } from '../lib/supabase';
 import { getActiveLocationSync, ensureAuthToken } from '../lib/supabase';
 import {
@@ -893,6 +894,13 @@ export default function SplitModal({ items, total, covers, canTakeCash = true, o
   // chargeMinor, needsHuman }). Carried so the close can re-read the tip from the SERVER
   // row rather than trusting this browser copy — a split leg has no reconciler behind it.
   const handlePortionPaid = (idx, method, tendered, change, paymentIntentId = null, tip = 0, giftCard = null, terminalJob = null) => {
+    // v5.5.943: if this is the FINAL leg and it's cash with change, the whole modal
+    // closes 500ms later and the change figure dies with it — earlier legs keep their
+    // change visible in the paid list, so only the closing leg needs the overlay.
+    const isFinalLeg = portions.every((p, i) => i === idx || p.paid);
+    if (isFinalLeg && method === 'cash' && change > 0) {
+      useStore.getState().showChangeDue?.(change);
+    }
     setPortions(p => p.map((portion, i) => i===idx ? { ...portion, paid:true, method, tendered, change, paymentIntentId: paymentIntentId || null, tip: tip || 0, giftCard: giftCard || null, terminalJob: terminalJob || null } : portion));
     setTenderingIdx(null);
   };

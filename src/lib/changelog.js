@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.943', date: '29 Jul 2026', label: 'Cash change stays on screen until you tap it away',
+    changes: [
+      'Cashing off a sale flashed the change for a moment and then it was gone — staff counting coins out of the drawer had to remember the figure. Now a full-screen CHANGE DUE takes over the till after every cash sale with change, and stays there until somebody taps.',
+      'Covers walk-in and table cash-offs on the POS and Bar, and the final cash leg of a split bill (earlier split legs keep showing their change in the paid list as before). Exact-money sales show nothing — there is no change to count.',
+      'TEST: ring anything up → Pay → Cash → tender more than the total → Complete. The change fills the screen and waits; tap anywhere to clear it. Try it from a table too — it survives the jump back to the floor plan.',
+    ],
+  },
+  {
     version: '5.5.942', date: '29 Jul 2026', label: 'Venue address — editable in Location settings, printed on supplier order emails',
     changes: [
       'There was no way to set the venue address — the order email\'s deliver-to line read from a field no screen edited. Location settings now has a Venue address box (saved to the same place the email reads), and the email prints it under "Deliver to".',

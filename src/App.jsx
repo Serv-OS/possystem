@@ -31,6 +31,7 @@ import MenuBoardSurface from './surfaces/MenuBoardSurface';
 import WaitlistSurface from './surfaces/waitlist/WaitlistSurface';
 import ManagerSurface from './surfaces/ManagerSurface';
 import KioskAutoUpdate from './components/KioskAutoUpdate';
+import ChangeDueOverlay from './components/ChangeDueOverlay';
 import OnboardingSignSurface from './surfaces/OnboardingSignSurface';
 import RyftTestSurface from './surfaces/RyftTestSurface';
 // v5.5.889: customer web routes are LAZY — they were riding in the one 5.1MB bundle every
@@ -720,6 +721,7 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
         </div>
       </div>
       {toast && <Toast toast={toast} />}
+      <ChangeDueOverlay />
       {orderAlert && surface !== 'kds' && <OrderAlert alert={orderAlert} onDismiss={dismissOrderAlert} setSurface={setSurface} />}
       {showWhatsNew && <Suspense fallback={null}><WhatsNewModal onClose={()=>setShowWhatsNew(false)} /></Suspense>}
     </div>
