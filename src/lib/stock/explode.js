@@ -46,6 +46,18 @@ export function explodeMenuItem(menuItemId, qty, ctx, out = {}, orderType = null
 /** Aggregate a basket of {itemId, qty} sold lines into { [inventoryItemId]: qtyBase }, scoped to orderType. */
 export function explodeBasket(lines, ctx, orderType = null) {
   const out = {};
-  for (const l of lines || []) explodeMenuItem(l.itemId, l.qty, ctx, out, orderType);
+  for (const l of lines || []) {
+    explodeMenuItem(l.itemId, l.qty, ctx, out, orderType);
+    // v5.5.935 — MODIFIER SUB-ITEMS COUNT. "Cheeseburger, brioche bun": the bun is a
+    // modifier option linked to its own menu item (the same link 86/sold-out already
+    // uses), and that item's recipe says what it consumes. Each chosen mod explodes as
+    // an extra line — bun picked, bun stock moves. Mods without a linked item (plain
+    // "no onions" instructions) explode nothing, exactly as before.
+    for (const m of (Array.isArray(l.mods) ? l.mods : [])) {
+      if (m && m.itemId && !m._instruction) {
+        explodeMenuItem(m.itemId, (Number(m.qty) || 1) * (Number(l.qty) || 1), ctx, out, orderType);
+      }
+    }
+  }
   return out;
 }

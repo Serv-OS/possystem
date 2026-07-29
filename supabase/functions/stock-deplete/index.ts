@@ -136,7 +136,17 @@ Deno.serve(async (req) => {
   try {
     const ctx = await buildCtx(sb, loc);
     if (!Object.keys(ctx.menuRecipes).length) return json({ ok: true, depleted: 0, note: 'no recipes' });
-    const agg = explode(items.map((i: any) => ({ itemId: i.itemId, qty: Number(i.qty) || 1 })), ctx, orderType);
+    // v5.5.935: modifier sub-items (a chosen bun) ride in as mods[{itemId,qty}] and
+    // deplete like extra lines — same rule as the client engine.
+    const flat: { itemId: string; qty: number }[] = [];
+    for (const i of items as any[]) {
+      const q = Number(i.qty) || 1;
+      flat.push({ itemId: i.itemId, qty: q });
+      for (const m of (Array.isArray(i.mods) ? i.mods : [])) {
+        if (m && m.itemId) flat.push({ itemId: m.itemId, qty: (Number(m.qty) || 1) * q });
+      }
+    }
+    const agg = explode(flat, ctx, orderType);
     let posted = 0;
     for (const [invId, qtyBase] of Object.entries(agg)) {
       if (!(qtyBase > 0)) continue;

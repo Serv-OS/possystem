@@ -31,7 +31,9 @@ export async function depleteForSaleServer(check, { reverse = false } = {}) {
     if (!loc) return;
     const items = (check?.items || [])
       .filter((it) => !it.voided && it.itemId)
-      .map((it) => ({ itemId: it.itemId, qty: Number(it.qty) || 1 }));
+      .map((it) => ({ itemId: it.itemId, qty: Number(it.qty) || 1,
+        // linked modifier sub-items (the bun) deplete server-side too
+        mods: (Array.isArray(it.mods) ? it.mods : []).filter(m => m && m.itemId && !m._instruction).map(m => ({ itemId: m.itemId, qty: Number(m.qty) || 1 })) }));
     if (!items.length) return;
     const checkId = check?.id || check?.ref;
     if (!checkId) return;
@@ -67,7 +69,7 @@ export async function depleteForSale(check) {
     if (!hasRecipes(ctx)) return;
     // Scope depletion to the sale's order type so order-type-specific lines (e.g. a disposable cup
     // for takeaway/collection/delivery) deplete only for those orders. Default to dine-in/base.
-    const agg = explodeBasket(items.map((it) => ({ itemId: it.itemId, qty: Number(it.qty) || 1 })), ctx, check?.orderType || 'dine-in');
+    const agg = explodeBasket(items.map((it) => ({ itemId: it.itemId, qty: Number(it.qty) || 1, mods: it.mods })), ctx, check?.orderType || 'dine-in');
     const key = keyOf(check);
     if (!key) return;
     for (const [invId, qtyBase] of Object.entries(agg)) {

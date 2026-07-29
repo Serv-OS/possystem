@@ -832,7 +832,10 @@ export default function KioskApp({ kioskId, onUnpair }) {
       if (e1) throw e1;
       // v5.5.583: deplete recipe ingredients from the stock ledger (server-side, since
       // kiosk runs anonymously). Fire-and-forget — never blocks the order.
-      depleteForSaleServer({ id: checkId, items: cart.map(l => ({ itemId: l.item.id, qty: l.qty })), orderType: orderTypeOut });
+      depleteForSaleServer({ id: checkId, items: cart.map(l => ({ itemId: l.item.id, qty: l.qty,
+        // v5.5.935: chosen modifier sub-items (the bun) deplete too — options carry itemId
+        // when linked (KioskProductModal stamps it), plain instructions don't and are skipped.
+        mods: (Array.isArray(l.modsArray) ? l.modsArray : []).filter(m => m && m.itemId).map(m => ({ itemId: m.itemId, qty: m.qty || 1 })) })), orderType: orderTypeOut });
       // 2. v5.5.5: customer attribution — kiosks were missing this path, so a customer
       // who ordered at the kiosk was stamped on the closed_check (customer name + phone)
       // but never made it into the customers table, customer_locations junction, or

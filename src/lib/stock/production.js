@@ -205,7 +205,7 @@ export const produceBatch = async ({ recipeId, actualQty, outputUnit, lotCode, e
   // Create the batch row first so its id keys the idempotent movements.
   const { data: batchRow, error: insErr } = await supabase.from('production_batches').insert({
     location_id: locationId, recipe_id: recipeId, output_item_id: rec.output_item_id,
-    output_name: rec.name || outName, planned_qty: Number(rec.yield_qty), actual_qty: Number(actualQty),
+    output_name: ctx.itemsById?.[rec.output_item_id]?.name || rec.name || outName,   // v5.5.935: ONE name everywhere — the stock item's planned_qty: Number(rec.yield_qty), actual_qty: Number(actualQty),
     output_unit: outUnit, status: 'DRAFT', theoretical_cost: plan.totalCost, actual_cost: plan.totalCost,
     output_unit_cost: plan.outputUnitCost, lot_code: lotCode || null, expiry_at: expiryAt || null,
     produced_at: nowIso(), notes: notes || null,

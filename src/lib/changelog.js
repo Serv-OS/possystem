@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.935', date: '29 Jul 2026', label: 'STOCK — modifier sub-items now deplete (the bun counts), and batches carry one name everywhere',
+    changes: [
+      'MODIFIER SUB-ITEMS NOW MOVE STOCK. A cheeseburger with a choice of bun: picking the brioche bun now depletes the bun\'s stock, on every channel — POS, kiosk, online. Modifier options were already linked to their own items (that is how sold-out on options works); the stock ledger simply never looked at the mods on a sold line. Now every chosen option with a linked item explodes through that item\'s recipe exactly like a line of its own. Plain instructions ("no onions") link to nothing and change nothing, as before. The server-side path used by kiosk and online is deployed.',
+      'TO MAKE THE BUN COUNT: the option needs its item link (it usually already has one — the same link that makes it show sold-out), and that sub-item needs its recipe pointing at the stock item, like any other product.',
+      'ONE NAME FOR A BATCH EVERYWHERE. The batch queue said "Burger Patty" while the history said "100g Burger Patty" — one was the stock item\'s name, the other the recipe\'s. Batches are now always named by the stock item they produce.',
+      'READY TO TEST: sell a cheeseburger with a brioche bun on the kiosk → the bun\'s stock drops along with the patty. Run a batch → queue, history and the Production report all show the same name.',
+    ],
+  },
+  {
     version: '5.5.934', date: '29 Jul 2026', label: 'FIXES — batch Done button, prep due-time saving, and two unreadable bits of UI',
     changes: [
       'THE DONE BUTTON ON A PLANNED BATCH WORKS NOW. It was dying on the unit: schedules store kitchen units like "ea", "portions" or "trays" that the stock maths did not recognise, so completing the patty batch failed. Those units are now understood (they read as "each"), and if a unit genuinely cannot be worked out the button says so in English instead of doing nothing. The units list also now says "each" rather than "ea".',
