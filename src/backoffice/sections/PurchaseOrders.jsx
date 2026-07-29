@@ -75,8 +75,13 @@ export default function PurchaseOrders() {
   };
   const updLine = (i, k, v) => setDraft(d => ({ ...d, lines: d.lines.map((l, j) => j === i ? { ...l, [k]: v } : l) }));
   const rmLine = (i) => setDraft(d => ({ ...d, lines: d.lines.filter((_, j) => j !== i) }));
-  const total = useMemo(() => (draft?.lines || []).reduce((s, l) => s + (Number(l.qtyPacks) || 0) * (Number(l.unitPrice) || 0), 0), [draft]);
-  const vatTotal = useMemo(() => (draft?.lines || []).reduce((s, l) => s + (Number(l.qtyPacks) || 0) * (Number(l.unitPrice) || 0) * lineRateDec(l), 0), [draft, lineRateDec]);
+  // v5.5.923 — a RECEIVED order's money is what was ACCEPTED, not what was ordered. The header
+  // subtotal is recomputed to accepted lines at receive time; without this the detail pane
+  // showed ordered × delivery-price (order 10, receive 6: list £12, pane £20 — same order,
+  // two numbers). The shorted remainder's value lives on its balance order.
+  const qtyFor = useCallback((l) => draft?.status === 'RECEIVED' ? (Number(l.qtyReceived) || 0) : (Number(l.qtyPacks) || 0), [draft?.status]);
+  const total = useMemo(() => (draft?.lines || []).reduce((s, l) => s + qtyFor(l) * (Number(l.unitPrice) || 0), 0), [draft, qtyFor]);
+  const vatTotal = useMemo(() => (draft?.lines || []).reduce((s, l) => s + qtyFor(l) * (Number(l.unitPrice) || 0) * lineRateDec(l), 0), [draft, qtyFor, lineRateDec]);
 
   const save = async (status) => {
     if (!draft.supplierId) { showToast?.('Pick a supplier', 'error'); return; }
@@ -216,7 +221,8 @@ export default function PurchaseOrders() {
                   <span style={{ fontSize: 11, color: 'var(--t3)' }}>× {l.packQty}×{l.innerQty}{l.innerUnit} @</span>
                   <input disabled={!editable} type="number" min="0" step="any" value={l.unitPrice} onChange={e => updLine(i, 'unitPrice', e.target.value)} style={{ ...field, width: 78 }} title="price per pack, ex VAT" />
                   {lineRateDec(l) > 0 && <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--t4)' }} title="purchase VAT">+{Math.round(lineRateDec(l) * 100)}%</span>}
-                  <span style={{ width: 70, textAlign: 'right', fontSize: 13, color: 'var(--t2)' }}>{money((Number(l.qtyPacks) || 0) * (Number(l.unitPrice) || 0))}</span>
+                  {draft.status === 'RECEIVED' && Number(l.qtyReceived) !== Number(l.qtyPacks) && <span style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--org, #f59e0b)' }} title="short — remainder on the balance order">rec {Number(l.qtyReceived) || 0}</span>}
+                  <span style={{ width: 70, textAlign: 'right', fontSize: 13, color: 'var(--t2)' }}>{money(qtyFor(l) * (Number(l.unitPrice) || 0))}</span>
                   {editable && <button onClick={() => rmLine(i)} style={{ background: 'transparent', border: 0, color: 'var(--t3)', cursor: 'pointer', fontSize: 16 }}>×</button>}
                 </div>
               ))}

@@ -168,9 +168,13 @@ export default function Invoices() {
     { key: 'supplier', label: 'Supplier', sortable: true, render: (inv) => <span style={{ color: 'var(--t1)' }}>{supplierNameOf(inv) || '—'}</span> },
     { key: 'number', label: 'Invoice #', sortable: true, render: (inv) => inv.invoiceNumber || '—' },
     { key: 'total', label: 'Total', align: 'right', sortable: true, render: (inv) => <Money v={inv.total} /> },
-    { key: 'status', label: 'Status', sortable: true, render: (inv) => <Tag label={inv.status} tone={inv.status === 'posted' ? 'good' : 'neutral'} /> },
+    { key: 'status', label: 'Status', sortable: true, render: (inv) => <Tag label={inv.status} tone={(inv.status || '').toUpperCase() === 'POSTED' ? 'good' : 'neutral'} /> },
     ...(xeroOn ? [{
       key: 'xero', label: 'Xero', render: (inv) => {
+        // v5.5.923 — ONLY a POSTED invoice may go to Xero. PO-attached paperwork rows are
+        // status REVIEW with a null total; pushing one created an AUTHORISED £0 bill in the
+        // venue's accounts AND the sync-log dedupe then blocked the real push forever.
+        if ((inv.status || '').toUpperCase() !== 'POSTED') return <span style={{ color: 'var(--t4)', fontSize: 11.5 }} title="Attached paperwork — post the invoice before sending it to Xero">not posted</span>;
         const st = xeroPush[inv.id];
         if (st === 'busy') return <span style={{ color: 'var(--t3)', fontSize: 12 }}>Sending…</span>;
         if (st && st.link) return <a href={st.link} target="_blank" rel="noreferrer" style={{ color: 'var(--acc)', fontWeight: 700, fontSize: 12, textDecoration: 'none' }}>✓ In Xero ↗</a>;

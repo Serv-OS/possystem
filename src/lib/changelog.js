@@ -7,6 +7,18 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.923', date: '29 Jul 2026', label: 'PURCHASING — four fixes from the reports audit, including a Xero £0-bill trap',
+    changes: [
+      'After the purchasing rework shipped, every report that touches stock or purchasing data was audited end to end. The good news first: all five stock reports, the stock overview, the order pad maths, the manager app and the daily P&L all read the new flow correctly — deliveries, balance orders and cost updates land exactly where they should. Four real problems were found and are fixed here.',
+      'THE SERIOUS ONE — AN ATTACHED INVOICE COULD BECOME AN AUTHORISED £0 BILL IN XERO. Invoices attached to an order for paperwork carry no total. The Xero push button appeared for them anyway, and one click created a real, authorised £0 bill against the supplier in the venue\'s accounts — and the duplicate-guard then blocked the correct bill from ever being sent. Now gated in BOTH places: the button only shows for posted invoices, and the server refuses non-posted ones outright (deployed). A money-writing endpoint never trusts a button.',
+      'Attached paperwork no longer pollutes the "Posted invoices" history or its count — it lives on the order it belongs to.',
+      'A RECEIVED ORDER NOW SHOWS ONE NUMBER, EVERYWHERE. Order 10, receive 6: the list said £12 while the order itself said £20. The detail now values received quantity, marks shorted lines with "rec N", and the remainder\'s value lives on its balance order — list and detail finally agree.',
+      'ACCEPTING A DELIVERY NOW REFUSES CLEANLY INSTEAD OF SILENTLY DROPPING LINES. If a line\'s stock item is missing or its unit conversion is broken, what staff typed was quietly discarded — no stock posted, no share of the totals, no balance order, and no way back because received orders are final. It now stops up front and names the exact lines to fix first.',
+      'Also: the Price changes screen now labels order deliveries as "po receipt" rather than calling everything an invoice.',
+      'READY TO TEST: attach an invoice to an order → Invoices screen should NOT offer Push to Xero for it; receive an order short → open it and confirm the total matches the list.',
+    ],
+  },
+  {
     version: '5.5.922', date: '29 Jul 2026', label: 'PURCHASING — Create orders emails suppliers on the spot; "Purchase orders" is now "Orders"; new Price changes screen',
     changes: [
       'CREATE MEANS SEND. On the Order pad, "Create orders" now emails each supplier their order immediately and the orders land in the renamed Orders screen as awaiting delivery — no separate send step. A supplier with no email on file cannot be emailed, so that order is marked sent instead and the confirmation tells you exactly how many were emailed versus marked.',

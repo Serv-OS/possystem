@@ -67,7 +67,10 @@ async function applyReceipt(locationId, item, itemId, recvBase, unitCostPerBase,
   await supabase.from('item_cost_history').update({ effective_to: nowIso() })
     .eq('location_id', locationId).eq('inventory_item_id', itemId).is('effective_to', null);
   await supabase.from('item_cost_history').insert({
-    location_id: locationId, inventory_item_id: itemId, base_unit_cost: newAvg, source: 'INVOICE', effective_from: nowIso(),
+    location_id: locationId, inventory_item_id: itemId, base_unit_cost: newAvg,
+    // v5.5.923: label the source honestly — Price changes shows it, and "invoice" for a
+    // delivery received against an order was a lie.
+    source: sourceType === 'purchase_order' ? 'PO_RECEIPT' : 'INVOICE', effective_from: nowIso(),
   });
   await supabase.from('inventory_items').update({ current_cost: newAvg, updated_at: nowIso() })
     .eq('location_id', locationId).eq('id', itemId);
@@ -185,6 +188,23 @@ export const receivePurchaseOrder = async (poId, locationId = null, receipts = n
   if (!lines?.length) return { error: new Error('No lines') };
   const byLine = receipts ? Object.fromEntries(receipts.map(r => [String(r.lineId), r])) : null;
   const map = await itemMap(locationId, lines.map(l => l.inventory_item_id));
+  // v5.5.923 — REFUSE rather than silently swallow. The loop below skips any line whose item
+  // is missing or whose unit conversion fails; on a line-by-line accept that meant what staff
+  // TYPED was discarded without a word, the header totals excluded the line, the shortfall
+  // never reached the balance PO — and RECEIVED is terminal, so the stock could never be
+  // posted afterwards. A receive that cannot represent every line must not half-happen.
+  if (byLine) {
+    const bad = [];
+    for (const l of lines) {
+      const item = map[l.inventory_item_id];
+      if (!item) { bad.push(l.description || 'unlinked line'); continue; }
+      try {
+        const b = convert(Number(l.pack_qty) * Number(l.inner_qty), l.inner_unit, item.baseUnit, { itemConversions: item.conversions });
+        if (!(b > 0)) bad.push(l.description || item.name);
+      } catch { bad.push(l.description || item.name); }
+    }
+    if (bad.length) return { error: new Error(`Cannot receive — fix these lines first (missing stock item or unit conversion): ${bad.join(', ')}`) };
+  }
   const ratesById = receipts ? await fetchTaxRateMap(locationId) : null;
   const shorted = [];
   let acceptedSubtotal = 0, acceptedTax = 0;
@@ -312,7 +332,10 @@ export const fetchInvoices = async (locationId = null, limit = 100) => {
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: [], error: null };
   const { data, error } = await supabase.from('supplier_invoices').select('*')
-    .eq('location_id', locationId).order('created_at', { ascending: false }).limit(limit);
+    .eq('location_id', locationId)
+    // v5.5.923: PO-attached paperwork rows (status REVIEW, no lines/total) belong on the PO
+    // screen, not in the posted-invoices history — and absolutely not one click from Xero.
+    .eq('status', 'POSTED').order('created_at', { ascending: false }).limit(limit);
   return { data: (data || []).map(invFromRow), error };
 };
 

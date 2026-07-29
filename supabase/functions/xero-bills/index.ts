@@ -77,6 +77,11 @@ Deno.serve(async (req) => {
     // Load the invoice + lines + supplier
     const { data: inv } = await sb.from('supplier_invoices').select('*').eq('id', invoiceId).eq('location_id', locationId).maybeSingle();
     if (!inv) return json({ error: 'Invoice not found' }, 404);
+    // v5.5.923 — server-side gate to match the UI's. A REVIEW row is PO-attached paperwork
+    // with a null total; pushing it created an AUTHORISED £0 bill and the sync-log dedupe
+    // above then blocked the real push forever. The button is gated too, but a money-writing
+    // endpoint never trusts a button.
+    if ((inv.status || '').toUpperCase() !== 'POSTED') return json({ error: 'Invoice not posted yet — post it before sending to Xero' }, 400);
     const [{ data: lines }, { data: supplier }] = await Promise.all([
       sb.from('supplier_invoice_lines').select('*').eq('invoice_id', invoiceId).order('sort_order'),
       inv.supplier_id ? sb.from('suppliers').select('name,payment_terms_days').eq('id', inv.supplier_id).maybeSingle() : Promise.resolve({ data: null }),
