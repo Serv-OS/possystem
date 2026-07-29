@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.930', date: '29 Jul 2026', label: 'FIX — Recipe tab crash, second cause (the real one this time)',
+    changes: [
+      'The Recipe tab on a made-here item was crashing for TWO reasons stacked on top of each other. v5.5.929 fixed the first (a missing import). This fixes the second: the tab styled its input boxes with a name that does not exist in that file — five references to a style called by the wrong name. Same "App Error" screen, different missing variable, which is why it looked identical.',
+      'Every name the Recipe tab uses has now been checked against what the file actually defines — mechanically, not by eye.',
+      'READY TO TEST on dev.serv-os.app: hard-refresh, check the version in the corner says v5.5.930, then burger patty → Recipe tab.',
+    ],
+  },
+  {
     version: '5.5.929', date: '29 Jul 2026', label: 'FIX — Recipe tab on a made-here item crashed to "App Error"',
     changes: [
       'Opening the Recipe tab on a made-here item (the burger patty) crashed the whole screen. Cause: the tab\'s code referenced the recipe functions but the line importing them never made it into the file — and with no TypeScript, the build cannot catch a missing import; it only fails at the moment someone clicks. All four functions are now imported and verified present.',

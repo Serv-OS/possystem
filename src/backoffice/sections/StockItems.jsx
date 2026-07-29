@@ -842,18 +842,18 @@ function RecipeTab({ draft, items, locId, showToast, onChanged }) {
         Saving updates this item's cost from its ingredients.
       </div>
       <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', marginBottom: 16 }}>
-        <Field label="A batch makes"><input type="number" min="0" step="any" value={yieldQty} onChange={e => setYieldQty(e.target.value)} style={{ ...inp, width: 100 }} /></Field>
-        <Field label="Unit"><input value={yieldUnit} onChange={e => setYieldUnit(e.target.value)} style={{ ...inp, width: 100 }} /></Field>
+        <Field label="A batch makes"><input type="number" min="0" step="any" value={yieldQty} onChange={e => setYieldQty(e.target.value)} style={{ ...fieldStyle, width: 100 }} /></Field>
+        <Field label="Unit"><input value={yieldUnit} onChange={e => setYieldUnit(e.target.value)} style={{ ...fieldStyle, width: 100 }} /></Field>
       </div>
       <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.06em', color: 'var(--t4)', marginBottom: 8 }}>INGREDIENTS</div>
       {lines.map((l, i) => (
         <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
-          <select value={l.componentItemId} onChange={e => updLine(i, 'componentItemId', e.target.value)} style={{ ...inp, flex: 1 }}>
+          <select value={l.componentItemId} onChange={e => updLine(i, 'componentItemId', e.target.value)} style={{ ...fieldStyle, flex: 1 }}>
             <option value="">— pick an ingredient —</option>
             {components.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
-          <input type="number" min="0" step="any" placeholder="qty" value={l.qty} onChange={e => updLine(i, 'qty', e.target.value)} style={{ ...inp, width: 80 }} />
-          <input placeholder="unit" value={l.unit} onChange={e => updLine(i, 'unit', e.target.value)} style={{ ...inp, width: 74 }} />
+          <input type="number" min="0" step="any" placeholder="qty" value={l.qty} onChange={e => updLine(i, 'qty', e.target.value)} style={{ ...fieldStyle, width: 80 }} />
+          <input placeholder="unit" value={l.unit} onChange={e => updLine(i, 'unit', e.target.value)} style={{ ...fieldStyle, width: 74 }} />
           <button onClick={() => rmLine(i)} style={{ background: 'transparent', border: 0, color: 'var(--t3)', cursor: 'pointer', fontSize: 16 }}>×</button>
         </div>
       ))}
