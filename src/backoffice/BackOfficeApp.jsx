@@ -43,6 +43,7 @@ import Recipes from './sections/Recipes';
 import Batches from './sections/Batches';
 import Suppliers from './sections/Suppliers';
 import PurchaseOrders from './sections/PurchaseOrders';
+import PriceChanges from './sections/PriceChanges';
 import Invoices from './sections/Invoices';
 import OrderPad from './sections/OrderPad';
 import SupabaseSetup from '../lib/SupabaseSetup';
@@ -102,7 +103,8 @@ const NAV = [
   { id:'ops-devices',     label:'Devices',             icon:'📱', group:'Operations' },
   { id:'order-pad',  label:'Order pad',       icon:'🛒',  group:'Configuration' },
   { id:'suppliers',  label:'Suppliers',       icon:'🚚',  group:'Configuration' },
-  { id:'purchase-orders', label:'Purchase orders', icon:'🧾', group:'Configuration' },
+  { id:'purchase-orders', label:'Orders', icon:'🧾', group:'Configuration' },
+  { id:'price-changes', label:'Price changes', icon:'📈', group:'Configuration' },
   { id:'invoices',   label:'Invoices',        icon:'📄',  group:'Configuration' },
   { id:'profiles',   label:'Device profiles', icon:'📋',  group:'Devices' },
   { id:'devices',    label:'Devices',         icon:'📱',  group:'Devices' },
@@ -149,7 +151,7 @@ const NAV_IA = [
   { label:'Floor plan', icon:'floor',     single:'floorplan' },
   { label:'Inventory',  icon:'inventory', children:[['stock-overview','Overview'],['stock-items','Stock items'],['stock-counts','Stock counts'],['wastage','Wastage'],['inventory','Daily counts'],['stock-reports','Reports']] },
   { label:'Produce',    icon:'inventory', children:[['recipes','Recipes'],['batches','Batches']] },
-  { label:'Purchasing', icon:'channels',  children:[['order-pad','Order pad'],['suppliers','Suppliers'],['purchase-orders','Purchase orders'],['invoices','Invoices']] },
+  { label:'Purchasing', icon:'channels',  children:[['order-pad','Order pad'],['suppliers','Suppliers'],['purchase-orders','Orders'],['invoices','Invoices'],['price-changes','Price changes']] },
   { label:'Operations', icon:'inventory', children:[['ops-overview','Compliance'],['ops-temperature','Temperature'],['ops-checklists','Checklists'],['ops-prep','Prep schedule'],['ops-maintenance','Maintenance'],['ops-notifications','Alert rules'],['ops-compliance','Calendar'],['ops-devices','Devices']] },
   { label:'Team',       icon:'user',      single:'staff' },
   { label:'Workforce',  icon:'team',      children:[['wf-dashboard','Dashboard'],['wf-rota','Rota'],['wf-timesheets','Timesheets'],['wf-payroll','Payroll'],['wf-timeoff','Time off & availability'],['wf-staff','Staff'],['wf-onboarding','Onboarding'],['wf-compliance','Compliance'],['wf-pay','Positions & rates'],['wf-tronc','Tronc / tips'],['wf-announce','Announcements'],['wf-settings','Workforce settings']] },
@@ -694,6 +696,7 @@ export default function BackOfficeApp() {
           {section === 'order-pad'  && <OrderPad />}
           {section === 'suppliers'  && <Suppliers />}
           {section === 'purchase-orders' && <PurchaseOrders />}
+          {section === 'price-changes' && <PriceChanges />}
           {section === 'invoices'   && <Invoices />}
           {section === 'profiles'   && <DeviceProfiles />}
           {section === 'devices'    && <DeviceRegistry />}

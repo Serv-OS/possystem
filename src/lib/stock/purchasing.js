@@ -255,11 +255,13 @@ export const createOrdersFromBasket = async (lines, status = 'DRAFT', locationId
     (bySupplier[l.supplierId] ??= []).push(l);
   }
   let created = 0;
+  const poIds = [];   // v5.5.922: callers need the ids to send each order on to its supplier
+  const supplierIds = [];
   for (const [supplierId, group] of Object.entries(bySupplier)) {
-    const { error } = await savePurchaseOrder({ supplierId, status }, group, locationId);
-    if (!error) created++;
+    const { data: po, error } = await savePurchaseOrder({ supplierId, status }, group, locationId);
+    if (!error) { created++; if (po?.id) { poIds.push(po.id); supplierIds.push(supplierId); } }
   }
-  return { data: { created }, error: null };
+  return { data: { created, poIds, supplierIds }, error: null };
 };
 
 /**

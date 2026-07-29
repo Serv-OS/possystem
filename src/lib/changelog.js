@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.922', date: '29 Jul 2026', label: 'PURCHASING — Create orders emails suppliers on the spot; "Purchase orders" is now "Orders"; new Price changes screen',
+    changes: [
+      'CREATE MEANS SEND. On the Order pad, "Create orders" now emails each supplier their order immediately and the orders land in the renamed Orders screen as awaiting delivery — no separate send step. A supplier with no email on file cannot be emailed, so that order is marked sent instead and the confirmation tells you exactly how many were emailed versus marked.',
+      '"PURCHASE ORDERS" IS NOW CALLED "ORDERS" — in the menu and on the screen — and it already opens filtered to Awaiting from v5.5.920.',
+      'NEW — PRICE CHANGES (Purchasing → Price changes). Every product whose cost has moved, biggest movers first: what it was, what it is now, the percentage, how many times it changed and when, filterable by window and rises-only. Shown per pack (£/Bottle, not £/ml). The history behind it has been recorded on every priced delivery and invoice since the stock module shipped — this screen finally lets you see a supplier creeping prices before it eats the margin.',
+      'READY TO TEST: Order pad → add quantities → Create orders → check the supplier inbox and the Orders screen. Then Purchasing → Price changes after your next priced delivery.',
+    ],
+  },
+  {
     version: '5.5.921', date: '29 Jul 2026', label: 'PURCHASING — accept deliveries line by line, attach the invoice, and "Send" actually emails the supplier',
     changes: [
       'ACCEPT DELIVERY, LINE BY LINE. "Receive into stock" was all-or-nothing — one confirm box received every line in full at the ordered price, with no way to record that the supplier sent nine cases instead of ten or changed a price. Now: Accept delivery opens a check-off panel seeded with what was ordered, so a clean delivery is two taps; correct any quantity or price that differs and the changed ones highlight. Each line can only ever be received once, so a retry or double-tap cannot double the stock.',

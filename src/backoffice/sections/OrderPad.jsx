@@ -20,12 +20,12 @@
 
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useStore } from '../../store';
-import { getActiveLocationSync, getLocationId } from '../../lib/supabase';
+import { getActiveLocationSync, getLocationId , supabase } from '../../lib/supabase';
 import { money } from '../../lib/currency';
 import { displayInUnits } from '../../lib/stock/uom';
 import { fetchInventoryItems, fetchSuppliers, fetchUsageRates } from '../../lib/stock/data';
 import { fetchParLevels } from '../../lib/stock/counts';
-import { fetchPurchaseOrders, createOrdersFromBasket } from '../../lib/stock/purchasing';
+import { fetchPurchaseOrders, createOrdersFromBasket, setPOStatus } from '../../lib/stock/purchasing';
 import { PageHeader, PrimaryBtn, SearchField, Chips } from './reports/reportKit';
 
 const USAGE_DAYS = 28;
@@ -150,10 +150,26 @@ export default function OrderPad() {
     }));
     if (!lines.length) { showToast?.('Add some quantities first', 'error'); return; }
     setBusy(true);
+    // v5.5.922 — CREATE MEANS SEND. One click: each supplier's order is emailed to them on the
+    // spot and lands in Orders as awaiting delivery. A supplier with no email on file cannot be
+    // emailed, so that order is marked sent instead (it still counts as on-order) and the toast
+    // says so — silence here would read as "sent" when nothing left the building.
     const { data, error } = await createOrdersFromBasket(lines, 'DRAFT', locId);
+    if (error) { setBusy(false); showToast?.(error.message, 'error'); return; }
+    let emailed = 0, markedOnly = 0;
+    for (const poId of (data.poIds || [])) {
+      const { data: res, error: sendErr } = await supabase.functions.invoke('po-send', {
+        body: { po_id: poId, location_id: locId },
+      });
+      if (!sendErr && res?.ok) emailed++;
+      else { await setPOStatus(poId, 'SENT', locId); markedOnly++; }
+    }
     setBusy(false);
-    if (error) { showToast?.(error.message, 'error'); return; }
-    showToast?.(`Created ${data.created} order${data.created === 1 ? '' : 's'} (draft) — find them in Purchase orders`, 'success');
+    showToast?.(
+      markedOnly
+        ? `${emailed} order${emailed === 1 ? '' : 's'} emailed · ${markedOnly} marked sent (no supplier email on file)`
+        : `${emailed} order${emailed === 1 ? '' : 's'} emailed to suppliers — now in Orders awaiting delivery`,
+      'success');
     setQty({}); await reload();
   };
 

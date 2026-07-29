@@ -156,7 +156,7 @@ export default function PurchaseOrders() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, background: 'var(--bg)' }}>
       <div style={{ padding: '22px 26px 0', flexShrink: 0 }}>
-        <PageHeader eyebrow="PURCHASING" title="Purchase orders" subtitle="Raise orders, send them to suppliers, then receive the delivery into stock." />
+        <PageHeader eyebrow="PURCHASING" title="Orders" subtitle="Orders sent to suppliers, waiting to be accepted into stock." />
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: '300px 1fr', flex: 1, minHeight: 0, borderTop: '1px solid var(--bdr)', background: 'var(--bg)' }}>
       <aside style={{ borderRight: '1px solid var(--bdr)', background: 'var(--bg1)', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
