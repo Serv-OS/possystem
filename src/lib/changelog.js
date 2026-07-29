@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.936', date: '29 Jul 2026', label: 'RECIPES — sub-items now appear in the item list, so you can build the bun\'s recipe',
+    changes: [
+      'Sub-items (the things modifier groups sell — the brioche bun on a cheeseburger) were deliberately hidden from the Recipes screen\'s item list, so you could not build a recipe for one — which made yesterday\'s "chosen options deplete stock" wiring impossible to actually use. They now appear like any other product. Variant parents stay hidden, because a parent is never sold — its variants are.',
+      'The full chain now works: Recipes → pick the bun sub-item → give it a recipe pointing at the Brioche Buns stock item → sell a cheeseburger with that bun → bun stock drops.',
+      'READY TO TEST: Recipes → the bun sub-item is in the list → link its recipe → kiosk sale with that bun → check Movements.',
+    ],
+  },
+  {
     version: '5.5.935', date: '29 Jul 2026', label: 'STOCK — modifier sub-items now deplete (the bun counts), and batches carry one name everywhere',
     changes: [
       'MODIFIER SUB-ITEMS NOW MOVE STOCK. A cheeseburger with a choice of bun: picking the brioche bun now depletes the bun\'s stock, on every channel — POS, kiosk, online. Modifier options were already linked to their own items (that is how sold-out on options works); the stock ledger simply never looked at the mods on a sold line. Now every chosen option with a linked item explodes through that item\'s recipe exactly like a line of its own. Plain instructions ("no onions") link to nothing and change nothing, as before. The server-side path used by kiosk and online is deployed.',

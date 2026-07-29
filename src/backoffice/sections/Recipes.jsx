@@ -91,7 +91,11 @@ export default function Recipes() {
   const dishProducts = useMemo(() => {
     const q = search.trim().toLowerCase();
     return menuItems
-      .filter(m => !m.archived && m.type !== 'subitem' && !menuMeta.parents.has(String(m.id)))
+      // v5.5.936: sub-items ARE sellable — they are what modifier groups sell (the
+      // brioche bun on a cheeseburger). Excluding them here made it impossible to build
+      // a recipe for one, which is why chosen options could never deplete stock.
+      // Variant PARENTS stay excluded: a parent is never sold, its children are.
+      .filter(m => !m.archived && !menuMeta.parents.has(String(m.id)))
       .map(m => ({ m, label: menuMeta.label(m), recipe: recipeByMenuId[String(m.id)] || null }))
       .filter(x => !q || x.label.toLowerCase().includes(q))
       .sort((a, b) => a.label.localeCompare(b.label));
