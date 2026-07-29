@@ -7,6 +7,12 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.938', date: '29 Jul 2026', label: 'Prep schedule and Batches now use the identical item label',
+    changes: [
+      'The prep schedule picker said "Burger Patty" while the Batches dropdown said "Burger Patty (100g Burger Patty)". Both now render the exact same string: the stock item\'s name, with the recipe\'s name in brackets when it differs. Two screens, one label.',
+    ],
+  },
+  {
     version: '5.5.937', date: '29 Jul 2026', label: 'One name everywhere — batches, schedule, queue and reports all call it what the stock item is called',
     changes: [
       'The last naming mismatch: the batch dropdown said "100g Burger Patty → Burger Patty" (the recipe\'s internal name) while the prep schedule, the queue, history and the Production report all said "Burger Patty". The dropdown now leads with the stock item\'s name everywhere; a recipe\'s own name only appears in brackets when it genuinely differs, as detail — never as the identity.',

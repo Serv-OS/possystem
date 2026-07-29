@@ -111,7 +111,13 @@ export default function OpsPrepSchedule() {
                 name: it ? it.name : editing.name, unit: rec?.yieldUnit || it?.baseUnit || editing.unit });
             }} style={{ ...field, marginBottom: 8 }}>
               <option value="">— not linked to stock (reminder only) —</option>
-              {madeItems.map(m => <option key={m.id} value={m.id}>{m.name}{recipesByOutput[m.id] ? '' : ' (no recipe yet)'}</option>)}
+              {/* v5.5.938: EXACTLY the same label as the Batches dropdown — item name first,
+                  recipe name in brackets when it differs. Two screens, one string. */}
+              {madeItems.map(m => {
+                const rec = recipesByOutput[m.id];
+                const showRec = rec?.name && rec.name.trim().toLowerCase() !== (m.name || '').trim().toLowerCase();
+                return <option key={m.id} value={m.id}>{m.name}{showRec ? ` (${rec.name})` : ''}{rec ? '' : ' — no recipe yet'}</option>;
+              })}
             </select>
             {editing.outputItemId && !editing.recipeId && <div style={{ fontSize: 11, color: 'var(--amb,#e8a020)', marginBottom: 8 }}>⚠ This item has no batch recipe — add one on the item's Recipe tab, or the cook will log without moving stock.</div>}
             <input value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} placeholder="e.g. Chicken stock" style={field} autoFocus />
