@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.925', date: '29 Jul 2026', label: 'MADE-HERE ITEMS — recipe edited on the item, no supplier asked for, batch language, out of the Order pad',
+    changes: [
+      'A MADE-HERE ITEM NO LONGER PRETENDS TO BE A PURCHASED ONE. Choosing "Made here" on a stock item now changes the screen to match: the Suppliers tab disappears (a burger patty has no supplier), and in its place is a RECIPE tab — what goes into a batch and how much a batch makes, edited right there on the item. Saving the recipe rolls the ingredient costs up into the item, so its stock value is real. No separate screen to know about.',
+      'BATCH LANGUAGE, NOT PURCHASING LANGUAGE. On a made-here item the "Reorder at" level is now "Make more when below", and dropping under it warns "batch needed" instead of "time to order".',
+      'MADE-HERE ITEMS NO LONGER APPEAR ON THE ORDER PAD. You do not order a burger patty from a supplier — you make it. Its ingredients (the minced beef) are what you order, and they were already there.',
+      'THE MATHS UNDERNEATH WAS ALREADY RIGHT, AND IS UNCHANGED: selling a burger deducts a patty (not the beef); producing a batch consumes the beef and adds patties at true cost. The screens were hiding a correct engine — now they match it.',
+      'READY TO TEST: open the burger patty → the tabs change, the Recipe tab is there; check the Order pad no longer lists it; set a make-more level and watch the warning wording.',
+    ],
+  },
+  {
     version: '5.5.924', date: '29 Jul 2026', label: 'Invoice review — the old price now shows next to every price-change flag',
     changes: [
       'The invoice scan review already flagged any line more than 5% off the product\'s current cost — it now also shows what that cost WAS, right next to the flag, so you can judge the change without opening the product.',

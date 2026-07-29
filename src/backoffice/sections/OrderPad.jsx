@@ -92,7 +92,10 @@ export default function OrderPad() {
   const supById = useMemo(() => { const m = {}; suppliers.forEach(s => { m[s.id] = s; }); return m; }, [suppliers]);
   const supName = useCallback((id) => supById[id]?.name || '—', [supById]);
 
-  const rows = useMemo(() => (items || []).filter(i => !i.archivedAt).map(it => {
+  // v5.5.925 — you don't ORDER a made-here item, you MAKE it. A burger patty in a
+  // supplier ordering list was the production model leaking into purchasing; its
+  // ingredients (the minced beef) are what belongs here, and they already are.
+  const rows = useMemo(() => (items || []).filter(i => !i.archivedAt && i.kind !== 'MADE').map(it => {
     const allSps = it.supplierProducts || [];
     const overrideId = supplierOverride[it.id];
     const sp = (overrideId && allSps.find(s => s.id === overrideId)) || allSps.find(s => s.isPreferred) || allSps[0] || null;

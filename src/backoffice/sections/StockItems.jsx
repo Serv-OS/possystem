@@ -244,7 +244,11 @@ export default function StockItems() {
 
             {/* tabs */}
             <div style={{ display: 'flex', gap: 4, padding: '10px 22px 0', borderBottom: '1px solid var(--bdr)' }}>
-              {TABS.map(t => (
+              {/* v5.5.925 — the tabs follow what the item IS. A made-here item has no
+                  supplier: asking for one was the model leaking through the screen. It has a
+                  RECIPE instead, edited right here — not on a separate screen someone has to
+                  know exists. */}
+              {(draft.kind === 'MADE' ? ['General', 'Units', 'Stock', 'Recipe', 'Dimension & Measure'] : TABS).map(t => (
                 <button key={t} onClick={() => setTab(t)} style={{
                   padding: '8px 14px', fontSize: 13, cursor: 'pointer', background: 'transparent', border: 0,
                   color: tab === t ? 'var(--t1)' : 'var(--t3)', fontWeight: tab === t ? 700 : 400,
@@ -258,7 +262,8 @@ export default function StockItems() {
               {tab === 'Stock' && <StockTab draft={draft} locId={locId} onChanged={() => reload(draft.id)} showToast={showToast} />}
               {tab === 'Dimension & Measure' && <DimensionTab draft={draft} locId={locId} onChanged={() => reload(draft.id)} showToast={showToast} />}
               {tab === 'Units' && <UnitsTab draft={draft} locId={locId} onChanged={() => reload(draft.id)} showToast={showToast} />}
-              {tab === 'Suppliers' && <SuppliersTab draft={draft} suppliers={suppliers} locId={locId} onChanged={() => reload(draft.id)} onSupplierAdded={() => reload(draft.id)} showToast={showToast} />}
+              {tab === 'Suppliers' && draft.kind !== 'MADE' && <SuppliersTab draft={draft} suppliers={suppliers} locId={locId} onChanged={() => reload(draft.id)} onSupplierAdded={() => reload(draft.id)} showToast={showToast} />}
+              {tab === 'Recipe' && draft.kind === 'MADE' && <RecipeTab draft={draft} items={items} locId={locId} showToast={showToast} onChanged={() => reload(draft.id)} />}
             </div>
           </>
         )}
@@ -445,7 +450,7 @@ function StockTab({ draft, locId, onChanged, showToast }) {
         <Field label={`Par level (${parUnitLabel})`}>
           <input type="number" min="0" step="any" value={parEdit.parLevel} onChange={e => setParEdit(p => ({ ...p, parLevel: e.target.value }))} onBlur={() => savePar(parEdit)} placeholder="target" style={{ ...fieldStyle, width: 120 }} />
         </Field>
-        <Field label={`Reorder at (${parUnitLabel})`}>
+        <Field label={draft.kind === 'MADE' ? `Make more when below (${parUnitLabel})` : `Reorder at (${parUnitLabel})`}>
           <input type="number" min="0" step="any" value={parEdit.reorderPoint} onChange={e => setParEdit(p => ({ ...p, reorderPoint: e.target.value }))} onBlur={() => savePar(parEdit)} placeholder="min before reorder" style={{ ...fieldStyle, width: 140 }} />
         </Field>
         {countUnit !== draft.baseUnit && parBase.parLevel !== '' && (
@@ -454,7 +459,7 @@ function StockTab({ draft, locId, onChanged, showToast }) {
             {parBase.reorderPoint !== '' && <> · reorder at {Math.round(Number(parBase.reorderPoint) * 1000) / 1000} {draft.baseUnit}</>}
           </div>
         )}
-        {belowReorder && <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--red, #ef4444)', paddingBottom: 8 }}>⚠ at/below reorder point — time to order</div>}
+        {belowReorder && <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--red, #ef4444)', paddingBottom: 8 }}>{draft.kind === 'MADE' ? '⚠ below the make-more level — batch needed' : '⚠ at/below reorder point — time to order'}</div>}
       </div>
 
       <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 8 }}>
@@ -765,6 +770,96 @@ function SuppliersTab({ draft, suppliers, locId, onChanged, showToast }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Recipe tab (v5.5.925) — a made-here item's recipe lives ON the item ─────────
+// The whole point of "Made here": what goes into it and what a batch yields. Editing
+// that on a separate Recipes screen forced people to know the model; here you pick the
+// kind and the recipe editor is simply the next tab. Saving recomputes the item's cost
+// from its components, so the made item's stock value stays honest.
+function RecipeTab({ draft, items, locId, showToast, onChanged }) {
+  const [recipe, setRecipe] = useState(null);   // null = loading, {} = none yet
+  const [lines, setLines] = useState([]);
+  const [yieldQty, setYieldQty] = useState('1');
+  const [yieldUnit, setYieldUnit] = useState(draft.baseUnit || 'each');
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    fetchRecipes(locId).then(({ data }) => {
+      if (!live) return;
+      const r = (data || []).find(x => x.outputItemId === draft.id && !x.archivedAt);
+      setRecipe(r || {});
+      if (r) {
+        setYieldQty(String(r.yieldQty ?? 1)); setYieldUnit(r.yieldUnit || draft.baseUnit || 'each');
+        setLines((r.lines || []).map(l => ({ componentItemId: l.componentItemId, qty: String(l.qty), unit: l.unit })));
+      }
+    });
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft.id]);
+
+  const components = (items || []).filter(i => !i.archivedAt && i.id !== draft.id);
+  const addLine = () => setLines(ls => [...ls, { componentItemId: '', qty: '', unit: '' }]);
+  const updLine = (i, k, v) => setLines(ls => ls.map((l, j) => {
+    if (j !== i) return l;
+    const next = { ...l, [k]: v };
+    // Picking a component defaults the unit to that item's base unit — the common case.
+    if (k === 'componentItemId') { const c = components.find(x => x.id === v); if (c && !l.unit) next.unit = c.baseUnit; }
+    return next;
+  }));
+  const rmLine = (i) => setLines(ls => ls.filter((_, j) => j !== i));
+
+  const save = async () => {
+    const keep = lines.filter(l => l.componentItemId && Number(l.qty) > 0);
+    if (!keep.length) { showToast?.('Add at least one ingredient', 'error'); return; }
+    setSaving(true);
+    const { data: saved, error } = await upsertRecipe({
+      ...(recipe?.id ? { id: recipe.id } : {}),
+      name: `${draft.name} (batch)`, recipeType: 'BATCH', outputItemId: draft.id,
+      yieldQty: Number(yieldQty) || 1, yieldUnit: yieldUnit || draft.baseUnit || 'each',
+    }, locId);
+    if (error || !saved) { setSaving(false); showToast?.(error?.message || 'Recipe save failed', 'error'); return; }
+    const { error: e2 } = await replaceRecipeLines(saved.id, keep.map((l, i) => ({
+      componentItemId: l.componentItemId, qty: Number(l.qty), unit: l.unit || 'each', sortOrder: i,
+    })), locId);
+    if (e2) { setSaving(false); showToast?.(e2.message, 'error'); return; }
+    // Roll the component costs up into this item so its valuation is real.
+    try { await recomputeMadeItemCost(draft.id, locId); } catch { /* cost roll-up is best-effort */ }
+    setSaving(false);
+    showToast?.('Recipe saved — cost updated from ingredients', 'success');
+    onChanged?.();
+  };
+
+  if (recipe === null) return <div style={{ color: 'var(--t3)', fontSize: 13 }}>Loading…</div>;
+  return (
+    <div style={{ maxWidth: 620 }}>
+      <div style={{ fontSize: 12.5, color: 'var(--t3)', marginBottom: 14 }}>
+        What goes into a batch of <b style={{ color: 'var(--t1)' }}>{draft.name}</b>, and how much a batch makes.
+        Saving updates this item's cost from its ingredients.
+      </div>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', marginBottom: 16 }}>
+        <Field label="A batch makes"><input type="number" min="0" step="any" value={yieldQty} onChange={e => setYieldQty(e.target.value)} style={{ ...inp, width: 100 }} /></Field>
+        <Field label="Unit"><input value={yieldUnit} onChange={e => setYieldUnit(e.target.value)} style={{ ...inp, width: 100 }} /></Field>
+      </div>
+      <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.06em', color: 'var(--t4)', marginBottom: 8 }}>INGREDIENTS</div>
+      {lines.map((l, i) => (
+        <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+          <select value={l.componentItemId} onChange={e => updLine(i, 'componentItemId', e.target.value)} style={{ ...inp, flex: 1 }}>
+            <option value="">— pick an ingredient —</option>
+            {components.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+          <input type="number" min="0" step="any" placeholder="qty" value={l.qty} onChange={e => updLine(i, 'qty', e.target.value)} style={{ ...inp, width: 80 }} />
+          <input placeholder="unit" value={l.unit} onChange={e => updLine(i, 'unit', e.target.value)} style={{ ...inp, width: 74 }} />
+          <button onClick={() => rmLine(i)} style={{ background: 'transparent', border: 0, color: 'var(--t3)', cursor: 'pointer', fontSize: 16 }}>×</button>
+        </div>
+      ))}
+      <button onClick={addLine} style={{ padding: '7px 12px', borderRadius: 8, background: 'var(--bg2)', border: '1px dashed var(--bdr)', color: 'var(--t2)', fontSize: 12.5, cursor: 'pointer', marginBottom: 16 }}>+ Add ingredient</button>
+      <div>
+        <button onClick={save} disabled={saving} style={{ padding: '9px 18px', borderRadius: 8, background: 'var(--acc)', border: 0, color: '#0b0c10', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>{saving ? 'Saving…' : 'Save recipe'}</button>
+      </div>
     </div>
   );
 }
