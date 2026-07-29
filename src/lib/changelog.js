@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.937', date: '29 Jul 2026', label: 'One name everywhere — batches, schedule, queue and reports all call it what the stock item is called',
+    changes: [
+      'The last naming mismatch: the batch dropdown said "100g Burger Patty → Burger Patty" (the recipe\'s internal name) while the prep schedule, the queue, history and the Production report all said "Burger Patty". The dropdown now leads with the stock item\'s name everywhere; a recipe\'s own name only appears in brackets when it genuinely differs, as detail — never as the identity.',
+      'The rule, now consistent system-wide: a thing is called what the STOCK ITEM is called. Recipes are how it is made, not what it is.',
+    ],
+  },
+  {
     version: '5.5.936', date: '29 Jul 2026', label: 'RECIPES — sub-items now appear in the item list, so you can build the bun\'s recipe',
     changes: [
       'Sub-items (the things modifier groups sell — the brioche bun on a cheeseburger) were deliberately hidden from the Recipes screen\'s item list, so you could not build a recipe for one — which made yesterday\'s "chosen options deplete stock" wiring impossible to actually use. They now appear like any other product. Variant parents stay hidden, because a parent is never sold — its variants are.',

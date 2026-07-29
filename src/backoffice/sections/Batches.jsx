@@ -233,8 +233,17 @@ export default function Batches() {
             <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr', gap: 14 }}>
               <div><label style={lbl}>Recipe</label>
                 <select value={recipeId} onChange={e => { setRecipeId(e.target.value); setQty(''); }} style={field}>
-                  <option value="">— choose prep recipe —</option>
-                  {recipes.map(r => <option key={r.id} value={r.id}>{r.name} → {itemName(r.outputItemId)}</option>)}
+                  <option value="">— choose what to make —</option>
+                  {/* v5.5.937: ONE name across the whole system — the STOCK ITEM'S. The prep
+                      schedule, the queue, history and reports all say "Burger Patty"; this
+                      dropdown said "100g Burger Patty → Burger Patty" (the recipe's internal
+                      name). Item name first; the recipe name only when it differs, in
+                      brackets, as detail — not as the identity. */}
+                  {recipes.map(r => {
+                    const item = itemName(r.outputItemId);
+                    const showRecipe = r.name && item !== '—' && r.name.trim().toLowerCase() !== item.trim().toLowerCase();
+                    return <option key={r.id} value={r.id}>{item !== '—' ? item : r.name}{showRecipe && item !== '—' ? ` (${r.name})` : ''}</option>;
+                  })}
                 </select>
               </div>
               <div><label style={lbl}>Output qty{recipe ? ` (${recipe.yieldUnit})` : ''}</label><input type="number" min="0" step="any" value={qty} onChange={e => setQty(e.target.value)} placeholder={recipe ? String(recipe.yieldQty) : ''} style={field} /></div>
