@@ -29,6 +29,11 @@ export default function PurchaseOrders() {
   const [draft, setDraft] = useState(null);
   const [selId, setSelId] = useState(null);
   const [busy, setBusy] = useState(false);
+  // v5.5.920 — the list is a WORK QUEUE, not an archive. Default view shows only orders that
+  // still need something done (awaiting send or delivery); received/cancelled live in their
+  // own tabs. This is the owner's "one constant list" complaint fixed at the root.
+  const [tab, setTab] = useState('open');           // 'open' | 'done' | 'all'
+  const [q, setQ] = useState('');
 
   const reload = useCallback(async (keepId) => {
     const loc = locId || getActiveLocationSync() || await getLocationId().catch(() => null);
@@ -40,6 +45,15 @@ export default function PurchaseOrders() {
   useEffect(() => { reload(); /* eslint-disable-next-line */ }, []);
 
   const supName = useCallback((id) => suppliers.find(s => s.id === id)?.name || '—', [suppliers]);
+  const OPEN_STATUSES = ['DRAFT', 'SENT', 'PARTIAL'];
+  const visible = useMemo(() => pos.filter(p => {
+    if (tab === 'open' && !OPEN_STATUSES.includes(p.status)) return false;
+    if (tab === 'done' && p.status !== 'RECEIVED') return false;
+    const needle = q.trim().toLowerCase();
+    if (needle && !(`${supName(p.supplierId)} ${p.reference || ''}`.toLowerCase().includes(needle))) return false;
+    return true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [pos, tab, q, supName]);
   const itemName = useCallback((id) => items.find(i => i.id === id)?.name || '—', [items]);
   const ratesById = useMemo(() => { const m = {}; taxRates.forEach(r => { m[r.id] = r; }); return m; }, [taxRates]);
   const lineRateDec = useCallback((l) => Number(ratesById[l.purchaseTaxRateId]?.rate || 0), [ratesById]);
@@ -93,16 +107,24 @@ export default function PurchaseOrders() {
         <div style={{ padding: 14 }}>
           <button onClick={newPO} style={{ width: '100%', padding: '9px 0', borderRadius: 7, background: 'var(--acc)', color: '#0b0c10', border: 0, fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>+ New purchase order</button>
         </div>
+        <div style={{ display: 'flex', gap: 6, padding: '0 14px 10px' }}>
+          {[['open', 'Awaiting'], ['done', 'Received'], ['all', 'All']].map(([id, label]) => (
+            <button key={id} onClick={() => setTab(id)} style={{ flex: 1, padding: '6px 0', borderRadius: 7, fontSize: 11.5, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', border: '1px solid ' + (tab === id ? 'var(--acc)' : 'var(--bdr)'), background: tab === id ? 'var(--bg2)' : 'transparent', color: tab === id ? 'var(--t1)' : 'var(--t3)' }}>{label}</button>
+          ))}
+        </div>
+        <div style={{ padding: '0 14px 10px' }}>
+          <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search supplier / ref…" style={field} />
+        </div>
         <div style={{ flex: 1, overflowY: 'auto' }}>
           {loading && <div style={{ padding: 16, color: 'var(--t3)', fontSize: 13 }}>Loading…</div>}
-          {!loading && pos.length === 0 && <div style={{ padding: 16, color: 'var(--t3)', fontSize: 13 }}>No orders yet.</div>}
-          {pos.map(p => (
+          {!loading && visible.length === 0 && <div style={{ padding: 16, color: 'var(--t3)', fontSize: 13 }}>{pos.length === 0 ? 'No orders yet.' : 'No orders in this view.'}</div>}
+          {visible.map(p => (
             <div key={p.id} onClick={() => { setDraft(structuredClone(p)); setSelId(p.id); }} style={{ padding: '11px 16px', cursor: 'pointer', borderLeft: '3px solid ' + (p.id === selId ? 'var(--acc)' : 'transparent'), background: p.id === selId ? 'var(--bg2)' : 'transparent' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
                 <span style={{ fontSize: 13, color: 'var(--t1)' }}>{supName(p.supplierId)}</span>
                 <Tag label={p.status} tone={STATUS_TONE[p.status]} />
               </div>
-              <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2 }}>{p.reference || ''} · {p.lines.length} line{p.lines.length === 1 ? '' : 's'} · {money(p.subtotal || 0)}</div>
+              <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2 }}>{p.reference || ''} · {p.lines.length} line{p.lines.length === 1 ? '' : 's'} · {money(p.subtotal || 0)}{p.expectedDate ? ` · due ${p.expectedDate}` : ''}</div>
             </div>
           ))}
         </div>

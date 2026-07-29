@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.920', date: '29 Jul 2026', label: 'PURCHASING — the order list is now a work queue, not one endless list',
+    changes: [
+      'PURCHASE ORDERS NOW OPEN ON "AWAITING" — just the orders that still need something: drafts to send and deliveries to receive. Received orders have their own tab, "All" shows everything, and there is a supplier/reference search. Before this, every order ever raised sat in one flat list with finished ones mixed among live ones.',
+      'Rows now show the expected delivery date, so the Awaiting tab reads as "what is arriving and when".',
+      'THIS IS SLICE 1 OF THE PURCHASING REWORK. Coming next, in order: accepting a delivery line by line (edit received quantity and price, shorted items spawn a balance order), attaching the supplier invoice on the same screen, and "Send" actually emailing the supplier rather than just marking the order sent. The full flow was mapped against MarketMan, Lightspeed and the other benchmark systems before any of it was built.',
+      'ALSO FOUND DURING THE MAPPING, WORTH KNOWING NOW: receiving a purchase order AND separately posting its scanned invoice both add the stock today — the same delivery counted twice. Until the invoice-attach slice ships: receive the order OR post the invoice, never both for the same delivery.',
+      'READY TO TEST: Back Office → Purchasing → Purchase orders. It should open on Awaiting with received orders filtered out.',
+    ],
+  },
+  {
     version: '5.5.919', date: '29 Jul 2026', label: 'STOCK — par levels are set in bottles and cases now, not millilitres',
     changes: [
       'PAR LEVEL AND REORDER POINT NOW USE THE UNIT YOU COUNT IN. A wine you buy by the bottle was asking for its par in millilitres — "par: 4500" when every human thinks "par: 6 bottles". Both fields now use the same unit picker as Set count (Bottle, Case, Keg…), with the base-unit equivalent shown underneath for reference.',
