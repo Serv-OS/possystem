@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.929', date: '29 Jul 2026', label: 'FIX — Recipe tab on a made-here item crashed to "App Error"',
+    changes: [
+      'Opening the Recipe tab on a made-here item (the burger patty) crashed the whole screen. Cause: the tab\'s code referenced the recipe functions but the line importing them never made it into the file — and with no TypeScript, the build cannot catch a missing import; it only fails at the moment someone clicks. All four functions are now imported and verified present.',
+      'READY TO TEST: burger patty → Recipe tab — it opens, take it from there (ingredients + batch yield, save updates the item cost).',
+    ],
+  },
+  {
     version: '5.5.928', date: '29 Jul 2026', label: 'WASTE — recording from the till actually saves now (it was being refused silently)',
     changes: [
       'RECORDING WASTE FROM THE TILL WAS BEING REFUSED — QUIETLY. The waste record table was still Back-Office-only in the database, so when a till tried to save, the database said no, the screen stayed open, and the only sign was a brief error message that was easy to miss. Nothing had been recorded — and because the event saves first, no stock moved either, so the ledger never lied; it just recorded nothing.',

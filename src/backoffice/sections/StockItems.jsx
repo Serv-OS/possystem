@@ -31,6 +31,7 @@ import {
   setInventoryOnHand, fetchItemMovements, movementLabel,
 } from '../../lib/stock/data';
 import { fetchParLevels, upsertParLevel } from '../../lib/stock/counts';
+import { fetchRecipes, upsertRecipe, replaceRecipeLines, recomputeMadeItemCost } from '../../lib/stock/recipes';
 import { toBase, fromBase, unitOptions, formatToken, unitLabel, displayInUnits } from '../../lib/stock/uom';
 
 const KINDS = [
