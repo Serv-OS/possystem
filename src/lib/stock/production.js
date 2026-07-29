@@ -30,6 +30,7 @@ const batchFromRow = (r) => ({
   actualCost: r.actual_cost == null ? null : Number(r.actual_cost),
   outputUnitCost: r.output_unit_cost == null ? null : Number(r.output_unit_cost),
   lotCode: r.lot_code, expiryAt: r.expiry_at, producedAt: r.produced_at, notes: r.notes, createdAt: r.created_at,
+  scheduleId: r.schedule_id || null, plannedFor: r.planned_for || null, dueTime: r.due_time || null,
 });
 
 export const fetchBatches = async (locationId = null, limit = 100) => {
@@ -91,6 +92,86 @@ export const previewBatch = async (recipeId, actualQty, outputUnit, locationId =
  * Create and complete a production batch in one step: posts consume/output
  * movements and writes the COMPLETED batch row. Returns { data: batch, error }.
  */
+
+/**
+ * THE SCHEDULE BUILDS THE BATCHES. (v5.5.933)
+ * For every active, recipe-linked prep_schedule row that cooks TODAY, ensure exactly one
+ * production_batches row exists (status PLANNED, planned qty/unit/due time from the plan).
+ * Idempotent by construction: a unique index on (location, schedule, day) means racing
+ * callers — the Batches screen, the Manager app, tomorrow's reload — cannot double-plan.
+ * Never throws: planning failing must not take down the screen that called it.
+ */
+export const ensureTodaysPlannedBatches = async (locationId = null) => {
+  if (isMock || !supabase) return { data: 0, error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: 0, error: null };
+  const today = new Date(); const dow = today.getDay();
+  const ymd = today.toISOString().slice(0, 10);
+  const { data: scheds } = await supabase.from('prep_schedule')
+    .select('id, name, qty, unit, due_time, days_of_week, recipe_id, output_item_id')
+    .eq('location_id', locationId).eq('active', true).not('recipe_id', 'is', null);
+  let created = 0;
+  for (const sc of (scheds || [])) {
+    const days = Array.isArray(sc.days_of_week) && sc.days_of_week.length ? sc.days_of_week : [0,1,2,3,4,5,6];
+    if (!days.includes(dow)) continue;
+    const { error } = await supabase.from('production_batches').insert({
+      location_id: locationId, schedule_id: sc.id, planned_for: ymd, due_time: sc.due_time || null,
+      recipe_id: sc.recipe_id, output_item_id: sc.output_item_id || null, output_name: sc.name,
+      planned_qty: sc.qty == null ? null : Number(sc.qty), output_unit: sc.unit || 'each', status: 'PLANNED',
+    });
+    if (!error) created++;   // unique-index conflict = already planned today: exactly the idea
+  }
+  return { data: created, error: null };
+};
+
+/**
+ * Complete a PLANNED batch: staff enter what was actually made; ingredients are consumed
+ * and the output stocked against THIS row (movement keys carry this batch id, so a retry
+ * cannot double-move). This is the only path from PLANNED to COMPLETED.
+ */
+export const completePlannedBatch = async (batchId, actualQty, locationId = null) => {
+  if (isMock || !supabase) return { data: null, error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: null, error: new Error('No locationId') };
+  const { data: b } = await supabase.from('production_batches').select('*')
+    .eq('location_id', locationId).eq('id', batchId).maybeSingle();
+  if (!b) return { data: null, error: new Error('Batch not found') };
+  if (b.status === 'COMPLETED') return { data: batchFromRow(b), error: null };   // already done — idempotent
+  if (!b.recipe_id) return { data: null, error: new Error('This batch has no recipe linked') };
+
+  const [{ data: rec }, { data: lines }, ctx] = await Promise.all([
+    supabase.from('recipes').select('*').eq('location_id', locationId).eq('id', b.recipe_id).maybeSingle(),
+    supabase.from('recipe_lines').select('*').eq('location_id', locationId).eq('recipe_id', b.recipe_id).order('sort_order'),
+    buildCostingCtx(locationId),
+  ]);
+  if (!rec?.output_item_id) return { data: null, error: new Error('Recipe has no output stock item') };
+  const recipe = { outputItemId: rec.output_item_id, yieldQty: Number(rec.yield_qty), yieldUnit: rec.yield_unit, wastagePct: Number(rec.wastage_pct) || 0 };
+  const mappedLines = (lines || []).map(l => ({ componentItemId: l.component_item_id, qty: Number(l.qty), unit: l.unit, usablePct: l.usable_pct == null ? 100 : Number(l.usable_pct) }));
+  let plan;
+  try { plan = planBatch(recipe, mappedLines, actualQty, b.output_unit || rec.yield_unit, ctx); }
+  catch (e) { return { data: null, error: e }; }
+
+  for (const c of plan.consume) {
+    if (!(c.qtyBase > 0)) continue;
+    await postStockMovement({
+      inventoryItemId: c.itemId, qtyBase: -c.qtyBase, movementType: 'PRODUCTION_CONSUME', unitCost: c.unitCost,
+      sourceType: 'production_batch', sourceId: batchId, idempotencyKey: `batch:${batchId}:consume:${c.itemId}`,
+    }, locationId);
+  }
+  await postStockMovement({
+    inventoryItemId: rec.output_item_id, qtyBase: plan.outputBase, movementType: 'PRODUCTION_OUTPUT',
+    unitCost: plan.outputUnitCost, sourceType: 'production_batch', sourceId: batchId,
+    idempotencyKey: `batch:${batchId}:output`,
+  }, locationId);
+
+  const { data: done, error } = await supabase.from('production_batches').update({
+    status: 'COMPLETED', actual_qty: Number(actualQty), output_item_id: rec.output_item_id,
+    actual_cost: plan.totalCost, theoretical_cost: plan.totalCost, output_unit_cost: plan.outputUnitCost,
+    produced_at: nowIso(), updated_at: nowIso(),
+  }).eq('location_id', locationId).eq('id', batchId).select().maybeSingle();
+  return { data: done ? batchFromRow(done) : null, error };
+};
+
 export const produceBatch = async ({ recipeId, actualQty, outputUnit, lotCode, expiryAt, notes }, locationId = null) => {
   if (isMock || !supabase) return { data: null, error: null };
   locationId = await ensureLoc(locationId);

@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.933', date: '29 Jul 2026', label: 'BATCHES — the schedule now BUILDS the batches: a to-make queue with complete status and filters',
+    changes: [
+      'THE SCHEDULE AND THE BATCHES ARE FINALLY ONE THING. When a prep schedule exists, the system now creates the actual batches to make: each scheduled cook appears on its day as a PLANNED batch — what to make, how much, by when — in Produce → Batches. No more plan in one place and history in another with nothing in between.',
+      'A BATCH HAS A STATUS AND YOU COMPLETE IT. The Batches screen is now a work queue: "To make" (with a count), "Done", "All", plus search — so a kitchen with many cooks can find theirs. Completing a batch asks what was actually made (pre-filled with the plan), then consumes the ingredients and stocks the output at true cost. Completion is the ONLY road from planned to done, and completing the same batch twice cannot double-move stock.',
+      'THE MANAGER APP AND THE QUEUE ARE TWO VIEWS OF THE SAME WORK. Recording a cook on the tablet completes the same planned batch the queue shows — not a parallel copy. However many screens are open, each scheduled cook exists exactly once per day, guaranteed by the database itself.',
+      'Everything flows on into the reports shipped earlier today: completed batches land in the Production tab with yield and cost, and the stock effect was already counted in Valuation, Movements and The Gap.',
+      'READY TO TEST: schedule the patty cook for today → Produce → Batches shows it under "To make" → Complete it → stock moves, and it appears under Done and in the Production report.',
+    ],
+  },
+  {
     version: '5.5.932', date: '29 Jul 2026', label: 'REPORTS — Production tab: every batch, plan vs actual, yield and cost',
     changes: [
       'Stock reports gain a PRODUCTION tab: every completed batch over the last 7/30/90 days — when it was made, what and how much, planned versus actual with a yield percentage per batch and overall, the ingredient cost, cost per unit, and the lot code for traceability. This is the batch-by-batch explanation of numbers the other tabs already count.',

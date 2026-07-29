@@ -14,7 +14,7 @@ import { money, currencySymbol } from '../../lib/currency';
 import { buildCostingCtx } from '../../lib/stock/recipes';
 import { fetchRecipes } from '../../lib/stock/recipes';
 import { fetchInventoryItems } from '../../lib/stock/data';
-import { planBatch, produceBatch, fetchBatches } from '../../lib/stock/production';
+import { planBatch, produceBatch, fetchBatches , ensureTodaysPlannedBatches, completePlannedBatch } from '../../lib/stock/production';
 import { PageHeader, PrimaryBtn, ReportTable, Money, Tag } from './reports/reportKit';
 
 const field = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '8px 10px', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
@@ -23,6 +23,30 @@ const lbl = { display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t3)
 export default function Batches() {
   // v5.5.931 — "needed today" suggestion inputs
   const [needed, setNeeded] = useState([]);
+  const [queueTab, setQueueTab] = useState('todo');   // todo | done | all
+  const [queueQ, setQueueQ] = useState('');
+  const [queue, setQueue] = useState([]);
+  const [completing, setCompleting] = useState(null);   // batch being completed → qty prompt
+  const [actualIn, setActualIn] = useState('');
+  const loadQueue = async () => {
+    const loc = getActiveLocationSync() || await getLocationId().catch(() => null);
+    if (!loc) return;
+    await ensureTodaysPlannedBatches(loc);              // the schedule BUILDS the batches
+    const { data } = await fetchBatches(loc, 300);
+    setQueue(data || []);
+  };
+  useEffect(() => { loadQueue(); /* eslint-disable-next-line */ }, []);
+  const doComplete = async () => {
+    if (!completing || !(Number(actualIn) > 0)) return;
+    const { error } = await completePlannedBatch(completing.id, Number(actualIn));
+    if (error) { showToast?.(error.message, 'error'); return; }
+    showToast?.(`Made ${actualIn} ${completing.outputUnit} — stock updated`, 'success');
+    setCompleting(null); setActualIn(''); loadQueue();
+  };
+  const queueView = queue
+    .filter(b => queueTab === 'all' ? true : queueTab === 'todo' ? b.status === 'PLANNED' : b.status === 'COMPLETED')
+    .filter(b => !queueQ.trim() || (b.outputName || '').toLowerCase().includes(queueQ.trim().toLowerCase()));
+
   const r1 = (v) => Math.round(Number(v) * 10) / 10;
   useEffect(() => {
     (async () => {
@@ -133,6 +157,44 @@ export default function Batches() {
 
   return (
     <div style={{ height: '100%', overflowY: 'auto', background: 'var(--bg0)', padding: '22px 26px' }}>
+      {/* ── THE BATCH QUEUE (v5.5.933) — the schedule builds these; completing one
+          moves the stock. Filters so a kitchen with many cooks can find theirs. */}
+      <div style={{ border: '1px solid var(--bdr)', borderRadius: 12, padding: '14px 18px', margin: '14px 0', background: 'var(--bg1)' }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10 }}>
+          {[['todo', 'To make'], ['done', 'Done'], ['all', 'All']].map(([t, l]) => (
+            <button key={t} onClick={() => setQueueTab(t)} style={{ padding: '6px 13px', borderRadius: 8, cursor: 'pointer', fontFamily: 'inherit', fontSize: 12.5, fontWeight: queueTab === t ? 700 : 500,
+              border: `1px solid ${queueTab === t ? 'var(--acc)' : 'var(--bdr)'}`, background: queueTab === t ? 'var(--acc-d, var(--bg2))' : 'transparent', color: queueTab === t ? 'var(--acc)' : 'var(--t3)' }}>
+              {l}{t === 'todo' && queue.filter(b => b.status === 'PLANNED').length > 0 ? ` (${queue.filter(b => b.status === 'PLANNED').length})` : ''}
+            </button>
+          ))}
+          <input value={queueQ} onChange={e => setQueueQ(e.target.value)} placeholder="Search batches…"
+            style={{ marginLeft: 'auto', background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 8, padding: '7px 11px', fontSize: 12.5, width: 190 }} />
+        </div>
+        {queueView.length === 0 && <div style={{ fontSize: 12.5, color: 'var(--t3)', padding: '10px 0' }}>
+          {queueTab === 'todo' ? 'Nothing to make right now — planned batches appear here on their scheduled day.' : 'Nothing here yet.'}</div>}
+        {queueView.slice(0, 40).map(b => (
+          <div key={b.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1px solid var(--bdr)', fontSize: 13 }}>
+            <b style={{ color: 'var(--t1)', flex: 1 }}>{b.outputName || itemName(b.outputItemId)}</b>
+            <span style={{ color: 'var(--t3)', fontSize: 12 }}>
+              {b.status === 'PLANNED'
+                ? `plan ${b.plannedQty ?? '—'} ${b.outputUnit}${b.dueTime ? ` · by ${String(b.dueTime).slice(0, 5)}` : ''}${b.plannedFor ? ` · ${b.plannedFor === new Date().toISOString().slice(0, 10) ? 'today' : b.plannedFor}` : ''}`
+                : `made ${b.actualQty} ${b.outputUnit} · ${b.producedAt ? new Date(b.producedAt).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : ''}`}
+            </span>
+            {b.status === 'PLANNED'
+              ? (completing?.id === b.id
+                ? (<span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <input autoFocus type="number" min="0" step="any" value={actualIn} onChange={e => setActualIn(e.target.value)} placeholder={String(b.plannedQty ?? '')}
+                      style={{ width: 74, background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--acc)', borderRadius: 7, padding: '6px 8px', fontSize: 13 }} />
+                    <button onClick={doComplete} style={{ padding: '6px 12px', borderRadius: 7, background: 'var(--acc)', border: 0, color: '#0b0c10', fontSize: 12.5, fontWeight: 700, cursor: 'pointer' }}>Done</button>
+                    <button onClick={() => { setCompleting(null); setActualIn(''); }} style={{ padding: '6px 8px', borderRadius: 7, background: 'transparent', border: '1px solid var(--bdr)', color: 'var(--t3)', fontSize: 12.5, cursor: 'pointer' }}>×</button>
+                  </span>)
+                : <button onClick={() => { setCompleting(b); setActualIn(String(b.plannedQty ?? '')); }}
+                    style={{ padding: '6px 14px', borderRadius: 7, background: 'var(--bg2)', border: '1px solid var(--acc)', color: 'var(--acc)', fontSize: 12.5, fontWeight: 700, cursor: 'pointer' }}>Complete…</button>)
+              : <Tag label="done" tone="good" />}
+          </div>
+        ))}
+      </div>
+
       {/* ── NEEDED TODAY (v5.5.931) — the plan + the top-up, from real data ─────────
           For each made-here item: what today's schedule says to make, PLUS a top-up when
           expected usage (weekday pattern, v5.5.926) up to the next scheduled cook exceeds

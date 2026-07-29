@@ -4,7 +4,7 @@
 // Location-fenced server-side by RLS (prep_schedule = users with location access; prep_log =
 // ops_can_write, i.e. BO users OR a claimed ops/manager device). camelCase here ↔ snake_case in DB.
 import { supabase, isMock } from './supabase';
-import { produceBatch } from './stock/production';
+import { produceBatch, ensureTodaysPlannedBatches, completePlannedBatch } from './stock/production';
 import { isTrainingMode } from './trainingMode';
 
 const schedFromRow = (r) => ({
@@ -80,11 +80,23 @@ export async function recordPrep({ scheduleId, name, prepDate, actualQty, unit, 
       const { data: sched } = await supabase.from('prep_schedule')
         .select('recipe_id, output_item_id').eq('location_id', locationId).eq('id', scheduleId).maybeSingle();
       if (sched?.recipe_id && actualQty != null && actualQty !== '' && Number(actualQty) > 0) {
-        const { data: batch, error: bErr } = await produceBatch({
-          recipeId: sched.recipe_id, actualQty: Number(actualQty), outputUnit: unit || undefined,
-          notes: `Scheduled cook — ${name || 'prep'}`,
-        }, locationId);
-        if (bErr) produceError = bErr.message; else produced = batch;
+        // v5.5.933: the schedule MATERIALISES a planned batch each cook-day — complete THAT
+        // row rather than minting a parallel one, so the Batches queue and the Manager app
+        // are two views of the same work item. ensure… is idempotent (unique per day).
+        await ensureTodaysPlannedBatches(locationId);
+        const { data: planned } = await supabase.from('production_batches').select('id')
+          .eq('location_id', locationId).eq('schedule_id', scheduleId)
+          .eq('planned_for', prepDate).neq('status', 'CANCELLED').maybeSingle();
+        if (planned?.id) {
+          const { data: batch, error: bErr } = await completePlannedBatch(planned.id, Number(actualQty), locationId);
+          if (bErr) produceError = bErr.message; else produced = batch;
+        } else {
+          const { data: batch, error: bErr } = await produceBatch({
+            recipeId: sched.recipe_id, actualQty: Number(actualQty), outputUnit: unit || undefined,
+            notes: `Scheduled cook — ${name || 'prep'}`,
+          }, locationId);
+          if (bErr) produceError = bErr.message; else produced = batch;
+        }
       }
     } catch (e) { produceError = e?.message || 'batch production failed'; }
   }
