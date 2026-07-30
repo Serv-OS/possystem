@@ -63,6 +63,11 @@ export default function Campaigns() {
   const [runMsg, setRunMsg] = useState({});      // { [id]: summary|busy|err }
   const [runsView, setRunsView] = useState(null); // { campaign, runs, sends }
   const [test, setTest] = useState({ email: '', phone: '' });
+  // v5.5.946: ended campaigns move to History — after years of trading the list holds
+  // hundreds, so History is searchable and paged rather than one endless wall.
+  const [tab, setTab] = useState('live');          // 'live' | 'history'
+  const [q, setQ] = useState('');
+  const [shown, setShown] = useState(25);
   const smsRef = useRef(null);
 
   const call = (action, extra = {}) => supabase.functions.invoke('marketing-campaigns', { body: { action, ops_location_id: locId, ...extra } })
@@ -103,7 +108,10 @@ export default function Campaigns() {
         name: c.name.trim(), description: c.description || null, type: c.type, channel: c.channel,
         segment_id: c.segment_id || null, exclusion_segment_id: c.exclusion_segment_id || null, schedule: c.schedule || {},
         offer_id: c.offer_id || null,
-        trigger: c.trigger || {}, subject: c.subject || null, from_name: c.from_name || null,
+        // v5.5.946: a one-off NEVER persists a trigger. A leftover automation trigger on a
+        // one_off row (from a preset or a type switch) used to intersect the audience down
+        // to ~nobody at send time — the "sent to my segment, nobody received it" bug.
+        trigger: c.type === 'one_off' ? {} : (c.trigger || {}), subject: c.subject || null, from_name: c.from_name || null,
         // Compile blocks → responsive HTML (what the engine sends); keep blocks for re-editing.
         email_blocks: blocks, email_html: blocks.length ? compileEmail(blocks) : null,
         sms_body: c.sms_body || null,
@@ -120,6 +128,10 @@ export default function Campaigns() {
   };
 
   const setStatus = async (c, status) => { try { await call('set_status', { id: c.id, status }); await load(); } catch (e) { alert(e.message); } };
+  const endCampaign = async (c) => {
+    if (!window.confirm(`End "${c.name}"? It stops sending and moves to History (runs and codes stay viewable).`)) return;
+    await setStatus(c, 'archived');
+  };
   const del = async (c) => { if (!window.confirm(`Delete campaign "${c.name}"?`)) return; try { await call('delete_campaign', { id: c.id }); await load(); } catch (e) { alert(e.message); } };
 
   const runNow = async (c) => {
@@ -170,6 +182,36 @@ export default function Campaigns() {
   const t = editing?.trigger || {};
   const setTrigger = (patch) => setEditing((e) => ({ ...e, trigger: { ...e.trigger, ...patch } }));
 
+  const renderCampaignRow = (c) => {
+    const rm = runMsg[c.id] || {};
+    const ended = c.status === 'archived';
+    return (
+      <div key={c.id} style={S.row}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--t1)' }}>{c.name} <span style={{ ...S.pill, marginLeft: 6, color: STATUS_COLOR[c.status] || 'var(--t2)' }}>{ended ? 'ended' : c.status}</span></div>
+          <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>
+            {c.type === 'automation'
+              ? `Automation · ${c.trigger?.type || '—'}${c.trigger?.type === 'birthday' ? ` (${c.trigger.days_before ?? 7}d before)` : c.trigger?.type === 'lapsed' ? ` (${c.trigger.days ?? 30}d)` : c.trigger?.type === 'recurring' ? ` (${c.trigger.recurrence || 'weekly'})` : ''}`
+              : c.schedule?.send_at ? `Scheduled · ${new Date(c.schedule.send_at).toLocaleString('en-GB')}` : 'One-off'} · {c.channel}{c.offer_id ? ' · offer ✓' : ''}{c.exclusion_segment_id ? ' · excl ✓' : ''}{c.last_run_at ? ` · last run ${new Date(c.last_run_at).toLocaleDateString('en-GB')}` : ''}
+          </div>
+          {rm.summary && rm.summary.candidates > 0 && <div style={{ ...S.ok, marginTop: 6 }}>Ran: {rm.summary.candidates} matched · {rm.summary.sent} sent · {rm.summary.skipped} skipped{rm.summary.failed ? ` · ${rm.summary.failed} failed` : ''}</div>}
+          {/* v5.5.946: a zero-recipient run is a LOUD outcome, not a quiet "done". */}
+          {rm.summary && rm.summary.candidates === 0 && <div style={{ ...S.err, marginTop: 6 }}>Nobody was messaged — {rm.summary.error || 'no recipients matched the audience at send time.'}</div>}
+          {rm.err && <div style={S.err}>{rm.err}</div>}
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          {!ended && <button style={S.ghost} onClick={() => runNow(c)} disabled={rm.busy}>{rm.busy ? 'Running…' : 'Run now'}</button>}
+          {!ended && c.status !== 'active' && <button style={S.ghost} onClick={() => setStatus(c, 'active')}>Activate</button>}
+          {!ended && c.status === 'active' && <button style={S.ghost} onClick={() => setStatus(c, 'paused')}>Pause</button>}
+          <button style={S.ghost} onClick={() => viewRuns(c)}>Runs</button>
+          {!ended && <button style={S.ghost} onClick={() => { setEditing({ ...BLANK(), ...c, segment_id: c.segment_id || '', exclusion_segment_id: c.exclusion_segment_id || '', schedule: c.schedule || {}, offer_id: c.offer_id || '', trigger: c.trigger || { type: 'birthday', days_before: 7 }, email_blocks: ensureBlocks(c), variants: Array.isArray(c.variants) ? c.variants : [] }); setSave({}); }}>Edit</button>}
+          {!ended && <button style={{ ...S.ghost, color: 'var(--red)' }} onClick={() => endCampaign(c)}>End</button>}
+          {ended && <button style={S.ghost} onClick={() => setStatus(c, 'paused')}>Restore</button>}
+        </div>
+      </div>
+    );
+  };
+
   if (loading) return <div style={S.empty}>Loading…</div>;
   if (!supabase || !locId) return <div style={S.empty}>Pick a location to manage campaigns.</div>;
 
@@ -181,38 +223,39 @@ export default function Campaigns() {
       {/* List */}
       {!editing && !runsView && (
         <div style={S.card}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
-            <h2 style={{ ...S.h2, margin: 0 }}>Your campaigns</h2>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4, gap: 10, flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              {[['live', 'Live'], ['history', 'History']].map(([k, l]) => {
+                const n = campaigns.filter((c) => (k === 'history') === (c.status === 'archived')).length;
+                return (
+                  <button key={k} onClick={() => { setTab(k); setShown(25); }}
+                    style={{ ...S.ghost, fontWeight: tab === k ? 800 : 500, color: tab === k ? 'var(--acc)' : 'var(--t3)', borderColor: tab === k ? 'var(--acc-b)' : 'var(--bdr)' }}>
+                    {l} {n > 0 && <span style={{ opacity: .7 }}>({n})</span>}
+                  </button>
+                );
+              })}
+              <input style={{ ...S.input, width: 180, marginLeft: 6 }} placeholder="Search campaigns…" value={q} onChange={(e) => { setQ(e.target.value); setShown(25); }} />
+            </div>
             <div style={{ display: 'flex', gap: 8 }}>
               <button style={S.ghost} onClick={() => { setEditing(BIRTHDAY_PRESET()); setSave({}); }}>🎂 Birthday preset</button>
               <button style={S.btn} onClick={() => { setEditing(BLANK()); setSave({}); }}>+ New campaign</button>
             </div>
           </div>
           {campaigns.length === 0 && <div style={{ ...S.hint, padding: '14px 0' }}>No campaigns yet. Start with the Birthday preset.</div>}
-          {campaigns.map((c) => {
-            const rm = runMsg[c.id] || {};
-            return (
-              <div key={c.id} style={S.row}>
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--t1)' }}>{c.name} <span style={{ ...S.pill, marginLeft: 6, color: STATUS_COLOR[c.status] || 'var(--t2)' }}>{c.status}</span></div>
-                  <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>
-                    {c.type === 'automation'
-                      ? `Automation · ${c.trigger?.type || '—'}${c.trigger?.type === 'birthday' ? ` (${c.trigger.days_before ?? 7}d before)` : c.trigger?.type === 'lapsed' ? ` (${c.trigger.days ?? 30}d)` : c.trigger?.type === 'recurring' ? ` (${c.trigger.recurrence || 'weekly'})` : ''}`
-                      : c.schedule?.send_at ? `Scheduled · ${new Date(c.schedule.send_at).toLocaleString('en-GB')}` : 'One-off'} · {c.channel}{c.offer_id ? ' · offer ✓' : ''}{c.exclusion_segment_id ? ' · excl ✓' : ''}{c.last_run_at ? ` · last run ${new Date(c.last_run_at).toLocaleDateString('en-GB')}` : ''}
-                  </div>
-                  {rm.summary && <div style={{ ...S.ok, marginTop: 6 }}>Ran: {rm.summary.candidates} matched · {rm.summary.sent} sent · {rm.summary.skipped} skipped{rm.summary.failed ? ` · ${rm.summary.failed} failed` : ''}</div>}
-                  {rm.err && <div style={S.err}>{rm.err}</div>}
+          {(() => {
+            const list = campaigns
+              .filter((c) => (tab === 'history') === (c.status === 'archived'))
+              .filter((c) => !q.trim() || (c.name || '').toLowerCase().includes(q.trim().toLowerCase()));
+            if (campaigns.length && !list.length) return <div style={{ ...S.hint, padding: '14px 0' }}>{tab === 'history' ? 'Nothing in History yet — End a campaign to move it here.' : 'No live campaigns match.'}</div>;
+            return <>
+              {list.slice(0, shown).map((c) => renderCampaignRow(c))}
+              {list.length > shown && (
+                <div style={{ textAlign: 'center', padding: '10px 0' }}>
+                  <button style={S.ghost} onClick={() => setShown((s) => s + 50)}>Show more ({list.length - shown} more)</button>
                 </div>
-                <div style={{ display: 'flex', gap: 8, flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                  <button style={S.ghost} onClick={() => runNow(c)} disabled={rm.busy}>{rm.busy ? 'Running…' : 'Run now'}</button>
-                  {c.status !== 'active' && <button style={S.ghost} onClick={() => setStatus(c, 'active')}>Activate</button>}
-                  {c.status === 'active' && <button style={S.ghost} onClick={() => setStatus(c, 'paused')}>Pause</button>}
-                  <button style={S.ghost} onClick={() => viewRuns(c)}>Runs</button>
-                  <button style={S.ghost} onClick={() => { setEditing({ ...BLANK(), ...c, segment_id: c.segment_id || '', exclusion_segment_id: c.exclusion_segment_id || '', schedule: c.schedule || {}, offer_id: c.offer_id || '', trigger: c.trigger || { type: 'birthday', days_before: 7 }, email_blocks: ensureBlocks(c), variants: Array.isArray(c.variants) ? c.variants : [] }); setSave({}); }}>Edit</button>
-                </div>
-              </div>
-            );
-          })}
+              )}
+            </>;
+          })()}
           {save.done && <div style={{ ...S.ok, marginTop: 10 }}>✓ Saved</div>}
         </div>
       )}

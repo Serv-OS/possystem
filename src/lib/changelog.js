@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.946', date: '30 Jul 2026', label: 'Marketing: why your campaign sent to nobody + codes ledger + End/History + opens tracking',
+    changes: [
+      'WHY YOUR SEND REACHED NOBODY: the campaign carried an invisible leftover birthday trigger, so the audience was "your segment AND birthday in exactly 7 days" = nobody. One-off campaigns now ignore triggers entirely (server), never save one (editor), and a zero-recipient run says so in red on the campaign row instead of a quiet "done". Your campaign\'s stray trigger has been cleared — Run now will reach the segment.',
+      'ONE CODE PER PERSON already works: attach an offer to a campaign and every recipient gets their own single-use code (re-sends reuse the same code — no leaks). New in Marketing report: a PROMO CODES ledger — still-to-use vs used counts, every code with who it went to (name + email/phone), campaign, offer, redeemed date/value; filter by status or campaign; CSV export.',
+      'Personal codes are now REDEEMABLE at the till: presenting the code counts as identity (it went to that person\'s own inbox), so staff no longer need to attach the exact customer first. A different attached customer is still refused, and redemptions record the code owner for reports.',
+      'END + HISTORY: campaigns get an End button and a History tab (searchable, paged) so ten years of campaigns stay tidy. Ended campaigns keep their runs and codes viewable; Restore brings one back.',
+      'OPENS/CLICKS NOW TRACKED: the email provider\'s event webhook was never registered — zero delivered/opened events had ever arrived. Tracking is now enabled on serv-os.app and the webhook is registered (done live, no action needed). Applies from the NEXT email sent; also fixed marketing consent recorded as "both channels" never being recognised.',
+      'TEST: Campaigns → your "Havent seen you in while" → Run now → banner shows matched/sent counts (should be ~2, incl. you). Check your inbox, open the email, wait ~a minute → Marketing report shows the open. Marketing report → Promo codes shows your code and marks it used after you redeem it on the POS.',
+    ],
+  },
+  {
     version: '5.5.945', date: '29 Jul 2026', label: 'Item sales trend — variants named properly (Latte — Large, not "Large")',
     changes: [
       'The Item sales trend report resolved each sold line back to its menu item for rename-stable grouping — but a variant\'s own menu name is just "Large" or "Double", so variant sales showed as bare "Large"/"Small" rows disconnected from their product. Variants now display parent-qualified: Latte — Large, Espresso — Double, one row per variant.',

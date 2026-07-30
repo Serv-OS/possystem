@@ -188,9 +188,16 @@ export async function runCampaign(sb: SB, campaign: any, opts: RunOpts): Promise
 
   try {
     // 2. Resolve candidates: trigger rule ∩ optional segment.
+    //
+    // v5.5.946: a ONE-OFF campaign's audience is its segment, full stop. The campaign
+    // editor used to persist a leftover automation trigger (e.g. birthday days_before:7)
+    // on one_off rows, and the intersection silently shrank the audience to ~zero — the
+    // live "sent to my segment, nobody got it" case ran 'done' with candidates:0 and no
+    // explanation. Trigger rules only mean something on automations.
     let ids: string[];
-    if (rule) {
-      ids = await resolveIds(sb, org, rule);
+    const effectiveRule = campaign.type === 'one_off' ? null : rule;
+    if (effectiveRule) {
+      ids = await resolveIds(sb, org, effectiveRule);
       if (campaign.segment_id) {
         const { data: seg } = await sb.from('segments').select('definition').eq('id', campaign.segment_id).eq('org_id', org).maybeSingle();
         // If the segment was deleted, do NOT zero the audience — fall back to the trigger matches.
@@ -292,7 +299,13 @@ export async function runCampaign(sb: SB, campaign: any, opts: RunOpts): Promise
     });
 
     summary.status = 'done';
-    await sb.from('campaign_runs').update({ status: 'done', candidates: summary.candidates, sent: summary.sent, skipped: summary.skipped, failed: summary.failed, finished_at: new Date().toISOString() }).eq('id', runId);
+    // v5.5.946: a zero-recipient run must SAY SO — 'done, 0' with no explanation is how
+    // the birthday-trigger audience kill went unnoticed. The note rides in run.error
+    // (nullable text) without changing status semantics.
+    if (summary.candidates === 0) {
+      summary.error = 'No recipients matched at send time — check the audience segment, and that members have contact details + marketing consent.';
+    }
+    await sb.from('campaign_runs').update({ status: 'done', candidates: summary.candidates, sent: summary.sent, skipped: summary.skipped, failed: summary.failed, error: summary.error ?? null, finished_at: new Date().toISOString() }).eq('id', runId);
     await sb.from('campaigns').update({ last_run_at: new Date().toISOString() }).eq('id', campaign.id);
   } catch (e) {
     summary.status = 'error'; summary.error = String(e instanceof Error ? e.message : e);

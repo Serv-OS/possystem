@@ -83,8 +83,11 @@ function normAddr(channel: string, addr: string): string {
 
 async function hasConsent(customerId: string | null, channel: string, org_id: string): Promise<boolean> {
   if (!customerId) return false;
+  // v5.5.946: consent rows are written with channel 'both' by WiFi capture (and it is
+  // the column default) — the exact-channel match silently never saw them, so genuinely
+  // opted-in customers fell through to the legacy flag and could drop as no_consent.
   const { data: rows } = await opsAdmin.from('customer_consents')
-    .select('purpose, consented, created_at').eq('customer_id', customerId).eq('channel', channel)
+    .select('purpose, consented, created_at').eq('customer_id', customerId).in('channel', [channel, 'both'])
     .order('created_at', { ascending: false }).limit(20);
   if (rows && rows.length) {
     const marketing = rows.find((r: any) => /market/i.test(r.purpose || ''));

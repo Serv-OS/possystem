@@ -34,7 +34,13 @@ async function evaluate(codeStr: string, locationId: string, customerId: string 
   if (row.expires_at && new Date(row.expires_at).getTime() < Date.now()) return { reason: 'expired' as const, row };
   if ((row.uses_count ?? 0) >= (row.uses_allowed ?? 1)) return { reason: 'already_used' as const, row };
   if (row.customer_id && customerId && row.customer_id !== customerId) return { reason: 'customer_mismatch' as const, row };
-  if (row.customer_id && !customerId) return { reason: 'customer_required' as const, row };
+  // v5.5.946: a code minted FOR a customer used to demand the till attach that exact
+  // customer first ('customer_required') — which made every campaign-issued personal
+  // code unredeemable at the counter, and for online/kiosk guests who weren't signed
+  // into loyalty. Presenting the code IS the identity evidence (it was delivered to
+  // that person's own inbox/phone), so adopt the code's owner as the redemption
+  // customer instead of refusing. A DIFFERENT attached customer is still refused above.
+  const effectiveCustomerId = customerId || row.customer_id || null;
 
   const { data: offer } = await opsAdmin.from('offers').select('*').eq('id', row.offer_id).maybeSingle();
   if (!offer) return { reason: 'not_found' as const, row };
@@ -47,14 +53,14 @@ async function evaluate(codeStr: string, locationId: string, customerId: string 
   if (offer.min_spend != null && Number(subtotal) < Number(offer.min_spend)) return { reason: 'min_spend' as const, row, offer, min_spend: Number(offer.min_spend) };
 
   // per-customer limit across the offer (shared codes): count this customer's prior redemptions.
-  if (customerId && (offer.per_customer_limit ?? 0) > 0) {
+  if (effectiveCustomerId && (offer.per_customer_limit ?? 0) > 0) {
     const { count } = await opsAdmin.from('promo_redemptions').select('id', { count: 'exact', head: true })
-      .eq('offer_id', offer.id).eq('customer_id', customerId);
+      .eq('offer_id', offer.id).eq('customer_id', effectiveCustomerId);
     if ((count ?? 0) >= offer.per_customer_limit) return { reason: 'usage_limit' as const, row, offer };
   }
 
   const discount = computeDiscount(offer, Number(subtotal) || 0);
-  return { row, offer, discount };
+  return { row, offer, discount, effectiveCustomerId };
 }
 
 Deno.serve(async (req) => {
@@ -86,6 +92,8 @@ Deno.serve(async (req) => {
     const ev = await evaluate(body?.code, locationId, customerId, subtotal);
     if ('reason' in ev) return json({ ok: false, redeemed: false, reason: ev.reason });
     const { row, offer, discount } = ev;
+    // Attribution: prefer the adopted owner (personal codes) over the till's null.
+    const redemptionCustomerId = (ev as any).effectiveCustomerId ?? customerId;
 
     // RACE-SAFE compare-and-swap: only succeeds if uses_count is still what we read.
     const newCount = (row.uses_count ?? 0) + 1;
@@ -106,7 +114,7 @@ Deno.serve(async (req) => {
     // Append-only ledger (idempotency_key unique). If a concurrent winner already inserted, ignore.
     await opsAdmin.from('promo_redemptions').insert({
       promo_code_id: row.id, offer_id: offer.id, org_id: row.org_id, code: row.code,
-      customer_id: customerId, location_id: locationId, order_id: orderId, staff_id: staffId,
+      customer_id: redemptionCustomerId, location_id: locationId, order_id: orderId, staff_id: staffId,
       basket_value: subtotal, discount_value: discount.amount ?? 0, idempotency_key: idemKey,
     }).then(() => {}, () => {});
     // Best-effort offer counter.

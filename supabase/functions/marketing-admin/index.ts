@@ -123,5 +123,100 @@ Deno.serve(async (req) => {
     return json({ issued, redeemed, redemption_rate: issued ? redeemed / issued : 0, discount_value: value });
   }
 
+  // ── v5.5.946: codes report — used / left / who each code went to ─────────────
+  // Per-code rows joined to customers + campaigns, filterable by offer/campaign/status,
+  // paged. This is the org's code ledger; the UI (Marketing report → Codes) renders it.
+  if (action === 'codes_report') {
+    const offerId = String(body.offer_id ?? '').trim();
+    const campaignId = String(body.campaign_id ?? '').trim();
+    const status = String(body.status ?? '').trim();          // issued | redeemed | voided | expired
+    const limit = Math.min(Number(body.limit) || 200, 500);
+    const offset = Math.max(Number(body.offset) || 0, 0);
+
+    let q = opsAdmin.from('promo_codes')
+      .select('id, code, status, uses_allowed, uses_count, issued_at, expires_at, redeemed_at, redeemed_value, redeemed_location_id, customer_id, campaign_id, offer_id', { count: 'exact' })
+      .eq('org_id', org_id)
+      .order('issued_at', { ascending: false })
+      .range(offset, offset + limit - 1);
+    if (offerId) q = q.eq('offer_id', offerId);
+    if (campaignId) q = q.eq('campaign_id', campaignId);
+    if (status) q = q.eq('status', status);
+    const { data: codes, error, count } = await q;
+    if (error) return json({ error: error.message }, 500);
+
+    // Resolve names in bulk — never per-row.
+    const custIds = [...new Set((codes ?? []).map((c: any) => c.customer_id).filter(Boolean))];
+    const campIds = [...new Set((codes ?? []).map((c: any) => c.campaign_id).filter(Boolean))];
+    const offerIds = [...new Set((codes ?? []).map((c: any) => c.offer_id).filter(Boolean))];
+    const [custs, camps, offs] = await Promise.all([
+      custIds.length ? opsAdmin.from('customers').select('id, name, first_name, last_name, email, phone').in('id', custIds) : Promise.resolve({ data: [] }),
+      campIds.length ? opsAdmin.from('campaigns').select('id, name').in('id', campIds) : Promise.resolve({ data: [] }),
+      offerIds.length ? opsAdmin.from('offers').select('id, name, reward_label').in('id', offerIds) : Promise.resolve({ data: [] }),
+    ]);
+    const custBy = Object.fromEntries((custs.data ?? []).map((c: any) => [c.id, c]));
+    const campBy = Object.fromEntries((camps.data ?? []).map((c: any) => [c.id, c.name]));
+    const offBy = Object.fromEntries((offs.data ?? []).map((o: any) => [o.id, o]));
+
+    const rows = (codes ?? []).map((c: any) => {
+      const cu = c.customer_id ? custBy[c.customer_id] : null;
+      return {
+        ...c,
+        customer_name: cu ? (cu.name || [cu.first_name, cu.last_name].filter(Boolean).join(' ') || null) : null,
+        customer_email: cu?.email ?? null,
+        customer_phone: cu?.phone ?? null,
+        campaign_name: c.campaign_id ? (campBy[c.campaign_id] ?? null) : null,
+        offer_name: c.offer_id ? (offBy[c.offer_id]?.name ?? null) : null,
+        offer_reward: c.offer_id ? (offBy[c.offer_id]?.reward_label ?? null) : null,
+      };
+    });
+
+    // Rollup for the header tiles (same filters, no paging).
+    let rq = opsAdmin.from('promo_codes').select('status', { count: 'exact', head: false }).eq('org_id', org_id).limit(10000);
+    if (offerId) rq = rq.eq('offer_id', offerId);
+    if (campaignId) rq = rq.eq('campaign_id', campaignId);
+    const { data: allStatuses } = await rq;
+    const tally: Record<string, number> = {};
+    for (const r of (allStatuses ?? [])) tally[r.status] = (tally[r.status] || 0) + 1;
+
+    return json({ ok: true, rows, total: count ?? rows.length, tally });
+  }
+
+  // ── v5.5.946: one-time Resend wiring — open/click tracking + event webhook ───
+  // 6 emails had been sent with ZERO delivered/opened events: the webhook endpoint was
+  // never registered with Resend. This action does the whole job with the key the
+  // function already holds: enables tracking on every domain, then creates the webhook
+  // pointing at marketing-webhook (idempotent — skips if one already points there).
+  if (action === 'resend_webhook_setup') {
+    const key = Deno.env.get('RESEND_API_KEY') ?? '';
+    if (!key) return json({ error: 'RESEND_API_KEY not configured' }, 400);
+    const hookSecret = Deno.env.get('MARKETING_WEBHOOK_SECRET') || '';
+    const endpoint = `${Deno.env.get('SUPABASE_URL')}/functions/v1/marketing-webhook?provider=resend${hookSecret ? `&key=${encodeURIComponent(hookSecret)}` : ''}`;
+    const H = { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' };
+
+    const domRes = await fetch('https://api.resend.com/domains', { headers: H });
+    const doms = await domRes.json().catch(() => null);
+    const tracked: string[] = [];
+    for (const d of (doms?.data ?? [])) {
+      const r = await fetch(`https://api.resend.com/domains/${d.id}`, {
+        method: 'PATCH', headers: H,
+        body: JSON.stringify({ open_tracking: true, click_tracking: true }),
+      });
+      if (r.ok) tracked.push(d.name);
+    }
+
+    const hooksRes = await fetch('https://api.resend.com/webhooks', { headers: H });
+    const hooks = await hooksRes.json().catch(() => null);
+    const existing = (hooks?.data ?? []).find((w: any) => String(w.endpoint || '').includes('/marketing-webhook'));
+    if (existing) return json({ ok: true, already: true, webhook_id: existing.id, tracked, endpoint: existing.endpoint });
+
+    const createRes = await fetch('https://api.resend.com/webhooks', {
+      method: 'POST', headers: H,
+      body: JSON.stringify({ endpoint, events: ['email.delivered', 'email.opened', 'email.clicked', 'email.bounced', 'email.complained'] }),
+    });
+    const created = await createRes.json().catch(() => null);
+    if (!createRes.ok) return json({ error: `webhook create failed: ${JSON.stringify(created)}` }, 502);
+    return json({ ok: true, webhook_id: created?.id ?? null, tracked, endpoint });
+  }
+
   return json({ error: 'unknown action' }, 400);
 });

@@ -50,7 +50,9 @@ Deno.serve(async (req) => {
 
   if (action === 'list_campaigns') {
     const [{ data: campaigns }, { data: segments }, { data: offers }] = await Promise.all([
-      sb.from('campaigns').select('*').eq('org_id', org_id).eq('ephemeral', false).order('created_at', { ascending: false }),
+      // v5.5.946: bounded — years of trading accumulate hundreds of campaigns; the UI
+      // splits Live/History and pages client-side, but the wire payload stays sane.
+      sb.from('campaigns').select('*').eq('org_id', org_id).eq('ephemeral', false).order('created_at', { ascending: false }).limit(500),
       sb.from('segments').select('id, name').eq('org_id', org_id).order('name'),
       sb.from('offers').select('id, name, reward_type, reward_value, reward_label').eq('org_id', org_id).eq('active', true).order('name'),
     ]);
