@@ -54,6 +54,27 @@ export default function OnlineOrdering({ setSection }) {
   const [menuId, setMenuId]   = useState('');
   const [leadMin, setLeadMin] = useState(30);
   const [deliveryOn, setDeliveryOn] = useState(false);
+  // v5.5.959: the Gift cards / Loyalty pills were hardcoded enabled={true} — a fresh
+  // venue with both OFF showed both ON. Read the REAL company-level flags; absent
+  // config = OFF (the honest default for an unconfigured venue).
+  const [giftOn, setGiftOn]       = useState(false);
+  const [loyaltyOn, setLoyaltyOn] = useState(false);
+  useEffect(() => {
+    if (!row?.company_id || !platformSupabase) return;
+    let alive = true;
+    (async () => {
+      try {
+        const [g, l] = await Promise.all([
+          platformSupabase.from('gift_brand_config').select('enabled').eq('company_id', row.company_id).maybeSingle(),
+          platformSupabase.from('loyalty_config').select('enabled').eq('company_id', row.company_id).maybeSingle(),
+        ]);
+        if (!alive) return;
+        setGiftOn(!!g?.data?.enabled);
+        setLoyaltyOn(!!l?.data?.enabled);
+      } catch { /* pills stay OFF — never claim a feature is live on a read failure */ }
+    })();
+    return () => { alive = false; };
+  }, [row?.company_id]);
   // v5.5.147: QR ordering settings + table list for QR-code generator
   const [qrPaymentMode, setQrPaymentMode] = useState('pay_now');   // 'pay_now' | 'open_tab' | 'both'
   const [qrTableMode,   setQrTableMode]   = useState('confirm');    // 'fixed' | 'confirm' | 'free'
@@ -317,8 +338,8 @@ export default function OnlineOrdering({ setSection }) {
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(280px, 1fr))', gap:12, marginBottom:24 }}>
         <StatusPill title="🌐 Online" enabled={row.online_enabled} url={onlineUrl} preview={previewOnline}/>
         <StatusPill title="📱 QR table-side" enabled={row.qr_enabled} url={qrUrl} preview={previewQr}/>
-        <StatusPill title="🎁 Gift cards" enabled={true} url={giftUrl} preview={previewGift}/>
-        <StatusPill title="⭐ Loyalty portal" enabled={true} url={portalUrl} preview={previewPortal}/>
+        <StatusPill title="🎁 Gift cards" enabled={giftOn} url={giftUrl} preview={previewGift}/>
+        <StatusPill title="⭐ Loyalty portal" enabled={loyaltyOn} url={portalUrl} preview={previewPortal}/>
       </div>
 
       {/* Multi-site group ordering link — one link for the whole group */}

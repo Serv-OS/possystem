@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.959', date: '30 Jul 2026', label: 'Online ordering screen: Gift cards / Loyalty badges now tell the truth',
+    changes: [
+      'The Gift cards and Loyalty portal badges on Channels → Online ordering were hardcoded to ON — a fresh venue with both switched off still showed them live. They now read the real company settings (the same flags the Gift cards and Loyalty screens toggle), and an unconfigured venue honestly shows OFF.',
+      'TEST: Birmingham → Channels → Online ordering → all four badges show OFF. Provo shows Gift cards/Loyalty ON (they are genuinely enabled there).',
+    ],
+  },
+  {
     version: '5.5.958', date: '30 Jul 2026', label: 'No menu at the venue? One gets created for you — loudly',
     changes: [
       'If a venue has no menu yet, importing a menu or adding a category used to quietly create menu-less categories. Both paths now auto-create a "Main menu", attach everything to it, and tell you with a toast: "This venue had no menu — created Main menu". You can rename it in menu settings.',
