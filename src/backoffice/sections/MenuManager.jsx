@@ -492,8 +492,15 @@ function MenuTab() {
     // the global counter minted sortOrders that collided across levels and left ties.
     const _sibs = menuCategories.filter(c => (c.parentId||null) === (catForm.parentId||null));
     // v5.5.955: NEVER stamp a menu id that isn't a real menu (the phantom 'menu-1'
-    // race). A null menuId is legal — the category then shows on every menu.
-    const _menuId = (menus||[]).some(m=>m.id===selMenuId) ? selMenuId : ((menus||[])[0]?.id || null);
+    // race). v5.5.958: and if the venue has NO menu at all, create "Main menu"
+    // loudly rather than minting menu-less categories — the serialised write chain
+    // lands the menu row before the category (FK-safe).
+    let _menuId = (menus||[]).some(m=>m.id===selMenuId) ? selMenuId : ((menus||[])[0]?.id || null);
+    if (!_menuId) {
+      const created = addMenu({ name: 'Main menu', isActive: true, isDefault: true });
+      _menuId = created?.id || null;
+      if (_menuId) { setSelMenuId(_menuId); showToast('This venue had no menu — created "Main menu" for you', 'success'); }
+    }
     addCategory({ menuId:_menuId, ...catForm, parentId:catForm.parentId||null, sortOrder: _sibs.length ? Math.max(..._sibs.map(c=>c.sortOrder||0)) + 1 : 0 });
     markBOChange(); showToast(`"${catForm.label}" added`,'success');
     setCatForm({label:'',icon:'🍽',color:'#3b82f6',parentId:''}); setAddingCat(false);

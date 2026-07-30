@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.958', date: '30 Jul 2026', label: 'No menu at the venue? One gets created for you — loudly',
+    changes: [
+      'If a venue has no menu yet, importing a menu or adding a category used to quietly create menu-less categories. Both paths now auto-create a "Main menu", attach everything to it, and tell you with a toast: "This venue had no menu — created Main menu". You can rename it in menu settings.',
+      'The save ordering guarantees the menu lands in the database before its first category, so this can never trip the foreign-key guard.',
+      'TEST: on a brand-new venue with no menus, run a menu import (or add a category) → toast appears, everything sits under "Main menu", survives refresh.',
+    ],
+  },
+  {
     version: '5.5.957', date: '30 Jul 2026', label: 'Location switcher shows organisations + menu import attaches to a real menu',
     changes: [
       'The location switcher now groups your venues by ORGANISATION with the org name as a header (Wing Fest, POSUP Test, …) and explains the rule: item sharing and roll-up reports work between locations in the SAME organisation. No more guessing why a share didn\'t appear somewhere.',

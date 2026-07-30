@@ -618,6 +618,7 @@ export const useStore = create((set, get) => ({
     const newMenu = { id:`menu-${Date.now()}`, ...menu };
     set(s => ({ menus: [...s.menus, newMenu] }));
     sbUpsertMenu(newMenu);
+    return newMenu;   // v5.5.958: callers auto-creating a first menu need the id
   },
   updateMenu: (id, patch) => {
     set(s => ({ menus: s.menus.map(m => m.id===id ? { ...m, ...patch } : m) }));

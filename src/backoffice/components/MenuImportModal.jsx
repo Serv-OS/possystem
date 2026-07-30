@@ -151,7 +151,15 @@ export default function MenuImportModal({ menuId, onClose }) {
       // menus?.[0]?.id captured by the parent — undefined when the venue's menus
       // hadn't loaded (or didn't exist yet) at mount. Birmingham's 25 imported
       // categories all landed with menu_id NULL because of exactly that.
-      const targetMenuId = menuId || useStore.getState().menus?.[0]?.id || undefined;
+      let targetMenuId = menuId || useStore.getState().menus?.[0]?.id || undefined;
+      // v5.5.958: a venue with NO menu gets one created for the import, loudly —
+      // never a tree of menu-less categories again. The serialised write chain
+      // guarantees the menu row lands before the first category (FK-safe).
+      if (!targetMenuId) {
+        const created = useStore.getState().addMenu({ name: 'Main menu', isActive: true, isDefault: true });
+        targetMenuId = created?.id;
+        showToast('This venue had no menu — created "Main menu" and attached the import to it', 'success');
+      }
 
       // 1) Create categories with pre-assigned IDs (or reuse existing if user picked one)
       const catIdMap = {};
