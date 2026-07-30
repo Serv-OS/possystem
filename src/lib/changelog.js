@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.957', date: '30 Jul 2026', label: 'Location switcher shows organisations + menu import attaches to a real menu',
+    changes: [
+      'The location switcher now groups your venues by ORGANISATION with the org name as a header (Wing Fest, POSUP Test, …) and explains the rule: item sharing and roll-up reports work between locations in the SAME organisation. No more guessing why a share didn\'t appear somewhere.',
+      'Menu import: categories are now attached to the venue\'s menu resolved at import time — Birmingham\'s 25 imported categories had landed with no menu because the menu list hadn\'t loaded when the screen opened. Those 25 have been repaired live (all attached to your POS menu); no re-import needed, no data lost.',
+      'TEST: open the location switcher → venues grouped under org headers with the sharing note at the bottom. Birmingham → Menu manager → categories all show under the POS menu.',
+    ],
+  },
+  {
     version: '5.5.956', date: '30 Jul 2026', label: 'Category drag: drop below the list works, nothing snaps back silently',
     changes: [
       'Dragging a category to the bottom (or into any gap between rows) landed on dead space with no drop handler — the browser cancelled the drag and the row snapped home. The whole list is now a drop zone: anywhere that isn\'t a row means "send to the end of its level".',

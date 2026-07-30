@@ -147,6 +147,12 @@ export default function MenuImportModal({ menuId, onClose }) {
       const genCatId  = () => `cat-${batch}-${(cCounter++).toString(36)}`;
       const genItemId = () => `m-${batch}-${(iCounter++).toString(36)}`;
 
+      // v5.5.957: resolve the target menu AT COMMIT TIME. The menuId prop is
+      // menus?.[0]?.id captured by the parent — undefined when the venue's menus
+      // hadn't loaded (or didn't exist yet) at mount. Birmingham's 25 imported
+      // categories all landed with menu_id NULL because of exactly that.
+      const targetMenuId = menuId || useStore.getState().menus?.[0]?.id || undefined;
+
       // 1) Create categories with pre-assigned IDs (or reuse existing if user picked one)
       const catIdMap = {};
       for (let i = 0; i < draft.categories.length; i++) {
@@ -163,7 +169,7 @@ export default function MenuImportModal({ menuId, onClose }) {
           label: c.label,
           icon: c.icon || '🍽',
           color: '#3b82f6',
-          menuId: menuId || undefined,
+          menuId: targetMenuId,
           sortOrder: c.sortOrder ?? i,
         });
       }

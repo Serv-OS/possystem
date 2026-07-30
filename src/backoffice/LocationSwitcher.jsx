@@ -83,10 +83,33 @@ export default function LocationSwitcher({ onClose }) {
           role: l.role,
         }));
         if (locs.length > 0) {
-          setItems([{
-            company: { id: 'mine', name: locs.length > 1 ? 'Your locations' : 'Your location' },
-            locations: locs,
-          }]);
+          // v5.5.957: GROUP BY ORGANISATION. A flat "Your locations" list hid the
+          // tenant walls — Peter shared an item from Birmingham (Wing Fest) and
+          // expected it at venues that are different organisations. The org is the
+          // sharing/reporting boundary, so the switcher now says so.
+          try {
+            const ids = locs.map(l => l.id);
+            const { data: locOrgs } = await supabase.from('locations').select('id, org_id').in('id', ids);
+            const orgIds = [...new Set((locOrgs || []).map(r => r.org_id).filter(Boolean))];
+            const { data: orgs } = orgIds.length
+              ? await supabase.from('organisations').select('id, name').in('id', orgIds)
+              : { data: [] };
+            const orgOf = Object.fromEntries((locOrgs || []).map(r => [String(r.id), r.org_id]));
+            const orgName = Object.fromEntries((orgs || []).map(o => [o.id, o.name]));
+            const groups = new Map();
+            for (const l of locs) {
+              const oid = orgOf[String(l.id)] || 'none';
+              if (!groups.has(oid)) groups.set(oid, []);
+              groups.get(oid).push(l);
+            }
+            setItems([...groups.entries()].map(([oid, ls]) => ({
+              company: { id: oid, name: oid === 'none' ? 'No organisation' : (orgName[oid] || 'Organisation') },
+              locations: ls,
+            })));
+          } catch {
+            // Org lookup is decoration — never block the switcher on it.
+            setItems([{ company: { id: 'mine', name: locs.length > 1 ? 'Your locations' : 'Your location' }, locations: locs }]);
+          }
         }
       }
     } catch(e) { console.error('[LocationSwitcher]', e); }
@@ -137,7 +160,7 @@ export default function LocationSwitcher({ onClose }) {
             <div style={{ textAlign:'center', padding:'32px 0', color:'var(--t4)', fontSize:13 }}>No locations found for your account</div>
           ) : items.map(({ company, locations }) => (
             <div key={company.id} style={{ marginBottom:16 }}>
-              {(isSuperAdmin || items.length > 1) && (
+              {(isSuperAdmin || items.length > 1 || company.id !== 'mine') && (
                 <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:8 }}>
                   <div style={{ fontSize:10, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em' }}>{company.name}</div>
                   {company.plan && <span style={{ fontSize:9, fontWeight:700, padding:'1px 6px', borderRadius:20, background:'var(--acc-d)', color:'var(--acc)', border:'1px solid var(--acc-b)' }}>{company.plan}</span>}
@@ -177,9 +200,13 @@ export default function LocationSwitcher({ onClose }) {
           ))}
         </div>
 
-        {isSuperAdmin && (
+        {isSuperAdmin ? (
           <div style={{ padding:'10px 24px 14px', borderTop:'1px solid var(--bdr)', fontSize:11, color:'var(--t4)', textAlign:'center' }}>
             Super admin — showing all organisations and locations
+          </div>
+        ) : items.length > 1 && (
+          <div style={{ padding:'10px 24px 14px', borderTop:'1px solid var(--bdr)', fontSize:11, color:'var(--t4)', textAlign:'center' }}>
+            Item sharing and roll-up reports work between locations in the <b>same organisation</b>.
           </div>
         )}
       </div>
