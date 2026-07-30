@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.950', date: '30 Jul 2026', label: 'Category drag & drop: lands where you drop it, order never shuffles',
+    changes: [
+      'Two real bugs. (1) Dropping a category inserted it ABOVE the row you dropped on — so dragging downwards landed one slot high, and dragging onto the next row down did nothing. Drops are now direction-aware: drag down → lands after the row you drop on; drag up → before it.',
+      '(2) Several categories shared the same saved position number (old versions numbered them with one global counter), and the database returns tied rows in a random order per load — that is why your order "moved around" after uploads/refreshes. Fixed three ways: your existing categories have been renumbered cleanly (done live, order preserved), every load now has a stable tie-break, and every drop renumbers the whole level 0,1,2… so ties can never come back.',
+      'New categories also get their position within their own level now, not from the global count.',
+      'TEST: hard-refresh Back Office → Menu → drag a category DOWN two slots → it lands exactly where dropped → refresh the page → order unchanged. Upload an item image → order unchanged.',
+    ],
+  },
+  {
     version: '5.5.949', date: '30 Jul 2026', label: '"+ Item" no longer dead-ends on a leftover "New item"',
     changes: [
       'Adding an item always created one literally named "New item" — so if one un-renamed "New item" existed anywhere in the menu, the button just alerted "already exists" with no box to type a name (naming happens after creation in this flow). It now auto-picks a free name: New item, New item 2, New item 3…',

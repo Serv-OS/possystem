@@ -105,7 +105,11 @@ export const fetchMenuCategories = async (locationId = null) => {
   if (isMock) return { data: null, error: null };
   if (!locationId || locationId === 'loc-demo') locationId = await getLocationId();
   if (!locationId || locationId === 'loc-demo') return { data: null, error: new Error('No location') };
-  return supabase.from('menu_categories').select('*').eq('location_id', locationId).order('sort_order');
+  // v5.5.950: deterministic tie-break. sort_order ties (legacy rows created with a
+  // GLOBAL counter, or two siblings renumbered to 0 on different levels) let Postgres
+  // return them in ANY order per query — the category tree visibly shuffled between
+  // loads ("each time I upload the order moves around").
+  return supabase.from('menu_categories').select('*').eq('location_id', locationId).order('sort_order').order('label').order('id');
 };
 
 export const upsertMenuCategory = async (cat, locationId = null) => {

@@ -328,7 +328,8 @@ function MenuTab() {
   const linkedCatIdsForMenu = useMemo(() => {
     return new Set((categoryLinks||[]).filter(l => l.menu_id === selMenuId).map(l => l.category_id));
   }, [categoryLinks, selMenuId]);
-  const roots     = useMemo(()=>menuCategories.filter(c=>!c.parentId&&!c.isSpecial&&(!c.menuId||c.menuId===selMenuId||linkedCatIdsForMenu.has(c.id))).sort((a,b)=>(a.sortOrder||0)-(b.sortOrder||0)),[menuCategories,selMenuId,linkedCatIdsForMenu]);
+  // v5.5.950: label tiebreak — sortOrder ties must never shuffle between renders/loads.
+  const roots     = useMemo(()=>menuCategories.filter(c=>!c.parentId&&!c.isSpecial&&(!c.menuId||c.menuId===selMenuId||linkedCatIdsForMenu.has(c.id))).sort((a,b)=>((a.sortOrder||0)-(b.sortOrder||0)) || String(a.label||'').localeCompare(String(b.label||''))),[menuCategories,selMenuId,linkedCatIdsForMenu]);
   const selCat    = menuCategories.find(c=>c.id===selCatId);
   const selItem   = menuItems.find(i=>i.id===selItemId);
 
@@ -421,11 +422,21 @@ function MenuTab() {
     // (Use the ↕ Move button per category to change parent/nesting)
     if (targetId==='root' || dragged.parentId===target?.parentId) {
       const level = targetId==='root' ? null : dragged.parentId;
-      const siblings = menuCategories.filter(c=>c.parentId===level).sort((a,b)=>(a.sortOrder||0)-(b.sortOrder||0));
+      const siblings = menuCategories.filter(c=>c.parentId===level)
+        .sort((a,b)=>((a.sortOrder||0)-(b.sortOrder||0)) || String(a.label||'').localeCompare(String(b.label||'')));
       const without  = siblings.filter(c=>c.id!==dragCatId);
-      const ti       = targetId==='root' ? without.length : without.findIndex(c=>c.id===targetId);
+      // v5.5.950: DIRECTION-AWARE drop. Insert-before-target meant dragging DOWN landed
+      // one slot above where you dropped — and moving onto the next-door neighbour did
+      // nothing at all ("keeps not letting them go where I want"). Dragging downward now
+      // lands AFTER the row you drop on; upward stays before it.
+      const fromIdx = siblings.findIndex(c=>c.id===dragCatId);
+      const toIdx   = siblings.findIndex(c=>c.id===targetId);
+      let ti        = targetId==='root' ? without.length : without.findIndex(c=>c.id===targetId);
+      if (targetId!=='root' && fromIdx < toIdx) ti += 1;
       const reordered = [...without.slice(0,ti), dragged, ...without.slice(ti)];
-      reordered.forEach((c,i)=>{ if((c.sortOrder||0)!==i) updateCategory(c.id,{sortOrder:i}); });
+      // Renumber the WHOLE level 0..n — also heals legacy duplicate sortOrders on this
+      // level, which were what let the order shuffle between page loads.
+      reordered.forEach((c,i)=>{ if((c.sortOrder??-1)!==i) updateCategory(c.id,{sortOrder:i}); });
       markBOChange(); showToast('Reordered','success');
     }
     setDragCatId(null); setOverCatId(null);
@@ -461,7 +472,10 @@ function MenuTab() {
 
   const saveNewCat = ()=>{
     if (!catForm.label.trim()) return;
-    addCategory({ menuId:selMenuId, ...catForm, parentId:catForm.parentId||null, sortOrder:menuCategories.length });
+    // v5.5.950: number within the SIBLING level (max+1), not the global category count —
+    // the global counter minted sortOrders that collided across levels and left ties.
+    const _sibs = menuCategories.filter(c => (c.parentId||null) === (catForm.parentId||null));
+    addCategory({ menuId:selMenuId, ...catForm, parentId:catForm.parentId||null, sortOrder: _sibs.length ? Math.max(..._sibs.map(c=>c.sortOrder||0)) + 1 : 0 });
     markBOChange(); showToast(`"${catForm.label}" added`,'success');
     setCatForm({label:'',icon:'🍽',color:'#3b82f6',parentId:''}); setAddingCat(false);
   };
@@ -733,7 +747,7 @@ function MenuTab() {
             // all its children stay visible.
             const q = catFilter.trim().toLowerCase();
             const hit = c => (c.label || '').toLowerCase().includes(q);
-            const kidsOf = id => menuCategories.filter(c => c.parentId === id).sort((a,b)=>(a.sortOrder||0)-(b.sortOrder||0));
+            const kidsOf = id => menuCategories.filter(c => c.parentId === id).sort((a,b)=>((a.sortOrder||0)-(b.sortOrder||0)) || String(a.label||'').localeCompare(String(b.label||'')));  // v5.5.950 tiebreak
             const visibleRoots = q
               ? roots.filter(r => hit(r) || kidsOf(r.id).some(hit))
               : roots;
