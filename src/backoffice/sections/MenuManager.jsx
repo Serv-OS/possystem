@@ -3302,10 +3302,13 @@ function MoveCatModal({ cat, allCats, onSave, onClose }) {
   const [parentId, setParentId] = useState(cat.parentId || '');
   return (
     <div className="modal-back" onClick={e=>e.target===e.currentTarget&&onClose()}>
-      <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr2)', borderRadius:18, width:'100%', maxWidth:380, padding:'20px', boxShadow:'var(--sh3)' }}>
-        <div style={{ fontSize:15, fontWeight:800, color:'var(--t1)', marginBottom:4 }}>Move "{cat.label}"</div>
-        <div style={{ fontSize:12, color:'var(--t3)', marginBottom:16 }}>Choose where this category sits in the hierarchy.</div>
-        <div style={{ display:'flex', flexDirection:'column', gap:8, marginBottom:20 }}>
+      {/* v5.5.960: maxHeight + scrollable option list. With 20+ root categories the
+          list ran past the viewport, the Move/Cancel buttons went off-page and the
+          modal body had no scroll — the picker was unusable at Wing Fest scale. */}
+      <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr2)', borderRadius:18, width:'100%', maxWidth:380, padding:'20px', boxShadow:'var(--sh3)', maxHeight:'85vh', display:'flex', flexDirection:'column' }}>
+        <div style={{ fontSize:15, fontWeight:800, color:'var(--t1)', marginBottom:4, flexShrink:0 }}>Move "{cat.label}"</div>
+        <div style={{ fontSize:12, color:'var(--t3)', marginBottom:16, flexShrink:0 }}>Choose where this category sits in the hierarchy.</div>
+        <div style={{ display:'flex', flexDirection:'column', gap:8, marginBottom:20, overflowY:'auto', flex:1, minHeight:0, paddingRight:4 }}>
           <div onClick={()=>setParentId('')} style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 12px', borderRadius:10, border:`2px solid ${parentId===''?'var(--acc)':'var(--bdr)'}`, background:parentId===''?'var(--acc-d)':'var(--bg3)', cursor:'pointer' }}>
             <div style={{ width:18,height:18,borderRadius:'50%',border:`2px solid ${parentId===''?'var(--acc)':'var(--bdr2)'}`,background:parentId===''?'var(--acc)':'transparent',flexShrink:0 }}/>
             <div>
@@ -3323,7 +3326,7 @@ function MoveCatModal({ cat, allCats, onSave, onClose }) {
             </div>
           ))}
         </div>
-        <div style={{ display:'flex', gap:8 }}>
+        <div style={{ display:'flex', gap:8, flexShrink:0 }}>
           <button onClick={onClose} style={{ flex:1, padding:'9px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr2)', color:'var(--t2)', fontSize:12 }}>Cancel</button>
           <button onClick={()=>onSave(parentId||null)} style={{ flex:2, padding:'9px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:13, fontWeight:800 }}>Move here</button>
         </div>

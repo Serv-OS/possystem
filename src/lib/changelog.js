@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.960', date: '30 Jul 2026', label: 'Daily counts drops the £0.00 + the Move-category picker scrolls',
+    changes: [
+      'Daily counts no longer shows a price under each item — it read a legacy field most items don\'t use (hence the false £0.00), and a counting screen is about quantities anyway.',
+      'The Move / nest-category picker now fits the screen: with 20+ categories the list ran off the page with no way to scroll and the Move button was unreachable. The list scrolls inside the dialog; title and buttons stay put.',
+      'TEST: Inventory → Daily counts → names only, no price. Menu → any category → ↕ Move → the full list scrolls inside the dialog and Move/Cancel are always visible.',
+    ],
+  },
+  {
     version: '5.5.959', date: '30 Jul 2026', label: 'Online ordering screen: Gift cards / Loyalty badges now tell the truth',
     changes: [
       'The Gift cards and Loyalty portal badges on Channels → Online ordering were hardcoded to ON — a fresh venue with both switched off still showed them live. They now read the real company settings (the same flags the Gift cards and Loyalty screens toggle), and an unconfigured venue honestly shows OFF.',

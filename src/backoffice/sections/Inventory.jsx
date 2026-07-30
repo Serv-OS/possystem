@@ -2,7 +2,6 @@ import { useState, useMemo } from 'react';
 import { useStore } from '../../store';
 import { MENU_ITEMS as SEED_ITEMS } from '../../data/seed';
 import { isMock } from '../../lib/supabase';
-import { money } from '../../lib/currency';
 
 const STATUS_LEVELS = [
   { id:'ok',       label:'In stock',   color:'var(--grn)', bg:'var(--grn-d)', border:'var(--grn-b)', threshold:0.4 },
@@ -156,9 +155,11 @@ export default function Inventory() {
 
                 return (
                   <tr key={item.id} style={{ borderBottom:'1px solid var(--bdr)', background:idx%2===0?'var(--bg)':'var(--bg1)', opacity:item.is86?.6:1 }}>
+                    {/* v5.5.960: price line removed — it read the legacy scalar `price` (most
+                        items price via pricing.base, so it showed a false £0.00), and a count
+                        screen is about QUANTITIES, not prices (owner call, 30 Jul). */}
                     <td style={{ padding:'10px 14px', maxWidth:200 }}>
                       <div style={{ fontSize:13, fontWeight:600, color:'var(--t1)' }}>{item.displayName || item.name}</div>
-                      <div style={{ fontSize:11, color:'var(--t4)', marginTop:1 }}>{money((item.price||0))}</div>
                     </td>
                     <td style={{ padding:'10px 14px', fontSize:11, color:'var(--t3)', textTransform:'capitalize' }}>
                       {(menuCategories||[]).find(c => c.id === item.cat)?.label || item.cat}
