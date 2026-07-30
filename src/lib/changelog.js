@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.952', date: '30 Jul 2026', label: 'Sub-category save race fixed (the banner caught it live) + old-order text replay blocked',
+    changes: [
+      'THE BANNER FOUND THE REAL CATEGORY-KILLER within minutes of shipping: adding a parent then a sub-category fired two racing saves — the sub could reach the database before its parent and get refused, existing only on screen. Category saves now run strictly in order, with an automatic retry if the parent is still landing. This is why subs kept vanishing (menu import made it near-certain).',
+      'OLD ORDER TEXTS: a months-old till came online and replayed week-old orders back into the queue — the database saw "new" orders and re-sent confirmation texts (5 to Neil, sorry Neil). Two server-side guards now make this impossible from ANY device: a permanent per-order notification ledger (survives rows being deleted and re-created) and an age gate (no "confirmed" for an order older than 6 hours). The replayed zombie orders (some from June) have been purged from the queue.',
+      'TEST: add a category and IMMEDIATELY add a sub under it, then refresh — both persist. The old till can reconnect all it likes — no more ghost texts.',
+    ],
+  },
+  {
     version: '5.5.951', date: '30 Jul 2026', label: 'Vanishing categories/items: silent save failures are now IMPOSSIBLE to miss',
     changes: [
       'Root cause found and proven: when a long-open Back Office tab\'s sign-in silently expires, the app KEEPS LOOKING signed in (reading the menu is public) but every save quietly fails with a permissions error the code only logged to the browser console. You could build categories and items for an hour and lose all of it on refresh — Sauces, Premium Sauces, Beer, Draught, Beavertown and Creamy Ranch never reached the database.',

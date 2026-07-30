@@ -147,6 +147,25 @@ Deno.serve(async (req) => {
   if (event === 'confirmed' && source === 'catering') return json({ ok: true, skipped: 'catering has its own confirmation' });
   if (event === 'ready' && String(order.type || '') === 'delivery') return json({ ok: true, skipped: 'delivery uses courier tracking' });
 
+  // ── v5.5.952 replay guards (live incident 30 Jul: a stale POS re-inserted week-old
+  // order_queue rows; fresh rows had null claim stamps, so five 23 Jul orders sent
+  // "confirmed" texts on 30 Jul). Two layers, both immune to ancient clients:
+  // 1. AGE GATE — a confirmation for an order older than 6h is always a replay
+  //    (re-inserted payloads keep their original created_at — verified live).
+  if (event === 'confirmed') {
+    const createdMs = Date.parse(String(order.created_at || '')) || 0;
+    if (createdMs && Date.now() - createdMs > 6 * 3600_000) {
+      return json({ ok: true, skipped: 'order too old — stale-device replay' });
+    }
+  }
+  // 2. PERMANENT LEDGER — one row per (ref, event), ever; survives the order_queue
+  //    row being deleted and re-created, which the per-row claim stamp cannot.
+  const { data: ledger } = await opsAdmin
+    .from('order_notifications')
+    .upsert({ ref, event }, { onConflict: 'ref,event', ignoreDuplicates: true })
+    .select('ref');
+  if (!ledger || ledger.length === 0) return json({ ok: true, skipped: 'already notified (ledger)' });
+
   const customer = (order.customer || {}) as Record<string, unknown>;
   const phone = normalisePhone(String(customer.phone || ''));
   const email = String(customer.email || '').trim() || null;

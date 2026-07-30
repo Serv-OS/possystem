@@ -97,7 +97,21 @@ const sbDeleteMenu = async (id) => {
   // v5.5.279: location_id guard — never delete across tenants
   await supabase.from('menus').delete().eq('id', id).eq('location_id', locationId);
 };
-const sbUpsertCategory = async (cat) => {
+// v5.5.952 — category writes are SERIALISED in call order + FK-retried.
+// THE BANNER CAUGHT THE REAL KILLER LIVE (30 Jul): create "Beer", then its sub
+// "Draught" a moment later — two independent fire-and-forget upserts race, the
+// CHILD can reach Postgres before the PARENT commits, and dies on
+// menu_categories_parent_id_fkey. The child then existed only on screen: the
+// exact "sub categories vanish on refresh" Peter hit ~20 times (menu import
+// bulk-creates make the race near-certain). Creation order is always
+// parent-before-child in the UI, so executing writes in call order fixes the
+// ordering; one delayed retry mops up a parent that was still in flight.
+let _catWriteChain = Promise.resolve();
+const sbUpsertCategory = (cat) => {
+  _catWriteChain = _catWriteChain.then(() => _sbUpsertCategoryNow(cat)).catch(() => {});
+  return _catWriteChain;
+};
+const _sbUpsertCategoryNow = async (cat, isRetry = false) => {
   if (isMock) return;
   const locationId = getActiveLocationSync() || await getLocationId();
   if (!locationId) return console.warn('[Supabase] no location ID — category not saved');
@@ -116,6 +130,12 @@ const sbUpsertCategory = async (cat) => {
     is_special: cat.isSpecial ?? cat.is_special ?? false,  // v5.5.316: persist so kiosk/online hide special cats
     updated_at: new Date().toISOString(),
   });
+  // Parent still landing (or landed by ANOTHER tab a beat later): wait and retry once
+  // before going loud — this heals the race instead of just reporting it.
+  if (error && !isRetry && /parent_id_fkey|menu_id_fkey/.test(String(error.message || ''))) {
+    await new Promise(r => setTimeout(r, 900));
+    return _sbUpsertCategoryNow(cat, true);
+  }
   // v5.5.951: failures must be LOUD — a silent console.error here is how "Premium
   // Sauces" lived on screen all session and never existed after refresh.
   reportSave('category', error);
