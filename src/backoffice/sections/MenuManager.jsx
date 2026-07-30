@@ -445,12 +445,16 @@ function MenuTab() {
   },[dragItemId, displayItems, updateMenuItem, markBOChange, showToast]);
 
   const addItem = (type='simple')=>{
-    const created = addMenuItem({ name:'New item', menuName:'New item', receiptName:'New item', kitchenName:'New item',
+    // v5.5.949: auto-pick a free name. "+ Item" always minted a literal "New item",
+    // so ONE un-renamed (or later-renamed-back) "New item" anywhere in the menu made
+    // the button dead-end with an alert and no way to type a name — naming happens
+    // AFTER creation in this flow. Now it mints "New item 2", "New item 3", …
+    const freshName = (() => { let n='New item', i=2; while (findDuplicateProductName(menuItems, n)) n=`New item ${i++}`; return n; })();
+    const created = addMenuItem({ name:freshName, menuName:freshName, receiptName:freshName, kitchenName:freshName,
       type, cat:selCatId||undefined, allergens:[],
       pricing:{base:0,dineIn:null,takeaway:null,collection:null,delivery:null},
       assignedModifierGroups:[], assignedInstructionGroups:[], cats:[], });
-    // v5.5.797: duplicate-name guard — an un-renamed "New item" already exists
-    if (!created) { window.alert('A product called "New item" already exists — rename it before adding another.'); return; }
+    if (!created) { window.alert(`A product called "${freshName}" already exists — rename it before adding another.`); return; }
     markBOChange();
     setTimeout(()=>{ const id=useStore.getState().menuItems.slice(-1)[0]?.id; if(id) setSelItemId(id); },30);
   };
@@ -1427,11 +1431,12 @@ function ItemsLibrary() {
     // while a category is selected still lands in that category — that is the context you are
     // working in, not a guess — but from "All" the primary category is now left empty to choose.
     const defCat = catFilter!=='all' ? catFilter : '';
-    const created = addMenuItem({ name:'New item', menuName:'New item', receiptName:'New item', kitchenName:'New item',
+    // v5.5.949: auto-pick a free name — same dead-end fix as the Menus-tab addItem.
+    const freshName = (() => { let n='New item', i=2; while (findDuplicateProductName(menuItems, n)) n=`New item ${i++}`; return n; })();
+    const created = addMenuItem({ name:freshName, menuName:freshName, receiptName:freshName, kitchenName:freshName,
       type:'simple', cat:defCat, allergens:[], pricing:{base:0},
       assignedModifierGroups:[], assignedInstructionGroups:[], cats:[], sortOrder:999 });
-    // v5.5.797: duplicate-name guard — an un-renamed "New item" already exists
-    if (!created) { window.alert('A product called "New item" already exists — rename it before adding another.'); return; }
+    if (!created) { window.alert(`A product called "${freshName}" already exists — rename it before adding another.`); return; }
     markBOChange();
     setTimeout(()=>{ const last=useStore.getState().menuItems.slice(-1)[0]; if(last) setSelItemId(last.id); }, 30);
   };

@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.949', date: '30 Jul 2026', label: '"+ Item" no longer dead-ends on a leftover "New item"',
+    changes: [
+      'Adding an item always created one literally named "New item" — so if one un-renamed "New item" existed anywhere in the menu, the button just alerted "already exists" with no box to type a name (naming happens after creation in this flow). It now auto-picks a free name: New item, New item 2, New item 3…',
+      'Fixed in both places you can add: the Menus tab and the Items tab.',
+      'TEST: click "+ Add items" twice in a row — you get "New item" and "New item 2", each opening in the editor ready to rename.',
+    ],
+  },
+  {
     version: '5.5.948', date: '30 Jul 2026', label: 'Drag cooking preferences anywhere in the flow — one order, every surface',
     changes: [
       'Back Office → item → Flow is now ONE list: cooking preferences sit among the modifier groups and drag anywhere, exactly like the modifier groups. Until you drag, they default to the top.',
