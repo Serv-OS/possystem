@@ -7,6 +7,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { money } from '../../lib/currency';
 import { dietaryBadges, DIET_LABELS } from '../../lib/dietary';
+import { orderOptionFlow } from '../../lib/optionFlow';
 
 export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs = [], eightySixIds = [], stockLevels = {}, cart = [], onClose, onAdd }) {
   const [qty, setQty]               = useState(1);
@@ -103,6 +104,17 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
       return extractIds(parent?.assigned_instruction_groups);
     }
     return own;
+  }, [effectiveItem, allItems]);
+
+  // v5.5.948: the Back Office Flow tab's combined drag order — same parent
+  // fallback as the two assigned lists above.
+  const flowOrder = useMemo(() => {
+    const own = effectiveItem.option_group_order ?? effectiveItem.optionGroupOrder;
+    if ((!Array.isArray(own) || own.length === 0) && effectiveItem.parent_id) {
+      const parent = (allItems || []).find(i => i.id === effectiveItem.parent_id);
+      return parent?.option_group_order ?? parent?.optionGroupOrder ?? null;
+    }
+    return Array.isArray(own) && own.length ? own : null;
   }, [effectiveItem, allItems]);
 
   useEffect(() => {
@@ -503,35 +515,37 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
           {/* Modifier groups */}
           {loading && <div style={{ padding: 12, color: muted, fontSize: 13 }}>Loading options…</div>}
 
-          {/* v5.5.947: instruction groups (cooking prefs) FIRST — same rule as POS/kiosk.
-              They were the last sections before the note box, below every modifier group. */}
-          {instGroups.map(g => {
-            const value = instSelections[g.id];
-            const required = !!g.required;
-            return (
-              <Section key={g.id} title={g.name} meta={required ? 'Required' : 'Optional'} required={required}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {(g.options || []).map(opt => {
-                    const label = typeof opt === 'string' ? opt : (opt.label || opt.name);
-                    const checked = value === label;
-                    return (
-                      <OptionRow key={label}
-                        label={label}
-                        priceDelta={0}
-                        checked={checked}
-                        onClick={() => setInstSelections(s => ({
-                          ...s, [g.id]: checked ? null : label,
-                        }))}
-                        mode="single"
-                        theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
-                    );
-                  })}
-                </div>
-              </Section>
-            );
-          })}
-
-          {modGroups.map(g => {
+          {/* v5.5.948: ONE ordered flow (lib/optionFlow.js) — the Back Office Flow tab's
+              drag order interleaves instruction + modifier groups; with no saved order,
+              instructions come first. */}
+          {orderOptionFlow(flowOrder, modGroups, instGroups).map(entry => {
+            if (entry.kind === 'inst') {
+              const ig = entry.g;
+              const value = instSelections[ig.id];
+              const required = !!ig.required;
+              return (
+                <Section key={ig.id} title={ig.name} meta={required ? 'Required' : 'Optional'} required={required}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {(ig.options || []).map(opt => {
+                      const label = typeof opt === 'string' ? opt : (opt.label || opt.name);
+                      const checked = value === label;
+                      return (
+                        <OptionRow key={label}
+                          label={label}
+                          priceDelta={0}
+                          checked={checked}
+                          onClick={() => setInstSelections(s => ({
+                            ...s, [ig.id]: checked ? null : label,
+                          }))}
+                          mode="single"
+                          theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
+                      );
+                    })}
+                  </div>
+                </Section>
+              );
+            }
+            const g = entry.g;
             const min = g.min ?? 0;
             const max = g.max ?? 1;
             const isQty = g.selection_type === 'quantity';

@@ -194,6 +194,11 @@ export const upsertMenuItem = async (item, locationId = null) => {
     tags:         item.tags        || [],
     assigned_modifier_groups:    item.assignedModifierGroups    || item.assigned_modifier_groups    || [],
     assigned_instruction_groups: item.assignedInstructionGroups || item.assigned_instruction_groups || [],
+    // v5.5.948: combined mod+instruction flow order (see lib/optionFlow.js). Only
+    // written when the caller carries the field — an upsert from a path that never
+    // loaded it must not null out a saved drag order.
+    ...(item.optionGroupOrder !== undefined || item.option_group_order !== undefined
+      ? { option_group_order: item.optionGroupOrder ?? item.option_group_order ?? null } : {}),
     visibility:   item.visibility  || { pos: true, kiosk: true, online: true },
     sold_alone:   item.soldAlone   ?? item.sold_alone   ?? true,
     archived:     item.archived    ?? false,

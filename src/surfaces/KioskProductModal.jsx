@@ -37,6 +37,7 @@ import { useStore } from '../store';
 import { t, useKioskLang } from '../lib/i18n';
 import { displayName } from '../lib/itemDisplay';
 import { money } from '../lib/currency';
+import { orderOptionFlow } from '../lib/optionFlow';
 
 // ============================================================
 // VALIDATION HELPERS (pure)
@@ -340,7 +341,7 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
   useEffect(() => {
     let alive = true;
     (async () => {
-      const result = [];
+      let result = [];
 
       // ── Synthesize 'Size' group for variants-type items ──
       if (item?.type === 'variants') {
@@ -401,12 +402,12 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
       }
 
       // ── Instruction groups ──
-      // v5.5.947: cooking preferences render FIRST, same rule as the POS (v5.5.915/947).
-      // They were pushed after every modifier group, so on a long kiosk item the
-      // kitchen-critical choice was the last card a customer scrolled to.
+      // v5.5.948: ONE ordered flow (lib/optionFlow.js) — the Back Office Flow tab's
+      // drag order interleaves instruction + modifier groups; with no saved order,
+      // instructions come first (the v5.5.947 rule).
       const instrAssignments = item?.assigned_instruction_groups;
+      const instrGroups = [];
       if (Array.isArray(instrAssignments) && instrAssignments.length > 0) {
-        const instrGroups = [];
         for (const a of instrAssignments) {
           const igId = typeof a === 'string' ? a : (a.groupId || a.id);
           const minOverride = (typeof a === 'object' && a.min !== undefined) ? a.min : null;
@@ -426,8 +427,12 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
             })),
           }));
         }
-        result.unshift(...instrGroups);
       }
+      // Kiosk instruction group ids carry the '__instr__' prefix; the saved order
+      // stores RAW group ids, so strip it when matching.
+      const flowOrder = item?.option_group_order ?? item?.optionGroupOrder ?? null;
+      result = orderOptionFlow(flowOrder, result, instrGroups,
+        (g) => String(g.id || '').replace('__instr__', '')).map(e => e.g);
 
       // ── Pre-fetch all sub-groups referenced by option.subGroupId ──
       const subGroupIds = new Set();

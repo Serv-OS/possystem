@@ -29,6 +29,7 @@ import { upsertMenuItem, uploadProductImage, deleteProductImage, saveQuickScreen
 import PerMenuPricingTiers from './PerMenuPricingTiers';
 import MenuImportModal from '../components/MenuImportModal';
 import { money } from '../../lib/currency';
+import { orderOptionFlow } from '../../lib/optionFlow';
 // v5.5.813: recipe-derived cost + GP% on the Items list. Same engine + same
 // ex-VAT net-price basis as Inventory → Reports → Recipe GP, so the two screens
 // can never disagree about a dish's margin.
@@ -75,6 +76,7 @@ async function cloneItem(item, menuItems, addMenuItem, updateMenuItem, markBOCha
     tags:                     [...(item.tags || [])],
     assignedModifierGroups:   [...(item.assignedModifierGroups || [])],
     assignedInstructionGroups:[...(item.assignedInstructionGroups || [])],
+    optionGroupOrder:         Array.isArray(item.optionGroupOrder) ? [...item.optionGroupOrder] : null,   // v5.5.948 combined flow order
     modifierGroups:           item.modifierGroups ? [...item.modifierGroups] : undefined,
     visibility:               { ...(item.visibility || { pos:true, kiosk:true, online:true }) },
     soldAlone:                item.soldAlone ?? true,
@@ -1994,6 +1996,23 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
     onUpdate({ assignedInstructionGroups:arr }); markBOChange();
   };
 
+  // ── v5.5.948: ONE combined flow — instructions sortable AMONG modifier groups ──
+  // The Flow tab used to render mods then instructions as two fixed blocks, so a
+  // cooking preference could never be dragged above a modifier group. The combined
+  // order lives on item.optionGroupOrder (menu_items.option_group_order) and every
+  // surface renders through the same lib/optionFlow.js rule. Dragging also rewrites
+  // the two per-kind arrays so anything still reading them alone stays consistent.
+  const flowEntries = orderOptionFlow(item.optionGroupOrder, assignedMods, assignedInst, (x) => String(x.groupId));
+  const reorderFlow = (from, to) => {
+    const arr = [...flowEntries]; const [moved] = arr.splice(from, 1); arr.splice(to, 0, moved);
+    onUpdate({
+      optionGroupOrder: arr.map(e => e.id),
+      assignedModifierGroups: arr.filter(e => e.kind === 'mod').map(e => e.g),
+      assignedInstructionGroups: arr.filter(e => e.kind === 'inst').map(e => e.g),
+    });
+    markBOChange();
+  };
+
   // ── Filtered search lists ──────────────────────────────────────────────────
   const filteredMods = (modifierGroupDefs||[]).filter(g =>
     !assignedMods.find(ag=>ag.groupId===g.id) &&
@@ -2278,59 +2297,61 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
               </div>
             )}
 
-            {/* STEPS: Modifier groups in assigned order */}
-            {assignedMods.map((ag, i) => {
-              const def = (modifierGroupDefs||[]).find(g => g.id === ag.groupId);
-              if (!def) return null;
+            {/* STEPS — v5.5.948: ONE combined list. Cooking preferences sit AMONG the
+                modifier groups and drag anywhere; the order saves to optionGroupOrder
+                and every surface (POS/kiosk/online/MPOS) renders it identically. */}
+            {flowEntries.map((entry, i) => {
               const stepNum = isParent ? i+2 : i+1;
-              const isReq = (def.min||0) > 0; // read from group def — single source of truth
-              const modeLabel = def.selectionType==='quantity' ? `qty, up to ${def.max||'∞'}` : def.selectionType==='multiple' ? `up to ${def.max||'∞'}` : 'pick 1';
-              return (
-                <div key={ag.groupId} draggable
-                  onDragStart={()=>setDragModIdx(i)} onDragOver={e=>{e.preventDefault();setOverModIdx(i);}}
-                  onDrop={e=>{e.preventDefault();if(dragModIdx!==null&&dragModIdx!==i)reorderMods(dragModIdx,i);setDragModIdx(null);setOverModIdx(null);}}
-                  onDragEnd={()=>{setDragModIdx(null);setOverModIdx(null);}}
-                  style={{ marginBottom:14, opacity:dragModIdx===i?.4:1, border:`1.5px solid ${overModIdx===i?'var(--acc)':'transparent'}`, borderRadius:10, padding:overModIdx===i?'4px':0, transition:'all .1s' }}>
-                  <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:8 }}>
-                    <div style={{ width:22, height:22, borderRadius:'50%', background:isReq?'var(--red)':'var(--bg4)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:11, fontWeight:800, color:isReq?'#fff':'var(--t3)', flexShrink:0 }}>{stepNum}</div>
-                    <div style={{ flex:1, minWidth:0 }}>
-                      <span style={{ fontSize:12, fontWeight:700, color:'var(--t1)' }}>{def.name}</span>
-                      <span style={{ fontSize:9, color:'var(--t4)', marginLeft:6 }}>{isReq?'required':'optional'} · {modeLabel}</span>
+              if (entry.kind === 'mod') {
+                const ag = entry.g;
+                const def = (modifierGroupDefs||[]).find(g => g.id === ag.groupId);
+                if (!def) return null;
+                const isReq = (def.min||0) > 0; // read from group def — single source of truth
+                const modeLabel = def.selectionType==='quantity' ? `qty, up to ${def.max||'∞'}` : def.selectionType==='multiple' ? `up to ${def.max||'∞'}` : 'pick 1';
+                return (
+                  <div key={ag.groupId} draggable
+                    onDragStart={()=>setDragModIdx(i)} onDragOver={e=>{e.preventDefault();setOverModIdx(i);}}
+                    onDrop={e=>{e.preventDefault();if(dragModIdx!==null&&dragModIdx!==i)reorderFlow(dragModIdx,i);setDragModIdx(null);setOverModIdx(null);}}
+                    onDragEnd={()=>{setDragModIdx(null);setOverModIdx(null);}}
+                    style={{ marginBottom:14, opacity:dragModIdx===i?.4:1, border:`1.5px solid ${overModIdx===i?'var(--acc)':'transparent'}`, borderRadius:10, padding:overModIdx===i?'4px':0, transition:'all .1s' }}>
+                    <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:8 }}>
+                      <div style={{ width:22, height:22, borderRadius:'50%', background:isReq?'var(--red)':'var(--bg4)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:11, fontWeight:800, color:isReq?'#fff':'var(--t3)', flexShrink:0 }}>{stepNum}</div>
+                      <div style={{ flex:1, minWidth:0 }}>
+                        <span style={{ fontSize:12, fontWeight:700, color:'var(--t1)' }}>{def.name}</span>
+                        <span style={{ fontSize:9, color:'var(--t4)', marginLeft:6 }}>{isReq?'required':'optional'} · {modeLabel}</span>
+                      </div>
+                      <span style={{ fontSize:10, color:'var(--t4)', cursor:'grab' }}>⠿</span>
+                      <button onClick={()=>removeMod(ag.groupId)} style={{ width:22,height:22,borderRadius:6,border:'1px solid var(--red-b)',background:'var(--red-d)',color:'var(--red)',cursor:'pointer',fontSize:12,display:'flex',alignItems:'center',justifyContent:'center' }}>×</button>
                     </div>
-                    <span style={{ fontSize:10, color:'var(--t4)', cursor:'grab' }}>⠿</span>
-                    <button onClick={()=>removeMod(ag.groupId)} style={{ width:22,height:22,borderRadius:6,border:'1px solid var(--red-b)',background:'var(--red-d)',color:'var(--red)',cursor:'pointer',fontSize:12,display:'flex',alignItems:'center',justifyContent:'center' }}>×</button>
+                    <div style={{ paddingLeft:30 }}>
+                      {(def.options||[]).map(opt => (
+                        <span key={opt.id} style={{ display:'inline-block', marginRight:6, marginBottom:4, padding:'3px 9px', borderRadius:12, fontSize:11, background:'var(--bg3)', border:'1px solid var(--bdr)', color:'var(--t2)' }}>
+                          {opt.name}{opt.price>0&&<span style={{ color:'var(--t4)', marginLeft:3 }}>+{money(opt.price)}</span>}
+                          {opt.subGroupId && <span style={{ color:'var(--acc)', marginLeft:3, fontSize:9 }}>↳</span>}
+                        </span>
+                      ))}
+                      {/* Nested modifier indicators */}
+                      {(def.options||[]).filter(o=>o.subGroupId).map(o => {
+                        const sub = (modifierGroupDefs||[]).find(d=>d.id===o.subGroupId);
+                        return sub ? <div key={o.id} style={{ fontSize:9, color:'var(--acc)', marginTop:2 }}>↳ If "{o.name}": also shows <strong>{sub.name}</strong></div> : null;
+                      })}
+                    </div>
                   </div>
-                  <div style={{ paddingLeft:30 }}>
-                    {(def.options||[]).map(opt => (
-                      <span key={opt.id} style={{ display:'inline-block', marginRight:6, marginBottom:4, padding:'3px 9px', borderRadius:12, fontSize:11, background:'var(--bg3)', border:'1px solid var(--bdr)', color:'var(--t2)' }}>
-                        {opt.name}{opt.price>0&&<span style={{ color:'var(--t4)', marginLeft:3 }}>+{money(opt.price)}</span>}
-                        {opt.subGroupId && <span style={{ color:'var(--acc)', marginLeft:3, fontSize:9 }}>↳</span>}
-                      </span>
-                    ))}
-                    {/* Nested modifier indicators */}
-                    {(def.options||[]).filter(o=>o.subGroupId).map(o => {
-                      const sub = (modifierGroupDefs||[]).find(d=>d.id===o.subGroupId);
-                      return sub ? <div key={o.id} style={{ fontSize:9, color:'var(--acc)', marginTop:2 }}>↳ If "{o.name}": also shows <strong>{sub.name}</strong></div> : null;
-                    })}
-                  </div>
-                </div>
-              );
-            })}
-
-            {/* Instruction groups — drag-reorderable + per-assignment required toggle */}
-            {assignedInst.length > 0 && assignedInst.map((ag, i) => {
+                );
+              }
+              // Instruction step — same drag index-space as the mods (one list, one order).
+              const ag = entry.g;
               const def = (instructionGroupDefs||[]).find(g=>g.id===ag.groupId);
               if (!def) return null;
-              const stepNum = (isParent ? 1 : 0) + assignedMods.length + i + 1;
               // Per-assignment min overrides group-def min; either being >0 means required
               const effectiveMin = ag.min ?? def.min ?? 0;
               const isReq = effectiveMin > 0;
               return (
                 <div key={ag.groupId} draggable
-                  onDragStart={()=>setDragInstIdx(i)} onDragOver={e=>{e.preventDefault();setOverInstIdx(i);}}
-                  onDrop={e=>{e.preventDefault();if(dragInstIdx!==null&&dragInstIdx!==i)reorderInst(dragInstIdx,i);setDragInstIdx(null);setOverInstIdx(null);}}
-                  onDragEnd={()=>{setDragInstIdx(null);setOverInstIdx(null);}}
-                  style={{ marginBottom:14, opacity:dragInstIdx===i?.4:1, border:`1.5px solid ${overInstIdx===i?'var(--acc)':'transparent'}`, borderRadius:10, padding:overInstIdx===i?'4px':0, transition:'all .1s' }}>
+                  onDragStart={()=>setDragModIdx(i)} onDragOver={e=>{e.preventDefault();setOverModIdx(i);}}
+                  onDrop={e=>{e.preventDefault();if(dragModIdx!==null&&dragModIdx!==i)reorderFlow(dragModIdx,i);setDragModIdx(null);setOverModIdx(null);}}
+                  onDragEnd={()=>{setDragModIdx(null);setOverModIdx(null);}}
+                  style={{ marginBottom:14, opacity:dragModIdx===i?.4:1, border:`1.5px solid ${overModIdx===i?'var(--acc)':'transparent'}`, borderRadius:10, padding:overModIdx===i?'4px':0, transition:'all .1s' }}>
                   <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:8 }}>
                     <div style={{ width:22, height:22, borderRadius:'50%', background:isReq?'var(--red)':'var(--grn)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:11, fontWeight:800, color:'#fff', flexShrink:0 }}>{stepNum}</div>
                     <div style={{ flex:1, minWidth:0 }}>

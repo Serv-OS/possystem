@@ -135,6 +135,8 @@ const sbUpsertMenuItem = async (item) => {
     parent_id: item.parentId||null, sort_order: item.sortOrder||0,
     pricing: item.pricing||{base:0}, allergens: item.allergens||[], tags: item.tags||[],
     assigned_modifier_groups: item.assignedModifierGroups||[],
+    // v5.5.948: combined flow order — conditional so this path can't clobber a saved order.
+    ...(item.optionGroupOrder !== undefined ? { option_group_order: item.optionGroupOrder } : {}),
     visibility: item.visibility||{pos:true,kiosk:true,online:true},
     sold_alone: item.soldAlone||false, archived: item.archived||false,
     updated_at: new Date().toISOString()

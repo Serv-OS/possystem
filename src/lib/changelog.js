@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.948', date: '30 Jul 2026', label: 'Drag cooking preferences anywhere in the flow — one order, every surface',
+    changes: [
+      'Back Office → item → Flow is now ONE list: cooking preferences sit among the modifier groups and drag anywhere, exactly like the modifier groups. Until you drag, they default to the top.',
+      'The order you set is saved on the item and rendered identically by the POS, kiosk, pizza modal and online ordering — no more Back Office showing one order and the till another. (The phone MPOS keeps preferences pinned first.)',
+      'Under the hood: new menu_items.option_group_order column (applied live) + one shared ordering rule (lib/optionFlow.js) instead of four hard-coded ones.',
+      'TEST: Back Office → any item with a cooking preference → Flow → drag the preference between two modifier groups → Push to POS → open the item on the till: same order. Kiosk and online match after their next menu refresh.',
+    ],
+  },
+  {
     version: '5.5.947', date: '30 Jul 2026', label: 'Cooking preferences first — on EVERY ordering surface this time',
     changes: [
       'v5.5.915 moved cooking preferences above modifier groups — but only in the pizza-style modal. The POS\'s everyday item panel, the kiosk, and online ordering each have their OWN configurator and all still showed instructions last. All three now render cooking preferences / order instructions at the top (the phone MPOS already did).',

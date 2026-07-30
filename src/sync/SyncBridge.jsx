@@ -307,6 +307,7 @@ export default function SyncBridge({ onSyncPulse }) {
             // Must map snake_case → camelCase for modifier and instruction groups
             assignedModifierGroups: item.assigned_modifier_groups ?? item.assignedModifierGroups ?? [],
             assignedInstructionGroups: item.assigned_instruction_groups ?? item.assignedInstructionGroups ?? [],
+            optionGroupOrder: item.option_group_order ?? item.optionGroupOrder ?? null,   // v5.5.948 combined flow order
             image: item.image ?? null,
             tags: Array.isArray(item.tags) ? item.tags : [],   // dietary tags (V/VG/GF/DF)
           }));

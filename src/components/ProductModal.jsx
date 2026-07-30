@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useStore } from '../store';
 import { ALLERGENS, PIZZA_TOPPINGS, PIZZA_BASES, PIZZA_CRUSTS, PIZZA_SIZES } from '../data/seed';
 import { money, currencySymbol } from '../lib/currency';
+import { orderOptionFlow } from '../lib/optionFlow';
 
 // ── Main product modal dispatcher ─────────────────────────────────────────────
 export default function ProductModal({ item, activeAllergens = [], onConfirm, onCancel }) {
@@ -314,34 +315,34 @@ function VariantsModal({ item, activeAllergens, onConfirm, onCancel }) {
           </div>
         </div>
 
-        {/* v5.5.915 — COOKING PREFERENCES COME FIRST. These are instructions like "medium rare"
-            or "no ice", and they were rendering BELOW every modifier group, so on a long item
-            the kitchen-critical choice was the last thing anyone saw (and off the bottom on a
-            small till). Back Office lets you drag modifier groups into order but instruction
-            groups are a separate list with no way to sort above them, so this is fixed here in
-            the render order rather than left to per-item setup. */}
-        {instGroups.map(g=>(
-          <div key={g.id} style={{ marginBottom:16 }}>
-            <div style={{ fontSize:10, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:8 }}>{g.name}</div>
-            <div style={{ display:'flex', flexDirection:'column', gap:5 }}>
-              {(g.options||[]).map(opt=>{
-                const isSel=instSel[g.id]===opt;
-                return (
-                  <button key={opt} onClick={()=>toggleInst(g.id,opt)}
-                    style={{ display:'flex', alignItems:'center', gap:9, padding:'9px 12px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', border:`1.5px solid ${isSel?'var(--grn)':'var(--bdr)'}`, background:isSel?'var(--grn-d)':'var(--bg3)', justifyContent:'space-between' }}>
-                    <div style={{ display:'flex', alignItems:'center', gap:9 }}>
-                      <div style={{ width:16,height:16,borderRadius:'50%',border:`2px solid ${isSel?'var(--grn)':'var(--bdr2)'}`,background:isSel?'var(--grn)':'transparent',flexShrink:0 }}/>
-                      <span style={{ fontSize:13, color:isSel?'var(--grn)':'var(--t1)', fontWeight:isSel?700:400 }}>{opt}</span>
-                    </div>
-                    {isSel&&<span style={{ fontSize:11, color:'var(--grn)' }}>✓</span>}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        ))}
-
-        {allGroups.map(group=>{
+        {/* v5.5.948 — ONE ordered flow (lib/optionFlow.js): the Back Office Flow tab's
+            drag order interleaves instruction + modifier groups; with no saved order,
+            instructions come first (the v5.5.915 rule). */}
+        {orderOptionFlow(item?.optionGroupOrder || item?.option_group_order, allGroups, instGroups).map(entry => {
+          if (entry.kind === 'inst') {
+            const g = entry.g;
+            return (
+              <div key={g.id} style={{ marginBottom:16 }}>
+                <div style={{ fontSize:10, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:8 }}>{g.name}</div>
+                <div style={{ display:'flex', flexDirection:'column', gap:5 }}>
+                  {(g.options||[]).map(opt=>{
+                    const isSel=instSel[g.id]===opt;
+                    return (
+                      <button key={opt} onClick={()=>toggleInst(g.id,opt)}
+                        style={{ display:'flex', alignItems:'center', gap:9, padding:'9px 12px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', border:`1.5px solid ${isSel?'var(--grn)':'var(--bdr)'}`, background:isSel?'var(--grn-d)':'var(--bg3)', justifyContent:'space-between' }}>
+                        <div style={{ display:'flex', alignItems:'center', gap:9 }}>
+                          <div style={{ width:16,height:16,borderRadius:'50%',border:`2px solid ${isSel?'var(--grn)':'var(--bdr2)'}`,background:isSel?'var(--grn)':'transparent',flexShrink:0 }}/>
+                          <span style={{ fontSize:13, color:isSel?'var(--grn)':'var(--t1)', fontWeight:isSel?700:400 }}>{opt}</span>
+                        </div>
+                        {isSel&&<span style={{ fontSize:11, color:'var(--grn)' }}>✓</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          }
+          const group = entry.g;
           const required   = (group.min||0)>0;
           const selType    = group.selectionType||'single';
           const cur        = selections[group.id];
