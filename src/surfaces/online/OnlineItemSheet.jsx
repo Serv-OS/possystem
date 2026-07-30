@@ -502,6 +502,35 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
 
           {/* Modifier groups */}
           {loading && <div style={{ padding: 12, color: muted, fontSize: 13 }}>Loading options…</div>}
+
+          {/* v5.5.947: instruction groups (cooking prefs) FIRST — same rule as POS/kiosk.
+              They were the last sections before the note box, below every modifier group. */}
+          {instGroups.map(g => {
+            const value = instSelections[g.id];
+            const required = !!g.required;
+            return (
+              <Section key={g.id} title={g.name} meta={required ? 'Required' : 'Optional'} required={required}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {(g.options || []).map(opt => {
+                    const label = typeof opt === 'string' ? opt : (opt.label || opt.name);
+                    const checked = value === label;
+                    return (
+                      <OptionRow key={label}
+                        label={label}
+                        priceDelta={0}
+                        checked={checked}
+                        onClick={() => setInstSelections(s => ({
+                          ...s, [g.id]: checked ? null : label,
+                        }))}
+                        mode="single"
+                        theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
+                    );
+                  })}
+                </div>
+              </Section>
+            );
+          })}
+
           {modGroups.map(g => {
             const min = g.min ?? 0;
             const max = g.max ?? 1;
@@ -606,34 +635,6 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
                           </div>
                         )}
                       </div>
-                    );
-                  })}
-                </div>
-              </Section>
-            );
-          })}
-
-          {/* Instruction groups — kitchen instructions (cooking prefs etc).
-              No price impact, single-pick per group. */}
-          {instGroups.map(g => {
-            const value = instSelections[g.id];
-            const required = !!g.required;
-            return (
-              <Section key={g.id} title={g.name} meta={required ? 'Required' : 'Optional'} required={required}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {(g.options || []).map(opt => {
-                    const label = typeof opt === 'string' ? opt : (opt.label || opt.name);
-                    const checked = value === label;
-                    return (
-                      <OptionRow key={label}
-                        label={label}
-                        priceDelta={0}
-                        checked={checked}
-                        onClick={() => setInstSelections(s => ({
-                          ...s, [g.id]: checked ? null : label,
-                        }))}
-                        mode="single"
-                        theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
                     );
                   })}
                 </div>

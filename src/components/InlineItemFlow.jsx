@@ -426,6 +426,37 @@ function ModifierStep({ modGroups, instGroups, allModDefs, menuItems, eightySixI
 
   return (
     <div style={{ display:'flex', flexDirection:'column', gap:20 }}>
+      {/* v5.5.947 — COOKING PREFERENCES COME FIRST, same rule as ProductModal (v5.5.915).
+          That fix only covered the pizza modal; the POS's everyday configurator is THIS
+          component, so instructions were still rendering below every modifier group —
+          off the bottom on a long item. Instruction groups are a separate assigned list
+          with no cross-sort against modifier groups in Back Office, so the order is
+          fixed here in render. */}
+      {instGroups.map(g => {
+        const sel = instSelections[g.id];
+        return (
+          <div key={g.id}>
+            <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:10 }}>
+              <span style={{ fontSize:12, fontWeight:800, color:'var(--t1)', textTransform:'uppercase', letterSpacing:'.06em' }}>{g.name}</span>
+              <span style={{ fontSize:10, color:'var(--t4)' }}>Preparation · no charge</span>
+            </div>
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(150px,1fr))', gap:8 }}>
+              {(g.options || []).map(opt => (
+                <button key={opt} onClick={() => onToggleInst(g.id, opt)}
+                  style={{ display:'flex', alignItems:'center', gap:10, padding:'12px 14px', borderRadius:12, cursor:'pointer', fontFamily:'inherit', textAlign:'left', transition:'all .1s',
+                    border:`2px solid ${sel===opt ? 'var(--grn)' : 'var(--bdr)'}`,
+                    background: sel===opt ? 'var(--grn-d)' : 'var(--bg2)' }}>
+                  <div style={{ width:18, height:18, borderRadius:'50%', border:`2px solid ${sel===opt ? 'var(--grn)' : 'var(--bdr2)'}`, background: sel===opt ? 'var(--grn)' : 'transparent', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+                    {sel===opt && <div style={{ width:6, height:6, borderRadius:'50%', background:'#0b0c10' }}/>}
+                  </div>
+                  <span style={{ fontSize:13, fontWeight: sel===opt ? 700 : 400, color: sel===opt ? 'var(--grn)' : 'var(--t1)' }}>{opt}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+
       {modGroups.map(group => {
         const isRequired    = group.required || (group.min || 0) > 0;
         const isMissing     = missingRequired.includes(group.id);
@@ -634,32 +665,6 @@ function ModifierStep({ modGroups, instGroups, allModDefs, menuItems, eightySixI
                   onAddMulti={onAddMulti} onRemoveMulti={onRemoveMulti}/>
               );
             })()}
-          </div>
-        );
-      })}
-
-      {/* Instruction groups */}
-      {instGroups.map(g => {
-        const sel = instSelections[g.id];
-        return (
-          <div key={g.id}>
-            <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:10 }}>
-              <span style={{ fontSize:12, fontWeight:800, color:'var(--t1)', textTransform:'uppercase', letterSpacing:'.06em' }}>{g.name}</span>
-              <span style={{ fontSize:10, color:'var(--t4)' }}>Preparation · no charge</span>
-            </div>
-            <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(150px,1fr))', gap:8 }}>
-              {(g.options || []).map(opt => (
-                <button key={opt} onClick={() => onToggleInst(g.id, opt)}
-                  style={{ display:'flex', alignItems:'center', gap:10, padding:'12px 14px', borderRadius:12, cursor:'pointer', fontFamily:'inherit', textAlign:'left', transition:'all .1s',
-                    border:`2px solid ${sel===opt ? 'var(--grn)' : 'var(--bdr)'}`,
-                    background: sel===opt ? 'var(--grn-d)' : 'var(--bg2)' }}>
-                  <div style={{ width:18, height:18, borderRadius:'50%', border:`2px solid ${sel===opt ? 'var(--grn)' : 'var(--bdr2)'}`, background: sel===opt ? 'var(--grn)' : 'transparent', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
-                    {sel===opt && <div style={{ width:6, height:6, borderRadius:'50%', background:'#0b0c10' }}/>}
-                  </div>
-                  <span style={{ fontSize:13, fontWeight: sel===opt ? 700 : 400, color: sel===opt ? 'var(--grn)' : 'var(--t1)' }}>{opt}</span>
-                </button>
-              ))}
-            </div>
           </div>
         );
       })}

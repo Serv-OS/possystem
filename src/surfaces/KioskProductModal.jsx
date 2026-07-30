@@ -401,14 +401,18 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
       }
 
       // ── Instruction groups ──
+      // v5.5.947: cooking preferences render FIRST, same rule as the POS (v5.5.915/947).
+      // They were pushed after every modifier group, so on a long kiosk item the
+      // kitchen-critical choice was the last card a customer scrolled to.
       const instrAssignments = item?.assigned_instruction_groups;
       if (Array.isArray(instrAssignments) && instrAssignments.length > 0) {
+        const instrGroups = [];
         for (const a of instrAssignments) {
           const igId = typeof a === 'string' ? a : (a.groupId || a.id);
           const minOverride = (typeof a === 'object' && a.min !== undefined) ? a.min : null;
           const def = allInstructionDefs.find(g => g.id === igId);
           if (!def) { console.warn('[kiosk] instruction group not found:', igId); continue; }
-          result.push(normalizeGroup({
+          instrGroups.push(normalizeGroup({
             id: '__instr__' + def.id,
             name: def.name,
             selection_type: 'single',
@@ -422,6 +426,7 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
             })),
           }));
         }
+        result.unshift(...instrGroups);
       }
 
       // ── Pre-fetch all sub-groups referenced by option.subGroupId ──

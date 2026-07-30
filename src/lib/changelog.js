@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.947', date: '30 Jul 2026', label: 'Cooking preferences first — on EVERY ordering surface this time',
+    changes: [
+      'v5.5.915 moved cooking preferences above modifier groups — but only in the pizza-style modal. The POS\'s everyday item panel, the kiosk, and online ordering each have their OWN configurator and all still showed instructions last. All three now render cooking preferences / order instructions at the top (the phone MPOS already did).',
+      'TEST: POS → tap an item with a cooking preference (e.g. Ribeye) → the preference is the FIRST section. Same on the kiosk and the online menu.',
+    ],
+  },
+  {
     version: '5.5.946', date: '30 Jul 2026', label: 'Marketing: why your campaign sent to nobody + codes ledger + End/History + opens tracking',
     changes: [
       'WHY YOUR SEND REACHED NOBODY: the campaign carried an invisible leftover birthday trigger, so the audience was "your segment AND birthday in exactly 7 days" = nobody. One-off campaigns now ignore triggers entirely (server), never save one (editor), and a zero-recipient run says so in red on the campaign row instead of a quiet "done". Your campaign\'s stray trigger has been cleared — Run now will reach the segment.',
