@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.954', date: '30 Jul 2026', label: 'Menu saves join the guarded chain (the banner caught the next one)',
+    changes: [
+      'The red banner caught its second real bug: a category refusing to save because the MENU it belongs to had itself failed to save silently (menu saves were still console-only). Menus now save through the same ordered, guarded chain as categories — a new menu always lands before its first category, and any menu save failure shows the red banner instantly.',
+      'IF YOU STILL HAVE THE TAB OPEN with the stuck menu: open that menu\'s settings and hit save (or rename it and back) — that re-sends the menu to the database. Then redo the category that failed. If you already refreshed, just recreate the menu; it will save properly now.',
+      'TEST: create a new menu → immediately add a category to it → refresh → both persist.',
+    ],
+  },
+  {
     version: '5.5.953', date: '30 Jul 2026', label: 'Kiosk now shows cooking preferences (it never loaded them)',
     changes: [
       'Cooking-preference definitions live in the menu snapshot that "Push to POS" publishes — online reads it, the POS applies it, but the KIOSK never loaded it at all: it fetched the menu straight from the database tables and silently skipped every real cooking preference it could not recognise. The kiosk now loads the definitions from the latest push, exactly like online does.',

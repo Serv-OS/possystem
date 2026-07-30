@@ -69,7 +69,18 @@ function promoDiscountEntry(promo) {
 }
 
 // ── Supabase helpers ─────────────────────────────────────────────────────────
-const sbUpsertMenu = async (menu) => {
+// v5.5.954 — ONE serialised write chain for menus AND categories. The banner caught
+// menu_categories_menu_id_fkey live: a category referencing a menu whose own insert
+// had failed SILENTLY (sbUpsertMenu was still console.error-only). Chain order =
+// creation order, so a new menu's row always lands before its first category, and a
+// parent category before its subs (v5.5.952).
+let _menuWriteChain = Promise.resolve();
+const enqueueMenuWrite = (job) => {
+  _menuWriteChain = _menuWriteChain.then(job).catch(() => {});
+  return _menuWriteChain;
+};
+const sbUpsertMenu = (menu) => enqueueMenuWrite(() => _sbUpsertMenuNow(menu));
+const _sbUpsertMenuNow = async (menu) => {
   if (isMock) return;
   const locationId = getActiveLocationSync() || await getLocationId();
   if (!locationId) return console.warn('[Supabase] no location ID — menu not saved');
@@ -89,13 +100,14 @@ const sbUpsertMenu = async (menu) => {
     org_id:     menu.orgId    ?? menu.org_id    ?? null,
     updated_at: new Date().toISOString(),
   });
-  if (error) console.error('[Supabase] menus upsert error:', error);
+  reportSave('menu', error);   // v5.5.954 — was console-only
 };
 const sbDeleteMenu = async (id) => {
   if (isMock) return;
   const locationId = getActiveLocationSync() || await getLocationId();
   // v5.5.279: location_id guard — never delete across tenants
-  await supabase.from('menus').delete().eq('id', id).eq('location_id', locationId);
+  const { error } = await supabase.from('menus').delete().eq('id', id).eq('location_id', locationId);
+  reportSave('menu delete', error);   // v5.5.954
 };
 // v5.5.952 — category writes are SERIALISED in call order + FK-retried.
 // THE BANNER CAUGHT THE REAL KILLER LIVE (30 Jul): create "Beer", then its sub
@@ -106,11 +118,7 @@ const sbDeleteMenu = async (id) => {
 // bulk-creates make the race near-certain). Creation order is always
 // parent-before-child in the UI, so executing writes in call order fixes the
 // ordering; one delayed retry mops up a parent that was still in flight.
-let _catWriteChain = Promise.resolve();
-const sbUpsertCategory = (cat) => {
-  _catWriteChain = _catWriteChain.then(() => _sbUpsertCategoryNow(cat)).catch(() => {});
-  return _catWriteChain;
-};
+const sbUpsertCategory = (cat) => enqueueMenuWrite(() => _sbUpsertCategoryNow(cat));
 const _sbUpsertCategoryNow = async (cat, isRetry = false) => {
   if (isMock) return;
   const locationId = getActiveLocationSync() || await getLocationId();
