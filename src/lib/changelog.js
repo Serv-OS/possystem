@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.953', date: '30 Jul 2026', label: 'Kiosk now shows cooking preferences (it never loaded them)',
+    changes: [
+      'Cooking-preference definitions live in the menu snapshot that "Push to POS" publishes — online reads it, the POS applies it, but the KIOSK never loaded it at all: it fetched the menu straight from the database tables and silently skipped every real cooking preference it could not recognise. The kiosk now loads the definitions from the latest push, exactly like online does.',
+      'Verified: the snapshot carries all 5 groups (Cooking preference, Bread service, Spice level, Allergy note, Burger Cook Pref) and the kiosk\'s new lookup works under a kiosk-style anonymous session. Online was checked live and already works — Wagyu Sirloin shows Cooking preference first.',
+      'NOTE: the kiosk reads the LAST push — after changing instruction groups in Back Office, hit "Push to POS" so kiosks pick them up.',
+      'TEST (kiosk): open a steak/burger with a cooking preference → the preference section shows (first, or wherever you dragged it in the Flow tab). If the kiosk is a Sunmi/Android unit, force-stop the app once to get the new version.',
+    ],
+  },
+  {
     version: '5.5.952', date: '30 Jul 2026', label: 'Sub-category save race fixed (the banner caught it live) + old-order text replay blocked',
     changes: [
       'THE BANNER FOUND THE REAL CATEGORY-KILLER within minutes of shipping: adding a parent then a sub-category fired two racing saves — the sub could reach the database before its parent and get refused, existing only on screen. Category saves now run strictly in order, with an automatic retry if the parent is still landing. This is why subs kept vanishing (menu import made it near-certain).',

@@ -114,10 +114,17 @@ function useKioskMenu(profile, locationId) {
         // v5.5.235: menu_category_links has no location_id column — filter via
         // the loaded menus' ids (which are already location-scoped). Previously
         // this was an unfiltered select('*') returning links from ALL locations.
-        const [iRes, cRes, mRes] = await Promise.all([
+        const [iRes, cRes, mRes, pRes] = await Promise.all([
           supabase.from('menu_items').select('*').eq('location_id', locationId).eq('archived', false).order('sort_order'),
           supabase.from('menu_categories').select('*').eq('location_id', locationId).order('sort_order'),
           supabase.from('menus').select('*').eq('location_id', locationId).eq('is_active', true),
+          // v5.5.953: instruction-group DEFINITIONS (cooking preference etc.) have no DB
+          // table — they ride the config-push snapshot. Online reads it, the POS applies
+          // it, but the kiosk never loaded it, so KioskProductModal's def lookup fell back
+          // to the seed defaults and every REAL cooking preference was silently skipped
+          // ('[kiosk] instruction group not found'). Same read OnlineSurface uses.
+          supabase.from('config_pushes').select('snapshot->instructionGroupDefs')
+            .eq('location_id', locationId).order('created_at', { ascending: false }).limit(1).maybeSingle(),
         ]);
         // Fetch links only for this location's menus
         const menuIds = (mRes.data || []).map(m => m.id);
@@ -125,6 +132,13 @@ function useKioskMenu(profile, locationId) {
           ? await supabase.from('menu_category_links').select('*').in('menu_id', menuIds)
           : { data: [] };
         if (!alive) return;
+        // Apply real instruction defs into the store so KioskProductModal's existing
+        // useStore(s => s.instructionGroupDefs) lookup resolves them. Keep the seed
+        // defaults when no push exists yet (mock/dev).
+        const instDefs = pRes?.data?.instructionGroupDefs;
+        if (Array.isArray(instDefs) && instDefs.length) {
+          useStore.setState({ instructionGroupDefs: instDefs });
+        }
         setData({
           items: iRes.data || [],
           categories: cRes.data || [],
