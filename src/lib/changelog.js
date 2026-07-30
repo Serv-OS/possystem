@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.955', date: '30 Jul 2026', label: 'The phantom "menu-1" — the real reason categories kept dying',
+    changes: [
+      'Found via the second red banner: if Menu manager opened before your menus finished loading (typical right after signing in), the selected menu silently fell back to a hardcoded placeholder id that exists nowhere — and stayed stuck on it. Every category created after that carried the phantom id and was refused by the database. Before the banner existed, that refusal was silent: category on screen, gone on refresh. This + the parent/child save race were your recurring losses.',
+      'Fixed twice over: the selected menu now snaps to your first real menu the moment the list loads (and whenever the selected one stops existing), and creating a category can never stamp a menu id that is not a real menu.',
+      'TEST: hard-refresh Back Office → go STRAIGHT to Menu (fast, before anything loads) → add a category → refresh → it persists. No red bar.',
+    ],
+  },
+  {
     version: '5.5.954', date: '30 Jul 2026', label: 'Menu saves join the guarded chain (the banner caught the next one)',
     changes: [
       'The red banner caught its second real bug: a category refusing to save because the MENU it belongs to had itself failed to save silently (menu saves were still console-only). Menus now save through the same ordered, guarded chain as categories — a new menu always lands before its first category, and any menu save failure shows the red banner instantly.',

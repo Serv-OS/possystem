@@ -251,6 +251,15 @@ function MenuTab() {
           markBOChange, showToast, modifierGroupDefs } = useStore();
 
   const [selMenuId, setSelMenuId] = useState(menus?.[0]?.id||'menu-1');
+  // v5.5.955 — THE PHANTOM 'menu-1'. If Menu manager mounts before menus finish
+  // loading, selMenuId froze on the hardcoded fallback (an id that exists nowhere)
+  // and NEVER healed — every category created after that carried menuId 'menu-1'
+  // and died on menu_categories_menu_id_fkey (silently pre-v951; the banner caught
+  // it twice tonight). Snap to the first real menu the moment the list arrives, and
+  // whenever the selected menu stops existing (e.g. deleted on another device).
+  useEffect(() => {
+    if (menus?.length && !menus.some(m => m.id === selMenuId)) setSelMenuId(menus[0].id);
+  }, [menus, selMenuId]);
   const [addingMenu, setAddingMenu]   = useState(false);
   const [editingMenuId, setEditingMenuId] = useState(null); // v4.6.4: which menu's settings panel is open
   const [newMenuName, setNewMenuName] = useState('');
@@ -475,7 +484,10 @@ function MenuTab() {
     // v5.5.950: number within the SIBLING level (max+1), not the global category count —
     // the global counter minted sortOrders that collided across levels and left ties.
     const _sibs = menuCategories.filter(c => (c.parentId||null) === (catForm.parentId||null));
-    addCategory({ menuId:selMenuId, ...catForm, parentId:catForm.parentId||null, sortOrder: _sibs.length ? Math.max(..._sibs.map(c=>c.sortOrder||0)) + 1 : 0 });
+    // v5.5.955: NEVER stamp a menu id that isn't a real menu (the phantom 'menu-1'
+    // race). A null menuId is legal — the category then shows on every menu.
+    const _menuId = (menus||[]).some(m=>m.id===selMenuId) ? selMenuId : ((menus||[])[0]?.id || null);
+    addCategory({ menuId:_menuId, ...catForm, parentId:catForm.parentId||null, sortOrder: _sibs.length ? Math.max(..._sibs.map(c=>c.sortOrder||0)) + 1 : 0 });
     markBOChange(); showToast(`"${catForm.label}" added`,'success');
     setCatForm({label:'',icon:'🍽',color:'#3b82f6',parentId:''}); setAddingCat(false);
   };
