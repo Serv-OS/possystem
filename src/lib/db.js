@@ -13,6 +13,7 @@ import { logActivity } from './activity';
 import { VERSION } from './version';
 import { getTodayStartFallback } from './locationTime';
 import { isTrainingMode } from './trainingMode';
+import { reportSave } from './saveHealth';
 import { describeMenuChange } from './menuDiff';
 import { money } from './currency';
 
@@ -138,7 +139,7 @@ export const upsertMenuCategory = async (cat, locationId = null) => {
     is_special: cat.isSpecial ?? cat.is_special ?? false,
     updated_at: new Date().toISOString(),
   });
-  if (result.error) console.error('[DB] menu_categories upsert failed:', result.error.message);
+  reportSave('category', result.error);   // v5.5.951 — loud, not console-only
   return result;
 };
 
@@ -220,7 +221,7 @@ export const upsertMenuItem = async (item, locationId = null) => {
   };
 
   const result = await supabase.from('menu_items').upsert(dbItem, { onConflict: 'id' });
-  if (result.error) console.error('[DB] menu_items upsert failed:', result.error.message, 'item:', item.id);
+  reportSave('item', result.error);   // v5.5.951
   return result;
 };
 
@@ -277,7 +278,7 @@ export const upsertModifierGroup = async (group, locationId = null) => {
     sort_order:     group.sortOrder ?? group.sort_order ?? 0,
   };
   const result = await supabase.from('modifier_groups').upsert(row, { onConflict: 'id' });
-  if (result.error) console.error('[DB] modifier_groups upsert failed:', result.error.message, 'group:', group.id);
+  reportSave('modifier group', result.error);   // v5.5.951
   return result;
 };
 

@@ -80,6 +80,7 @@ import XeroIntegration from './sections/XeroIntegration';
 import MenuBoards from './sections/MenuBoards';
 import PrintMenu from './sections/PrintMenu';
 import { money, currencySymbol } from '../lib/currency';
+import { subscribeSaveHealth } from '../lib/saveHealth';
 
 const NAV = [
   { id:'overview',   label:'Overview',        icon:'◈',  group:'Dashboard' },
@@ -161,6 +162,31 @@ const NAV_IA = [
   { label:'Reports',    icon:'reports',   children:[['reports','All reports'],['shift','Shifts'],['eod','Close day'],['pettycash','Petty cash'],['waitlist-insights','Tables Ready']] },
   { label:'Settings',   icon:'settings',  children:[['location','Location settings'],['receipt','Receipt'],['sending-domain','Email domain'],['xero','Xero (accounting)'],['ai','AI assistant']] },
 ];
+
+// v5.5.951 — the "Premium Sauces vanished" guard. Menu writers used to log failures
+// to the console and nothing else, while the screen showed the change as saved; a
+// tab whose login had silently expired could edit for hours and lose EVERYTHING on
+// refresh (reads stay alive on anon policies, so the app still looked signed in).
+// This banner is undismissable while saves are failing and clears itself on the
+// next successful save. saveHealth also auto-kicks a session refresh on auth errors.
+function SaveHealthBanner() {
+  const [health, setHealth] = useState({ broken: false });
+  useEffect(() => subscribeSaveHealth(setHealth), []);
+  if (!health.broken) return null;
+  return (
+    <div style={{
+      position:'fixed', top:0, left:0, right:0, zIndex:100002,
+      background:'var(--red, #d33)', color:'#fff', padding:'12px 18px',
+      fontSize:13.5, fontWeight:800, textAlign:'center', lineHeight:1.45,
+      boxShadow:'0 2px 18px rgba(0,0,0,.45)',
+    }}>
+      ⚠ YOUR CHANGES ARE NOT SAVING{health.authy
+        ? ' — your sign-in has expired. Refresh this page and sign in again, then REDO the change you just made.'
+        : ` — ${health.message || 'database write failed'}. Redo the change once this clears.`}
+      <span style={{ fontWeight:500, opacity:.9 }}> Anything edited while this bar is showing will be lost.</span>
+    </div>
+  );
+}
 
 export default function BackOfficeApp() {
   const { setAppMode, staff, closedChecks, tables, devices, theme, setTheme } = useStore();
@@ -466,6 +492,7 @@ export default function BackOfficeApp() {
       display:'flex', height:'100vh', background:'transparent', color:'var(--t1)',
       fontFamily:'inherit', overflow:'hidden',
     }}>
+      <SaveHealthBanner />
       {/* ── Sidebar (glass) ─────────────────────────────── */}
       <div style={{
         width:236, background:'var(--glass-bg)',

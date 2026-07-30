@@ -21,6 +21,7 @@ import { dispatchDelivery, sendDeliveryTrackingSMS } from '../lib/delivery/dispa
 import { STALE_ORDER_FLOOR_MS } from '../sync/staleness';
 import { giftRecordFrom, giftLegs, reverseGiftCard } from '../lib/giftCommit';
 import { waitlistSlice } from './waitlistSlice';
+import { reportSave } from '../lib/saveHealth';
 
 // v5.5.944: terminal jobs whose closed_check upsert failed and were flagged to the
 // activity feed — once per job per boot, so the 8s retry loop doesn't spam the feed.
@@ -115,19 +116,22 @@ const sbUpsertCategory = async (cat) => {
     is_special: cat.isSpecial ?? cat.is_special ?? false,  // v5.5.316: persist so kiosk/online hide special cats
     updated_at: new Date().toISOString(),
   });
-  if (error) console.error('[Supabase] menu_categories upsert error:', error);
+  // v5.5.951: failures must be LOUD — a silent console.error here is how "Premium
+  // Sauces" lived on screen all session and never existed after refresh.
+  reportSave('category', error);
 };
 const sbDeleteCategory = async (id) => {
   if (isMock) return;
   const locationId = getActiveLocationSync() || await getLocationId();
   // v5.5.279: location_id guard — never delete across tenants
-  await supabase.from('menu_categories').delete().eq('id', id).eq('location_id', locationId);
+  const { error } = await supabase.from('menu_categories').delete().eq('id', id).eq('location_id', locationId);
+  reportSave('category delete', error);   // v5.5.951
 };
 const sbUpsertMenuItem = async (item) => {
   if (isMock) return;
   const locationId = getActiveLocationSync() || await getLocationId();
   if (!locationId) return console.warn('[Supabase] no location ID — item not saved');
-  await supabase.from('menu_items').upsert({
+  const { error } = await supabase.from('menu_items').upsert({
     id: item.id, location_id: locationId, name: item.menuName||item.menu_name||item.name||'Item',
     menu_name: item.menuName||item.menu_name||item.name||'Item', receipt_name: item.receiptName||item.name,
     kitchen_name: item.kitchenName||item.name, description: item.description||'',
@@ -141,6 +145,7 @@ const sbUpsertMenuItem = async (item) => {
     sold_alone: item.soldAlone||false, archived: item.archived||false,
     updated_at: new Date().toISOString()
   });
+  reportSave('item', error);   // v5.5.951 — this writer previously didn't even LOOK at the result
 };
 import { INITIAL_KDS, SHIFT, MENU_ITEMS, CATEGORIES, STAFF as STAFF_SEED, QUICK_IDS, ALLERGENS as ALLERGEN_DEFS } from '../data/seed';
 import { money } from '../lib/currency';

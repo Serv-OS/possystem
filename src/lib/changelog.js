@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.951', date: '30 Jul 2026', label: 'Vanishing categories/items: silent save failures are now IMPOSSIBLE to miss',
+    changes: [
+      'Root cause found and proven: when a long-open Back Office tab\'s sign-in silently expires, the app KEEPS LOOKING signed in (reading the menu is public) but every save quietly fails with a permissions error the code only logged to the browser console. You could build categories and items for an hour and lose all of it on refresh — Sauces, Premium Sauces, Beer, Draught, Beavertown and Creamy Ranch never reached the database.',
+      'The fix, across the system: every menu save (categories, items, modifier groups — both save paths) now verifies the database accepted it. The moment one fails, a RED FULL-WIDTH BAR locks to the top of Back Office: "YOUR CHANGES ARE NOT SAVING", with a plain instruction (refresh + sign in again when it\'s an expired session). It cannot be dismissed and clears itself on the next successful save. On sign-in errors the app also tries to refresh your session automatically.',
+      'Your lost tree from tonight was never in the database, so it can\'t be restored — refresh Back Office, sign in, and re-add: Sauces → Premium Sauces (+ Creamy Ranch), Beer → Draught / Beavertown. With this version, if a save fails you\'ll know within a second, not after a refresh.',
+      'TEST: hard-refresh Back Office → add a category → refresh → it\'s still there. (The write path itself was verified live end-to-end tonight with a real signed-in session.)',
+    ],
+  },
+  {
     version: '5.5.950', date: '30 Jul 2026', label: 'Category drag & drop: lands where you drop it, order never shuffles',
     changes: [
       'Two real bugs. (1) Dropping a category inserted it ABOVE the row you dropped on — so dragging downwards landed one slot high, and dragging onto the next row down did nothing. Drops are now direction-aware: drag down → lands after the row you drop on; drag up → before it.',
