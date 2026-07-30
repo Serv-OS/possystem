@@ -423,15 +423,19 @@ function MenuTab() {
   // ── Category drag: same level = reorder, cross level = nest ──────────────
   const onCatDrop = useCallback((e, targetId) => {
     e.preventDefault();
+    e.stopPropagation();   // v5.5.956: a row drop must not ALSO fire the container's catch-all
     if (!dragCatId || dragCatId===targetId) { setDragCatId(null); setOverCatId(null); return; }
     const dragged = menuCategories.find(c=>c.id===dragCatId);
     const target  = menuCategories.find(c=>c.id===targetId);
     if (!dragged) { setDragCatId(null); setOverCatId(null); return; }
     // ONLY reorder within the same parent level — no cross-level nesting via drag
     // (Use the ↕ Move button per category to change parent/nesting)
-    if (targetId==='root' || dragged.parentId===target?.parentId) {
-      const level = targetId==='root' ? null : dragged.parentId;
-      const siblings = menuCategories.filter(c=>c.parentId===level)
+    // v5.5.956: 'end' = the container catch-all — send to the END of the dragged
+    // item's OWN level (dropping below the list / in a gap used to just snap back).
+    const isEnd = targetId==='end';
+    if (isEnd || dragged.parentId===target?.parentId) {
+      const level = dragged.parentId ?? null;
+      const siblings = menuCategories.filter(c=>(c.parentId??null)===level)
         .sort((a,b)=>((a.sortOrder||0)-(b.sortOrder||0)) || String(a.label||'').localeCompare(String(b.label||'')));
       const without  = siblings.filter(c=>c.id!==dragCatId);
       // v5.5.950: DIRECTION-AWARE drop. Insert-before-target meant dragging DOWN landed
@@ -440,13 +444,16 @@ function MenuTab() {
       // lands AFTER the row you drop on; upward stays before it.
       const fromIdx = siblings.findIndex(c=>c.id===dragCatId);
       const toIdx   = siblings.findIndex(c=>c.id===targetId);
-      let ti        = targetId==='root' ? without.length : without.findIndex(c=>c.id===targetId);
-      if (targetId!=='root' && fromIdx < toIdx) ti += 1;
+      let ti        = isEnd ? without.length : without.findIndex(c=>c.id===targetId);
+      if (!isEnd && fromIdx < toIdx) ti += 1;
       const reordered = [...without.slice(0,ti), dragged, ...without.slice(ti)];
       // Renumber the WHOLE level 0..n — also heals legacy duplicate sortOrders on this
       // level, which were what let the order shuffle between page loads.
       reordered.forEach((c,i)=>{ if((c.sortOrder??-1)!==i) updateCategory(c.id,{sortOrder:i}); });
-      markBOChange(); showToast('Reordered','success');
+      markBOChange(); showToast(isEnd ? `${dragged.label} → end of its level` : 'Reordered','success');
+    } else {
+      // v5.5.956: never refuse SILENTLY — the invisible no-op read as "snapped back".
+      showToast('Drag reorders within the same level — use the ↕ Move button to change parent', 'info');
     }
     setDragCatId(null); setOverCatId(null);
   },[dragCatId, menuCategories, updateCategory, markBOChange, showToast]);
@@ -732,7 +739,14 @@ function MenuTab() {
         {/* Root drop zone */}
 
 
-        <div style={{ flex:1, overflowY:'auto', padding:'4px 6px' }}>
+        {/* v5.5.956: catch-all drop zone. Dropping BELOW the last row (or in any gap)
+            used to hit an element with no drop handler — the browser cancelled the
+            drag and the row "snapped back" (Liqueurs-to-bottom). Anywhere that isn't
+            a category row now means "send to the END of its own level". Row drops
+            stopPropagation, so this never double-fires. */}
+        <div style={{ flex:1, overflowY:'auto', padding:'4px 6px' }}
+          onDragOver={e=>{ if (dragCatId) e.preventDefault(); }}
+          onDrop={e=>{ if (dragCatId) onCatDrop(e,'end'); }}>
           {/* v5.5.813 (handoff markers 1 + 2): row actions are hidden at rest and
               fade in on hover. They stay in the DOM and in tab order — revealed on
               :focus-within for keyboard users, and always shown on touch devices

@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.956', date: '30 Jul 2026', label: 'Category drag: drop below the list works, nothing snaps back silently',
+    changes: [
+      'Dragging a category to the bottom (or into any gap between rows) landed on dead space with no drop handler — the browser cancelled the drag and the row snapped home. The whole list is now a drop zone: anywhere that isn\'t a row means "send to the end of its level".',
+      'Dropping onto a row from a different level (e.g. a sub-category onto a main category) used to do nothing silently — that also read as "snapped back". It now tells you: drag reorders within a level; the ↕ Move button changes parent.',
+      'Every successful drop shows a toast so you always know it took.',
+      'TEST: drag Liqueurs (or any sub) to the empty space below its list → it lands last in its level, toast confirms → refresh → order kept.',
+    ],
+  },
+  {
     version: '5.5.955', date: '30 Jul 2026', label: 'The phantom "menu-1" — the real reason categories kept dying',
     changes: [
       'Found via the second red banner: if Menu manager opened before your menus finished loading (typical right after signing in), the selected menu silently fell back to a hardcoded placeholder id that exists nowhere — and stayed stuck on it. Every category created after that carried the phantom id and was refused by the database. Before the banner existed, that refusal was silent: category on screen, gone on refresh. This + the parent/child save race were your recurring losses.',
