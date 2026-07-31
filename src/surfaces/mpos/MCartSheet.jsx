@@ -296,6 +296,8 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
 
 function CartLine({ item, onRemove, onInc, onDec, onActions }) {
   const sent = item.status === 'sent';
+  // v5.5.961: MPOS honours its own profile's "Course management: Hidden" toggle
+  const hideCourses = useStore(s => (s.deviceConfig?.hiddenFeatures || []).includes('courses'));
   const baseLine = (item.price || 0) * (item.qty || 0);
   const lineTotal = item.discount?.value
     ? baseLine * (1 - item.discount.value / 100)
@@ -318,7 +320,7 @@ function CartLine({ item, onRemove, onInc, onDec, onActions }) {
           <div style={{ display:'flex', alignItems:'baseline', gap:8, marginBottom:2 }}>
             <span style={{ fontSize:14, fontWeight:700, color:'var(--t1)' }}>{item.name}</span>
             {sent && <span style={{ ...Sx.pill, background:'var(--bg3)', color:'var(--t4)', border:'1px solid var(--bdr)' }}>Sent</span>}
-            {item.course != null && item.course > 0 && (
+            {!hideCourses && item.course != null && item.course > 0 && (
               <span style={{ ...Sx.pill, background:'var(--acc-d)', color:'var(--acc)', border:'1px solid var(--acc-b)' }}>C{item.course}</span>
             )}
           </div>
@@ -378,8 +380,10 @@ function CartLine({ item, onRemove, onInc, onDec, onActions }) {
 // fire at a glance. Course 0 = Immediate (drinks fired on send), 1 = starters,
 // 2 = mains, 3+ = later courses.
 function CourseGroupedItems({ items, onRemove, onInc, onDec, onActions }) {
+  // v5.5.961: profile can hide course management — collapse to one flat group, no headers
+  const hideCourses = useStore(s => (s.deviceConfig?.hiddenFeatures || []).includes('courses'));
   // Bucket by course
-  const byCourse = items.reduce((acc, it) => {
+  const byCourse = hideCourses ? { 0: items } : items.reduce((acc, it) => {
     const c = it.course ?? 1;
     (acc[c] = acc[c] || []).push(it);
     return acc;
@@ -414,6 +418,7 @@ function CourseGroupedItems({ items, onRemove, onInc, onDec, onActions }) {
         return (
           <div key={c} style={{ marginBottom:14 }}>
             {/* Course header */}
+            {!hideCourses && (
             <div style={{ display:'flex', alignItems:'center', gap:8, padding:'10px 4px' }}>
               <span style={{
                 fontSize:11, fontWeight:800, color:accent, textTransform:'uppercase', letterSpacing:'.07em',
@@ -430,6 +435,7 @@ function CourseGroupedItems({ items, onRemove, onInc, onDec, onActions }) {
                 {money(courseSubtotal)}
               </span>
             </div>
+            )}
             {pending.length > 0 && (
               <>
                 {sent.length > 0 && (

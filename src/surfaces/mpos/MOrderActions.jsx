@@ -40,9 +40,12 @@ export default function MOrderActions({ onClose }) {
   const session = isTable ? tables.find(t => t.id === activeTableId)?.session : null;
   const orderDiscounts = isTable ? (session?.discounts || []) : (walkInOrder?.discounts || []);
 
+  // v5.5.961: profile can hide course management on this device
+  const hideCourses = useStore(s => (s.deviceConfig?.hiddenFeatures || []).includes('courses'));
+
   // Held courses (sessions only — walk-ins fire everything on send)
   const heldCourses = (() => {
-    if (!session) return [];
+    if (!session || hideCourses) return [];
     const fired = new Set(session.firedCourses || []);
     const all = new Set((session.items || []).filter(i => !i.voided).map(i => i.course ?? 1));
     return [...all].filter(c => !fired.has(c)).sort((a, b) => a - b);

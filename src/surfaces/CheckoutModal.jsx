@@ -1681,7 +1681,9 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     return acc;
   }, {});
   const courseNums = Object.keys(courseGroups).map(Number).sort();
-  const showCourses = courseNums.length > 1;
+  // v5.5.961: honour the device profile's "Course management: Hidden" toggle on the bill too
+  const hideCourses = (deviceConfig?.hiddenFeatures || []).includes('courses');
+  const showCourses = !hideCourses && courseNums.length > 1;
 
   const contextLabel = isBarTab ? `Bar tab · ${tabName}`
     : tableId ? `${tableId.replace(/^[tbp]/,'')} · ${orderType}${covers>1?` · ${covers} covers`:''}`

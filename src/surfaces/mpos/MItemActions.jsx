@@ -28,6 +28,8 @@ const DISCOUNTS = [
 
 export default function MItemActions({ item, onClose }) {
   const { activeTableId, staff, updateItemCourse, updateItemNote, addItemDiscount, removeItemDiscount, voidItem, removeItem } = useStore();
+  // v5.5.961: profile can hide course management on this device
+  const hideCourses = useStore(s => (s.deviceConfig?.hiddenFeatures || []).includes('courses'));
   const sent = item?.status === 'sent';
   const [view, setView] = useState('main'); // main | course | discount | note
   // Pending discount waiting on a manager PIN
@@ -109,7 +111,7 @@ export default function MItemActions({ item, onClose }) {
 
         {view === 'main' && (
           <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
-            {!sent && <ActionRow icon="⏱" label="Change course" sub={`Currently course ${item.course ?? 1}`} onClick={() => setView('course')} />}
+            {!sent && !hideCourses && <ActionRow icon="⏱" label="Change course" sub={`Currently course ${item.course ?? 1}`} onClick={() => setView('course')} />}
             <ActionRow icon="📝" label={item.notes ? 'Edit note' : 'Add note'} sub={item.notes || 'Special instruction for this item'} onClick={() => { setDraftNote(item.notes || ''); setView('note'); }} />
             <ActionRow icon="💸" label={item.discount ? 'Change discount' : 'Apply discount'} sub={item.discount ? `${item.discount.label} active` : 'Pick from preset list'} onClick={() => setView('discount')} />
             {item.discount && <ActionRow icon="✕" label="Remove discount" onClick={clearDiscount} />}

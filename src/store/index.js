@@ -1072,6 +1072,13 @@ export const useStore = create((set, get) => ({
     if (!newItem.parentId && (newItem.type || 'simple') === 'simple' && (newItem.assignedModifierGroups?.length > 0)) {
       newItem.type = 'modifiable';
     }
+    // v5.5.961: new products are born with the venue's default tax rate stamped on
+    // (same resolution as lib/tax.js), so pricing before/after setting up tax rates
+    // never leaves items untaxed. An explicit taxRateId from the caller wins.
+    if (!newItem.taxRateId && newItem.type !== 'spacer') {
+      const def = (useStore.getState().taxRates || []).find(r => (r.isDefault || r.is_default) && r.active !== false);
+      if (def) newItem.taxRateId = def.id;
+    }
     set(s => ({ menuItems: [...s.menuItems, newItem] }));
     upsertMenuItem(newItem);
     return newItem;

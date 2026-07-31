@@ -1407,6 +1407,7 @@ function ItemsLibrary() {
 
   const recipeCosts = useRecipeCosts();          // v5.5.813 — B7 COST + GP%
   const [hovRow, setHovRow] = useState(null);
+  const [bulkTaxId, setBulkTaxId] = useState(''); // v5.5.961 — bulk tax fix-up strip
 
   // Ex-VAT net selling price — the same basis Inventory → Reports → Recipe GP
   // uses, so GP% can never disagree between the two screens.
@@ -1559,6 +1560,36 @@ function ItemsLibrary() {
             </span>
           </span>
         </div>
+
+        {/* v5.5.961: bulk tax fix-up. Peter priced the whole menu BEFORE creating tax
+            rates, so every item sat with no rate and fixing them one-by-one through the
+            editor's Tax tab was unworkable. This strip appears only while items are
+            missing a rate: pick one, apply to all the gaps in a click. Items that
+            already have a rate are never touched. */}
+        {!showArchived && (() => {
+          const missingTax = menuItems.filter(i => !i.archived && !i.taxRateId);
+          if (missingTax.length === 0 || !(taxRates || []).length) return null;
+          return (
+            <div style={{ padding:'8px 12px', borderBottom:'1px solid var(--bdr)', background:'color-mix(in srgb, var(--amber, #F5A623) 12%, transparent)', display:'flex', alignItems:'center', gap:10, flexWrap:'wrap', flexShrink:0 }}>
+              <span style={{ fontSize:12, fontWeight:700, color:'var(--amber, #F5A623)' }}>⚠ {missingTax.length} item{missingTax.length===1?' has':'s have'} no tax rate</span>
+              <select value={bulkTaxId} onChange={e=>setBulkTaxId(e.target.value)} style={{ ...inp, width:'auto', fontSize:11, cursor:'pointer' }}>
+                <option value="">— pick the default rate —</option>
+                {(taxRates||[]).map(t=><option key={t.id} value={t.id}>{t.name} ({t.rate}%)</option>)}
+              </select>
+              <button disabled={!bulkTaxId}
+                onClick={()=>{
+                  missingTax.forEach(i=>updateMenuItem(i.id,{ taxRateId: bulkTaxId }));
+                  markBOChange();
+                  const t=(taxRates||[]).find(r=>r.id===bulkTaxId);
+                  showToast(`${t?.name||'Tax rate'} set on ${missingTax.length} item${missingTax.length===1?'':'s'}`,'success');
+                }}
+                style={{ padding:'6px 14px', borderRadius:8, cursor:bulkTaxId?'pointer':'not-allowed', fontFamily:'inherit', background:bulkTaxId?'var(--acc)':'var(--bg3)', border:'none', color:bulkTaxId?'#0b0c10':'var(--t4)', fontSize:12, fontWeight:800 }}>
+                Apply to all {missingTax.length}
+              </button>
+              <span style={{ fontSize:10.5, color:'var(--t4)' }}>Only fills the gaps — items that already have a rate are untouched.</span>
+            </div>
+          );
+        })()}
 
         {/* Column headers */}
         <div style={{ display:'grid', gridTemplateColumns:COL, gap:0, padding:'7px 12px', borderBottom:'2px solid var(--bdr)', background:'var(--bg2)', flexShrink:0, alignItems:'center' }}>

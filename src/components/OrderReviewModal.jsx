@@ -1,9 +1,12 @@
 import { useState } from 'react';
 import { ALLERGENS } from '../data/seed';
 import { money } from '../lib/currency';
+import { useStore } from '../store';
 
 export default function OrderReviewModal({ items, subtotal, service, total, checkDiscount, orderType, tableLabel, server, covers, customer, onClose, onCheckout, onPrint }) {
   const [mode, setMode] = useState('compact');  // compact | detailed
+  // v5.5.961: this device's profile can hide course management entirely
+  const hideCourses = useStore(s => (s.deviceConfig?.hiddenFeatures || []).includes('courses'));
   const nonVoided = items.filter(i => !i.voided);
   const sentCount  = nonVoided.filter(i => i.status==='sent').length;
   const pendingCount = nonVoided.filter(i => i.status==='pending').length;
@@ -120,7 +123,7 @@ export default function OrderReviewModal({ items, subtotal, service, total, chec
                     )}
                     <div style={{ display:'flex', gap:4, marginTop:5, flexWrap:'wrap' }}>
                       {item.seat&&item.seat!=='shared'&&<span style={{ fontSize:10, padding:'1px 6px', borderRadius:4, background:'var(--acc-d)', color:'var(--acc)', fontWeight:700, border:'1px solid var(--acc-b)' }}>Seat {item.seat}</span>}
-                      {item.course>0&&<span style={{ fontSize:10, padding:'1px 6px', borderRadius:4, background:'var(--bg3)', color:'var(--t3)', fontWeight:700, border:'1px solid var(--bdr)' }}>Course {item.course}</span>}
+                      {!hideCourses&&item.course>0&&<span style={{ fontSize:10, padding:'1px 6px', borderRadius:4, background:'var(--bg3)', color:'var(--t3)', fontWeight:700, border:'1px solid var(--bdr)' }}>Course {item.course}</span>}
                     </div>
                   </div>
                   <div style={{ textAlign:'right', flexShrink:0 }}>

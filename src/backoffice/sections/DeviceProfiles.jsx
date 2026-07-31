@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useStore } from '../../store';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
+import { reportSave } from '../../lib/saveHealth';
 
 const SURFACES = [
   { id:'tables', label:'Floor plan', icon:'⬚', desc:'Opens to the table layout view' },
@@ -197,17 +198,20 @@ export default function DeviceProfiles() {
         if (existing.data) {
           // Update all fields explicitly
           const { error: e, data: dataUp } = await supabase.from('device_profiles').update(row).eq('id', row.id).select('id');
-          if (!dataUp || dataUp.length === 0) throw new Error(`Profile update matched 0 rows for id=${p.id}. Column may be missing (run migration) or RLS blocked it.`);
+          if (e) throw e;
+          if (!dataUp || dataUp.length === 0) throw new Error(`Profile update matched 0 rows for id=${row.id}. Column may be missing (run migration) or RLS blocked it.`);
           error = e;
         } else {
           const { error: e } = await supabase.from('device_profiles').insert(row);
           error = e;
         }
         if (error) throw error;
+        reportSave('device profile', null);
         showToast(`"${updated.name}" saved`, 'success');
       } catch (err) {
         console.error('Profile save failed:', err);
-        showToast('Save failed — check connection', 'error');
+        reportSave('device profile', err);
+        showToast(`Save failed — "${updated.name}" NOT saved to cloud`, 'error');
       }
     } else {
       showToast(`"${updated.name}" saved`, 'success');
@@ -229,8 +233,12 @@ export default function DeviceProfiles() {
     } catch {}
 
     markBOChange();
-    showToast(`"${profile.name}" profile created`, 'success');
 
+    // v5.5.961: the success toast used to fire HERE, before the DB insert was even
+    // attempted — a failed insert left a phantom profile that lived in state +
+    // localStorage all evening and "vanished on refresh" when loadFromDB replaced
+    // both with DB truth. Now: success only after the row lands; on failure the
+    // card is reverted on the spot and the saveHealth banner goes up.
     if (!isMock) {
       try {
         const locId = await resolveLocId();
@@ -238,16 +246,35 @@ export default function DeviceProfiles() {
         const row = toDbRow(newProfile, locId);
         const { error } = await supabase.from('device_profiles').insert(row);
         if (error) throw error;
+        reportSave('device profile', null);
+        showToast(`"${profile.name}" profile created`, 'success');
       } catch (err) {
         console.error('Profile insert failed:', err);
-        showToast('Could not save to cloud — check connection', 'error');
+        reportSave('device profile', err);
+        setProfiles(ps => ps.filter(x => x.id !== newProfile.id));
+        try {
+          const cur = JSON.parse(localStorage.getItem('rpos-device-profiles') || '[]');
+          localStorage.setItem('rpos-device-profiles', JSON.stringify(cur.filter(x => x.id !== newProfile.id)));
+        } catch {}
+        showToast(`"${profile.name}" was NOT saved — fix the connection and create it again`, 'error');
       }
+    } else {
+      showToast(`"${profile.name}" profile created`, 'success');
     }
   };
 
   const deleteProfile = async (id) => {
+    // v5.5.961: check the delete actually landed — a swallowed failure here made
+    // the profile resurrect on refresh (inverse of the phantom-create bug).
+    if (!isMock) {
+      const { error } = await supabase.from('device_profiles').delete().eq('id', id);
+      reportSave('device profile delete', error);
+      if (error) {
+        showToast('Delete failed — profile kept', 'error');
+        return;
+      }
+    }
     setProfiles(ps => ps.filter(p => p.id !== id));
-    if (!isMock) await supabase.from('device_profiles').delete().eq('id', id);
     try {
       const cur = JSON.parse(localStorage.getItem('rpos-device-profiles') || '[]');
       localStorage.setItem('rpos-device-profiles', JSON.stringify(cur.filter(p => p.id !== id)));

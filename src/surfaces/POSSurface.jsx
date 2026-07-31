@@ -1209,6 +1209,7 @@ export default function POSSurface() {
                 )}
                 {byCourse[courseNum].map(item=>(
                   <OrderItem key={item.uid} item={item} covers={covers} orderType={orderType} seatList={seatList} namesOnly={namesOnly}
+                    hideCourses={hideCourses}
                     flash={flashLineUid===item.uid}
                     onQty={d=>updateItemQty(item.uid,d)}
                     onRemove={()=>removeItem(item.uid)}
@@ -1528,9 +1529,12 @@ export default function POSSurface() {
                 <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12,paddingBottom:10,borderBottom:'1px solid var(--bdr)'}}>
                   <div>
                     <div style={{fontSize:14,fontWeight:700,color:'var(--t1)'}}>Quick picks</div>
-                    <div style={{fontSize:11,color:'var(--t3)',marginTop:1}}>AI-curated · {daypart}</div>
+                    {/* v5.5.961: was "AI-curated · Live" — there is no AI behind this grid
+                        (it renders exactly locations.quick_screen_ids, hand-picked in
+                        Back Office → Menu Manager → Quick Screen). Label the truth. */}
+                    <div style={{fontSize:11,color:'var(--t3)',marginTop:1}}>Set in Back Office · {daypart}</div>
                   </div>
-                  <span style={{fontSize:11,fontWeight:700,padding:'3px 10px',borderRadius:20,background:'var(--acc-d)',border:'1px solid var(--acc-b)',color:'var(--acc)',display:'inline-flex',alignItems:'center',gap:4}}><Icon name="sparkle" size={11}/>Live</span>
+                  <span style={{fontSize:11,fontWeight:700,padding:'3px 10px',borderRadius:20,background:'var(--acc-d)',border:'1px solid var(--acc-b)',color:'var(--acc)',display:'inline-flex',alignItems:'center',gap:4}}><Icon name="bolt" size={11}/>{quickItems.length} pinned</span>
                 </div>
               )}
               {search&&displayItems.length>0&&(
@@ -1954,7 +1958,7 @@ export default function POSSurface() {
 }
 
 function OrderItem({
-  item, covers, orderType, seatList, onQty, onRemove, onNote, onSeat, onCourse, onVoid, onDiscount, onRemoveDiscount, namesOnly=false, flash=false }) {
+  item, covers, orderType, seatList, onQty, onRemove, onNote, onSeat, onCourse, onVoid, onDiscount, onRemoveDiscount, namesOnly=false, flash=false, hideCourses=false }) {
   const compact = useCompact();
   const [showMenu, setShowMenu] = useState(false);
   const [editNote, setEditNote] = useState(false);
@@ -2073,7 +2077,7 @@ function OrderItem({
                     {item.seat==='shared'?'Shared':`Seat ${item.seat}`}
                   </button>
                 )}
-                {!isCommitted && (
+                {!isCommitted && !hideCourses && (
                   <button onClick={()=>setShowMenu(s=>!s)} style={{fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:5,background:COURSE_COLORS[item.course]?.bg||'var(--bg3)',border:`1px solid ${(COURSE_COLORS[item.course]?.color||'var(--t3)')+'44'}`,color:COURSE_COLORS[item.course]?.color||'var(--t3)',cursor:'pointer',fontFamily:'inherit'}}>
                     {COURSE_COLORS[item.course]?.label || 'Course 1'}
                   </button>
@@ -2108,6 +2112,7 @@ function OrderItem({
                 </div>
               </div>
             )}
+            {!hideCourses && (
             <div>
               <div style={{fontSize:9,fontWeight:800,color:'var(--t4)',textTransform:'uppercase',letterSpacing:'.08em',marginBottom:6}}>Move to course</div>
               <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
@@ -2118,6 +2123,7 @@ function OrderItem({
                 ))}
               </div>
             </div>
+            )}
             <button onClick={()=>setShowMenu(false)} style={{marginTop:8,fontSize:11,color:'var(--t4)',background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',fontWeight:600}}>Done</button>
           </div>
         )}

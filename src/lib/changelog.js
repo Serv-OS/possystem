@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.961', date: '30 Jul 2026', label: 'Tax in one click, courses hide properly, terminals can\'t vanish, and the Quick screen stops claiming AI',
+    changes: [
+      'ITEMS TAB — FIX MISSING TAX IN ONE CLICK: when any items have no tax rate, an amber strip appears above the list ("54 items have no tax rate"): pick a rate → Apply to all. Only fills the gaps — items with a rate already set are untouched. Built for pricing the menu before setting up tax.',
+      'NEW PRODUCTS ARE BORN TAXED: any newly created product (and sub-item) is automatically stamped with the venue\'s default tax rate (the one marked default in Tax & VAT). Picking a different rate in the editor still wins.',
+      'COURSES HIDDEN MEANS HIDDEN: with Course management set to Hidden on a device profile, the green "Course 1" chip no longer shows on order lines, the "Move to course" picker is gone from the line drawer, the bill in Checkout drops its course group headers, and the Order review modal drops its course chips. MPOS now honours the toggle too (no course pill, no course grouping, no Change course / Fire course actions). Kitchen tickets and the KDS keep courses — the kitchen still needs them, exactly as the toggle\'s description promises.',
+      'TERMINAL PROFILES CAN\'T SILENTLY VANISH: creating a device profile used to show "created" BEFORE saving to the cloud — if the save failed (e.g. an expired session), the profile lived on screen all evening and vanished on refresh. Now the success toast only fires after the row is really in the database; on failure the card is removed immediately, you get a clear "NOT saved" toast, and the red saveHealth banner goes up. Edits and deletes got the same treatment (a failed delete no longer pretends it worked).',
+      'QUICK SCREEN HONESTY: the POS Quick picks header claimed "AI-curated · Live" — there is no AI behind it; it shows exactly what you pinned in Menu Manager → Quick Screen. It now says "Set in Back Office" with a pinned-count badge. (A real AI-suggested quick screen is a build we can do — say the word.)',
+      'TEST: (1) Menu → Items → amber strip → pick rate → Apply → strip disappears; refresh → rates stuck. (2) Create a new product → open it → Tax tab already shows the default rate. (3) On the A50\'s profile set Course management Hidden → order lines show no Course chip anywhere, checkout bill has no course headers. (4) Back Office → Device profiles → create one → it must survive a refresh (and if the save fails you\'ll now KNOW).',
+    ],
+  },
+  {
     version: '5.5.960', date: '30 Jul 2026', label: 'Daily counts drops the £0.00 + the Move-category picker scrolls',
     changes: [
       'Daily counts no longer shows a price under each item — it read a legacy field most items don\'t use (hence the false £0.00), and a counting screen is about quantities anyway.',
