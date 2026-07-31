@@ -28,11 +28,15 @@ const lineQty = (l) => {
 /**
  * Rank menu items by units sold per daypart.
  * @param {Array} checks  closed_checks rows: { items: [...lines], closed_at | created_at }
- * @param {Object} opts   { top = 24 }  how many ids to keep per daypart
+ * @param {Object} opts
+ *   top:      how many ids to keep per daypart (default 24)
+ *   parentOf: optional id => masterId|null — checkout lines carry the VARIANT
+ *             child's id ("Half", "Large"); mapping to the master here merges a
+ *             product's variant sales into one rank ("Cappuccino" = Regular+Large)
  * @returns {{ breakfast: string[], lunch: string[], dinner: string[], late: string[] }}
  *          ids ranked best-seller first (ties broken by id for stable output)
  */
-export function rankQuickPicks(checks, { top = 24 } = {}) {
+export function rankQuickPicks(checks, { top = 24, parentOf } = {}) {
   const counts = { breakfast: {}, lunch: {}, dinner: {}, late: {} };
 
   for (const chk of checks || []) {
@@ -43,8 +47,10 @@ export function rankQuickPicks(checks, { top = 24 } = {}) {
     const lines = Array.isArray(chk?.items) ? chk.items : [];
     for (const l of lines) {
       if (l?.voided) continue;
-      const id = lineItemId(l);
+      let id = lineItemId(l);
       if (!id) continue;
+      const master = parentOf?.(id);
+      if (master) id = master;
       counts[dp][id] = (counts[dp][id] || 0) + lineQty(l);
     }
   }
@@ -79,15 +85,28 @@ export function rankQuickPicks(checks, { top = 24 } = {}) {
  */
 export function resolveQuickItems({ mode, pinnedIds, autoLists, daypart, findItem, isBlocked, slots = 16 }) {
   const ok = (id) => {
-    const it = findItem(id);
-    return it && !isBlocked(it) ? it : null;
+    let it = findItem(id);
+    if (!it) return null;
+    // v5.5.963: stored lists (and old checks) can carry a VARIANT child's id —
+    // a bare "Half"/"Large" tile is meaningless, so represent it by its master
+    // product (tapping the master opens the size picker). Sub-items are NOT
+    // promoted — they're modifier options; they show as themselves only if the
+    // venue sells them standalone (the isBlocked visibility rule handles that).
+    if (it.parentId && it.type !== 'subitem') {
+      const master = findItem(it.parentId);
+      if (!master) return null;
+      it = master;
+    }
+    return !isBlocked(it) ? it : null;
   };
+  // Promotion can map several children onto one master — keep first occurrence.
+  const dedupe = (arr) => { const seen = new Set(); return arr.filter(i => !seen.has(i.id) && seen.add(i.id)); };
   const asPins = (items) => ({ items, source: 'pins', pinnedCount: items.length, rankedCount: 0 });
 
-  const pinned = (pinnedIds || []).map(ok).filter(Boolean);
+  const pinned = dedupe((pinnedIds || []).map(ok).filter(Boolean));
   if ((mode || 'manual') === 'manual') return asPins(pinned.slice(0, slots));
 
-  const auto = (autoLists?.[daypart] || []).map(ok).filter(Boolean);
+  const auto = dedupe((autoLists?.[daypart] || []).map(ok).filter(Boolean));
   if (mode === 'auto') {
     // No sales history for this daypart → fall back to the pins rather than an
     // empty grid — and SAY SO via source:'pins'.

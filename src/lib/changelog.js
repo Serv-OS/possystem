@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.963', date: '31 Jul 2026', label: 'Quick Screen shows the master product, never a bare variant',
+    changes: [
+      'Best-seller ranking used to surface variant sizes as their own tiles — a tile saying just "Half" or "Large" with no product name. The till now always shows the MASTER product (tapping it opens the size picker as normal), and several sizes of the same product collapse into one tile.',
+      'Ranking also merges variant sales into the master from now on — "Cappuccino" ranks by Regular + Large combined, which is what a best-seller list should mean. Existing stored rankings display correctly right away; hit ↻ Refresh from sales once to re-rank with combined counts.',
+      'Sub-items (modifier options like sauces/sides) are NOT promoted to their parent product — they appear as themselves only if you sell them standalone.',
+      'TEST: Provo → POS ⚡ Quick tab in Auto mode → tiles show real product names (no bare "Half"/"Large"/"Regular"); tapping a variant product opens its size picker.',
+    ],
+  },
+  {
     version: '5.5.962', date: '31 Jul 2026', label: 'Smart Quick Screen — real best sellers, per daypart, from your actual sales',
     changes: [
       'THE QUICK SCREEN NOW HAS A BRAIN (a real one this time): Menu Manager → Quick Screen has three modes. MANUAL = exactly your pinned items, as today. AUTO = the till shows the venue\'s genuine best sellers for the current daypart (breakfast/lunch/dinner/late), ranked from the last 28 days of closed checks. HYBRID = your pins keep their slots and best sellers fill the empty ones. Default is Manual — nothing changes until you flip it.',

@@ -3473,7 +3473,15 @@ function QuickScreenManager() {
         .limit(5000);
       if (error) throw error;
       const checks = (data || []).filter(c => c.status !== 'voided');
-      const lists = rankQuickPicks(checks, { top: 24 });
+      // v5.5.963: checkout lines carry the variant CHILD's id ("Half"/"Large") —
+      // map to the master so a product ranks by all its variants combined.
+      // Sub-items (modifier options) keep their own id.
+      const byId = new Map(menuItems.map(m => [m.id, m]));
+      const parentOf = (id) => {
+        const it = byId.get(id);
+        return (it?.parentId && it.type !== 'subitem') ? it.parentId : null;
+      };
+      const lists = rankQuickPicks(checks, { top: 24, parentOf });
       const auto = { computed_at: new Date().toISOString(), days: RANK_DAYS, checks: checks.length, lists };
       // Success toast ONLY once the persist really landed — saveSmart already
       // toasted the failure (and showToast is single-slot: a success here would
