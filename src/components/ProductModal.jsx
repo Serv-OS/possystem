@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useStore } from '../store';
 import { ALLERGENS, PIZZA_TOPPINGS, PIZZA_BASES, PIZZA_CRUSTS, PIZZA_SIZES } from '../data/seed';
 import { money, currencySymbol } from '../lib/currency';
-import { orderOptionFlow } from '../lib/optionFlow';
+import { orderOptionFlow, flowOrderedMods } from '../lib/optionFlow';
 
 // ── Main product modal dispatcher ─────────────────────────────────────────────
 export default function ProductModal({ item, activeAllergens = [], onConfirm, onCancel }) {
@@ -213,13 +213,24 @@ function VariantsModal({ item, activeAllergens, onConfirm, onCancel }) {
 
   const handleAdd = () => {
     const target = childItem || item;
-    const mods = Object.entries(selections).flatMap(([gid,val])=>{
-      if(!val) return [];
-      const group = allGroups.find(g=>g.id===gid);
-      const arr   = Array.isArray(val)?val:[val];
-      return arr.filter(Boolean).map(m=>({groupLabel:group?.label, label:m.label||m.name||'', price:m.price||0}));
+    // v5.5.964: commit mods in FLOW order so tickets/receipts follow the BO flow
+    const mods = flowOrderedMods({
+      order: item?.optionGroupOrder || item?.option_group_order || null,
+      modGroups: allGroups, instGroups,
+      modKeys: Object.keys(selections), instKeys: instGroups.map(g=>g.id),
+      buildModGroup: (gid) => {
+        const val = selections[gid];
+        if(!val) return [];
+        const group = allGroups.find(g=>g.id===gid);
+        const arr   = Array.isArray(val)?val:[val];
+        return arr.filter(Boolean).map(m=>({groupLabel:group?.label, label:m.label||m.name||'', price:m.price||0}));
+      },
+      buildInst: (gid) => {
+        if(!instSel[gid]) return null;
+        const g = instGroups.find(ig=>ig.id===gid);
+        return {groupLabel:g?.name, label:instSel[gid], price:0, _instruction:true};
+      },
     });
-    instGroups.forEach(g=>{ if(instSel[g.id]) mods.push({groupLabel:g.name, label:instSel[g.id], price:0, _instruction:true}); });
 
     // Build display name: "Lager — Pint" or "Ribeye — Large — Chips, Peppercorn"
     const modParts = mods.filter(m=>!m._instruction).map(m=>m.label);
@@ -512,18 +523,24 @@ function ModifiersModal({ item, activeAllergens, onConfirm, onCancel }) {
   };
 
   const handleAdd = () => {
-    const mods = Object.entries(selections).flatMap(([gid, val]) => {
-      if (!val) return [];
-      const group = allModGroups.find(g => g.id === gid);
-      const arr = Array.isArray(val) ? val : [val];
-      return arr.filter(Boolean).map(m => ({ groupLabel: group?.label||group?.name, label: m.label||m.name||'', price: m.price || 0 }));
-    });
-    // Add instructions as zero-price mods for kitchen printing
-    Object.entries(instSelections).forEach(([gid, val]) => {
-      if (val) {
+    // v5.5.964: commit mods in FLOW order so tickets/receipts follow the BO flow
+    const mods = flowOrderedMods({
+      order: item?.optionGroupOrder || item?.option_group_order || null,
+      modGroups: allModGroups, instGroups: instrGroups,
+      modKeys: Object.keys(selections), instKeys: Object.keys(instSelections),
+      buildModGroup: (gid) => {
+        const val = selections[gid];
+        if (!val) return [];
+        const group = allModGroups.find(g => g.id === gid);
+        const arr = Array.isArray(val) ? val : [val];
+        return arr.filter(Boolean).map(m => ({ groupLabel: group?.label||group?.name, label: m.label||m.name||'', price: m.price || 0 }));
+      },
+      buildInst: (gid) => {
+        const val = instSelections[gid];
+        if (!val) return null;
         const g = instrGroups.find(ig => ig.id === gid);
-        mods.push({ groupLabel: g?.name, label: val, price: 0, _instruction: true });
-      }
+        return { groupLabel: g?.name, label: val, price: 0, _instruction: true };
+      },
     });
     onConfirm(item, mods, null, {
       notes: notes.trim(), qty, linePrice: price,

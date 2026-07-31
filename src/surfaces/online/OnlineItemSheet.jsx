@@ -7,7 +7,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { money } from '../../lib/currency';
 import { dietaryBadges, DIET_LABELS } from '../../lib/dietary';
-import { orderOptionFlow } from '../../lib/optionFlow';
+import { orderOptionFlow, flowOrderedMods } from '../../lib/optionFlow';
 
 export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs = [], eightySixIds = [], stockLevels = {}, cart = [], onClose, onAdd }) {
   const [qty, setQty]               = useState(1);
@@ -318,12 +318,17 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
 
   const handleAdd = () => {
     if (!canAdd) { setErrors(validationErrors); return; }
-    const flatMods = [];
-    Object.entries(selections).forEach(([gid, val]) => {
+    // v5.5.964: mods commit in FLOW order (the order the sheet displays), so the
+    // kitchen ticket / receipts follow the Back Office flow instead of always
+    // printing cooking preferences last. Nested sub-picks stay glued to their
+    // parent option; each group's own emission logic is unchanged.
+    const buildGroupMods = (gid) => {
+      const out = [];
       const grp = modGroups.find(g => g.id === gid);
+      const val = selections[gid];
       const arr = Array.isArray(val) ? val : (val ? [val] : []);
       arr.forEach(o => {
-        flatMods.push({
+        out.push({
           id: o?.id || null,
           itemId: resolveOptItemId(o),  // v5.5.313: enable online stock decrement + 86
           name: o?.name || o?.label || '',
@@ -336,7 +341,7 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
         const subPick = subPicks[subKey];
         const subGroup = subPick && allModGroups.find(g => g.id === o?.subGroupId);
         if (subPick && subGroup) {
-          flatMods.push({
+          out.push({
             id: subPick?.id || null,
             itemId: resolveOptItemId(subPick),  // v5.5.313
             name: subPick?.name || subPick?.label || '',
@@ -346,41 +351,44 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
           });
         }
       });
-    });
-    // Quantity-mode picks: emit one entry per pick (so a Box of 3 with 3
-    // Bueno Filled emits three separate Bueno Filled entries — same shape
-    // MItemDetail produces, which the kitchen ticket / reports / receipts
-    // already understand).
-    Object.entries(qtyPicks).forEach(([gid, picks]) => {
-      const grp = (allModGroups || modGroups).find(g => g.id === gid);
-      Object.entries(picks).forEach(([optId, count]) => {
-        const opt = grp?.options?.find(o => (o.id || o.name) === optId);
-        if (!opt || !count) return;
-        for (let i = 0; i < count; i++) {
-          flatMods.push({
-            id: opt.id || null,
-            itemId: resolveOptItemId(opt),  // v5.5.313
-            name: opt.name || opt.label || '',
-            label: opt.name || opt.label || '',
-            groupLabel: grp?.name || '',
-            price: Number(opt.price) || 0,
-          });
-        }
-      });
-    });
+      // Quantity-mode picks: emit one entry per pick (so a Box of 3 with 3
+      // Bueno Filled emits three separate Bueno Filled entries — same shape
+      // MItemDetail produces, which the kitchen ticket / reports / receipts
+      // already understand).
+      const picks = qtyPicks[gid];
+      if (picks) {
+        const qgrp = (allModGroups || modGroups).find(g => g.id === gid);
+        Object.entries(picks).forEach(([optId, count]) => {
+          const opt = qgrp?.options?.find(o => (o.id || o.name) === optId);
+          if (!opt || !count) return;
+          for (let i = 0; i < count; i++) {
+            out.push({
+              id: opt.id || null,
+              itemId: resolveOptItemId(opt),  // v5.5.313
+              name: opt.name || opt.label || '',
+              label: opt.name || opt.label || '',
+              groupLabel: qgrp?.name || '',
+              price: Number(opt.price) || 0,
+            });
+          }
+        });
+      }
+      return out;
+    };
     // Instruction picks — flagged as instruction so kitchen ticket renders
     // them but no surcharge applies.
-    Object.entries(instSelections).forEach(([gid, val]) => {
-      if (!val) return;
+    const buildInst = (gid) => {
+      const val = instSelections[gid];
+      if (!val) return null;
       const grp = instGroups.find(g => g.id === gid);
-      flatMods.push({
-        id: `ig-${gid}-${val}`,
-        name: val,
-        label: val,
-        groupLabel: grp?.name || '',
-        price: 0,
-        _instruction: true,
-      });
+      return { id: `ig-${gid}-${val}`, name: val, label: val, groupLabel: grp?.name || '', price: 0, _instruction: true };
+    };
+    const flatMods = flowOrderedMods({
+      order: flowOrder,
+      modGroups, instGroups,
+      modKeys: [...new Set([...Object.keys(selections), ...Object.keys(qtyPicks)])],
+      instKeys: Object.keys(instSelections),
+      buildModGroup: buildGroupMods, buildInst,
     });
     const finalItem = {
       ...effectiveItem,

@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.964', date: '31 Jul 2026', label: 'Order lines and kitchen tickets follow the Back Office flow order',
+    changes: [
+      'THE LINE NOW FOLLOWS THE FLOW: v948 made the option PICKER screens follow the Back Office flow order, but the committed order line was still built "modifiers first, instructions last" — so the check rail, KDS, receipts and kitchen tickets always printed cooking preferences last (the Cheeseburger case). The line\'s options now commit in the exact flow order you set on Back Office → item → Flow, and everything downstream (KDS, receipts, kitchen tickets) prints in that order automatically.',
+      'Fixed on every surface that builds order lines: POS everyday panel, POS product modals, online ordering, and MPOS. The kiosk already committed in flow order.',
+      'Nested sub-picks (e.g. Peppercorn sauce → On the side) stay glued to their parent option, exactly as before.',
+      'Applies to NEW lines from now on — lines already sitting on open checks keep the order they were rung in with.',
+      'TEST: Back Office → Cheeseburger → Flow → drag Cooking preference to the top → on the POS ring a Cheeseburger with a preference + a modifier → the check line lists the preference first and the kitchen ticket prints it first.',
+    ],
+  },
+  {
     version: '5.5.963', date: '31 Jul 2026', label: 'Quick Screen shows the master product, never a bare variant',
     changes: [
       'Best-seller ranking used to surface variant sizes as their own tiles — a tile saying just "Half" or "Large" with no product name. The till now always shows the MASTER product (tapping it opens the size picker as normal), and several sizes of the same product collapse into one tile.',

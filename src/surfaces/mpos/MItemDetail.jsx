@@ -14,6 +14,7 @@
 import { useState, useMemo } from 'react';
 import { useStore } from '../../store';
 import { Sx, money } from './MShellStyles';
+import { flowOrderedMods } from '../../lib/optionFlow';
 
 export default function MItemDetail({ item, onClose, onAdded }) {
   const { addItem, modifierGroupDefs = [], instructionGroupDefs = [], eightySixIds = [], menuItems = [] } = useStore();
@@ -182,28 +183,42 @@ export default function MItemDetail({ item, onClose, onAdded }) {
 
   const handleAdd = () => {
     if (!canAdd) return;
+    // v5.5.964: mods commit in FLOW order (Back Office → item → Flow), so the
+    // check line and kitchen ticket follow the configured order instead of
+    // always printing cooking preferences last.
     // Expand picks into a flat mods array for the store. Each "qty" of an option
     // becomes that many entries (so kitchen tickets show "× 3 Extra cheese"
     // correctly, and the line surcharge calculation stays right).
-    const flatMods = [];
-    Object.values(selectedMods).flat().forEach(m => {
-      const subPickEntries = (m.subPicks || []).map(s => ({
-        id: s.id, name: s.name, price: s.price || 0, label: s.name, groupLabel: s.groupLabel,
-      }));
-      const baseEntry = { id: m.id, name: m.name, price: m.price || 0, label: m.name, groupLabel: m.groupLabel };
-      for (let i = 0; i < (m.qty || 1); i++) {
-        flatMods.push(baseEntry);
-        // Sub-picks attached once per parent-pick instance
-        flatMods.push(...subPickEntries);
-      }
-    });
-    // Add instructions as flagged mod entries so kitchen tickets show them but
+    const buildGroupMods = (gid) => {
+      const out = [];
+      (selectedMods[gid] || []).forEach(m => {
+        const subPickEntries = (m.subPicks || []).map(s => ({
+          id: s.id, name: s.name, price: s.price || 0, label: s.name, groupLabel: s.groupLabel,
+        }));
+        const baseEntry = { id: m.id, name: m.name, price: m.price || 0, label: m.name, groupLabel: m.groupLabel };
+        for (let i = 0; i < (m.qty || 1); i++) {
+          out.push(baseEntry);
+          // Sub-picks attached once per parent-pick instance
+          out.push(...subPickEntries);
+        }
+      });
+      return out;
+    };
+    // Instructions as flagged mod entries so kitchen tickets show them but
     // pricing isn't affected (no surcharge on canned instructions).
-    pickedInstructions.forEach(p => flatMods.push({
-      id:`ig-${p.groupId}-${p.label}`,
-      name: p.label, label: p.label, groupLabel: p.groupLabel,
-      price: 0, _instruction: true,
-    }));
+    const buildInst = (gid) => {
+      const p = pickedInstructions.find(x => String(x.groupId) === String(gid));
+      if (!p) return null;
+      return { id:`ig-${p.groupId}-${p.label}`, name: p.label, label: p.label, groupLabel: p.groupLabel, price: 0, _instruction: true };
+    };
+    const flatMods = flowOrderedMods({
+      order: item?.optionGroupOrder || item?.option_group_order || null,
+      modGroups: groups.filter(g => !g.__isVariantGroup),
+      instGroups: instructionGroups,
+      modKeys: Object.keys(selectedMods),
+      instKeys: pickedInstructions.map(p => p.groupId),
+      buildModGroup: buildGroupMods, buildInst,
+    });
     addItem(item, flatMods, null, { qty, notes: notes.trim() || undefined });
     onAdded?.();
   };

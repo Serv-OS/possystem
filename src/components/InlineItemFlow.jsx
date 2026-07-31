@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect, useRef } from 'react';
 import { useStore } from '../store';
 import { ALLERGENS } from '../data/seed';
 import { money } from '../lib/currency';
-import { orderOptionFlow } from '../lib/optionFlow';
+import { orderOptionFlow, flowOrderedMods } from '../lib/optionFlow';
 
 // ══════════════════════════════════════════════════════════════════════════════
 // InlineItemFlow — replaces ProductModal for POS
@@ -170,7 +170,11 @@ export default function InlineItemFlow({ item, menuItems, activeAllergens = [], 
 
   const handleAdd = () => {
     if (!canAdd) { setRequireErr(true); setTimeout(() => setRequireErr(false), 3000); return; }
-    const mods = Object.entries(selections).flatMap(([gid, val]) => {
+    // v5.5.964: the line's mods commit in FLOW order (same order the panel shows),
+    // so the check rail / KDS / receipts / kitchen tickets follow the Back Office
+    // flow instead of always printing cooking preferences last.
+    const buildGroupMods = (gid) => {
+      const val = selections[gid];
       if (!val) return [];
       const group = modGroups.find(g => g.id === gid);
       // Quantity mode: { optionId: qty } → expand to flat mods with qty label
@@ -209,12 +213,18 @@ export default function InlineItemFlow({ item, menuItems, activeAllergens = [], 
           price: m.price || 0,
         };
       });
-    });
-    Object.entries(instSelections).forEach(([gid, val]) => {
-      if (val) {
-        const g = instGroups.find(ig => ig.id === gid);
-        mods.push({ groupLabel: g?.name, label: val, price: 0, _instruction: true });
-      }
+    };
+    const buildInst = (gid) => {
+      const val = instSelections[gid];
+      if (!val) return null;
+      const g = instGroups.find(ig => ig.id === gid);
+      return { groupLabel: g?.name, label: val, price: 0, _instruction: true };
+    };
+    const mods = flowOrderedMods({
+      order: item?.optionGroupOrder || item?.option_group_order || null,
+      modGroups, instGroups,
+      modKeys: Object.keys(selections), instKeys: Object.keys(instSelections),
+      buildModGroup: buildGroupMods, buildInst,
     });
     const variantPart = selectedVariant
       ? ` — ${selectedVariant.menuName || selectedVariant.name || selectedVariant.label}`
