@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.965', date: '31 Jul 2026', label: 'Flow order part 2 — the DISPLAYS stop re-sorting instructions to the bottom',
+    changes: [
+      'v964 fixed the ORDER LINE itself, but three renderers were quietly re-splitting every line back into "modifiers first, instructions last" before showing it: the POS check rail, the KDS/kitchen-ticket text builder in the store, and the MPOS cart + order-queue views. However the line was stored, cooking preferences displayed and printed at the bottom.',
+      'All of them now render the line exactly as committed — instructions keep their styling (italic on POS, accent colour on MPOS), just in the position your Back Office flow puts them.',
+      'The checkout bill was already correct — it always rendered the stored order.',
+      'SUNMI NOTE: the Sunmi till keeps running OLD code after a normal refresh — it needs a full force-stop (swipe it away from recents or Settings → Apps → ServOS → Force stop) and relaunch to pick up new versions.',
+      'TEST: on v5.5.965, ring a Cheeseburger with a cooking preference + a topping → the check rail line, checkout bill, KDS ticket and kitchen print all show the preference exactly where the Flow tab puts it.',
+    ],
+  },
+  {
     version: '5.5.964', date: '31 Jul 2026', label: 'Order lines and kitchen tickets follow the Back Office flow order',
     changes: [
       'THE LINE NOW FOLLOWS THE FLOW: v948 made the option PICKER screens follow the Back Office flow order, but the committed order line was still built "modifiers first, instructions last" — so the check rail, KDS, receipts and kitchen tickets always printed cooking preferences last (the Cheeseburger case). The line\'s options now commit in the exact flow order you set on Back Office → item → Flow, and everything downstream (KDS, receipts, kitchen tickets) prints in that order automatically.',

@@ -2039,15 +2039,18 @@ function OrderItem({
               {item.name}
               {isVoided && <span style={{fontSize:9,fontWeight:800,padding:'1px 5px',borderRadius:4,background:'var(--red-d)',color:'var(--red)',letterSpacing:.04}}>VOIDED</span>}
             </div>
-            {item.mods?.filter(m => !m._instruction).map((m,i)=>(
+            {/* v5.5.965: ONE pass in line order — the old split (mods first, then all
+                instructions) forced cooking preferences to the bottom of every line,
+                overriding the BO flow order the line was committed with. Instructions
+                keep their italic style, just in place. */}
+            {item.mods?.map((m,i)=> m._instruction ? (
+              <div key={i} style={{fontSize:11,color:'var(--t3)',marginTop:1,fontStyle:'italic'}}>
+                {m.label}
+              </div>
+            ) : (
               <div key={i} style={{fontSize:11,color:'var(--t3)',marginTop:1,display:'flex',justifyContent:'space-between'}}>
                 <span>{m.label}</span>
                 {m.price>0&&<span style={{color:'var(--acc)',fontFamily:'var(--font-mono)'}}>+{money(m.price)}</span>}
-              </div>
-            ))}
-            {item.mods?.filter(m => m._instruction).map((m,i)=>(
-              <div key={`inst-${i}`} style={{fontSize:11,color:'var(--t3)',marginTop:1,fontStyle:'italic'}}>
-                {m.label}
               </div>
             ))}
             {item.notes && (

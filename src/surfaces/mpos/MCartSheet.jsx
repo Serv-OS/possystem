@@ -302,12 +302,11 @@ function CartLine({ item, onRemove, onInc, onDec, onActions }) {
   const lineTotal = item.discount?.value
     ? baseLine * (1 - item.discount.value / 100)
     : baseLine;
-  const modsList = (item.mods || [])
-    .filter(m => !m?._instruction)
-    .map(m => m?.name || m?.label || m).filter(Boolean);
-  const instructionsList = (item.mods || [])
-    .filter(m => m?._instruction)
-    .map(m => m?.label || m?.name || m).filter(Boolean);
+  // v5.5.965: one list in LINE order (instructions in place, accent-coloured) —
+  // the old mods-then-instructions split overrode the BO flow order.
+  const lineOptions = (item.mods || [])
+    .map(m => ({ label: (m?._instruction ? (m?.label || m?.name) : (m?.name || m?.label)) || (typeof m === 'string' ? m : null), inst: !!m?._instruction }))
+    .filter(o => o.label);
   return (
     <div onClick={onActions} style={{
       padding:'12px 14px', background:'var(--bg2)', borderRadius:12,
@@ -324,11 +323,12 @@ function CartLine({ item, onRemove, onInc, onDec, onActions }) {
               <span style={{ ...Sx.pill, background:'var(--acc-d)', color:'var(--acc)', border:'1px solid var(--acc-b)' }}>C{item.course}</span>
             )}
           </div>
-          {modsList.length > 0 && (
-            <div style={{ fontSize:11, color:'var(--t3)', lineHeight:1.4 }}>+ {modsList.join(' · ')}</div>
-          )}
-          {instructionsList.length > 0 && (
-            <div style={{ fontSize:11, color:'var(--acc)', marginTop:2, lineHeight:1.4 }}>{instructionsList.join(' · ')}</div>
+          {lineOptions.length > 0 && (
+            <div style={{ fontSize:11, color:'var(--t3)', lineHeight:1.4 }}>
+              + {lineOptions.map((o, i) => (
+                <span key={i}>{i > 0 && ' · '}<span style={o.inst ? { color:'var(--acc)' } : undefined}>{o.label}</span></span>
+              ))}
+            </div>
           )}
           {item.notes && (
             <div style={{ fontSize:11, color:'var(--acc)', marginTop:2, lineHeight:1.4 }}>📝 {item.notes}</div>

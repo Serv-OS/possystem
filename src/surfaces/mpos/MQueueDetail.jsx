@@ -109,12 +109,10 @@ export default function MQueueDetail({ order, onBack }) {
           </div>
           {items.map((it, i) => {
             const lineTotal = (Number(it.price) || 0) * (Number(it.qty) || 0);
-            const modsList = (it.mods || [])
-              .filter(m => !m?._instruction)
-              .map(m => m?.name || m?.label || m).filter(Boolean);
-            const instructions = (it.mods || [])
-              .filter(m => m?._instruction)
-              .map(m => m?.label || m?.name || m).filter(Boolean);
+            // v5.5.965: one list in LINE order (instructions accent-coloured in place)
+            const lineOptions = (it.mods || [])
+              .map(m => ({ label: (m?._instruction ? (m?.label || m?.name) : (m?.name || m?.label)) || (typeof m === 'string' ? m : null), inst: !!m?._instruction }))
+              .filter(o => o.label);
             return (
               <div key={i} style={{ padding:'10px 12px', background:'var(--bg2)', borderRadius:11, border:'1px solid var(--bdr)', marginBottom:6, display:'flex', gap:10 }}>
                 <div style={{ fontSize:12, fontWeight:800, color:'var(--t4)', fontFamily:'var(--font-mono)', minWidth:24, paddingTop:1 }}>
@@ -122,11 +120,12 @@ export default function MQueueDetail({ order, onBack }) {
                 </div>
                 <div style={{ flex:1, minWidth:0 }}>
                   <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)' }}>{it.name}</div>
-                  {modsList.length > 0 && (
-                    <div style={{ fontSize:11, color:'var(--t3)', marginTop:1 }}>+ {modsList.join(' · ')}</div>
-                  )}
-                  {instructions.length > 0 && (
-                    <div style={{ fontSize:11, color:'var(--acc)', marginTop:1 }}>{instructions.join(' · ')}</div>
+                  {lineOptions.length > 0 && (
+                    <div style={{ fontSize:11, color:'var(--t3)', marginTop:1 }}>
+                      + {lineOptions.map((o, j) => (
+                        <span key={j}>{j > 0 && ' · '}<span style={o.inst ? { color:'var(--acc)' } : undefined}>{o.label}</span></span>
+                      ))}
+                    </div>
                   )}
                   {it.notes && (
                     <div style={{ fontSize:11, color:'var(--acc)', marginTop:1 }}>📝 {it.notes}</div>
